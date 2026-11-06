@@ -195,14 +195,13 @@ def test_manual_openfocus_spatial_cap_is_preserved_with_roomy_ram(monkeypatch):
 def test_frame_producers_respect_complete_per_worker_budget(monkeypatch, activity_only):
     from types import SimpleNamespace
     from core import multi_focus_fusion as mff, resource_policy as policy
-    from core.algorithm_adapters import (
-        openfocus_a_resources, DEPTH_KERNEL_STARTUP_BYTES)
+    from core.algorithm_adapters import openfocus_a_resources
     from fusion_methods.openfocus_ab import _frame_pass_workers
 
     frame = SimpleNamespace(shape=(1000, 1000, 3))
     fixed, worker = openfocus_a_resources(1000, 1000, {}, 16)
     if activity_only:
-        fixed = DEPTH_KERNEL_STARTUP_BYTES + 4 * 1024 * 1024 + 1000 * 1000 * 12
+        fixed = 4 * 1024 * 1024 + 1000 * 1000 * 12
     monkeypatch.setattr(policy, 'probe_resources', lambda: policy.ResourceSnapshot(
         available_ram=8 * 1024 ** 3, total_ram=16 * 1024 ** 3,
         physical_cores=8, logical_cpus=16))

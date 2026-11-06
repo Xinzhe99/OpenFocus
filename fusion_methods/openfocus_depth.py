@@ -80,6 +80,10 @@ def depth_map(frames, img_resize, kernel_size, smoothing, should_cancel,
     """Estimate independent activities in a bounded window; reduce globally."""
     from fusion_methods.openfocus_ab import (
         _check_cancel, _prepare_frame, _frame_pass_workers, _ordered_frame_results)
+    from fusion_methods._depth_kernel import prepare_depth_kernel
+
+    prepare_depth_kernel(guided=float(smoothing) > 0,
+                         should_cancel=should_cancel)
 
     def cancel():
         _check_cancel(should_cancel)

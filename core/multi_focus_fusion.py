@@ -598,6 +598,14 @@ class MultiFocusFusion:
         else:
             raise ValueError("Fusion requires a non-empty image stack or directory")
 
+        if self.algorithm in ('openfocus_b', 'openfocus_c'):
+            from fusion_methods._depth_kernel import prepare_depth_kernel
+            smoothing_key = ('depth_smoothing' if self.algorithm == 'openfocus_b'
+                             else 'blend_smoothing')
+            smoothing = kwargs[smoothing_key]
+            prepare_depth_kernel(guided=smoothing is None or smoothing > 0,
+                                 should_cancel=should_cancel)
+
         h, w = first.shape[:2]
         spec = self.descriptor
         height = max(h, img_resize[1]) if img_resize else h
