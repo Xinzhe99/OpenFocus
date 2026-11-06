@@ -174,6 +174,51 @@ def _from16f(img16: np.ndarray, like: np.ndarray) -> np.ndarray:
     return out
 
 
+# OpenCV's medianBlur accepts 16-bit input only for 3x3 and 5x5 windows, but
+# frame-index maps are uint16 above 256 frames and the tuned window scales
+# past 5 on large sensors.  Clamping the window would change how far the
+# depth labels are smoothed, so the wider window is filtered band-wise with
+# edge replication; this budget caps the scratch held per band.
+INDEX_MEDIAN_BAND_BYTES = 16 * 1024 * 1024
+
+
+def _median_blur_index(idx: np.ndarray, size: int, *, cancelled=None) -> np.ndarray:
+    """Median-filter a frame-index map, keeping the whole (scaled) window.
+
+    `focus_measures` returns uint16 indices once a stack has more than 256
+    frames, and OpenCV's ``medianBlur`` accepts 16-bit input only for 3x3 and
+    5x5 windows (wider apertures are 8-bit only).  The scaled window
+    (`_ksize(5)`) is wider than 5 on sensors above ~5.7 kpx, so those maps
+    fall back to SciPy's median with ``mode="nearest"`` -- the same edge
+    replication OpenCV uses -- applied band by band.  A band is the output
+    rows plus a half-window halo on each side, so the result is identical to
+    one whole-image filter while the scratch stays bounded by
+    ``INDEX_MEDIAN_BAND_BYTES`` and the caller's cancel callback is checked
+    between bands.
+    """
+    size = int(size) | 1
+    if size <= 1:
+        return np.array(idx, copy=True)
+    if idx.dtype == np.uint8 or size <= 5:
+        return cv2.medianBlur(idx, size)
+    from scipy.ndimage import median_filter
+
+    height, width = idx.shape[:2]
+    pad = size // 2
+    itemsize = max(int(idx.dtype.itemsize), 1)
+    rows = INDEX_MEDIAN_BAND_BYTES // max(width * itemsize, 1) - 2 * pad
+    rows = max(1, min(height, rows))
+    out = np.empty_like(idx)
+    for start in range(0, height, rows):
+        if cancelled is not None and cancelled():
+            raise BackgroundFillCancelled()
+        stop = min(height, start + rows)
+        low, high = max(0, start - pad), min(height, stop + pad)
+        filtered = median_filter(idx[low:high], size=(size, size), mode="nearest")
+        out[start:stop] = filtered[start - low:start - low + (stop - start)]
+    return out
+
+
 # ---------------------------------------------------------------------- helpers
 def focus_measures(G, sigma=None, *, cancelled=None):
     """Per-pixel focus measures from smoothed Laplacian energy E across the stack.
@@ -431,7 +476,7 @@ def refine_subject(sub_half, fused, band=24, r=12, eps=2e-4):
     return cv2.resize(matte, (W, H), interpolation=cv2.INTER_LINEAR)
 
 
-def edge_frame_map(sub_half, idx_half, inner=None):
+def edge_frame_map(sub_half, idx_half, inner=None, *, cancelled=None):
     """For every pixel, the in-focus frame of the nearest subject edge.
 
     Reads the argmax index just inside the subject (between inner[0] and
@@ -444,7 +489,7 @@ def edge_frame_map(sub_half, idx_half, inner=None):
         ring = sub_half
     if not ring.any():
         raise BackgroundFillError("no subject found to replace the background around")
-    idx = cv2.medianBlur(idx_half, _ksize(5))
+    idx = _median_blur_index(idx_half, _ksize(5), cancelled=cancelled)
     src = np.where(ring, 0, 1).astype(np.uint8)
     _, labels = cv2.distanceTransformWithLabels(src, cv2.DIST_L2, 5,
                                                 labelType=cv2.DIST_LABEL_PIXEL)
@@ -1093,7 +1138,7 @@ def clean_edges(fz, bgf, est, sub, dist, Wmap, lo_q, hi_q, strength, scale=4):
     return bgf + shift, shift
 
 
-def classify_never_sharp(sub, peak_half, peak_t, idx_half, N, fused, dist):
+def classify_never_sharp(sub, peak_half, peak_t, idx_half, N, fused, dist, *, cancelled=None):
     """Split subject pixels no frame shows sharply into three causes:
     hidden (the camera never had a clear view: truly missing), out of range
     (sharpness still rising at the first or last frame: the stack did not
@@ -1102,7 +1147,7 @@ def classify_never_sharp(sub, peak_half, peak_t, idx_half, N, fused, dist):
     H, W = sub.shape
     h, w = peak_half.shape
     never = np.clip((peak_t - peak_half) / 0.5, 0, 1).astype(np.float32)
-    ends = cv2.medianBlur(idx_half, _ksize(5))
+    ends = _median_blur_index(idx_half, _ksize(5), cancelled=cancelled)
     at_end = ((ends == 0) | (ends == N - 1)).astype(np.float32)
     g = cv2.resize(cv2.cvtColor(fused.astype(np.float32) / 257.0, cv2.COLOR_BGR2GRAY), (w, h),
                    interpolation=cv2.INTER_AREA)
@@ -1114,7 +1159,7 @@ def classify_never_sharp(sub, peak_half, peak_t, idx_half, N, fused, dist):
     # Hidden data sits where something blocks the view: next to the outline
     # or next to a depth step inside the subject (one cap in front of the
     # other).  Smooth, dark shadow there is hidden, not merely featureless.
-    depth = cv2.medianBlur(idx_half, _ksize(5)).astype(np.float32)
+    depth = _median_blur_index(idx_half, _ksize(5), cancelled=cancelled).astype(np.float32)
     gx = cv2.Sobel(depth, cv2.CV_32F, 1, 0, ksize=3) / 8
     gy = cv2.Sobel(depth, cv2.CV_32F, 0, 1, ksize=3) / 8
     sub_h = cv2.resize(sub.astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST)
@@ -1501,7 +1546,7 @@ def _replace_background(frames: Sequence[np.ndarray], fused: np.ndarray, *,
 
     step("matching the background frame")
     bgf, gains = load_matched(k_bg)
-    k_edge = edge_frame_map(sub_half, idx)
+    k_edge = edge_frame_map(sub_half, idx, cancelled=cancelled)
     # Next to the subject no single frame has a clean background: the frame
     # where an edge is sharp is darkened by partial occlusion, the background
     # frame carries the subject's glow out to the measured radius.  Rebuild
@@ -1558,7 +1603,8 @@ def _replace_background(frames: Sequence[np.ndarray], fused: np.ndarray, *,
                                                          size_cap, cancelled=cancelled)
     del k_edge_full, size_cap
     step("classifying unseen subject")
-    hidden, out_range, featureless = classify_never_sharp(sub, measures["peak"], peak_t, idx, N, fused16, dist)
+    hidden, out_range, featureless = classify_never_sharp(sub, measures["peak"], peak_t, idx, N, fused16, dist,
+                                                          cancelled=cancelled)
     to8 = lambda m: (np.clip(m, 0, 1) * 255).astype(np.uint8)
     missing = MissingData(to8(bg_miss), to8(hidden), to8(out_range), to8(featureless))
     del bg_miss, hidden, out_range, featureless

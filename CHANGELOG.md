@@ -67,6 +67,23 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   counts tuned on 20 MP images, so a stack loaded at reduced size got a large
   pale halo and rings, and larger sensors got zones too narrow. They now scale
   with the image's long side; 20 MP results are unchanged.
+- Auto background no longer stops with an OpenCV error on a long stack from a
+  large sensor. The per-pixel frame index is 16-bit above 256 frames and
+  OpenCV filters that only with a 3x3 or 5x5 window, while the tuned window is
+  wider on large sensors; the wider window is now applied band by band with
+  the same edge replication and a bounded scratch buffer, and is never
+  clamped, so the smoothing extent is unchanged.
+- The command line refuses a run whose outputs would overwrite each other
+  before it writes anything. The result, `--depth-map`, `--save-stacked`,
+  `--missing-data-map` (the map and one mask per class), `--json` and
+  `--alignment-report` are checked against one another in a single run, and
+  across every batch folder (including per-folder configs) in a batch run; a
+  different name for the same file is caught too. An output may also no
+  longer replace an input the run reads -- a frame, the dust or defect
+  reference, or the config -- in a single run and in every batch folder, so a
+  result, sidecar, class mask or JSON summary is never lost to a colliding
+  path. Batch folders are listed with each folder's own config and filters
+  and nothing is created before either check passes.
 
 ## [1.76.0] - 2026-11-06
 
