@@ -295,7 +295,7 @@ class RenderWorker(QThread):
 
     finished_signal = pyqtSignal(object, object, bool, float, float, str)
     progress_signal = pyqtSignal(int, int)  # done, total (tiled fusion)
-    stage_signal = pyqtSignal(str)  # "align" | "fuse"
+    stage_signal = pyqtSignal(str)  # waiting | prepare | align | fuse | finish
     error_signal = pyqtSignal(str)
 
     def __init__(self, raw_images, aligned_images=None, is_images_aligned=False,
@@ -375,8 +375,10 @@ class RenderWorker(QThread):
                            sort_mode=self.sort_mode, exposure_match=self.exposure_match,
                            **frame_details(self.raw_images)) as operation:
             try:
+                self.stage_signal.emit("waiting")
                 with heavy_job(lambda: self.is_cancelled):
                     try:
+                        self.stage_signal.emit("prepare")
                         self._run_admitted()
                     except RegistrationCancelled:
                         operation.cancel()
