@@ -14,8 +14,10 @@ from PyQt6.QtWidgets import (QComboBox, QDialog, QHBoxLayout, QLabel,
                              QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QProgressBar,
                              QPushButton, QScrollArea, QVBoxLayout, QWidget)
 
-from core.batch_converter import INPUT_EXTENSIONS, OUTPUT_EXTENSIONS, convert_batch, thumbnail_rgb
+from core.batch_converter import (INPUT_EXTENSIONS, OUTPUT_EXTENSIONS, OUTPUT_FORMAT_ORDER,
+                                  convert_batch, thumbnail_rgb)
 from utils.file_dialogs import FileDialog, expand_dialog_path
+from utils.settings_store import get_converter_output_format, set_converter_output_format
 from utils.sorting import natural_sort_key
 from utils.logging_setup import get_logger
 from locales import trans
@@ -148,9 +150,19 @@ class BatchConverterDialog(QDialog):
         layout.addLayout(row)
         layout.addWidget(QLabel(trans.t('batch_output_format')))
         self.format = QComboBox()
-        self.format.addItems(OUTPUT_EXTENSIONS)
+        self.format.addItems(OUTPUT_FORMAT_ORDER)
+        self.format.setCurrentText(get_converter_output_format())
+        self.format.setAccessibleName(trans.t('batch_output_format'))
         self.format.setToolTip(trans.t('converter_warning'))
         layout.addWidget(self.format)
+        self.format_example = QLabel()
+        self.format_example.setObjectName('mutedLabel')
+        self.format_example.setWordWrap(True)
+        layout.addWidget(self.format_example)
+        self.format_scope = QLabel(trans.t('converter_output_scope'))
+        self.format_scope.setObjectName('mutedLabel')
+        self.format_scope.setWordWrap(True)
+        layout.addWidget(self.format_scope)
         self.format_warning = QLabel()
         self.format_warning.setWordWrap(True)
         self.format_warning.setObjectName('mutedLabel')
@@ -181,11 +193,22 @@ class BatchConverterDialog(QDialog):
         self.list.itemSelectionChanged.connect(self._update_controls)
         self.directory.textChanged.connect(self._update_controls)
         self.directory.returnPressed.connect(self._start_if_ready)
-        self.format.currentTextChanged.connect(self._update_format_warning)
+        self.format.currentTextChanged.connect(self._format_changed)
         for button in (*self.controls[:3], self.browse, self.start, self.cancel, close):
             button.setAutoDefault(False)
         self._update_controls()
-        self._update_format_warning(self.format.currentText())
+        self._update_format_selection(self.format.currentText())
+
+    def _format_changed(self, image_format):
+        self._update_format_selection(image_format)
+        set_converter_output_format(image_format)
+
+    def _update_format_selection(self, image_format):
+        self._update_format_warning(image_format)
+        ext = OUTPUT_EXTENSIONS.get(image_format, '')
+        self.format_example.setText(
+            trans.t('converter_output_example').format(ext=ext) if ext else '')
+        self.format_example.setVisible(bool(ext))
 
     def _update_format_warning(self, image_format):
         keys = {'DNG': 'converter_dng_risk', 'JPEG': 'converter_jpeg_risk',

@@ -507,12 +507,15 @@ def _rationals(values, signed=False):
 
 
 def _write_linear_dng_atomic(path, linear_bgr, metadata, *, should_cancel=None,
-                             px_size_um=None):
+                             px_size_um=None, display_preview=None):
     """Write the DNG payload and replace the destination atomically.
 
     `px_size_um` is the physical pixel size of *these* pixels (after any
     loading scale). It is stored as ResolutionUnit=cm resolution tags so a
     re-import recovers the same microscopy calibration as a TIFF.
+
+    `display_preview`, when supplied by RAW conversion, is bounded display RGB;
+    it occupies a separate reduced IFD without changing the LinearRaw payload.
     """
     _validate_image(linear_bgr)
     matrix, neutral = _validate_metadata(metadata)
@@ -572,12 +575,17 @@ def _write_linear_dng_atomic(path, linear_bgr, metadata, *, should_cancel=None,
     fd, temporary = tempfile.mkstemp(prefix='.openfocus-', suffix='.dng', dir=directory)
     os.close(fd)
     try:
-        tifffile.imwrite(temporary, strips(), shape=linear_bgr.shape, dtype='<u2',
-                         byteorder='<', rowsperstrip=rows_per_strip,
+        with tifffile.TiffWriter(temporary, byteorder='<') as writer:
+            writer.write(strips(), shape=linear_bgr.shape, dtype='<u2',
+                         rowsperstrip=rows_per_strip,
                          planarconfig='contig', photometric=34892, subfiletype=0, metadata=None,
                          resolution=resolution,
                          resolutionunit=3 if resolution is not None else None,
+                         subifds=1 if display_preview is not None else None,
                          extratags=tags, software='OpenFocus', description=None)
+            if display_preview is not None:
+                check_cancel()
+                _write_display_ifd(writer, display_preview)
         check_cancel()
         os.replace(temporary, destination)
     finally:
@@ -683,6 +691,39 @@ def _cfa_metadata(raw, source):
     ]
 
 
+def _conversion_display_preview(raw, source, should_cancel):
+    """Reuse the bounded display reader; never unpack a second sensor."""
+    from core.source_frames import _raw_preview, _UnavailablePreview, _small, PREVIEW_EDGE
+    try:
+        # CFA samples retain their orientation tag. LinearRaw export is already
+        # oriented by LibRaw, so its display must use the same pixel domain.
+        orientation = (1 if raw.raw_type == rawpy.RawType.Flat else
+                       (1, 2, 4, 3, 5, 8, 6, 7)[raw.sizes.flip])
+        preview = _raw_preview(raw, orientation, source, should_cancel)
+    except InterruptedError:
+        raise
+    except (rawpy.LibRawError, OSError, ValueError, MemoryError):
+        if should_cancel is not None and should_cancel():
+            raise InterruptedError('DNG conversion cancelled')
+        return None
+    if isinstance(preview, _UnavailablePreview):
+        return None
+    if should_cancel is not None and should_cancel():
+        raise InterruptedError('DNG conversion cancelled')
+    preview = _small(preview, edge=min(PREVIEW_EDGE, max(raw.sizes.width, raw.sizes.height)))
+    if preview.dtype == np.uint16:
+        preview = (preview >> 8).astype(np.uint8)
+    return np.ascontiguousarray(preview[:, :, ::-1])
+
+
+def _write_display_ifd(writer, rgb, *, orientation=1):
+    # Uncompressed RGB needs no optional codec and remains bounded to 768px.
+    writer.write(rgb, photometric='rgb', planarconfig='contig', subfiletype=1,
+                 metadata=None, description=None, software='OpenFocus',
+                 extratags=[(274, 'H', 1, orientation, False),
+                            (50970, 'I', 1, 2, False)])  # PreviewColorSpace: sRGB
+
+
 def convert_raw_to_dng(path, source, *, should_cancel=None):
     """Export CFA samples losslessly, or preserve an existing DNG verbatim.
 
@@ -694,6 +735,13 @@ def convert_raw_to_dng(path, source, *, should_cancel=None):
     from core.registration import RegistrationCancelled
     if os.path.exists(path) and os.path.samefile(path, source):
         raise ValueError('DNG destination must differ from its source')
+    stat = os.stat(source)
+    source_stamp = (stat.st_size, stat.st_mtime_ns)
+
+    def check_source():
+        stat = os.stat(source)
+        if (stat.st_size, stat.st_mtime_ns) != source_stamp:
+            raise OSError(f'Source changed during DNG conversion: {source}')
 
     def check_cancel():
         if should_cancel is not None and should_cancel():
@@ -723,10 +771,14 @@ def convert_raw_to_dng(path, source, *, should_cancel=None):
                         outgoing.write(chunk)
                 log_action('converter.dng.format', format='original DNG (unchanged)')
                 check_cancel()
+                check_source()
                 return
             with rawpy.RawPy() as raw:
                 raw.open_file(os.fspath(source))
                 check_cancel()
+                display_preview = _conversion_display_preview(raw, source, should_cancel)
+                check_cancel()
+                check_source()
                 if raw.raw_type != rawpy.RawType.Flat:
                     linear_sensor = True
                 else:
@@ -748,19 +800,27 @@ def convert_raw_to_dng(path, source, *, should_cancel=None):
                             check_cancel()
                             yield np.ascontiguousarray(pixels[start:start + rows], dtype='<u2').tobytes()
 
-                    tifffile.imwrite(path, strips(), shape=pixels.shape, dtype='<u2',
-                                     byteorder='<', bigtiff=False, rowsperstrip=rows, photometric=32803,
+                    with tifffile.TiffWriter(path, byteorder='<', bigtiff=False) as writer:
+                        writer.write(strips(), shape=pixels.shape, dtype='<u2',
+                                     rowsperstrip=rows, photometric=32803,
                                      subfiletype=0, metadata=None, description=None, software='OpenFocus',
-                                     extratags=tags)
+                                     subifds=1 if display_preview is not None else None, extratags=tags)
+                        if display_preview is not None:
+                            check_cancel()
+                            _write_display_ifd(writer, display_preview,
+                                               orientation=(1, 2, 4, 3, 5, 8, 6, 7)[raw.sizes.flip])
                     log_action('converter.dng.format', format='CFA', repeat=raw.raw_pattern.shape,
                                width=pixels.shape[1], height=pixels.shape[0], storage_bits=16,
                                white_level=raw.white_level)
             if linear_sensor:
                 check_cancel()
                 pixels, metadata = load_linear_raw(source)
-                _write_linear_dng_atomic(path, pixels, metadata, should_cancel=should_cancel)
+                check_source()
+                _write_linear_dng_atomic(path, pixels, metadata, should_cancel=should_cancel,
+                                         display_preview=display_preview)
                 log_action('converter.dng.format', format='LinearRaw (camera-linear RGB)')
             check_cancel()
+            check_source()
         except (InterruptedError, RegistrationCancelled):
             operation.cancel()
             raise

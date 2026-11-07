@@ -52,7 +52,7 @@ def test_stored_frame_preserves_strides_pixels_and_live_views(tmp_path, layout):
     pixels = {'crop': source[2:-2, 3:-3],
               'transpose': source.transpose(1, 0, 2),
               'reverse': source[::-1, ::-1]}[layout]
-    mapped = frame_storage.store_frame(pixels)
+    mapped = frame_storage.store_frame(pixels, prefer_ram=False)
     path = mapped.filename
     np.testing.assert_array_equal(mapped, pixels)
     assert mapped.dtype == pixels.dtype
@@ -285,10 +285,11 @@ def test_rejected_load_restores_loader_and_releases_frames(qapp, monkeypatch, ou
 def test_failed_load_restores_loader_metadata(qapp, monkeypatch):
     previous = [np.zeros((1, 1), np.uint8)]
     loader = SimpleNamespace(images=previous, image_paths=['old'], px_size_um=4,
-                             should_cancel=None, progress_callback=None)
+                             failed_count=3, should_cancel=None, progress_callback=None)
     def fail(paths, **kwargs):
         loader.image_paths = ['new']
         loader.px_size_um = None
+        loader.failed_count = 1
         raise ValueError('decode failed')
     loader.load_from_filepaths = fail
     worker = workers.StackLoadWorker(loader, filepaths=['new'])
@@ -297,7 +298,7 @@ def test_failed_load_restores_loader_metadata(qapp, monkeypatch):
     worker.run()
     assert not results[0][0]
     assert loader.images is previous and loader.image_paths == ['old']
-    assert loader.px_size_um == 4
+    assert loader.px_size_um == 4 and loader.failed_count == 3
 
 
 @pytest.mark.parametrize('cancelled', [False, True])
@@ -399,7 +400,7 @@ def test_independent_scopes_keep_their_own_directory(monkeypatch, tmp_path):
         with frame_storage.scratch_directory():
             selected = frame_storage.select_scratch(size)
             barrier.wait()
-            mapped = frame_storage.store_frame(np.zeros(2, np.uint8))
+            mapped = frame_storage.store_frame(np.zeros(2, np.uint8), prefer_ram=False)
             assert os.path.dirname(mapped.filename) == selected
             return selected
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:

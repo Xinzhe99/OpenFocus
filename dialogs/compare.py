@@ -576,13 +576,15 @@ class CompareDialog(QDialog):
         frame = self._frames[self._ref_index]
         self.ref_canvas.setToolTip("")
         from core.source_frames import preview_ready
-        if preview_ready(frame):
+        from core.image_loader import is_raw_source
+        if (preview_ready(frame) and
+                (getattr(frame, 'preview_is_available', True) or not is_raw_source(frame.path))):
             self._set_reference_image(frame)
         else:
             with QSignalBlocker(self.ref_canvas):
                 self.ref_canvas.set_pixmap(None)
             request = self._source_preview_generation
-            worker = SourcePreviewWorker(self._frames, request, [self._ref_index])
+            worker = SourcePreviewWorker(self._frames, request, [self._ref_index], selected_display=True)
             self._source_preview_workers[worker] = request
             worker.ready.connect(self._source_preview_ready)
             worker.failed.connect(self._source_preview_failed)

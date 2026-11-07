@@ -32,7 +32,7 @@ from core.frame_storage import scratch_directory
 
 from core.algorithms import (fusion_algorithms, registration_algorithms, get_fusion,
                              get_registration, resolve_fusion_parameters,
-                             resolve_registration_parameters)
+                             resolve_registration_parameters, alignment_steps)
 from constants import APP_VERSION
 from utils.logging_setup import (setup_logging, log_session_start, log_operation,
                                  log_action, get_logger, frame_details)
@@ -117,9 +117,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--align-param", action="append", default=[], metavar="KEY=JSON_VALUE",
                         help="Registration parameter; repeat for multiple keys.")
     parser.add_argument("--align-shift-limit", type=float, default=None, metavar="RATIO",
-                        help="openfocus alignment only: maximum accepted frame shift as a fraction of the "
-                             "frame size (default 0.08; frames above it are "
-                             "left unaligned rather than half-corrected)")
+                        help="openfocus alignment only: translation search domain as a fraction "
+                             "of the frame size (default 0.05)")
     parser.add_argument("--base-frame", default="none", choices=["none", "last", "first"],
                         help="Optional post-fusion base correction: match the output's low "
                              "frequencies to the last/first frame (default: none).")
@@ -145,10 +144,10 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Odd kernel size; for OpenFocus A/B, controls focus-response scale")
     parser.add_argument("--depth-smoothing", type=float, default=None, metavar="VALUE",
                         help="openfocus_b only: depth-map transition smoothing "
-                             "(default 1.2; larger values smooth transitions more)")
+                             "(default 1.44; larger values smooth transitions more)")
     parser.add_argument("--blend-smoothing", type=float, default=None, metavar="VALUE",
                         help="openfocus_a / openfocus_c only: transition smoothing "
-                             "(defaults 2.0 for A and 3.0 for C)")
+                             "(defaults 2.0 for A and 3.6 for C)")
     parser.add_argument("--threads", "-t", type=int, default=0,
                         help="Worker thread upper limit (0 = automatic; default: 0)")
     parser.add_argument("--resource-preference", default="balanced",
@@ -373,14 +372,14 @@ def _resolve_stack(args, video_temp_root: str) -> Tuple[str, List[str]]:
 
 def _load_images(paths: List[str], thread_count: int = 0,
                  resource_preference: str = "balanced",
-                 should_cancel=None, registration_steps=0, exposure_match=False):
+                 should_cancel=None, registration_steps=0, exposure_match=False, lazy=False):
     with scratch_directory():
         return _load_images_admitted(paths, thread_count, resource_preference,
-                                     should_cancel, registration_steps, exposure_match)
+                                     should_cancel, registration_steps, exposure_match, lazy)
 
 
 def _load_images_admitted(paths, thread_count, resource_preference,
-                          should_cancel, registration_steps, exposure_match):
+                          should_cancel, registration_steps, exposure_match, lazy=False):
     from core.image_loader import iter_decoded_sources, _DecodeCancelled
     from core.frame_storage import store_frame
     from core.frame_storage import select_scratch, estimate_registration_space, estimate_fusion_space
@@ -396,7 +395,11 @@ def _load_images_admitted(paths, thread_count, resource_preference,
         except InterruptedError as exc:
             raise RuntimeError('Loading cancelled') from exc
         except (OSError, ValueError, ImportError):
+            if lazy:
+                raise
             continue
+    if lazy:
+        return manifest
     size = sum(frame.nbytes for frame in manifest)
     staging = estimate_registration_space(manifest, registration_steps) if registration_steps else 0
     staging += estimate_fusion_space(manifest, exposure_match)
@@ -576,8 +579,8 @@ def _transparent_region(images, args):
             or getattr(args, "depth_map", None) or getattr(args, "scale_bar", False)
             or getattr(args, "scale_um", None) is not None):
         raise ValueError("Transparent PNG stacks require no alignment, dust map, sensor cleanup, depth map or scale bar")
-    from core.transparency import crop_transparent_stack
-    return crop_transparent_stack(images)
+    from core.source_frames import crop_transparent_frames
+    return crop_transparent_frames(images, getattr(args, '_should_cancel', None))
 
 
 def _fuse_stack(images, args):
@@ -592,20 +595,24 @@ def _fuse_stack_admitted(images, args):
     from core.multi_focus_fusion import MultiFocusFusion
     from utils.image_utils import prepare_fusion_input, quantize_fuse_output
     from core.frame_storage import store_frame
-    from core.source_frames import materialize_frames
+    from core.source_frames import materialize_frames, process_frame
 
     _resolve_algorithm_arguments(args)
-    images = materialize_frames(images, getattr(args, "_should_cancel", None))
+    native_codes = args.method in ('openfocus_a', 'openfocus_b', 'openfocus_c')
+    should_cancel = getattr(args, '_should_cancel', None)
+    if not native_codes:
+        images = materialize_frames(images, should_cancel)
     images, transparent = _transparent_region(images, args)
     if getattr(args, "defect_mask_path", None) or getattr(args, "sensor_denoise", False):
         from utils.sensor_cleanup import cleanup_sensor_image, require_sensor_cleanup_stack
         require_sensor_cleanup_stack(images, getattr(args, "defect_mask_path", None),
                                      getattr(args, "sensor_denoise", False), disk_backed=True)
         mask = _sensor_mask(args)
-        images = [store_frame(cleanup_sensor_image(
-            image, mask, getattr(args, "sensor_denoise", False),
-            cancel_callback=getattr(args, "_should_cancel", None)))
-            for image in images]
+        def clean(image):
+            return cleanup_sensor_image(image, mask, getattr(args, 'sensor_denoise', False),
+                                        cancel_callback=should_cancel)
+        images = ([process_frame(image, clean, should_cancel=should_cancel) for image in images]
+                  if native_codes else [store_frame(clean(image)) for image in images])
     # Flat-field correction also runs in the raw pixel domain before registration.
     dust_white = getattr(args, "dust_map", None)
     if dust_white:
@@ -615,19 +622,25 @@ def _fuse_stack_admitted(images, args):
         if white is None:
             raise RuntimeError(f"Failed to decode white-field image: {dust_white}")
         gain = compute_flat_field(white)
-        images = [store_frame(apply_flat_field(image, gain)) for image in images]
+        images = ([process_frame(image, lambda pixels: apply_flat_field(pixels, gain),
+                                 should_cancel=should_cancel) for image in images]
+                  if native_codes else [store_frame(apply_flat_field(image, gain)) for image in images])
         _say(f"Flat-field (dust map) correction applied from {dust_white}")
 
     if args.align != "none":
+        defer_warps = native_codes and alignment_steps(args.align) == ('openfocus',)
+        if not defer_warps:
+            images = materialize_frames(images, should_cancel)
         t0 = time.time()
         reg = ImageRegistration(
             method=args.align, downscale_width=args.downscale,
             parameters=args._registration_parameters,
             brightness_reference=("last" if getattr(args, "exposure_match", True)
                                   else "first"),
-            use_gpu=False)
+            use_gpu=False, defer_warps=defer_warps)
         images = reg.process(images, output_path=None, thread_count=args.threads,
-                             resource_preference=getattr(args, "resource_preference", "balanced"))
+                             resource_preference=getattr(args, "resource_preference", "balanced"),
+                             should_cancel=should_cancel)
         _say(f"Registration ({args.align}) done in {time.time() - t0:.1f}s")
 
     spec = get_fusion(args.method)
@@ -655,7 +668,8 @@ def _fuse_stack_admitted(images, args):
     fusion = MultiFocusFusion(**fusion_kwargs)
     images, is_16bit = prepare_fusion_input(images, getattr(args, "_should_cancel", None))
     t0 = time.time()
-    fuse_kwargs = dict(input_source=images, img_resize=None, thread_count=args.threads)
+    fuse_kwargs = dict(input_source=images, img_resize=None, thread_count=args.threads,
+                       should_cancel=should_cancel)
     model_weights = _method_weights(spec)
     if model_weights:
         fuse_kwargs["model_path"] = model_weights
@@ -1236,7 +1250,8 @@ def _run_batch(args, _emit_json=None) -> int:
                     paths, thread_count=getattr(args, "threads", 0) or 0,
                     resource_preference=getattr(args, "resource_preference", "balanced"),
                     registration_steps=int(folder_args.align != 'none'),
-                    exposure_match=getattr(folder_args, 'exposure_match', False))
+                    exposure_match=getattr(folder_args, 'exposure_match', False),
+                    lazy=folder_args.method in ('openfocus_a', 'openfocus_b', 'openfocus_c'))
                 fused = _fuse_stack(images, folder_args)
                 images = None
             background = stacked = None
@@ -1783,7 +1798,8 @@ def _run_cli_admitted(argv: List[str]) -> int:
                     paths, thread_count=getattr(args, "threads", 0) or 0,
                     resource_preference=getattr(args, "resource_preference", "balanced"),
                     registration_steps=int(args.align != 'none'),
-                    exposure_match=getattr(args, 'exposure_match', False))
+                    exposure_match=getattr(args, 'exposure_match', False),
+                    lazy=args.method in ('openfocus_a', 'openfocus_b', 'openfocus_c'))
             if paths:
                 from utils.image_utils import set_source_exif
                 from core.image_loader import _read_exif_bytes

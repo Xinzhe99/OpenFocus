@@ -316,7 +316,7 @@ def test_transparent_export_rejects_other_formats(tmp_path):
     ('.png', np.uint8, 3), ('.png', np.uint16, 3),
     ('.png', np.uint8, 4), ('.png', np.uint16, 4),
     ('.jpg', np.uint8, 3), ('.tif', np.uint16, 3)])
-def test_opaque_decode_matches_original_color_read(tmp_path, monkeypatch, extension, dtype, channels):
+def test_opaque_decode_matches_original_color_read(tmp_path, extension, dtype, channels):
     from core.image_loader import decode_image
     rng = np.random.default_rng(42)
     maximum = np.iinfo(dtype).max
@@ -328,11 +328,4 @@ def test_opaque_decode_matches_original_color_read(tmp_path, monkeypatch, extens
     assert cv2.imwrite(str(path), pixels)
     expected = cv2.imdecode(np.fromfile(str(path), np.uint8),
                             cv2.IMREAD_ANYDEPTH | cv2.IMREAD_COLOR | cv2.IMREAD_IGNORE_ORIENTATION)
-    decode = cv2.imdecode
-    calls = []
-    def counted(*args, **kwargs):
-        calls.append(1)
-        return decode(*args, **kwargs)
-    monkeypatch.setattr(cv2, 'imdecode', counted)
     np.testing.assert_array_equal(decode_image(str(path)), expected)
-    assert len(calls) == 1

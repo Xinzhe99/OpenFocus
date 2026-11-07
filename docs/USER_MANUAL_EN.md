@@ -447,10 +447,11 @@ fusion runs at full depth and results can be saved back as 16-bit PNG/TIFF
 Camera RAW files are developed to 16-bit (camera white balance and the sRGB color space and transfer curve)
 with auto-brightening disabled, so every frame of a stack gets the same
 exposure mapping; per-frame auto exposure would make brightness flicker
-between frames. Save as TIFF or PNG to keep the 16-bit data.
+between frames. When prompted, choose **Standard color image** for normal
+fusion and JPEG/PNG/TIFF export. Save as TIFF or PNG to keep the 16-bit data.
 
 For a camera-linear workflow, open a folder or files containing only camera
-RAW frames and choose **Camera-linear RAW** when prompted. DNG files are also
+RAW frames and choose **Camera-linear RAW (Linear DNG)** when prompted. DNG files are also
 accepted, including DNG files named `.tif` or `.tiff`; ordinary TIFF images are not camera RAW.
 Support for a particular camera depends on the installed LibRaw decoder. All
 frames must share camera calibration and white balance; unsupported or
@@ -1462,7 +1463,7 @@ The batch dialog shows real-time progress. You can cancel processing at any time
 
 ### Batch image conversion
 
-Open **Tools → Batch Image Converter** independently of the current stack. Add files or all supported images in a folder, choose or enter an output folder and a format, then select **Convert**. Missing output folders are created when conversion starts. The list shows output paths and errors per source; the summary reports successful and failed sources. Cancel stops between operations; already completed files remain available. Closing during conversion requests cancellation and closes the window when processing stops.
+Open **Tools → Batch Image Converter** independently of the current stack. Add files or all supported images in a folder, choose or enter an output folder and a format, then select **Convert**. The converter starts with PNG (lossless and 16-bit) and restores the last format you explicitly chose; an example filename below the selector shows the actual extension. This tool converts individual files and is separate from fusion Batch processing, which has its own output format. Missing output folders are created when conversion starts. The list shows output paths and errors per source; the summary reports successful and failed sources. Cancel stops between operations; already completed files remain available. Closing during conversion requests cancellation and closes the window when processing stops.
 
 Drag local image files or folders onto the queue or dialog to add them. Folder
 imports include direct children only. Files are naturally sorted and deduplicated;

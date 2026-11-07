@@ -41,6 +41,9 @@ class Sensor:
         s = self.sizes
         return self.raw_image[s.top_margin:s.top_margin + s.height, s.left_margin:s.left_margin + s.width]
 
+    def extract_thumb(self):
+        raise rawpy.LibRawNoThumbnailError()
+
     def open_file(self, path):
         assert isinstance(path, str)
 
@@ -154,11 +157,22 @@ def test_cfa_strip_cancellation_removes_unpublished_outputs(tmp_path, monkeypatc
     monkeypatch.setattr(linear_dng, '_camera_identity', lambda *a: ('Nikon', 'Nikon Synthetic'))
     monkeypatch.setattr(batch_converter, 'available_memory_bytes', lambda: 8 * 1024**3)
     checks = 0
+    writing_sensor = False
+    original_metadata = linear_dng._cfa_metadata
+
+    def metadata(*args):
+        nonlocal writing_sensor
+        tags = original_metadata(*args)
+        writing_sensor = True
+        return tags
+
+    monkeypatch.setattr(linear_dng, '_cfa_metadata', metadata)
 
     def cancelled():
         nonlocal checks
-        checks += 1
-        return checks >= 7
+        if writing_sensor:
+            checks += 1
+        return checks >= 3
 
     with pytest.raises(InterruptedError):
         batch_converter.convert_one(str(source), str(tmp_path), '.dng', cancelled=cancelled)

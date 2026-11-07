@@ -201,7 +201,7 @@ def test_project_roundtrips_per_method_parameters(tmp_path):
     assert restored._brightness_by_method[("exposure_match", "openfocus_b")] is False
     assert restored.fusion_parameters_for("openfocus_c") == {"blend_smoothing": 3.5}
     assert restored.fusion_parameters_for("dct") == {"kernel_size": 11}
-    assert restored.registration_parameters_for("openfocus") == {"max_shift_ratio": .12, "failure_policy": "fail", "reference_frame": 2}
+    assert restored.registration_parameters_for("openfocus") == {"max_shift_ratio": .12, "rotation": 0., "magnification": 3., "failure_policy": "fail", "reference_frame": 2}
 
 
 def test_project_does_not_rebind_missing_absolute_source_to_same_basename(tmp_path):
