@@ -74,7 +74,7 @@ QComboBox::drop-down {{
 }}
 QComboBox::down-arrow {{ image: url("{down}"); width: 10px; height: 10px; }}
 /* Keep Qt's native spin box interaction while giving each step a compact,
-   separately highlighted target. The edit padding reserves this column. */
+   separately highlighted target. Qt reserves the stepper column itself. */
 QSpinBox::up-button, QDoubleSpinBox::up-button,
 QSpinBox::down-button, QDoubleSpinBox::down-button {{
     subcontrol-origin: border;
@@ -345,9 +345,8 @@ QSpinBox, QDoubleSpinBox {{
     color: {t['text']};
     border: 1px solid {t['controlBorder']};
     border-radius: {r['sm']}px;
-    /* The stepper column sits on the trailing edge and is 22 px wide;
-       padding must reserve exactly that or the digits run under it. */
-    padding: {s['xs'] + 2}px 22px {s['xs'] + 2}px {s['sm']}px;
+    /* Qt already subtracts the stepper width from the edit field. */
+    padding: {s['xs'] + 2}px 4px {s['xs'] + 2}px {s['sm']}px;
     min-height: 20px;
     selection-background-color: {t['accent']};
     selection-color: {t['textOnAccent']};

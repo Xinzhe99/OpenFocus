@@ -60,7 +60,7 @@ Ad esempio, l'equivalente CLI è `python main.py --input ./png-stack --output ./
 
 ### Formati di output supportati
 
-In **Salva con nome**, il TIFF normale salva il risultato come immagine singola; il TIFF a livelli include i fotogrammi sorgente come livelli. Linear DNG è sempre elencato, ma per salvarlo serve un risultato lineare della fotocamera senza modifiche incorporate, ottenuto con **Apri RAW nativo** e dotato della calibrazione della fotocamera.
+In **Salva con nome**, il TIFF normale salva il risultato come immagine singola; il TIFF a livelli include i fotogrammi sorgente come livelli. Linear DNG è sempre elencato, ma per salvarlo serve un risultato lineare della fotocamera senza modifiche incorporate e dotato della calibrazione della fotocamera.
 
 - Immagini singole: JPG, PNG, BMP, TIFF, WebP
 - Sequenze di immagini: salvate come cartelle
@@ -434,6 +434,8 @@ OpenFocus offre dieci algoritmi di fusione (più una modalità solo allineamento
 
 Ogni tile neurale usa tutti i fotogrammi. I fotogrammi e i dati temporanei di allineamento possono usare il disco; spazio libero e memoria disponibile limitano lo stack. La suddivisione spaziale V2 approssima l’inferenza sull’intera immagine.
 
+Se non viene indicata una cartella temporanea, OpenFocus stima lo spazio necessario in base agli input noti e ai dati temporanei. Se il disco temporaneo di sistema non ha spazio sufficiente, può prendere in considerazione dischi locali fissi scrivibili. Una cartella specificata esplicitamente non viene sostituita automaticamente. Il controllo è una stima del momento, non una prenotazione; lo spazio può esaurirsi in seguito. In caso di errore di archiviazione, scegli una cartella scrivibile nelle impostazioni avanzate.
+
 
 ### OpenFocus A / B / C
 
@@ -447,8 +449,10 @@ Ogni tile neurale usa tutti i fotogrammi. I fotogrammi e i dati temporanei di al
 | Metodo | Etichetta | Predefinito | Effetto |
 |---|---|---|---|
 | OpenFocus A | Levigatura della miscelazione | 2,0 | Controlla la levigatura della mappa di risposta di fuoco prima della selezione dei pixel |
-| OpenFocus B | Levigatura della profondità | 1,2 | Controlla la levigatura della mappa di profondità che guida la miscelazione |
-| OpenFocus C | Levigatura della miscelazione | 3,0 | Controlla la levigatura della mappa di profondità che guida la ricostruzione multi-scala |
+| OpenFocus B | Levigatura della profondità | 1,44 | Controlla la levigatura della mappa di profondità che guida la miscelazione |
+| OpenFocus C | Levigatura della miscelazione | 3,6 | Controlla la levigatura della mappa di profondità che guida la ricostruzione multi-scala |
+
+Dimensione kernel predefinita per A/B: 17. I valori salvati restano in uso; ripristina i valori predefiniti per usare quelli nuovi.
 
 Valori più alti aumentano la levigatura delle transizioni. Ogni metodo ricorda il proprio valore tra le sessioni e l'elaborazione batch applica la stessa regola.
 
@@ -893,8 +897,8 @@ Ad esempio, aggiungi `--align openfocus --alignment-report alignment.json` a un 
 | `--defect-mask-path MASK` | Maschera difetti in coordinate sensore riparata prima della registrazione |
 | `--sensor-denoise` | Riduzione prudente del rumore del sensore prima della registrazione |
 | `--kernel, -k` | Dimensione kernel (forzata dispari); controlla la scala di risposta di fuoco per `openfocus_a` e `openfocus_b`; C non ha raggio |
-| `--depth-smoothing VALUE` | Solo `openfocus_b`: forza della levigatura delle transizioni di profondità (1,2 predefinito) |
-| `--blend-smoothing VALUE` | Solo `openfocus_a` / `openfocus_c`: forza della levigatura delle transizioni (2,0 per A, 3,0 per C predefiniti) |
+| `--depth-smoothing VALUE` | Solo `openfocus_b`: forza della levigatura delle transizioni di profondità (1,44 predefinito) |
+| `--blend-smoothing VALUE` | Solo `openfocus_a` / `openfocus_c`: forza della levigatura delle transizioni (2,0 per A, 3,6 per C predefiniti) |
 | `--ai-mode {soft,hard}` | Output StackMFF V3: miscelazione ponderata per probabilità (predefinita) o fotogramma più probabile per pixel |
 | `--threads, -t` | Limite superiore dei thread di lavoro; `0` = automatico (predefinito), i valori positivi limitano la concorrenza |
 | `--resource-preference` | `balanced` (predefinito), `responsive` o `maximum`; controlla la pianificazione delle risorse |

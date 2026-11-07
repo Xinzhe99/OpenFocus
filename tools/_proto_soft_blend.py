@@ -63,25 +63,26 @@ def transition_band_error(out, gt, band=6):
     return err[mask > 0].mean() if mask.any() else float('nan')
 
 
-print(f"{'scene':>7} {'noise':>5} {'frames':>6} " + ' '.join(f"{k:>10}" for k in ['hard', 'soft1', 'soft2', 'soft4', 'soft8']) + '   (transition-band MAE, lower=better)')
-for scene in ("default", "small"):
-    for noise in (0.0, 3.0):
-        for n in (16, 32):
-            h, w = 768, 1024
-            gt = make_texture(h, w)
-            depth = SCENES[scene](h, w)
-            frames = make_stack(gt, depth, n, noise=noise)
-            resp = responses(frames)
-            gt8 = gt.clip(0, 255).astype('uint8')
-            res = {'hard': fuse_hard(frames, resp)}
-            for g in [1.0, 2.0, 4.0, 8.0]:
-                res[f'soft{g:g}'] = fuse_soft(frames, resp, g)
-            cells = ' '.join(f"{transition_band_error(res[k], gt8):>10.3f}" for k in ['hard', 'soft1', 'soft2', 'soft4', 'soft8'])
-            print(f"{scene:>7} {noise:>5.1f} {n:>6} {cells}")
+if __name__ == '__main__':
+    print(f"{'scene':>7} {'noise':>5} {'frames':>6} " + ' '.join(f"{k:>10}" for k in ['hard', 'soft1', 'soft2', 'soft4', 'soft8']) + '   (transition-band MAE, lower=better)')
+    for scene in ("default", "small"):
+        for noise in (0.0, 3.0):
+            for n in (16, 32):
+                h, w = 768, 1024
+                gt = make_texture(h, w)
+                depth = SCENES[scene](h, w)
+                frames = make_stack(gt, depth, n, noise=noise)
+                resp = responses(frames)
+                gt8 = gt.clip(0, 255).astype('uint8')
+                res = {'hard': fuse_hard(frames, resp)}
+                for g in [1.0, 2.0, 4.0, 8.0]:
+                    res[f'soft{g:g}'] = fuse_soft(frames, resp, g)
+                cells = ' '.join(f"{transition_band_error(res[k], gt8):>10.3f}" for k in ['hard', 'soft1', 'soft2', 'soft4', 'soft8'])
+                print(f"{scene:>7} {noise:>5.1f} {n:>6} {cells}")
 
-print(f"\n{'scene':>7} {'noise':>5} {'frames':>6} " + ' '.join(f"{k:>8}" for k in ['hard', 'soft1', 'soft2', 'soft4', 'soft8']) + '   (PSNR)')
-for scene in ("default", "small"):
-    for noise in (0.0, 3.0):
-        for n in (16, 32):
-            r = bench(scene, noise, n, [1.0, 2.0, 4.0, 8.0])
-            print(f"{scene:>7} {noise:>5.1f} {n:>6} " + ' '.join(f"{r[k][0]:>8.2f}" for k in ['hard', 'soft1', 'soft2', 'soft4', 'soft8']))
+    print(f"\n{'scene':>7} {'noise':>5} {'frames':>6} " + ' '.join(f"{k:>8}" for k in ['hard', 'soft1', 'soft2', 'soft4', 'soft8']) + '   (PSNR)')
+    for scene in ("default", "small"):
+        for noise in (0.0, 3.0):
+            for n in (16, 32):
+                r = bench(scene, noise, n, [1.0, 2.0, 4.0, 8.0])
+                print(f"{scene:>7} {noise:>5.1f} {n:>6} " + ' '.join(f"{r[k][0]:>8.2f}" for k in ['hard', 'soft1', 'soft2', 'soft4', 'soft8']))

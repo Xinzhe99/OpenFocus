@@ -35,7 +35,7 @@ from typing import Union, List, Optional
 
 from utils.sorting import natural_sort_key as _image_sort_key
 from core.image_loader import apply_exif_orientation
-from core.frame_storage import create_frame, store_frame
+from core.frame_storage import capture_scratch, create_frame, run_with_scratch, store_frame
 from utils.logging_setup import log_action, log_operation
 
 
@@ -404,6 +404,7 @@ def _bounded_registration_map(function, values, workers, should_cancel=None):
     pool = concurrent.futures.ThreadPoolExecutor(max_workers=workers)
     pending = deque()
     source = iter(values)
+    scratch = capture_scratch()
 
     def submit_one():
         _check_cancel(should_cancel)
@@ -411,7 +412,7 @@ def _bounded_registration_map(function, values, workers, should_cancel=None):
             value = next(source)
         except StopIteration:
             return
-        pending.append(pool.submit(run, value))
+        pending.append(pool.submit(run_with_scratch, scratch, run, value))
 
     def run(value):
         _check_cancel(should_cancel)
@@ -1334,8 +1335,9 @@ class ImageRegistration:
             list: 配准后的图像列表（始终返回，无论是否保存到磁盘）
         """
         from core.resource_policy import Workload, heavy_job, plan_execution
+        from core.frame_storage import estimate_registration_space, scratch_directory, select_scratch
 
-        with heavy_job(should_cancel):
+        with heavy_job(should_cancel), scratch_directory():
             _check_cancel(should_cancel)
             filenames = None
             images = input_source
@@ -1347,6 +1349,12 @@ class ImageRegistration:
                                 if os.path.splitext(name)[1].lower() in extensions),
                                key=_image_sort_key)
                 from core.image_loader import admit_image_decode, decode_image
+                from core.source_frames import scratch_source_headers
+                headers = scratch_source_headers(paths, should_cancel)
+                if headers:
+                    input_bytes = sum(frame.nbytes for frame in headers)
+                    select_scratch(input_bytes, paths, preferred_size=(
+                        input_bytes + estimate_registration_space(headers, len(self.steps))))
                 images = []
                 for path in paths:
                     _check_cancel(should_cancel)
@@ -1358,8 +1366,13 @@ class ImageRegistration:
                     images.append(store_frame(image))
                 filenames = [os.path.basename(path) for path in paths]
             else:
+                from collections.abc import Sequence
                 from core.source_frames import materialize_frames
-                images = materialize_frames(input_source, should_cancel) if input_source is not None else []
+                staging = (estimate_registration_space(input_source, len(self.steps))
+                           if isinstance(input_source, Sequence) else 0)
+                images = (materialize_frames(input_source, should_cancel,
+                                             preferred_staging_bytes=staging)
+                          if input_source is not None else [])
             if images is not None and len(images) and 'openfocus' in self.steps and self.parameters['reference_frame'] > len(images):
                 raise ValueError(f"OpenFocus reference frame {self.parameters['reference_frame']} is outside the stack of {len(images)} frames")
 

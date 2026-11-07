@@ -470,6 +470,8 @@ OpenFocus biedt tien fusiealgorithmen plus een modus met alleen uitlijning. Een 
 
 Elke neurale tegel gebruikt alle frames. Bronframes en tijdelijke uitlijngegevens kunnen op schijf staan; vrije schijfruimte en beschikbaar geheugen begrenzen de stapelgrootte. Ruimtelijke V2-tegels benaderen inferentie op de volledige afbeelding.
 
+Als geen tijdelijke map is opgegeven, schat OpenFocus de benodigde ruimte op basis van bekende invoer en tijdelijke werkgegevens. Als de tijdelijke systeemschijf onvoldoende ruimte heeft, kan het beschrijfbare vaste lokale schijven overwegen. Een expliciet gekozen map wordt niet automatisch vervangen. De ruimtecontrole is een momentopname, geen reservering; later kan alsnog ruimtegebrek ontstaan. Kies bij een opslagfout een beschrijfbare map in de geavanceerde instellingen.
+
 - **Standaard**: StackMFF V3.
 
 ### OpenFocus A / B / C
@@ -484,8 +486,10 @@ Elke neurale tegel gebruikt alle frames. Bronframes en tijdelijke uitlijngegeven
 | Methode | Label | Standaard | Effect |
 |---|---|---|---|
 | OpenFocus A | Mengingsafvlakking | 2,0 | Regelt de afvlakking van de focusresponskaart voordat pixels worden geselecteerd |
-| OpenFocus B | Diepteafvlakking | 1,2 | Regelt de afvlakking van de dieptekaart die de menging stuurt |
-| OpenFocus C | Mengingsafvlakking | 3,0 | Regelt de afvlakking van de dieptekaart die de meerschalige reconstructie stuurt |
+| OpenFocus B | Diepteafvlakking | 1,44 | Regelt de afvlakking van de dieptekaart die de menging stuurt |
+| OpenFocus C | Mengingsafvlakking | 3,6 | Regelt de afvlakking van de dieptekaart die de meerschalige reconstructie stuurt |
+
+Standaardkernelgrootte voor A/B: 17. Opgeslagen waarden blijven behouden; herstel de standaardwaarden om de nieuwe te gebruiken.
 
 Hogere waarden versterken de overgangsafvlakking. Elke methode onthoudt zijn eigen waarde tussen sessies, en batchverwerking gebruikt dezelfde regel.
 
@@ -930,8 +934,8 @@ Voeg voor één rendering bijvoorbeeld `--align openfocus --alignment-report ali
 | `--defect-mask-path MASK` | Sensordefectmasker; waarden die niet nul zijn worden vóór registratie gerepareerd |
 | `--sensor-denoise` | Voorzichtige sensorruisonderdrukking vóór registratie |
 | `--kernel, -k` | Kernelgrootte (oneven; regelt bij OpenFocus A/B de schaal van de focusrespons; C heeft geen straal) |
-| `--depth-smoothing VALUE` | Alleen `openfocus_b`: sterkte van diepteafvlakking (standaard 1,2) |
-| `--blend-smoothing VALUE` | Alleen `openfocus_a` / `openfocus_c`: sterkte van mengingsafvlakking (standaard 2,0 voor A, 3,0 voor C) |
+| `--depth-smoothing VALUE` | Alleen `openfocus_b`: sterkte van diepteafvlakking (standaard 1,44) |
+| `--blend-smoothing VALUE` | Alleen `openfocus_a` / `openfocus_c`: sterkte van mengingsafvlakking (standaard 2,0 voor A, 3,6 voor C) |
 | `--sharpen-output` | Milde onscherpe maskering op het gefuseerde resultaat toepassen (standaard uit) |
 | `--threads, -t` | Bovengrens voor workerthreads; `0` = automatisch (standaard), positieve waarden beperken de gelijktijdigheid |
 | `--resource-preference` | Resourcemodus: `balanced` (standaard), `responsive` of `maximum` |

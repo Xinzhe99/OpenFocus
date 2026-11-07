@@ -418,7 +418,7 @@ def test_background_noop_refreshes_maps_without_enabling_apply(qapp, monkeypatch
         assert not dlg.btn_save_missing.isHidden()
         diagnostic[0] = None
         dlg._update_controls()
-        assert dlg.lbl_missing_legend.isHidden()
+        assert dlg.chk_missing.isHidden() and dlg.btn_save_missing.isHidden()
     finally:
         dlg._allow_close = True
         dlg.close()

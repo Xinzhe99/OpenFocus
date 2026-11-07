@@ -60,7 +60,7 @@ Por exemplo, o equivalente na CLI é `python main.py --input ./png-stack --outpu
 
 ### Formatos de saída compatíveis
 
-Em **Salvar como**, TIFF comum salva o resultado como uma única imagem; TIFF em camadas inclui os quadros de origem como camadas. Linear DNG aparece sempre, mas salvá-lo exige um resultado linear da câmera sem ajustes incorporados, obtido com **Abrir RAW nativo** e com calibração da câmera.
+Em **Salvar como**, TIFF comum salva o resultado como uma única imagem; TIFF em camadas inclui os quadros de origem como camadas. Linear DNG aparece sempre, mas salvá-lo exige um resultado linear da câmera sem ajustes incorporados e com calibração da câmera.
 
 - Imagens individuais: JPG, PNG, BMP, TIFF, WebP
 - Sequências de imagens: salvas como pastas
@@ -434,6 +434,8 @@ O OpenFocus oferece dez algoritmos de fusão (além de um modo somente alinhamen
 
 Cada bloco neural usa todos os quadros. Quadros de origem e dados temporários de alinhamento podem usar o disco; espaço livre e memória disponível limitam o tamanho da pilha. Os blocos espaciais de V2 aproximam a inferência da imagem inteira.
 
+Se nenhum diretório temporário for especificado, o OpenFocus estima o espaço necessário a partir das entradas conhecidas e dos dados temporários. Se faltar espaço no disco temporário do sistema, ele pode considerar discos locais fixos graváveis. Um diretório escolhido explicitamente não é substituído automaticamente. A verificação de espaço é uma estimativa naquele momento, não uma reserva; o espaço pode acabar depois. Em caso de erro de armazenamento, escolha um diretório gravável nas configurações avançadas.
+
 
 ### OpenFocus A / B / C
 
@@ -447,8 +449,10 @@ Cada bloco neural usa todos os quadros. Quadros de origem e dados temporários d
 | Método | Rótulo | Padrão | Efeito |
 |---|---|---|---|
 | OpenFocus A | Suavização da mistura | 2,0 | Controla a suavização do mapa de resposta de foco antes da seleção dos pixels |
-| OpenFocus B | Suavização da profundidade | 1,2 | Controla a suavização do mapa de profundidade que guia a mistura |
-| OpenFocus C | Suavização da mistura | 3,0 | Controla a suavização do mapa de profundidade que guia a reconstrução multiescala |
+| OpenFocus B | Suavização da profundidade | 1,44 | Controla a suavização do mapa de profundidade que guia a mistura |
+| OpenFocus C | Suavização da mistura | 3,6 | Controla a suavização do mapa de profundidade que guia a reconstrução multiescala |
+
+Tamanho de kernel padrão para A/B: 17. Os valores salvos são mantidos; restaure os padrões para usar os novos valores.
 
 Valores mais altos aumentam a suavização das transições. Cada método lembra seu próprio valor entre sessões, e o processamento em lote aplica a mesma regra.
 
@@ -890,8 +894,8 @@ Por exemplo, adicione `--align openfocus --alignment-report alignment.json` a um
 | `--defect-mask-path MASK` | Máscara de defeitos em coordenadas do sensor reparada antes do registro |
 | `--sensor-denoise` | Redução de ruído conservadora do sensor antes do registro |
 | `--kernel, -k` | Tamanho do kernel (forçado ímpar); controla a escala de resposta de foco em `openfocus_a` e `openfocus_b`; C não tem raio |
-| `--depth-smoothing VALUE` | Apenas `openfocus_b`: força da suavização de transição de profundidade (1,2 padrão) |
-| `--blend-smoothing VALUE` | Apenas `openfocus_a` / `openfocus_c`: força da suavização de transição (2,0 para A, 3,0 para C por padrão) |
+| `--depth-smoothing VALUE` | Apenas `openfocus_b`: força da suavização de transição de profundidade (1,44 padrão) |
+| `--blend-smoothing VALUE` | Apenas `openfocus_a` / `openfocus_c`: força da suavização de transição (2,0 para A, 3,6 para C por padrão) |
 | `--ai-mode {soft,hard}` | Saída do StackMFF V3: mistura ponderada por probabilidade (padrão) ou quadro mais provável por pixel |
 | `--threads, -t` | Limite superior de threads de trabalho; `0` = automático (padrão), valores positivos limitam a concorrência |
 | `--resource-preference` | `balanced` (padrão), `responsive` ou `maximum`; controla o agendamento de recursos |

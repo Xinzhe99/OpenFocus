@@ -11,6 +11,8 @@ from utils.linear_dng import LinearDNGMetadata, write_linear_dng
 
 def test_native_raw_folder_reload_ignores_rendered_companions(qapp, monkeypatch, tmp_path):
     from utils import recovery, settings_store
+    from PyQt6.QtCore import QSettings
+    from PIL import Image
 
     metadata = LinearDNGMetadata(
         ((0.8293, -0.1611, -0.1132), (-0.4759, 1.2711, 0.2275),
@@ -33,7 +35,8 @@ def test_native_raw_folder_reload_ignores_rendered_companions(qapp, monkeypatch,
     errors = []
     monkeypatch.setattr(source_manager, 'show_warning_box', lambda *args: errors.append(args))
     monkeypatch.setattr(source_manager, 'show_message_box', lambda *args: errors.append(args))
-    monkeypatch.setattr(settings_store, 'get_settings', lambda: SimpleNamespace(setValue=lambda *args: None))
+    settings = QSettings(str(tmp_path / 'settings.ini'), QSettings.Format.IniFormat)
+    monkeypatch.setattr(settings_store, 'get_settings', lambda: settings)
     monkeypatch.setattr(recovery, 'write_snapshot', lambda window: None)
     monkeypatch.setattr(manager, '_ask_load_scale', lambda: 1.0)
     monkeypatch.setattr(manager, '_show_load_status', lambda: None)
@@ -66,3 +69,40 @@ def test_native_raw_folder_reload_ignores_rendered_companions(qapp, monkeypatch,
     assert len(window.raw_images) == 2
     np.testing.assert_allclose([image[64, 64, 0] for image in window.raw_images], [2000, 10000], atol=4)
     assert window.linear_dng_metadata.camera_model == 'Canon EOS R6'
+
+    assert settings.value(settings_store.LAST_STACK_FOLDER_KEY) == str(tmp_path)
+    assert settings.value(settings_store.LAST_STACK_MODE_KEY) == 'linear'
+    window.raw_images = []
+    window.linear_dng_metadata = None
+    manager.restore_last_stack()
+    assert not errors
+    assert window.image_filenames == ['frame2.tiff', 'frame10.dng']
+    assert window.linear_dng_metadata.camera_model == 'Canon EOS R6'
+    np.testing.assert_allclose([image[64, 64, 0] for image in window.raw_images], [2000, 10000], atol=4)
+
+    ordinary = tmp_path / 'ordinary'
+    ordinary.mkdir()
+    Image.fromarray(np.full((128, 128, 3), 50, np.uint8)).save(ordinary / 'photo.png')
+    manager.load_image_stack(str(ordinary))
+    assert not errors
+    assert window.image_filenames == ['photo.png']
+    assert window.linear_dng_metadata is None
+    assert settings.value(settings_store.LAST_STACK_FOLDER_KEY) == str(ordinary)
+    assert settings.value(settings_store.LAST_STACK_MODE_KEY) == 'standard'
+
+    empty = tmp_path / 'empty'
+    empty.mkdir()
+    manager.load_image_stack(str(empty))
+    assert errors
+    assert settings.value(settings_store.LAST_STACK_FOLDER_KEY) == str(ordinary)
+    assert settings.value(settings_store.LAST_STACK_MODE_KEY) == 'standard'
+    assert window.image_filenames == ['photo.png']
+    errors.clear()
+
+    # An old settings file has no mode key and must continue to restore ordinary images.
+    settings.remove(settings_store.LAST_STACK_MODE_KEY)
+    window.raw_images = []
+    manager.restore_last_stack()
+    assert not errors
+    assert window.image_filenames == ['photo.png']
+    assert window.linear_dng_metadata is None

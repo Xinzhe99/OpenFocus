@@ -15,6 +15,10 @@ person with the merge date, the affected areas and the pull request number, and
 extend that row as more work lands. Code, bug reports, reproduction stacks and
 usability feedback all count.
 
+UI changes must follow [UI and UX guidelines](docs/UI_UX_GUIDELINES.md), including
+using control tooltips for persistent explanatory text while keeping necessary
+status, errors and decision-critical information visible.
+
 ## Agent control surface
 
 `core/control/` hosts a local command server (`openfocus/control/1`) that lets

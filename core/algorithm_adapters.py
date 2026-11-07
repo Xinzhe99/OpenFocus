@@ -36,9 +36,11 @@ def roi_openfocus_b(parameters, width, height):
 
 
 def roi_openfocus_c(parameters, width, height):
-    from fusion_methods.openfocus_bc import DEFAULT_PYRAMID_LEVELS
-    grid = 2 ** (DEFAULT_PYRAMID_LEVELS - 1)
-    return max(96, ceil((8 + 4 * parameters['blend_smoothing']) * grid)), grid
+    from fusion_methods.openfocus_bc import automatic_pyramid_levels
+    grid = 2 ** (automatic_pyramid_levels(height, width) - 1)
+    # Depth filtering is global and pyramid depth depends on the whole image.
+    # A cropped preview would therefore use different decisions and scales.
+    return max(width, height), grid
 
 
 # Serial OpenFocus passes retain global planes in mappings and use bounded

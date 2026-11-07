@@ -62,8 +62,13 @@ def _to_dtype(patch: np.ndarray, dst_dtype) -> np.ndarray:
     return out
 
 
-def adjust_tones(image: np.ndarray, exposure: float, contrast: float) -> np.ndarray:
-    """Apply exposure and midpoint contrast in the image's native range."""
+def adjust_tones(image: np.ndarray, exposure: float, contrast: float, *,
+                 highlights: float = 0., shadows: float = 0.,
+                 saturation: float = 0., temperature: float = 0.) -> np.ndarray:
+    """Apply global tone and colour adjustments in the image's native range."""
+    for value in (highlights, shadows, saturation, temperature):
+        if not np.isfinite(value) or not -1 <= value <= 1:
+            raise ValueError("Tone adjustment must be finite and between -1 and 1")
     maximum = _dtype_max(image.dtype)
     pixels = image.astype(np.float32)
     color = pixels[..., :3] if pixels.ndim == 3 and pixels.shape[2] == 4 else pixels
@@ -71,10 +76,41 @@ def adjust_tones(image: np.ndarray, exposure: float, contrast: float) -> np.ndar
     color -= maximum / 2.0
     color *= 2.0 ** contrast
     color += maximum / 2.0
+    if highlights or shadows or saturation or temperature:
+        rgb = color.ndim == 3 and color.shape[2] >= 3
+        if highlights or shadows or (saturation and rgb):
+            if rgb:
+                luminance = (color[..., 0] * 0.114 + color[..., 1] * 0.587
+                             + color[..., 2] * 0.299)
+            else:
+                luminance = color
+            level = np.clip(luminance / maximum, 0, 1)
+            if highlights or shadows:
+                smooth = level * level * (3 - 2 * level)
+                delta = maximum * (highlights * smooth * (1 - level)
+                                   + shadows * (1 - smooth) * level)
+                if rgb:
+                    color += delta[..., None]
+                else:
+                    color += delta
+            if saturation and rgb:
+                # Recompute luminance after the tonal adjustments.
+                luminance = (color[..., 0] * 0.114 + color[..., 1] * 0.587
+                             + color[..., 2] * 0.299)
+                color -= luminance[..., None]
+                color *= 1 + saturation
+                color += luminance[..., None]
+        if temperature and rgb:
+            # OpenCV images use BGR channel order.
+            color[..., 0] *= 1 - 0.25 * temperature
+            color[..., 2] *= 1 + 0.25 * temperature
     np.clip(color, 0, maximum, out=color)
     if np.issubdtype(image.dtype, np.integer):
         np.rint(color, out=color)
-    return pixels.astype(image.dtype)
+    result = pixels.astype(image.dtype)
+    if image.ndim == 3 and image.shape[2] == 4:
+        result[..., 3] = image[..., 3]
+    return result
 
 
 def _as_bgr(img: np.ndarray) -> np.ndarray:
@@ -595,14 +631,19 @@ class RetouchDocument:
     def result(self) -> np.ndarray:
         return self.working
 
-    def adjust_tones(self, exposure: float, contrast: float, cancelled=None) -> str:
+    def adjust_tones(self, exposure: float, contrast: float, cancelled=None, *,
+                     highlights: float = 0., shadows: float = 0.,
+                     saturation: float = 0., temperature: float = 0.) -> str:
         """Apply a whole-image adjustment as one bounded history transaction.
 
         Cancellation and errors restore every changed tile.
         """
         if self.stroke_active:
             return "busy"
-        if exposure == 0 and contrast == 0:
+        for value in (highlights, shadows, saturation, temperature):
+            if not np.isfinite(value) or not -1 <= value <= 1:
+                raise ValueError("Tone adjustment must be finite and between -1 and 1")
+        if not any((exposure, contrast, highlights, shadows, saturation, temperature)):
             return "empty"
         if self._cursor >= 100000:
             self.last_status = "record_limit"
@@ -617,7 +658,9 @@ class RetouchDocument:
                     return "cancelled"
                 sl = self.history._tile_slice(key)
                 tile = self.working[sl]
-                adjusted = adjust_tones(tile, exposure, contrast)
+                adjusted = adjust_tones(tile, exposure, contrast, highlights=highlights,
+                                        shadows=shadows, saturation=saturation,
+                                        temperature=temperature)
                 if not np.array_equal(tile, adjusted):
                     self.history.remember_tile(key)
                     tile[...] = adjusted
@@ -627,7 +670,11 @@ class RetouchDocument:
             status = self.history.end(cancelled=cancelled)
             if status == "committed":
                 self._record_operation({"type": "tones", "exposure": float(exposure),
-                                        "contrast": float(contrast)})
+                                        "contrast": float(contrast),
+                                        "highlights": float(highlights),
+                                        "shadows": float(shadows),
+                                        "saturation": float(saturation),
+                                        "temperature": float(temperature)})
             return status
         except BaseException:
             self.history.abort()

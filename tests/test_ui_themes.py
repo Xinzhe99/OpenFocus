@@ -58,13 +58,6 @@ def test_dustmap_preview_follows_the_theme():
     assert "surfaceSunken" in src
 
 
-def test_spin_boxes_reserve_room_for_their_buttons():
-    """The up/down column is 20 px wide; the text side must not run under it."""
-    from ui.styles import get_app_light_style
-    qss = get_app_light_style()
-    spin = qss[qss.index("QSpinBox, QDoubleSpinBox {"):]
-    spin = spin[:spin.index("}")]
-    assert "22px" in spin, "spin boxes must reserve the arrow column"
 
 
 def test_batch_dialog_has_an_empty_state():

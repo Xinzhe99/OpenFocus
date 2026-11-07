@@ -270,3 +270,106 @@ def test_legacy_empty_stroke_retains_its_history_through_migration(tmp_path):
     assert not restored.can_undo and restored.can_redo
     assert restored.redo() and restored.can_undo
     np.testing.assert_array_equal(restored.working, doc.base)
+
+
+@pytest.mark.parametrize('dtype,maximum', [(np.uint8, 255), (np.uint16, 65535),
+                                           (np.float32, 255)])
+def test_tones_channels_ranges_and_legacy_math(dtype, maximum):
+    from utils.retouch import adjust_tones
+
+    image = np.array([[[.2, .4, .7, .123], [.8, .8, .8, .777]]]) * maximum
+    image = image.astype(dtype)
+    legacy = image.astype(np.float32)
+    legacy[..., :3] *= 2 ** .3
+    legacy[..., :3] -= maximum / 2
+    legacy[..., :3] *= 2 ** -.2
+    legacy[..., :3] += maximum / 2
+    np.clip(legacy[..., :3], 0, maximum, out=legacy[..., :3])
+    if np.issubdtype(dtype, np.integer):
+        np.rint(legacy[..., :3], out=legacy[..., :3])
+    np.testing.assert_array_equal(adjust_tones(image, .3, -.2), legacy.astype(dtype))
+    result = adjust_tones(image, 0, 0, highlights=.6, shadows=-.4,
+                          saturation=.7, temperature=.8)
+    np.testing.assert_array_equal(result[..., 3], image[..., 3])
+    assert result.dtype == dtype and np.all((result >= 0) & (result <= maximum))
+    assert not np.array_equal(result[..., :3], image[..., :3])
+
+
+def test_tones_luminance_masks_saturation_and_temperature():
+    from utils.retouch import adjust_tones
+
+    gray = np.array([[0, 32, 128, 224, 255]], np.uint8)
+    high = adjust_tones(gray, 0, 0, highlights=1)
+    shadow = adjust_tones(gray, 0, 0, shadows=1)
+    assert high[0, 3] - gray[0, 3] > high[0, 1] - gray[0, 1]
+    assert shadow[0, 1] - gray[0, 1] > shadow[0, 3] - gray[0, 3]
+    assert high[0, 0] == shadow[0, 0] == 0
+    assert high[0, 4] == shadow[0, 4] == 255
+    np.testing.assert_array_equal(adjust_tones(gray, 0, 0, saturation=1, temperature=1), gray)
+    color = np.array([[[40, 100, 160]]], np.uint8)
+    desaturated = adjust_tones(color, 0, 0, saturation=-1)
+    assert desaturated[0, 0, 0] == desaturated[0, 0, 1] == desaturated[0, 0, 2]
+    warm = adjust_tones(color, 0, 0, temperature=1)
+    cold = adjust_tones(color, 0, 0, temperature=-1)
+    assert warm[0, 0, 0] < color[0, 0, 0] < cold[0, 0, 0]
+    assert cold[0, 0, 2] < color[0, 0, 2] < warm[0, 0, 2]
+
+
+@pytest.mark.parametrize('name', ['highlights', 'shadows', 'saturation', 'temperature'])
+@pytest.mark.parametrize('value', [-1.01, 1.01, float('nan'), float('inf')])
+def test_tones_reject_invalid_values(name, value):
+    from utils.retouch import adjust_tones
+
+    doc = document(np.uint8)
+    with pytest.raises(ValueError):
+        adjust_tones(doc.working, 0, 0, **{name: value})
+    with pytest.raises(ValueError):
+        doc.adjust_tones(0, 0, **{name: value})
+    np.testing.assert_array_equal(doc.working, doc.base)
+    assert not doc.can_undo
+
+
+def test_extended_tones_undo_replay_and_cancel(tmp_path):
+    base = np.full((260, 260, 3), (50, 110, 190), np.uint8)
+    context = build_render_context([base.copy()], base, filenames=['one'])
+    doc = RetouchDocument(base, context)
+    doc.initialize_checkpoint()
+    settings = dict(highlights=.7, shadows=-.5, saturation=.4, temperature=-.3)
+    calls = iter([False, False, True])
+    assert doc.adjust_tones(0, 0, lambda: next(calls), **settings) == 'cancelled'
+    np.testing.assert_array_equal(doc.working, base)
+    assert not doc.can_undo
+    assert doc.adjust_tones(0, 0, **settings) == 'committed'
+    edited = doc.working.copy()
+    assert doc.undo() and not doc.can_undo
+    np.testing.assert_array_equal(doc.working, base)
+    path = tmp_path / 'tones.json'
+    doc.save_checkpoint(path)
+    restored = RetouchDocument(base, context)
+    restored.initialize_checkpoint()
+    restored.load_checkpoint(path)
+    assert restored.redo()
+    np.testing.assert_array_equal(restored.working, edited)
+
+
+def test_legacy_tone_checkpoint_and_invalid_new_fields(tmp_path):
+    from utils.retouch_checkpoint import provenance
+
+    doc = document(np.uint8)
+    operation = {'type': 'tones', 'exposure': .3, 'contrast': -.2}
+    record = {'version': 1, **provenance(doc), 'operations': [operation],
+              'cursor': 1, 'undo_count': 1, 'redo_count': 0,
+              'max_strokes': 100, 'max_bytes': doc.history.max_bytes}
+    path = tmp_path / 'legacy.json'
+    path.write_text(json.dumps(record), encoding='utf-8')
+    doc.load_checkpoint(path)
+    expected = document(np.uint8)
+    assert expected.adjust_tones(.3, -.2) == 'committed'
+    np.testing.assert_array_equal(doc.working, expected.working)
+    for name in ('highlights', 'shadows', 'saturation', 'temperature'):
+        operation[name] = 1.01
+        path.write_text(json.dumps(record), encoding='utf-8')
+        with pytest.raises(ValueError):
+            doc.load_checkpoint(path)
+        np.testing.assert_array_equal(doc.working, expected.working)
+        del operation[name]

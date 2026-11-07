@@ -7,7 +7,7 @@ import cv2
 import numpy as np
 from core.registration import ImageRegistration, RegistrationCancelled
 from core.multi_focus_fusion import MultiFocusFusion
-from core.frame_storage import store_frame
+from core.frame_storage import store_frame, scratch_directory, estimate_fusion_space
 from core.source_frames import materialize_frames, processing_preview, resolve_frame
 from core.resource_policy import heavy_job, require_memory
 from utils import resource_path
@@ -78,20 +78,26 @@ _MISSING_LOADER_FIELD = object()
 
 
 
-def _check_processing_space(images, registration_steps=0):
+def _processing_space(images, registration_steps=0):
     """Estimate new mappings while the input stack remains alive."""
-    from core.frame_storage import require_disk_space
     if not images or (registration_steps and len(images) < 2):
-        return
+        return 0
     if registration_steps:
         height = max(image.shape[0] for image in images)
         width = max(image.shape[1] for image in images)
         pixel_bytes = max(image.dtype.itemsize * (image.shape[2] if image.ndim == 3 else 1)
                           for image in images)
-        size = height * width * pixel_bytes * len(images) * min(2, registration_steps)
-    else:
-        size = sum(image.nbytes for image in images)
-    require_disk_space(size)
+        return height * width * pixel_bytes * len(images) * min(2, registration_steps)
+    return sum(image.nbytes for image in images)
+
+
+def _check_processing_space(images, registration_steps=0):
+    from core.frame_storage import require_disk_space
+    size = _processing_space(images, registration_steps)
+    if size:
+        require_disk_space(size)
+
+
 
 
 
@@ -251,7 +257,7 @@ class ROIAlignmentWorker(QThread):
                            thread_count=self.thread_count, resource_preference=self.resource_preference,
                            **frame_details(self.raw_images)) as operation:
             try:
-                with heavy_job(lambda: self._cancelled):
+                with heavy_job(lambda: self._cancelled), scratch_directory():
                     try:
                         self._run_admitted()
                     except RegistrationCancelled:
@@ -277,8 +283,8 @@ class ROIAlignmentWorker(QThread):
         else:
             registration = ImageRegistration(method="ecc")
     
-        images = materialize_frames(self.raw_images, lambda: self._cancelled)
-        _check_processing_space(images, 1)
+        images = materialize_frames(self.raw_images, lambda: self._cancelled,
+                                    preferred_staging_bytes=_processing_space(self.raw_images, 1))
         aligned_images = registration.process(
             images, output_path=None, thread_count=self.thread_count,
             resource_preference=self.resource_preference,
@@ -376,7 +382,7 @@ class RenderWorker(QThread):
                            **frame_details(self.raw_images)) as operation:
             try:
                 self.stage_signal.emit("waiting")
-                with heavy_job(lambda: self.is_cancelled):
+                with heavy_job(lambda: self.is_cancelled), scratch_directory():
                     try:
                         self.stage_signal.emit("prepare")
                         self._run_admitted()
@@ -426,18 +432,57 @@ class RenderWorker(QThread):
     
         # 1. 配准阶段
         if need_registration and can_reuse_aligned_images:
-            processed_images = materialize_frames(self.aligned_images, lambda: self.is_cancelled)
+            preferred = estimate_fusion_space(self.aligned_images, self.exposure_match) if self.need_fusion else 0
+            processed_images = materialize_frames(
+                self.aligned_images, lambda: self.is_cancelled,
+                preferred_staging_bytes=preferred, thread_count=self.thread_count,
+                resource_preference=self.resource_preference,
+                progress_callback=self.progress_signal.emit)
             registration_performed = True
             self.alignment_reused = True
         else:
             if self.preview:
+                from core.frame_storage import select_scratch
+                from core.source_frames import SourceFrame
+                preview_bytes = 0
+                source_paths = []
+                for frame in self.raw_images:
+                    if self.is_cancelled:
+                        raise RegistrationCancelled()
+                    if isinstance(frame, SourceFrame):
+                        source_paths.append(frame.path)
+                        image = (frame.preview if frame.preview_is_available and frame.linear_metadata is None
+                                 else None)
+                    else:
+                        image = frame
+                    if image is None:
+                        continue
+                    h, w = image.shape[:2]
+                    longest = max(h, w)
+                    target = max(PREVIEW_MIN_SIDE, int(round(longest * PREVIEW_SCALE)))
+                    scale = min(1.0, target / float(longest))
+                    width, height = max(1, int(round(w * scale))), max(1, int(round(h * scale)))
+                    channels = int(np.prod(image.shape[2:])) if len(image.shape) > 2 else 1
+                    preview_bytes += width * height * channels * image.dtype.itemsize
+                select_scratch(preview_bytes, source_paths,
+                               preferred_size=preview_bytes * (1 + min(2, len(self.alignment))))
                 processed_images = []
                 for frame in self.raw_images:
                     if self.is_cancelled:
                         raise RegistrationCancelled()
                     processed_images.append(store_frame(_downscale_for_preview(processing_preview(frame))))
+                    self.progress_signal.emit(len(processed_images), len(self.raw_images))
             else:
-                processed_images = materialize_frames(self.raw_images, lambda: self.is_cancelled)
+                staging = _processing_space(self.raw_images) if cleanup else 0
+                preferred = (_processing_space(self.raw_images, len(self.alignment))
+                             if need_registration else 0)
+                if self.need_fusion:
+                    preferred += estimate_fusion_space(self.raw_images, self.exposure_match)
+                processed_images = materialize_frames(
+                    self.raw_images, lambda: self.is_cancelled, staging_bytes=staging,
+                    preferred_staging_bytes=preferred, thread_count=self.thread_count,
+                    resource_preference=self.resource_preference,
+                    progress_callback=self.progress_signal.emit)
             if cleanup:
                 from utils.sensor_cleanup import (load_sensor_defect_mask, cleanup_sensor_image,
                                                   require_sensor_cleanup_stack)
@@ -482,7 +527,6 @@ class RenderWorker(QThread):
                     alignment_time = 0.0
                 else:
                     alignment_start_time = time.time()
-                    _check_processing_space(processed_images, len(self.alignment))
                     self.stage_signal.emit("align")
                     if self.alignment_report is None:
                         processed_images, alignment_time = self._run_registration(
@@ -1033,7 +1077,7 @@ class BatchWorker(QThread):
                     with log_operation("batch_folder", task_name=name, folder=source if split else data,
                                        index=index, total=total) as folder_operation:
                         try:
-                            with heavy_job(lambda: self.is_cancelled):
+                            with heavy_job(lambda: self.is_cancelled), scratch_directory(separate=True):
                                 if split:
                                     from core.image_loader import (_read_exif_bytes, common_icc_profile,
                                                                    _consistent_px_size_um)
@@ -1141,7 +1185,17 @@ class BatchWorker(QThread):
                 if method and method != 'none' and len(images) < 2:
                     raise ValueError('Fusion requires at least two frames')
         
-                aligned_images = materialize_frames(images, lambda: self.is_cancelled)
+                alignment = self.processing_settings.get('alignment', self.processing_settings.get('reg_methods', ()))
+                steps = alignment_steps(alignment)
+                cleanup = any(self.processing_settings.get(key) for key in
+                              ('defect_mask_path', 'sensor_denoise', 'flat_field_path'))
+                staging = _processing_space(images) if cleanup else 0
+                preferred = _processing_space(images, len(steps)) if steps else 0
+                if method and method != 'none':
+                    preferred += estimate_fusion_space(images, self.exposure_match)
+                aligned_images = materialize_frames(images, lambda: self.is_cancelled,
+                                                    staging_bytes=staging,
+                                                    preferred_staging_bytes=preferred)
                 mask_path = self.processing_settings.get('defect_mask_path', '')
                 denoise = bool(self.processing_settings.get('sensor_denoise', False))
                 if mask_path and float(self.processing_settings.get('load_scale_factor', 1.0)) != 1.0:
@@ -1178,8 +1232,6 @@ class BatchWorker(QThread):
                             raise RegistrationCancelled()
                         corrected.append(store_frame(apply_flat_field(frame, gain)))
                     aligned_images = corrected
-                alignment = self.processing_settings.get('alignment', self.processing_settings.get('reg_methods', ()))
-                steps = alignment_steps(alignment)
                 has_alpha = any(image.ndim == 3 and image.shape[2] == 4 for image in images)
                 if has_alpha:
                     from locales import trans
@@ -1189,7 +1241,6 @@ class BatchWorker(QThread):
                             or self.processing_settings.get('save_aligned', False)):
                         raise ValueError(trans.t('transparent_desktop_unsupported').format(path=''))
                 if steps:
-                    _check_processing_space(aligned_images, len(steps))
                     registration = ImageRegistration(method=alignment,
                         parameters=self.registration_parameters,
                         downscale_width=self._registration_width(aligned_images),

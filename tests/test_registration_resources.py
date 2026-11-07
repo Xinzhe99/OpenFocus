@@ -261,7 +261,7 @@ def test_combined_alignment_admits_disk_backed_stack_by_active_working_set(
         total_ram=4 * 1024 ** 3, physical_cores=8, logical_cpus=8)
     monkeypatch.setattr(resource_policy, 'probe_resources', lambda *args, **kwargs: snapshot)
     monkeypatch.setattr(source_frames, 'materialize_frames',
-                        lambda images, should_cancel: images)
+                        lambda images, should_cancel, **kwargs: images)
     plans = []
     plan_execution = resource_policy.plan_execution
 

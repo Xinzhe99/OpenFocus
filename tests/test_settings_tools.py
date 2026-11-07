@@ -141,15 +141,17 @@ def test_invalid_storage_directory_keeps_previous_settings(settings_window, tmp_
     assert not settings_window.saved
 
 
-def test_storage_directory_rolls_back_when_save_fails(settings_window, tmp_path, monkeypatch):
+@pytest.mark.parametrize('previous_exists', [True, False])
+def test_storage_directory_rolls_back_when_save_fails(settings_window, tmp_path, monkeypatch, previous_exists):
     from core import frame_storage
     from dialogs import advanced_settings
 
     monkeypatch.setattr(frame_storage, '_storage_directory', None)
     previous, requested = tmp_path / 'previous', tmp_path / 'requested'
-    previous.mkdir()
+    if previous_exists:
+        previous.mkdir()
     requested.mkdir()
-    frame_storage.configure_storage_directory(previous)
+    frame_storage.restore_storage_directory(previous)
     settings_window.storage_directory = str(previous)
     def fail():
         raise OSError('disk full')
@@ -161,7 +163,7 @@ def test_storage_directory_rolls_back_when_save_fails(settings_window, tmp_path,
     assert dialog.result() != QDialog.DialogCode.Accepted
 
 
-def test_saved_storage_directory_restores_or_reports_fallback(tmp_path, monkeypatch):
+def test_saved_storage_directory_restores_or_reports_unavailable(tmp_path, monkeypatch):
     import main
     from core import frame_storage
 
@@ -172,8 +174,8 @@ def test_saved_storage_directory_restores_or_reports_fallback(tmp_path, monkeypa
     missing = str(tmp_path / 'missing')
     window.storage_directory = missing
     warning = main._restore_storage_directory(window)
-    assert window.storage_directory == ''
-    assert frame_storage.storage_directory() == frame_storage.tempfile.gettempdir()
+    assert window.storage_directory == missing
+    assert frame_storage.storage_directory() == missing
     assert missing in warning
 
 
@@ -675,15 +677,6 @@ def test_environment_dialog_closes_while_probe_is_running(qapp, monkeypatch):
         QTest.qWait(50)
 
 
-def test_welcome_theme_updates_existing_hint(qapp):
-    from dialogs.welcome import WelcomeDialog
-    from utils.design_tokens import palette
-    window = SimpleNamespace(ui_theme="dark")
-    window.apply_theme = lambda theme: setattr(window, "ui_theme", theme)
-    dialog = WelcomeDialog(main_window=window)
-    dialog._choose_theme("light")
-    assert palette("light")["textMuted"] in dialog._demo_hint.styleSheet()
-    dialog.deleteLater()
 
 
 @pytest.mark.parametrize("initial", [True, False])
@@ -897,16 +890,50 @@ def test_default_full_frame_policy_and_explicit_threshold_are_visible(settings_w
         assert dialog.chk_tile.isChecked()
         assert not dialog.spin_threshold.isHidden()
         assert dialog.spin_block.isHidden() and dialog.spin_overlap.isHidden()
+        assert dialog.tile_note.isHidden()
         assert dialog.tile_status.text() == trans.t('advanced_tile_full_frame_status').format(
             method=get_fusion(method).display_name)
         full_frame_status = dialog.tile_status.text()
         dialog.spin_threshold.setValue(_DEFAULT_TILE_THRESHOLD + 256)
         assert not dialog.spin_block.isHidden() and not dialog.spin_overlap.isHidden()
+        assert not dialog.tile_note.isHidden()
         assert dialog.tile_status.text() != full_frame_status
         dialog.chk_tile.setChecked(False)
         assert dialog.spin_threshold.isHidden() and dialog.spin_block.isHidden()
+        assert dialog.tile_note.isHidden()
         assert dialog.tile_status.text() == full_frame_status
         dialog.reject()
         assert settings_window.tile_threshold == _DEFAULT_TILE_THRESHOLD
     finally:
         dialog.deleteLater()
+
+
+def test_enabling_sharpening_reveals_risk_in_small_render_dialog(qapp):
+    from PyQt6.QtCore import QPoint, QRect
+    from dialogs.render_settings import RenderSettingsDialog
+    from locales import trans
+    from ui.right_panel import ElidingCheckBox
+
+    window = QWidget()
+    for name in ('chk_quick_preview', 'chk_reverse_order', 'chk_exposure_match',
+                 'chk_base_correct', 'chk_sharpen_output'):
+        setattr(window, name, ElidingCheckBox(trans.t(name), trans.t(name + '_hint'), window))
+    dialog = RenderSettingsDialog(window)
+    try:
+        dialog.resize(dialog.width(), 210)
+        dialog.show()
+        qapp.processEvents()
+        assert dialog._sharpen_risk.isHidden()
+        window.chk_sharpen_output.click()
+        qapp.processEvents()
+        qapp.processEvents()
+        viewport = dialog._scroll.viewport()
+        risk_rect = QRect(dialog._sharpen_risk.mapTo(viewport, QPoint()),
+                          dialog._sharpen_risk.size())
+        assert not dialog._sharpen_risk.isHidden()
+        assert viewport.rect().contains(risk_rect)
+        window.chk_sharpen_output.click()
+        assert dialog._sharpen_risk.isHidden()
+    finally:
+        dialog.close()
+        window.deleteLater()

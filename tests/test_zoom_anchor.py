@@ -14,10 +14,6 @@ from PyQt6.QtCore import QEvent, QPoint, QPointF, Qt
 from PyQt6.QtGui import QMouseEvent, QPixmap, QWheelEvent
 
 
-@pytest.fixture()
-def qapp():
-    from PyQt6.QtWidgets import QApplication
-    return QApplication.instance() or QApplication([])
 
 
 def _send_mouse(widget, kind, pos, button, buttons):

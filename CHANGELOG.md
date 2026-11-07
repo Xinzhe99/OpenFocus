@@ -5,6 +5,36 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+- Simplify the Retouch workspace and move explanatory text throughout the UI
+  into control tooltips, keeping relevant risks and status visible. Result
+  adjustments include highlights, shadows, saturation and color temperature,
+  with a larger side-by-side preview and draggable before/after comparison.
+- Import camera RAW and ordinary image folders through the same entry; a RAW-only
+  stack can still use camera-linear import and Linear DNG export.
+- Prepare source frames with bounded parallel decoding and publish thumbnails
+  incrementally, while respecting the configured thread and memory budgets.
+- Move frame-review messages to the bottom status bar, leaving more room for
+  the source list while preserving temporary render and update messages.
+- Set new OpenFocus A/B kernel defaults to 17, B depth smoothing to 1.44 and C
+  blend smoothing to 3.6. Existing saved per-method values are preserved.
+- Choose OpenFocus C pyramid depth from the full output size, targeting a
+  coarsest short dimension near 128 pixels. Explicit tiles retain that scale
+  and include grid-aligned context.
+
+### Fixed
+- Let Batch Image Converter create a typed output directory and avoid rejecting
+  RAW-to-JPEG work based on an inflated working-memory estimate or duplicate
+  reservations. Resource errors are shown in the selected language.
+- Restore source-list thumbnails that were decoded just before a preview request
+  was cancelled. Show complete option indicators and numeric values in themed
+  Retouch controls and other spin boxes.
+- Select a writable local temporary volume for large jobs when the default
+  lacks space, using known stack and staging estimates. User-selected paths
+  remain binding; unavailable paths and insufficient space produce actionable
+  errors. Workers share the job's selection and release temporary files when
+  their final views are freed.
+
 ## [1.77.0] - 2026-11-06
 
 ### Added

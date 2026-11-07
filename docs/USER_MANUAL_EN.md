@@ -84,7 +84,7 @@ For example, the CLI equivalent is `python main.py --input ./png-stack
 
 ### Supported Output Formats
 
-In **Save As**, ordinary TIFF saves the result as a single image; layered TIFF includes the source frames as layers. Linear DNG is always listed, but saving it requires an unbaked camera-linear result from **Open native RAW** with camera calibration.
+In **Save As**, ordinary TIFF saves the result as a single image; layered TIFF includes the source frames as layers. Linear DNG is always listed, but saving it requires an unbaked camera-linear result with camera calibration.
 
 - Individual images: JPG, PNG, BMP, TIFF, WebP
 - Image sequences: Saved as folders
@@ -449,9 +449,9 @@ with auto-brightening disabled, so every frame of a stack gets the same
 exposure mapping; per-frame auto exposure would make brightness flicker
 between frames. Save as TIFF or PNG to keep the 16-bit data.
 
-For a camera-linear workflow, choose **File → Open native RAW stack…** and
-select the original camera RAW frames. DNG files are also accepted, including
-DNG files named `.tif` or `.tiff`; ordinary TIFF images are not camera RAW.
+For a camera-linear workflow, open a folder or files containing only camera
+RAW frames and choose **Camera-linear RAW** when prompted. DNG files are also
+accepted, including DNG files named `.tif` or `.tiff`; ordinary TIFF images are not camera RAW.
 Support for a particular camera depends on the installed LibRaw decoder. All
 frames must share camera calibration and white balance; unsupported or
 incompatible files are rejected. There is no need to convert vendor RAW files
@@ -773,12 +773,15 @@ various image types.
 
 
 For large stacks, leave space in the temporary directory for source frames and
-any additional aligned or corrected frames. Choose an existing folder under
-**Settings → Advanced Settings → Performance → Temporary directory**; leave it
-empty for the system default. Changes apply immediately to newly created data;
-already loaded frames stay in their original directory until released. OpenFocus
-checks free space before creating mappings and estimates whole-stack needs when
-possible. This is not a reservation; other programs may use the space later.
+any additional aligned or corrected frames. If no directory is specified,
+OpenFocus estimates needs from known inputs and scratch data. If the system
+temporary disk lacks space, it may consider writable fixed local disks. An
+explicitly selected directory is never automatically replaced. Choose an
+existing writable folder under **Settings → Advanced Settings → Performance →
+Temporary directory** if a storage error occurs. Free-space checks are estimates
+at a moment in time, not reservations; space may run out later. Changes apply
+to newly created data; already loaded frames stay in their original directory
+until released.
 
 Each neural tile uses every frame. Source frames and alignment scratch can be disk-backed, but free disk space and available memory still limit stack size. V2 spatial tiling approximates whole-image inference.
 
@@ -795,8 +798,10 @@ selected method (range 0–8, step 0.2):
 | Method | Label | Default | Effect |
 |---|---|---|---|
 | OpenFocus A | Blend smoothing | 2.0 | Spreads squared high-pass energy with `sigma = max(1, smoothing / 2)`; 0 retains the minimum spread |
-| OpenFocus B | Depth smoothing | 1.2 | Controls smoothing of the depth map that guides blending |
-| OpenFocus C | Blend smoothing | 3.0 | Controls smoothing of the depth map that guides multiscale reconstruction |
+| OpenFocus B | Depth smoothing | 1.44 | Controls smoothing of the depth map that guides blending |
+| OpenFocus C | Blend smoothing | 3.6 | Controls smoothing of the depth map that guides multiscale reconstruction |
+
+A/B default kernel size: 17. Existing saved values remain in use; restore defaults to use the new defaults.
 
 For A, values from 0 through 2 use the same minimum spread; higher values spread
 energy farther. For B and C, larger values increase depth-map smoothing. Each
@@ -939,8 +944,8 @@ a bristle taken from the wrong frame, noise in a flat area. The workspace
 copies pixels from the exact frames that produced the selected result:
 
 1. Select one output and click **Retouch Result…** in the output header, or press
-   `Ctrl+T`. The output context menu offers the same action. With no selection,
-   a chooser lists every result and marks which ones have recorded source frames.
+   `Ctrl+T`. You can also right-click an output and choose the same action. The
+   menu and shortcut require one selected output.
 2. The source frame is on the left, the result on the right. Both share zoom
    and position: wheel zooms, right/middle-drag (or Space+drag) pans, `F`
    fits, `1` shows 100 %.
@@ -962,8 +967,8 @@ copies pixels from the exact frames that produced the selected result:
    window, and OpenFocus protects it from automatic history eviction and
    from quitting without a decision.
 
-**Open shortcut help** lists navigation, frame selection, brush and editing
-shortcuts in separate groups with one action per row.
+**Open shortcut help**, next to **Before** in the toolbar, lists navigation,
+frame selection, brush and editing shortcuts. Hover over a control for its help.
 
 Apply the retouch as a new output, then select it and choose **Save As**. Select layered TIFF in the format list to save the result with its source frames.
 Live labels and scale bars are not included; unsaved annotation changes remain
@@ -990,11 +995,12 @@ Escape during a stroke to cancel it, or use undo and redo after the stroke.
 These are pixel edits, not adjustable layers. Apply as New Output and export
 the new entry to save the edited pixels; a project does not store those pixels.
 
-**Result adjustments…** changes the entire current retouch result. Its sampled
-preview updates as you change exposure and contrast; check **Before** to
-compare with the result before opening the adjustment. Both controls use
-hundredths of a stop: exposure multiplies pixel values, then contrast scales
-their distance from mid-gray. Extreme values can clip highlights or shadows.
+**Result adjustments…** changes the entire current retouch result. Controls are
+on the left and the sampled preview is on the right. Adjust exposure, contrast,
+highlights, shadows, saturation and color temperature; enable **Wipe comparison**
+and drag the divider to compare before and after. The wheel zooms, dragging the
+image pans and double-clicking resets the view. **Reset Default** clears the
+adjustments. Extreme values can clip highlights or shadows.
 **OK** applies the adjustment as one undoable edit; **Cancel** leaves the
 result unchanged. During processing, Cancel requests a rollback. The full
 image must fit within the retouch history's memory limit for this undoable
@@ -1456,13 +1462,15 @@ The batch dialog shows real-time progress. You can cancel processing at any time
 
 ### Batch image conversion
 
-Open **Tools → Batch Image Converter** independently of the current stack. Add files or all supported images in a folder, choose an existing output folder and a format, then select **Convert**. The list shows output paths and errors per source; the summary reports successful and failed sources. Cancel stops between operations; already completed files remain available. Closing during conversion requests cancellation and closes the window when processing stops.
+Open **Tools → Batch Image Converter** independently of the current stack. Add files or all supported images in a folder, choose or enter an output folder and a format, then select **Convert**. Missing output folders are created when conversion starts. The list shows output paths and errors per source; the summary reports successful and failed sources. Cancel stops between operations; already completed files remain available. Closing during conversion requests cancellation and closes the window when processing stops.
 
 Drag local image files or folders onto the queue or dialog to add them. Folder
 imports include direct children only. Files are naturally sorted and deduplicated;
 the import summary reports added and skipped entries. Convert becomes available
-when the queue contains images and the output field resolves to an existing
-folder. Quoted paths and environment variables are supported.
+when the queue contains images and the output path names an existing directory
+or a new directory. Quoted paths and environment variables are supported.
+The selected format's relevant limitations appear below the format selector;
+hover over the selector for the full conversion guidance.
 
 The fixed 96×72 thumbnail sits to the left of each row. Select multiple rows and
 press **Delete** or **Backspace**, or choose **Remove**. These keys edit text
@@ -1667,8 +1675,8 @@ an input or another output. Batch, grouped and dry-run modes reject this option.
 | `--defect-mask-path MASK` | Sensor-coordinate defect mask repaired before registration |
 | `--sensor-denoise` | Conservative sensor denoising before registration |
 | `--kernel, -k` | Kernel size (forced odd); controls focus-response scale for `openfocus_a` and `openfocus_b`; C has no radius |
-| `--depth-smoothing VALUE` | `openfocus_b` only: depth-transition smoothing strength (default 1.2) |
-| `--blend-smoothing VALUE` | `openfocus_a` / `openfocus_c` only: transition smoothing strength (defaults 2.0 for A, 3.0 for C) |
+| `--depth-smoothing VALUE` | `openfocus_b` only: depth-transition smoothing strength (default 1.44) |
+| `--blend-smoothing VALUE` | `openfocus_a` / `openfocus_c` only: transition smoothing strength (defaults 2.0 for A, 3.6 for C) |
 | `--ai-mode {soft,hard}` | StackMFF V3 output: probability-weighted blend (default) or most probable frame per pixel |
 | `--threads, -t` | Worker thread upper limit; `0` = automatic (default), positive values cap concurrency |
 | `--resource-preference` | `balanced` (default), `responsive`, or `maximum`; controls resource scheduling |
