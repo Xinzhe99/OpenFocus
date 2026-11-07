@@ -531,3 +531,22 @@ def test_batch_disables_unavailable_methods_without_dropping_selection(
         dialog.deleteLater()
         parent.deleteLater()
         qapp.processEvents()
+
+
+def test_batch_depth_warning_only_appears_for_eight_bit_formats(qapp):
+    from dialogs.batch import BatchProcessingDialog
+    from locales import trans
+
+    dialog = BatchProcessingDialog(None)
+    try:
+        assert dialog.depth_hint.isHidden()
+        assert trans.t('export_depth_hint') in dialog.format_combo.toolTip()
+        for image_format in ('JPG', 'BMP'):
+            dialog.format_combo.setCurrentText(image_format)
+            assert not dialog.depth_hint.isHidden()
+        for image_format in ('PNG', 'TIFF'):
+            dialog.format_combo.setCurrentText(image_format)
+            assert dialog.depth_hint.isHidden()
+    finally:
+        dialog.close()
+        dialog.deleteLater()

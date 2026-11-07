@@ -1,5 +1,5 @@
 """Immediate render options, using the main window's existing controls."""
-from PyQt6.QtCore import QEvent, Qt
+from PyQt6.QtCore import QEvent, QTimer, Qt
 from PyQt6.QtWidgets import (
     QDialog, QFrame, QHBoxLayout, QLabel, QPushButton,
     QScrollArea, QSizePolicy, QVBoxLayout, QWidget,
@@ -39,12 +39,6 @@ class RenderSettingsDialog(QDialog):
             window.chk_exposure_match, window.chk_base_correct,
             window.chk_sharpen_output,
         )
-        self._hint_keys = (
-            'chk_quick_preview_hint', 'chk_reverse_order_hint',
-            'chk_exposure_match_hint', 'chk_base_correct_hint',
-            'chk_sharpen_output_hint',
-        )
-        self._descriptions = []
         root = QVBoxLayout(self)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -61,21 +55,16 @@ class RenderSettingsDialog(QDialog):
             label = _OptionLabel(option)
             option._dialog_label = label
             option.refit()
-            description = QLabel()
-            description.setObjectName('mutedLabel')
-            description.setWordWrap(True)
-            description.setSizePolicy(QSizePolicy.Policy.Ignored,
-                                      QSizePolicy.Policy.Preferred)
-            option.installEventFilter(self)
-            self._descriptions.append(description)
-            text_column = QVBoxLayout()
-            text_column.setContentsMargins(0, 0, 0, 0)
-            text_column.setSpacing(3)
-            text_column.addWidget(label)
-            text_column.addWidget(description)
             row.addWidget(option, 0, Qt.AlignmentFlag.AlignTop)
-            row.addLayout(text_column, 1)
+            row.addWidget(label, 1)
             options_layout.addLayout(row)
+            if option is window.chk_sharpen_output:
+                self._sharpen_risk = QLabel()
+                self._sharpen_risk.setObjectName('mutedLabel')
+                self._sharpen_risk.setWordWrap(True)
+                options_layout.addWidget(self._sharpen_risk)
+                self._sharpen_risk.setVisible(option.isChecked())
+                option.toggled.connect(self._show_sharpen_risk)
             option.show()
         scroll.setWidget(page)
         self._scroll = scroll
@@ -96,20 +85,21 @@ class RenderSettingsDialog(QDialog):
                         + self._close_button.sizeHint().height())
         self.resize(self.width(), min(self.height(), content_height + fixed_height))
 
-    def eventFilter(self, watched, event):  # noqa: N802
-        if event.type() == QEvent.Type.EnabledChange and watched in self._options:
-            index = self._options.index(watched)
-            self._descriptions[index].setEnabled(watched.isEnabled())
-        return super().eventFilter(watched, event)
+
+    def _show_sharpen_risk(self, enabled):
+        self._sharpen_risk.setVisible(enabled)
+        if enabled:
+            QTimer.singleShot(0, self._reveal_sharpen_risk)
+
+    def _reveal_sharpen_risk(self):
+        if not self._sharpen_risk.isHidden():
+            self._scroll.ensureWidgetVisible(self._sharpen_risk)
 
     def retranslate(self):
         for option in self._options:
             option.refit()
-        for key, description, option in zip(self._hint_keys, self._descriptions,
-                                            self._options):
-            description.setText(trans.t(key))
-            description.setToolTip(option.toolTip())
-            description.setEnabled(option.isEnabled())
+            option._dialog_label.setToolTip(option.toolTip())
+        self._sharpen_risk.setText(trans.t('chk_sharpen_output_hint'))
         self.setWindowTitle(trans.t("render_settings_title"))
         self._close_button.setText(trans.t("dialog_close"))
 

@@ -40,7 +40,7 @@ def _response(frame, fine_sigma, spread_sigma, should_cancel, check_cancel):
     return response
 
 
-def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 11,
+def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 17,
                      thread_count: int = None, blend_smoothing: float = 2.0,
                      blend_mode: str = 'hard', soft_gamma: float = 1.0,
                      feather_theta: float = 0.9,

@@ -519,17 +519,42 @@ def test_closed_parented_dialog_releases_document_without_deleting_worker(qapp, 
 
 
 def test_global_tone_dialog_previews_cancels_and_applies(qapp):
-    from PyQt6.QtCore import QEventLoop, QTimer
+    from PyQt6.QtCore import QEventLoop, QPoint, QTimer, Qt
+    from PyQt6.QtTest import QTest
     from PyQt6.QtWidgets import QDialog
     from dialogs.retouch import _ToneDialog
 
     parent, published = _dialog(qapp)
     dialog = _ToneDialog(parent.doc, parent)
+    dialog.show()
+    qapp.processEvents()
     dialog.exposure.spin.setValue(100)
-    after = dialog.preview.pixmap().toImage().pixelColor(10, 10).red()
-    dialog.before.setChecked(True)
-    before = dialog.preview.pixmap().toImage().pixelColor(10, 10).red()
-    assert (before, after) == (110, 220)
+    QTest.qWait(100)
+    preview = dialog.preview
+    image_rect = preview._target_rect()
+    y = int(image_rect.top() + image_rect.height() * .7)
+    left = int(image_rect.left() + image_rect.width() * .25)
+    right = int(image_rect.left() + image_rect.width() * .75)
+    image = preview.grab().toImage()
+    assert image.pixelColor(left, y).red() == 220
+    assert image.pixelColor(right, y).red() == 220
+
+    dialog.compare_box.setChecked(True)
+    qapp.processEvents()
+    image = preview.grab().toImage()
+    assert image.pixelColor(left, y).red() == 110
+    assert image.pixelColor(right, y).red() == 220
+    start = QPoint(preview.width() // 2, preview.height() // 2)
+    end = QPoint(int(preview.width() * .85), preview.height() // 2)
+    QTest.mousePress(preview, Qt.MouseButton.LeftButton, pos=start)
+    QTest.mouseMove(preview, end, 10)
+    QTest.mouseRelease(preview, Qt.MouseButton.LeftButton, pos=end)
+    qapp.processEvents()
+    assert preview.grab().toImage().pixelColor(right, y).red() == 110
+
+    dialog.reset_button.click()
+    assert all(row.value() == 0 for row in dialog.tone_rows)
+    assert preview.grab().toImage().pixelColor(right, y).red() == 110
     dialog.reject()
     assert (parent.doc.working == 110).all() and not parent.doc.can_undo
 
@@ -545,6 +570,32 @@ def test_global_tone_dialog_previews_cancels_and_applies(qapp):
     parent._update_dirty_ui()
     assert parent._apply()
     assert (published[0][1] == 220).all()
+    parent.close()
+
+def test_global_tone_controls_preview_and_commit(qapp):
+    from PyQt6.QtCore import QEventLoop, QTimer
+    from dialogs.retouch import _ToneDialog
+    from utils.retouch import adjust_tones
+    import numpy as np
+
+    parent, _ = _dialog(qapp)
+    original = parent.doc.working.copy()
+    dialog = _ToneDialog(parent.doc, parent)
+    for name, value in (("highlights", 30), ("shadows", -20),
+                        ("saturation", 40), ("temperature", -50)):
+        getattr(dialog, name).spin.setValue(value)
+    expected = adjust_tones(original, 0, 0, highlights=.3, shadows=-.2,
+                            saturation=.4, temperature=-.5)
+    assert not np.array_equal(expected, original)
+    dialog._apply()
+    loop = QEventLoop()
+    dialog.worker.finished.connect(loop.quit)
+    QTimer.singleShot(5000, loop.quit)
+    loop.exec()
+    np.testing.assert_array_equal(parent.doc.working, expected)
+    assert parent.doc.undo()
+    np.testing.assert_array_equal(parent.doc.working, original)
+    parent._allow_close = True
     parent.close()
 
 
@@ -598,6 +649,7 @@ def test_dialog_preserves_zoom_and_frame_when_switching(qapp):
 def test_zoom_indicator_tracks_wheel_and_keeps_canvases_aligned(qapp):
     from PyQt6.QtCore import QPoint, QPointF, Qt
     from PyQt6.QtGui import QWheelEvent
+    from PyQt6.QtTest import QTest
     from locales import trans
     from ui.styles import get_theme_style
 
@@ -606,13 +658,14 @@ def test_zoom_indicator_tracks_wheel_and_keeps_canvases_aligned(qapp):
     dlg, _ = _dialog(qapp)
     try:
         dlg.resize(1280, 820)
-        dlg._set_focus_layout(False, True)
         qapp.processEvents()
         assert dlg.source_canvas.mapTo(dlg, QPoint()).y() == \
             dlg.result_canvas.mapTo(dlg, QPoint()).y()
         assert dlg.source_canvas.height() == dlg.result_canvas.height()
 
-        dlg.btn_100.click()
+        dlg.result_canvas.setFocus()
+        qapp.processEvents()
+        QTest.keyClick(dlg.result_canvas, Qt.Key.Key_1)
         assert dlg.lbl_zoom.text() == trans.t("retouch_zoom_level").format(percent=100)
         point = QPointF(dlg.result_canvas.rect().center())
         wheel = QWheelEvent(point, point, QPoint(), QPoint(0, 120),
@@ -713,81 +766,46 @@ def test_dialog_frame_slider_switches_and_stays_synced(qapp):
     assert dlg.frame_spin.value() == 3
     dlg._select_frame(0)
     assert dlg.frame_slider.value() == 0
-    # The theme's stepper padding needs room for three digits.
-    assert dlg.num_diameter.spin.width() >= 100
-    assert dlg.num_opacity.spin.width() >= 100
-    assert dlg.frame_spin.width() >= 120
     dlg._allow_close = True
     dlg.close()
 
+def test_retouch_number_fields_show_complete_values(qapp):
+    from ui.styles import get_theme_style
 
-def test_dialog_focus_layout_keeps_scale(qapp):
+    previous_style = qapp.styleSheet()
+    try:
+        for theme in ('light', 'dark'):
+            qapp.setStyleSheet(get_theme_style(theme))
+            dlg, _ = _dialog(qapp)
+            try:
+                for spin, value in ((dlg.num_diameter.spin, 2048),
+                                    (dlg.num_opacity.spin, 100),
+                                    (dlg.frame_spin, 3)):
+                    spin.setValue(value)
+                qapp.processEvents()
+                for spin in (dlg.num_diameter.spin, dlg.num_opacity.spin, dlg.frame_spin):
+                    field = spin.lineEdit()
+                    assert field.contentsRect().width() >= field.fontMetrics().horizontalAdvance(field.text()) + 8
+            finally:
+                dlg._allow_close = True
+                dlg.close()
+    finally:
+        qapp.setStyleSheet(previous_style)
+
+
+
+def test_dialog_always_keeps_both_canvases(qapp):
     dlg, _ = _dialog(qapp)
-    dlg.view.fit = False
-    dlg.view.scale = 1.5
-    dlg._set_focus_layout(True, True)
-    assert dlg.left_panel.isVisible() is False
-    assert abs(dlg.view.scale - 1.5) < 1e-9
-    dlg._set_focus_layout(False, True)
-    assert dlg.left_panel.isVisible() is True
-    assert abs(dlg.view.scale - 1.5) < 1e-9
+    qapp.processEvents()
+    assert dlg.left_panel.isVisible()
+    dlg.resize(900, 600)
+    qapp.processEvents()
+    assert dlg.left_panel.isVisible()
+    assert dlg.btn_shortcuts.isVisible()
     dlg._allow_close = True
     dlg.close()
 
 
-def test_dialog_focus_layout_does_not_refit_a_fitted_view(qapp):
-    dlg, _ = _dialog(qapp)
-    dlg._fit()
-    fitted = dlg.view.scale
-    dlg._set_focus_layout(True, True)
-    assert abs(dlg.view.scale - fitted) < 1e-9
-    assert dlg.view.fit is False
-    dlg._allow_close = True
-    dlg.close()
-
-
-def test_chooser_offers_only_provenance_backed_outputs(qapp):
-    from PyQt6.QtWidgets import QLabel, QListWidget, QListWidgetItem
-    from controllers.output_manager import (
-        OUTPUT_RECORD_ROLE, OutputManager, OutputRecord,
-    )
-    from dialogs.retouch import RetouchResultChooser
-
-    class W:
-        pass
-
-    w = W()
-    w.output_list = QListWidget()
-    w.output_label = QLabel()
-    w.fusion_results = []
-    w.fusion_result = None
-
-    class E:
-        @staticmethod
-        def generate_default_filename():
-            return "out"
-
-    w.export_manager = E()
-    w.output_manager = OutputManager(w)
-    image = np.zeros((16, 16, 3), np.uint8)
-    good = OutputRecord.create(
-        image, "good", context=_context([image], image))
-    bad = OutputRecord.create(image, "batch", kind="batch")
-    good_item = QListWidgetItem("good")
-    good_item.setData(OUTPUT_RECORD_ROLE, good)
-    bad_item = QListWidgetItem("batch")
-    bad_item.setData(OUTPUT_RECORD_ROLE, bad)
-    w.output_list.addItem(bad_item)
-    w.output_list.addItem(good_item)
-
-    chooser = RetouchResultChooser(w)
-    assert chooser.list.count() == 2
-    assert chooser.btn_ok.isEnabled()
-    assert chooser.selected_item() is good_item
-    chooser.list.setCurrentRow(0)
-    assert not chooser.btn_ok.isEnabled()
-    assert chooser.selected_item() is None
-    chooser.close()
 
 
 def _entry_host(qapp):
@@ -853,6 +871,12 @@ def test_entry_opens_the_clicked_or_selected_output(qapp, monkeypatch):
     w.output_list.clearSelection()
     w.output_list.setCurrentRow(1)
     main_module.OpenFocus.show_retouch_dialog(w)
+    assert seen == ["older", "newer"]
+    w.output_list.clearSelection()
+    warnings = []
+    monkeypatch.setattr(main_module, "show_warning_box", lambda *args: warnings.append(args))
+    main_module.OpenFocus.show_retouch_dialog(w)
+    assert warnings[0][2] == main_module.trans.t('retouch_select_result')
     assert seen == ["older", "newer"]
 
 
@@ -1125,6 +1149,33 @@ def test_source_peek_never_contains_sharpness_overlay(qapp):
         dlg.close()
 
 
+def test_retouch_explanations_are_tooltips_and_errors_remain_visible(qapp):
+    from PyQt6.QtWidgets import QLabel
+    from dialogs.retouch import _AutoBackgroundDialog
+    from locales import trans
+
+    dlg, _ = _dialog(qapp)
+    auto = _AutoBackgroundDialog(dlg.doc, dlg)
+    try:
+        auto.show()
+        qapp.processEvents()
+        visible_texts = {label.text() for label in auto.findChildren(QLabel) if label.isVisible()}
+        for control, key in ((auto.chk_clean, "retouch_auto_bg_clean_hint"),
+                             (auto.chk_soft_parts, "retouch_auto_bg_soft_parts_hint")):
+            assert trans.t(key) in control.toolTip()
+            assert trans.t(key) not in visible_texts
+        assert trans.t("retouch_sharpness_legend") in dlg.chk_sharp.toolTip()
+        dlg._set_sharp_state("ready")
+        assert dlg.lbl_sharp_state.isHidden()
+        dlg._set_sharp_state("failed")
+        assert not dlg.lbl_sharp_state.isHidden()
+        assert dlg.lbl_sharp_state.text() == trans.t("retouch_sharp_failed")
+    finally:
+        auto.reject()
+        dlg._allow_close = True
+        dlg.close()
+
+
 def test_apply_exception_preserves_dirty_document_and_allows_retry(qapp, monkeypatch):
     from PyQt6.QtWidgets import QMessageBox
     dlg, _published = _dialog(qapp)
@@ -1228,6 +1279,25 @@ def test_frame_navigation_has_no_window_and_coalesces_stale_pixel_work(qapp, mon
         dlg.close()
 
 
+def test_retouch_control_hints_include_shortcut_scope(qapp):
+    from locales import trans
+    dlg, _ = _dialog(qapp)
+    try:
+        assert 'Ctrl+Z' in dlg.btn_undo.toolTip()
+        assert 'Ctrl+Y' in dlg.btn_redo.toolTip()
+        assert 'Tab' in dlg.btn_before.toolTip()
+        assert trans.t('retouch_shortcut_scope') in dlg.btn_before.toolTip()
+        for button in (dlg.btn_save_checkpoint, dlg.btn_load_checkpoint,
+                       dlg.btn_shortcuts, dlg.btn_tones, dlg.btn_restore_all):
+            assert trans.t('retouch_no_shortcut') in button.toolTip()
+        assert 'Esc' in dlg.btn_cancel.toolTip()
+        assert dlg.rb_source.toolTip() and dlg.rb_restore.toolTip()
+        assert dlg.num_diameter.spin.toolTip() == dlg.num_diameter.toolTip()
+    finally:
+        dlg._allow_close = True
+        dlg.close()
+
+
 def test_shortcut_help_has_separate_readable_groups_and_rows(qapp, monkeypatch):
     from PyQt6.QtWidgets import QDialog, QGridLayout, QLabel, QScrollArea
     dlg, _ = _dialog(qapp)
@@ -1288,6 +1358,7 @@ def test_wrapped_option_indicators_align_with_the_first_text_line(qapp):
                 element = (QStyle.SubElement.SE_RadioButtonIndicator if isinstance(option, QRadioButton)
                            else QStyle.SubElement.SE_CheckBoxIndicator)
                 indicator = option.style().subElementRect(element, style_option, option)
+                assert option.rect().contains(indicator)
                 centre = option.mapTo(host, indicator.center()).y()
                 text_top = label.mapTo(host, QPoint()).y()
                 assert abs(centre - (text_top + label.fontMetrics().height() / 2)) <= 2
@@ -1308,8 +1379,7 @@ def test_retouch_native_events_during_preparation_wait_have_initialized_state(qa
         dialog = next(widget for widget in qapp.topLevelWidgets()
                       if isinstance(widget, RetouchDialog)
                       and not getattr(widget, '_ui_ready', False))
-        early.append((getattr(dialog, '_layout_user_choice', None),
-                      getattr(dialog, '_ui_ready', None)))
+        early.append(getattr(dialog, '_ui_ready', None))
         # Deliver the same native callbacks that a modal preparation window
         # can dispatch before the workspace's controls have been built.
         for callback, event in (
@@ -1328,14 +1398,14 @@ def test_retouch_native_events_during_preparation_wait_have_initialized_state(qa
     QTimer.singleShot(0, prepare_events)
     dialog, _ = _dialog(qapp)
     try:
-        assert early == [(False, False)] and errors == []
+        assert early == [False] and errors == []
         assert dialog._ui_ready
         dialog.resize(950, 650)
         qapp.processEvents()
-        assert dialog._responsive_focus and dialog.left_panel.isHidden()
+        assert not dialog.left_panel.isHidden()
         dialog.resize(1280, 820)
         qapp.processEvents()
-        assert not dialog._responsive_focus and not dialog.left_panel.isHidden()
+        assert not dialog.left_panel.isHidden()
         assert dialog._source_ready
     finally:
         dialog._allow_close = True

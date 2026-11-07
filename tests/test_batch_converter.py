@@ -125,6 +125,22 @@ def converter_dialog(qapp, monkeypatch):
         dialog.close()
 
 
+def test_converter_format_risks_follow_the_selected_format(converter_dialog):
+    dialog = converter_dialog
+    for image_format in ('JPEG', 'BMP', 'WebP'):
+        dialog.format.setCurrentText(image_format)
+        assert not dialog.format_warning.isHidden()
+        assert '16' in dialog.format_warning.text()
+    dialog.format.setCurrentText('DNG')
+    assert not dialog.format_warning.isHidden()
+    assert 'DNG' in dialog.format_warning.text()
+    dialog.format.setCurrentText('TIFF')
+    assert not dialog.format_warning.isHidden()
+    assert 'PNG' in dialog.format_warning.text()
+    dialog.format.setCurrentText('PNG')
+    assert dialog.format_warning.isHidden()
+
+
 def _converter_drop(qapp, target, urls):
     from PyQt6.QtCore import QMimeData, QPoint, QPointF, Qt
     from PyQt6.QtGui import QDragEnterEvent, QDragMoveEvent, QDropEvent
@@ -234,7 +250,7 @@ def test_converter_output_path_keyboard_and_delete_scope(
     dialog.directory.setText(str(source))
     assert not dialog.start.isEnabled() and dialog.directory.toolTip()
     dialog.directory.setText(str(tmp_path / 'missing'))
-    assert not dialog.start.isEnabled()
+    assert dialog.start.isEnabled() and not dialog.directory.toolTip()
     monkeypatch.setenv('OPENFOCUS_CONVERTER_OUTPUT', str(tmp_path))
     dialog.directory.setText('"%OPENFOCUS_CONVERTER_OUTPUT%"')
     assert dialog.start.isEnabled() and not dialog.directory.toolTip()
@@ -901,3 +917,129 @@ def test_cancelled_metadata_tiff_retains_original_and_existing_output(tmp_path):
     assert list(directory.iterdir()) == [existing]
     assert existing.read_bytes() == b'keep existing output'
     np.testing.assert_array_equal(tifffile.imread(source), rgb)
+
+
+def test_batch_creates_unicode_parents_and_does_not_repeat_page_admission(tmp_path, monkeypatch):
+    source = tmp_path / '花.png'
+    Image.new('RGB', (8, 8), 'red').save(source)
+    original = source.read_bytes()
+    directory = tmp_path / '新建' / '输出'
+    monkeypatch.setattr(converter, '_admit', lambda *a: pytest.fail('batch re-admitted its reserved page'))
+    statuses, progress = {}, []
+    result = converter.convert_batch([str(source)], str(directory), '.jpg', lambda: False,
+                                     lambda i, text: statuses.update({i: text}), progress.append)
+    assert result == (1, 0, False) and progress == [1]
+    assert source.read_bytes() == original
+    with Image.open(directory / '花.jpg') as output:
+        assert output.size == (8, 8)
+
+
+def test_batch_reports_output_directory_creation_error(tmp_path, monkeypatch):
+    source = tmp_path / 'input.png'
+    Image.new('RGB', (8, 8)).save(source)
+    before = source.read_bytes()
+    directory = tmp_path / 'denied' / 'output'
+    def deny(*args, **kwargs):
+        raise PermissionError('directory access denied')
+    monkeypatch.setattr(converter.os, 'makedirs', deny)
+    statuses = {}
+    result = converter.convert_batch([str(source)], str(directory), '.jpg', lambda: False,
+                                     lambda i, text: statuses.update({i: text}), lambda n: None)
+    assert result == (0, 1, False)
+    assert 'directory access denied' in statuses[0]
+    assert source.read_bytes() == before and not directory.exists()
+
+
+def test_batch_admits_one_job_above_comfortable_budget_only_up_to_ceiling(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    plan = SimpleNamespace(workers=1, native_threads=1, max_in_flight=1,
+                           ram_budget=100, describe=lambda: 'test')
+    monkeypatch.setattr(converter.resource_policy, 'plan_execution', lambda *a, **k: plan)
+    monkeypatch.setattr(converter.resource_policy, 'ram_ceiling', lambda *a: 150)
+    monkeypatch.setattr(converter, '_estimate_source', lambda *a: (1, 125, 1))
+    calls = []
+    monkeypatch.setattr(converter, '_convert_source', lambda *a: (calls.append(a[1]) or True, False))
+    result = converter.convert_batch(['one'], str(tmp_path), '.jpg', lambda: False,
+                                     lambda *a: None, lambda *a: None)
+    assert result == (1, 0, False) and calls == ['one']
+    monkeypatch.setattr(converter.resource_policy, 'ram_ceiling', lambda *a: 124)
+    statuses = {}
+    result = converter.convert_batch(['two'], str(tmp_path), '.jpg', lambda: False,
+                                     lambda i, text: statuses.update({i: text}), lambda *a: None)
+    assert result == (0, 1, False) and calls == ['one']
+    assert statuses[0] == converter.trans.t('converter_memory_error')
+
+
+def test_raw_jpeg_estimate_uses_sensor_bounds_with_headroom(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    source = tmp_path / 'sensor.raf'
+    source.write_bytes(b'raw')
+    class Header:
+        sizes = SimpleNamespace(raw_width=1000, raw_height=800)
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            pass
+        def open_file(self, path):
+            pass
+    monkeypatch.setattr(converter.image_loader.rawpy, 'RawPy', Header)
+    jpeg_ram, _ = converter.estimate_job(source, ext='.jpg')
+    png_ram, _ = converter.estimate_job(source, ext='.png')
+    assert jpeg_ram == 1000 * 800 * 32 + 6
+    assert png_ram == 1000 * 800 * 64 + 6
+
+
+def test_cancelled_batch_does_not_create_output_directory(tmp_path):
+    directory = tmp_path / 'not-created'
+    result = converter.convert_batch(['source'], str(directory), '.jpg', lambda: True,
+                                     lambda *a: None, lambda *a: None)
+    assert result == (0, 0, True)
+    assert not directory.exists()
+
+
+def test_batch_preserves_existing_output_and_same_directory_source(tmp_path):
+    source = tmp_path / 'photo.png'
+    Image.new('RGB', (8, 8), 'blue').save(source)
+    original = source.read_bytes()
+    existing = tmp_path / 'photo.jpg'
+    existing.write_bytes(b'existing output')
+    result = converter.convert_batch([str(source)], str(tmp_path), '.jpg', lambda: False,
+                                     lambda *a: None, lambda *a: None)
+    assert result == (1, 0, False)
+    assert source.read_bytes() == original
+    assert existing.read_bytes() == b'existing output'
+    with Image.open(tmp_path / 'photo_1.jpg') as output:
+        assert output.size == (8, 8)
+
+
+def test_batch_reports_unknown_memory_instead_of_claiming_shortage(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    plan = SimpleNamespace(workers=1, native_threads=1, max_in_flight=1,
+                           ram_budget=100, describe=lambda: 'test')
+    monkeypatch.setattr(converter.resource_policy, 'plan_execution', lambda *a, **k: plan)
+    monkeypatch.setattr(converter.resource_policy, 'probe_resources', lambda: SimpleNamespace(ram_known=False))
+    monkeypatch.setattr(converter.resource_policy, 'ram_ceiling', lambda *a: 0)
+    monkeypatch.setattr(converter, '_estimate_source', lambda *a: (1, 10, 1))
+    statuses = {}
+    result = converter.convert_batch(['source'], str(tmp_path), '.jpg', lambda: False,
+                                     lambda i, text: statuses.update({i: text}), lambda *a: None)
+    assert result == (0, 1, False)
+    assert statuses[0] == converter.trans.t('converter_memory_unknown')
+
+
+def test_single_page_admission_uses_localized_resource_errors(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    monkeypatch.setattr(converter, 'estimate_job', lambda *a: (100, 100))
+    monkeypatch.setattr(converter, 'available_memory_bytes', lambda: 0)
+    with pytest.raises(MemoryError) as error:
+        converter._admit('source', 0, str(tmp_path), '.jpg')
+    assert str(error.value) == converter.trans.t('converter_memory_unknown')
+    monkeypatch.setattr(converter, 'available_memory_bytes', lambda: 100)
+    with pytest.raises(MemoryError) as error:
+        converter._admit('source', 0, str(tmp_path), '.jpg')
+    assert str(error.value) == converter.trans.t('converter_memory_error')
+    monkeypatch.setattr(converter, 'available_memory_bytes', lambda: 1000)
+    monkeypatch.setattr(converter.shutil, 'disk_usage', lambda *a: SimpleNamespace(free=99))
+    with pytest.raises(OSError) as error:
+        converter._admit('source', 0, str(tmp_path), '.jpg')
+    assert str(error.value) == converter.trans.t('converter_space_error')

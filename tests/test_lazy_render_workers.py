@@ -49,6 +49,21 @@ def test_render_materializes_original_geometry_to_disk(tmp_path):
     np.testing.assert_array_equal(rendered, original)
 
 
+def test_render_reports_completed_preparation_frames(tmp_path):
+    frames = [_source(tmp_path, name=f'progress-{i}.png', value=i)[0]
+              for i in range(2)]
+    worker = workers.RenderWorker(frames, algorithm=None, need_fusion=False, thread_count=1)
+    results, errors = _capture(worker)
+    progress, stages = [], []
+    worker.progress_signal.connect(lambda done, total: progress.append((done, total)),
+                                   Qt.ConnectionType.DirectConnection)
+    worker.stage_signal.connect(stages.append, Qt.ConnectionType.DirectConnection)
+    worker.run()
+    assert errors == [] and len(results) == 1
+    assert 'prepare' in stages
+    assert progress == [(1, 2), (2, 2)]
+
+
 def test_preview_uses_display_pixels_and_skips_original_alignment_cache(tmp_path, monkeypatch):
     frame, _ = _source(tmp_path)
     monkeypatch.setattr(SourceFrame, 'full_resolution',

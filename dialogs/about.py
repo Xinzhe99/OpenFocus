@@ -3,12 +3,11 @@
 
 import sys
 import threading
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import QTimer
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
     QDialog,
     QVBoxLayout,
-    QLabel,
     QTextEdit,
     QPushButton,
 )
@@ -44,14 +43,9 @@ class EnvironmentInfoDialog(QDialog):
 
         layout = QVBoxLayout(self)
 
-        # 标题
-        title = QLabel(trans.t('env_subtitle'))
-        title.setFont(QFont("Arial", 14, QFont.Weight.Normal))  # System UI font
-        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(title)
-
         # 信息显示区
         self.text_edit = QTextEdit()
+        self.text_edit.setToolTip(trans.t('env_subtitle'))
         self.text_edit.setReadOnly(True)
         self.text_edit.setFont(QFont("Consolas", 10))
         layout.addWidget(self.text_edit)

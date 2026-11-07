@@ -604,10 +604,6 @@ class DepthMapDialog(QDialog):
 
         self.fusion_parameter_panel = AlgorithmParameterPanel(self)
         form.addRow(self.fusion_parameter_panel)
-        manual_hint = QLabel(trans.t("depth_manual_compute_hint"))
-        manual_hint.setWordWrap(True)
-        manual_hint.setObjectName("mutedLabel")
-        form.addRow(manual_hint)
         self._sync_method_controls()
 
         self.map_combo = QComboBox()
@@ -740,6 +736,7 @@ class DepthMapDialog(QDialog):
         # ---- actions ----
         btns = FlowPanel(h_spacing=6, v_spacing=6)
         self.compute_btn = QPushButton(trans.t("depth_compute"))
+        self.compute_btn.setToolTip(trans.t("depth_manual_compute_hint"))
         self.compute_btn.clicked.connect(self._compute)
         self.cancel_btn = QPushButton(trans.t("btn_cancel_compute"))
         self.cancel_btn.clicked.connect(self._cancel)
@@ -1225,7 +1222,8 @@ class DepthMapDialog(QDialog):
                   if not available else "")
         self.compute_btn.setEnabled(
             not self._closing and not busy and bool(self._images()) and available)
-        self.compute_btn.setToolTip(reason or "")
+        self.compute_btn.setToolTip("\n\n".join(
+            text for text in (trans.t("depth_manual_compute_hint"), reason) if text))
         if reason and not busy and not self._closing:
             self.status_lbl.setText(reason)
         self.cancel_btn.setVisible(busy and not self._closing)

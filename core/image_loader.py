@@ -159,11 +159,15 @@ def _read_raw(path: str, scale_factor: float = 1.0) -> Optional[np.ndarray]:
 
 
 def decode_image(path: str, *, allow_transparent_png: bool = False,
-                 preserve_grayscale: bool = False) -> Optional[np.ndarray]:
-    """Decode an oriented still image, rejecting unsupported transparency."""
+                 preserve_grayscale: bool = False, scale_factor: float = 1.0) -> Optional[np.ndarray]:
+    """Decode an oriented still image, rejecting unsupported transparency.
+
+    ``scale_factor`` applies to RAW decoding only; other callers resize after
+    orientation and transparency handling.
+    """
     ext = os.path.splitext(path)[1].lower()
     if is_raw_source(path):
-        return _read_raw(path)
+        return _read_raw(path, scale_factor)
     # IMREAD_IGNORE_ORIENTATION is required: modern OpenCV already rotates by
     # the EXIF Orientation tag itself, so letting apply_exif_orientation run
     # afterwards applied every transform twice (portrait phone shots loaded

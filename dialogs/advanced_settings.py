@@ -18,7 +18,7 @@ from constants import (
 from core.algorithms import (get_fusion, registration_algorithms, registration_parameter_specs,
                              resolve_registration_parameters)
 from core.multi_focus_fusion import _DEFAULT_TILE_THRESHOLD
-from core.frame_storage import configure_storage_directory
+from core.frame_storage import configure_storage_directory, restore_storage_directory
 from locales import trans
 from utils.export_paths import prefix_output_name, valid_output_prefix
 from widgets.stepper import StepperSpinBox
@@ -64,10 +64,6 @@ class AdvancedSettingsDialog(QDialog):
         self.resize(640, 620)
 
         root = QVBoxLayout(self)
-        intro = QLabel(trans.t("advanced_settings_intro"))
-        intro.setWordWrap(True)
-        intro.setObjectName("mutedLabel")
-        root.addWidget(intro)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -85,7 +81,10 @@ class AdvancedSettingsDialog(QDialog):
         perf = _section(page_lay, trans.t("advanced_tab_performance"))
         self.chk_tile = QCheckBox()
         self.chk_tile.setChecked(bool(getattr(w, "tile_enabled", True)))
-        self.chk_tile.setToolTip(trans.t('advanced_tile_policy_hint'))
+        self.chk_tile.setToolTip('\n\n'.join((
+            trans.t('advanced_tile_policy_hint'),
+            trans.t('advanced_tile_streaming_hint'),
+            trans.t('advanced_settings_intro'))))
         perf.addRow(trans.t('advanced_tile_policy'), self.chk_tile)
         self.spin_block = StepperSpinBox(
             minimum=TILE_BLOCK_MIN, maximum=TILE_BLOCK_MAX, step=128,
@@ -128,7 +127,8 @@ class AdvancedSettingsDialog(QDialog):
         perf.addRow(trans.t("advanced_resource_mode"), self.combo_resources)
         self.tile_status = _note(page_lay, '')
         self.tile_status.setProperty('controlId', 'effective_tiling_status')
-        self.tile_note = _note(page_lay, trans.t('advanced_tile_streaming_hint'))
+        self.tile_note = _note(page_lay, trans.t('advanced_tile_note'))
+        self.tile_note.hide()
         method = getattr(w, 'current_fusion_method', lambda: 'stackmffv3')()
         spec = None if method == 'none' else get_fusion(method)
 
@@ -136,6 +136,8 @@ class AdvancedSettingsDialog(QDialog):
             enabled = self.chk_tile.isChecked() and spec is not None
             explicit = int(self.spin_threshold.value()) != _DEFAULT_TILE_THRESHOLD
             spatial = enabled and (spec.external_tiling_default or explicit)
+            self.tile_note.setVisible(bool(spec is not None and spatial and explicit
+                                           and not spec.external_tiling_default))
             perf.setRowVisible(self.spin_threshold, enabled)
             for control in (self.spin_block, self.spin_overlap):
                 perf.setRowVisible(control, spatial)
@@ -158,6 +160,7 @@ class AdvancedSettingsDialog(QDialog):
         self.spin_reg_width = StepperSpinBox(
             minimum=REG_WIDTH_MIN, maximum=REG_WIDTH_MAX, step=64, decimals=0,
             value=int(getattr(w, "reg_downscale_width", 1024)))
+        self.spin_reg_width.setToolTip(trans.t("advanced_settings_intro"))
         reg.addRow(trans.t("advanced_reg_width"), self.spin_reg_width)
         self.combo_align_failure = QComboBox()
         self.combo_align_failure.setProperty("controlId", "combo_align_failure")
@@ -239,19 +242,13 @@ class AdvancedSettingsDialog(QDialog):
         except Exception:
             self.chk_auto_update.setChecked(True)
         other.addRow(trans.t("action_auto_download"), self.chk_auto_update)
-        auto_hint = QLabel(trans.t("action_auto_download_hint"))
-        auto_hint.setObjectName("mutedLabel")
-        auto_hint.setWordWrap(True)
-        other.addRow("", auto_hint)
+        self.chk_auto_update.setToolTip(trans.t("action_auto_download_hint"))
         self.chk_usage = QCheckBox()
         self.chk_usage.setProperty("controlId", "chk_usage")
         analytics = getattr(w, "usage_analytics", None)
         self.chk_usage.setChecked(analytics.enabled() if analytics is not None else True)
         other.addRow(trans.t("usage_enabled"), self.chk_usage)
-        usage_hint = QLabel(trans.t("usage_disclosure"))
-        usage_hint.setObjectName("mutedLabel")
-        usage_hint.setWordWrap(True)
-        other.addRow("", usage_hint)
+        self.chk_usage.setToolTip(trans.t("usage_disclosure"))
 
         page_lay.addStretch()
         self.status = QLabel()
@@ -372,7 +369,7 @@ class AdvancedSettingsDialog(QDialog):
             if hasattr(w, "persist_settings"):
                 w.persist_settings()
         except Exception as exc:
-            configure_storage_directory(previous_storage)
+            restore_storage_directory(previous_storage)
             for key, value in previous.items():
                 setattr(w, key, value)
             if "_registration_parameters_by_method" in draft:

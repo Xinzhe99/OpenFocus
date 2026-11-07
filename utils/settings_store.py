@@ -38,6 +38,7 @@ LAST_UPDATE_CHECK_KEY = "updates/last_check_epoch"
 # version must not nag again, a newer one re-shows the banner.
 UPDATE_BANNER_DISMISSED_KEY = "updates/banner_dismissed_tag"
 LAST_STACK_FOLDER_KEY = "ui/last_stack_folder"
+LAST_STACK_MODE_KEY = "ui/last_stack_mode"
 LAST_DIALOG_DIR_KEY = "ui/last_dialog_dir"
 LAST_IMAGE_SAVE_DIR_KEY = "ui/last_image_save_dir"
 # The "AI runs on the CPU" warning is informational and repeat-per-launch

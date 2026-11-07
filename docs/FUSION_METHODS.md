@@ -9,6 +9,14 @@ these approaches:
 | B | Blends neighboring frames according to a smoothed depth map. | Kernel radius and depth smoothing (`--kernel`, `--depth-smoothing`) |
 | C | Uses a depth estimate to merge and reconstruct a fixed-point pyramid. | Blend smoothing (`--blend-smoothing`); no radius control |
 
+Default parameters are kernel size 17 for A and B, blend smoothing 2.0 for A,
+depth smoothing 1.44 for B, and blend smoothing 3.6 for C. B and C retain
+their respective smoothing multipliers of 5/1.2 and 5/3.0. These defaults are
+a parameter mapping calibrated to Helicon Focus 9's GUI radius 8 and smoothing
+6, not a guarantee of equivalent algorithms, visual results or resource use.
+Existing per-method saved values remain in use; restore defaults to use the new
+defaults.
+
 Exposure matching can compensate for brightness differences across the stack
 before fusion. OpenFocus A/B/C input can be sorted with `--sort asc|desc|off`;
 StackMFF V2 keeps its original focus order. The pipeline
@@ -36,6 +44,13 @@ alpha. Thread settings and low-memory processing retain this selection rule.
 B and C can produce the same depth map while producing different color pixels:
 B blends source layers, whereas C reconstructs a multilevel pyramid. Similar
 depth estimates alone do not establish that the methods share their output.
+C chooses its pyramid depth from the output dimensions: the shortest coarse
+dimension is the one closest to 128 pixels, with odd dimensions rounded up
+at each reduction. This is an engineering interpretation of the documented
+Helicon Focus scale target, not a verified reproduction of its level selection.
+Explicit C tiles use the full-image depth map and pyramid scale, with
+grid-aligned context around each tile.
+
 
 StackMFF V1 and V2 use retrained single-scale attention networks, each with
 about 156,172 parameters. V1 combines luminance with softmax weights and takes
@@ -57,12 +72,14 @@ Imported frames and alignment scratch can be disk-backed, reducing resident
 stack storage. Decoding, inference workspaces and full-size outputs still need
 available RAM, while temporary frame and alignment data need free disk space.
 Very large inputs can exceed either limit and fail with a resource error.
-The temporary data directory can be selected in Advanced Settings. Checks use
-the selected directory before creating each mapped frame and estimate whole-stack
-needs where headers are available. Some processing stages also check for their
-additional mapped frames. These are point-in-time checks, not reservations;
-other processes can still consume space afterward. Changing the directory does
-not move previously created mappings.
+When no temporary directory is configured, OpenFocus chooses a writable local
+temporary location using the known input and staging estimates; if the system
+temporary disk is too small, it considers fixed local volumes. A manually
+selected directory is used as configured and is never silently replaced.
+Checks use point-in-time free space with a system reserve, not a reservation;
+later processing or other processes may still require additional space. If
+storage is unavailable or fills up, free space or choose a writable directory
+in Advanced Settings. Changing that setting does not move existing mappings.
 
 
 GFG-FGF converts source frames to its float32 working range as each pass

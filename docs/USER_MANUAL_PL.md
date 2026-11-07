@@ -408,6 +408,8 @@ OpenFocus oferuje dziesięć algorytmów fuzji plus tryb tylko wyrównania. W no
 
 Każdy kafelek sieci używa wszystkich klatek. Klatki źródłowe i dane tymczasowe wyrównania mogą być przechowywane na dysku; wolne miejsce i dostępna pamięć ograniczają wielkość stosu. Kafelkowanie przestrzenne V2 przybliża wnioskowanie dla całego obrazu.
 
+Jeśli nie wskazano katalogu tymczasowego, OpenFocus szacuje potrzebne miejsce na podstawie znanych danych wejściowych i danych tymczasowych. Gdy na systemowym dysku tymczasowym brakuje miejsca, może rozważyć zapisywalne stałe dyski lokalne. Jawnie wskazany katalog nie jest automatycznie zastępowany. Sprawdzenie miejsca jest szacunkiem w danej chwili, a nie rezerwacją; później miejsca może zabraknąć. W razie błędu zapisu wybierz katalog z prawem zapisu w ustawieniach zaawansowanych.
+
 
 ### StackMFF V2 (uczenie głębokie)
 
@@ -466,8 +468,10 @@ Każdy kafelek sieci używa wszystkich klatek. Klatki źródłowe i dane tymczas
 | Metoda | Etykieta | Domyślnie | Efekt |
 |---|---|---|---|
 | OpenFocus A | Wygładzanie mieszania | 2,0 | Wygładza mapę odpowiedzi ostrości przed wyborem pikseli |
-| OpenFocus B | Wygładzanie głębi | 1,2 | Kontroluje wygładzanie mapy głębi kierującej mieszaniem |
-| OpenFocus C | Wygładzanie mieszania | 3,0 | Kontroluje wygładzanie mapy głębi dla rekonstrukcji wieloskalowej |
+| OpenFocus B | Wygładzanie głębi | 1,44 | Kontroluje wygładzanie mapy głębi kierującej mieszaniem |
+| OpenFocus C | Wygładzanie mieszania | 3,6 | Kontroluje wygładzanie mapy głębi dla rekonstrukcji wieloskalowej |
+
+Domyślny rozmiar jądra A/B: 17. Zapisane wartości pozostają w użyciu; przywróć ustawienia domyślne, aby użyć nowych wartości.
 
 Większe wartości zwiększają wygładzanie przejść. Każda metoda pamięta własną wartość między sesjami, a przetwarzanie wsadowe stosuje tę samą regułę.
 
@@ -915,8 +919,8 @@ Na przykład dodaj `--align openfocus --alignment-report alignment.json` do poje
 | `--defect-mask-path MASK` | Maska defektów we współrzędnych matrycy, naprawiana przed rejestracją |
 | `--sensor-denoise` | Ostrożne odszumianie matrycy przed rejestracją |
 | `--kernel, -k` | Rozmiar jądra (wymuszony nieparzysty); skala odpowiedzi ostrości dla `openfocus_a` i `openfocus_b`; C nie ma promienia |
-| `--depth-smoothing VALUE` | Tylko `openfocus_b`: siła wygładzania przejść głębi (domyślnie 1,2) |
-| `--blend-smoothing VALUE` | Tylko `openfocus_a` / `openfocus_c`: siła wygładzania przejść (domyślnie 2,0 dla A, 3,0 dla C) |
+| `--depth-smoothing VALUE` | Tylko `openfocus_b`: siła wygładzania przejść głębi (domyślnie 1,44) |
+| `--blend-smoothing VALUE` | Tylko `openfocus_a` / `openfocus_c`: siła wygładzania przejść (domyślnie 2,0 dla A, 3,6 dla C) |
 | `--ai-mode {soft,hard}` | Wyjście StackMFF V3: mieszanie ważone prawdopodobieństwami (domyślnie) lub najbardziej prawdopodobna klatka dla każdego piksela |
 | `--threads, -t` | Górny limit wątków roboczych; `0` = automatycznie (domyślnie), wartości dodatnie ograniczają współbieżność |
 | `--resource-preference` | `balanced` (domyślnie), `responsive` lub `maximum`; steruje planowaniem zasobów |

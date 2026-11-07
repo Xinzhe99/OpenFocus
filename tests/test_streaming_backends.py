@@ -357,6 +357,40 @@ def test_c_coarse_bands_change_visible_fusion():
     assert np.any(multiscale != single)
     assert 32 < multiscale[16, 14] < 224
 
+@pytest.mark.parametrize("shape,expected", [
+    ((1, 10000), 1), ((127, 300), 1), ((170, 500), 1),
+    ((171, 500), 2), ((340, 700), 2), ((341, 700), 3),
+    ((681, 1200), 4), ((1012, 1337), 4),
+])
+def test_c_automatic_pyramid_level_boundaries(shape, expected):
+    assert openfocus_bc.automatic_pyramid_levels(*shape) == expected
+    assert openfocus_bc.automatic_pyramid_levels(*shape[::-1]) == expected
+
+
+def test_c_automatic_pyramid_blends_at_broader_scale_than_b():
+    shape = (1017, 1017)
+    frames = [np.full(shape, 32, np.uint8), np.full(shape, 224, np.uint8)]
+    depth = np.zeros(shape, np.float32)
+    depth[:, shape[1] // 2:] = 1
+    automatic = openfocus_bc.openfocus_c_impl(frames, depth_override=depth)
+    explicit = openfocus_bc.openfocus_c_impl(frames, levels=4, depth_override=depth)
+    old_depth = openfocus_bc.openfocus_c_impl(frames, levels=3, depth_override=depth)
+    b = openfocus_bc.openfocus_b_impl(frames, depth_override=depth)
+    np.testing.assert_array_equal(automatic, explicit)
+    assert np.any(automatic != old_depth)
+    assert np.any(automatic != b)
+
+
+@pytest.mark.parametrize("dtype", [np.uint8, np.uint16])
+def test_c_automatic_pyramid_preserves_first_source(dtype):
+    shape = (255, 257)
+    frames = [np.full(shape, np.iinfo(dtype).max // 4, dtype),
+              np.full(shape, np.iinfo(dtype).max * 3 // 4, dtype)]
+    actual = openfocus_bc.openfocus_c_impl(
+        frames, depth_override=np.zeros(shape, np.float32))
+    expected = frames[0] if dtype == np.uint8 else frames[0].astype(np.float32) * (255 / 65535)
+    np.testing.assert_allclose(actual, expected, atol=0.004)
+
 
 @pytest.mark.parametrize("method", ["b", "c"])
 def test_deep_stack_override_selects_last_frame(method):

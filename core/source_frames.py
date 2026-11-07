@@ -72,17 +72,25 @@ PREVIEW_CACHE = FrameCache(64 * 1024 * 1024)
 class PreviewPixels:
     """A preview's disk lifetime without pinning its pixel allocation."""
     def __init__(self, image):
-        from core.frame_storage import storage_directory, require_disk_space
-        require_disk_space(image.nbytes)
-        fd, self.path = tempfile.mkstemp(prefix='openfocus-preview-', dir=storage_directory())
+        from core.frame_storage import (storage_directory, require_disk_space,
+                                        track_temp_file, _storage_error)
+        directory = storage_directory()
+        require_disk_space(image.nbytes, directory)
+        try:
+            fd, self.path = tempfile.mkstemp(prefix='openfocus-preview-', dir=directory)
+        except OSError as exc:
+            raise _storage_error(directory, image.nbytes, exc) from exc
         self.shape, self.dtype = image.shape, image.dtype
         try:
             with os.fdopen(fd, 'wb') as stream:
                 image.tofile(stream)
+        except OSError as exc:
+            os.unlink(self.path)
+            raise _storage_error(directory, image.nbytes, exc) from exc
         except BaseException:
             os.unlink(self.path)
             raise
-        weakref.finalize(self, os.unlink, self.path)
+        track_temp_file(self, self.path)
 
     @property
     def nbytes(self):
@@ -407,6 +415,7 @@ class SourceFrame:
         native_bytes = math.prod(self.native_shape or self.shape) * self.dtype.itemsize
         require_memory(native_bytes * 4 + self.nbytes)
         with log_operation('source_decode', path=self.path, page=self.page, scale=self.scale):
+            scaled_raw = False
             if self.linear_metadata is not None:
                 from utils.linear_dng import load_linear_raw
                 # Calibration is checked again because the source can be replaced
@@ -418,7 +427,9 @@ class SourceFrame:
             elif os.path.splitext(self.path)[1].lower() in ('.tif', '.tiff'):
                 from core.image_loader import is_raw_source
                 if is_raw_source(self.path):
-                    image = decode_image(self.path, allow_transparent_png=True)
+                    image = decode_image(self.path, allow_transparent_png=True,
+                                         scale_factor=self.scale)
+                    scaled_raw = 0 < self.scale <= 1
                 else:
                     data = np.memmap(self.path, dtype=np.uint8, mode='r')
                     ok, pages = cv2.imdecodemulti(data, flags=cv2.IMREAD_UNCHANGED,
@@ -435,12 +446,18 @@ class SourceFrame:
                     elif image.shape[2] == 4:
                         image = cv2.cvtColor(image, cv2.COLOR_BGRA2BGR)
             else:
-                image = decode_image(self.path, allow_transparent_png=True)
+                from core.image_loader import is_raw_source
+                if is_raw_source(self.path):
+                    image = decode_image(self.path, allow_transparent_png=True,
+                                         scale_factor=self.scale)
+                    scaled_raw = 0 < self.scale <= 1
+                else:
+                    image = decode_image(self.path, allow_transparent_png=True)
             if image is None:
                 raise ValueError(f'Could not decode source: {self.path}')
             if self.shape[-1] == 4 and image.ndim == 3 and image.shape[2] == 3:
                 image = cv2.cvtColor(image, cv2.COLOR_BGR2BGRA)
-            if self.linear_metadata is None and self.scale != 1:
+            if self.linear_metadata is None and self.scale != 1 and not scaled_raw:
                 image = cv2.resize(image, (max(1, int(image.shape[1] * self.scale)),
                                           max(1, int(image.shape[0] * self.scale))), interpolation=cv2.INTER_AREA)
             for operation in self.transforms:
@@ -483,21 +500,139 @@ def resolve_frame(frame):
     return frame.full_resolution() if isinstance(frame, SourceFrame) else frame
 
 
-def materialize_frames(frames, should_cancel=None):
+def scratch_source_headers(paths, should_cancel=None):
+    """Read known first-page headers without decoding source pixels."""
     from core.registration import RegistrationCancelled
-    result = []
-    for frame in frames:
+    headers = []
+    for path in paths:
         if should_cancel is not None and should_cancel():
             raise RegistrationCancelled()
-        image = resolve_frame(frame)
-        if should_cancel is not None and should_cancel():
-            raise RegistrationCancelled()
-        mapped = isinstance(image, np.memmap) and getattr(image, 'filename', None) is not None
-        result.append(image if mapped else store_frame(image))
-        del image
+        try:
+            headers.extend(scan_source(path, header_only=True, page_index=0,
+                                       should_cancel=should_cancel))
+        except InterruptedError as exc:
+            raise RegistrationCancelled() from exc
+        except RegistrationCancelled:
+            raise
+        except Exception:
+            if should_cancel is not None and should_cancel():
+                raise RegistrationCancelled()
     if should_cancel is not None and should_cancel():
         raise RegistrationCancelled()
-    return result
+    return headers
+
+
+def materialize_frames(frames, should_cancel=None, *, staging_bytes=0,
+                       preferred_staging_bytes=0, thread_count=0,
+                       resource_preference='balanced', progress_callback=None):
+    """Prepare ordered disk-backed frames with a resource-bounded decode window."""
+    from contextvars import copy_context
+    from collections import deque
+    from collections.abc import Sequence
+    from concurrent.futures import ThreadPoolExecutor, wait
+    from core import resource_policy as policy
+    from core.frame_storage import scratch_directory, select_scratch
+    from core.registration import RegistrationCancelled
+
+    def check_cancel():
+        if should_cancel is not None and should_cancel():
+            raise RegistrationCancelled()
+
+    def save(image):
+        check_cancel()
+        mapped = isinstance(image, np.memmap) and getattr(image, 'filename', None) is not None
+        return image if mapped else store_frame(image)
+
+    with scratch_directory():
+        check_cancel()
+        known = isinstance(frames, Sequence)
+        total = len(frames) if known else 0
+        workers = 1
+        if known:
+            size = sum(frame.nbytes for frame in frames
+                       if not (isinstance(frame, np.memmap) and frame.filename is not None))
+            paths = [frame.path for frame in frames if isinstance(frame, SourceFrame)]
+            select_scratch(size + staging_bytes, paths,
+                           preferred_size=size + staging_bytes + preferred_staging_bytes)
+            sources = [frame for frame in frames if isinstance(frame, SourceFrame)]
+            if len(sources) > 1:
+                # RAW develops the full sensor even for a small output scale.
+                per_worker = max(math.prod(frame.native_shape or frame.shape) * frame.dtype.itemsize * 4
+                                 + frame.nbytes + os.path.getsize(frame.path) * 2
+                                 for frame in sources)
+                plan = policy.plan_execution(
+                    policy.Workload(algorithm='decode', frames=len(sources),
+                                    fixed_bytes=min(max(0, SOURCE_CACHE.max_bytes - SOURCE_CACHE.bytes),
+                                                    sum(frame.nbytes for frame in sources)),
+                                    per_worker_bytes=per_worker,
+                                    outer_tasks=min(8, len(sources))),
+                    preference=resource_preference, user_threads=thread_count)
+                workers = min(plan.workers, plan.max_in_flight, len(sources))
+        result = []
+
+        def append(image):
+            result.append(save(image))
+            if progress_callback is not None and total:
+                progress_callback(len(result), total)
+
+        if workers == 1:
+            for frame in frames:
+                check_cancel()
+                if not known:
+                    mapped = isinstance(frame, np.memmap) and frame.filename is not None
+                    select_scratch((0 if mapped else frame.nbytes) + staging_bytes,
+                                   [frame.path] if isinstance(frame, SourceFrame) else ())
+                    staging_bytes = 0
+                append(resolve_frame(frame))
+        else:
+            from threadpoolctl import threadpool_limits
+
+            def init_worker():
+                # OpenMP limits may be thread-local for the RAW decoder.
+                threadpool_limits(limits=1)
+
+            previous_cv_threads = cv2.getNumThreads()
+            cv2.setNumThreads(1)
+            pending = deque()
+            iterator = iter(frames)
+            try:
+                with threadpool_limits(limits=1):
+                    pool = ThreadPoolExecutor(max_workers=workers, initializer=init_worker)
+                    try:
+                        exhausted = False
+                        while pending or not exhausted:
+                            check_cancel()
+                            while not exhausted and len(pending) < workers:
+                                try:
+                                    frame = next(iterator)
+                                except StopIteration:
+                                    exhausted = True
+                                    break
+                                context = copy_context()
+                                pending.append((frame, pool.submit(context.run, resolve_frame, frame)))
+                            if not pending:
+                                break
+                            # Surface a later failure without waiting for earlier work.
+                            for _, future in pending:
+                                if future.done() and future.exception() is not None:
+                                    future.result()
+                            frame, future = pending[0]
+                            if not future.done():
+                                wait((future,), timeout=0.05)
+                                continue
+                            pending.popleft()
+                            image = future.result()
+                            del future
+                            append(image)
+                            del image
+                    finally:
+                        for _, future in pending:
+                            future.cancel()
+                        pool.shutdown(wait=True, cancel_futures=True)
+            finally:
+                cv2.setNumThreads(previous_cv_threads)
+        check_cancel()
+        return result
 
 
 def transform_frame(frame, operation, **params):

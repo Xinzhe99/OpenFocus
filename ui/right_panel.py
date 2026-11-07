@@ -283,8 +283,6 @@ class RightPanelComponents:
     btn_select_all: QPushButton
     btn_select_none: QPushButton
     btn_review_stack: QPushButton
-    btn_retouch: QPushButton
-    review_status: QLabel
     file_list: QListWidget
     output_label: QLabel
     output_list: QListWidget
@@ -472,9 +470,6 @@ def create_right_panel() -> RightPanelComponents:
     source_header.addWidget(btn_all)
     source_header.addWidget(btn_none)
     source_list_layout.addLayout(source_header)
-    review_status = QLabel()
-    review_status.setWordWrap(True)
-    source_list_layout.addWidget(review_status)
 
     file_list = QListWidget()
     file_list.setIconSize(QSize(40, 40))
@@ -500,10 +495,6 @@ def create_right_panel() -> RightPanelComponents:
     output_label = QLabel(trans.t('label_output').format(0))
     output_header = QHBoxLayout()
     output_header.addWidget(output_label, 1)
-    btn_retouch = ElidingButton(trans.t('action_retouch'))
-    btn_retouch.setObjectName("secondaryButton")
-    btn_retouch.setToolTip(trans.t('action_retouch') + "\n" + trans.t('action_retouch_hint'))
-    output_header.addWidget(btn_retouch)
     output_list_layout.addLayout(output_header)
     output_list = OutputListWidget()
     output_list.setIconSize(QSize(40, 40))
@@ -593,8 +584,6 @@ def create_right_panel() -> RightPanelComponents:
         btn_select_all=btn_all,
         btn_select_none=btn_none,
         btn_review_stack=btn_review_stack,
-        btn_retouch=btn_retouch,
-        review_status=review_status,
         file_list=file_list,
         output_label=output_label,
         output_list=output_list,
@@ -625,7 +614,6 @@ def bind_right_panel(window, components: RightPanelComponents) -> None:
     components.btn_select_none.clicked.connect(
         lambda: _set_all_source_checks(False))
     components.btn_review_stack.clicked.connect(window.source_manager.toggle_stack_review)
-    components.btn_retouch.clicked.connect(lambda _checked=False: window.show_retouch_dialog())
 
     components.combo_fusion.currentIndexChanged.connect(
         window.refresh_algorithm_parameters)

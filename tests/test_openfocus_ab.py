@@ -447,7 +447,7 @@ def test_openfocus_b_depth_smoothing_controls_transition():
     sharp = openfocus_b_impl([f0, f1], depth_smoothing=0)
     soft = openfocus_b_impl([f0, f1], depth_smoothing=6)
     default = openfocus_b_impl([f0, f1])
-    assert (default == openfocus_b_impl([f0, f1], depth_smoothing=1.2)).all()
+    assert (default == openfocus_b_impl([f0, f1], depth_smoothing=1.44)).all()
     assert (sharp != soft).any()
 
 
@@ -469,7 +469,7 @@ class TestSmoothingControls:
             f"{algo}: blend_smoothing had no effect on the output")
 
     @pytest.mark.parametrize("algo,default", [("openfocus_a", 2.0),
-                                              ("openfocus_c", 3.0)])
+                                              ("openfocus_c", 3.6)])
     def test_default_smoothing_matches_explicit_value(self, algo, default):
         from core.multi_focus_fusion import MultiFocusFusion
         frames = self._stack()
@@ -882,3 +882,20 @@ def test_depth_recurrence_carries_state_across_forward_and_reverse_strips(monkey
     np.testing.assert_array_equal(actual, expected)
 
 
+
+@pytest.mark.parametrize('shape,block_size,overlap', [
+    ((253, 301), 107, 18), ((505, 509), 221, 40), ((681, 685), 301, 50),
+])
+def test_c_odd_tiles_keep_full_image_pyramid_phase(shape, block_size, overlap):
+    from core.multi_focus_fusion import MultiFocusFusion
+
+    frames = make_two_focus_stack(shape)
+    options = dict(algorithm='openfocus_c', use_gpu=False, exposure_match=False,
+                   base_frame='none', sort_mode='off')
+    whole = MultiFocusFusion(tile_enabled=False, **options).fuse(frames, thread_count=1)
+    tiled = MultiFocusFusion(tile_enabled=True, tile_threshold=64,
+                             tile_block_size=block_size, tile_overlap=overlap,
+                             **options).fuse(frames, thread_count=2)
+    difference = np.abs(tiled.astype(np.int16) - whole.astype(np.int16))
+    assert difference.max() <= 1
+    assert difference.mean() < 0.2

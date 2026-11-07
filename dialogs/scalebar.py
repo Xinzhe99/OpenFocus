@@ -178,7 +178,7 @@ class ScaleBarDialog(QDialog):
             float(getattr(window, "scale_bar_font_size", 0.0) or 0.0))
         self.size_spin.setMinimumWidth(96)
         size_lay.addWidget(self.size_spin)
-        size_lay.addWidget(QLabel(trans.t("scalebar_font_auto")), 1)
+        self.size_spin.setToolTip(trans.t("scalebar_font_auto"))
         text_form.addRow(trans.t("scalebar_font_size"), size_row)
 
         self.bold_chk = QCheckBox(trans.t("scalebar_bold"))

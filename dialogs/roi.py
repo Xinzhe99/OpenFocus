@@ -28,11 +28,9 @@ class ROIRenderOptionsDialog(QDialog):
 
         layout = QVBoxLayout(self)
 
-        lbl = QLabel(trans.t("dialog_roi_msg"))
-        layout.addWidget(lbl)
-
         # Options Group
         group = QGroupBox(trans.t("dialog_roi_group_output"))
+        group.setToolTip(trans.t("dialog_roi_msg"))
         vbox = QVBoxLayout()
 
         self.rb_crop = QRadioButton(trans.t("dialog_roi_opt_crop"))

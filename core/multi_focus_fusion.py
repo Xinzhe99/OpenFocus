@@ -11,7 +11,7 @@ from utils import memory, resource_path
 from utils.image_utils import apply_exposure_gain, normalize_fuse_input
 from utils.sorting import natural_sort_key
 from core.algorithms import get_fusion, resolve_fusion_parameters, resolve_runner
-from core.frame_storage import create_frame, store_frame
+from core.frame_storage import capture_scratch, create_frame, run_with_scratch, store_frame
 
 
 # Tile 参数已改为 MultiFocusFusion 实例属性，见类构造函数中的默认值和访问器方法。
@@ -274,7 +274,7 @@ class MultiFocusFusion:
     def _fuse_openfocus_a(self,
                           input_source: Union[str, List[np.ndarray]],
                           img_resize: Optional[Tuple[int, int]] = None,
-                          kernel_size: int = 11,
+                          kernel_size: int = 17,
                           **kwargs) -> np.ndarray:
         """OpenFocus A: high-frequency energy source selection."""
         from fusion_methods.openfocus_a import openfocus_a_impl
@@ -288,7 +288,7 @@ class MultiFocusFusion:
     def _fuse_openfocus_b(self,
                           input_source: Union[str, List[np.ndarray]],
                           img_resize: Optional[Tuple[int, int]] = None,
-                          kernel_size: int = 11,
+                          kernel_size: int = 17,
                           **kwargs) -> np.ndarray:
         """OpenFocus B: depth-guided source blending."""
         from fusion_methods.openfocus_bc import openfocus_b_impl
@@ -310,6 +310,7 @@ class MultiFocusFusion:
                                 thread_count=kwargs.get('thread_count', None),
                                 blend_smoothing=kwargs.get('blend_smoothing', None),
                                 should_cancel=kwargs.get('should_cancel'),
+                                levels=kwargs.get('levels'),
                                 depth_override=kwargs.get('depth_override'),
                                 progress_callback=kwargs.get('progress_callback'))
 
@@ -542,8 +543,9 @@ class MultiFocusFusion:
         """Fuse under one cancellable lease, including preparation and publication."""
         from core.resource_policy import heavy_job
         from core.registration import RegistrationCancelled
+        from core.frame_storage import scratch_directory
         from utils.logging_setup import log_operation, log_action, image_result_details
-        with heavy_job(should_cancel), log_operation(
+        with heavy_job(should_cancel), scratch_directory(), log_operation(
                 'fusion', method=self.algorithm,
                 checkpoint=kwargs.get('model_path') or self.descriptor.weights,
                 use_gpu=self.use_gpu, tile_enabled=self.tile_enabled) as operation:
@@ -597,6 +599,18 @@ class MultiFocusFusion:
             if not names:
                 raise ValueError(f"No image files found in directory: {input_source}")
             from core.image_loader import admit_image_decode, decode_image
+            from core.frame_storage import estimate_fusion_space, select_scratch
+            from core.source_frames import scratch_source_headers
+
+            paths = [os.path.join(input_source, name) for name in names]
+            # Some decoders support formats whose headers are unavailable to
+            # the scanner. Remaining allocations are checked individually.
+            headers = scratch_source_headers(paths, should_cancel)
+            input_bytes = sum(frame.nbytes for frame in headers)
+            if headers:
+                staging = estimate_fusion_space(headers, self.exposure_match)
+                select_scratch(input_bytes, paths,
+                               preferred_size=input_bytes + staging)
             frame_specs = []
             first = None
             frames = []
@@ -615,8 +629,13 @@ class MultiFocusFusion:
             input_source = frames
             count = len(frames)
         elif isinstance(input_source, (list, tuple)) and len(input_source):
+            from core.frame_storage import estimate_fusion_space
             from core.source_frames import materialize_frames
-            input_source = materialize_frames(input_source, should_cancel)
+            input_source = materialize_frames(
+                input_source, should_cancel,
+                preferred_staging_bytes=estimate_fusion_space(input_source, self.exposure_match),
+                thread_count=kwargs.get('thread_count', 0),
+                resource_preference=self.resource_preference)
             first = input_source[0]
             count = len(input_source)
             frame_specs = [(frame.size, frame.dtype) for frame in input_source]
@@ -1197,6 +1216,18 @@ class MultiFocusFusion:
         overlap = max(0, min(int(overlap), block_size // 2))
         step = max(1, block_size - overlap)
         num_images = len(imgs) if imgs is not None else len(files)
+        pyramid_grid = 1
+        pyramid_halo = 0
+        if algorithm == 'openfocus_c':
+            from fusion_methods.openfocus_bc import automatic_pyramid_levels
+            levels = automatic_pyramid_levels(h, w)
+            kwargs['levels'] = levels
+            pyramid_grid = 2 ** (levels - 1)
+            # Expand each tile on the global pyramid grid so reduction phases
+            # match the full image. The halo covers the reduction and
+            # four-tap expansion support at every scale.
+            pyramid_halo = 4 * pyramid_grid
+
 
         # 计算 tile 坐标
         tile_coords = []
@@ -1266,13 +1297,13 @@ class MultiFocusFusion:
                                     exposure_gains[index] if match_depth else None)
                                 for index, frame in enumerate(imgs)]
             if algorithm == 'openfocus_b':
-                kernel = kwargs.get('kernel_size', 11)
+                kernel = kwargs.get('kernel_size', 17)
                 smoothing = kwargs.get('depth_smoothing')
-                smoothing = (1.2 if smoothing is None else smoothing) * (5.0 / 1.2)
+                smoothing = (1.44 if smoothing is None else smoothing) * (5.0 / 1.2)
             else:
                 kernel = 11
                 smoothing = kwargs.get('blend_smoothing')
-                smoothing = (3.0 if smoothing is None else smoothing) * (5.0 / 3.0)
+                smoothing = (3.6 if smoothing is None else smoothing) * (5.0 / 3.0)
             depth_threads = policy.cpu_capacity(policy.probe_resources(), self.resource_preference)
             if thread_count is not None and thread_count > 0:
                 depth_threads = min(depth_threads, thread_count)
@@ -1285,8 +1316,11 @@ class MultiFocusFusion:
             # scratch. Charge their sum per concurrent tile; none of those
             # backend-local accumulators is shared between tile calls.
             from core import resource_policy as policy
+            extra = 2 * (pyramid_halo + pyramid_grid - 1)
+            tile_h = min(h, block_size + extra)
+            tile_w = min(w, block_size + extra)
             fixed, per_worker = resolve_runner(get_fusion(algorithm).resource_estimator)(
-                block_size, block_size, kwargs, num_images)
+                tile_h, tile_w, kwargs, num_images)
             # Full-image output accumulators are disk-backed and reduced in strips.
             plan = policy.plan_execution(
                 policy.Workload(
@@ -1379,12 +1413,24 @@ class MultiFocusFusion:
             import cv2
             _check_cancel()
             x0, y0, x1, y1 = coords
-            crops = _crop_frames(coords)
+            crop_coords = coords
+            if pyramid_halo:
+                grid = pyramid_grid
+                crop_coords = (
+                    max(0, (x0 - pyramid_halo) // grid * grid),
+                    max(0, (y0 - pyramid_halo) // grid * grid),
+                    min(w, (x1 + pyramid_halo + grid - 1) // grid * grid),
+                    min(h, (y1 + pyramid_halo + grid - 1) // grid * grid),
+                )
+            crops = _crop_frames(crop_coords)
 
-            fused_tile = call_algo(crops, coords)
+            fused_tile = call_algo(crops, crop_coords)
             _check_cancel()
             if fused_tile is None:
                 raise RuntimeError("Fusion returned None for a tile")
+            if pyramid_halo:
+                cx0, cy0, _, _ = crop_coords
+                fused_tile = fused_tile[y0 - cy0:y1 - cy0, x0 - cx0:x1 - cx0]
 
             if fused_tile.ndim == 2:
                 fused_tile = fused_tile[:, :, np.newaxis]
@@ -1433,6 +1479,7 @@ class MultiFocusFusion:
         completed_tiles = 0
         total_tiles = len(tile_coords)
         window = deque()
+        scratch = capture_scratch()
         next_to_submit = 0
         with concurrent.futures.ThreadPoolExecutor(max_workers=optimal_threads) as executor:
             while next_to_submit < total_tiles or window:
@@ -1440,7 +1487,7 @@ class MultiFocusFusion:
                 while (next_to_submit < total_tiles
                        and len(window) < optimal_threads):
                     window.append(executor.submit(
-                        process_single_tile, tile_coords[next_to_submit]))
+                        run_with_scratch, scratch, process_single_tile, tile_coords[next_to_submit]))
                     next_to_submit += 1
                 result = window.popleft().result()
                 _check_cancel()

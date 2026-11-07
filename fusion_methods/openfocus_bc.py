@@ -12,7 +12,18 @@ from fusion_methods.openfocus_depth import depth_map
 from core.frame_storage import create_frame
 
 
-DEFAULT_PYRAMID_LEVELS = 3
+def automatic_pyramid_levels(height, width):
+    """Choose the level closest to 128 pixels along the shortest dimension.
+
+    Reduction rounds odd dimensions up. This is an engineering interpretation
+    of the documented coarse-scale target, not a verified Helicon rule.
+    """
+    shortest = min(int(height), int(width))
+    levels = 1
+    while abs((shortest + 1) // 2 - 128) < abs(shortest - 128):
+        shortest = (shortest + 1) // 2
+        levels += 1
+    return levels
 
 
 def _weight(depth, index):
@@ -103,13 +114,13 @@ def _depth(frames, shape, img_resize, kernel_size, smoothing, should_cancel,
     return depth
 
 
-def openfocus_b_impl(input_source, img_resize=None, kernel_size: int = 11,
-                     thread_count: int = None, depth_smoothing: float = 1.2,
+def openfocus_b_impl(input_source, img_resize=None, kernel_size: int = 17,
+                     thread_count: int = None, depth_smoothing: float = 1.44,
                      should_cancel=None, depth_override=None, progress_callback=None):
     """Fuse source pixels using a continuous, smoothed depth map."""
     from fusion_methods.openfocus_ab import _check_cancel, _prepare_frame
     frames, shape = _inputs(input_source, img_resize, should_cancel)
-    smoothing = 1.2 if depth_smoothing is None else float(depth_smoothing)
+    smoothing = 1.44 if depth_smoothing is None else float(depth_smoothing)
     count = len(frames)
     activity_steps = count if depth_override is None else 0
     total = activity_steps + count + 1
@@ -146,13 +157,15 @@ def openfocus_b_impl(input_source, img_resize=None, kernel_size: int = 11,
 
 
 def openfocus_c_impl(input_source, img_resize=None, kernel_size: int = 7,
-                     thread_count: int = None, levels: int = DEFAULT_PYRAMID_LEVELS,
-                     blend_smoothing: float = 3.0, should_cancel=None,
+                     thread_count: int = None, levels: int = None,
+                     blend_smoothing: float = 3.6, should_cancel=None,
                      depth_override=None, progress_callback=None):
     """Fuse depth-guided pyramids with Q10 merge and integer collapse."""
     from fusion_methods.openfocus_ab import _check_cancel, _prepare_frame
     frames, shape = _inputs(input_source, img_resize, should_cancel)
-    smoothing = 3.0 if blend_smoothing is None else float(blend_smoothing)
+    smoothing = 3.6 if blend_smoothing is None else float(blend_smoothing)
+    if levels is None:
+        levels = automatic_pyramid_levels(*shape[:2])
     # Method C exposes smoothing only; use the default radius internally.
     count = len(frames)
     activity_steps = count if depth_override is None else 0

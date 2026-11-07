@@ -148,9 +148,6 @@ class MosaicDialog(QDialog):
 
     def _build_ui(self):
         outer = QVBoxLayout(self)
-        intro = QLabel(trans.t('mosaic_intro'))
-        intro.setWordWrap(True)
-        outer.addWidget(intro)
         splitter = QSplitter(Qt.Orientation.Horizontal)
         outer.addWidget(splitter, 1)
         panel = QWidget()
@@ -210,6 +207,7 @@ class MosaicDialog(QDialog):
             spin.setRange(-1000000000, 1000000000)
             spin.setDecimals(1)
             spin.setSingleStep(1)
+            spin.setToolTip("\n\n".join((trans.t('mosaic_intro'), trans.t('mosaic_manual'))))
         position.addRow(trans.t('label_x'), self.x_spin)
         position.addRow(trans.t('label_y'), self.y_spin)
         self.scale_spin, self.rotation_spin = QDoubleSpinBox(), QDoubleSpinBox()
@@ -240,6 +238,7 @@ class MosaicDialog(QDialog):
         splitter.addWidget(scroll)
         self.scene = QGraphicsScene(self)
         self.canvas = _Canvas(self.scene)
+        self.canvas.setToolTip("\n\n".join((trans.t('mosaic_intro'), trans.t('mosaic_manual'))))
         splitter.addWidget(self.canvas)
         splitter.setStretchFactor(1, 1)
         splitter.setSizes([280, 900])
@@ -277,9 +276,6 @@ class MosaicDialog(QDialog):
         self.rotation_spin.valueChanged.connect(self._geometry_changed)
         self.opacity.valueChanged.connect(self._opacity_changed)
         self.opacity.setToolTip(trans.t('mosaic_preview_hint'))
-        preview_hint = QLabel(trans.t('mosaic_preview_hint'))
-        preview_hint.setWordWrap(True)
-        left.addWidget(preview_hint)
         for button in (self.add_files, self.add_folder, self.add_outputs, self.remove, self.grid_apply,
                        self.auto, self.fit, self.cancel, self.save, self.close_button):
             button.setAutoDefault(False)
@@ -509,8 +505,8 @@ class MosaicDialog(QDialog):
         picker = QDialog(self)
         picker.setWindowTitle(trans.t('label_outputs_all'))
         layout = QVBoxLayout(picker)
-        layout.addWidget(QLabel(trans.t('mosaic_choose_hint')))
         choices = QListWidget()
+        choices.setToolTip(trans.t('mosaic_choose_hint'))
         choices.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         for record in records:
             choices.addItem(record.label)
@@ -548,7 +544,7 @@ class MosaicDialog(QDialog):
         self.connected = [False] * len(self.frames)
         self._rebuild()
         self.list.setCurrentRow(len(self.frames) - 1)
-        self.status.setText(trans.t('mosaic_manual'))
+        self.status.clear()
         QTimer.singleShot(0, self._fit)
 
     def _remove_selected(self):
@@ -564,7 +560,7 @@ class MosaicDialog(QDialog):
         del self.preview_opacities[index]
         self._rebuild()
         self.list.setCurrentRow(min(index, len(self.frames) - 1))
-        self.status.setText(trans.t('mosaic_manual') if self.frames else trans.t('mosaic_empty'))
+        self.status.setText('' if self.frames else trans.t('mosaic_empty'))
 
     def _apply_grid(self):
         if self.worker is not None or not self.grid_apply.isEnabled():

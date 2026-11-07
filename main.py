@@ -159,7 +159,7 @@ from utils.settings_store import (
     restore_window_layout,
     get_settings,
 )
-from core.frame_storage import configure_storage_directory
+from core.frame_storage import configure_storage_directory, restore_storage_directory
 from ui.image_panels import create_source_panel, create_result_panel
 from ui.menus import setup_menus
 from ui.right_panel import bind_right_panel, create_right_panel, set_panel_label
@@ -294,8 +294,7 @@ def _restore_storage_directory(window):
         configure_storage_directory(window.storage_directory)
     except OSError as exc:
         path = window.storage_directory
-        configure_storage_directory("")
-        window.storage_directory = ""
+        restore_storage_directory(path)
         return trans.t("advanced_storage_fallback").format(path=path, error=str(exc))
     return None
 
@@ -1416,6 +1415,12 @@ class OpenFocus(QMainWindow):
         from PyQt6.QtWidgets import QHBoxLayout, QLabel, QProgressBar, QPushButton, QWidget
 
         bar = self.statusBar()
+        from PyQt6.QtWidgets import QSizePolicy
+
+        self._review_status = QLabel("", bar)
+        self._review_status.setSizePolicy(QSizePolicy.Policy.Ignored,
+                                          QSizePolicy.Policy.Preferred)
+        bar.addWidget(self._review_status, 1)
         container = QWidget(bar)
         layout = QHBoxLayout(container)
         layout.setContentsMargins(6, 0, 6, 0)
@@ -1438,7 +1443,18 @@ class OpenFocus(QMainWindow):
         # swallowed every direct statusBar().showMessage call).
         bar.messageChanged.connect(self._on_status_message_changed)
         bar.setSizeGripEnabled(False)
+        bar.setVisible(True)
         self._update_indicator = container
+        self.source_manager.refresh_review_text()
+
+    def _set_review_status(self, text: str) -> None:
+        label = getattr(self, '_review_status', None)
+        if label is not None:
+            label.setText(text)
+            label.setToolTip(text)
+            label.setAccessibleName(text)
+            if text:
+                self.statusBar().setVisible(True)
 
     def _show_status_message(self, text: str, timeout_ms: int = 5000) -> None:
         bar = self.statusBar()
@@ -1502,8 +1518,7 @@ class OpenFocus(QMainWindow):
             show = False
         self._update_indicator.setVisible(show)
         bar = self.statusBar()
-        if show or not bar.currentMessage():
-            bar.setVisible(show)
+        bar.setVisible(True)
 
         action = getattr(self, 'ui_objs', {}).get('action_install_update')
         if action is not None:
@@ -2210,20 +2225,13 @@ class OpenFocus(QMainWindow):
             dialog = RetouchDialog(self, record=record, apply_callback=apply_selected,
                                    input_paths=[result_path, *source_paths])
             dialog.exec()
-            if dialog.change_requested:
-                self.show_retouch_dialog()
         except Exception as exc:  # noqa: BLE001 - report file and preparation errors
             show_message_box(self, trans.t('msg_error'), trans.t('msg_proc_error'),
                              str(exc), QMessageBox.Icon.Critical)
 
     def show_retouch_dialog(self, item=None) -> None:
-        """Retouch one output selected by identity, not by row order.
-
-        `item` is the entry the user right-clicked; menu/shortcut calls pass
-        None, in which case the visible selection decides.  With no selection
-        a chooser lists every output and marks which ones have provenance.
-        """
-        from dialogs.retouch import RetouchDialog, RetouchResultChooser
+        """Retouch the right-clicked output or the single selected output."""
+        from dialogs.retouch import RetouchDialog
 
         # QAction.triggered passes a `checked` bool; treat it as "no item".
         if item is not None and not hasattr(item, "data"):
@@ -2244,52 +2252,30 @@ class OpenFocus(QMainWindow):
                 item = selected[0]
 
         if item is None:
-            chooser = RetouchResultChooser(self)
-            if not chooser.exec():
-                return
-            item = chooser.selected_item()
-            if item is None:
-                return
+            show_warning_box(self, trans.t("msg_warning"), trans.t("retouch_select_result"))
+            return
 
         self.output_list.clearSelection()
         item.setSelected(True)
         self.output_list.setCurrentItem(item)
 
-        while True:
-            record = self.output_manager.record_for_item(item)
-            if (record is not None and record.image is not None and record.image.ndim == 3
-                    and record.image.shape[2] == 4):
-                show_warning_box(self, trans.t('msg_warning'),
-                                 trans.t('transparent_desktop_unsupported').format(path=''))
-                return
-            if record is None or not record.retouchable:
-                show_warning_box(self, trans.t("msg_warning"),
-                                 trans.t("retouch_no_source"))
-                return
-
-            try:
-                dlg = RetouchDialog(
-                    self, record=record,
-                    apply_callback=self._apply_retouch_output)
-            except Exception as exc:  # noqa: BLE001 - preparation failure
-                show_message_box(
-                    self, trans.t("msg_error"), trans.t("msg_proc_error"),
-                    str(exc), QMessageBox.Icon.Critical)
-                return
-            dlg.exec()
-            if not getattr(dlg, "change_requested", False):
-                return
-
-            chooser = RetouchResultChooser(self)
-            if not chooser.exec():
-                return
-            new_item = chooser.selected_item()
-            if new_item is None:
-                return
-            item = new_item
-            self.output_list.clearSelection()
-            item.setSelected(True)
-            self.output_list.setCurrentItem(item)
+        record = self.output_manager.record_for_item(item)
+        if (record is not None and record.image is not None and record.image.ndim == 3
+                and record.image.shape[2] == 4):
+            show_warning_box(self, trans.t('msg_warning'),
+                             trans.t('transparent_desktop_unsupported').format(path=''))
+            return
+        if record is None or not record.retouchable:
+            show_warning_box(self, trans.t("msg_warning"), trans.t("retouch_no_source"))
+            return
+        try:
+            dlg = RetouchDialog(self, record=record,
+                                apply_callback=self._apply_retouch_output)
+        except Exception as exc:  # noqa: BLE001 - preparation failure
+            show_message_box(self, trans.t("msg_error"), trans.t("msg_proc_error"),
+                             str(exc), QMessageBox.Icon.Critical)
+            return
+        dlg.exec()
 
     def _apply_retouch_output(self, base_record, image):
         """Publish the edited buffer; the dialog stays open on failure."""
@@ -2515,7 +2501,10 @@ class OpenFocus(QMainWindow):
             if old_request != request:
                 old_worker.request_cancel()
         indices = ([selected_index] if selected_index is not None else
-                   [index for index, frame in enumerate(self.raw_images) if not preview_ready(frame)])
+                   [index for index, frame in enumerate(self.raw_images)
+                    if not preview_ready(frame) or
+                    (self.file_list.item(index) is not None and
+                     self.file_list.item(index).icon().isNull())])
         if not indices:
             return
         worker = SourcePreviewWorker(self.raw_images, request, indices)
@@ -4095,9 +4084,6 @@ class OpenFocus(QMainWindow):
         # Panel titles are QLabels built once at startup; without this they
         # kept the language the app was launched in ("Source Stack"/"Output"
         # stayed English after switching to Polish).
-        if getattr(c, 'btn_retouch', None) is not None:
-            c.btn_retouch.setText(trans.t('action_retouch'))
-            c.btn_retouch.setToolTip(trans.t('action_retouch') + "\n" + trans.t('action_retouch_hint'))
         if hasattr(self, 'lbl_source_title'):
             self.lbl_source_title.setText(' ' + trans.t('panel_source_stack'))
         if hasattr(self, 'lbl_result_title'):
@@ -4111,6 +4097,7 @@ class OpenFocus(QMainWindow):
         # ROI Button
         if hasattr(self, 'btn_preview_roi'):
             self.btn_preview_roi.setText(trans.t('btn_roi'))
+            self.btn_preview_roi.setToolTip(trans.t('btn_roi_hint'))
 
         # Lists labels
         count = self.file_list.count()

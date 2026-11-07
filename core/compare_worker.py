@@ -14,7 +14,7 @@ from PyQt6.QtCore import QThread, pyqtSignal
 from core.resource_policy import heavy_job
 from core.registration import RegistrationCancelled
 from utils.logging_setup import frame_details, log_operation
-from core.frame_storage import store_frame
+from core.frame_storage import store_frame, scratch_directory
 from core.source_frames import materialize_frames
 
 
@@ -44,7 +44,13 @@ def align_frames(images, alignment, shared, should_cancel):
         raise ValueError("The image stack is empty.")
     if should_cancel():
         return None
-    frames = materialize_frames(frames, should_cancel)
+    if alignment != 'none':
+        from core.algorithms import alignment_steps
+        from core.workers import _processing_space
+        staging = _processing_space(frames, len(alignment_steps(alignment)))
+    else:
+        staging = 0
+    frames = materialize_frames(frames, should_cancel, preferred_staging_bytes=staging)
     if alignment != "none":
         settings = {"method": alignment, "brightness_reference": shared.get(
             "brightness_reference", "last" if shared.get("exposure_match", False) else "first"),
@@ -79,7 +85,7 @@ class AlignmentWorker(_CancellableWorker):
                 operation.cancel()
                 return
             try:
-                with heavy_job(self._should_cancel):
+                with heavy_job(self._should_cancel), scratch_directory():
                     images = align_frames(self.images, self.alignment, self.shared, self._should_cancel)
                 if images is not None and not self._should_cancel():
                     self.ready.emit(images)
@@ -208,7 +214,7 @@ class PreviewWorker(_CancellableWorker):
                            shared_parameters=self.shared, region=self.region, roi_only=self.roi_only,
                            **frame_details(self.images)) as operation:
             try:
-                with heavy_job(self._should_cancel):
+                with heavy_job(self._should_cancel), scratch_directory():
                     failed = self._run_admitted()
                 if failed:
                     operation.fail()

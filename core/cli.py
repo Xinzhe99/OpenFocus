@@ -28,6 +28,7 @@ from typing import List, Optional, Tuple
 from utils.sorting import natural_sort_key
 from utils.path_identity import file_identity, path_key
 from core.resource_policy import heavy_job, require_memory
+from core.frame_storage import scratch_directory
 
 from core.algorithms import (fusion_algorithms, registration_algorithms, get_fusion,
                              get_registration, resolve_fusion_parameters,
@@ -372,9 +373,34 @@ def _resolve_stack(args, video_temp_root: str) -> Tuple[str, List[str]]:
 
 def _load_images(paths: List[str], thread_count: int = 0,
                  resource_preference: str = "balanced",
-                 should_cancel=None):
+                 should_cancel=None, registration_steps=0, exposure_match=False):
+    with scratch_directory():
+        return _load_images_admitted(paths, thread_count, resource_preference,
+                                     should_cancel, registration_steps, exposure_match)
+
+
+def _load_images_admitted(paths, thread_count, resource_preference,
+                          should_cancel, registration_steps, exposure_match):
     from core.image_loader import iter_decoded_sources, _DecodeCancelled
     from core.frame_storage import store_frame
+    from core.frame_storage import select_scratch, estimate_registration_space, estimate_fusion_space
+    from core.source_frames import scan_source
+    # Admit known headers without consuming the decoder's streaming iterator.
+    # Unknown formats remain subject to per-frame checks as they are decoded.
+    manifest = []
+    for path in paths:
+        if should_cancel is not None and should_cancel():
+            raise RuntimeError('Loading cancelled')
+        try:
+            manifest.extend(scan_source(path, header_only=True, should_cancel=should_cancel))
+        except InterruptedError as exc:
+            raise RuntimeError('Loading cancelled') from exc
+        except (OSError, ValueError, ImportError):
+            continue
+    size = sum(frame.nbytes for frame in manifest)
+    staging = estimate_registration_space(manifest, registration_steps) if registration_steps else 0
+    staging += estimate_fusion_space(manifest, exposure_match)
+    select_scratch(size, paths, preferred_size=size + staging)
     images = []
     try:
         decoded = iter_decoded_sources(
@@ -555,7 +581,7 @@ def _transparent_region(images, args):
 
 
 def _fuse_stack(images, args):
-    with heavy_job(getattr(args, "_should_cancel", None)):
+    with heavy_job(getattr(args, "_should_cancel", None)), scratch_directory():
         return _fuse_stack_admitted(images, args)
 
 
@@ -1187,6 +1213,8 @@ def _run_batch(args, _emit_json=None) -> int:
         if progress is not None:
             progress(event="folder", name=name, index=i + 1,
                      total=len(folders))
+        scratch_scope = scratch_directory(separate=True)
+        scratch_scope.__enter__()
         try:
             paths = _filter_stack_paths(_folder_stack_paths(folder, loader, folder_args), folder_args.dust_map)
             paths = _filter_stack_paths(paths, getattr(folder_args, "defect_mask_path", None))
@@ -1206,7 +1234,9 @@ def _run_batch(args, _emit_json=None) -> int:
             else:
                 images = _load_images(
                     paths, thread_count=getattr(args, "threads", 0) or 0,
-                    resource_preference=getattr(args, "resource_preference", "balanced"))
+                    resource_preference=getattr(args, "resource_preference", "balanced"),
+                    registration_steps=int(folder_args.align != 'none'),
+                    exposure_match=getattr(folder_args, 'exposure_match', False))
                 fused = _fuse_stack(images, folder_args)
                 images = None
             background = stacked = None
@@ -1238,6 +1268,7 @@ def _run_batch(args, _emit_json=None) -> int:
             # background; release them before the next folder loads.
             for holder in {id(args): args, id(folder_args): folder_args}.values():
                 holder._depth_frames = None
+            scratch_scope.__exit__(None, None, None)
 
     summary = {
         "mode": "batch", "dry_run": bool(args.dry_run),
@@ -1444,7 +1475,7 @@ def _run_recipe_command(argv: List[str]) -> int:
 def _run_with_logging(argv: List[str]) -> int:
     with log_operation("cli", args=argv) as operation:
         try:
-            with heavy_job():
+            with heavy_job(), scratch_directory():
                 result = _run_cli_admitted(argv)
             if result == EXIT_ERROR:
                 operation.fail()
@@ -1750,7 +1781,9 @@ def _run_cli_admitted(argv: List[str]) -> int:
             elif not args.group_size:
                 images = _load_images(
                     paths, thread_count=getattr(args, "threads", 0) or 0,
-                    resource_preference=getattr(args, "resource_preference", "balanced"))
+                    resource_preference=getattr(args, "resource_preference", "balanced"),
+                    registration_steps=int(args.align != 'none'),
+                    exposure_match=getattr(args, 'exposure_match', False))
             if paths:
                 from utils.image_utils import set_source_exif
                 from core.image_loader import _read_exif_bytes

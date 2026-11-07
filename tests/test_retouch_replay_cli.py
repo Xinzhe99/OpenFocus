@@ -215,3 +215,24 @@ def test_replay_exact_archive_rejects_corrupt_payload_without_output(exact_archi
     output = tmp_path / 'corrupt-output.tif'
     assert _replay(checkpoint, paths, output) != 0
     assert not output.exists()
+
+
+@pytest.mark.parametrize('dtype', [np.uint8, np.uint16])
+def test_replay_extended_tones(tmp_path, dtype):
+    base = np.empty((32, 32, 3), dtype)
+    base[:] = (40, 100, 180) if dtype == np.uint8 else (10000, 26000, 46000)
+    source = base.copy()
+    context = RenderContext('tones', 'test', (), 32, 32, base.dtype,
+                            (SourceFrame('source', 'source', source),))
+    doc = RetouchDocument(base, context)
+    doc.initialize_checkpoint()
+    assert doc.adjust_tones(.1, -.1, highlights=.8, shadows=-.6,
+                            saturation=.5, temperature=-.7) == 'committed'
+    checkpoint = tmp_path / 'tones.json'
+    doc.save_checkpoint(checkpoint)
+    paths = [tmp_path / 'base.png', tmp_path / 'source.png']
+    assert cv2.imwrite(str(paths[0]), base)
+    assert cv2.imwrite(str(paths[1]), source)
+    output = tmp_path / 'tones.tif'
+    assert _replay(checkpoint, paths, output) == 0
+    np.testing.assert_array_equal(cv2.imread(str(output), cv2.IMREAD_UNCHANGED), doc.working)

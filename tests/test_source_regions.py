@@ -233,3 +233,264 @@ def test_active_region_waits_for_render_and_coalesces_queued_view(qapp):
         assert worker.wait(2000)
         if owner is not None:
             owner.join(2)
+
+
+def test_previews_publish_each_completed_thumbnail_without_waiting_for_batch(qapp, monkeypatch):
+    from core import source_previews
+    slow_started, release = threading.Event(), threading.Event()
+    frames = [object(), object()]
+    owner = threading.get_ident()
+    threads = []
+
+    def preview(frame, should_cancel=None):
+        threads.append(threading.get_ident())
+        if frame is frames[0]:
+            slow_started.set()
+            assert release.wait(5)
+        return np.full((80, 120, 3), 32 if frame is frames[0] else 160, np.uint16)
+
+    monkeypatch.setattr(source_previews, 'ensure_preview', preview)
+    monkeypatch.setattr(source_previews, '_preview_parallelism', lambda: 2)
+    worker = source_previews.SourcePreviewWorker(frames, 'stack')
+    received = QSignalSpy(worker.ready)
+    worker.start()
+    try:
+        assert slow_started.wait(2)
+        if not received:
+            assert received.wait(2000)
+        assert len(received) == 1
+        assert received[0][:3] == ['stack', 1, id(frames[1])]
+        assert received[0][3].shape == (27, 40, 3)
+        assert all(thread != owner for thread in threads)
+        release.set()
+        assert worker.wait(2000)
+        qapp.processEvents()
+        assert sorted(item[1] for item in received) == [0, 1]
+    finally:
+        release.set()
+        worker.request_cancel()
+        assert worker.wait(2000)
+
+
+def test_preview_switch_cancels_old_work_and_serializes_same_frame(qapp, monkeypatch):
+    from core import source_previews
+    entered, release = threading.Event(), threading.Event()
+    lock = threading.Lock()
+    frame = object()
+    active, calls = [], []
+
+    def preview(source, should_cancel=None):
+        with lock:
+            active.append(source)
+            calls.append(source)
+            assert len(active) == 1
+            first = len(calls) == 1
+        try:
+            if first:
+                entered.set()
+                assert release.wait(5)
+            return np.full((12, 16, 3), 42, np.uint8)
+        finally:
+            with lock:
+                active.remove(source)
+
+    monkeypatch.setattr(source_previews, 'ensure_preview', preview)
+    monkeypatch.setattr(source_previews, '_preview_parallelism', lambda: 2)
+    old = source_previews.SourcePreviewWorker([frame], 'old', [0])
+    new = source_previews.SourcePreviewWorker([frame], 'new', [0])
+    old_ready, new_ready = QSignalSpy(old.ready), QSignalSpy(new.ready)
+    old.start()
+    try:
+        assert entered.wait(2)
+        old.request_cancel()
+        new.start()
+        release.set()
+        assert old.wait(2000) and new.wait(2000)
+        qapp.processEvents()
+        assert not old_ready
+        assert len(new_ready) == 1
+        assert new_ready[0][:3] == ['new', 0, id(frame)]
+        assert calls == [frame, frame]
+    finally:
+        release.set()
+        old.request_cancel()
+        new.request_cancel()
+        assert old.wait(2000) and new.wait(2000)
+
+
+def test_preview_failure_does_not_block_other_thumbnails(qapp, monkeypatch):
+    from core import source_previews
+    frames = [object(), object(), object()]
+
+    def preview(frame, should_cancel=None):
+        if frame is frames[1]:
+            raise OSError('preview failed')
+        return np.full((10, 20, 3), 80, np.uint8)
+
+    monkeypatch.setattr(source_previews, 'ensure_preview', preview)
+    monkeypatch.setattr(source_previews, '_preview_parallelism', lambda: 2)
+    worker = source_previews.SourcePreviewWorker(frames, 'stack')
+    received, failed = QSignalSpy(worker.ready), QSignalSpy(worker.failed)
+    worker.start()
+    try:
+        assert worker.wait(2000)
+        qapp.processEvents()
+        assert sorted(row[1] for row in received) == [0, 2]
+        assert list(failed[0]) == ['stack', 'preview failed']
+        assert len(failed) == 1
+    finally:
+        worker.request_cancel()
+        assert worker.wait(2000)
+
+
+def test_preview_parallelism_respects_memory_and_cpu_budget(monkeypatch):
+    from core import resource_policy, source_previews
+    snapshot = resource_policy.ResourceSnapshot(physical_cores=8, logical_cpus=8)
+    monkeypatch.setattr(resource_policy, 'probe_resources', lambda: snapshot)
+    for budget, expected in [(0, 1), (source_previews._PREVIEW_WORKING_BYTES, 1),
+                             (2 * source_previews._PREVIEW_WORKING_BYTES, 2),
+                             (20 * source_previews._PREVIEW_WORKING_BYTES, 2)]:
+        monkeypatch.setattr(resource_policy, 'ram_budget', lambda unused, value=budget: value)
+        assert source_previews._preview_parallelism() == expected
+    monkeypatch.setattr(resource_policy, 'cpu_capacity', lambda unused, preference: 1)
+    assert source_previews._preview_parallelism() == 1
+
+
+def test_selected_preview_takes_turn_before_next_batch(qapp, monkeypatch):
+    from core import source_previews
+    first_started, release = threading.Event(), threading.Event()
+    lock = threading.Lock()
+    frames = [object() for _ in range(4)]
+    order = []
+
+    def preview(frame, should_cancel=None):
+        with lock:
+            order.append(frame)
+        if frame is frames[0]:
+            first_started.set()
+            assert release.wait(5)
+        return np.zeros((10, 10, 3), np.uint8)
+
+    monkeypatch.setattr(source_previews, 'ensure_preview', preview)
+    monkeypatch.setattr(source_previews, '_preview_parallelism', lambda: 1)
+    bulk = source_previews.SourcePreviewWorker(frames, 'bulk', [0, 1, 2])
+    selected = source_previews.SourcePreviewWorker(frames, 'selected', [3])
+    bulk.start()
+    try:
+        assert first_started.wait(2)
+        selected.start()
+        # Observe the selected worker entering the admission queue before
+        # releasing the currently executing preview.
+        with source_previews._PREVIEW_CONDITION:
+            assert source_previews._PREVIEW_CONDITION.wait_for(
+                lambda: source_previews._PREVIEW_PRIORITY_WAITERS == 1, timeout=2)
+        release.set()
+        assert bulk.wait(2000) and selected.wait(2000)
+        assert order == [frames[0], frames[3], frames[1], frames[2]]
+    finally:
+        release.set()
+        bulk.request_cancel()
+        selected.request_cancel()
+        assert bulk.wait(2000) and selected.wait(2000)
+
+
+def test_cancelled_stack_does_not_start_remaining_frames_or_exceed_limit(qapp, monkeypatch):
+    from core import source_previews
+    both_started, release = threading.Event(), threading.Event()
+    lock = threading.Lock()
+    frames = [object() for _ in range(8)]
+    active = 0
+    peak = 0
+    calls = []
+
+    def preview(frame, should_cancel=None):
+        nonlocal active, peak
+        with lock:
+            calls.append(frame)
+            active += 1
+            peak = max(peak, active)
+            if active == 2:
+                both_started.set()
+        try:
+            assert release.wait(5)
+            return np.zeros((10, 10, 3), np.uint8)
+        finally:
+            with lock:
+                active -= 1
+
+    monkeypatch.setattr(source_previews, 'ensure_preview', preview)
+    monkeypatch.setattr(source_previews, '_preview_parallelism', lambda: 2)
+    old = source_previews.SourcePreviewWorker(frames, 'deleted')
+    new = source_previews.SourcePreviewWorker(frames, 'replacement', [5])
+    old_ready, new_ready = QSignalSpy(old.ready), QSignalSpy(new.ready)
+    old.start()
+    try:
+        assert both_started.wait(2)
+        old.request_cancel()
+        new.start()
+        release.set()
+        assert old.wait(2000) and new.wait(2000)
+        qapp.processEvents()
+        assert peak == 2
+        assert set(calls) == {frames[0], frames[1], frames[5]}
+        assert not old_ready
+        assert len(new_ready) == 1 and new_ready[0][2] == id(frames[5])
+    finally:
+        release.set()
+        old.request_cancel()
+        new.request_cancel()
+        assert old.wait(2000) and new.wait(2000)
+
+
+def test_preview_waits_for_active_render_and_can_be_cancelled(qapp, monkeypatch):
+    from core import resource_policy, source_previews
+    render_started, release = threading.Event(), threading.Event()
+    decoded = threading.Event()
+
+    def render():
+        with resource_policy.heavy_job():
+            render_started.set()
+            assert release.wait(5)
+
+    def preview(frame, should_cancel=None):
+        decoded.set()
+        return np.zeros((10, 10, 3), np.uint8)
+
+    monkeypatch.setattr(source_previews, 'ensure_preview', preview)
+    owner = threading.Thread(target=render)
+    owner.start()
+    worker = source_previews.SourcePreviewWorker([object()], 'pending')
+    received = QSignalSpy(worker.ready)
+    try:
+        assert render_started.wait(2)
+        worker.start()
+        worker.request_cancel()
+        assert worker.wait(2000)
+        qapp.processEvents()
+        assert not decoded.is_set() and not received
+    finally:
+        release.set()
+        owner.join(2)
+        worker.request_cancel()
+        assert worker.wait(2000)
+
+
+@pytest.mark.parametrize('dtype,channels', [(np.uint16, 3), (np.float32, 3), (np.uint8, 4)])
+def test_preview_thumbnail_preserves_original_pixels(qapp, dtype, channels):
+    import cv2
+    from core import source_previews
+    image = np.arange(12 * 20 * channels, dtype=dtype).reshape(12, 20, channels)
+    before = image.copy()
+    worker = source_previews.SourcePreviewWorker([image], 'pixels')
+    received = QSignalSpy(worker.ready)
+    worker.start()
+    try:
+        assert worker.wait(2000)
+        qapp.processEvents()
+        assert len(received) == 1
+        expected = to_display_uint8(cv2.resize(before, (20, 12), interpolation=cv2.INTER_AREA))
+        np.testing.assert_array_equal(received[0][3], expected)
+        np.testing.assert_array_equal(image, before)
+    finally:
+        worker.request_cancel()
+        assert worker.wait(2000)

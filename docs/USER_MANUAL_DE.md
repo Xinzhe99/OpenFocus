@@ -470,6 +470,8 @@ OpenFocus bietet zehn Fusionsalgorithmen plus einen reinen Ausrichtungsmodus. Ei
 
 Jede neuronale Kachel verwendet alle Bilder. Quelldaten und Ausrichtungsdaten können auf der Festplatte liegen; freier Speicherplatz und Arbeitsspeicher begrenzen die Stapelgröße. Räumliche V2-Kachelung nähert die Berechnung des Gesamtbilds an.
 
+Ist kein temporäres Verzeichnis angegeben, schätzt OpenFocus den Bedarf anhand bekannter Eingaben und temporärer Daten. Reicht der Platz auf dem temporären Systemlaufwerk nicht aus, kann es beschreibbare feste lokale Laufwerke berücksichtigen. Ein ausdrücklich gewähltes Verzeichnis wird nicht automatisch ersetzt. Die Platzprüfung ist eine Momentaufnahme und keine Reservierung; später kann der Platz dennoch ausgehen. Wählen Sie bei einem Speicherfehler in den erweiterten Einstellungen ein beschreibbares Verzeichnis.
+
 - **Standard**: StackMFF V3.
 
 ### OpenFocus A / B / C
@@ -484,8 +486,10 @@ Jede neuronale Kachel verwendet alle Bilder. Quelldaten und Ausrichtungsdaten k�
 | Methode | Bezeichnung | Standard | Wirkung |
 |---|---|---|---|
 | OpenFocus A | Mischungsglättung | 2,0 | Steuert die Glättung der Fokusantwortkarte vor der Pixelauswahl |
-| OpenFocus B | Tiefenglättung | 1,2 | Steuert die Glättung der Tiefenkarte, die die Mischung führt |
-| OpenFocus C | Mischungsglättung | 3,0 | Steuert die Glättung der Tiefenkarte, die die mehrskalige Rekonstruktion führt |
+| OpenFocus B | Tiefenglättung | 1,44 | Steuert die Glättung der Tiefenkarte, die die Mischung führt |
+| OpenFocus C | Mischungsglättung | 3,6 | Steuert die Glättung der Tiefenkarte, die die mehrskalige Rekonstruktion führt |
+
+Standard-Kernelgröße für A/B: 17. Gespeicherte Werte bleiben erhalten; stellen Sie die Standardwerte wieder her, um die neuen Vorgaben zu verwenden.
 
 Höhere Werte verstärken die Übergangsglättung. Jede Methode merkt sich ihren eigenen Wert über Sitzungen hinweg, und die Stapelverarbeitung verwendet dieselbe Regel.
 
@@ -930,8 +934,8 @@ Für ein einzelnes Rendering lässt sich beispielsweise `--align openfocus --ali
 | `--defect-mask-path MASK` | Sensordefektmaske; Werte ungleich null werden vor der Registrierung repariert |
 | `--sensor-denoise` | Behutsame Sensorentrauschung vor der Registrierung |
 | `--kernel, -k` | Kernelgröße (ungerade; steuert bei OpenFocus A/B die Skala der Fokusantwort; C hat keinen Radius) |
-| `--depth-smoothing VALUE` | Nur `openfocus_b`: Stärke der Tiefenglättung (Standard 1,2) |
-| `--blend-smoothing VALUE` | Nur `openfocus_a` / `openfocus_c`: Stärke der Mischungsglättung (Standard 2,0 für A, 3,0 für C) |
+| `--depth-smoothing VALUE` | Nur `openfocus_b`: Stärke der Tiefenglättung (Standard 1,44) |
+| `--blend-smoothing VALUE` | Nur `openfocus_a` / `openfocus_c`: Stärke der Mischungsglättung (Standard 2,0 für A, 3,6 für C) |
 | `--sharpen-output` | Mildes Unscharfmaskieren auf das Fusionsergebnis anwenden (standardmäßig aus) |
 | `--threads, -t` | Thread-Obergrenze; `0` = automatisch (Standard), positive Werte begrenzen die Parallelität |
 | `--resource-preference` | Ressourcenmodus: `balanced` (Standard), `responsive` oder `maximum` |

@@ -6,7 +6,7 @@ import cv2
 import numpy as np
 
 from utils.sorting import natural_sort_key
-from core.frame_storage import create_frame, store_frame
+from core.frame_storage import capture_scratch, create_frame, run_with_scratch, store_frame
 
 
 def _collect_images(input_source, *, normalize=True, should_cancel=None) -> List[np.ndarray]:
@@ -112,12 +112,13 @@ def _ordered_frame_results(count, produce, workers, should_cancel):
             _check_cancel(cancelled)
             yield index, produce(index, cancelled)
         return
+    scratch = capture_scratch()
     with ThreadPoolExecutor(max_workers=workers) as pool:
         window = deque()
         next_index = 0
         try:
             while next_index < min(workers, count):
-                window.append(pool.submit(produce, next_index, cancelled))
+                window.append(pool.submit(run_with_scratch, scratch, produce, next_index, cancelled))
                 next_index += 1
             index = 0
             while window:
@@ -137,7 +138,7 @@ def _ordered_frame_results(count, produce, workers, should_cancel):
                 index += 1
                 _check_cancel(cancelled)
                 if next_index < count:
-                    window.append(pool.submit(produce, next_index, cancelled))
+                    window.append(pool.submit(run_with_scratch, scratch, produce, next_index, cancelled))
                     next_index += 1
         finally:
             stop.set()

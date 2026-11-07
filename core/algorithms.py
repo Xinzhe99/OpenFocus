@@ -330,9 +330,9 @@ def registration_defaults(id):
 _K_GUIDED = ParameterSpec('kernel_size', 'label_kernel_guided', 31, 1, 51, 2, odd=True)
 _K_DCT = ParameterSpec('kernel_size', 'label_kernel_dct', 7, 1, 51, 2, odd=True)
 _K_GFG = ParameterSpec('kernel_size', 'label_kernel_gfg', 7, 1, 51, 2, odd=True)
-_K_OF = ParameterSpec('kernel_size', 'label_kernel_of', 11, 1, 21, 2, odd=True)
-_SM_B = ParameterSpec('depth_smoothing', 'label_depth_smoothing', 1.2, 0, 8, .2, 1)
-_SM_C = ParameterSpec('blend_smoothing', 'label_blend_smoothing', 3.0, 0, 8, .2, 1)
+_K_OF = ParameterSpec('kernel_size', 'label_kernel_of', 17, 1, 21, 2, odd=True)
+_SM_B = ParameterSpec('depth_smoothing', 'label_depth_smoothing', 1.44, 0, 8, .2, 2)
+_SM_C = ParameterSpec('blend_smoothing', 'label_blend_smoothing', 3.6, 0, 8, .2, 1)
 _LEVELS = ParameterSpec('N', 'compare_levels', 4, 1, 6)
 _MODE = ParameterSpec('mode', 'label_ai_mode', 'soft', choices=('soft', 'hard'), choice_labels=('radio_ai_soft', 'radio_ai_hard'))
 _ADAPTER = 'core.algorithm_adapters:'

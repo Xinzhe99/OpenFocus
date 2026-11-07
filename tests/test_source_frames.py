@@ -127,6 +127,110 @@ def test_pathless_result_arrays_remain_supported():
     np.testing.assert_array_equal(materialized[0], image)
 
 
+def test_materialize_parallel_window_preserves_order_and_progress(tmp_path, monkeypatch):
+    import threading
+    from types import SimpleNamespace
+    from core import frame_storage
+    from core import resource_policy
+
+    paths = [_jpeg(tmp_path, f'parallel-{i}.jpg', (8, 10)) for i in range(4)]
+    frames = [sources.scan_source(path, header_only=True)[0] for path in paths]
+    monkeypatch.setattr(resource_policy, 'plan_execution', lambda *a, **k:
+                        SimpleNamespace(workers=2, max_in_flight=2))
+    second_started = threading.Event()
+    lock = threading.Lock()
+    active = peak = 0
+
+    def decode(frame):
+        nonlocal active, peak
+        index = paths.index(frame.path)
+        assert frame_storage._scratch.get() is not None
+        with lock:
+            active += 1
+            peak = max(peak, active)
+        try:
+            if index == 0:
+                assert second_started.wait(5)
+            elif index == 1:
+                second_started.set()
+            return np.full(frame.shape, index, frame.dtype)
+        finally:
+            with lock:
+                active -= 1
+
+    monkeypatch.setattr(sources, 'resolve_frame', decode)
+    progress = []
+    result = sources.materialize_frames(frames, progress_callback=lambda done, total:
+                                        progress.append((done, total)))
+    assert peak == 2
+    assert progress == [(1, 4), (2, 4), (3, 4), (4, 4)]
+    assert all(isinstance(image, np.memmap) and np.all(image == index)
+               for index, image in enumerate(result))
+
+
+def test_materialize_waits_for_running_decode_after_failure(tmp_path, monkeypatch):
+    import threading
+    from types import SimpleNamespace
+    from core import resource_policy
+
+    paths = [_jpeg(tmp_path, f'failure-{i}.jpg', (8, 10)) for i in range(2)]
+    frames = [sources.scan_source(path, header_only=True)[0] for path in paths]
+    monkeypatch.setattr(resource_policy, 'plan_execution', lambda *a, **k:
+                        SimpleNamespace(workers=2, max_in_flight=2))
+    started = threading.Event()
+    completed = threading.Event()
+    release = threading.Event()
+
+    def decode(frame):
+        if frame is frames[0]:
+            started.set()
+            assert release.wait(5)
+            completed.set()
+            return np.zeros(frame.shape, frame.dtype)
+        assert started.wait(5)
+        threading.Timer(0.1, release.set).start()
+        raise ValueError('decode failure')
+
+    monkeypatch.setattr(sources, 'resolve_frame', decode)
+    with pytest.raises(ValueError, match='decode failure'):
+        sources.materialize_frames(frames)
+    assert completed.is_set()
+
+
+def test_materialize_cancellation_waits_for_running_decode(tmp_path, monkeypatch):
+    import threading
+    from types import SimpleNamespace
+    from core import resource_policy
+    from core.registration import RegistrationCancelled
+
+    paths = [_jpeg(tmp_path, f'cancel-{i}.jpg', (8, 10)) for i in range(2)]
+    frames = [sources.scan_source(path, header_only=True)[0] for path in paths]
+    monkeypatch.setattr(resource_policy, 'plan_execution', lambda *a, **k:
+                        SimpleNamespace(workers=2, max_in_flight=2))
+    cancelled = threading.Event()
+    released = threading.Event()
+    completed = threading.Event()
+    started = threading.Barrier(2)
+
+    def decode(frame):
+        started.wait(timeout=5)
+        if frame is frames[0]:
+            cancelled.set()
+            threading.Timer(0.1, released.set).start()
+        assert released.wait(5)
+        if frame is frames[1]:
+            completed.set()
+        return np.zeros(frame.shape, frame.dtype)
+
+    monkeypatch.setattr(sources, 'resolve_frame', decode)
+    progress = []
+    with pytest.raises(RegistrationCancelled):
+        sources.materialize_frames(frames, cancelled.is_set,
+                                   progress_callback=lambda *args: progress.append(args))
+    assert completed.is_set()
+    assert not progress
+
+
 def test_manifest_opens_before_remaining_previews(tmp_path, monkeypatch):
     paths = [_jpeg(tmp_path, f'{index}.jpg', (90, 120)) for index in range(4)]
     original = Image.Image.thumbnail
@@ -739,3 +843,57 @@ def test_materialization_discards_last_frame_after_cancellation(tmp_path, monkey
     monkeypatch.setattr(sources, 'store_frame', store)
     mapped = sources.materialize_frames([frame])[0]
     np.testing.assert_array_equal(mapped, decode(path))
+
+
+def test_materialization_rejects_known_stack_before_decode(monkeypatch, tmp_path):
+    from core import frame_storage
+    paths = [_jpeg(tmp_path, f'early-{i}.jpg', (30, 40)) for i in range(2)]
+    frames = [sources.scan_source(path, header_only=True)[0] for path in paths]
+    monkeypatch.setattr(frame_storage, '_storage_directory', str(tmp_path))
+    monkeypatch.setattr(frame_storage, '_space', lambda path: (None, 0, frames[0].nbytes))
+    def forbidden(*args, **kwargs):
+        raise AssertionError('decoded before stack admission')
+    monkeypatch.setattr(sources.SourceFrame, 'full_resolution', forbidden)
+    with pytest.raises(frame_storage.ScratchSpaceError) as error:
+        sources.materialize_frames(frames, staging_bytes=10)
+    assert error.value.required == 2 * frames[0].nbytes + 10
+    assert not list(tmp_path.glob('openfocus-frame-*.bin'))
+
+
+def test_existing_maps_are_not_charged_as_new_allocations(monkeypatch, tmp_path):
+    from core import frame_storage
+    monkeypatch.setattr(frame_storage, '_storage_directory', str(tmp_path))
+    existing = frame_storage.store_frame(np.arange(16, dtype=np.uint8))
+    monkeypatch.setattr(frame_storage, '_space', lambda path: (None, 0, 20))
+    result = sources.materialize_frames([existing, np.zeros(10, np.uint8)], staging_bytes=10)
+    assert result[0] is existing
+    np.testing.assert_array_equal(result[1], np.zeros(10, np.uint8))
+
+
+def test_generator_is_not_consumed_before_processing(monkeypatch, tmp_path):
+    from core import frame_storage
+    monkeypatch.setattr(frame_storage, '_storage_directory', str(tmp_path))
+    first = np.arange(10, dtype=np.uint8)
+    stored = []
+    original = sources.store_frame
+    def record(image):
+        stored.append(True)
+        return original(image)
+    def frames():
+        yield first
+        assert stored, 'generator was exhausted before the first frame was stored'
+        yield first
+    monkeypatch.setattr(sources, 'store_frame', record)
+    mapped = sources.materialize_frames(frames())
+    assert len(mapped) == 2
+    np.testing.assert_array_equal(mapped[1], first)
+
+
+def test_scratch_headers_skip_unreadable_and_propagate_cancel(monkeypatch, tmp_path):
+    from core.registration import RegistrationCancelled
+    path = _jpeg(tmp_path, shape=(20, 30))
+    headers = sources.scratch_source_headers([path, str(tmp_path / 'missing.jpg')])
+    assert len(headers) == 1 and headers[0].shape == (20, 30, 3)
+    monkeypatch.setattr(sources, 'scan_source', lambda *args, **kwargs: (_ for _ in ()).throw(InterruptedError()))
+    with pytest.raises(RegistrationCancelled):
+        sources.scratch_source_headers([path])
