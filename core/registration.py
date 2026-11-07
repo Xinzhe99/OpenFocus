@@ -22,7 +22,6 @@ python Registration.py --mode both
 
 import argparse
 import concurrent.futures
-from itertools import chain
 from collections import deque
 from contextlib import contextmanager
 import time
@@ -482,357 +481,93 @@ def _save_registration(images, output_path, filenames, should_cancel):
 
 
 
-# ========== OpenFocus 对齐：有界相似变换（平移+旋转+缩放） ==========
+def _report_helicon_transform(transform, reference_index):
+    if alignment_report.get() is None:
+        return
+    _report_alignment(transform.source_index, 'openfocus',
+        'reference' if transform.source_index == reference_index else
+        'fallback' if transform.failure else 'aligned',
+        transform=np.linalg.inv(transform.inverse_matrix),
+        detector_parameters=list(transform.f8), pair_parameters=list(transform.pair_f8),
+        reference_index=transform.reference_index, rounds=transform.rounds,
+        **({'reason': transform.failure} if transform.failure else {}))
 
-_OF_EST_WIDTH = 480  # Maximum long edge used for transform estimation.
-_OF_MAX_SHIFT_RATIO = 0.08
-# Independent bounds for rotation and magnification.
-_OF_MAX_ROTATION_DEG = 8.0
-_OF_MAX_SCALE_DELTA = 0.05
 
-
-def _of_gray_float(img, should_cancel=None, *, average_two=False):
-    """Preserve fractional luminance without a full RGB float allocation."""
-    gray = np.empty(img.shape[:2], dtype=np.float32)
-    take = min(img.shape[2], 3) if img.ndim == 3 else 1
-    weights = np.array([0.114, 0.587, 0.299], np.float32)[:take]
-    if take == 2 and average_two:
-        weights[:] = 0.5
-    for y in range(0, img.shape[0], 128):
+def apply_alignment_plan(sources, plan, *, defer_warps=False, should_cancel=None):
+    """Apply a validated cached or fresh plan, preserving original source order."""
+    from functools import partial
+    from core.hf9_alignment import apply_alignment, alignment_resolution_bytes
+    from core.source_frames import resolve_frame
+    plan.validate_sources(sources, should_cancel=should_cancel)
+    for transform in plan.transforms:
         _check_cancel(should_cancel)
-        strip = img[y:y + 128]
-        if img.ndim == 2:
-            gray[y:y + 128] = strip
-        elif take == 1:
-            gray[y:y + 128] = strip[:, :, 0]
+        _report_helicon_transform(transform, plan.reference_index)
+    h, w = sources[0].shape[:2]
+    left, top, right, bottom = 0, 0, w, h
+    if grouped_crop_offsets.get() is not None:
+        bounds = [transform.valid_bounds for transform in plan.transforms]
+        left = max(bound[0] for bound in bounds)
+        top = max(bound[1] for bound in bounds)
+        right = min(bound[2] for bound in bounds)
+        bottom = min(bound[3] for bound in bounds)
+        if top >= bottom or left >= right:
+            raise ValueError('Registration transforms have no common valid crop')
+        _record_grouped_crop(top, bottom, left, right)
+    result = []
+    for source, transform in zip(sources, plan.transforms):
+        _check_cancel(should_cancel)
+        processor = partial(apply_alignment, transform=transform, should_cancel=should_cancel)
+        if defer_warps:
+            from core.source_frames import process_frame, crop_frame
+            aligned = process_frame(source, processor, should_cancel=should_cancel,
+                                    scratch_bytes=alignment_resolution_bytes(source))
+            h, w = source.shape[:2]
+            if (left, top, right, bottom) != (0, 0, w, h):
+                aligned = crop_frame(aligned, left, top, right - left, bottom - top,
+                                     should_cancel=should_cancel)
         else:
-            converted = cv2.transform(strip[:, :, :take].astype(np.float32),
-                                      weights.reshape(1, -1))
-            gray[y:y + 128] = converted.reshape(strip.shape[:2])
-    return gray
+            image = processor(resolve_frame(source))
+            aligned = store_frame(image[top:bottom, left:right])
+        result.append(aligned)
+    _check_cancel(should_cancel)
+    return result
 
 
-def _of_lowpass_mean(img, should_cancel=None):
-    """Mean of the sigma-32 low-pass, without constructing a blurred frame.
-
-    A separable Gaussian's spatial mean is a weighted sum of the input. The
-    reflected borders contribute unequal weights; retaining them preserves
-    calibration even when bright objects touch a frame edge.
-    """
-    sigma = 32.0
-    radius = round(sigma * 4)
-    kernel = cv2.getGaussianKernel(radius * 2 + 1, sigma, cv2.CV_64F)[:, 0]
-
-    def weights(length):
-        indices = np.pad(np.arange(length), radius,
-                         mode='reflect' if length > 1 else 'edge')
-        result = np.zeros(length, np.float64)
-        for offset, coefficient in enumerate(kernel):
-            _check_cancel(should_cancel)
-            np.add.at(result, indices[offset:offset + length], coefficient / length)
-        return result
-
-    wy, wx = weights(img.shape[0]), weights(img.shape[1])
-    total = 0.0
-    for y in range(0, img.shape[0], 128):
-        _check_cancel(should_cancel)
-        gray = _of_gray_float(img[y:y + 128], should_cancel, average_two=True)
-        rows = np.sum(gray * wx, axis=1, dtype=np.float64)
-        total += float(np.sum(rows * wy[y:y + 128], dtype=np.float64))
-    return total
-
-
-def _of_gray_est(img, est_width, should_cancel=None):
-    """灰度 + 降采样到估计分辨率（估计分辨率以长边计）。
-
-    这里曾额外减去 σ2.5 低通（函数旧名 `_of_gray_hp`）。高通会丢掉
-    低频，而"清晰 vs 失焦"帧对的相关性主要就在低频——实测 σ11 失焦时，
-    高通输入把 16 px 位移估成误差 22 px，普通灰度误差 0.27 px。旋转/
-    缩放的判别评分同样不依赖高频。
-    """
-    g = _of_gray_float(img, should_cancel)
-    h, w = g.shape[:2]
-    if max(h, w) > est_width:
-        s = est_width / float(max(h, w))
-        g = cv2.resize(g, (max(16, int(round(w * s))),
-                           max(16, int(round(h * s)))),
-                       interpolation=cv2.INTER_AREA)
-    return np.ascontiguousarray(g, np.float32)
-
-
-def _of_estimate_similarity(ref_est, cur_est, shift_ratio=0.08,
-                            rot_bound=8.0, scale_range=(0.95, 1.05),
-                            should_cancel=None):
-    """Estimate a bounded similarity transform with the sampled detector."""
-    from core.openfocus_align import estimate
-
-    return estimate(ref_est, cur_est, shift_ratio, rot_bound, scale_range,
-                    lambda: _check_cancel(should_cancel))
-
-
-def _align_openfocus_impl(input_source, output_path=None, img_filenames=None,
-                          downscale_width=None, thread_count: int = 4,
-                          should_cancel=None, equalize_brightness=True,
-                          max_shift_ratio=None, brightness_reference="first",
-                          max_rotation_deg=None, max_scale_delta=None,
-                          failure_policy='continue', reference_frame=1):
-    """
-    OpenFocus 快速对齐：有界相似变换（平移+旋转+缩放）+ 亮度均衡 + 自动裁边。
-
-    Geometry uses the selected frame as its anchor. A bounded sampled-difference
-    grid estimates translation, rotation and scale; the common valid region
-    is cropped after brightness equalization and warping.
-    """
-    if max_shift_ratio is None:
-        max_shift_ratio = _OF_MAX_SHIFT_RATIO
-    if max_rotation_deg is None:
-        max_rotation_deg = _OF_MAX_ROTATION_DEG
-    if max_scale_delta is None:
-        max_scale_delta = _OF_MAX_SCALE_DELTA
-    if img_filenames is None and isinstance(input_source, str):
-        valid_exts = {'.jpg', '.jpeg', '.jpe', '.jfif', '.png', '.bmp', '.tif', '.tiff', '.webp'}
-        img_paths = sorted(
-            (os.path.join(input_source, f) for f in os.listdir(input_source)
-             if os.path.splitext(f)[1].lower() in valid_exts),
-            key=_image_sort_key
-        )
-        images = []
-        for path in img_paths:
-            img = cv2.imdecode(np.fromfile(path, dtype=np.uint8), cv2.IMREAD_UNCHANGED)
-            images.append(apply_exif_orientation(path, img) if img is not None else None)
-        img_filenames = [os.path.basename(path) for path in img_paths]
-    else:
-        images = input_source
+def _align_helicon_impl(input_source, output_path=None, img_filenames=None, *,
+                        should_cancel=None, max_shift_ratio=.05, failure_policy='continue',
+                        reference_frame=1, rotation=0., magnification=3.,
+                        defer_warps=False, plan_callback=None):
+    """Verified HF9 wide detector; no alternate estimator or native fit."""
+    from core.hf9_alignment import estimate_alignment_plan, AlignmentEstimationError
+    images = input_source
+    if isinstance(input_source, str):
+        from core.source_frames import scratch_source_headers
+        extensions = {'.jpg', '.jpeg', '.jpe', '.jfif', '.png', '.bmp', '.tif', '.tiff', '.webp'}
+        paths = sorted((os.path.join(input_source, name) for name in os.listdir(input_source)
+                        if os.path.splitext(name)[1].lower() in extensions), key=_image_sort_key)
+        images = scratch_source_headers(paths, should_cancel)
+        img_filenames = [os.path.basename(path) for path in paths]
     if images is None or not len(images):
-        return images if images is not None else []
-    if not 1 <= reference_frame <= len(images):
-        raise ValueError(f'OpenFocus reference frame {reference_frame} is outside the stack of {len(images)} frames')
-    if len(images) < 2:
-        _report_reference('openfocus')
-        return images
+        return []
+    try:
+        plan = estimate_alignment_plan(images, max_shift_ratio=max_shift_ratio,
+            reference_frame=reference_frame, rotation=rotation, magnification=magnification,
+            should_cancel=should_cancel,
+            failure_policy=failure_policy)
+    except AlignmentEstimationError as error:
+        for transform in getattr(error, 'completed_transforms', ()):
+            _report_helicon_transform(transform, reference_frame - 1)
+        _report_alignment(getattr(error, 'frame_index', None), 'openfocus', 'failed', reason=str(error))
+        raise
+    if plan_callback is not None:
+        plan_callback(plan)
+    result = apply_alignment_plan(images, plan, defer_warps=defer_warps, should_cancel=should_cancel)
+    if output_path:
+        from core.source_frames import resolve_frame
+        _save_registration((resolve_frame(frame) for frame in result), output_path,
+                           img_filenames, should_cancel)
+    return result
 
-    n = len(images)
-    h, w = images[0].shape[:2]
-    max_shift = (w * max_shift_ratio, h * max_shift_ratio)
-    est_width = min(_OF_EST_WIDTH, max(320, w))
-
-    # Brightness and geometry have independent reference frames.
-    ref_idx = reference_frame - 1
-    ref_low_mean = 1.0
-    if equalize_brightness:
-        bright_frame = images[-1] if brightness_reference == "last" else images[0]
-        ref_low_mean = _of_lowpass_mean(bright_frame, should_cancel) or 1.0
-    gains = [1.0] * n
-
-    ref_est = _of_gray_est(images[ref_idx], est_width, should_cancel)
-    eh, ew = ref_est.shape[:2]
-
-    def _prepare(i):
-        """Everything about frame i that does not depend on the state machine.
-
-        Greyscale, the σ32 brightness low-pass and the estimation-resolution
-        grey are per-frame and read-only, so they are computed for a bounded
-        window in parallel. The acceptance logic below still consumes the
-        results strictly in frame order.
-        """
-        gain = 1.0
-        if equalize_brightness:
-            cur_mean = _of_lowpass_mean(images[i], should_cancel)
-            if cur_mean > 1e-3:
-                gain = float(np.clip(ref_low_mean / cur_mean, 0.5, 2.0))
-        return i, gain, _of_gray_est(images[i], est_width, should_cancel)
-
-    def _compose_full(ncc_pack):
-        """估计分辨率下的校正参数 → 全分辨率 3x3（warpAffine 直接可用）。
-
-        warpAffine 的 M 是内容正向变换（实测：[I|+10] 把内容右移 10px；
-        getRotationMatrix2D(θ,s) 的搜索语义已在网格中验证）。完整校正 =
-        先施加旋转/缩放 Rs，再把内容平移 −d（d 为估计器的残差位移）。
-        矩阵复合：M_total = [I|−d]·Rs_full；d 从估计分辨率按
-        比例换算回全分辨率。
-        """
-        _ncc, theta, scale, dx, dy = ncc_pack
-        Rs = np.eye(3)
-        Rs[:2, :] = cv2.getRotationMatrix2D((w / 2.0, h / 2.0), theta, scale)
-        sx, sy = ew / float(w), eh / float(h)
-        d_full = np.array([-dx / sx, -dy / sy])
-        M = np.eye(3)
-        M[:2, :2] = Rs[:2, :2]
-        M[:2, 2] = d_full + Rs[:2, 2]
-        return M
-
-    # 死区：低于这些分量视为无运动（固定机位栈的噪声保护）
-    dead_t, dead_rot, dead_scale = 0.15, 0.05, 1e-3
-    min_ncc = 0.06          # 低于此视为无可靠对应关系
-    chain_ncc = 0.10        # 对参考帧置信不足 → 链到上一帧重估
-    # Keep the fine search narrow; probe a wider range when its score is weak
-    # or rotation touches the bound, so out-of-range motion can be rejected.
-    search_shift = min(3.0 * max_shift_ratio, max(0.5, max_shift_ratio))
-    search_rotation = 1.5 * max_rotation_deg
-
-    def _estimate(reference, current):
-        scale_range = (1.0 - max_scale_delta, 1.0 + max_scale_delta)
-        estimate = _of_estimate_similarity(
-            reference, current, shift_ratio=max_shift_ratio,
-            rot_bound=max_rotation_deg, scale_range=scale_range,
-            should_cancel=should_cancel)
-        at_rotation_limit = (max_rotation_deg > 0 and
-                             abs(estimate[1]) >= 0.95 * max_rotation_deg)
-        if estimate[0] < 0.9 or at_rotation_limit:
-            wider = _of_estimate_similarity(
-                reference, current, shift_ratio=search_shift,
-                rot_bound=search_rotation, scale_range=scale_range,
-                should_cancel=should_cancel)
-            if wider[0] > estimate[0] + 0.05:
-                estimate = wider
-        return estimate
-
-    corrections = [None] * n  # cur→ref 的校正矩阵；参考帧为 None
-    corrections[ref_idx] = np.eye(3, dtype=np.float64)
-    report_entries = {} if alignment_report.get() is not None else None
-    if report_entries is not None:
-        report_entries[ref_idx] = ('reference', {'transform': corrections[ref_idx]})
-
-    def flush_report():
-        if report_entries is not None:
-            for frame_index in sorted(report_entries):
-                status, details = report_entries[frame_index]
-                _report_alignment(frame_index, 'openfocus', status, **details)
-    prev_est = ref_est
-    print("Aligning %d images using OpenFocus (reference: frame %d)..." % (n, reference_frame))
-    order = chain((ref_idx,), range(ref_idx - 1, -1, -1), range(ref_idx + 1, n))
-    with _bounded_registration_map(_prepare, order, max(1, int(thread_count)),
-                                   should_cancel) as prepared:
-        for i, gain, cur_est in prepared:
-            _check_cancel(should_cancel)
-            # Brightness calibration also applies to the geometric reference.
-            gains[i] = gain
-            if i == ref_idx:
-                continue
-            if i == ref_idx + 1:
-                prev_est = ref_est
-
-            est = _estimate(ref_est, cur_est)
-            chained = False
-            if est[0] < chain_ncc and abs(i - ref_idx) >= 2:
-                # Retry against the adjacent frame in the direction of the anchor.
-                est2 = _estimate(prev_est, cur_est)
-                if est2[0] > est[0] + 0.02:
-                    previous_index = i + 1 if i < ref_idx else i - 1
-                    M = corrections[previous_index] @ _compose_full(est2)
-                    chained = True
-                    est = (est2[0],) + est[1:]
-            if not chained:
-                M = _compose_full(est)
-
-            ncc = est[0]
-            if ncc < min_ncc:
-                M = np.eye(3)
-            # 平移分量取“画面中心的净位移”：矩阵的 M[:,2] 还包含绕中心旋转/缩放
-            # 诱导的项（480×360 上 2.5° 就有 ~8-11px），直接拿它判上限会把合法
-            # 的旋转校正误杀成“位移超限”。t_c = b + (A − I)·c。
-            A2 = M[:2, :2]
-            tc = M[:2, 2] + A2 @ np.array([w / 2.0, h / 2.0]) - np.array(
-                [w / 2.0, h / 2.0])
-            tx = float(tc[0])
-            ty = float(tc[1])
-            # 位移上限：超限**放弃该帧对齐**——较大的位移估计不可靠，
-            # 旧的"钳制到上限"会把大位移校正成半错位，还让有效区交集被裁掉
-            # 一大块（25% 上限意味着单边最多裁 1/4 画面）。
-            over = (abs(tx) > max_shift[0] or abs(ty) > max_shift[1])
-            # 旋转和放大率各自独立设限，超出时放弃整帧而不是半校正。
-            rot_deg = float(np.degrees(np.arctan2(M[1, 0], M[0, 0])))
-            scale_now = float(np.sqrt(abs(M[0, 0] * M[1, 1] - M[0, 1] * M[1, 0])))
-            if (abs(rot_deg) > max_rotation_deg + 1e-6
-                    or abs(scale_now - 1.0) > max_scale_delta + 1e-6):
-                over = True
-            if failure_policy == 'fail' and (ncc < min_ncc or over):
-                reason = 'low detector quality' if ncc < min_ncc else 'motion outside limits'
-                if report_entries is not None:
-                    report_entries[i] = ('failed', {'reason': reason, 'quality': float(ncc),
-                                                   'reference_index': previous_index if chained else ref_idx,
-                                                   'chained': chained})
-                flush_report()
-                raise ValueError(f'OpenFocus alignment failed at frame {i + 1}: {reason} (detector quality {ncc:.2f})')
-            if over:
-                M = np.eye(3)
-                tx = ty = 0.0
-                rot_deg, scale_now = 0.0, 1.0
-            # 死区：整体运动可忽略 → 恒等（不产生裁边/插值损失）
-            if (abs(tx) < dead_t and abs(ty) < dead_t
-                    and abs(rot_deg) < dead_rot
-                    and abs(scale_now - 1.0) < dead_scale):
-                M = np.eye(3)
-            if report_entries is not None:
-                reason = ('low detector quality' if ncc < min_ncc else
-                          'motion outside limits' if over else None)
-                if chained and reason is None and report_entries[previous_index][0] == 'fallback':
-                    reason = 'reference alignment fell back'
-                details = {'quality': float(ncc), 'transform': M,
-                           'reference_index': previous_index if chained else ref_idx,
-                           'chained': chained}
-                if reason is not None:
-                    details['reason'] = reason
-                report_entries[i] = ('fallback' if reason else 'aligned', details)
-            corrections[i] = M
-            prev_est = cur_est
-            print("  frame %d/%d: rot %+.2f° scale %.3f shift (%+.2f, %+.2f)"
-                  " detector quality %.2f%s%s" % (i + 1, n, rot_deg, scale_now, tx, ty, ncc,
-                                     " (chained)" if chained else "",
-                                     " (DROPPED: outside limits)" if over else
-                                     " (DROPPED: low detector quality)" if ncc < min_ncc else ""))
-    flush_report()
-
-    def _apply_gain(img, gain, *, inplace=False):
-        if gain == 1.0:
-            return img
-        result = img if inplace else create_frame(img.shape, img.dtype)
-        limit = 65535 if img.dtype == np.uint16 else 255
-        for y in range(0, img.shape[0], 128):
-            _check_cancel(should_cancel)
-            strip = img[y:y + 128]
-            if img.ndim == 3 and img.shape[2] == 4:
-                result[y:y + 128, :, 3] = strip[:, :, 3]
-                target = result[y:y + 128, :, :3]
-                strip = strip[:, :, :3]
-            else:
-                target = result[y:y + 128]
-            color = strip.astype(np.float32)
-            color *= gain
-            np.clip(color, 0, limit, out=color)
-            target[...] = color
-        return result
-
-    def _warp(args):
-        idx, img, M, gain = args
-        _check_cancel(should_cancel)
-        # OpenCV ignores dst when its shape differs from the output canvas.
-        warped = create_frame((h, w) + img.shape[2:], img.dtype)
-        cv2.warpAffine(img, M[:2, :], (w, h), dst=warped,
-                       flags=cv2.INTER_LANCZOS4 | cv2.WARP_FILL_OUTLIERS,
-                       borderMode=cv2.BORDER_REFLECT)
-        _check_cancel(should_cancel)
-        return idx, _apply_gain(warped, gain, inplace=True)
-
-    aligned = [None] * n
-    aligned[ref_idx] = _apply_gain(images[ref_idx], gains[ref_idx])
-    warp_args = ((i, images[i], corrections[i], gains[i])
-                 for i in range(n) if i != ref_idx)
-    with _bounded_registration_map(_warp, warp_args, max(1, int(thread_count)),
-                                   should_cancel) as results:
-        for idx, warped in results:
-            aligned[idx] = warped
-
-    # corrections map source coordinates into the output canvas.
-    top, bottom, left, right = _compute_valid_region_from_transforms(
-        corrections, (h, w), margin=0 if min(h, w) <= 4 else 2)
-    _record_grouped_crop(top, bottom, left, right)
-    if top >= bottom or left >= right:
-        raise ValueError("Registration transforms have no common valid crop")
-    aligned = [img[top:bottom, left:right] for img in aligned]
-
-    _save_registration(aligned, output_path, img_filenames, should_cancel)
-    return aligned
 
 # ========== ECC对齐算法实现（高精度） ==========
 
@@ -1301,7 +1036,7 @@ class ImageRegistration:
     
     def __init__(self, method='homography', downscale_width=1024,
                  max_shift_ratio=None, brightness_reference='first',
-                 use_gpu=False, parameters=None):
+                 use_gpu=False, parameters=None, *, defer_warps=False):
         from core.algorithms import (alignment_steps, registration_parameter_specs,
                                      resolve_registration_parameters)
         self.method = method
@@ -1316,6 +1051,8 @@ class ImageRegistration:
         self.downscale_width = int(downscale_width) if downscale_width is not None else 1024
         self.brightness_reference = brightness_reference if brightness_reference in ('first', 'last') else 'first'
         self.use_gpu = bool(use_gpu)
+        self.defer_warps = bool(defer_warps)
+        self.alignment_plan = None
     
     def process(self, 
                 input_source: Union[str, List[np.ndarray]], 
@@ -1339,6 +1076,15 @@ class ImageRegistration:
 
         with heavy_job(should_cancel), scratch_directory():
             _check_cancel(should_cancel)
+            self.alignment_plan = None
+            if self.steps == ('openfocus',):
+                from core.algorithms import get_registration, resolve_runner
+                sources = input_source if input_source is not None else []
+                if not isinstance(sources, str) and not hasattr(sources, '__len__'):
+                    sources = tuple(sources)
+                return resolve_runner(get_registration('openfocus').runner)(self, sources,
+                    thread_count=thread_count, should_cancel=should_cancel,
+                    output_path=output_path, **self.parameters)
             filenames = None
             images = input_source
             if isinstance(input_source, str):

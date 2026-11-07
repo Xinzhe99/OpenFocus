@@ -217,3 +217,136 @@ from core.multi_focus_fusion import MultiFocusFusion
 优先:①解码与融合重叠(有界队列,消费者不再单独落盘 128MB——直接喂融合窗口);
 ②融合帧级并行 + float32/in-place(对齐 FusionStreaming agent 的 bounded activity 工作);
 ③复测当前 HEAD 的融合基线。打开/默认参数两项已完成,不要再动。
+
+## 9. E5 registration/producer cutover (2026-11-07)
+
+The measurements and remaining gaps above describe the earlier pipeline. The
+OpenFocus A/B/C bridge now keeps original `SourceFrame` descriptors for fresh
+`openfocus` registration. GUI renders (including alignment-only publication),
+CLI runs, comparison alignment and batch stacks opt into
+`ImageRegistration(defer_warps=True)`. Generic registration and preview paths
+retain their eager array contract. Registration estimates an immutable plan
+sequentially; it does not build an aligned full-stack staging generation.
+
+Each deferred aligned frame retains its source and resolves decode, source
+validation and warp inside the existing admitted fusion producer. ROI crops
+retain that chain and its full-image workspace even when the requested crop
+is small. Published GUI sources and CLI depth inputs remain repeatable
+descriptors, preserve uint8/uint16 and calibration metadata, and recheck source
+fingerprints on later resolution. Batch aligned exports resolve one descriptor
+at the actual file-writing boundary. Existing producer cancellation joins
+remain in the fusion backends; cancellation after decode also prevents a
+subsequent processed-frame warp from starting.
+
+`process_frame(..., scratch_bytes=...)` declares the additional workspace of
+one processing step. `frame_resolution_bytes` adds all nested processing
+workspace to native decode/encoded-input scratch. E4 supplies warp-only
+`alignment_resolution_bytes`; view-only crops and alpha validation add zero
+workspace. Exposure gain accounts for its output and simultaneous float/integer
+row scratch. Resolution admission checks the combined descriptor workspace,
+and the existing A/B/C producer planner charges the same total per worker.
+
+GUI disk reuse calls `load_alignment_plan(folder, filenames, sources, *,
+identity=None, should_cancel=None)` and `save_alignment_plan(folder, filenames,
+plan, sources, *, identity=None, should_cancel=None)`. Warm reuse calls
+`apply_alignment_plan(sources, plan, *, defer_warps=True, should_cancel=None)`;
+cold registration exposes `ImageRegistration.alignment_plan`. Cache identity
+includes effective registration parameters/reference, source revision, load
+scale, requested downscale and shape. E4 additionally checks source order,
+file fingerprints, calibration and plan metadata. This path never invokes
+the aligned-PNG cache or hashes/materializes an entire source stack before
+fusion. Generic registrations continue using the existing array cache.
+
+Sensor-cleanup descriptors remain deferred through cold registration, but
+disk plan reuse is disabled for those requests because arbitrary processing
+callables have no stable serializable identity. In-memory reuse still retains
+their source descriptors. Unsupported transparent registration restrictions
+remain enforced; supported no-alignment alpha crops keep their original source
+and mask semantics.
+
+Integration fixtures in `tests/test_hf9_streaming.py` cover GUI cold/warm plan
+reuse, reference/revision/source invalidation and corrupt cache recovery;
+CLI A/B/C with both integer bit depths and retained depth sources; comparison
+ROI, batch aligned exports, sensor cleanup, deferred/eager application equality,
+source lifetime, nested workspace accounting and decode-to-warp cancellation.
+These new fixtures have not been run in the implementation branch. Parent
+integration owns the regression suite, real application checks and performance
+measurements; no new throughput or peak-memory measurement is claimed here.
+
+`frame_source_cache_bytes(frame)` reports the full decoded `SourceFrame` retained
+by `SOURCE_CACHE` underneath any number of processed frames or ROI crops. The
+fusion admission estimate uses this value for future cache growth, rather than
+the cropped descriptor's byte size. Non-file-backed arrays contribute zero new
+source-cache bytes. Comparison-alignment descriptors also retain an event-based
+cancellation callback, so resolving a retained source after Qt deletes its
+completed alignment worker does not call the destroyed native QThread.
+
+Admission charges future cache growth through
+`source_cache_growth_bytes(frames)`, bounded by remaining cache capacity and
+full decoded source sizes beneath ROI crops. Existing `SOURCE_CACHE.bytes`
+are already excluded from the operating system's available RAM and are not
+reserved a second time. Cold, partially filled and full cache cases have
+regression fixtures in `tests/test_hf9_streaming.py` (not run in this branch).
+
+Native producer admission also accounts for full-source int32 code storage and
+the float32 resize input for every input dtype, including uint8. A small
+requested output cannot reduce those source-sized allocations. The resize
+envelope includes overlapping float32 resized pixels and the integer result,
+in addition to source decode/warp scratch and future source-cache growth.
+The general producer envelope remains 80 bytes per output pixel until the
+optimized numerical kernels' allocation footprints are established. The
+parent's representative two-frame 4000² method B profile measured 25 transient
+RAM allocations, zero transient mappings and 0.061 seconds in allocation out
+of 18.591 seconds total. That evidence does not justify changing the transient
+cap or resource-probe behavior; kernel and conversion work dominate that run.
+
+
+## 10. Engineering cutover: S1–S3
+
+Native A/B/C descriptors enter the existing ordered producer window without
+pre-materializing the stack. `store_frame` now makes independent RAM snapshots
+within the shared transient budget, spilling to the existing admitted disk
+mapping when needed. `prefer_ram=False` explicitly requests disk storage.
+Snapshots retain their dtype, strided-source pixels and independence from
+later source mutations. Views retain their allocation's byte reservation.
+
+`FRAME_RAM_BUDGET_BYTES` caps combined snapshots and numerical RAM scratch at
+384 MiB; the current resource-policy budget can lower that ceiling. This is a
+buffer-storage limit, excluding decoder workspaces and caller-owned input
+arrays. Producer admission charges decoder/warp workspace and future native
+cache growth separately. `HF9_MAX_IN_FLIGHT_FRAMES` bounds the source-order
+window at two, even when more cores or source frames are available.
+
+S1 (512² × 4, C, one thread) measured 0.020 s load, 0.919 s fusion and
+114 MiB peak commit. After this initial smoke, the local launcher gained a
+Windows Job Object limiting its whole job to 512 MiB and one CPU. S2's 512²
+cases ran under those hard limits and measured:
+
+| Frames | Load seconds | Fusion seconds | Peak commit MiB |
+|---:|---:|---:|---:|
+| 2 | 0.018 | 0.912 | 111 |
+| 8 | 0.036 | 0.378 | 128 |
+
+These small cases do not establish large-stack throughput or a large-image
+process-memory ceiling. Large benchmarks remain suspended on the user's
+machine. Fourteen targeted snapshot/admission regressions passed under the
+same process limits.
+
+S3 retains B's depth pass, then resolves only sources used by the final depth
+band. Source fingerprints and processor checks still run for skipped inputs.
+C follows the verified online reference: each resolved source updates shared
+depth and its pyramid bands immediately; a separate collapse reads those
+accumulated bands without resolving sources again. External tile thresholds
+cannot split that state into independent domains. C smoothing controls the
+depth-map output.
+
+Both methods remain sample-exact against their verified reference functions.
+The supplied 512² HF9 stacks retain B's established ±1 results on S3/S4 and
+C's 100% S3/S4 results; C S1/S2 measure 95.87%/97.04% exact samples. These
+measurements do not establish general HF9 bit parity.
+
+The same isolated S3 harness measured C at 0.404 s / 111 MiB for 512² × 4 and
+0.398 s / 125 MiB for 512² × 8. Throughput uses the source TIFF payload
+(single-channel uint16): 4.95 and 10.06 MiB/s respectively. The 20 MiB/s
+throughput gate remains open for S4.
+

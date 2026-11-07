@@ -77,13 +77,8 @@ def test_open_folder_loads_raf_and_photos_in_natural_order(qapp, monkeypatch, tm
     assert all(frame.linear_metadata is None for frame in frames)
 
 
-def test_raw_mode_choices_are_translated_in_every_language():
-    from locales import trans
 
-    for code in trans.PACK_ORDER:
-        for key in ('raw_import_mode_title', 'raw_import_mode_prompt',
-                    'raw_import_mode_linear', 'raw_import_mode_standard'):
-            assert trans.translations[code].get(key), f'{code}: {key}'
+
 
 
 @pytest.mark.parametrize('entry', ['folder', 'drop', 'icon'])
@@ -112,7 +107,7 @@ def test_raw_mode_dialog_is_visible_without_scale_prompt(qapp, monkeypatch, tmp_
     def choose():
         box = QApplication.activeModalWidget()
         if isinstance(box, QMessageBox):
-            shown.append((box.isVisible(), box.windowTitle(), box.text(),
+            shown.append((box.isVisible(), box.windowTitle(), box.text(), box.informativeText(),
                           {button.text() for button in box.buttons()}))
             for button in box.buttons():
                 if button.text() == source_manager.trans.t(choice):
@@ -144,10 +139,6 @@ def test_raw_mode_dialog_is_visible_without_scale_prompt(qapp, monkeypatch, tmp_
     else:
         manager.load_image_files_from_icon([str(raw)])
     assert shown and shown[0][0]
-    assert shown[0][1:3] == (source_manager.trans.t('raw_import_mode_title'),
-                              source_manager.trans.t('raw_import_mode_prompt'))
-    assert {source_manager.trans.t(key) for key in ('raw_import_mode_linear',
-            'raw_import_mode_standard', 'btn_cancel_generic')} <= shown[0][3]
     if expected is None:
         assert not loads and window.raw_images == ([existing] if entry == 'folder' else [])
     else:

@@ -237,3 +237,113 @@ def save_aligned(folder: str, filenames: List[str], aligned_images: List[np.ndar
         for directory in (temporary, generation_path):
             if directory:
                 shutil.rmtree(directory, ignore_errors=True)
+
+
+PLAN_CACHE_VERSION = 1
+
+
+def _plan_signature(folder, filenames, sources, identity):
+    from core.source_frames import SourceFrame
+    from core.hf9_alignment import _source_context
+    if len(filenames) != len(sources):
+        raise ValueError('Alignment cache source count mismatch')
+    descriptions = []
+    for name, source in zip(filenames, sources):
+        # Arbitrary processors have no stable persistent identity. Their
+        # decoded digest is sufficient only for an in-memory plan.
+        if not isinstance(source, (np.ndarray, SourceFrame)):
+            raise ValueError('Processed sources cannot use the disk alignment plan cache')
+        path = os.path.join(folder, name)
+        stamp = os.stat(path)
+        descriptions.append({'name': name, 'size': stamp.st_size, 'mtime': stamp.st_mtime_ns,
+            'shape': list(source.shape), 'dtype': np.dtype(source.dtype).str,
+            'context': _source_context(source), 'path': os.fspath(getattr(source, 'path', '')),
+            'page': int(getattr(source, 'page', 0))})
+    request = {'version': PLAN_CACHE_VERSION, 'backend': 'hf9-wide4d-v1',
+               'sources': descriptions, 'identity': identity or {}}
+    encoded = json.dumps(request, sort_keys=True, separators=(',', ':'), allow_nan=False).encode('utf-8')
+    return hashlib.sha256(encoded).hexdigest()[:32]
+
+
+def _plan_payload(plan):
+    return json.dumps(plan.to_dict(), sort_keys=True, separators=(',', ':'), allow_nan=False).encode('utf-8')
+
+
+def _validate_plan_request(plan, identity):
+    parameters = (identity or {}).get('effective_params', {})
+    if ('max_shift_ratio' in parameters and float(parameters['max_shift_ratio']) != plan.max_shift_ratio
+            or 'reference_frame' in parameters and int(parameters['reference_frame']) - 1 != plan.reference_index
+            or 'rotation' in parameters and float(parameters['rotation']) != plan.rotation
+            or 'magnification' in parameters and float(parameters['magnification']) != plan.magnification
+            or 'failure_policy' in parameters and parameters['failure_policy'] != plan.failure_policy):
+        raise ValueError('Alignment plan parameters differ from the cache request')
+
+
+def load_alignment_plan(folder, filenames, sources, *, identity=None, should_cancel=None):
+    """Load and validate only immutable metadata; never decode N cached frames."""
+    from core.hf9_alignment import AlignmentPlan
+    _check_cancel(should_cancel)
+    if not folder or not os.path.isdir(folder):
+        return None
+    try:
+        signature = _plan_signature(folder, filenames, sources, identity)
+        path = os.path.join(cache_dir(folder), 'plans', signature, 'meta.json')
+        with _cache_access(should_cancel):
+            # A plan contains only small per-source records. Reject a corrupt
+            # manifest before allowing an unbounded JSON allocation.
+            if os.stat(path).st_size > max(65536, len(sources) * 32768):
+                return None
+            with open(path, encoding='utf-8') as handle:
+                manifest = json.load(handle)
+            if (manifest['version'] != PLAN_CACHE_VERSION or manifest['signature'] != signature
+                    or manifest['count'] != len(sources)):
+                return None
+            plan = AlignmentPlan.from_dict(manifest['plan'])
+            if hashlib.sha256(_plan_payload(plan)).hexdigest() != manifest['sha256']:
+                return None
+            _validate_plan_request(plan, identity)
+            plan.validate_sources(sources, should_cancel=should_cancel)
+            if signature != _plan_signature(folder, filenames, sources, identity):
+                return None
+            _check_cancel(should_cancel)
+            os.utime(path, None)
+            return plan
+    except (OSError, ValueError, TypeError, KeyError, IndexError, OverflowError):
+        return None
+
+
+def save_alignment_plan(folder, filenames, plan, sources, *, identity=None, should_cancel=None):
+    """Publish an atomic, checksummed metadata generation after source validation."""
+    _check_cancel(should_cancel)
+    if not folder or not os.path.isdir(folder):
+        return
+    temporary = None
+    try:
+        signature = _plan_signature(folder, filenames, sources, identity)
+        _validate_plan_request(plan, identity)
+        plan.validate_sources(sources, should_cancel=should_cancel)
+        manifest = {'version': PLAN_CACHE_VERSION, 'signature': signature,
+                    'count': len(sources), 'plan': plan.to_dict(),
+                    'sha256': hashlib.sha256(_plan_payload(plan)).hexdigest()}
+        directory = os.path.join(cache_dir(folder), 'plans', signature)
+        os.makedirs(directory, exist_ok=True)
+        with _cache_access(should_cancel):
+            fd, temporary = tempfile.mkstemp(prefix='.plan-', dir=directory)
+            with os.fdopen(fd, 'w', encoding='utf-8') as handle:
+                json.dump(manifest, handle, allow_nan=False)
+            plan.validate_sources(sources, should_cancel=should_cancel)
+            if signature != _plan_signature(folder, filenames, sources, identity):
+                return
+            _check_cancel(should_cancel)
+            os.replace(temporary, os.path.join(directory, 'meta.json'))
+            temporary = None
+    except (OSError, ValueError, TypeError, KeyError, OverflowError):
+        # Cache persistence is optional; source validation is repeated by
+        # apply_alignment before any plan can affect pixels.
+        pass
+    finally:
+        if temporary is not None:
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass

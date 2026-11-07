@@ -96,7 +96,17 @@ def test_insufficient_memory_and_existing_file(tmp_path, monkeypatch):
     assert existing.read_bytes() == b'keep'
 
 
-def test_dialog_starts_without_main_window(qapp):
+@pytest.fixture
+def clean_converter_format(qapp):
+    """Start each dialog test without a remembered converter format."""
+    from utils.settings_store import CONVERTER_FORMAT_KEY, get_settings
+    settings = get_settings()
+    settings.remove(CONVERTER_FORMAT_KEY)
+    yield settings
+    settings.remove(CONVERTER_FORMAT_KEY)
+
+
+def test_dialog_starts_without_main_window(qapp, clean_converter_format):
     from dialogs.batch_converter import BatchConverterDialog
     dialog = BatchConverterDialog()
     try:
@@ -111,7 +121,7 @@ def test_dialog_starts_without_main_window(qapp):
 
 
 @pytest.fixture
-def converter_dialog(qapp, monkeypatch):
+def converter_dialog(qapp, monkeypatch, clean_converter_format):
     from dialogs.batch_converter import BatchConverterDialog, ThumbnailWorker, ConverterWorker
     monkeypatch.setattr(ThumbnailWorker, 'start', lambda self: None)
     monkeypatch.setattr(ConverterWorker, 'start', lambda self: None)
@@ -139,6 +149,38 @@ def test_converter_format_risks_follow_the_selected_format(converter_dialog):
     assert 'PNG' in dialog.format_warning.text()
     dialog.format.setCurrentText('PNG')
     assert dialog.format_warning.isHidden()
+
+
+def test_converter_remembers_explicit_format_and_recovers_from_a_bad_value(
+        qapp, clean_converter_format):
+    from dialogs.batch_converter import BatchConverterDialog
+    from utils.settings_store import CONVERTER_FORMAT_KEY
+    first = BatchConverterDialog()
+    try:
+        first.format.setCurrentText('JPEG')
+    finally:
+        first.close()
+    second = BatchConverterDialog()
+    try:
+        assert second.format.currentText() == 'JPEG'
+        second.format.setCurrentText('DNG')
+    finally:
+        second.close()
+    third = BatchConverterDialog()
+    try:
+        assert third.format.currentText() == 'DNG'
+    finally:
+        third.close()
+    clean_converter_format.setValue(CONVERTER_FORMAT_KEY, 'JPEG2000')
+    fallback = BatchConverterDialog()
+    try:
+        assert fallback.format.currentText() == 'PNG'
+    finally:
+        fallback.close()
+
+
+
+
 
 
 def _converter_drop(qapp, target, urls):

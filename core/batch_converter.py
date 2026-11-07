@@ -1,6 +1,7 @@
 """Source-safe conversion with bounded resource admission and atomic outputs."""
 import os
 import errno
+import operator
 import shutil
 import tempfile
 from pathlib import Path
@@ -23,6 +24,10 @@ from locales import trans
 
 INPUT_EXTENSIONS = image_loader.RAW_FORMATS | {'.jpg', '.jpeg', '.jpe', '.jfif', '.png', '.tif', '.tiff', '.bmp', '.webp', '.heic', '.heif'}
 OUTPUT_EXTENSIONS = {'DNG': '.dng', 'JPEG': '.jpg', 'PNG': '.png', 'TIFF': '.tif', 'BMP': '.bmp', 'WebP': '.webp'}
+# Ordinary formats first: dict order is not a UI default, and DNG is a
+# RAW-only conversion target rather than the expected everyday output.
+DEFAULT_OUTPUT_FORMAT = 'PNG'
+OUTPUT_FORMAT_ORDER = ('PNG', 'JPEG', 'TIFF', 'BMP', 'WebP', 'DNG')
 
 
 
@@ -497,6 +502,35 @@ def _raw_preview_pages(tif, should_cancel=None):
             pending.append((iter(page.pages), depth + 1))
 
 
+def _tiff_tag_integers(tag):
+    """Normalize a TIFF offset/length tag to non-negative integers.
+
+    JPEG interchange tags are vectors per the TIFF specification: tifffile
+    returns a tuple even for the single-value tags common in NEF previews,
+    while other readers may return a scalar. Accept both shapes. A value that
+    is empty, negative, or not a true integer is malformed and must not be
+    turned into a plausible-looking container offset.
+    """
+    if tag is None:
+        return None
+    try:
+        value = tag.value
+    except (OSError, TypeError, ValueError, struct.error, tifffile.TiffFileError):
+        return None
+    if isinstance(value, np.ndarray):
+        value = value.ravel().tolist()
+    values = value if isinstance(value, (tuple, list)) else (value,)
+    if not values:
+        return None
+    try:
+        integers = tuple(operator.index(item) for item in values)
+    except TypeError:
+        return None
+    if any(integer < 0 for integer in integers):
+        return None
+    return integers
+
+
 def _embedded_raw_jpegs(path, should_cancel=None):
     """Yield bounded JPEG ranges in display order, one encoded image at a time."""
     def payload(offset, length):
@@ -534,10 +568,14 @@ def _embedded_raw_jpegs(path, should_cancel=None):
                                           else -p.imagewidth * p.imagelength))
             seen = set()
             for page in candidates:
-                offset, length = page.tags.get(513), page.tags.get(514)
                 ranges = []
-                if offset is not None and length is not None:
-                    ranges.append((int(offset.value), int(length.value)))
+                offsets = _tiff_tag_integers(page.tags.get(513))
+                lengths = _tiff_tag_integers(page.tags.get(514))
+                # Parallel vectors describe one pair per index. A mismatched
+                # count is ambiguous: never truncate to the short vector or
+                # broadcast one value across several ranges.
+                if offsets is not None and lengths is not None and len(offsets) == len(lengths):
+                    ranges.extend(zip(offsets, lengths))
                 if (page.photometric.name in ('RGB', 'YCBCR')
                         and page.compression.value in (6, 7) and len(page.dataoffsets) == 1):
                     ranges.append((page.dataoffsets[0], page.databytecounts[0]))

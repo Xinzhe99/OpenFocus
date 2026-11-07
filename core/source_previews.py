@@ -67,17 +67,24 @@ def _make_thumbnail(frame, cancelled):
     return to_display_uint8(thumb)
 
 
+def _make_display_thumbnail(frame, cancelled):
+    from core.source_frames import ensure_display_preview
+    ensure_display_preview(frame, should_cancel=cancelled)
+    return _make_thumbnail(frame, cancelled)
+
+
 class SourcePreviewWorker(QThread):
     ready = pyqtSignal(object, int, object, object)  # request, index, identity, thumbnail
     failed = pyqtSignal(object, str)
 
-    def __init__(self, frames, request, indices=None):
+    def __init__(self, frames, request, indices=None, *, selected_display=False):
         super().__init__()
         self.frames = tuple(frames)
         self.request = request
         self.indices = tuple(range(len(self.frames))) if indices is None else tuple(indices)
         self.cancelled = False
         self._cancel_event = threading.Event()
+        self.selected_display = selected_display
 
     def request_cancel(self):
         self.cancelled = True
@@ -115,7 +122,7 @@ class SourcePreviewWorker(QThread):
                             if cancelled():
                                 operation.cancel()
                                 return
-                            count = _preview_parallelism()
+                            count = 1 if self.selected_display else _preview_parallelism()
                             batch = []
                             identities = set()
                             while position < len(self.indices) and len(batch) < count:
@@ -131,7 +138,8 @@ class SourcePreviewWorker(QThread):
                             futures = {}
                             try:
                                 for index in batch:
-                                    futures[executor.submit(_make_thumbnail, self.frames[index],
+                                    make = _make_display_thumbnail if self.selected_display else _make_thumbnail
+                                    futures[executor.submit(make, self.frames[index],
                                                             self._cancel_event.is_set)] = index
                                 pending = set(futures)
                                 while pending:

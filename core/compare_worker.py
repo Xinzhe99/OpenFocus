@@ -44,17 +44,17 @@ def align_frames(images, alignment, shared, should_cancel):
         raise ValueError("The image stack is empty.")
     if should_cancel():
         return None
-    if alignment != 'none':
-        from core.algorithms import alignment_steps
+    from core.algorithms import alignment_steps
+    defer_warps = alignment_steps(alignment) == ('openfocus',)
+    if alignment != 'none' and not defer_warps:
         from core.workers import _processing_space
         staging = _processing_space(frames, len(alignment_steps(alignment)))
-    else:
-        staging = 0
-    frames = materialize_frames(frames, should_cancel, preferred_staging_bytes=staging)
+        frames = materialize_frames(frames, should_cancel, preferred_staging_bytes=staging)
     if alignment != "none":
         settings = {"method": alignment, "brightness_reference": shared.get(
             "brightness_reference", "last" if shared.get("exposure_match", False) else "first"),
-            "use_gpu": False, "parameters": shared.get('registration_parameters')}
+            "use_gpu": False, "parameters": shared.get('registration_parameters'),
+            "defer_warps": defer_warps}
         if shared.get('reg_downscale_width') is not None:
             settings['downscale_width'] = shared['reg_downscale_width']
         registration = ImageRegistration(**settings)
@@ -66,7 +66,7 @@ def align_frames(images, alignment, shared, should_cancel):
 
 
 class AlignmentWorker(_CancellableWorker):
-    """Register once; ready carries a list of aligned arrays without conversion."""
+    """Register once; ready retains deferred OpenFocus sources for each render."""
 
     ready = pyqtSignal(object)
     failed = pyqtSignal(str)
@@ -86,7 +86,10 @@ class AlignmentWorker(_CancellableWorker):
                 return
             try:
                 with heavy_job(self._should_cancel), scratch_directory():
-                    images = align_frames(self.images, self.alignment, self.shared, self._should_cancel)
+                    # Returned descriptors outlive this QThread's native object.
+                    # cancel() sets the event even before the thread starts.
+                    images = align_frames(self.images, self.alignment, self.shared,
+                                          self._cancelled.is_set)
                 if images is not None and not self._should_cancel():
                     self.ready.emit(images)
                 else:
@@ -177,9 +180,12 @@ class PreviewWorker(_CancellableWorker):
 
         if not self.images:
             raise ValueError("The image stack is empty.")
-        if self._materialized_images is None:
-            self._materialized_images = materialize_frames(self.images, self._should_cancel)
-        frames = self._materialized_images
+        if method in ('openfocus_a', 'openfocus_b', 'openfocus_c'):
+            frames = list(self.images)
+        else:
+            if self._materialized_images is None:
+                self._materialized_images = materialize_frames(self.images, self._should_cancel)
+            frames = self._materialized_images
         height, width = frames[0].shape[:2]
         if any(image.shape[:2] != (height, width) for image in frames):
             raise ValueError("Comparison images must have the same aligned dimensions.")
@@ -189,7 +195,9 @@ class PreviewWorker(_CancellableWorker):
         if context == (0, 0, width, height):
             inputs = list(frames)
         else:
-            inputs = [frame[y0:y0 + ch, x0:x0 + cw] for frame in frames]
+            from core.source_frames import crop_frame
+            inputs = [crop_frame(frame, x0, y0, cw, ch, should_cancel=self._should_cancel)
+                      for frame in frames]
         # Fusion owns normalization under its processing lease.
         fusion = MultiFocusFusion(**constructor)
         inputs, is_16bit = prepare_fusion_input(inputs, self._should_cancel)

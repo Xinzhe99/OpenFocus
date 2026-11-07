@@ -2507,7 +2507,8 @@ class OpenFocus(QMainWindow):
                      self.file_list.item(index).icon().isNull())])
         if not indices:
             return
-        worker = SourcePreviewWorker(self.raw_images, request, indices)
+        worker = (SourcePreviewWorker(self.raw_images, request, indices, selected_display=True)
+                  if selected_index is not None else SourcePreviewWorker(self.raw_images, request, indices))
         workers[request] = worker
         def accept(key, index, identity, thumb):
             if (getattr(self, '_shutting_down', False) or key[0] != getattr(self, 'source_revision', 0)
@@ -2518,6 +2519,7 @@ class OpenFocus(QMainWindow):
             if item is not None:
                 item.setIcon(QIcon(cv2_to_pixmap(thumb)))
             if index == getattr(self, 'current_display_index', -1):
+                self.stack_images[index] = None
                 self.update_source_view(index)
         def failed(key, message):
             if key[0] == getattr(self, 'source_revision', 0):
@@ -2594,7 +2596,9 @@ class OpenFocus(QMainWindow):
                 if pending_key != key:
                     worker.request_cancel()
             from core.source_frames import preview_ready
-            if not preview_ready(self.raw_images[index]):
+            from core.image_loader import is_raw_source
+            if (not preview_ready(frame) or
+                    (not getattr(frame, 'preview_is_available', True) and is_raw_source(frame.path))):
                 self.lbl_source_img.clear()
                 self.lbl_source_img.setText(trans.t('msg_loading_stack'))
                 self.lbl_stack_info.setText(f'{index + 1} / {len(self.stack_images)}')

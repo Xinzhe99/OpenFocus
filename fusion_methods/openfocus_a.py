@@ -1,42 +1,108 @@
-"""High-frequency energy selection for OpenFocus A."""
+"""HF9 method A: Burt pyramid response and ordered hard source selection."""
 
 import cv2
 import numpy as np
-from core.frame_storage import create_frame, store_frame
+from core.frame_storage import create_transient_frame as create_frame
+from fusion_methods._hf9_pixels import frame_codes, frame_gray_codes, gray_codes, output_codes
 
 
-def _response(frame, fine_sigma, spread_sigma, should_cancel, check_cancel):
-    """Measure high-frequency energy with globally aligned, mapped row passes."""
-    height, width = frame.shape[:2]
-    gray = create_frame((height, width), np.float32)
+def _down2(gray, should_cancel, check_cancel):
+    """Truncated 2x2 mean with replicated odd edges."""
+    height, width = gray.shape
+    result = create_frame(((height + 1) // 2, (width + 1) // 2), np.int32)
+    left = 2 * np.arange(result.shape[1])
+    right = np.minimum(left + 1, width - 1)
+    for start in range(0, result.shape[0], 128):
+        check_cancel(should_cancel)
+        stop = min(result.shape[0], start + 128)
+        top = (2 * np.arange(start, stop))[:, None]
+        bottom = np.minimum(top + 1, height - 1)
+        result[start:stop] = ((gray[top, left] + gray[top, right]
+                               + gray[bottom, left] + gray[bottom, right]) >> 2)
+    return result
+
+
+def _expand_burt(gray, shape, should_cancel, check_cancel):
+    """Prototype bilinear phase (dst+0.5)/2-0.5, with edge clamping."""
+    result = create_frame(shape, np.float64)
+    sx = (np.arange(shape[1], dtype=np.float64) + 0.5) / 2.0 - 0.5
+    x0 = np.floor(sx).astype(np.int32)
+    fx = sx - x0
+    x1 = np.clip(x0 + 1, 0, gray.shape[1] - 1)
+    x0 = np.clip(x0, 0, gray.shape[1] - 1)
+    for start in range(0, shape[0], 128):
+        check_cancel(should_cancel)
+        stop = min(shape[0], start + 128)
+        sy = (np.arange(start, stop, dtype=np.float64) + 0.5) / 2.0 - 0.5
+        y0 = np.floor(sy).astype(np.int32)
+        fy = (sy - y0)[:, None]
+        y1 = np.clip(y0 + 1, 0, gray.shape[0] - 1)[:, None]
+        y0 = np.clip(y0, 0, gray.shape[0] - 1)[:, None]
+        top = gray[y0, x0] * (1.0 - fx) + gray[y0, x1] * fx
+        bottom = gray[y1, x0] * (1.0 - fx) + gray[y1, x1] * fx
+        result[start:stop] = top * (1.0 - fy) + bottom * fy
+    return result
+
+
+def _response(code, radius, should_cancel, check_cancel, *, u8=False):
+    """Sum nearest-expanded |L_k| in the verified integer code domain."""
+    gray = gray_codes(code, should_cancel, u8=u8)
+    height, width = gray.shape
+    levels = int(np.floor(np.log2(max(1, radius)))) + 3
+    response = create_frame((height, width), np.float64)
+    response[...] = 0
+    for level in range(levels):
+        check_cancel(should_cancel)
+        reduced = _down2(gray, should_cancel, check_cancel)
+        laplacian = _expand_burt(reduced, gray.shape, should_cancel, check_cancel)
+        for start in range(0, gray.shape[0], 128):
+            check_cancel(should_cancel)
+            rows = slice(start, min(gray.shape[0], start + 128))
+            np.subtract(gray[rows], laplacian[rows], out=laplacian[rows])
+            np.abs(laplacian[rows], out=laplacian[rows])
+        factor = 1 << level
+        columns = np.arange(width) // factor
+        for start in range(0, height, 128):
+            check_cancel(should_cancel)
+            stop = min(height, start + 128)
+            rows = (np.arange(start, stop) // factor)[:, None]
+            response[start:stop] += laplacian[rows, columns]
+        gray = reduced
+        del laplacian
     for start in range(0, height, 128):
         check_cancel(should_cancel)
-        rows = slice(start, min(height, start + 128))
-        pixels = frame[rows]
-        gray[rows] = (pixels if frame.ndim == 2 else pixels[:, :, 0]
-                      if frame.shape[2] == 1 else
-                      np.mean(pixels[:, :, :3], axis=2, dtype=np.float32))
-    energy = create_frame((height, width), np.float32)
-    halo = int(np.ceil(4 * fine_sigma)) + 2
-    for start in range(0, height, 128):
+        np.minimum(response[start:start + 128], 65535, out=response[start:start + 128])
+    return response
+
+
+def _hard_response(gray, radius, should_cancel, check_cancel):
+    """Exact Burt response in Q4; dyadic interpolation needs no float plane."""
+    from fusion_methods._hf9_kernels import (
+        down2_rows, burt_laplacian_rows, burt_accumulate_rows,
+    )
+
+    height, width = gray.shape
+    levels = int(np.floor(np.log2(max(1, radius)))) + 3
+    response = create_frame((height, width), np.int32)
+    response[...] = 0
+    for level in range(levels):
         check_cancel(should_cancel)
-        stop = min(height, start + 128)
-        top, bottom = max(0, start - halo), min(height, stop + halo)
-        blurred = cv2.GaussianBlur(gray[top:bottom], (0, 0), sigmaX=fine_sigma,
-                                    borderType=cv2.BORDER_REPLICATE)
-        rows = slice(start, stop)
-        np.subtract(gray[rows], blurred[start - top:stop - top], out=energy[rows])
-        np.square(energy[rows], out=energy[rows])
-    del gray, pixels, blurred
-    response = create_frame((height, width), np.float32)
-    halo = int(np.ceil(4 * spread_sigma)) + 2
-    for start in range(0, height, 128):
-        check_cancel(should_cancel)
-        stop = min(height, start + 128)
-        top, bottom = max(0, start - halo), min(height, stop + halo)
-        blurred = cv2.GaussianBlur(energy[top:bottom], (0, 0), sigmaX=spread_sigma,
-                                    borderType=cv2.BORDER_REPLICATE)
-        response[start:stop] = blurred[start - top:stop - top]
+        reduced = create_frame(((gray.shape[0] + 1) // 2,
+                                (gray.shape[1] + 1) // 2), np.int32)
+        for start in range(0, reduced.shape[0], 128):
+            check_cancel(should_cancel)
+            down2_rows(gray, reduced, start, min(reduced.shape[0], start + 128))
+        laplacian = create_frame(gray.shape, np.int32)
+        for start in range(0, gray.shape[0], 128):
+            check_cancel(should_cancel)
+            burt_laplacian_rows(gray, reduced, laplacian, start,
+                                min(gray.shape[0], start + 128))
+        for start in range(0, height, 128):
+            check_cancel(should_cancel)
+            burt_accumulate_rows(laplacian, response, level, start,
+                                 min(height, start + 128))
+        gray = reduced
+        del laplacian
     return response
 
 
@@ -45,45 +111,45 @@ def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 17,
                      blend_mode: str = 'hard', soft_gamma: float = 1.0,
                      feather_theta: float = 0.9,
                      should_cancel=None, progress_callback=None):
-    """Select original pixels using local high-frequency energy.
+    """Select source pixels with the HF9 Burt-pyramid response.
 
-    ``kernel_size`` controls the fine Gaussian scale (kernel/5.5, minimum 1).
-    ``blend_smoothing`` controls the energy spread (smoothing/2, minimum 1).
-    ``blend_mode`` selects the fusion rule: ``hard`` (default) keeps the
-    argmax frame per pixel; ``soft`` blends all frames with log-domain
-    power-softmax weights ``exp(gamma*(log r - max log r))`` in a
-    deterministic three-pass streaming pipeline with per-pixel (H×W)
-    auxiliary memory. ``soft`` triples response computation and is an
-    experimental, unregistered path (Issue #21: content-dependent quality —
-    not shipped); ``soft_gamma`` controls hardness (higher = closer to hard).
-    ``feather`` keeps hard selection everywhere except pixels where the
-    second-best response is within ``feather_theta`` of the best (r2/r1 >=
-    theta), which are blended 50/50 between the top-2 frames — the depth
-    transitions where halos form. Two-pass streaming, H×W auxiliary memory.
-    ``thread_count`` bounds independent response producers. Selection remains
-    strict and in source order, so ties keep the first frame. RAM admission
-    bounds both live producers and completed results; low RAM stays serial.
+    ``kernel_size=2*R+1`` controls ``floor(log2(R))+3`` levels. Smoothing is
+    intentionally inert, as in HF9 method A. Strict source-order argmax keeps
+    the first frame on ties. Eight-bit output applies E-37; sixteen-bit codes
+    retain all bits through the application's float32 output boundary.
 
-    Frames use the application's float32 0-255 domain. Float results retain
-    the precision needed by 16-bit export.
+    ``soft`` and ``feather`` are experimental, unregistered merge modes.
+    Their historical blending stays separate from the default hard path.
     """
     from fusion_methods.openfocus_ab import (
         _check_cancel, _collect_images, _prepare_frame,
         _frame_pass_workers, _ordered_frame_results)
 
     frames = _collect_images(input_source, normalize=False, should_cancel=should_cancel)
-    fine_sigma = max(1.0, float(kernel_size) / 5.5)
-    spread_sigma = max(1.0, float(
-        2.0 if blend_smoothing is None else blend_smoothing) / 2.0)
+    radius = max(1, int(kernel_size) // 2)
+    hard = blend_mode not in ('soft', 'feather')
+    fast_hard = hard and img_resize is None and all(
+        source.dtype in (np.uint8, np.uint16) for source in frames)
     workers = _frame_pass_workers(frames, img_resize, 'openfocus_a', thread_count)
     if progress_callback is not None:
         progress_callback(0, len(frames))
     _check_cancel(should_cancel)
 
     def produce(index, cancelled):
-        frame = _prepare_frame(frames[index], img_resize, cancelled)
-        response = _response(frame, fine_sigma, spread_sigma,
-                             cancelled, _check_cancel)
+        source = frames[index]
+        if fast_hard:
+            from core.source_frames import resolve_frame
+
+            _check_cancel(cancelled)
+            frame = resolve_frame(source)
+            _check_cancel(cancelled)
+            gray = frame_gray_codes(frame, None, cancelled)
+            response = _hard_response(gray, radius, cancelled, _check_cancel)
+            return frame, response
+        code = frame_codes(source, img_resize, cancelled)
+        response = _response(code, radius, cancelled, _check_cancel,
+                             u8=source.dtype == np.uint8)
+        frame = code if hard else _prepare_frame(source, img_resize, cancelled)
         return frame, response
 
     soft = blend_mode == 'soft'
@@ -227,23 +293,34 @@ def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 17,
         else:
             for index, (frame, response) in produced:
                 if index == 0:
-                    output = store_frame(frame)
                     best = response
-                    del frame, response
-                    if progress_callback is not None:
-                        progress_callback(index + 1, len(frames))
-                    _check_cancel(should_cancel)
-                    continue
+                    if fast_hard:
+                        output = create_frame(frame.shape, np.int32)
+                    else:
+                        output = frame
+                        del frame, response
+                        if progress_callback is not None:
+                            progress_callback(index + 1, len(frames))
+                        _check_cancel(should_cancel)
+                        continue
                 if frame.shape != output.shape:
                     raise ValueError("OpenFocus A requires frames with matching shapes")
                 for start in range(0, output.shape[0], 128):
                     _check_cancel(should_cancel)
-                    rows = slice(start, min(output.shape[0], start + 128))
-                    better = response[rows] > best[rows]
-                    np.copyto(output[rows], frame[rows],
-                              where=better[:, :, None] if frame.ndim == 3 else better)
-                    np.copyto(best[rows], response[rows], where=better)
-                del frame, response, better
+                    stop = min(output.shape[0], start + 128)
+                    if fast_hard:
+                        from fusion_methods._hf9_kernels import select_rows
+
+                        select_rows(frame, response, best, output, start, stop,
+                                    256 if frame.dtype == np.uint8 else 1, index == 0)
+                    else:
+                        rows = slice(start, stop)
+                        better = response[rows] > best[rows]
+                        np.copyto(output[rows], frame[rows],
+                                  where=better[:, :, None] if frame.ndim == 3 else better)
+                        np.copyto(best[rows], response[rows], where=better)
+                        del better
+                del frame, response
                 if progress_callback is not None:
                     progress_callback(index + 1, len(frames))
                 _check_cancel(should_cancel)
@@ -251,6 +328,8 @@ def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 17,
         produced.close()
 
     _check_cancel(should_cancel)
+    if hard:
+        return output_codes(output, frames, should_cancel, e37=True)
     np.clip(output, 0, 255, out=output)
     if all(frame.dtype == np.uint8 for frame in frames):
         result = create_frame(output.shape, np.uint8)

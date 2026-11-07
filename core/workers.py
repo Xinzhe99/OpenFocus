@@ -26,9 +26,9 @@ logger = get_logger(__name__)
 
 
 def _crop_transparent_for_gui(images, should_cancel=None):
-    from core.transparency import crop_transparent_stack
+    from core.source_frames import crop_transparent_frames
     try:
-        return crop_transparent_stack(images, should_cancel)
+        return crop_transparent_frames(images, should_cancel)
     except ValueError as exc:
         from locales import trans
         raise ValueError(trans.t('transparent_desktop_unsupported').format(path='') + ' ' + str(exc)) from exc
@@ -73,7 +73,8 @@ def _downscale_for_preview(img):
 
 
 _LOADER_STATE_FIELDS = ('images', 'image_paths', 'px_size_um', 'source_exif',
-                        'source_icc_profile', 'source_icc_profiles', 'linear_dng_metadata')
+                        'source_icc_profile', 'source_icc_profiles', 'linear_dng_metadata',
+                        'failed_count')
 _MISSING_LOADER_FIELD = object()
 
 
@@ -358,6 +359,10 @@ class RenderWorker(QThread):
         if self.disk_cache is not None and (self.registration_parameters or self.defect_mask_path or self.sensor_denoise):
             self.disk_cache['identity'] = dict(self.disk_cache.get('identity') or {})
         self._cache_identity_prepared = False
+        self._defer_warps = (self.alignment == ('openfocus',) and not self.preview
+                             and (not self.need_fusion or self.algorithm in
+                                  ('openfocus_a', 'openfocus_b', 'openfocus_c')))
+        self._alignment_plan = None
         self.resource_preference = resource_preference
         self.alignment_reused = False
         self.alignment_computed = False
@@ -429,15 +434,20 @@ class RenderWorker(QThread):
             and self.last_alignment_options == current_alignment_options
             and not cleanup and not self.preview
         )
+        lazy_fusion = (self.need_fusion and not self.preview and self.algorithm in
+                       ('openfocus_a', 'openfocus_b', 'openfocus_c'))
     
         # 1. 配准阶段
         if need_registration and can_reuse_aligned_images:
-            preferred = estimate_fusion_space(self.aligned_images, self.exposure_match) if self.need_fusion else 0
-            processed_images = materialize_frames(
-                self.aligned_images, lambda: self.is_cancelled,
-                preferred_staging_bytes=preferred, thread_count=self.thread_count,
-                resource_preference=self.resource_preference,
-                progress_callback=self.progress_signal.emit)
+            if lazy_fusion or self._defer_warps:
+                processed_images = list(self.aligned_images)
+            else:
+                preferred = estimate_fusion_space(self.aligned_images, self.exposure_match) if self.need_fusion else 0
+                processed_images = materialize_frames(
+                    self.aligned_images, lambda: self.is_cancelled,
+                    preferred_staging_bytes=preferred, thread_count=self.thread_count,
+                    resource_preference=self.resource_preference,
+                    progress_callback=self.progress_signal.emit)
             registration_performed = True
             self.alignment_reused = True
         else:
@@ -472,6 +482,8 @@ class RenderWorker(QThread):
                         raise RegistrationCancelled()
                     processed_images.append(store_frame(_downscale_for_preview(processing_preview(frame))))
                     self.progress_signal.emit(len(processed_images), len(self.raw_images))
+            elif self._defer_warps or (lazy_fusion and not need_registration):
+                processed_images = list(self.raw_images)
             else:
                 staging = _processing_space(self.raw_images) if cleanup else 0
                 preferred = (_processing_space(self.raw_images, len(self.alignment))
@@ -490,7 +502,8 @@ class RenderWorker(QThread):
                                              self.sensor_denoise, disk_backed=True)
                 mask = (load_sensor_defect_mask(self.defect_mask_path, cancel_callback=lambda: self.is_cancelled)
                         if self.defect_mask_path else None)
-                _check_processing_space(processed_images)
+                if not (self._defer_warps or (lazy_fusion and not need_registration)):
+                    _check_processing_space(processed_images)
                 if self.preview and mask is not None and any(
                         frame.shape[:2] != (mask.height, mask.width) for frame in self.raw_images):
                     raise ValueError('Sensor defect mask dimensions do not match the image')
@@ -505,9 +518,17 @@ class RenderWorker(QThread):
                         pixels = (cv2.resize(mask._pixels.astype(np.float32), (width, height),
                                              interpolation=cv2.INTER_AREA) > 0).astype(np.uint8)
                         image_mask = SensorDefectMask(width, height, float(pixels.mean()), pixels)
-                    cleaned.append(store_frame(cleanup_sensor_image(image, defect_mask_path=image_mask,
-                                   sensor_denoise=self.sensor_denoise,
-                                   cancel_callback=lambda: self.is_cancelled)))
+                    if self._defer_warps or (lazy_fusion and not need_registration):
+                        from core.source_frames import process_frame
+                        cleaned.append(process_frame(image, lambda pixels, image_mask=image_mask:
+                            cleanup_sensor_image(pixels, defect_mask_path=image_mask,
+                                sensor_denoise=self.sensor_denoise,
+                                cancel_callback=lambda: self.is_cancelled),
+                            should_cancel=lambda: self.is_cancelled))
+                    else:
+                        cleaned.append(store_frame(cleanup_sensor_image(image, defect_mask_path=image_mask,
+                                       sensor_denoise=self.sensor_denoise,
+                                       cancel_callback=lambda: self.is_cancelled)))
                 processed_images = cleaned
             self._cache_source_images = processed_images
             registration_performed = False
@@ -600,6 +621,20 @@ class RenderWorker(QThread):
 
     def _prepare_cache_identity(self):
         request = self.disk_cache
+        if self._defer_warps:
+            if self._cache_identity_prepared:
+                return
+            identity = dict(request.get('identity') or {})
+            identity.update(alignment_steps=list(self.alignment),
+                            registration_parameters=dict(self.registration_parameters),
+                            registration_backend='hf9-wide4d',
+                            downscale_width=self.reg_downscale_width,
+                            scale_factor=request.get('scale_factor', 1.0),
+                            frame_shape=request.get('frame_shape'),
+                            brightness_reference='last' if self.exposure_match else 'first')
+            request['identity'] = identity
+            self._cache_identity_prepared = True
+            return
         if self._cache_identity_prepared or request.get("identity") is None:
             return
         request['align_options'] = self.alignment
@@ -622,14 +657,11 @@ class RenderWorker(QThread):
         self._cache_identity_prepared = True
 
     def _load_cached_alignment(self):
-        """Cached aligned frames for this request, or None.
-
-        Runs on the worker thread. Every guard that used to live in the GUI
-        (eligibility, cache toggle, OpenFocus-only exclusion) is resolved
-        before the request is built, so this only performs the I/O.
-        """
+        """Load arrays for generic registration or an immutable deferred plan."""
         request = self.disk_cache
         if not request or request.get("mode") != "load":
+            return None
+        if self._defer_warps and (self.defect_mask_path or self.sensor_denoise):
             return None
         is_current = request.get("is_current", lambda: True)
         from utils import align_cache
@@ -637,16 +669,28 @@ class RenderWorker(QThread):
             if self.is_cancelled or not is_current():
                 raise RegistrationCancelled()
             self._prepare_cache_identity()
-            cached = align_cache.load_aligned(
-                request.get("folder", ""),
-                list(request.get("filenames") or []),
-                tuple(request.get("align_options") or ()),
-                request.get("downscale_width"),
-                request.get("scale_factor", 1.0),
-                request.get("frame_shape"),
-                identity=request.get("identity"),
-                should_cancel=lambda: self.is_cancelled or not is_current(),
-            )
+            if self._defer_warps:
+                plan = align_cache.load_alignment_plan(
+                    request.get('folder', ''), list(request.get('filenames') or []),
+                    self._cache_source_images, identity=request.get('identity'),
+                    should_cancel=lambda: self.is_cancelled or not is_current())
+                if plan is None:
+                    return None
+                from core.registration import apply_alignment_plan
+                cached = apply_alignment_plan(self._cache_source_images, plan,
+                    defer_warps=True, should_cancel=lambda: self.is_cancelled or not is_current())
+                self._alignment_plan = plan
+            else:
+                cached = align_cache.load_aligned(
+                    request.get("folder", ""),
+                    list(request.get("filenames") or []),
+                    tuple(request.get("align_options") or ()),
+                    request.get("downscale_width"),
+                    request.get("scale_factor", 1.0),
+                    request.get("frame_shape"),
+                    identity=request.get("identity"),
+                    should_cancel=lambda: self.is_cancelled or not is_current(),
+                )
         except RegistrationCancelled:
             raise
         except Exception:
@@ -670,23 +714,33 @@ class RenderWorker(QThread):
         request = self.disk_cache
         if not request or not request.get("save", request.get("mode") == "save") or not images or self.is_cancelled:
             return
+        if self._defer_warps and (self.defect_mask_path or self.sensor_denoise
+                                  or self._alignment_plan is None):
+            return
         is_current = request.get("is_current", lambda: True)
         if not is_current():
             raise RegistrationCancelled()
         from utils import align_cache
         try:
             self._prepare_cache_identity()
-            align_cache.save_aligned(
-                request.get("folder", ""),
-                list(request.get("filenames") or []),
-                list(images),
-                tuple(request.get("align_options") or ()),
-                request.get("downscale_width"),
-                request.get("scale_factor", 1.0),
-                request.get("frame_shape"),
-                identity=request.get("identity"),
-                should_cancel=lambda: self.is_cancelled or not is_current(),
-            )
+            if self._defer_warps:
+                align_cache.save_alignment_plan(
+                    request.get('folder', ''), list(request.get('filenames') or []),
+                    self._alignment_plan, self._cache_source_images,
+                    identity=request.get('identity'),
+                    should_cancel=lambda: self.is_cancelled or not is_current())
+            else:
+                align_cache.save_aligned(
+                    request.get("folder", ""),
+                    list(request.get("filenames") or []),
+                    list(images),
+                    tuple(request.get("align_options") or ()),
+                    request.get("downscale_width"),
+                    request.get("scale_factor", 1.0),
+                    request.get("frame_shape"),
+                    identity=request.get("identity"),
+                    should_cancel=lambda: self.is_cancelled or not is_current(),
+                )
         except RegistrationCancelled:
             raise
         except Exception:
@@ -700,9 +754,10 @@ class RenderWorker(QThread):
             parameters=self.registration_parameters,
             downscale_width=self.reg_downscale_width,
             brightness_reference='last' if self.exposure_match else 'first',
-            use_gpu=False)
+            use_gpu=False, defer_warps=self._defer_warps)
         images = registration.process(images, thread_count=self.thread_count,
             resource_preference=self.resource_preference, should_cancel=should_cancel)
+        self._alignment_plan = registration.alignment_plan if self._defer_warps else None
         return images, time.time() - started
 
     def _apply_roi_cropping(self, images):
@@ -717,15 +772,12 @@ class RenderWorker(QThread):
 
             if self.roi_mode == "paste":
                 idx = max(0, min(self.roi_base_index, len(images) - 1))
-                base_full_image = store_frame(images[idx])
+                base_full_image = store_frame(resolve_frame(images[idx]))
 
-            cropped_stack = []
-            for img in images:
-                if img.ndim == 3:
-                    crop = img[ry:ry+rh, rx:rx+rw, :]
-                else:
-                    crop = img[ry:ry+rh, rx:rx+rw]
-                cropped_stack.append(crop)
+            from core.source_frames import crop_frame
+            cropped_stack = [crop_frame(image, rx, ry, rw, rh,
+                                       should_cancel=lambda: self.is_cancelled)
+                             for image in images]
 
             return cropped_stack, base_full_image, roi_rect_int
 
@@ -1189,13 +1241,18 @@ class BatchWorker(QThread):
                 steps = alignment_steps(alignment)
                 cleanup = any(self.processing_settings.get(key) for key in
                               ('defect_mask_path', 'sensor_denoise', 'flat_field_path'))
-                staging = _processing_space(images) if cleanup else 0
-                preferred = _processing_space(images, len(steps)) if steps else 0
-                if method and method != 'none':
-                    preferred += estimate_fusion_space(images, self.exposure_match)
-                aligned_images = materialize_frames(images, lambda: self.is_cancelled,
-                                                    staging_bytes=staging,
-                                                    preferred_staging_bytes=preferred)
+                lazy_fusion = (method in ('openfocus_a', 'openfocus_b', 'openfocus_c')
+                               and steps in ((), ('openfocus',)))
+                if lazy_fusion:
+                    aligned_images = list(images)
+                else:
+                    staging = _processing_space(images) if cleanup else 0
+                    preferred = _processing_space(images, len(steps)) if steps else 0
+                    if method and method != 'none':
+                        preferred += estimate_fusion_space(images, self.exposure_match)
+                    aligned_images = materialize_frames(images, lambda: self.is_cancelled,
+                                                        staging_bytes=staging,
+                                                        preferred_staging_bytes=preferred)
                 mask_path = self.processing_settings.get('defect_mask_path', '')
                 denoise = bool(self.processing_settings.get('sensor_denoise', False))
                 if mask_path and float(self.processing_settings.get('load_scale_factor', 1.0)) != 1.0:
@@ -1208,10 +1265,16 @@ class BatchWorker(QThread):
                     require_sensor_cleanup_stack(aligned_images, mask_path, denoise, disk_backed=True)
                     mask = (load_sensor_defect_mask(mask_path, cancel_callback=lambda: self.is_cancelled)
                             if mask_path else None)
-                    _check_processing_space(aligned_images)
-                    aligned_images = [store_frame(cleanup_sensor_image(
-                        frame, defect_mask_path=mask, sensor_denoise=denoise,
-                        cancel_callback=lambda: self.is_cancelled)) for frame in aligned_images]
+                    def clean(frame):
+                        return cleanup_sensor_image(frame, defect_mask_path=mask, sensor_denoise=denoise,
+                                                    cancel_callback=lambda: self.is_cancelled)
+                    if lazy_fusion:
+                        from core.source_frames import process_frame
+                        aligned_images = [process_frame(frame, clean, should_cancel=lambda: self.is_cancelled)
+                                          for frame in aligned_images]
+                    else:
+                        _check_processing_space(aligned_images)
+                        aligned_images = [store_frame(clean(frame)) for frame in aligned_images]
                 reference = self.processing_settings.get('flat_field_path', '')
                 if reference and any(image.ndim == 3 and image.shape[2] == 4 for image in images):
                     raise ValueError('Flat-field correction is not supported for transparent input')
@@ -1225,12 +1288,18 @@ class BatchWorker(QThread):
                     require_memory(max(frame.nbytes + frame.size * 12 for frame in aligned_images)
                                    + white.size * 12)
                     gain = compute_flat_field(white)
-                    _check_processing_space(aligned_images)
+                    if not lazy_fusion:
+                        _check_processing_space(aligned_images)
                     corrected = []
                     for frame in aligned_images:
                         if self.is_cancelled:
                             raise RegistrationCancelled()
-                        corrected.append(store_frame(apply_flat_field(frame, gain)))
+                        if lazy_fusion:
+                            from core.source_frames import process_frame
+                            corrected.append(process_frame(frame, lambda pixels: apply_flat_field(pixels, gain),
+                                                           should_cancel=lambda: self.is_cancelled))
+                        else:
+                            corrected.append(store_frame(apply_flat_field(frame, gain)))
                     aligned_images = corrected
                 has_alpha = any(image.ndim == 3 and image.shape[2] == 4 for image in images)
                 if has_alpha:
@@ -1245,7 +1314,7 @@ class BatchWorker(QThread):
                         parameters=self.registration_parameters,
                         downscale_width=self._registration_width(aligned_images),
                         brightness_reference='last' if self.exposure_match else 'first',
-                        use_gpu=False)
+                        use_gpu=False, defer_warps=lazy_fusion and steps == ('openfocus',))
                     aligned_images = registration.process(aligned_images,
                         thread_count=self.thread_count, resource_preference=self.resource_preference,
                         should_cancel=lambda: self.is_cancelled)
@@ -1460,7 +1529,9 @@ class BatchWorker(QThread):
             if alignment_steps(alignment):
                 registration = ImageRegistration(method=alignment, parameters=self.registration_parameters,
                     downscale_width=self._registration_width(images),
-                    brightness_reference='last' if self.exposure_match else 'first', use_gpu=False)
+                    brightness_reference='last' if self.exposure_match else 'first', use_gpu=False,
+                    defer_warps=(method in ('openfocus_a', 'openfocus_b', 'openfocus_c')
+                                 and alignment_steps(alignment) == ('openfocus',)))
                 images = registration.process(images, thread_count=self.thread_count,
                     resource_preference=self.resource_preference, should_cancel=lambda: self.is_cancelled)
             fusion_input, is_16bit = prepare_fusion_input(images)

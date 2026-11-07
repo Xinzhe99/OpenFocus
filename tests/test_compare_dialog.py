@@ -666,7 +666,7 @@ def test_source_preview_reframe_rejects_old_generation_and_identity(dialog, tmp_
         failed = pyqtSignal(object, str)
         finished = pyqtSignal()
 
-        def __init__(self, frames, request, indices):
+        def __init__(self, frames, request, indices, *, selected_display=False):
             super().__init__()
             self.frames, self.request, self.indices = tuple(frames), request, indices
             self.cancelled = False

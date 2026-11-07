@@ -26,7 +26,7 @@
 | B | `openfocus_bc.openfocus_b_impl:117`、`openfocus_depth.depth_map:79` | `helicon_exact.fuse_noalign` | ❌ 码/拉伸/snap/merge 不同 |
 | C | `openfocus_bc.openfocus_c_impl:159` | `fuse_b.fuse_b` | ❌ 权重/canvas/collapse 不同 |
 | 深度核 | `_depth_kernel.axis_block:19`(Numba Q12) | `helicon_exact.filter_type7` | 🟡 IIR 结构一致,细节待对账 |
-| 对齐 | `registration._align_openfocus_impl:573`;`openfocus_align.estimate:66` | `helicon_align.*` | ❌ 不同算法 |
+| 对齐 | `registration._align_helicon_impl`;`hf9_alignment.estimate_alignment_plan` | `helicon_align4d.align_pair_wide` | 已切换 verified wide4D；完整 S0–S16 尚未闭合，见 `HF9_TRANSLATION_CORE.md` |
 | 默认参数 | `algorithms.py:333-335,345-349` | GUI R8/S6 | ✅ 已对齐(17/1.44/3.6) |
 | 位深 | 8-bit/16-bit 双出口 | u8→v<<8/E-37;u16→v/原值 | ❌ 现为单一 0-255 浮点路径(§2.5) |
 | 输入格式 | JPG/PNG/TIFF/BMP/WebP/HEIC/RAW、灰度/RGBA/多页/混合栈 | 见 §2.6 矩阵 | ❌ float32 TIFF/CMYK 未显式处理;其余保持 |
@@ -35,21 +35,22 @@
 
 # 1. 对齐(HF9 链全量移植)
 
-## 1.1 当前实现解剖(已核对)
+## 1.1 当前实现与证据边界
 
-`core/registration.py:573 _align_openfocus_impl`:
-- 估计:`_of_estimate_similarity:563` → `openfocus_align.estimate:66`:
-  `_native_proposal:40`(`cv2.findTransformECC` MOTION_AFFINE)→ 压缩相似;
-  `_samples:23` Q8.8 采样 + **NCC** 判决。
-- 灰度:`_of_gray_float:494` 用 **BT.601 权重 (0.114,0.587,0.299)**。
-- 亮度:`_of_lowpass_mean:515` **σ=32** 低通均值,gain clip 0.5–2.0。
-- 参考:`reference_frame`(默认 1);NCC 低时链到相邻帧(`chain_ncc=0.10`)。
-- 边界:`max_shift_ratio=0.08`、`max_rotation=8°`、`max_scale=0.05`,超限放弃。
-- 重采样:`_warp:806` `cv2.warpAffine(INTER_LANCZOS4|WARP_FILL_OUTLIERS,
-  BORDER_REFLECT)`。
-- 裁边:`_compute_valid_region_from_transforms:75` 有效区裁剪。
+`core.registration._align_helicon_impl` 已接入 `core.hf9_alignment` 的 wide4D 金字塔搜索；旧 ECC 提案、NCC 判决、Lanczos 采样与缩略图引擎已移除。
+
+- 估计：直接移植 `helicon_align4d.align_pair_wide` 的候选顺序、float32 差分标准差、4D 缩放与无槽交错 rollback；分块控制搜索内存。
+- 参数：位移范围默认 0.05，旋转默认 0 度、放大率默认 3%；旋转与放大率通过现有注册表控件实际进入搜索。亮度固定 1，不推断 seed/autosort 控件。
+- 采样：等权整数灰度、原生 uint16、Q8.8 采样；精确恒等直接借用原像素。
+- 内存兼容：保留 `normalize_fuse_input` 已有的 float32/64 `[0,255]` 数组域与精确恒等；估计逐行还原 uint16 码值，非恒等采样保留浮点小数。文件描述符仍限定 uint8/uint16，不新增 float TIFF 格式。
+- 参考与失败：保留原始输出顺序、显式参考帧、continue/fail 策略与实际配准报告；默认首帧保留已验证的累计链，显式后续参考帧保持固定几何锚点。
+- 生产端：默认返回 eager 数组；`defer_warps=True` 返回可重复解析的处理描述符，缓存只存带源指纹/校准/参数的不可变计划，不存 N 张已对齐图像。
+
+完整接口、裁边/内存/缓存约定及证据限制见 `HF9_TRANSLATION_CORE.md`。新事实以 `T5_ANSWERS_20261107.md` §10 为准；scale1.06 的逆放大率 0.94344 正确，rollback 已由静态反汇编裁决。seed 参数归属、autosort 触发与全 S0–S16 仍开放。
 
 ## 1.2 HF9 链(S0–S16;移植 `helicon_align.py`)
+
+以下表格保留最初移植前的差距基线；已落地的 wide4D 实现及未验证范围以上一节和 `HF9_TRANSLATION_CORE.md` 为准。
 
 | 项 | 当前 | HF9(必须) |
 |---|---|---|

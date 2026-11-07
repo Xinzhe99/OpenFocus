@@ -689,6 +689,7 @@ class SourceManager(QObject):
         style_message_box(box)
         box.setWindowTitle(trans.t("raw_import_mode_title"))
         box.setText(trans.t("raw_import_mode_prompt"))
+        box.setInformativeText(trans.t("raw_import_mode_explanation"))
         box.setIcon(QMessageBox.Icon.Question)
         linear = box.addButton(trans.t("raw_import_mode_linear"), QMessageBox.ButtonRole.AcceptRole)
         standard = box.addButton(trans.t("raw_import_mode_standard"), QMessageBox.ButtonRole.ActionRole)

@@ -5,7 +5,7 @@ these approaches:
 
 | Method | Approach | Main controls |
 |---|---|---|
-| A | Selects original source pixels using smoothed high-frequency energy. | High-pass scale and energy spread (`--kernel`, `--blend-smoothing`) |
+| A | Selects pixels using the sum of absolute Burt-pyramid Laplacians. | Radius (`--kernel`); smoothing is inert as in HF9 A |
 | B | Blends neighboring frames according to a smoothed depth map. | Kernel radius and depth smoothing (`--kernel`, `--depth-smoothing`) |
 | C | Uses a depth estimate to merge and reconstruct a fixed-point pyramid. | Blend smoothing (`--blend-smoothing`); no radius control |
 
@@ -20,36 +20,61 @@ defaults.
 Exposure matching can compensate for brightness differences across the stack
 before fusion. OpenFocus A/B/C input can be sorted with `--sort asc|desc|off`;
 StackMFF V2 keeps its original focus order. The pipeline
-supports 8-bit and 16-bit output. The depth-map dialog uses the same B/C depth
-estimation and smoothing as fusion. Tiled B/C renders share a full-image depth
-map; when resizing is requested, they use whole-frame rendering so the depth
-map and output have the same dimensions.
+supports 8-bit and 16-bit output. The depth-map dialog uses the shared B/C
+depth estimator. B fusion uses its smoothed depth map; C updates running shared
+depth as it consumes each source and applies smoothing only to depth-map output.
+B's external tiles share a full-image depth map; resizing uses whole frames.
 
 OpenFocus A/B/C use whole-image processing at the default tile threshold, even
-when the general tile option is enabled. A non-default threshold explicitly
-opts into their external tile path. Bounded row and frame passes are internal
-memory controls and retain the global depth/reconstruction domain.
+when the general tile option is enabled. A non-default threshold opts A/B into
+external tiling. C keeps a single depth/reconstruction domain at every threshold.
+Bounded rows and frame windows control memory within that domain.
 
-A computes float32 grayscale as the equal-channel mean, excluding alpha. With
-`fine_sigma = max(1.0, kernel_size / 5.5)`, it subtracts a Gaussian-blurred
-grayscale image to obtain a high-pass response. Its score is the Gaussian blur
-of that response squared, using
-`spread_sigma = max(1.0, (2.0 if blend_smoothing is None else blend_smoothing) / 2.0)`.
-Both Gaussian passes replicate border pixels. The kernel controls high-pass
-scale. Smoothing 0 uses a spread sigma of 1.0.
-A compares scores strictly in source order, retaining the first frame on ties,
-and copies the winning complete original pixel, preserving 16-bit precision and
-alpha. Thread settings and low-memory processing retain this selection rule.
+A computes an equal-channel integer mean, excluding alpha. Eight-bit source
+values enter the code domain as `v << 8`; sixteen-bit values retain their
+original code. Radius `R = max(1, kernel_size // 2)` chooses
+`floor(log2(R)) + 3` Burt-pyramid levels. Each level uses a truncated 2×2 mean
+with replicated odd edges and bilinear expansion at phase −0.5. The response
+is the sum of nearest-expanded absolute Laplacians, saturated at 65535.
+Smoothing does not change A's response or selection. Strict source-order
+comparison retains the first frame on ties. Eight-bit output uses HF9's E-37
+exit (`max(v-1, 0)`); sixteen-bit output keeps the selected code, without that
+subtraction. Mixed stacks map each input according to its own source depth.
 
-B and C can produce the same depth map while producing different color pixels:
-B blends source layers, whereas C reconstructs a multilevel pyramid. Similar
-depth estimates alone do not establish that the methods share their output.
-C chooses its pyramid depth from the output dimensions: the shortest coarse
-dimension is the one closest to 128 pixels, with odd dimensions rounded up
-at each reduction. This is an engineering interpretation of the documented
-Helicon Focus scale target, not a verified reproduction of its level selection.
-Explicit C tiles use the full-image depth map and pyramid scale, with
-grid-aligned context around each tile.
+B and C use the integer activity/depth chain and ordered Q10 code-band merge.
+Signed division truncates toward zero; frames outside the current depth band do
+not write to the accumulated image. B computes smoothed depth first, then decodes
+only sources contributing to that depth band. Unused sources still undergo
+identity and processor validation. C consumes each source once: it updates
+running depth, merges at every level, forms a centered half-Laplacian canvas with
+a ceiling half-difference, then performs integer coarse-to-fine collapse. Identical
+C inputs bypass reconstruction so both 8-bit and 16-bit samples remain exact.
+
+C includes the original image as level zero and reduces odd dimensions with
+replicated edges. It stops before the next level's shortest side would fall
+below 128 pixels. Thus 4000×4000 uses five levels and 4084×5376 uses six.
+C retains that full-image pyramid and depth domain when general tiling is enabled.
+
+The supplied 512×512 HF9 CPU golden stacks were exercised with the production
+implementation. A covers R=1/5/10/22, S=0/5/20 and F=0/10; B/C below use
+R=22, S=5 and F=0. C uses the actual `mp:3` reference, not the obsolete
+`mp:2` files. Percentages count output samples in the 8-bit code domain.
+
+| Method | Golden stack | Exact samples | Within one code |
+|---|---|---:|---:|
+| A | S3 ties / S4 amplitude | 100% | 100% |
+| B | S3 ties | 69.89% | 100% |
+| B | S4 amplitude | 69.54% | 100% |
+| C | S3 ties / S4 amplitude | 100% | 100% |
+| C | S1 zones, four frames | 95.87% | 97.23% |
+| C | S2 gradient, five frames | 97.04% | 98.79% |
+
+These results establish the tested configurations. Multi-frame B/C reference
+details, C's exact expansion kernel, non-identical 16-bit C stacks and small
+non-identical C images remain outside a general bit-exactness claim. C identity
+is separately checked at 64–512 pixels in both source depths, including odd
+dimensions. The product preserves A's 16-bit source codes rather than copying
+HF9's occasional one-code float round-trip loss.
 
 
 StackMFF V1 and V2 use retrained single-scale attention networks, each with

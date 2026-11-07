@@ -74,7 +74,6 @@ def test_transforms_remain_lazy_then_materialize_exact_pixels(tmp_path, monkeypa
     assert max(sources.display_image(resized).shape[:2]) <= sources.PREVIEW_EDGE
     monkeypatch.setattr(image_loader, 'decode_image', original_decoder)
     materialized = sources.materialize_frames([resized])
-    assert isinstance(materialized[0], np.memmap)
     expected = cv2.resize(cv2.rotate(original_decoder(path), cv2.ROTATE_90_CLOCKWISE),
                           (450, 600), interpolation=cv2.INTER_AREA)
     np.testing.assert_array_equal(materialized[0], expected)
@@ -683,6 +682,142 @@ def test_raf_preview_rejects_unbounded_or_invalid_encoded_range(tmp_path, monkey
         raise AssertionError('invalid JPEG payload was admitted')
     monkeypatch.setattr(batch_converter.resource_policy, 'require_memory', forbidden)
     assert list(batch_converter._embedded_raw_jpegs(path)) == []
+
+
+def _preview_jpeg(color=(41, 91, 161)):
+    from io import BytesIO
+    with BytesIO() as output:
+        Image.new('RGB', (8, 6), color).save(output, format='JPEG')
+        return output.getvalue()
+
+
+def _interchange_tiff(tmp_path, payloads, name='interchange.tif'):
+    """TIFF IFD whose 513/514 tags point at independently encoded JPEGs."""
+    import tifffile
+    path = tmp_path / name
+    count = len(payloads)
+    with tifffile.TiffWriter(path) as writer:
+        writer.write(np.zeros((2, 2, 3), np.uint8), photometric='rgb',
+                     extratags=[(513, 'I', count, (0,) * count, False),
+                                (514, 'I', count, (0,) * count, False)])
+    ranges = []
+    with path.open('ab') as stream:
+        for payload in payloads:
+            ranges.append((stream.tell(), len(payload)))
+            stream.write(payload)
+    return path, ranges
+
+
+def _set_interchange_tags(path, offsets, lengths):
+    import tifffile
+    with tifffile.TiffFile(path, mode='r+b') as tif:
+        page = tif.pages[0]
+        page.tags['JPEGInterchangeFormat'].overwrite(tuple(offsets))
+        page.tags['JPEGInterchangeFormatLength'].overwrite(tuple(lengths))
+
+
+@pytest.mark.parametrize('value,expected', [
+    (163096, (163096,)),
+    ((163096,), (163096,)),
+    ((163096, 595456), (163096, 595456)),
+    ([163096], (163096,)),
+])
+def test_tiff_offset_tags_accept_scalars_and_vectors(value, expected):
+    from types import SimpleNamespace
+    from core import batch_converter
+    assert batch_converter._tiff_tag_integers(SimpleNamespace(value=value)) == expected
+
+
+@pytest.mark.parametrize('value', [
+    None, '', '163096', [], (), (163096, 'length'), (163096, 595456.5), (-1,),
+])
+def test_tiff_offset_tags_reject_malformed_values(value):
+    from types import SimpleNamespace
+    from core import batch_converter
+    assert batch_converter._tiff_tag_integers(SimpleNamespace(value=value)) is None
+
+
+def test_embedded_raw_jpegs_read_singleton_tuple_interchange_tags(tmp_path):
+    import tifffile
+    from core import batch_converter
+    payload = _preview_jpeg()
+    path, ranges = _interchange_tiff(tmp_path, [payload])
+    _set_interchange_tags(path, (ranges[0][0],), (ranges[0][1],))
+    with tifffile.TiffFile(path) as tif:
+        # The real NEFs report these single-value tags as one-element tuples.
+        assert tif.pages[0].tags['JPEGInterchangeFormat'].value == (ranges[0][0],)
+    assert list(batch_converter._embedded_raw_jpegs(path)) == [payload]
+
+
+def test_raw_preview_decodes_singleton_tuple_interchange_tag(tmp_path):
+    from io import BytesIO
+    from types import SimpleNamespace
+    pytest.importorskip('rawpy')
+    payload = _preview_jpeg((10, 80, 140))
+    path, ranges = _interchange_tiff(tmp_path, [payload])
+    _set_interchange_tags(path, (ranges[0][0],), (ranges[0][1],))
+    class HeaderRaw:
+        sizes = SimpleNamespace(width=8000, height=6000)
+        def extract_thumb(self):
+            raise AssertionError('tuple preview fell back to LibRaw')
+    preview = sources._raw_preview(HeaderRaw(), 1, path)
+    with Image.open(BytesIO(payload)) as image:
+        expected = np.asarray(image)[:, :, ::-1]
+    np.testing.assert_array_equal(preview, expected)
+
+
+def test_embedded_raw_jpegs_accept_paired_multiple_interchange_values(tmp_path):
+    from core import batch_converter
+    payloads = [_preview_jpeg((220, 30, 40)), _preview_jpeg((20, 180, 60))]
+    path, ranges = _interchange_tiff(tmp_path, payloads)
+    _set_interchange_tags(path, [item[0] for item in ranges], [item[1] for item in ranges])
+    assert list(batch_converter._embedded_raw_jpegs(path)) == payloads
+
+
+@pytest.mark.parametrize('offset_count,length_count', [(2, 1), (1, 2)])
+def test_embedded_raw_jpegs_reject_unequal_interchange_vector_lengths(
+        tmp_path, offset_count, length_count):
+    from core import batch_converter
+    payloads = [_preview_jpeg((220, 30, 40)), _preview_jpeg((20, 180, 60))]
+    path, ranges = _interchange_tiff(tmp_path, payloads)
+    _set_interchange_tags(path,
+                          [item[0] for item in ranges[:offset_count]],
+                          [item[1] for item in ranges[:length_count]])
+    # Neither a truncated prefix nor one broadcast length may be admitted.
+    assert list(batch_converter._embedded_raw_jpegs(path)) == []
+
+
+def test_embedded_raw_jpegs_ignore_malformed_interchange_ranges(tmp_path):
+    from core import batch_converter
+    payload = _preview_jpeg()
+    path, ranges = _interchange_tiff(tmp_path, [payload])
+    offset, length = ranges[0]
+    file_size = path.stat().st_size
+    for bad_offset, bad_length in ((0, 8), (offset, 0), (file_size + 1024, length),
+                                   (offset, 33 * 1024 * 1024)):
+        _set_interchange_tags(path, (bad_offset,), (bad_length,))
+        assert list(batch_converter._embedded_raw_jpegs(path)) == []
+
+
+def test_embedded_raw_jpegs_cancel_between_paired_values(tmp_path):
+    from core import batch_converter
+    payloads = [_preview_jpeg((220, 30, 40)), _preview_jpeg((20, 180, 60))]
+    path, ranges = _interchange_tiff(tmp_path, payloads)
+    _set_interchange_tags(path, [item[0] for item in ranges], [item[1] for item in ranges])
+    cancelled = False
+    iterator = batch_converter._embedded_raw_jpegs(path, should_cancel=lambda: cancelled)
+    assert next(iterator) == payloads[0]
+    cancelled = True
+    with pytest.raises(InterruptedError, match='cancelled'):
+        next(iterator)
+
+
+def test_embedded_raw_jpegs_cancel_before_reading_any_range(tmp_path):
+    from core import batch_converter
+    payload = _preview_jpeg()
+    path, _ranges = _interchange_tiff(tmp_path, [payload])
+    with pytest.raises(InterruptedError, match='cancelled'):
+        next(batch_converter._embedded_raw_jpegs(path, should_cancel=lambda: True))
 
 
 def _multiple_raw_jpegs(tmp_path, monkeypatch):

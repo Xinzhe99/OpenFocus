@@ -33,6 +33,9 @@ WINDOW_GEOMETRY_KEY = "ui/window_geometry"
 MAIN_SPLITTER_KEY = "ui/main_splitter"
 RIGHT_SPLITTER_KEY = "ui/right_splitter"
 DRAG_FORMAT_KEY = "export/drag_format"
+# Last explicitly chosen Batch Image Converter target; dict order must not
+# decide it, and a missing/corrupt value falls back to lossless PNG.
+CONVERTER_FORMAT_KEY = "export/converter_format"
 LAST_UPDATE_CHECK_KEY = "updates/last_check_epoch"
 # Release tag whose startup banner the user dismissed: the same
 # version must not nag again, a newer one re-shows the banner.
@@ -385,7 +388,8 @@ def restore_default_settings(window) -> None:
     keys = {key for key, _default, _kind in _PERSISTED_FIELDS.values()}
     keys.update((BRIGHTNESS_BY_METHOD_KEY, METHOD_PARAMETERS_KEY,
                  REGISTRATION_PARAMETERS_KEY, SMOOTHING_BY_METHOD_KEY,
-                 KERNEL_BY_MODE_KEY, DRAG_FORMAT_KEY, AI_CPU_WARNING_DISMISSED_KEY,
+                 KERNEL_BY_MODE_KEY, DRAG_FORMAT_KEY, CONVERTER_FORMAT_KEY,
+                 AI_CPU_WARNING_DISMISSED_KEY,
                  'fusion/ai_mode', 'fusion/dtcwt_levels',
                  'fusion/ofb_depth_smoothing', 'fusion/of_blend_smoothing',
                  'retouch/auto_bg_mode', 'retouch/auto_bg_clean',
@@ -518,6 +522,24 @@ def set_drag_export_format(window, fmt: str) -> None:
         return
     window.drag_export_format = fmt
     get_settings().setValue(DRAG_FORMAT_KEY, fmt)
+
+
+def get_converter_output_format() -> str:
+    """Last explicitly chosen Batch Image Converter format label."""
+    # Imported lazily: the converter module pulls in the image codecs, and
+    # this preference is only read when its dialog opens. Keeping the
+    # accepted labels in one place prevents the saved value and the combo
+    # from drifting apart.
+    from core.batch_converter import DEFAULT_OUTPUT_FORMAT, OUTPUT_EXTENSIONS
+    value = str(get_settings().value(CONVERTER_FORMAT_KEY, DEFAULT_OUTPUT_FORMAT) or "")
+    return value if value in OUTPUT_EXTENSIONS else DEFAULT_OUTPUT_FORMAT
+
+
+def set_converter_output_format(fmt: str) -> None:
+    """Persist a user-selected converter format, ignoring unknown labels."""
+    from core.batch_converter import OUTPUT_EXTENSIONS
+    if fmt in OUTPUT_EXTENSIONS:
+        get_settings().setValue(CONVERTER_FORMAT_KEY, fmt)
 
 
 def get_last_dialog_dir() -> str:

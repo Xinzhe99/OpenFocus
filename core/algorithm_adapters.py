@@ -89,8 +89,6 @@ def openfocus_b_needs_tiles(frames, threshold):
     return _openfocus_needs_tiles(frames, threshold)
 
 
-def openfocus_c_needs_tiles(frames, threshold):
-    return _openfocus_needs_tiles(frames, threshold)
 
 
 def dtcwt_resources(height, width, parameters, frames):
@@ -118,11 +116,13 @@ def registration_ecc(registration, images, thread_count=4, should_cancel=None, *
 
 
 def registration_openfocus(registration, images, thread_count=4, should_cancel=None, **parameters):
-    from core.registration import _align_openfocus_impl
-    return _align_openfocus_impl(images, downscale_width=registration.downscale_width,
-        thread_count=thread_count, should_cancel=should_cancel,
-        max_shift_ratio=parameters['max_shift_ratio'], brightness_reference=registration.brightness_reference,
-        failure_policy=parameters['failure_policy'], reference_frame=parameters['reference_frame'])
+    from core.registration import _align_helicon_impl
+    return _align_helicon_impl(images, should_cancel=should_cancel,
+        max_shift_ratio=parameters['max_shift_ratio'],
+        failure_policy=parameters['failure_policy'], reference_frame=parameters['reference_frame'],
+        rotation=parameters['rotation'], magnification=parameters['magnification'],
+        defer_warps=registration.defer_warps, output_path=parameters.get('output_path'),
+        plan_callback=lambda plan: setattr(registration, 'alignment_plan', plan))
 
 
 def depth_dct(images, progress_callback=None, should_cancel=None, **parameters):
@@ -183,4 +183,4 @@ def depth_openfocus_b(images, progress_callback=None, should_cancel=None, **para
 def depth_openfocus_c(images, progress_callback=None, should_cancel=None, **parameters):
     from fusion_methods.openfocus_depth import depth_map
     smoothing = parameters['blend_smoothing'] * (5.0 / 3.0)
-    return depth_map(images, None, 11, smoothing, should_cancel, progress_callback)
+    return depth_map(images, None, 17, smoothing, should_cancel, progress_callback)

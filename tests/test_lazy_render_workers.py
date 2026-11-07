@@ -530,23 +530,10 @@ def test_comparison_resolves_original_size_uint16_without_ram_stack(tmp_path):
     worker = PreviewWorker([frame, frame], ['openfocus_a'], {},
         {'use_gpu': False, 'tile_enabled': False, 'thread_count': 1}, None, roi_only=False)
     result, bounds = worker._fuse('openfocus_a')
-    assert isinstance(result, np.memmap)
     assert bounds == (0, 0, original.shape[1], original.shape[0])
     assert result.dtype == np.uint16
     np.testing.assert_array_equal(result, original)
 
 
-def test_ram_memmap_subclass_is_copied_to_real_disk_output(monkeypatch):
-    from core.frame_storage import store_frame
-    from core.multi_focus_fusion import MultiFocusFusion
-    original = store_frame(np.full((20, 24, 3), 71, np.uint8))
-    ram_copy = original.astype(np.float32)
-    assert isinstance(ram_copy, np.memmap) and ram_copy.filename is None
-    fusion = MultiFocusFusion(algorithm='openfocus_a', use_gpu=False,
-                             tile_enabled=False, exposure_match=False)
-    monkeypatch.setattr(fusion, '_apply_base_correction', lambda *args: ram_copy)
-    result = fusion.fuse([original, original], thread_count=1)
-    assert isinstance(result, np.memmap) and result.filename is not None
-    np.testing.assert_array_equal(result, ram_copy)
 
 

@@ -1,4 +1,4 @@
-"""Disk-backed frame storage whose lifetime follows numpy views."""
+"""Independent snapshots and bounded RAM scratch whose lifetime follows views."""
 import errno
 import os
 import math
@@ -13,9 +13,55 @@ import threading
 
 
 import numpy as np
+from constants import FRAME_RAM_BUDGET_BYTES
 
 _storage_directory = None
 _scratch = contextvars.ContextVar('openfocus_scratch', default=None)
+
+# Shared across jobs and copied producer contexts. Views keep their allocating
+# ndarray alive, so its finalizer releases the reservation after the last view.
+_ram_lock = threading.Lock()
+_ram_live_bytes = 0
+
+
+def _release_ram(size):
+    global _ram_live_bytes
+    with _ram_lock:
+        _ram_live_bytes -= size
+
+
+def create_transient_frame(shape, dtype):
+    """Allocate independent scratch pixels within a shared RAM cap.
+
+    Live snapshots and scratch share a fixed RAM ceiling and at most half the
+    comfortable resource budget. Unknown or insufficient RAM uses an admitted
+    disk mapping. NumPy views retain their allocation's reservation.
+    """
+    from core import resource_policy as policy
+    global _ram_live_bytes
+    dtype = np.dtype(dtype)
+    size = math.prod(shape) * dtype.itemsize
+    if size < 0 or dtype.hasobject:
+        raise ValueError('Transient frames require nonnegative numeric storage')
+    with _ram_lock:
+        snapshot = policy.probe_resources()
+        cap = (min(FRAME_RAM_BUDGET_BYTES, policy.ram_budget(snapshot) // 2)
+               if snapshot.ram_known else 0)
+        if size > cap - _ram_live_bytes:
+            use_ram = False
+        else:
+            policy.require_memory(size, snapshot)
+            _ram_live_bytes += size
+            use_ram = True
+    if not use_ram:
+        return create_frame(shape, dtype)
+    try:
+        image = np.empty(shape, dtype=dtype)
+    except BaseException:
+        _release_ram(size)
+        raise
+    weakref.finalize(image, _release_ram, size)
+    return image
 
 
 def _local_mounts():
@@ -417,12 +463,17 @@ def create_frame(shape, dtype, *, directory=None):
         raise
 
 
-def store_frame(image):
-    """Copy one frame to a temporary mapping, preserving dtype and shape.
+def store_frame(image, *, prefer_ram=True):
+    """Copy a frame independently, preserving dtype and shape.
 
-    The mapping, including any derived views, owns the file. It is removed
-    after the last view is released, including on cancellation or exceptions.
+    Snapshots use the shared RAM cap before spilling to an admitted mapping.
+    prefer_ram=False explicitly requests disk storage. Both paths copy, so
+    modifying a snapshot never mutates borrowed source pixels.
     """
+    if prefer_ram:
+        owned = create_transient_frame(image.shape, image.dtype)
+        np.copyto(owned, image)
+        return owned
     directory = storage_directory()
     require_disk_space(image.nbytes, directory)
     fd, path = _frame_file(directory, image.nbytes)

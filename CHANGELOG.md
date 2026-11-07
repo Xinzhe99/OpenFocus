@@ -6,6 +6,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Changed
+- Default Batch Image Converter to lossless PNG, restore the last explicitly
+  selected output format, and show the actual result extension below the
+  selector. Its individual-file conversion, including RAW-to-DNG, remains
+  separate from fusion Batch output. RAW import now names the two intents
+  **Standard color image** and **Camera-linear RAW (Linear DNG)** with a
+  plain-language explanation in every language pack.
 - Simplify the Retouch workspace and move explanatory text throughout the UI
   into control tooltips, keeping relevant risks and status visible. Result
   adjustments include highlights, shadows, saturation and color temperature,
@@ -18,11 +24,23 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the source list while preserving temporary render and update messages.
 - Set new OpenFocus A/B kernel defaults to 17, B depth smoothing to 1.44 and C
   blend smoothing to 3.6. Existing saved per-method values are preserved.
+- Match OpenFocus A's integer Burt-pyramid response and eight-bit E-37 output
+  to HF9. A smoothing is inert; sixteen-bit selected codes remain unchanged.
 - Choose OpenFocus C pyramid depth from the full output size, targeting a
-  coarsest short dimension near 128 pixels. Explicit tiles retain that scale
-  and include grid-aligned context.
+  coarsest short dimension near 128 pixels. Accumulate running shared depth and
+  multiscale bands in source order within one full-image domain; smoothing
+  controls depth-map output.
+- Store independent frame snapshots in a shared, bounded RAM pool before
+  spilling to admitted temporary mappings. OpenFocus producers retain at most
+  two in-flight frames and use the same resource planner and memory ceiling.
+- Resolve only sources contributing to OpenFocus B's final depth bands in its
+  second pass, while retaining source identity and processor validation.
 
 ### Fixed
+- Include a bounded RGB display preview when converting camera RAW to DNG and
+  a safe embedded preview is available, preserving sensor samples and calibration.
+  Recover missing RAW/DNG previews for the first or selected source in admitted
+  background work; other sources retain lazy sensor decoding.
 - Let Batch Image Converter create a typed output directory and avoid rejecting
   RAW-to-JPEG work based on an inflated working-memory estimate or duplicate
   reservations. Resource errors are shown in the selected language.

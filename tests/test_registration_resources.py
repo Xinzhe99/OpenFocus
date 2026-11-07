@@ -191,21 +191,21 @@ def test_openfocus_cancels_between_search_candidates():
         calls += 1
         return calls >= 3
 
-    gray = cv2.cvtColor(_stack(1)[0], cv2.COLOR_BGR2GRAY).astype(np.float32)
+    from core.hf9_alignment import align_pair_wide
+    gray = cv2.cvtColor(_stack(1)[0], cv2.COLOR_BGR2GRAY).astype(np.uint16)
     with pytest.raises(registration.RegistrationCancelled):
-        registration._of_estimate_similarity(gray, gray,
-                                              should_cancel=should_cancel)
+        align_pair_wide(gray, gray, should_cancel=should_cancel)
     assert calls == 3
 
 
-@pytest.mark.parametrize('method', ['homography', 'ecc', 'openfocus'])
+@pytest.mark.parametrize('method', ['homography', 'ecc'])
 def test_native_failure_does_not_publish_frames(method, monkeypatch, tmp_path):
     frames = _stack(2)
     destination = tmp_path / 'aligned'
     destination.mkdir()
     previous = destination / 'frame_0000.png'
     previous.write_bytes(b'previous output')
-    function = 'warpAffine' if method == 'openfocus' else 'warpPerspective'
+    function = 'warpPerspective'
     original = getattr(cv2, function)
 
     def fail_after_warp(*args, **kwargs):
@@ -296,23 +296,22 @@ def test_combined_alignment_admits_disk_backed_stack_by_active_working_set(
     assert dispatched == [1, 1]
 
 
-@pytest.mark.parametrize('dtype', [np.uint8, np.uint16, np.float32])
+@pytest.mark.parametrize('dtype', [np.uint8, np.uint16])
 @pytest.mark.parametrize('shape', [(1, 9, 3), (37, 41, 3), (259, 311, 3)])
-def test_strip_brightness_preserves_gaussian_border_calibration(dtype, shape):
+def test_native_gray_keeps_equal_mean_and_uint16_codes(dtype, shape):
+    from core.hf9_alignment import _gray16
     rng = np.random.default_rng(177)
     image = rng.integers(0, 256, shape, dtype=np.uint16).astype(dtype)
     if dtype == np.uint16:
         image *= 257
-    # Concentrated light at an edge exposes a plain unweighted mean shortcut.
-    image[:, :3] = 65535 if dtype == np.uint16 else 255
-    gray = cv2.transform(image.astype(np.float32),
-                         np.array([[0.114, 0.587, 0.299]], np.float32))
-    expected = float(cv2.GaussianBlur(gray, (0, 0), 32.0).mean())
-    assert registration._of_lowpass_mean(image) == pytest.approx(expected, rel=2e-6, abs=2e-5)
-    np.testing.assert_array_equal(registration._of_gray_float(image), gray)
+    expected = image.sum(axis=2, dtype=np.uint32) // 3
+    if dtype == np.uint8:
+        expected <<= 8
+    np.testing.assert_array_equal(_gray16(image, None), expected)
 
 
 def test_grayscale_preparation_cancels_between_rows():
+    from core.hf9_alignment import _gray16
     calls = 0
 
     def cancelled():
@@ -321,21 +320,13 @@ def test_grayscale_preparation_cancels_between_rows():
         return calls == 3
 
     with pytest.raises(registration.RegistrationCancelled):
-        registration._of_gray_est(np.zeros((513, 97, 3), np.uint16), 320, cancelled)
+        _gray16(np.zeros((513, 97, 3), np.uint16), cancelled)
     assert calls == 3
 
 
 @pytest.mark.parametrize('dtype', [np.uint8, np.uint16])
-def test_openfocus_direct_mapped_warp_preserves_gain_pixels(monkeypatch, dtype):
-    first = np.full((267, 289, 3), 80, dtype)
-    second = np.full_like(first, 50)
-    if dtype == np.uint16:
-        first *= 257
-        second *= 257
-    monkeypatch.setattr(registration, '_of_estimate_similarity',
-                        lambda *args, **kwargs: (1.0, 0.0, 1.0, 0.0, 0.0))
-    output = registration._align_openfocus_impl([first, second], thread_count=1)
-    assert output[0].dtype == dtype and output[1].dtype == dtype
-    # Floating gain followed by integer truncation can differ by one code value.
-    np.testing.assert_allclose(output[0], output[1], rtol=0, atol=1)
-    assert np.all(output[0] == first[0, 0, 0])
+def test_openfocus_fixed_brightness_preserves_identity_codes(dtype):
+    frame = np.full((32, 40, 3), 80, dtype)
+    output = registration._align_helicon_impl([frame, frame.copy()])
+    for image in output:
+        np.testing.assert_array_equal(image, frame)
