@@ -114,3 +114,6 @@ shot_tmp.py
 
 # Local WeChat bot workspace (local only: QR session, .env, message cache)
 /wechat-bot/
+
+# 推广运营档案：已迁移至私密仓库 Xinzhe99/openfocus-outreach（原地 git 仓库，勿提交主仓库）
+promo-video/outreach/
