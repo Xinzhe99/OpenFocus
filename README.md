@@ -316,9 +316,18 @@ Questions, ideas or feedback? Join our [Discord community](https://discord.gg/af
 - **Feedback** — open an [issue](https://github.com/Xinzhe99/OpenFocus/issues) for bugs, ideas and algorithm work
 - **Credits** — each fusion/registration algorithm keeps its original research licence; StackMFF V3 lives at [Xinzhe99/StackMFF-V3](https://github.com/Xinzhe99/StackMFF-V3)
 
-**WeChat community:** Scan with WeChat to join the OpenFocus group.
+**WeChat:** Scan to join the OpenFocus group or follow our official account.
 
-<img src="assets/readme/wechat-group.jpg" alt="QR code for the OpenFocus WeChat group" width="260">
+<table>
+  <tr>
+    <th align="center">WeChat group</th>
+    <th align="center">Official account</th>
+  </tr>
+  <tr>
+    <td align="center" valign="top"><img src="assets/readme/wechat-group.jpg" alt="QR code for the OpenFocus WeChat group" width="260"></td>
+    <td align="center" valign="top"><img src="assets/readme/wechat-official-account.jpg" alt="QR code for the OpenFocus WeChat official account" width="260"></td>
+  </tr>
+</table>
 
 **Support OpenFocus:** If you enjoy the software, you can buy us a coffee via Alipay in China or [PayPal](https://paypal.me/XinZEN0602) internationally. Include your username in the payment note and we will permanently acknowledge it in the project as a thank-you.
 
