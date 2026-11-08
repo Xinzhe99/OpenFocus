@@ -82,8 +82,7 @@ def clipboard_mime_matches(expected: QMimeData, actual: QMimeData | None) -> boo
     if expected.hasFormat("image/jpeg"):
         if not actual.hasImage() or not actual.hasFormat("image/jpeg"):
             return False
-        return (bytes(actual.data("image/jpeg"))
-                == bytes(expected.data("image/jpeg")))
+        return actual.data("image/jpeg") == expected.data("image/jpeg")
     return False
 
 
