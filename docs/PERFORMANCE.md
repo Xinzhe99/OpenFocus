@@ -153,6 +153,31 @@ reported historical OpenFocus 82.1-s adapter run and HF9 approximately 15-s
 workflow used different generated stacks and stage boundaries, so they do not
 establish a same-input speed ratio. Avoid simultaneous benchmarks or tests.
 
+### Remote large-stack acceptance (2026-11-08)
+
+GitHub Actions `Tests` run `42442414086`, commit `5833edc`, passed the remote
+engineering gates on Ubuntu with Python 3.10.22, OpenCV 5.0.0 and NumPy 2.2.6.
+Fusion used four allowed CPUs; native library pools remained serial. The same
+sixteen 4000×4000 grayscale uint16 TIFFs entered the production BGR SourceFrame
+pipeline without materializing an input stack. Fusion time includes cold
+preparation/compilation. Quantization, TIFF writing and metadata readback ran
+afterward; reported RSS covers those stages as well.
+
+| Case | Allowed CPUs | Fusion / ready-open time | Peak process RSS |
+|---|---:|---:|---:|
+| OpenFocus A, 4000×4000×16 | 4 | 9.758 s | 984.2 MiB |
+| OpenFocus B, 4000×4000×16 | 4 | 19.768 s | 875.9 MiB |
+| OpenFocus C, 4000×4000×16 | 4 | 16.881 s | 819.1 MiB |
+| Open 92 JPEGs, 8192×5464 | 2 | 0.211 s | 137.0 MiB |
+
+Peak RSS is the larger of the sampled peak and the OS high-water value. Fusion
+passed <=20 s and <=1024 MiB; source opening passed <2 s with a ready 768×512 BGR
+display preview. All three fusion input manifests, float working hashes and
+uint16 export hashes match the earlier two-CPU `6283bd9` reports exactly. These
+are single runs on shared hosts; they do not establish an algorithm speed ratio
+across different CPU allocations or a memory bound for every image resolution.
+The user workstation retained its one-CPU/512-MiB local validation limits.
+
 ### Small-stack engineering measurements (2026-11-08)
 
 These Windows measurements run `ImageStackLoader.load_from_filepaths` followed
@@ -169,9 +194,8 @@ normalized uint16 exposure path.
 | 512×512, 4 frames | 0.019 s | 0.094 s | 21.28 MiB/s | 111 MiB |
 | 1024×1024, 8 frames | 0.031 s | 0.718 s | 22.29 MiB/s | 174 MiB |
 
-The current revision still needs separate 4000×4000×16 and 92×45-MP
-acceptance. These small cases establish neither those timings nor their
-resident-memory peaks.
+These small local cases complement the remote acceptance above; they do not
+independently establish large-stack timings or resident-memory peaks.
 
 C expansion reuses immutable four-tap axis tables, bounded to 8 MiB and
 256 geometries; eviction leaves live band readers valid. A retains direct
