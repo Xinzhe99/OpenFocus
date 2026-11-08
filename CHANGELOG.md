@@ -79,6 +79,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   desktop multipage exports and the public helper's historical LZW default.
 
 ### Fixed
+- Isolate desktop renders in a spawned process so a native fault or killed
+  render preserves the open project and reports the worker's exit reason.
+  Preserve lazy source/alignment descriptors and the shared frame-memory cap;
+  acknowledge mapped results before transferring their file ownership and
+  remove unaccepted scratch after a failed or cancelled render.
 - Give macOS fusion, comparison, depth-map and batch threads enough native
   stack for cold LLVM compilation, preventing a crash at the stack guard page.
 - Explicitly disable OpenCV parallel regions inside native fusion jobs and

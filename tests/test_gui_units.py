@@ -403,7 +403,7 @@ def _patched_render_manager(monkeypatch, window, ai_available=False):
     from controllers import render_manager as render_module
     from utils import align_cache
 
-    monkeypatch.setattr(render_module, "RenderWorker", _fake_worker_class())
+    monkeypatch.setattr(render_module, "RenderProcessWorker", _fake_worker_class())
     monkeypatch.setattr(render_module, "is_ai_fusion_available", lambda: ai_available)
     for name in ("show_message_box", "show_warning_box"):
         monkeypatch.setattr(render_module, name, lambda *a, **k: None)

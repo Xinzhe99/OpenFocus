@@ -1066,6 +1066,7 @@ PACK = {
     "msg_success": "Operazione riuscita",
     "msg_error": "Errore",
     "msg_proc_error": "Si è verificato un errore durante l'elaborazione:",
+    "render_worker_crashed": "Il processo di rendering si è arrestato in modo imprevisto ({reason}). Il progetto resta aperto. Modifica le impostazioni di rendering e riprova.",
     "msg_warning": "Avviso",
     "dialog_env_title": "Informazioni sull'ambiente",
     "env_subtitle": "Dipendenze dell'ambiente OpenFocus",

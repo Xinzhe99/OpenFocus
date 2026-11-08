@@ -1066,6 +1066,7 @@ PACK = {
     "msg_success": "Succes",
     "msg_error": "Fout",
     "msg_proc_error": "Er is een fout opgetreden tijdens de verwerking:",
+    "render_worker_crashed": "Het renderproces is onverwacht gestopt ({reason}). Uw project blijft geopend. Pas de renderinstellingen aan en probeer het opnieuw.",
     "msg_warning": "Waarschuwing",
     "dialog_env_title": "Omgevingsinformatie",
     "env_subtitle": "Afhankelijkheden van de OpenFocus-omgeving",

@@ -1102,6 +1102,7 @@ ZH = {
     "msg_success": "成功",
     "msg_error": "错误",
     "msg_proc_error": "处理过程中发生错误:",
+    "render_worker_crashed": "渲染进程意外停止（{reason}）。项目仍然打开，可调整渲染设置后重试。",
     "msg_warning": "警告",
     "dialog_env_title": "环境信息",
     "env_subtitle": "OpenFocus 环境依赖",

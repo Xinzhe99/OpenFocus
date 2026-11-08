@@ -128,6 +128,150 @@ def test_budget_check_never_treats_zero_as_unlimited(required, budget, expected)
     assert policy.fits_in_budget(required, budget) is expected
 
 
+def _probe(monkeypatch, available_ram, total_ram=16 * GiB):
+    monkeypatch.setattr(policy, 'probe_memory',
+                        lambda: _snapshot(available_ram=available_ram,
+                                          total_ram=total_ram))
+
+
+def test_child_budget_inherits_admission_share_and_shared_frame_cap(monkeypatch):
+    mib = 1024 ** 2
+    snapshot = _snapshot()
+    _probe(monkeypatch, snapshot.available_ram)
+    share, ceiling = policy.ram_budget(snapshot), policy.ram_ceiling(snapshot)
+    full_cap = min(policy.FRAME_RAM_BUDGET_BYTES, share // 2)
+    budget = policy.make_process_budget(snapshot=snapshot)
+    assert (budget.comfortable_ram, budget.maximum_ram) == (share, ceiling)
+    assert budget.frame_ram == full_cap
+    # Without an admission snapshot the same reading produces the same envelope.
+    assert policy.make_process_budget() == budget
+    # The parent still holds part of the job-wide frame cap: the child gets
+    # the remainder, never a fresh full allowance, and never less than zero.
+    assert policy.make_process_budget(128 * mib, snapshot).frame_ram == full_cap - 128 * mib
+    assert policy.make_process_budget(GiB, snapshot).frame_ram == 0
+    with pytest.raises(ValueError):
+        policy.make_process_budget(-1, snapshot)
+
+
+def test_child_budget_only_tightens_with_consumed_headroom(monkeypatch):
+    snapshot = _snapshot()
+    _probe(monkeypatch, 16 * GiB)
+    looser = policy.make_process_budget(snapshot=snapshot)
+    assert looser.comfortable_ram == policy.ram_budget(snapshot)
+    assert looser.maximum_ram == policy.ram_ceiling(snapshot)
+    # Imports and decoders already took part of the admitted headroom: the
+    # current reading lowers the envelope instead of being ignored.
+    _probe(monkeypatch, 4 * GiB)
+    consumed = policy.make_process_budget(snapshot=snapshot)
+    smaller = replace(snapshot, available_ram=4 * GiB)
+    assert consumed.comfortable_ram == policy.ram_budget(smaller)
+    assert consumed.maximum_ram == policy.ram_ceiling(smaller)
+    assert consumed.comfortable_ram < looser.comfortable_ram
+    assert consumed.frame_ram == min(policy.FRAME_RAM_BUDGET_BYTES,
+                                     consumed.comfortable_ram // 2)
+    # Below the desktop reserve nothing is admitted: no invented budget.
+    _probe(monkeypatch, GiB)
+    exhausted = policy.make_process_budget(snapshot=snapshot)
+    assert exhausted == policy.ProcessBudget(0, 0, 0)
+    # An unreadable current reading never invents or widens anything.
+    monkeypatch.setattr(policy, 'probe_memory', policy.ResourceSnapshot)
+    assert policy.make_process_budget(snapshot=snapshot) == looser
+
+
+def test_unknown_memory_child_budget_stays_unknown(monkeypatch):
+    _probe(monkeypatch, 8 * GiB)
+    unknown = policy.ResourceSnapshot()
+    budget = policy.make_process_budget(snapshot=unknown)
+    assert (budget.comfortable_ram, budget.maximum_ram, budget.frame_ram) == (0, 0, 0)
+    assert policy.frame_ram_budget(unknown) == 0
+    with policy.process_budget(budget):
+        with pytest.raises(policy.ResourceLimitError):
+            policy.require_memory(1, unknown)
+
+
+def test_process_budget_bounds_every_producer_thread_and_restores():
+    snapshot = _snapshot()
+    ordinary = (policy.ram_budget(snapshot), policy.ram_ceiling(snapshot),
+                policy.frame_ram_budget(snapshot))
+    envelope = policy.ProcessBudget(comfortable_ram=1000, maximum_ram=1200,
+                                    frame_ram=256)
+    observed = {}
+
+    def producer():
+        observed['values'] = (policy.ram_budget(snapshot),
+                              policy.ram_ceiling(snapshot),
+                              policy.frame_ram_budget(snapshot),
+                              policy.require_memory(1000, snapshot))
+
+    with policy.process_budget(envelope) as active:
+        assert active is envelope
+        _result(_thread_call(producer))
+        assert observed['values'] == (1000, 1200, 256, 1000)
+        assert (policy.ram_budget(snapshot), policy.ram_ceiling(snapshot),
+                policy.frame_ram_budget(snapshot)) == (1000, 1200, 256)
+        # Above the share but inside the child's hard limit: admitted alone.
+        assert policy.require_memory(1100, snapshot) == 1100
+        with pytest.raises(policy.ResourceLimitError):
+            policy.require_memory(1201, snapshot)
+        # A generous user limit or override cannot widen the envelope.
+        with pytest.raises(policy.ResourceLimitError):
+            policy.require_memory(1201, snapshot, user_limit=100 * GiB)
+        plan = policy.plan_execution(_workload(), snapshot,
+                                     ram_budget_override=100 * GiB)
+        assert (plan.ram_budget, plan.workers) == (1000, 2)
+    assert (policy.ram_budget(snapshot), policy.ram_ceiling(snapshot),
+            policy.frame_ram_budget(snapshot)) == ordinary
+
+
+def test_envelope_never_raises_detected_physical_limits():
+    snapshot = _snapshot()
+    ordinary = (policy.ram_budget(snapshot), policy.ram_ceiling(snapshot),
+                policy.frame_ram_budget(snapshot))
+    generous = policy.ProcessBudget(comfortable_ram=100 * GiB,
+                                    maximum_ram=200 * GiB, frame_ram=GiB)
+    with policy.process_budget(generous):
+        assert (policy.ram_budget(snapshot), policy.ram_ceiling(snapshot),
+                policy.frame_ram_budget(snapshot)) == ordinary
+        assert policy.require_memory(GiB, snapshot) == ordinary[0]
+
+
+def test_process_budget_restores_previous_envelope_on_error():
+    snapshot = _snapshot()
+    ordinary = policy.ram_budget(snapshot)
+    outer = policy.ProcessBudget(comfortable_ram=1000, maximum_ram=2000, frame_ram=400)
+    inner = policy.ProcessBudget(comfortable_ram=500, maximum_ram=600, frame_ram=0)
+    with policy.process_budget(outer):
+        with pytest.raises(RuntimeError, match="render failed"):
+            with policy.process_budget(inner):
+                assert policy.ram_budget(snapshot) == 500
+                assert policy.frame_ram_budget(snapshot) == 0
+                raise RuntimeError("render failed")
+        assert policy.ram_budget(snapshot) == 1000
+        with policy.process_budget(None):
+            assert policy.ram_budget(snapshot) == 1000
+    assert policy.ram_budget(snapshot) == ordinary
+
+
+def test_frame_cap_is_the_tighter_of_live_memory_and_child_slice():
+    snapshot = _snapshot()
+    envelope = policy.ProcessBudget(comfortable_ram=GiB, maximum_ram=2 * GiB,
+                                    frame_ram=192 * 1024 ** 2)
+    with policy.process_budget(envelope):
+        assert policy.frame_ram_budget(snapshot) == 192 * 1024 ** 2
+        # 1.25 GiB free on a 2 GiB box: half the comfortable share is 128 MiB.
+        tighter = replace(snapshot, available_ram=GiB + GiB // 4, total_ram=2 * GiB)
+        assert policy.frame_ram_budget(tighter) == GiB // 8
+
+
+@pytest.mark.parametrize("changes", [dict(comfortable_ram=-1),
+                                     dict(maximum_ram=-1), dict(frame_ram=-1),
+                                     dict(comfortable_ram=2, maximum_ram=1)])
+def test_process_budget_rejects_inconsistent_limits(changes):
+    values = dict(dict(comfortable_ram=1, maximum_ram=2, frame_ram=0), **changes)
+    with pytest.raises(ValueError):
+        policy.ProcessBudget(**values)
+
+
 def test_whole_frame_admission_accounts_for_worker_scratch():
     workload = policy.Workload(algorithm="registration", frames=4, height=10,
                                width=20, channels=3, itemsize=2)
