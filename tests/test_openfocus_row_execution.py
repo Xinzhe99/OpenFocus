@@ -368,15 +368,17 @@ def test_direct_cold_import_restores_existing_and_new_native_pools(cancel):
 
 
 def test_late_initializer_joins_before_native_limits_are_restored(resources, monkeypatch):
-    from threadpoolctl import threadpool_info, threadpool_limits
+    from contextlib import contextmanager
     late_entered = threading.Event()
     close_started = threading.Event()
     finished = threading.Event()
+    restore_started = threading.Event()
+    scope_finished = threading.Event()
     lock = threading.Lock()
     arrivals = 0
     original_initialize = execution._worker_native_limit
     original_close = execution._Execution.close
-    observed = []
+    original_scope = execution.native_execution_scope
 
     def initialize():
         nonlocal arrivals
@@ -386,8 +388,7 @@ def test_late_initializer_joins_before_native_limits_are_restored(resources, mon
         if slot == 1:
             late_entered.set()
             assert close_started.wait(timeout=10)
-            observed.extend(pool['num_threads'] for pool in threadpool_info()
-                            if pool['user_api'] == 'blas')
+            assert not restore_started.is_set()
         original_initialize()
         if slot == 1:
             finished.set()
@@ -396,8 +397,19 @@ def test_late_initializer_joins_before_native_limits_are_restored(resources, mon
         close_started.set()
         original_close(job)
 
+    @contextmanager
+    def observe_scope():
+        with original_scope():
+            try:
+                yield
+            finally:
+                assert finished.is_set(), 'native limits restored before initializer joined'
+                restore_started.set()
+        scope_finished.set()
+
     monkeypatch.setattr(execution, '_worker_native_limit', initialize)
     monkeypatch.setattr(execution._Execution, 'close', close)
+    monkeypatch.setattr(execution, 'native_execution_scope', observe_scope)
     frame = np.zeros((512, 512), np.uint8)
     output = np.zeros(512, np.uint8)
 
@@ -409,10 +421,6 @@ def test_late_initializer_joins_before_native_limits_are_restored(resources, mon
             output[start:stop] = 7
         execution.run_bands(512, 64, write)
 
-    with threadpool_limits(limits=3):
-        before = {pool['filepath']: pool['num_threads'] for pool in threadpool_info()}
-        compute()
-        assert finished.is_set() and observed and set(observed) == {1}
-        after = {pool['filepath']: pool['num_threads'] for pool in threadpool_info()}
-        assert after == before
+    compute()
+    assert finished.is_set() and scope_finished.is_set()
     np.testing.assert_array_equal(output, np.full(512, 7, np.uint8))
