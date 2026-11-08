@@ -103,6 +103,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Preserve advanced JPEG parameters with explicit whole-codec memory admission,
   choose classic TIFF for known small page layouts, and retain uncompressed
   desktop multipage exports and the public helper's historical LZW default.
+- A two-finger touchpad scroll pans the image instead of zooming it (Ctrl still
+  zooms); mouse wheels keep zooming. Touchpads are recognised by device type or
+  scroll phase, including X11, where only angle deltas are reliable.
 
 ### Fixed
 - Recognize reopened strided mappings during source materialization, fusion
