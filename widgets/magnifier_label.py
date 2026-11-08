@@ -11,20 +11,33 @@ MAGNIFIER_MIN_SIZE = 64.0
 MAGNIFIER_MAX_SIZE = 1024.0
 
 
+# Pixels a touchpad pan moves per wheel-notch equivalent (120 angle units)
+# when the platform reports only angle deltas: three 20 px lines, the same
+# distance QAbstractScrollArea scrolls for one notch.
+ANGLE_UNITS_PER_PIXEL = 2.0
+
+
 def _is_touchpad_gesture(event):
     """True for a two-finger touchpad scroll, False for a mouse wheel.
 
-    pixelDelta() alone is not enough: macOS and some high-resolution wheels
-    report pixel deltas for an ordinary mouse wheel too. Touchpad gestures
-    carry a scroll phase (begin/update/end, plus momentum on macOS), and some
-    platforms also identify the device as a touchpad. Plain wheels do neither.
+    pixelDelta() is neither necessary nor sufficient: macOS and some
+    high-resolution wheels report pixel deltas for an ordinary mouse wheel,
+    while X11 reports touchpad scrolling with angle deltas only. Touchpad
+    gestures are identified by their device type or by a scroll phase
+    (begin/update/end, plus momentum on macOS); plain wheels have neither.
     """
-    if event.pixelDelta().isNull():
-        return False
     device = event.pointingDevice()
     if device is not None and device.type() == QInputDevice.DeviceType.TouchPad:
         return True
     return event.phase() != Qt.ScrollPhase.NoScrollPhase
+
+
+def _gesture_pan(event):
+    """How far a touchpad gesture moves the image, in pixels."""
+    pixels = event.pixelDelta()
+    if not pixels.isNull():
+        return QPointF(pixels)
+    return QPointF(event.angleDelta()) / ANGLE_UNITS_PER_PIXEL
 
 
 class MagnifierLabel(QLabel):
@@ -345,7 +358,7 @@ class MagnifierLabel(QLabel):
         # the touchpad while a key is held.
         if (_is_touchpad_gesture(event)
                 and not event.modifiers() & Qt.KeyboardModifier.ControlModifier):
-            self._pan_offset += QPointF(event.pixelDelta())
+            self._pan_offset += _gesture_pan(event)
             self._clamp_pan_offset()
             self._update_scaled_pixmap()
             event.accept()
