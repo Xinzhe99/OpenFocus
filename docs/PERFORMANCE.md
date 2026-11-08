@@ -70,6 +70,9 @@ Native pool limits belong to the owner thread. Workers and late initializers
 join before BLAS/OpenMP limits and the caller's OpenCV thread count are restored,
 including cancellation. Cold direct calls capture OpenCV state before loading
 the planning modules, whose import configures OpenCV's own parallelism.
+OpenCV parallel regions are explicitly disabled with `setNumThreads(0)` during
+these scopes. On macOS GCD, a positive setting of one still reports the host's
+pool capacity from `getNumThreads()`; zero reports the disabled state correctly.
 
 Default A hard selection also uses its Q4 integer response for normalized float
 inputs and resizing. A warm three-frame smoke compared the former floating

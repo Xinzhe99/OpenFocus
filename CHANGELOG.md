@@ -55,6 +55,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 - Give macOS fusion, comparison, depth-map and batch threads enough native
   stack for cold LLVM compilation, preventing a crash at the stack guard page.
+- Explicitly disable OpenCV parallel regions inside native fusion jobs and
+  preserve an existing serial setting when restoring macOS GCD thread state.
 - Match OpenFocus C's native depth chain: fixed half-scale gray FMA resampling,
   vote-based confidence, square-root guide, horizontal-first Q12 smoothing,
   and truncating feather correction before expanding depth to the canvas. Preserve
