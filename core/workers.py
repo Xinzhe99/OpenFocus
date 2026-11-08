@@ -75,9 +75,28 @@ def _downscale_for_preview(img):
 
 
 _LOADER_STATE_FIELDS = ('images', 'image_paths', 'px_size_um', 'source_exif',
-                        'source_icc_profile', 'source_icc_profiles', 'linear_dng_metadata',
-                        'failed_count')
+                        'source_exifs', 'source_icc_profile', 'source_icc_profiles',
+                        'linear_dng_metadata', 'failed_count')
 _MISSING_LOADER_FIELD = object()
+
+
+def _image_write_failure_text(exc):
+    """Localize an ImageWriteError code; keep the generic contract otherwise."""
+    try:
+        from utils.image_utils import ImageWriteError
+        if not isinstance(exc, ImageWriteError):
+            return str(exc)
+        code = getattr(exc, "code", "") or ""
+        if not code:
+            return str(exc)
+        from locales import trans
+        key = "image_write_" + code
+        text = trans.t(key)
+        if text and text != key:
+            return text
+    except Exception:
+        pass
+    return str(exc)
 
 
 
@@ -151,6 +170,7 @@ class StackLoadWorker(QThread):
         self._previous_loader_state.clear()
 
     def run(self):
+        from core.image_loader import SourceExifTooLarge
         with log_operation("stack_load", source="folder" if self.folder else "video" if self.video else "files",
                            folder=self.folder, video=self.video, scale=self.scale,
                            thread_count=self.thread_count, resource_preference=self.resource_preference,
@@ -185,7 +205,7 @@ class StackLoadWorker(QThread):
                         paths = [path for path in paths if not any(
                             same_path(path, excluded) for excluded in self.exclude_paths)]
                         ok, msg, imgs, names = self.loader.load_linear_raw_stack(
-                            paths, scale_factor=self.scale,
+                            paths, scale_factor=self.scale, thread_count=self.thread_count,
                             resource_preference=self.resource_preference,
                             expected_metadata=self.expected_metadata)
                         if ok:
@@ -215,6 +235,15 @@ class StackLoadWorker(QThread):
             except RegistrationCancelled as e:
                 operation.cancel()
                 ok, msg, imgs, names = False, str(e), [], []
+            except SourceExifTooLarge as exc:
+                operation.fail()
+                try:
+                    from locales import trans
+                    message = trans.t('source_exif_snapshot_too_large').format(
+                        path=exc.path)
+                except Exception:
+                    message = str(exc)
+                ok, msg, imgs, names = False, message, [], []
             except Exception as e:
                 operation.fail()
                 ok, msg, imgs, names = False, str(e), [], []
@@ -273,18 +302,22 @@ class ROIFramePreviewWorker(QThread):
 
 
 class ROIAlignmentWorker(QThread):
-    """后台执行ROI模式下的ECC配准线程，用于在ROI选择前对齐图像栈"""
+    """Align the selected stack for ROI selection on a background thread."""
 
     finished_signal = pyqtSignal(object, float)  # deferred aligned images, alignment_time
     error_signal = pyqtSignal(str)
 
     def __init__(self, raw_images, reg_downscale_width=None, thread_count: int = DEFAULT_THREAD_COUNT,
-                 resource_preference="balanced"):
+                 resource_preference="balanced", alignment="ecc",
+                 registration_parameters=None, exposure_match=False):
         super().__init__()
         self.raw_images = raw_images
         self.reg_downscale_width = reg_downscale_width
         self._cancelled = False
         self.resource_preference = resource_preference
+        self.alignment = alignment
+        self.registration_parameters = dict(registration_parameters or {})
+        self.exposure_match = bool(exposure_match)
         try:
             self.thread_count = max(0, int(thread_count))
         except (TypeError, ValueError):
@@ -294,7 +327,7 @@ class ROIAlignmentWorker(QThread):
         self._cancelled = True
 
     def run(self):
-        with log_operation("roi_alignment", method="ecc", reg_downscale_width=self.reg_downscale_width,
+        with log_operation("roi_alignment", method=self.alignment, reg_downscale_width=self.reg_downscale_width,
                            thread_count=self.thread_count, resource_preference=self.resource_preference,
                            **frame_details(self.raw_images)) as operation:
             try:
@@ -315,15 +348,13 @@ class ROIAlignmentWorker(QThread):
                 self.error_signal.emit(str(e))
 
     def _run_admitted(self):
-        """在线程中执行ECC配准"""
+        """Run the same registration settings as the subsequent render."""
         alignment_start_time = time.time()
-    
-        # 使用ECC方法进行配准
-        if self.reg_downscale_width is not None:
-            registration = ImageRegistration(method="ecc", downscale_width=self.reg_downscale_width,
-                                             defer_warps=True)
-        else:
-            registration = ImageRegistration(method="ecc", defer_warps=True)
+        registration = ImageRegistration(
+            method=self.alignment, parameters=self.registration_parameters,
+            downscale_width=self.reg_downscale_width,
+            brightness_reference='last' if self.exposure_match else 'first',
+            use_gpu=False, defer_warps=True)
 
         aligned_images = registration.process(
             self.raw_images, output_path=None, thread_count=self.thread_count,
@@ -445,6 +476,18 @@ class RenderWorker(QThread):
                 self.error_signal.emit(str(e))
 
     def _run_admitted(self):
+        from core.algorithms import alignment_steps
+        from core.frame_resolution_cache import (mandatory_staging_bytes,
+                                                 render_scope)
+        steps = len(alignment_steps(self.alignment)) if self.alignment else 0
+        mandatory = mandatory_staging_bytes(
+            self.raw_images, alignment_steps=steps,
+            exposure_match=self.exposure_match, deferred=bool(self._defer_warps))
+        with render_scope(self.raw_images, mandatory_bytes=mandatory,
+                          should_cancel=lambda: self.is_cancelled):
+            return self._run_admitted_body()
+
+    def _run_admitted_body(self):
         """在线程中执行图像处理流程"""
         if self.is_cancelled:
             raise RegistrationCancelled()
@@ -634,11 +677,11 @@ class RenderWorker(QThread):
         if self.is_cancelled:
             raise RegistrationCancelled()
     
-        # Persist a freshly computed alignment before reporting the
-        # result, so the next render of this stack skips registration.
-        # Best-effort: _save_cached_alignment swallows write failures.
+        # Finalize the render and persist fresh alignment for later reuse.
+        # Deferred warps may have been applied during fusion; cache writing is
+        # not another alignment stage.
+        self.stage_signal.emit("finish")
         if self.alignment_computed:
-            self.stage_signal.emit("finish")
             self._save_cached_alignment(processed_images)
         if self.is_cancelled:
             raise RegistrationCancelled()
@@ -667,7 +710,7 @@ class RenderWorker(QThread):
             identity = dict(request.get('identity') or {})
             identity.update(alignment_steps=list(self.alignment),
                             registration_parameters=dict(self.registration_parameters),
-                            registration_backend=('hf9-wide4d' if self.alignment == ('openfocus',)
+                            registration_backend=('openfocus-wide4d' if self.alignment == ('openfocus',)
                                                   else 'opencv-perspective-v1'),
                             downscale_width=self.reg_downscale_width,
                             scale_factor=request.get('scale_factor', 1.0),
@@ -1131,13 +1174,16 @@ class BatchWorker(QThread):
                 raise
             except Exception as exc:
                 operation.fail()
-                self._task_failures.append({'path': path, 'error': str(exc)})
+                self._task_failures.append({'path': path,
+                                            'error': _image_write_failure_text(exc)})
                 return False
             if ok:
                 self._task_artifacts.append(path)
             else:
                 operation.fail()
-                self._task_failures.append({'path': path, 'error': 'Image write failed'})
+                from locales import trans
+                self._task_failures.append(
+                    {'path': path, 'error': trans.t('msg_save_failed_info_write')})
             return ok
 
     def run(self):

@@ -484,22 +484,22 @@ OpenFocus bietet zehn Fusionsalgorithmen plus einen reinen Ausrichtungsmodus. Ei
 
 Jede neuronale Kachel verwendet alle Bilder. Quelldaten und Ausrichtungsdaten können auf der Festplatte liegen; freier Speicherplatz und Arbeitsspeicher begrenzen die Stapelgröße. Räumliche V2-Kachelung nähert die Berechnung des Gesamtbilds an.
 
-Ist kein temporäres Verzeichnis angegeben, schätzt OpenFocus den Bedarf anhand bekannter Eingaben und temporärer Daten. Reicht der Platz auf dem temporären Systemlaufwerk nicht aus, kann es beschreibbare feste lokale Laufwerke berücksichtigen. Ein ausdrücklich gewähltes Verzeichnis wird nicht automatisch ersetzt. Die Platzprüfung ist eine Momentaufnahme und keine Reservierung; später kann der Platz dennoch ausgehen. Wählen Sie bei einem Speicherfehler in den erweiterten Einstellungen ein beschreibbares Verzeichnis.
+Ist kein temporäres Verzeichnis angegeben, schätzt OpenFocus den Bedarf anhand bekannter Eingaben und temporärer Daten und berücksichtigt bei Platzmangel beschreibbare feste lokale Laufwerke. Ist das gewählte Verzeichnis nicht verfügbar, wird eine Warnung angezeigt und vorübergehend das System-Temporärverzeichnis verwendet; neue Aufgaben versuchen die gespeicherte Wahl erneut. Bei Platzmangel auf dem gewählten Laufwerk wird nicht automatisch gewechselt. Die Platzprüfung ist eine Momentaufnahme und keine Reservierung. Wählen Sie bei einem Speicherfehler in den erweiterten Einstellungen ein beschreibbares Verzeichnis.
 
 - **Standard**: StackMFF V3.
 
 ### OpenFocus A / B / C
 
-- **OpenFocus A**: wählt Quellpixel anhand einer mehrskaligen Fokusantwort aus.
+- **OpenFocus A**: nutzt eine mehrskalige Fokusantwort und mischt detailarme Hintergründe.
 - **OpenFocus B**: mischt benachbarte Bilder anhand einer geglätteten Tiefenkarte.
 - **OpenFocus C**: mischt Quellpixel anhand der fertigen, geglätteten Tiefenkarte.
-- **Parameter**: A und B verwenden den Kernelregler für die Skala der Fokusantwort; C hat keinen Radius. Die Glättung von A hat wie bei HF9 A keine Wirkung. B und C glätten die für die Fusion verwendete Tiefenkarte.
+- **Parameter**: A und B verwenden den Kernelregler für die Skala der Fokusantwort; C hat keinen Radius. Die Glättung von A hat wie beim Referenzprodukt A keine Wirkung. B und C glätten die für die Fusion verwendete Tiefenkarte.
 
 **Glättung**: ein Drehfeld unter dem Kernelregler, dessen Bedeutung von der gewählten Methode abhängt (Bereich 0–8, Schrittweite 0,2):
 
 | Methode | Bezeichnung | Standard | Wirkung |
 |---|---|---|---|
-| OpenFocus A | Mischungsglättung | 2,0 | Wie bei HF9 A ohne Wirkung |
+| OpenFocus A | Mischungsglättung | 2,0 | Wie bei Referenzprodukt A ohne Wirkung |
 | OpenFocus B | Tiefenglättung | 1,44 | Steuert die Glättung der Tiefenkarte, die die Mischung führt |
 | OpenFocus C | Mischungsglättung | 3,6 | Steuert die Glättung der Tiefenkarte und die Fusionsübergänge |
 
@@ -511,7 +511,7 @@ C hat keinen Radiusparameter, daher ist sein Kernelregler ausgeblendet.
 
 CLI: `--depth-smoothing VALUE` (B) und `--blend-smoothing VALUE` (A, C).
 
-**Helligkeitsoptionen gelten pro Methode.** *Belichtung vor der Fusion angleichen* und *Helligkeitsdrift entfernen* werden für jede Fusionsmethode separat gespeichert, weil sie eine Frage pro Stapel beantworten und keine globale Voreinstellung sind. Beide sind für OpenFocus A/B/C standardmäßig an (diese Methoden haben keine eingebaute Belichtungskalibrierung); die übrigen Methoden behalten die bisherigen Standards (Belichtungsabgleich an, Driftentfernung aus). Beim Methodenwechsel werden die jeweiligen Werte dieser Methode angezeigt, und sie überstehen einen Neustart. **Zurücksetzen** löscht die gemerkten Helligkeits-, Glättungs- und Radiuswerte aller Methoden.
+**Helligkeitsoptionen gelten pro Methode.** *Belichtung vor der Fusion angleichen* und *Helligkeitsdrift entfernen* werden separat pro Fusionsmethode gespeichert. In der Oberfläche sind beide für alle Methoden standardmäßig aus; es sind zusätzliche Korrekturen, nicht die Helligkeitsanpassung des Referenzprodukts. Der Belichtungsabgleich skaliert jedes Quellbild vor der Fusion auf das letzte Bild; das Entfernen der Helligkeitsdrift korrigiert danach die niedrigen Frequenzen des Fusionsergebnisses. Beim Methodenwechsel werden die jeweiligen Werte angezeigt und über Neustarts hinweg gespeichert. In der CLI bleibt der Belichtungsabgleich standardmäßig an; `--no-exposure-match` deaktiviert ihn. **Zurücksetzen** löscht die gemerkten Helligkeits-, Glättungs- und Radiuswerte aller Methoden und schaltet beide Helligkeitsoptionen wieder aus.
 
 **Fusionsergebnis schärfen** wendet nach der Fusion eine milde Unscharfmaskierung an, bevor das Ergebnis in seine Ausgabebittiefe überführt wird. Sie ist standardmäßig aus und kann in den Haupt-Fusionsoptionen oder den Stapeloptionen aktiviert werden; die entsprechende CLI-Option ist `--sharpen-output`. Sie betrifft das fusionierte Bild, nicht registrierte Bilder oder Tiefenkarten. Kanten können deutlicher werden, Rauschen und Halos aber ebenfalls zunehmen. Die Einstellung wird im Projekt gespeichert und zwischen Sitzungen gemerkt.
 
@@ -537,7 +537,7 @@ CLI: `--depth-smoothing VALUE` (B) und `--blend-smoothing VALUE` (A, C).
 | StackMFF (V1) | Langsam (GPU) | Hier nicht bewertet | Luma unabhängig von der Reihenfolge; Chrominanz kann bei gleichem Luma-Abstand abweichen |
 | StackMFF V2 | Schnell (GPU) | Hier nicht bewertet | Kontinuierliche Fokusserien mit einem winzigen Modell |
 | StackMFF V3 | Langsam (GPU) | Hervorragend | Beste Qualität |
-| OpenFocus A | Abhängig vom Stapel | Abhängig vom Stapel | Mehrskalige Fokusauswahl |
+| OpenFocus A | Abhängig vom Stapel | Abhängig vom Stapel | Mehrskalige Fokusantwort und Mischung detailarmer Bereiche |
 | OpenFocus B | Abhängig vom Stapel | Abhängig vom Stapel | Tiefenkartengesteuerte Mischung benachbarter Bilder |
 | OpenFocus C | Abhängig vom Stapel | Abhängig vom Stapel | Mischung von Quellpixeln anhand der fertigen Tiefenkarte |
 
@@ -783,7 +783,7 @@ Eine leere Datei namens `OpenFocus.portable` neben `OpenFocus.exe` anlegen (das 
 
 ### EXIF-Metadaten
 
-Quellmetadaten (Kameramodell, Belichtung, Ausrichtung und so weiter) bleiben erhalten: Die Ausrichtung wird beim Laden angewendet, und PNG/TIFF/WebP-Exporte betten die ursprünglichen EXIF-Daten automatisch ein. JPG/BMP-Exporte können keine vollständigen EXIF-Daten speichern und werden ohne sie geschrieben.
+PNG-, TIFF-, JPEG- und WebP-Exporte behalten bereinigte Kamera-, Objektiv-, Belichtungs-, Datums- und GPS-Metadaten und setzen Orientation auf 1. BMP bettet kein EXIF ein. Überschreiten die EXIF- oder ICC-Daten eines JPEG die Formatgrenze, meldet OpenFocus einen eindeutigen Fehler; wählen Sie dann PNG oder TIFF. Überschreiten die bereinigten EXIF-Daten einer Quelle 16 MiB, verweigert OpenFocus das Laden; entfernen oder reduzieren Sie zuerst die EXIF-Daten dieser Datei.
 
 ### HEIC/HEIF-Eingabe
 
@@ -858,7 +858,7 @@ Unter **Einstellungen → Erweiterte Einstellungen… → Ausgabebenennung** hil
 
 ### Ein Ergebnis teilen
 
-Klicken Sie mit der rechten Maustaste auf ein Ergebnis und öffnen Sie **Teilen**. **Vorschaubild kopieren (JPEG)** legt das aktuelle Ergebnis in voller Auflösung einschließlich Beschriftungen und Maßstabsbalken als echtes JPEG in die Zwischenablage und stellt zusätzlich ein dekodiertes Bitmap bereit. **Dateipfade kopieren** kopiert persistente Datei-URLs aller ausgewählten Ergebnisse; ungespeicherte oder veraltete Ergebnisse fragen nach einem Ordner und werden als PNG mit aktuellen 8/16-Bit-Pixeln und Anmerkungen geschrieben. **Im Ordner anzeigen** öffnet Explorer, Finder oder den Dateimanager mit ausgewählter Datei. Vorhandene Exporte werden nur wiederverwendet, solange sie noch zum aktuellen Bild und den Anmerkungen passen. **Privaten Freigabelink erstellen** bleibt deaktiviert, bis gehostetes Teilen verfügbar ist.
+Klicken Sie mit der rechten Maustaste auf ein Ergebnis und öffnen Sie **Teilen**. **Vorschaubild kopieren (JPEG)** legt das aktuelle Ergebnis in voller Auflösung einschließlich Beschriftungen und Maßstabsbalken als echtes JPEG und dekodiertes Bitmap in die Zwischenablage. **Dateipfade kopieren** kopiert lokale Pfade als Text und Datei-URLs. Unverändert gespeicherte Ergebnisse verwenden die vorhandene Datei; ungespeicherte, geänderte oder fehlende Ergebnisse werden ohne Ordnerauswahl als PNG im System-Temporärverzeichnis erstellt und nicht als gespeichert markiert. Das System kann temporäre Dateien löschen; verwenden Sie **Speichern unter** für eine dauerhafte Datei. **Im Ordner anzeigen** öffnet Explorer, Finder oder den Dateimanager mit ausgewählter Datei. **Privaten Freigabelink erstellen** bleibt bis zur Verfügbarkeit von gehostetem Teilen deaktiviert.
 
 ### Exportformat beim Herausziehen
 

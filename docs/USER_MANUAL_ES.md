@@ -448,21 +448,21 @@ Es el método preseleccionado en una instalación nueva.
 
 Cada mosaico neuronal usa todos los fotogramas. Los fotogramas y los datos temporales de alineación pueden guardarse en disco; el espacio libre y la memoria disponible limitan el tamaño de la pila. Los mosaicos espaciales de V2 aproximan la inferencia de la imagen completa.
 
-Si no se especifica un directorio temporal, OpenFocus estima el espacio necesario a partir de las entradas conocidas y los datos temporales. Si falta espacio en el disco temporal del sistema, puede considerar discos locales fijos con permiso de escritura. Un directorio indicado explícitamente no se reemplaza automáticamente. La comprobación de espacio es una estimación puntual, no una reserva; el espacio puede agotarse después. Ante un error de almacenamiento, elige un directorio con permiso de escritura en los ajustes avanzados.
+Si no se especifica un directorio temporal, OpenFocus estima el espacio necesario según las entradas y los datos temporales; si falta espacio, puede considerar discos locales fijos con permiso de escritura. Si el directorio elegido no está disponible, avisa y usa temporalmente el directorio temporal del sistema; cada nuevo trabajo vuelve a intentar la opción guardada. Si el disco elegido está lleno, no cambia automáticamente. La comprobación es una estimación puntual, no una reserva. Ante un error de almacenamiento, elige un directorio escribible en los ajustes avanzados.
 
 
 ### OpenFocus A / B / C
 
-- **OpenFocus A**: selecciona los píxeles de origen mediante una respuesta de enfoque multiescala.
+- **OpenFocus A**: usa una respuesta de enfoque multiescala y mezcla fondos con pocos detalles.
 - **OpenFocus B**: mezcla fotogramas vecinos guiándose por un mapa de profundidad suavizado.
 - **OpenFocus C**: mezcla los píxeles de origen según el mapa de profundidad final suavizado.
-- **Parámetros**: A y B usan el deslizador de núcleo para controlar la escala de respuesta de enfoque; C no tiene radio. El suavizado de A no tiene efecto, como en HF9 A; B y C suavizan el mapa de profundidad utilizado para la fusión.
+- **Parámetros**: A y B usan el deslizador de núcleo para controlar la escala de respuesta de enfoque; C no tiene radio. El suavizado de A no tiene efecto, como en el producto de referencia A; B y C suavizan el mapa de profundidad utilizado para la fusión.
 
 **Suavizado**: un único campo numérico bajo el deslizador de núcleo, cuyo significado depende del método seleccionado (rango 0–8, paso 0,2):
 
 | Método | Etiqueta | Predeterminado | Efecto |
 |---|---|---|---|
-| OpenFocus A | Suavizado de mezcla | 2,0 | Sin efecto, como en HF9 A |
+| OpenFocus A | Suavizado de mezcla | 2,0 | Sin efecto, como en el producto de referencia A |
 | OpenFocus B | Suavizado de profundidad | 1,44 | Controla el suavizado del mapa de profundidad que guía la mezcla |
 | OpenFocus C | Suavizado de mezcla | 3,6 | Controla el suavizado del mapa de profundidad y las transiciones de fusión |
 
@@ -474,7 +474,7 @@ C no tiene parámetro de radio, por lo que se oculta su deslizador de núcleo.
 
 CLI: `--depth-smoothing VALUE` (B) y `--blend-smoothing VALUE` (A, C).
 
-**Las opciones de brillo son por método.** *Igualar exposición antes de fusionar* y *Eliminar deriva de brillo* se recuerdan por separado para cada método de fusión, porque responden a una cuestión de cada pila y no a una preferencia global. Ambas están activadas por defecto en OpenFocus A/B/C (que no tienen calibración de exposición integrada); los demás métodos mantienen los valores históricos (igualado de exposición activado, eliminación de deriva desactivada). Al cambiar de método se muestran los valores propios de ese método, y esos valores sobreviven al reinicio. **Restablecer** borra los valores recordados de brillo, suavizado y radio de todos los métodos.
+**Las opciones de brillo son por método.** *Igualar exposición antes de fusionar* y *Eliminar deriva de brillo* se recuerdan por separado para cada método. En la interfaz, ambas están desactivadas por defecto para todos los métodos; son correcciones adicionales, distintas del ajuste de brillo del producto de referencia. El igualado de exposición escala cada fotograma de origen al último antes de la fusión; la eliminación de la deriva de brillo corrige después las bajas frecuencias del resultado fusionado. Al cambiar de método se muestran sus valores, que se conservan al reiniciar. En la CLI, el igualado de exposición sigue activado por defecto; usa `--no-exposure-match` para desactivarlo. **Restablecer** borra los valores recordados de brillo, suavizado y radio de todos los métodos y vuelve a dejar ambas opciones de brillo desactivadas.
 
 **Nitidear la salida fusionada** aplica una máscara de enfoque suave después de la fusión, antes de convertir el resultado a su profundidad de salida. Está desactivado por defecto y se puede activar en **Ajustes de renderizado** o en las opciones del lote; la opción equivalente de la CLI es `--sharpen-output`. Afecta a la imagen fusionada, no a los fotogramas registrados ni a los mapas de profundidad. Puede hacer más distintos los bordes, pero también amplificar el ruido y los halos. Se guarda con el proyecto y se recuerda entre sesiones.
 
@@ -500,7 +500,7 @@ Selecciona **Solo alineación (sin fusión)** para registrar la pila y añadir u
 | StackMFF (V1) | Lenta (GPU) | No evaluada aquí | Luminancia independiente del orden; crominancia variable si hay empate en la distancia de luminancia |
 | StackMFF V2 | Rápida (GPU) | No evaluada aquí | Barridos continuos con un modelo minúsculo |
 | StackMFF V3 | Lenta (GPU) | Excelente | Máxima calidad |
-| OpenFocus A | Depende de la pila | Depende de la pila | Selección multiescala de píxeles enfocados |
+| OpenFocus A | Depende de la pila | Depende de la pila | Respuesta multiescala y mezcla de zonas poco detalladas |
 | OpenFocus B | Depende de la pila | Depende de la pila | Mezcla de fotogramas vecinos guiada por profundidad |
 | OpenFocus C | Depende de la pila | Depende de la pila | Mezcla de píxeles de origen según el mapa de profundidad final |
 
@@ -743,7 +743,7 @@ Crea un archivo vacío llamado `OpenFocus.portable` junto a `OpenFocus.exe` (el 
 
 ### Metadatos EXIF
 
-Los metadatos de origen (modelo de cámara, exposición, orientación, etc.) se conservan: la orientación se aplica al cargar y las exportaciones PNG/TIFF/WebP incluyen el EXIF original automáticamente. Las exportaciones JPG/BMP no pueden almacenar el EXIF completo y se escriben sin él.
+Las exportaciones PNG/TIFF/JPEG/WebP conservan los metadatos saneados de cámara, objetivo, exposición, fecha y GPS, y establecen Orientation en 1. BMP no incorpora EXIF. Si los datos EXIF o ICC de un JPEG superan el límite del formato, OpenFocus muestra un error claro; elige PNG o TIFF. Si el EXIF saneado de una imagen de origen supera 16 MiB, OpenFocus se niega a cargarla; elimina o reduce primero el EXIF de ese archivo.
 
 ### Entrada HEIC/HEIF
 
@@ -818,7 +818,7 @@ En **Ajustes → Ajustes avanzados → Nombres de salida**, un prefijo de nombre
 
 ### Compartir un resultado
 
-Haz clic derecho en una salida y abre **Compartir**. **Copiar imagen de vista previa (JPEG)** coloca el resultado actual a resolución completa, incluidas sus etiquetas y barra de escala, en el portapapeles como un JPEG real y también proporciona un mapa de bits decodificado para aplicaciones de escritorio. **Copiar rutas de archivo** copia las URL de archivos persistentes de todos los resultados seleccionados; los resultados no guardados o desactualizados piden una carpeta y se escriben como PNG con sus píxeles de 8/16 bits y anotaciones actuales. **Mostrar en la carpeta** abre el Explorador, Finder o el gestor de archivos con el archivo seleccionado. Los archivos exportados existentes solo se reutilizan mientras sigan coincidiendo con la imagen y las anotaciones actuales. **Crear enlace compartido privado** permanece desactivado hasta que exista alojamiento compartido.
+Haz clic derecho en una salida y abre **Compartir**. **Copiar imagen de vista previa (JPEG)** coloca el resultado a resolución completa, incluidas etiquetas y barra de escala, en el portapapeles como JPEG real y mapa de bits decodificado. **Copiar rutas de archivo** copia las rutas locales como texto y URL de archivo. Los resultados guardados sin cambios usan el archivo existente; los no guardados, modificados o cuyo archivo falta se escriben automáticamente como PNG en la carpeta temporal del sistema, sin marcarlos como guardados. El sistema puede eliminar los archivos temporales; usa **Guardar como** para conservarlos. **Mostrar en la carpeta** abre el Explorador, Finder o el gestor de archivos con el archivo seleccionado, sin pedir una carpeta. **Crear enlace compartido privado** permanece desactivado hasta que exista alojamiento compartido.
 
 ### Formato de exportación al arrastrar
 

@@ -484,22 +484,22 @@ OpenFocus biedt tien fusiealgorithmen plus een modus met alleen uitlijning. Een 
 
 Elke neurale tegel gebruikt alle frames. Bronframes en tijdelijke uitlijngegevens kunnen op schijf staan; vrije schijfruimte en beschikbaar geheugen begrenzen de stapelgrootte. Ruimtelijke V2-tegels benaderen inferentie op de volledige afbeelding.
 
-Als geen tijdelijke map is opgegeven, schat OpenFocus de benodigde ruimte op basis van bekende invoer en tijdelijke werkgegevens. Als de tijdelijke systeemschijf onvoldoende ruimte heeft, kan het beschrijfbare vaste lokale schijven overwegen. Een expliciet gekozen map wordt niet automatisch vervangen. De ruimtecontrole is een momentopname, geen reservering; later kan alsnog ruimtegebrek ontstaan. Kies bij een opslagfout een beschrijfbare map in de geavanceerde instellingen.
+Als geen tijdelijke map is opgegeven, schat OpenFocus de benodigde ruimte op basis van bekende invoer en tijdelijke gegevens en kan het bij ruimtegebrek beschrijfbare vaste lokale schijven overwegen. Is de gekozen map niet beschikbaar, dan verschijnt een waarschuwing en wordt tijdelijk de systeemmap gebruikt; elke nieuwe taak probeert de opgeslagen keuze opnieuw. Bij ruimtegebrek op de gekozen schijf wordt niet automatisch gewisseld. De ruimtecontrole is een momentopname, geen reservering. Kies bij een fout een beschrijfbare map in de geavanceerde instellingen.
 
 - **Standaard**: StackMFF V3.
 
 ### OpenFocus A / B / C
 
-- **OpenFocus A**: selecteert bronpixels op basis van een meerschalige focusrespons.
+- **OpenFocus A**: gebruikt een meerschalige focusrespons en mengt achtergronden met weinig detail.
 - **OpenFocus B**: mengt naburige frames op basis van een afgeplatte dieptekaart.
 - **OpenFocus C**: mengt bronpixels op basis van de voltooide, afgevlakte dieptekaart.
-- **Parameters**: A en B gebruiken de kernelregelaar voor de schaal van de focusrespons; C heeft geen straal. Afvlakking heeft bij A geen effect, net als bij HF9 A; B en C vlakken de dieptekaart voor de fusie af.
+- **Parameters**: A en B gebruiken de kernelregelaar voor de schaal van de focusrespons; C heeft geen straal. Afvlakking heeft bij A geen effect, net als bij het referentieproduct A; B en C vlakken de dieptekaart voor de fusie af.
 
 **Afvlakking**: één draaischijf onder de kernelregelaar, met een betekenis die afhangt van de gekozen methode (bereik 0–8, stap 0,2):
 
 | Methode | Label | Standaard | Effect |
 |---|---|---|---|
-| OpenFocus A | Mengingsafvlakking | 2,0 | Geen effect, net als bij HF9 A |
+| OpenFocus A | Mengingsafvlakking | 2,0 | Geen effect, net als bij het referentieproduct A |
 | OpenFocus B | Diepteafvlakking | 1,44 | Regelt de afvlakking van de dieptekaart die de menging stuurt |
 | OpenFocus C | Mengingsafvlakking | 3,6 | Regelt de afvlakking van de dieptekaart en de fusieovergangen |
 
@@ -511,7 +511,7 @@ C heeft geen straalparameter, dus de kernelregelaar is verborgen.
 
 CLI: `--depth-smoothing VALUE` (B) en `--blend-smoothing VALUE` (A, C).
 
-**Helderheidsopties gelden per methode.** *Belichting afstemmen vóór fusie* en *Helderheidsdrift verwijderen* worden per fusiemethode afzonderlijk bewaard, omdat ze een vraag per stapel beantwoorden en geen globale voorkeur zijn. Beide staan standaard aan voor OpenFocus A/B/C (die geen ingebouwde belichtingskalibratie hebben); de andere methoden behouden de historische standaarden (belichtingsafstemming aan, driftverwijdering uit). Bij het wisselen van methode worden de waarden van die methode getoond, en ze overleven een herstart. **Herstellen** wist de onthouden helderheids-, afvlakkings- en straalwaarden van elke methode.
+**Helderheidsopties gelden per methode.** *Belichting afstemmen vóór fusie* en *Helderheidsdrift verwijderen* worden afzonderlijk per methode bewaard. In de interface staan beide standaard uit voor alle methoden; dit zijn extra correcties, verschillend van de helderheidsaanpassing van het referentieproduct. Belichtingsafstemming schaalt elk bronframe vóór de fusie naar het laatste frame; helderheidsdrift verwijderen corrigeert daarna de lage frequenties van het fusieresultaat. Bij het wisselen van methode worden de eigen waarden getoond; die blijven na herstart behouden. In de CLI blijft belichtingsafstemming standaard aan; gebruik `--no-exposure-match` om die uit te schakelen. **Herstellen** wist de onthouden helderheids-, afvlakkings- en straalwaarden van elke methode en zet beide helderheidsopties weer uit.
 
 **Gefuseerd resultaat verscherpen** past na de fusie een milde onscherpe maskering toe, voordat het resultaat naar zijn uitvoerbitdiepte wordt omgezet. Dit staat standaard uit en kan in de hoofdfusie-opties of batchopties worden ingeschakeld; de equivalente CLI-optie is `--sharpen-output`. Dit beïnvloedt het gefuseerde beeld, niet geregistreerde frames of dieptekaarten. Het kan randen duidelijker maken, maar ook ruis en halo's versterken. De instelling wordt in het project opgeslagen en tussen sessies onthouden.
 
@@ -537,7 +537,7 @@ Kies **Alleen uitlijning (geen fusie)** om de stapel te registreren en één sta
 | StackMFF (V1) | Langzaam (GPU) | Hier niet beoordeeld | Luma onafhankelijk van volgorde; chroma kan verschillen bij gelijke luma-afstanden |
 | StackMFF V2 | Snel (GPU) | Hier niet beoordeeld | Continue focusreeksen met een klein model |
 | StackMFF V3 | Langzaam (GPU) | Uitstekend | Beste kwaliteit |
-| OpenFocus A | Afhankelijk van stapel | Afhankelijk van stapel | Meerschalige focusselectie |
+| OpenFocus A | Afhankelijk van stapel | Afhankelijk van stapel | Meerschalige focusrespons en menging van detailarme gebieden |
 | OpenFocus B | Afhankelijk van stapel | Afhankelijk van stapel | Dieptegestuurde menging van naburige frames |
 | OpenFocus C | Afhankelijk van stapel | Afhankelijk van stapel | Bronpixels mengen op basis van de voltooide dieptekaart |
 
@@ -783,7 +783,7 @@ Maak een leeg bestand met de naam `OpenFocus.portable` naast `OpenFocus.exe` (de
 
 ### EXIF-metadata
 
-Bronmetadata (cameramodel, belichting, oriëntatie enzovoort) blijft behouden: oriëntatie wordt bij het laden toegepast en PNG/TIFF/WebP-exporten sluiten de oorspronkelijke EXIF automatisch in. JPG/BMP-exporten kunnen geen volledige EXIF opslaan en worden zonder geschreven.
+PNG/TIFF/JPEG/WebP-export behoudt opgeschoonde metadata van camera, objectief, belichting, datum en GPS en zet Orientation op 1. BMP slaat geen EXIF op. Als de EXIF- of ICC-gegevens van een JPEG de formaatlimiet overschrijden, meldt OpenFocus een duidelijke fout; kies dan PNG of TIFF. Als de opgeschoonde EXIF van een bron groter is dan 16 MiB, weigert OpenFocus het bestand te laden; verwijder of verklein eerst de EXIF van dat bestand.
 
 ### HEIC/HEIF-invoer
 
@@ -858,7 +858,7 @@ Onder **Instellingen → Geavanceerde instellingen… → Uitvoerbenaming** help
 
 ### Een resultaat delen
 
-Klik met de rechtermuisknop op een uitvoer en open **Delen**. **Voorbeeldafbeelding kopiëren (JPEG)** zet het huidige resultaat op volledige resolutie, inclusief labels en schaalbalk, als echte JPEG op het klembord en levert ook een gedecodeerde bitmap. **Bestandspaden kopiëren** kopieert persistente bestands-URL's van alle geselecteerde resultaten; niet-opgeslagen of verouderde resultaten vragen om één map en worden als PNG geschreven met de huidige 8/16-bits pixels en annotaties. **Tonen in map** opent Verkenner, Finder of de bestandsbeheerder met het bestand geselecteerd. Bestaande exports worden alleen hergebruikt zolang ze nog bij de huidige afbeelding en annotaties passen. **Privédeellink maken** blijft uitgeschakeld tot gehost delen beschikbaar is.
+Klik met de rechtermuisknop op een uitvoer en open **Delen**. **Voorbeeldafbeelding kopiëren (JPEG)** zet het resultaat op volledige resolutie, met labels en schaalbalk, als echte JPEG en gedecodeerde bitmap op het klembord. **Bestandspaden kopiëren** kopieert lokale paden als tekst en bestands-URL's. Een ongewijzigd opgeslagen resultaat gebruikt het bestaande bestand; een niet-opgeslagen, gewijzigd of ontbrekend resultaat wordt automatisch als PNG in de tijdelijke systeemmap geschreven en niet als opgeslagen gemarkeerd. Het systeem kan tijdelijke bestanden verwijderen; gebruik **Opslaan als** om ze te bewaren. **Tonen in map** opent Verkenner, Finder of de bestandsbeheerder met het bestand geselecteerd, zonder om een map te vragen. **Privédeellink maken** blijft uitgeschakeld tot gehost delen beschikbaar is.
 
 ### Sleepformaat voor export
 

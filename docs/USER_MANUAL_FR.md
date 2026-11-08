@@ -448,21 +448,21 @@ C'est la méthode présélectionnée dans une nouvelle installation.
 
 Chaque tuile neuronale utilise toutes les images. Les images et les données temporaires de recalage peuvent être stockées sur disque ; l’espace libre et la mémoire disponible limitent la pile. Le pavage spatial V2 est une approximation de l’inférence sur l’image entière.
 
-Si aucun dossier temporaire n'est indiqué, OpenFocus estime les besoins à partir des entrées connues et des données temporaires. Si le disque temporaire du système manque d'espace, il peut envisager des disques locaux fixes accessibles en écriture. Un dossier explicitement choisi n'est jamais remplacé automatiquement. La vérification est une estimation ponctuelle, pas une réservation ; l'espace peut manquer par la suite. En cas d'erreur de stockage, choisissez un dossier accessible en écriture dans les paramètres avancés.
+Si aucun dossier temporaire n'est indiqué, OpenFocus estime les besoins d'après les entrées et les données temporaires et peut envisager des disques locaux fixes accessibles en écriture si l'espace manque. Si le dossier choisi est indisponible, un avertissement indique l'utilisation temporaire du dossier système ; chaque nouvelle tâche réessaie le choix enregistré. Un disque choisi plein ne provoque pas de changement automatique. La vérification est une estimation ponctuelle, pas une réservation. En cas d'erreur, choisissez un dossier accessible en écriture dans les paramètres avancés.
 
 
 ### OpenFocus A / B / C
 
-- **OpenFocus A** : sélectionne les pixels sources selon une réponse de netteté multi-échelles.
+- **OpenFocus A** : utilise une réponse de netteté multi-échelles et mélange les arrière-plans peu détaillés.
 - **OpenFocus B** : mélange les images voisines guidé par une carte de profondeur lissée.
 - **OpenFocus C** : mélange les pixels sources selon la carte de profondeur finale lissée.
-- **Paramètres** : A et B utilisent le curseur de noyau pour régler l'échelle de réponse de netteté ; C n'a pas de rayon. Le lissage de A est sans effet, comme dans HF9 A ; B et C lissent la carte de profondeur utilisée pour la fusion.
+- **Paramètres** : A et B utilisent le curseur de noyau pour régler l'échelle de réponse de netteté ; C n'a pas de rayon. Le lissage de A est sans effet, comme dans le produit de référence A ; B et C lissent la carte de profondeur utilisée pour la fusion.
 
 **Lissage** : un seul champ numérique sous le curseur de noyau, dont le sens dépend de la méthode sélectionnée (plage 0–8, pas 0,2) :
 
 | Méthode | Libellé | Défaut | Effet |
 |---|---|---|---|
-| OpenFocus A | Lissage du mélange | 2,0 | Sans effet, comme dans HF9 A |
+| OpenFocus A | Lissage du mélange | 2,0 | Sans effet, comme dans le produit de référence A |
 | OpenFocus B | Lissage de profondeur | 1,44 | Contrôle le lissage de la carte de profondeur qui guide le mélange |
 | OpenFocus C | Lissage du mélange | 3,6 | Contrôle le lissage de la carte de profondeur et les transitions de fusion |
 
@@ -474,7 +474,7 @@ C n'a pas de paramètre Rayon ; son curseur de noyau est donc masqué.
 
 CLI : `--depth-smoothing VALUE` (B) et `--blend-smoothing VALUE` (A, C).
 
-**Les options de luminosité sont propres à chaque méthode.** *Égaliser l'exposition avant la fusion* et *Supprimer la dérive de luminosité* sont mémorisées séparément pour chaque méthode de fusion, car elles répondent à une question propre à chaque pile plutôt qu'à une préférence globale. Les deux sont activées par défaut pour OpenFocus A/B/C (qui n'ont pas de calibration d'exposition intégrée) ; les autres méthodes conservent les valeurs historiques (égalisation activée, suppression de dérive désactivée). Changer de méthode affiche les valeurs de cette méthode, qui survivent au redémarrage. **Réinitialiser** efface les valeurs mémorisées de luminosité, lissage et rayon de toutes les méthodes.
+**Les options de luminosité sont propres à chaque méthode.** *Égaliser l'exposition avant la fusion* et *Supprimer la dérive de luminosité* sont mémorisées séparément. Dans l'interface, les deux sont désactivées par défaut pour toutes les méthodes ; ce sont des corrections supplémentaires, distinctes du réglage de luminosité du produit de référence. L'égalisation d'exposition met chaque image source au niveau de la dernière avant la fusion ; la suppression de la dérive de luminosité corrige ensuite les basses fréquences du résultat fusionné. Le changement de méthode affiche ses valeurs, conservées au redémarrage. Dans la CLI, l'égalisation d'exposition reste activée par défaut ; utilisez `--no-exposure-match` pour la désactiver. **Réinitialiser** efface les valeurs mémorisées de luminosité, lissage et rayon de toutes les méthodes et remet les deux options de luminosité sur désactivé.
 
 **Accentuer la sortie fusionnée** applique un léger masque flou après la fusion, avant la conversion du résultat vers sa profondeur de sortie. Désactivé par défaut, il s'active dans les options de fusion principales ou du lot ; l'option CLI équivalente est `--sharpen-output`. Cela affecte l'image fusionnée, pas les images recalées ni les cartes de profondeur. Cela peut rendre les contours plus nets, mais aussi amplifier le bruit et les halos. Le réglage est enregistré avec le projet et mémorisé entre les sessions.
 
@@ -500,7 +500,7 @@ Sélectionnez **Alignement seul (sans fusion)** pour recaler la pile et ajouter 
 | StackMFF (V1) | Lente (GPU) | Non évaluée ici | Luminance indépendante de l'ordre ; chrominance variable en cas d'égalité des écarts de luminance |
 | StackMFF V2 | Rapide (GPU) | Non évaluée ici | Balayages continus avec un modèle minuscule |
 | StackMFF V3 | Lente (GPU) | Excellente | Qualité maximale |
-| OpenFocus A | Dépend de la pile | Dépend de la pile | Sélection multi-échelles des pixels nets |
+| OpenFocus A | Dépend de la pile | Dépend de la pile | Réponse multi-échelles et mélange des zones peu détaillées |
 | OpenFocus B | Dépend de la pile | Dépend de la pile | Mélange d'images voisines guidé par la profondeur |
 | OpenFocus C | Dépend de la pile | Dépend de la pile | Mélange des pixels sources selon la carte de profondeur finale |
 
@@ -745,7 +745,7 @@ Créez un fichier vide nommé `OpenFocus.portable` à côté de `OpenFocus.exe` 
 
 ### Métadonnées EXIF
 
-Les métadonnées source (modèle d'appareil, exposition, orientation, etc.) sont conservées : l'orientation est appliquée au chargement, et les exports PNG/TIFF/WebP intègrent automatiquement l'EXIF d'origine. Les exports JPG/BMP ne peuvent pas stocker l'EXIF complet et sont écrits sans lui.
+Les exports PNG/TIFF/JPEG/WebP conservent les métadonnées assainies de l'appareil, de l'objectif, de l'exposition, de la date et du GPS, et règlent Orientation sur 1. Le BMP n'intègre pas d'EXIF. Si les données EXIF ou ICC d'un JPEG dépassent la limite du format, OpenFocus affiche une erreur explicite ; choisissez PNG ou TIFF. Si l'EXIF assaini d'une source dépasse 16 MiB, OpenFocus refuse de la charger ; supprimez ou réduisez d'abord l'EXIF de ce fichier.
 
 ### Entrée HEIC/HEIF
 
@@ -820,7 +820,7 @@ Dans **Paramètres → Paramètres avancés → Nommage des sorties**, un préfi
 
 ### Partager un résultat
 
-Cliquez avec le bouton droit sur une sortie et ouvrez **Partager**. **Copier l'image d'aperçu (JPEG)** place le résultat actuel en pleine résolution, annotations et barre d'échelle comprises, dans le presse-papiers sous forme de vrai JPEG et fournit aussi un bitmap décodé. **Copier les chemins de fichiers** copie les URL de fichiers persistants de tous les résultats sélectionnés ; les résultats non enregistrés ou obsolètes demandent un dossier puis sont écrits en PNG avec leurs pixels 8/16 bits et annotations actuels. **Afficher dans le dossier** ouvre l'Explorateur, le Finder ou le gestionnaire de fichiers avec le fichier sélectionné. Un export existant n'est réutilisé que s'il correspond encore à l'image et aux annotations actuelles. **Créer un lien de partage privé** reste désactivé tant que le partage hébergé n'existe pas.
+Cliquez avec le bouton droit sur une sortie et ouvrez **Partager**. **Copier l'image d'aperçu (JPEG)** place le résultat en pleine résolution, avec annotations et barre d'échelle, dans le presse-papiers sous forme de vrai JPEG et de bitmap décodé. **Copier les chemins de fichiers** copie les chemins locaux comme texte et URL de fichier. Un résultat enregistré et inchangé utilise son fichier existant ; un résultat non enregistré, modifié ou dont le fichier manque est automatiquement écrit en PNG dans le dossier temporaire du système, sans être marqué comme enregistré. Le système peut supprimer les fichiers temporaires ; utilisez **Enregistrer sous** pour les conserver. **Afficher dans le dossier** ouvre l'Explorateur, le Finder ou le gestionnaire de fichiers avec le fichier sélectionné, sans demander de dossier. **Créer un lien de partage privé** reste désactivé tant que le partage hébergé n'existe pas.
 
 ### Format d'export par glisser-déposer
 

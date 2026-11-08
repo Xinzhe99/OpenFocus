@@ -450,6 +450,7 @@ class TestSmoothingControls:
         window = SimpleNamespace(method="openfocus_a", _fusion_parameters_by_method={})
         window.current_fusion_method = lambda: window.method
         window.persist_settings = lambda: None
+        window._mark_project_setting_changed = lambda: None
         window._sync_brightness_checkboxes = lambda *_: None
         window.fusion_parameter_panel = AlgorithmParameterPanel()
         for name in ("fusion_parameters_for", "set_fusion_parameters",
@@ -510,6 +511,24 @@ def test_tiled_depth_guided_transitions_match_whole_frame(method, dtype, graysca
                              tile_overlap=24, **options).fuse(frames, thread_count=1)
     error = np.abs(whole.astype(np.float32) - tiled.astype(np.float32))
     assert error.mean() < (1.5 if method == 'openfocus_b' else 8.0)
+
+
+def test_tiled_b_preserves_fine_texture_in_each_focus_region():
+    from core.multi_focus_fusion import MultiFocusFusion
+    from utils.image_utils import quantize_fuse_output
+
+    shape = (129, 131)
+    texture = ((np.indices(shape).sum(axis=0) % 2) * 32768 + 32767).astype(np.uint16)
+    flat = np.full(shape, 65535, np.uint16)
+    left = np.indices(shape)[1] < 65
+    frames = [np.where(left, texture, flat), np.where(left, flat, texture)]
+    fusion = MultiFocusFusion(algorithm='openfocus_b', tile_threshold=32,
+                              tile_block_size=48, tile_overlap=24,
+                              exposure_match=False, sort_mode='off')
+    result = quantize_fuse_output(fusion.fuse(frames, thread_count=1), True)
+    np.testing.assert_array_equal(result[:, 8:48], texture[:, 8:48])
+    np.testing.assert_array_equal(result[:, 84:120], texture[:, 84:120])
+
 
 
 def test_openfocus_a_extreme_aspect_ratio():

@@ -798,6 +798,16 @@ and grouped renders do not provide this report.
 - The scene has parallax (closer objects shift between frames)
 - Results show ghosting or doubling artifacts
 
+### ROI (Region) Rendering
+
+**Preview ROI** prepares the included frames with the current registration
+method and its parameters, and uses the current fusion method's exposure-matching setting
+to choose the brightness reference. With **No alignment**, ROI selection uses the original
+frames directly. Changing the stack, included frames, registration method or
+parameters, downscale width, frame order, sensor cleanup, or exposure-matching
+setting discards the old ROI stack; entering ROI again prepares a new one. The
+selected rectangle is then fused by the normal render path.
+
 ### Registration Settings
 
 Access additional settings via **Settings → Advanced Settings → Registration**:
@@ -894,28 +904,29 @@ For large stacks, leave space in the temporary directory for source frames and
 any additional aligned or corrected frames. If no directory is specified,
 OpenFocus estimates needs from known inputs and scratch data. If the system
 temporary disk lacks space, it may consider writable fixed local disks. An
-explicitly selected directory is never automatically replaced. Choose an
-existing writable folder under **Settings → Advanced Settings → Performance →
-Temporary directory** if a storage error occurs. Free-space checks are estimates
-at a moment in time, not reservations; space may run out later. Changes apply
-to newly created data; already loaded frames stay in their original directory
-until released.
+explicitly selected directory stays in the settings. If it becomes unavailable,
+OpenFocus warns and temporarily uses the system temporary directory; each new
+job retries the saved choice. A full selected disk is not replaced automatically.
+Choose an existing writable folder under **Settings → Advanced Settings →
+Performance → Temporary directory** if a storage error occurs. Free-space
+checks are estimates, not reservations; space may run out later. Existing
+frames remain in their original directory until released.
 
 Each neural tile uses every frame. Source frames and alignment scratch can be disk-backed, but free disk space and available memory still limit stack size. V2 spatial tiling approximates whole-image inference.
 
 ### OpenFocus A / B / C
 
-- **OpenFocus A**: selects source pixels using a multiscale focus response; first-frame ties and 16-bit precision are preserved.
+- **OpenFocus A**: uses a multiscale focus response and blends low-detail backgrounds; ties keep the first frame, and 16-bit precision is preserved.
 - **OpenFocus B**: blends neighboring frames guided by a smoothed depth map.
 - **OpenFocus C**: blends source pixels using the completed, smoothed depth map.
-- **Parameters**: A and B use the kernel slider for focus-response scale; C has no radius. A's smoothing setting has no effect, matching HF9 A; B and C smooth the depth map used for fusion.
+- **Parameters**: A and B use the kernel slider for focus-response scale; C has no radius. A's smoothing setting has no effect, matching the reference A method; B and C smooth the depth map used for fusion.
 
 **Smoothing**: one spin box under the kernel slider, with the meaning of the
 selected method (range 0–8, step 0.2):
 
 | Method | Label | Default | Effect |
 |---|---|---|---|
-| OpenFocus A | Blend smoothing | 2.0 | No effect, matching HF9 A |
+| OpenFocus A | Blend smoothing | 2.0 | No effect, matching the reference A method |
 | OpenFocus B | Depth smoothing | 1.44 | Controls smoothing of the depth map that guides blending |
 | OpenFocus C | Blend smoothing | 3.6 | Controls depth-map smoothing and fusion transitions |
 
@@ -932,11 +943,15 @@ CLI: `--depth-smoothing VALUE` (B) and `--blend-smoothing VALUE` (A, C).
 **Brightness options are per method.** *Match exposure before fusion* and
 *Remove brightness drift* are remembered separately for each fusion method,
 because they answer a per-stack question rather than a global preference.
-Both default to on for OpenFocus A/B/C (which have no built-in exposure
-calibration); the other methods keep the historical defaults (exposure
-matching on, drift removal off). Switching methods shows that method's own
-values, and those values survive a restart. **Reset** clears the remembered
-brightness, smoothing and Radius values of every method.
+In the GUI both default to off for every method. They are optional extra
+corrections, distinct from the reference product's brightness adjustment. Exposure matching scales
+every source frame to the last frame before fusion; removing brightness drift
+corrects the fused result's low frequencies afterwards. Switching methods shows
+that method's own values, and those values survive a restart. The CLI retains
+its separate exposure-matching default; use `--no-exposure-match` to disable it.
+**Reset** clears the remembered
+brightness, smoothing and Radius values of every method and returns both
+brightness options to off.
 
 **Sharpen fused output** applies a mild unsharp mask after fusion, before the
 result is converted to its output bit depth. It is off by default and can be
@@ -973,7 +988,7 @@ filename stems are retained, with the extension of the format you select.
 | StackMFF (V1) | Slow (GPU) | Not benchmarked here | Luma is order-invariant; chroma may differ on luma-distance ties |
 | StackMFF V2 | Fast (GPU) | Not benchmarked here | Continuous sweeps with a tiny model |
 | StackMFF V3 | Slow (GPU) | Excellent | Best quality |
-| OpenFocus A | Depends on stack | Depends on stack | Multiscale focus-response source-pixel selection |
+| OpenFocus A | Depends on stack | Depends on stack | Multiscale focus response and low-detail blending |
 | OpenFocus B | Depends on stack | Depends on stack | Depth-guided blending of neighboring frames |
 | OpenFocus C | Depends on stack | Depends on stack | Source blending using the final depth map |
 
@@ -1060,6 +1075,14 @@ Transformations are applied to the entire image stack, maintaining alignment bet
 Fusion can still leave a local defect — a halo around a high-contrast edge,
 a bristle taken from the wrong frame, noise in a flat area. The workspace
 copies pixels from the exact frames that produced the selected result:
+
+The workspace opens as soon as the result and any available thumbnails are
+ready. Thumbnails use existing source previews where present, and the selected
+frame's thumbnail is replaced with its processed pixels once the frame resolves.
+Only the source frame you select is resolved, in the background; at most two
+resolved frames stay cached. Some actions still read every frame on demand, for
+example **Auto background**, checkpoint save/load, or turning on the sharpness
+reference.
 
 1. Select one output and click **Retouch Result…** in the output header, or press
    `Ctrl+T`. You can also right-click an output and choose the same action. The
@@ -1444,10 +1467,11 @@ stick. Delete the marker to switch back to the normal profile.
 
 ### EXIF Metadata
 
-Source metadata (camera model, exposure, orientation and so on) is kept:
-orientation is applied on load, and PNG/TIFF/WebP exports embed the
-original EXIF automatically. JPG/BMP exports cannot store full EXIF and
-are written without it.
+PNG/TIFF/JPEG/WebP exports keep sanitized camera, lens, exposure, date and
+GPS metadata and set Orientation to 1. BMP output embeds no EXIF. If a JPEG's
+EXIF or ICC payload exceeds the format limit, OpenFocus reports a clear error;
+choose PNG or TIFF instead. If a source's sanitized EXIF exceeds 16 MiB,
+OpenFocus refuses to load it; remove or reduce that file's EXIF first.
 
 ### HEIC/HEIF Input
 
@@ -1677,13 +1701,14 @@ output names.
 Right-click an output and use the **Share** submenu. **Copy preview image
 (JPEG)** writes the current result at full resolution, including its labels and
 scale bar, to the clipboard as a real JPEG and also provides a decoded bitmap
-for desktop applications. **Copy file paths** copies persistent file URLs for
-every selected result; unsaved or outdated results ask for one folder and are
-written as PNG with their current 8/16-bit pixels and annotations. **Show in
-folder** opens Explorer, Finder or the desktop file manager with the file
-selected. Existing exported files are reused only while they still match the
-current image and annotations. **Create private share link** stays disabled
-until hosted sharing exists.
+for desktop applications. **Copy file paths** copies each selected local path
+as text and as a file URL. An unchanged saved result uses its existing file;
+an unsaved, changed or missing result is written as a PNG in the system
+temporary directory without being marked saved. Temporary files may be removed
+by the operating system; use **Save As** to keep one permanently. **Show in
+folder** opens Explorer, Finder or the desktop file manager with that file
+selected, without asking for a folder. **Create private share link** remains
+disabled until hosted sharing exists.
 
 ### Drag-out Export Format
 

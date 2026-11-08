@@ -1,11 +1,11 @@
-"""Behavior regressions for the standalone proven HF9 translation subset."""
+"""Behavior regressions for the standalone translation subset."""
 from dataclasses import FrozenInstanceError
 import hashlib
 
 import numpy as np
 import pytest
 
-from core import hf9_alignment as alignment
+from core import openfocus_alignment as alignment
 from core.registration import RegistrationCancelled
 
 

@@ -244,12 +244,12 @@ PLAN_CACHE_VERSION = 2
 
 def _plan_backend(identity):
     return ('opencv-perspective-v1' if (identity or {}).get('registration_backend') ==
-            'opencv-perspective-v1' else 'hf9-wide4d-v1')
+            'opencv-perspective-v1' else 'openfocus-wide4d-v1')
 
 
 def _plan_signature(folder, filenames, sources, identity):
     from core.source_frames import SourceFrame
-    from core.hf9_alignment import _source_context
+    from core.openfocus_alignment import _source_context
     if len(filenames) != len(sources):
         raise ValueError('Alignment cache source count mismatch')
     descriptions = []
@@ -288,8 +288,8 @@ def _validate_plan_request(plan, identity):
                 or int(request.get('downscale_width') or 1024) != plan.downscale_width):
             raise ValueError('Perspective plan parameters differ from cache request')
         return
-    if _plan_backend(identity) != 'hf9-wide4d-v1':
-        raise ValueError('HF9 plan backend differs from cache request')
+    if _plan_backend(identity) != 'openfocus-wide4d-v1':
+        raise ValueError('OpenFocus plan backend differs from cache request')
     parameters = (identity or {}).get('effective_params', {})
     if ('max_shift_ratio' in parameters and float(parameters['max_shift_ratio']) != plan.max_shift_ratio
             or 'reference_frame' in parameters and int(parameters['reference_frame']) - 1 != plan.reference_index
@@ -301,7 +301,7 @@ def _validate_plan_request(plan, identity):
 
 def load_alignment_plan(folder, filenames, sources, *, identity=None, should_cancel=None):
     """Load and validate only immutable metadata; never decode N cached frames."""
-    from core.hf9_alignment import AlignmentPlan
+    from core.openfocus_alignment import AlignmentPlan
     _check_cancel(should_cancel)
     if not folder or not os.path.isdir(folder):
         return None

@@ -1,4 +1,4 @@
-"""Bounded HF9 depth-guided fusion in the native integer code domain.
+"""Bounded depth-guided fusion in the native integer code domain.
 
 C consumes the completed canvas depth in reverse source order. Its RGB
 output is the full-resolution merge; it has no reconstruction pyramid.
@@ -7,7 +7,7 @@ import numpy as np
 
 from fusion_methods.openfocus_depth import depth_map
 from core.frame_storage import create_transient_frame as create_frame
-from fusion_methods._hf9_execution import (
+from fusion_methods._openfocus_execution import (
     execution_job, configure_rows, run_bands,
 )
 
@@ -26,11 +26,12 @@ def _inputs(input_source, img_resize, should_cancel):
 
 def _depth(frames, shape, img_resize, kernel_size, smoothing, should_cancel,
            depth_override, thread_count, progress_callback=None, *, return_codes=False,
-           half_resolution=False):
+           half_resolution=False, preserve_detail=False):
     if depth_override is None:
         return depth_map(frames, img_resize, kernel_size, smoothing, should_cancel,
                          progress_callback=progress_callback, thread_count=thread_count,
-                         return_codes=return_codes, half_resolution=half_resolution)
+                         return_codes=return_codes, half_resolution=half_resolution,
+                         preserve_detail=preserve_detail)
     depth = np.asarray(depth_override, dtype=np.float32)
     if depth.shape != shape[:2]:
         raise ValueError("depth_override must match the source height and width")
@@ -44,7 +45,7 @@ def _source_codes(source, img_resize, should_cancel):
     """Borrow native samples; allocate code planes only at the legacy boundary."""
     from core.source_frames import resolve_frame
     from fusion_methods.openfocus_ab import _check_cancel
-    from fusion_methods._hf9_pixels import frame_codes
+    from fusion_methods._openfocus_pixels import frame_codes
     _check_cancel(should_cancel)
     frame = resolve_frame(source)
     _check_cancel(should_cancel)
@@ -57,7 +58,7 @@ def _merge_codes(accumulator, current, depth, index, count, should_cancel,
                  *, source_scale=1, reverse=False):
     """Ordered MergeWeighted bands, skipping inactive samples before color reads."""
     from fusion_methods.openfocus_ab import _check_cancel
-    from fusion_methods._hf9_kernels import merge_rows
+    from fusion_methods._openfocus_kernels import merge_rows
     step = 65535 // max(1, count - 1)
     first = index == (count - 1 if reverse else 0)
     def merge(start, stop):
@@ -99,9 +100,10 @@ def _active_sources(depth, count, should_cancel):
         _check_cancel(should_cancel)
         codes = depth[start:start + 128].astype(np.int64)
         lower = np.clip(codes // step, 0, count - 1)
-        active[np.unique(lower)] = True
+        active |= np.bincount(lower.ravel(), minlength=count).astype(bool)
         fraction = codes % step != 0
-        active[np.unique(np.minimum(lower[fraction] + 1, count - 1))] = True
+        upper = np.minimum(lower[fraction] + 1, count - 1)
+        active |= np.bincount(upper, minlength=count).astype(bool)
     return active
 
 
@@ -109,7 +111,7 @@ def _active_sources(depth, count, should_cancel):
 def openfocus_b_impl(input_source, img_resize=None, kernel_size: int = 17,
                      thread_count: int = None, depth_smoothing: float = 1.44,
                      should_cancel=None, depth_override=None, progress_callback=None):
-    """Fuse integer source codes with the HF9 ordered MergeWeighted bands."""
+    """Fuse integer source codes with ordered weighted-merge bands."""
     from core import source_frames
     from fusion_methods.openfocus_ab import _check_cancel
     frames, shape = _inputs(input_source, img_resize, should_cancel)
@@ -126,7 +128,8 @@ def openfocus_b_impl(input_source, img_resize=None, kernel_size: int = 17,
             progress_callback(index + 1, total)
     depth = _depth(frames, shape, img_resize, kernel_size,
                    smoothing * (5.0 / 1.2), should_cancel, depth_override,
-                   thread_count, depth_progress, return_codes=True)
+                   thread_count, depth_progress, return_codes=True,
+                   half_resolution=True, preserve_detail=True)
     active = _active_sources(depth, count, should_cancel)
     result = create_frame(shape, np.uint16)
     for index, source in enumerate(frames):

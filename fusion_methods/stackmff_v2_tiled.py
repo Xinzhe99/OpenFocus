@@ -171,10 +171,12 @@ def tiled_depth(source, model_path, use_gpu, should_cancel=None,
                                       execution_plan, thread_count,
                                       resource_preference, result_count)
     block = max(block, min(common.ATTENTION_PAD_ALIGN, h, w))
+    if block >= common.ATTENTION_PAD_ALIGN:
+        block = (block // common.ATTENTION_PAD_ALIGN) * common.ATTENTION_PAD_ALIGN
     overlap = max(0, min(int(tile_overlap), block // 2))
-    step = block - overlap
-    ys = sorted({min(y, h - block) for y in range(0, h, step)})
-    xs = sorted({min(x, w - block) for x in range(0, w, step)})
+    from core.multi_focus_fusion import _tile_axis_starts
+    ys = sorted(set(_tile_axis_starts(h, block, overlap, common.ATTENTION_PAD_ALIGN)))
+    xs = sorted(set(_tile_axis_starts(w, block, overlap, common.ATTENTION_PAD_ALIGN)))
     total = len(xs) * len(ys)
     expected = create_frame((h, w), np.float32)
     weight = create_frame((h, w), np.float32)

@@ -2,7 +2,7 @@
 import numpy as np
 import pytest
 
-from fusion_methods import openfocus_bc as bc, _hf9_pixels as pixels
+from fusion_methods import openfocus_bc as bc, _openfocus_pixels as pixels
 from utils.image_utils import quantize_fuse_output
 
 
@@ -72,6 +72,17 @@ def _native_sources(tmp_path):
         sources.append(source_frames.scan_source(str(path), header_only=True)[0])
     source_frames.SOURCE_CACHE.clear()
     return sources, pixels
+
+
+def test_b_active_sources_include_fractional_neighbors_across_row_bands():
+    count = 92
+    step = 65535 // (count - 1)
+    depth = np.zeros((129, 4), np.uint16)
+    depth[0, 0] = 7 * step
+    depth[128, 0] = 23 * step + 1
+    depth[128, 1] = 65535
+    active = bc._active_sources(depth, count, None)
+    assert np.flatnonzero(active).tolist() == [0, 7, 23, 24, 91]
 
 
 @pytest.mark.parametrize('method', [bc.openfocus_b_impl, bc.openfocus_c_impl])

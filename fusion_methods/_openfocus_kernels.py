@@ -1,4 +1,4 @@
-"""Exact integer rows for HF9 source preparation and weighted merges.
+"""Exact integer rows for OpenFocus source preparation and weighted merges.
 
 The caller owns allocation and checks cancellation between bounded row calls.
 Use the existing admitted compiler import; frozen installs need no disk cache.
@@ -11,14 +11,19 @@ from fusion_methods._depth_kernel import njit
 
 
 @njit(nogil=True)
-def gray_rows(image, output, start, stop, scale):
+def gray_rows(image, output, start, stop, scale, depth_color=False):
     for y in range(start, stop):
         for x in range(image.shape[1]):
             if image.ndim == 2:
                 value = np.int64(image[y, x])
             elif image.shape[2] >= 3:
-                value = (np.int64(image[y, x, 0]) + np.int64(image[y, x, 1])
-                         + np.int64(image[y, x, 2])) // 3
+                total = (np.int64(image[y, x, 0]) + np.int64(image[y, x, 1])
+                         + np.int64(image[y, x, 2]))
+                # Match the depth color-code range without an intermediate image.
+                if depth_color:
+                    output[y, x] = (total * scale * 85) >> 8
+                    continue
+                value = total // 3
             elif image.shape[2] == 1:
                 value = np.int64(image[y, x, 0])
             else:
@@ -81,17 +86,56 @@ def burt_accumulate_rows(laplacian, response, level, start, stop):
 
 
 @njit(nogil=True)
-def select_rows(image, response, best, output, start, stop, scale, first):
+def select_rows(image, response, best, output, start, stop, scale, first,
+                accumulated, minimum):
     for y in range(start, stop):
         for x in range(response.shape[1]):
             score = response[y, x]
-            if first or score > best[y, x]:
+            previous = best[y, x]
+            take = first or score > previous
+            collect = first or previous < 65536
+            if first:
+                minimum[y, x] = score
+            elif collect:
+                minimum[y, x] = min(minimum[y, x], score)
+            if image.ndim == 2:
+                value = np.int64(image[y, x]) * scale
+                if first:
+                    accumulated[y, x] = value
+                elif collect:
+                    accumulated[y, x] += value
+                if take:
+                    output[y, x] = value
+            else:
+                for channel in range(image.shape[2]):
+                    value = np.int64(image[y, x, channel]) * scale
+                    if first:
+                        accumulated[y, x, channel] = value
+                    elif collect:
+                        accumulated[y, x, channel] += value
+                    if take:
+                        output[y, x, channel] = value
+            if take:
                 best[y, x] = score
-                if image.ndim == 2:
-                    output[y, x] = np.int64(image[y, x]) * scale
-                else:
-                    for channel in range(image.shape[2]):
-                        output[y, x, channel] = np.int64(image[y, x, channel]) * scale
+
+
+@njit(nogil=True)
+def blend_low_response_rows(output, best, minimum, accumulated, count, start, stop):
+    for y in range(start, stop):
+        for x in range(best.shape[1]):
+            score = np.int64(best[y, x])
+            if score >= 65536 or score == minimum[y, x]:
+                continue
+            strength = min(32768, 65536 - score)
+            if output.ndim == 2:
+                average = (np.int64(accumulated[y, x]) + count // 2) // count
+                output[y, x] = (np.int64(output[y, x]) * (32768 - strength)
+                                + average * strength + 16384) >> 15
+            else:
+                for channel in range(output.shape[2]):
+                    average = (np.int64(accumulated[y, x, channel]) + count // 2) // count
+                    output[y, x, channel] = (np.int64(output[y, x, channel]) * (32768 - strength)
+                                             + average * strength + 16384) >> 15
 
 
 @njit(nogil=True)

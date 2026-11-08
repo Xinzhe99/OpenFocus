@@ -1322,14 +1322,11 @@ class RetouchDialog(QDialog):
         self.frame_list.clear()
         for index, frame in enumerate(self.doc.frames):
             image = self.doc.source_previews[index]
-            h, w = image.shape[:2]
-            scale = min(1.0, 64 / max(h, w))
-            small = cv2.resize(image, (max(1, int(w * scale)), max(1, int(h * scale))),
-                               interpolation=cv2.INTER_AREA)
-            thumb = thumbnail_bgr(self._display_image(small), 64)
-            item = QListWidgetItem(
-                QIcon(QPixmap.fromImage(_qimage_from_bgr(thumb))),
-                str(index + 1))
+            item = QListWidgetItem(str(index + 1))
+            if image is not None:
+                metadata = None if self.doc.source_previews_are_display[index] else ...
+                thumb = thumbnail_bgr(self._display_image(image, metadata), 64)
+                item.setIcon(QIcon(QPixmap.fromImage(_qimage_from_bgr(thumb))))
             item.setToolTip(frame.name)
             item.setSizeHint(QSize(76, 82))
             item.setTextAlignment(Qt.AlignmentFlag.AlignHCenter
@@ -1487,7 +1484,7 @@ class RetouchDialog(QDialog):
         try:
             display, valid = run_pixel_worker(
                 self, trans.t("retouch_title"),
-                lambda: (self._display_image(frame.image, metadata), doc.mask_for(index)),
+                lambda: (self._display_image(doc.source_pixels(index), metadata), doc.mask_for(index)),
                 show_progress=False)
         except Exception as exc:
             if not self._closing and request == self._source_request:
@@ -1504,6 +1501,10 @@ class RetouchDialog(QDialog):
             return False
         if display.ndim == 2:
             display = cv2.cvtColor(display, cv2.COLOR_GRAY2BGR)
+        item = self.frame_list.item(index)
+        if item is not None:
+            thumb = thumbnail_bgr(display, 64)
+            item.setIcon(QIcon(QPixmap.fromImage(_qimage_from_bgr(thumb))))
         self._pure_source_qimage = _qimage_from_bgr(display)
         if self.chk_sharp.isChecked() and self._sharpness_maps:
             heat = self._sharpness_maps.get(self.doc.frame_index)

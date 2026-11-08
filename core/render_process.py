@@ -59,7 +59,7 @@ class _Relay:
         self.connection = connection
         self.cancel_event = cancel_event
         self.lock = threading.RLock()
-        self.last_progress = 0.0
+        self.last_progress = None
         self.directories = set()
 
     def send(self, message):
@@ -74,12 +74,17 @@ class _Relay:
     def progress(self, done, total):
         with self.lock:
             now = time.monotonic()
-            if now - self.last_progress >= .1 or done >= total:
+            if self.last_progress is None or now - self.last_progress >= .1 or done >= total:
                 self.last_progress = now
                 self.send(('progress', int(done), int(total)))
 
     def stage(self, stage):
-        self.send(('stage', stage))
+        # The parent already owns the shared lease. The child's independent
+        # process-local lease does not represent a wait for another GUI job.
+        if stage != 'waiting':
+            with self.lock:
+                self.last_progress = None
+                self.send(('stage', stage))
 
     def temporary_file(self, path):
         state = storage.capture_scratch()
@@ -231,6 +236,7 @@ class RenderProcessWorker(RenderWorker):
         try:
             self.stage_signal.emit('waiting')
             with heavy_job(self._check_current), storage.scratch_directory():
+                self.stage_signal.emit('prepare')
                 result = self._run_process()
         except RegistrationCancelled:
             error = 'CANCELLED: render cancelled'

@@ -448,21 +448,21 @@ O OpenFocus oferece dez algoritmos de fusão (além de um modo somente alinhamen
 
 Cada bloco neural usa todos os quadros. Quadros de origem e dados temporários de alinhamento podem usar o disco; espaço livre e memória disponível limitam o tamanho da pilha. Os blocos espaciais de V2 aproximam a inferência da imagem inteira.
 
-Se nenhum diretório temporário for especificado, o OpenFocus estima o espaço necessário a partir das entradas conhecidas e dos dados temporários. Se faltar espaço no disco temporário do sistema, ele pode considerar discos locais fixos graváveis. Um diretório escolhido explicitamente não é substituído automaticamente. A verificação de espaço é uma estimativa naquele momento, não uma reserva; o espaço pode acabar depois. Em caso de erro de armazenamento, escolha um diretório gravável nas configurações avançadas.
+Se nenhum diretório temporário for especificado, o OpenFocus estima o espaço necessário com base nas entradas e nos dados temporários e pode considerar discos locais fixos graváveis quando faltar espaço. Se o diretório escolhido estiver indisponível, avisa e usa temporariamente o diretório do sistema; cada nova tarefa tenta novamente a escolha salva. Um disco escolhido cheio não provoca troca automática. A verificação é uma estimativa, não uma reserva. Em caso de erro, escolha um diretório gravável nas configurações avançadas.
 
 
 ### OpenFocus A / B / C
 
-- **OpenFocus A**: seleciona os pixels de origem por uma resposta de foco multiescala.
+- **OpenFocus A**: usa uma resposta de foco multiescala e mistura fundos com poucos detalhes.
 - **OpenFocus B**: mistura quadros vizinhos guiado por um mapa de profundidade suavizado.
 - **OpenFocus C**: mistura os pixels de origem com base no mapa de profundidade final suavizado.
-- **Parâmetros**: A e B usam o controle de kernel para a escala de resposta de foco; C não tem raio. A suavização de A não tem efeito, como no HF9 A; B e C suavizam o mapa de profundidade usado para a fusão.
+- **Parâmetros**: A e B usam o controle de kernel para a escala de resposta de foco; C não tem raio. A suavização de A não tem efeito, como no produto de referência A; B e C suavizam o mapa de profundidade usado para a fusão.
 
 **Suavização**: um único campo numérico abaixo do controle de kernel, cujo significado depende do método selecionado (intervalo 0–8, passo 0,2):
 
 | Método | Rótulo | Padrão | Efeito |
 |---|---|---|---|
-| OpenFocus A | Suavização da mistura | 2,0 | Sem efeito, como no HF9 A |
+| OpenFocus A | Suavização da mistura | 2,0 | Sem efeito, como no produto de referência A |
 | OpenFocus B | Suavização da profundidade | 1,44 | Controla a suavização do mapa de profundidade que guia a mistura |
 | OpenFocus C | Suavização da mistura | 3,6 | Controla a suavização do mapa de profundidade e as transições de fusão |
 
@@ -474,7 +474,7 @@ C não tem parâmetro de raio, então seu controle de kernel fica oculto.
 
 CLI: `--depth-smoothing VALUE` (B) e `--blend-smoothing VALUE` (A, C).
 
-**As opções de brilho são por método.** *Igualar exposição antes da fusão* e *Remover deriva de brilho* são lembradas separadamente para cada método de fusão, porque respondem a uma questão de cada pilha e não a uma preferência global. Ambas ficam ativadas por padrão em OpenFocus A/B/C (que não têm calibração de exposição integrada); os outros métodos mantêm os padrões históricos (igualação de exposição ativada, remoção de deriva desativada). Trocar de método mostra os valores daquele método, e esses valores sobrevivem ao reinício. **Redefinir** limpa os valores lembrados de brilho, suavização e raio de todos os métodos.
+**As opções de brilho são por método.** *Igualar exposição antes da fusão* e *Remover deriva de brilho* são lembradas separadamente para cada método. Na interface, ambas ficam desativadas por padrão em todos os métodos; são correções adicionais, diferentes do ajuste de brilho do produto de referência. A igualação de exposição escala cada quadro de origem ao último antes da fusão; a remoção da deriva de brilho corrige depois as baixas frequências do resultado fundido. Trocar de método mostra seus valores, preservados após reiniciar. Na CLI, a igualação de exposição continua ativada por padrão; use `--no-exposure-match` para desativá-la. **Redefinir** limpa os valores lembrados de brilho, suavização e raio de todos os métodos e volta a deixar as duas opções de brilho desativadas.
 
 **Nitidez da saída fundida** aplica uma máscara de nitidez suave após a fusão, antes de o resultado ser convertido para sua profundidade de saída. Fica desativada por padrão e pode ser ativada em **Configurações de renderização** ou nas opções do lote; o sinalizador equivalente da CLI é `--sharpen-output`. Afeta a imagem fundida, não os quadros registrados nem os mapas de profundidade. Pode tornar as bordas mais distintas, mas amplificar ruído e halos. É salva com o projeto e lembrada entre sessões.
 
@@ -500,7 +500,7 @@ Selecione **Somente alinhamento (sem fusão)** para registrar a pilha e adiciona
 | StackMFF (V1) | Lenta (GPU) | Não avaliada aqui | Luminância independente da ordem; crominância pode variar em caso de empate nas distâncias de luminância |
 | StackMFF V2 | Rápida (GPU) | Não avaliada aqui | Varreduras contínuas com um modelo minúsculo |
 | StackMFF V3 | Lenta (GPU) | Excelente | Qualidade máxima |
-| OpenFocus A | Depende da pilha | Depende da pilha | Seleção multiescala de pixels em foco |
+| OpenFocus A | Depende da pilha | Depende da pilha | Resposta multiescala e mistura de áreas pouco detalhadas |
 | OpenFocus B | Depende da pilha | Depende da pilha | Mistura de quadros vizinhos guiada por profundidade |
 | OpenFocus C | Depende da pilha | Depende da pilha | Mistura de pixels de origem com base no mapa de profundidade final |
 
@@ -740,7 +740,7 @@ Crie um arquivo vazio chamado `OpenFocus.portable` ao lado de `OpenFocus.exe` (o
 
 ### Metadados EXIF
 
-Os metadados de origem (modelo da câmera, exposição, orientação e assim por diante) são mantidos: a orientação é aplicada ao carregar, e exportações PNG/TIFF/WebP incorporam o EXIF original automaticamente. Exportações JPG/BMP não armazenam o EXIF completo e são gravadas sem ele.
+As exportações PNG/TIFF/JPEG/WebP preservam metadados sanitizados de câmera, lente, exposição, data e GPS e definem Orientation como 1. O BMP não incorpora EXIF. Se os dados EXIF ou ICC de um JPEG excederem o limite do formato, o OpenFocus mostra um erro claro; escolha PNG ou TIFF. Se o EXIF sanitizado de uma origem exceder 16 MiB, o OpenFocus recusa carregá-la; remova ou reduza primeiro o EXIF desse arquivo.
 
 ### Entrada HEIC/HEIF
 
@@ -815,7 +815,7 @@ Em **Configurações → Configurações avançadas → Nomes de saída**, um pr
 
 ### Compartilhar um resultado
 
-Clique com o botão direito em uma saída e abra **Compartilhar**. **Copiar imagem de pré-visualização (JPEG)** coloca o resultado atual em resolução total, incluindo rótulos e barra de escala, na área de transferência como um JPEG real e também fornece um bitmap decodificado. **Copiar caminhos de arquivo** copia URLs de arquivos persistentes de todos os resultados selecionados; resultados não salvos ou desatualizados pedem uma pasta e são gravados como PNG com os pixels de 8/16 bits e anotações atuais. **Mostrar na pasta** abre o Explorer, o Finder ou o gerenciador de arquivos com o arquivo selecionado. Exportações existentes só são reutilizadas enquanto ainda correspondem à imagem e às anotações atuais. **Criar link de compartilhamento privado** permanece desativado até existir compartilhamento hospedado.
+Clique com o botão direito em uma saída e abra **Compartilhar**. **Copiar imagem de pré-visualização (JPEG)** coloca o resultado em resolução total, com rótulos e barra de escala, na área de transferência como JPEG real e bitmap decodificado. **Copiar caminhos de arquivo** copia os caminhos locais como texto e URLs de arquivo. Um resultado salvo e inalterado usa o arquivo existente; um resultado não salvo, alterado ou sem arquivo é gravado automaticamente como PNG na pasta temporária do sistema, sem ser marcado como salvo. O sistema pode excluir arquivos temporários; use **Salvar como** para guardá-los. **Mostrar na pasta** abre o Explorer, o Finder ou o gerenciador de arquivos com o arquivo selecionado, sem pedir uma pasta. **Criar link de compartilhamento privado** permanece desativado até existir compartilhamento hospedado.
 
 ### Formato de arrastar para exportação
 

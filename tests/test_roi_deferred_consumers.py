@@ -61,6 +61,42 @@ def _aligned(qapp, dtype, linear):
         assert worker.wait(15000)
 
 
+@pytest.mark.parametrize('method', ['homography', 'ecc', 'both', 'openfocus'])
+def test_roi_worker_matches_selected_registration(qapp, method):
+    import cv2
+    from core.registration import ImageRegistration
+
+    rng = np.random.default_rng(25)
+    first = rng.integers(20, 230, (160, 192, 3), dtype=np.uint8)
+    second = cv2.warpAffine(first, np.float32([[1, 0, 2.5], [0, 1, -1.5]]),
+                            (192, 160), borderMode=cv2.BORDER_REPLICATE)
+    frames = [first, second]
+    parameters = {'failure_policy': 'continue'}
+    direct = ImageRegistration(method=method, parameters=parameters,
+                               downscale_width=128, brightness_reference='last',
+                               defer_warps=True).process(frames, thread_count=1)
+    worker = workers.ROIAlignmentWorker(frames, reg_downscale_width=128,
+                                        thread_count=1, alignment=method,
+                                        registration_parameters=parameters,
+                                        exposure_match=True)
+    results, errors = [], []
+    worker.finished_signal.connect(lambda images, elapsed: results.append(images))
+    worker.error_signal.connect(errors.append)
+    worker.start()
+    try:
+        _until(qapp, lambda: not worker.isRunning())
+        qapp.processEvents()
+        assert not errors and len(results) == 1
+        for expected, actual in zip(direct, results[0]):
+            np.testing.assert_allclose(source_frames.resolve_frame(actual),
+                                       source_frames.resolve_frame(expected),
+                                       rtol=0, atol=1)
+    finally:
+        if worker.isRunning():
+            worker.cancel()
+        assert worker.wait(15000)
+
+
 def _expected_color(image, metadata):
     pixels = develop_linear(image, metadata) if metadata is not None else image
     return tuple(int(value) for value in to_display_uint8(pixels)[0, 0, ::-1])

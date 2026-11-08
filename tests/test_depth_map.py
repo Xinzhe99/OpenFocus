@@ -57,6 +57,13 @@ class TestComputeFocusIndex:
         assert np.any(np.abs(sharp - smooth) > 0.01)
         assert smooth[:, :30].mean() < smooth[:, 90:].mean()
 
+    @pytest.mark.parametrize("shape", [(1, 131), (131, 1), (2, 2), (3, 3), (129, 131)])
+    def test_openfocus_b_depth_keeps_fine_uint16_texture(self, shape):
+        sharp = ((np.indices(shape).sum(axis=0) % 2) * 32768 + 32767).astype(np.uint16)
+        flat = np.full(shape, 65535, np.uint16)
+        depth = compute_focus_index([flat, sharp], "openfocus_b")
+        np.testing.assert_array_equal(depth, np.ones(shape, np.float32))
+
     def test_weighted_average_methods_rejected(self):
         """加权平均类融合没有逐像素决策——不提供深度图（v1.44 设计收敛）。"""
         for method in ("guided_filter", "openfocus_a"):

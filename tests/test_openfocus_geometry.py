@@ -1,4 +1,4 @@
-"""HF9 A pixels preserve independent Burt interpolation at odd edges."""
+"""OpenFocus A preserves Burt interpolation at odd edges."""
 
 import numpy as np
 import pytest

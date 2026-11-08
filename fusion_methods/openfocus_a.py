@@ -1,10 +1,10 @@
-"""HF9 method A: Burt pyramid response and ordered hard source selection."""
+"""OpenFocus A: Burt response with low-detail background blending."""
 
 import cv2
 import numpy as np
 from core.frame_storage import create_transient_frame as create_frame
-from fusion_methods._hf9_pixels import frame_codes, frame_gray_codes, gray_codes, output_codes
-from fusion_methods._hf9_execution import execution_job, configure_rows, run_bands
+from fusion_methods._openfocus_pixels import frame_codes, frame_gray_codes, gray_codes, output_codes
+from fusion_methods._openfocus_execution import execution_job, configure_rows, run_bands
 
 
 def _down2(gray, should_cancel, check_cancel):
@@ -83,7 +83,7 @@ def _response(code, radius, should_cancel, check_cancel, *, u8=False):
 
 def _hard_response(gray, radius, should_cancel, check_cancel):
     """Exact Burt response in Q4; dyadic interpolation needs no float plane."""
-    from fusion_methods._hf9_kernels import (
+    from fusion_methods._openfocus_kernels import (
         down2_rows, burt_laplacian_rows, burt_accumulate_rows,
     )
 
@@ -119,15 +119,15 @@ def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 17,
                      blend_mode: str = 'hard', soft_gamma: float = 1.0,
                      feather_theta: float = 0.9,
                      should_cancel=None, progress_callback=None):
-    """Select source pixels with the HF9 Burt-pyramid response.
+    """Fuse with the Burt-pyramid focus response.
 
     ``kernel_size=2*R+1`` controls ``floor(log2(R))+3`` levels. Smoothing is
-    intentionally inert, as in HF9 method A. Strict source-order argmax keeps
-    the first frame on ties. Eight-bit output applies E-37; sixteen-bit codes
-    retain all bits through the application's float32 output boundary.
+    intentionally inert. Clear focus keeps the highest-response source;
+    low-response areas blend the stack unless all responses tie. Eight-bit
+    output applies E-37; sixteen-bit codes retain their input precision.
 
     ``soft`` and ``feather`` are experimental, unregistered merge modes.
-    Their historical blending stays separate from the default hard path.
+    Their historical blending stays separate from the default path.
     """
     from fusion_methods.openfocus_ab import (
         _check_cancel, _collect_images, _prepare_frame,
@@ -258,9 +258,11 @@ def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 17,
             for index, (frame, response) in produced:
                 _check_cancel(should_cancel)
                 lr = _log_rows(response)
-                m = lr.max(axis=0)
-                log_max = m if log_max is None else np.maximum(log_max, m)
-                del frame, response, lr, m
+                if log_max is None:
+                    log_max = lr
+                else:
+                    np.maximum(log_max, lr, out=log_max)
+                del frame, response, lr
                 step += 1
                 if progress_callback is not None:
                     progress_callback(step, total_steps)
@@ -278,7 +280,7 @@ def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 17,
                 def denominator(start, stop):
                     _check_cancel(should_cancel)
                     rows = slice(start, stop)
-                    denom[rows] += np.exp(_soft_gamma * (lr[rows] - log_max[rows, None]))
+                    denom[rows] += np.exp(_soft_gamma * (lr[rows] - log_max[rows]))
                 run_bands(denom.shape[0], 128, denominator,
                           scratch_bytes=min(128, denom.shape[0]) * denom.shape[1] * 24)
                 del frame, response, lr
@@ -300,7 +302,7 @@ def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 17,
                 def accumulate_soft(start, stop):
                     _check_cancel(should_cancel)
                     rows = slice(start, stop)
-                    weight = np.exp(_soft_gamma * (lr[rows] - log_max[rows, None])) / \
+                    weight = np.exp(_soft_gamma * (lr[rows] - log_max[rows])) / \
                         np.where(denom[rows] > 0, denom[rows], 1.0)
                     if frame.ndim == 3:
                         accumulated[rows] += weight[:, :, None] * frame[rows]
@@ -314,36 +316,22 @@ def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 17,
                     progress_callback(step, total_steps)
             output = accumulated
         else:
+            from fusion_methods._openfocus_kernels import select_rows
             for index, (frame, response) in produced:
                 if index == 0:
                     best = response
-                    if fast_hard:
-                        output = create_frame(frame.shape, np.uint16)
-                    else:
-                        output = frame
-                        del frame, response
-                        if progress_callback is not None:
-                            progress_callback(index + 1, len(frames))
-                        _check_cancel(should_cancel)
-                        continue
+                    output = create_frame(frame.shape, np.uint16)
+                    minimum = create_frame(response.shape, np.int32)
+                    sum_dtype = np.uint32 if len(frames) <= 65536 else np.uint64
+                    accumulated = create_frame(frame.shape, sum_dtype)
                 if frame.shape != output.shape:
                     raise ValueError("OpenFocus A requires frames with matching shapes")
+                scale = 256 if fast_hard and frame.dtype == np.uint8 else 1
                 def select(start, stop):
                     _check_cancel(should_cancel)
-                    if fast_hard:
-                        from fusion_methods._hf9_kernels import select_rows
-
-                        select_rows(frame, response, best, output, start, stop,
-                                    256 if frame.dtype == np.uint8 else 1, index == 0)
-                    else:
-                        rows = slice(start, stop)
-                        better = response[rows] > best[rows]
-                        np.copyto(output[rows], frame[rows],
-                                  where=better[:, :, None] if frame.ndim == 3 else better)
-                        np.copyto(best[rows], response[rows], where=better)
-                        del better
-                run_bands(output.shape[0], 128, select,
-                          scratch_bytes=min(128, output.shape[0]) * output.shape[1])
+                    select_rows(frame, response, best, output, start, stop, scale,
+                                index == 0, accumulated, minimum)
+                run_bands(output.shape[0], 128, select)
                 del frame, response
                 if progress_callback is not None:
                     progress_callback(index + 1, len(frames))
@@ -354,7 +342,13 @@ def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 17,
     _check_cancel(should_cancel)
     if hard:
         from core.source_frames import SOURCE_CACHE
-        del best
+        from fusion_methods._openfocus_kernels import blend_low_response_rows
+        def blend_background(start, stop):
+            _check_cancel(should_cancel)
+            blend_low_response_rows(output, best, minimum, accumulated,
+                                    len(frames), start, stop)
+        run_bands(output.shape[0], 128, blend_background)
+        del best, minimum, accumulated
         SOURCE_CACHE.clear()
         return output_codes(output, frames, should_cancel, e37=True)
     np.clip(output, 0, 255, out=output)

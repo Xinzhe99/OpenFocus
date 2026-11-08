@@ -47,6 +47,20 @@ def test_public_consumers_keep_v1_v3_models_and_reconstruction_distinct(tiled):
             frames, None, weights_path('stackmff_v3_final.onnx'), False, thread_count=1))
 
 
+@pytest.mark.parametrize('method', ['stackmff', 'stackmffv2', 'stackmffv3'])
+@pytest.mark.parametrize('shape,block', [((65, 129), 64), ((190, 259), 128)])
+def test_neural_tiles_cover_short_edge_without_black_seams(method, shape, block):
+    pytest.importorskip('onnxruntime')
+    from core.multi_focus_fusion import MultiFocusFusion
+
+    frames = [np.full((*shape, 3), 100, np.uint8) for _ in range(2)]
+    result = MultiFocusFusion(method, use_gpu=False, exposure_match=False,
+                              tile_threshold=32, tile_block_size=block,
+                              tile_overlap=block // 4).fuse(frames, thread_count=1)
+    assert result.shape == frames[0].shape
+    assert result.min() >= 95 and result.max() <= 105
+
+
 def test_sessions_isolate_checkpoint_shape_and_directml_adapter(monkeypatch, tmp_path):
     calls = []
 

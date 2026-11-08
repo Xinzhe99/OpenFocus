@@ -1,6 +1,8 @@
 import os
 import re
 import uuid
+import tempfile
+import weakref
 import threading
 from dataclasses import dataclass, replace
 from copy import deepcopy
@@ -14,13 +16,13 @@ from utils.file_dialogs import FileDialog
 from PyQt6.QtWidgets import (QListWidgetItem, QMenu, QMessageBox,
                              QProgressDialog)
 
-from controllers.export_manager import get_imwrite_params
+from controllers.export_manager import get_imwrite_params, image_write_error_text
 from utils import (show_error_box, show_message_box, show_success_box,
                    show_warning_box)
 from utils.settings_store import get_drag_export_format, set_drag_export_format
 from utils import scalebar, watermark
 from utils.settings_store import get_last_dialog_dir, set_last_dialog_dir
-from utils.image_utils import to_display_uint8, cv2_to_pixmap
+from utils.image_utils import ImageWriteError, to_display_uint8, cv2_to_pixmap
 from utils.image_utils import imwrite_auto
 from locales import trans
 from utils.export_paths import unique_path
@@ -219,6 +221,10 @@ class OutputRecord:
     exported_annotations: Optional[dict] = None
     annotations_changed: bool = False
     icc_profile: bytes = b""
+    #: EXIF snapshot of the first participating source (single-image export).
+    source_exif: bytes = b""
+    #: Per-source EXIF snapshot for aligned/source-frame export.
+    frame_exif: tuple = ()
     linear_dng_metadata: Any = None
     source_paths: tuple = ()
 
@@ -228,6 +234,8 @@ class OutputRecord:
         return cls(output_id=uuid.uuid4().hex, image=image, label=label,
                    context=context, kind=kind, parent_id=parent_id,
                    exported=exported,
+                   source_exif=bytes(getattr(context, 'source_exif', b'') or b''),
+                   frame_exif=tuple(getattr(context, 'frame_exif', ()) or ()),
                    linear_dng_metadata=deepcopy(getattr(context, 'linear_dng_metadata', None)),
                    source_paths=tuple(getattr(context, 'source_paths', ()) or ()))
 
@@ -296,6 +304,8 @@ class OutputManager:
         self._stack_thumbnail_worker = None
         self._stack_thumbnail_queue = []
         self._share_preview_active = False
+        self._share_temp_dir = None
+        self._share_temp_cache = {}
 
     # ------------------------------------------------------------------
     # UI helpers
@@ -848,7 +858,7 @@ class OutputManager:
                 self._mark_record_exported(original, record.image, path, self._annotation_state(record, labels))
                 written.append(path)
             except Exception as exc:
-                failed.append((path or record.label, str(exc)))
+                failed.append((path or record.label, image_write_error_text(exc)))
         self._report_export_result(written, failed, folder)
         return not failed
 
@@ -898,9 +908,15 @@ class OutputManager:
             image = watermark.burn(image, wm_cfg)
         from core.image_loader import _read_exif_bytes, _read_icc_profile
         baked_path = record.export_path if record.annotations_baked else ""
-        exif = _read_exif_bytes(baked_path) if baked_path else b''
-        profile = (_read_icc_profile(baked_path) if baked_path else
-                   getattr(record.context, 'icc_profile', record.icc_profile))
+        if baked_path:
+            exif = _read_exif_bytes(baked_path)
+            profile = _read_icc_profile(baked_path)
+        else:
+            record_context = getattr(record, 'context', None)
+            exif = (getattr(record_context, 'source_exif', b'')
+                    or getattr(record, 'source_exif', b'') or b'')
+            profile = (getattr(record_context, 'icc_profile', b'')
+                       or getattr(record, 'icc_profile', b''))
         if metadata is not None:
             from utils.image_utils import srgb_icc_profile
             profile = srgb_icc_profile()
@@ -939,7 +955,7 @@ class OutputManager:
                     n=len(written), path=folder).replace("\n", " "), 8000)
             return
         detail = "\n".join(
-            f"{path}: {error or trans.t('msg_save_failed_info_write')}"
+            f"{path}: {image_write_error_text(error) if isinstance(error, ImageWriteError) else (error or trans.t('msg_save_failed_info_write'))}"
             for path, error in failed)
         show_error_box(
             window, trans.t("msg_save_failed_title"),
@@ -1088,53 +1104,66 @@ class OutputManager:
         return display
 
     def _share_files_for_records(self, records):
-        """Resolve or write persistent files for ``records`` in order.
+        """Resolve saved files or write reusable temporary PNGs in order.
 
-        Returns ``(paths, failures, folder)``. ``paths`` is None when the user
-        cancelled the destination picker; ``failures`` holds ``(path, error)``
-        for every record whose write failed. Successful writes stay on disk and
-        are marked exported even when another record fails.
+        Temporary shares do not change the record's export state. Keep them
+        after the window closes so clipboard file paths remain usable until
+        the operating system cleans its temporary directory.
         """
         labels = self.window.label_manager.snapshot()
         resolved = {}
-        pending = []
-        for record in records:
-            path = self._share_persistent_path(record)
-            if path:
-                resolved[id(record)] = path
-            else:
-                pending.append(record)
-        if not pending:
-            return [resolved[id(record)] for record in records], [], ""
-
-        window = self.window
-        folder = FileDialog.getExistingDirectory(
-            window, trans.t("menu_share"), get_last_dialog_dir(),
-            FileDialog.Option.ShowDirsOnly)
-        if not folder:
-            return None, [], ""
-        set_last_dialog_dir(folder)
         failures = []
-        for original in pending:
-            record = replace(
-                original, scale_bar_config=deepcopy(original.scale_bar_config))
-            name = window.export_manager.filename_from_label(record.label)
-            path = unique_path(
-                os.path.join(folder, os.path.splitext(name)[0] + ".png"))
-            state = self._annotation_state(record, labels)
-            try:
-                self._write_record(record, path, labels)
-                self._mark_record_exported(original, record.image, path, state)
+        if len(self._share_temp_cache) > self.MAX_HISTORY:
+            self._share_temp_cache = {
+                key: value for key, value in self._share_temp_cache.items()
+                if value[0]() is not None}
+        for original in records:
+            path = self._share_persistent_path(original)
+            if path:
                 resolved[id(original)] = path
+                continue
+            state = self._annotation_state(original, labels)
+            cached = self._share_temp_cache.get(original.output_id)
+            if cached:
+                image_ref, old_state, baked, path = cached
+                try:
+                    current = (image_ref() is original.image and old_state == state
+                               and baked == (original.annotations_baked, original.watermark_baked)
+                               and os.path.isfile(path) and os.path.getsize(path) > 0)
+                except OSError:
+                    current = False
+                if current:
+                    resolved[id(original)] = path
+                    continue
+            path = original.label
+            try:
+                if not self._share_temp_dir or not os.path.isdir(self._share_temp_dir):
+                    self._share_temp_dir = tempfile.mkdtemp(prefix='openfocus-share-')
+                record = replace(
+                    original, scale_bar_config=deepcopy(original.scale_bar_config),
+                    watermark_config=deepcopy(original.watermark_config))
+                name = self.window.export_manager.filename_from_label(record.label)
+                path = unique_path(os.path.join(
+                    self._share_temp_dir, os.path.splitext(name)[0] + '.png'))
+                self._write_record(record, path, labels)
+                resolved[id(original)] = path
+                try:
+                    image_ref = weakref.ref(original.image)
+                except TypeError:
+                    self._share_temp_cache.pop(original.output_id, None)
+                else:
+                    self._share_temp_cache[original.output_id] = (
+                        image_ref, state,
+                        (original.annotations_baked, original.watermark_baked), path)
             except Exception as exc:
-                failures.append((path, str(exc)))
+                failures.append((path, image_write_error_text(exc)))
         paths = [resolved.get(id(record)) for record in records]
-        return paths, failures, folder
+        return paths, failures
 
     def _report_share_failure(self, paths, failures) -> None:
         ok = sum(1 for path in paths or () if path)
         detail = "\n".join(
-            f"{path}: {error or trans.t('msg_save_failed_info_write')}"
+            f"{path}: {image_write_error_text(error) if isinstance(error, ImageWriteError) else (error or trans.t('msg_save_failed_info_write'))}"
             for path, error in failures)
         show_error_box(
             self.window, trans.t("msg_share_failed_title"),
@@ -1189,7 +1218,7 @@ class OutputManager:
         if not records:
             return
 
-        paths, failures, _folder = self._share_files_for_records(records)
+        paths, failures = self._share_files_for_records(records)
         if failures:
             self._report_share_failure(paths, failures)
             return
@@ -1207,15 +1236,11 @@ class OutputManager:
         record = self._share_record_for_item(target_item, attach=True)
         if not self._share_record_supported(record):
             return
-        path = self._share_persistent_path(record)
-        if not path:
-            paths, failures, _folder = self._share_files_for_records([record])
-            if failures:
-                self._report_share_failure(paths, failures)
-                return
-            if not paths:
-                return
-            path = paths[0]
+        paths, failures = self._share_files_for_records([record])
+        if failures:
+            self._report_share_failure(paths, failures)
+            return
+        path = paths[0]
         try:
             opened = select_in_file_manager(path)
         except Exception as exc:
@@ -1458,9 +1483,12 @@ class OutputManager:
             self._mark_record_exported(original, record.image, file_path, self._annotation_state(record, labels))
             window.statusBar().showMessage(
                 trans.t('msg_image_saved_info').format(path=file_path).replace('\n', ' '), 8000)
+        except ImageWriteError as exc:
+            show_error_box(window, trans.t('msg_save_failed_title'),
+                           trans.t('msg_save_failed_text'), image_write_error_text(exc))
         except Exception as exc:
             show_error_box(window, trans.t('msg_save_failed_title'),
-                           trans.t('msg_save_failed_text'), str(exc))
+                           trans.t('msg_save_failed_text'), image_write_error_text(exc))
 
     def delete_selected_output_images(self) -> None:
         window = self.window
@@ -1640,7 +1668,7 @@ class OutputManager:
 
 def publish_aligned_stack(window, frames, *, filenames=None, icc_profile=None,
                           source_frames=None, source_indices=None, source_revision=0,
-                          linear_dng_metadata=None) -> None:
+                          linear_dng_metadata=None, source_exif=b"", frame_exif=()) -> None:
     """List an aligned stack once; write its folder only on explicit export."""
     if not frames:
         return
@@ -1661,6 +1689,10 @@ def publish_aligned_stack(window, frames, *, filenames=None, icc_profile=None,
         record.aligned_source_frames = tuple(source_frames)
         record.aligned_source_indices = tuple(source_indices or range(len(frames)))
         record.aligned_source_revision = source_revision
+        # Align-only records have no RenderContext; carry the snapshots the
+        # render worker/load cache produced, never read the current stack here.
+        record.source_exif = bytes(source_exif or b'')
+        record.frame_exif = tuple(frame_exif or ())
     from core.image_loader import stack_icc_profile
     record.icc_profile = stack_icc_profile(window, indices) if icc_profile is None else icc_profile
     item = window.output_manager._insert_output(None, label, record)

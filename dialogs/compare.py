@@ -117,6 +117,9 @@ class CompareDialog(QDialog):
             "linear_dng_metadata": getattr(window_main, "linear_dng_metadata", None),
             "source_paths": [window_main.image_source_paths[i] for i in self._source_indices]
                 if len(getattr(window_main, "image_source_paths", ())) == self._total_frames else [],
+            "frame_exif": [getattr(window_main, "image_source_exifs", ())[i]
+                           for i in self._source_indices]
+                if len(getattr(window_main, "image_source_exifs", ())) == self._total_frames else [],
         }
 
         self._preview_timer = QTimer(self)
@@ -195,7 +198,7 @@ class CompareDialog(QDialog):
             "thread_count": max(0, int(getattr(window, "thread_count", 0))),
             "resource_preference": getattr(window, "resource_preference", "balanced"),
             "reg_downscale_width": int(getattr(window, "reg_downscale_width", 1024)),
-            "exposure_match": bool(getattr(window, "exposure_match", True)),
+            "exposure_match": bool(getattr(window, "exposure_match", False)),
             "sharpen_output": bool(getattr(window, "sharpen_output", False)),
             "sort_mode": "desc" if getattr(window, "stack_reverse_order", False) else "asc",
         }

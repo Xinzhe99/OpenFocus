@@ -98,7 +98,7 @@ def neural_device_kind():
     return ('N/A' if kind == 'CPU' else kind) if kind is not None else _NEURAL_DEVICE_KIND
 
 def estimate_peak_bytes(algorithm: str, frames, block_size: int = None,
-                        workers: int = 1) -> int:
+                        workers: int = 1, height: int = None, width: int = None) -> int:
     """Estimate new stage allocations; resident source buffers are not charged twice."""
     from core.resource_policy import Workload, estimate_working_set
 
@@ -108,6 +108,8 @@ def estimate_peak_bytes(algorithm: str, frames, block_size: int = None,
     if getattr(first, "ndim", 0) < 2:
         return 0
     h, w = first.shape[:2]
+    h = int(height) if height is not None else h
+    w = int(width) if width is not None else w
     spec = get_fusion(algorithm)
     estimates = {}
     if spec.resource_estimator:
@@ -136,7 +138,7 @@ def memory_budget_bytes() -> int:
 memory.configure_opencv_memory()
 
 
-def _stack_footprint_exceeds(frames, tile_threshold: int) -> bool:
+def _stack_footprint_exceeds(frames, tile_threshold: int, height=None, width=None) -> bool:
     """True when total stack bytes exceed a single threshold-sized frame.
 
     A deep stack of sub-threshold frames carries more pixels than one big
@@ -147,11 +149,29 @@ def _stack_footprint_exceeds(frames, tile_threshold: int) -> bool:
         return False
     first = frames[0]
     itemsize = np.dtype(first.dtype).itemsize
-    bytes_per_frame = itemsize * int(np.prod(first.shape)) if first.ndim else itemsize
+    if first.ndim >= 2:
+        h = int(height) if height is not None else first.shape[0]
+        w = int(width) if width is not None else first.shape[1]
+        bytes_per_frame = itemsize * h * w * int(np.prod(first.shape[2:]))
+    else:
+        bytes_per_frame = itemsize * int(np.prod(first.shape)) if first.ndim else itemsize
     total_bytes = len(frames) * bytes_per_frame
     return total_bytes > (tile_threshold ** 2) * 3
 
 
+
+
+def _tile_axis_starts(length, block, overlap, grid=1):
+    """Align tile origins while covering the last pixel within the admitted block."""
+    grid = max(1, int(grid))
+    if block < grid or (overlap and block - grid < 2 and length > block):
+        # A grid as wide as the tile cannot feather adjacent tiles safely.
+        grid = 1
+    step = max(1, block - overlap)
+    if grid > 1:
+        step = max(grid, (step // grid) * grid)
+    last = ((length - block + grid - 1) // grid) * grid
+    return [min(start, last) for start in range(0, length, step)]
 
 
 def _ai_effective_tiling(n_frames, block_size, h, w, overlap, batch_pref):
@@ -160,12 +180,12 @@ def _ai_effective_tiling(n_frames, block_size, h, w, overlap, batch_pref):
     Batch one is the validated execution path on all devices. Larger GPU
     batches require their own numerical and device-memory qualification.
     """
+    from fusion_methods.neural_common import ATTENTION_PAD_ALIGN
     block = max(1, min(int(block_size), int(h), int(w)))
     overlap = max(0, min(int(overlap), block // 2))
-    step = max(1, block - overlap)
-    ys = sorted({min(y, h - block) for y in range(0, h, step)})
-    xs = sorted({min(x, w - block) for x in range(0, w, step)})
-    coords = [(x, y, x + block, y + block) for y in ys for x in xs]
+    ys = sorted(set(_tile_axis_starts(h, block, overlap, ATTENTION_PAD_ALIGN)))
+    xs = sorted(set(_tile_axis_starts(w, block, overlap, ATTENTION_PAD_ALIGN)))
+    coords = [(x, y, min(x + block, w), min(y + block, h)) for y in ys for x in xs]
     return block, 1, coords
 
 
@@ -691,13 +711,20 @@ class MultiFocusFusion:
 
         h, w = first.shape[:2]
         spec = self.descriptor
-        height = max(h, img_resize[1]) if img_resize else h
-        width = max(w, img_resize[0]) if img_resize else w
+        width, height = ((int(img_resize[0]), int(img_resize[1])) if img_resize
+                         else (w, h))
         allow_spatial_tiles = (spec.external_tiling_supported and (
             spec.external_tiling_default or self.tile_threshold != _DEFAULT_TILE_THRESHOLD))
-        needs_tiles = allow_spatial_tiles and (
-            resolve_runner(spec.tile_decider)([first] * count, self.tile_threshold)
-            if spec.tile_decider else max(height, width) > self.tile_threshold)
+        if allow_spatial_tiles and spec.tile_decider:
+            if spec.neural:
+                from fusion_methods.neural_runtime import resolve_device
+                device = resolve_device(self.use_gpu)
+            else:
+                device = 'CPU'
+            needs_tiles = resolve_runner(spec.tile_decider)(
+                [first] * count, self.tile_threshold, height=height, width=width, device=device)
+        else:
+            needs_tiles = allow_spatial_tiles and max(height, width) > self.tile_threshold
         if self.algorithm == 'dtcwt':
             # Activity selection is incremental; stack depth no longer makes
             # an N-plane activity set. Respect the requested transform levels.
@@ -1300,21 +1327,19 @@ class MultiFocusFusion:
         # overlap 超过半瓦会让 step 逼近 1（每像素一个瓦片，等于无限循环），
         # 用户把瓦片设小而重叠保持默认 256 时就会触发
         overlap = max(0, min(int(overlap), block_size // 2))
-        step = max(1, block_size - overlap)
         num_images = len(imgs) if imgs is not None else len(files)
 
-
-        # 计算 tile 坐标
-        tile_coords = []
-        max_start_y = h - block_size
-        max_start_x = w - block_size
-        for y in range(0, h, step):
-            y0 = min(y, max_start_y)
-            y1 = y0 + block_size
-            for x in range(0, w, step):
-                x0 = min(x, max_start_x)
-                x1 = x0 + block_size
-                tile_coords.append((x0, y0, x1, y1))
+        descriptor = get_fusion(algorithm)
+        grid = 1
+        if descriptor.roi and not descriptor.tile_runner:
+            parameters = {parameter.key: kwargs[parameter.key]
+                          for parameter in descriptor.parameters if parameter.key in kwargs}
+            parameters = resolve_fusion_parameters(algorithm, parameters)
+            _halo, grid = resolve_runner(descriptor.roi)(parameters, w, h)
+        ys = _tile_axis_starts(h, block_size, overlap, grid)
+        xs = _tile_axis_starts(w, block_size, overlap, grid)
+        tile_coords = [(x, y, min(x + block_size, w), min(y + block_size, h))
+                       for y in ys for x in xs]
 
         # StackMFF V3 使用批量处理
         if get_fusion(algorithm).tile_runner:
@@ -1333,7 +1358,7 @@ class MultiFocusFusion:
 
         native_codes = algorithm in ('openfocus_a', 'openfocus_b', 'openfocus_c')
         if native_codes:
-            from fusion_methods._hf9_execution import (
+            from fusion_methods._openfocus_execution import (
                 native_execution_scope, serial_execution_scope, _worker_native_limit,
             )
         normalize_16bit = (not native_codes and (any(frame.dtype == np.uint16 for frame in imgs)
@@ -1382,7 +1407,8 @@ class MultiFocusFusion:
             if thread_count is not None and thread_count > 0:
                 depth_threads = min(depth_threads, thread_count)
             global_depth = depth_map(depth_images, None, kernel, smoothing, should_cancel,
-                                     thread_count=depth_threads)
+                                     thread_count=depth_threads, half_resolution=True,
+                                     preserve_detail=True)
             del depth_images
 
         if get_fusion(algorithm).resource_estimator:
@@ -1594,6 +1620,8 @@ class MultiFocusFusion:
             row_weight[row_weight == 0] = 1.0
             np.divide(acc[rows], row_weight, out=acc[rows])
             np.clip(acc[rows], 0, 255, out=acc[rows])
+            if out_dtype is np.uint8:
+                np.rint(acc[rows], out=acc[rows])
             fused[rows] = acc[rows]
         _check_cancel()
 
@@ -1737,6 +1765,8 @@ class MultiFocusFusion:
                 row_weight[row_weight == 0] = 1.0
                 np.divide(acc[rows], row_weight, out=acc[rows])
             np.clip(acc[rows], 0, 255, out=acc[rows])
+            if out_dtype is np.uint8:
+                np.rint(acc[rows], out=acc[rows])
             fused[rows] = acc[rows]
         check_cancel()
         return fused[:, :, 0] if channels == 1 else fused

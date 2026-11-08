@@ -69,6 +69,26 @@ def test_brightness_rejects_coercions_and_keeps_adjacent_valid_values():
     assert brightness_memory_from_json(raw) == expected
     assert brightness_memory_from_json(brightness_memory_to_json(expected)) == expected
 
+@pytest.mark.parametrize('method', ['openfocus_a', 'openfocus_b', 'openfocus_c'])
+def test_openfocus_brightness_defaults_preserve_explicit_choices(clean_store, method):
+    from main import OpenFocus
+
+    window = _window()
+    window._fusion = method
+    assert not OpenFocus.brightness_option_for(window, 'exposure_match')
+    assert not OpenFocus.brightness_option_for(window, 'base_correct')
+    assert not OpenFocus.brightness_option_for(window, 'exposure_match', 'guided_filter')
+
+    window._brightness_by_method = {('exposure_match', method): True,
+                                    ('base_correct', method): True}
+    save_window_settings(window)
+    reset_settings_singleton()
+    restored = _window()
+    restored._fusion = method
+    load_window_settings(restored)
+    assert OpenFocus.brightness_option_for(restored, 'exposure_match')
+    assert OpenFocus.brightness_option_for(restored, 'base_correct')
+
 
 def test_generic_codec_validates_per_field(extra_methods):
     raw = {"memory_extra": {"gain": 1.75, "selection": "invalid", "unknown": 2},

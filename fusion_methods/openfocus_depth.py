@@ -3,7 +3,7 @@ import ctypes
 from functools import lru_cache
 import numpy as np
 from core.frame_storage import create_transient_frame as create_frame
-from fusion_methods._hf9_execution import (
+from fusion_methods._openfocus_execution import (
     execution_job, configure_rows, run_bands, cancellation_check,
 )
 
@@ -128,14 +128,14 @@ def _filter(src, radius, cancel, guide=None, low=None, *, allocate=None):
 
 
 def _activity_frames(frames, img_resize, kernel_size, thread_count, should_cancel,
-                     *, half_resolution=False):
+                     *, half_resolution=False, preserve_detail=False):
     """Return ordered activity planes from the admitted source window."""
     from core.source_frames import resolve_frame
     from fusion_methods.openfocus_ab import (
         _check_cancel, _frame_pass_workers, _ordered_frame_results)
     from fusion_methods._depth_kernel import prepare_depth_kernel
-    from fusion_methods._hf9_pixels import frame_gray_codes
-    from fusion_methods._hf9_depth_rows import activity_rows
+    from fusion_methods._openfocus_pixels import frame_gray_codes
+    from fusion_methods._openfocus_depth_rows import activity_rows, detail_rows, smooth_detail_rows
 
     if not 2 <= len(frames) <= 65536:
         raise ValueError('OpenFocus depth requires between 2 and 65536 source frames')
@@ -146,7 +146,7 @@ def _activity_frames(frames, img_resize, kernel_size, thread_count, should_cance
              else (int(img_resize[1]), int(img_resize[0])))
     axes = None
     if half_resolution:
-        from fusion_methods._hf9_resample import half_gray_axes
+        from fusion_methods._openfocus_resample import half_gray_axes
         axes = half_gray_axes(*shape)
     radius = max(1, int(kernel_size or 17) // 2)
     parameter = float(np.float64(radius) * np.float64(np.float32(0.075)))
@@ -158,12 +158,26 @@ def _activity_frames(frames, img_resize, kernel_size, thread_count, should_cance
             _check_cancel(cancelled)
 
         pixels = resolve_frame(frames[index])
-        gray = frame_gray_codes(pixels, img_resize, cancelled)
+        gray = frame_gray_codes(pixels, img_resize, cancelled, depth_color=True)
         del pixels
         if gray.shape != shape:
             raise ValueError('OpenFocus depth requires frames with matching shapes')
+        detail = None
+        if preserve_detail:
+            detail_shape = (max(1, shape[0] // 2), max(1, shape[1] // 2))
+            pooled = create_frame(detail_shape, np.uint16)
+            detail = create_frame(detail_shape, np.uint16)
+            def measure_detail(start, stop):
+                cancel()
+                detail_rows(gray, pooled, start, stop)
+            run_bands(detail_shape[0], 128, measure_detail)
+            def smooth_detail(start, stop):
+                cancel()
+                smooth_detail_rows(pooled, detail, start, stop)
+            run_bands(detail_shape[0], 128, smooth_detail)
+            del pooled
         if half_resolution:
-            from fusion_methods._hf9_resample import half_gray
+            from fusion_methods._openfocus_resample import half_gray
             gray = half_gray(gray, cancelled, axes=axes)
         extent = np.float32(max(gray.shape))
         fine_radius = np.float32(extent * fine_parameter / np.float32(100))
@@ -175,7 +189,8 @@ def _activity_frames(frames, img_resize, kernel_size, thread_count, should_cance
             activity_rows(gray, fine, diff, start, stop)
         run_bands(gray.shape[0], 128, activity)
         del gray, fine
-        return _filter(diff, coarse_radius, cancel)
+        activity = _filter(diff, coarse_radius, cancel)
+        return (activity, detail) if preserve_detail else activity
 
     return _ordered_frame_results(len(frames), produce, workers, should_cancel)
 
@@ -183,16 +198,19 @@ def _activity_frames(frames, img_resize, kernel_size, thread_count, should_cance
 @execution_job
 def depth_map(frames, img_resize, kernel_size, smoothing, should_cancel,
               progress_callback=None, thread_count=1, *, return_codes=False,
-              half_resolution=False):
-    """Native HF9 depth, with C snapping before expansion to the canvas."""
+              half_resolution=False, preserve_detail=False):
+    """Estimate depth, optionally retaining detail lost by half-size sampling."""
     from fusion_methods.openfocus_ab import _check_cancel
     from fusion_methods._depth_kernel import prepare_depth_kernel
-    from fusion_methods._hf9_depth_rows import (
+    from fusion_methods._openfocus_depth_rows import (
         initialize_activity_rows, select_activity_rows, confidence_rows,
-        guide_rows, snap_rows)
+        guide_rows, snap_rows, initialize_detail_rows, select_detail_rows,
+        detail_confidence_rows, apply_detail_rows)
 
     if not 2 <= len(frames) <= 65536:
         raise ValueError('OpenFocus depth requires between 2 and 65536 source frames')
+    if preserve_detail and not half_resolution:
+        raise ValueError('Detail preservation requires half-resolution depth')
     algorithm = 'openfocus_c' if half_resolution else 'openfocus_b'
     configure_rows(frames, img_resize, algorithm, thread_count, should_cancel)
     prepare_depth_kernel(guided=True, should_cancel=should_cancel)
@@ -203,11 +221,30 @@ def depth_map(frames, img_resize, kernel_size, smoothing, should_cancel,
 
     step = 65535 // (len(frames) - 1)
     best = depth = votes = None
+    detail_best = detail_second = detail_winner = None
     produced = _activity_frames(frames, img_resize, kernel_size, thread_count,
-                                should_cancel, half_resolution=half_resolution)
+                                should_cancel, half_resolution=half_resolution,
+                                preserve_detail=preserve_detail)
     try:
         for index, activity in produced:
             cancel()
+            if preserve_detail:
+                activity, detail = activity
+                if detail_best is None:
+                    detail_best = detail
+                    detail_second = create_frame(detail.shape, np.uint16)
+                    detail_winner = create_frame(detail.shape, np.uint16)
+                    def initialize_detail(start, stop):
+                        cancel()
+                        initialize_detail_rows(detail_second, detail_winner, start, stop)
+                    run_bands(detail.shape[0], 128, initialize_detail)
+                else:
+                    def select_detail(start, stop):
+                        cancel()
+                        select_detail_rows(detail, detail_best, detail_second,
+                                           detail_winner, index * step, start, stop)
+                    run_bands(detail.shape[0], 128, select_detail)
+                del detail
             if best is None:
                 best = activity
                 depth = create_frame(activity.shape, np.uint16)
@@ -232,6 +269,14 @@ def depth_map(frames, img_resize, kernel_size, smoothing, should_cancel,
     finally:
         produced.close()
     cancel()
+    if preserve_detail:
+        # Only replace low-frequency choices when the full-size signal has a
+        # clear, strong winner; smoothing each score rejects isolated noise.
+        def detail_confidence(start, stop):
+            cancel()
+            detail_confidence_rows(best, detail_best, detail_second, start, stop)
+        run_bands(best.shape[0], 128, detail_confidence)
+        del detail_best
     hist = np.zeros(65536, np.int64)
     for rows in _rows(best, cancel):
         confidence_rows(best, votes, rows.start, rows.stop)
@@ -264,8 +309,14 @@ def depth_map(frames, img_resize, kernel_size, smoothing, should_cancel,
             cancel()
             snap_rows(depth, lut, step, start, stop)
         run_bands(depth.shape[0], 128, snap)
+    if preserve_detail:
+        def apply_detail(start, stop):
+            cancel()
+            apply_detail_rows(depth, detail_second, detail_winner, start, stop)
+        run_bands(depth.shape[0], 128, apply_detail)
+        del detail_second, detail_winner
     if half_resolution:
-        from fusion_methods._hf9_resample import expand_depth
+        from fusion_methods._openfocus_resample import expand_depth
         shape = (frames[0].shape[:2] if img_resize is None
                  else (int(img_resize[1]), int(img_resize[0])))
         depth = expand_depth(depth, shape, should_cancel)

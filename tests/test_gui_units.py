@@ -933,6 +933,7 @@ def test_algorithm_parameters_survive_method_switches(qapp):
     host = SimpleNamespace(method="guided_filter", _fusion_parameters_by_method={})
     host.current_fusion_method = lambda: host.method
     host.persist_settings = lambda: None
+    host._mark_project_setting_changed = lambda: None
     host._sync_brightness_checkboxes = lambda *_: None
     host.fusion_parameter_panel = AlgorithmParameterPanel()
     for name in ("fusion_parameters_for", "set_fusion_parameters",

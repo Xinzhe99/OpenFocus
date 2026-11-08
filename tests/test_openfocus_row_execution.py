@@ -1,4 +1,4 @@
-"""Observable HF9 spatial execution, resource boundaries and worker lifetimes."""
+"""Spatial execution, resource boundaries and worker lifetimes."""
 import os
 from pathlib import Path
 import subprocess
@@ -13,7 +13,7 @@ import pytest
 
 from core import frame_storage, resource_policy, source_frames
 from core.registration import RegistrationCancelled
-from fusion_methods import _hf9_execution as execution
+from fusion_methods import _openfocus_execution as execution
 from fusion_methods import openfocus_a, openfocus_bc, openfocus_depth
 
 
@@ -53,9 +53,9 @@ def test_native_parallel_result_matches_serial_with_odd_edges(resources, monkeyp
                   'c': openfocus_bc.openfocus_c_impl}[method]
         return runner(frames, thread_count=threads)
     serial = fuse(1)
-    from fusion_methods import _hf9_kernels, _hf9_depth_rows
-    module, name = ((_hf9_depth_rows, 'select_activity_rows') if method == 'depth'
-                    else (_hf9_kernels, 'select_rows' if method == 'a' else 'merge_rows'))
+    from fusion_methods import _openfocus_kernels, _openfocus_depth_rows
+    module, name = ((_openfocus_depth_rows, 'select_activity_rows') if method == 'depth'
+                    else (_openfocus_kernels, 'select_rows' if method == 'a' else 'merge_rows'))
     original = getattr(module, name)
     lock = threading.Lock()
     barrier = threading.Barrier(4)
@@ -145,7 +145,7 @@ def test_fresh_pass_ram_admission_at_worker_boundary(resources, monkeypatch, bud
 @pytest.mark.parametrize('phase', ['merge', 'iir'])
 @pytest.mark.parametrize('failure', ['cancel', 'error'])
 def test_native_workers_join_before_cancel_or_error_escapes(resources, monkeypatch, phase, failure):
-    from fusion_methods import _hf9_kernels, _depth_kernel
+    from fusion_methods import _openfocus_kernels, _depth_kernel
     frames = _stack(np.uint16)
     original_frames = [frame.copy() for frame in frames]
     barrier = threading.Barrier(2)
@@ -155,7 +155,7 @@ def test_native_workers_join_before_cancel_or_error_escapes(resources, monkeypat
     entered = 0
     finished = 0
     scratch_states = []
-    module, name = ((_hf9_kernels, 'merge_rows') if phase == 'merge'
+    module, name = ((_openfocus_kernels, 'merge_rows') if phase == 'merge'
                     else (_depth_kernel, 'axis_block'))
     original = getattr(module, name)
 
@@ -203,25 +203,25 @@ def test_native_workers_join_before_cancel_or_error_escapes(resources, monkeypat
 
 
 def test_small_fusion_uses_calling_thread(resources, monkeypatch):
-    from fusion_methods import _hf9_kernels
+    from fusion_methods import _openfocus_kernels
     frames = _stack(np.uint8, 65, 67)
-    original = _hf9_kernels.select_rows
+    original = _openfocus_kernels.select_rows
     identities = set()
     def select(*args):
         identities.add(threading.get_ident())
         return original(*args)
-    monkeypatch.setattr(_hf9_kernels, 'select_rows', select)
+    monkeypatch.setattr(_openfocus_kernels, 'select_rows', select)
     result = openfocus_a.openfocus_a_impl(frames, thread_count=4)
     assert result.shape == frames[0].shape
     assert identities == {threading.get_ident()}
 
 
 def test_medium_images_use_bounded_frame_parallelism_without_row_pool(resources, monkeypatch):
-    from fusion_methods import _hf9_kernels
+    from fusion_methods import _openfocus_kernels
     frames = _stack(np.uint16, 257, 259)
     expected = openfocus_a.openfocus_a_impl(frames, thread_count=1)
-    original_reduce = _hf9_kernels.down2_rows
-    original_select = _hf9_kernels.select_rows
+    original_reduce = _openfocus_kernels.down2_rows
+    original_select = _openfocus_kernels.select_rows
     barrier = threading.Barrier(2)
     lock = threading.Lock()
     arrivals = 0
@@ -239,8 +239,8 @@ def test_medium_images_use_bounded_frame_parallelism_without_row_pool(resources,
     def select_rows(*args):
         consumers.add(threading.get_ident())
         return original_select(*args)
-    monkeypatch.setattr(_hf9_kernels, 'down2_rows', reduce_rows)
-    monkeypatch.setattr(_hf9_kernels, 'select_rows', select_rows)
+    monkeypatch.setattr(_openfocus_kernels, 'down2_rows', reduce_rows)
+    monkeypatch.setattr(_openfocus_kernels, 'select_rows', select_rows)
     actual = openfocus_a.openfocus_a_impl(frames, thread_count=4)
     np.testing.assert_array_equal(actual, expected)
     assert len(producers) == 2
@@ -300,7 +300,7 @@ def test_real_explicit_tiles_finish_with_serial_and_parallel_workers(method):
                 tile_overlap=16)
             return fusion.fuse(frames, thread_count=threads)
         serial = render(1)
-        from fusion_methods import _hf9_kernels as kernels
+        from fusion_methods import _openfocus_kernels as kernels
         name = 'select_rows' if method == 'openfocus_a' else 'merge_rows'
         original = getattr(kernels, name)
         barrier = threading.Barrier(2)

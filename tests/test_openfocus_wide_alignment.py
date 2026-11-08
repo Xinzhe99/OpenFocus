@@ -1,7 +1,7 @@
 """Wide detector, plan reuse, cache integrity and public deferred regressions.
 
-The optional source differential executes the real research source and recorded
-aligrange files. Set HF9_RESEARCH_ROOT when the source lives elsewhere.
+The optional differential executes an explicitly configured research script
+and its recorded image cases. Set OPENFOCUS_REFERENCE_ALIGN_SCRIPT to its path.
 """
 from dataclasses import FrozenInstanceError, replace
 import hashlib
@@ -15,7 +15,7 @@ import cv2
 import numpy as np
 import pytest
 
-from core import hf9_alignment as alignment
+from core import openfocus_alignment as alignment
 from core.registration import ImageRegistration, RegistrationCancelled, alignment_report, apply_alignment_plan
 from utils import align_cache
 
@@ -185,31 +185,69 @@ def test_public_deferred_plan_never_materializes_the_stack(monkeypatch):
 
 @pytest.mark.parametrize('deferred', [False, True])
 @pytest.mark.parametrize('grouped', [False, True])
-def test_full_canvas_unless_grouped_crop_is_requested(deferred, grouped):
+@pytest.mark.parametrize('f8', [
+    (0, 0, 6, 4, 0, 1, 1, 1),
+    (0, 0, -2.25, 1.5, 5, 1.02, 1.02, 1),
+])
+def test_common_crop_is_applied_for_fresh_and_cached_plans(deferred, grouped, f8):
     from core.registration import grouped_crop_offsets
     from core.source_frames import resolve_frame
 
-    image = _image(32)
+    image = np.full((32, 32), 12000, np.uint16)
+    image[13:19, 13:19] = 0  # Real black pixels must survive the crop.
+    sources = [image, image.copy()]
+    identity = alignment.estimate_alignment_plan(sources)
+    shifted = replace(_transform(image, f8), source_index=1)
+    plan = replace(identity, transforms=(identity.transforms[0], shifted))
+    cached = alignment.AlignmentPlan.from_dict(json.loads(json.dumps(plan.to_dict())))
+    left, top, right, bottom = shifted.valid_bounds
+    if f8[4] == 0:
+        assert (left, top, right, bottom) == (6, 4, 32, 32)
+    assert alignment.alignment_valid_mask(shifted)[top:bottom, left:right].all()
+    assert not alignment.alignment_valid_mask(shifted).all()
+    expected = [image[top:bottom, left:right],
+                alignment.apply_alignment(image, shifted)[top:bottom, left:right]]
+    assert all(np.any(frame == 0) for frame in expected)
+    for candidate in (plan, cached):
+        crops = []
+        token = grouped_crop_offsets.set(crops if grouped else None)
+        try:
+            result = apply_alignment_plan(sources, candidate, defer_warps=deferred)
+        finally:
+            grouped_crop_offsets.reset(token)
+        assert crops == ([(left, top, right, bottom)] if grouped else [])
+        for actual, pixels in zip(result, expected):
+            np.testing.assert_array_equal(resolve_frame(actual), pixels)
+
+
+def test_axis_aligned_common_crop_can_exclude_the_image_center():
+    image = np.full((32, 32), 1000, np.uint16)
+    identity = alignment.estimate_alignment_plan([image, image.copy()])
+    shifted = replace(_transform(image, (0, 0, 20, 0, 0, 1, 1, 1)), source_index=1)
+    plan = replace(identity, transforms=(identity.transforms[0], shifted))
+    assert shifted.valid_bounds == (20, 0, 32, 32)
+    result = apply_alignment_plan([image, image.copy()], plan)
+    assert all(frame.shape == (32, 12) for frame in result)
+    assert all(np.all(frame) for frame in result)
+
+
+def test_openfocus_c_fuses_the_cropped_aligned_images():
+    from core.multi_focus_fusion import MultiFocusFusion
+
+    image = np.full((64, 64, 3), 18000, np.uint16)
+    image[24:40, 24:40] = 0
     sources = [image, image.copy()]
     identity = alignment.estimate_alignment_plan(sources)
     shifted = replace(_transform(image, (0, 0, 6, 4, 0, 1, 1, 1)), source_index=1)
     plan = replace(identity, transforms=(identity.transforms[0], shifted))
-    crops = []
-    token = grouped_crop_offsets.set(crops if grouped else None)
-    try:
-        result = apply_alignment_plan(sources, plan, defer_warps=deferred)
-    finally:
-        grouped_crop_offsets.reset(token)
-    if grouped:
-        assert crops == [(6, 6, 26, 26)]
-        np.testing.assert_array_equal(resolve_frame(result[0]), image[6:26, 6:26])
-        np.testing.assert_array_equal(resolve_frame(result[1]), image[2:22, :20])
-    else:
-        expected = np.zeros_like(image)
-        expected[4:, 6:] = image[:-4, :-6]
-        np.testing.assert_array_equal(resolve_frame(result[0]), image)
-        np.testing.assert_array_equal(resolve_frame(result[1]), expected)
-        assert crops == []
+    aligned = apply_alignment_plan(sources, plan, defer_warps=True)
+    fusion = MultiFocusFusion(algorithm='openfocus_c', tile_enabled=False)
+    result = fusion.fuse(aligned, thread_count=1)
+    expected_inputs = [image[4:, 6:], alignment.apply_alignment(image, shifted)[4:, 6:]]
+    expected = fusion.fuse(expected_inputs, thread_count=1)
+    assert result.shape == (60, 58, 3)
+    np.testing.assert_array_equal(result, expected)
+    assert all(np.any(frame == 0) for frame in expected_inputs)
 
 def test_cancel_during_wide_candidate_chunk_and_warp(monkeypatch):
     image = _image()
@@ -318,11 +356,14 @@ def test_arbitrary_processors_are_in_memory_only(cached_plan):
 
 @pytest.fixture(scope='module')
 def research_source():
-    root = Path(os.environ.get('HF9_RESEARCH_ROOT', 'F:/REA_heliconfocus9'))
-    script = root / 'tools' / 'scripts' / 'helicon_align4d.py'
+    script_path = os.environ.get('OPENFOCUS_REFERENCE_ALIGN_SCRIPT')
+    if not script_path:
+        pytest.skip('Set OPENFOCUS_REFERENCE_ALIGN_SCRIPT to run the optional differential')
+    script = Path(script_path)
     if not script.is_file():
-        pytest.skip('Real HF9 research source is not installed; set HF9_RESEARCH_ROOT')
-    spec = importlib.util.spec_from_file_location('_hf9_wide_differential', script)
+        pytest.skip('The configured reference alignment script is not available')
+    root = script.parents[2]
+    spec = importlib.util.spec_from_file_location('_openfocus_wide_differential', script)
     module = importlib.util.module_from_spec(spec)
     sys.path.insert(0, str(script.parent))
     try:
@@ -388,7 +429,7 @@ def test_real_aligrange_source_differential_and_public_geometry(research_source,
         np.testing.assert_array_equal(registered[1].full_resolution(),
                                       prototype_warp[top:bottom, left:right])
     # These files record injected geometry. The historical f8 .npy files
-    # have no generator/kwargs provenance and are not native HF9 oracles.
+    # have no generator/kwargs provenance and are not independent native oracles.
     cases = json.loads((root / 'experiments/stacks/aligrange/cases.json').read_text(encoding='utf-8'))
     _, kind, first, second = next(item for item in cases if item[0] == case)
     expected_rotation = -first if kind == 'rot' else 0

@@ -448,21 +448,21 @@ OpenFocus offre dieci algoritmi di fusione (più una modalità solo allineamento
 
 Ogni tile neurale usa tutti i fotogrammi. I fotogrammi e i dati temporanei di allineamento possono usare il disco; spazio libero e memoria disponibile limitano lo stack. La suddivisione spaziale V2 approssima l’inferenza sull’intera immagine.
 
-Se non viene indicata una cartella temporanea, OpenFocus stima lo spazio necessario in base agli input noti e ai dati temporanei. Se il disco temporaneo di sistema non ha spazio sufficiente, può prendere in considerazione dischi locali fissi scrivibili. Una cartella specificata esplicitamente non viene sostituita automaticamente. Il controllo è una stima del momento, non una prenotazione; lo spazio può esaurirsi in seguito. In caso di errore di archiviazione, scegli una cartella scrivibile nelle impostazioni avanzate.
+Se non viene indicata una cartella temporanea, OpenFocus stima lo spazio necessario in base agli input e ai dati temporanei e può considerare dischi locali fissi scrivibili se lo spazio manca. Se la cartella scelta non è disponibile, avvisa e usa temporaneamente la cartella di sistema; ogni nuovo processo riprova la scelta salvata. Un disco scelto pieno non provoca un cambio automatico. Il controllo è una stima del momento, non una prenotazione. In caso di errore, scegli una cartella scrivibile nelle impostazioni avanzate.
 
 
 ### OpenFocus A / B / C
 
-- **OpenFocus A**: seleziona i pixel sorgente tramite una risposta di fuoco multi-scala.
+- **OpenFocus A**: usa una risposta di fuoco multiscala e miscela gli sfondi poco dettagliati.
 - **OpenFocus B**: miscela fotogrammi vicini guidato da una mappa di profondità levigata.
 - **OpenFocus C**: miscela i pixel sorgente in base alla mappa di profondità finale levigata.
-- **Parametri**: A e B usano il cursore del kernel per controllare la scala di risposta di fuoco; C non ha raggio. La levigatura di A non ha effetto, come in HF9 A; B e C levigano la mappa di profondità usata per la fusione.
+- **Parametri**: A e B usano il cursore del kernel per controllare la scala di risposta di fuoco; C non ha raggio. La levigatura di A non ha effetto, come nel prodotto di riferimento A; B e C levigano la mappa di profondità usata per la fusione.
 
 **Levigatura**: un unico campo numerico sotto il cursore del kernel, il cui significato dipende dal metodo selezionato (intervallo 0–8, passo 0,2):
 
 | Metodo | Etichetta | Predefinito | Effetto |
 |---|---|---|---|
-| OpenFocus A | Levigatura della miscelazione | 2,0 | Nessun effetto, come in HF9 A |
+| OpenFocus A | Levigatura della miscelazione | 2,0 | Nessun effetto, come nel prodotto di riferimento A |
 | OpenFocus B | Levigatura della profondità | 1,44 | Controlla la levigatura della mappa di profondità che guida la miscelazione |
 | OpenFocus C | Levigatura della miscelazione | 3,6 | Controlla la levigatura della mappa di profondità e le transizioni di fusione |
 
@@ -474,7 +474,7 @@ C non ha il parametro Raggio, quindi il suo cursore del kernel è nascosto.
 
 CLI: `--depth-smoothing VALUE` (B) e `--blend-smoothing VALUE` (A, C).
 
-**Le opzioni di luminosità sono per metodo.** *Abbina l'esposizione prima della fusione* e *Rimuovi la deriva di luminosità* sono ricordate separatamente per ogni metodo di fusione, perché rispondono a una domanda specifica dello stack più che a una preferenza globale. Entrambe sono attive per impostazione predefinita in OpenFocus A/B/C (che non hanno calibrazione dell'esposizione integrata); gli altri metodi mantengono i valori storici (abbinamento esposizione attivo, rimozione deriva disattivata). Cambiando metodo vengono mostrati i valori di quel metodo, che sopravvivono al riavvio. **Reimposta** cancella i valori memorizzati di luminosità, levigatura e raggio di tutti i metodi.
+**Le opzioni di luminosità sono per metodo.** *Abbina l'esposizione prima della fusione* e *Rimuovi la deriva di luminosità* sono ricordate separatamente per ogni metodo. Nell'interfaccia entrambe sono disattivate per impostazione predefinita per tutti i metodi; sono correzioni aggiuntive, diverse dalla regolazione della luminosità del prodotto di riferimento. L'abbinamento dell'esposizione allinea ogni fotogramma sorgente all'ultimo prima della fusione; la rimozione della deriva di luminosità corregge dopo le basse frequenze del risultato fuso. Cambiando metodo vengono mostrati i suoi valori, conservati dopo il riavvio. Nella CLI l'abbinamento dell'esposizione resta attivo per impostazione predefinita; usa `--no-exposure-match` per disattivarlo. **Reimposta** cancella i valori memorizzati di luminosità, levigatura e raggio di tutti i metodi e riporta entrambe le opzioni di luminosità su disattivate.
 
 **Nitidezza dell'output fuso** applica una leggera maschera di contrasto dopo la fusione, prima che il risultato venga convertito nella profondità di output. È disattivata per impostazione predefinita e può essere attivata in **Impostazioni di rendering** o nelle opzioni batch; il flag CLI equivalente è `--sharpen-output`. Influisce sull'immagine fusa, non sui fotogrammi registrati né sulle mappe di profondità. Può rendere i bordi più distinti, ma può amplificare rumore e aloni. Viene salvata con il progetto e ricordata tra le sessioni.
 
@@ -500,7 +500,7 @@ Seleziona **Solo allineamento (nessuna fusione)** per registrare lo stack e aggi
 | StackMFF (V1) | Lenta (GPU) | Non valutata qui | Luminanza indipendente dall'ordine; crominanza variabile in caso di parità delle distanze di luminanza |
 | StackMFF V2 | Veloce (GPU) | Non valutata qui | Scansioni continue con un modello minuscolo |
 | StackMFF V3 | Lenta (GPU) | Eccellente | Massima qualità |
-| OpenFocus A | Dipende dallo stack | Dipende dallo stack | Selezione multi-scala dei pixel a fuoco |
+| OpenFocus A | Dipende dallo stack | Dipende dallo stack | Risposta multiscala e miscela delle aree poco dettagliate |
 | OpenFocus B | Dipende dallo stack | Dipende dallo stack | Miscelazione di fotogrammi vicini guidata dalla profondità |
 | OpenFocus C | Dipende dallo stack | Dipende dallo stack | Miscelazione dei pixel sorgente in base alla mappa di profondità finale |
 
@@ -743,7 +743,7 @@ Crea un file vuoto chiamato `OpenFocus.portable` accanto a `OpenFocus.exe` (lo Z
 
 ### Metadati EXIF
 
-I metadati di origine (modello di fotocamera, esposizione, orientamento e così via) vengono conservati: l'orientamento viene applicato al caricamento e le esportazioni PNG/TIFF/WebP incorporano automaticamente l'EXIF originale. Le esportazioni JPG/BMP non possono memorizzare l'EXIF completo e vengono scritte senza.
+Le esportazioni PNG/TIFF/JPEG/WebP conservano i metadati ripuliti di fotocamera, obiettivo, esposizione, data e GPS e impostano Orientation su 1. Il BMP non incorpora EXIF. Se i dati EXIF o ICC di un JPEG superano il limite del formato, OpenFocus mostra un errore chiaro; scegli PNG o TIFF. Se l'EXIF ripulito di un'immagine di origine supera 16 MiB, OpenFocus rifiuta di caricarla; rimuovi o riduci prima l'EXIF di quel file.
 
 ### Input HEIC/HEIF
 
@@ -818,7 +818,7 @@ In **Impostazioni → Impostazioni avanzate → Nomi dei risultati**, un prefiss
 
 ### Condividere un risultato
 
-Fai clic con il pulsante destro su un output e apri **Condividi**. **Copia immagine di anteprima (JPEG)** inserisce negli appunti il risultato corrente a piena risoluzione, incluse etichette e barra di scala, come vero JPEG e fornisce anche una bitmap decodificata. **Copia percorsi dei file** copia gli URL dei file persistenti di tutti i risultati selezionati; i risultati non salvati o obsoleti richiedono una cartella e vengono scritti come PNG con gli attuali pixel 8/16 bit e annotazioni. **Mostra nella cartella** apre Esplora file, Finder o il gestore file con il file selezionato. Le esportazioni esistenti vengono riutilizzate solo finché corrispondono all'immagine e alle annotazioni correnti. **Crea link di condivisione privato** resta disattivato finché non esiste la condivisione ospitata.
+Fai clic con il pulsante destro su un output e apri **Condividi**. **Copia immagine di anteprima (JPEG)** inserisce negli appunti il risultato a piena risoluzione, con etichette e barra di scala, come vero JPEG e bitmap decodificata. **Copia percorsi dei file** copia i percorsi locali come testo e URL di file. Un risultato salvato e invariato usa il file esistente; uno non salvato, modificato o con file mancante viene scritto automaticamente come PNG nella cartella temporanea di sistema, senza essere segnato come salvato. Il sistema può eliminare i file temporanei; usa **Salva con nome** per conservarli. **Mostra nella cartella** apre Esplora file, Finder o il gestore file con il file selezionato, senza chiedere una cartella. **Crea link di condivisione privato** resta disattivato finché non esiste la condivisione ospitata.
 
 ### Formato di esportazione per trascinamento
 

@@ -136,7 +136,10 @@ def ensure_preview(frame, should_cancel=None):
     if frame.preview is None:
         if _fingerprint(frame.path) != frame.fingerprint:
             raise OSError(f'Source changed since it was opened: {frame.path}')
-        loaded = scan_source(frame.path, frame.scale, linear=frame.linear_metadata is not None,
+        # The descriptor already owns verified linear calibration. A display
+        # preview needs only the embedded image; asking for calibration again
+        # makes rawpy unpack the full sensor for every preview.
+        loaded = scan_source(frame.path, frame.scale, linear=False,
                              page_index=frame.page, should_cancel=should_cancel)[0]
         if loaded.fingerprint != frame.fingerprint:
             raise OSError(f'Source changed since it was opened: {frame.path}')
@@ -487,6 +490,12 @@ class SourceFrame:
 
     def full_resolution(self):
         self.validate_source()
+        from core import frame_resolution_cache as _resolution_cache
+        cache = _resolution_cache.current()
+        if cache is not None:
+            hit = cache.get(self)
+            if hit is not None:
+                return hit
         # Native gray and display BGR layouts retain independent cached buffers.
         key = (self.path, self.page, self.fingerprint, self.scale,
                tuple(tuple(sorted(op.items())) for op in self.transforms),
@@ -547,6 +556,13 @@ class SourceFrame:
                                  f'{image.shape}/{image.dtype}, expected {self.shape}/{self.dtype}')
             if _fingerprint(self.path) != self.fingerprint:
                 raise OSError(f'Source changed while decoding; reopen the stack: {self.path}')
+            if cache is not None:
+                stored = cache.put(self, image)
+                if stored is not None:
+                    return stored
+            # Scope exists but the disk cache is disabled, degraded, or a write
+            # failed: keep the historical bounded RAM cache so a later consumer
+            # does not decode the same source again.
             SOURCE_CACHE.put(key, image)
             return image
 
@@ -606,11 +622,17 @@ class ProcessedFrame:
         from core.registration import RegistrationCancelled
         if self.should_cancel is not None and self.should_cancel():
             raise RegistrationCancelled()
-        from core.resource_policy import require_memory
-        require_memory(frame_resolution_bytes(self))
+        from core import frame_resolution_cache as _resolution_cache
+        cache = _resolution_cache.current()
         from core.frame_storage import scratch_directory
         with scratch_directory():
             select_frame_scratch((self,), should_cancel=self.should_cancel)
+            if cache is not None:
+                hit = cache.get(self)
+                if hit is not None:
+                    return hit
+            from core.resource_policy import require_memory
+            require_memory(frame_resolution_bytes(self))
             image = resolve_frame(self.source)
             if self.should_cancel is not None and self.should_cancel():
                 raise RegistrationCancelled()
@@ -619,6 +641,10 @@ class ProcessedFrame:
                 raise RegistrationCancelled()
             if image.shape != self.shape or image.dtype != self.dtype:
                 raise ValueError('Processed frame does not match its declared shape/dtype')
+            if cache is not None:
+                stored = cache.put(self, image)
+                if stored is not None:
+                    return stored
         return image
 
     def __array__(self, dtype=None, copy=None):
@@ -1159,7 +1185,7 @@ def _tiff_preview(page, should_cancel=None):
 
 
 def scan_source(path, scale=1.0, *, linear=False, header_only=False, page_index=None, should_cancel=None):
-    """Read headers and bounded previews; never invoke the full image decoder."""
+    """Read headers and bounded previews; linear RAW calibration may unpack the sensor."""
     from core.image_loader import is_raw_source
     _check_preview_cancel(should_cancel)
     path = os.path.abspath(os.fspath(path))
@@ -1172,6 +1198,7 @@ def scan_source(path, scale=1.0, *, linear=False, header_only=False, page_index=
         import rawpy
         with rawpy.RawPy() as raw:
             raw.open_file(path)
+            _check_preview_cancel(should_cancel)
             sizes = raw.sizes
             width, height = sizes.width, sizes.height
             aspect = float(sizes.pixel_aspect)
@@ -1200,6 +1227,7 @@ def scan_source(path, scale=1.0, *, linear=False, header_only=False, page_index=
                     make, model = _camera_identity(path, raw)
                     metadata = LinearDNGMetadata(tuple(map(tuple, matrix)), tuple(wb[1] / wb), make, model)
                 _validate_metadata(metadata)
+            _check_preview_cancel(should_cancel)
             preview = None if header_only else _raw_preview(raw, orientation, path, should_cancel)
         frames.append(SourceFrame(path, 0, (max(1, int(height * scale)), max(1, int(width * scale)), 3),
                                   np.dtype(np.uint16), preview, stamp, scale, orientation,

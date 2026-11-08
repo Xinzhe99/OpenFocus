@@ -1,4 +1,4 @@
-"""Consumer-visible HF9 integer-domain, source selection and identity boundaries."""
+"""Integer-domain, source selection and identity boundaries."""
 import numpy as np
 import pytest
 
@@ -32,6 +32,31 @@ def test_a_mixed_stack_uses_256_for_eight_bit_pixels():
                              thread_count=1)
     np.testing.assert_array_equal(quantize_fuse_output(result, True),
                                   pattern.astype(np.uint16) << 8)
+
+
+@pytest.mark.parametrize('dtype', [np.uint8, np.uint16])
+def test_a_reduces_flat_background_noise_and_preserves_focused_texture(dtype):
+    rng = np.random.default_rng(421)
+    shape = (192, 192)
+    scale = 1 if dtype == np.uint8 else 256
+    base = 120 * scale
+    frames = [np.clip(base + rng.integers(-3, 4, shape) * scale,
+                      0, np.iinfo(dtype).max).astype(dtype) for _ in range(8)]
+    pattern = np.where(np.indices((48, 48)).sum(axis=0) % 2,
+                       210 * scale, 30 * scale).astype(dtype)
+    for frame in frames:
+        frame[72:120, 72:120] = base
+    frames[3][72:120, 72:120] = pattern
+
+    result = quantize_fuse_output(openfocus_a_impl(frames, thread_count=1),
+                                  dtype == np.uint16)
+    expected_background = base - (1 if dtype == np.uint8 else 0)
+    original = frames[0][:32, :32].astype(np.int64) - expected_background
+    output = result[:32, :32].astype(np.int64) - expected_background
+    assert np.mean(output * output) < np.mean(original * original) * 0.6
+    expected_pattern = pattern - 1 if dtype == np.uint8 else pattern
+    np.testing.assert_array_equal(result[80:112, 80:112], expected_pattern[8:40, 8:40])
+
 
 
 def test_burt_odd_edges_do_not_amplify_repeated_samples():

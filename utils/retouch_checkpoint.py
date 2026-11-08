@@ -66,11 +66,11 @@ def provenance(doc, cancelled=None):
         from core.resource_policy import require_memory
         require_memory(mask_bytes)
     frames = []
-    for frame in doc.frames:
+    for index, frame in enumerate(doc.frames):
         if cancelled is not None and cancelled():
             raise ValueError('Retouch replay cancelled')
-        image = frame.image
-        mask = frame.valid_mask() if image is not None and frame.aligned else None
+        image = doc.source_pixels(index) if frame.image is not None else None
+        mask = doc.mask_for(index) if image is not None and frame.aligned else None
         frames.append({"id": str(frame.frame_id), "image": _fingerprint(image, cancelled),
                        "offset_x": int(frame.offset_x), "offset_y": int(frame.offset_y),
                        "aligned": bool(frame.aligned), "mask": _fingerprint(mask, cancelled)})
@@ -370,6 +370,8 @@ def _legacy_background_states(operations, analyses, first):
 def _replay_background(replay, operation, cancelled, expected_status):
     _validate_background_operation(operation)
     stacked = replay.stacked_image
+    if operation.get('from_stacked') and (stacked is None or stacked.shape != replay.working.shape):
+        raise ValueError('Stacked image required by checkpoint is missing or has the wrong shape')
     # Older v1 records analysed the then-current pixels. New operations name
     # their immutable analysis source explicitly; snapshots never recompute it.
     if not operation.get('from_stacked'):
