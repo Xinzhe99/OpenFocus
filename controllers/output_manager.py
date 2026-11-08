@@ -17,7 +17,7 @@ from controllers.export_manager import get_imwrite_params
 from utils import (show_error_box, show_message_box, show_success_box,
                    show_warning_box)
 from utils.settings_store import get_drag_export_format, set_drag_export_format
-from utils import scalebar
+from utils import scalebar, watermark
 from utils.settings_store import get_last_dialog_dir, set_last_dialog_dir
 from utils.image_utils import to_display_uint8, cv2_to_pixmap
 from utils.image_utils import imwrite_auto
@@ -190,6 +190,10 @@ class OutputRecord:
     context: Any = None
     kind: str = "fusion"
     parent_id: Optional[str] = None
+    #: Load lineage of the source stack this result was published under.
+    #: `context.source_revision` freezes the pixels' provenance; this identity
+    #: decides watermark scope ownership and survives in-stack edits.
+    stack_lineage: int = 0
     exported: bool = False
     # Identity of the pixels that were last written. Comparing it with the
     # current image detects "changed since export" without hashing megapixels.
@@ -464,7 +468,6 @@ class OutputManager:
                 record.scale_bar_config = dict(cfg) if cfg else None
                 record.scale_bar_initialized = True
             if not record.watermark_initialized:
-                from utils import watermark
                 target = 'registered' if record.kind == 'aligned' else 'output'
                 current = (record.context is None or record.kind == 'aligned'
                            or watermark.record_belongs_to_current_stack(window, record))
@@ -552,6 +555,9 @@ class OutputManager:
             image = window.fusion_result
             record = OutputRecord.create(image, fusion_filename,
                                          context=context, kind="fusion")
+            # Freeze the load lineage with the result so later rotate/flip/
+            # resize/exclusion keep it in this stack's watermark scope.
+            record.stack_lineage = watermark.stack_lineage(window)
             if linear_dng_metadata is not None:
                 record.linear_dng_metadata = deepcopy(linear_dng_metadata)
             if source_paths:
@@ -724,6 +730,9 @@ class OutputManager:
         record = OutputRecord.create(
             image, label, context=base_record.context, kind="retouch",
             parent_id=base_record.output_id, exported=False)
+        # A retouch belongs to the same loaded stack as the output it edited;
+        # a historical base keeps its result historical.
+        record.stack_lineage = getattr(base_record, "stack_lineage", 0)
         record.scale_bar_config = (dict(base_record.scale_bar_config)
                                    if base_record.scale_bar_config else None)
         record.scale_bar_initialized = True
@@ -776,6 +785,8 @@ class OutputManager:
         if record is None or record.image is None:
             raise ValueError("a result image is required")
         window = self.window
+        if not getattr(record, "stack_lineage", 0):
+            record.stack_lineage = watermark.stack_lineage(window)
         previous = getattr(window, "fusion_result", None)
         previous_row = window.output_list.currentRow()
         previous_view = self._capture_result_view()
@@ -1360,6 +1371,9 @@ def publish_aligned_stack(window, frames, *, filenames=None, icc_profile=None,
     names = tuple(filenames)
     label = trans.t('output_aligned_stack').format(n=len(frames))
     record = OutputRecord.create(None, label, kind='aligned', exported=False)
+    # Registered-frame watermarks use the same stack ownership as results;
+    # the aligned folder stays part of the stack it was rendered from.
+    record.stack_lineage = watermark.stack_lineage(window)
     record.aligned_frames = tuple(frames)
     record.aligned_names = names
     record.linear_dng_metadata = deepcopy(linear_dng_metadata)

@@ -224,6 +224,10 @@ def _restore_watermark_state(host, saved) -> None:
     """Apply a snapshot watermark state, ignoring hosts without a window."""
     if not isinstance(saved, dict) or not saved:
         return
+    restore = getattr(host, "_restore_watermark_state", None)
+    if restore is not None:
+        restore(saved)
+        return
     from utils import watermark
     watermark.restore_state(host, saved)
 
@@ -888,8 +892,21 @@ class OpenFocus(QMainWindow):
         self._refresh_undo_actions()
 
     def _restore_watermark_state(self, saved) -> None:
+        if not isinstance(saved, dict) or not saved:
+            return
         from utils import watermark
+        before = watermark.capture_state(self)
         watermark.restore_state(self, saved)
+        if watermark.capture_state(self) == before:
+            return
+        # Undo/redo of a watermark change is committed state, exactly like an
+        # apply or a removal: a crash must restore it instead of a stale
+        # snapshot that would resurrect a removed watermark.
+        try:
+            from utils import recovery
+            recovery.write_snapshot(self)
+        except Exception:
+            pass
 
     def _capture_label_state(self):
         """Label set as plain data, for undo snapshots.
@@ -2206,6 +2223,13 @@ class OpenFocus(QMainWindow):
             return
         self.push_watermark_undo(previous)
         self.persist_settings()
+        # Removal is committed state: without a fresh snapshot a crash or an
+        # update restart would restore the watermark the user just deleted.
+        try:
+            from utils import recovery
+            recovery.write_snapshot(self)
+        except Exception:
+            pass
         self.refresh_annotation_views()
         if where == "all" and baked:
             message = trans.t("watermark_removed_all_baked")

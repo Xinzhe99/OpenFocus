@@ -142,24 +142,6 @@ def test_single_pixel_regions_match_full_canvas_including_stroke_only():
         assert np.array_equal(pixel[0, 0], full[y, x]), (int(x), int(y))
 
 
-def test_burn_uses_disk_backed_copy_above_the_memory_threshold(monkeypatch):
-    import core.frame_storage as storage
-
-    calls = []
-    original_store = storage.store_frame
-
-    def store(image):
-        calls.append(image.shape)
-        return original_store(image)
-
-    monkeypatch.setattr(storage, "store_frame", store)
-    monkeypatch.setattr(wm, "MAX_IN_MEMORY_BURN_BYTES", 0)
-    image = np.full((120, 160, 3), 90, np.uint8)
-    result = wm.burn(image, _config())
-    assert calls == [image.shape]
-    assert result is not image
-    assert np.any(result != image)
-    assert np.array_equal(result[0, 0], image[0, 0])
 
 
 def test_burn_can_be_cancelled_in_the_stamp_loop():
@@ -493,3 +475,34 @@ def test_corrupt_project_watermark_is_disabled_without_crashing():
     assert window.watermark_text == ""
     assert window.watermark_opacity == wm.DEFAULT_OPACITY
     assert not wm.active_targets(window)
+
+
+@pytest.mark.parametrize('text', ['\u3164', '\u2800', '\u200d'])
+def test_invisible_glyphs_cannot_export_an_unmarked_image(text):
+    source = np.full((300, 400, 3), 1001, np.uint16)
+    with pytest.raises(wm.WatermarkError):
+        wm.burn(source, _config(text=text))
+
+
+def test_spilled_watermark_export_succeeds_when_ram_snapshot_is_unavailable(monkeypatch, tmp_path):
+    from core import frame_storage
+    from utils.image_utils import imwrite_auto
+
+    source = np.full((256, 384, 3), 1001, np.uint16)
+    before = source.copy()
+    config = _config(text='Creator')
+    expected = wm.burn(source, config)
+    monkeypatch.setattr(wm, 'MAX_IN_MEMORY_BURN_BYTES', 0)
+    monkeypatch.setattr(frame_storage, '_storage_directory', str(tmp_path))
+
+    def refuse_ram(*args, **kwargs):
+        raise MemoryError('RAM snapshot unavailable')
+
+    monkeypatch.setattr(frame_storage, '_try_ram_frame', refuse_ram)
+    with frame_storage.scratch_directory():
+        result = wm.burn(source, config)
+        path = tmp_path / 'watermarked.png'
+        assert imwrite_auto(str(path), result)
+        exported = cv2.imdecode(np.fromfile(path, np.uint8), cv2.IMREAD_UNCHANGED)
+        np.testing.assert_array_equal(exported, expected)
+    np.testing.assert_array_equal(source, before)

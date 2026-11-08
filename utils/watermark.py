@@ -346,6 +346,8 @@ def _plan_cached(config: WatermarkConfig, width: int, height: int) -> Layout:
         raise
     except Exception as exc:
         raise WatermarkError("font_missing", str(exc)) from exc
+    if not (fill.any() or ring.any()):
+        raise WatermarkError("text_empty")
     stamp_h, stamp_w = fill.shape
     if stamp_w < 4 or stamp_h < 4:
         raise WatermarkError("too_small", f"stamp {stamp_w}x{stamp_h}")
@@ -528,7 +530,7 @@ def burn(image: np.ndarray, config, *, canvas_size: Optional[Sequence[int]] = No
             check_cancel()
             if int(image.nbytes) >= MAX_IN_MEMORY_BURN_BYTES:
                 from core.frame_storage import store_frame
-                result = store_frame(image)
+                result = store_frame(image, prefer_ram=False)
             else:
                 result = image.copy()
         sub_fill = fill[src_top:src_top + copy_h, src_left:src_left + copy_w]
@@ -630,10 +632,60 @@ def _record_config(record) -> Optional[WatermarkConfig]:
     return safe_config(getattr(record, "watermark_config", None))
 
 
+STACK_LINEAGE_ATTR = "stack_lineage_id"
+_STACK_LINEAGE_HWM_ATTR = "stack_lineage_hwm"
+
+
+def _rotate_stack_lineage(window) -> int:
+    current = getattr(window, STACK_LINEAGE_ATTR, None)
+    high = getattr(window, _STACK_LINEAGE_HWM_ATTR, None)
+    if not isinstance(high, int) or isinstance(high, bool):
+        high = 0
+    if isinstance(current, int) and not isinstance(current, bool):
+        high = max(high, current)
+    # Reuse the load counter the source manager already keeps, but re-freeze
+    # it here: that counter also advances for append/failed loads and must
+    # never be mistaken for a stack replacement.  The high-water mark keeps
+    # this identity unique even when undo restores an older stack's value.
+    generation = getattr(getattr(window, "source_manager", None),
+                         "_load_generation", None)
+    if not isinstance(generation, int) or isinstance(generation, bool):
+        generation = 0
+    value = max(high + 1, generation, 1)
+    setattr(window, STACK_LINEAGE_ATTR, value)
+    setattr(window, _STACK_LINEAGE_HWM_ATTR, value)
+    return value
+
+
+def stack_lineage(window) -> int:
+    """Runtime identity of the currently loaded source stack.
+
+    ``source_revision`` tracks mutations *inside* one loaded stack (rotate,
+    flip, resize, exclusion, undo...) and is therefore not an ownership
+    boundary: a result fused from this stack stays owned by it after those
+    edits.  Replacing or reloading the stack -- even from the same paths --
+    starts a new lineage, so previously published outputs stay isolated.  The
+    value is frozen onto every published output and carried by undo snapshots
+    together with the stack they describe.
+    """
+    value = getattr(window, STACK_LINEAGE_ATTR, None)
+    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+        return value
+    return _rotate_stack_lineage(window)
+
+
 def record_belongs_to_current_stack(window, record) -> bool:
     """Stable enough to avoid applying this stack's watermark to another's."""
     if record is None:
         return False
+    lineage = getattr(record, "stack_lineage", None)
+    window_lineage = getattr(window, STACK_LINEAGE_ATTR, None)
+    if (isinstance(lineage, int) and not isinstance(lineage, bool) and lineage > 0
+            and isinstance(window_lineage, int) and not isinstance(window_lineage, bool)
+            and window_lineage > 0):
+        # Published outputs carry the load lineage they were created under;
+        # content revisions no longer decide whether they are still ours.
+        return lineage == window_lineage
     raw = list(getattr(window, "raw_images", ()) or ())
     raw_ids = {id(frame) for frame in raw}
     revision = getattr(window, "source_revision", 0)
@@ -762,6 +814,12 @@ def capture_state(window) -> dict:
         cfg = target_config(window, target)
         state[f"target_{target}"] = cfg.to_dict() if cfg else None
     state["targets"] = list(active_targets(window))
+    state["stack_lineage"] = stack_lineage(window)
+    # Frame identities (not pixels) tell a restore whether the snapshot still
+    # describes the loaded stack: undoing a watermark edit after another stack
+    # was loaded must not re-home this window's outputs to the old stack.
+    state["stack_frames"] = tuple(id(frame) for frame in
+                                  (getattr(window, "raw_images", ()) or ()))
     state["outputs"] = record_configs(window)
     return state
 
@@ -788,6 +846,17 @@ def restore_state(window, state) -> None:
             for target in TARGETS:
                 setattr(window, _TARGET_CONFIG_ATTRS[target],
                         cfg.to_dict() if cfg and target in targets else None)
+    lineage = state.get("stack_lineage")
+    snap_frames = state.get("stack_frames")
+    current_frames = tuple(id(frame) for frame in
+                           (getattr(window, "raw_images", ()) or ()))
+    if (isinstance(lineage, int) and not isinstance(lineage, bool) and lineage > 0
+            and isinstance(snap_frames, tuple) and snap_frames == current_frames):
+        # The snapshot describes the stack that is loaded right now (undo/redo
+        # of a stack state, or a same-stack edit); its outputs are current
+        # again.  A watermark undo that crosses a stack replacement leaves the
+        # loaded stack's identity alone.
+        setattr(window, STACK_LINEAGE_ATTR, lineage)
     saved_outputs = state.get("outputs")
     if not isinstance(saved_outputs, dict):
         return
@@ -801,6 +870,9 @@ def restore_state(window, state) -> None:
 
 def reset_for_new_stack(window) -> None:
     """A newly loaded stack must not inherit the previous stack's watermark."""
+    # The replaced (or cleared) stack becomes history: any result published
+    # from it must stay isolated, even when the new stack has the same paths.
+    _rotate_stack_lineage(window)
     for target in TARGETS:
         setattr(window, _TARGET_CONFIG_ATTRS[target], None)
     window.watermark_text = ""
