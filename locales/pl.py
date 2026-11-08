@@ -378,6 +378,7 @@ PACK = {
     "msg_share_preview_copied": "Obraz podglądu skopiowany do schowka.",
     "msg_share_files_copied": "Skopiowano {n} plik(ów) do schowka.",
     "msg_share_reveal_failed": "Nie można otworzyć pliku w systemowym menedżerze plików.",
+    "msg_share_clipboard_failed": "Nie można zapisać do schowka. Być może korzysta z niego inna aplikacja; zamknij ją i spróbuj ponownie.",
     "action_delete": "Usuń",
     "action_gpu_accel": "Akceleracja GPU",
     "msg_gpu_accel_hint": "Fuzja AI może używać sprawdzonego dostawcy wykonania, także obsługiwanego zintegrowanego GPU. Wyłączenie wymusza CPU dla AI. Klasyczna fuzja i wyrównanie używają CPU; nie przenosi on automatycznie AI na GPU.",

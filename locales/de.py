@@ -378,6 +378,7 @@ PACK = {
     "msg_share_preview_copied": "Vorschaubild in die Zwischenablage kopiert.",
     "msg_share_files_copied": "{n} Datei(en) in die Zwischenablage kopiert.",
     "msg_share_reveal_failed": "Die Datei konnte im systemeigenen Dateimanager nicht geöffnet werden.",
+    "msg_share_clipboard_failed": "Die Zwischenablage konnte nicht beschrieben werden. Möglicherweise hält eine andere Anwendung sie belegt; schließen Sie sie und versuchen Sie es erneut.",
     "action_delete": "Löschen",
     "action_gpu_accel": "GPU-Beschleunigung",
     "msg_gpu_accel_hint": "KI-Fusion kann einen geprüften Anbieter nutzen, auch mit unterstützter integrierter GPU. Ausschalten erzwingt CPU für KI. Klassische Fusion und Ausrichtung nutzen CPU; diese lagert KI nicht automatisch auf eine GPU aus.",

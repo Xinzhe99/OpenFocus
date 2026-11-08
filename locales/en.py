@@ -413,6 +413,7 @@ EN = {
     "msg_share_preview_copied": "Preview image copied to clipboard.",
     "msg_share_files_copied": "Copied {n} file(s) to the clipboard.",
     "msg_share_reveal_failed": "Could not open the file in the system file manager.",
+    "msg_share_clipboard_failed": "Could not write to the clipboard. Another application may be holding it; close it and try again.",
     "action_delete": "Delete",
     "action_gpu_accel": "GPU Acceleration",
     "msg_gpu_accel_hint": "When enabled, AI fusion may use a verified execution provider, including a supported integrated GPU. Turn off to force AI to CPU. Classical fusion and alignment use CPU; the CPU does not automatically offload AI to a GPU.",

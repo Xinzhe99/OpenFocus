@@ -378,6 +378,7 @@ PACK = {
     "msg_share_preview_copied": "Voorbeeldafbeelding naar klembord gekopieerd.",
     "msg_share_files_copied": "{n} bestand(en) naar klembord gekopieerd.",
     "msg_share_reveal_failed": "Kan het bestand niet openen in de systeembestandsbeheerder.",
+    "msg_share_clipboard_failed": "Kan niet naar het klembord schrijven. Een andere toepassing houdt het mogelijk vast; sluit die en probeer opnieuw.",
     "action_delete": "Verwijderen",
     "action_gpu_accel": "GPU-versnelling",
     "msg_gpu_accel_hint": "AI-fusie kan een geteste provider gebruiken, ook met een ondersteunde geïntegreerde GPU. Uitschakelen dwingt AI naar de CPU. Klassieke fusie en uitlijning gebruiken CPU; deze besteedt AI niet automatisch uit aan een GPU.",

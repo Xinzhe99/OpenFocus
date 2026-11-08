@@ -12,8 +12,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the desktop file manager. Unsaved or outdated results are written as PNG
   only after choosing a folder, with unique names and current annotations;
   existing exports are reused only while they still match. The private-link
-  entry stays disabled until hosted sharing exists. Menu and feedback strings
-  are translated in all twelve language packs.
+  entry stays disabled until hosted sharing exists. Clipboard ownership is
+  verified after writing, so a locked clipboard reports an error instead of a
+  false success. Menu and feedback strings are translated in all twelve
+  language packs.
 
 ### Changed
 - Default Batch Image Converter to lossless PNG, restore the last explicitly

@@ -13,6 +13,7 @@ import cv2
 import numpy as np
 from PyQt6.QtCore import QByteArray, QMimeData, QUrl
 from PyQt6.QtGui import QImage
+from PyQt6.QtWidgets import QApplication
 
 from locales import trans
 from utils.image_utils import composite_transparent_for_display, to_display_uint8
@@ -67,3 +68,37 @@ def file_urls_mime_data(paths) -> QMimeData:
     mime = QMimeData()
     mime.setUrls(urls)
     return mime
+
+
+def clipboard_mime_matches(expected: QMimeData, actual: QMimeData | None) -> bool:
+    """Whether the clipboard actually took ``expected`` rather than rejecting it."""
+    if expected is None or actual is None:
+        return False
+    if expected.hasUrls():
+        if not actual.hasUrls():
+            return False
+        return (sorted(url.toString() for url in actual.urls())
+                == sorted(url.toString() for url in expected.urls()))
+    if expected.hasFormat("image/jpeg"):
+        if not actual.hasImage() or not actual.hasFormat("image/jpeg"):
+            return False
+        return (bytes(actual.data("image/jpeg"))
+                == bytes(expected.data("image/jpeg")))
+    return False
+
+
+def set_clipboard_payload(mime: QMimeData, clipboard=None) -> bool:
+    """Set a clipboard payload and verify ownership actually succeeded.
+
+    ``QClipboard.setMimeData`` has no error return.  On Windows a locked
+    clipboard makes Qt log ``OleSetClipboard`` errors and leave the clipboard
+    empty; reporting success there would be a lie.
+    """
+    clipboard = clipboard or QApplication.clipboard()
+    if clipboard is None:
+        return False
+    try:
+        clipboard.setMimeData(mime)
+        return clipboard_mime_matches(mime, clipboard.mimeData())
+    except Exception:
+        return False

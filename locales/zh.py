@@ -411,6 +411,7 @@ ZH = {
     "msg_share_preview_copied": "预览图片已复制到剪贴板。",
     "msg_share_files_copied": "已将 {n} 个文件复制到剪贴板。",
     "msg_share_reveal_failed": "无法在系统文件管理器中打开该文件。",
+    "msg_share_clipboard_failed": "无法写入剪贴板。可能有其他程序正在占用剪贴板，请关闭后重试。",
     "action_delete": "删除",
     "action_gpu_accel": "GPU 加速",
     "msg_gpu_accel_hint": "开启后，AI 融合可使用已验证的执行提供程序，包括受支持的集成 GPU。关闭后 AI 强制使用 CPU。传统融合与对齐使用 CPU；CPU 不会自动将 AI 转交给 GPU。",

@@ -11,7 +11,7 @@ import numpy as np
 from PyQt6.QtCore import QItemSelectionModel, QPoint, Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QAction, QActionGroup, QIcon, QPixmap, QImage
 from utils.file_dialogs import FileDialog
-from PyQt6.QtWidgets import (QApplication, QListWidgetItem, QMenu, QMessageBox,
+from PyQt6.QtWidgets import (QListWidgetItem, QMenu, QMessageBox,
                              QProgressDialog)
 
 from controllers.export_manager import get_imwrite_params
@@ -25,7 +25,8 @@ from utils.image_utils import imwrite_auto
 from locales import trans
 from utils.export_paths import unique_path
 from utils.file_manager import select_in_file_manager
-from utils.output_share import encode_jpeg_preview, file_urls_mime_data, jpeg_mime_data
+from utils.output_share import (encode_jpeg_preview, file_urls_mime_data,
+                                jpeg_mime_data, set_clipboard_payload)
 from core.source_frames import resolve_frame
 from utils.frame_pixels import preview_pixels as source_display_image, run_pixel_worker
 
@@ -1095,7 +1096,10 @@ class OutputManager:
                 lambda: encode_jpeg_preview(
                     self._share_preview_pixels(snapshot, labels)),
                 show_progress=True)
-            QApplication.clipboard().setMimeData(jpeg_mime_data(jpeg))
+            if not set_clipboard_payload(jpeg_mime_data(jpeg)):
+                show_error_box(window, trans.t("msg_share_failed_title"),
+                               trans.t("msg_share_clipboard_failed"))
+                return
         except Exception as exc:
             show_error_box(window, trans.t("msg_share_failed_title"),
                            trans.t("msg_share_preview_failed"), str(exc))
@@ -1126,7 +1130,10 @@ class OutputManager:
             return
         if not paths:
             return
-        QApplication.clipboard().setMimeData(file_urls_mime_data(paths))
+        if not set_clipboard_payload(file_urls_mime_data(paths)):
+            show_error_box(self.window, trans.t("msg_share_failed_title"),
+                           trans.t("msg_share_clipboard_failed"))
+            return
         self.window.statusBar().showMessage(
             trans.t("msg_share_files_copied").format(n=len(paths)).replace(
                 "\n", " "), 5000)

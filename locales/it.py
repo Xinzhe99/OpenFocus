@@ -378,6 +378,7 @@ PACK = {
     "msg_share_preview_copied": "Immagine di anteprima copiata negli appunti.",
     "msg_share_files_copied": "Copiati {n} file negli appunti.",
     "msg_share_reveal_failed": "Impossibile aprire il file nel gestore file di sistema.",
+    "msg_share_clipboard_failed": "Impossibile scrivere negli appunti. Un'altra applicazione potrebbe occuparli; chiudila e riprova.",
     "action_delete": "Elimina",
     "action_gpu_accel": "Accelerazione GPU",
     "msg_gpu_accel_hint": "La fusione IA può usare un provider verificato, anche con GPU integrata supportata. Disattivare per imporre la CPU all’IA. Fusione classica e allineamento usano la CPU, che non trasferisce automaticamente l’IA alla GPU.",
