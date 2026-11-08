@@ -804,6 +804,10 @@ La boîte de dialogue affiche la progression en temps réel. Vous pouvez annuler
 
 Dans **Paramètres → Paramètres avancés → Nommage des sorties**, un préfixe de nom de fichier facultatif aide à identifier les résultats nouvellement rendus. L'exemple se met à jour pendant la saisie ; utilisez jusqu'à 40 lettres, chiffres, traits de soulignement ou traits d'union. Laissez vide pour conserver le nommage d'origine. Confirmez avec **OK** pour le mémoriser, ou annulez pour abandonner la modification. Le préfixe fait partie des nouveaux noms de la liste des sorties et de leurs noms d'export suggérés ; les résultats existants gardent leurs noms. Vous pouvez toujours modifier un nom dans la boîte d'enregistrement. Cette préférence ne renomme pas les fichiers sources et ne change pas les noms de sortie des lots.
 
+### Partager un résultat
+
+Cliquez avec le bouton droit sur une sortie et ouvrez **Partager**. **Copier l'image d'aperçu (JPEG)** place le résultat actuel en pleine résolution, annotations et barre d'échelle comprises, dans le presse-papiers sous forme de vrai JPEG et fournit aussi un bitmap décodé. **Copier les chemins de fichiers** copie les URL de fichiers persistants de tous les résultats sélectionnés ; les résultats non enregistrés ou obsolètes demandent un dossier puis sont écrits en PNG avec leurs pixels 8/16 bits et annotations actuels. **Afficher dans le dossier** ouvre l'Explorateur, le Finder ou le gestionnaire de fichiers avec le fichier sélectionné. Un export existant n'est réutilisé que s'il correspond encore à l'image et aux annotations actuelles. **Créer un lien de partage privé** reste désactivé tant que le partage hébergé n'existe pas.
+
 ### Format d'export par glisser-déposer
 
 Faire glisser des résultats depuis la liste des sorties écrit des fichiers image au format choisi dans le menu contextuel de la liste (**Format de glisser-déposer** : JPG, PNG, WebP ou TIFF). Le choix est mémorisé.
