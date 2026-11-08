@@ -4,7 +4,6 @@
 接缝蜿蜒、无鬼影融合、8/16 位深保持。
 """
 import os
-import tempfile
 
 import numpy as np
 import pytest
@@ -131,7 +130,7 @@ def test_u16_roundtrip(tmp_path):
     base = cv2.resize(small, (canvas_w, canvas_h), interpolation=cv2.INTER_CUBIC)
     base = (base - base.min()) / (np.ptp(base) + 1e-9) * 40000 + 5000  # u16 量程
     xs = [0, 300]; ys = [0, 300]
-    tmp = tempfile.mkdtemp()
+    tmp = str(tmp_path)
     frames = []
     k = 0
     for r in range(2):
