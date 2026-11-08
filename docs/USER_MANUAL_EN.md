@@ -1553,6 +1553,19 @@ the save dialog. This preference does not rename source files or change batch
 output names.
 
 
+### Sharing a Result
+
+Right-click an output and use the **Share** submenu. **Copy preview image
+(JPEG)** writes the current result at full resolution, including its labels and
+scale bar, to the clipboard as a real JPEG and also provides a decoded bitmap
+for desktop applications. **Copy file paths** copies persistent file URLs for
+every selected result; unsaved or outdated results ask for one folder and are
+written as PNG with their current 8/16-bit pixels and annotations. **Show in
+folder** opens Explorer, Finder or the desktop file manager with the file
+selected. Existing exported files are reused only while they still match the
+current image and annotations. **Create private share link** stays disabled
+until hosted sharing exists.
+
 ### Drag-out Export Format
 
 Dragging results from the output list writes image files using the format

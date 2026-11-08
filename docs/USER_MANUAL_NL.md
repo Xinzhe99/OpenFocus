@@ -842,6 +842,10 @@ Het batchdialoog toont voortgang in realtime. Je kunt de verwerking op elk momen
 
 Onder **Instellingen → Geavanceerde instellingen… → Uitvoerbenaming** helpt een optioneel bestandsnaamvoorvoegsel om nieuw gerenderde resultaten te herkennen. Het voorbeeld werkt bij terwijl je typt; gebruik maximaal 40 letters, cijfers, underscores of koppeltekens. Laat het leeg voor de oorspronkelijke benaming. Bevestig met **OK** om het te bewaren, of annuleer om de wijziging te verwerpen. Het voorvoegsel wordt onderdeel van nieuwe namen in de uitvoerlijst en hun voorgestelde exportnamen; bestaande resultaten behouden hun namen. Je kunt een naam in het opslaandialoog nog steeds bewerken. Deze voorkeur hernoemt geen bronbestanden en wijzigt geen batchnamen.
 
+### Een resultaat delen
+
+Klik met de rechtermuisknop op een uitvoer en open **Delen**. **Voorbeeldafbeelding kopiëren (JPEG)** zet het huidige resultaat op volledige resolutie, inclusief labels en schaalbalk, als echte JPEG op het klembord en levert ook een gedecodeerde bitmap. **Bestandspaden kopiëren** kopieert persistente bestands-URL's van alle geselecteerde resultaten; niet-opgeslagen of verouderde resultaten vragen om één map en worden als PNG geschreven met de huidige 8/16-bits pixels en annotaties. **Tonen in map** opent Verkenner, Finder of de bestandsbeheerder met het bestand geselecteerd. Bestaande exports worden alleen hergebruikt zolang ze nog bij de huidige afbeelding en annotaties passen. **Privédeellink maken** blijft uitgeschakeld tot gehost delen beschikbaar is.
+
 ### Sleepformaat voor export
 
 Wanneer je resultaten uit de uitvoerlijst sleept, worden beeldbestanden geschreven in het formaat dat in het contextmenu van de uitvoerlijst onder **Sleepformaat** is gekozen (JPG, PNG, WebP of TIFF). De keuze wordt onthouden.
