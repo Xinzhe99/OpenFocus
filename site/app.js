@@ -87,12 +87,15 @@
       langMenu.hidden = !show;
       langBtn.setAttribute('aria-expanded', String(show));
     });
-    langMenu.querySelectorAll('a[hreflang]').forEach((link) => {
-      link.addEventListener('click', () => {
-        const lang = link.getAttribute('hreflang');
-        if (lang) document.cookie = `lang=${lang}; path=/; max-age=31536000; SameSite=Lax`;
+    const updateLanguageLinks = () => {
+      langMenu.querySelectorAll('a[hreflang]').forEach((link) => {
+        const target = new URL(link.href);
+        target.hash = window.location.hash;
+        link.href = target.href;
       });
-    });
+    };
+    updateLanguageLinks();
+    window.addEventListener('hashchange', updateLanguageLinks);
     document.addEventListener('click', (e) => {
       if (!langMenu.hidden && !langMenu.contains(e.target) && !langBtn.contains(e.target)) close();
     });
