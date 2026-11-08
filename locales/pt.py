@@ -378,6 +378,7 @@ PACK = {
     "msg_share_preview_copied": "Imagem de pré-visualização copiada para a área de transferência.",
     "msg_share_files_copied": "{n} arquivo(s) copiado(s) para a área de transferência.",
     "msg_share_reveal_failed": "Não foi possível abrir o arquivo no gerenciador de arquivos do sistema.",
+    "msg_share_clipboard_failed": "Não foi possível gravar na área de transferência. Outro aplicativo pode estar usando-a; feche-o e tente novamente.",
     "action_delete": "Excluir",
     "action_gpu_accel": "Aceleração por GPU",
     "msg_gpu_accel_hint": "A fusão por IA pode usar um provedor verificado, incluindo GPU integrada compatível. Desative para forçar a IA à CPU. Fusão clássica e alinhamento usam CPU; ela não transfere a IA automaticamente para a GPU.",

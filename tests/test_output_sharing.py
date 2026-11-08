@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import cv2
 import numpy as np
 import pytest
-from PyQt6.QtCore import QPoint
+from PyQt6.QtCore import QMimeData, QPoint
 from PyQt6.QtGui import QImage
 from PyQt6.QtWidgets import QAbstractItemView, QLabel, QSlider, QWidget
 
@@ -15,7 +15,9 @@ import controllers.output_manager as output_module
 from locales import trans
 from utils.file_manager import select_in_file_manager
 from utils.image_utils import imwrite_auto
-from utils.output_share import encode_jpeg_preview
+from utils.output_share import (clipboard_mime_matches, encode_jpeg_preview,
+                                file_urls_mime_data, jpeg_mime_data,
+                                set_clipboard_payload)
 from widgets.output_list import OutputListWidget
 
 
@@ -295,6 +297,23 @@ def test_copy_preview_freezes_state_and_ignores_reentry(qapp, monkeypatch):
     assert window.status.messages == [trans.t("msg_share_preview_copied")]
 
 
+def test_copy_preview_rejected_by_clipboard_reports_failure(qapp, monkeypatch):
+    window = host(qapp)
+    item, _ = add_record(window, np.zeros((40, 40, 3), np.uint8), "preview")
+    errors = []
+    monkeypatch.setattr(output_module, "show_error_box",
+                        lambda *args: errors.append(args))
+    monkeypatch.setattr(output_module, "set_clipboard_payload",
+                        lambda mime: False)
+    qapp.clipboard().setText("sentinel")
+    window.output_manager.share_copy_preview(item)
+    assert errors and errors[0][1] == trans.t("msg_share_failed_title")
+    assert errors[0][2] == trans.t("msg_share_clipboard_failed")
+    assert qapp.clipboard().text() == "sentinel"
+    assert not window.status.messages
+    assert not window.output_manager._share_preview_active
+
+
 def test_copy_preview_handles_grayscale_and_transparency(qapp):
     window = host(qapp)
     gray = np.tile(np.arange(32, dtype=np.uint8), (24, 1))
@@ -356,6 +375,48 @@ def test_copy_paths_sets_multiple_file_urls_including_unicode(qapp, tmp_path):
         first_path.resolve(), second_path.resolve()}
     assert all(Path(url.toLocalFile()).is_file() for url in urls)
     assert window.status.messages[-1] == trans.t("msg_share_files_copied").format(n=2)
+
+
+def test_clipboard_verification_detects_empty_or_different_payloads(tmp_path):
+    path = tmp_path / "file.png"
+    path.write_bytes(b"x")
+    expected_urls = file_urls_mime_data([path])
+    assert not clipboard_mime_matches(expected_urls, QMimeData())
+    assert not clipboard_mime_matches(
+        expected_urls, file_urls_mime_data([tmp_path / "other.png"]))
+    expected_jpeg = jpeg_mime_data(encode_jpeg_preview(
+        np.full((4, 4, 3), 30, np.uint8)))
+    assert not clipboard_mime_matches(expected_jpeg, QMimeData())
+
+    class RejectingClipboard:
+        def setMimeData(self, mime):
+            pass
+
+        def mimeData(self):
+            return QMimeData()
+
+    assert not set_clipboard_payload(expected_urls, RejectingClipboard())
+
+
+def test_copy_paths_rejected_by_clipboard_reports_failure(
+        qapp, tmp_path, monkeypatch):
+    window = host(qapp)
+    saved = tmp_path / "saved.png"
+    assert imwrite_auto(str(saved), np.zeros((4, 4, 3), np.uint8), [])
+    item, _ = add_record(window, np.zeros((4, 4, 3), np.uint8), "saved",
+                         exported=True, export_path=str(saved),
+                         annotations_baked=True)
+    errors = []
+    monkeypatch.setattr(output_module, "show_error_box",
+                        lambda *args: errors.append(args))
+    monkeypatch.setattr(output_module, "set_clipboard_payload",
+                        lambda mime: False)
+    qapp.clipboard().setText("sentinel")
+    window.output_manager.share_copy_paths(item)
+    assert errors and errors[0][1] == trans.t("msg_share_failed_title")
+    assert errors[0][2] == trans.t("msg_share_clipboard_failed")
+    assert qapp.clipboard().text() == "sentinel"
+    assert not window.status.messages
 
 
 def test_copy_paths_single_selection_ignores_other_selected_history(qapp, tmp_path):

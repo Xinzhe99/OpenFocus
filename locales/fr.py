@@ -378,6 +378,7 @@ PACK = {
     "msg_share_preview_copied": "Image d'aperçu copiée dans le presse-papiers.",
     "msg_share_files_copied": "{n} fichier(s) copié(s) dans le presse-papiers.",
     "msg_share_reveal_failed": "Impossible d'ouvrir le fichier dans le gestionnaire de fichiers du système.",
+    "msg_share_clipboard_failed": "Impossible d'écrire dans le presse-papiers. Une autre application l'utilise peut-être ; fermez-la et réessayez.",
     "action_delete": "Supprimer",
     "action_gpu_accel": "Accélération GPU",
     "msg_gpu_accel_hint": "La fusion IA peut utiliser un fournisseur vérifié, y compris un GPU intégré compatible. Désactivez pour imposer le CPU à l’IA. La fusion classique et l’alignement utilisent le CPU, qui ne transfère pas automatiquement l’IA au GPU.",
