@@ -10,7 +10,7 @@ from utils import show_message_box, show_warning_box
 from utils.image_utils import cv2_to_pixmap
 from core.multi_focus_fusion import is_ai_fusion_available
 from core.render_context import build_render_context
-from core.workers import RenderWorker
+from core.render_process import RenderProcessWorker
 from dialogs import ROIRenderOptionsDialog  # Import the new dialog
 from locales import trans
 from core.algorithms import fusion_algorithms, get_fusion, get_registration, alignment_steps
@@ -26,7 +26,7 @@ class RenderManager:
 
     def __init__(self, window: Any):
         self.window = window
-        self.worker: Optional[RenderWorker] = None
+        self.worker: Optional[RenderProcessWorker] = None
         self._compare_mode = False
         self._compare_cancelling = False
         self._compare_queue: List[str] = []
@@ -926,7 +926,7 @@ class RenderManager:
         all_source_paths = list(getattr(window, "image_source_paths", None) or [])
         source_paths = ([all_source_paths[i] for i in included_idx]
                         if len(all_source_paths) == len(window.raw_images) else [])
-        self.worker = RenderWorker(
+        self.worker = RenderProcessWorker(
             source_images,
             effective_aligned_images,
             effective_is_aligned,

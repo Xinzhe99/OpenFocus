@@ -1,5 +1,6 @@
 from typing import Optional
 
+from functools import partial
 from PyQt6.QtCore import QThread, pyqtSignal
 import time
 import os
@@ -559,10 +560,10 @@ class RenderWorker(QThread):
                         image_mask = SensorDefectMask(width, height, float(pixels.mean()), pixels)
                     if self._defer_warps or (lazy_fusion and not need_registration):
                         from core.source_frames import process_frame
-                        cleaned.append(process_frame(image, lambda pixels, image_mask=image_mask:
-                            cleanup_sensor_image(pixels, defect_mask_path=image_mask,
-                                sensor_denoise=self.sensor_denoise,
-                                cancel_callback=lambda: self.is_cancelled),
+                        cleanup_image = partial(cleanup_sensor_image, defect_mask_path=image_mask,
+                            sensor_denoise=self.sensor_denoise,
+                            cancel_callback=lambda: self.is_cancelled)
+                        cleaned.append(process_frame(image, cleanup_image,
                             should_cancel=lambda: self.is_cancelled))
                     else:
                         cleaned.append(store_frame(cleanup_sensor_image(image, defect_mask_path=image_mask,

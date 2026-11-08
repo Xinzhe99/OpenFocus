@@ -1066,6 +1066,7 @@ PACK = {
     "msg_success": "Erfolg",
     "msg_error": "Fehler",
     "msg_proc_error": "Bei der Verarbeitung ist ein Fehler aufgetreten:",
+    "render_worker_crashed": "Der Renderprozess wurde unerwartet beendet ({reason}). Ihr Projekt bleibt geöffnet. Passen Sie die Rendereinstellungen an und versuchen Sie es erneut.",
     "msg_warning": "Warnung",
     "dialog_env_title": "Umgebungsinformationen",
     "env_subtitle": "OpenFocus – Umgebungsabhängigkeiten",

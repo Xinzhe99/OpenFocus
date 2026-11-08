@@ -151,7 +151,7 @@ def test_transient_ram_cap_counts_views_and_disk_fallback(tmp_path, monkeypatch,
     monkeypatch.setattr(resource_policy, 'ram_budget', lambda snapshot: 2 * (baseline + 32))
     if ceiling == 'shared_limit':
         monkeypatch.setattr(resource_policy, 'ram_budget', lambda snapshot: 1024 ** 4)
-        monkeypatch.setattr(frame_storage, 'FRAME_RAM_BUDGET_BYTES', baseline + 32)
+        monkeypatch.setattr(resource_policy, 'FRAME_RAM_BUDGET_BYTES', baseline + 32)
     monkeypatch.setattr(resource_policy, 'require_memory', lambda *args, **kwargs: 1024)
     monkeypatch.setattr(frame_storage, '_storage_directory', str(tmp_path))
     first = frame_storage.create_transient_frame((16,), np.uint8)
