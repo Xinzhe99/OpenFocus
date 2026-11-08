@@ -946,6 +946,7 @@ PACK = {
     "msg_success": "성공",
     "msg_error": "오류",
     "msg_proc_error": "처리 중 오류가 발생했습니다:",
+    "render_worker_crashed": "렌더링 프로세스가 예기치 않게 종료되었습니다({reason}). 프로젝트는 열려 있습니다. 렌더링 설정을 조정한 후 다시 시도하세요.",
     "msg_warning": "경고",
     "dialog_env_title": "환경 정보",
     "env_subtitle": "OpenFocus 환경 의존성",

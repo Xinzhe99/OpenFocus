@@ -5,6 +5,7 @@ never cause a full-resolution decode; transforms retain that separation.
 """
 from collections import OrderedDict
 from dataclasses import dataclass, replace
+from functools import partial
 from io import BytesIO
 import logging
 import math
@@ -78,11 +79,11 @@ class PreviewPixels:
     """A preview's disk lifetime without pinning its pixel allocation."""
     def __init__(self, image):
         from core.frame_storage import (storage_directory, require_disk_space,
-                                        track_temp_file, _storage_error)
+                                        track_temp_file, _storage_error, _frame_file)
         directory = storage_directory()
         require_disk_space(image.nbytes, directory)
         try:
-            fd, self.path = tempfile.mkstemp(prefix='openfocus-preview-', dir=directory)
+            fd, self.path = _frame_file(directory, image.nbytes, prefix='openfocus-preview-')
         except OSError as exc:
             raise _storage_error(directory, image.nbytes, exc) from exc
         self.shape, self.dtype = image.shape, image.dtype
@@ -641,14 +642,17 @@ def process_frame(frame, processor, *, shape=None, dtype=None, should_cancel=Non
     return ProcessedFrame(frame, processor, shape, dtype, should_cancel, scratch)
 
 
+def _crop_pixels(image, *, x, y, width, height, channels):
+    image = image[y:y + height, x:x + width]
+    return image if channels is None or image.ndim != 3 else image[:, :, :channels]
+
+
 def crop_frame(frame, x, y, width, height, *, channels=None, should_cancel=None):
     """Retain a repeatable crop rather than a view pinning a decoded source."""
     shape = (height, width) + frame.shape[2:]
     if channels is not None and frame.ndim == 3:
         shape = (height, width, channels)
-    def crop(image):
-        image = image[y:y + height, x:x + width]
-        return image if channels is None or image.ndim != 3 else image[:, :, :channels]
+    crop = partial(_crop_pixels, x=x, y=y, width=width, height=height, channels=channels)
     return process_frame(frame, crop, shape=shape, should_cancel=should_cancel, scratch_bytes=0)
 
 

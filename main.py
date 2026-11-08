@@ -12,6 +12,10 @@ import os
 # something a user install can do.
 os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 
+if __name__ == "__main__":
+    import multiprocessing
+    multiprocessing.freeze_support()
+
 # Windowed PyInstaller builds may set Python's streams to None even when a CLI
 # caller supplied inherited handles. Never attach or create a console.
 def _is_cli_invocation(argv):

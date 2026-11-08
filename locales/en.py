@@ -983,6 +983,7 @@ EN = {
     "msg_success": "Success",
     "msg_error": "Error",
     "msg_proc_error": "An error occurred during processing:",
+    "render_worker_crashed": "The render process stopped unexpectedly ({reason}). Your project is still open. Adjust the render settings and try again.",
     "msg_warning": "Warning",
     "dialog_env_title": "Environment Information",
     "env_subtitle": "OpenFocus Environment Dependencies",
