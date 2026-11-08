@@ -45,14 +45,21 @@ jobs:
           python -m pip install -r requirements.txt -r requirements-dev.txt
 
       - name: Run test suite
+        id: pytest
+        shell: bash
         timeout-minutes: 15
         env:
           QT_QPA_PLATFORM: offscreen
           PYTHONFAULTHANDLER: '1'
-        run: pytest -v -x --timeout=90 --timeout-method=thread
+        run: |
+          set +e
+          pytest -v --timeout=90 --timeout-method=thread
+          pytest_exit=$?
+          echo "exit_code=$pytest_exit" >> "$GITHUB_OUTPUT"
+          exit "$pytest_exit"
 
       - name: Capture macOS native backtrace
-        if: ${{ failure() && runner.os == 'macOS' }}
+        if: ${{ failure() && runner.os == 'macOS' && fromJSON(steps.pytest.outputs.exit_code || '0') >= 128 }}
         timeout-minutes: 15
         continue-on-error: true
         shell: bash
