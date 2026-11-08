@@ -87,32 +87,66 @@ def burt_accumulate_rows(laplacian, response, level, start, stop):
 
 @njit(nogil=True)
 def select_rows(image, response, best, output, start, stop, scale, first,
-                accumulated, minimum):
+                accumulated, weights, statistics):
     for y in range(start, stop):
+        local_y = y - start
         for x in range(response.shape[1]):
-            score = response[y, x]
-            previous = best[y, x]
+            score = np.int64(response[y, x])
+            previous = np.int64(best[y, x])
             take = first or score > previous
             collect = first or previous < 65536
-            if first:
-                minimum[y, x] = score
-            elif collect:
-                minimum[y, x] = min(minimum[y, x], score)
+            if collect:
+                # Responses are saturated at 65535*16. Store the minimum and
+                # runner-up in code units to keep both in one uint16 pair.
+                current_code = score >> 4
+                if first:
+                    statistics[local_y, x, 0] = current_code
+                    statistics[local_y, x, 1] = 0
+                else:
+                    minimum = min(np.int64(statistics[local_y, x, 0]), current_code)
+                    second = np.int64(statistics[local_y, x, 1])
+                    if score > previous:
+                        second = previous >> 4
+                    else:
+                        second = max(second, current_code)
+                    statistics[local_y, x, 0] = minimum
+                    statistics[local_y, x, 1] = second
+                factor = np.float32(1.0)
+                if first:
+                    weight = np.float32(1.0 if score else 0.0)
+                    weights[local_y, x] = weight
+                elif score > previous:
+                    ratio = np.float32(previous) / np.float32(score)
+                    factor = ratio * ratio
+                    factor *= factor
+                    weight = np.float32(1.0)
+                    weights[local_y, x] = weights[local_y, x] * factor + weight
+                else:
+                    ratio = (np.float32(score) / np.float32(previous)
+                             if previous else np.float32(0.0))
+                    weight = ratio * ratio
+                    weight *= weight
+                    weights[local_y, x] += weight
             if image.ndim == 2:
                 value = np.int64(image[y, x]) * scale
-                if first:
-                    accumulated[y, x] = value
-                elif collect:
-                    accumulated[y, x] += value
+                if collect:
+                    if first:
+                        accumulated[local_y, x] = np.float32(value) * weight
+                    else:
+                        accumulated[local_y, x] = (accumulated[local_y, x] * factor
+                                                    + np.float32(value) * weight)
                 if take:
                     output[y, x] = value
             else:
                 for channel in range(image.shape[2]):
                     value = np.int64(image[y, x, channel]) * scale
-                    if first:
-                        accumulated[y, x, channel] = value
-                    elif collect:
-                        accumulated[y, x, channel] += value
+                    if collect:
+                        if first:
+                            accumulated[local_y, x, channel] = np.float32(value) * weight
+                        else:
+                            accumulated[local_y, x, channel] = (
+                                accumulated[local_y, x, channel] * factor
+                                + np.float32(value) * weight)
                     if take:
                         output[y, x, channel] = value
             if take:
@@ -120,22 +154,34 @@ def select_rows(image, response, best, output, start, stop, scale, first,
 
 
 @njit(nogil=True)
-def blend_low_response_rows(output, best, minimum, accumulated, count, start, stop):
+def blend_low_response_rows(output, best, accumulated, weights, statistics, start, stop):
     for y in range(start, stop):
+        local_y = y - start
         for x in range(best.shape[1]):
             score = np.int64(best[y, x])
-            if score >= 65536 or score == minimum[y, x]:
+            if score >= 65536 or (score >> 4) == statistics[local_y, x, 0]:
                 continue
-            strength = min(32768, 65536 - score)
+            second = np.int64(statistics[local_y, x, 1]) << 4
+            gap = max(0, score - second)
+            if gap * 2 >= score:
+                continue
+            # Blend only when the two leading focus responses are close.
+            confidence = min(score, 5 * score - 10 * gap)
+            strength = (np.float32(min(32768, 65536 - score)) / np.float32(32768)
+                        * np.float32(confidence) / np.float32(score))
+            denominator = weights[local_y, x]
+            if denominator <= 0:
+                continue
             if output.ndim == 2:
-                average = (np.int64(accumulated[y, x]) + count // 2) // count
-                output[y, x] = (np.int64(output[y, x]) * (32768 - strength)
-                                + average * strength + 16384) >> 15
+                average = accumulated[local_y, x] / denominator
+                value = np.float32(output[y, x]) * (np.float32(1.0) - strength) + average * strength
+                output[y, x] = min(65535, max(0, int(value + np.float32(0.5))))
             else:
                 for channel in range(output.shape[2]):
-                    average = (np.int64(accumulated[y, x, channel]) + count // 2) // count
-                    output[y, x, channel] = (np.int64(output[y, x, channel]) * (32768 - strength)
-                                             + average * strength + 16384) >> 15
+                    average = accumulated[local_y, x, channel] / denominator
+                    value = (np.float32(output[y, x, channel]) * (np.float32(1.0) - strength)
+                             + average * strength)
+                    output[y, x, channel] = min(65535, max(0, int(value + np.float32(0.5))))
 
 
 @njit(nogil=True)

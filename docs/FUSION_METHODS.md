@@ -37,8 +37,9 @@ original code. Radius `R = max(1, kernel_size // 2)` chooses
 with replicated odd edges and bilinear expansion at phase −0.5. The response
 is the sum of nearest-expanded absolute Laplacians, saturated at 65535.
 Smoothing does not change A's response. Clear focus selects the highest-response
-frame; low-response regions blend the source stack to reduce background noise.
-When all responses tie, A retains the first frame. Eight-bit output uses the
+frame; low-response regions blend similarly focused frames to reduce background
+noise while retaining clear low-contrast detail. When all responses tie, A
+retains the first frame. Eight-bit output uses the
 E-37 exit (`max(v-1, 0)`); sixteen-bit output keeps its code precision.
 Mixed stacks map each input according to its own source depth.
 

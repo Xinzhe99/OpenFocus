@@ -42,11 +42,12 @@ def roi_openfocus_c(parameters, width, height):
 
 
 # Serial OpenFocus passes retain global planes in mappings and use bounded
-# row scratch. A also keeps a response minimum and a BGRA code accumulator.
-# Concurrent producers are admitted separately by _frame_pass_workers.
+# row scratch. A's background accumulators spill to mapped row windows when
+# they exceed 32 MiB. Concurrent producers are admitted separately.
 def openfocus_a_resources(height, width, parameters, frames):
-    bytes_per_pixel = 36 if frames <= 65536 else 52
-    return 4 * 1024 * 1024 + min(height, 128) * width * 96, height * width * bytes_per_pixel
+    background_ram = min(height * width * 24, 32 * 1024 * 1024)
+    fixed = 4 * 1024 * 1024 + background_ram + min(height, 128) * width * 120
+    return fixed, height * width * 16
 
 
 def openfocus_b_resources(height, width, parameters, frames):

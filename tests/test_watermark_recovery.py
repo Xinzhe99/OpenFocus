@@ -87,6 +87,8 @@ def _window(tmp_path, records=()):
     window.refreshed = 0
     window.dirty_marks = 0
     window.messages = []
+    window._capture_label_state = MethodType(OpenFocus._capture_label_state, window)
+    window._capture_scalebar_state = MethodType(OpenFocus._capture_scalebar_state, window)
     window._capture_watermark_state = lambda: wm.capture_state(window)
     window._capture_stack_state = lambda: {
         "watermark": wm.capture_state(window), "labels": None, "scalebar": None,

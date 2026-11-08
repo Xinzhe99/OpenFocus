@@ -58,6 +58,32 @@ def test_a_reduces_flat_background_noise_and_preserves_focused_texture(dtype):
     np.testing.assert_array_equal(result[80:112, 80:112], expected_pattern[8:40, 8:40])
 
 
+@pytest.mark.parametrize('dtype', [np.uint8, np.uint16])
+@pytest.mark.parametrize('focused_frames', [1, 2])
+def test_a_keeps_low_contrast_detail_with_one_or_more_focused_frames(dtype, focused_frames):
+    shape = (129, 131)
+    scale = 1 if dtype == np.uint8 else 256
+    pattern = np.where(np.indices(shape).sum(axis=0) % 2,
+                       124 * scale, 116 * scale).astype(dtype)
+    frames = [np.full(shape, 120 * scale, dtype) for _ in range(8 - focused_frames)]
+    frames += [pattern.copy() for _ in range(focused_frames)]
+    result = quantize_fuse_output(openfocus_a_impl(frames, thread_count=1),
+                                  dtype == np.uint16)
+    expected = pattern - 1 if dtype == np.uint8 else pattern
+    np.testing.assert_array_equal(result, expected)
+
+
+def test_a_mapped_background_accumulators_match_in_memory(monkeypatch):
+    from fusion_methods import openfocus_a
+
+    rng = np.random.default_rng(422)
+    frames = [np.clip(30000 + rng.integers(-600, 601, (97, 103, 3)),
+                      0, 65535).astype(np.uint16) for _ in range(4)]
+    expected = openfocus_a.openfocus_a_impl(frames, thread_count=1)
+    monkeypatch.setattr(openfocus_a, '_BACKGROUND_RAM_LIMIT_BYTES', 0)
+    actual = openfocus_a.openfocus_a_impl(frames, thread_count=1)
+    np.testing.assert_array_equal(actual, expected)
+
 
 def test_burt_odd_edges_do_not_amplify_repeated_samples():
     from fusion_methods.openfocus_a import _down2

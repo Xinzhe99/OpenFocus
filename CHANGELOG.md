@@ -228,8 +228,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Explicit temporary-directory choices remain binding.
 - Evict old source-cache owners before the next full decode, avoiding a full
   old cache overlapping the incoming image while preserving live consumer views.
-- Reduce OpenFocus A background noise by blending frames where focus response
-  is weak; keep sharp-region selection, first-frame ties and 16-bit precision.
+- Reduce OpenFocus A background noise by blending similarly focused frames
+  where response is weak; retain clear low-contrast detail, first-frame ties and
+  16-bit precision. Large blend accumulators use bounded mapped row windows.
 - Resolve macOS temporary subdirectories to their actual disk device before
   checking whether the volume is internal and fixed.
 - Quantize fusion results in bounded sample chunks instead of allocating
