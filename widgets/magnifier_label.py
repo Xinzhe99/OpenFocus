@@ -32,10 +32,19 @@ def _is_touchpad_gesture(event):
     return event.phase() != Qt.ScrollPhase.NoScrollPhase
 
 
+def _platform_name():
+    from PyQt6.QtGui import QGuiApplication
+    return QGuiApplication.platformName()
+
+
 def _gesture_pan(event):
-    """How far a touchpad gesture moves the image, in pixels."""
+    """How far a touchpad gesture moves the image, in pixels.
+
+    Pixel deltas are used where the platform provides reliable ones.  On X11
+    (xcb) Qt documents them as driver-specific and unreliable, so the angle
+    deltas are converted there even when pixel deltas are present."""
     pixels = event.pixelDelta()
-    if not pixels.isNull():
+    if not pixels.isNull() and _platform_name() != "xcb":
         return QPointF(pixels)
     return QPointF(event.angleDelta()) / ANGLE_UNITS_PER_PIXEL
 

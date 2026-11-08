@@ -144,6 +144,21 @@ class TestMagnifierZoomAnchor:
         finally:
             label.close()
 
+    def test_x11_touchpad_pan_ignores_unreliable_pixel_deltas(self, qapp, monkeypatch):
+        # On xcb Qt's pixel deltas are driver-specific; angle deltas are used.
+        import widgets.magnifier_label as ml
+        monkeypatch.setattr(ml, "_platform_name", lambda: "xcb")
+        label = self._label(qapp)
+        try:
+            label._zoom_factor = 2.0
+            label.refresh_display()
+            before_pan = QPointF(label._pan_offset)
+            _send_wheel(label, QPointF(200, 150), -48, pixels=QPoint(300, -200), angle_x=36,
+                        phase=Qt.ScrollPhase.ScrollUpdate)
+            assert label._pan_offset == before_pan + QPointF(36, -48) / ml.ANGLE_UNITS_PER_PIXEL
+        finally:
+            label.close()
+
     def test_control_touchpad_scroll_still_zooms(self, qapp):
         label = self._label(qapp)
         try:
