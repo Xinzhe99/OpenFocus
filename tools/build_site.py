@@ -95,7 +95,7 @@ def render_downloads(locale: dict) -> str:
 def render_lang_menu(current: dict) -> str:
     links = []
     for code, locale in LOCALES.items():
-        href = f"/{locale['path']}"
+        href = f"/{locale['path']}?lang={code}"
         current_attr = ' aria-current="page"' if code == current["code"] else ""
         links.append(
             f'<a href="{href}" hreflang="{code}" lang="{locale["html_lang"]}"'

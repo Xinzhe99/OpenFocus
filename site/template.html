@@ -65,7 +65,7 @@
       <a href="#cli">{{nav.cli}}</a>
       <a href="{{manual}}" rel="noopener">{{nav.docs}}</a>
       <a href="{{repo}}" rel="noopener">{{nav.github}}</a>
-      <a href="https://account.openfocus.top/account">{{nav.account}}</a>
+      <a href="{{nav.account_url}}">{{nav.account}}</a>
     </div>
     <button class="icon menu" id="menu" type="button" aria-label="{{nav.menu}}" aria-expanded="false" aria-controls="links">
       <svg class="i-open" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
@@ -201,6 +201,10 @@
   </section>
   <section id="privacy">
     <h2>{{privacy.title}}</h2>
+    <p class="note">{{privacy.accounts}}</p>
+    <p class="note">{{privacy.controls}} <a href="{{nav.account_url}}">{{privacy.manage}}</a></p>
+    <p class="note">{{privacy.cookies}}</p>
+    <p class="note">{{privacy.providers}}</p>
     <p class="note">{{privacy.downloads}}</p>
     <p class="note">{{privacy.usage}}</p>
     <p class="note">{{privacy.retention}}</p>
