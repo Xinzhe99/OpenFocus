@@ -268,6 +268,11 @@ class ExportManager:
             show_warning_box(window, trans.t('action_export_layered_tiff'),
                              trans.t('layered_tiff_no_source'))
             return
+        from utils import watermark
+        if watermark.any_active(window, record):
+            show_warning_box(window, trans.t('action_export_layered_tiff'),
+                             trans.t('watermark_layered_blocked'))
+            return
         root, ext = os.path.splitext(path)
         if not ext:
             path = root + '.tif'
@@ -316,7 +321,7 @@ class ExportManager:
                 # annotation state so omitted changes stay protected.
                 self.window.output_manager._mark_record_exported(
                     self._layered_record, self.layered_worker.image, message,
-                    {'labels': [], 'scale': None})
+                    {'labels': [], 'scale': None, 'watermark': None})
             self.window.statusBar().showMessage(
                 trans.t('msg_image_saved_info').format(path=message).replace('\n', ' '), 8000)
         elif message:
@@ -348,7 +353,11 @@ class ExportManager:
             if staged and os.path.isdir(staged):
                 aligned_dir = staged
         if aligned_dir is not None:
-            self._save_aligned_dir(aligned_dir)
+            item = getattr(window, "output_list", None)
+            item = item.currentItem() if item is not None else None
+            record = (output_manager.record_for_item(item)
+                      if output_manager is not None and item is not None else None)
+            self._save_aligned_dir(aligned_dir, record=record)
             return
 
         result_to_save = None
@@ -370,13 +379,19 @@ class ExportManager:
             return
 
         labels = window.label_manager.snapshot()
+        record = None
+        if output_manager is not None:
+            record = output_manager.record_for_image(result_to_save)
+        baked = bool(record is not None and record.annotations_baked)
         preview_record = getattr(window, '_wipe_preview_record', None)
         metadata = (preview_record.linear_dng_metadata
                     if preview_record is not None and preview_record.image is result_to_save else None)
         if metadata is None and result_to_save is window.fusion_result:
             render_context = getattr(getattr(window, 'render_manager', None), '_render_context', None) or {}
             metadata = render_context.get('linear_dng_metadata')
-        cfg = scalebar.export_cfg(window, target='output')
+        cfg = scalebar.export_cfg(window, target='output', record=record)
+        from utils import watermark
+        wm_cfg = watermark.export_cfg(window, target='output', record=record)
         if not default_filename:
             default_filename = self.generate_default_filename()
         filters = ('PNG 8/16-bit (*.png);;TIFF 8/16-bit (*.tif *.tiff);;'
@@ -395,13 +410,16 @@ class ExportManager:
             from utils.logging_setup import log_action, log_operation
             log_action('export_image', path=file_path)
             if os.path.splitext(file_path)[1].lower() == '.dng':
-                if metadata is None:
+                if metadata is None or (record is not None and record.watermark_baked):
                     show_warning_box(window, trans.t('linear_dng_filter'),
                                      trans.t('linear_dng_requires_raw'))
                     return
                 from controllers.output_manager import OutputRecord
                 record = OutputRecord.create(result_to_save, default_filename)
                 record.linear_dng_metadata = metadata
+                if wm_cfg:
+                    record.watermark_config = dict(wm_cfg)
+                    record.watermark_initialized = True
                 window.output_manager.start_linear_dng_export(
                     record, None, file_path, labels,
                     px_size_um=scalebar.effective_px_um(window))
@@ -418,10 +436,15 @@ class ExportManager:
                 ext = os.path.splitext(file_path)[1].lower()
                 if image.ndim == 3 and image.shape[2] == 4 and ext != '.png':
                     raise ValueError(trans.t('transparent_desktop_unsupported').format(path=file_path))
-                image = labels.prepare_bgr_image('output', image, 0)
+                if not baked:
+                    image = labels.prepare_bgr_image('output', image, 0,
+                                                     output_id=record.output_id if record else None)
+                    image = scalebar.burn(image, cfg)
+                if wm_cfg:
+                    image = watermark.burn(image, wm_cfg)
                 with log_operation("export_image_write", path=file_path, extension=ext,
                                    shape=image.shape, dtype=str(image.dtype)) as operation:
-                    written = imwrite_auto(file_path, scalebar.burn(image, cfg), get_imwrite_params(ext),
+                    written = imwrite_auto(file_path, image, get_imwrite_params(ext),
                                            exif=b'', icc_profile=icc)
                     if not written:
                         operation.fail()
@@ -467,11 +490,17 @@ class ExportManager:
                                     destination=destination, extension=extension, record=record,
                                     labels_snapshot=labels_snapshot)
 
-    def save_aligned_stack_as(self, source_dir: str, label: str = '', *, destination=None, extension=None):
-        return self._save_aligned_dir(source_dir, label, destination=destination, extension=extension)
+    def save_aligned_stack_as(self, source_dir: str, label: str = '', *, destination=None, extension=None, record=None):
+        return self._save_aligned_dir(source_dir, label, destination=destination,
+                                      extension=extension, record=record)
 
-    def _save_aligned_dir(self, source_dir: str, label: str = '', *, destination=None, extension=None):
-        """Already exported stacks retain their pixels without reburning annotations."""
+    def _save_aligned_dir(self, source_dir: str, label: str = '', *, destination=None, extension=None, record=None):
+        """Already exported stacks retain their pixels without reburning annotations.
+
+        A watermark that is not yet in those pixels is independent of baked
+        labels/scale bars, so the caller passes the record to distinguish the
+        two cases.
+        """
         from utils.sorting import natural_sort_key
         names = sorted((name for name in os.listdir(source_dir)
                         if os.path.isfile(os.path.join(source_dir, name)) and
@@ -480,7 +509,7 @@ class ExportManager:
         return self._save_frames_as(
             (os.path.join(source_dir, name) for name in names), names,
             'registered', os.path.basename(source_dir), baked=True,
-            destination=destination, extension=extension)
+            destination=destination, extension=extension, record=record)
 
     def _save_frames_as(self, frames, filenames, target, label='', *, baked=False, destination=None, extension=None, record=None, labels_snapshot=None):
         window = self.window
@@ -488,6 +517,11 @@ class ExportManager:
         annotate = not baked and not getattr(record, 'annotations_baked', False)
         labels = (labels_snapshot or window.label_manager.snapshot()) if annotate else None
         cfg = scalebar.export_cfg(window, target=target, record=record) if annotate else None
+        from utils import watermark
+        wm_cfg = (None if getattr(record, 'watermark_baked', False)
+                  else watermark.export_cfg(
+                      window, target='source' if target == 'input' else target,
+                      record=record))
         base = destination
         if base is None:
             base = FileDialog.getExistingDirectory(
@@ -502,6 +536,12 @@ class ExportManager:
             if not accepted:
                 return None
         extension = (extension or ('' if baked else 'png')).lstrip('.').lower()
+        if baked and not extension and wm_cfg:
+            # The directory has baked annotations but no watermark; re-encode
+            # to add the independently tracked mark instead of copying.
+            first_suffix = os.path.splitext(frames[0])[1].lower() if frames else ''
+            extension = (first_suffix.lstrip('.')
+                         if first_suffix in ALLOWED_EXPORT_EXTENSION_MAP else 'png')
         folder_name = label or os.path.basename(getattr(window, 'current_folder_path', '') or 'Stack')
         if not folder_name.endswith('_aligned') and target == 'registered':
             folder_name += '_aligned'
@@ -540,6 +580,8 @@ class ExportManager:
                     if labels is not None:
                         image = labels.prepare_bgr_image(target, image, index)
                         image = scalebar.burn(image, cfg)
+                    if wm_cfg:
+                        image = watermark.burn(image, wm_cfg)
                     frame_exif, frame_profile = exif, profile
                     if baked:
                         from core.image_loader import _read_exif_bytes, _read_icc_profile
@@ -599,6 +641,11 @@ class ExportManager:
         labels = None if baked else window.label_manager.snapshot()
         scale_cfg = None if baked else scalebar.export_cfg(
             window, target='source' if target_type == 'input' else 'registered', record=record)
+        from utils import watermark
+        wm_cfg = (None if (record and record.watermark_baked)
+                  else watermark.export_cfg(
+                      window, target='source' if target_type == 'input' else 'registered',
+                      record=record))
 
         duration_dialog = DurationDialog(window)
         if not duration_dialog.exec():
@@ -645,7 +692,8 @@ class ExportManager:
         duration_sec = duration_ms / 1000.0
         self.gif_worker = GifSaverWorker(
             images_to_save, file_path, duration_sec, labels,
-            target_type, scale_cfg=scale_cfg, linear_dng_metadata=metadata)
+            target_type, scale_cfg=scale_cfg, watermark_cfg=wm_cfg,
+            linear_dng_metadata=metadata)
         self.gif_worker.finished_signal.connect(
             lambda success, msg: self.on_gif_saved(success, msg, duration_ms)
         )
@@ -716,6 +764,11 @@ class ExportManager:
         labels = None if baked else window.label_manager.snapshot()
         cfg = None if baked else scalebar.export_cfg(
             window, target='source' if label_target == 'input' else 'registered', record=record)
+        from utils import watermark
+        wm_cfg = (None if (record and record.watermark_baked)
+                  else watermark.export_cfg(
+                      window, target='source' if label_target == 'input' else 'registered',
+                      record=record))
 
         from utils.settings_store import image_save_default, remember_image_save
         file_path, _ = FileDialog.getSaveFileName(
@@ -736,7 +789,8 @@ class ExportManager:
             profile = srgb_icc_profile() if metadata is not None else b''
             if run_pixel_worker(window, trans.t('action_save_multipage_tiff'),
                                 lambda: _write_lazy_multipage_tiff(
-                                    file_path, images, labels, label_target, cfg, metadata, profile)):
+                                    file_path, images, labels, label_target, cfg, metadata, profile,
+                                    wm_cfg)):
                 show_success_box(
                     window, trans.t("msg_success"),
                     trans.t("msg_multipage_saved_text"),
@@ -758,7 +812,8 @@ class ExportManager:
         self._save_frames_as(window.raw_images, window.image_filenames, 'input')
 
 
-def _write_lazy_multipage_tiff(path, frames, labels, target, cfg, metadata=None, profile=b''):
+def _write_lazy_multipage_tiff(path, frames, labels, target, cfg, metadata=None, profile=b'',
+                               watermark_cfg=None):
     """Resolve one source at a time; the unified TIFF writer converts bands."""
     from core.image_loader import _has_transparency
 
@@ -786,6 +841,9 @@ def _write_lazy_multipage_tiff(path, frames, labels, target, cfg, metadata=None,
                 raise ValueError(trans.t('transparent_desktop_unsupported').format(path=path))
             if labels is not None:
                 image = scalebar.burn(labels.prepare_bgr_image(target, image, index), cfg)
+            if watermark_cfg:
+                from utils import watermark
+                image = watermark.burn(image, watermark_cfg)
             yield image
             del image
 

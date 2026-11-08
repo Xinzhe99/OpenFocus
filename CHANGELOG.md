@@ -30,6 +30,32 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   verified after writing, so a locked clipboard reports an error instead of a
   false success. Menu and feedback strings are translated in all twelve
   language packs.
+- Add a visible tiled text watermark under Tools → Watermark for source
+  frames, registered frames and fusion results. Source, registered and output
+  scopes keep independent text/style; editing one never rewrites the others.
+  Text, font, relative size, opacity, ink colour, angle and density are
+  editable with a live preview of the real target; Apply commits one undoable
+  edit and Cancel leaves the committed configuration untouched. A newly
+  loaded stack does not inherit the previous stack's text, and the text is
+  never written to global preferences.
+- Burn the frozen watermark into every GUI export path: single save/Save As,
+  output batch and drag-out, source/registered frame folders, multi-page
+  TIFF, GIF, GUI batch output and aligned stacks, and representable Linear
+  DNG. 8-bit and 16-bit depth, PNG alpha and pixels outside the anti-aliased
+  mask are preserved; layered TIFF is blocked while a watermark is active,
+  and results whose pixels already contain one cannot receive another.
+- Persist watermark scope and style in projects and crash recovery; global
+  preferences store style defaults without the watermark text. Per-output
+  bindings survive reordering and renaming, and corrupt project fields are
+  handled safely.
+- Reject watermark text whose font produces no visible ink, and spill large
+  watermark copies directly to admitted disk storage when RAM is unavailable.
+- Keep result watermarks attached to their loaded stack through transforms
+  and undo, isolate reloaded stacks and historical results, apply registered
+  scope to the selected aligned result, and refresh recovery after removal,
+  undo and redo.
+- Include the frozen watermark in shared JPEG previews and preserve transparent
+  source coverage before compositing the display background.
 
 ### Changed
 - Default Batch Image Converter to lossless PNG, restore the last explicitly
