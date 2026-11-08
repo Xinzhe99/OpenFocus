@@ -24,14 +24,25 @@ def _send_mouse(widget, kind, pos, button, buttons):
     QApplication.processEvents()
 
 
+def _touchpad():
+    from PyQt6.QtGui import QInputDevice, QPointingDevice
+    return QPointingDevice("test touchpad", 4242, QInputDevice.DeviceType.TouchPad,
+                           QPointingDevice.PointerType.Finger,
+                           QInputDevice.Capability.Position | QInputDevice.Capability.Scroll,
+                           2, 0)
+
+
 def _send_wheel(widget, pos, delta, *, pixels=QPoint(0, 0), control=False,
-                phase=Qt.ScrollPhase.NoScrollPhase):
+                phase=Qt.ScrollPhase.NoScrollPhase, device=None, angle_x=0):
     from PyQt6.QtWidgets import QApplication
-    event = QWheelEvent(QPointF(pos), QPointF(pos), pixels,
-                        QPoint(0, delta), Qt.MouseButton.NoButton,
-                        (Qt.KeyboardModifier.ControlModifier if control
-                         else Qt.KeyboardModifier.NoModifier),
-                        phase, False)
+    args = (QPointF(pos), QPointF(pos), pixels,
+            QPoint(angle_x, delta), Qt.MouseButton.NoButton,
+            (Qt.KeyboardModifier.ControlModifier if control
+             else Qt.KeyboardModifier.NoModifier),
+            phase, False)
+    if device is not None:
+        args += (Qt.MouseEventSource.MouseEventNotSynthesized, device)
+    event = QWheelEvent(*args)
     QApplication.sendEvent(widget, event)
     QApplication.processEvents()
 
@@ -110,6 +121,26 @@ class TestMagnifierZoomAnchor:
                         phase=Qt.ScrollPhase.ScrollUpdate)
             assert label._zoom_factor == before_zoom
             assert label._pan_offset == before_pan + QPointF(34, -27)
+        finally:
+            label.close()
+
+    def test_x11_touchpad_scroll_without_pixel_deltas_pans(self, qapp):
+        # X11 reports touchpad scrolling as angle deltas from a TouchPad
+        # device, with no pixel deltas and no scroll phase.
+        from widgets.magnifier_label import ANGLE_UNITS_PER_PIXEL
+        label = self._label(qapp)
+        device = _touchpad()
+        try:
+            label._zoom_factor = 2.0
+            label.refresh_display()
+            before_zoom = label._zoom_factor
+            before_pan = QPointF(label._pan_offset)
+            _send_wheel(label, QPointF(200, 150), -48, angle_x=36, device=device)
+            assert label._zoom_factor == before_zoom
+            assert label._pan_offset == before_pan + QPointF(36, -48) / ANGLE_UNITS_PER_PIXEL
+            # Ctrl still zooms from the same device.
+            _send_wheel(label, QPointF(200, 150), 24, control=True, device=device)
+            assert label._zoom_factor > before_zoom
         finally:
             label.close()
 
