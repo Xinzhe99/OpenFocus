@@ -42,6 +42,19 @@ def test_affinity_and_fractional_quota_limit_all_preferences():
     assert policy.cpu_capacity(limited, policy.PREFERENCE_RESPONSIVE) == 1
 
 
+def test_ram_only_admission_tracks_lost_and_unknown_memory(monkeypatch):
+    available = iter((8 * GiB, 0, policy.RESERVE_BYTES // 2))
+    monkeypatch.setattr(memory, 'available_memory_bytes',
+                        lambda: next(available))
+    monkeypatch.setattr(memory, 'total_memory_bytes', lambda: 16 * GiB)
+    monkeypatch.setattr(memory, 'process_rss_bytes', lambda: GiB)
+    required = 64 * 1024 ** 2
+    assert policy.require_memory(required, policy.probe_memory()) >= required
+    for _ in range(2):
+        with pytest.raises(policy.ResourceLimitError):
+            policy.require_memory(required, policy.probe_memory())
+
+
 def test_fixed_allocations_reduce_concurrency_before_workers():
     plan = policy.plan_execution(_workload(), _snapshot(), ram_budget_override=1100)
     assert (plan.workers, plan.native_threads, plan.max_in_flight) == (3, 1, 3)
@@ -396,3 +409,30 @@ def test_unknown_device_memory_never_becomes_a_zero_budget_approval(monkeypatch)
     with pytest.raises(policy.ResourceLimitError,
                        match="Insufficient or unknown"):
         policy.plan_execution(workload, snapshot)
+
+
+def test_neural_tiles_admit_decoder_and_future_cache_growth():
+    mib = 1024 ** 2
+    snapshot = _snapshot(total_ram=4 * GiB, available_ram=GiB + 2 * mib)
+    options = dict(snapshot=snapshot)
+    args = (2, 64, 64, 3, 64, 'CPU', lambda *args: 0)
+    assert policy.plan_neural_tiles(*args, **options)[0] == 64
+    for decode, cache in ((2 * mib, 0), (0, 2 * mib), (mib, mib)):
+        with pytest.raises(policy.ResourceLimitError):
+            policy.plan_neural_tiles(*args, source_resolution_bytes=decode,
+                                      source_cache_bytes=cache, **options)
+
+
+def test_explicit_source_resolution_replaces_legacy_directory_estimate():
+    mib = 1024 ** 2
+    snapshot = _snapshot(total_ram=4 * GiB, available_ram=GiB + 2 * mib)
+    args = (2, 64, 64, 3, 64, 'CPU', lambda *args: 0)
+    block, _plan = policy.plan_neural_tiles(
+        *args, snapshot=snapshot, directory=True,
+        source_resolution_bytes=mib, source_cache_bytes=224 * 1024)
+    assert block == 64
+    with pytest.raises(policy.ResourceLimitError):
+        policy.plan_neural_tiles(
+            *args, snapshot=snapshot, directory=True,
+            source_resolution_bytes=mib + 64 * 1024,
+            source_cache_bytes=224 * 1024)

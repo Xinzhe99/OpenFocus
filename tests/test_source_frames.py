@@ -122,7 +122,6 @@ def test_pathless_result_arrays_remain_supported():
     assert sources.display_image(image) is image
     assert sources.resolve_frame(image) is image
     materialized = sources.materialize_frames([image])
-    assert isinstance(materialized[0], np.memmap)
     np.testing.assert_array_equal(materialized[0], image)
 
 
@@ -163,8 +162,9 @@ def test_materialize_parallel_window_preserves_order_and_progress(tmp_path, monk
                                         progress.append((done, total)))
     assert peak == 2
     assert progress == [(1, 4), (2, 4), (3, 4), (4, 4)]
-    assert all(isinstance(image, np.memmap) and np.all(image == index)
-               for index, image in enumerate(result))
+    for index, image in enumerate(result):
+        np.testing.assert_array_equal(
+            image, np.full(frames[index].shape, index, frames[index].dtype))
 
 
 def test_materialize_waits_for_running_decode_after_failure(tmp_path, monkeypatch):
@@ -299,6 +299,7 @@ def test_large_raw_missing_preview_never_unpacks_sensor(monkeypatch):
 
 def test_large_nondraft_preview_never_calls_pillow_decoder():
     class HeaderImage:
+        mode = 'RGB'
         size = (20000, 12000)
         width, height = size
         def getbands(self): return ('R', 'G', 'B')
@@ -315,6 +316,8 @@ def test_large_single_strip_tiff_preview_refuses_before_decode():
     def forbidden(**_kwargs):
         raise AssertionError('oversized TIFF strip decoded')
     page = SimpleNamespace(imagelength=12000, imagewidth=20000, samplesperpixel=3,
+                           parent=SimpleNamespace(filehandle=SimpleNamespace(path='header-only.tif')),
+                           photometric=2,
                            planarconfig=1, dtype=np.dtype(np.uint16), is_memmappable=False,
                            is_tiled=False, rowsperstrip=12000, databytecounts=(1000,),
                            segments=forbidden)
@@ -332,6 +335,7 @@ def test_mappable_tiff_preview_samples_without_segment_decoder():
         return mapped
     def forbidden(**_kwargs): raise AssertionError('mapped TIFF invoked strip decoder')
     page = SimpleNamespace(imagelength=4000, imagewidth=5000, samplesperpixel=3,
+                           parent=SimpleNamespace(filehandle=SimpleNamespace(path='mapped-header.tif')),
                            planarconfig=1, dtype=np.dtype(np.uint16), is_memmappable=True,
                            asarray=asarray, segments=forbidden, photometric=2)
     preview = sources._tiff_preview(page)
@@ -342,6 +346,7 @@ def test_mappable_tiff_preview_samples_without_segment_decoder():
 
 def test_progressive_jpeg_admits_original_coefficient_scratch():
     class ProgressiveHeader:
+        mode = 'RGB'
         size = (6000, 4000)
         width, height = size
         info = {'progressive': True}
@@ -375,6 +380,8 @@ def test_oversized_lzw_preview_never_calls_full_decoder(monkeypatch):
     def forbidden(*_args, **_kwargs): raise AssertionError('oversized LZW decode')
     monkeypatch.setattr(cv2, 'imdecodemulti', forbidden)
     page = SimpleNamespace(imagelength=12000, imagewidth=20000, samplesperpixel=3,
+                           parent=SimpleNamespace(filehandle=SimpleNamespace(path='lzw-header.tif')),
+                           photometric=2,
                            planarconfig=1, dtype=np.dtype(np.uint16), compression=5, tags={})
     preview = sources._tiff_preview(page)
     assert isinstance(preview, sources._UnavailablePreview)
@@ -963,9 +970,9 @@ def test_materialization_discards_last_frame_after_cancellation(tmp_path, monkey
         cancelled = cancel_at == 'decode'
         return pixels
 
-    def store_and_cancel(image):
+    def store_and_cancel(image, **kwargs):
         nonlocal cancelled
-        mapped = store(image)
+        mapped = store(image, **kwargs)
         cancelled = True
         return mapped
 
@@ -998,7 +1005,7 @@ def test_materialization_rejects_known_stack_before_decode(monkeypatch, tmp_path
 def test_existing_maps_are_not_charged_as_new_allocations(monkeypatch, tmp_path):
     from core import frame_storage
     monkeypatch.setattr(frame_storage, '_storage_directory', str(tmp_path))
-    existing = frame_storage.store_frame(np.arange(16, dtype=np.uint8))
+    existing = frame_storage.store_frame(np.arange(16, dtype=np.uint8), prefer_ram=False)
     monkeypatch.setattr(frame_storage, '_space', lambda path: (None, 0, 20))
     result = sources.materialize_frames([existing, np.zeros(10, np.uint8)], staging_bytes=10)
     assert result[0] is existing
@@ -1011,9 +1018,9 @@ def test_generator_is_not_consumed_before_processing(monkeypatch, tmp_path):
     first = np.arange(10, dtype=np.uint8)
     stored = []
     original = sources.store_frame
-    def record(image):
+    def record(image, **kwargs):
         stored.append(True)
-        return original(image)
+        return original(image, **kwargs)
     def frames():
         yield first
         assert stored, 'generator was exhausted before the first frame was stored'

@@ -21,34 +21,45 @@ def activity_rows(gray, fine, output, start, stop):
 
 
 @njit(nogil=True)
-def select_activity_rows(activity, best, winner, index, start, stop):
+def initialize_activity_rows(activity, depth, votes, count, start, stop):
+    for y in range(start, stop):
+        for x in range(activity.shape[1]):
+            depth[y, x] = 0
+            votes[y, x] = np.int64(activity[y, x]) // count
+
+
+@njit(nogil=True)
+def select_activity_rows(activity, best, depth, votes, code, count, start, stop):
     for y in range(start, stop):
         for x in range(activity.shape[1]):
             value = activity[y, x]
+            votes[y, x] = (np.int64(votes[y, x]) + np.int64(value) // count) & 65535
             if value > best[y, x]:
                 best[y, x] = value
-                winner[y, x] = index
+                depth[y, x] = code
+
+
+@njit(nogil=True)
+def confidence_rows(best, votes, start, stop):
+    for y in range(start, stop):
+        for x in range(best.shape[1]):
+            best[y, x] = abs(np.int64(best[y, x]) - np.int64(votes[y, x]))
 
 
 @njit(nogil=True)
 def guide_rows(best, lut, output, start, stop):
-    ratio = np.float32(np.float32(65534) / np.float32(65535))
+    ratio = np.float32(4095.0 / 65535.0)
     for y in range(start, stop):
         for x in range(best.shape[1]):
             position = np.float32(np.float32(best[y, x]) * ratio)
-            index = min(65533, max(0, np.int32(position)))
+            index = min(4094, max(0, np.int32(position)))
             fraction = np.float32(position - np.float32(index))
             left = np.float32(lut[index] * np.float32(np.float32(1) - fraction))
             right = np.float32(lut[index + 1] * fraction)
             value = np.float32(left + right)
-            output[y, x] = np.int64(value) & 65535
+            output[y, x] = min(65535, max(0, np.int64(value)))
 
 
-@njit(nogil=True)
-def winner_depth_rows(winner, output, step, start, stop):
-    for y in range(start, stop):
-        for x in range(winner.shape[1]):
-            output[y, x] = np.int64(winner[y, x]) * step
 
 
 @njit(nogil=True)
@@ -63,4 +74,6 @@ def snap_rows(depth, lut, step, start, stop):
             signed = ((abs(distance) << 10) // half) * (-1 if distance < 0 else 1)
             index = min(1024, abs(signed))
             correction = half * lut[index] * (1 if signed > 0 else -1)
-            depth[y, x] = (snapped + ((correction + (correction & 1023)) >> 10)) & 65535
+            correction = ((correction >> 10) if correction >= 0
+                          else -((-correction) >> 10))
+            depth[y, x] = (snapped + correction) & 65535

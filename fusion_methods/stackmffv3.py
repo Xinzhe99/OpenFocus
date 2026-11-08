@@ -81,20 +81,32 @@ def _blend_tile(probs, frames, mode, should_cancel=None):
     channels = frames[0].shape[2] if frames[0].ndim == 3 else 1
     result = np.zeros((height, width, channels), dtype=np.float32)
     normalize_stack = any(frame.dtype == np.uint16 for frame in frames)
-    for row in range(0, height, 256):
-        _cancel(should_cancel)
-        stop = min(row + 256, height)
-        selected = probs[:, row:stop].argmax(0) if mode == 'hard' else None
-        output = result[row:stop]
-        for index, frame in enumerate(frames):
+    selected_indices = None
+    if mode == 'hard':
+        from core.frame_storage import create_frame
+        selected_indices = create_frame((height, width), np.intp)
+        for row in range(0, height, 256):
             _cancel(should_cancel)
-            source = common.working_frame(frame[row:stop], normalize_stack)
+            stop = min(row + 256, height)
+            selected_indices[row:stop] = probs[:, row:stop].argmax(0)
+    from core.source_frames import resolve_frame
+    for index, frame in enumerate(frames):
+        _cancel(should_cancel)
+        image = resolve_frame(frame)
+        for row in range(0, height, 256):
+            _cancel(should_cancel)
+            stop = min(row + 256, height)
+            source = common.working_frame(image[row:stop], normalize_stack)
             if source.ndim == 2:
                 source = source[:, :, None]
-            if selected is None:
+            output = result[row:stop]
+            if selected_indices is None:
                 output += probs[index, row:stop, :, None] * source
             else:
-                np.copyto(output, source, where=(selected == index)[:, :, None])
+                np.copyto(output, source,
+                          where=(selected_indices[row:stop] == index)[:, :, None])
+            del source
+        del image
     _cancel(should_cancel)
     return result
 
@@ -190,7 +202,7 @@ def _stackmffv3_batch_impl(tiles_list, model_path, use_gpu, mode='soft',
 
 
 def _read_stack(input_source, img_resize, should_cancel=None, execution_plan=None):
-    """Load original pixels using the shared, frame-at-a-time mapped staging."""
+    """Capture source descriptors using shared cancellable per-frame processing."""
     return common.read_stack(input_source, img_resize, should_cancel, execution_plan)
 
 

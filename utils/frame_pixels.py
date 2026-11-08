@@ -89,7 +89,7 @@ def run_pixel_worker(parent, title, operation, *, show_progress=True):
 
 def preview_pixels(frame, parent=None):
     """Return bounded display pixels, generating missing previews off Qt."""
-    from core.source_frames import SourceFrame, display_image
-    if isinstance(frame, SourceFrame) and frame.preview is None:
+    from core.source_frames import SourceFrame, ProcessedFrame, display_image
+    if isinstance(frame, ProcessedFrame) or (isinstance(frame, SourceFrame) and frame.preview is None):
         return run_pixel_worker(parent, "OpenFocus", lambda: display_image(frame))
     return display_image(frame)

@@ -146,7 +146,8 @@ def test_transient_ram_cap_counts_views_and_disk_fallback(tmp_path, monkeypatch,
     from core import resource_policy
     gc.collect()
     baseline = frame_storage._ram_live_bytes
-    monkeypatch.setattr(resource_policy, 'probe_resources', lambda: SimpleNamespace(ram_known=True))
+    monkeypatch.setattr(resource_policy, 'probe_memory',
+                        lambda: SimpleNamespace(ram_known=True))
     monkeypatch.setattr(resource_policy, 'ram_budget', lambda snapshot: 2 * (baseline + 32))
     if ceiling == 'shared_limit':
         monkeypatch.setattr(resource_policy, 'ram_budget', lambda snapshot: 1024 ** 4)

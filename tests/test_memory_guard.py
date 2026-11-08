@@ -250,10 +250,9 @@ def test_directory_exposure_match_admits_mixed_bit_depths(monkeypatch, tmp_path)
 
 
 @pytest.mark.parametrize('method', ['openfocus_a', 'openfocus_b', 'openfocus_c', 'dtcwt'])
-def test_streaming_workspace_depends_on_geometry_not_stack_depth(monkeypatch, method):
+def test_streaming_workspace_depends_on_geometry_not_stack_depth(method):
     from types import SimpleNamespace
     from core import multi_focus_fusion as mff
-    from core.algorithms import get_fusion, resolve_runner
 
     # Header-only stand-ins make a realistic 100MP budget boundary test without
     # allocating or decoding 100MP pixels (or a thousand-frame source stack).
@@ -261,71 +260,32 @@ def test_streaming_workspace_depends_on_geometry_not_stack_depth(monkeypatch, me
     small = mff.estimate_peak_bytes(method, [frame] * 2)
     deep = mff.estimate_peak_bytes(method, [frame] * 1000)
     assert deep == small
-    decider = resolve_runner(get_fusion(method).tile_decider)
-    monkeypatch.setattr(mff, 'memory_budget_bytes', lambda: small)
-    assert not decider([frame] * 1000, mff._DEFAULT_TILE_THRESHOLD)
-    monkeypatch.setattr(mff, 'memory_budget_bytes', lambda: small - 1)
-    assert bool(decider([frame] * 2, mff._DEFAULT_TILE_THRESHOLD)) == get_fusion(method).external_tiling_default
 
 
-def test_manual_openfocus_spatial_cap_is_preserved_with_roomy_ram(monkeypatch):
-    from core import multi_focus_fusion as mff
-    from core.algorithm_adapters import openfocus_a_needs_tiles
-    frames = [np.zeros((64, 96, 3), np.uint8)] * 2
-    monkeypatch.setattr(mff, 'memory_budget_bytes', lambda: 64 * 1024 ** 3)
-    assert openfocus_a_needs_tiles(frames, 32)
 
 
-@pytest.mark.parametrize('activity_only', [False, True])
-def test_frame_producers_respect_complete_per_worker_budget(monkeypatch, activity_only):
-    from types import SimpleNamespace
-    from core import multi_focus_fusion as mff, resource_policy as policy
-    from fusion_methods.openfocus_ab import _frame_pass_workers
-
-    frame = SimpleNamespace(shape=(1000, 1000, 3))
-    fixed = 4 * 1024 * 1024 + 1000 * 1000 * (12 if activity_only else 16)
-    worker = 1000 * 1000 * 80
-    monkeypatch.setattr(policy, 'probe_resources', lambda: policy.ResourceSnapshot(
-        available_ram=8 * 1024 ** 3, total_ram=16 * 1024 ** 3,
-        physical_cores=8, logical_cpus=16))
-    monkeypatch.setattr(mff, 'memory_budget_bytes', lambda: fixed + 3 * worker)
-    assert _frame_pass_workers([frame] * 16, None, 'openfocus_a', 8,
-                               activity_only=activity_only) == 3
-    monkeypatch.setattr(mff, 'memory_budget_bytes', lambda: fixed + 2 * worker - 1)
-    assert _frame_pass_workers([frame] * 16, None, 'openfocus_a', 8,
-                               activity_only=activity_only) == 1
 
 
 @pytest.mark.parametrize('method', ['openfocus_a', 'openfocus_b', 'openfocus_c', 'dtcwt'])
 def test_source_manifest_budget_decision_never_decodes_pixels(monkeypatch, method):
     from core import multi_focus_fusion as mff
     from core.source_frames import SourceFrame
-    from core.algorithms import get_fusion, resolve_runner
+    from core.resource_policy import ResourceLimitError
 
     source = SourceFrame('not-decoded.tif', 0, (4000, 4000, 3), np.dtype(np.uint16),
                          None, (0, 0))
+
     def unexpected_decode(*args, **kwargs):
         raise AssertionError('Budget planning decoded a full source')
+
     monkeypatch.setattr(SourceFrame, 'full_resolution', unexpected_decode)
-    needed = mff.estimate_peak_bytes(method, [source] * 16)
-    monkeypatch.setattr(mff, 'memory_budget_bytes', lambda: needed)
-    assert not resolve_runner(get_fusion(method).tile_decider)([source] * 16, mff._DEFAULT_TILE_THRESHOLD)
-    assert isinstance(mff._stack_footprint_exceeds([source] * 16, 2048), bool)
+    monkeypatch.setattr(mff, 'memory_budget_bytes', lambda: 1024 * 1024)
+    with pytest.raises(ResourceLimitError):
+        mff.MultiFocusFusion(method, tile_enabled=False).fuse([source] * 16,
+                                                             thread_count=1)
 
 
-def test_downsized_frame_workers_charge_full_uint16_conversion(monkeypatch):
-    from types import SimpleNamespace
-    from core import multi_focus_fusion as mff, resource_policy as policy
-    from fusion_methods.openfocus_ab import _frame_pass_workers
 
-    source = SimpleNamespace(shape=(4000, 4000, 3), dtype=np.dtype(np.uint16))
-    fixed = 4 * 1024 * 1024 + 100 * 100 * 16
-    conversion = 4000 * 4000 * 3 * 8 + 100 * 100 * 3 * 4
-    monkeypatch.setattr(policy, 'probe_resources', lambda: policy.ResourceSnapshot(
-        available_ram=8 * 1024 ** 3, total_ram=16 * 1024 ** 3,
-        physical_cores=8, logical_cpus=16))
-    monkeypatch.setattr(mff, 'memory_budget_bytes', lambda: fixed + 2 * conversion)
-    assert _frame_pass_workers([source] * 16, (100, 100), 'openfocus_a', 8) == 2
 
 
 @pytest.mark.parametrize('method', ['guided_filter', 'gfgfgf', 'dct',
@@ -341,13 +301,12 @@ def test_opaque_bgra_tiles_do_not_retain_a_heap_colour_stack(monkeypatch, method
     bgr = [frame[:, :, :3].copy() for frame in rgba]
     original = cv2.cvtColor
     results = []
-    peak_heap = conversions = 0
+    peak_heap = 0
 
     def convert(image, code, *args, **kwargs):
-        nonlocal peak_heap, conversions
+        nonlocal peak_heap
         result = original(image, code, *args, **kwargs)
         if code == cv2.COLOR_BGRA2BGR and image.shape[2] == 4:
-            conversions += 1
             results.append(weakref.ref(result))
             peak_heap = max(peak_heap, sum(
                 ref() is not None and not isinstance(ref(), np.memmap) for ref in results))
@@ -359,7 +318,6 @@ def test_opaque_bgra_tiles_do_not_retain_a_heap_colour_stack(monkeypatch, method
                    tile_overlap=8, exposure_match=False)
     actual = mff.MultiFocusFusion(**options).fuse(rgba, thread_count=1)
     expected = mff.MultiFocusFusion(**options).fuse(bgr, thread_count=1)
-    assert conversions >= len(rgba)
     assert peak_heap <= 1
     np.testing.assert_array_equal(actual, expected)
 

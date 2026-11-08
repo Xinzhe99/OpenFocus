@@ -15,6 +15,13 @@ def frame_codes(source, img_resize, should_cancel):
     _check_cancel(should_cancel)
     if frame.dtype not in (np.uint8, np.uint16, np.float32, np.float64):
         raise ValueError(f"Unsupported fusion pixel type: {frame.dtype}")
+    if img_resize is not None and frame.dtype.kind == 'f':
+        # Interpolate the documented 0-255 samples before quantizing codes.
+        # Quantizing first changes fractional area-resize contributions.
+        frame = cv2.resize(np.asarray(frame, dtype=np.float32),
+                           tuple(map(int, img_resize)), interpolation=cv2.INTER_AREA)
+        _check_cancel(should_cancel)
+        img_resize = None
     code = create_frame(frame.shape, np.int32)
     for start in range(0, frame.shape[0], 128):
         _check_cancel(should_cancel)

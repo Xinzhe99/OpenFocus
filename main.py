@@ -3228,6 +3228,9 @@ class OpenFocus(QMainWindow):
             worker = getattr(self, "roi_alignment_worker", None)
             if worker is not None and worker.isRunning():
                 worker.cancel()
+            key = getattr(self, '_roi_display_key', None)
+            if key is not None:
+                self._release_roi_regions(key)
             # 退出ROI模式
             self.roi_mode_active = False
             if hasattr(self, 'lbl_result_img'):
@@ -3321,31 +3324,84 @@ class OpenFocus(QMainWindow):
             self.roi_alignment_worker = None
         worker.deleteLater()
 
-    def _display_roi_aligned_image(self, index: int):
-        """在右侧结果面板显示ROI模式下对齐后的图像"""
-        if not self.roi_aligned_images or index < 0 or index >= len(self.roi_aligned_images):
+    def _release_roi_regions(self, key):
+        for worker in tuple(getattr(self, '_roi_preview_workers', {}).values()):
+            if worker.next_request is not None and worker.next_request[0] == key:
+                worker.next_request = None
+            if worker.key == key:
+                worker.request_cancel()
+        if key == getattr(self, '_roi_display_key', None):
+            self._roi_display_key = None
+
+    def _request_roi_region(self, key, request):
+        if (key != getattr(self, '_roi_display_key', None) or not self.roi_mode_active
+                or getattr(self, '_shutting_down', False)):
             return
-        
-        # 保存当前ROI区域，以便在切换图像时保持ROI选择
-        current_roi = None
-        if hasattr(self, 'lbl_result_img') and self.lbl_result_img.get_roi_rect() is not None:
-            current_roi = self.lbl_result_img.get_roi_rect()
-        
-        try:
-            image = self.roi_aligned_images[index]
-            if self.linear_dng_metadata is not None:
-                from utils.linear_dng import develop_linear
-                image = develop_linear(image, self.linear_dng_metadata)
-            self.lbl_result_img.set_display_pixmap(cv2_to_pixmap(image))
-            self.lbl_result_info.setText(f"{index + 1} / {len(self.roi_aligned_images)}")
-            # ROI模式下保持控制栏可见，以便用户切换图像
-            self.result_control_bar.setVisible(True)
-            
-            # 恢复之前的ROI选择区域
-            if current_roi is not None:
-                self.lbl_result_img.set_roi_rect(current_roi)
-        except Exception as exc:
-            show_error_box(self, trans.t("msg_error"), trans.t("roi_display_failed"), str(exc))
+        workers = self.__dict__.setdefault('_roi_preview_workers', {})
+        # Preview, viewport and loupe each own one active/retiring slot across
+        # all frame generations, with only their latest request pending.
+        slot = request[0]
+        if slot in workers:
+            worker = workers[slot]
+            worker.next_request = (key, request)
+            if worker.key != key:
+                worker.request_cancel()
+            return
+        from core.workers import ROIFramePreviewWorker
+        frame = self.roi_aligned_images[key[3]]
+        worker = ROIFramePreviewWorker(frame, key, request,
+            metadata=getattr(frame, 'linear_metadata', None) or self.linear_dng_metadata)
+        workers[slot] = worker
+
+        def accept(decoded_key, completed_request, image, rect):
+            if (decoded_key != getattr(self, '_roi_display_key', None) or image is None
+                    or worker.next_request is not None or not self.roi_mode_active
+                    or getattr(self, '_shutting_down', False)):
+                return
+            if completed_request[0] == 'preview':
+                self.lbl_result_img.set_display_pixmap(cv2_to_pixmap(image),
+                    source_size=(frame.shape[1], frame.shape[0]), source_key=key)
+            else:
+                self.lbl_result_img.set_source_region(cv2_to_pixmap(image), rect,
+                    source_key=key, request=completed_request)
+
+        def failed(decoded_key, message):
+            if decoded_key == getattr(self, '_roi_display_key', None):
+                show_error_box(self, trans.t('msg_error'), trans.t('roi_display_failed'), message)
+
+        def finished():
+            pending = worker.next_request
+            if workers.get(slot) is worker:
+                workers.pop(slot, None)
+            worker.deleteLater()
+            if pending is not None:
+                self._request_roi_region(*pending)
+
+        worker.ready.connect(accept)
+        worker.failed.connect(failed)
+        worker.finished.connect(finished)
+        worker.start()
+
+    def _display_roi_aligned_image(self, index: int):
+        """Display bounded background pixels in the aligned source coordinates."""
+        if not self.roi_aligned_images or not 0 <= index < len(self.roi_aligned_images):
+            return
+        frame = self.roi_aligned_images[index]
+        if not getattr(self, '_roi_regions_connected', False):
+            self.lbl_result_img.sourceRegionRequested.connect(self._request_roi_region)
+            self.lbl_result_img.sourceRegionsReleased.connect(self._release_roi_regions)
+            self._roi_regions_connected = True
+        previous_key = getattr(self, '_roi_display_key', None)
+        if previous_key is not None:
+            self._release_roi_regions(previous_key)
+        self.lbl_result_img.clear()
+        self._roi_display_serial = getattr(self, '_roi_display_serial', 0) + 1
+        key = ('roi', getattr(self, 'source_revision', 0), id(self.roi_aligned_images),
+               index, id(frame), self._roi_display_serial)
+        self._roi_display_key = key
+        self._request_roi_region(key, ('preview', 0, (0, 0, frame.shape[1], frame.shape[0]), (766, 766)))
+        self.lbl_result_info.setText(f'{index + 1} / {len(self.roi_aligned_images)}')
+        self.result_control_bar.setVisible(True)
 
     def _on_roi_mode_exit_requested(self):
         """处理ROI模式退出请求（点击X按钮或右键点击非ROI区域）"""
@@ -3695,10 +3751,18 @@ class OpenFocus(QMainWindow):
                 worker.requestInterruption()
                 shutdown_running = True
         self._source_display_key = None
-        for name in ('_source_decode_workers', '_source_preview_workers'):
+        for name in ('_source_decode_workers', '_source_preview_workers', '_roi_preview_workers'):
             for worker in tuple(getattr(self, name, {}).values()):
+                if name == '_roi_preview_workers':
+                    worker.next_request = None
                 worker.request_cancel()
                 shutdown_running = worker.isRunning() or shutdown_running
+        from dialogs.roi import ROIRenderOptionsDialog, _ROI_PREVIEW_WORKERS
+        for dialog in self.findChildren(ROIRenderOptionsDialog):
+            dialog._cancel_previews()
+        for worker in tuple(_ROI_PREVIEW_WORKERS):
+            worker.request_cancel()
+            shutdown_running = worker.isRunning() or shutdown_running
         output_manager = getattr(self, 'output_manager', None)
         cancel_thumbnails = getattr(output_manager, 'cancel_stack_thumbnails', None)
         if callable(cancel_thumbnails):
