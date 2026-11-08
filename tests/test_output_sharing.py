@@ -719,3 +719,55 @@ def test_encode_jpeg_preview_rejects_non_image_values():
         encode_jpeg_preview(np.zeros((0, 0, 3), np.uint8))
     with pytest.raises(ValueError):
         encode_jpeg_preview(np.zeros(8, np.uint8))
+
+
+def test_jpeg_preview_freezes_watermark_before_background_work(qapp, monkeypatch):
+    from utils import watermark
+    from utils.image_utils import to_display_uint8
+
+    window = host(qapp)
+    image = np.full((320, 480, 3), 12345, np.uint16)
+    before = image.copy()
+    config = watermark.WatermarkConfig(text='Frozen creator', size_percent=6.0)
+    item, record = add_record(window, image, 'watermarked',
+                              watermark_config=config.to_dict(), watermark_initialized=True)
+    labelled = window.label_manager.prepare_bgr_image('output', image, 0, output_id=record.output_id)
+    expected = encode_jpeg_preview(to_display_uint8(watermark.burn(labelled, config)))
+    original_worker = output_module.run_pixel_worker
+
+    def edit_before_work(parent, title, operation, **kwargs):
+        record.watermark_config['text'] = 'Later edit'
+        return original_worker(parent, title, operation, **kwargs)
+
+    monkeypatch.setattr(output_module, 'run_pixel_worker', edit_before_work)
+    window.output_manager.share_copy_preview(item)
+    actual = cv2.imdecode(np.frombuffer(bytes(clipboard_mime(qapp).data('image/jpeg')), np.uint8), cv2.IMREAD_UNCHANGED)
+    reference = cv2.imdecode(np.frombuffer(expected, np.uint8), cv2.IMREAD_UNCHANGED)
+    np.testing.assert_array_equal(actual, reference)
+    np.testing.assert_array_equal(record.image, before)
+    assert not record.exported
+
+
+def test_transparent_jpeg_preview_burns_watermark_before_flattening(qapp):
+    from utils import watermark
+    from utils.image_utils import composite_transparent_for_display
+
+    window = host(qapp)
+    image = np.full((320, 480, 4), 12345, np.uint16)
+    image[..., 3] = 65535
+    image[:, :160, 3] = 0
+    image[:, 160:320, 3] = 32767
+    before = image.copy()
+    config = watermark.WatermarkConfig(text='Creator', size_percent=6.0)
+    item, record = add_record(window, image, 'transparent',
+                              watermark_config=config.to_dict(), watermark_initialized=True)
+    decorated = image.copy()
+    decorated[..., :3] = window.label_manager.prepare_bgr_image(
+        'output', image[..., :3], 0, output_id=record.output_id)
+    expected = encode_jpeg_preview(composite_transparent_for_display(
+        watermark.burn(decorated, config)))
+    window.output_manager.share_copy_preview(item)
+    actual = cv2.imdecode(np.frombuffer(bytes(clipboard_mime(qapp).data('image/jpeg')), np.uint8), cv2.IMREAD_UNCHANGED)
+    reference = cv2.imdecode(np.frombuffer(expected, np.uint8), cv2.IMREAD_UNCHANGED)
+    np.testing.assert_array_equal(actual, reference)
+    np.testing.assert_array_equal(record.image, before)

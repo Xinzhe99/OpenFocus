@@ -18,7 +18,7 @@ from controllers.export_manager import get_imwrite_params
 from utils import (show_error_box, show_message_box, show_success_box,
                    show_warning_box)
 from utils.settings_store import get_drag_export_format, set_drag_export_format
-from utils import scalebar
+from utils import scalebar, watermark
 from utils.settings_store import get_last_dialog_dir, set_last_dialog_dir
 from utils.image_utils import to_display_uint8, cv2_to_pixmap
 from utils.image_utils import imwrite_auto
@@ -114,6 +114,9 @@ def _linear_dng_annotated_image(record, labels, state, should_cancel=None):
     check_cancel()
     annotated = labels.prepare_bgr_image('output', display, 0, output_id=record.output_id)
     annotated = scalebar.burn(annotated, state['scale'])
+    if state.get('watermark'):
+        from utils import watermark
+        annotated = watermark.burn(annotated, state['watermark'])
     check_cancel()
     result = image.copy()
     matrix = np.asarray(metadata.color_matrix, dtype=np.float64) @ _RGB_TO_XYZ
@@ -155,7 +158,8 @@ class LinearDngExportWorker(QThread):
     def run(self):
         try:
             image = resolve_frame(self.record.image)
-            if self.annotation_state['labels'] or self.annotation_state['scale']:
+            if (self.annotation_state.get('labels') or self.annotation_state.get('scale')
+                    or self.annotation_state.get('watermark')):
                 try:
                     image = _linear_dng_annotated_image(
                         self.record, self.labels, self.annotation_state, self._cancelled.is_set)
@@ -190,6 +194,10 @@ class OutputRecord:
     context: Any = None
     kind: str = "fusion"
     parent_id: Optional[str] = None
+    #: Load lineage of the source stack this result was published under.
+    #: `context.source_revision` freezes the pixels' provenance; this identity
+    #: decides watermark scope ownership and survives in-stack edits.
+    stack_lineage: int = 0
     exported: bool = False
     # Identity of the pixels that were last written. Comparing it with the
     # current image detects "changed since export" without hashing megapixels.
@@ -198,6 +206,11 @@ class OutputRecord:
     scale_bar_config: Optional[dict] = None
     scale_bar_initialized: bool = False
     annotations_baked: bool = False
+    # Watermark state is tracked separately from labels/scale bars: an old
+    # batch result may have baked labels but no watermark, and vice versa.
+    watermark_config: Optional[dict] = None
+    watermark_initialized: bool = False
+    watermark_baked: bool = False
     aligned_frames: tuple = ()
     aligned_names: tuple = ()
     aligned_source_frames: tuple = ()
@@ -390,32 +403,39 @@ class OutputManager:
             lines.append(trans.t("retouch_unexported"))
         elif record.changed_since_export:
             lines.append(trans.t("msg_export_after_change"))
+        if getattr(record, "watermark_baked", False):
+            lines.append(trans.t("watermark_baked_notice"))
         if lines:
             item.setToolTip("\n".join(lines))
 
     def _annotation_state(self, record, labels=None):
         """Only annotation settings capable of changing this artifact's pixels."""
-        if record.annotations_baked:
-            return {'labels': [], 'scale': None}
-        from utils.validators import parse_label_range
-        labels = labels or getattr(self.window, 'label_manager', None)
+        from utils import watermark
         target = 'registered' if record.kind == 'aligned' else 'output'
-        applicable = []
-        for label in getattr(labels, 'labels', ()):
-            config = label.config
-            if not label.enabled or label.target != target:
-                continue
-            if target == 'output':
-                if config.output_id and config.output_id != record.output_id:
+        if record.annotations_baked:
+            applicable, scale_cfg = [], None
+        else:
+            from utils.validators import parse_label_range
+            labels = labels or getattr(self.window, 'label_manager', None)
+            applicable = []
+            for label in getattr(labels, 'labels', ()):
+                config = label.config
+                if not label.enabled or label.target != target:
                     continue
-                if not parse_label_range(config.range).matches(0):
-                    continue
-            data = label.to_dict()
-            for key in ('label_id', 'target_stack', 'output_id'):
-                data.pop(key, None)
-            applicable.append(data)
+                if target == 'output':
+                    if config.output_id and config.output_id != record.output_id:
+                        continue
+                    if not parse_label_range(config.range).matches(0):
+                        continue
+                data = label.to_dict()
+                for key in ('label_id', 'target_stack', 'output_id'):
+                    data.pop(key, None)
+                applicable.append(data)
+            scale_cfg = scalebar.export_cfg(self.window, target=target, record=record)
         return deepcopy({'labels': applicable,
-                         'scale': scalebar.export_cfg(self.window, target=target, record=record)})
+                         'scale': scale_cfg,
+                         'watermark': watermark.export_cfg(
+                             self.window, target=target, record=record)})
 
     def refresh_annotation_export_state(self):
         """Undo back to the exported settings clears the annotation delta."""
@@ -452,6 +472,14 @@ class OutputManager:
                 cfg = scalebar.export_cfg(window, target='registered' if record.kind == 'aligned' else 'output', record=record)
                 record.scale_bar_config = dict(cfg) if cfg else None
                 record.scale_bar_initialized = True
+            if not record.watermark_initialized:
+                target = 'registered' if record.kind == 'aligned' else 'output'
+                current = (record.context is None or record.kind == 'aligned'
+                           or watermark.record_belongs_to_current_stack(window, record))
+                cfg = (None if record.watermark_baked or record.kind == 'batch' or not current
+                       else watermark.export_cfg(window, target=target))
+                record.watermark_config = dict(cfg) if cfg else None
+                record.watermark_initialized = True
         item = QListWidgetItem(label)
         if record is not None:
             item.setData(OUTPUT_RECORD_ROLE, record)
@@ -485,6 +513,9 @@ class OutputManager:
             self._trim_history()
         self.update_output_count()
         self._refresh_output_tooltip(0)
+        sync = getattr(window, "_sync_watermark_actions", None)
+        if callable(sync):
+            sync()
         return item
 
     def _remove_row(self, row: int) -> None:
@@ -529,13 +560,16 @@ class OutputManager:
             image = window.fusion_result
             record = OutputRecord.create(image, fusion_filename,
                                          context=context, kind="fusion")
+            # Freeze the load lineage with the result so later rotate/flip/
+            # resize/exclusion keep it in this stack's watermark scope.
+            record.stack_lineage = watermark.stack_lineage(window)
             if linear_dng_metadata is not None:
                 record.linear_dng_metadata = deepcopy(linear_dng_metadata)
             if source_paths:
                 record.source_paths = tuple(source_paths)
         self._insert_output(image, fusion_filename, record)
 
-    def add_batch_outputs(self, paths) -> int:
+    def add_batch_outputs(self, paths, watermark_baked: bool = False) -> int:
         """Append finished batch files to the output list.
 
         A batch used to end in a message box only: the results were on disk but
@@ -564,6 +598,9 @@ class OutputManager:
                 record = OutputRecord.create(image, label, kind="batch",
                                              exported=True)
                 record.annotations_baked = True
+                record.watermark_baked = bool(watermark_baked)
+                record.watermark_initialized = True
+                record.watermark_config = None
                 record.export_path = path
                 record.exported_image = image
                 self._insert_output(image, label, record, tooltip=path)
@@ -589,6 +626,9 @@ class OutputManager:
             record = OutputRecord.create(None, label, kind='aligned', exported=True)
             record.aligned_names = names
             record.annotations_baked = True
+            record.watermark_baked = bool(stack.get('watermark_baked', False))
+            record.watermark_initialized = True
+            record.watermark_config = None
             record.export_path = folder
             item = self._insert_output(None, label, record, tooltip=folder)
             item.setData(ALIGNED_DIR_ROLE, folder)
@@ -695,9 +735,16 @@ class OutputManager:
         record = OutputRecord.create(
             image, label, context=base_record.context, kind="retouch",
             parent_id=base_record.output_id, exported=False)
+        # A retouch belongs to the same loaded stack as the output it edited;
+        # a historical base keeps its result historical.
+        record.stack_lineage = getattr(base_record, "stack_lineage", 0)
         record.scale_bar_config = (dict(base_record.scale_bar_config)
                                    if base_record.scale_bar_config else None)
         record.scale_bar_initialized = True
+        record.watermark_config = (dict(base_record.watermark_config)
+                                   if base_record.watermark_config else None)
+        record.watermark_initialized = True
+        record.watermark_baked = bool(base_record.watermark_baked)
         record.annotations_baked = base_record.annotations_baked
         record.linear_dng_metadata = deepcopy(base_record.linear_dng_metadata)
         record.source_paths = base_record.source_paths
@@ -743,6 +790,8 @@ class OutputManager:
         if record is None or record.image is None:
             raise ValueError("a result image is required")
         window = self.window
+        if not getattr(record, "stack_lineage", 0):
+            record.stack_lineage = watermark.stack_lineage(window)
         previous = getattr(window, "fusion_result", None)
         previous_row = window.output_list.currentRow()
         previous_view = self._capture_result_view()
@@ -821,9 +870,9 @@ class OutputManager:
             raise ValueError(trans.t('msg_no_valid_image_text'))
         metadata = record.linear_dng_metadata
         if os.path.splitext(path)[1].lower() == '.dng':
-            if metadata is None or record.annotations_baked:
+            if metadata is None or record.annotations_baked or record.watermark_baked:
                 raise ValueError(trans.t('linear_dng_export_failed'))
-            if state['labels'] or state['scale']:
+            if state['labels'] or state['scale'] or state.get('watermark'):
                 try:
                     image = _linear_dng_annotated_image(record, labels, state)
                 except Exception as exc:
@@ -843,6 +892,10 @@ class OutputManager:
         if not record.annotations_baked:
             image = labels.prepare_bgr_image('output', image, 0, output_id=record.output_id)
             image = scalebar.burn(image, cfg)
+        wm_cfg = state.get('watermark')
+        if wm_cfg:
+            from utils import watermark
+            image = watermark.burn(image, wm_cfg)
         from core.image_loader import _read_exif_bytes, _read_icc_profile
         baked_path = record.export_path if record.annotations_baked else ""
         exif = _read_exif_bytes(baked_path) if baked_path else b''
@@ -874,7 +927,8 @@ class OutputManager:
                                                     labels_snapshot=labels_snapshot)
         if not record.export_path or not os.path.isdir(record.export_path):
             raise OSError(record.export_path or record.label)
-        return exporter.save_aligned_stack_as(record.export_path, record.label, destination=destination)
+        return exporter.save_aligned_stack_as(record.export_path, record.label,
+                                              destination=destination, record=record)
 
     def _report_export_result(self, written, failed, folder) -> None:
         """One summary for a multi-file export, with the failing paths."""
@@ -1007,14 +1061,24 @@ class OutputManager:
         if metadata is not None:
             from utils.linear_dng import develop_linear
             image = develop_linear(image, metadata)
+        wm_cfg = watermark.export_cfg(self.window, target="output", record=record)
+        alpha = None
         if image.ndim == 3 and image.shape[2] == 4:
             from utils.image_utils import composite_transparent_for_display
-            image = composite_transparent_for_display(image)
+            if wm_cfg is not None:
+                alpha = image[..., 3]
+                image = image[..., :3]
+            else:
+                image = composite_transparent_for_display(image)
         if not record.annotations_baked:
             image = labels.prepare_bgr_image(
                 "output", image, 0, output_id=record.output_id)
             image = scalebar.burn(
                 image, scalebar.export_cfg(self.window, record=record))
+        if wm_cfg is not None:
+            image = watermark.burn(image, wm_cfg)
+        if alpha is not None:
+            image = composite_transparent_for_display(image, alpha=alpha)
         display = to_display_uint8(image)
         if display.ndim == 2:
             display = cv2.cvtColor(display, cv2.COLOR_GRAY2BGR)
@@ -1090,7 +1154,8 @@ class OutputManager:
         try:
             labels = window.label_manager.snapshot()
             snapshot = replace(
-                record, scale_bar_config=deepcopy(record.scale_bar_config))
+                record, scale_bar_config=deepcopy(record.scale_bar_config),
+                watermark_config=deepcopy(record.watermark_config))
             jpeg = run_pixel_worker(
                 window, trans.t("share_copy_preview"),
                 lambda: encode_jpeg_preview(
@@ -1288,7 +1353,8 @@ class OutputManager:
                                 px_size_um=None):
         if self.linear_dng_worker is not None:
             raise ValueError(trans.t('linear_dng_export_failed'))
-        if record.image is None or record.linear_dng_metadata is None or record.annotations_baked:
+        if (record.image is None or record.linear_dng_metadata is None
+                or record.annotations_baked or record.watermark_baked):
             raise ValueError(trans.t('linear_dng_export_failed'))
         if record.source_paths:
             self.window.export_manager._safe_export_path(path, record.source_paths)
@@ -1354,7 +1420,9 @@ class OutputManager:
             image = window.fusion_results[row] if 0 <= row < len(window.fusion_results) else None
             original = OutputRecord.create(image, item.text())
             item.setData(OUTPUT_RECORD_ROLE, original)
-        record = replace(original, scale_bar_config=deepcopy(original.scale_bar_config))
+        record = replace(original,
+                         scale_bar_config=deepcopy(original.scale_bar_config),
+                         watermark_config=deepcopy(original.watermark_config))
         try:
             labels = window.label_manager.snapshot()
             if record.kind == 'aligned':
@@ -1379,7 +1447,8 @@ class OutputManager:
                 return
             file_path = window.export_manager.normalize_export_path(file_path, selected_filter=selected_filter)
             if os.path.splitext(file_path)[1].lower() == '.dng':
-                if record.linear_dng_metadata is None or record.annotations_baked:
+                if (record.linear_dng_metadata is None or record.annotations_baked
+                        or record.watermark_baked):
                     show_warning_box(window, trans.t('linear_dng_filter'),
                                      trans.t('linear_dng_requires_raw'))
                     return
@@ -1454,11 +1523,15 @@ class OutputManager:
             if metadata is not None and not getattr(fusion_image, "preview_is_display", False):
                 from utils.linear_dng import develop_linear
                 image = develop_linear(image, metadata)
-            if record is None or not record.annotations_baked:
-                image = window.label_manager.display_bgr_image(
-                    "output", image, 0,
-                    output_id=record.output_id if record else None,
-                    scale_cfg=scalebar.export_cfg(window, record=record), source_shape=source_shape)
+            from utils import watermark
+            image = window.label_manager.display_bgr_image(
+                "output", image, 0,
+                output_id=record.output_id if record else None,
+                scale_cfg=scalebar.export_cfg(window, record=record),
+                source_shape=source_shape,
+                watermark_cfg=watermark.export_cfg(window, target='output', record=record),
+                watermark_canvas=source_shape,
+                annotations_baked=bool(record is not None and record.annotations_baked))
             display_image = to_display_uint8(image)
             window.lbl_result_img.set_display_pixmap(cv2_to_pixmap(display_image))
             window.result_control_bar.setVisible(False)
@@ -1542,11 +1615,14 @@ class OutputManager:
             if metadata is not None and not getattr(frame, "preview_is_display", False):
                 from utils.linear_dng import develop_linear
                 image = develop_linear(image, metadata)
-            if record is None or not record.annotations_baked:
-                image = window.label_manager.display_bgr_image(
-                    "registered", image, index,
-                    scale_cfg=scalebar.export_cfg(window, target='registered', record=record),
-                    source_shape=source_shape)
+            from utils import watermark
+            image = window.label_manager.display_bgr_image(
+                "registered", image, index,
+                scale_cfg=scalebar.export_cfg(window, target='registered', record=record),
+                source_shape=source_shape,
+                watermark_cfg=watermark.export_cfg(window, target='registered', record=record),
+                watermark_canvas=source_shape,
+                annotations_baked=bool(record is not None and record.annotations_baked))
             image = to_display_uint8(image)
 
             window.lbl_result_img.set_display_pixmap(cv2_to_pixmap(image))
@@ -1575,6 +1651,9 @@ def publish_aligned_stack(window, frames, *, filenames=None, icc_profile=None,
     names = tuple(filenames)
     label = trans.t('output_aligned_stack').format(n=len(frames))
     record = OutputRecord.create(None, label, kind='aligned', exported=False)
+    # Registered-frame watermarks use the same stack ownership as results;
+    # the aligned folder stays part of the stack it was rendered from.
+    record.stack_lineage = watermark.stack_lineage(window)
     record.aligned_frames = tuple(frames)
     record.aligned_names = names
     record.linear_dng_metadata = deepcopy(linear_dng_metadata)
