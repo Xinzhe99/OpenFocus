@@ -31,6 +31,12 @@ C builds immutable gray-resampling axis plans once per job and shares them
 across source producers. Its integer merge follows native reverse ordering
 and signed truncation; it does not allocate RGB reconstruction pyramids.
 
+The decoded source cache evicts old entries before admitting an incoming decode.
+An existing consumer keeps its array views valid after eviction; the cache no
+longer pins an entire old cache while the decoder allocates its next frame.
+A's native hard-selection canvas uses uint16 codes, and its response/cache
+owners are released before conversion to the common float32 output domain.
+
 OpenFocus C estimates depth on floor-half gray planes at a fixed 0.5 scale.
 Its 64-node gray kernel stores normalized float32 coefficients and evaluates
 vertical then horizontal taps with explicit LLVM float32 FMA. Intermediate

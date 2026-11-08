@@ -53,6 +53,36 @@ def test_full_pixels_use_original_and_cache_evicts_by_bytes(tmp_path, monkeypatc
     np.testing.assert_array_equal(first, original(paths[0]))
 
 
+@pytest.mark.parametrize('cached_frames', [1, 2])
+def test_cache_releases_old_pixels_before_next_decode(tmp_path, monkeypatch, cached_frames):
+    import weakref
+    from utils.image_utils import imwrite_auto
+
+    pixels = [np.full((32, 40, 3), value, np.uint16) for value in (257, 19001, 65001)]
+    paths = [str(tmp_path / f'cache-{index}.png') for index in range(len(pixels))]
+    for path, expected in zip(paths, pixels):
+        assert imwrite_auto(path, expected)
+    frames = [sources.scan_source(path, header_only=True)[0] for path in paths]
+    cache = sources.FrameCache(cached_frames * pixels[0].nbytes)
+    monkeypatch.setattr(sources, 'SOURCE_CACHE', cache)
+    original = image_loader.decode_image
+    decoded = []
+
+    def decode(path, **kwargs):
+        live_bytes = sum(image.nbytes for ref in decoded if (image := ref()) is not None)
+        assert live_bytes + pixels[0].nbytes <= cache.max_bytes
+        image = original(path, **kwargs)
+        decoded.append(weakref.ref(image))
+        return image
+
+    monkeypatch.setattr(image_loader, 'decode_image', decode)
+    for frame, expected in zip(frames, pixels):
+        actual = sources.resolve_frame(frame)
+        np.testing.assert_array_equal(actual, expected)
+        del actual
+    np.testing.assert_array_equal(sources.resolve_frame(frames[0]), pixels[0])
+
+
 def test_oversized_frame_is_not_retained(tmp_path, monkeypatch):
     cache = sources.FrameCache(1)
     monkeypatch.setattr(sources, 'SOURCE_CACHE', cache)

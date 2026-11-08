@@ -318,7 +318,7 @@ def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 17,
                 if index == 0:
                     best = response
                     if fast_hard:
-                        output = create_frame(frame.shape, np.int32)
+                        output = create_frame(frame.shape, np.uint16)
                     else:
                         output = frame
                         del frame, response
@@ -353,6 +353,9 @@ def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 17,
 
     _check_cancel(should_cancel)
     if hard:
+        from core.source_frames import SOURCE_CACHE
+        del best
+        SOURCE_CACHE.clear()
         return output_codes(output, frames, should_cancel, e37=True)
     np.clip(output, 0, 255, out=output)
     if all(frame.dtype == np.uint8 for frame in frames):

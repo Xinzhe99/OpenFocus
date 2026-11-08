@@ -156,10 +156,14 @@ def _default_is_local(path):
     if sys.platform == 'darwin':
         import plistlib
         try:
+            # diskutil accepts a device or mount point, not an arbitrary
+            # temporary subdirectory (including APFS Data firmlink paths).
+            usage = subprocess.check_output(['/bin/df', '-P', path], timeout=3, text=True)
+            device = usage.splitlines()[-1].split()[0]
             info = plistlib.loads(subprocess.check_output(
-                ['/usr/sbin/diskutil', 'info', '-plist', path], timeout=10))
+                ['/usr/sbin/diskutil', 'info', '-plist', device], timeout=10))
             return info.get('Internal') is True and info.get('RemovableMedia') is False
-        except (OSError, subprocess.SubprocessError, ValueError):
+        except (OSError, subprocess.SubprocessError, ValueError, IndexError):
             return False
     return False
 

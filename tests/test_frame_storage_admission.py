@@ -599,16 +599,18 @@ def test_macos_recognizes_internal_fixed_volumes_only(monkeypatch):
                          'MountPoint': '/Volumes/USB'},
              'disk3s1': {'Internal': False, 'RemovableMedia': False,
                          'MountPoint': '/Volumes/Network'}}
-    def diskutil(command, timeout):
+    paths = {'/System/Volumes/Data/tmp': '/dev/disk0s1',
+             '/private/var/folders/app/tmp': '/dev/disk0s1',
+             '/Volumes/USB/tmp': '/dev/disk2s1',
+             '/Volumes/Network/tmp': '/dev/disk3s1'}
+    def diskutil(command, timeout, text=False):
+        if command[0] == '/bin/df':
+            return 'Filesystem 512-blocks Used Available Capacity Mounted on\n' + paths[command[-1]] + ' 100 1 99 1% /\n'
         if command[1] == 'list':
             return plistlib.dumps({'AllDisks': list(disks)})
-        value = command[-1]
-        if value.startswith('/System/Volumes/Data'):
-            value = 'disk0s1'
-        elif value.startswith('/Volumes/USB'):
-            value = 'disk2s1'
-        elif value.startswith('/Volumes/Network'):
-            value = 'disk3s1'
+        value = command[-1].removeprefix('/dev/')
+        if value not in disks:
+            raise subprocess.CalledProcessError(1, command)
         return plistlib.dumps(disks[value])
     monkeypatch.setattr(frame_storage, 'sys', SimpleNamespace(platform='darwin'))
     monkeypatch.setattr(frame_storage, 'subprocess', SimpleNamespace(
@@ -616,6 +618,7 @@ def test_macos_recognizes_internal_fixed_volumes_only(monkeypatch):
 
     assert frame_storage._local_mounts() == ['/System/Volumes/Data']
     assert frame_storage._default_is_local('/System/Volumes/Data/tmp')
+    assert frame_storage._default_is_local('/private/var/folders/app/tmp')
     assert not frame_storage._default_is_local('/Volumes/USB/tmp')
     assert not frame_storage._default_is_local('/Volumes/Network/tmp')
 

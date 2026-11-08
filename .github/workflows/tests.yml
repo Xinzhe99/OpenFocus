@@ -48,7 +48,8 @@ jobs:
         timeout-minutes: 15
         env:
           QT_QPA_PLATFORM: offscreen
-        run: pytest -v --timeout=90 --timeout-method=thread
+          PYTHONFAULTHANDLER: '1'
+        run: pytest -v -x --timeout=90 --timeout-method=thread
 
   headless-wheel:
     name: Installed wheel without GUI
