@@ -46,11 +46,12 @@ def native_execution_scope():
     from threadpoolctl import threadpool_limits
 
     try:
-        cv2.setNumThreads(1)
+        # Zero disables parallel regions on every backend, including macOS GCD.
+        cv2.setNumThreads(0)
         with threadpool_limits(limits=1):
             yield
     finally:
-        cv2.setNumThreads(previous)
+        cv2.setNumThreads(0 if previous == 1 else previous)
 
 
 @contextmanager

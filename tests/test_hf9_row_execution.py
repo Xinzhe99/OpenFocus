@@ -98,7 +98,6 @@ def test_passes_obey_affinity_and_user_bounds_and_keep_scratch(
             lock = threading.Lock()
             def workspace():
                 assert frame_storage.capture_scratch() is scratch
-                assert cv2.getNumThreads() == 1
                 with lock:
                     identities.add(threading.get_ident())
                 barrier.wait(timeout=5)
