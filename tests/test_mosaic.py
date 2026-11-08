@@ -465,9 +465,12 @@ def test_global_fit_can_be_cancelled_before_changing_placements(monkeypatch):
     original = [np.eye(3), np.array([[1., 0, 50], [0, 1., 0], [0, 0, 1.]])]
     points = np.array([[10., 10], [60, 10], [10, 50], [60, 50]])
     controls = mosaic._ControlPoints(original[1], points, points + (50, 0), 1.)
+    before = [placement.copy() for placement in original]
     with pytest.raises(RegistrationCancelled):
         mosaic._optimize_component([frame, frame], original, [0, 1], [(0, 1, controls)], lambda: True)
-    np.testing.assert_array_equal(original[1], controls.transform)
+    # Compare with copies: controls.transform is the same array as original[1].
+    for placement, snapshot in zip(original, before):
+        np.testing.assert_array_equal(placement, snapshot)
 
 
 def test_workspace_manual_scale_and_rotation_keep_dragged_position(qapp):
