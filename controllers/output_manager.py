@@ -8,10 +8,11 @@ from typing import Any, Optional
 
 import cv2
 import numpy as np
-from PyQt6.QtCore import QPoint, Qt, QThread, pyqtSignal
+from PyQt6.QtCore import QItemSelectionModel, QPoint, Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QAction, QActionGroup, QIcon, QPixmap, QImage
 from utils.file_dialogs import FileDialog
-from PyQt6.QtWidgets import QListWidgetItem, QMenu, QMessageBox, QProgressDialog
+from PyQt6.QtWidgets import (QListWidgetItem, QMenu, QMessageBox,
+                             QProgressDialog)
 
 from controllers.export_manager import get_imwrite_params
 from utils import (show_error_box, show_message_box, show_success_box,
@@ -23,6 +24,9 @@ from utils.image_utils import to_display_uint8, cv2_to_pixmap
 from utils.image_utils import imwrite_auto
 from locales import trans
 from utils.export_paths import unique_path
+from utils.file_manager import select_in_file_manager
+from utils.output_share import (encode_jpeg_preview, file_urls_mime_data,
+                                jpeg_mime_data, set_clipboard_payload)
 from core.source_frames import resolve_frame
 from utils.frame_pixels import preview_pixels as source_display_image, run_pixel_worker
 
@@ -278,6 +282,7 @@ class OutputManager:
         self.linear_dng_progress = None
         self._stack_thumbnail_worker = None
         self._stack_thumbnail_queue = []
+        self._share_preview_active = False
 
     # ------------------------------------------------------------------
     # UI helpers
@@ -933,9 +938,248 @@ class OutputManager:
             self.display_output_image_in_result_view(item)
 
     # ------------------------------------------------------------------
+    # Sharing outputs
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _share_record_supported(record) -> bool:
+        """Whether a record can be shared as one image artifact."""
+        return (record is not None and record.kind != "aligned"
+                and record.image is not None)
+
+    def _share_record_for_item(self, item, *, attach: bool = False):
+        record = self.record_for_item(item)
+        if record is not None:
+            return record
+        row = self.window.output_list.row(item) if item is not None else -1
+        if 0 <= row < len(self.window.fusion_results):
+            image = self.window.fusion_results[row]
+            if image is not None:
+                record = OutputRecord.create(image, item.text())
+                if attach:
+                    item.setData(OUTPUT_RECORD_ROLE, record)
+                return record
+        return None
+
+    def _share_item_supported(self, item) -> bool:
+        if item is None:
+            return False
+        record = self.record_for_item(item)
+        if record is not None:
+            return self._share_record_supported(record)
+        row = self.window.output_list.row(item)
+        return (0 <= row < len(self.window.fusion_results)
+                and self.window.fusion_results[row] is not None)
+
+    def _share_persistent_path(self, record) -> str:
+        """An exported file that still matches the record's pixels and marks."""
+        if not self._share_record_supported(record):
+            return ""
+        path = record.export_path
+        try:
+            if not path or not os.path.isfile(path) or os.path.getsize(path) <= 0:
+                return ""
+        except OSError:
+            # The file disappeared between the checks: do not reuse it.
+            return ""
+        if not record.exported:
+            return ""
+        # The written pixels must be the current pixels. Records without a
+        # recorded identity cannot prove that and are written again.
+        if record.exported_image is not record.image:
+            return ""
+        if record.annotations_changed:
+            return ""
+        if record.exported_annotations is not None:
+            if record.exported_annotations != self._annotation_state(record):
+                return ""
+        elif not record.annotations_baked:
+            # An export with no recorded annotation state cannot be proven
+            # current; write a fresh file instead of sharing a stale one.
+            return ""
+        return path
+
+    def _share_preview_pixels(self, record, labels):
+        """Full-resolution display pixels with the current export annotations."""
+        image = resolve_frame(record.image)
+        if image is None:
+            raise ValueError(trans.t("msg_no_valid_image_text"))
+        metadata = record.linear_dng_metadata
+        if metadata is not None:
+            from utils.linear_dng import develop_linear
+            image = develop_linear(image, metadata)
+        if image.ndim == 3 and image.shape[2] == 4:
+            from utils.image_utils import composite_transparent_for_display
+            image = composite_transparent_for_display(image)
+        if not record.annotations_baked:
+            image = labels.prepare_bgr_image(
+                "output", image, 0, output_id=record.output_id)
+            image = scalebar.burn(
+                image, scalebar.export_cfg(self.window, record=record))
+        display = to_display_uint8(image)
+        if display.ndim == 2:
+            display = cv2.cvtColor(display, cv2.COLOR_GRAY2BGR)
+        if display.ndim == 3 and display.shape[2] == 4:
+            from utils.image_utils import composite_transparent_for_display
+            display = composite_transparent_for_display(display)
+        return display
+
+    def _share_files_for_records(self, records):
+        """Resolve or write persistent files for ``records`` in order.
+
+        Returns ``(paths, failures, folder)``. ``paths`` is None when the user
+        cancelled the destination picker; ``failures`` holds ``(path, error)``
+        for every record whose write failed. Successful writes stay on disk and
+        are marked exported even when another record fails.
+        """
+        labels = self.window.label_manager.snapshot()
+        resolved = {}
+        pending = []
+        for record in records:
+            path = self._share_persistent_path(record)
+            if path:
+                resolved[id(record)] = path
+            else:
+                pending.append(record)
+        if not pending:
+            return [resolved[id(record)] for record in records], [], ""
+
+        window = self.window
+        folder = FileDialog.getExistingDirectory(
+            window, trans.t("menu_share"), get_last_dialog_dir(),
+            FileDialog.Option.ShowDirsOnly)
+        if not folder:
+            return None, [], ""
+        set_last_dialog_dir(folder)
+        failures = []
+        for original in pending:
+            record = replace(
+                original, scale_bar_config=deepcopy(original.scale_bar_config))
+            name = window.export_manager.filename_from_label(record.label)
+            path = unique_path(
+                os.path.join(folder, os.path.splitext(name)[0] + ".png"))
+            state = self._annotation_state(record, labels)
+            try:
+                self._write_record(record, path, labels)
+                self._mark_record_exported(original, record.image, path, state)
+                resolved[id(original)] = path
+            except Exception as exc:
+                failures.append((path, str(exc)))
+        paths = [resolved.get(id(record)) for record in records]
+        return paths, failures, folder
+
+    def _report_share_failure(self, paths, failures) -> None:
+        ok = sum(1 for path in paths or () if path)
+        detail = "\n".join(
+            f"{path}: {error or trans.t('msg_save_failed_info_write')}"
+            for path, error in failures)
+        show_error_box(
+            self.window, trans.t("msg_share_failed_title"),
+            trans.t("msg_export_partial_text").format(
+                ok=ok, failed=len(failures)), detail)
+
+    def share_copy_preview(self, target_item) -> None:
+        # The modal pixel progress keeps the window state stable; this flag
+        # also rejects a programmatic reentry before it can race the clipboard.
+        if self._share_preview_active:
+            return
+        record = self._share_record_for_item(target_item, attach=True)
+        if not self._share_record_supported(record):
+            return
+        self._share_preview_active = True
+        window = self.window
+        try:
+            labels = window.label_manager.snapshot()
+            snapshot = replace(
+                record, scale_bar_config=deepcopy(record.scale_bar_config))
+            jpeg = run_pixel_worker(
+                window, trans.t("share_copy_preview"),
+                lambda: encode_jpeg_preview(
+                    self._share_preview_pixels(snapshot, labels)),
+                show_progress=True)
+            if not set_clipboard_payload(jpeg_mime_data(jpeg)):
+                show_error_box(window, trans.t("msg_share_failed_title"),
+                               trans.t("msg_share_clipboard_failed"))
+                return
+        except Exception as exc:
+            show_error_box(window, trans.t("msg_share_failed_title"),
+                           trans.t("msg_share_preview_failed"), str(exc))
+            return
+        finally:
+            self._share_preview_active = False
+        window.statusBar().showMessage(
+            trans.t("msg_share_preview_copied").replace("\n", " "), 5000)
+
+    def share_copy_paths(self, target_item) -> None:
+        if target_item is None:
+            return
+        selected = list(self.window.output_list.selectedItems())
+        if target_item not in selected:
+            selected = [target_item]
+        records = []
+        for item in selected:
+            record = self._share_record_for_item(item, attach=True)
+            if not self._share_record_supported(record):
+                return
+            records.append(record)
+        if not records:
+            return
+
+        paths, failures, _folder = self._share_files_for_records(records)
+        if failures:
+            self._report_share_failure(paths, failures)
+            return
+        if not paths:
+            return
+        if not set_clipboard_payload(file_urls_mime_data(paths)):
+            show_error_box(self.window, trans.t("msg_share_failed_title"),
+                           trans.t("msg_share_clipboard_failed"))
+            return
+        self.window.statusBar().showMessage(
+            trans.t("msg_share_files_copied").format(n=len(paths)).replace(
+                "\n", " "), 5000)
+
+    def share_reveal(self, target_item) -> None:
+        record = self._share_record_for_item(target_item, attach=True)
+        if not self._share_record_supported(record):
+            return
+        path = self._share_persistent_path(record)
+        if not path:
+            paths, failures, _folder = self._share_files_for_records([record])
+            if failures:
+                self._report_share_failure(paths, failures)
+                return
+            if not paths:
+                return
+            path = paths[0]
+        try:
+            opened = select_in_file_manager(path)
+        except Exception as exc:
+            show_error_box(self.window, trans.t("msg_share_failed_title"),
+                           trans.t("msg_share_reveal_failed"), str(exc))
+            return
+        if opened:
+            return
+        show_error_box(self.window, trans.t("msg_share_failed_title"),
+                       trans.t("msg_share_reveal_failed"), path)
+
+    # ------------------------------------------------------------------
     # Context menu & list operations
     # ------------------------------------------------------------------
-    def show_output_context_menu(self, position: QPoint) -> None:
+    def _prepare_output_context_selection(self, position: QPoint):
+        """Select the right-click target without collapsing a multi-selection."""
+        window = self.window
+        target_item = window.output_list.itemAt(position)
+        if target_item is not None:
+            if not target_item.isSelected():
+                window.output_list.clearSelection()
+                target_item.setSelected(True)
+            # NoUpdate keeps an existing multi-selection: the default command
+            # collapses it to the right-clicked row.
+            window.output_list.setCurrentItem(
+                target_item, QItemSelectionModel.SelectionFlag.NoUpdate)
+        return target_item
+
+    def _build_output_context_menu(self, target_item) -> QMenu:
         window = self.window
         menu = QMenu(window.output_list)
 
@@ -943,29 +1187,50 @@ class OutputManager:
         delete_action.triggered.connect(self.delete_selected_output_images)
         menu.addAction(delete_action)
 
-        target_item = window.output_list.itemAt(position)
-        if target_item is not None:
-            # The action must follow the entry that was right-clicked, not a
-            # different row that happened to stay selected.
-            window.output_list.clearSelection()
-            target_item.setSelected(True)
-            window.output_list.setCurrentItem(target_item)
-        else:
-            target_item = window.output_list.currentItem()
-
+        # Save As and Retouch follow the right-click target; on blank space
+        # they retain the previous current-row behaviour.
+        action_target = (target_item if target_item is not None
+                         else window.output_list.currentItem())
         save_as_action = QAction(trans.t("action_save_as"), window)
         save_as_action.triggered.connect(
-            lambda: self.save_output_image_as(target_item))
-        save_as_action.setEnabled(target_item is not None)
+            lambda: self.save_output_image_as(action_target))
+        save_as_action.setEnabled(action_target is not None)
         menu.addAction(save_as_action)
 
         retouch_action = QAction(trans.t("action_retouch"), window)
         retouch_action.triggered.connect(
-            lambda: window.show_retouch_dialog(target_item))
-        record = self.record_for_item(target_item)
+            lambda: window.show_retouch_dialog(action_target))
+        record = self.record_for_item(action_target)
         retouch_action.setEnabled(record is not None and record.retouchable)
         menu.addAction(retouch_action)
 
+        share_menu = menu.addMenu(trans.t("menu_share"))
+        preview_action = QAction(trans.t("share_copy_preview"), window)
+        preview_action.triggered.connect(
+            lambda: self.share_copy_preview(target_item))
+        preview_action.setEnabled(self._share_item_supported(target_item))
+        share_menu.addAction(preview_action)
+
+        selected = list(window.output_list.selectedItems())
+        if target_item is not None and target_item not in selected:
+            selected = [target_item]
+        paths_ok = (target_item is not None and bool(selected) and all(
+            self._share_item_supported(item) for item in selected))
+        paths_action = QAction(trans.t("share_copy_paths"), window)
+        paths_action.triggered.connect(
+            lambda: self.share_copy_paths(target_item))
+        paths_action.setEnabled(paths_ok)
+        share_menu.addAction(paths_action)
+
+        reveal_action = QAction(trans.t("share_reveal"), window)
+        reveal_action.triggered.connect(
+            lambda: self.share_reveal(target_item))
+        reveal_action.setEnabled(self._share_item_supported(target_item))
+        share_menu.addAction(reveal_action)
+
+        private_action = QAction(trans.t("share_private_link"), window)
+        private_action.setEnabled(False)
+        share_menu.addAction(private_action)
 
         # Drag-out export format submenu (persisted per user)
         drag_menu = menu.addMenu(trans.t("menu_drag_format"))
@@ -979,8 +1244,12 @@ class OutputManager:
             act.triggered.connect(lambda _checked, f=fmt: set_drag_export_format(window, f))
             group.addAction(act)
             drag_menu.addAction(act)
+        return menu
 
-        menu.exec(window.output_list.mapToGlobal(position))
+    def show_output_context_menu(self, position: QPoint) -> None:
+        target_item = self._prepare_output_context_selection(position)
+        menu = self._build_output_context_menu(target_item)
+        menu.exec(self.window.output_list.mapToGlobal(position))
 
     def delete_output_image(self, item: QListWidgetItem) -> None:
         window = self.window

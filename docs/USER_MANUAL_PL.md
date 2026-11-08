@@ -833,6 +833,10 @@ Okno pokazuje postęp w czasie rzeczywistym. Przetwarzanie można anulować w do
 
 W **Ustawienia → Ustawienia zaawansowane → Nazwy wyników** opcjonalny prefiks nazwy pomaga identyfikować nowe wyniki. Przykład aktualizuje się podczas wpisywania; dozwolone jest do 40 liter, cyfr, podkreśleń lub łączników. Pozostaw puste, aby zachować oryginalne nazewnictwo. Potwierdź **OK**, aby zapamiętać prefiks, albo anuluj, aby odrzucić zmianę. Prefiks staje się częścią nowych nazw na liście wyników i sugerowanych nazw eksportu; istniejące wyniki zachowują swoje nazwy. Nazwę nadal można zmienić w oknie zapisu. Ustawienie nie zmienia nazw plików źródłowych ani nazw wyjściowych wsadu.
 
+### Udostępnianie wyniku
+
+Kliknij wynik prawym przyciskiem myszy i otwórz **Udostępnij**. **Kopiuj obraz podglądu (JPEG)** umieszcza bieżący wynik w pełnej rozdzielczości, wraz z etykietami i paskiem skali, w schowku jako prawdziwy JPEG i udostępnia także zdekodowaną mapę bitową. **Kopiuj ścieżki plików** kopiuje adresy URL trwałych plików wszystkich zaznaczonych wyników; niezapisane lub nieaktualne wyniki wymagają wybrania folderu i są zapisywane jako PNG z bieżącymi pikselami 8/16 bitów i adnotacjami. **Pokaż w folderze** otwiera Eksplorator, Finder lub menedżer plików z zaznaczonym plikiem. Istniejące eksporty są używane ponownie tylko wtedy, gdy nadal odpowiadają bieżącemu obrazowi i adnotacjom. **Utwórz prywatny link** pozostaje wyłączony, dopóki nie będzie udostępniania hostowanego.
+
 ### Format eksportu przez przeciąganie
 
 Przeciąganie wyników z listy wyników zapisuje pliki obrazów w formacie wybranym w menu kontekstowym listy wyników (**Format przeciągania**: JPG, PNG, WebP lub TIFF). Wybór jest pamiętany.

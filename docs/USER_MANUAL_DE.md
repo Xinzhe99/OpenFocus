@@ -856,6 +856,10 @@ Der Stapeldialog zeigt den Fortschritt in Echtzeit. Die Verarbeitung kann jederz
 
 Unter **Einstellungen → Erweiterte Einstellungen… → Ausgabebenennung** hilft ein optionales Dateinamenpräfix, neu gerenderte Ergebnisse zu erkennen. Das Beispiel aktualisiert sich während der Eingabe; verwenden Sie bis zu 40 Buchstaben, Zahlen, Unterstriche oder Bindestriche. Leer lassen für die ursprüngliche Benennung. Mit **OK** bestätigen, um es zu merken, oder abbrechen, um die Änderung zu verwerfen. Das Präfix wird Teil neuer Namen in der Ausgabeliste und ihrer vorgeschlagenen Exportnamen; vorhandene Ergebnisse behalten ihre Namen. Im Speicherdialog lässt sich ein Name weiterhin bearbeiten. Diese Voreinstellung benennt keine Quelldateien um und ändert keine Batch-Ausgabenamen.
 
+### Ein Ergebnis teilen
+
+Klicken Sie mit der rechten Maustaste auf ein Ergebnis und öffnen Sie **Teilen**. **Vorschaubild kopieren (JPEG)** legt das aktuelle Ergebnis in voller Auflösung einschließlich Beschriftungen und Maßstabsbalken als echtes JPEG in die Zwischenablage und stellt zusätzlich ein dekodiertes Bitmap bereit. **Dateipfade kopieren** kopiert persistente Datei-URLs aller ausgewählten Ergebnisse; ungespeicherte oder veraltete Ergebnisse fragen nach einem Ordner und werden als PNG mit aktuellen 8/16-Bit-Pixeln und Anmerkungen geschrieben. **Im Ordner anzeigen** öffnet Explorer, Finder oder den Dateimanager mit ausgewählter Datei. Vorhandene Exporte werden nur wiederverwendet, solange sie noch zum aktuellen Bild und den Anmerkungen passen. **Privaten Freigabelink erstellen** bleibt deaktiviert, bis gehostetes Teilen verfügbar ist.
+
 ### Exportformat beim Herausziehen
 
 Werden Ergebnisse aus der Ausgabeliste herausgezogen, entstehen Bilddateien im Format, das im Kontextmenü der Ausgabeliste unter **Format beim Herausziehen** gewählt wurde (JPG, PNG, WebP oder TIFF). Die Wahl wird gespeichert.

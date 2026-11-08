@@ -816,6 +816,10 @@ La finestra batch mostra l'avanzamento in tempo reale. Puoi annullare l'elaboraz
 
 In **Impostazioni → Impostazioni avanzate → Nomi dei risultati**, un prefisso facoltativo del nome file aiuta a identificare i risultati appena renderizzati. L'esempio si aggiorna mentre digiti; usa fino a 40 lettere, numeri, underscore o trattini. Lascialo vuoto per la denominazione originale. Conferma con **OK** per ricordarlo, o annulla per scartare la modifica. Il prefisso entra nei nuovi nomi dell'elenco output e nei nomi di esportazione suggeriti; i risultati esistenti mantengono i loro nomi. Puoi comunque modificare un nome nella finestra di salvataggio. Questa preferenza non rinomina i file sorgente né cambia i nomi di output batch.
 
+### Condividere un risultato
+
+Fai clic con il pulsante destro su un output e apri **Condividi**. **Copia immagine di anteprima (JPEG)** inserisce negli appunti il risultato corrente a piena risoluzione, incluse etichette e barra di scala, come vero JPEG e fornisce anche una bitmap decodificata. **Copia percorsi dei file** copia gli URL dei file persistenti di tutti i risultati selezionati; i risultati non salvati o obsoleti richiedono una cartella e vengono scritti come PNG con gli attuali pixel 8/16 bit e annotazioni. **Mostra nella cartella** apre Esplora file, Finder o il gestore file con il file selezionato. Le esportazioni esistenti vengono riutilizzate solo finché corrispondono all'immagine e alle annotazioni correnti. **Crea link di condivisione privato** resta disattivato finché non esiste la condivisione ospitata.
+
 ### Formato di esportazione per trascinamento
 
 Trascinare i risultati dall'elenco output scrive file immagine nel formato scelto nel menu contestuale dell'elenco (**Formato trascinamento**: JPG, PNG, WebP o TIFF). La scelta viene ricordata.

@@ -816,6 +816,10 @@ El diálogo de lote muestra el progreso en tiempo real. Puedes cancelar el proce
 
 En **Ajustes → Ajustes avanzados → Nombres de salida**, un prefijo de nombre de archivo opcional ayuda a identificar los resultados recién renderizados. El ejemplo se actualiza mientras escribes; usa hasta 40 letras, números, guiones bajos o guiones. Déjalo vacío para conservar la nomenclatura original. Confirma con **OK** para recordarlo o cancela para descartar el cambio. El prefijo forma parte de los nuevos nombres de la lista de salida y de sus nombres de exportación sugeridos; los resultados existentes conservan sus nombres. Aún puedes editar un nombre en el diálogo de guardado. Esta preferencia no renombra archivos de origen ni cambia los nombres de salida por lotes.
 
+### Compartir un resultado
+
+Haz clic derecho en una salida y abre **Compartir**. **Copiar imagen de vista previa (JPEG)** coloca el resultado actual a resolución completa, incluidas sus etiquetas y barra de escala, en el portapapeles como un JPEG real y también proporciona un mapa de bits decodificado para aplicaciones de escritorio. **Copiar rutas de archivo** copia las URL de archivos persistentes de todos los resultados seleccionados; los resultados no guardados o desactualizados piden una carpeta y se escriben como PNG con sus píxeles de 8/16 bits y anotaciones actuales. **Mostrar en la carpeta** abre el Explorador, Finder o el gestor de archivos con el archivo seleccionado. Los archivos exportados existentes solo se reutilizan mientras sigan coincidiendo con la imagen y las anotaciones actuales. **Crear enlace compartido privado** permanece desactivado hasta que exista alojamiento compartido.
+
 ### Formato de exportación al arrastrar
 
 Arrastrar resultados desde la lista de salida escribe archivos de imagen con el formato elegido en el menú contextual de la lista (**Formato al arrastrar**: JPG, PNG, WebP o TIFF). La elección se recuerda.
