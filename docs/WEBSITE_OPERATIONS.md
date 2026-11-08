@@ -53,7 +53,7 @@ personal information.
 flowchart LR
   U[Browser] -->|DNS: openfocus.top| CF[Cloudflare edge]
   CF --> W[Worker: run_worker_first<br/>every request]
-  W -->|"/"| L[Language check<br/>Accept-Language + lang cookie]
+  W -->|"/"| L[Language check<br/>lang query, cookie, Accept-Language]
   L -->|zh| Z[302 /zh/]
   L -->|en| A[Static assets: site/dist]
   W -->|"/zh/" or other path| A
@@ -78,10 +78,16 @@ the Worker. It handles `/`, the website and desktop update APIs and download
 routes, and `www` canonicalisation; other requests go to the static binding.
 Every page and asset request therefore counts as a Worker invocation.
 
-- `/` — prefers Chinese from `Accept-Language` (or the `lang` cookie) and
-  redirects to `/zh/`; English otherwise. Response: `Vary: Accept-Language,
-  Cookie`, `Cache-Control: no-store`.
-- `/zh/` — pre-rendered Chinese page.
+- `/` — chooses a valid `?lang=en` or `?lang=zh` first, then the `lang`
+  cookie, then the highest-priority supported `Accept-Language` entry; English
+  otherwise. Chinese redirects to `/zh/` while preserving the query string.
+  Both the English asset response
+  and language redirect carry `Vary: Accept-Language, Cookie` and
+  `Cache-Control: no-store`.
+- `/zh/` — pre-rendered Chinese page. An explicit `?lang=en` redirects to
+  `/?lang=en`; `?lang=zh` stays Chinese. Valid explicit selections on either
+  page set a one-year, host-only `lang` cookie (`SameSite=Lax`, `Secure` on
+  HTTPS) and return `no-store`, including for HEAD requests.
 - `/api/latest` — GitHub `releases/latest` reduced to
   `{tag, published, assets: {windows-setup, windows-zip, macos-dmg,
   macos-zip}}`. For a release with split GitHub assets, missing complete files
@@ -197,12 +203,56 @@ authenticity.
 - Theme defaults to **light** on a first visit; the header toggle cycles
   light → dark → system and stores the choice in `localStorage`.
 - The primary download button picks the visitor's OS (Windows/macOS/Linux).
-- The language menu writes a `lang` cookie before navigating, so a manual
-  choice beats `Accept-Language`.
+- The language menu links include an explicit `lang` query, so selecting
+  English overrides a Chinese browser preference even when no cookie was
+  available before navigation. The Worker persists the selection; JavaScript
+  preserves the current section fragment when changing language.
 - After load the page fetches `/api/latest` and updates the version label and
   file sizes. Download links use `/download/latest/<kind>` even without
   JavaScript, so they follow the latest release through the Worker.
 - No third-party scripts, fonts or analytics.
+
+### Account and privacy boundary
+
+The public site links to the separately deployed account service at
+`https://account.openfocus.top/account?lang=en` or `?lang=zh`. Those explicit
+queries select the account language; the public `lang` cookie is host-only
+and is separate from the account service's language/session cookies. English
+return links should use `https://openfocus.top/?lang=en#<section>` so the
+browser's Chinese preference cannot change the language. Chinese return links
+use `https://openfocus.top/zh/#<section>`. Shared section anchors are
+`features`, `workflow`, `benchmark`, `cli`, `download` and `privacy`.
+
+The footer links to the account service's `/terms?lang=en` or `?lang=zh`.
+Its consent/login pages link back to the public privacy section. Keep the
+English and Chinese privacy copy aligned with the account implementation:
+account identifiers, profile details, sessions/device labels, consent and
+marketing choices, plan records, cookies, Cloudflare hosting and Resend email
+delivery are separate from the optional statistics database. The 90-day
+statistics retention period does not apply to account records. Account
+deletion clears contact details, sign-in identities and sessions; remaining
+account/service records must not be described as fully erased. Marketing
+requires a separate choice and supports the unsubscribe link; transactional
+messages are separate.
+
+When integrating changes, run `node --test tests/site_worker.test.mjs` and
+`python tools/build_site.py`. Review the generated English and Chinese pages,
+then smoke these paths in a preview environment without signing in or sending
+email:
+
+- `/?lang=en#privacy` with a Chinese browser preference and a `lang=zh`
+  cookie: English privacy, an English account link and English terms link.
+- `/?lang=zh&from=account#privacy` with `lang=en`: redirect to
+  `/zh/?lang=zh&from=account#privacy`, retaining the section and query.
+- `/zh/?lang=en#features`: redirect to `/?lang=en#features`.
+- From `/#workflow` or `/zh/#workflow`, switch language and confirm the
+  workflow section remains selected. Check mobile menu links and the privacy
+  footer anchor on both pages.
+- Open the public account and terms links in each language, then follow the
+  account page's return/privacy links and check language continuity.
+- Repeat locale-page requests with HEAD: selection headers remain, bodies
+  are empty. Other static assets continue through the asset binding.
+
 
 ---
 
@@ -489,14 +539,32 @@ curl -sS -o /dev/null -D - https://www.openfocus.top/zh/
 
 ## 10. Cost and limits
 
-- Cloudflare Workers Free: Worker invocations are 100k/day. Because
-  `run_worker_first: true` routes every page and asset request through the
-  Worker before `env.ASSETS`, static traffic counts against that limit; static
-  asset bandwidth itself is free. `/`, `/api/latest`, `/download/latest/*` and
-  `www` are handled in the Worker, while other paths forward to the asset
+Decision recorded 2026-11-09: the site stays on the Workers Free plan until a
+limit is actually observed. The only recurring cash cost is the domain
+registration; nothing is pre-purchased. The account service shares the same
+account-wide quota, and its upgrade triggers live in the private
+`openfocus-cloud` repository (`ops/RESOURCES.md`, "Cost posture").
+
+- Cloudflare Workers Free: Worker invocations are 100k/day **for the whole
+  account**, shared with `account.openfocus.top` and the desktop update checks.
+  Because `run_worker_first: true` routes every page and asset request through
+  the Worker before `env.ASSETS`, static traffic counts against that limit;
+  static asset bandwidth itself is free. `/`, `/api/latest`, `/download/latest/*`
+  and `www` are handled in the Worker, while other paths forward to the asset
   binding.
+- Budget per visit: the HTML inlines CSS and JS, but the document, its images
+  and the favicon each invoke the Worker, so a first page view costs roughly
+  six to eight requests; repeat views hit the browser cache and cost less.
+- Exceeding the limit is a hard stop, not throttling: matching requests receive
+  429 (Cloudflare error 1027) instead of falling back to static assets, so the
+  site and the account service fail together. Upgrade path: Workers Paid,
+  $5/month, 10 million requests included.
 - R2: egress free; 10 GB-month storage, 1M Class A, 10M Class B per month.
-  Overage: $0.015/GB-month, $4.50/M Class A, $0.36/M Class B.
+  Overage: $0.015/GB-month, $4.50/M Class A, $0.36/M Class B. One mirrored
+  release is about 825 MB (setup.exe, Windows zip, macOS dmg and arm64 zip);
+  pruning keeps only the latest tag, so storage stays around 1 GB.
+- Resend, used by the account service rather than the site, is free at 100
+  emails/day and 3,000/month; login and marketing mail share that cap.
 - The website itself has no paid services beyond the domain registration.
 
 OSS (Alibaba Cloud) and COS (Tencent Cloud) are alternative object stores, but
@@ -508,6 +576,12 @@ Cloudflare account as the Worker.
 
 ## 11. Change log (this work)
 
+- Fixed explicit English/Chinese selection across account return links and
+  language switching, preserved queries and section fragments, and applied
+  language cache headers to English responses as well as redirects.
+- Expanded both privacy sections to distinguish account data and optional
+  marketing from installation statistics; added localized account-management
+  and terms links.
 - Added the bilingual static site (`site/`) with a hand-written template,
   light/dark/system themes, OS-aware download button, copy buttons, language
   menu, 404, sitemap, robots, Open Graph and JSON-LD.
