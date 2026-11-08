@@ -94,6 +94,12 @@ mappings need disk space. BGRA tile conversion writes into mappings, and a
 resize-capable tiled method stages one full resized source at a time before
 building its target-coordinate tile grid. DCT still requires a fixed grid.
 
+The shared final bit-depth conversion uses chunks of at most 131072 samples.
+Its output shares RAM admission or falls back to a retained temporary mapping;
+clipping, scaling and rounding do not allocate whole-image float copies. The
+same helper serves CLI, GUI, comparison and batch consumers, preserving native
+uint16 low bits and round-to-even behavior for strided, read-only inputs.
+
 OpenFocus alignment reuses reference preparation and writes full-resolution
 Gaussian, gain and warp scratch to mappings. Gaussian strips preserve the
 original float32 reductions. Progress covers transform estimation and output
