@@ -452,7 +452,9 @@ def test_independent_scopes_keep_their_own_directory(monkeypatch, tmp_path):
     import concurrent.futures
     import threading
     default, alternative = _fake_volumes(monkeypatch, tmp_path, 100, 1000)
-    barrier = threading.Barrier(2)
+    # A timeout turns an exception in one job into BrokenBarrierError in the
+    # other, instead of a hang that the executor would wait on forever.
+    barrier = threading.Barrier(2, timeout=30)
     def job(size):
         with frame_storage.scratch_directory():
             selected = frame_storage.select_scratch(size)
