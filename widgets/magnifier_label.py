@@ -1,7 +1,7 @@
 from typing import Optional
 
 from PyQt6.QtCore import QPointF, QRectF, QSizeF, Qt, QTimer, QPropertyAnimation, QEasingCurve, pyqtProperty, pyqtSignal
-from PyQt6.QtGui import QColor, QFont, QPainter, QPixmap, QPen, QRegion
+from PyQt6.QtGui import QColor, QFont, QInputDevice, QPainter, QPixmap, QPen, QRegion
 from PyQt6.QtWidgets import QLabel
 
 from locales import trans
@@ -9,6 +9,22 @@ from locales import trans
 
 MAGNIFIER_MIN_SIZE = 64.0
 MAGNIFIER_MAX_SIZE = 1024.0
+
+
+def _is_touchpad_gesture(event):
+    """True for a two-finger touchpad scroll, False for a mouse wheel.
+
+    pixelDelta() alone is not enough: macOS and some high-resolution wheels
+    report pixel deltas for an ordinary mouse wheel too. Touchpad gestures
+    carry a scroll phase (begin/update/end, plus momentum on macOS), and some
+    platforms also identify the device as a touchpad. Plain wheels do neither.
+    """
+    if event.pixelDelta().isNull():
+        return False
+    device = event.pointingDevice()
+    if device is not None and device.type() == QInputDevice.DeviceType.TouchPad:
+        return True
+    return event.phase() != Qt.ScrollPhase.NoScrollPhase
 
 
 class MagnifierLabel(QLabel):
@@ -322,6 +338,17 @@ class MagnifierLabel(QLabel):
 
         if self._base_pixmap is None or self._base_pixmap.isNull():
             super().wheelEvent(event)
+            return
+
+        # A two-finger touchpad gesture moves the image like a drag; Ctrl keeps
+        # zooming. Space+drag is unusable on laptops where libinput disables
+        # the touchpad while a key is held.
+        if (_is_touchpad_gesture(event)
+                and not event.modifiers() & Qt.KeyboardModifier.ControlModifier):
+            self._pan_offset += QPointF(event.pixelDelta())
+            self._clamp_pan_offset()
+            self._update_scaled_pixmap()
+            event.accept()
             return
 
         delta = event.angleDelta().y()
