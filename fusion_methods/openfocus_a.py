@@ -2,9 +2,14 @@
 
 import cv2
 import numpy as np
-from core.frame_storage import create_transient_frame as create_frame
+from core.frame_storage import (
+    create_transient_frame as create_frame, create_frame as create_disk_frame,
+    frame_region,
+)
 from fusion_methods._openfocus_pixels import frame_codes, frame_gray_codes, gray_codes, output_codes
 from fusion_methods._openfocus_execution import execution_job, configure_rows, run_bands
+
+_BACKGROUND_RAM_LIMIT_BYTES = 32 * 1024 * 1024
 
 
 def _down2(gray, should_cancel, check_cancel):
@@ -321,17 +326,26 @@ def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 17,
                 if index == 0:
                     best = response
                     output = create_frame(frame.shape, np.uint16)
-                    minimum = create_frame(response.shape, np.int32)
-                    sum_dtype = np.uint32 if len(frames) <= 65536 else np.uint64
-                    accumulated = create_frame(frame.shape, sum_dtype)
+                    scratch_bytes = frame.size * 4 + response.size * 8
+                    allocate = (create_frame if scratch_bytes <= _BACKGROUND_RAM_LIMIT_BYTES
+                                else create_disk_frame)
+                    accumulated = allocate(frame.shape, np.float32)
+                    weights = allocate(response.shape, np.float32)
+                    statistics = allocate(response.shape + (2,), np.uint16)
+                    row_scratch = min(128, output.shape[0]) * output.shape[1] * (
+                        4 * (1 if frame.ndim == 2 else frame.shape[2]) + 8)
                 if frame.shape != output.shape:
                     raise ValueError("OpenFocus A requires frames with matching shapes")
                 scale = 256 if fast_hard and frame.dtype == np.uint8 else 1
                 def select(start, stop):
                     _check_cancel(should_cancel)
-                    select_rows(frame, response, best, output, start, stop, scale,
-                                index == 0, accumulated, minimum)
-                run_bands(output.shape[0], 128, select)
+                    rows = slice(start, stop)
+                    with frame_region(accumulated, rows, write=True) as sums, \
+                            frame_region(weights, rows, write=True) as weight_rows, \
+                            frame_region(statistics, rows, write=True) as stats:
+                        select_rows(frame, response, best, output, start, stop, scale,
+                                    index == 0, sums, weight_rows, stats)
+                run_bands(output.shape[0], 128, select, scratch_bytes=row_scratch)
                 del frame, response
                 if progress_callback is not None:
                     progress_callback(index + 1, len(frames))
@@ -345,10 +359,13 @@ def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 17,
         from fusion_methods._openfocus_kernels import blend_low_response_rows
         def blend_background(start, stop):
             _check_cancel(should_cancel)
-            blend_low_response_rows(output, best, minimum, accumulated,
-                                    len(frames), start, stop)
-        run_bands(output.shape[0], 128, blend_background)
-        del best, minimum, accumulated
+            rows = slice(start, stop)
+            with frame_region(accumulated, rows, write=True) as sums, \
+                    frame_region(weights, rows, write=True) as weight_rows, \
+                    frame_region(statistics, rows, write=True) as stats:
+                blend_low_response_rows(output, best, sums, weight_rows, stats, start, stop)
+        run_bands(output.shape[0], 128, blend_background, scratch_bytes=row_scratch)
+        del best, accumulated, weights, statistics
         SOURCE_CACHE.clear()
         return output_codes(output, frames, should_cancel, e37=True)
     np.clip(output, 0, 255, out=output)

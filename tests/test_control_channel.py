@@ -951,6 +951,8 @@ def test_project_open_sets_lifecycle_state(server, control_window, monkeypatch):
     from utils import project_file
 
     assert getattr(control_window, "project_path", None) in (None, "")
+    # Fixture settings can mark the untitled project dirty before this test.
+    control_window._clear_project_dirty()
     captured = {}
 
     def fake_apply(window, state, on_loaded=None, on_error=None):
@@ -959,7 +961,10 @@ def test_project_open_sets_lifecycle_state(server, control_window, monkeypatch):
     monkeypatch.setattr(project_file, "validate_project",
                         lambda path: (True, "", {"sources": []}))
     monkeypatch.setattr(project_file, "apply_project", fake_apply)
-    call(server, "project.open", path="life.ofproj")["result"]
+    result = call(server, "project.open", path="life.ofproj")
+    assert result["ok"], result
+    assert getattr(control_window, "project_path", None) in (None, "")
+    control_window._mark_project_dirty()
     captured["on_loaded"]()
     assert control_window.project_path == "life.ofproj"
     assert control_window._project_dirty is False

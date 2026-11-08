@@ -34,9 +34,10 @@ and signed truncation; it does not allocate RGB reconstruction pyramids.
 The decoded source cache evicts old entries before admitting an incoming decode.
 An existing consumer keeps its array views valid after eviction; the cache no
 longer pins an entire old cache while the decoder allocates its next frame.
-A stores selected codes as uint16 and accumulates source codes for low-detail
-background blending. Its response and accumulation planes are released before
-conversion to the common float32 output domain.
+A stores selected codes as uint16 and accumulates focus-weighted source codes
+for low-detail background blending. Accumulators above 32 MiB use temporary
+row-windowed mappings; their pages are released between bands. The response
+and accumulation planes are released before the common float32 output conversion.
 
 OpenFocus B and C estimate depth on floor-half gray planes at a fixed 0.5 scale.
 Their 64-node gray kernel stores normalized float32 coefficients and evaluates
