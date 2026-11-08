@@ -730,6 +730,13 @@ class WatermarkDialog(QDialog):
         if not targets:
             self._error.setText(trans.t("watermark_target_required"))
             return
+        # The selected entry is updated under its own scope: results use the
+        # output scope, an aligned stack uses the registered one.  Passing it
+        # only for a checked "output" left a selected historical/batch aligned
+        # record without the registered style the user just applied.
+        selected = self._apply_record
+        selected_target = ("registered" if getattr(selected, "kind", "") == "aligned"
+                           else "output") if selected is not None else None
         previous = watermark.capture_state(parent)
         for key, value in cfg.to_dict().items():
             setattr(parent, watermark.ATTRS[key][0], value)
@@ -742,7 +749,7 @@ class WatermarkDialog(QDialog):
                 continue
             watermark.set_target_config(parent, target, cfg)
         watermark.apply_to_records(parent, cfg, targets,
-                                   self._apply_record if "output" in targets else None)
+                                   selected if selected_target in targets else None)
         if watermark.capture_state(parent) == previous:
             self.accept()
             return

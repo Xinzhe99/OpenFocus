@@ -24,6 +24,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   preferences store style defaults without the watermark text. Per-output
   bindings survive reordering and renaming, and corrupt project fields are
   handled safely.
+- Reject watermark text whose font produces no visible ink, and spill large
+  watermark copies directly to admitted disk storage when RAM is unavailable.
+- Keep result watermarks attached to their loaded stack through transforms
+  and undo, isolate reloaded stacks and historical results, apply registered
+  scope to the selected aligned result, and refresh recovery after removal,
+  undo and redo.
 
 ### Changed
 - Default Batch Image Converter to lossless PNG, restore the last explicitly

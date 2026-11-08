@@ -434,6 +434,7 @@ class SourceManager(QObject):
                     load_options = prepare_options(load_options)
                 if not load_is_current():
                     return
+                from utils import watermark
                 state_fields = ("current_folder_path", "source_px_um", "linear_dng_metadata",
                                 "base_images", "raw_images", "image_filenames", "image_source_paths",
                                 "image_icc_profiles", "current_scale_factor", "base_scale_factor",
@@ -442,7 +443,10 @@ class SourceManager(QObject):
                                 "watermark_size_percent", "watermark_opacity",
                                 "watermark_color", "watermark_angle", "watermark_density",
                                 "watermark_source_enabled", "watermark_registered_enabled",
-                                "watermark_output_enabled")
+                                "watermark_output_enabled", watermark.STACK_LINEAGE_ATTR)
+                # Rotating the lineage is what isolates the replaced stack's
+                # outputs; a rolled-back load must restore the old one.
+                watermark.stack_lineage(window)
                 previous_window_state = {name: getattr(window, name) for name in state_fields
                                          if hasattr(window, name)}
                 previous_baseline = self._stack_baseline
@@ -468,7 +472,6 @@ class SourceManager(QObject):
                     # A new source stack must not inherit the previous stack's
                     # watermark text/scope.  Project restore re-applies its own
                     # validated settings in on_success below.
-                    from utils import watermark
                     watermark.reset_for_new_stack(window)
                     persist = getattr(window, "persist_settings", None)
                     if callable(persist):

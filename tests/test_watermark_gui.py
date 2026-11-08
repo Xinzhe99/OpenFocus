@@ -652,3 +652,117 @@ def test_batch_output_reports_burned_watermark(tmp_path):
     assert page is not None and page.shape[0] == 120
     # The frozen watermark changed pixels beyond the plain gradient source.
     assert page.dtype == np.uint8 and page.min() < 80
+
+
+def _stack_record(image, *, lineage, kind="fusion", paths=(), initialized=True):
+    record = _Record(image, kind=kind, context=_Context(image, paths=paths))
+    record.watermark_initialized = initialized
+    record.stack_lineage = lineage
+    return record
+
+
+def test_same_stack_output_scope_survives_non_load_mutations(qapp):
+    from dialogs.watermark import WatermarkDialog
+
+    image = _image()
+    record = _stack_record(image, lineage=0)
+    window = _DialogHost([record], source=image)
+    record.stack_lineage = wm.stack_lineage(window)
+    # Rotate/flip/resize/exclusion bump the content revision; the result was
+    # still fused from this loaded stack and must remain in its output scope.
+    window.source_revision = 7
+    foreign = _stack_record(_image(), lineage=wm.stack_lineage(window) + 1000,
+                            paths=["/other/stack.png"])
+    foreign.watermark_config = wm.normalize_config({"text": "FOREIGN"}).to_dict()
+    window.output_list.records.append(foreign)
+    window.output_manager.records.append(foreign)
+
+    dialog = WatermarkDialog(window)
+    assert dialog._apply_record is record
+    dialog.target_checks["source"].setChecked(False)
+    dialog.target_checks["registered"].setChecked(False)
+    dialog.target_checks["output"].setChecked(True)
+    dialog.text_edit.setText("© Same stack")
+    dialog._save_and_accept()
+
+    assert dialog.result() == QDialog.DialogCode.Accepted
+    assert wm.record_export_cfg(record)["text"] == "© Same stack"
+    assert wm.config_for_target(window, "output").text == "© Same stack"
+    # A foreign history entry keeps its own configuration.
+    assert wm.record_export_cfg(foreign)["text"] == "FOREIGN"
+    # The next fusion of this stack inherits the edited output scope.
+    future = _stack_record(_image(), lineage=wm.stack_lineage(window),
+                           initialized=False)
+    assert wm.export_cfg(window, "output", future)["text"] == "© Same stack"
+
+
+def test_same_path_reload_starts_a_new_stack_lineage(qapp):
+    image = _image()
+    window = _DialogHost(source=image)
+    window.image_filenames = ["frame.png"]
+    window.source_revision = 4
+    old = _Record(None, kind="aligned")
+    old.aligned_names = ("frame.png",)
+    old.aligned_source_revision = 4
+    old.watermark_initialized = True
+    old.stack_lineage = wm.stack_lineage(window)
+    window.output_list.records = [old]
+    window.output_manager.records = [old]
+    assert wm.record_belongs_to_current_stack(window, old)
+
+    snapshot = wm.capture_state(window)
+    old_frames = list(window.raw_images)
+    # Reloading the same folder (identical names, paths and revision) is a
+    # new load, not an in-stack edit: the old aligned stack stays foreign.
+    wm.reset_for_new_stack(window)
+    window.raw_images = [np.full_like(image, 200)]
+    assert wm.stack_lineage(window) != old.stack_lineage
+    assert not wm.record_belongs_to_current_stack(window, old)
+    changed = wm.apply_to_records(
+        window, wm.normalize_config({"text": "NEW"}), ("registered",))
+    assert changed == 0
+    assert wm.record_export_cfg(old) is None
+
+    # A watermark-only undo that crosses the reload keeps the loaded stack's
+    # identity; only the committed configuration is restored.
+    crossed = wm.stack_lineage(window)
+    wm.restore_state(window, snapshot)
+    assert wm.stack_lineage(window) == crossed
+    assert not wm.record_belongs_to_current_stack(window, old)
+
+    # Undoing the stack state itself restores its frames first, so the
+    # snapshotted lineage travels back with the stack.
+    window.raw_images = old_frames
+    wm.restore_state(window, snapshot)
+    assert wm.stack_lineage(window) == old.stack_lineage
+    assert wm.record_belongs_to_current_stack(window, old)
+
+
+def test_selected_aligned_record_gets_the_registered_scope(qapp):
+    from dialogs.watermark import WatermarkDialog
+
+    image = _image()
+    aligned = _Record(None, kind="aligned")
+    aligned.watermark_initialized = True
+    window = _DialogHost([aligned], source=image)
+    window.registration_results = [image]
+    foreign = _stack_record(_image(), lineage=wm.stack_lineage(window) + 1000,
+                            kind="aligned", paths=["/foreign/stack.png"])
+    foreign.watermark_config = wm.normalize_config({"text": "FOREIGN"}).to_dict()
+    window.output_list.records.append(foreign)
+    window.output_manager.records.append(foreign)
+
+    dialog = WatermarkDialog(window)
+    assert dialog._apply_record is aligned
+    dialog.target_checks["source"].setChecked(False)
+    dialog.target_checks["output"].setChecked(False)
+    dialog.target_checks["registered"].setChecked(True)
+    dialog.text_edit.setText("© Registered")
+    dialog._save_and_accept()
+
+    assert dialog.result() == QDialog.DialogCode.Accepted
+    assert wm.record_export_cfg(aligned)["text"] == "© Registered"
+    assert wm.config_for_target(window, "registered").text == "© Registered"
+    # Unrelated foreign entries are not rewritten by the selected record.
+    assert wm.record_export_cfg(foreign)["text"] == "FOREIGN"
+    assert len(window.undone) == 1
