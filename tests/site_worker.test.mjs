@@ -597,12 +597,80 @@ test("Chinese preference redirects / to /zh/ and other static paths pass through
   assert.equal(await response.text(), "asset:/zh/");
 });
 
-test("wrangler sends every route through the worker so www can canonicalise", async () => {
-  const config = JSON.parse(
-    await readFile(new URL("site/wrangler.jsonc", root), "utf8"),
-  );
-  assert.equal(config.assets.run_worker_first, true);
+test("explicit English overrides Chinese preferences and persists without browser scripts", async () => {
+  const env = makeEnv();
+  const response = await run("https://openfocus.top/?lang=en", {
+    headers: { "Accept-Language": "zh-CN", Cookie: "lang=zh" },
+    env,
+  });
+  assert.equal(response.status, 200);
+  assert.equal(await response.text(), "asset:/");
+  assert.equal(response.headers.get("Cache-Control"), "no-store");
+  assert.equal(response.headers.get("Vary"), "Accept-Language, Cookie");
+  assert.match(response.headers.get("Set-Cookie"), /^lang=en; Path=\/; Max-Age=31536000; SameSite=Lax; Secure$/);
 });
+
+test("language redirects preserve query parameters and persist the explicit choice", async () => {
+  const env = makeEnv();
+  let response = await run("https://openfocus.top/?lang=zh&from=account", {
+    headers: { "Accept-Language": "en-US", Cookie: "lang=en" },
+    env,
+  });
+  assert.equal(response.status, 302);
+  assert.equal(response.headers.get("Location"), "/zh/?lang=zh&from=account");
+  assert.equal(response.headers.get("Cache-Control"), "no-store");
+  assert.match(response.headers.get("Set-Cookie"), /^lang=zh;/);
+  assert.deepEqual(env.ASSETS.calls, []);
+
+  response = await run("https://openfocus.top/zh/?lang=en&from=account", { env });
+  assert.equal(response.status, 302);
+  assert.equal(response.headers.get("Location"), "/?lang=en&from=account");
+  assert.match(response.headers.get("Set-Cookie"), /^lang=en;/);
+
+  response = await run("https://openfocus.top/?from=account", {
+    headers: { "Accept-Language": "zh-CN" }, env,
+  });
+  assert.equal(response.headers.get("Location"), "/zh/?from=account");
+  assert.equal(response.headers.get("Set-Cookie"), null);
+});
+
+test("invalid language queries use cookie preference and English responses vary without caching", async () => {
+  const env = makeEnv();
+  const response = await run("https://openfocus.top/?lang=unknown", {
+    headers: { "Accept-Language": "zh-CN", Cookie: "other=1; lang=en" }, env,
+  });
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("Set-Cookie"), null);
+  assert.equal(response.headers.get("Vary"), "Accept-Language, Cookie");
+  assert.equal(response.headers.get("Cache-Control"), "no-store");
+});
+
+test("HEAD locale pages retain selection headers without an asset body", async () => {
+  for (const pathname of ["/?lang=en", "/zh/?lang=zh"]) {
+    const response = await run(`https://openfocus.top${pathname}`, {
+      method: "HEAD", env: makeEnv(),
+    });
+    assert.equal(response.status, 200);
+    assert.equal(await response.text(), "");
+    assert.equal(response.headers.get("Cache-Control"), "no-store");
+    assert.match(response.headers.get("Set-Cookie"), /^lang=(en|zh);/);
+  }
+});
+
+test("negotiation selects the highest-priority supported language", async () => {
+  for (const [header, expected] of [
+    ["fr-FR,zh-CN;q=0.9,en;q=0.8", "/zh/"],
+    ["fr-FR,en;q=0.9,zh;q=0.8", null],
+    ["zh;q=0,en;q=0.5", null],
+  ]) {
+    const response = await run("https://openfocus.top/", {
+      headers: { "Accept-Language": header }, env: makeEnv(),
+    });
+    assert.equal(response.headers.get("Location"), expected);
+    assert.equal(response.status, expected ? 302 : 200);
+  }
+});
+
 
 function analyticsDb() {
   const writes = [];

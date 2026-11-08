@@ -1,8 +1,8 @@
 /**
  * OpenFocus site worker.
  *
- * - "/" redirects to /zh/ when the browser prefers Chinese (Accept-Language +
- *   a `lang` cookie set by the language menu).
+ * - "/" negotiates English/Chinese from an explicit `lang` query, the
+ *   language-menu cookie, or Accept-Language, preserving query parameters.
  * - "/api/latest" returns the latest GitHub release, cached at the edge.
  * - "/download/latest/<kind>" streams the matching R2 object with byte-range
  *   support, or redirects to the GitHub asset when the mirror has no object.
@@ -91,7 +91,8 @@ function preferredLanguage(request) {
     .filter((entry) => entry.tag && entry.q > 0)
     .sort((a, b) => b.q - a.q);
 
-  return tags.length && tags[0].tag.startsWith("zh") ? "zh" : "en";
+  const supported = tags.find((entry) => /^(en|zh)(?:-|$)/.test(entry.tag));
+  return supported?.tag === "zh" || supported?.tag.startsWith("zh-") ? "zh" : "en";
 }
 
 function githubAssetUrl(value) {
@@ -693,16 +694,24 @@ export default {
       return handleDownload(request, env, ctx);
     }
 
-    if (url.pathname === "/" && (method === "GET" || method === "HEAD")) {
-      if (preferredLanguage(request) === "zh") {
-        return new Response(null, {
-          status: 302,
-          headers: {
-            Location: "/zh/",
-            Vary: "Accept-Language, Cookie",
-            "Cache-Control": NO_STORE,
-          },
+    let languageHeaders = null;
+    if ((url.pathname === "/" || url.pathname === "/zh/") && (method === "GET" || method === "HEAD")) {
+      const query = url.searchParams.get("lang");
+      const explicit = query === "en" || query === "zh";
+      const lang = explicit ? query : url.pathname === "/zh/" ? "zh" : preferredLanguage(request);
+      if (url.pathname === "/" || explicit) {
+        languageHeaders = new Headers({
+          Vary: "Accept-Language, Cookie",
+          "Cache-Control": NO_STORE,
         });
+        if (explicit) {
+          languageHeaders.set("Set-Cookie", `lang=${lang}; Path=/; Max-Age=31536000; SameSite=Lax${url.protocol === "https:" ? "; Secure" : ""}`);
+        }
+      }
+      const pathname = lang === "zh" ? "/zh/" : "/";
+      if (url.pathname !== pathname) {
+        languageHeaders.set("Location", pathname + url.search);
+        return new Response(null, { status: 302, headers: languageHeaders });
       }
     }
 
@@ -710,6 +719,14 @@ export default {
       return textResponse("Not Found", 404, {}, method);
     }
 
-    return env.ASSETS.fetch(request);
+    const response = await env.ASSETS.fetch(request);
+    if (!languageHeaders) return response;
+    const headers = new Headers(response.headers);
+    for (const [key, value] of languageHeaders) headers.set(key, value);
+    return new Response(method === "HEAD" ? null : response.body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers,
+    });
   },
 };
