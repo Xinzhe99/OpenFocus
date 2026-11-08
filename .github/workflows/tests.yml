@@ -56,10 +56,15 @@ jobs:
         timeout-minutes: 15
         continue-on-error: true
         shell: bash
+        env:
+          QT_QPA_PLATFORM: offscreen
+          PYTHONFAULTHANDLER: '1'
         run: |
           lldb --batch \
+            -o 'settings set target.process.stop-on-exec false' \
             -o 'process handle SIGILL -s true -n false -p true' \
-            -o run -o 'thread backtrace all' -o 'image list' \
+            -o run -o 'thread backtrace all' -o 'register read' \
+            -o 'disassemble --pc --count 16' -o 'image list' \
             -- python -m pytest -o addopts='' -vv -s -x \
                --timeout=90 --timeout-method=thread 2>&1 | tee "$RUNNER_TEMP/macos-lldb.txt"
 
@@ -71,7 +76,6 @@ jobs:
           path: |
             ~/Library/Application Support/OpenFocus/logs/openfocus-*.crash.txt
             ~/Library/Application Support/OpenFocus/logs/openfocus-*.log
-            /private/var/folders/**/openfocus-*.crash.txt
             ~/Library/Logs/DiagnosticReports/Python*.ips
             ~/Library/Logs/DiagnosticReports/python*.ips
             ~/Library/Logs/DiagnosticReports/pytest*.ips
