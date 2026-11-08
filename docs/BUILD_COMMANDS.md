@@ -8,6 +8,10 @@ The macOS job uses `macos-latest`, matching the test matrix. The former
 `macos-14` hosted configuration is no longer available; preview builds exercise
 the current runner before any tag can publish a release.
 
+Linux regression runs need `fonts-noto-cjk` alongside the Qt system libraries
+to exercise Chinese watermark text with real glyphs. Install that package
+before running `pytest`; the test workflow supplies it on Ubuntu runners.
+
 The CPU depth kernel also requires Numba and llvmlite. Keep
 `--additional-hooks-dir hooks`: the kernel hook copies their package metadata,
 including the original compiler and LLVM redistribution notices. The packaged

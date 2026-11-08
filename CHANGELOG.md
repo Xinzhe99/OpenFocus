@@ -105,6 +105,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   desktop multipage exports and the public helper's historical LZW default.
 
 ### Fixed
+- Keep HDR bracket planning samples and merged coverage in temporary mappings,
+  reuse bracket scratch for retained samples, and release borrowed pages between
+  groups so preview plans do not accumulate unadmitted resident canvases.
+- Report the completed seam-planning stage and remove unused pair-transform
+  fields from automatic control-point detection.
 - Isolate desktop renders in a spawned process so a native fault or killed
   render preserves the open project and reports the worker's exit reason.
   Preserve lazy source/alignment descriptors and the shared frame-memory cap;

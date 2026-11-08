@@ -115,6 +115,12 @@ Retained processing frames open the same scoped admission when resolved later,
 so temporary mappings survive until their final views are released. Explicit
 temporary-directory choices remain binding.
 
+HDR mosaic planning stages bracket colors and coverage in the captured scratch
+directory. It reuses the first bracket's mappings for the merged low sample and
+closes all region leases before retaining the plan. Merge workspaces remain
+admitted per bracket group; retaining multiple groups does not retain their
+decoded low canvases in RAM.
+
 ### GUI render isolation
 
 `RenderManager` starts `RenderProcessWorker`, which runs the existing
