@@ -60,7 +60,7 @@ Por ejemplo, el equivalente en la CLI es `python main.py --input ./png-stack --o
 
 ### Formatos de salida compatibles
 
-En **Guardar como**, TIFF normal guarda el resultado como una sola imagen; TIFF por capas incluye los fotogramas de origen como capas. Linear DNG siempre aparece, pero para guardarlo se requiere un resultado lineal de cámara sin ajustes incorporados, obtenido con **Abrir RAW nativo** y con calibración de cámara.
+En **Guardar como**, TIFF normal guarda el resultado como una sola imagen; TIFF por capas incluye los fotogramas de origen como capas. Linear DNG siempre aparece, pero para guardarlo se requiere un resultado lineal de cámara sin ajustes incorporados y con calibración de cámara.
 
 - Imágenes individuales: JPG, PNG, BMP, TIFF, WebP
 - Secuencias de imágenes: guardadas como carpetas
@@ -434,21 +434,25 @@ Es el método preseleccionado en una instalación nueva.
 
 Cada mosaico neuronal usa todos los fotogramas. Los fotogramas y los datos temporales de alineación pueden guardarse en disco; el espacio libre y la memoria disponible limitan el tamaño de la pila. Los mosaicos espaciales de V2 aproximan la inferencia de la imagen completa.
 
+Si no se especifica un directorio temporal, OpenFocus estima el espacio necesario a partir de las entradas conocidas y los datos temporales. Si falta espacio en el disco temporal del sistema, puede considerar discos locales fijos con permiso de escritura. Un directorio indicado explícitamente no se reemplaza automáticamente. La comprobación de espacio es una estimación puntual, no una reserva; el espacio puede agotarse después. Ante un error de almacenamiento, elige un directorio con permiso de escritura en los ajustes avanzados.
+
 
 ### OpenFocus A / B / C
 
-- **OpenFocus A**: suaviza su mapa de respuesta de enfoque multiescala y después selecciona los píxeles enfocados.
+- **OpenFocus A**: selecciona los píxeles de origen mediante una respuesta de enfoque multiescala.
 - **OpenFocus B**: mezcla fotogramas vecinos guiándose por un mapa de profundidad suavizado.
-- **OpenFocus C**: reconstruye bandas multiescala guiándose por un mapa de profundidad suavizado.
-- **Parámetros**: A y B usan el deslizador de núcleo para controlar la escala de respuesta de enfoque; C no tiene radio. Los tres tienen un parámetro de suavizado que controla la intensidad de transición.
+- **OpenFocus C**: mezcla los píxeles de origen según el mapa de profundidad final suavizado.
+- **Parámetros**: A y B usan el deslizador de núcleo para controlar la escala de respuesta de enfoque; C no tiene radio. El suavizado de A no tiene efecto, como en HF9 A; B y C suavizan el mapa de profundidad utilizado para la fusión.
 
 **Suavizado**: un único campo numérico bajo el deslizador de núcleo, cuyo significado depende del método seleccionado (rango 0–8, paso 0,2):
 
 | Método | Etiqueta | Predeterminado | Efecto |
 |---|---|---|---|
-| OpenFocus A | Suavizado de mezcla | 2,0 | Controla el suavizado del mapa de respuesta de enfoque antes de seleccionar los píxeles |
-| OpenFocus B | Suavizado de profundidad | 1,2 | Controla el suavizado del mapa de profundidad que guía la mezcla |
-| OpenFocus C | Suavizado de mezcla | 3,0 | Controla el suavizado del mapa de profundidad que guía la reconstrucción multiescala |
+| OpenFocus A | Suavizado de mezcla | 2,0 | Sin efecto, como en HF9 A |
+| OpenFocus B | Suavizado de profundidad | 1,44 | Controla el suavizado del mapa de profundidad que guía la mezcla |
+| OpenFocus C | Suavizado de mezcla | 3,6 | Controla el suavizado del mapa de profundidad y las transiciones de fusión |
+
+Tamaño de núcleo predeterminado de A/B: 17. Se conservan los valores guardados; restablece los valores predeterminados para usar los nuevos.
 
 Los valores mayores aumentan el suavizado de las transiciones. Cada método recuerda su propio valor entre sesiones, y el procesamiento por lotes aplica la misma regla.
 
@@ -484,7 +488,7 @@ Selecciona **Solo alineación (sin fusión)** para registrar la pila y añadir u
 | StackMFF V3 | Lenta (GPU) | Excelente | Máxima calidad |
 | OpenFocus A | Depende de la pila | Depende de la pila | Selección multiescala de píxeles enfocados |
 | OpenFocus B | Depende de la pila | Depende de la pila | Mezcla de fotogramas vecinos guiada por profundidad |
-| OpenFocus C | Depende de la pila | Depende de la pila | Reconstrucción multiescala guiada por profundidad |
+| OpenFocus C | Depende de la pila | Depende de la pila | Mezcla de píxeles de origen según el mapa de profundidad final |
 
 Abre **Herramientas → Comparación de métodos** para ajustar varios métodos de forma independiente. El nombre, las etiquetas de parámetros y los controles de cada método permanecen juntos cuando la ventana se estrecha. Los cambios actualizan la vista previa automáticamente. **Vista previa ROI (rápida)** fusiona el área seleccionada con el contexto circundante; **Fusión de imagen completa** comprueba el resultado de toda la imagen y permite inspeccionar otra área sin volver a renderizar. Los resultados ROI pueden diferir de los de imagen completa porque las estadísticas de exposición y algunos algoritmos dependen de la extensión de la imagen.
 La **fusión de imagen completa** está seleccionada por defecto.
@@ -893,8 +897,8 @@ Por ejemplo, añade `--align openfocus --alignment-report alignment.json` a un r
 | `--defect-mask-path MASK` | Máscara de defectos en coordenadas del sensor que se repara antes del registro |
 | `--sensor-denoise` | Reducción de ruido conservadora del sensor antes del registro |
 | `--kernel, -k` | Tamaño de núcleo (forzado a impar); controla la escala de respuesta de enfoque en `openfocus_a` y `openfocus_b`; C no tiene radio |
-| `--depth-smoothing VALUE` | Solo `openfocus_b`: intensidad del suavizado de transición de profundidad (1,2 por defecto) |
-| `--blend-smoothing VALUE` | Solo `openfocus_a` / `openfocus_c`: intensidad del suavizado de transición (2,0 para A y 3,0 para C por defecto) |
+| `--depth-smoothing VALUE` | Solo `openfocus_b`: intensidad del suavizado de transición de profundidad (1,44 por defecto) |
+| `--blend-smoothing VALUE` | Solo `openfocus_a` / `openfocus_c`: intensidad del suavizado de transición (2,0 para A y 3,6 para C por defecto) |
 | `--ai-mode {soft,hard}` | Salida de StackMFF V3: mezcla ponderada por probabilidad (predeterminada) o fotograma más probable por píxel |
 | `--threads, -t` | Límite superior de hilos de trabajo; `0` = automático (predeterminado), los valores positivos limitan la concurrencia |
 | `--resource-preference` | `balanced` (predeterminado), `responsive` o `maximum`; controla la planificación de recursos |

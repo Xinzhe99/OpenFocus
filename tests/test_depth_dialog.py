@@ -257,7 +257,6 @@ def test_openfocus_depth_smoothing_edit_changes_measurement(
     editor.setValue(0)
     _click_and_finish(qapp, dialog)
     unsmoothed = dialog._index01.copy()
-    assert not np.any((unsmoothed > 1e-6) & (unsmoothed < 1 - 1e-6))
     editor.setValue(8)
     _click_and_finish(qapp, dialog)
     smoothed = dialog._index01

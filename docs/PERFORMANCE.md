@@ -14,13 +14,48 @@ fit. See [GPU support](GPU_SUPPORT.md) for provider and validation limitations.
 
 ## Current bounded execution (unreleased)
 
-OpenFocus A computes independent frame responses in a RAM-admitted window;
-B/C compute independent activity planes in the same way. Source-order reduction
-preserves strict first-frame ties and the previous accumulation order. B/C
-finish all activity producers before global depth smoothing and reconstruction.
-Spatial tile workers keep their child frame pass serial, so the two pools do
-not overlap. A worker budget includes a completed result waiting for reduction
-and the original-size uint16 conversion required before resizing.
+OpenFocus A/B/C choose either a RAM-admitted frame window or one reusable row
+executor. The two parallel layers do not overlap. Activity selection preserves
+strict first-frame ties. B/C finish activity production and global depth before
+consuming source bands. B reads contributing source bands; C rereads sources
+through a bounded window in reverse order, using one completed canvas depth.
+A worker budget includes
+completed results waiting for reduction and original-size conversion before
+resizing. Explicit spatial tiles borrow the parent's lease and keep their
+private HF9 child execution serial.
+
+Repeated source consumption retains each immutable source's exposure gain as
+a scalar; pixels still resolve through the same admitted window and source
+validation. Winner selection writes the final integer depth code directly.
+C builds immutable gray-resampling axis plans once per job and shares them
+across source producers. Its integer merge follows native reverse ordering
+and signed truncation; it does not allocate RGB reconstruction pyramids.
+
+The decoded source cache evicts old entries before admitting an incoming decode.
+An existing consumer keeps its array views valid after eviction; the cache no
+longer pins an entire old cache while the decoder allocates its next frame.
+A's native hard-selection canvas uses uint16 codes, and its response/cache
+owners are released before conversion to the common float32 output domain.
+
+OpenFocus C estimates depth on floor-half gray planes at a fixed 0.5 scale.
+Its 64-node gray kernel stores normalized float32 coefficients and evaluates
+vertical then horizontal taps with explicit LLVM float32 FMA. Intermediate
+float storage is limited to 128 rows per worker. B/C confidence uses the
+absolute difference between maximum activity and the sum of per-frame
+activity divided by frame count, followed by a 4096-node percentile/square-root
+guide. Q12 smoothing runs horizontally then vertically with an even minimum
+weight of two; a zero smoothing radius skips filtering. C snaps the half-size
+depth with correction truncated toward zero, then expands it to the canvas.
+
+A guarded single-core, 512-MiB smoke compared production C at native R22/S5/F0
+against S1/S2/S4 captures. Gray planes, raw depth and both guided-filter outputs
+matched the exported native stages; final 512-square depth matched each
+official uint16 sidecar exactly. Complete production fusion also matched each
+official output exactly, with maximum error zero. This proves those captured
+R22/S5/F0 cases; it does not establish all parameter combinations or large-stack
+performance. Dynamic capture records reverse frame indices, first/last flags
+and the active merge object's vtable; an unrelated legacy pyramid class must
+not be used to infer this path's RGB reconstruction.
 
 B/C's Q12 recurrence runs in a lazily compiled, GIL-free Numba CPU kernel.
 A separate 256-MiB startup check covers compilation before workspace planning;
@@ -31,6 +66,30 @@ serial low-RAM work and global maps retain temporary mappings. Compilation stays
 in memory, so read-only installed/frozen modules need no writable JIT cache.
 The first fusion in a fresh process includes compilation time.
 
+Native pool limits belong to the owner thread. Workers and late initializers
+join before BLAS/OpenMP limits and the caller's OpenCV thread count are restored,
+including cancellation. Cold direct calls capture OpenCV state before loading
+the planning modules, whose import configures OpenCV's own parallelism.
+OpenCV parallel regions are explicitly disabled with `setNumThreads(0)` during
+these scopes. On macOS GCD, a positive setting of one still reports the host's
+pool capacity from `getNumThreads()`; zero reports the disabled state correctly.
+
+Default A hard selection also uses its Q4 integer response for normalized float
+inputs and resizing. A warm three-frame smoke compared the former floating
+response with the integer response at 513×515 and after resizing to 257×259.
+All five tested input paths produced identical pixels and preserved sources.
+Normalized float sources are area-resized in their documented 0-255 sample domain
+before native code quantization; registered extensions retain the same order.
+The affected full-resolution paths had these traced temporary-allocation peaks:
+
+| A input | Floating response | Q4 response |
+|---|---:|---:|
+| RGB float32, 513×515 | 17.19 MiB | 10.66 MiB |
+| Grayscale float32, 513×515 | 13.17 MiB | 6.63 MiB |
+
+These are warm `tracemalloc` peaks for small inputs, not process RSS or large-stack
+acceptance. The native unsigned-input hard path already used Q4 before this change.
+
 Guided Filter, DCT, GFG-FGF, DTCWT and neural preparation use frame/strip passes
 and mapped intermediates where applicable. Full outputs, decision maps,
 reconstruction buffers and native decoder work still need admission; temporary
@@ -38,11 +97,27 @@ mappings need disk space. BGRA tile conversion writes into mappings, and a
 resize-capable tiled method stages one full resized source at a time before
 building its target-coordinate tile grid. DCT still requires a fixed grid.
 
+The shared final bit-depth conversion uses chunks of at most 131072 samples.
+Its output shares RAM admission or falls back to a retained temporary mapping;
+clipping, scaling and rounding do not allocate whole-image float copies. The
+same helper serves CLI, GUI, comparison and batch consumers, preserving native
+uint16 low bits and round-to-even behavior for strided, read-only inputs.
+
 OpenFocus alignment reuses reference preparation and writes full-resolution
 Gaussian, gain and warp scratch to mappings. Gaussian strips preserve the
 original float32 reductions. Progress covers transform estimation and output
 creation; cancellation waits for any current native call to return. Weak
 matching can remain expensive on low-detail or repeated textures.
+Deferred registration/fusion bind a local scratch volume from source metadata
+before resolving pixels. Optional whole-stack staging and bounded live-workspace
+hints guide placement separately; they do not reserve disk for RAM-only work.
+Retained processing frames open the same scoped admission when resolved later,
+so temporary mappings survive until their final views are released. Explicit
+temporary-directory choices remain binding.
+
+GUI previews resolve these retained frames through the background pixel worker.
+Warm alignment plans validate the active stack while loading; their published
+frames retain job cancellation, not the active stack's later revision predicate.
 
 Exposure means use at most 128 contiguous float32 rows, including deferred
 uint16 normalization; gain application also uses row buffers. Admission covers
@@ -81,7 +156,80 @@ reported historical OpenFocus 82.1-s adapter run and HF9 approximately 15-s
 workflow used different generated stacks and stage boundaries, so they do not
 establish a same-input speed ratio. Avoid simultaneous benchmarks or tests.
 
-### Same-input OpenFocus B measurement
+### Remote large-stack acceptance (2026-11-08)
+
+GitHub Actions `Tests` run `42442414086`, commit `5833edc`, passed the remote
+engineering gates on Ubuntu with Python 3.10.22, OpenCV 5.0.0 and NumPy 2.2.6.
+Fusion used four allowed CPUs; native library pools remained serial. The same
+sixteen 4000×4000 grayscale uint16 TIFFs entered the production BGR SourceFrame
+pipeline without materializing an input stack. Fusion time includes cold
+preparation/compilation. Quantization, TIFF writing and metadata readback ran
+afterward; reported RSS covers those stages as well.
+
+| Case | Allowed CPUs | Fusion / ready-open time | Peak process RSS |
+|---|---:|---:|---:|
+| OpenFocus A, 4000×4000×16 | 4 | 9.758 s | 984.2 MiB |
+| OpenFocus B, 4000×4000×16 | 4 | 19.768 s | 875.9 MiB |
+| OpenFocus C, 4000×4000×16 | 4 | 16.881 s | 819.1 MiB |
+| Open 92 JPEGs, 8192×5464 | 2 | 0.211 s | 137.0 MiB |
+
+Peak RSS is the larger of the sampled peak and the OS high-water value. Fusion
+passed <=20 s and <=1024 MiB; source opening passed <2 s with a ready 768×512 BGR
+display preview. All three fusion input manifests, float working hashes and
+uint16 export hashes match the earlier two-CPU `6283bd9` reports exactly. These
+are single runs on shared hosts; they do not establish an algorithm speed ratio
+across different CPU allocations or a memory bound for every image resolution.
+The user workstation retained its one-CPU/512-MiB local validation limits.
+
+macOS fusion, comparison, depth-map and GUI batch workers reserve at least
+8 MiB of native thread stack before starting. A captured ARM64 crash showed
+LLVM code generation exhausting Qt's approximately 544-KiB default stack;
+larger caller-configured stacks are preserved. The cold-process Qt regression
+compiles and runs the native depth path and verifies exact uint16 output.
+
+### Small-stack engineering measurements (2026-11-08)
+
+These Windows measurements run `ImageStackLoader.load_from_filepaths` followed
+by the OpenFocus C fusion pipeline. The process and its children have a
+512-MiB commit limit and one-CPU affinity. A 64-pixel warm-up precedes the
+ladder. Throughput divides original uint16 input MiB by fusion time; loading
+is reported separately. Each ladder case ran once.
+These runs use C's corrected completed-depth two-pass merge and the restored
+normalized uint16 exposure path.
+
+| Input | Load | Fusion | Input throughput | Peak process commit |
+|---|---:|---:|---:|---:|
+| 128×128, 2 frames | 0.010 s | 0.021 s | 3.01 MiB/s | 101 MiB |
+| 512×512, 4 frames | 0.019 s | 0.094 s | 21.28 MiB/s | 111 MiB |
+| 1024×1024, 8 frames | 0.031 s | 0.718 s | 22.29 MiB/s | 174 MiB |
+
+These small local cases complement the remote acceptance above; they do not
+independently establish large-stack timings or resident-memory peaks.
+
+C expansion reuses immutable four-tap axis tables, bounded to 8 MiB and
+256 geometries; eviction leaves live band readers valid. A retains direct
+quarter-phase interpolation. An independent full-FIR comparison covers odd
+and singleton axes, channel layouts, saturation and rounding.
+
+A serial microbenchmark processed three 513×515 uint16 RGB pyramids, taking
+the median of five warm repetitions after compilation. Pixels matched the
+uncached implementation exactly. Five tables retained 107,008 bytes, took
+1.835 ms to construct, and required no additional construction during warm
+repetitions.
+
+| C operation | Direct geometry | Cached geometry |
+|---|---:|---:|
+| Three pyramid reconstructions | 18.228 ms | 17.887 ms |
+| One 13-row vertical pass | 0.0140 ms | 0.0171 ms |
+| One 13-row horizontal pass | 0.0743 ms | 0.0633 ms |
+
+These are warm microbenchmarks on a shared machine; cold table construction
+and other fusion stages remain separate costs.
+
+
+### Earlier same-input OpenFocus B measurement
+
+The following runs predate the current bounded RAM and row-execution changes.
 
 Fresh Windows processes measured the same sixteen 4000×4000 uint16 TIFFs,
 in lexical filename order, with no alignment and thread limits of one or eight.

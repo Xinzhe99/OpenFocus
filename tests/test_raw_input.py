@@ -74,5 +74,12 @@ def test_scaled_raw_preserves_full_decode_colors_and_size(monkeypatch, tmp_path)
         assert result.pages[0].dtype == np.uint16
         assert result.pages[0].flags.c_contiguous
         np.testing.assert_array_equal(result.pages[0], expected)
+        from core import source_frames
+        frame = source_frames.SourceFrame(
+            str(path), 0, expected.shape, expected.dtype, None,
+            source_frames._fingerprint(str(path)), scale=scale,
+            native_shape=rgb.shape)
+        source_frames.SOURCE_CACHE.clear()
+        np.testing.assert_array_equal(frame.full_resolution(), expected)
 
 

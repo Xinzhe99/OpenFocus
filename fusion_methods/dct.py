@@ -10,7 +10,7 @@ import numpy as np
 from scipy.ndimage import median_filter
 
 from utils.image_utils import fuse_output_dtype
-from core.frame_storage import create_frame, store_frame
+from core.frame_storage import create_frame
 
 ArraySource = Sequence[np.ndarray]
 
@@ -18,6 +18,8 @@ def _ensure_color_image(image: np.ndarray) -> np.ndarray:
     """确保输入图像为三通道BGR格式。"""
     if image is None:
         raise ValueError("Input image is None")
+    from core.source_frames import resolve_frame
+    image = resolve_frame(image)
     if image.ndim == 2:
         return cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
     if image.ndim == 3 and image.shape[2] == 4:
@@ -27,7 +29,7 @@ def _ensure_color_image(image: np.ndarray) -> np.ndarray:
     raise ValueError(f"Unsupported image shape: {image.shape}")
 
 def _collect_images_from_folder(source_folder: str, check_cancel=None) -> Tuple[List[np.ndarray], List[str]]:
-    from core.image_loader import admit_image_decode, decode_image
+    from core.source_frames import scan_source
 
     extensions = ['*.jpg', '*.jpeg', '*.png', '*.tif', '*.tiff', '*.bmp']
     img_paths = []
@@ -39,10 +41,7 @@ def _collect_images_from_folder(source_folder: str, check_cancel=None) -> Tuple[
     for path in img_paths:
         if check_cancel is not None:
             check_cancel()
-        admit_image_decode(path)
-        img = decode_image(path)
-        if img is not None:
-            images.append(store_frame(img))
+        images.extend(scan_source(path, header_only=True, should_cancel=check_cancel))
     return images, img_paths
 
 def _normalize_image_stack(images: Sequence[np.ndarray], check_cancel=None) -> Tuple[List[np.ndarray], Tuple[int, int]]:
@@ -58,10 +57,14 @@ def _normalize_image_stack(images: Sequence[np.ndarray], check_cancel=None) -> T
     for img in images:
         if check_cancel is not None:
             check_cancel()
-        img_bgr = _ensure_color_image(img)
-        if img_bgr.shape[:2] != (target_h, target_w):
-            img_bgr = cv2.resize(img_bgr, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
-        normalized.append(img_bgr if img_bgr is img else store_frame(img_bgr))
+        from core.source_frames import process_frame
+        def prepare(image):
+            image = _ensure_color_image(image)
+            if image.shape[:2] != (target_h, target_w):
+                image = cv2.resize(image, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
+            return image
+        normalized.append(process_frame(img, prepare, shape=(target_h, target_w, 3),
+                                        should_cancel=check_cancel))
         
     if target_h < 8 or target_w < 8:
         raise ValueError("图像尺寸过小")
@@ -123,7 +126,8 @@ def dct_focus_stack_fusion(
 
     def padded_frame(index):
         check_cancel()
-        image = normalized_images[index]
+        from core.source_frames import resolve_frame
+        image = resolve_frame(normalized_images[index])
         if image.dtype == np.uint16:
             image = image.astype(np.float32) * (255.0 / 65535.0)
         if pad_rows or pad_cols:

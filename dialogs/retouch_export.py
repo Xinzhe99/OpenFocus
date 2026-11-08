@@ -76,9 +76,6 @@ class MissingDataExportDialog(QDialog):
         self.setModal(True)
         self._cancel_requested = False
         layout = QVBoxLayout(self)
-        note = QLabel(trans.t("retouch_missing_save"))
-        note.setWordWrap(True)
-        layout.addWidget(note)
         row = QHBoxLayout()
         self.progress = QProgressBar()
         self.progress.setRange(0, len(targets))

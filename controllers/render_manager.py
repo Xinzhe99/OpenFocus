@@ -1446,6 +1446,7 @@ class RenderManager:
 
 
     def on_render_stage(self, stage: str) -> None:
+        self._render_progress_stage = stage
         if self.worker is not None and getattr(self.worker, 'is_cancelled', False):
             text = trans.t('depth_cancelling')
         else:
@@ -1454,11 +1455,12 @@ class RenderManager:
                    'finish': 'render_stage_finish'}.get(stage, 'render_progress')
             text = trans.t(key)
         self._progress_first_t = None
+        self._progress_last_t = None
         self._show_progress_bar(text)
         self.window.statusBar().showMessage(text)
 
     def on_render_progress(self, done: int, total: int) -> None:
-        """Surface tiled-fusion progress in the status bar with an ETA."""
+        """Surface completed preparation frames or fusion tiles with an ETA."""
         import time as _time
         window = self.window
         if self.worker is not None and getattr(self.worker, 'is_cancelled', False):
@@ -1485,8 +1487,10 @@ class RenderManager:
                 eta = f" · ~{int(remaining) + 1}s"
             else:
                 self._progress_first_t = now
+            key = ('render_stage_prepare' if getattr(self, '_render_progress_stage', None) == 'prepare'
+                   else 'render_progress')
             window.statusBar().showMessage(
-                f"{trans.t('render_progress')} {pct}% ({done}/{total}){eta}", 5000)
+                f"{trans.t(key)} {pct}% ({done}/{total}){eta}", 5000)
 
     def _finish_compare_run(self) -> None:
         """End a comparison run: unlock the UI and report skipped methods."""

@@ -309,7 +309,9 @@ def _replay_checkpoint(doc, path, cancelled=None):
             elif kind == 'tones':
                 exposure = _number(op['exposure'], -2, 2)
                 contrast = _number(op['contrast'], -1, 1)
-                if replay.adjust_tones(exposure, contrast, cancelled) != 'committed':
+                adjustments = {name: _number(op.get(name, 0), -1, 1)
+                               for name in ('highlights', 'shadows', 'saturation', 'temperature')}
+                if replay.adjust_tones(exposure, contrast, cancelled, **adjustments) != 'committed':
                     raise ValueError('Tone adjustment could not be replayed')
             elif kind == 'auto_background':
                 _replay_background(replay, op, cancelled, 'committed')
@@ -607,6 +609,8 @@ def _snapshot_operations(doc, operations):
         elif kind == 'tones':
             _number(operation['exposure'], -2, 2)
             _number(operation['contrast'], -1, 1)
+            for name in ('highlights', 'shadows', 'saturation', 'temperature'):
+                _number(operation.get(name, 0), -1, 1)
         elif kind == 'auto_background':
             _validate_background_operation(operation)
         elif kind != 'restore_all':

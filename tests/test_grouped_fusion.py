@@ -271,7 +271,7 @@ def test_different_crops_and_singleton_keep_source_coordinates(tmp_path, admitte
     np.testing.assert_array_equal(result, image[y0:y0 + result.shape[0], x0:x0 + result.shape[1]])
 
 
-def test_real_registration_crops_across_rounds(tmp_path, monkeypatch):
+def test_real_registration_preserves_coordinates_across_rounds(tmp_path):
     from core import registration as registration_module
     y, x = np.indices((64, 68))
     image = np.stack([x, y, x + y], axis=-1).astype(np.uint8)
@@ -280,15 +280,13 @@ def test_real_registration_crops_across_rounds(tmp_path, monkeypatch):
         path = tmp_path / f'{index}.png'
         assert cv2.imwrite(str(path), image)
         paths.append(path)
-    monkeypatch.setattr(registration_module, '_of_estimate_similarity',
-                        lambda *args, **kwargs: (1.0, 0.0, 1.0, 0.0, 0.0))
     registration = registration_module.ImageRegistration(method='openfocus')
 
     def fuse(images):
         return registration.process(images, thread_count=1)[0].copy()
 
     result = grouped.grouped_fuse(paths, 2, 0, fuse)
-    np.testing.assert_array_equal(result, image[12:52, 12:56])
+    np.testing.assert_array_equal(result, image)
 
 
 def test_scaled_resource_admission_keeps_full_decoder_scratch(tmp_path, monkeypatch):

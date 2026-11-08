@@ -4,10 +4,11 @@ import re
 import cv2
 import numpy as np
 import concurrent.futures
+from functools import partial
 
 from fusion_methods.dct import _ensure_color_image
 from utils.image_utils import fuse_output_dtype
-from core.frame_storage import create_frame, store_frame
+from core.frame_storage import create_frame, store_frame, capture_scratch, run_with_scratch
 
 # Reference:
 # https://github.com/RCharradi/Image-fusion-with-guided-filtering
@@ -25,6 +26,7 @@ def gff_impl(input_source, img_resize, kernel_size=31, thread_count: int = None,
             raise RegistrationCancelled()
 
     check_cancel()
+    scratch = capture_scratch()
     try:
         max_workers = max(1, int(thread_count)) if thread_count is not None else 1
     except (TypeError, ValueError):
@@ -48,7 +50,7 @@ def gff_impl(input_source, img_resize, kernel_size=31, thread_count: int = None,
 
     # ========== 数据加载 ==========
     if isinstance(input_source, str):
-        from core.image_loader import admit_image_decode, decode_image
+        from core.source_frames import scan_source
 
         def get_image_suffix(input_stack_path):
             filenames = os.listdir(input_stack_path)
@@ -72,11 +74,7 @@ def gff_impl(input_source, img_resize, kernel_size=31, thread_count: int = None,
         stack_ori = []
         for img_path in img_stack_path_list:
             check_cancel()
-            admit_image_decode(img_path)
-            image = decode_image(img_path, preserve_grayscale=True)
-            if image is None:
-                raise ValueError(f"Failed to read image: {img_path}")
-            stack_ori.append(store_frame(image))
+            stack_ori.extend(scan_source(img_path, header_only=True, should_cancel=check_cancel))
     else:
         stack_ori = input_source
     
@@ -131,7 +129,8 @@ def gff_impl(input_source, img_resize, kernel_size=31, thread_count: int = None,
             for start in range(0, num_images, max_workers):
                 check_cancel()
                 stop = min(num_images, start + max_workers)
-                for k, sal in zip(range(start, stop), executor.map(process_saliency, range(start, stop))):
+                for k, sal in zip(range(start, stop), executor.map(
+                        partial(run_with_scratch, scratch, process_saliency), range(start, stop))):
                     check_cancel()
                     if best_saliency is None:
                         best_saliency = store_frame(sal)
@@ -220,7 +219,8 @@ def gff_impl(input_source, img_resize, kernel_size=31, thread_count: int = None,
         def contributes(k):
             if wins[k]:
                 return True
-            frame = stack_ori[k]
+            from core.source_frames import resolve_frame
+            frame = resolve_frame(stack_ori[k])
             if frame.dtype in (np.uint8, np.uint16):
                 return False
             if frame.dtype.kind == 'f':
@@ -233,7 +233,8 @@ def gff_impl(input_source, img_resize, kernel_size=31, thread_count: int = None,
                 check_cancel()
                 stop = min(num_images, start + max_workers)
                 batch = [k for k in range(start, stop) if contributes(k)]
-                for bn, bd, dn, dd in executor.map(process_weight_fusion, batch):
+                for bn, bd, dn, dd in executor.map(
+                        partial(run_with_scratch, scratch, process_weight_fusion), batch):
                     check_cancel()
                     fused_base_numerator += bn
                     fused_base_denominator += bd

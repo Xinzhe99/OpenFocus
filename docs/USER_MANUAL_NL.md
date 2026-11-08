@@ -470,22 +470,26 @@ OpenFocus biedt tien fusiealgorithmen plus een modus met alleen uitlijning. Een 
 
 Elke neurale tegel gebruikt alle frames. Bronframes en tijdelijke uitlijngegevens kunnen op schijf staan; vrije schijfruimte en beschikbaar geheugen begrenzen de stapelgrootte. Ruimtelijke V2-tegels benaderen inferentie op de volledige afbeelding.
 
+Als geen tijdelijke map is opgegeven, schat OpenFocus de benodigde ruimte op basis van bekende invoer en tijdelijke werkgegevens. Als de tijdelijke systeemschijf onvoldoende ruimte heeft, kan het beschrijfbare vaste lokale schijven overwegen. Een expliciet gekozen map wordt niet automatisch vervangen. De ruimtecontrole is een momentopname, geen reservering; later kan alsnog ruimtegebrek ontstaan. Kies bij een opslagfout een beschrijfbare map in de geavanceerde instellingen.
+
 - **Standaard**: StackMFF V3.
 
 ### OpenFocus A / B / C
 
-- **OpenFocus A**: vlakt zijn meerschalige focusresponskaart af en selecteert vervolgens scherpe pixels.
+- **OpenFocus A**: selecteert bronpixels op basis van een meerschalige focusrespons.
 - **OpenFocus B**: mengt naburige frames op basis van een afgeplatte dieptekaart.
-- **OpenFocus C**: reconstrueert meerschalige banden op basis van een afgeplatte dieptekaart.
-- **Parameters**: A en B gebruiken de kernelregelaar voor de schaal van de focusrespons; C heeft geen straal. Alle drie hebben een afvlakkingsparameter voor de overgangssterkte.
+- **OpenFocus C**: mengt bronpixels op basis van de voltooide, afgevlakte dieptekaart.
+- **Parameters**: A en B gebruiken de kernelregelaar voor de schaal van de focusrespons; C heeft geen straal. Afvlakking heeft bij A geen effect, net als bij HF9 A; B en C vlakken de dieptekaart voor de fusie af.
 
 **Afvlakking**: één draaischijf onder de kernelregelaar, met een betekenis die afhangt van de gekozen methode (bereik 0–8, stap 0,2):
 
 | Methode | Label | Standaard | Effect |
 |---|---|---|---|
-| OpenFocus A | Mengingsafvlakking | 2,0 | Regelt de afvlakking van de focusresponskaart voordat pixels worden geselecteerd |
-| OpenFocus B | Diepteafvlakking | 1,2 | Regelt de afvlakking van de dieptekaart die de menging stuurt |
-| OpenFocus C | Mengingsafvlakking | 3,0 | Regelt de afvlakking van de dieptekaart die de meerschalige reconstructie stuurt |
+| OpenFocus A | Mengingsafvlakking | 2,0 | Geen effect, net als bij HF9 A |
+| OpenFocus B | Diepteafvlakking | 1,44 | Regelt de afvlakking van de dieptekaart die de menging stuurt |
+| OpenFocus C | Mengingsafvlakking | 3,6 | Regelt de afvlakking van de dieptekaart en de fusieovergangen |
+
+Standaardkernelgrootte voor A/B: 17. Opgeslagen waarden blijven behouden; herstel de standaardwaarden om de nieuwe te gebruiken.
 
 Hogere waarden versterken de overgangsafvlakking. Elke methode onthoudt zijn eigen waarde tussen sessies, en batchverwerking gebruikt dezelfde regel.
 
@@ -521,7 +525,7 @@ Kies **Alleen uitlijning (geen fusie)** om de stapel te registreren en één sta
 | StackMFF V3 | Langzaam (GPU) | Uitstekend | Beste kwaliteit |
 | OpenFocus A | Afhankelijk van stapel | Afhankelijk van stapel | Meerschalige focusselectie |
 | OpenFocus B | Afhankelijk van stapel | Afhankelijk van stapel | Dieptegestuurde menging van naburige frames |
-| OpenFocus C | Afhankelijk van stapel | Afhankelijk van stapel | Dieptegestuurde meerschalige reconstructie |
+| OpenFocus C | Afhankelijk van stapel | Afhankelijk van stapel | Bronpixels mengen op basis van de voltooide dieptekaart |
 
 **Extra → Methoden vergelijken…** opent een dialoog waarin meerdere methoden onafhankelijk worden ingesteld. Naam, parameterlabels en bedieningselementen van elke methode blijven bij elkaar wanneer het venster smaller wordt. Wijzigingen werken het voorbeeld automatisch bij. **ROI-voorbeeld (snel)** fuseert het geselecteerde gebied met omringende context; **Fusie van het hele beeld** controleert het resultaat van het hele beeld en laat je een ander gebied bekijken zonder opnieuw te renderen. ROI-resultaten kunnen afwijken van resultaten van het hele beeld, omdat belichtingsstatistieken en sommige algoritmen van de beeldomvang afhangen.
 **Fusie van het hele beeld** is standaard geselecteerd.
@@ -930,8 +934,8 @@ Voeg voor één rendering bijvoorbeeld `--align openfocus --alignment-report ali
 | `--defect-mask-path MASK` | Sensordefectmasker; waarden die niet nul zijn worden vóór registratie gerepareerd |
 | `--sensor-denoise` | Voorzichtige sensorruisonderdrukking vóór registratie |
 | `--kernel, -k` | Kernelgrootte (oneven; regelt bij OpenFocus A/B de schaal van de focusrespons; C heeft geen straal) |
-| `--depth-smoothing VALUE` | Alleen `openfocus_b`: sterkte van diepteafvlakking (standaard 1,2) |
-| `--blend-smoothing VALUE` | Alleen `openfocus_a` / `openfocus_c`: sterkte van mengingsafvlakking (standaard 2,0 voor A, 3,0 voor C) |
+| `--depth-smoothing VALUE` | Alleen `openfocus_b`: sterkte van diepteafvlakking (standaard 1,44) |
+| `--blend-smoothing VALUE` | Alleen `openfocus_a` / `openfocus_c`: sterkte van mengingsafvlakking (standaard 2,0 voor A, 3,6 voor C) |
 | `--sharpen-output` | Milde onscherpe maskering op het gefuseerde resultaat toepassen (standaard uit) |
 | `--threads, -t` | Bovengrens voor workerthreads; `0` = automatisch (standaard), positieve waarden beperken de gelijktijdigheid |
 | `--resource-preference` | Resourcemodus: `balanced` (standaard), `responsive` of `maximum` |

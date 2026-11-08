@@ -1,115 +1,120 @@
-"""Depth-map and multilevel fusion for OpenFocus B and C.
+"""Bounded HF9 depth-guided fusion in the native integer code domain.
 
-B merges neighboring frames at the estimated depth. C merges their multiscale
-residuals using a separately reduced depth map at each scale.
-Independent per-frame depth activities may run concurrently in an admitted
-window. Global winner selection, depth smoothing and pyramid collapse remain
-ordered stages separated by a producer barrier.
+C consumes the completed canvas depth in reverse source order. Its RGB
+output is the full-resolution merge; it has no reconstruction pyramid.
 """
 import numpy as np
 
 from fusion_methods.openfocus_depth import depth_map
-from core.frame_storage import create_frame
-
-
-DEFAULT_PYRAMID_LEVELS = 3
-
-
-def _weight(depth, index):
-    # Adjacent-frame linear weights, quantized as Q10. The two weights add to
-    # exactly 1024, including the endpoints of stacks with more than two frames.
-    lower = np.floor(depth).astype(np.int32)
-    fraction = np.clip(np.rint((depth - lower) * 1024), 0, 1024).astype(np.int32)
-    return (np.where(lower == index, 1024 - fraction, 0) +
-            np.where(lower + 1 == index, fraction, 0)).astype(np.float32) / 1024.0
-
-
-def _reduce(image, should_cancel=None):
-    """Truncated 2x2 mean with replicated edges and bounded row scratch."""
-    from fusion_methods.openfocus_ab import _check_cancel
-    h, w = image.shape[:2]
-    shape = ((h + 1) // 2, (w + 1) // 2) + image.shape[2:]
-    out = create_frame(shape, image.dtype)
-    left = np.arange(shape[1]) * 2
-    right = np.minimum(left + 1, w - 1)
-    for start in range(0, shape[0], 128):
-        _check_cancel(should_cancel)
-        rows = slice(start, min(shape[0], start + 128))
-        top = (np.arange(rows.start, rows.stop) * 2)[:, None]
-        bottom = np.minimum(top + 1, h - 1)
-        out[rows] = ((image[top, left] + image[top, right]
-                      + image[bottom, left] + image[bottom, right]) >> 2)
-    return out
-
-
-def _expand_axis(image, axis, should_cancel=None):
-    """Four-tap phase-mirrored expansion with bounded row scratch."""
-    from fusion_methods.openfocus_ab import _check_cancel
-    n = image.shape[axis]
-    shape = list(image.shape)
-    shape[axis] = 2 * n
-    out = create_frame(tuple(shape), np.int32)
-    for start in range(0, image.shape[0], 128):
-        _check_cancel(should_cancel)
-        stop = min(image.shape[0], start + 128)
-        source = image[start:stop] if axis else image
-        positions = np.arange(n) if axis else np.arange(start, stop)
-        for phase, offsets, weights in (
-                (0, (-2, -1, 0, 1), (2, 37, 64, 12)),
-                (1, (-1, 0, 1, 2), (12, 64, 37, 2))):
-            accum = np.zeros((stop - start,) + image.shape[1:], np.int32)
-            for offset, weight in zip(offsets, weights):
-                accum += np.take(source, np.clip(positions + offset, 0, n - 1),
-                                 axis=axis) * weight
-            if axis:
-                out[start:stop, phase::2] = (accum + 57) // 115
-            else:
-                out[2 * start + phase:2 * stop:2] = (accum + 57) // 115
-    return out
-
-
-def _expand(image, shape, should_cancel=None):
-    return _expand_axis(_expand_axis(image, 0, should_cancel), 1,
-                        should_cancel)[:shape[0], :shape[1]]
+from core.frame_storage import create_transient_frame as create_frame
+from fusion_methods._hf9_execution import (
+    execution_job, configure_rows, run_bands,
+)
 
 
 def _inputs(input_source, img_resize, should_cancel):
     from fusion_methods.openfocus_ab import _collect_images
     frames = _collect_images(input_source, normalize=False, should_cancel=should_cancel)
+    if len(frames) > 65536:
+        raise ValueError('OpenFocus depth requires between 2 and 65536 source frames')
     shape = frames[0].shape
     if img_resize is not None:
         shape = (int(img_resize[1]), int(img_resize[0])) + shape[2:]
     return frames, shape
 
 
-def _output(image, frames, should_cancel):
-    from fusion_methods.openfocus_ab import _check_cancel
-    dtype = np.uint8 if all(frame.dtype == np.uint8 for frame in frames) else np.float32
-    output = create_frame(image.shape, dtype)
-    for start in range(0, image.shape[0], 128):
-        _check_cancel(should_cancel)
-        rows = slice(start, min(image.shape[0], start + 128))
-        output[rows] = np.clip(image[rows], 0, 255)
-    return output
 
 def _depth(frames, shape, img_resize, kernel_size, smoothing, should_cancel,
-           depth_override, thread_count, progress_callback=None):
+           depth_override, thread_count, progress_callback=None, *, return_codes=False,
+           half_resolution=False):
     if depth_override is None:
         return depth_map(frames, img_resize, kernel_size, smoothing, should_cancel,
-                         progress_callback=progress_callback, thread_count=thread_count)
+                         progress_callback=progress_callback, thread_count=thread_count,
+                         return_codes=return_codes, half_resolution=half_resolution)
     depth = np.asarray(depth_override, dtype=np.float32)
     if depth.shape != shape[:2]:
         raise ValueError("depth_override must match the source height and width")
+    if return_codes:
+        step = 65535 // max(1, len(frames) - 1)
+        return np.rint(depth.astype(np.float64) * step).astype(np.int64)
     return depth
 
 
-def openfocus_b_impl(input_source, img_resize=None, kernel_size: int = 11,
-                     thread_count: int = None, depth_smoothing: float = 1.2,
+def _source_codes(source, img_resize, should_cancel):
+    """Borrow native samples; allocate code planes only at the legacy boundary."""
+    from core.source_frames import resolve_frame
+    from fusion_methods.openfocus_ab import _check_cancel
+    from fusion_methods._hf9_pixels import frame_codes
+    _check_cancel(should_cancel)
+    frame = resolve_frame(source)
+    _check_cancel(should_cancel)
+    if img_resize is None and frame.dtype in (np.uint8, np.uint16):
+        return frame, 256 if frame.dtype == np.uint8 else 1
+    return frame_codes(frame, img_resize, should_cancel), 1
+
+
+def _merge_codes(accumulator, current, depth, index, count, should_cancel,
+                 *, source_scale=1, reverse=False):
+    """Ordered MergeWeighted bands, skipping inactive samples before color reads."""
+    from fusion_methods.openfocus_ab import _check_cancel
+    from fusion_methods._hf9_kernels import merge_rows
+    step = 65535 // max(1, count - 1)
+    first = index == (count - 1 if reverse else 0)
+    def merge(start, stop):
+        _check_cancel(should_cancel)
+        merge_rows(accumulator, current, depth, index, step, start, stop,
+                   source_scale, first, reverse)
+    run_bands(current.shape[0], 128, merge)
+
+
+
+def _output_codes(codes, frames, should_cancel, *, source_scale=1):
+    from fusion_methods.openfocus_ab import _check_cancel
+    is_8bit = all(frame.dtype == np.uint8 for frame in frames)
+    output = create_frame(codes.shape, np.uint8 if is_8bit else np.float32)
+    def convert(start, stop):
+        _check_cancel(should_cancel)
+        rows = slice(start, stop)
+        if is_8bit:
+            output[rows] = codes[rows] if source_scale == 256 else codes[rows] >> 8
+        else:
+            block = codes[rows].astype(np.float32)
+            if source_scale != 1:
+                block *= np.float32(source_scale)
+            output[rows] = block * np.float32(255.0 / 65535.0)
+    run_bands(codes.shape[0], 128, convert,
+              scratch_bytes=min(128, codes.shape[0]) * int(np.prod(codes.shape[1:])) * 8)
+    return output
+
+
+
+
+def _active_sources(depth, count, should_cancel):
+    """Reject whole sources before decoding when no code band uses them."""
+    from fusion_methods.openfocus_ab import _check_cancel
+    active = np.zeros(count, dtype=bool)
+    active[0] = True  # The first merge initializes every output sample.
+    step = 65535 // (count - 1)
+    for start in range(0, depth.shape[0], 128):
+        _check_cancel(should_cancel)
+        codes = depth[start:start + 128].astype(np.int64)
+        lower = np.clip(codes // step, 0, count - 1)
+        active[np.unique(lower)] = True
+        fraction = codes % step != 0
+        active[np.unique(np.minimum(lower[fraction] + 1, count - 1))] = True
+    return active
+
+
+@execution_job
+def openfocus_b_impl(input_source, img_resize=None, kernel_size: int = 17,
+                     thread_count: int = None, depth_smoothing: float = 1.44,
                      should_cancel=None, depth_override=None, progress_callback=None):
-    """Fuse source pixels using a continuous, smoothed depth map."""
-    from fusion_methods.openfocus_ab import _check_cancel, _prepare_frame
+    """Fuse integer source codes with the HF9 ordered MergeWeighted bands."""
+    from core import source_frames
+    from fusion_methods.openfocus_ab import _check_cancel
     frames, shape = _inputs(input_source, img_resize, should_cancel)
-    smoothing = 1.2 if depth_smoothing is None else float(depth_smoothing)
+    configure_rows(frames, img_resize, 'openfocus_b', thread_count, should_cancel)
+    smoothing = 1.44 if depth_smoothing is None else float(depth_smoothing)
     count = len(frames)
     activity_steps = count if depth_override is None else 0
     total = activity_steps + count + 1
@@ -121,128 +126,97 @@ def openfocus_b_impl(input_source, img_resize=None, kernel_size: int = 11,
             progress_callback(index + 1, total)
     depth = _depth(frames, shape, img_resize, kernel_size,
                    smoothing * (5.0 / 1.2), should_cancel, depth_override,
-                   thread_count, depth_progress)
-    result = create_frame(shape, np.float32)
-    result[...] = 0
+                   thread_count, depth_progress, return_codes=True)
+    active = _active_sources(depth, count, should_cancel)
+    result = create_frame(shape, np.uint16)
     for index, source in enumerate(frames):
         _check_cancel(should_cancel)
-        frame = _prepare_frame(source, img_resize, should_cancel)
+        if img_resize is None and source.shape != shape:
+            raise ValueError('OpenFocus B requires frames with matching shapes')
+        if not active[index]:
+            if isinstance(source, source_frames.ProcessedFrame) or (
+                    source.ndim == 3 and source.shape[2] == 4):
+                # Lazy processors may enforce alpha/calibration invariants.
+                source_frames.resolve_frame(source)
+            elif isinstance(source, source_frames.SourceFrame):
+                source.validate_source()
+            if progress_callback is not None:
+                progress_callback(activity_steps + index + 1, total)
+            continue
+        frame, source_scale = _source_codes(source, img_resize, should_cancel)
         if frame.shape != shape:
             raise ValueError("OpenFocus B requires frames with matching shapes")
-        for start in range(0, shape[0], 128):
-            _check_cancel(should_cancel)
-            rows = slice(start, min(shape[0], start + 128))
-            weight = _weight(depth[rows], index)
-            result[rows] += frame[rows] * (weight[:, :, None] if frame.ndim == 3 else weight)
-        del frame, weight
+        _merge_codes(result, frame, depth, index, count, should_cancel,
+                     source_scale=source_scale)
+        del frame
         if progress_callback is not None:
             progress_callback(activity_steps + index + 1, total)
+    del depth
+    source_frames.SOURCE_CACHE.clear()
     _check_cancel(should_cancel)
-    output = _output(result, frames, should_cancel)
+    output = _output_codes(result, frames, should_cancel)
     if progress_callback is not None:
         progress_callback(total, total)
     _check_cancel(should_cancel)
     return output
 
 
-def openfocus_c_impl(input_source, img_resize=None, kernel_size: int = 7,
-                     thread_count: int = None, levels: int = DEFAULT_PYRAMID_LEVELS,
-                     blend_smoothing: float = 3.0, should_cancel=None,
-                     depth_override=None, progress_callback=None):
-    """Fuse depth-guided pyramids with Q10 merge and integer collapse."""
-    from fusion_methods.openfocus_ab import _check_cancel, _prepare_frame
+@execution_job
+def openfocus_c_impl(input_source, img_resize=None, kernel_size: int = 17,
+                     thread_count: int = None, blend_smoothing: float = 3.6,
+                     should_cancel=None, depth_override=None, progress_callback=None):
+    """Complete native depth, then merge full-resolution sources in reverse."""
+    from core import source_frames
+    from fusion_methods.openfocus_ab import (
+        _check_cancel, _frame_pass_workers, _ordered_frame_results,
+    )
+
     frames, shape = _inputs(input_source, img_resize, should_cancel)
-    smoothing = 3.0 if blend_smoothing is None else float(blend_smoothing)
-    # Method C exposes smoothing only; use the default radius internally.
     count = len(frames)
+    configure_rows(frames, img_resize, 'openfocus_c', thread_count, should_cancel)
     activity_steps = count if depth_override is None else 0
     total = activity_steps + count + 1
     if progress_callback is not None:
         progress_callback(0, total)
-    _check_cancel(should_cancel)
+
+    def cancel():
+        _check_cancel(should_cancel)
+
     def depth_progress(index, _total):
         if progress_callback is not None:
             progress_callback(index + 1, total)
-    depth = _depth(frames, shape, img_resize, 11,
-                   smoothing * (5.0 / 3.0), should_cancel, depth_override,
-                   thread_count, depth_progress)
-    depth_code = create_frame(depth.shape, np.int32)
-    for start in range(0, depth.shape[0], 128):
-        _check_cancel(should_cancel)
-        rows = slice(start, min(depth.shape[0], start + 128))
-        depth_code[rows] = np.rint(depth[rows] * 1024).astype(np.int32)
+
+    produced = None
+    try:
+        smoothing = 3.6 if blend_smoothing is None else float(blend_smoothing)
+        depth = _depth(frames, shape, img_resize, kernel_size,
+                       smoothing * (5.0 / 3.0), should_cancel, depth_override,
+                       thread_count, depth_progress, return_codes=True,
+                       half_resolution=True)
+        result = create_frame(shape, np.uint16)
+
+        def prepare(position, cancelled):
+            return _source_codes(frames[count - 1 - position], img_resize, cancelled)
+
+        workers = _frame_pass_workers(frames, img_resize, 'openfocus_c', thread_count)
+        produced = _ordered_frame_results(count, prepare, workers, should_cancel)
+        for position, (current, source_scale) in produced:
+            cancel()
+            if current.shape != shape:
+                raise ValueError('OpenFocus C requires frames with matching shapes')
+            _merge_codes(result, current, depth, count - 1 - position, count,
+                         should_cancel, source_scale=source_scale, reverse=True)
+            del current
+            if progress_callback is not None:
+                progress_callback(activity_steps + position + 1, total)
+    finally:
+        if produced is not None:
+            produced.close()
+        source_frames.SOURCE_CACHE.clear()
     del depth
-    depth_levels = [depth_code]
-    for _ in range(max(1, int(levels)) - 1):
-        _check_cancel(should_cancel)
-        if max(depth_levels[-1].shape) <= 1:
-            break
-        depth_levels.append(_reduce(depth_levels[-1], should_cancel))
-    blends = [create_frame(shape, np.int32)]
-    for code in depth_levels[1:]:
-        blends.append(create_frame(code.shape + shape[2:], np.int32))
-    for blend in blends:
-        blend[...] = 0
-    is_8bit = all(source.dtype == np.uint8 for source in frames)
-    scale = 256.0 if is_8bit else 65535.0 / 255.0
-    for index, source in enumerate(frames):
-        _check_cancel(should_cancel)
-        frame = _prepare_frame(source, img_resize, should_cancel)
-        if frame.shape != shape:
-            raise ValueError("OpenFocus C requires frames with matching shapes")
-        current = create_frame(shape, np.int32)
-        for start in range(0, shape[0], 128):
-            _check_cancel(should_cancel)
-            rows = slice(start, min(shape[0], start + 128))
-            current[rows] = np.rint(np.clip(frame[rows], 0, 255) * scale).astype(np.int32)
-        del frame
-        for level, code in enumerate(depth_levels):
-            _check_cancel(should_cancel)
-            if level + 1 < len(depth_levels):
-                reduced = _reduce(current, should_cancel)
-                expanded = _expand(reduced, current.shape, should_cancel)
-            for start in range(0, code.shape[0], 128):
-                _check_cancel(should_cancel)
-                rows = slice(start, min(code.shape[0], start + 128))
-                band = (current[rows] - expanded[rows]
-                        if level + 1 < len(depth_levels) else current[rows])
-                weight = np.rint(_weight(code[rows].astype(np.float32) / 1024, index)
-                                 * 1024).astype(np.int32)
-                if current.ndim == 3:
-                    weight = weight[:, :, None]
-                blends[level][rows] += band * weight
-            del weight, band
-            if level + 1 < len(depth_levels):
-                current = reduced
-                del reduced, expanded
-        del current
-        if progress_callback is not None:
-            progress_callback(activity_steps + index + 1, total)
-    result = create_frame(blends[-1].shape, np.int32)
-    coarse = blends.pop()
-    for start in range(0, result.shape[0], 128):
-        _check_cancel(should_cancel)
-        rows = slice(start, min(result.shape[0], start + 128))
-        result[rows] = np.clip((coarse[rows] + 512) >> 10, 0, 65535)
-    del coarse
-    while blends:
-        _check_cancel(should_cancel)
-        detail = blends.pop()
-        expanded = _expand(result, detail.shape, should_cancel)
-        result = create_frame(detail.shape, np.int32)
-        for start in range(0, result.shape[0], 128):
-            _check_cancel(should_cancel)
-            rows = slice(start, min(result.shape[0], start + 128))
-            result[rows] = np.clip(expanded[rows] + ((detail[rows] + 512) >> 10), 0, 65535)
-        del detail, expanded
-    _check_cancel(should_cancel)
-    output = create_frame(result.shape, np.uint8 if is_8bit else np.float32)
-    for start in range(0, result.shape[0], 128):
-        _check_cancel(should_cancel)
-        rows = slice(start, min(result.shape[0], start + 128))
-        output[rows] = ((result[rows] >> 8) if is_8bit else
-                        result[rows].astype(np.float32) * np.float32(255.0 / 65535.0))
+    cancel()
+    output = _output_codes(result, frames, should_cancel)
     if progress_callback is not None:
         progress_callback(total, total)
-    _check_cancel(should_cancel)
+    cancel()
     return output

@@ -11,7 +11,7 @@ import cv2
 import numpy as np
 
 from core.algorithms import get_fusion, resolve_fusion_parameters, resolve_runner
-from core.frame_storage import create_frame, store_frame
+from core.frame_storage import create_frame, store_frame, scratch_directory
 
 
 class DepthMapCancelled(Exception):
@@ -330,7 +330,7 @@ def compute_focus_index(images: Sequence[np.ndarray], method: str, parameters=No
     values = resolve_fusion_parameters(method, values, depth=True)
     depth_block = legacy_parameters.get('block_size')
     try:
-        with heavy_job(should_cancel):
+        with heavy_job(should_cancel), scratch_directory():
             from core.source_frames import materialize_frames
             images = materialize_frames(images, should_cancel)
             _check(images, allow_grayscale=method in ('openfocus_b', 'openfocus_c'))

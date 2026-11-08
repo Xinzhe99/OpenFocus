@@ -5,6 +5,9 @@
 import os
 import platform
 import struct
+import sys
+
+from constants import NATIVE_WORKER_STACK_BYTES
 
 
 def get_os_type() -> str:
@@ -95,6 +98,12 @@ def is_macos() -> bool:
 def is_linux() -> bool:
     """检查是否为 Linux 系统"""
     return get_os_type() == 'linux'
+
+
+def configure_native_worker_stack(worker) -> None:
+    """Set before start: LLVM code generation overflows macOS's 512-KiB stack."""
+    if sys.platform == 'darwin':
+        worker.setStackSize(max(worker.stackSize(), NATIVE_WORKER_STACK_BYTES))
 
 
 # 导出常用函数

@@ -682,7 +682,7 @@ def test_stacked_source_follows_retouches_back_to_the_stack():
 
 def test_retouch_dialog_on_a_retouched_output_links_the_stacked_result(qapp, scene):
     from types import SimpleNamespace
-    from PyQt6.QtWidgets import QApplication, QLabel, QWidget
+    from PyQt6.QtWidgets import QApplication, QWidget
     from controllers.output_manager import OutputRecord
     from core.render_context import build_render_context
     from dialogs.retouch import RetouchDialog, _AutoBackgroundDialog
@@ -704,8 +704,7 @@ def test_retouch_dialog_on_a_retouched_output_links_the_stacked_result(qapp, sce
         assert dlg.doc.stacked_image is fused
         assert dlg._notice == trans.t("retouch_from_retouched")
         auto = _AutoBackgroundDialog(dlg.doc, dlg)
-        texts = [label.text() for label in auto.findChildren(QLabel)]
-        assert trans.t("retouch_auto_bg_from_stacked") in texts
+        assert trans.t("retouch_auto_bg_from_stacked") in auto.run_button.toolTip()
         auto.deleteLater()
     finally:
         for d in (plain, dlg):

@@ -221,8 +221,9 @@ class SourceManager(QObject):
         if status_key in ("stack_review_found", "stack_review_none"):
             status_key = "stack_review_found" if visible else "stack_review_none"
         status = trans.t(status_key) if status_key else ""
-        panel.review_status.setText(status.format(count=len(visible),
-                                                  error=self._review_error))
+        set_status = getattr(self.window, "_set_review_status", None)
+        if set_status is not None:
+            set_status(status.format(count=len(visible), error=self._review_error))
 
     def _invalidate_stale_review(self):
         if self._review_frames and not self._review_matches_stack(self._review_frames):
@@ -319,6 +320,28 @@ class SourceManager(QObject):
                 linear_raw = True
             elif linear_raw:
                 message = trans.t("linear_raw_mismatch")
+                if on_error is not None:
+                    on_error(message)
+                else:
+                    show_warning_box(window, trans.t("msg_load_failed"), message)
+                return
+        if linear_raw and folder and append:
+            from core.image_loader import ImageStackLoader, is_raw_source
+            from utils.path_identity import same_path
+            excluded = getattr(window, "defect_mask_path", "") if prepare_options is None else ""
+            try:
+                with os.scandir(folder) as entries:
+                    mixed = any(
+                        entry.is_file()
+                        and os.path.splitext(entry.name)[1].lower() in ImageStackLoader.SUPPORTED_FORMATS
+                        and not (excluded and same_path(entry.path, excluded))
+                        and not is_raw_source(entry.path)
+                        for entry in entries
+                    )
+            except OSError:
+                mixed = False  # The worker reports directory errors without changing the stack.
+            if mixed:
+                message = trans.t("linear_raw_invalid")
                 if on_error is not None:
                     on_error(message)
                 else:
@@ -440,8 +463,12 @@ class SourceManager(QObject):
                 if on_success is not None:
                     on_success()
                 # Remember for the optional "restore last stack on startup"
-                from utils.settings_store import get_settings, LAST_STACK_FOLDER_KEY
-                get_settings().setValue(LAST_STACK_FOLDER_KEY, window.current_folder_path or "")
+                from utils.settings_store import get_settings, LAST_STACK_FOLDER_KEY, LAST_STACK_MODE_KEY
+                settings = get_settings()
+                settings.setValue(LAST_STACK_FOLDER_KEY, window.current_folder_path or "")
+                settings.setValue(LAST_STACK_MODE_KEY,
+                                  "linear" if getattr(window, "linear_dng_metadata", None) is not None
+                                  else "standard")
                 # Exports inherit the source metadata from now on
                 from utils.image_utils import set_source_exif
                 set_source_exif(getattr(window.image_loader, "source_exif", b""))
@@ -613,14 +640,17 @@ class SourceManager(QObject):
     def restore_last_stack(self) -> None:
         """Re-load the most recently opened stack (skip the downsample dialog,
         reusing the scale from the previous session)."""
-        from utils.settings_store import get_settings, LAST_STACK_FOLDER_KEY
-        folder = str(get_settings().value(LAST_STACK_FOLDER_KEY, "") or "")
+        from utils.settings_store import get_settings, LAST_STACK_FOLDER_KEY, LAST_STACK_MODE_KEY
+        settings = get_settings()
+        folder = str(settings.value(LAST_STACK_FOLDER_KEY, "") or "")
+        linear_raw = settings.value(LAST_STACK_MODE_KEY, "standard") == "linear"
         if folder and os.path.isdir(folder):
             window = self.window
             self._start_load_worker(
                 folder=folder,
                 scale=getattr(window, "current_scale_factor", 1.0),
                 append=False,
+                linear_raw=linear_raw,
             )
 
     def _ask_load_scale(self):
@@ -647,6 +677,47 @@ class SourceManager(QObject):
             persist()
         return scale
 
+    def _choose_raw_import_mode(self, paths, append=False):
+        """Return the import mode, or None when the user cancels."""
+        if append and getattr(self.window, "raw_images", None):
+            return getattr(self.window, "linear_dng_metadata", None) is not None
+        from core.image_loader import is_raw_source
+        if not paths or not all(is_raw_source(path) for path in paths):
+            return False
+        from utils.ui_utils import style_message_box
+        box = QMessageBox(self.window)
+        style_message_box(box)
+        box.setWindowTitle(trans.t("raw_import_mode_title"))
+        box.setText(trans.t("raw_import_mode_prompt"))
+        box.setInformativeText(trans.t("raw_import_mode_explanation"))
+        box.setIcon(QMessageBox.Icon.Question)
+        linear = box.addButton(trans.t("raw_import_mode_linear"), QMessageBox.ButtonRole.AcceptRole)
+        standard = box.addButton(trans.t("raw_import_mode_standard"), QMessageBox.ButtonRole.ActionRole)
+        cancel = box.addButton(trans.t("btn_cancel_generic"), QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(cancel)
+        box.exec()
+        if box.clickedButton() is linear:
+            return True
+        if box.clickedButton() is standard:
+            return False
+        return None
+
+    def _folder_import_paths(self, folder):
+        """Match the ordinary folder loader's supported and excluded sources."""
+        from core.image_loader import ImageStackLoader
+        from utils.path_identity import same_path
+        loader = ImageStackLoader()
+        excluded = getattr(self.window, "defect_mask_path", "")
+        try:
+            with os.scandir(folder) as entries:
+                files = [(entry.name, entry.path) for entry in entries
+                         if entry.is_file()
+                         and os.path.splitext(entry.name)[1].lower() in loader.SUPPORTED_FORMATS
+                         and not (excluded and same_path(entry.path, excluded))]
+            return [path for _, path in loader._drop_derived_aligned_copies(files)]
+        except OSError:
+            return []  # Let the worker report inaccessible folders.
+
     def load_image_stack(self, folder_path: str, append: bool = False) -> None:
         window = self.window
         from utils.logging_setup import log_action
@@ -656,7 +727,12 @@ class SourceManager(QObject):
         # 重复栈（恢复会话后再导入、拖同一文件夹两次都触发过）
         same_folder = (os.path.normcase(os.path.abspath(folder_path)) == os.path.normcase(
             os.path.abspath(getattr(window, "current_folder_path", "") or "")))
-        linear_reload = same_folder and getattr(window, "linear_dng_metadata", None) is not None
+        if same_folder and getattr(window, "linear_dng_metadata", None) is not None:
+            linear_raw = True
+        else:
+            linear_raw = self._choose_raw_import_mode(self._folder_import_paths(folder_path), append=append)
+        if linear_raw is None:
+            return
         if append and same_folder:
             append = False
 
@@ -667,7 +743,7 @@ class SourceManager(QObject):
         # Decode on a background thread so the window stays responsive on
         # large stacks; the continuation runs on the UI thread via the signal.
         self._start_load_worker(
-            folder=folder_path, scale=scale_factor, append=append, linear_raw=linear_reload,
+            folder=folder_path, scale=scale_factor, append=append, linear_raw=linear_raw,
             on_success=lambda: window.add_recent_file(folder_path) if hasattr(window, "add_recent_file") else None,
         )
 
@@ -683,24 +759,6 @@ class SourceManager(QObject):
             video=video_path, scale=scale_factor, append=append,
             on_success=lambda: window.add_recent_file(video_path) if hasattr(window, "add_recent_file") else None,
         )
-
-    def prompt_and_load_linear_raw(self) -> None:
-        from core.image_loader import RAW_FORMATS, is_raw_source
-        from utils.settings_store import get_last_dialog_dir, set_last_dialog_dir
-
-        patterns = " ".join(f"*{ext}" for ext in sorted(RAW_FORMATS | {".tif", ".tiff"}))
-        paths, _ = FileDialog.getOpenFileNames(
-            self.window, trans.t("linear_raw_caption"), get_last_dialog_dir(),
-            f"RAW ({patterns});;All Files (*)")
-        if not paths:
-            return
-        if not all(is_raw_source(path) for path in paths):
-            show_warning_box(self.window, trans.t("msg_load_failed"), trans.t("linear_raw_invalid"))
-            return
-        set_last_dialog_dir(paths[0])
-        scale = self._ask_load_scale()
-        if scale is not None:
-            self._start_load_worker(filepaths=paths, scale=scale, linear_raw=True)
 
     def prompt_and_load_stack(self) -> None:
         from utils.settings_store import get_last_dialog_dir, set_last_dialog_dir
@@ -824,6 +882,10 @@ class SourceManager(QObject):
 
         # Prompt for downsample (same UX as folder loading)
         try:
+            linear_raw = self._choose_raw_import_mode(valid_paths, append=True)
+            if linear_raw is None:
+                event.ignore()
+                return
             scale = self._ask_load_scale()
             if scale is None:
                 # user cancelled
@@ -832,7 +894,7 @@ class SourceManager(QObject):
 
             # Decode on the load worker like folder loads: dropping a large
             # file set used to freeze the window while it decoded.
-            self._start_load_worker(filepaths=valid_paths, scale=scale, append=True)
+            self._start_load_worker(filepaths=valid_paths, scale=scale, append=True, linear_raw=linear_raw)
             event.acceptProposedAction()
         except Exception as exc:  # pylint: disable=broad-except
             show_message_box(
@@ -1318,19 +1380,8 @@ class SourceManager(QObject):
     # These methods handle files dropped on app icon/taskbar/dock
 
     def load_image_stack_from_icon(self, folder_path: str) -> None:
-        """Load image stack from folder dropped on app icon / passed on the
-        command line. The intent there is unambiguous — one folder is one
-        stack — so no import-mode dialog; open the batch dialog explicitly
-        when several stacks are wanted. Same folder again = reload."""
-        append = bool(getattr(self.window, "raw_images", None))
-        same = (os.path.normcase(os.path.abspath(folder_path))
-                == os.path.normcase(os.path.abspath(
-                    getattr(self.window, "current_folder_path", "") or "")))
-        if not append or same:
-            self.load_image_stack(folder_path, append=False)
-            return
-        # 已有其他栈时才需要确认是追加还是……直接追加（与拖放语义一致）
-        self.load_image_stack(folder_path, append=True)
+        """Load a folder dropped on the app icon or passed on the command line."""
+        self.load_image_stack(folder_path, append=bool(getattr(self.window, "raw_images", None)))
 
     def load_multiple_folders_from_icon(self, folder_paths: list[str]) -> None:
         """Load multiple folders dropped on app icon."""
@@ -1347,8 +1398,11 @@ class SourceManager(QObject):
 
     def load_image_files_from_icon(self, file_paths: list[str]) -> None:
         """Load image files dropped on app icon."""
+        linear_raw = self._choose_raw_import_mode(file_paths, append=True)
+        if linear_raw is None:
+            return
         scale = self._ask_load_scale()
         if scale is None:
             return
 
-        self._start_load_worker(filepaths=list(file_paths), scale=scale, append=True)
+        self._start_load_worker(filepaths=list(file_paths), scale=scale, append=True, linear_raw=linear_raw)

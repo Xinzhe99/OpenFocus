@@ -292,9 +292,18 @@ openfocus -i ./stack_folder -o ./result/fused.tif --auto-background auto --save-
 - **反馈** — 通过 [issue](https://github.com/Xinzhe99/OpenFocus/issues) 报告缺陷、提出想法或算法改进
 - **致谢** — 各融合/配准算法遵循其原始研究许可；StackMFF V3 位于 [Xinzhe99/StackMFF-V3](https://github.com/Xinzhe99/StackMFF-V3)
 
-**微信群：** 使用微信扫描二维码加入 OpenFocus 交流群。
+**微信社区：** 扫码加入 OpenFocus 交流群，或关注微信公众号。
 
-<img src="../../assets/readme/wechat-group.jpg" alt="OpenFocus 微信交流群二维码" width="260">
+<table>
+  <tr>
+    <th align="center">微信交流群</th>
+    <th align="center">微信公众号</th>
+  </tr>
+  <tr>
+    <td align="center" valign="top"><img src="../../assets/readme/wechat-group.jpg" alt="OpenFocus 微信交流群二维码" width="260"></td>
+    <td align="center" valign="top"><img src="../../assets/readme/wechat-official-account.jpg" alt="OpenFocus 微信公众号二维码" width="260"></td>
+  </tr>
+</table>
 
 **支持项目：** 如果你觉得 OpenFocus 不错，欢迎在国内通过支付宝或在海外通过 [PayPal](https://paypal.me/XinZEN0602) 请我们喝杯咖啡。如果在付款备注中留下用户名，我们会将其永久记录在项目中，表达感谢。
 

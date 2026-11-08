@@ -21,7 +21,7 @@ import math
 import sys
 import threading
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Optional
 
 import numpy as np
@@ -285,23 +285,28 @@ def _gpu_memory(kind: str) -> tuple:
         return 0, 0
 
 
+def probe_memory() -> ResourceSnapshot:
+    """Read current RAM for admission without CPU topology or GPU queries."""
+    return ResourceSnapshot(
+        available_ram=int(memory.available_memory_bytes() or 0),
+        total_ram=int(memory.total_memory_bytes() or 0),
+        process_rss=int(memory.process_rss_bytes() or 0),
+    )
+
+
 def probe_resources(device_kind: Optional[str] = None) -> ResourceSnapshot:
     """Read the machine once. Every field may be zero when unknowable."""
     cores, logical, limit, topology_known = cpu_limits()
 
-    available = memory.available_memory_bytes()
-    total = memory.total_memory_bytes()
-    rss = memory.process_rss_bytes()
+    ram = probe_memory()
     kind = str(device_kind or "CPU").upper()
     free_vram = total_vram = 0
     if kind == 'DIRECTML':
         free_vram, total_vram = _directml_memory()
     elif kind in ('CUDA', 'ROCM', 'XPU', 'OPENVINO'):
         free_vram, total_vram = _gpu_memory(kind)
-    return ResourceSnapshot(
-        available_ram=int(available or 0),
-        total_ram=int(total or 0),
-        process_rss=int(rss or 0),
+    return replace(
+        ram,
         physical_cores=max(1, int(cores)),
         logical_cpus=max(1, int(logical)),
         free_vram=free_vram,
@@ -500,6 +505,7 @@ def plan_execution(workload: Workload, snapshot: Optional[ResourceSnapshot] = No
 def plan_neural_tiles(frames: int, height: int, width: int, channels: int,
                       block_size: int, device_kind: str, estimate_inference,
                       *, directory: bool = False, itemsize: int = 1,
+                      source_resolution_bytes: int = 0, source_cache_bytes: int = 0,
                       snapshot: Optional[ResourceSnapshot] = None,
                       preference: str = PREFERENCE_BALANCED,
                       user_threads: Optional[int] = None):
@@ -509,14 +515,18 @@ def plan_neural_tiles(frames: int, height: int, width: int, channels: int,
     trustworthy free-VRAM reading; without one, select CPU instead.
     The tile estimate includes crop copies, staging, inference and reduction.
     """
+    if source_resolution_bytes < 0 or source_cache_bytes < 0:
+        raise ValueError('Source workspace sizes must be nonnegative')
     snapshot = snapshot or probe_resources(device_kind)
     maximum = max(1, min(int(block_size), height, width))
     minimum = min(maximum, 64)
     pixels = height * width
     fixed = pixels * ((channels + 1) * 4 + channels * 4)
-    if directory:
-        # One decoded source frame and decoder/input scratch stay live while
-        # the next tile stack is assembled.
+    fixed += source_cache_bytes
+    if source_resolution_bytes:
+        fixed += source_resolution_bytes
+    elif directory:
+        # Legacy directories lack descriptor geometry/decoder information.
         fixed += pixels * channels * max(4, itemsize) * 2
     ceiling = ram_ceiling(snapshot)
     if not snapshot.ram_known:

@@ -58,13 +58,6 @@ class FeedbackDialog(QDialog):
         root.setContentsMargins(14, 12, 14, 10)
         root.setSpacing(6)
 
-        # The log IS the content: the two paragraphs of intro went to the
-        # docstring, and the log view fills the page instead of a 150 px
-        # sliver under a wall of blank space.
-        head = QLabel(trans.t("feedback_head").format(version=APP_VERSION))
-        head.setWordWrap(True)
-        root.addWidget(head)
-
         self.log_view = QPlainTextEdit()
         self.log_view.setReadOnly(True)
         f = QFont("Consolas")
@@ -98,10 +91,13 @@ class FeedbackDialog(QDialog):
 
         buttons = QHBoxLayout()
         copy_btn = QPushButton(trans.t("feedback_copy_log"))
+        copy_btn.setToolTip(trans.t("feedback_head").format(version=APP_VERSION))
         copy_btn.clicked.connect(self._copy_log)
         issues_btn = QPushButton(trans.t("feedback_open_issues"))
+        issues_btn.setToolTip(trans.t("feedback_head").format(version=APP_VERSION))
         issues_btn.clicked.connect(self._open_issues)
         export_btn = QPushButton(trans.t("feedback_export"))
+        export_btn.setToolTip(trans.t("feedback_head").format(version=APP_VERSION))
         export_btn.clicked.connect(self._export_package)
         buttons.addWidget(copy_btn)
         buttons.addWidget(issues_btn)

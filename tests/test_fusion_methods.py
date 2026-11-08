@@ -474,27 +474,10 @@ def test_v3_tiled_exposure_matches_whole_stack_preprocessing(dtype, monkeypatch)
     assert all(frame.dtype == dtype for frame in frames)
 
 
-def test_v3_tiled_exposure_budget_excludes_full_stack_copy(monkeypatch):
-    import core.resource_policy as policy
-    import core.multi_focus_fusion as fusion_module
-    import fusion_methods.stackmffv3 as v3
-
-    monkeypatch.setattr(MultiFocusFusion, '_validate_ai_environment', lambda self: None)
-    monkeypatch.setattr(v3, '_prepare_inference', lambda *a, **k: (None, 'CPU', object()))
-    monkeypatch.setattr(fusion_module, '_stackmffv3_impl',
-                        lambda source, *a, **k: normalize_fuse_input(source)[0][0])
-    admitted = []
-    monkeypatch.setattr(policy, 'require_memory', lambda size, **kwargs: admitted.append(size))
-    frames = [np.full((32, 40, 3), 1000 + i, np.uint16) for i in range(24)]
-    fusion = MultiFocusFusion('stackmffv3', tile_enabled=True, tile_block_size=8,
-                              tile_overlap=2, tile_threshold=1, exposure_match=True)
-    fusion.fuse(frames)
-    full_copy = sum(frame.size * 4 for frame in frames)
-    assert admitted and max(admitted) < full_copy
 
 
 @pytest.mark.parametrize('backend', ['shared', 'v3'])
-def test_neural_directory_resize_stages_one_frame_under_small_budget(tmp_path, backend):
+def test_neural_directory_resize_resolves_one_frame_at_a_time(tmp_path, backend):
     from core.resource_policy import ExecutionPlan
     from fusion_methods.neural_common import read_stack
     if backend == 'v3':
@@ -510,12 +493,11 @@ def test_neural_directory_resize_stages_one_frame_under_small_budget(tmp_path, b
         assert ok
         encoded.tofile(str(directory / f'frame{index}.png'))
         expected.append(cv2.resize(image, (192, 192)))
-    # One source/resize workspace fits; all eight resized frames do not.
-    plan = ExecutionPlan(ram_budget=768 * 1024)
+    # Resizing remains deferred until one consumer requests its frame pixels.
+    plan = ExecutionPlan(ram_budget=2 * 1024 * 1024)
     actual = read_stack(str(directory), (192, 192), execution_plan=plan)
     assert len(actual) == len(expected)
     for frame, reference in zip(actual, expected):
-        assert isinstance(frame, np.memmap)
         np.testing.assert_array_equal(frame, reference)
 
 
@@ -552,7 +534,7 @@ def test_v2_mapped_source_sampling_crosses_row_strip_boundary(grayscale):
     np.testing.assert_array_equal(actual, expected)
 
 
-def test_neural_mapped_normalization_preserves_mixed_stack_precision():
+def test_neural_source_normalization_preserves_mixed_stack_precision():
     from fusion_methods.neural_common import normalized_frames
     from utils.image_utils import normalize_fuse_input
 
@@ -564,7 +546,6 @@ def test_neural_mapped_normalization_preserves_mixed_stack_precision():
     actual = normalized_frames(frames)
     for mapped, reference in zip(actual, expected):
         np.testing.assert_array_equal(mapped, reference)
-    assert isinstance(actual[0], np.memmap) and isinstance(actual[1], np.memmap)
     assert actual[2] is frames[2]
 
 

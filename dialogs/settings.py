@@ -142,6 +142,7 @@ class DownsampleDialog(QDialog):
         self.slider.setValue(self.scale_percent)
         self.slider.setTickPosition(QSlider.TickPosition.TicksBelow)
         self.slider.setTickInterval(10)
+        self.slider.setToolTip(trans.t('ds_hint'))
 
         # 增大按钮
         self.increase_btn = QPushButton("+")
@@ -159,6 +160,7 @@ class DownsampleDialog(QDialog):
         self.spinbox.setRange(1, self.max_percent)
         self.spinbox.setValue(self.scale_percent)
         self.spinbox.setSuffix("%")
+        self.spinbox.setToolTip(trans.t('ds_hint'))
         # A fixed 60 px was narrower than the widget needs with its suffix and
         # QSS padding (77 px minimum), so "100%" rendered as "10(". Let it
         # size itself, with a floor that keeps the layout stable.
@@ -174,11 +176,6 @@ class DownsampleDialog(QDialog):
         controls_layout.addWidget(self.spinbox)
         layout.addLayout(controls_layout)
 
-        # 提示信息
-        hint_label = QLabel(trans.t('ds_hint'))
-        hint_label.setObjectName("mutedLabel")
-        hint_label.setWordWrap(True)
-        layout.addWidget(hint_label)
 
         # 导入时可选"不再询问"（设置菜单可重新打开）
         if self._show_dont_ask:

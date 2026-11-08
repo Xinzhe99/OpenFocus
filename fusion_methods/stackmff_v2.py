@@ -49,6 +49,8 @@ def _sample(frames, index, should_cancel=None):
     out = create_frame(frames[0].shape, np.float32)
     for layer, frame in enumerate(frames):
         common.cancel(should_cancel)
+        from core.source_frames import resolve_frame
+        frame = resolve_frame(frame)
         for start in range(0, out.shape[0], 128):
             common.cancel(should_cancel)
             rows = slice(start, min(out.shape[0], start + 128))
@@ -107,17 +109,8 @@ def stackmffv2_impl(input_source, img_resize, model_path, use_gpu,
                 input_source, img_resize, model_path, use_gpu, should_cancel,
                 execution_plan, thread_count, resource_preference, tile_size,
                 tile_overlap, progress_callback, exposure_gains, source_all_uint8)
-        if isinstance(input_source, str):
-            from core.frame_storage import store_frame
-            from fusion_methods.stackmff_v2_tiled import _Source
-            source = _Source(input_source, img_resize, None, should_cancel)
-            frames = []
-            for index in range(len(source.items)):
-                common.cancel(should_cancel)
-                frames.append(store_frame(source.get(index)))
-        else:
-            frames = common.read_stack(input_source, img_resize, should_cancel,
-                                       execution_plan)
+        frames = common.read_stack(input_source, img_resize, should_cancel,
+                                   execution_plan, preserve_grayscale=False)
         if len(frames) < 2:
             raise ValueError("At least two images are required for fusion")
         if progress_callback is not None:

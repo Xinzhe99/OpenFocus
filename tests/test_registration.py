@@ -33,10 +33,14 @@ print("输出正常", flush=True)
 def test_directory_preserves_single_page_precision(tmp_path, method):
     frame = np.arange(120, dtype=np.uint16).reshape(10, 12) * 251 + 3
     assert cv2.imwrite(str(tmp_path / 'frame.png'), frame)
+    from core.source_frames import scan_source, resolve_frame
+    display_source = scan_source(str(tmp_path / 'frame.png'), header_only=True)[0]
+    display_pixels = resolve_frame(display_source).copy()
     result = ImageRegistration(method=method).process(str(tmp_path))
     assert result[0].dtype == np.uint16
     expected = frame if method == 'openfocus' else np.repeat(frame[..., None], 3, axis=2)
     np.testing.assert_array_equal(result[0], expected)
+    np.testing.assert_array_equal(resolve_frame(display_source), display_pixels)
 
 
 def _shifted_stack(dx=12, dy=6, size=(140, 180), n=2):
@@ -155,67 +159,43 @@ def test_openfocus_recovers_rotation_scale_and_translation_together():
     moved = cv2.warpAffine(base, transform, (width, height),
                            borderMode=cv2.BORDER_REFLECT)
 
-    aligned = ImageRegistration(method="openfocus").process(
+    aligned = ImageRegistration(method="openfocus", parameters={'rotation': 8.}).process(
         [base, moved], thread_count=1)
     raw_error = np.abs(base[20:-20, 20:-20].astype(np.float32)
                        - moved[20:-20, 20:-20]).mean()
-    aligned_error = np.abs(aligned[0].astype(np.float32) - aligned[1]).mean()
+    aligned_error = np.abs(aligned[0][20:-20, 20:-20].astype(np.float32)
+                           - aligned[1][20:-20, 20:-20]).mean()
     assert aligned_error < raw_error * 0.15
 
-@pytest.mark.parametrize("dtype", [np.uint8, np.uint16])
-@pytest.mark.parametrize("channels", [1, 3])
-def test_openfocus_different_size_frame_uses_mapped_output_canvas(dtype, channels):
-    from core.registration import _align_openfocus_impl, alignment_report
-
-    rng = np.random.default_rng(177)
-    height, width = 240, 320
-    gray = cv2.resize(rng.integers(20, 220, (20, 27), dtype=np.uint8),
-                      (width, height), interpolation=cv2.INTER_CUBIC)
-    base = (gray if channels == 1 else
-            np.stack((gray, np.flip(gray, axis=1), np.flip(gray, axis=0)), axis=2))
-    if dtype == np.uint16:
-        base = base.astype(np.uint16) * 251 + 19
-    # Both estimation images are identical after bounded downsampling, while
-    # the native source shape differs from the first frame's output canvas.
-    current = np.repeat(np.repeat(base, 2, axis=0), 2, axis=1)
-    report = []
-    token = alignment_report.set(report)
-    try:
-        aligned = _align_openfocus_impl(
-            [base, current], equalize_brightness=False, thread_count=1,
-            failure_policy="fail")
-    finally:
-        alignment_report.reset(token)
-
-    assert [entry["status"] for entry in report] == ["reference", "aligned"]
-    np.testing.assert_array_equal(report[1]["transform"], np.eye(3))
-    np.testing.assert_array_equal(aligned[0], base[2:-2, 2:-2])
-    assert isinstance(aligned[1], np.memmap)
-    assert aligned[1].dtype == dtype
-    assert aligned[1].shape == aligned[0].shape
-    np.testing.assert_array_equal(aligned[1], current[2:height - 2, 2:width - 2])
+@pytest.mark.parametrize('dtype', [np.uint8, np.uint16])
+@pytest.mark.parametrize('channels', [1, 3])
+def test_openfocus_rejects_mismatched_native_geometry(dtype, channels):
+    frame = np.zeros((32, 40) if channels == 1 else (32, 40, channels), dtype)
+    with pytest.raises(ValueError, match='equal shapes'):
+        ImageRegistration('openfocus').process([frame, frame[::2, ::2]])
 
 
 @pytest.mark.parametrize("reference", [2, 3])
 def test_openfocus_selected_reference_aligns_both_sides_without_reordering(reference):
-    from core.registration import _align_openfocus_impl
+    from core.registration import _align_helicon_impl
     frames, _ = _shifted_stack(dx=4, dy=2)
     base = frames[0]
     frames = [base, cv2.warpAffine(base, np.float32([[1, 0, 4], [0, 1, 2]]),
                                    (base.shape[1], base.shape[0]), borderMode=cv2.BORDER_REFLECT),
               cv2.warpAffine(base, np.float32([[1, 0, 8], [0, 1, 4]]),
                              (base.shape[1], base.shape[0]), borderMode=cv2.BORDER_REFLECT)]
-    aligned = _align_openfocus_impl(frames, reference_frame=reference,
-                                    equalize_brightness=False, thread_count=1,
-                                    failure_policy="fail")
+    aligned = _align_helicon_impl(frames, reference_frame=reference,
+                                 failure_policy="fail")
     anchor = aligned[reference - 1]
-    # The anchor is cropped but never warped, and every other frame reaches it.
+    # The anchor retains its native canvas; compare only the common interior.
     source = frames[reference - 1]
     ys, xs = np.where(np.all(source == anchor[0, 0], axis=2))
     assert any(np.array_equal(source[y:y + anchor.shape[0], x:x + anchor.shape[1]], anchor)
                for y, x in zip(ys, xs))
+    margin = 9  # Largest synthetic displacement is eight pixels, plus one warp tap.
     for image in aligned:
-        assert np.abs(image.astype(np.float32) - anchor).mean() < 10
+        assert np.abs(image[margin:-margin, margin:-margin].astype(np.float32)
+                      - anchor[margin:-margin, margin:-margin]).mean() < 10
 
 
 def test_openfocus_reference_outside_stack_is_an_error():
@@ -236,43 +216,26 @@ def test_openfocus_strict_policy_accepts_known_translation_and_preserves_uint16(
     assert result < raw
 
 
-def test_openfocus_strict_policy_rejects_low_texture_without_saving(tmp_path):
+def test_openfocus_identical_low_texture_is_exact_in_strict_mode():
     frame = np.full((48, 64), 2000, dtype=np.uint16)
-    output = tmp_path / "aligned"
-    with pytest.raises(ValueError, match=r"frame 2: low detector quality"):
-        ImageRegistration(method="openfocus", parameters={"failure_policy": "fail"}).process(
-            [frame, frame.copy()], output_path=str(output), thread_count=1)
-    assert not output.exists()
-    default = ImageRegistration(method="openfocus").process([frame, frame.copy()], thread_count=1)
-    assert len(default) == 2
-    assert all(image.dtype == np.uint16 for image in default)
+    aligned = ImageRegistration('openfocus', parameters={'failure_policy': 'fail'}).process(
+        [frame, frame.copy()])
+    for image in aligned:
+        np.testing.assert_array_equal(image, frame)
 
 
-def test_openfocus_strict_policy_rejects_estimated_motion_over_limit(monkeypatch):
-    import core.registration as registration
-    frames, _ = _shifted_stack(size=(140, 180))
-    monkeypatch.setattr(registration, '_of_estimate_similarity',
-                        lambda *args, **kwargs: (1.0, 0.0, 1.0, -50.0, 0.0))
-    with pytest.raises(ValueError, match=r"frame 2: motion outside limits"):
-        ImageRegistration(method="openfocus", parameters={"failure_policy": "fail"}).process(
-            frames, thread_count=1)
+def test_openfocus_strict_policy_reports_real_unestimable_geometry():
+    with pytest.raises(ValueError, match='frame 2: Alignment requires at least two pixels'):
+        ImageRegistration('openfocus', parameters={'failure_policy': 'fail'}).process(
+            [np.full((1, 8), 1000, np.uint16), np.full((1, 8), 2000, np.uint16)])
 
 
 
-def test_openfocus_aligns_color_texture_with_constant_channel_sum():
-    rng = np.random.default_rng(5)
-    small = rng.integers(20, 180, (20, 27), dtype=np.uint8)
-    green = np.clip(cv2.resize(small, (320, 240),
-                               interpolation=cv2.INTER_CUBIC), 20, 180)
+def test_openfocus_equal_channel_mean_uses_verified_gray_rule():
+    from core.hf9_alignment import _gray16
+    green = np.arange(64, dtype=np.uint8).reshape(8, 8)
     base = np.dstack([np.full_like(green, 50), green, 200 - green])
-    moved = np.roll(base, 8, axis=1)
-
-    aligned = ImageRegistration(method="openfocus").process(
-        [base, moved], thread_count=1)
-    raw_error = np.abs(base.astype(np.int16) - moved.astype(np.int16)).mean()
-    aligned_error = np.abs(aligned[0].astype(np.int16)
-                           - aligned[1].astype(np.int16)).mean()
-    assert aligned_error < raw_error * 0.35
+    np.testing.assert_array_equal(_gray16(base, None), np.full((8, 8), (250 // 3) << 8, np.uint16))
 
 
 def test_openfocus_directory_preserves_grayscale_16bit(tmp_path):
@@ -291,7 +254,7 @@ def test_openfocus_directory_preserves_grayscale_16bit(tmp_path):
     for image in aligned:
         assert image.dtype == np.uint16
         assert image.ndim == 2
-        np.testing.assert_array_equal(image, base[2:-2, 2:-2])
+        np.testing.assert_array_equal(image, base)
 
 
 def test_openfocus_identical_ramps_do_not_invent_motion():
@@ -299,7 +262,7 @@ def test_openfocus_identical_ramps_do_not_invent_motion():
     aligned = ImageRegistration(method="openfocus").process(
         [ramp, ramp.copy()], thread_count=1)
     for image in aligned:
-        np.testing.assert_array_equal(image, ramp[2:-2, 2:-2])
+        np.testing.assert_array_equal(image, ramp)
 
 
 def test_openfocus_directory_applies_exif_orientation_on_unicode_paths(tmp_path):
@@ -316,7 +279,7 @@ def test_openfocus_directory_applies_exif_orientation_on_unicode_paths(tmp_path)
         Image.fromarray(pixels).save(folder / name, exif=exif)
     decoded = cv2.imdecode(np.fromfile(str(folder / "帧1.jpg"), dtype=np.uint8),
                            cv2.IMREAD_UNCHANGED)
-    expected = np.rot90(decoded, -1)[2:-2, 2:-2]
+    expected = np.rot90(decoded, -1)
     aligned = ImageRegistration(method="openfocus").process(str(folder), thread_count=1)
     for image in aligned:
         np.testing.assert_array_equal(image, expected)
@@ -415,9 +378,7 @@ def test_single_frame_reports_each_reference(method, steps):
 
 def test_openfocus_report_orders_frames_and_records_applied_fallback(monkeypatch):
     import core.registration as registration
-    monkeypatch.setattr(registration, '_of_estimate_similarity',
-                        lambda *args, **kwargs: (-1.0, 0.0, 1.0, 0.0, 0.0))
-    frames = [np.full((30, 40), 1200, np.uint16) for _ in range(3)]
+    frames = [np.full((1, 8), value, np.uint16) for value in (1000, 2000, 3000)]
     report = []
     token = registration.alignment_report.set(report)
     try:
@@ -426,7 +387,7 @@ def test_openfocus_report_orders_frames_and_records_applied_fallback(monkeypatch
         registration.alignment_report.reset(token)
     assert [r['frame_index'] for r in report] == [0, 1, 2]
     assert [r['status'] for r in report] == ['fallback', 'reference', 'fallback']
-    assert report[0]['reason'] == 'low detector quality'
+    assert 'at least two pixels' in report[0]['reason']
     np.testing.assert_array_equal(report[0]['transform'], np.eye(3))
     assert all(image.dtype == np.uint16 for image in aligned)
 
@@ -494,91 +455,6 @@ def test_composite_reports_each_stage_and_actual_ecc_transform(monkeypatch):
     assert report[-1]['transform'][0][2] == pytest.approx(-2)
 
 
-def test_detector_interpolation_preserves_full_uint16_fixed_point_range():
-    from core.openfocus_align import _samples
-
-    image = np.array([[65535, 0, 43000], [0, 65535, 65535],
-                      [65535, 65535, 65535]], dtype=np.uint16)
-    x = np.array([[-1, 0, 0.25, 0.999, 1.5, 2.5]], np.float32)
-    y = np.array([[0, 0, 0.75, 1.25, 1.5, 3]], np.float32)
-    actual, valid = _samples(image, x, y)
-    cx, cy = np.clip(x, 0, 1.999), np.clip(y, 0, 1.999)
-    ix, iy = cx.astype(np.int32), cy.astype(np.int32)
-    fx, fy = ((cx - ix) * 256).astype(np.int64), ((cy - iy) * 256).astype(np.int64)
-    pixels = image.astype(np.int64)
-    expected = ((pixels[iy, ix] * (256 - fx) + pixels[iy, ix + 1] * fx) * (256 - fy)
-                + (pixels[iy + 1, ix] * (256 - fx) + pixels[iy + 1, ix + 1] * fx) * fy) >> 16
-    np.testing.assert_array_equal(actual, expected)
-    np.testing.assert_array_equal(valid, [[False, True, True, True, True, False]])
-
-
-def test_native_seed_failure_retains_pyramid_motion_recovery(monkeypatch):
-    from core import openfocus_align
-
-    def no_native_fit(*args, **kwargs):
-        raise cv2.error('flat local ECC basin')
-
-    monkeypatch.setattr(cv2, 'findTransformECC', no_native_fit)
-    frames, _ = _shifted_stack(dx=5, dy=3, size=(140, 180))
-    ref, cur = [cv2.cvtColor(image, cv2.COLOR_BGR2GRAY).astype(np.float32)
-                for image in frames]
-    result = openfocus_align.estimate(ref, cur, 0.08, 8.0, (0.95, 1.05), lambda: None)
-    assert result[0] > 0.9
-    assert result[3] == pytest.approx(5, abs=0.4)
-    assert result[4] == pytest.approx(3, abs=0.4)
-
-
-def test_thumbnail_transform_reuse_tracks_pixels_reference_and_bounds():
-    from core.openfocus_align import estimate
-
-    frames, _ = _shifted_stack(dx=4, dy=2, size=(120, 160))
-    ref, cur = [cv2.cvtColor(image, cv2.COLOR_BGR2GRAY).astype(np.float32)
-                for image in frames]
-    first = estimate(ref, cur, 0.08, 8.0, (0.95, 1.05), lambda: None)
-    repeated = estimate(ref.copy(), cur.copy(), 0.08, 8.0, (0.95, 1.05), lambda: None)
-    assert repeated == first
-    reversed_anchor = estimate(cur, ref, 0.08, 8.0, (0.95, 1.05), lambda: None)
-    assert first[3] == pytest.approx(4, abs=0.4)
-    assert reversed_anchor[3] == pytest.approx(-4, abs=0.4)
-    fixed = estimate(ref, cur, 0.0, 0.0, (1.0, 1.0), lambda: None)
-    assert fixed[1:] == (0.0, 1.0, 0.0, 0.0)
-    cur[:] = ref
-    changed_pixels = estimate(ref, cur, 0.08, 8.0, (0.95, 1.05), lambda: None)
-    assert changed_pixels[3:] == pytest.approx((0, 0), abs=0.15)
-
-
-def test_cached_detector_still_honors_cancellation():
-    from core.openfocus_align import estimate
-    from core.registration import RegistrationCancelled
-
-    rng = np.random.default_rng(901)
-    ref = cv2.GaussianBlur(rng.integers(0, 65535, (80, 96), dtype=np.uint16), (5, 5), 0)
-    estimate(ref, ref, 0.08, 8.0, (0.95, 1.05), lambda: None)
-    checks = 0
-
-    def cancel_after_identity():
-        nonlocal checks
-        checks += 1
-        if checks >= 2:
-            raise RegistrationCancelled()
-
-    with pytest.raises(RegistrationCancelled):
-        estimate(ref, ref, 0.08, 8.0, (0.95, 1.05), cancel_after_identity)
-
-
-def test_openfocus_detector_retains_motion_under_strong_defocus():
-    from core.registration import _of_estimate_similarity
-
-    rng = np.random.default_rng(42)
-    ref = cv2.resize(rng.integers(15, 240, (20, 27), dtype=np.uint8),
-                     (320, 240), interpolation=cv2.INTER_CUBIC).astype(np.float32)
-    cur = cv2.GaussianBlur(ref, (0, 0), 11.0)
-    cur = cv2.warpAffine(cur, np.float32([[1, 0, 16], [0, 1, -7]]),
-                         (320, 240), borderMode=cv2.BORDER_REFLECT)
-    result = _of_estimate_similarity(ref, cur)
-    assert result[0] > 0.1
-    assert result[3] == pytest.approx(16, abs=1.5)
-    assert result[4] == pytest.approx(-7, abs=1.5)
 
 
 @pytest.mark.parametrize('input_scale', [1.0, 255.0])

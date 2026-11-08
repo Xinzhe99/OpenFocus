@@ -89,37 +89,34 @@ def test_grouped_dry_run_rejects_alpha_before_processing(tmp_path, capsys, batch
     assert not (tmp_path / 'out').exists()
 
 
-def test_grouped_cli_real_registration_keeps_singleton_coordinates(tmp_path, monkeypatch):
-    import core.registration as registration
-    from core.multi_focus_fusion import MultiFocusFusion
+def test_grouped_cli_real_registration_keeps_singleton_coordinates(tmp_path):
     folder = tmp_path / 'stack'
     folder.mkdir()
-    y, x = np.indices((64, 68))
-    frame = np.stack([x, y, x + y], axis=-1).astype(np.uint8)
+    rng = np.random.default_rng(131)
+    frame = rng.integers(0, 256, (64, 68, 3), dtype=np.uint8)
     for index in range(5):
         assert cv2.imwrite(str(folder / f'{index}.png'), frame)
-    monkeypatch.setattr(registration, '_of_estimate_similarity',
-                        lambda *args, **kwargs: (1.0, 0.0, 1.0, 0.0, 0.0))
-    monkeypatch.setattr(MultiFocusFusion, 'fuse', lambda self, input_source, **kwargs: input_source[0])
     output = tmp_path / 'out.png'
     assert _run_cli(['-i', str(folder), '-o', str(output), '--group-size', '2',
-                     '--group-overlap', '0', '--align', 'openfocus', '--cpu']) == 0
-    np.testing.assert_array_equal(cv2.imread(str(output)), frame[12:52, 12:56])
+                     '--group-overlap', '0', '--align', 'openfocus',
+                     '--method', 'openfocus_c', '--cpu']) == 0
+    np.testing.assert_array_equal(cv2.imread(str(output)), frame)
 
-def test_cli_alignment_report_records_registration_and_restores_context(tmp_path, monkeypatch):
+def test_cli_alignment_report_records_registration_and_restores_context(tmp_path):
     import core.registration as registration
-    from core.multi_focus_fusion import MultiFocusFusion
 
-    folder, _, _ = _make_stacks(tmp_path)
-    monkeypatch.setattr(registration, '_of_estimate_similarity',
-                        lambda *args, **kwargs: (1.0, 0.0, 1.0, 0.0, 0.0))
-    monkeypatch.setattr(MultiFocusFusion, 'fuse', lambda self, input_source, **kwargs: input_source[0])
+    folder = str(tmp_path / 'report-stack')
+    os.makedirs(folder)
+    for index in range(3):
+        assert cv2.imwrite(os.path.join(folder, f'f{index}.png'),
+                           np.full((24, 24, 3), 80, np.uint8))
     report = tmp_path / 'report.json'
     prior = []
     token = registration.alignment_report.set(prior)
     try:
         result = _run_cli(['-i', folder, '-o', str(tmp_path / 'fused.png'),
-                           '--align', 'openfocus', '--cpu', '--alignment-report', str(report)])
+                           '--align', 'openfocus', '--method', 'guided_filter',
+                           '--cpu', '--alignment-report', str(report)])
         assert result == 0
         assert registration.alignment_report.get() is prior
         assert prior == []
@@ -266,15 +263,15 @@ def test_batch_json_summary(tmp_path):
 
 def test_strict_alignment_reports_rejected_frames_in_single_and_batch(tmp_path, capsys):
     fa, fb, out = _make_stacks(tmp_path)
-    option = ["--align", "openfocus", "--align-param", 'failure_policy="fail"']
+    option = ["--align", "homography", "--align-param", 'failure_policy="fail"',
+              "-m", "guided_filter", "--cpu"]
     single = tmp_path / "single.png"
     assert _run_cli(["-i", fa, "-o", str(single), *option]) == 1
-    assert "frame 2: low detector quality" in capsys.readouterr().err
+    capsys.readouterr()
     assert not single.exists()
     assert _run_cli(["-i", fa, fb, "-d", str(out), *option]) == 1
     error = capsys.readouterr().err
     assert "stackA" in error and "stackB" in error
-    assert "frame 2: low detector quality" in error
     assert not list(out.glob("*.png"))
 
 

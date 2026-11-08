@@ -759,37 +759,40 @@ class ExportManager:
 
 
 def _write_lazy_multipage_tiff(path, frames, labels, target, cfg, metadata=None, profile=b''):
-    """Write one original at a time, retaining no decoded stack in memory."""
-    import tempfile
-    import tifffile
+    """Resolve one source at a time; the unified TIFF writer converts bands."""
     from core.image_loader import _has_transparency
-    directory = os.path.dirname(os.path.abspath(path))
-    fd, temporary = tempfile.mkstemp(suffix='.tif', dir=directory)
-    os.close(fd)
-    try:
-        total = sum(frame.nbytes for frame in frames)
-        with tifffile.TiffWriter(temporary, bigtiff=total >= 2**32 - 2**25) as writer:
-            for index, frame in enumerate(frames):
-                image = resolve_frame(frame)
-                if metadata is not None:
-                    from utils.linear_dng import develop_linear
-                    image = develop_linear(image, metadata)
-                if _has_transparency(image):
-                    raise ValueError(trans.t('transparent_desktop_unsupported').format(path=path))
-                if labels is not None:
-                    image = scalebar.burn(labels.prepare_bgr_image(target, image, index), cfg)
-                rgb = image.ndim == 3 and image.shape[2] == 3
-                if rgb:
-                    image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-                tags = [(34675, 'B', len(profile), profile, False)] if profile else []
-                writer.write(image, photometric='rgb' if rgb else 'minisblack',
-                             metadata=None, extratags=tags)
-                del image
-        os.replace(temporary, path)
-        return True
-    finally:
-        if os.path.exists(temporary):
-            os.unlink(temporary)
+
+    page_specs = None
+    if isinstance(frames, (list, tuple)):
+        known = []
+        for frame in frames:
+            shape, dtype = getattr(frame, 'shape', None), getattr(frame, 'dtype', None)
+            if shape is None or dtype is None:
+                break
+            # Annotation drawing may promote grayscale to color. An RGBA bound
+            # covers that layout without decoding or retaining an original.
+            shape = tuple(shape[:2]) + (4,) if labels is not None else tuple(shape)
+            known.append((shape, dtype))
+        else:
+            page_specs = known
+
+    def pages():
+        for index, frame in enumerate(frames):
+            image = resolve_frame(frame)
+            if metadata is not None:
+                from utils.linear_dng import develop_linear
+                image = develop_linear(image, metadata)
+            if _has_transparency(image):
+                raise ValueError(trans.t('transparent_desktop_unsupported').format(path=path))
+            if labels is not None:
+                image = scalebar.burn(labels.prepare_bgr_image(target, image, index), cfg)
+            yield image
+            del image
+
+    # This desktop workflow historically used TiffWriter's uncompressed
+    # default; the public imwrite_multi_tiff helper has a separate LZW default.
+    return imwrite_auto(path, pages=pages(), params=get_imwrite_params('.tif'),
+                        exif=b'', icc_profile=profile, page_specs=page_specs)
 
 
 def _read_image_any(path: str):

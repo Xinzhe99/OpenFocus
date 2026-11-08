@@ -60,7 +60,7 @@ Ad esempio, l'equivalente CLI è `python main.py --input ./png-stack --output ./
 
 ### Formati di output supportati
 
-In **Salva con nome**, il TIFF normale salva il risultato come immagine singola; il TIFF a livelli include i fotogrammi sorgente come livelli. Linear DNG è sempre elencato, ma per salvarlo serve un risultato lineare della fotocamera senza modifiche incorporate, ottenuto con **Apri RAW nativo** e dotato della calibrazione della fotocamera.
+In **Salva con nome**, il TIFF normale salva il risultato come immagine singola; il TIFF a livelli include i fotogrammi sorgente come livelli. Linear DNG è sempre elencato, ma per salvarlo serve un risultato lineare della fotocamera senza modifiche incorporate e dotato della calibrazione della fotocamera.
 
 - Immagini singole: JPG, PNG, BMP, TIFF, WebP
 - Sequenze di immagini: salvate come cartelle
@@ -434,21 +434,25 @@ OpenFocus offre dieci algoritmi di fusione (più una modalità solo allineamento
 
 Ogni tile neurale usa tutti i fotogrammi. I fotogrammi e i dati temporanei di allineamento possono usare il disco; spazio libero e memoria disponibile limitano lo stack. La suddivisione spaziale V2 approssima l’inferenza sull’intera immagine.
 
+Se non viene indicata una cartella temporanea, OpenFocus stima lo spazio necessario in base agli input noti e ai dati temporanei. Se il disco temporaneo di sistema non ha spazio sufficiente, può prendere in considerazione dischi locali fissi scrivibili. Una cartella specificata esplicitamente non viene sostituita automaticamente. Il controllo è una stima del momento, non una prenotazione; lo spazio può esaurirsi in seguito. In caso di errore di archiviazione, scegli una cartella scrivibile nelle impostazioni avanzate.
+
 
 ### OpenFocus A / B / C
 
-- **OpenFocus A**: leviga la sua mappa di risposta di fuoco multi-scala, poi seleziona i pixel a fuoco.
+- **OpenFocus A**: seleziona i pixel sorgente tramite una risposta di fuoco multi-scala.
 - **OpenFocus B**: miscela fotogrammi vicini guidato da una mappa di profondità levigata.
-- **OpenFocus C**: ricostruisce bande multi-scala guidato da una mappa di profondità levigata.
-- **Parametri**: A e B usano il cursore del kernel per controllare la scala di risposta di fuoco; C non ha raggio. Tutti e tre hanno un parametro di levigatura che controlla la forza delle transizioni.
+- **OpenFocus C**: miscela i pixel sorgente in base alla mappa di profondità finale levigata.
+- **Parametri**: A e B usano il cursore del kernel per controllare la scala di risposta di fuoco; C non ha raggio. La levigatura di A non ha effetto, come in HF9 A; B e C levigano la mappa di profondità usata per la fusione.
 
 **Levigatura**: un unico campo numerico sotto il cursore del kernel, il cui significato dipende dal metodo selezionato (intervallo 0–8, passo 0,2):
 
 | Metodo | Etichetta | Predefinito | Effetto |
 |---|---|---|---|
-| OpenFocus A | Levigatura della miscelazione | 2,0 | Controlla la levigatura della mappa di risposta di fuoco prima della selezione dei pixel |
-| OpenFocus B | Levigatura della profondità | 1,2 | Controlla la levigatura della mappa di profondità che guida la miscelazione |
-| OpenFocus C | Levigatura della miscelazione | 3,0 | Controlla la levigatura della mappa di profondità che guida la ricostruzione multi-scala |
+| OpenFocus A | Levigatura della miscelazione | 2,0 | Nessun effetto, come in HF9 A |
+| OpenFocus B | Levigatura della profondità | 1,44 | Controlla la levigatura della mappa di profondità che guida la miscelazione |
+| OpenFocus C | Levigatura della miscelazione | 3,6 | Controlla la levigatura della mappa di profondità e le transizioni di fusione |
+
+Dimensione kernel predefinita per A/B: 17. I valori salvati restano in uso; ripristina i valori predefiniti per usare quelli nuovi.
 
 Valori più alti aumentano la levigatura delle transizioni. Ogni metodo ricorda il proprio valore tra le sessioni e l'elaborazione batch applica la stessa regola.
 
@@ -484,7 +488,7 @@ Seleziona **Solo allineamento (nessuna fusione)** per registrare lo stack e aggi
 | StackMFF V3 | Lenta (GPU) | Eccellente | Massima qualità |
 | OpenFocus A | Dipende dallo stack | Dipende dallo stack | Selezione multi-scala dei pixel a fuoco |
 | OpenFocus B | Dipende dallo stack | Dipende dallo stack | Miscelazione di fotogrammi vicini guidata dalla profondità |
-| OpenFocus C | Dipende dallo stack | Dipende dallo stack | Ricostruzione multi-scala guidata dalla profondità |
+| OpenFocus C | Dipende dallo stack | Dipende dallo stack | Miscelazione dei pixel sorgente in base alla mappa di profondità finale |
 
 Apri **Strumenti → Confronto metodi** per regolare più metodi in modo indipendente. Nome, etichette dei parametri e controlli di ogni metodo restano insieme quando la finestra si restringe. Le modifiche aggiornano automaticamente l'anteprima. **Anteprima ROI (veloce)** fonde l'area selezionata con il contesto circostante; **Fusione immagine intera** verifica il risultato sull'intera immagine e permette di ispezionare un'altra area senza renderizzare di nuovo. I risultati ROI possono differire da quelli a immagine intera perché le statistiche di esposizione e alcuni algoritmi dipendono dall'estensione dell'immagine.
 La **fusione immagine intera** è selezionata per impostazione predefinita.
@@ -893,8 +897,8 @@ Ad esempio, aggiungi `--align openfocus --alignment-report alignment.json` a un 
 | `--defect-mask-path MASK` | Maschera difetti in coordinate sensore riparata prima della registrazione |
 | `--sensor-denoise` | Riduzione prudente del rumore del sensore prima della registrazione |
 | `--kernel, -k` | Dimensione kernel (forzata dispari); controlla la scala di risposta di fuoco per `openfocus_a` e `openfocus_b`; C non ha raggio |
-| `--depth-smoothing VALUE` | Solo `openfocus_b`: forza della levigatura delle transizioni di profondità (1,2 predefinito) |
-| `--blend-smoothing VALUE` | Solo `openfocus_a` / `openfocus_c`: forza della levigatura delle transizioni (2,0 per A, 3,0 per C predefiniti) |
+| `--depth-smoothing VALUE` | Solo `openfocus_b`: forza della levigatura delle transizioni di profondità (1,44 predefinito) |
+| `--blend-smoothing VALUE` | Solo `openfocus_a` / `openfocus_c`: forza della levigatura delle transizioni (2,0 per A, 3,6 per C predefiniti) |
 | `--ai-mode {soft,hard}` | Output StackMFF V3: miscelazione ponderata per probabilità (predefinita) o fotogramma più probabile per pixel |
 | `--threads, -t` | Limite superiore dei thread di lavoro; `0` = automatico (predefinito), i valori positivi limitano la concorrenza |
 | `--resource-preference` | `balanced` (predefinito), `responsive` o `maximum`; controlla la pianificazione delle risorse |

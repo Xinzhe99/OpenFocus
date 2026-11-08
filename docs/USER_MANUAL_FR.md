@@ -60,7 +60,7 @@ Par exemple, l'équivalent en CLI est `python main.py --input ./png-stack --outp
 
 ### Formats de sortie pris en charge
 
-Dans **Enregistrer sous**, le TIFF ordinaire enregistre le résultat comme une seule image ; le TIFF multicouche inclut les images sources comme calques. Linear DNG est toujours affiché, mais son enregistrement exige un résultat linéaire appareil sans modifications incorporées, issu de **Ouvrir un RAW natif** et doté de la calibration de l’appareil.
+Dans **Enregistrer sous**, le TIFF ordinaire enregistre le résultat comme une seule image ; le TIFF multicouche inclut les images sources comme calques. Linear DNG est toujours affiché, mais son enregistrement exige un résultat linéaire appareil sans modifications incorporées et doté de la calibration de l’appareil.
 
 - Images individuelles : JPG, PNG, BMP, TIFF, WebP
 - Séquences d'images : enregistrées sous forme de dossiers
@@ -434,21 +434,25 @@ C'est la méthode présélectionnée dans une nouvelle installation.
 
 Chaque tuile neuronale utilise toutes les images. Les images et les données temporaires de recalage peuvent être stockées sur disque ; l’espace libre et la mémoire disponible limitent la pile. Le pavage spatial V2 est une approximation de l’inférence sur l’image entière.
 
+Si aucun dossier temporaire n'est indiqué, OpenFocus estime les besoins à partir des entrées connues et des données temporaires. Si le disque temporaire du système manque d'espace, il peut envisager des disques locaux fixes accessibles en écriture. Un dossier explicitement choisi n'est jamais remplacé automatiquement. La vérification est une estimation ponctuelle, pas une réservation ; l'espace peut manquer par la suite. En cas d'erreur de stockage, choisissez un dossier accessible en écriture dans les paramètres avancés.
+
 
 ### OpenFocus A / B / C
 
-- **OpenFocus A** : lisse sa carte de réponse de netteté multi-échelles, puis sélectionne les pixels nets.
+- **OpenFocus A** : sélectionne les pixels sources selon une réponse de netteté multi-échelles.
 - **OpenFocus B** : mélange les images voisines guidé par une carte de profondeur lissée.
-- **OpenFocus C** : reconstruit les bandes multi-échelles guidé par une carte de profondeur lissée.
-- **Paramètres** : A et B utilisent le curseur de noyau pour régler l'échelle de réponse de netteté ; C n'a pas de rayon. Les trois ont un paramètre de lissage qui contrôle la force des transitions.
+- **OpenFocus C** : mélange les pixels sources selon la carte de profondeur finale lissée.
+- **Paramètres** : A et B utilisent le curseur de noyau pour régler l'échelle de réponse de netteté ; C n'a pas de rayon. Le lissage de A est sans effet, comme dans HF9 A ; B et C lissent la carte de profondeur utilisée pour la fusion.
 
 **Lissage** : un seul champ numérique sous le curseur de noyau, dont le sens dépend de la méthode sélectionnée (plage 0–8, pas 0,2) :
 
 | Méthode | Libellé | Défaut | Effet |
 |---|---|---|---|
-| OpenFocus A | Lissage du mélange | 2,0 | Contrôle le lissage de la carte de réponse de netteté avant la sélection des pixels |
-| OpenFocus B | Lissage de profondeur | 1,2 | Contrôle le lissage de la carte de profondeur qui guide le mélange |
-| OpenFocus C | Lissage du mélange | 3,0 | Contrôle le lissage de la carte de profondeur qui guide la reconstruction multi-échelles |
+| OpenFocus A | Lissage du mélange | 2,0 | Sans effet, comme dans HF9 A |
+| OpenFocus B | Lissage de profondeur | 1,44 | Contrôle le lissage de la carte de profondeur qui guide le mélange |
+| OpenFocus C | Lissage du mélange | 3,6 | Contrôle le lissage de la carte de profondeur et les transitions de fusion |
+
+Taille de noyau par défaut pour A/B : 17. Les valeurs enregistrées sont conservées ; réinitialisez les paramètres pour utiliser les nouvelles valeurs par défaut.
 
 Des valeurs plus élevées augmentent le lissage des transitions. Chaque méthode mémorise sa propre valeur entre les sessions, et le traitement par lots applique la même règle.
 
@@ -484,7 +488,7 @@ Sélectionnez **Alignement seul (sans fusion)** pour recaler la pile et ajouter 
 | StackMFF V3 | Lente (GPU) | Excellente | Qualité maximale |
 | OpenFocus A | Dépend de la pile | Dépend de la pile | Sélection multi-échelles des pixels nets |
 | OpenFocus B | Dépend de la pile | Dépend de la pile | Mélange d'images voisines guidé par la profondeur |
-| OpenFocus C | Dépend de la pile | Dépend de la pile | Reconstruction multi-échelles guidée par la profondeur |
+| OpenFocus C | Dépend de la pile | Dépend de la pile | Mélange des pixels sources selon la carte de profondeur finale |
 
 Ouvrez **Outils → Comparaison de méthodes** pour régler plusieurs méthodes indépendamment. Le nom, les libellés de paramètres et les contrôles de chaque méthode restent groupés lorsque la fenêtre se rétrécit. Les modifications actualisent l'aperçu automatiquement. **Aperçu ROI (rapide)** fusionne la zone sélectionnée avec le contexte environnant ; **Fusion pleine image** vérifie le résultat sur toute l'image et permet d'inspecter une autre zone sans relancer le rendu. Les résultats ROI peuvent différer de ceux en pleine image, car les statistiques d'exposition et certains algorithmes dépendent de l'étendue de l'image.
 La **fusion pleine image** est sélectionnée par défaut.
@@ -895,8 +899,8 @@ Par exemple, ajoutez `--align openfocus --alignment-report alignment.json` à un
 | `--defect-mask-path MASK` | Masque de défauts en coordonnées capteur réparé avant le recalage |
 | `--sensor-denoise` | Réduction du bruit du capteur prudente avant le recalage |
 | `--kernel, -k` | Taille du noyau (forcée impaire) ; contrôle l'échelle de réponse de netteté pour `openfocus_a` et `openfocus_b` ; C n'a pas de rayon |
-| `--depth-smoothing VALUE` | `openfocus_b` uniquement : force du lissage des transitions de profondeur (1,2 par défaut) |
-| `--blend-smoothing VALUE` | `openfocus_a` / `openfocus_c` uniquement : force du lissage des transitions (2,0 pour A, 3,0 pour C par défaut) |
+| `--depth-smoothing VALUE` | `openfocus_b` uniquement : force du lissage des transitions de profondeur (1,44 par défaut) |
+| `--blend-smoothing VALUE` | `openfocus_a` / `openfocus_c` uniquement : force du lissage des transitions (2,0 pour A, 3,6 pour C par défaut) |
 | `--ai-mode {soft,hard}` | Sortie StackMFF V3 : mélange pondéré par les probabilités (défaut) ou image la plus probable par pixel |
 | `--threads, -t` | Limite supérieure de threads de travail ; `0` = automatique (défaut), les valeurs positives plafonnent la concurrence |
 | `--resource-preference` | `balanced` (défaut), `responsive` ou `maximum` ; contrôle l'ordonnancement des ressources |

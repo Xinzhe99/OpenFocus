@@ -5,37 +5,78 @@ these approaches:
 
 | Method | Approach | Main controls |
 |---|---|---|
-| A | Selects original source pixels using smoothed high-frequency energy. | High-pass scale and energy spread (`--kernel`, `--blend-smoothing`) |
+| A | Selects pixels using the sum of absolute Burt-pyramid Laplacians. | Radius (`--kernel`); smoothing is inert as in HF9 A |
 | B | Blends neighboring frames according to a smoothed depth map. | Kernel radius and depth smoothing (`--kernel`, `--depth-smoothing`) |
-| C | Uses a depth estimate to merge and reconstruct a fixed-point pyramid. | Blend smoothing (`--blend-smoothing`); no radius control |
+| C | Blends source pixels using the completed, smoothed depth map. | Blend smoothing (`--blend-smoothing`); no radius control |
+
+Default parameters are kernel size 17 for A and B, blend smoothing 2.0 for A,
+depth smoothing 1.44 for B, and blend smoothing 3.6 for C. B and C retain
+their respective smoothing multipliers of 5/1.2 and 5/3.0. These defaults are
+a parameter mapping calibrated to Helicon Focus 9's GUI radius 8 and smoothing
+6, not a guarantee of equivalent algorithms, visual results or resource use.
+Existing per-method saved values remain in use; restore defaults to use the new
+defaults.
 
 Exposure matching can compensate for brightness differences across the stack
 before fusion. OpenFocus A/B/C input can be sorted with `--sort asc|desc|off`;
 StackMFF V2 keeps its original focus order. The pipeline
-supports 8-bit and 16-bit output. The depth-map dialog uses the same B/C depth
-estimation and smoothing as fusion. Tiled B/C renders share a full-image depth
-map; when resizing is requested, they use whole-frame rendering so the depth
-map and output have the same dimensions.
+supports 8-bit and 16-bit output. The depth-map dialog uses the shared B/C
+depth estimator. B and C use the completed smoothed depth map for fusion;
+C merges full-resolution source codes in reverse source order during its second pass.
+B's external tiles share a full-image depth map; resizing uses whole frames.
 
 OpenFocus A/B/C use whole-image processing at the default tile threshold, even
-when the general tile option is enabled. A non-default threshold explicitly
-opts into their external tile path. Bounded row and frame passes are internal
-memory controls and retain the global depth/reconstruction domain.
+when the general tile option is enabled. A non-default threshold opts A/B into
+external tiling. C keeps a single depth and source-merge domain at every threshold.
+Bounded rows and frame windows control memory within that domain.
 
-A computes float32 grayscale as the equal-channel mean, excluding alpha. With
-`fine_sigma = max(1.0, kernel_size / 5.5)`, it subtracts a Gaussian-blurred
-grayscale image to obtain a high-pass response. Its score is the Gaussian blur
-of that response squared, using
-`spread_sigma = max(1.0, (2.0 if blend_smoothing is None else blend_smoothing) / 2.0)`.
-Both Gaussian passes replicate border pixels. The kernel controls high-pass
-scale. Smoothing 0 uses a spread sigma of 1.0.
-A compares scores strictly in source order, retaining the first frame on ties,
-and copies the winning complete original pixel, preserving 16-bit precision and
-alpha. Thread settings and low-memory processing retain this selection rule.
+A computes an equal-channel integer mean, excluding alpha. Eight-bit source
+values enter the code domain as `v << 8`; sixteen-bit values retain their
+original code. Radius `R = max(1, kernel_size // 2)` chooses
+`floor(log2(R)) + 3` Burt-pyramid levels. Each level uses a truncated 2×2 mean
+with replicated odd edges and bilinear expansion at phase −0.5. The response
+is the sum of nearest-expanded absolute Laplacians, saturated at 65535.
+Smoothing does not change A's response or selection. Strict source-order
+comparison retains the first frame on ties. Eight-bit output uses HF9's E-37
+exit (`max(v-1, 0)`); sixteen-bit output keeps the selected code, without that
+subtraction. Mixed stacks map each input according to its own source depth.
 
-B and C can produce the same depth map while producing different color pixels:
-B blends source layers, whereas C reconstructs a multilevel pyramid. Similar
-depth estimates alone do not establish that the methods share their output.
+B and C use the integer activity/depth chain and ordered Q10 code-band merge.
+Signed division truncates toward zero; frames outside the current depth band do
+not write to the accumulated image. B computes smoothed depth first, then decodes
+only sources contributing to that depth band. Unused sources still undergo
+identity and processor validation. C computes final depth first, then merges
+full-resolution frames in reverse source order through a bounded window.
+Identical C inputs retain the original 8-bit and 16-bit samples.
+
+C computes activity on floor-sized half-resolution gray planes using the native
+fixed-half-scale LUT and ordered float32 FMA resampling. Votes and a square-root
+guide feed horizontal-then-vertical depth smoothing. Feather correction is
+truncated before bilinear expansion to the exact source canvas. Expansion keeps
+the native float32 scale and half-pixel offset operations separate, including
+when the requested width or height is odd.
+
+The supplied 512×512 HF9 CPU golden stacks were exercised with the production
+implementation. A covers R=1/5/10/22, S=0/5/20 and F=0/10; B/C below use
+R=22, S=5 and F=0. C uses the actual `mp:3` reference, not the obsolete
+`mp:2` files. Percentages count output samples in the 8-bit code domain.
+
+| Method | Golden stack | Exact samples | Within one code |
+|---|---|---:|---:|
+| A | S3 ties / S4 amplitude | 100% | 100% |
+| B | S4 amplitude | 69.54% | 100% |
+| C | S3 ties / S4 amplitude | 100% | 100% |
+| C | S1 zones, four frames | 100% | 100% |
+| C | S2 gradient, five frames | 100% | 100% |
+
+These results establish the tested configurations. Other B reconstruction details,
+non-identical sixteen-bit C stacks and other parameter/image-size combinations remain
+outside general bit-exactness claims. Odd-canvas depth expansion matches a native
+129×131 capture. C identity
+is separately checked at 64–512 pixels in both source depths, including odd
+dimensions. The product preserves A's 16-bit source codes rather than copying
+HF9's occasional one-code float round-trip loss.
+
 
 StackMFF V1 and V2 use retrained single-scale attention networks, each with
 about 156,172 parameters. V1 combines luminance with softmax weights and takes
@@ -57,12 +98,14 @@ Imported frames and alignment scratch can be disk-backed, reducing resident
 stack storage. Decoding, inference workspaces and full-size outputs still need
 available RAM, while temporary frame and alignment data need free disk space.
 Very large inputs can exceed either limit and fail with a resource error.
-The temporary data directory can be selected in Advanced Settings. Checks use
-the selected directory before creating each mapped frame and estimate whole-stack
-needs where headers are available. Some processing stages also check for their
-additional mapped frames. These are point-in-time checks, not reservations;
-other processes can still consume space afterward. Changing the directory does
-not move previously created mappings.
+When no temporary directory is configured, OpenFocus chooses a writable local
+temporary location using the known input and staging estimates; if the system
+temporary disk is too small, it considers fixed local volumes. A manually
+selected directory is used as configured and is never silently replaced.
+Checks use point-in-time free space with a system reserve, not a reservation;
+later processing or other processes may still require additional space. If
+storage is unavailable or fills up, free space or choose a writable directory
+in Advanced Settings. Changing that setting does not move existing mappings.
 
 
 GFG-FGF converts source frames to its float32 working range as each pass

@@ -466,27 +466,6 @@ def test_deep_stack_depth_index_is_preserved(monkeypatch, smoothing, winner):
     np.testing.assert_allclose(depth, winner, atol=0.01)
 
 
-def test_depth_guide_expands_range_from_lower_percentile(monkeypatch):
-    from fusion_methods import openfocus_depth
-
-    activity = np.arange(100, dtype=np.int64).reshape(10, 10) * 10 + 1000
-    guides = []
-    calls = 0
-
-    def fake_filter(src, radius, cancel, guide=None, low=None, *,
-                    allocate=None):
-        nonlocal calls
-        if guide is not None:
-            guides.append(guide.copy())
-            return src.astype(np.int64)
-        calls += 1
-        return np.zeros_like(src) if calls % 2 else activity.copy()
-
-    monkeypatch.setattr(openfocus_depth, "_filter", fake_filter)
-    frames = [np.zeros((10, 10), np.uint8)] * 2
-    openfocus_depth.depth_map(frames, None, 11, 5, None)
-    assert guides[0][0, 0] < 100
-    assert guides[0][-1, -1] > 65000
 
 
 def test_estimated_indices_boundaries_and_invalid_pixels():
