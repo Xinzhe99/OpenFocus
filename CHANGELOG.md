@@ -106,6 +106,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   response/cache before the common float output conversion.
 - Resolve macOS temporary subdirectories to their actual disk device before
   checking whether the volume is internal and fixed.
+- Quantize fusion results in bounded sample chunks instead of allocating
+  whole-image float copies, preserving 8/16-bit rounding and strided inputs.
 
 ## [1.77.0] - 2026-11-06
 

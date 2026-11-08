@@ -51,6 +51,40 @@ jobs:
           PYTHONFAULTHANDLER: '1'
         run: pytest -v -x --timeout=90 --timeout-method=thread
 
+      - name: Capture macOS native backtrace
+        if: ${{ failure() && runner.os == 'macOS' }}
+        timeout-minutes: 15
+        continue-on-error: true
+        shell: bash
+        run: |
+          lldb --batch \
+            -o 'process handle SIGILL -s true -n false -p true' \
+            -o run -o 'thread backtrace all' -o 'image list' \
+            -- python -m pytest -o addopts='' -vv -s -x \
+               --timeout=90 --timeout-method=thread 2>&1 | tee "$RUNNER_TEMP/macos-lldb.txt"
+
+      - name: Upload macOS native crash diagnostics
+        if: ${{ failure() && runner.os == 'macOS' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-crash-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ~/Library/Application Support/OpenFocus/logs/openfocus-*.crash.txt
+            ~/Library/Application Support/OpenFocus/logs/openfocus-*.log
+            /private/var/folders/**/openfocus-*.crash.txt
+            ~/Library/Logs/DiagnosticReports/Python*.ips
+            ~/Library/Logs/DiagnosticReports/python*.ips
+            ~/Library/Logs/DiagnosticReports/pytest*.ips
+            ~/Library/Logs/DiagnosticReports/Python*.crash
+            ${{ runner.temp }}/macos-lldb.txt
+            ~/Library/Logs/DiagnosticReports/python*.crash
+            ~/Library/Logs/DiagnosticReports/pytest*.crash
+            /Library/Logs/DiagnosticReports/Python*.ips
+            /Library/Logs/DiagnosticReports/python*.ips
+            /Library/Logs/DiagnosticReports/pytest*.ips
+          if-no-files-found: warn
+          retention-days: 7
+
   headless-wheel:
     name: Installed wheel without GUI
     if: ${{ github.event_name != 'workflow_dispatch' || inputs.run_suite }}
@@ -111,8 +145,10 @@ jobs:
           import subprocess
           import sys
 
-          # Children inherit this two-CPU affinity; native pools remain serial.
-          os.sched_setaffinity(0, sorted(os.sched_getaffinity(0))[:2])
+          # Children share the runner's available CPUs, capped at four;
+          # native library pools remain serial inside the row/frame budget.
+          cpus = sorted(os.sched_getaffinity(0))[:4]
+          os.sched_setaffinity(0, cpus)
           import cv2
           import numpy as np
           import tifffile
@@ -135,7 +171,7 @@ jobs:
                          '--count', '16', '--channels', '1', '--dtype', 'uint16',
                          '--seed', '7', '--file-order', 'lexical', '--kernel-size', '17', '--method', method,
                          '--entry', 'pipeline', '--load-mode', 'loader', '--alignment', 'none',
-                         '--threads', '2', '--resource-preference', 'maximum',
+                         '--threads', str(len(cpus)), '--resource-preference', 'maximum',
                          '--output', str(output), '--json-output', str(report_path)]
               print(subprocess.list2cmdline(command), flush=True)
               try:

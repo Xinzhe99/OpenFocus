@@ -1061,17 +1061,27 @@ def fuse_output_dtype(images) -> type:
 
 
 def quantize_fuse_output(result, is_16bit: bool):
-    """Quantize a 0-255 fusion result back to the source bit depth."""
+    """Quantize 0-255 pixels using bounded chunks, including strided views."""
     if result is None:
         return None
-    if is_16bit:
-        return (np.clip(result, 0.0, 255.0) * (65535.0 / 255.0)).round().astype(np.uint16)
-    if result.dtype == np.uint8:
+    if not is_16bit and result.dtype == np.uint8:
         return result
-    clipped = np.clip(result, 0.0, 255.0)
-    if clipped.dtype.kind == "f":
-        np.rint(clipped, out=clipped)
-    return clipped.astype(np.uint8)
+    from core.frame_storage import create_transient_frame
+
+    pixels = np.asarray(result)
+    output = create_transient_frame(pixels.shape, np.uint16 if is_16bit else np.uint8)
+    # Buffered external loops cap every arithmetic temporary independently of
+    # image dimensions while retaining source/output coordinates for any stride.
+    with np.nditer([pixels, output], flags=['external_loop', 'buffered', 'zerosize_ok'],
+                   op_flags=[['readonly'], ['writeonly']], buffersize=128 * 1024) as chunks:
+        for source, destination in chunks:
+            clipped = np.clip(source, 0.0, 255.0)
+            if is_16bit:
+                clipped *= 65535.0 / 255.0
+            if clipped.dtype.kind == 'f':
+                np.rint(clipped, out=clipped)
+            destination[...] = clipped
+    return output[()] if pixels.ndim == 0 else output
 
 
 # ---------------------------------------------------------------------------
