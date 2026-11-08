@@ -76,12 +76,26 @@ def test_high_depth_heif_to_png_retains_16bit(tmp_path):
     assert np.any(decoded % 257)
 
 
-def test_cancellation_after_encoding_removes_reserved_file(tmp_path):
+@pytest.mark.parametrize('stage', ['writer', 'after_write'])
+def test_cancelled_conversion_removes_reserved_and_temporary_outputs(tmp_path, monkeypatch, stage):
     source = tmp_path / 'image.png'
     Image.new('RGB', (4, 4)).save(source)
-    calls = iter([False, False, True])
+    before = source.read_bytes()
+    stopped = False
+    write = converter.imwrite_auto
+
+    def cancel_at_write(*args, **kwargs):
+        nonlocal stopped
+        if stage == 'writer':
+            stopped = True
+        result = write(*args, **kwargs)
+        stopped = True
+        return result
+
+    monkeypatch.setattr(converter, 'imwrite_auto', cancel_at_write)
     with pytest.raises(InterruptedError):
-        converter.convert_one(str(source), str(tmp_path), '.jpg', cancelled=lambda: next(calls))
+        converter.convert_one(str(source), str(tmp_path), '.jpg', cancelled=lambda: stopped)
+    assert source.read_bytes() == before
     assert sorted(p.name for p in tmp_path.iterdir()) == ['image.png']
 
 

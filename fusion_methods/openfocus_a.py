@@ -4,6 +4,7 @@ import cv2
 import numpy as np
 from core.frame_storage import create_transient_frame as create_frame
 from fusion_methods._hf9_pixels import frame_codes, frame_gray_codes, gray_codes, output_codes
+from fusion_methods._hf9_execution import execution_job, configure_rows, run_bands
 
 
 def _down2(gray, should_cancel, check_cancel):
@@ -12,13 +13,14 @@ def _down2(gray, should_cancel, check_cancel):
     result = create_frame(((height + 1) // 2, (width + 1) // 2), np.int32)
     left = 2 * np.arange(result.shape[1])
     right = np.minimum(left + 1, width - 1)
-    for start in range(0, result.shape[0], 128):
+    def reduce_rows(start, stop):
         check_cancel(should_cancel)
-        stop = min(result.shape[0], start + 128)
         top = (2 * np.arange(start, stop))[:, None]
         bottom = np.minimum(top + 1, height - 1)
         result[start:stop] = ((gray[top, left] + gray[top, right]
                                + gray[bottom, left] + gray[bottom, right]) >> 2)
+    run_bands(result.shape[0], 128, reduce_rows,
+              scratch_bytes=min(128, result.shape[0]) * result.shape[1] * 24)
     return result
 
 
@@ -30,9 +32,8 @@ def _expand_burt(gray, shape, should_cancel, check_cancel):
     fx = sx - x0
     x1 = np.clip(x0 + 1, 0, gray.shape[1] - 1)
     x0 = np.clip(x0, 0, gray.shape[1] - 1)
-    for start in range(0, shape[0], 128):
+    def expand_rows(start, stop):
         check_cancel(should_cancel)
-        stop = min(shape[0], start + 128)
         sy = (np.arange(start, stop, dtype=np.float64) + 0.5) / 2.0 - 0.5
         y0 = np.floor(sy).astype(np.int32)
         fy = (sy - y0)[:, None]
@@ -41,6 +42,8 @@ def _expand_burt(gray, shape, should_cancel, check_cancel):
         top = gray[y0, x0] * (1.0 - fx) + gray[y0, x1] * fx
         bottom = gray[y1, x0] * (1.0 - fx) + gray[y1, x1] * fx
         result[start:stop] = top * (1.0 - fy) + bottom * fy
+    run_bands(shape[0], 128, expand_rows,
+              scratch_bytes=min(128, shape[0]) * shape[1] * 64)
     return result
 
 
@@ -55,23 +58,26 @@ def _response(code, radius, should_cancel, check_cancel, *, u8=False):
         check_cancel(should_cancel)
         reduced = _down2(gray, should_cancel, check_cancel)
         laplacian = _expand_burt(reduced, gray.shape, should_cancel, check_cancel)
-        for start in range(0, gray.shape[0], 128):
+        def difference(start, stop):
             check_cancel(should_cancel)
-            rows = slice(start, min(gray.shape[0], start + 128))
+            rows = slice(start, stop)
             np.subtract(gray[rows], laplacian[rows], out=laplacian[rows])
             np.abs(laplacian[rows], out=laplacian[rows])
+        run_bands(gray.shape[0], 128, difference)
         factor = 1 << level
         columns = np.arange(width) // factor
-        for start in range(0, height, 128):
+        def accumulate(start, stop):
             check_cancel(should_cancel)
-            stop = min(height, start + 128)
             rows = (np.arange(start, stop) // factor)[:, None]
             response[start:stop] += laplacian[rows, columns]
+        run_bands(height, 128, accumulate,
+                  scratch_bytes=min(128, height) * width * 8)
         gray = reduced
         del laplacian
-    for start in range(0, height, 128):
+    def clamp(start, stop):
         check_cancel(should_cancel)
-        np.minimum(response[start:start + 128], 65535, out=response[start:start + 128])
+        np.minimum(response[start:stop], 65535, out=response[start:stop])
+    run_bands(height, 128, clamp)
     return response
 
 
@@ -89,23 +95,25 @@ def _hard_response(gray, radius, should_cancel, check_cancel):
         check_cancel(should_cancel)
         reduced = create_frame(((gray.shape[0] + 1) // 2,
                                 (gray.shape[1] + 1) // 2), np.int32)
-        for start in range(0, reduced.shape[0], 128):
+        def reduce_rows(start, stop):
             check_cancel(should_cancel)
-            down2_rows(gray, reduced, start, min(reduced.shape[0], start + 128))
+            down2_rows(gray, reduced, start, stop)
+        run_bands(reduced.shape[0], 128, reduce_rows)
         laplacian = create_frame(gray.shape, np.int32)
-        for start in range(0, gray.shape[0], 128):
+        def laplacian_rows(start, stop):
             check_cancel(should_cancel)
-            burt_laplacian_rows(gray, reduced, laplacian, start,
-                                min(gray.shape[0], start + 128))
-        for start in range(0, height, 128):
+            burt_laplacian_rows(gray, reduced, laplacian, start, stop)
+        run_bands(gray.shape[0], 128, laplacian_rows)
+        def accumulate_rows(start, stop):
             check_cancel(should_cancel)
-            burt_accumulate_rows(laplacian, response, level, start,
-                                 min(height, start + 128))
+            burt_accumulate_rows(laplacian, response, level, start, stop)
+        run_bands(height, 128, accumulate_rows)
         gray = reduced
         del laplacian
     return response
 
 
+@execution_job
 def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 17,
                      thread_count: int = None, blend_smoothing: float = 2.0,
                      blend_mode: str = 'hard', soft_gamma: float = 1.0,
@@ -126,6 +134,7 @@ def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 17,
         _frame_pass_workers, _ordered_frame_results)
 
     frames = _collect_images(input_source, normalize=False, should_cancel=should_cancel)
+    configure_rows(frames, img_resize, 'openfocus_a', thread_count, should_cancel)
     radius = max(1, int(kernel_size) // 2)
     hard = blend_mode not in ('soft', 'feather')
     fast_hard = hard and img_resize is None and all(
@@ -147,8 +156,12 @@ def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 17,
             response = _hard_response(gray, radius, cancelled, _check_cancel)
             return frame, response
         code = frame_codes(source, img_resize, cancelled)
-        response = _response(code, radius, cancelled, _check_cancel,
-                             u8=source.dtype == np.uint8)
+        if hard:
+            gray = gray_codes(code, cancelled, u8=source.dtype == np.uint8)
+            response = _hard_response(gray, radius, cancelled, _check_cancel)
+        else:
+            response = _response(code, radius, cancelled, _check_cancel,
+                                 u8=source.dtype == np.uint8)
         frame = code if hard else _prepare_frame(source, img_resize, cancelled)
         return frame, response
 
@@ -173,9 +186,9 @@ def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 17,
                     i2 = i1.copy()
                     v2 = np.full_like(response, -np.inf)
                 else:
-                    for start in range(0, response.shape[0], 128):
+                    def select_top_two(start, stop):
                         _check_cancel(should_cancel)
-                        rows = slice(start, min(response.shape[0], start + 128))
+                        rows = slice(start, stop)
                         a, b = v1[rows], v2[rows]
                         ia, ib = i1[rows], i2[rows]
                         r = response[rows]
@@ -189,6 +202,8 @@ def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 17,
                         take2 = (~take1) & (r > b)
                         np.copyto(v2[rows], r, where=take2)
                         np.copyto(i2[rows], np.full(r.shape, index, np.int32), where=take2)
+                    run_bands(response.shape[0], 128, select_top_two,
+                              scratch_bytes=min(128, response.shape[0]) * response.shape[1] * 8)
                 del frame, response
                 step += 1
                 if progress_callback is not None:
@@ -207,9 +222,9 @@ def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 17,
                 if accumulated is None:
                     accumulated = np.zeros(frame.shape, np.float32)
                     height, width = accumulated.shape[:2]
-                for start in range(0, height, 128):
+                def accumulate_top_two(start, stop):
                     _check_cancel(should_cancel)
-                    rows = slice(start, min(height, start + 128))
+                    rows = slice(start, stop)
                     is1 = i1[rows] == index
                     is2 = blend2[rows] & (i2[rows] == index)
                     if frame.ndim == 3:
@@ -218,6 +233,8 @@ def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 17,
                     else:
                         accumulated[rows] += np.where(is1, 1.0 - 0.5 * blend2[rows], 0.0) * frame[rows]
                         accumulated[rows] += np.where(is2, 0.5, 0.0) * frame[rows]
+                run_bands(height, 128, accumulate_top_two,
+                          scratch_bytes=min(128, height) * width * 64)
                 del frame, response
                 step += 1
                 if progress_callback is not None:
@@ -227,11 +244,13 @@ def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 17,
             def _log_rows(response):
                 """In-place log of a copy, rows blocked."""
                 out = np.empty_like(response)
-                for start in range(0, response.shape[0], 128):
+                def log_rows(start, stop):
                     _check_cancel(should_cancel)
-                    rows = slice(start, min(response.shape[0], start + 128))
+                    rows = slice(start, stop)
                     np.log(np.maximum(response[rows], 1e-12, dtype=np.float32),
                            out=out[rows])
+                run_bands(response.shape[0], 128, log_rows,
+                          scratch_bytes=min(128, response.shape[0]) * response.shape[1] * 4)
                 return out
 
             # pass 1: per-pixel max of log response
@@ -256,10 +275,12 @@ def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 17,
                 lr = _log_rows(response)
                 if denom is None:
                     denom = np.zeros_like(lr)
-                for start in range(0, denom.shape[0], 128):
+                def denominator(start, stop):
                     _check_cancel(should_cancel)
-                    rows = slice(start, min(denom.shape[0], start + 128))
+                    rows = slice(start, stop)
                     denom[rows] += np.exp(_soft_gamma * (lr[rows] - log_max[rows, None]))
+                run_bands(denom.shape[0], 128, denominator,
+                          scratch_bytes=min(128, denom.shape[0]) * denom.shape[1] * 24)
                 del frame, response, lr
                 step += 1
                 if progress_callback is not None:
@@ -276,16 +297,18 @@ def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 17,
                     accumulated = np.zeros(frame.shape, np.float32)
                     height, width = accumulated.shape[:2]
                 lr = _log_rows(response)
-                for start in range(0, height, 128):
+                def accumulate_soft(start, stop):
                     _check_cancel(should_cancel)
-                    rows = slice(start, min(height, start + 128))
+                    rows = slice(start, stop)
                     weight = np.exp(_soft_gamma * (lr[rows] - log_max[rows, None])) / \
                         np.where(denom[rows] > 0, denom[rows], 1.0)
                     if frame.ndim == 3:
                         accumulated[rows] += weight[:, :, None] * frame[rows]
                     else:
                         accumulated[rows] += weight * frame[rows]
-                del frame, response, lr, weight
+                run_bands(height, 128, accumulate_soft,
+                          scratch_bytes=min(128, height) * width * 64)
+                del frame, response, lr
                 step += 1
                 if progress_callback is not None:
                     progress_callback(step, total_steps)
@@ -305,9 +328,8 @@ def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 17,
                         continue
                 if frame.shape != output.shape:
                     raise ValueError("OpenFocus A requires frames with matching shapes")
-                for start in range(0, output.shape[0], 128):
+                def select(start, stop):
                     _check_cancel(should_cancel)
-                    stop = min(output.shape[0], start + 128)
                     if fast_hard:
                         from fusion_methods._hf9_kernels import select_rows
 
@@ -320,6 +342,8 @@ def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 17,
                                   where=better[:, :, None] if frame.ndim == 3 else better)
                         np.copyto(best[rows], response[rows], where=better)
                         del better
+                run_bands(output.shape[0], 128, select,
+                          scratch_bytes=min(128, output.shape[0]) * output.shape[1])
                 del frame, response
                 if progress_callback is not None:
                     progress_callback(index + 1, len(frames))
@@ -333,9 +357,10 @@ def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 17,
     np.clip(output, 0, 255, out=output)
     if all(frame.dtype == np.uint8 for frame in frames):
         result = create_frame(output.shape, np.uint8)
-        for start in range(0, output.shape[0], 128):
+        def convert(start, stop):
             _check_cancel(should_cancel)
-            rows = slice(start, min(output.shape[0], start + 128))
+            rows = slice(start, stop)
             result[rows] = output[rows]
+        run_bands(output.shape[0], 128, convert)
         return result
     return output

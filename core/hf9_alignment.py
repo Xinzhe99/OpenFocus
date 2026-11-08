@@ -82,10 +82,10 @@ class SourceFingerprint:
 
 @dataclass(frozen=True)
 class TranslationTransform:
-    """Forward translation in full-resolution pixels; sample at (x-dx, y-dy).
+    """Translation in full-resolution pixels; sample at (x-dx, y-dy).
 
-    pair_dx/dy are the estimator result against the previous ALIGNED gray
-    plane. dx/dy include the previous total, exactly as the proven prototype.
+    The previous reference is already aligned to source zero, so pair_dx/dy
+    and dx/dy are in that same anchor coordinate system.
     """
 
     source_index: int
@@ -386,11 +386,11 @@ def estimate_translation_plan(sources, *, max_shift_ratio=0.05,
     """Estimate once; retain only immutable transforms and source identities.
 
     Sources are a sized sequence of arrays or resolve_frame descriptors.
-    Reference is source 0; processing order is input order. max_shift_ratio is
-    a per-axis bound on the PAIR result (width*x, height*y), not the cumulative
-    total. It admits/rejects the canonical search result, never clips it or
-    changes the proven search grid. Zero disables estimation and emits identity
-    transforms. Progress is callback(completed_frames, total_frames).
+    Reference is source zero; processing order is input order. The previous
+    gray reference is already aligned, so each result directly maps to the
+    anchor. max_shift_ratio bounds that estimate per axis (width*x, height*y).
+    Zero disables estimation and emits identity transforms. Progress is
+    callback(completed_frames, total_frames).
     """
     _check_cancel(should_cancel)
     ratio = float(max_shift_ratio)
@@ -405,7 +405,6 @@ def estimate_translation_plan(sources, *, max_shift_ratio=0.05,
         fixed_bytes=needed, per_worker_bytes=0, outer_tasks=1), user_threads=1)
     transforms = []
     previous = None
-    total_x = total_y = 0.0
     for index, frame in enumerate(sources):
         _check_cancel(should_cancel)
         image = resolve_frame(frame)
@@ -424,12 +423,9 @@ def estimate_translation_plan(sources, *, max_shift_ratio=0.05,
             if abs(pair_x) > w * ratio or abs(pair_y) > h * ratio:
                 raise ValueError(f'Translation for frame {index} exceeds max_shift_ratio: '
                                  f'({pair_x}, {pair_y}) full-resolution pixels')
-        total_x += pair_x
-        total_y += pair_y
-        transform = TranslationTransform(index, total_x, total_y, pair_x, pair_y, identity)
+        transform = TranslationTransform(index, pair_x, pair_y, pair_x, pair_y, identity)
         transforms.append(transform)
-        # Preserve the exact aligned-reference-plus-total chain in the source.
-        previous = _warp(gray, total_x, total_y, should_cancel)
+        previous = _warp(gray, pair_x, pair_y, should_cancel)
         del gray
         if progress_callback is not None:
             progress_callback(index + 1, len(sources))
@@ -838,8 +834,14 @@ def align_pair_wide(ref_u16, test_u16, h_pct=12.0, v_pct=12.0, rot_deg=6.0,
         rot_cov = float(np.sin(np.radians(float(rot_rng)))) * 0.5
         sf = max(float(shift_frac[0]), rot_cov)
         rng = [F32(sf), F32(sf), mag_rng, rot_rng]
+        level_grid = grid_half
+        if rot_rng == 0 and mag_rng == 0:
+            # With translation alone, a coarse step above one pixel can skip
+            # the true basin entirely before quarter-pixel refinement starts.
+            radius = F32(F32(sf) * F32(max(A.shape) // 2) * F32(2))
+            level_grid = max(grid_half, math.ceil(float(radius)))
         f8, _r, rounds = grid_level_4d(A, B, base_lvl, rng, coef=1.0,
-                                       grid_half=grid_half, divisor=divisor,
+                                       grid_half=level_grid, divisor=divisor,
                                        max_rounds=max_rounds, verbose=verbose,
                                        tag=f"wide{lvl}", should_cancel=should_cancel)
         rounds_total += rounds
@@ -901,7 +903,7 @@ def _bilinear_points(image, u, v):
 
 
 _IDENTITY_F8 = (0., 0., 0., 0., 0., 1., 1., 1.)
-ALIGNMENT_PLAN_VERSION = 1
+ALIGNMENT_PLAN_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -1096,9 +1098,10 @@ def estimate_alignment_plan(sources, *, max_shift_ratio=.05, reference_frame=1,
                             progress_callback=None, failure_policy='fail'):
     """Sequential wide search; rotation in degrees, magnification in percent.
 
-    Reference 1 follows the proven aligned-reference cumulative chain. An
-    explicitly selected later reference is the fixed geometric anchor, visited
-    first, then frames to its left descending and frames to its right ascending.
+    Source one follows the previous aligned reference. Each pair estimate
+    already maps to the anchor, so no previous transform is added again.
+    An explicitly selected later reference is a fixed geometric anchor,
+    visited first, then frames to its left descending and right ascending.
     No content autosort or unproven seed ownership is inferred.
     """
     _check_cancel(should_cancel)
@@ -1123,7 +1126,6 @@ def estimate_alignment_plan(sources, *, max_shift_ratio=.05, reference_frame=1,
     order = (ref, *range(ref - 1, -1, -1), *range(ref + 1, len(sources)))
     transforms = [None] * len(sources)
     previous = anchor = None
-    accumulated = np.array(_IDENTITY_F8, np.float32)
     previous_index = ref
     for done, index in enumerate(order):
         _check_cancel(should_cancel)
@@ -1144,7 +1146,6 @@ def estimate_alignment_plan(sources, *, max_shift_ratio=.05, reference_frame=1,
         del image
         if index != ref and ref > 0:
             previous, previous_index = anchor, ref
-            accumulated = np.array(_IDENTITY_F8, np.float32)
         pair = np.array(_IDENTITY_F8, np.float32)
         rounds, failure = 0, ''
         if index != ref and ratio and not np.array_equal(previous, gray):
@@ -1160,13 +1161,7 @@ def estimate_alignment_plan(sources, *, max_shift_ratio=.05, reference_frame=1,
                     raise failure from error
                 failure = str(error)
                 pair = np.array(_IDENTITY_F8, np.float32)
-        if failure:
-            total = np.array(_IDENTITY_F8, np.float32)
-        else:
-            total = pair.copy()
-            total[:4] = accumulated[:4] + pair[:4]
-            total[4] = accumulated[4] + pair[4]
-            total[5:7] = accumulated[5:7] * pair[5:7]
+        total = pair.copy()
         if (not failure and ref == 0 and previous_index != ref
                 and transforms[previous_index].failure):
             failure = 'reference alignment fell back'
@@ -1177,7 +1172,7 @@ def estimate_alignment_plan(sources, *, max_shift_ratio=.05, reference_frame=1,
         if index == ref and ref > 0:
             anchor = previous
         del gray
-        accumulated, previous_index = total, index
+        previous_index = index
         if progress_callback is not None:
             progress_callback(done + 1, len(sources))
     _check_cancel(should_cancel)

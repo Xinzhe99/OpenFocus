@@ -11,6 +11,7 @@ from utils.image_utils import (
 )
 from utils import align_cache
 from core.multi_focus_fusion import MultiFocusFusion
+from tests.test_algorithms import extension
 
 
 class TestDisplayConversion:
@@ -219,10 +220,15 @@ class TestAlignCache:
 class TestAlignCacheIsNotOnTheGuiThread:
     """Reading a cache hit used to decode every PNG synchronously in the GUI."""
 
+    @pytest.fixture(autouse=True)
+    def _array_extension(self, extension):
+        """Extensions without streaming source support retain the array cache."""
+        return extension
+
     def _worker(self, tmp_path, frames, request, parameters=None):
         from core.workers import RenderWorker
         worker = RenderWorker(
-            frames, algorithm='guided_filter', alignment='homography', need_fusion=False,
+            frames, algorithm='extension', alignment='homography', need_fusion=True,
             registration_parameters=parameters, use_gpu=False, disk_cache=request,
         )
         return worker

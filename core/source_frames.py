@@ -459,6 +459,8 @@ class SourceFrame:
     preview_is_display: bool = False
     native_shape: tuple = ()
     preview_is_available: bool = True
+    # Native single-channel samples; the common decoder still exposes BGR pixels.
+    grayscale: bool = False
 
     @property
     def ndim(self):
@@ -479,8 +481,10 @@ class SourceFrame:
 
     def full_resolution(self):
         self.validate_source()
+        # Native gray and display BGR layouts retain independent cached buffers.
         key = (self.path, self.page, self.fingerprint, self.scale,
-               tuple(tuple(sorted(op.items())) for op in self.transforms), self.linear_metadata)
+               tuple(tuple(sorted(op.items())) for op in self.transforms),
+               self.linear_metadata, tuple(self.shape))
         cached = SOURCE_CACHE.get(key)
         if cached is not None:
             return cached
@@ -506,7 +510,10 @@ class SourceFrame:
                     scaled_raw = 0 < self.scale <= 1
                 else:
                     from core.image_loader import decode_tiff_page
-                    image = decode_tiff_page(self.path, self.page)
+                    if self.ndim == 2:
+                        image = decode_tiff_page(self.path, self.page, preserve_grayscale=True)
+                    else:
+                        image = decode_tiff_page(self.path, self.page)
             else:
                 from core.image_loader import is_raw_source
                 if is_raw_source(self.path):
@@ -514,7 +521,11 @@ class SourceFrame:
                                          scale_factor=self.scale)
                     scaled_raw = 0 < self.scale <= 1
                 else:
-                    image = decode_image(self.path, allow_transparent_png=True)
+                    if self.ndim == 2:
+                        image = decode_image(self.path, allow_transparent_png=True,
+                                             preserve_grayscale=True)
+                    else:
+                        image = decode_image(self.path, allow_transparent_png=True)
             if image is None:
                 raise ValueError(f'Could not decode source: {self.path}')
             if self.shape[-1] == 4 and image.ndim == 3 and image.shape[2] == 3:
@@ -590,14 +601,17 @@ class ProcessedFrame:
             raise RegistrationCancelled()
         from core.resource_policy import require_memory
         require_memory(frame_resolution_bytes(self))
-        image = resolve_frame(self.source)
-        if self.should_cancel is not None and self.should_cancel():
-            raise RegistrationCancelled()
-        image = self.processor(image)
-        if self.should_cancel is not None and self.should_cancel():
-            raise RegistrationCancelled()
-        if image.shape != self.shape or image.dtype != self.dtype:
-            raise ValueError('Processed frame does not match its declared shape/dtype')
+        from core.frame_storage import scratch_directory
+        with scratch_directory():
+            select_frame_scratch((self,), should_cancel=self.should_cancel)
+            image = resolve_frame(self.source)
+            if self.should_cancel is not None and self.should_cancel():
+                raise RegistrationCancelled()
+            image = self.processor(image)
+            if self.should_cancel is not None and self.should_cancel():
+                raise RegistrationCancelled()
+            if image.shape != self.shape or image.dtype != self.dtype:
+                raise ValueError('Processed frame does not match its declared shape/dtype')
         return image
 
     def __array__(self, dtype=None, copy=None):
@@ -632,29 +646,107 @@ def crop_frame(frame, x, y, width, height, *, channels=None, should_cancel=None)
     return process_frame(frame, crop, shape=shape, should_cancel=should_cancel, scratch_bytes=0)
 
 
-def match_exposure_frames(frames, should_cancel=None):
-    """Resolve the last mean once; apply each gain inside its admitted producer."""
-    from utils.image_utils import _exposure_mean, apply_exposure_gain
-    from core.frame_storage import create_transient_frame
-    target = _exposure_mean(resolve_frame(frames[-1]), should_cancel, normalize_uint16=True)
+def resolve_region(frame, x, y, width, height, *, channels=None, should_cancel=None):
+    """Copy one resolved region so a tile cannot retain its decoded full source."""
+    cropped = crop_frame(frame, x, y, width, height, channels=channels,
+                         should_cancel=should_cancel)
+    from core.resource_policy import require_memory
+    require_memory(frame_resolution_bytes(cropped) + cropped.nbytes)
+    image = np.array(resolve_frame(cropped), copy=True, order='C')
+    from core.registration import RegistrationCancelled
+    if should_cancel is not None and should_cancel():
+        raise RegistrationCancelled()
+    return image
 
-    def match(image):
+
+def normalize_frames(frames, should_cancel=None):
+    """Describe the existing shared float32 domain, preserving uint16 low bits."""
+    if not any(frame.dtype == np.uint16 for frame in frames):
+        return list(frames)
+
+    def normalize(image):
+        from core.frame_storage import create_transient_frame
         from core.registration import RegistrationCancelled
-        mean = _exposure_mean(image, should_cancel, normalize_uint16=True)
-        gain = 1.0 if target <= 1e-6 or mean <= 1e-6 else target / mean
-        if gain == 1.0:
-            return image
-        output = create_transient_frame(image.shape, image.dtype)
+        output = create_transient_frame(image.shape, np.float32)
         for y in range(0, image.shape[0], 128):
             if should_cancel is not None and should_cancel():
                 raise RegistrationCancelled()
-            output[y:y + 128] = apply_exposure_gain(image[y:y + 128], gain)
+            strip = image[y:y + 128].astype(np.float32)
+            if image.dtype == np.uint16:
+                strip *= 255.0 / 65535.0
+            output[y:y + 128] = strip
         return output
 
-    # Output storage and the converted float/integer strip coexist per producer.
-    return [process_frame(frame, match, should_cancel=should_cancel,
+    return [frame if frame.dtype == np.float32 else process_frame(
+                frame, normalize, dtype=np.float32, should_cancel=should_cancel,
+                scratch_bytes=frame.size * 4 + min(frame.shape[0], 128)
+                * math.prod(frame.shape[1:]) * 4) for frame in frames]
+
+
+def exposure_frames(frames, gains, should_cancel=None):
+    """Apply precomputed whole-frame gains inside each admitted source consumer."""
+    from core.frame_storage import create_transient_frame
+    from utils.image_utils import apply_exposure_gain
+    from core.registration import RegistrationCancelled
+
+    def adjusted(gain):
+        def apply(image):
+            output = create_transient_frame(image.shape, image.dtype)
+            for y in range(0, image.shape[0], 128):
+                if should_cancel is not None and should_cancel():
+                    raise RegistrationCancelled()
+                output[y:y + 128] = apply_exposure_gain(image[y:y + 128], gain)
+            return output
+        return apply
+
+    return [frame if gain == 1.0 else process_frame(
+                frame, adjusted(gain), should_cancel=should_cancel,
+                scratch_bytes=frame.nbytes + min(frame.shape[0], 128)
+                * math.prod(frame.shape[1:]) * (4 + frame.dtype.itemsize))
+            for frame, gain in zip(frames, gains)]
+
+
+def match_exposure_frames(frames, should_cancel=None):
+    """Resolve the target mean once and retain only one gain per immutable source."""
+    from utils.image_utils import (
+        _exposure_mean, apply_exposure_gain, normalize_fuse_input, quantize_fuse_output,
+    )
+    from core.frame_storage import create_transient_frame
+    reference = frames[-1]
+    target = _exposure_mean(resolve_frame(reference), should_cancel, normalize_uint16=True)
+
+    def matcher(gain):
+        def match(image):
+            nonlocal gain
+            from core.registration import RegistrationCancelled
+            if gain is None:
+                mean = _exposure_mean(image, should_cancel, normalize_uint16=True)
+                gain = 1.0 if target <= 1e-6 or mean <= 1e-6 else target / mean
+            if gain == 1.0:
+                return image
+            output = create_transient_frame(image.shape, image.dtype)
+            for y in range(0, image.shape[0], 128):
+                if should_cancel is not None and should_cancel():
+                    raise RegistrationCancelled()
+                strip = image[y:y + 128]
+                if image.dtype == np.uint16:
+                    # Match normalized float32 exposure before restoring native codes.
+                    normalized, _ = normalize_fuse_input([strip])
+                    adjusted = apply_exposure_gain(normalized[0], gain)
+                    del normalized
+                    output[y:y + 128] = quantize_fuse_output(adjusted, True)
+                    del adjusted
+                else:
+                    output[y:y + 128] = apply_exposure_gain(strip, gain)
+            return output
+        return match
+
+    # Native u16 restoration peaks at three float32 strips; outputs stay bounded.
+    return [process_frame(frame, matcher(1.0 if frame is reference else None),
+                          should_cancel=should_cancel,
                           scratch_bytes=frame.nbytes + min(frame.shape[0], 128)
-                          * math.prod(frame.shape[1:]) * (4 + frame.dtype.itemsize))
+                          * math.prod(frame.shape[1:])
+                          * (12 if frame.dtype == np.uint16 else 4 + frame.dtype.itemsize))
             for frame in frames]
 
 
@@ -724,6 +816,34 @@ def frame_resolution_bytes(frame):
     return 0
 
 
+def select_frame_scratch(frames, *, preferred_size=0, should_cancel=None):
+    """Bind a local volume using metadata without staging decoded pixels.
+
+    A bounded frame workspace is an optional placement hint. RAM-only work
+    needs no disk reservation; each actual mapping checks its own allocation.
+    The caller owns a scratch_directory scope, which retained mappings extend.
+    """
+    from core.frame_storage import capture_scratch, select_scratch
+    state = capture_scratch()
+    if state is not None and state.directory is not None:
+        return state.directory
+    peak = 0
+    paths = []
+    for frame in frames:
+        while True:
+            _check_preview_cancel(should_cancel)
+            peak = max(peak, frame.nbytes + int(getattr(frame, 'scratch_bytes', 0)))
+            if isinstance(frame, ProcessedFrame):
+                frame = frame.source
+                continue
+            path = frame.path if isinstance(frame, SourceFrame) else getattr(frame, 'filename', None)
+            if path:
+                paths.append(path)
+            break
+    return select_scratch(0, paths, preferred_size=max(peak * 4, preferred_size),
+                          working_size=peak * 4)
+
+
 def resolve_frame(frame):
     return frame.full_resolution() if isinstance(frame, (SourceFrame, ProcessedFrame)) else frame
 
@@ -752,8 +872,8 @@ def scratch_source_headers(paths, should_cancel=None):
 
 def materialize_frames(frames, should_cancel=None, *, staging_bytes=0,
                        preferred_staging_bytes=0, thread_count=0,
-                       resource_preference='balanced', progress_callback=None):
-    """Prepare ordered disk-backed frames with a resource-bounded decode window."""
+                       resource_preference='balanced', progress_callback=None, prefer_ram=True):
+    """Prepare ordered frames with bounded decoding and an explicit storage preference."""
     from contextvars import copy_context
     from collections import deque
     from collections.abc import Sequence
@@ -769,7 +889,7 @@ def materialize_frames(frames, should_cancel=None, *, staging_bytes=0,
     def save(image):
         check_cancel()
         mapped = isinstance(image, np.memmap) and getattr(image, 'filename', None) is not None
-        return image if mapped else store_frame(image)
+        return image if mapped else store_frame(image, prefer_ram=prefer_ram)
 
     with scratch_directory():
         check_cancel()
@@ -1094,7 +1214,8 @@ def scan_source(path, scale=1.0, *, linear=False, header_only=False, page_index=
                 preview = None if header_only else _tiff_preview(page, should_cancel)
                 frames.append(SourceFrame(path, index, (max(1, int(h * scale)), max(1, int(w * scale)), 3),
                                           np.dtype(page.dtype), preview, stamp, scale, orientation,
-                                          native_shape=(h, w, 3)))
+                                          native_shape=(h, w, 3),
+                                          grayscale=page.samplesperpixel == 1 and page.photometric in (0, 1)))
     else:
         with Image.open(path) as image:
             from core.image_loader import validate_pil_header
@@ -1103,6 +1224,7 @@ def scan_source(path, scale=1.0, *, linear=False, header_only=False, page_index=
             orientation = int(read_image_exif(image).get(274, 1))
             alpha = 'A' in image.getbands() or 'transparency' in image.info
             dtype = np.dtype(np.uint16 if image.mode in ('I', 'I;16', 'I;16B') else np.uint8)
+            grayscale = image.mode in ('1', 'L', 'I', 'I;16', 'I;16B') and not alpha
             if extension == '.png':
                 # Pillow presents RGB16 PNG as RGB8; the IHDR bit depth is
                 # still authoritative for the original pixel decoder.
@@ -1117,7 +1239,7 @@ def scan_source(path, scale=1.0, *, linear=False, header_only=False, page_index=
                 preview = _orient(_pil_preview(image, itemsize=dtype.itemsize, alpha=alpha), orientation)
         frames.append(SourceFrame(path, 0, (max(1, int(height * scale)), max(1, int(width * scale)),
                                             4 if alpha else 3), dtype, preview, stamp, scale, orientation,
-                                  native_shape=(height, width, 4 if alpha else 3)))
+                                  native_shape=(height, width, 4 if alpha else 3), grayscale=grayscale))
     _check_preview_cancel(should_cancel)
     if _fingerprint(path) != stamp:
         raise OSError(f'Source changed while reading its preview: {path}')

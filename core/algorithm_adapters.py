@@ -36,11 +36,9 @@ def roi_openfocus_b(parameters, width, height):
 
 
 def roi_openfocus_c(parameters, width, height):
-    from fusion_methods.openfocus_bc import automatic_pyramid_levels
-    grid = 2 ** (automatic_pyramid_levels(height, width) - 1)
-    # Depth filtering is global and pyramid depth depends on the whole image.
-    # A cropped preview would therefore use different decisions and scales.
-    return max(width, height), grid
+    # Global depth recurrences require the full context. Half-scale gray
+    # sampling uses a two-pixel grid; C does not reconstruct RGB pyramids.
+    return max(width, height), 2
 
 
 # Serial OpenFocus passes retain global planes in mappings and use bounded
@@ -177,10 +175,12 @@ def depth_openfocus_b(images, progress_callback=None, should_cancel=None, **para
     from fusion_methods.openfocus_depth import depth_map
     smoothing = parameters['depth_smoothing'] * (5.0 / 1.2)
     return depth_map(images, None, parameters['kernel_size'], smoothing,
-                     should_cancel, progress_callback)
+                     should_cancel, progress_callback,
+                     thread_count=parameters.get('thread_count'))
 
 
 def depth_openfocus_c(images, progress_callback=None, should_cancel=None, **parameters):
     from fusion_methods.openfocus_depth import depth_map
     smoothing = parameters['blend_smoothing'] * (5.0 / 3.0)
-    return depth_map(images, None, 17, smoothing, should_cancel, progress_callback)
+    return depth_map(images, None, 17, smoothing, should_cancel, progress_callback,
+                     thread_count=parameters.get('thread_count'), half_resolution=True)

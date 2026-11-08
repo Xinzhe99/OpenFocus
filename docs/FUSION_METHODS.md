@@ -7,7 +7,7 @@ these approaches:
 |---|---|---|
 | A | Selects pixels using the sum of absolute Burt-pyramid Laplacians. | Radius (`--kernel`); smoothing is inert as in HF9 A |
 | B | Blends neighboring frames according to a smoothed depth map. | Kernel radius and depth smoothing (`--kernel`, `--depth-smoothing`) |
-| C | Uses a depth estimate to merge and reconstruct a fixed-point pyramid. | Blend smoothing (`--blend-smoothing`); no radius control |
+| C | Blends source pixels using the completed, smoothed depth map. | Blend smoothing (`--blend-smoothing`); no radius control |
 
 Default parameters are kernel size 17 for A and B, blend smoothing 2.0 for A,
 depth smoothing 1.44 for B, and blend smoothing 3.6 for C. B and C retain
@@ -21,13 +21,13 @@ Exposure matching can compensate for brightness differences across the stack
 before fusion. OpenFocus A/B/C input can be sorted with `--sort asc|desc|off`;
 StackMFF V2 keeps its original focus order. The pipeline
 supports 8-bit and 16-bit output. The depth-map dialog uses the shared B/C
-depth estimator. B fusion uses its smoothed depth map; C updates running shared
-depth as it consumes each source and applies smoothing only to depth-map output.
+depth estimator. B and C use the completed smoothed depth map for fusion;
+C merges full-resolution source codes in reverse source order during its second pass.
 B's external tiles share a full-image depth map; resizing uses whole frames.
 
 OpenFocus A/B/C use whole-image processing at the default tile threshold, even
 when the general tile option is enabled. A non-default threshold opts A/B into
-external tiling. C keeps a single depth/reconstruction domain at every threshold.
+external tiling. C keeps a single depth and source-merge domain at every threshold.
 Bounded rows and frame windows control memory within that domain.
 
 A computes an equal-channel integer mean, excluding alpha. Eight-bit source
@@ -45,15 +45,16 @@ B and C use the integer activity/depth chain and ordered Q10 code-band merge.
 Signed division truncates toward zero; frames outside the current depth band do
 not write to the accumulated image. B computes smoothed depth first, then decodes
 only sources contributing to that depth band. Unused sources still undergo
-identity and processor validation. C consumes each source once: it updates
-running depth, merges at every level, forms a centered half-Laplacian canvas with
-a ceiling half-difference, then performs integer coarse-to-fine collapse. Identical
-C inputs bypass reconstruction so both 8-bit and 16-bit samples remain exact.
+identity and processor validation. C computes final depth first, then merges
+full-resolution frames in reverse source order through a bounded window.
+Identical C inputs retain the original 8-bit and 16-bit samples.
 
-C includes the original image as level zero and reduces odd dimensions with
-replicated edges. It stops before the next level's shortest side would fall
-below 128 pixels. Thus 4000×4000 uses five levels and 4084×5376 uses six.
-C retains that full-image pyramid and depth domain when general tiling is enabled.
+C computes activity on floor-sized half-resolution gray planes using the native
+fixed-half-scale LUT and ordered float32 FMA resampling. Votes and a square-root
+guide feed horizontal-then-vertical depth smoothing. Feather correction is
+truncated before bilinear expansion to the exact source canvas. Expansion keeps
+the native float32 scale and half-pixel offset operations separate, including
+when the requested width or height is odd.
 
 The supplied 512×512 HF9 CPU golden stacks were exercised with the production
 implementation. A covers R=1/5/10/22, S=0/5/20 and F=0/10; B/C below use
@@ -63,15 +64,15 @@ R=22, S=5 and F=0. C uses the actual `mp:3` reference, not the obsolete
 | Method | Golden stack | Exact samples | Within one code |
 |---|---|---:|---:|
 | A | S3 ties / S4 amplitude | 100% | 100% |
-| B | S3 ties | 69.89% | 100% |
 | B | S4 amplitude | 69.54% | 100% |
 | C | S3 ties / S4 amplitude | 100% | 100% |
-| C | S1 zones, four frames | 95.87% | 97.23% |
-| C | S2 gradient, five frames | 97.04% | 98.79% |
+| C | S1 zones, four frames | 100% | 100% |
+| C | S2 gradient, five frames | 100% | 100% |
 
-These results establish the tested configurations. Multi-frame B/C reference
-details, C's exact expansion kernel, non-identical 16-bit C stacks and small
-non-identical C images remain outside a general bit-exactness claim. C identity
+These results establish the tested configurations. Other B reconstruction details,
+non-identical sixteen-bit C stacks and other parameter/image-size combinations remain
+outside general bit-exactness claims. Odd-canvas depth expansion matches a native
+129×131 capture. C identity
 is separately checked at 64–512 pixels in both source depths, including odd
 dimensions. The product preserves A's 16-bit source codes rather than copying
 HF9's occasional one-code float round-trip loss.

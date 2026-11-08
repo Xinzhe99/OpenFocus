@@ -30,6 +30,32 @@ def _release_ram(size):
         _ram_live_bytes -= size
 
 
+def _try_ram_frame(shape, dtype):
+    """Reserve and allocate RAM, returning None when snapshots must spill."""
+    from core import resource_policy as policy
+    global _ram_live_bytes
+    dtype = np.dtype(dtype)
+    size = math.prod(shape) * dtype.itemsize
+    if size < 0 or dtype.hasobject:
+        raise ValueError('Transient frames require nonnegative numeric storage')
+    # Probing and allocating can collect arrays whose finalizers take this lock.
+    snapshot = policy.probe_memory()
+    cap = (min(FRAME_RAM_BUDGET_BYTES, policy.ram_budget(snapshot) // 2)
+           if snapshot.ram_known else 0)
+    with _ram_lock:
+        if size > cap - _ram_live_bytes:
+            return None
+        _ram_live_bytes += size
+    try:
+        policy.require_memory(size, snapshot)
+        image = np.empty(shape, dtype=dtype)
+        weakref.finalize(image, _release_ram, size)
+    except BaseException:
+        _release_ram(size)
+        raise
+    return image
+
+
 def create_transient_frame(shape, dtype):
     """Allocate independent scratch pixels within a shared RAM cap.
 
@@ -37,31 +63,8 @@ def create_transient_frame(shape, dtype):
     comfortable resource budget. Unknown or insufficient RAM uses an admitted
     disk mapping. NumPy views retain their allocation's reservation.
     """
-    from core import resource_policy as policy
-    global _ram_live_bytes
-    dtype = np.dtype(dtype)
-    size = math.prod(shape) * dtype.itemsize
-    if size < 0 or dtype.hasobject:
-        raise ValueError('Transient frames require nonnegative numeric storage')
-    with _ram_lock:
-        snapshot = policy.probe_resources()
-        cap = (min(FRAME_RAM_BUDGET_BYTES, policy.ram_budget(snapshot) // 2)
-               if snapshot.ram_known else 0)
-        if size > cap - _ram_live_bytes:
-            use_ram = False
-        else:
-            policy.require_memory(size, snapshot)
-            _ram_live_bytes += size
-            use_ram = True
-    if not use_ram:
-        return create_frame(shape, dtype)
-    try:
-        image = np.empty(shape, dtype=dtype)
-    except BaseException:
-        _release_ram(size)
-        raise
-    weakref.finalize(image, _release_ram, size)
-    return image
+    image = _try_ram_frame(shape, dtype)
+    return create_frame(shape, dtype) if image is None else image
 
 
 def _local_mounts():
@@ -270,7 +273,7 @@ def run_with_scratch(state, function, *args, **kwargs):
         _scratch.reset(token)
 
 
-def select_scratch(size, source_paths=(), *, preferred_size=None):
+def select_scratch(size, source_paths=(), *, preferred_size=None, working_size=None):
     """Admit an estimate and bind a writable directory to the current job.
 
     The estimate is a snapshot, not a reservation. Allocation checks continue
@@ -304,11 +307,12 @@ def select_scratch(size, source_paths=(), *, preferred_size=None):
                     pass
         yield from mounts
     best = (default, None)
-    # An optional upper estimate guides automatic placement but never rejects
-    # a job that fits the known required allocation.
-    goals = ([max(size, preferred_size), size]
-             if preferred_size is not None and state.explicit_directory is None
-             and preferred_size > size else [size])
+    # Optional staging and bounded-workspace estimates guide placement without
+    # rejecting RAM-only work or jobs that fit the known required allocation.
+    goals = [size]
+    if state.explicit_directory is None:
+        goals = sorted({size, *(max(size, hint) for hint in
+                        (preferred_size, working_size) if hint is not None)}, reverse=True)
     for goal in goals:
         seen = set()
         for candidate in candidates():
@@ -471,9 +475,10 @@ def store_frame(image, *, prefer_ram=True):
     modifying a snapshot never mutates borrowed source pixels.
     """
     if prefer_ram:
-        owned = create_transient_frame(image.shape, image.dtype)
-        np.copyto(owned, image)
-        return owned
+        owned = _try_ram_frame(image.shape, image.dtype)
+        if owned is not None:
+            np.copyto(owned, image)
+            return owned
     directory = storage_directory()
     require_disk_space(image.nbytes, directory)
     fd, path = _frame_file(directory, image.nbytes)

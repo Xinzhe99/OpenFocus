@@ -33,10 +33,14 @@ print("输出正常", flush=True)
 def test_directory_preserves_single_page_precision(tmp_path, method):
     frame = np.arange(120, dtype=np.uint16).reshape(10, 12) * 251 + 3
     assert cv2.imwrite(str(tmp_path / 'frame.png'), frame)
+    from core.source_frames import scan_source, resolve_frame
+    display_source = scan_source(str(tmp_path / 'frame.png'), header_only=True)[0]
+    display_pixels = resolve_frame(display_source).copy()
     result = ImageRegistration(method=method).process(str(tmp_path))
     assert result[0].dtype == np.uint16
     expected = frame if method == 'openfocus' else np.repeat(frame[..., None], 3, axis=2)
     np.testing.assert_array_equal(result[0], expected)
+    np.testing.assert_array_equal(resolve_frame(display_source), display_pixels)
 
 
 def _shifted_stack(dx=12, dy=6, size=(140, 180), n=2):
@@ -159,7 +163,8 @@ def test_openfocus_recovers_rotation_scale_and_translation_together():
         [base, moved], thread_count=1)
     raw_error = np.abs(base[20:-20, 20:-20].astype(np.float32)
                        - moved[20:-20, 20:-20]).mean()
-    aligned_error = np.abs(aligned[0].astype(np.float32) - aligned[1]).mean()
+    aligned_error = np.abs(aligned[0][20:-20, 20:-20].astype(np.float32)
+                           - aligned[1][20:-20, 20:-20]).mean()
     assert aligned_error < raw_error * 0.15
 
 @pytest.mark.parametrize('dtype', [np.uint8, np.uint16])
@@ -182,13 +187,15 @@ def test_openfocus_selected_reference_aligns_both_sides_without_reordering(refer
     aligned = _align_helicon_impl(frames, reference_frame=reference,
                                  failure_policy="fail")
     anchor = aligned[reference - 1]
-    # The anchor is cropped but never warped, and every other frame reaches it.
+    # The anchor retains its native canvas; compare only the common interior.
     source = frames[reference - 1]
     ys, xs = np.where(np.all(source == anchor[0, 0], axis=2))
     assert any(np.array_equal(source[y:y + anchor.shape[0], x:x + anchor.shape[1]], anchor)
                for y, x in zip(ys, xs))
+    margin = 9  # Largest synthetic displacement is eight pixels, plus one warp tap.
     for image in aligned:
-        assert np.abs(image.astype(np.float32) - anchor).mean() < 10
+        assert np.abs(image[margin:-margin, margin:-margin].astype(np.float32)
+                      - anchor[margin:-margin, margin:-margin]).mean() < 10
 
 
 def test_openfocus_reference_outside_stack_is_an_error():

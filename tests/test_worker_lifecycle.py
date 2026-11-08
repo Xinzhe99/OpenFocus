@@ -163,14 +163,14 @@ def _request(tmp_path, frames):
 def test_fresh_alignment_writes_in_background_then_hit_is_not_rewritten(tmp_path, monkeypatch):
     frames = _frames()
     request = _request(tmp_path, frames)
-    original = align_cache.save_aligned
+    original = align_cache.save_alignment_plan
     writers = []
 
     def save(*args, **kwargs):
         writers.append(get_ident())
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(align_cache, "save_aligned", save)
+    monkeypatch.setattr(align_cache, "save_alignment_plan", save)
     first = _render(frames, request)
     first_results, first_errors = _capture(first)
     first.start()
@@ -188,6 +188,34 @@ def test_fresh_alignment_writes_in_background_then_hit_is_not_rewritten(tmp_path
     np.testing.assert_array_equal(first_results[0][1], second_results[0][1])
 
 
+@pytest.mark.parametrize('alignment', ['openfocus', 'ecc'])
+def test_cached_alignment_remains_resolvable_after_stack_revision(tmp_path, alignment):
+    from core.source_frames import resolve_frame
+
+    frames = _frames(np.uint16)
+    frames[1] = np.roll(frames[0], 4, axis=1)
+    current = [True]
+    request = {**_request(tmp_path, frames), 'is_current': lambda: current[0]}
+
+    def render():
+        parameters = {'max_shift_ratio': .2, 'magnification': 0} if alignment == 'openfocus' else {}
+        worker = RenderWorker(frames, algorithm='openfocus_a', alignment=alignment,
+            registration_parameters=parameters,
+            fusion_parameters={'kernel_size': 17}, need_fusion=False,
+            thread_count=1, use_gpu=False, exposure_match=False, disk_cache=request)
+        results, errors = _capture(worker)
+        worker.run()
+        assert not errors and len(results) == 1
+        return worker, results[0][0]
+
+    _, first_frames = render()
+    second, warm_frames = render()
+    assert second.alignment_reused
+    expected = resolve_frame(first_frames[1]).copy()
+    current[0] = False
+    np.testing.assert_array_equal(resolve_frame(warm_frames[1]), expected)
+
+
 def test_cache_write_failure_keeps_real_fusion_result(tmp_path, monkeypatch):
     frames = _frames()
     request = _request(tmp_path, frames)
@@ -202,7 +230,7 @@ def test_cache_write_failure_keeps_real_fusion_result(tmp_path, monkeypatch):
         writes.append(True)
         raise OSError("disk full")
 
-    monkeypatch.setattr(align_cache, "save_aligned", fail)
+    monkeypatch.setattr(align_cache, "save_alignment_plan", fail)
     results, errors = _capture(worker)
     worker.run()
     assert errors == [] and len(results) == 1
@@ -417,17 +445,22 @@ def test_grouped_batch_only_draws_a_shared_physical_calibration(tmp_path, calibr
     style = {'position': 'bottom-right', 'color': 'white',
              'font_family': None, 'font_size': 0.0, 'font_bold': False,
              'text_align': 'auto', 'custom_x': None, 'custom_y': None}
-    worker = BatchWorker([str(source)], 'custom', str(tmp_path / 'out'),
-                         {'format': 'png', 'fusion_method': 'openfocus_a', 'group_size': 2,
-                          'fusion_params': {'kernel_size': 3},
-                          'scale_bar': {'target': 'output', **style}},
-                         thread_count=1, use_gpu=False, tile_enabled=False)
-    results, errors = {}, []
-    worker.finished.connect(results.update)
-    worker.error.connect(errors.append)
-    worker.run()
-    assert not errors and results['counts']['success'] == 1, results
-    actual = cv2.imdecode(np.fromfile(results['outputs'][0], np.uint8), cv2.IMREAD_UNCHANGED)
-    expected = (burn(pixels, {'px_um': .5, **style})
-                if all(value == .5 for value in calibrations) else pixels)
-    np.testing.assert_allclose(actual, expected, rtol=0, atol=1)
+    outputs = []
+    for annotated in (False, True):
+        settings = {'format': 'png', 'fusion_method': 'openfocus_a', 'group_size': 2,
+                    'fusion_params': {'kernel_size': 3}}
+        if annotated:
+            settings['scale_bar'] = {'target': 'output', **style}
+        worker = BatchWorker([str(source)], 'custom', str(tmp_path / str(annotated)),
+                             settings, thread_count=1, use_gpu=False, tile_enabled=False)
+        results, errors = {}, []
+        worker.finished.connect(results.update)
+        worker.error.connect(errors.append)
+        worker.run()
+        assert not errors and results['counts']['success'] == 1, results
+        outputs.append(cv2.imdecode(np.fromfile(results['outputs'][0], np.uint8),
+                                    cv2.IMREAD_UNCHANGED))
+    reference, actual = outputs
+    expected = (burn(reference, {'px_um': .5, **style})
+                if all(value == .5 for value in calibrations) else reference)
+    np.testing.assert_array_equal(actual, expected)

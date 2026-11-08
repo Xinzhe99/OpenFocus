@@ -439,18 +439,18 @@ Se non viene indicata una cartella temporanea, OpenFocus stima lo spazio necessa
 
 ### OpenFocus A / B / C
 
-- **OpenFocus A**: leviga la sua mappa di risposta di fuoco multi-scala, poi seleziona i pixel a fuoco.
+- **OpenFocus A**: seleziona i pixel sorgente tramite una risposta di fuoco multi-scala.
 - **OpenFocus B**: miscela fotogrammi vicini guidato da una mappa di profondità levigata.
-- **OpenFocus C**: ricostruisce bande multi-scala guidato da una mappa di profondità levigata.
-- **Parametri**: A e B usano il cursore del kernel per controllare la scala di risposta di fuoco; C non ha raggio. Tutti e tre hanno un parametro di levigatura che controlla la forza delle transizioni.
+- **OpenFocus C**: miscela i pixel sorgente in base alla mappa di profondità finale levigata.
+- **Parametri**: A e B usano il cursore del kernel per controllare la scala di risposta di fuoco; C non ha raggio. La levigatura di A non ha effetto, come in HF9 A; B e C levigano la mappa di profondità usata per la fusione.
 
 **Levigatura**: un unico campo numerico sotto il cursore del kernel, il cui significato dipende dal metodo selezionato (intervallo 0–8, passo 0,2):
 
 | Metodo | Etichetta | Predefinito | Effetto |
 |---|---|---|---|
-| OpenFocus A | Levigatura della miscelazione | 2,0 | Controlla la levigatura della mappa di risposta di fuoco prima della selezione dei pixel |
+| OpenFocus A | Levigatura della miscelazione | 2,0 | Nessun effetto, come in HF9 A |
 | OpenFocus B | Levigatura della profondità | 1,44 | Controlla la levigatura della mappa di profondità che guida la miscelazione |
-| OpenFocus C | Levigatura della miscelazione | 3,6 | Controlla la levigatura della mappa di profondità che guida la ricostruzione multi-scala |
+| OpenFocus C | Levigatura della miscelazione | 3,6 | Controlla la levigatura della mappa di profondità e le transizioni di fusione |
 
 Dimensione kernel predefinita per A/B: 17. I valori salvati restano in uso; ripristina i valori predefiniti per usare quelli nuovi.
 
@@ -488,7 +488,7 @@ Seleziona **Solo allineamento (nessuna fusione)** per registrare lo stack e aggi
 | StackMFF V3 | Lenta (GPU) | Eccellente | Massima qualità |
 | OpenFocus A | Dipende dallo stack | Dipende dallo stack | Selezione multi-scala dei pixel a fuoco |
 | OpenFocus B | Dipende dallo stack | Dipende dallo stack | Miscelazione di fotogrammi vicini guidata dalla profondità |
-| OpenFocus C | Dipende dallo stack | Dipende dallo stack | Ricostruzione multi-scala guidata dalla profondità |
+| OpenFocus C | Dipende dallo stack | Dipende dallo stack | Miscelazione dei pixel sorgente in base alla mappa di profondità finale |
 
 Apri **Strumenti → Confronto metodi** per regolare più metodi in modo indipendente. Nome, etichette dei parametri e controlli di ogni metodo restano insieme quando la finestra si restringe. Le modifiche aggiornano automaticamente l'anteprima. **Anteprima ROI (veloce)** fonde l'area selezionata con il contesto circostante; **Fusione immagine intera** verifica il risultato sull'intera immagine e permette di ispezionare un'altra area senza renderizzare di nuovo. I risultati ROI possono differire da quelli a immagine intera perché le statistiche di esposizione e alcuni algoritmi dipendono dall'estensione dell'immagine.
 La **fusione immagine intera** è selezionata per impostazione predefinita.

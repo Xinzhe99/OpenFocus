@@ -4,7 +4,6 @@ import os
 import cv2
 import numpy as np
 
-from utils.image_utils import normalize_fuse_input
 from utils.sorting import natural_sort_key
 ATTENTION_PAD_ALIGN = 64
 
@@ -18,15 +17,11 @@ def cancel(should_cancel):
 
 
 
-def read_stack(input_source, img_resize, should_cancel=None, execution_plan=None):
-    """Decode a directory or accept a frame list, preserving source depth."""
-    from core.resource_policy import probe_resources, require_memory
-    from core.frame_storage import store_frame
-    cap = execution_plan.ram_budget if execution_plan is not None else None
+def read_stack(input_source, img_resize, should_cancel=None, execution_plan=None,
+               *, preserve_grayscale=True):
+    """Read source descriptors and defer each exact backend resize to its consumer."""
+    from core.source_frames import scan_source, process_frame
     if isinstance(input_source, str):
-        from core.image_loader import admit_image_decode, decode_image
-        snapshot = probe_resources()
-        require_memory(1, snapshot, user_limit=cap)
         exts = ('.png', '.jpg', '.jpeg', '.jpe', '.jfif', '.webp',
                 '.tif', '.tiff', '.bmp')
         names = sorted((name for name in os.listdir(input_source)
@@ -34,32 +29,33 @@ def read_stack(input_source, img_resize, should_cancel=None, execution_plan=None
         frames = []
         for name in names:
             cancel(should_cancel)
-            path = os.path.join(input_source, name)
-            admit_image_decode(path, user_limit=cap)
-            image = decode_image(path, preserve_grayscale=True)
-            if image is None:
-                raise ValueError(f"Failed to read image: {path}")
-            frames.append(store_frame(image))
-            del image
+            frames.extend(scan_source(os.path.join(input_source, name), header_only=True,
+                                      should_cancel=lambda: cancel(should_cancel)))
+        frames = [process_frame(frame, lambda image: image[:, :, 0], shape=frame.shape[:2],
+                                should_cancel=should_cancel, scratch_bytes=0)
+                  if preserve_grayscale and frame.grayscale else frame for frame in frames]
     else:
         frames = list(input_source)
     if not frames:
         raise ValueError("Empty image list")
     if img_resize:
-        pixels = int(img_resize[0]) * int(img_resize[1])
-        resized = []
-        for frame in frames:
-            cancel(should_cancel)
-            channels = frame.shape[2] if frame.ndim == 3 else 1
-            require_memory((pixels * channels + frame.size) * frame.dtype.itemsize * 2,
-                           user_limit=cap)
-            resized.append(store_frame(cv2.resize(frame, img_resize)))
-        frames = resized
+        frames = [process_frame(frame, lambda image: cv2.resize(image, img_resize),
+                    shape=(img_resize[1], img_resize[0]) + (frame.shape[2:]
+                        if frame.ndim != 3 or frame.shape[2] != 1 else ()),
+                    should_cancel=should_cancel) for frame in frames]
+    if execution_plan is not None:
+        from core.source_frames import frame_resolution_bytes, source_cache_growth_bytes
+        from core.resource_policy import require_memory
+        required = max(frame_resolution_bytes(frame) for frame in frames) + source_cache_growth_bytes(frames)
+        if required:
+            require_memory(required, user_limit=execution_plan.ram_budget)
     return frames
 
 
 def working_frame(frame, normalize_stack):
     """Convert a single frame exactly as 16-bit stack normalization does."""
+    from core.source_frames import resolve_frame
+    frame = resolve_frame(frame)
     if not normalize_stack or frame.dtype == np.float32:
         return frame
     result = frame.astype(np.float32)
@@ -104,18 +100,10 @@ def stage_planes(frames, align, should_cancel=None):
 
 
 def normalized_frames(frames, should_cancel=None):
-    """Normalize one frame at a time without retaining a float colour stack."""
-    from core.frame_storage import store_frame
-    if not any(frame.dtype == np.uint16 for frame in frames):
-        return list(frames)
-    normalized = []
-    for frame in frames:
-        cancel(should_cancel)
-        converted = normalize_fuse_input([frame])[0][0]
-        if converted.dtype != np.float32:
-            converted = converted.astype(np.float32)
-        normalized.append(frame if converted is frame else store_frame(converted))
-    return normalized
+    """Describe normalization without retaining processed full colour sources."""
+    from core.source_frames import normalize_frames
+    cancel(should_cancel)
+    return normalize_frames(frames, should_cancel)
 
 
 def plan_attention_inference(algorithm, frames, model_path, device,
@@ -137,6 +125,8 @@ def plan_attention_inference(algorithm, frames, model_path, device,
     inference = estimate_inference_bytes(n, h, w, device)
     host = (fixed_bytes + n * hp * wp * 4 * (2 * c + 3)
             + result_count * h * w * c * 4 + inference)
+    from core.source_frames import frame_resolution_bytes, source_cache_growth_bytes
+    host += max(frame_resolution_bytes(frame) for frame in frames) + source_cache_growth_bytes(frames)
     workload = Workload(algorithm=algorithm, frames=n, height=h, width=w,
                         channels=c, itemsize=max(f.dtype.itemsize for f in frames),
                         parallel_layer='native', fixed_bytes=host, per_worker_bytes=0)

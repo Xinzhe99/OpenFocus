@@ -10,13 +10,13 @@
 `F:\REA_heliconfocus9\hf9.py`(统一 API)、`hf9_validate.py`(验收运行器)。
 **证据等级**:[实测] 黑盒/动态;[汇编] 反汇编;[RTTI] 类/符号直证;[推算] 行为学。
 
-> 本文所有"现状"行号均按上述基线核对过。若行号漂移,以函数名为准。
+> §0 保留 2026-11-07 迁移前基线；不代表当前实现。当前 C 路径与像素证据见 §2.3，工程验收见 §3.4；行号漂移时以函数名为准。
 
 ---
 
 # 0. 总览
 
-| 组件 | 现状(文件:函数:行) | HF9 目标(原型) | 差距 |
+| 组件 | 迁移前基线(文件:函数:行) | 当时 HF9 目标(原型) | 当时差距 |
 |---|---|---|---|
 | 打开 | `image_loader.load_from_filepaths:878`;`source_frames.ensure_preview:124`、`FrameCache:32` | 只建预览、按需解码 | ✅ 已对齐,勿动 |
 | 解码窗口 | `source_frames.materialize_frames:525`(并行/有序/有界) | 流式队列+重叠 | 🟡 并行已有,仍"先全量物化" |
@@ -24,7 +24,7 @@
 | 融合入口 | `multi_focus_fusion.fuse:537`、`_fuse_under_lease:569`、list 物化 ~630 | 流式输入 | ❌ 先物化 |
 | A | `openfocus_a.openfocus_a_impl:43`、`_response:8` | `fuse_a.fuse_a` | ❌ 响应/输出不同 |
 | B | `openfocus_bc.openfocus_b_impl:117`、`openfocus_depth.depth_map:79` | `helicon_exact.fuse_noalign` | ❌ 码/拉伸/snap/merge 不同 |
-| C | `openfocus_bc.openfocus_c_impl:159` | `fuse_b.fuse_b` | ❌ 权重/canvas/collapse 不同 |
+| C | `openfocus_bc.openfocus_c_impl:159` | 原推测 `fuse_b.fuse_b`，已由 §2.3 原生捕获排除 | 旧金字塔假设不作为当前实现依据 |
 | 深度核 | `_depth_kernel.axis_block:19`(Numba Q12) | `helicon_exact.filter_type7` | 🟡 IIR 结构一致,细节待对账 |
 | 对齐 | `registration._align_helicon_impl`;`hf9_alignment.estimate_alignment_plan` | `helicon_align4d.align_pair_wide` | 已切换 verified wide4D；完整 S0–S16 尚未闭合，见 `HF9_TRANSLATION_CORE.md` |
 | 默认参数 | `algorithms.py:333-335,345-349` | GUI R8/S6 | ✅ 已对齐(17/1.44/3.6) |
@@ -43,7 +43,7 @@
 - 参数：位移范围默认 0.05，旋转默认 0 度、放大率默认 3%；旋转与放大率通过现有注册表控件实际进入搜索。亮度固定 1，不推断 seed/autosort 控件。
 - 采样：等权整数灰度、原生 uint16、Q8.8 采样；精确恒等直接借用原像素。
 - 内存兼容：保留 `normalize_fuse_input` 已有的 float32/64 `[0,255]` 数组域与精确恒等；估计逐行还原 uint16 码值，非恒等采样保留浮点小数。文件描述符仍限定 uint8/uint16，不新增 float TIFF 格式。
-- 参考与失败：保留原始输出顺序、显式参考帧、continue/fail 策略与实际配准报告；默认首帧保留已验证的累计链，显式后续参考帧保持固定几何锚点。
+- 参考与失败：保留原始输出顺序、显式参考帧、continue/fail 策略与实际配准报告；默认首帧用前一已对齐灰度估计，结果已在锚点坐标中，直接使用，不再次累计前帧变换；显式后续参考帧保持固定几何锚点。
 - 生产端：默认返回 eager 数组；`defer_warps=True` 返回可重复解析的处理描述符，缓存只存带源指纹/校准/参数的不可变计划，不存 N 张已对齐图像。
 
 完整接口、裁边/内存/缓存约定及证据限制见 `HF9_TRANSLATION_CORE.md`。新事实以 `T5_ANSWERS_20261107.md` §10 为准；scale1.06 的逆放大率 0.94344 正确，rollback 已由静态反汇编裁决。seed 参数归属、autosort 触发与全 S0–S16 仍开放。
@@ -178,12 +178,13 @@ resp = Σ_k up^k(|L_k|)  ; resp = min(resp, 0xffff)
 
 ## 2.2 方法 B(移植 `helicon_exact.fuse_noalign`)
 
-**当前**(`openfocus_bc.openfocus_b_impl:117` + `openfocus_depth.depth_map:79`):
-- 深度链:IIR(op 半径 `extent*R*0.0375/100`、`extent*R*0.15/100`)、
-  `diff=min(65535,110*|g−f| // (max(g,f)*100//65535+10))`、argmax、
-  1% 拉伸、平滑(scale=`maxdim*S*0.0234375/100`、guide、`×2`)、snap
-- merge:`_weight:26` 相邻帧**线性** Q10 权重直接加权
-- 输出 clip 0..255
+**生产深度链（2026-11-08 更新）**：`openfocus_depth.depth_map` 逐帧消费有界源，
+在原生 u16 码域计算 activity、严格 argmax 与逐帧截断的平均票数。
+guide 来自 `abs(best-votes)` 的 1%/99% 直方图阈值及 4096 节点 sqrt LUT；
+type7 强制偶数最小权重 2，H→V 两遍，零半径跳过。C 先在固定 0.5
+尺度、floor 半尺寸灰度上计算和 snap，再 FMA 双线性扩展到画布。
+生产 S1/S2/S4 的 R22/S5/F0 最终 depth 与官方 u16 sidecar 逐位一致；
+完整 C 融合也与官方 mp3 输出逐位一致、max0，见下一节的原生归并证据。
 
 **目标全链**(与原型逐项对照):
 
@@ -199,15 +200,13 @@ blur2 = np.float32(R_chain * 2.0)        # 原型把这两个"参数"传给 filt
 den = (((mx*100) * 0x80008001) >> 32) >> 15
 d = min(0xffff, (110*|a-b|) // (den+10))
 # 码:ch = 0xffff // max(1, N-1);code_i = i*ch (截断,非四舍五入)
-# 拉伸:thresh = int(float32(float32(total) * 0.009999999776482582))
-#       hi 自 65535 向下 / lo 自 0 向上,各自 cum≥thresh 停;
-#       LUT[k] (k=0..65535): x=(k/65535)*gain,gain=65535/max(hi-lo,1);
-#       x=clip(x,0,1);lut=float32(x*65536);sat='clip'→min(lut,65535)
-#       索引:idx=v*(65534/65535),i=cvtt,frac;out=trunc(lut[i]*(1-frac)+lut[i+1]*frac)&0xffff
-#       ⚠ 当前 OpenFocus 先减 lo 再乘 gain —— 与原型不同,必须去掉减法
+# guide 预输入: abs(best - sum_i(activity_i // N))。
+# thresh = int(float32(float32(total) * 0.009999999776482582))；
+# lo/hi 分别从两端走到 cum>=thresh，span=max(hi-lo,1)。
+# LUT[k] (k=0..4095): float32(65535*sqrt(clip((k*65535/4095-lo)/span,0,1)))；
+# idx=float32(v)*float32(4095/65535)，截断索引、float32 线性插值后截断。
 # 平滑:Sf=float32((float32(S)*0.75)*0.03125);filter_type7(d,guide,Sf,Sf,Sf*64,Sf*64)×2
-#       ⚠ 当前 OpenFocus 的 scale=maxdim*S*0.0234375/100 与原型等价(内部再 /100),
-#         但 guide 语义需逐行对账(filter_type7 的 w40/w44=(4096−wq)>>1)
+#       两轴按 H→V 执行；wq 偶数、最小 2；参数为 0 时跳过该轴。
 # snap:feather_snap(d,ch,F)(公式见下),F=0
 # (b) merge = helicon_exact.merge_weighted_identity
 stepw = 0xffff // max(1, N-1)
@@ -228,7 +227,8 @@ s = half + d; snapped = s - (s % ch)
 dist = d - snapped
 q = abs(dist) << 10; t = (q // half) * sign(dist)  # 朝零
 k = clip(abs(t), 0, 1024); c = half * lut[k]
-corr = sign(t) * c; corr = (corr + (corr & 0x3ff)) >> 10
+corr = sign(t) * c
+corr = corr >> 10 if corr >= 0 else -((-corr) >> 10)  # 修正量朝零截断
 out = (snapped + corr) & 0xffff
 ```
 
@@ -236,136 +236,58 @@ out = (snapped + corr) & 0xffff
 
 **验收**:S4 **±1 = 100%**(exact 69.5%,PSNR 53.29dB);S2 ±1 99.5%;S1 ±1 97.3%。
 
-## 2.3 方法 C(移植 `fuse_b.fuse_b`)
+## 2.3 方法 C：原生全尺寸反向归并
 
-**当前**(`openfocus_c_impl:159`):
-- `depth_code=rint(depth*1024)`;`_weight` 线性相邻 Q10;逐层累加;
-  `_reduce:34` 2x2 均值;`_expand:48` `(2,37,64,12)/115`;收尾
-  `clip(expanded + ((detail+512)>>10),0,65535)`;输出 `result>>8`
+2026-11-08 的现场捕获修正了原先把其它内部类的 RGB 金字塔/collapse
+套到 CLI `-mp:3` 的假设。生产 `openfocus_c_impl` 不再构造该 RGB 重建链，
+也不再提供由该假设产生的 `levels` 参数。
 
-**目标全链**:
+**直接证据**：`outputs/c_merge_worker_512_v1/c_worker_capture.npz` 中，
+四次 `frame_pre` 分别与原始 f03/f02/f01/f00 左移八位逐位一致；
+每次 `depth_pre` 均与官方最终 dmap 逐位一致。重新现场捕获还记录到
+`ctx+0x38=1`、frameInfo 的首帧/末帧标记及合并对象 vtable RVA `0xDCEE78`。
+按以下公式模拟，三次可比较的 `acc_post` 均为 100%/max0。
 
 ```python
-# 1) depth = depth_map_noalign(frames_gray_u8, R, S, F)[0]     # u16 码
-# 2) frames16 = u8 → v<<8;u16 → v(§2.5)
-# 3) 逐层 MergeWeighted(码带权重,与 B 相同公式;rev_method_C:
-#    "每层异步执行 MergeWeighted")——不是连续深度比例混合!
-#    2 帧例: blend = merge_weighted_identity(frames16, depth16)
-#    多帧: 同一函数(逐帧代码带 w=0x400/((t<<10)/stepw)+0x400,越界跳过)
-#    ⚠ 原型 fuse_b.blend_level 的连续权重是"猜测":多帧时 depth=0 像素
-#      权重全 0(黑),S1 4 帧实测仅 2.33% exact;必须改用 MergeWeighted。
-# 4) 逐层 down2x: 2x2 均值,ceil 尺寸,边缘复制   # = 当前 _reduce ✅
-# 5) 最粗 temp = resample_2x(down2x(blend_coarsest))
-#    resample_2x = 4-tap (2,37,64,12)/115,偶相 (-2,-1,0,1)、奇相镜像
-#    (2,37,64,12)/115                            # = 当前 _expand ✅
-# 6) 粗→细:up = resample_2x(rec) 裁到本层形状;temps[k]=up
-#    canvas = canvas_from_blend(blend_k, temps[k])
-#      = clip(32768 + ((blend-lowpass)>>1) + ((blend-lowpass)&1), 0, 0xffff)   # ceil
-#    rec = collapse_level(canvas, temps[k])
-#      = clip(2*canvas + coarse - 0x10000, 0, 0xffff)
-# 7) 输出(u8)= rec[:, :, 0] >> 8;u16 = rec(§2.5)
+step = 65535 // (N - 1)
+acc = source_codes(frames[N - 1])       # 首处理帧无条件初始化
+for i in range(N - 2, -1, -1):
+    t = i * step - final_depth         # ctx+0x38=1：code-depth
+    # t>=0 且 t<=step：完全选当前源；t>step：跳过。
+    # -step<t<0：w=1024-trunc(((-t)<<10)/step)；其余跳过。
+    # acc=(acc*(1024-w)+current*w)>>10；运算次序保持整数语义。
+output_u8 = acc >> 8
 ```
 
-**关键差异**:逐层权重=MergeWeighted 码带(非连续 depth/65535)、collapse
-(`expanded+((detail+512)>>10)` → `clip(2c+t−0x10000)`)、canvas 中心化
-(32768 + 半拉普拉斯 ceil)。**实测(真 mp3 golden,2026-11-07)**:
+负分支的原生指令为 `shl/cdq/idiv/lea +0x400`，除法向零截断。
+不能把该分支替换成 Python 对负数的 floor 除法；早先 floor 变体接近
+golden，只是在补偿错误的正向归并。先帧胜出的 activity 选择仍按输入正序，
+与最终反向颜色归并是两个阶段。
 
-| 栈 | 帧数 | 逐层 MergeWeighted | 旧 blend_level |
-|---|---|---|---|
-| S3/S4 | 2 | **100.00% / ±1 100%** | 100%(二帧等价)|
-| S1_zones | 4 | 95.94% / ±1 97.36%(max 99)| **2.33%** |
-| S2_gradient | 5 | **97.43% / ±1 99.53%(max 8)** | 11.66% |
+**深度链**：固定 0.5 尺度、floor 半尺寸灰度；64 节点 LUT 的 float32
+权重按 tap 顺序归一化，V→H 逐 tap FMA，最后 `+0.5` 后截断/饱和；
+activity→严格 argmax/votes→sqrt guide→H→V type7 两次；半尺寸 snap 的
+最终修正量向零截断，再双线性 FMA 扩展到完整画布。坐标必须分步使用
+float32 `scale=dst/src`、`offset=0.5/scale-0.5`、`position/scale+offset`；
+合并为等价乘除表达式会改变奇数画布的舍入。
 
-> 历史记载的 "C S1 96.13% / S2 97.60%" 只在**逐层 MergeWeighted** 变体下近似成立;
-> 旧 `blend_level` 版本无法复现。S1/S2 的残余(max 99/8)属 **E-78 近似上采样核 +
-> 多帧码带细节**,未闭合,**不要**把 S3/S4 的 100% 当成多帧结论。
+**生产验收**：单核、512MiB 硬限的真实调用已覆盖 S1_zones（4 帧）、
+S2_gradient（5 帧）、S4_amp4（2 帧）的 R22/S5/F0。每个样本的灰度、
+raw depth 和两次滤波输出匹配阶段导出；最终 u16 depth 和融合图都与
+官方 sidecar/`experiments/golden/mp3/*__c3_R22_S5_F0__noalign.tif`
+逐位一致、max0。`tests/test_hf9_native_resample.py` 保留原生灰度边界条带、
+完整 S1 原始四帧、官方 depth 与融合图，生产没有研究仓库运行时依赖。
 
-**恒等栈黑盒(HF9 9.0.7,3 帧完全相同,u16/u8 渐变)**:
+补充原生捕获 `c_gray_resize_odd_v1/call6_src.npy`（64×65）→
+`call6_dst_post.npy`（129×131，返回 RVA `0x40F469`）已逐位 100%/max0；
+`tests/fixtures/hf9_native_odd_depth_expand.npz` 保留完整捕获像素。
+生产 C 的 S3_ties 也对新版 `mp3/S3_ties__c3...` 输出逐位一致；原先
+`f0-1` 的旧 C S3 golden 已隔离，新原生 `-mp:3 -dmap` 输出等于源帧。
 
-| 方法 | HF9 输出 vs 输入 | 说明 |
-|---|---|---|
-| C u8 | **100.000% 精确** | 逐层 MergeWeighted + 近似核在 u8 下仍恒等 |
-| C u16 | **100.000% 精确** | 我们的 ceil 链为 50%+0/±1(odd lap2 时 +1)→ **近似上采样核未闭合** |
-| A u8 | 0.391% 精确 / ±1 100%(v−1)| E-37 |
-| A u16 | 95.861% 精确 / ±1 100%(v 或 v−1)| **E-37 f32 往返**:`trunc(f32(v/65535)*65535)` 逐位复现 |
-| B u8 | 66.975% 精确 / ±1 100% | δ 场 |
-| B u16 | 13.760% 精确 / ±1 91.18%(max 2)| **未复现**;我们的 u16 变体输出恒等(0 偏差)|
+原生其它金字塔类及 B 的 centered canvas/层级重建应单独对账，不能用其
+类名、层数或 collapse 公式推断这里的 C 输出。上述证据不代替其它参数组合、
+16-bit 非恒等原生差分和大栈性能验收。
 
-**结论**:HF9 自身只有 **C** 在恒等栈上逐位恒等;A/B 不是。若产品要求"恒等栈=输入",
-需在**方法之上**加恒等快速路径(全部帧相同 → 直接返回输入),这是产品决策,不是 HF9 语义。
-层数(HF9 asm 定案,CreatePyramid 0x140838e30,minDim=128):
-```python
-levels = [(w, h)]
-while True:
-    nw, nh = roundf(w / 2.0), roundf(h / 2.0)   # roundf = 半值远离零
-    if min(nw, nh) < 128: break                 # 0x1408391c6 比较"下一层"(jl)
-    levels.append((nw, nh)); w, h = nw, nh
-```
-- 计 L0:512² → **3** 层(512,256,128);4000² → **5** 层(…,250;下一层 125<128 停);
-  **4084² → 6 层**(4084,2042,1021,511,256,128;下一层 64<128 停)。
-- **OpenFocus 现有 `automatic_pyramid_levels`("最接近 128")对 4000² 会多出 1 层
-  (125 被选中),必须改成"下一层 min<128 即停"。**
-- C 的内部 R:B ctor 默认 **R=8.0**(+0x10/+0x18)、S=4.0;C slot6 直接转发 B 的
-  FirstPass(0x14040dab0)→ R 与 B 同源进入;渲染参数(registry 8 / CLI 5)覆盖默认。
-  **无 C 专属常数;产品默认取 8(kernel 17),与 A/B 一致。**
-- 类别名备注:E-26 修正 C(mp:3)=internal 15=`HF_WeightedPyramidStacking`(flag=0);
-  早期 rev_method_C 标题的 `HF_DepthMapPyramidStacking` 实为 mp:4(Bl)。
-  上述参数证据(ctor R=8、minDim=128)对两者都成立。
-
-**验收**(真 mp3 golden,`experiments/golden/mp3/`):
-- **E2 硬验收**:S3/S4(2 帧)= 100.0000% / ±1 100% —— 已达成。
-- 多帧(S1 4 帧 95.94%,S2 5 帧 97.43% / ±1 99.53%)**未闭合**,不得宣称多帧 100%。
-- S5 13 帧未验证;恒等栈结论见上表。
-
-### 2.3.1 canonical C 原型(已落实到代码,直接调用,勿自创公式)
-
-**文件/函数**(可直接移植):
-
-| 项 | 路径/函数 | 作用 |
-|---|---|---|
-| canonical C | `F:\REA_heliconfocus9\tools\scripts\fuse_b.py::fuse_c_merge(frames, R, S, F, levels=None)` | u8/u16 全链;levels=None 用 asm 规则 |
-| 逐层码带混合 | 同文件 `merge_level(frames16, depth16)` → `helicon_exact.merge_weighted_identity` | 每层 MergeWeighted(与 B 同公式)|
-| 层数规则 | 同文件 `pyramid_levels(h, w)` | CreatePyramid:下一层 min(round(w/2),round(h/2))<128 停 |
-| 重建链 | 同文件 `_chain(blends, levels)` | temp 链 + canvas(ceil 半差) + collapse(**coarsest 也 collapse**)|
-| 恒等快速路径 | `fuse_c_merge` 内:全部帧逐位相同 → 直接返回输入 | HF9 C 恒等精确;规避近似上采样核的 u16 ±1 |
-
-**实测(2026-11-07,canonical 原型)**:
-
-| 用例 | 结果 |
-|---|---|
-| mp3 golden S3/S4(2 帧)| **100.00% / ±1 100%** |
-| mp3 golden S1(4 帧)/S2(5 帧)| 95.94%/97.43%(±1 97.36%/99.53%)|
-| 恒等 u8/u16,64–512px | **100%**(快速路径)|
-| 非恒等小图 u8 256px(2 层)| 100% |
-| 非恒等小图 u8 128px(1 层)| 99.53% / ±1 99.91%(max 3)|
-| 非恒等小图 u8 64px(1 层)| 68.90%(max 26)——**<128px 残差未闭合** |
-| 非恒等 u16 256px | 32.86%(mean|d| 619,max 5058)——**u16 非恒等未复现(开放)** |
-
-> **产品红线覆盖**:A 的 u16 输出按用户红线**保留原值**(不抄 HF9 的 −1 低位损失);
-> C 的 u16 恒等由快速路径保证。u16 *非恒等* 的 C 精确度是开放项,不要用它做验收。
-
-### 2.3.1 真 C 黄金(2026-11-07 现场渲染)与映射
-
-```
-F:\REA_heliconfocus9\experiments\golden\mp3\
-  {S1_zones,S2_gradient,S3_ties,S4_amp4}__c3_R{22,8}_S5_F0__noalign.tif
-  manifest_mp3.json
-渲染命令:HeliconFocus.exe -silent -mp:3 -disable-opencl -rp:R -sp:S
-          -va:0 -ha:0 -ra:0 -ma:0 -ba:0 -i list -save:out
-```
-**映射(必须记住,否则验收错对象)**:
-
-| 文件/轨 | 实际方法 | 用途 |
-|---|---|---|
-| `helicon_cpu/*__a_*` | mp:0(A) | A 验收 |
-| `helicon_cpu/*__b_*` | mp:1(B) | B 验收(±1 100%) |
-| `helicon_cpu/*__c_*` | **mp:2(无效回退)** | **禁止使用**(E-89)|
-| `golden/mp3/*__c3_*` | **mp:3(真 C)** | **C 验收** |
-
-`fuse_b.fuse_b`(旧 blend_level)vs mp3:S3/S4 100%,**S1 2.33%、S2 11.66%**(多帧缺陷);
-per-level MergeWeighted 才是正解(见上表)。`levels=1` 崩溃(2D `rec[:,:,0]`)是
-原型 bug;修复:仅 3D 时取通道,`levels=1` 直接输出 `rec >> 8`。
-coarsest canvas 是否参与 collapse 对 S1–S4 结果无影响(实测)。
 
 ## 2.4 默认参数(已对齐,勿回改)
 
@@ -535,7 +457,7 @@ float32 : 拒绝(或按文档化规则归一化)
 
 # 3. 工程架构(打开快、融合快、内存有界)
 
-## 3.1 当前代码事实(已核对)
+## 3.1 迁移前代码基线（非当前实现）
 
 | 阶段 | 函数(行) | 行为 |
 |---|---|---|
@@ -557,7 +479,7 @@ float32 : 拒绝(或按文档化规则归一化)
 - 线程 25-71;AVX 开/关 12.2s vs 36.7s(≈3×)
 - 帧数梯 n=1..64 commit +12%
 
-## 3.3 目标流水线(代码级)
+## 3.3 最初迁移方案（当前状态见 §3.4 和 `PERFORMANCE.md`）
 
 ### 3.3.1 后端直收 SourceFrame(消除预物化)
 
@@ -608,12 +530,19 @@ def store_frame(image, *, prefer_ram=None):
 
 | 项 | 目标 |
 |---|---|
-| 92×45MP 打开 | <2s(已达标) |
+| 92×45MP 打开 | <2s（当前大栈复验待运行） |
 | 点击融合→首进度 | <5s |
 | 92×45MP 融合 | ≤HF9×1.5;吞吐 ≥20MB/s |
 | 峰值内存 | 与帧数解耦(窗口+3-4 张图) |
 | 4000²×16 融合 | ≤20s |
 | 200+ 帧 | 不 OOM/不卡死 |
+
+2026-11-08 的受控小栈复验使用单核、512MiB Windows Job 硬限：
+512²×4 为 0.094s、21.28MiB/s、peak commit 111MiB；1024²×8 为
+0.718s、22.29MiB/s、peak commit 174MiB。已包含 u16 曝光顺序修复。
+计时前有小图预热，输入为
+u16 TIFF；报告的吞吐按原始输入字节计。该测量只完成小栈验收，
+4000²×16 和 92×45MP 的工程门槛仍待受控大栈验证。
 
 ---
 
@@ -628,7 +557,7 @@ def store_frame(image, *, prefer_ram=None):
 | 5 | `fusion_methods/openfocus_depth.py:79` | diff 魔法乘;码截断;拉伸去 lo 减;snap 公式;平滑 guide 对账 | `helicon_exact.depth_map_noalign` |
 | 6 | `fusion_methods/_depth_kernel.py:19` | 与 `filter_type7` 逐行对账(含 w40/w44 语义) | `helicon_exact.filter_type7` |
 | 7 | `fusion_methods/openfocus_bc.py:117` | B = merge_weighted_identity;输出 `(acc&0xffff)>>8` | `helicon_exact.merge_weighted_identity` |
-| 8 | `fusion_methods/openfocus_bc.py:159` | C = blend_level + canvas_from_blend + collapse_level;输出 `rec>>8` | `fuse_b.fuse_b` |
+| 8 | `fusion_methods/openfocus_bc.py:openfocus_c_impl` | 最终深度后全尺寸反向码带归并，输出 `acc>>8`；移除 RGB pyramid/levels | §2.3 原生捕获 |
 | 9 | `core/multi_focus_fusion.py:~630` | list 不再预物化 | §3.3.1 |
 | 10 | `core/workers.py:402,697,749` | 流式编排 | §3.3.3 |
 | 11 | `core/frame_storage.py:420` | `store_frame` RAM-first | §3.3.2 |
@@ -641,7 +570,7 @@ def store_frame(image, *, prefer_ram=None):
 | 阶段 | 内容 | 验收 |
 |---|---|---|
 | E1 | A 对齐(响应/E-37/S 失效) | A 100%(S3/S4) |
-| E2 | C 对齐(权重/canvas/collapse) | C 100%(S3/S4) |
+| E2 | C 对齐(最终深度/反向全尺寸归并) | C 100%(S3/S4)；补充 S1/S2 100% |
 | E3 | B 对齐(码/拉伸/snap/merge) | B ±1 100%(S4),exact ≥69.5% |
 | E4 | 对齐链移植(P0–P5) | 恒等门逐位;±6/±4/±160 精确 |
 | E5 | 流水线(§3.3) | 首进度 <5s;内存有界 |
@@ -653,35 +582,33 @@ def store_frame(image, *, prefer_ram=None):
 
 ---
 
-# 6. 决策项与开放项
+# 6. 已定决策与开放项
 
-**需实现 agent 定夺**:
-1. C 的层数:原型 API 默认 `levels=3` vs HF9 规则 L0 最短边 128px
-   (`automatic_pyramid_levels`)。用 golden(S3/S4)对比后二选一。
-2. C 的内部 R:C 无 R 滑条;当前用 kernel=11(半径 5)。是否改为与 B 相同
-   (17 → R8)?用 golden 定夺。
-3. B/C 的 merge 第二遍取像素策略:memmap 常驻(简单)vs 码带拒绝+重解码(省内存)。
-4. 32-bit float/int32 TIFF:**HF9 黑盒实测=拒绝**("Failed to load using tiff"),
-   OpenFocus 同样拒绝并给清晰错误(不建议归一化)。
-5. CMYK:**HF9 实测=CMYK TIFF 拒绝、CMYK JPEG 堆损坏崩溃(0xC0000374)**,
-   不可照抄。OpenFocus 应优雅处理:能无损转换(PIL/ImageCms)则转 sRGB,
-   否则明确拒绝 —— 产品取向待用户确认(大多数摄影工作流为 sRGB)。
+**已定的 C 路径**：
 
-**开放项(如实)**:
-1. **B 的 δ 场**(L≥1 级生产者 ±1 混合):exact 69.5%→100% 的最后 30%;
-   需页保护捕获 L1/L2 blend 缓冲(ProducerHunt)。
-1b. **C 多帧**(>2 帧):per-level MergeWeighted 下 S1 95.94%、S2 97.43%(±1 99.53%),
-   残余 = E-78 近似上采样核 + 多帧码带细节;S5 13 帧未验证。
-1c. **C u16 恒等**:HF9 精确;canonical 原型用恒等快速路径达成。u16 **非恒等**
-   残差(mean|d| 619、max 5058 @256px)未复现——开放项。
-1d. **C 小图(<128px)**:u8 64px 68.9%;近似上采样核/单层公式在小图上残差放大。
-1e. **A u16**:按产品红线保留原值(不抄 HF9 的 v−1 低位损失);HF9 实测
-   `trunc(f32(v/65535)*65535)` 只作证据记录,不作为产品出口。
-2. 小 R(≤5)op 半径展宽:非默认 R 的位级精度。
-3. 对齐 4D rot/mag 真实栈 + pixelization(D1/D2/D7):需 hook alignrec/compose/
-   gridHalf 的 GT。
-4. S5 13 帧多帧 merge:顺序/链语义。
-5. `resample_2x` 为近似核(HF 精确权重表未取证,σ≈13 u16);`temp` 逐位 100% 未达。
+1. RGB 金字塔与 `levels` 来自已排除的内部类假设，已移除；C 按 §2.3
+   完成最终深度后，以完整源像素反向归并。
+2. C 没有半径控件；内部默认 kernel=17，参数映射沿用
+   `HF9_DEFAULT_PARAMETER_EQUIVALENCE.md`。
+3. B 第二遍只解码深度带参与源，同时验证未参与源的身份；C 使用有界
+   帧窗口与反向归并。源、行带和输出继续受统一资源预算管理。
+4. 输入格式与产品位深约束仍按 §2.5/§2.6；A 的 u16 出口保留原值，
+   HF9 的一代码浮点往返损失只作证据记录。
 
-> 上述不阻塞"产品级完全替代"(A/C 100%、B ±1 100% 视觉无差、对齐 5/5 精确);
-> 逐位 100% 属后续精化。
+**明确开放的范围**：
+
+1. B 的原生最终 collapse temp、A 多帧 response 尚未闭合；不把全参数
+   bit-exact 临时新增为门槛。当前生产矩阵 A S3/S4 逐位 100%，B S4
+   exact 69.5419%、within1 100%、max1，C S1/S2/S3/S4 逐位 100%。
+2. C 非恒等 u16、其它半径/平滑/画幅组合尚无通用逐位一致保证。
+   旧金字塔原型的 C 残差不再作为当前生产路径的结果。
+3. 研究侧 C 的 S5 13 帧 RGB 与 8192² 两帧，使用官方 depth 的归并已
+   100%/max0；该证据不替代生产大栈的全链工程验收。
+4. 4D 对齐真实栈与 pixelization 的完整 S0–S16 证据边界见
+   `HF9_TRANSLATION_CORE.md`，保持已验证的恒等、位移及坐标语义。
+5. 4000²×16 ≤20s、92×45MP 打开 <2s、峰值 ≤1GB 仍待授权后的
+   受控测量；当前本机验证保持单核、512MiB、自动小栈 ≤1024²×8。
+
+上述像素矩阵只覆盖已运行配置；大栈工程门槛与完整回归未闭合前，
+不得标记全量验收或据此合并。
+

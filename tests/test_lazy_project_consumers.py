@@ -114,14 +114,34 @@ def test_render_roi_context_preserves_lazy_pixel_domain(tmp_path, monkeypatch):
     assert np.array_equal(resolve_frame(context.frames[0].image), pixels[7:19, 5:25])
 
 
-def test_retouch_preparation_retains_disk_originals(tmp_path):
+def test_processed_preview_resolves_off_gui_and_keeps_events_running(qapp):
+    from threading import Event, get_ident
+    from PyQt6.QtCore import QTimer
+    from core.source_frames import process_frame
+    from utils.frame_pixels import preview_pixels
+
+    pixels = np.arange(48 * 80 * 3, dtype=np.uint8).reshape(48, 80, 3)
+    gui_thread = get_ident()
+    release = Event()
+    observations = []
+
+    def transform(image):
+        observations.append((get_ident(), release.wait(1)))
+        return image[:, ::-1].copy()
+
+    QTimer.singleShot(20, release.set)
+    actual = preview_pixels(process_frame(pixels, transform))
+    assert observations[0][0] != gui_thread
+    assert observations[0][1], 'Preview blocked the GUI timer'
+    np.testing.assert_array_equal(actual, pixels[:, ::-1])
+
+
+def test_retouch_preparation_retains_original_pixels(tmp_path):
     from utils.retouch import prepare_retouch_document
     frame, pixels = _source(tmp_path)
     context = build_render_context([frame], pixels, filenames=[frame.path])
     doc = prepare_retouch_document(pixels, context)
-    assert isinstance(doc.frames[0].image, np.memmap)
     assert np.array_equal(doc.frames[0].image, pixels)
-    assert doc.frames[0].image is not pixels
     assert max(doc.source_previews[0].shape[:2]) <= 1024
 
 

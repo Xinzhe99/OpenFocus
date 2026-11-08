@@ -24,6 +24,8 @@ import argparse
 import concurrent.futures
 from collections import deque
 from contextlib import contextmanager
+from dataclasses import asdict, dataclass
+import json
 import time
 import cv2
 import numpy as np
@@ -182,7 +184,7 @@ def _compute_valid_region_from_transforms(H_matrices, img_shape, margin=2):
 # ========== 单应性对齐算法实现（非线性） ==========
 
 
-def _align_homography_impl(input_source, output_path=None, img_filenames=None, downscale_width=1600, thread_count: int = 4, should_cancel=None, failure_policy='continue'):
+def _align_homography_impl(input_source, output_path=None, img_filenames=None, downscale_width=1600, thread_count: int = 4, should_cancel=None, failure_policy='continue', *, defer_warps=False, plan_callback=None):
     """
     商业级图像对齐算法优化版
     特性：
@@ -192,23 +194,8 @@ def _align_homography_impl(input_source, output_path=None, img_filenames=None, d
     4. Lanczos插值：保证画质清晰度
     5. 并行计算优化 (Parallel Processing)：利用多核加速特征提取和图像变换
     """
-    import concurrent.futures
-
-    # --- 1. 数据加载与预处理 ---
-    if img_filenames is None and isinstance(input_source, str):
-        # 支持常见格式，过滤非图片
-        valid_exts = {'.jpg', '.jpeg', '.jpe', '.jfif', '.png', '.bmp', '.tif', '.tiff', '.webp'}
-        img_paths = sorted(
-            (os.path.join(input_source, f) for f in os.listdir(input_source)
-             if os.path.splitext(f)[1].lower() in valid_exts),
-            key=_image_sort_key
-        )
-        # 注意：这里为了内存考虑，商业软件通常不会一次性读入所有大图
-        # 但为了保持接口一致，这里先全部读入。更好的做法是建立生成器。
-        images = [cv2.imread(path) for path in img_paths]
-        img_filenames = [os.path.basename(path) for path in img_paths]
-    else:
-        images = input_source
+    # Directory loading and source policy belong to ImageRegistration.process.
+    images = input_source
 
     num_images = len(images)
     if num_images:
@@ -241,6 +228,10 @@ def _align_homography_impl(input_source, output_path=None, img_filenames=None, d
     print("  - Step 1/3: Extracting features concurrently...")
 
     def get_features_task(img):
+        from core.source_frames import resolve_frame
+        source = img
+        img = resolve_frame(img)
+        identity = _perspective_source(source, img, should_cancel)
         # 在线程中创建独立的检测器，确保线程安全
         local_detector = cv2.SIFT_create()
         h, w = img.shape[:2]
@@ -267,7 +258,7 @@ def _align_homography_impl(input_source, output_path=None, img_filenames=None, d
                 divisor = 1.0
             img_small = (img_small.astype(np.float32) / divisor * 255.0).round().clip(0, 255).astype(np.uint8)
         kps, des = local_detector.detectAndCompute(img_small, None)
-        return kps, des, scale
+        return kps, des, scale, identity
 
     # 使用线程池并行提取特征
     # OpenCV 的大部分操作释放 GIL，因此多线程可以有效加速
@@ -280,10 +271,12 @@ def _align_homography_impl(input_source, output_path=None, img_filenames=None, d
     bf = cv2.BFMatcher(cv2.NORM_L2)
     with _bounded_registration_map(get_features_task, images, max_workers,
                                    should_cancel) as features:
-        last_kps, last_des, last_scale = next(features)
+        last_kps, last_des, last_scale, identity = next(features)
+        source_identities = [identity]
         last_index = 0
         trajectory_failed = False
-        for idx, (curr_kps, curr_des, curr_scale) in enumerate(features, 1):
+        for idx, (curr_kps, curr_des, curr_scale, identity) in enumerate(features, 1):
+            source_identities.append(identity)
             _check_cancel(should_cancel)
             if curr_des is None or len(curr_kps) < 4 or last_des is None:
                 print(f"Warning: Frame {idx} features insufficient. Keeping original position.")
@@ -365,20 +358,10 @@ def _align_homography_impl(input_source, output_path=None, img_filenames=None, d
     # 构造裁切平移矩阵
     T_crop = np.array([[1, 0, offset_x], [0, 1, offset_y], [0, 0, 1]], dtype=np.float32)
 
-    def warp_task(args):
-        img, H = args
-        # 合并裁切变换
-        if do_crop:
-            H_final = T_crop @ H
-        else:
-            H_final = H
-
-        return cv2.warpPerspective(img, H_final, (target_w, target_h),
-                                 flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_CONSTANT)
-
-    with _bounded_registration_map(warp_task, zip(images, H_matrices),
-                                   max_workers, should_cancel) as results:
-        aligned_images = [store_frame(image) for image in results]
+    aligned_images = _apply_perspective_warps(
+        images, H_matrices, T_crop if do_crop else None, (target_w, target_h),
+        max_workers, should_cancel, defer_warps, method='homography', sources=source_identities,
+        bounds=(top, bottom, left, right), plan_callback=plan_callback)
     _save_registration(aligned_images, output_path, img_filenames, should_cancel)
 
     return aligned_images
@@ -391,6 +374,162 @@ def _check_cancel(should_cancel):
     if should_cancel is not None and should_cancel():
         raise RegistrationCancelled()
 
+
+def _perspective_source(frame, image, should_cancel):
+    from core.hf9_alignment import (SourceFingerprint, _source_file_identity,
+                                    _pixel_digest, _source_context)
+    path, page, stamp = _source_file_identity(frame)
+    source = SourceFingerprint(tuple(image.shape), image.dtype.str,
+                              _pixel_digest(image, should_cancel), path, page,
+                              stamp, _source_context(frame))
+    source.validate_file()
+    return source
+
+
+@dataclass(frozen=True)
+class PerspectiveWarp:
+    source: object
+    matrix: tuple
+    matrix_dtype: str
+    dsize: tuple
+    should_cancel: object = None
+
+    def __call__(self, image):
+        self.source.validate_pixels(image, self.should_cancel)
+        return cv2.warpPerspective(image,
+            np.asarray(self.matrix, dtype=self.matrix_dtype).reshape(3, 3), self.dsize,
+            flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_CONSTANT)
+
+
+def _perspective_output_shape(shape, dsize):
+    # OpenCV drops a singleton channel axis when producing warp output.
+    channels = () if shape[2:] == (1,) else shape[2:]
+    return (dsize[1], dsize[0]) + channels
+
+
+@dataclass(frozen=True)
+class PerspectiveStage:
+    method: str
+    sources: tuple
+    matrices: tuple
+    matrix_dtypes: tuple
+    bounds: tuple
+    dsize: tuple
+
+    def __post_init__(self):
+        count = len(self.sources)
+        if (self.method not in ('homography', 'ecc') or count < 2
+                or not all(isinstance(value, tuple) for value in
+                           (self.sources, self.matrices, self.matrix_dtypes, self.bounds, self.dsize))
+                or len(self.matrices) != count or len(self.matrix_dtypes) != count
+                or len(self.bounds) != 4 or len(self.dsize) != 2
+                or any(type(value) is not int or value <= 0 for value in self.dsize)
+                or any(type(value) is not int for value in self.bounds)):
+            raise ValueError('Invalid perspective stage geometry')
+        top, bottom, left, right = self.bounds
+        height, width = self.sources[0].shape[:2]
+        if top < bottom and left < right:
+            if not (0 <= top < bottom <= height and 0 <= left < right <= width
+                    and self.dsize == (right - left, bottom - top)):
+                raise ValueError('Invalid perspective crop')
+        elif self.dsize != (width, height):
+            raise ValueError('Invalid uncropped perspective size')
+        for source, matrix, dtype in zip(self.sources, self.matrices, self.matrix_dtypes):
+            if (not isinstance(matrix, tuple) or len(matrix) != 9
+                    or np.dtype(dtype) not in (np.dtype('float32'), np.dtype('float64'))
+                    or not np.all(np.isfinite(matrix))
+                    or len(source.shape) not in (2, 3) or any(value <= 0 for value in source.shape)
+                    or np.dtype(source.dtype).kind not in 'uf'
+                    or len(source.sha256) != 64
+                    or any(value not in '0123456789abcdef' for value in source.sha256)):
+                raise ValueError('Invalid perspective transform or source')
+
+    def validate_sources(self, sources, *, should_cancel=None):
+        from core.hf9_alignment import _source_context, _source_file_identity
+        from core.source_frames import ProcessedFrame
+        if len(sources) != len(self.sources):
+            raise ValueError('Perspective source count changed')
+        for frame, source in zip(sources, self.sources):
+            _check_cancel(should_cancel)
+            source.validate_file()
+            if (tuple(frame.shape) != source.shape or np.dtype(frame.dtype).str != source.dtype
+                    or _source_file_identity(frame) != (source.path, source.page, source.file_stamp)
+                    or (not (isinstance(frame, ProcessedFrame) and
+                             isinstance(frame.processor, PerspectiveWarp))
+                        and _source_context(frame) != source.context)):
+                raise ValueError('Perspective source identity changed')
+            if isinstance(frame, np.ndarray):
+                source.validate_pixels(frame, should_cancel)
+
+    def apply(self, images, *, defer_warps, should_cancel=None, workers=1):
+        from core.source_frames import process_frame, resolve_frame
+        self.validate_sources(images, should_cancel=should_cancel)
+        frames = [process_frame(image, PerspectiveWarp(source, matrix, dtype, self.dsize, should_cancel),
+                    shape=_perspective_output_shape(image.shape, self.dsize), should_cancel=should_cancel)
+                  for image, source, matrix, dtype in
+                  zip(images, self.sources, self.matrices, self.matrix_dtypes)]
+        if defer_warps:
+            return frames
+        with _bounded_registration_map(resolve_frame, frames, workers, should_cancel) as results:
+            return [store_frame(image) for image in results]
+
+
+@dataclass(frozen=True)
+class PerspectiveAlignmentPlan:
+    """Ordered OpenCV resamplings; independent of the HF9 f8 plan schema."""
+    stages: tuple
+    parameters: str
+    downscale_width: int
+
+    def __post_init__(self):
+        if (not isinstance(self.stages, tuple) or not self.stages
+                or any(not isinstance(stage, PerspectiveStage) for stage in self.stages)
+                or type(self.downscale_width) is not int or self.downscale_width <= 0
+                or not isinstance(json.loads(self.parameters), dict)):
+            raise ValueError('Invalid perspective alignment plan')
+        for previous, current in zip(self.stages, self.stages[1:]):
+            if len(previous.sources) != len(current.sources):
+                raise ValueError('Perspective stage source count changed')
+            for before, after in zip(previous.sources, current.sources):
+                if (after.shape != _perspective_output_shape(before.shape, previous.dsize)
+                        or before.dtype != after.dtype
+                        or (before.path, before.page, before.file_stamp) !=
+                           (after.path, after.page, after.file_stamp)):
+                    raise ValueError('Perspective stage source chain changed')
+
+    def validate_sources(self, sources, *, should_cancel=None):
+        self.stages[0].validate_sources(sources, should_cancel=should_cancel)
+
+    def to_dict(self):
+        return {'version': 1, 'backend': 'opencv-perspective-v1', **asdict(self)}
+
+    @classmethod
+    def from_dict(cls, data):
+        from core.hf9_alignment import SourceFingerprint
+        if data['version'] != 1 or data['backend'] != 'opencv-perspective-v1':
+            raise ValueError('Unsupported perspective plan version')
+        stages = []
+        for item in data['stages']:
+            sources = tuple(SourceFingerprint(tuple(source['shape']), source['dtype'],
+                source['sha256'], source['path'], source['page'], tuple(source['file_stamp']),
+                source['context']) for source in item['sources'])
+            stages.append(PerspectiveStage(item['method'], sources,
+                tuple(tuple(matrix) for matrix in item['matrices']), tuple(item['matrix_dtypes']),
+                tuple(item['bounds']), tuple(item['dsize'])))
+        return cls(tuple(stages), data['parameters'], data['downscale_width'])
+
+
+def _apply_perspective_warps(images, matrices, crop, dsize, workers,
+                             should_cancel, defer_warps, *, method, sources,
+                             bounds, plan_callback=None):
+    """Keep every stage's Lanczos resampling, matrix precision and crop."""
+    final = tuple(crop @ matrix if crop is not None else matrix.copy() for matrix in matrices)
+    stage = PerspectiveStage(method, tuple(sources),
+        tuple(tuple(float(value) for value in matrix.flat) for matrix in final),
+        tuple(matrix.dtype.str for matrix in final), tuple(int(value) for value in bounds), dsize)
+    if plan_callback is not None:
+        plan_callback(stage)
+    return stage.apply(images, defer_warps=defer_warps, should_cancel=should_cancel, workers=workers)
 
 @contextmanager
 def _bounded_registration_map(function, values, workers, should_cancel=None):
@@ -451,6 +590,9 @@ def _bounded_registration_map(function, values, workers, should_cancel=None):
             future.cancel()
         pool.shutdown(wait=True, cancel_futures=True)
         pending.clear()
+        close = getattr(source, 'close', None)
+        if close is not None:
+            close()
 
 
 def _save_registration(images, output_path, filenames, should_cancel):
@@ -462,6 +604,9 @@ def _save_registration(images, output_path, filenames, should_cancel):
     from utils.image_utils import imwrite_auto
     os.makedirs(output_path, exist_ok=True)
     for index, image in enumerate(images):
+        _check_cancel(should_cancel)
+        from core.source_frames import resolve_frame
+        image = resolve_frame(image)
         _check_cancel(should_cancel)
         name = filenames[index] if filenames else f'frame_{index:04d}.png'
         destination = os.path.join(output_path, name)
@@ -495,6 +640,16 @@ def _report_helicon_transform(transform, reference_index):
 
 def apply_alignment_plan(sources, plan, *, defer_warps=False, should_cancel=None):
     """Apply a validated cached or fresh plan, preserving original source order."""
+    if isinstance(plan, PerspectiveAlignmentPlan):
+        plan.validate_sources(sources, should_cancel=should_cancel)
+        result = sources
+        for stage in plan.stages:
+            _record_grouped_crop(*stage.bounds)
+            result = stage.apply(result, defer_warps=True, should_cancel=should_cancel)
+        if defer_warps:
+            return result
+        from core.source_frames import resolve_frame
+        return [store_frame(resolve_frame(frame)) for frame in result]
     from functools import partial
     from core.hf9_alignment import apply_alignment, alignment_resolution_bytes
     from core.source_frames import resolve_frame
@@ -541,56 +696,52 @@ def _align_helicon_impl(input_source, output_path=None, img_filenames=None, *,
     from core.hf9_alignment import estimate_alignment_plan, AlignmentEstimationError
     images = input_source
     if isinstance(input_source, str):
+        from dataclasses import replace
         from core.source_frames import scratch_source_headers
         extensions = {'.jpg', '.jpeg', '.jpe', '.jfif', '.png', '.bmp', '.tif', '.tiff', '.webp'}
         paths = sorted((os.path.join(input_source, name) for name in os.listdir(input_source)
                         if os.path.splitext(name)[1].lower() in extensions), key=_image_sort_key)
         images = scratch_source_headers(paths, should_cancel)
+        images = [replace(frame, shape=frame.shape[:2]) if frame.grayscale else frame
+                  for frame in images]
         img_filenames = [os.path.basename(path) for path in paths]
     if images is None or not len(images):
         return []
-    try:
-        plan = estimate_alignment_plan(images, max_shift_ratio=max_shift_ratio,
-            reference_frame=reference_frame, rotation=rotation, magnification=magnification,
-            should_cancel=should_cancel,
-            failure_policy=failure_policy)
-    except AlignmentEstimationError as error:
-        for transform in getattr(error, 'completed_transforms', ()):
-            _report_helicon_transform(transform, reference_frame - 1)
-        _report_alignment(getattr(error, 'frame_index', None), 'openfocus', 'failed', reason=str(error))
-        raise
-    if plan_callback is not None:
-        plan_callback(plan)
-    result = apply_alignment_plan(images, plan, defer_warps=defer_warps, should_cancel=should_cancel)
-    if output_path:
-        from core.source_frames import resolve_frame
-        _save_registration((resolve_frame(frame) for frame in result), output_path,
-                           img_filenames, should_cancel)
-    return result
+    from core.frame_storage import scratch_directory
+    from core.source_frames import select_frame_scratch
+    with scratch_directory():
+        select_frame_scratch(images, should_cancel=should_cancel)
+        try:
+            plan = estimate_alignment_plan(images, max_shift_ratio=max_shift_ratio,
+                reference_frame=reference_frame, rotation=rotation, magnification=magnification,
+                should_cancel=should_cancel,
+                failure_policy=failure_policy)
+        except AlignmentEstimationError as error:
+            for transform in getattr(error, 'completed_transforms', ()):
+                _report_helicon_transform(transform, reference_frame - 1)
+            _report_alignment(getattr(error, 'frame_index', None), 'openfocus', 'failed', reason=str(error))
+            raise
+        if plan_callback is not None:
+            plan_callback(plan)
+        result = apply_alignment_plan(images, plan, defer_warps=defer_warps, should_cancel=should_cancel)
+        if output_path:
+            from core.source_frames import resolve_frame
+            _save_registration((resolve_frame(frame) for frame in result), output_path,
+                               img_filenames, should_cancel)
+        return result
 
 
 # ========== ECC对齐算法实现（高精度） ==========
 
-def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscale_width=1000, thread_count: int = 4, should_cancel=None, use_gpu: bool = False, failure_policy='continue'):
+def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscale_width=1000, thread_count: int = 4, should_cancel=None, use_gpu: bool = False, failure_policy='continue', *, defer_warps=False, plan_callback=None):
     """
     基于 ECC (增强相关系数) 的高精度图像栈对齐算法
     适用于：显微摄影、微距摄影中伴随呼吸效应的图像栈
     优势：亚像素精度，自动处理缩放中心偏移，不依赖特征点
     优化：并行预处理、并行变换、合并裁切操作
     """
-    import concurrent.futures
-
-    # --- 1. 数据加载 ---
-    if img_filenames is None and isinstance(input_source, str):
-        img_paths = sorted(
-            (os.path.join(input_source, f) for f in os.listdir(input_source)
-             if os.path.splitext(f)[1].lower() in {'.jpg', '.jpeg', '.jpe', '.jfif', '.png', '.bmp', '.tif', '.tiff', '.webp'}),
-            key=_image_sort_key
-        )
-        images = [cv2.imread(path) for path in img_paths]
-        img_filenames = [os.path.basename(path) for path in img_paths]
-    else:
-        images = input_source
+    # Directory loading and source policy belong to ImageRegistration.process.
+    images = input_source
     if len(images):
         _report_reference('ecc')
 
@@ -625,6 +776,10 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
 
     # 预处理函数：转灰度 + 降采样 + 高斯模糊 + 归一化
     def preprocess(img):
+        from core.source_frames import resolve_frame
+        source = img
+        img = resolve_frame(img)
+        identity = _perspective_source(source, img, should_cancel)
         h, w = img.shape[:2]
         scale = downscale_width / float(w) if w > downscale_width else 1.0
         if scale < 1.0:
@@ -642,7 +797,7 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
         # findTransformECC 的数值稳定性依赖归一化的浮点输入：uint8 的
         # 大幅值梯度会让优化步长过大，常见于小位移场景直接不收敛
         gray = gray.astype(np.float32) / (65535.0 if gray.dtype == np.uint16 else 255.0)
-        return gray, scale
+        return gray, scale, identity
 
     print(f"Aligning {len(images)} images using ECC (Parallel Optimized)...")
 
@@ -653,21 +808,23 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
     except Exception:
         max_workers = min(8, os.cpu_count() or 1)
 
-    with _bounded_registration_map(preprocess, images, max_workers,
-                                   should_cancel) as results:
-        preprocessed_data = [(store_frame(gray), scale) for gray, scale in results]
+    source_identities = []
+    def pairs():
+        # Retain only adjacent bounded-resolution planes and the active tasks.
+        # Resolving here also applies upstream deferred stages, one source at
+        # a time, without keeping their full-resolution intermediate images.
+        with _bounded_registration_map(preprocess, images, max_workers,
+                                       should_cancel) as results:
+            previous, scale_factor, identity = next(results)
+            source_identities.append(identity)
+            for idx, (current, _, identity) in enumerate(results, 1):
+                source_identities.append(identity)
+                yield idx, previous, current, scale_factor
+                previous = current
 
-    # 所有帧同尺寸，缩放比例一致
-    scale_factor = preprocessed_data[0][1]
-
-
-    # --- 4. 计算矩阵 (相邻帧对彼此独立 -> 并行计算, 串行累积) ---
-    # print("  - Step 2/3: Calculating ECC matrices...")
-
-    def _compute_pair_transform(idx: int) -> np.ndarray:
+    def _compute_pair_transform(pair):
         """ECC transform of frame idx relative to frame idx-1 (scale-restored)."""
-        prev_gray = preprocessed_data[idx - 1][0]
-        curr_gray, _ = preprocessed_data[idx]
+        idx, prev_gray, curr_gray, scale_factor = pair
 
         if warp_mode == cv2.MOTION_HOMOGRAPHY:
             warp_matrix = np.eye(3, 3, dtype=np.float32)
@@ -704,10 +861,8 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
         return warp_matrix, cc
 
     with _bounded_registration_map(_compute_pair_transform,
-                                   range(1, len(images)), max_workers,
-                                   should_cancel) as results:
+                                   pairs(), max_workers, should_cancel) as results:
         pair_transforms = list(results)
-    del preprocessed_data
 
     trajectory_failed = False
     for idx, (warp_matrix, cc) in enumerate(pair_transforms, start=1):
@@ -794,94 +949,37 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
                device='CUDA' if HAS_CUPY else 'CPU', shape=(target_h, target_w),
                frames=len(images), gpu_requested=use_gpu)
 
-    def warp_task(args):
-        idx, img, H = args
-        
-        # 合并裁切变换：先变换 H，再平移 T_crop
-        if do_crop:
-            H_final = T_crop @ H
-        else:
-            H_final = H
-            
-        # 如果有 Cupy，使用 GPU 加速
-        if HAS_CUPY:
-            # 将图像传输到 GPU
-            img_gpu = cp.asarray(img)
-            
-            # Cupy 的 affine_transform 需要逆变换矩阵
-            # cv2.warpPerspective 使用的是 H_final (前向映射矩阵的逆，即从目标到源)
-            # 但 ndimage.affine_transform 也需要从输出坐标映射回输入坐标的矩阵
-            # 注意：ndimage.affine_transform 对矩阵的定义可能与 OpenCV 不同
-            # OpenCV: dst(x,y) = src(M * [x,y,1])
-            # ndimage: output[i, j] = input[matrix @ [i,j] + offset]
-            
-            # 对于透视变换 (Homography)，affine_transform 不够用，因为它只支持仿射
-            # 我们需要手动构建坐标网格并使用 map_coordinates
-            
-            # 创建目标网格
-            y_grid, x_grid = cp.meshgrid(cp.arange(target_h), cp.arange(target_w), indexing='ij')
-            
-            # 展平网格
-            ones = cp.ones_like(x_grid)
-            coords = cp.stack([x_grid, y_grid, ones]) # 3 x N
-            coords = coords.reshape(3, -1)
-            
-            # 应用变换矩阵 (H_final 已经是 H_inv，即从目标到源的映射)
-            # src_coords = H_final @ dst_coords
-            # cv2.warpPerspective treats M as the forward src->dst map and
-            # inverts it internally; manual grid sampling must therefore use
-            # the inverse so the CuPy path matches the CPU path.
-            H_gpu = cp.asarray(np.linalg.inv(H_final))
-            src_coords_homo = cp.matmul(H_gpu, coords)
-            
-            # 归一化齐次坐标
-            w_coords = src_coords_homo[2, :]
-            w_coords = cp.where(cp.abs(w_coords) < 1e-10, 1e-10, w_coords)
-            src_x = src_coords_homo[0, :] / w_coords
-            src_y = src_coords_homo[1, :] / w_coords
-            
-            # 重塑回图像形状
-            src_x = src_x.reshape(target_h, target_w)
-            src_y = src_y.reshape(target_h, target_w)
-            
-            # 对每个通道进行插值
-            channels = []
-            planes = ((img_gpu,) if img.ndim == 2 else
-                      (img_gpu[:, :, c] for c in range(img.shape[2])))
-            for plane in planes:
-                # order=1 (linear) 速度最快, order=3 (cubic) 质量更好
-                # 这里使用 order=1 以获得最大加速，如果追求质量可用 order=3
-                channel_out = cupyx.scipy.ndimage.map_coordinates(
-                    plane,
-                    cp.stack([src_y, src_x]), 
-                    order=1, 
-                    mode='constant', 
-                    cval=0
-                )
-                channels.append(channel_out)
-            
-            aligned_img_gpu = (channels[0] if len(channels) == 1 else
-                               cp.stack(channels, axis=2))
-            
-            # 传回 CPU
-            aligned_img = cp.asnumpy(aligned_img_gpu).astype(img.dtype)
-            
-        else:
-            # CPU 版本 (OpenCV)
-            aligned_img = cv2.warpPerspective(
-                img,
-                H_final,
-                (target_w, target_h),
-                flags=cv2.INTER_LANCZOS4,
-                borderMode=cv2.BORDER_CONSTANT
-            )
-        
-        return aligned_img
+    if not HAS_CUPY:
+        aligned_images = _apply_perspective_warps(
+            images, H_matrices, T_crop if do_crop else None, (target_w, target_h),
+            max_workers, should_cancel, defer_warps, method='ecc', sources=source_identities,
+            bounds=(top, bottom, left, right), plan_callback=plan_callback)
+        _save_registration(aligned_images, output_path, img_filenames, should_cancel)
+        return aligned_images
 
-    task_args = ((i, image, H_matrices[i]) for i, image in enumerate(images))
+    def warp_task(args):
+        from core.source_frames import resolve_frame
+        img, H = args
+        img = resolve_frame(img)
+        H_final = T_crop @ H if do_crop else H
+        img_gpu = cp.asarray(img)
+        y_grid, x_grid = cp.meshgrid(cp.arange(target_h), cp.arange(target_w), indexing='ij')
+        coords = cp.stack([x_grid, y_grid, cp.ones_like(x_grid)]).reshape(3, -1)
+        # Preserve the explicitly selected legacy GPU linear interpolation.
+        src_coords = cp.asarray(np.linalg.inv(H_final)) @ coords
+        divisor = cp.where(cp.abs(src_coords[2]) < 1e-10, 1e-10, src_coords[2])
+        src_x = (src_coords[0] / divisor).reshape(target_h, target_w)
+        src_y = (src_coords[1] / divisor).reshape(target_h, target_w)
+        planes = ((img_gpu,) if img.ndim == 2 else
+                  (img_gpu[:, :, c] for c in range(img.shape[2])))
+        channels = [cupyx.scipy.ndimage.map_coordinates(
+            plane, cp.stack([src_y, src_x]), order=1, mode='constant', cval=0)
+            for plane in planes]
+        result = channels[0] if len(channels) == 1 else cp.stack(channels, axis=2)
+        return cp.asnumpy(result).astype(img.dtype)
+
     # The explicit legacy GPU backend is serialized; never mix CPU/GPU frames.
-    with _bounded_registration_map(warp_task, task_args,
-                                   1 if HAS_CUPY else max_workers,
+    with _bounded_registration_map(warp_task, zip(images, H_matrices), 1,
                                    should_cancel) as results:
         aligned_images = [store_frame(image) for image in results]
     _save_registration(aligned_images, output_path, img_filenames, should_cancel)
@@ -1053,6 +1151,7 @@ class ImageRegistration:
         self.use_gpu = bool(use_gpu)
         self.defer_warps = bool(defer_warps)
         self.alignment_plan = None
+        self._perspective_stages = []
     
     def process(self, 
                 input_source: Union[str, List[np.ndarray]], 
@@ -1077,6 +1176,7 @@ class ImageRegistration:
         with heavy_job(should_cancel), scratch_directory():
             _check_cancel(should_cancel)
             self.alignment_plan = None
+            self._perspective_stages = []
             if self.steps == ('openfocus',):
                 from core.algorithms import get_registration, resolve_runner
                 sources = input_source if input_source is not None else []
@@ -1087,6 +1187,7 @@ class ImageRegistration:
                     output_path=output_path, **self.parameters)
             filenames = None
             images = input_source
+            deferred = self.defer_warps and not self.use_gpu
             if isinstance(input_source, str):
                 extensions = {'.jpg', '.jpeg', '.jpe', '.jfif', '.png',
                               '.bmp', '.tif', '.tiff', '.webp'}
@@ -1095,37 +1196,65 @@ class ImageRegistration:
                                 if os.path.splitext(name)[1].lower() in extensions),
                                key=_image_sort_key)
                 from core.image_loader import admit_image_decode, decode_image
-                from core.source_frames import scratch_source_headers
-                headers = scratch_source_headers(paths, should_cancel)
-                if headers:
-                    input_bytes = sum(frame.nbytes for frame in headers)
-                    select_scratch(input_bytes, paths, preferred_size=(
-                        input_bytes + estimate_registration_space(headers, len(self.steps))))
-                images = []
-                for path in paths:
-                    _check_cancel(should_cancel)
-                    admit_image_decode(path)
-                    image = (decode_image(path, preserve_grayscale=True)
-                             if self.steps == ('openfocus',) else decode_image(path))
-                    if image is None:
-                        raise ValueError(f"Could not decode registration frame: {path}")
-                    images.append(store_frame(image))
+                if deferred:
+                    from core.source_frames import scan_source, process_frame
+                    images = []
+                    for path in paths:
+                        _check_cancel(should_cancel)
+                        for source in scan_source(path, header_only=True, page_index=0,
+                                                  should_cancel=should_cancel):
+                            # Match decode_image's directory contract: validate
+                            # alpha before retaining an opaque BGR producer.
+                            if source.ndim == 3 and source.shape[2] == 4:
+                                from core.source_frames import resolve_frame
+                                from core.image_loader import _has_transparency, UnsupportedTransparency
+                                if _has_transparency(resolve_frame(source)):
+                                    raise UnsupportedTransparency('Registration of transparent images is unsupported')
+                                _check_cancel(should_cancel)
+                                source = process_frame(source,
+                                    lambda pixels: cv2.cvtColor(pixels, cv2.COLOR_BGRA2BGR),
+                                    shape=source.shape[:2] + (3,), should_cancel=should_cancel)
+                            images.append(source)
+                else:
+                    from core.source_frames import scratch_source_headers
+                    headers = scratch_source_headers(paths, should_cancel)
+                    if headers:
+                        input_bytes = sum(frame.nbytes for frame in headers)
+                        select_scratch(input_bytes, paths, preferred_size=(
+                            input_bytes + estimate_registration_space(headers, len(self.steps))))
+                    images = []
+                    for path in paths:
+                        _check_cancel(should_cancel)
+                        admit_image_decode(path)
+                        image = decode_image(path)
+                        if image is None:
+                            raise ValueError(f"Could not decode registration frame: {path}")
+                        images.append(store_frame(image))
                 filenames = [os.path.basename(path) for path in paths]
             else:
                 from collections.abc import Sequence
                 from core.source_frames import materialize_frames
-                staging = (estimate_registration_space(input_source, len(self.steps))
-                           if isinstance(input_source, Sequence) else 0)
-                images = (materialize_frames(input_source, should_cancel,
-                                             preferred_staging_bytes=staging)
-                          if input_source is not None else [])
+                if deferred:
+                    images = list(input_source) if input_source is not None else []
+                else:
+                    staging = (estimate_registration_space(input_source, len(self.steps))
+                               if isinstance(input_source, Sequence) else 0)
+                    images = (materialize_frames(input_source, should_cancel,
+                                                 preferred_staging_bytes=staging)
+                              if input_source is not None else [])
+            if deferred and images and self.steps:
+                from core.source_frames import select_frame_scratch
+                select_frame_scratch(images,
+                    preferred_size=estimate_registration_space(images[:2], len(self.steps)),
+                    should_cancel=should_cancel)
             if images is not None and len(images) and 'openfocus' in self.steps and self.parameters['reference_frame'] > len(images):
                 raise ValueError(f"OpenFocus reference frame {self.parameters['reference_frame']} is outside the stack of {len(images)} frames")
 
             from core.image_loader import _has_transparency, UnsupportedTransparency
             for image in images or ():
                 _check_cancel(should_cancel)
-                if _has_transparency(image):
+                from core.source_frames import resolve_frame
+                if image.ndim == 3 and image.shape[2] == 4 and _has_transparency(resolve_frame(image)):
                     raise UnsupportedTransparency("Registration of transparent images is unsupported")
 
             if images is None or len(images) < 2:
@@ -1139,14 +1268,16 @@ class ImageRegistration:
                 return images
             height, width = images[0].shape[:2]
             channels = images[0].shape[2] if images[0].ndim == 3 else 1
-            # Grayscale caches and aligned frames are disk-backed. Charge only
-            # the active frame scratch; worker slots account for concurrent ECC.
+            # Charge active source resolution and bounded concurrent estimation;
+            # deferred output descriptors retain no full-resolution warp stack.
             gray_bytes = height * width * 4
+            from core.source_frames import frame_resolution_bytes
             plan = plan_execution(Workload(
                 algorithm='registration', frames=len(images), height=height,
                 width=width, channels=channels, itemsize=images[0].dtype.itemsize,
                 fixed_bytes=gray_bytes,
-                per_worker_bytes=max(image.size for image in images) * 4 * 4,
+                per_worker_bytes=max(image.size * 16 + frame_resolution_bytes(image)
+                                     for image in images),
                 outer_tasks=len(images), parallel_layer='outer'),
                 preference=resource_preference, user_threads=thread_count)
             workers = min(plan.workers, plan.max_in_flight)
@@ -1159,6 +1290,11 @@ class ImageRegistration:
             for step in self.steps:
                 _check_cancel(should_cancel)
                 spec = get_registration(step)
+                if deferred and step not in ('homography', 'ecc', 'openfocus'):
+                    # Extensions retain their existing array input contract and
+                    # receive only their declared parameters/execution keywords.
+                    from core.source_frames import materialize_frames
+                    result = materialize_frames(result, should_cancel)
                 parameters = {item.key: self.parameters[item.key] for item in spec.parameters}
                 with log_operation('registration_stage', method=step,
                                    parameters=parameters, provider='OpenCV',
@@ -1171,6 +1307,12 @@ class ImageRegistration:
                     except RegistrationCancelled:
                         operation.cancel()
                         raise
+            if len(self._perspective_stages) == len(self.steps):
+                self.alignment_plan = PerspectiveAlignmentPlan(tuple(self._perspective_stages),
+                    json.dumps(self.parameters, sort_keys=True, separators=(',', ':'), allow_nan=False),
+                    self.downscale_width)
+            else:
+                self.alignment_plan = None
             _save_registration(result, output_path, filenames, should_cancel)
             return result
     
@@ -1189,7 +1331,7 @@ class ImageRegistration:
         Returns:
             配准后的图像列表
         """
-        return _align_homography_impl(input_source, output_path, downscale_width=self.downscale_width, thread_count=thread_count, should_cancel=should_cancel, failure_policy=failure_policy)
+        return _align_homography_impl(input_source, output_path, downscale_width=self.downscale_width, thread_count=thread_count, should_cancel=should_cancel, failure_policy=failure_policy, defer_warps=self.defer_warps and not self.use_gpu, plan_callback=self._perspective_stages.append)
     
     def _process_ecc(self, 
                     input_source: Union[str, List[np.ndarray]], 
@@ -1206,7 +1348,7 @@ class ImageRegistration:
         Returns:
             配准后的图像列表
         """
-        return _align_ecc_impl(input_source, output_path, downscale_width=self.downscale_width, thread_count=thread_count, should_cancel=should_cancel, use_gpu=self.use_gpu, failure_policy=failure_policy)
+        return _align_ecc_impl(input_source, output_path, downscale_width=self.downscale_width, thread_count=thread_count, should_cancel=should_cancel, use_gpu=self.use_gpu, failure_policy=failure_policy, defer_warps=self.defer_warps, plan_callback=self._perspective_stages.append)
 
 
     def set_method(self, method):

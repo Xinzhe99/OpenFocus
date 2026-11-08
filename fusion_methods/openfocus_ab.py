@@ -73,6 +73,9 @@ def _check_cancel(should_cancel):
 
 def _frame_pass_workers(frames, img_resize, algorithm, thread_count, *, activity_only=False):
     """Admit complete independent producers, including their retained result."""
+    from fusion_methods._hf9_execution import uses_rows, frame_parallelism_allowed
+    if uses_rows() or not frame_parallelism_allowed():
+        return 1
     if thread_count == 1 or len(frames) < 2:
         return 1
     from core import resource_policy as policy
@@ -121,6 +124,7 @@ def _ordered_frame_results(count, produce, workers, should_cancel):
     from collections import deque
     from concurrent.futures import ThreadPoolExecutor, wait
     from threading import Event
+    from fusion_methods._hf9_execution import _worker_native_limit
     stop = Event()
 
     def cancelled():
@@ -132,7 +136,7 @@ def _ordered_frame_results(count, produce, workers, should_cancel):
             yield index, produce(index, cancelled)
         return
     scratch = capture_scratch()
-    with ThreadPoolExecutor(max_workers=workers) as pool:
+    with ThreadPoolExecutor(max_workers=workers, initializer=_worker_native_limit) as pool:
         window = deque()
         next_index = 0
         try:

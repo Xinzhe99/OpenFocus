@@ -4,7 +4,10 @@ Compare the same inputs/options in separate processes/checkouts, for example:
   python tools/fusion_streaming_benchmark.py --source-dir STACK --output serial.tif --threads 1
   python tools/fusion_streaming_benchmark.py --source-dir STACK --output parallel.tif --threads 8
 Use --repo-root to execute this script against another checkout. Input generation
-is explicit and excluded from load/fusion timings. No GUI or analytics starts.
+is explicit and excluded from load/fusion timings. The default loader retains
+SourceFrame descriptors through public fuse; manifest/decode explicitly stage
+pixels for comparison. No GUI or analytics starts. RSS fields are bytes and
+stage timings are seconds; the process high-water includes fixture generation.
 """
 import argparse
 import gc
@@ -72,9 +75,10 @@ def main():
         from core.multi_focus_fusion import MultiFocusFusion, estimate_peak_bytes, memory_budget_bytes
         from fusion_methods import openfocus_ab
         from utils import memory
-        from utils.image_utils import prepare_fusion_input, quantize_fuse_output, imwrite_auto
+        from utils.image_utils import quantize_fuse_output, imwrite_auto
         from utils.sorting import natural_sort_key
         configure_storage_directory(scratch)
+        memory.configure_opencv_memory()
 
         def write_tiff(path, pixels):
             if pixels.ndim == 2 or pixels.shape[2] == 1:
@@ -143,7 +147,16 @@ def main():
             raise ValueError('A benchmark requires at least two source images')
         if args.output.resolve() in paths:
             raise ValueError('Output must not replace a source image')
-        report['inputs'] = [{'path': str(path), 'bytes': path.stat().st_size, 'mtime_ns': path.stat().st_mtime_ns} for path in paths]
+        def file_sha256(path):
+            digest = hashlib.sha256()
+            with path.open('rb') as stream:
+                for block in iter(lambda: stream.read(1024 * 1024), b''):
+                    digest.update(block)
+            return digest.hexdigest()
+
+        report['inputs'] = [{'path': str(path), 'bytes': path.stat().st_size,
+                             'mtime_ns': path.stat().st_mtime_ns, 'sha256': file_sha256(path)}
+                            for path in paths]
         stop = threading.Event()
         peak = [memory.process_rss_bytes()]
 
@@ -195,7 +208,9 @@ def main():
             elif args.load_mode == 'loader':
                 from core.image_loader import ImageStackLoader
                 loader = ImageStackLoader()
-                ok, message, frames, _names = loader.load_from_filepaths([str(path) for path in paths])
+                ok, message, frames, _names = loader.load_from_filepaths(
+                    [str(path) for path in paths], thread_count=args.threads,
+                    resource_preference=args.resource_preference)
                 if not ok:
                     raise RuntimeError(message)
             else:
@@ -210,19 +225,17 @@ def main():
             report['stages_s']['load'] = time.perf_counter() - start
             report['source_shape'] = list(frames[0].shape)
             report['source_dtypes'] = sorted({str(frame.dtype) for frame in frames})
+            is_16bit = any(np.dtype(frame.dtype) == np.dtype(np.uint16) for frame in frames)
             report['load_pixels_materialized'] = args.load_mode != 'loader'
             report['represented_stack_bytes'] = sum(frame.nbytes for frame in frames)
             report['decoded_stack_bytes'] = report['represented_stack_bytes'] if args.load_mode != 'loader' else None
-            if args.load_mode == 'loader' and (args.entry == 'pipeline' or args.alignment != 'none'):
-                from core.source_frames import materialize_frames
-                start = time.perf_counter()
-                frames = materialize_frames(frames)
-                report['stages_s']['pixel_materialization'] = time.perf_counter() - start
-                report['processing_stack_bytes'] = sum(frame.nbytes for frame in frames)
+            # No materialized processing stack exists on the descriptor path.
+            report['processing_stack_bytes'] = None if args.load_mode == 'loader' else report['represented_stack_bytes']
             start = time.perf_counter()
             if args.alignment != 'none':
                 from core.registration import ImageRegistration
-                frames = ImageRegistration(method=args.alignment).process(frames, thread_count=args.threads, resource_preference=args.resource_preference)
+                frames = ImageRegistration(method=args.alignment, defer_warps=args.load_mode == 'loader').process(
+                    frames, thread_count=args.threads, resource_preference=args.resource_preference)
             report['stages_s']['alignment'] = time.perf_counter() - start
             parameters = {} if args.method == 'openfocus_c' else {'kernel_size': args.kernel_size}
             if args.smoothing is not None:
@@ -241,10 +254,8 @@ def main():
             report['serial_workspace_estimate'] = estimate_peak_bytes(args.method, [header] * len(frames))
             report['ram_ceiling_before_fusion'] = memory_budget_bytes()
             start = time.perf_counter()
-            if args.entry == 'pipeline':
-                prepared, is_16bit = prepare_fusion_input(frames)
-            else:
-                prepared, is_16bit = frames, any(frame.dtype == np.uint16 for frame in frames)
+            prepared = frames
+            report['fusion_input_types'] = sorted({type(frame).__name__ for frame in prepared})
             report['stages_s']['source_binding'] = time.perf_counter() - start
             report['pipeline_exposure_sort_base_applied'] = args.entry == 'pipeline'
             start = time.perf_counter()
@@ -276,6 +287,17 @@ def main():
             if not write_tiff(args.output, output):
                 raise RuntimeError('Output write failed')
             report['stages_s']['write'] = time.perf_counter() - start
+            import tifffile
+            start = time.perf_counter()
+            with tifffile.TiffFile(str(args.output)) as written:
+                report['readback_shape'] = list(written.series[0].shape)
+                report['readback_dtype'] = str(written.series[0].dtype)
+                report['readback_page_count'] = len(written.pages)
+            report['output_file_bytes'] = args.output.stat().st_size
+            report['stages_s']['readback_metadata'] = time.perf_counter() - start
+            if (report['readback_shape'] != report['output_shape']
+                    or report['readback_dtype'] != report['output_dtype']):
+                raise RuntimeError('Written TIFF metadata does not match fusion output')
             report['sampled_peak_rss'] = max(peak[0], memory.process_rss_bytes())
             report['process_high_water_rss'] = memory.peak_rss_bytes()
             report['timed_stage_total_s'] = sum(report['stages_s'].values())

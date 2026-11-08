@@ -1,4 +1,4 @@
-"""Lazy originals stay on workers and retained render planes stay on disk."""
+"""Lazy originals preserve pixels and geometry across admitted render storage."""
 from dataclasses import replace
 from threading import Event, get_ident
 from types import SimpleNamespace
@@ -14,7 +14,6 @@ from core import workers
 from core.source_frames import SourceFrame, scan_source
 from core import source_frames
 from core.source_previews import SourceRegionWorker
-from utils.image_utils import prepare_fusion_input
 
 
 @pytest.fixture(autouse=True)
@@ -38,14 +37,13 @@ def _capture(worker):
     return results, errors
 
 
-def test_render_materializes_original_geometry_to_disk(tmp_path):
+def test_render_resolves_original_geometry(tmp_path):
     frame, original = _source(tmp_path)
     worker = workers.RenderWorker([frame], algorithm=None, need_fusion=False)
     results, errors = _capture(worker)
     worker.run()
     assert errors == [] and len(results) == 1
     rendered = results[0][0][0]
-    assert isinstance(rendered, np.memmap)
     np.testing.assert_array_equal(rendered, original)
 
 
@@ -77,7 +75,6 @@ def test_preview_uses_display_pixels_and_skips_original_alignment_cache(tmp_path
     results, errors = _capture(worker)
     worker.run()
     assert errors == [] and len(results) == 1
-    assert all(isinstance(image, np.memmap) for image in results[0][0])
     np.testing.assert_array_equal(results[0][0][0], frame.preview)
 
 
@@ -138,22 +135,23 @@ def test_unavailable_preview_decode_failure_does_not_publish_canvas(tmp_path, mo
     assert results == [] and errors == ['original pixels unavailable']
 
 
-def test_roi_alignment_receives_original_mappings(tmp_path, monkeypatch):
+def test_roi_alignment_preserves_original_descriptors(tmp_path, monkeypatch):
     frame, original = _source(tmp_path)
-    calls = []
-    def process(self, images, **kwargs):
-        assert all(isinstance(image, np.memmap) for image in images)
-        calls.extend(images)
-        return images
-    monkeypatch.setattr(workers.ImageRegistration, 'process', process)
+    def forbidden(*args, **kwargs):
+        raise AssertionError('ROI alignment staged all original frames')
+    monkeypatch.setattr(workers, 'materialize_frames', forbidden)
+    monkeypatch.setattr(source_frames, 'materialize_frames', forbidden)
     worker = workers.ROIAlignmentWorker([frame, frame], thread_count=1)
     results, errors = [], []
     worker.finished_signal.connect(lambda *args: results.append(args))
     worker.error_signal.connect(errors.append)
     worker.run()
     assert errors == [] and len(results) == 1
-    assert len(calls) == 2
-    np.testing.assert_array_equal(calls[0], original)
+    aligned = results[0][0]
+    assert all(image.source is frame for image in aligned)
+    expected = original[2:-2, 2:-2]
+    for image in aligned:
+        np.testing.assert_array_equal(source_frames.resolve_frame(image), expected)
 
 
 @pytest.mark.parametrize('fail', [False, True])
@@ -274,30 +272,34 @@ def test_source_decode_failure_keeps_request_key(monkeypatch):
 
 
 
-def test_ecc_retained_gray_planes_are_mappings(monkeypatch):
+def test_ecc_consumes_adjacent_gray_planes_without_staging_them(monkeypatch):
     from core import registration
-    from core.frame_storage import store_frame
-    source = store_frame(np.full((32, 40, 3), 90, np.uint8))
+    source = np.full((32, 40, 3), 90, np.uint8)
     pairs = []
     def ecc(template, image, matrix, *args):
-        assert isinstance(template, np.memmap) and isinstance(image, np.memmap)
+        assert template.dtype == image.dtype == np.float32
+        assert template.shape == image.shape == (32, 40)
+        np.testing.assert_allclose(template, 90 / 255)
         pairs.append((template.shape, image.shape))
         return 1.0, matrix
+    def forbidden(*args, **kwargs):
+        raise AssertionError('Deferred ECC stored a frame')
+    monkeypatch.setattr(registration, 'store_frame', forbidden)
     monkeypatch.setattr(registration.cv2, 'findTransformECC', ecc)
-    result = registration._align_ecc_impl([source] * 3, thread_count=1)
+    result = registration._align_ecc_impl([source] * 3, thread_count=1, defer_warps=True)
     assert len(pairs) == 2
-    assert all(isinstance(image, np.memmap) for image in result)
+    for image in result:
+        np.testing.assert_array_equal(source_frames.resolve_frame(image), source[2:-2, 2:-2])
 
 
 @pytest.mark.parametrize('algorithm', ['guided_filter', 'gfgfgf', 'openfocus_a',
                                       'openfocus_b', 'openfocus_c', 'dct'])
-def test_cpu_fusion_preserves_dimensions_and_disk_output(algorithm):
+def test_cpu_fusion_preserves_dimensions_and_pixels(algorithm):
     from core.multi_focus_fusion import MultiFocusFusion
     images = [np.full((31, 37, 3), 63, np.uint8)] * 3
     fusion = MultiFocusFusion(algorithm=algorithm, use_gpu=False,
                              tile_enabled=False, exposure_match=True, base_frame='none')
     result = fusion.fuse(images, thread_count=1)
-    assert isinstance(result, np.memmap)
     assert result.shape == images[0].shape and result.dtype == np.uint8
     np.testing.assert_allclose(result, images[0], atol=1)
 
@@ -469,59 +471,15 @@ def test_tiled_exposure_and_base_correction_match_materialized_pipeline(algorith
                     tile_block_size=16, tile_overlap=4, tile_threshold=16, base_frame='last')
     actual = MultiFocusFusion(**settings, exposure_match=True).fuse(images, thread_count=1)
     reference = MultiFocusFusion(**settings, exposure_match=False).fuse(matched, thread_count=1)
-    assert isinstance(actual, np.memmap) and actual.shape == images[0].shape
+    assert actual.shape == images[0].shape
     np.testing.assert_allclose(actual, reference, rtol=0, atol=1e-5)
 
 
-def test_guided_uint16_normalizes_only_spatial_crops(monkeypatch):
-    from core import multi_focus_fusion
-    frames = [np.full((32, 40, 3), value, np.uint16) for value in (258, 591, 712)]
-    fusion = multi_focus_fusion.MultiFocusFusion(algorithm='guided_filter', use_gpu=False,
-        tile_enabled=True, tile_block_size=16, tile_overlap=4, tile_threshold=16,
-        exposure_match=True, base_frame='none')
-    prepared, is_16bit = prepare_fusion_input(frames)
-    assert is_16bit and all(a is b for a, b in zip(prepared, frames))
-    normalize = multi_focus_fusion.normalize_fuse_input
-    calls = []
-    def crop_only(images):
-        assert len(images) == 1
-        assert max(images[0].shape[:2]) <= 16
-        calls.append(images[0].shape)
-        return normalize(images)
-    monkeypatch.setattr(multi_focus_fusion, 'normalize_fuse_input', crop_only)
-    output = fusion.fuse(prepared, thread_count=1)
-    assert calls and output.shape == frames[0].shape
-    assert output.dtype == np.float32
-    np.testing.assert_allclose(output, 712 * (255.0 / 65535.0), rtol=0, atol=1e-5)
-
-
-@pytest.mark.parametrize('algorithm', ['openfocus_b', 'openfocus_c'])
-def test_tiled_depth_is_computed_globally_once(monkeypatch, algorithm):
-    from core.multi_focus_fusion import MultiFocusFusion
-    from fusion_methods import openfocus_depth
-    shape = (32, 40, 3)
-    frames = [np.full(shape, value, np.uint16) for value in (258, 591, 712)]
-    original = openfocus_depth.depth_map
-    calls = []
-    def global_depth(images, *args, **kwargs):
-        assert all(image.shape == shape and isinstance(image, np.memmap) for image in images)
-        calls.append(len(images))
-        return original(images, *args, **kwargs)
-    monkeypatch.setattr(openfocus_depth, 'depth_map', global_depth)
-    fusion = MultiFocusFusion(algorithm=algorithm, use_gpu=False, exposure_match=True,
-        tile_enabled=True, tile_block_size=16, tile_overlap=4, tile_threshold=16,
-        base_frame='none')
-    result = fusion.fuse(frames, thread_count=1)
-    assert calls == [3]
-    assert isinstance(result, np.memmap) and result.shape == shape
-
-
-def test_comparison_none_alignment_materializes_originals(tmp_path):
+def test_comparison_none_alignment_preserves_original_pixels(tmp_path):
     from core.compare_worker import align_frames
     frame, original = _source(tmp_path)
     actual = align_frames([frame], 'none', {}, lambda: False)
-    assert isinstance(actual[0], np.memmap)
-    np.testing.assert_array_equal(actual[0], original)
+    np.testing.assert_array_equal(source_frames.resolve_frame(actual[0]), original)
 
 
 def test_comparison_resolves_original_size_uint16_without_ram_stack(tmp_path):

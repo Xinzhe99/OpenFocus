@@ -476,18 +476,18 @@ Als geen tijdelijke map is opgegeven, schat OpenFocus de benodigde ruimte op bas
 
 ### OpenFocus A / B / C
 
-- **OpenFocus A**: vlakt zijn meerschalige focusresponskaart af en selecteert vervolgens scherpe pixels.
+- **OpenFocus A**: selecteert bronpixels op basis van een meerschalige focusrespons.
 - **OpenFocus B**: mengt naburige frames op basis van een afgeplatte dieptekaart.
-- **OpenFocus C**: reconstrueert meerschalige banden op basis van een afgeplatte dieptekaart.
-- **Parameters**: A en B gebruiken de kernelregelaar voor de schaal van de focusrespons; C heeft geen straal. Alle drie hebben een afvlakkingsparameter voor de overgangssterkte.
+- **OpenFocus C**: mengt bronpixels op basis van de voltooide, afgevlakte dieptekaart.
+- **Parameters**: A en B gebruiken de kernelregelaar voor de schaal van de focusrespons; C heeft geen straal. Afvlakking heeft bij A geen effect, net als bij HF9 A; B en C vlakken de dieptekaart voor de fusie af.
 
 **Afvlakking**: één draaischijf onder de kernelregelaar, met een betekenis die afhangt van de gekozen methode (bereik 0–8, stap 0,2):
 
 | Methode | Label | Standaard | Effect |
 |---|---|---|---|
-| OpenFocus A | Mengingsafvlakking | 2,0 | Regelt de afvlakking van de focusresponskaart voordat pixels worden geselecteerd |
+| OpenFocus A | Mengingsafvlakking | 2,0 | Geen effect, net als bij HF9 A |
 | OpenFocus B | Diepteafvlakking | 1,44 | Regelt de afvlakking van de dieptekaart die de menging stuurt |
-| OpenFocus C | Mengingsafvlakking | 3,6 | Regelt de afvlakking van de dieptekaart die de meerschalige reconstructie stuurt |
+| OpenFocus C | Mengingsafvlakking | 3,6 | Regelt de afvlakking van de dieptekaart en de fusieovergangen |
 
 Standaardkernelgrootte voor A/B: 17. Opgeslagen waarden blijven behouden; herstel de standaardwaarden om de nieuwe te gebruiken.
 
@@ -525,7 +525,7 @@ Kies **Alleen uitlijning (geen fusie)** om de stapel te registreren en één sta
 | StackMFF V3 | Langzaam (GPU) | Uitstekend | Beste kwaliteit |
 | OpenFocus A | Afhankelijk van stapel | Afhankelijk van stapel | Meerschalige focusselectie |
 | OpenFocus B | Afhankelijk van stapel | Afhankelijk van stapel | Dieptegestuurde menging van naburige frames |
-| OpenFocus C | Afhankelijk van stapel | Afhankelijk van stapel | Dieptegestuurde meerschalige reconstructie |
+| OpenFocus C | Afhankelijk van stapel | Afhankelijk van stapel | Bronpixels mengen op basis van de voltooide dieptekaart |
 
 **Extra → Methoden vergelijken…** opent een dialoog waarin meerdere methoden onafhankelijk worden ingesteld. Naam, parameterlabels en bedieningselementen van elke methode blijven bij elkaar wanneer het venster smaller wordt. Wijzigingen werken het voorbeeld automatisch bij. **ROI-voorbeeld (snel)** fuseert het geselecteerde gebied met omringende context; **Fusie van het hele beeld** controleert het resultaat van het hele beeld en laat je een ander gebied bekijken zonder opnieuw te renderen. ROI-resultaten kunnen afwijken van resultaten van het hele beeld, omdat belichtingsstatistieken en sommige algoritmen van de beeldomvang afhangen.
 **Fusie van het hele beeld** is standaard geselecteerd.

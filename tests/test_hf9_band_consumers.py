@@ -20,8 +20,6 @@ def test_native_bands_match_materialized_codes_without_rgb_code_planes(monkeypat
         frame.flags.writeable = False
     depth = np.broadcast_to(np.linspace(0, 2, 19, dtype=np.float32), (259, 19))
     options = dict(depth_override=depth, thread_count=1)
-    if method is bc.openfocus_c_impl:
-        options['levels'] = 3
     native_boundary = bc._source_codes
     monkeypatch.setattr(bc, '_source_codes',
                         lambda source, resize, cancel: (pixels.frame_codes(source, resize, cancel), 1))
@@ -47,49 +45,10 @@ def test_c_identity_compares_mixed_sources_in_code_domain(first_u8):
     for frame in frames:
         frame.flags.writeable = False
     depth = np.full(first.shape[:2], 0.37, np.float32)
-    result = bc.openfocus_c_impl(frames, levels=3, depth_override=depth, thread_count=1)
+    result = bc.openfocus_c_impl(frames, depth_override=depth, thread_count=1)
     np.testing.assert_array_equal(quantize_fuse_output(result, True), second)
 
 
-def test_depth_rows_match_legacy_signed_and_float32_expressions(monkeypatch):
-    from fusion_methods import openfocus_depth as depth, _hf9_depth_rows as rows
-
-    rng = np.random.default_rng(741)
-    frames = [rng.integers(0, 256, (65, 67, 3), np.uint8) for _ in range(3)]
-    frames[1] = frames[1].astype(np.uint16) * 256 + 7
-
-    def legacy_activity(gray, fine, output, start, stop):
-        g = gray[start:stop].astype(np.int64)
-        f = fine[start:stop].astype(np.int64)
-        denominator = ((np.maximum(g, f) * 100 * np.int64(0x80008001)) >> 32) >> 15
-        output[start:stop] = np.minimum(65535, 110 * np.abs(g - f) // (denominator + 10))
-
-    def legacy_guide(best, lut, output, start, stop):
-        position = best[start:stop].astype(np.float32) * (np.float32(65534) / np.float32(65535))
-        index = np.clip(position.astype(np.int32), 0, 65533)
-        fraction = position - index.astype(np.float32)
-        output[start:stop] = ((lut[index] * (np.float32(1) - fraction)
-                               + lut[index + 1] * fraction).astype(np.int64) & 65535)
-
-    def legacy_snap(output, lut, step, start, stop):
-        block = output[start:stop].astype(np.int64)
-        half = step >> 1
-        total = half + block
-        snapped = total - total % step
-        distance = block - snapped
-        signed = ((np.abs(distance) << 10) // half) * np.where(distance < 0, -1, 1)
-        index = np.clip(np.abs(signed), 0, 1024)
-        correction = half * lut[index] * np.where(signed > 0, 1, -1)
-        output[start:stop] = (snapped + ((correction + (correction & 1023)) >> 10)) & 65535
-
-    with monkeypatch.context() as legacy:
-        legacy.setattr(rows, 'activity_rows', legacy_activity)
-        legacy.setattr(rows, 'guide_rows', legacy_guide)
-        legacy.setattr(rows, 'snap_rows', legacy_snap)
-        expected = depth.depth_map(frames, None, 17, 6, None, thread_count=1,
-                                   return_codes=True)
-    actual = depth.depth_map(frames, None, 17, 6, None, thread_count=1, return_codes=True)
-    np.testing.assert_array_equal(actual, expected)
 
 
 def test_depth_rejects_mismatched_activity_shapes_before_compiled_selection():
@@ -131,8 +90,6 @@ def test_source_decode_count_follows_consumed_bands(tmp_path, monkeypatch, metho
     options = dict(thread_count=1)
     if method is bc.openfocus_b_impl:
         options['depth_override'] = np.zeros(pixels[0].shape[:2], np.float32)
-    else:
-        options['levels'] = 3
     result = quantize_fuse_output(method(sources, **options), True)
     if method is bc.openfocus_b_impl:
         assert decoded == [sources[0].path]
@@ -192,3 +149,5 @@ def test_depth_filter_respects_a_half_mebibyte_scratch_budget(guided):
     actual = _filter(source, 2.4, lambda: None, guide, 153.6,
                      allocate=allocate)
     np.testing.assert_array_equal(actual, expected)
+
+

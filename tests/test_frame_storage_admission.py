@@ -45,14 +45,16 @@ def test_switching_directories_preserves_existing_mapping(tmp_path):
     assert frame_storage.storage_directory() == frame_storage.tempfile.gettempdir()
 
 
+@pytest.mark.parametrize('prefer_ram', [False, True])
 @pytest.mark.parametrize('layout', ['crop', 'transpose', 'reverse'])
-def test_stored_frame_preserves_strides_pixels_and_live_views(tmp_path, layout):
+def test_stored_frame_preserves_strides_pixels_and_live_views(tmp_path, monkeypatch, layout, prefer_ram):
     frame_storage.configure_storage_directory(tmp_path)
+    monkeypatch.setattr(frame_storage, 'FRAME_RAM_BUDGET_BYTES', 0)
     source = np.arange(21 * 27 * 3, dtype=np.uint16).reshape(21, 27, 3)
     pixels = {'crop': source[2:-2, 3:-3],
               'transpose': source.transpose(1, 0, 2),
               'reverse': source[::-1, ::-1]}[layout]
-    mapped = frame_storage.store_frame(pixels, prefer_ram=False)
+    mapped = frame_storage.store_frame(pixels, prefer_ram=prefer_ram)
     path = mapped.filename
     np.testing.assert_array_equal(mapped, pixels)
     assert mapped.dtype == pixels.dtype
@@ -341,7 +343,7 @@ def test_default_uses_alternative_and_releases_views(monkeypatch, tmp_path):
     default, alternative = _fake_volumes(monkeypatch, tmp_path, 3, 10000)
     pixels = [np.arange(48, dtype=np.uint16).reshape(4, 4, 3)] * 2
     with frame_storage.scratch_directory():
-        mapped = materialize_frames(pixels, staging_bytes=96)
+        mapped = materialize_frames(pixels, staging_bytes=96, prefer_ram=False)
         directory = os.path.dirname(mapped[0].filename)
         assert os.path.dirname(directory) == str(alternative)
         assert all(os.path.dirname(frame.filename) == directory for frame in mapped)
@@ -379,6 +381,61 @@ def test_unwritable_alternative_is_skipped(monkeypatch, tmp_path):
     with pytest.raises(frame_storage.ScratchSpaceError):
         materialize_frames([np.zeros((4, 4), np.uint8)])
     assert not list(default.iterdir()) and not list(alternative.iterdir())
+
+
+@pytest.mark.parametrize('operation', ['fusion', 'registration', 'retained'])
+def test_deferred_processing_uses_available_local_volume(monkeypatch, tmp_path, operation):
+    from core.multi_focus_fusion import MultiFocusFusion
+    from core.registration import ImageRegistration
+    from core.source_frames import process_frame, resolve_frame, scan_source
+    from utils.image_utils import imwrite_auto
+
+    pixels = np.random.default_rng(998).integers(0, 65536, (48, 64, 3), np.uint16)
+    paths = [tmp_path / 'first.png', tmp_path / 'second.png']
+    for path in paths:
+        assert imwrite_auto(path, pixels, exif=b'')
+    frames = [scan_source(str(path), header_only=True)[0] for path in paths]
+
+    def fuse():
+        return MultiFocusFusion('guided_filter', use_gpu=False, tile_enabled=False,
+                                exposure_match=False).fuse(frames, thread_count=1)
+
+    def register():
+        return ImageRegistration('ecc', defer_warps=True).process(frames, thread_count=1)
+
+    def flipped_mapping(image):
+        result = frame_storage.create_frame(image.shape, image.dtype)
+        result[:] = image[:, ::-1]
+        return result
+
+    retained = process_frame(frames[0], flipped_mapping)
+    if operation == 'fusion':
+        expected = fuse().copy()
+    elif operation == 'registration':
+        expected = resolve_frame(register()[1]).copy()
+    else:
+        expected = pixels[:, ::-1]
+    default, alternative = _fake_volumes(monkeypatch, tmp_path, 0, 32 * 1024 ** 2)
+    if operation == 'retained':
+        actual = resolve_frame(retained)
+        np.testing.assert_array_equal(actual, expected)
+    else:
+        with frame_storage.scratch_directory():
+            actual = fuse() if operation == 'fusion' else resolve_frame(register()[1])
+            np.testing.assert_array_equal(actual, expected)
+            assert os.path.commonpath((str(alternative), frame_storage.storage_directory())) == str(alternative)
+    assert not list(default.iterdir())
+
+
+def test_bounded_workspace_hint_precedes_ram_only_fallback(monkeypatch, tmp_path):
+    default, alternative = _fake_volumes(monkeypatch, tmp_path, 3, 1000)
+    with frame_storage.scratch_directory():
+        directory = frame_storage.select_scratch(0, preferred_size=10000, working_size=500)
+        assert os.path.dirname(directory) == str(alternative)
+        result = frame_storage.create_frame((2, 2), np.uint16)
+        result[:] = [[7, 257], [1001, 65535]]
+        np.testing.assert_array_equal(result, [[7, 257], [1001, 65535]])
+    assert not list(default.iterdir())
 
 
 def test_optional_estimate_prefers_larger_volume_without_rejecting_explicit(monkeypatch, tmp_path):
@@ -470,9 +527,9 @@ def test_cancelled_materialization_cleans_alternative(monkeypatch, tmp_path):
     _, alternative = _fake_volumes(monkeypatch, tmp_path, 0, 10000)
     original = source_frames.store_frame
     cancelled = False
-    def store(image):
+    def store(image, **kwargs):
         nonlocal cancelled
-        result = original(image)
+        result = original(image, **kwargs)
         cancelled = True
         return result
     monkeypatch.setattr(source_frames, 'store_frame', store)
@@ -480,7 +537,7 @@ def test_cancelled_materialization_cleans_alternative(monkeypatch, tmp_path):
         directory = frame_storage.select_scratch(100)
         try:
             source_frames.materialize_frames([np.zeros(10, np.uint8)] * 2,
-                                             should_cancel=lambda: cancelled)
+                                             should_cancel=lambda: cancelled, prefer_ram=False)
         except RegistrationCancelled:
             pass
         else:
@@ -561,3 +618,54 @@ def test_macos_recognizes_internal_fixed_volumes_only(monkeypatch):
     assert frame_storage._default_is_local('/System/Volumes/Data/tmp')
     assert not frame_storage._default_is_local('/Volumes/USB/tmp')
     assert not frame_storage._default_is_local('/Volumes/Network/tmp')
+
+
+def test_collecting_snapshot_during_admission_reclaims_budget_without_deadlock(tmp_path):
+    import subprocess
+    import sys
+    from pathlib import Path
+    from textwrap import dedent
+
+    script = dedent('''
+        import gc
+        import sys
+        import weakref
+        import numpy as np
+        from core import frame_storage as storage, resource_policy as policy
+
+        snapshot = policy.ResourceSnapshot(available_ram=8 * 1024**3,
+                                           total_ram=16 * 1024**3)
+        policy.probe_memory = lambda: snapshot
+        storage.FRAME_RAM_BUDGET_BYTES = 64
+        storage.configure_storage_directory(sys.argv[1])
+        gc.disable()
+        first = storage.create_transient_frame((8, 8), np.uint8)
+        assert not isinstance(first, np.memmap)
+        reference = weakref.ref(first)
+        cycle = [first]
+        cycle.append(cycle)
+        del first, cycle
+
+        def collect_snapshot():
+            gc.collect()
+            assert reference() is None
+            return snapshot
+
+        policy.probe_memory = collect_snapshot
+        saved = storage.store_frame(np.full((8, 8), 37, np.uint8))
+        assert not isinstance(saved, np.memmap)
+        view = saved[1:3, 1:3]
+        del saved
+        spilled = storage.create_transient_frame((1,), np.uint8)
+        assert isinstance(spilled, np.memmap)
+        np.testing.assert_array_equal(view, np.full((2, 2), 37, np.uint8))
+        del view, spilled
+        gc.collect()
+        reclaimed = storage.create_transient_frame((8, 8), np.uint8)
+        assert not isinstance(reclaimed, np.memmap)
+    ''')
+    completed = subprocess.run(
+        [sys.executable, '-c', script, str(tmp_path)],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True, text=True, timeout=20)
+    assert completed.returncode == 0, completed.stdout + completed.stderr

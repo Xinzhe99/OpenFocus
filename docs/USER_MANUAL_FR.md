@@ -439,18 +439,18 @@ Si aucun dossier temporaire n'est indiqué, OpenFocus estime les besoins à part
 
 ### OpenFocus A / B / C
 
-- **OpenFocus A** : lisse sa carte de réponse de netteté multi-échelles, puis sélectionne les pixels nets.
+- **OpenFocus A** : sélectionne les pixels sources selon une réponse de netteté multi-échelles.
 - **OpenFocus B** : mélange les images voisines guidé par une carte de profondeur lissée.
-- **OpenFocus C** : reconstruit les bandes multi-échelles guidé par une carte de profondeur lissée.
-- **Paramètres** : A et B utilisent le curseur de noyau pour régler l'échelle de réponse de netteté ; C n'a pas de rayon. Les trois ont un paramètre de lissage qui contrôle la force des transitions.
+- **OpenFocus C** : mélange les pixels sources selon la carte de profondeur finale lissée.
+- **Paramètres** : A et B utilisent le curseur de noyau pour régler l'échelle de réponse de netteté ; C n'a pas de rayon. Le lissage de A est sans effet, comme dans HF9 A ; B et C lissent la carte de profondeur utilisée pour la fusion.
 
 **Lissage** : un seul champ numérique sous le curseur de noyau, dont le sens dépend de la méthode sélectionnée (plage 0–8, pas 0,2) :
 
 | Méthode | Libellé | Défaut | Effet |
 |---|---|---|---|
-| OpenFocus A | Lissage du mélange | 2,0 | Contrôle le lissage de la carte de réponse de netteté avant la sélection des pixels |
+| OpenFocus A | Lissage du mélange | 2,0 | Sans effet, comme dans HF9 A |
 | OpenFocus B | Lissage de profondeur | 1,44 | Contrôle le lissage de la carte de profondeur qui guide le mélange |
-| OpenFocus C | Lissage du mélange | 3,6 | Contrôle le lissage de la carte de profondeur qui guide la reconstruction multi-échelles |
+| OpenFocus C | Lissage du mélange | 3,6 | Contrôle le lissage de la carte de profondeur et les transitions de fusion |
 
 Taille de noyau par défaut pour A/B : 17. Les valeurs enregistrées sont conservées ; réinitialisez les paramètres pour utiliser les nouvelles valeurs par défaut.
 
@@ -488,7 +488,7 @@ Sélectionnez **Alignement seul (sans fusion)** pour recaler la pile et ajouter 
 | StackMFF V3 | Lente (GPU) | Excellente | Qualité maximale |
 | OpenFocus A | Dépend de la pile | Dépend de la pile | Sélection multi-échelles des pixels nets |
 | OpenFocus B | Dépend de la pile | Dépend de la pile | Mélange d'images voisines guidé par la profondeur |
-| OpenFocus C | Dépend de la pile | Dépend de la pile | Reconstruction multi-échelles guidée par la profondeur |
+| OpenFocus C | Dépend de la pile | Dépend de la pile | Mélange des pixels sources selon la carte de profondeur finale |
 
 Ouvrez **Outils → Comparaison de méthodes** pour régler plusieurs méthodes indépendamment. Le nom, les libellés de paramètres et les contrôles de chaque méthode restent groupés lorsque la fenêtre se rétrécit. Les modifications actualisent l'aperçu automatiquement. **Aperçu ROI (rapide)** fusionne la zone sélectionnée avec le contexte environnant ; **Fusion pleine image** vérifie le résultat sur toute l'image et permet d'inspecter une autre zone sans relancer le rendu. Les résultats ROI peuvent différer de ceux en pleine image, car les statistiques d'exposition et certains algorithmes dépendent de l'étendue de l'image.
 La **fusion pleine image** est sélectionnée par défaut.

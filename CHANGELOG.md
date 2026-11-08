@@ -26,17 +26,39 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   blend smoothing to 3.6. Existing saved per-method values are preserved.
 - Match OpenFocus A's integer Burt-pyramid response and eight-bit E-37 output
   to HF9. A smoothing is inert; sixteen-bit selected codes remain unchanged.
-- Choose OpenFocus C pyramid depth from the full output size, targeting a
-  coarsest short dimension near 128 pixels. Accumulate running shared depth and
-  multiscale bands in source order within one full-image domain; smoothing
-  controls depth-map output.
+- Show the localized OpenFocus smoothing hints in the registered parameter panels
+  and update all twelve language packs and manuals for A and C's actual behavior.
+- Reuse A's exact Q4 hard-selection response for normalized float and resized
+  sources, removing full-size double-precision response and expansion buffers.
+- Match OpenFocus C's native reverse, full-resolution source merge using the
+  completed depth map. Remove the unrelated RGB pyramid reconstruction and
+  its layer-count option; smoothing affects fusion and exported depth together.
 - Store independent frame snapshots in a shared, bounded RAM pool before
   spilling to admitted temporary mappings. OpenFocus producers retain at most
   two in-flight frames and use the same resource planner and memory ceiling.
 - Resolve only sources contributing to OpenFocus B's final depth bands in its
   second pass, while retaining source identity and processor validation.
+- Process native OpenFocus depth, selection and reconstruction in bounded row
+  bands, borrowing native source pixels instead of full RGB code-plane copies.
+- Reuse each source's exposure gain and immutable gray-resampling axes across
+  passes. Write winner depth codes during selection, avoiding a separate
+  full-image conversion while preserving the code domain.
+- Share one admitted OpenFocus executor across row passes, keeping frame, row
+  and explicit-tile parallelism within one budget and joining on cancellation.
+- Automatically stream large TIFF, PNG and baseline JPEG exports in bounded
+  bands, including multipage and physical-depth TIFF. Preserve native 16-bit
+  samples and supported EXIF/GPS/ICC metadata without duplicating the full output.
+- Preserve advanced JPEG parameters with explicit whole-codec memory admission,
+  choose classic TIFF for known small page layouts, and retain uncompressed
+  desktop multipage exports and the public helper's historical LZW default.
 
 ### Fixed
+- Match OpenFocus C's native depth chain: fixed half-scale gray FMA resampling,
+  vote-based confidence, square-root guide, horizontal-first Q12 smoothing,
+  and truncating feather correction before expanding depth to the canvas. Preserve
+  native float32 coordinate order when expanding to odd canvas dimensions.
+- Preserve normalized float32 exposure and nearest-code rounding for native
+  sixteen-bit OpenFocus sources, with admitted row-band quantization scratch.
 - Include a bounded RGB display preview when converting camera RAW to DNG and
   a safe embedded preview is available, preserving sensor samples and calibration.
   Recover missing RAW/DNG previews for the first or selected source in admitted
@@ -52,6 +74,32 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   remain binding; unavailable paths and insufficient space produce actionable
   errors. Workers share the job's selection and release temporary files when
   their final views are freed.
+- Avoid a frame-allocation deadlock when memory probing collects an older RAM
+  snapshot. Preserve direct file writing for snapshots that exceed the shared
+  RAM budget, and retain reservations until their final array views are freed.
+- Restore the caller's OpenCV thread count after cold direct OpenFocus calls,
+  and join all workers and late initializers before restoring native pool limits.
+- Keep ROI previews off the GUI thread after deferred alignment, bound rapid
+  frame changes to the latest request, and preserve ROI edits while previews
+  load. Match eager registration for singleton channels and opaque-alpha folders.
+- Preserve the converter's cancellation exception and remove reserved and
+  temporary outputs when cancellation occurs inside the shared image writer.
+- Drop opaque alpha through lazy tile crops before native color conversion,
+  preserving bounded memory and BGR-equivalent tiled output.
+- Apply each OpenFocus alignment estimate directly in the anchor coordinate
+  system, preventing motion from being counted twice from the third frame.
+  Invalidate alignment plans and cached results produced by the former chain.
+- Keep the initial OpenFocus translation-only grid at one-pixel spacing or
+  finer, preventing broad search ranges from skipping the true alignment.
+- Resize normalized OpenFocus samples before native code quantization, preserving
+  area interpolation for registered extensions and resized float sources.
+- Preserve native grayscale directory registration while keeping its decoded
+  source cache independent from BGR display consumers.
+- Resolve deferred alignment previews off the GUI thread and keep cached
+  alignment results usable after later edits to the active source stack.
+- Restore local scratch-volume selection before deferred registration, fusion
+  and retained-frame resolution, without reserving disk for RAM-only work.
+  Explicit temporary-directory choices remain binding.
 
 ## [1.77.0] - 2026-11-06
 

@@ -86,18 +86,22 @@ def test_homography_failed_frame_keeps_last_accepted_reference():
 @pytest.mark.parametrize('method', ['homography', 'ecc', 'openfocus'])
 def test_cancel_after_final_native_warp_never_publishes(method, monkeypatch, tmp_path):
     cancelled = Event()
-    function = 'warpAffine' if method == 'openfocus' else 'warpPerspective'
-    original = getattr(cv2, function)
+    if method == 'openfocus':
+        from core import hf9_alignment
+        target, function = hf9_alignment, 'apply_alignment'
+    else:
+        target, function = cv2, 'warpPerspective'
+    original = getattr(target, function)
 
-    def cancel_after_warp(*args, **kwargs):
-        result = original(*args, **kwargs)
-        # OpenFocus also uses affine warps for the estimation grid.
-        if kwargs.get('flags', 0) & cv2.INTER_LANCZOS4:
+    def cancel_after_warp(image, transform, *args, **kwargs):
+        result = original(image, transform, *args, **kwargs)
+        if (method == 'openfocus' and transform.source_index == len(frames) - 1
+                or method != 'openfocus' and kwargs.get('flags', 0) & cv2.INTER_LANCZOS4):
             cancelled.set()
         return result
 
     frames = _stack(2)
-    monkeypatch.setattr(cv2, function, cancel_after_warp)
+    monkeypatch.setattr(target, function, cancel_after_warp)
     destination = tmp_path / 'aligned'
     with pytest.raises(registration.RegistrationCancelled):
         registration.ImageRegistration(method).process(

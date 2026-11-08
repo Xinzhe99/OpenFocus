@@ -304,13 +304,12 @@ class MultiFocusFusion:
                           input_source: Union[str, List[np.ndarray]],
                           img_resize: Optional[Tuple[int, int]] = None,
                           **kwargs) -> np.ndarray:
-        """OpenFocus C: depth-guided pyramid reconstruction."""
+        """OpenFocus C: native reverse source merge using completed depth."""
         from fusion_methods.openfocus_bc import openfocus_c_impl
         return openfocus_c_impl(input_source, img_resize,
                                 thread_count=kwargs.get('thread_count', None),
                                 blend_smoothing=kwargs.get('blend_smoothing', None),
                                 should_cancel=kwargs.get('should_cancel'),
-                                levels=kwargs.get('levels'),
                                 depth_override=kwargs.get('depth_override'),
                                 progress_callback=kwargs.get('progress_callback'))
 
@@ -407,8 +406,9 @@ class MultiFocusFusion:
                 if should_cancel is not None and should_cancel():
                     raise RegistrationCancelled()
                 if frame is not None:
+                    from core.source_frames import resolve_frame
                     means.append(_exposure_mean(
-                        frame, should_cancel, normalize_uint16=normalize_uint16))
+                        resolve_frame(frame), should_cancel, normalize_uint16=normalize_uint16))
             if not means:
                 return []
             target = means[-1]
@@ -593,7 +593,8 @@ class MultiFocusFusion:
             raise ValueError(f'Unknown fusion parameters: {sorted(unknown)}')
         kwargs.update(resolve_fusion_parameters(self.algorithm, values))
         native_codes = self.algorithm in ('openfocus_a', 'openfocus_b', 'openfocus_c')
-        if native_codes and isinstance(input_source, str) and os.path.isdir(input_source):
+        streaming_sources = self.descriptor.streaming_sources
+        if streaming_sources and isinstance(input_source, str) and os.path.isdir(input_source):
             from core.source_frames import scan_source
             exts = ('.png', '.jpg', '.jpeg', '.jpe', '.jfif', '.webp', '.tif', '.tiff', '.bmp')
             paths = [os.path.join(input_source, name) for name in
@@ -602,7 +603,7 @@ class MultiFocusFusion:
             input_source = []
             for path in paths:
                 check_cancel()
-                input_source.extend(scan_source(path, header_only=True, should_cancel=should_cancel))
+                input_source.extend(scan_source(path, header_only=True, should_cancel=check_cancel))
         # Inspect each frame under an admission check before directory materialisation.
         if isinstance(input_source, str) and os.path.isdir(input_source):
             exts = ('.png', '.jpg', '.jpeg', '.jpe', '.jfif', '.webp',
@@ -642,8 +643,13 @@ class MultiFocusFusion:
             input_source = frames
             count = len(frames)
         elif isinstance(input_source, (list, tuple)) and len(input_source):
-            if native_codes:
+            if streaming_sources:
                 input_source = list(input_source)
+                from core.frame_storage import estimate_fusion_space
+                from core.source_frames import select_frame_scratch
+                select_frame_scratch(input_source,
+                    preferred_size=estimate_fusion_space(input_source, self.exposure_match),
+                    should_cancel=should_cancel)
             else:
                 from core.frame_storage import estimate_fusion_space
                 from core.source_frames import materialize_frames
@@ -659,14 +665,15 @@ class MultiFocusFusion:
             def validate_alpha(pixels):
                 if _has_transparency(pixels):
                     raise UnsupportedTransparency("Transparent frames require the CLI PNG workflow")
-                return pixels
+                return pixels[:, :, :3]
 
             for index, frame in enumerate(input_source):
                 check_cancel()
                 if frame.ndim == 3 and frame.shape[2] == 4:
-                    if native_codes:
+                    if streaming_sources:
                         from core.source_frames import process_frame
                         input_source[index] = process_frame(frame, validate_alpha,
+                                                           shape=frame.shape[:2] + (3,),
                                                            should_cancel=should_cancel, scratch_bytes=0)
                     else:
                         validate_alpha(frame)
@@ -678,8 +685,7 @@ class MultiFocusFusion:
             smoothing_key = ('depth_smoothing' if self.algorithm == 'openfocus_b'
                              else 'blend_smoothing')
             smoothing = kwargs[smoothing_key]
-            prepare_depth_kernel(guided=self.algorithm == 'openfocus_b' and (
-                                     smoothing is None or smoothing > 0),
+            prepare_depth_kernel(guided=smoothing is None or smoothing > 0,
                                  should_cancel=should_cancel)
 
         h, w = first.shape[:2]
@@ -699,7 +705,7 @@ class MultiFocusFusion:
         resize_for_tiles = (self.tile_enabled and needs_tiles and img_resize is not None
                             and self.algorithm in ('guided_filter', 'gfgfgf', 'openfocus_a',
                                                    'dtcwt', 'stackmff', 'stackmffv2', 'stackmffv3'))
-        deferred_exposure = (self.tile_enabled and needs_tiles
+        deferred_exposure = (not streaming_sources and self.tile_enabled and needs_tiles
                              and isinstance(input_source, list) and not resize_for_tiles
                              and (img_resize is None or self.algorithm not in ('openfocus_b', 'openfocus_c')))
         # Retain prepared pixels on disk; color conversion/gain scratch is
@@ -725,7 +731,10 @@ class MultiFocusFusion:
         # matching and resizing. Spatial tiles may defer the same conversion to
         # crops, but whole-image neural calls must not mix 0-65535 and 0-255.
         normalized_owned = set()
-        if normalize_sources:
+        if normalize_sources and streaming_sources:
+            from core.source_frames import normalize_frames
+            input_source = normalize_frames(input_source, should_cancel)
+        elif normalize_sources:
             normalized_frames = []
             for frame in input_source:
                 check_cancel()
@@ -753,7 +762,10 @@ class MultiFocusFusion:
                 input_source, should_cancel,
                 normalize_uint16=deferred_exposure or native_codes)
             check_cancel()
-            if exposure_gains_ is not None and isinstance(input_source, list) and not deferred_exposure:
+            if streaming_sources:
+                from core.source_frames import exposure_frames
+                input_source = exposure_frames(input_source, exposure_gains_, should_cancel)
+            elif exposure_gains_ is not None and isinstance(input_source, list) and not deferred_exposure:
                 matched = []
                 for frame, gain in zip(input_source, exposure_gains_):
                     check_cancel()
@@ -809,7 +821,7 @@ class MultiFocusFusion:
                 estimates = {}
                 if spec.resource_estimator:
                     fixed, per_worker = resolve_runner(spec.resource_estimator)(height, width, kwargs, count)
-                    if native_codes:
+                    if streaming_sources:
                         from core.source_frames import (frame_resolution_bytes,
                                                         source_cache_growth_bytes)
                         per_worker += max(frame_resolution_bytes(frame) for frame in input_source)
@@ -836,6 +848,14 @@ class MultiFocusFusion:
         check_cancel()
         result = self._apply_base_correction(result, input_source, exposure_gains_, deferred_exposure)
         check_cancel()
+        if streaming_sources:
+            from core.source_frames import SourceFrame, ProcessedFrame
+            for frame in input_source:
+                check_cancel()
+                while isinstance(frame, ProcessedFrame):
+                    frame = frame.source
+                if isinstance(frame, SourceFrame):
+                    frame.validate_source()
         return result if isinstance(result, np.memmap) and result.filename is not None else store_frame(result)
     
     def _fuse_guided_filter(self, 
@@ -895,8 +915,13 @@ class MultiFocusFusion:
             h, w = input_source[0].shape[:2]
             if h < 8 or w < 8:
                 original_shape = (h, w)
-                input_source = [store_frame(np.pad(frame, ((0, max(0, 8 - h)), (0, max(0, 8 - w)))
-                    + ((0, 0),) * (frame.ndim - 2), mode='edge')) for frame in input_source]
+                from core.source_frames import process_frame
+                input_source = [process_frame(frame, lambda image: np.pad(image,
+                    ((0, max(0, 8 - h)), (0, max(0, 8 - w)))
+                    + ((0, 0),) * (image.ndim - 2), mode='edge'),
+                    shape=(frame.shape[0] + max(0, 8 - h),
+                           frame.shape[1] + max(0, 8 - w)) + frame.shape[2:],
+                    should_cancel=kwargs.get('should_cancel')) for frame in input_source]
 
         result = dct_focus_stack_fusion(
             input_source,
@@ -1150,38 +1175,56 @@ class MultiFocusFusion:
         return np.outer(wy, wx).astype(np.float32)
 
     def _resize_tile_sources(self, frames, target_size, should_cancel):
-        """Stage full resized sources in backend order without a dense stack."""
+        """Prepare each exact full-source resize once in admitted disk storage."""
         import cv2
+        from core.source_frames import (SourceFrame, ProcessedFrame, resolve_frame,
+                                        frame_resolution_bytes, source_cache_growth_bytes)
+        from core.frame_storage import scratch_directory, select_scratch
         from core.resource_policy import require_memory
+        from core.registration import RegistrationCancelled
         from fusion_methods.dct import _ensure_color_image
+
+        def check_cancel():
+            if should_cancel is not None and should_cancel():
+                raise RegistrationCancelled()
 
         if self.descriptor.resize_interpolation == 'area':
             target_size = tuple(map(int, target_size))
         width, height = map(int, target_size)
         interpolation = getattr(cv2, f'INTER_{self.descriptor.resize_interpolation.upper()}')
-        if self.algorithm in ('openfocus_a', 'openfocus_b', 'openfocus_c'):
-            from core.source_frames import process_frame
-            return [process_frame(frame, lambda image: cv2.resize(
-                        image, target_size, interpolation=interpolation),
-                        shape=(height, width) + frame.shape[2:], should_cancel=should_cancel)
-                    for frame in frames]
-        resized = []
+        promote = self.algorithm in ('guided_filter', 'gfgfgf')
+        staging_bytes = 0
+        workspace = 0
+        paths = []
         for frame in frames:
-            if should_cancel is not None and should_cancel():
-                from core.registration import RegistrationCancelled
-                raise RegistrationCancelled()
-            channels = frame.shape[2] if frame.ndim == 3 else 1
-            if self.algorithm in ('guided_filter', 'gfgfgf'):
-                channels = 3
-            require_memory(frame.nbytes * 4 + width * height * channels * frame.dtype.itemsize * 2,
-                           user_limit=memory_budget_bytes())
-            # Guided Filter makes its input contiguous before colour promotion;
-            # GFG promotes before resize. Other backends retain native channels.
-            prepared = (np.ascontiguousarray(frame) if self.algorithm == 'guided_filter' else frame)
-            if self.algorithm in ('guided_filter', 'gfgfgf'):
-                prepared = _ensure_color_image(prepared)
-            resized.append(store_frame(cv2.resize(prepared, target_size, interpolation=interpolation)))
-            del prepared
+            check_cancel()
+            channels = 3 if promote else (frame.shape[2] if frame.ndim == 3 else 1)
+            output_bytes = width * height * channels * frame.dtype.itemsize
+            staging_bytes += output_bytes
+            workspace = max(workspace, frame_resolution_bytes(frame)
+                            + frame.nbytes * 4 + output_bytes * 2)
+            source = frame
+            while isinstance(source, ProcessedFrame):
+                source = source.source
+            if isinstance(source, SourceFrame):
+                paths.append(source.path)
+        require_memory(workspace + source_cache_growth_bytes(frames),
+                       user_limit=memory_budget_bytes())
+        resized = []
+        with scratch_directory():
+            select_scratch(staging_bytes, paths)
+            for frame in frames:
+                check_cancel()
+                image = resolve_frame(frame)
+                if self.algorithm == 'guided_filter':
+                    image = np.ascontiguousarray(image)
+                if promote:
+                    image = _ensure_color_image(image)
+                check_cancel()
+                image = cv2.resize(image, target_size, interpolation=interpolation)
+                resized.append(store_frame(image, prefer_ram=False))
+                check_cancel()
+                del image
         return resized
 
     def _fuse_tiled(self,
@@ -1288,6 +1331,10 @@ class MultiFocusFusion:
             )
 
         native_codes = algorithm in ('openfocus_a', 'openfocus_b', 'openfocus_c')
+        if native_codes:
+            from fusion_methods._hf9_execution import (
+                native_execution_scope, serial_execution_scope, _worker_native_limit,
+            )
         normalize_16bit = (not native_codes and (any(frame.dtype == np.uint16 for frame in imgs)
                            if imgs is not None else src_dtype == np.uint16))
 
@@ -1346,18 +1393,19 @@ class MultiFocusFusion:
             tile_w = min(w, block_size)
             fixed, per_worker = resolve_runner(get_fusion(algorithm).resource_estimator)(
                 tile_h, tile_w, kwargs, num_images)
-            if native_codes and imgs is not None:
+            cache_growth = 0
+            if get_fusion(algorithm).streaming_sources and imgs is not None:
                 from core.source_frames import (frame_resolution_bytes,
                                                 source_cache_growth_bytes)
                 per_worker += max(frame_resolution_bytes(frame) for frame in imgs)
-                fixed += source_cache_growth_bytes(imgs)
+                cache_growth = source_cache_growth_bytes(imgs)
             # Full-image output accumulators are disk-backed and reduced in strips.
             plan = policy.plan_execution(
                 policy.Workload(
                     algorithm=algorithm, frames=num_images, height=h, width=w,
                     channels=channels, block_size=block_size,
                     itemsize=np.dtype(src_dtype).itemsize,
-                    fixed_bytes=0,
+                    fixed_bytes=cache_growth,
                     per_worker_bytes=fixed + per_worker,
                     outer_tasks=len(tile_coords)),
                 preference=self.resource_preference,
@@ -1402,15 +1450,23 @@ class MultiFocusFusion:
                     workers=1, native_threads=1, max_in_flight=1,
                     ram_budget=0, vram_budget=0,
                     device_kind='CPU', reasons=('tiled child',))
+            if native_codes:
+                # The caller owns heavy_job. Each tile gets its own serial
+                # scope, so backend decorators neither reacquire that lease
+                # from this worker nor create another parallel layer.
+                with serial_execution_scope(should_cancel):
+                    return resolve_runner(get_fusion(algorithm).runner)(
+                        self, crops, img_resize, **algo_kwargs)
             return resolve_runner(get_fusion(algorithm).runner)(self, crops, img_resize, **algo_kwargs)
 
         def _crop_frames(coords):
             from core.image_loader import admit_image_decode, decode_image
             x0, y0, x1, y1 = coords
             if imgs is not None:
-                if native_codes:
+                if get_fusion(algorithm).streaming_sources:
                     from core.source_frames import crop_frame
                     crops = [crop_frame(img, x0, y0, x1 - x0, y1 - y0,
+                                        channels=3 if img.ndim == 3 and img.shape[2] == 4 else None,
                                         should_cancel=should_cancel) for img in imgs]
                 else:
                     crops = [prepare_tile_frame(img[y0:y1, x0:x1],
@@ -1504,7 +1560,11 @@ class MultiFocusFusion:
         window = deque()
         scratch = capture_scratch()
         next_to_submit = 0
-        with concurrent.futures.ThreadPoolExecutor(max_workers=optimal_threads) as executor:
+        from contextlib import nullcontext
+        with (native_execution_scope() if native_codes else nullcontext()), \
+                concurrent.futures.ThreadPoolExecutor(
+                    max_workers=optimal_threads,
+                    initializer=_worker_native_limit if native_codes else None) as executor:
             while next_to_submit < total_tiles or window:
                 _check_cancel()
                 while (next_to_submit < total_tiles
@@ -1570,11 +1630,15 @@ class MultiFocusFusion:
         from core.resource_policy import plan_neural_tiles
         from fusion_methods.neural_runtime import resolve_device, estimate_inference_bytes
         requested_device = resolve_device(self.use_gpu)
+        from core.source_frames import frame_resolution_bytes, source_cache_growth_bytes
+        source_resolution = max((frame_resolution_bytes(frame) for frame in imgs), default=0) if imgs is not None else 0
+        source_cache = source_cache_growth_bytes(imgs) if imgs is not None else 0
         block_size, tile_plan = plan_neural_tiles(
             count, h, w, channels, block_size, requested_device,
             estimate_inference_bytes, directory=imgs is None,
             itemsize=(max(frame.dtype.itemsize for frame in imgs)
                       if imgs is not None else np.dtype(out_dtype).itemsize),
+            source_resolution_bytes=source_resolution, source_cache_bytes=source_cache,
             preference=self.resource_preference, user_threads=thread_count)
         block_size, _, tile_coords = _ai_effective_tiling(
             count, block_size, h, w, overlap, self.ai_batch_size)
@@ -1592,7 +1656,9 @@ class MultiFocusFusion:
             check_cancel()
             x0, y0, x1, y1 = coords
             if imgs is not None:
-                crops = [frame[y0:y1, x0:x1] for frame in imgs]
+                from core.source_frames import resolve_region
+                crops = [resolve_region(frame, x0, y0, x1 - x0, y1 - y0,
+                                        should_cancel=should_cancel) for frame in imgs]
                 if exposure_gains is not None:
                     crops = normalize_fuse_input(crops)[0]
                     crops = [apply_exposure_gain(crop, gain)

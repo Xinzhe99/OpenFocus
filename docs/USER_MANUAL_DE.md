@@ -476,18 +476,18 @@ Ist kein temporäres Verzeichnis angegeben, schätzt OpenFocus den Bedarf anhand
 
 ### OpenFocus A / B / C
 
-- **OpenFocus A**: glättet seine mehrskalige Fokusantwortkarte und wählt anschließend fokussierte Pixel aus.
+- **OpenFocus A**: wählt Quellpixel anhand einer mehrskaligen Fokusantwort aus.
 - **OpenFocus B**: mischt benachbarte Bilder anhand einer geglätteten Tiefenkarte.
-- **OpenFocus C**: rekonstruiert mehrskalige Bänder anhand einer geglätteten Tiefenkarte.
-- **Parameter**: A und B verwenden den Kernelregler für die Skala der Fokusantwort; C hat keinen Radius. Alle drei besitzen einen Glättungsparameter für die Übergangsstärke.
+- **OpenFocus C**: mischt Quellpixel anhand der fertigen, geglätteten Tiefenkarte.
+- **Parameter**: A und B verwenden den Kernelregler für die Skala der Fokusantwort; C hat keinen Radius. Die Glättung von A hat wie bei HF9 A keine Wirkung. B und C glätten die für die Fusion verwendete Tiefenkarte.
 
 **Glättung**: ein Drehfeld unter dem Kernelregler, dessen Bedeutung von der gewählten Methode abhängt (Bereich 0–8, Schrittweite 0,2):
 
 | Methode | Bezeichnung | Standard | Wirkung |
 |---|---|---|---|
-| OpenFocus A | Mischungsglättung | 2,0 | Steuert die Glättung der Fokusantwortkarte vor der Pixelauswahl |
+| OpenFocus A | Mischungsglättung | 2,0 | Wie bei HF9 A ohne Wirkung |
 | OpenFocus B | Tiefenglättung | 1,44 | Steuert die Glättung der Tiefenkarte, die die Mischung führt |
-| OpenFocus C | Mischungsglättung | 3,6 | Steuert die Glättung der Tiefenkarte, die die mehrskalige Rekonstruktion führt |
+| OpenFocus C | Mischungsglättung | 3,6 | Steuert die Glättung der Tiefenkarte und die Fusionsübergänge |
 
 Standard-Kernelgröße für A/B: 17. Gespeicherte Werte bleiben erhalten; stellen Sie die Standardwerte wieder her, um die neuen Vorgaben zu verwenden.
 
@@ -525,7 +525,7 @@ CLI: `--depth-smoothing VALUE` (B) und `--blend-smoothing VALUE` (A, C).
 | StackMFF V3 | Langsam (GPU) | Hervorragend | Beste Qualität |
 | OpenFocus A | Abhängig vom Stapel | Abhängig vom Stapel | Mehrskalige Fokusauswahl |
 | OpenFocus B | Abhängig vom Stapel | Abhängig vom Stapel | Tiefenkartengesteuerte Mischung benachbarter Bilder |
-| OpenFocus C | Abhängig vom Stapel | Abhängig vom Stapel | Tiefenkartengesteuerte mehrskalige Rekonstruktion |
+| OpenFocus C | Abhängig vom Stapel | Abhängig vom Stapel | Mischung von Quellpixeln anhand der fertigen Tiefenkarte |
 
 **Werkzeuge → Methoden vergleichen…** öffnet einen Dialog, in dem mehrere Verfahren unabhängig eingestellt werden. Name, Parameterbeschriftungen und Bedienelemente jeder Methode bleiben zusammen, wenn das Fenster schmaler wird. Änderungen aktualisieren die Vorschau automatisch. **ROI-Vorschau (schnell)** fusioniert den ausgewählten Bereich mit umgebendem Kontext; **Ganzbild-Fusion** prüft das Ergebnis des gesamten Bildes und erlaubt die Untersuchung eines anderen Bereichs ohne erneutes Rendern. ROI-Ergebnisse können von Ganzbild-Ergebnissen abweichen, weil Belichtungsstatistiken und einige Algorithmen von der Bildausdehnung abhängen.
 Die **Ganzbild-Fusion** ist standardmäßig ausgewählt.

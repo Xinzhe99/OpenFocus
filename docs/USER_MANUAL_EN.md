@@ -191,7 +191,7 @@ does not alter the exported blend.
 Save as TIFF or PNG. TIFF uses disk-backed tiled composition and strip-based
 writing, including BigTIFF for large files; allow enough temporary and output
 disk space. TIFF strip buffers target 4 MiB per strip, but one full output row
-is the minimum. PNG encoding needs additional memory. Overlaps use edge
+is the minimum. Large PNGs are also encoded in row bands. Overlaps use edge
 feathering, so differences in exposure or specimen content can remain visible.
 Eight-bit inputs remain 8-bit, while 16-bit or mixed-depth inputs produce
 16-bit output. Preview opacity is not baked into the image. The mosaic does
@@ -788,19 +788,19 @@ Each neural tile uses every frame. Source frames and alignment scratch can be di
 
 ### OpenFocus A / B / C
 
-- **OpenFocus A**: smooths squared high-pass energy, then selects complete original pixels; first-frame ties and 16-bit precision are preserved.
+- **OpenFocus A**: selects source pixels using a multiscale focus response; first-frame ties and 16-bit precision are preserved.
 - **OpenFocus B**: blends neighboring frames guided by a smoothed depth map.
-- **OpenFocus C**: reconstructs multiscale bands guided by a smoothed depth map.
-- **Parameters**: A uses the kernel slider for high-pass scale (`sigma = max(1, kernel / 5.5)`); B uses it for focus-response scale. C has no radius. A smooths energy before source selection; B and C smooth depth maps.
+- **OpenFocus C**: blends source pixels using the completed, smoothed depth map.
+- **Parameters**: A and B use the kernel slider for focus-response scale; C has no radius. A's smoothing setting has no effect, matching HF9 A; B and C smooth the depth map used for fusion.
 
 **Smoothing**: one spin box under the kernel slider, with the meaning of the
 selected method (range 0–8, step 0.2):
 
 | Method | Label | Default | Effect |
 |---|---|---|---|
-| OpenFocus A | Blend smoothing | 2.0 | Spreads squared high-pass energy with `sigma = max(1, smoothing / 2)`; 0 retains the minimum spread |
+| OpenFocus A | Blend smoothing | 2.0 | No effect, matching HF9 A |
 | OpenFocus B | Depth smoothing | 1.44 | Controls smoothing of the depth map that guides blending |
-| OpenFocus C | Blend smoothing | 3.6 | Controls smoothing of the depth map that guides multiscale reconstruction |
+| OpenFocus C | Blend smoothing | 3.6 | Controls depth-map smoothing and fusion transitions |
 
 A/B default kernel size: 17. Existing saved values remain in use; restore defaults to use the new defaults.
 
@@ -856,9 +856,9 @@ filename stems are retained, with the extension of the format you select.
 | StackMFF (V1) | Slow (GPU) | Not benchmarked here | Luma is order-invariant; chroma may differ on luma-distance ties |
 | StackMFF V2 | Fast (GPU) | Not benchmarked here | Continuous sweeps with a tiny model |
 | StackMFF V3 | Slow (GPU) | Excellent | Best quality |
-| OpenFocus A | Depends on stack | Depends on stack | High-frequency energy source-pixel selection |
+| OpenFocus A | Depends on stack | Depends on stack | Multiscale focus-response source-pixel selection |
 | OpenFocus B | Depends on stack | Depends on stack | Depth-guided blending of neighboring frames |
-| OpenFocus C | Depends on stack | Depends on stack | Depth-guided multiscale reconstruction |
+| OpenFocus C | Depends on stack | Depends on stack | Source blending using the final depth map |
 
 Open **Tools → Compare methods…** to adjust several methods independently.
 Each method's name, parameter labels and controls stay together when the window
@@ -1580,6 +1580,35 @@ PNG, WebP or TIFF). The choice is remembered.
 - **BMP**: Uncompressed, converts 16-bit image data to 8-bit
 - **TIFF**: Preserves 8-bit and 16-bit data; multi-page export keeps the whole stack in one file
 - **GIF**: Animation with an 8-bit palette; cancellation leaves an existing destination intact
+
+Large ordinary TIFF, PNG and baseline JPEG saves automatically use row bands;
+no special save mode is required. TIFF and PNG retain native 16-bit samples,
+including their low bits. JPEG converts 16-bit samples to 8 bits and stages
+grayscale or RGBX pixels in temporary disk storage before encoding. Allow up to
+four bytes per pixel of JPEG scratch space in addition to the destination file.
+Its mapped pages remain subject to the operating system's memory management.
+Advanced progressive or optimized JPEG requests require additional image-sized
+codec memory and are admitted only when the resource budget can cover it.
+Other OpenCV JPEG parameters, including restart intervals, sampling factors and
+independent luminance/chrominance quality, retain their requested settings through
+the original codec after admission for its complete image-sized working set.
+Cancellation of that native codec call takes effect at its boundaries; an existing
+destination remains intact. BMP, WebP and other legacy encoders also require
+image-sized memory buffers.
+
+Ordinary TIFF automatically switches to BigTIFF when its pixel data and metadata
+cannot safely fit classic TIFF offsets. Camera, exposure, lens, valid GPS and RGB
+ICC metadata stay attached to the output, including BigTIFF; source layout tags
+and MakerNotes are removed and Orientation is reset to 1. Multi-page exports with
+known page geometry stay classic TIFF when the complete conservative bound,
+including every page's metadata and strip tables, fits its offsets. Large stacks
+and streams with unknown geometry use BigTIFF from the outset, requiring a
+BigTIFF-capable receiving application. Page conversion and encoding use the same
+strip writer. Desktop multi-page stack exports retain their uncompressed TIFF
+default. Supported bounded TIFF compression modes are
+uncompressed, LZW, Deflate and PackBits, subject to the installed OpenCV codec.
+PNG retains transparency; ordinary non-PNG exports require opaque pixels.
+Cancellation or a failed write leaves an existing destination file intact.
 
 ---
 

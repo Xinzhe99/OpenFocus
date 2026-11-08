@@ -439,18 +439,18 @@ Si no se especifica un directorio temporal, OpenFocus estima el espacio necesari
 
 ### OpenFocus A / B / C
 
-- **OpenFocus A**: suaviza su mapa de respuesta de enfoque multiescala y después selecciona los píxeles enfocados.
+- **OpenFocus A**: selecciona los píxeles de origen mediante una respuesta de enfoque multiescala.
 - **OpenFocus B**: mezcla fotogramas vecinos guiándose por un mapa de profundidad suavizado.
-- **OpenFocus C**: reconstruye bandas multiescala guiándose por un mapa de profundidad suavizado.
-- **Parámetros**: A y B usan el deslizador de núcleo para controlar la escala de respuesta de enfoque; C no tiene radio. Los tres tienen un parámetro de suavizado que controla la intensidad de transición.
+- **OpenFocus C**: mezcla los píxeles de origen según el mapa de profundidad final suavizado.
+- **Parámetros**: A y B usan el deslizador de núcleo para controlar la escala de respuesta de enfoque; C no tiene radio. El suavizado de A no tiene efecto, como en HF9 A; B y C suavizan el mapa de profundidad utilizado para la fusión.
 
 **Suavizado**: un único campo numérico bajo el deslizador de núcleo, cuyo significado depende del método seleccionado (rango 0–8, paso 0,2):
 
 | Método | Etiqueta | Predeterminado | Efecto |
 |---|---|---|---|
-| OpenFocus A | Suavizado de mezcla | 2,0 | Controla el suavizado del mapa de respuesta de enfoque antes de seleccionar los píxeles |
+| OpenFocus A | Suavizado de mezcla | 2,0 | Sin efecto, como en HF9 A |
 | OpenFocus B | Suavizado de profundidad | 1,44 | Controla el suavizado del mapa de profundidad que guía la mezcla |
-| OpenFocus C | Suavizado de mezcla | 3,6 | Controla el suavizado del mapa de profundidad que guía la reconstrucción multiescala |
+| OpenFocus C | Suavizado de mezcla | 3,6 | Controla el suavizado del mapa de profundidad y las transiciones de fusión |
 
 Tamaño de núcleo predeterminado de A/B: 17. Se conservan los valores guardados; restablece los valores predeterminados para usar los nuevos.
 
@@ -488,7 +488,7 @@ Selecciona **Solo alineación (sin fusión)** para registrar la pila y añadir u
 | StackMFF V3 | Lenta (GPU) | Excelente | Máxima calidad |
 | OpenFocus A | Depende de la pila | Depende de la pila | Selección multiescala de píxeles enfocados |
 | OpenFocus B | Depende de la pila | Depende de la pila | Mezcla de fotogramas vecinos guiada por profundidad |
-| OpenFocus C | Depende de la pila | Depende de la pila | Reconstrucción multiescala guiada por profundidad |
+| OpenFocus C | Depende de la pila | Depende de la pila | Mezcla de píxeles de origen según el mapa de profundidad final |
 
 Abre **Herramientas → Comparación de métodos** para ajustar varios métodos de forma independiente. El nombre, las etiquetas de parámetros y los controles de cada método permanecen juntos cuando la ventana se estrecha. Los cambios actualizan la vista previa automáticamente. **Vista previa ROI (rápida)** fusiona el área seleccionada con el contexto circundante; **Fusión de imagen completa** comprueba el resultado de toda la imagen y permite inspeccionar otra área sin volver a renderizar. Los resultados ROI pueden diferir de los de imagen completa porque las estadísticas de exposición y algunos algoritmos dependen de la extensión de la imagen.
 La **fusión de imagen completa** está seleccionada por defecto.

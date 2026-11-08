@@ -291,6 +291,7 @@ def test_unrequested_cancellation_exception_is_not_silently_swallowed(monkeypatc
 
 
 def test_alignment_runs_real_registration_on_background_thread(monkeypatch):
+    from core.source_frames import resolve_frame
     frames = _stack(96, 128, np.uint16)
     frames[1] = np.roll(frames[0], (2, -3), axis=(0, 1))
     shared = {'reg_downscale_width': 96, 'registration_parameters': {'max_shift_ratio': .1},
@@ -316,7 +317,7 @@ def test_alignment_runs_real_registration_on_background_thread(monkeypatch):
     assert observations[0][0] != main_thread
     assert observations[0][1:] == (96, 0.1, "first", 0, True)
     before = np.mean(np.abs(frames[0].astype(float) - frames[1]))
-    after = np.mean(np.abs(aligned[0].astype(float) - aligned[1]))
+    after = np.mean(np.abs(resolve_frame(aligned[0]).astype(float) - resolve_frame(aligned[1])))
     assert after < before * 0.5
 
 

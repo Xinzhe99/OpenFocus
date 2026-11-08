@@ -62,13 +62,20 @@ def test_wide_identity_is_borrowed_and_serializable(dtype, channels):
     restored = alignment.AlignmentPlan.from_dict(json.loads(json.dumps(plan.to_dict())))
     assert restored == plan
     assert restored.processing_order == (0, 1)
-    assert restored.rotation == 0 and restored.magnification == 3
     for transform in restored.transforms:
         assert transform.is_identity
         assert alignment.apply_alignment(image, transform) is image
         assert alignment.alignment_valid_mask(transform).all()
     with pytest.raises(FrozenInstanceError):
         restored.transforms[1].f8 = (0,) * 8
+
+
+def test_old_double_accumulation_plan_is_rejected():
+    image = _image(17)
+    payload = alignment.estimate_alignment_plan([image, image.copy()]).to_dict()
+    payload['version'] = 1
+    with pytest.raises(ValueError, match='version'):
+        alignment.AlignmentPlan.from_dict(payload)
 
 
 @pytest.mark.parametrize('dtype', [np.uint8, np.uint16])
@@ -112,41 +119,26 @@ def test_wide_fast_reduction_replicates_odd_edges():
     np.testing.assert_array_equal(alignment.fast_downsize(image), expected)
 
 
-def test_default_chain_preserves_aligned_reference_and_cumulative_slots(monkeypatch):
-    images = [_image(32) ^ np.uint16(value) for value in (0, 7, 13)]
-    calls = []
-    pairs = iter([(0, 0, -2, 3, .5, 1.01, 1.01, 1),
-                  (0, 0, -4, -1, -.25, .99, .99, 1)])
-
-    def estimate(previous, current, **kwargs):
-        calls.append((previous.copy(), kwargs))
-        return np.array(next(pairs), np.float32), 3
-
-    monkeypatch.setattr(alignment, 'align_pair_wide', estimate)
-    plan = alignment.estimate_alignment_plan(images, rotation=8, magnification=6)
-    np.testing.assert_array_equal(calls[1][0], alignment._warp_alignment(
-        alignment._gray16(images[1], None), plan.transforms[1].f8, None))
-    assert plan.transforms[2].f8[2:5] == pytest.approx((-6, 2, .25))
-    assert plan.transforms[2].f8[5] == float(np.float32(1.01) * np.float32(.99))
-    assert calls[0][1]['rot_deg'] == 8 and calls[0][1]['mag_pct'] == 6
+def test_default_chain_preserves_aligned_reference_and_cumulative_slots():
+    base = _image(160)
+    shifts = (0, 6, 12)
+    images = [np.roll(base, shift, axis=1) for shift in shifts]
+    plan = alignment.estimate_alignment_plan(images, max_shift_ratio=.2,
+                                             magnification=0)
+    offsets = [transform.f8[0] - transform.f8[2] for transform in plan.transforms]
+    np.testing.assert_allclose(offsets, shifts, atol=.6, rtol=0)
 
 
-def test_selected_reference_visits_both_sides_without_reordering(monkeypatch):
-    images = [_image(32) ^ np.uint16(value) for value in range(5)]
-    seen = []
-
-    def estimate(previous, current, **kwargs):
-        seen.append(previous.copy())
-        return np.array((0, 0, -2, 1, 0, 1, 1, 1), np.float32), 1
-
-    monkeypatch.setattr(alignment, 'align_pair_wide', estimate)
-    plan = alignment.estimate_alignment_plan(images, reference_frame=3)
-    assert plan.processing_order == (2, 1, 0, 3, 4)
+def test_selected_reference_visits_both_sides_without_reordering():
+    base = _image(160)
+    shifts = (-12, -6, 0, 6, 12)
+    images = [np.roll(base, shift, axis=1) for shift in shifts]
+    plan = alignment.estimate_alignment_plan(images, reference_frame=3,
+                                             max_shift_ratio=.2, magnification=0)
+    offsets = [transform.f8[0] - transform.f8[2] for transform in plan.transforms]
+    np.testing.assert_allclose(offsets, shifts, atol=.6, rtol=0)
     assert plan.reference_index == 2
-    assert [t.source_index for t in plan.transforms] == list(range(5))
-    for previous in seen:
-        np.testing.assert_array_equal(previous, images[2])
-    assert plan.transforms[0].f8 == plan.transforms[1].f8
+    assert [transform.source_index for transform in plan.transforms] == list(range(5))
 
 
 @pytest.mark.parametrize('policy', ['continue', 'fail'])
@@ -335,33 +327,45 @@ def research_source():
     sys.path.insert(0, str(script.parent))
     try:
         spec.loader.exec_module(module)
+        score = module._score_chunk
+
+        def bounded_score(first, second, xs, ys, candidates):
+            # Each candidate has independent integer sums. Keep the full input
+            # and search order while bounding the real reference's temporaries.
+            chunk = max(1, 65536 // max(1, len(xs) * len(ys)))
+            if len(candidates) <= chunk:
+                return score(first, second, xs, ys, candidates)
+            outputs = tuple(np.empty(len(candidates), np.int64) for _ in range(3))
+            for start in range(0, len(candidates), chunk):
+                values = score(first, second, xs, ys, candidates[start:start + chunk])
+                for output, value in zip(outputs, values):
+                    output[start:start + len(value)] = value
+            return outputs
+
+        module._score_chunk = bounded_score
         yield root, module
     finally:
         sys.path.pop(0)
 
 
 @pytest.mark.parametrize('case', ['shift_10_10', 'shift_160_160', 'rot_6.0', 'scale_1.06'])
-def test_real_aligrange_source_differential_and_recorded_f8(research_source, case):
+def test_real_aligrange_source_differential_and_public_geometry(research_source, case):
     root, prototype = research_source
     ref = cv2.imread(str(root / 'experiments/stacks/aligntest/f1_base.tif'), cv2.IMREAD_UNCHANGED)
     test = cv2.imread(str(root / 'experiments/stacks/aligrange' / (case + '.tif')), cv2.IMREAD_UNCHANGED)
     assert ref is not None and test is not None
     a, b = alignment._gray16(ref, None), alignment._gray16(test, None)
-    kwargs = dict(h_pct=12, v_pct=12, rot_deg=6, mag_pct=6)
+    # Keep the injected 6-degree / 6-percent motion inside the initial range.
+    # The research reproduction records these explicit 8/8 search settings.
+    kwargs = dict(h_pct=12, v_pct=12, rot_deg=8, mag_pct=8)
     expected, expected_rounds = prototype.align_pair_wide(a, b, **kwargs)
     actual, rounds = alignment.align_pair_wide(a, b, **kwargs)
     np.testing.assert_array_equal(actual, expected)
     assert rounds == expected_rounds
-    golden = np.load(root / 'experiments' / ('aligrange_f8_' + case + '.npy'))
-    np.testing.assert_allclose(actual[:4], golden[:4], atol=.5, rtol=0)
-    assert actual[4] == pytest.approx(golden[4], abs=.08)
-    assert actual[5] == pytest.approx(golden[5], abs=.0005)
-    # The production plan exposes rotation and magnification through its public API.
-    rotation = 8 if case == 'rot_6.0' else 6
+    # The public API uses the same recorded search configuration.
     plan = alignment.estimate_alignment_plan([ref, test], max_shift_ratio=.12,
-                                            rotation=rotation, magnification=6)
-    public_expected, _ = prototype.align_pair_wide(a, b, h_pct=12, v_pct=12,
-                                                  rot_deg=rotation, mag_pct=6)
+                                            rotation=8, magnification=8)
+    public_expected = expected
     np.testing.assert_array_equal(plan.transforms[1].f8, public_expected)
     warped = alignment.apply_alignment(test, plan.transforms[1])
     prototype_warp = prototype.warp_frame4d(test.astype(np.uint16), public_expected).astype(test.dtype)
@@ -371,7 +375,7 @@ def test_real_aligrange_source_differential_and_recorded_f8(research_source, cas
     if case == 'rot_6.0':
         from core.registration import grouped_crop_offsets
         engine = ImageRegistration('openfocus', defer_warps=True, parameters={
-            'max_shift_ratio': .12, 'rotation': 8., 'magnification': 6.,
+            'max_shift_ratio': .12, 'rotation': 8., 'magnification': 8.,
             'failure_policy': 'fail'})
         crops = []
         token = grouped_crop_offsets.set(crops)
@@ -383,6 +387,18 @@ def test_real_aligrange_source_differential_and_recorded_f8(research_source, cas
         left, top, right, bottom = crops[-1]
         np.testing.assert_array_equal(registered[1].full_resolution(),
                                       prototype_warp[top:bottom, left:right])
+    # These files record injected geometry. The historical f8 .npy files
+    # have no generator/kwargs provenance and are not native HF9 oracles.
+    cases = json.loads((root / 'experiments/stacks/aligrange/cases.json').read_text(encoding='utf-8'))
+    _, kind, first, second = next(item for item in cases if item[0] == case)
+    expected_rotation = -first if kind == 'rot' else 0
+    expected_magnification = 1 / second if kind == 'scale' else 1
+    for f8 in (actual, plan.transforms[1].f8):
+        assert f8[4] == pytest.approx(expected_rotation, abs=.08)
+        np.testing.assert_allclose(f8[5:7], expected_magnification, atol=.0005, rtol=0)
+        if kind == 'shift':
+            np.testing.assert_allclose(np.asarray(f8[:2]) - f8[2:4],
+                                       (first, second), atol=.5, rtol=0)
 
 
 @pytest.mark.parametrize('dx,dy', [(0, 0), (6, 4), (-6, -4)])

@@ -115,35 +115,19 @@ def test_wide_native_pyramid_integer_estimation(shift):
     assert (transform.dx, transform.dy) == (-shift, shift)
 
 
-def test_cumulative_chain_uses_previous_aligned_reference(monkeypatch):
-    images = [_texture(32), _texture(32) ^ np.uint16(7), _texture(32) ^ np.uint16(13)]
-    calls = []
-    pairs = iter([(2.0, -3.0), (4.0, 1.0)])
-
-    def estimate(reference, current, should_cancel):
-        calls.append(reference.copy())
-        return next(pairs)
-
-    monkeypatch.setattr(alignment, '_estimate_pair', estimate)
-    plan = alignment.estimate_translation_plan(images, max_shift_ratio=0.5)
-    assert [(t.dx, t.dy) for t in plan.transforms] == [(0.0, 0.0), (2.0, -3.0), (6.0, -2.0)]
-    assert [(t.pair_dx, t.pair_dy) for t in plan.transforms] == [(0.0, 0.0), (2.0, -3.0), (4.0, 1.0)]
-    expected = alignment.apply_translation(images[1], plan.transforms[1])
-    np.testing.assert_array_equal(calls[1], expected)
-    assert plan.processing_order == (0, 1, 2)
-    assert plan.reference_index == 0
-    with pytest.raises(FrozenInstanceError):
-        plan.transforms[1].dx = 8
 
 
 def test_real_cumulative_pairwise_signs():
     base = _texture()
-    sources = [base, _shift(base, 6, 4), _shift(base, 10, 8)]
+    shifts = [(0, 0), (6, 4), (10, 8)]
+    sources = [_shift(base, dx, dy) for dx, dy in shifts]
     plan = alignment.estimate_translation_plan(sources, max_shift_ratio=0.2)
-    # Prototype searches aligned frame 1 (base) against raw frame 2: (-10,-8),
-    # then ADDS the previous total (-6,-4); it does not return raw adjacency.
-    assert [(t.pair_dx, t.pair_dy) for t in plan.transforms] == [(0, 0), (-6, -4), (-10, -8)]
-    assert [(t.dx, t.dy) for t in plan.transforms] == [(0, 0), (-6, -4), (-16, -12)]
+    assert [(t.dx, t.dy) for t in plan.transforms] == [(-dx, -dy) for dx, dy in shifts]
+    for source, transform in zip(sources, plan.transforms):
+        actual = alignment.apply_translation(source, transform)
+        np.testing.assert_array_equal(actual[12:-12, 12:-12], base[12:-12, 12:-12])
+    with pytest.raises(FrozenInstanceError):
+        plan.transforms[1].dx = 8
 
 
 def test_identical_plan_preserves_u16_low_bits():

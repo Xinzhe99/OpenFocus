@@ -458,18 +458,18 @@ Jeśli nie wskazano katalogu tymczasowego, OpenFocus szacuje potrzebne miejsce n
 
 ### OpenFocus A / B / C
 
-- **OpenFocus A**: wygładza wieloskalową mapę odpowiedzi ostrości, a następnie wybiera ostre piksele
+- **OpenFocus A**: wybiera piksele źródłowe według wieloskalowej odpowiedzi ostrości
 - **OpenFocus B**: miesza sąsiednie klatki według wygładzonej mapy głębi
-- **OpenFocus C**: rekonstruuje wieloskalowe pasma według wygładzonej mapy głębi
-- **Parametry**: A i B używają suwaka jądra do skali odpowiedzi ostrości (1–21, domyślnie 11); C nie ma promienia. Wszystkie trzy mają parametr wygładzania kontrolujący siłę przejść
+- **OpenFocus C**: miesza piksele źródłowe według końcowej wygładzonej mapy głębi
+- **Parametry**: A i B używają suwaka jądra do skali odpowiedzi ostrości; C nie ma promienia. Wygładzanie A nie wpływa na wynik, tak jak w HF9 A; B i C wygładzają mapę głębi używaną do łączenia
 
 **Wygładzanie**: jedno pole pod suwakiem jądra, znaczenie zależy od wybranej metody (zakres 0–8, krok 0,2):
 
 | Metoda | Etykieta | Domyślnie | Efekt |
 |---|---|---|---|
-| OpenFocus A | Wygładzanie mieszania | 2,0 | Wygładza mapę odpowiedzi ostrości przed wyborem pikseli |
+| OpenFocus A | Wygładzanie mieszania | 2,0 | Bez wpływu na wynik, tak jak w HF9 A |
 | OpenFocus B | Wygładzanie głębi | 1,44 | Kontroluje wygładzanie mapy głębi kierującej mieszaniem |
-| OpenFocus C | Wygładzanie mieszania | 3,6 | Kontroluje wygładzanie mapy głębi dla rekonstrukcji wieloskalowej |
+| OpenFocus C | Wygładzanie mieszania | 3,6 | Kontroluje wygładzanie mapy głębi i przejścia łączenia |
 
 Domyślny rozmiar jądra A/B: 17. Zapisane wartości pozostają w użyciu; przywróć ustawienia domyślne, aby użyć nowych wartości.
 
@@ -507,7 +507,7 @@ Wybierz **Tylko wyrównanie (bez fuzji)**, aby zarejestrować stos i dodać do l
 | StackMFF V3 | Wolno (GPU) | Doskonała | Najwyższej jakości |
 | OpenFocus A | Zależy od stosu | Zależy od stosu | Wyboru ostrych pikseli według odpowiedzi wieloskalowej |
 | OpenFocus B | Zależy od stosu | Zależy od stosu | Mieszania sąsiednich klatek według mapy głębi |
-| OpenFocus C | Zależy od stosu | Zależy od stosu | Rekonstrukcji wieloskalowej według mapy głębi |
+| OpenFocus C | Zależy od stosu | Zależy od stosu | Mieszania pikseli źródłowych według końcowej mapy głębi |
 
 **Narzędzia → Porównaj metody…** pozwala niezależnie ustawić kilka metod. Nazwa metody, etykiety parametrów i kontrolki pozostają razem przy zwężaniu okna. Zmiany automatycznie aktualizują podgląd. **Podgląd ROI (szybko)** łączy wybrany obszar z otaczającym kontekstem; **Fuzja całego obrazu** sprawdza wynik całego obrazu i pozwala zbadać inny obszar bez ponownego renderowania. Wyniki ROI mogą różnić się od pełnego obrazu, ponieważ statystyki ekspozycji i niektóre algorytmy zależą od rozmiaru obrazu.
 Domyślnie wybrana jest **fuzja całego obrazu**.

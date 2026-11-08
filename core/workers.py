@@ -232,10 +232,48 @@ class StackLoadWorker(QThread):
 
 
 
+class ROIFramePreviewWorker(QThread):
+    """Resolve one aligned ROI frame off Qt and deliver only bounded pixels."""
+    ready = pyqtSignal(object, object, object, object)
+    failed = pyqtSignal(object, str)
+
+    def __init__(self, frame, key, request, *, metadata=None):
+        super().__init__()
+        self.frame = frame
+        self.key = key
+        self.request = request
+        self.metadata = metadata
+        self.next_request = None
+        self._cancelled = False
+
+    def request_cancel(self):
+        self._cancelled = True
+
+    def run(self):
+        from core.source_previews import render_source_region
+        image = None
+        try:
+            with heavy_job(lambda: self._cancelled), scratch_directory():
+                if self._cancelled:
+                    return
+                image = resolve_frame(self.frame)
+                if self._cancelled:
+                    return
+                pixels, rect = render_source_region(image, self.request[2], self.request[3], self.metadata)
+                if not self._cancelled:
+                    self.ready.emit(self.key, self.request, pixels, rect)
+        except Exception as exc:
+            if not self._cancelled:
+                self.failed.emit(self.key, str(exc))
+        finally:
+            image = None
+            self.frame = None
+
+
 class ROIAlignmentWorker(QThread):
     """后台执行ROI模式下的ECC配准线程，用于在ROI选择前对齐图像栈"""
 
-    finished_signal = pyqtSignal(object, float)  # aligned_images, alignment_time
+    finished_signal = pyqtSignal(object, float)  # deferred aligned images, alignment_time
     error_signal = pyqtSignal(str)
 
     def __init__(self, raw_images, reg_downscale_width=None, thread_count: int = DEFAULT_THREAD_COUNT,
@@ -280,14 +318,13 @@ class ROIAlignmentWorker(QThread):
     
         # 使用ECC方法进行配准
         if self.reg_downscale_width is not None:
-            registration = ImageRegistration(method="ecc", downscale_width=self.reg_downscale_width)
+            registration = ImageRegistration(method="ecc", downscale_width=self.reg_downscale_width,
+                                             defer_warps=True)
         else:
-            registration = ImageRegistration(method="ecc")
-    
-        images = materialize_frames(self.raw_images, lambda: self._cancelled,
-                                    preferred_staging_bytes=_processing_space(self.raw_images, 1))
+            registration = ImageRegistration(method="ecc", defer_warps=True)
+
         aligned_images = registration.process(
-            images, output_path=None, thread_count=self.thread_count,
+            self.raw_images, output_path=None, thread_count=self.thread_count,
             resource_preference=self.resource_preference,
             should_cancel=lambda: self._cancelled)
         alignment_time = time.time() - alignment_start_time
@@ -359,9 +396,9 @@ class RenderWorker(QThread):
         if self.disk_cache is not None and (self.registration_parameters or self.defect_mask_path or self.sensor_denoise):
             self.disk_cache['identity'] = dict(self.disk_cache.get('identity') or {})
         self._cache_identity_prepared = False
-        self._defer_warps = (self.alignment == ('openfocus',) and not self.preview
-                             and (not self.need_fusion or self.algorithm in
-                                  ('openfocus_a', 'openfocus_b', 'openfocus_c')))
+        self._defer_warps = (bool(self.alignment) and not self.preview
+                             and all(step in ('openfocus', 'homography', 'ecc') for step in self.alignment)
+                             and (not self.need_fusion or get_fusion(self.algorithm).streaming_sources))
         self._alignment_plan = None
         self.resource_preference = resource_preference
         self.alignment_reused = False
@@ -434,8 +471,8 @@ class RenderWorker(QThread):
             and self.last_alignment_options == current_alignment_options
             and not cleanup and not self.preview
         )
-        lazy_fusion = (self.need_fusion and not self.preview and self.algorithm in
-                       ('openfocus_a', 'openfocus_b', 'openfocus_c'))
+        lazy_fusion = (self.need_fusion and not self.preview
+                       and get_fusion(self.algorithm).streaming_sources)
     
         # 1. 配准阶段
         if need_registration and can_reuse_aligned_images:
@@ -627,7 +664,8 @@ class RenderWorker(QThread):
             identity = dict(request.get('identity') or {})
             identity.update(alignment_steps=list(self.alignment),
                             registration_parameters=dict(self.registration_parameters),
-                            registration_backend='hf9-wide4d',
+                            registration_backend=('hf9-wide4d' if self.alignment == ('openfocus',)
+                                                  else 'opencv-perspective-v1'),
                             downscale_width=self.reg_downscale_width,
                             scale_factor=request.get('scale_factor', 1.0),
                             frame_shape=request.get('frame_shape'),
@@ -678,7 +716,7 @@ class RenderWorker(QThread):
                     return None
                 from core.registration import apply_alignment_plan
                 cached = apply_alignment_plan(self._cache_source_images, plan,
-                    defer_warps=True, should_cancel=lambda: self.is_cancelled or not is_current())
+                    defer_warps=True, should_cancel=lambda: self.is_cancelled)
                 self._alignment_plan = plan
             else:
                 cached = align_cache.load_aligned(
@@ -700,8 +738,8 @@ class RenderWorker(QThread):
             return None
         if len(cached) != len(self.raw_images):
             return None
-        if self.is_cancelled:
-            return None
+        if self.is_cancelled or not is_current():
+            raise RegistrationCancelled()
         print("Registration cache hit — skipping alignment")
         return cached
 
@@ -1241,8 +1279,8 @@ class BatchWorker(QThread):
                 steps = alignment_steps(alignment)
                 cleanup = any(self.processing_settings.get(key) for key in
                               ('defect_mask_path', 'sensor_denoise', 'flat_field_path'))
-                lazy_fusion = (method in ('openfocus_a', 'openfocus_b', 'openfocus_c')
-                               and steps in ((), ('openfocus',)))
+                lazy_fusion = ((not method or method == 'none' or get_fusion(method).streaming_sources)
+                               and all(step in ('openfocus', 'homography', 'ecc') for step in steps))
                 if lazy_fusion:
                     aligned_images = list(images)
                 else:
@@ -1314,7 +1352,7 @@ class BatchWorker(QThread):
                         parameters=self.registration_parameters,
                         downscale_width=self._registration_width(aligned_images),
                         brightness_reference='last' if self.exposure_match else 'first',
-                        use_gpu=False, defer_warps=lazy_fusion and steps == ('openfocus',))
+                        use_gpu=False, defer_warps=lazy_fusion)
                     aligned_images = registration.process(aligned_images,
                         thread_count=self.thread_count, resource_preference=self.resource_preference,
                         should_cancel=lambda: self.is_cancelled)
@@ -1530,8 +1568,7 @@ class BatchWorker(QThread):
                 registration = ImageRegistration(method=alignment, parameters=self.registration_parameters,
                     downscale_width=self._registration_width(images),
                     brightness_reference='last' if self.exposure_match else 'first', use_gpu=False,
-                    defer_warps=(method in ('openfocus_a', 'openfocus_b', 'openfocus_c')
-                                 and alignment_steps(alignment) == ('openfocus',)))
+                    defer_warps=get_fusion(method).streaming_sources)
                 images = registration.process(images, thread_count=self.thread_count,
                     resource_preference=self.resource_preference, should_cancel=lambda: self.is_cancelled)
             fusion_input, is_16bit = prepare_fusion_input(images)

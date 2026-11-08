@@ -219,8 +219,11 @@ def test_cli_runs_both_and_rejects_depth_for_v1(tmp_path):
     frames = _stack(count=4)
     for index, frame in enumerate(frames):
         assert imwrite_auto(str(source / f"f{index}.png"), frame)
+    cli_pythonpath = os.pathsep.join(
+        path for path in (str(root), os.environ.get("PYTHONPATH", "")) if path
+    )
     environment = dict(os.environ, OPENFOCUS_LOG_DIR=str(tmp_path / "logs"),
-                       PYTHONPATH=str(root), KMP_DUPLICATE_LIB_OK="TRUE",
+                       PYTHONPATH=cli_pythonpath, KMP_DUPLICATE_LIB_OK="TRUE",
                        PYTHONIOENCODING="utf-8")
 
     def run(args):

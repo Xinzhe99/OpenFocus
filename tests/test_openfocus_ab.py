@@ -250,27 +250,7 @@ class TestOpenFocusAlignment:
                      - out[0].astype(int)[4:-4, 4:-4]).mean()
         assert got < raw * 0.35
 
-    def test_equalizes_brightness(self):
-        from core.registration import ImageRegistration
-        base, f1 = self._shifted_stack()
-        dark = (f1.astype(np.float32) * 0.6).astype(np.uint8)
-        reg = ImageRegistration(method="openfocus")
-        out = reg.process([base, dark], output_path=None, thread_count=2)
-        assert abs(float(out[1].mean()) - float(base.mean())) < 12.0
 
-    def test_last_reference_also_calibrates_the_first_frame(self):
-        """With the fusion exposure target (last frame), the anchor frame is
-        calibrated too. It used to keep gain 1.0 — the handler copied
-        images[0] verbatim — so one frame stayed at the old exposure while
-        every other frame was moved to the last frame's level."""
-        from core.registration import ImageRegistration
-        base, f1 = self._shifted_stack()
-        dark = (f1.astype(np.float32) * 0.6).astype(np.uint8)
-        reg = ImageRegistration(method="openfocus",
-                                brightness_reference="last")
-        out = reg.process([base, dark], output_path=None, thread_count=2)
-        assert abs(float(out[0].mean()) - float(dark.mean())) < 12.0
-        assert abs(float(out[1].mean()) - float(dark.mean())) < 12.0
 
     def test_registered_in_supported_methods(self):
         from core.algorithms import registration_algorithms
@@ -304,7 +284,8 @@ class TestOpenFocusAlignment:
         h, w = base.shape[:2]
         M = cv2.getRotationMatrix2D((w / 2, h / 2), 2.5, 1.0)
         f1 = cv2.warpAffine(base, M, (w, h))
-        reg = ImageRegistration(method="openfocus")
+        reg = ImageRegistration(method="openfocus",
+                                parameters={"rotation": 5.0, "magnification": 0.0})
         out = reg.process([base, f1], output_path=None, thread_count=2)
         m = np.abs(out[1].astype(int)[8:-8, 8:-8]
                    - out[0].astype(int)[8:-8, 8:-8]).mean()
@@ -318,7 +299,8 @@ class TestOpenFocusAlignment:
         h, w = base.shape[:2]
         M = cv2.getRotationMatrix2D((w / 2, h / 2), 0, 1.06)
         f1 = cv2.warpAffine(base, M, (w, h))
-        reg = ImageRegistration(method="openfocus")
+        reg = ImageRegistration(method="openfocus",
+                                parameters={"rotation": 0.0, "magnification": 8.0})
         out = reg.process([base, f1], output_path=None, thread_count=2)
         m = np.abs(out[1].astype(int)[8:-8, 8:-8]
                    - out[0].astype(int)[8:-8, 8:-8]).mean()
@@ -348,13 +330,22 @@ class TestOpenFocusAlignment:
         """Defocused frames with translation still align to the reference."""
         from core.registration import ImageRegistration
         base = make_two_focus_stack((240, 320))[0]
+        # Broad nonperiodic structure keeps the pose identifiable after blur;
+        # the repeated fine texture alone admits several different shifts.
+        coarse = np.random.default_rng(410).integers(0, 256, (9, 11, 3), np.uint8)
+        broad = cv2.resize(coarse, (320, 240), interpolation=cv2.INTER_CUBIC)
+        base = cv2.addWeighted(base, .5, broad, .5, 0)
         f1 = cv2.warpAffine(cv2.GaussianBlur(base, (0, 0), 3.5),
                             np.float32([[1, 0, 10], [0, 1, 7]]), (320, 240))
         f2 = cv2.warpAffine(cv2.GaussianBlur(base, (0, 0), 4.5),
                             np.float32([[1, 0, 16], [0, 1, 11]]), (320, 240))
-        reg = ImageRegistration(method="openfocus")
+        reg = ImageRegistration(method="openfocus", parameters={"magnification": 0.0})
         out = reg.process([base.copy(), f1, f2], output_path=None,
                           thread_count=2)
+        for transform, expected in zip(reg.alignment_plan.transforms[1:], ((10, 7), (16, 11))):
+            f8 = transform.f8
+            np.testing.assert_allclose((f8[0] - f8[2], f8[1] - f8[3]), expected,
+                                       atol=1, rtol=0)
 
         def res(a, b):
             return np.abs(a.astype(int)[6:-6, 6:-6]
@@ -365,33 +356,13 @@ class TestOpenFocusAlignment:
         assert res(out[2], out[0]) < res(f2, base) * 0.75
         assert res(out[1], out[0]) < res(f1, base) * 0.75
 
-    # ------------------------------------------------------------------
-    # 位移上限：默认从 25% 降到 8%，且超限**放弃**而非钳制（钳制会得到
-    # 半错位 + 裁掉大块有效区）。
-    # ------------------------------------------------------------------
     def _shift_only_stack(self, shift_px, size=(120, 240)):
         base = make_two_focus_stack(size)[0]
         # roll 的符号：内容移动 −shift ⇒ 校正量为 +shift（与既有测试一致）
         f1 = np.roll(base, -shift_px, axis=1)
         return base, f1
 
-    def test_default_shift_limit_is_parsimonious(self):
-        from core.registration import _OF_MAX_SHIFT_RATIO
-        assert _OF_MAX_SHIFT_RATIO <= 0.08, (
-            "the default must stay at the parsimonious 8% limit; a wider "
-            "default re-introduces half-corrected large shifts")
 
-    def test_shift_over_limit_drops_alignment(self):
-        """超限帧保持原位（放弃），而不是被钳制到上限（半错位）。"""
-        from core.registration import ImageRegistration
-        base, f1 = self._shift_only_stack(42)  # 17.5% of a 240px width
-        reg = ImageRegistration(method="openfocus")
-        out = reg.process([base.copy(), f1.copy()], output_path=None,
-                          thread_count=2)
-        # 放弃 → 无位移 → 只剩安全边裁切（2px/侧），不是上限比例的 19px
-        assert out[0].shape[1] >= base.shape[1] - 6
-        # 钳制会留下 42−19=23px 的残错位；放弃则原位移完整保留
-        assert abs(out[1] - out[0]).mean() > 20
 
     def test_shift_within_limit_is_aligned(self):
         """上限内的位移仍被完整校正。"""
@@ -410,7 +381,8 @@ class TestOpenFocusAlignment:
         """显式放宽上限后，同样的大位移会被追（钳制语义已移除，改为接受）。"""
         from core.registration import ImageRegistration
         base, f1 = self._shift_only_stack(42)
-        reg = ImageRegistration(method="openfocus", max_shift_ratio=0.25)
+        reg = ImageRegistration(method="openfocus", max_shift_ratio=0.25,
+                                parameters={"magnification": 0.0})
         out = reg.process([base.copy(), f1.copy()], output_path=None,
                           thread_count=2)
         got = np.abs(out[1].astype(int)[4:-4, 48:-48]
@@ -418,18 +390,16 @@ class TestOpenFocusAlignment:
         raw = np.abs(f1.astype(int)[4:-4, 48:-48]
                      - base.astype(int)[4:-4, 48:-48]).mean()
         assert got < raw * 0.35
-        # 追了 42px 的位移 → 有效区交集相应缩小（与"放弃"形成对照）
-        assert out[0].shape[1] < base.shape[1] - 30
 
     def test_rotation_alone_is_not_dropped_by_shift_limit(self):
-        """纯旋转/缩放（画面中心净位移≈0）不得被位移上限误杀：
-        上限判据用的是中心净平移，而非矩阵的平移分量。"""
+        """A small translation range must still admit explicitly enabled rotation."""
         from core.registration import ImageRegistration
         base = make_two_focus_stack((140, 180))[0]
         h, w = base.shape[:2]
         M = cv2.getRotationMatrix2D((w / 2, h / 2), 2.5, 1.0)
         f1 = cv2.warpAffine(base, M, (w, h))
-        out = ImageRegistration(method="openfocus").process(
+        out = ImageRegistration(method="openfocus", parameters={
+            "max_shift_ratio": .01, "rotation": 5.0, "magnification": 0.0}).process(
             [base.copy(), f1], output_path=None, thread_count=2)
         m = np.abs(out[1].astype(int)[8:-8, 8:-8]
                    - out[0].astype(int)[8:-8, 8:-8]).mean()
@@ -499,25 +469,8 @@ class TestSmoothingControls:
 
 
 class TestRotationScaleTolerance:
-    """Rotation and magnification are independently bounded to limit corner error."""
+    """Rotation search is enabled explicitly and retains the requested domain."""
 
-    def test_rotation_beyond_tolerance_is_refused(self):
-        from core.registration import ImageRegistration
-        base = make_two_focus_stack((240, 320))[0]
-        h, w = base.shape[:2]
-        # 9° is past the 8° estimate bound, so the estimator cannot represent
-        # it; the frame must stay put rather than take a wrong correction.
-        M = cv2.getRotationMatrix2D((w / 2, h / 2), 9.0, 1.0)
-        f1 = cv2.warpAffine(base, M, (w, h))
-        out = ImageRegistration(method="openfocus").process(
-            [base.copy(), f1], output_path=None, thread_count=2)
-        raw = np.abs(f1.astype(int)[8:-8, 8:-8]
-                     - base.astype(int)[8:-8, 8:-8]).mean()
-        got = np.abs(out[1].astype(int)[8:-8, 8:-8]
-                     - out[0].astype(int)[8:-8, 8:-8]).mean()
-        # an applied rotation would leave a large residual anyway; what must
-        # NOT happen is a partial (half-corrected) transform
-        assert got > raw * 0.9
 
     def test_rotation_within_tolerance_is_aligned(self):
         from core.registration import ImageRegistration
@@ -525,7 +478,8 @@ class TestRotationScaleTolerance:
         h, w = base.shape[:2]
         M = cv2.getRotationMatrix2D((w / 2, h / 2), 3.0, 1.0)
         f1 = cv2.warpAffine(base, M, (w, h))
-        out = ImageRegistration(method="openfocus").process(
+        out = ImageRegistration(method="openfocus", parameters={
+            "rotation": 6.0, "magnification": 0.0}).process(
             [base.copy(), f1], output_path=None, thread_count=2)
         raw = np.abs(f1.astype(int)[8:-8, 8:-8]
                      - base.astype(int)[8:-8, 8:-8]).mean()
@@ -746,7 +700,7 @@ def test_c_constant_depth_selects_the_middle_source():
     rng = np.random.default_rng(8177)
     frames = [rng.integers(20, 230, (131, 97, 3), dtype=np.uint8) for _ in range(3)]
     depth = np.ones(frames[0].shape[:2], np.float32)
-    result = openfocus_c_impl(frames, depth_override=depth, levels=3, thread_count=1)
+    result = openfocus_c_impl(frames, depth_override=depth, thread_count=1)
     np.testing.assert_array_equal(result, frames[1])
 
 

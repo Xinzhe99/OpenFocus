@@ -598,9 +598,9 @@ def _fuse_stack_admitted(images, args):
     from core.source_frames import materialize_frames, process_frame
 
     _resolve_algorithm_arguments(args)
-    native_codes = args.method in ('openfocus_a', 'openfocus_b', 'openfocus_c')
+    streaming_sources = get_fusion(args.method).streaming_sources
     should_cancel = getattr(args, '_should_cancel', None)
-    if not native_codes:
+    if not streaming_sources:
         images = materialize_frames(images, should_cancel)
     images, transparent = _transparent_region(images, args)
     if getattr(args, "defect_mask_path", None) or getattr(args, "sensor_denoise", False):
@@ -612,7 +612,7 @@ def _fuse_stack_admitted(images, args):
             return cleanup_sensor_image(image, mask, getattr(args, 'sensor_denoise', False),
                                         cancel_callback=should_cancel)
         images = ([process_frame(image, clean, should_cancel=should_cancel) for image in images]
-                  if native_codes else [store_frame(clean(image)) for image in images])
+                  if streaming_sources else [store_frame(clean(image)) for image in images])
     # Flat-field correction also runs in the raw pixel domain before registration.
     dust_white = getattr(args, "dust_map", None)
     if dust_white:
@@ -624,11 +624,11 @@ def _fuse_stack_admitted(images, args):
         gain = compute_flat_field(white)
         images = ([process_frame(image, lambda pixels: apply_flat_field(pixels, gain),
                                  should_cancel=should_cancel) for image in images]
-                  if native_codes else [store_frame(apply_flat_field(image, gain)) for image in images])
+                  if streaming_sources else [store_frame(apply_flat_field(image, gain)) for image in images])
         _say(f"Flat-field (dust map) correction applied from {dust_white}")
 
     if args.align != "none":
-        defer_warps = native_codes and alignment_steps(args.align) == ('openfocus',)
+        defer_warps = streaming_sources
         if not defer_warps:
             images = materialize_frames(images, should_cancel)
         t0 = time.time()
@@ -1251,7 +1251,7 @@ def _run_batch(args, _emit_json=None) -> int:
                     resource_preference=getattr(args, "resource_preference", "balanced"),
                     registration_steps=int(folder_args.align != 'none'),
                     exposure_match=getattr(folder_args, 'exposure_match', False),
-                    lazy=folder_args.method in ('openfocus_a', 'openfocus_b', 'openfocus_c'))
+                    lazy=get_fusion(folder_args.method).streaming_sources)
                 fused = _fuse_stack(images, folder_args)
                 images = None
             background = stacked = None
@@ -1799,7 +1799,7 @@ def _run_cli_admitted(argv: List[str]) -> int:
                     resource_preference=getattr(args, "resource_preference", "balanced"),
                     registration_steps=int(args.align != 'none'),
                     exposure_match=getattr(args, 'exposure_match', False),
-                    lazy=args.method in ('openfocus_a', 'openfocus_b', 'openfocus_c'))
+                    lazy=get_fusion(args.method).streaming_sources)
             if paths:
                 from utils.image_utils import set_source_exif
                 from core.image_loader import _read_exif_bytes

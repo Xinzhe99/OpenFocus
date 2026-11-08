@@ -1,10 +1,13 @@
-"""Exact integer rows for HF9 native source preparation and pyramid merges.
+"""Exact integer rows for HF9 source preparation and weighted merges.
 
 The caller owns allocation and checks cancellation between bounded row calls.
 Use the existing admitted compiler import; frozen installs need no disk cache.
 """
+
 import numpy as np
 from fusion_methods._depth_kernel import njit
+
+
 
 
 @njit(nogil=True)
@@ -92,12 +95,15 @@ def select_rows(image, response, best, output, start, stop, scale, first):
 
 
 @njit(nogil=True)
-def merge_rows(accumulator, image, depth, index, step, start, stop, scale=1):
+def merge_rows(accumulator, image, depth, index, step, start, stop,
+               scale, first, reverse):
     for y in range(start, stop):
         for x in range(depth.shape[1]):
             weight = 1024
-            if index != 0:
+            if not first:
                 delta = np.int64(depth[y, x]) - step * index
+                if reverse:
+                    delta = -delta
                 if delta >= 0:
                     if delta > step:
                         continue
@@ -125,80 +131,3 @@ def merge_rows(accumulator, image, depth, index, step, start, stop, scale=1):
                              + value * weight) >> 10)
 
 
-@njit(nogil=True)
-def equal_code_rows(first, second, start, stop, first_scale=1, second_scale=1):
-    for y in range(start, stop):
-        for x in range(first.shape[1]):
-            if first.ndim == 2:
-                if np.int64(first[y, x]) * first_scale != np.int64(second[y, x]) * second_scale:
-                    return False
-            else:
-                for channel in range(first.shape[2]):
-                    if (np.int64(first[y, x, channel]) * first_scale
-                            != np.int64(second[y, x, channel]) * second_scale):
-                        return False
-    return True
-
-
-@njit(nogil=True)
-def expand_rows(image, output, axis, start, stop):
-    height, width = image.shape[:2]
-    for y in range(start, stop):
-        for phase in range(2):
-            shift = -2 if phase == 0 else -1
-            w0 = 2 if phase == 0 else 12
-            w1 = 37 if phase == 0 else 64
-            w2 = 64 if phase == 0 else 37
-            w3 = 12 if phase == 0 else 2
-            for x in range(width):
-                if axis == 0:
-                    a0, a1 = max(y + shift, 0), max(y + shift + 1, 0)
-                    a2, a3 = min(y + shift + 2, height - 1), min(y + shift + 3, height - 1)
-                    a0, a1 = min(a0, height - 1), min(a1, height - 1)
-                    a2, a3 = max(a2, 0), max(a3, 0)
-                    oy, ox = 2 * y + phase, x
-                    if image.ndim == 2:
-                        total = (np.int64(image[a0, x]) * w0 + np.int64(image[a1, x]) * w1
-                                 + np.int64(image[a2, x]) * w2 + np.int64(image[a3, x]) * w3)
-                        output[oy, ox] = (total + 57) // 115
-                    else:
-                        for channel in range(image.shape[2]):
-                            total = (np.int64(image[a0, x, channel]) * w0
-                                     + np.int64(image[a1, x, channel]) * w1
-                                     + np.int64(image[a2, x, channel]) * w2
-                                     + np.int64(image[a3, x, channel]) * w3)
-                            output[oy, ox, channel] = (total + 57) // 115
-                else:
-                    a0, a1 = max(x + shift, 0), max(x + shift + 1, 0)
-                    a2, a3 = min(x + shift + 2, width - 1), min(x + shift + 3, width - 1)
-                    a0, a1 = min(a0, width - 1), min(a1, width - 1)
-                    a2, a3 = max(a2, 0), max(a3, 0)
-                    oy, ox = y, 2 * x + phase
-                    if image.ndim == 2:
-                        total = (np.int64(image[y, a0]) * w0 + np.int64(image[y, a1]) * w1
-                                 + np.int64(image[y, a2]) * w2 + np.int64(image[y, a3]) * w3)
-                        output[oy, ox] = (total + 57) // 115
-                    else:
-                        for channel in range(image.shape[2]):
-                            total = (np.int64(image[y, a0, channel]) * w0
-                                     + np.int64(image[y, a1, channel]) * w1
-                                     + np.int64(image[y, a2, channel]) * w2
-                                     + np.int64(image[y, a3, channel]) * w3)
-                            output[oy, ox, channel] = (total + 57) // 115
-
-
-@njit(nogil=True)
-def collapse_rows(blend, lowpass, output, start, stop):
-    for y in range(start, stop):
-        for x in range(blend.shape[1]):
-            if blend.ndim == 2:
-                difference = np.int64(blend[y, x]) - np.int64(lowpass[y, x])
-                canvas = min(65535, max(0, 32768 + ((difference + 1) >> 1)))
-                output[y, x] = min(65535, max(0, 2 * canvas + np.int64(lowpass[y, x]) - 65536))
-            else:
-                for channel in range(blend.shape[2]):
-                    difference = (np.int64(blend[y, x, channel])
-                                  - np.int64(lowpass[y, x, channel]))
-                    canvas = min(65535, max(0, 32768 + ((difference + 1) >> 1)))
-                    output[y, x, channel] = min(65535, max(
-                        0, 2 * canvas + np.int64(lowpass[y, x, channel]) - 65536))

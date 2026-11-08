@@ -45,7 +45,7 @@ def align_frames(images, alignment, shared, should_cancel):
     if should_cancel():
         return None
     from core.algorithms import alignment_steps
-    defer_warps = alignment_steps(alignment) == ('openfocus',)
+    defer_warps = all(step in ('openfocus', 'homography', 'ecc') for step in alignment_steps(alignment))
     if alignment != 'none' and not defer_warps:
         from core.workers import _processing_space
         staging = _processing_space(frames, len(alignment_steps(alignment)))
@@ -66,7 +66,7 @@ def align_frames(images, alignment, shared, should_cancel):
 
 
 class AlignmentWorker(_CancellableWorker):
-    """Register once; ready retains deferred OpenFocus sources for each render."""
+    """Register once; ready retains repeatable deferred sources for each render."""
 
     ready = pyqtSignal(object)
     failed = pyqtSignal(str)
@@ -180,7 +180,7 @@ class PreviewWorker(_CancellableWorker):
 
         if not self.images:
             raise ValueError("The image stack is empty.")
-        if method in ('openfocus_a', 'openfocus_b', 'openfocus_c'):
+        if get_fusion(method).streaming_sources:
             frames = list(self.images)
         else:
             if self._materialized_images is None:

@@ -439,18 +439,18 @@ Se nenhum diretório temporário for especificado, o OpenFocus estima o espaço 
 
 ### OpenFocus A / B / C
 
-- **OpenFocus A**: suaviza seu mapa de resposta de foco multiescala e então seleciona os pixels em foco.
+- **OpenFocus A**: seleciona os pixels de origem por uma resposta de foco multiescala.
 - **OpenFocus B**: mistura quadros vizinhos guiado por um mapa de profundidade suavizado.
-- **OpenFocus C**: reconstrói bandas multiescala guiado por um mapa de profundidade suavizado.
-- **Parâmetros**: A e B usam o controle de kernel para a escala de resposta de foco; C não tem raio. Os três têm um parâmetro de suavização que controla a força das transições.
+- **OpenFocus C**: mistura os pixels de origem com base no mapa de profundidade final suavizado.
+- **Parâmetros**: A e B usam o controle de kernel para a escala de resposta de foco; C não tem raio. A suavização de A não tem efeito, como no HF9 A; B e C suavizam o mapa de profundidade usado para a fusão.
 
 **Suavização**: um único campo numérico abaixo do controle de kernel, cujo significado depende do método selecionado (intervalo 0–8, passo 0,2):
 
 | Método | Rótulo | Padrão | Efeito |
 |---|---|---|---|
-| OpenFocus A | Suavização da mistura | 2,0 | Controla a suavização do mapa de resposta de foco antes da seleção dos pixels |
+| OpenFocus A | Suavização da mistura | 2,0 | Sem efeito, como no HF9 A |
 | OpenFocus B | Suavização da profundidade | 1,44 | Controla a suavização do mapa de profundidade que guia a mistura |
-| OpenFocus C | Suavização da mistura | 3,6 | Controla a suavização do mapa de profundidade que guia a reconstrução multiescala |
+| OpenFocus C | Suavização da mistura | 3,6 | Controla a suavização do mapa de profundidade e as transições de fusão |
 
 Tamanho de kernel padrão para A/B: 17. Os valores salvos são mantidos; restaure os padrões para usar os novos valores.
 
@@ -488,7 +488,7 @@ Selecione **Somente alinhamento (sem fusão)** para registrar a pilha e adiciona
 | StackMFF V3 | Lenta (GPU) | Excelente | Qualidade máxima |
 | OpenFocus A | Depende da pilha | Depende da pilha | Seleção multiescala de pixels em foco |
 | OpenFocus B | Depende da pilha | Depende da pilha | Mistura de quadros vizinhos guiada por profundidade |
-| OpenFocus C | Depende da pilha | Depende da pilha | Reconstrução multiescala guiada por profundidade |
+| OpenFocus C | Depende da pilha | Depende da pilha | Mistura de pixels de origem com base no mapa de profundidade final |
 
 Abra **Ferramentas → Comparação de métodos** para ajustar vários métodos independentemente. Nome, rótulos de parâmetros e controles de cada método permanecem juntos quando a janela estreita. As mudanças atualizam a prévia automaticamente. **Prévia ROI (rápida)** funde a área selecionada com o contexto ao redor; **Fusão de imagem inteira** verifica o resultado da imagem toda e permite inspecionar outra área sem renderizar novamente. Resultados ROI podem diferir dos de imagem inteira porque estatísticas de exposição e alguns algoritmos dependem da extensão da imagem.
 A **fusão de imagem inteira** é selecionada por padrão.

@@ -4,52 +4,81 @@ Each inference sees the complete focal stack.  Tiles contribute expected layer
 positions to a single feathered image, which is normalized once before any
 source pixels are selected.
 """
-import os
 
 import cv2
 import numpy as np
 
 from fusion_methods import neural_common as common
 from utils.image_utils import apply_exposure_gain
-from utils.sorting import natural_sort_key
 from core.frame_storage import create_frame
 
 
 class _Source:
     def __init__(self, source, resize, gains, should_cancel):
-        self.resize = resize
         self.gains = gains
         self.should_cancel = should_cancel
         self.directory = isinstance(source, str)
-        if self.directory:
-            extensions = ('.png', '.jpg', '.jpeg', '.jpe', '.jfif', '.webp',
-                          '.tif', '.tiff', '.bmp')
-            self.items = [os.path.join(source, name) for name in
-                          sorted(os.listdir(source), key=natural_sort_key)
-                          if name.lower().endswith(extensions)]
-        else:
-            self.items = list(source)
+        self.items = common.read_stack(source, None, should_cancel, preserve_grayscale=False)
         if len(self.items) < 2:
             raise ValueError('At least two images are required for fusion')
         self.mixed_16 = not self.directory and any(x.dtype == np.uint16 for x in self.items)
-        first = self.get(0)
-        self.shape = first.shape
-        self.dtype = first.dtype
+        first = self.items[0]
+        tail = first.shape[2:] if first.ndim != 3 or first.shape[2] != 1 else ()
+        self.shape = ((resize[1], resize[0]) + tail) if resize else first.shape
+        self.dtype = np.dtype(np.float32) if gains is not None and self.mixed_16 else first.dtype
+        self.original_items = None
+        if resize:
+            from core.source_frames import (SourceFrame, ProcessedFrame, process_frame,
+                                            materialize_frames, frame_resolution_bytes,
+                                            source_cache_growth_bytes)
+            from core.frame_storage import scratch_directory, select_scratch
+            from core.resource_policy import require_memory
+            mixed_16 = self.mixed_16
+
+            def prepare(image, index):
+                if gains is not None:
+                    image = common.working_frame(image, mixed_16)
+                    image = apply_exposure_gain(image, gains[index])
+                return cv2.resize(image, resize)
+
+            prepared = []
+            paths = []
+            for index, frame in enumerate(self.items):
+                common.cancel(should_cancel)
+                shape = (resize[1], resize[0]) + (frame.shape[2:]
+                    if frame.ndim != 3 or frame.shape[2] != 1 else ())
+                dtype = np.float32 if gains is not None and mixed_16 else frame.dtype
+                prepared.append(process_frame(frame,
+                    lambda image, index=index: prepare(image, index), shape=shape, dtype=dtype,
+                    should_cancel=should_cancel,
+                    scratch_bytes=frame.nbytes * 4 + int(np.prod(shape)) * np.dtype(dtype).itemsize * 2))
+                original = frame
+                while isinstance(original, ProcessedFrame):
+                    original = original.source
+                if isinstance(original, SourceFrame):
+                    paths.append(original.path)
+            require_memory(max(frame_resolution_bytes(frame) for frame in prepared)
+                           + source_cache_growth_bytes(prepared))
+            self.original_items = self.items
+            with scratch_directory():
+                select_scratch(sum(frame.nbytes for frame in prepared), paths)
+                self.items = materialize_frames(prepared, should_cancel, thread_count=1,
+                                                prefer_ram=False)
+            self.gains = None
 
     def get(self, index, region=None):
         common.cancel(self.should_cancel)
-        if self.directory:
-            from core.image_loader import admit_image_decode, decode_image
-            admit_image_decode(self.items[index])
-            frame = decode_image(self.items[index])
-            if frame is None:
-                raise ValueError(f'Failed to read image: {self.items[index]}')
-        else:
-            frame = self.items[index]
-        if (not self.resize and hasattr(self, 'shape')
-                and frame.shape[:2] != self.shape[:2]):
+        from core.source_frames import SourceFrame, ProcessedFrame, resolve_frame
+        if self.original_items is not None:
+            original = self.original_items[index]
+            while isinstance(original, ProcessedFrame):
+                original = original.source
+            if isinstance(original, SourceFrame):
+                original.validate_source()
+        frame = resolve_frame(self.items[index])
+        if frame.shape[:2] != self.shape[:2]:
             raise ValueError('All frames must have the same dimensions')
-        if region is not None and not self.resize:
+        if region is not None:
             frame = self._crop(frame, region)
         if self.gains is not None:
             if self.mixed_16:
@@ -58,10 +87,6 @@ class _Source:
                 elif frame.dtype != np.float32:
                     frame = frame.astype(np.float32)
             frame = apply_exposure_gain(frame, self.gains[index])
-        if self.resize:
-            frame = cv2.resize(frame, self.resize)
-            if region is not None:
-                frame = self._crop(frame, region)
         return frame
 
     @staticmethod
@@ -92,9 +117,15 @@ def _plan(source, model_path, use_gpu, tile_size, execution_plan,
     channels = source.shape[2] if len(source.shape) == 3 else 1
     device = (execution_plan.device_kind if execution_plan is not None
               else resolve_device(use_gpu))
+    from core.source_frames import frame_resolution_bytes, source_cache_growth_bytes
+    source_resolution = max(frame_resolution_bytes(frame) for frame in source.items)
+    source_cache = source_cache_growth_bytes(source.items)
+    if source.gains is not None:
+        source_resolution += h * w * channels * max(4, source.dtype.itemsize) * 4
     block, outer = plan_neural_tiles(
         len(source.items), h, w, channels, tile_size or min(h, w), device,
-        estimate_inference_bytes, directory=source.directory,
+        estimate_inference_bytes, directory=False,
+        source_resolution_bytes=source_resolution, source_cache_bytes=source_cache,
         itemsize=source.dtype.itemsize, preference=resource_preference,
         user_threads=thread_count)
     if execution_plan is not None:
@@ -105,8 +136,7 @@ def _plan(source, model_path, use_gpu, tile_size, execution_plan,
     padded_h = h + (-h) % common.ATTENTION_PAD_ALIGN
     padded_w = w + (-w) % common.ATTENTION_PAD_ALIGN
     fixed = padded_h * padded_w * (32 + channels * 8 * result_count)
-    if source.directory:
-        fixed += first.nbytes * 2
+    fixed += source_resolution + source_cache
     while True:
         crop = first[:block, :block]
         try:

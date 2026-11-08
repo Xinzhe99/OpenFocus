@@ -3,6 +3,9 @@ import ctypes
 from functools import lru_cache
 import numpy as np
 from core.frame_storage import create_transient_frame as create_frame
+from fusion_methods._hf9_execution import (
+    execution_job, configure_rows, run_bands, cancellation_check,
+)
 
 
 @lru_cache(maxsize=1)
@@ -26,13 +29,13 @@ def _powf32(value, exponent):
 
 
 @lru_cache(maxsize=128)
-def _weight(radius, allow_zero=False):
+def _weight(radius):
     r = np.float32(max(float(radius), 1e-6))
     half = np.float32(r / np.float32(3.0))
     exponent = np.float32(np.float32(1.0) / np.float32(half + half))
     value = np.float32(_powf32(np.float32(0.045999825), exponent) * np.float32(4096))
     weight = max(1, int(value)) & ~1
-    return weight if allow_zero else max(weight, 2)
+    return max(weight, 2)
 
 
 @lru_cache(maxsize=1)
@@ -45,6 +48,7 @@ def _snap_lut():
 
 def _axis(src, guide, main, low, count, axis, cancel, allocate):
     from fusion_methods._depth_kernel import axis_block
+    cancel = cancellation_check(cancel)
 
     src = np.asarray(src)
     guide = None if guide is None else np.asarray(guide)
@@ -54,38 +58,40 @@ def _axis(src, guide, main, low, count, axis, cancel, allocate):
             guide = guide.T
     h, w = src.shape
     count = max(1, min(int(count), h))
-    # Guided forward rounding can reach 65536; only that history needs u32.
-    first = allocate((h, min(w, 64)),
-                     np.uint16 if guide is None else np.uint32)
     out = allocate((h, w), np.uint16)
-    first_pixels, out_pixels = np.asarray(first), np.asarray(out)
+    out_pixels = np.asarray(out)
     q = t = tm = tl = 0
     if guide is None:
         q = _weight(main)
         t = (4096 - q) >> 1
     else:
-        tm = (4096 - _weight(main, True)) >> 1
-        tl = (4096 - _weight(low, True)) >> 1
-    # Columns have independent recurrences. Complete both directions before
-    # reusing history for the next strip; rows always retain source order.
-    for left in range(0, w, 64):
-        right = min(w, left + 64)
+        tm = (4096 - _weight(main)) >> 1
+        tl = (4096 - _weight(low)) >> 1
+    # Both recurrence directions stay ordered inside each independent strip.
+    # Each worker reuses its history plane for all its assigned columns.
+    def columns(left, right, first):
+        first_pixels = np.asarray(first)
         initial = ((src[:count, left:right].sum(axis=0, dtype=np.uint64) << 4)
                    // count)
         if guide is None:
             initial *= t + q
         acc = (initial & 0xffffffff).astype(np.uint32)
-        for start in range(0, h, 64):
+        for start in range(0, h, 128):
             cancel()
             axis_block(src, guide, first_pixels, out_pixels, acc, q, t, tm, tl,
-                       start, min(h, start + 64), left, right, False)
+                       start, min(h, start + 128), left, right, False)
         acc = first_pixels[-1, :right - left].astype(np.uint32) << 4
         if guide is None:
             acc *= t + q
-        for stop in range(h, 0, -64):
+        for stop in range(h, 0, -128):
             cancel()
             axis_block(src, guide, first_pixels, out_pixels, acc, q, t, tm, tl,
-                       max(0, stop - 64), stop, left, right, True)
+                       max(0, stop - 128), stop, left, right, True)
+    run_bands(w, 64, columns,
+              scratch_bytes=h * min(w, 64) * (2 if guide is None else 4)
+              + count * min(w, 64) * 8 + min(w, 64) * 32,
+              workspace=lambda: allocate((h, min(w, 64)),
+                                         np.uint16 if guide is None else np.uint32))
     return out.T if axis else out
 
 
@@ -99,8 +105,10 @@ def _mapped_cast(image, dtype, cancel, allocate):
     if image.dtype == dtype:
         return image
     result = allocate(image.shape, dtype)
-    for rows in _rows(image, cancel):
-        result[rows] = image[rows]
+    def cast(start, stop):
+        cancel()
+        result[start:stop] = image[start:stop]
+    run_bands(image.shape[0], 128, cast)
     return result
 
 
@@ -110,16 +118,18 @@ def _filter(src, radius, cancel, guide=None, low=None, *, allocate=None):
     # Code planes contain only final 16-bit values. Q12 state and guided
     # forward history remain uint32 inside _axis/axis_block.
     result = _mapped_cast(src, np.uint16, cancel, allocate)
+    if radius == 0:
+        return result
     guide = (None if guide is None
              else _mapped_cast(guide, np.uint16, cancel, allocate))
-    for axis in (0, 1):
+    for axis in (1, 0):
         result = _axis(result, guide, radius, low, radius, axis, cancel, allocate)
     return result
 
 
 def _activity_frames(frames, img_resize, kernel_size, thread_count, should_cancel,
-                     *, keep_pixels=False):
-    """Return ordered (pixels, activity) payloads from the admitted window."""
+                     *, half_resolution=False):
+    """Return ordered activity planes from the admitted source window."""
     from core.source_frames import resolve_frame
     from fusion_methods.openfocus_ab import (
         _check_cancel, _frame_pass_workers, _ordered_frame_results)
@@ -131,7 +141,13 @@ def _activity_frames(frames, img_resize, kernel_size, thread_count, should_cance
         raise ValueError('OpenFocus depth requires between 2 and 65536 source frames')
     prepare_depth_kernel(guided=False, should_cancel=should_cancel)
     workers = _frame_pass_workers(frames, img_resize, 'openfocus_b', thread_count,
-                                  activity_only=not keep_pixels)
+                                  activity_only=True)
+    shape = (frames[0].shape[:2] if img_resize is None
+             else (int(img_resize[1]), int(img_resize[0])))
+    axes = None
+    if half_resolution:
+        from fusion_methods._hf9_resample import half_gray_axes
+        axes = half_gray_axes(*shape)
     radius = max(1, int(kernel_size or 17) // 2)
     parameter = float(np.float64(radius) * np.float64(np.float32(0.075)))
     fine_parameter = np.float32(parameter * 0.5)
@@ -143,53 +159,73 @@ def _activity_frames(frames, img_resize, kernel_size, thread_count, should_cance
 
         pixels = resolve_frame(frames[index])
         gray = frame_gray_codes(pixels, img_resize, cancelled)
-        retained = pixels if keep_pixels else None
         del pixels
+        if gray.shape != shape:
+            raise ValueError('OpenFocus depth requires frames with matching shapes')
+        if half_resolution:
+            from fusion_methods._hf9_resample import half_gray
+            gray = half_gray(gray, cancelled, axes=axes)
         extent = np.float32(max(gray.shape))
         fine_radius = np.float32(extent * fine_parameter / np.float32(100))
         coarse_radius = np.float32(extent * coarse_parameter / np.float32(100))
         fine = _filter(gray, fine_radius, cancel)
         diff = create_frame(gray.shape, np.uint16)
-        for rows in _rows(gray, cancel):
-            activity_rows(gray, fine, diff, rows.start, rows.stop)
+        def activity(start, stop):
+            cancel()
+            activity_rows(gray, fine, diff, start, stop)
+        run_bands(gray.shape[0], 128, activity)
         del gray, fine
-        return retained, _filter(diff, coarse_radius, cancel)
+        return _filter(diff, coarse_radius, cancel)
 
     return _ordered_frame_results(len(frames), produce, workers, should_cancel)
 
 
+@execution_job
 def depth_map(frames, img_resize, kernel_size, smoothing, should_cancel,
-              progress_callback=None, thread_count=1, *, return_codes=False):
-    """HF9 first pass, percentile guide, two guided passes and feather snap."""
+              progress_callback=None, thread_count=1, *, return_codes=False,
+              half_resolution=False):
+    """Native HF9 depth, with C snapping before expansion to the canvas."""
     from fusion_methods.openfocus_ab import _check_cancel
     from fusion_methods._depth_kernel import prepare_depth_kernel
     from fusion_methods._hf9_depth_rows import (
-        select_activity_rows, guide_rows, winner_depth_rows, snap_rows)
+        initialize_activity_rows, select_activity_rows, confidence_rows,
+        guide_rows, snap_rows)
 
     if not 2 <= len(frames) <= 65536:
         raise ValueError('OpenFocus depth requires between 2 and 65536 source frames')
+    algorithm = 'openfocus_c' if half_resolution else 'openfocus_b'
+    configure_rows(frames, img_resize, algorithm, thread_count, should_cancel)
     prepare_depth_kernel(guided=True, should_cancel=should_cancel)
 
     def cancel():
         _check_cancel(should_cancel)
 
 
-    best = winner = None
+    step = 65535 // (len(frames) - 1)
+    best = depth = votes = None
     produced = _activity_frames(frames, img_resize, kernel_size, thread_count,
-                                should_cancel)
+                                should_cancel, half_resolution=half_resolution)
     try:
-        for index, (_pixels, activity) in produced:
+        for index, activity in produced:
             cancel()
             if best is None:
                 best = activity
-                winner = create_frame(activity.shape, np.uint16)
-                winner[...] = 0
+                depth = create_frame(activity.shape, np.uint16)
+                votes = create_frame(activity.shape, np.uint16)
+                def initialize(start, stop):
+                    cancel()
+                    initialize_activity_rows(activity, depth, votes, len(frames),
+                                             start, stop)
+                run_bands(activity.shape[0], 128, initialize)
             else:
                 if activity.shape != best.shape:
                     raise ValueError('OpenFocus depth requires frames with matching shapes')
-                for rows in _rows(activity, cancel):
-                    select_activity_rows(activity, best, winner, index,
-                                         rows.start, rows.stop)
+                code = index * step
+                def select(start, stop):
+                    cancel()
+                    select_activity_rows(activity, best, depth, votes, code,
+                                         len(frames), start, stop)
+                run_bands(activity.shape[0], 128, select)
             if progress_callback is not None:
                 progress_callback(index, len(frames))
             del activity
@@ -198,24 +234,22 @@ def depth_map(frames, img_resize, kernel_size, smoothing, should_cancel,
     cancel()
     hist = np.zeros(65536, np.int64)
     for rows in _rows(best, cancel):
+        confidence_rows(best, votes, rows.start, rows.stop)
         hist += np.bincount(best[rows].ravel(), minlength=65536)
+    del votes
     threshold = int(np.float32(np.float32(best.size) * np.float32(0.009999999776482582)))
     lo = int(np.searchsorted(np.cumsum(hist), threshold)) if threshold else 0
     hi = (65535 - int(np.searchsorted(np.cumsum(hist[::-1]), threshold))
           if threshold else 65535)
-    gain = np.float32(np.float32(65535) / np.float32(max(hi - lo, 1)))
-    positions = np.arange(65536, dtype=np.float64) / 65535.0
-    guide_lut = np.float32(np.clip(positions * gain, 0, 1) * 65536.0)
-    np.minimum(guide_lut, np.float32(65535), out=guide_lut)
+    positions = np.arange(4096, dtype=np.float64) * 65535.0 / 4095.0
+    span = max(hi - lo, 1)
+    guide_lut = (65535.0 * np.sqrt(np.clip((positions - lo) / span, 0, 1))).astype(np.float32)
     guide = create_frame(best.shape, np.uint16)
-    for rows in _rows(best, cancel):
-        guide_rows(best, guide_lut, guide, rows.start, rows.stop)
+    def make_guide(start, stop):
+        cancel()
+        guide_rows(best, guide_lut, guide, start, stop)
+    run_bands(best.shape[0], 128, make_guide)
     del best
-    step = 65535 // (len(frames) - 1)
-    depth = create_frame(winner.shape, np.uint16)
-    for rows in _rows(winner, cancel):
-        winner_depth_rows(winner, depth, step, rows.start, rows.stop)
-    del winner
     smooth = np.float32(np.float32(smoothing) * np.float32(0.75) * np.float32(0.03125))
     extent = np.float32(max(depth.shape))
     scale = np.float32(extent * smooth / np.float32(100))
@@ -226,11 +260,21 @@ def depth_map(frames, img_resize, kernel_size, smoothing, should_cancel,
     half = step >> 1
     if half:
         lut = _snap_lut()
-        for rows in _rows(depth, cancel):
-            snap_rows(depth, lut, step, rows.start, rows.stop)
+        def snap(start, stop):
+            cancel()
+            snap_rows(depth, lut, step, start, stop)
+        run_bands(depth.shape[0], 128, snap)
+    if half_resolution:
+        from fusion_methods._hf9_resample import expand_depth
+        shape = (frames[0].shape[:2] if img_resize is None
+                 else (int(img_resize[1]), int(img_resize[0])))
+        depth = expand_depth(depth, shape, should_cancel)
     if return_codes:
         return depth
     result = create_frame(depth.shape, np.float32)
-    for rows in _rows(depth, cancel):
-        result[rows] = depth[rows].astype(np.float32) / np.float32(step)
+    def convert(start, stop):
+        cancel()
+        result[start:stop] = depth[start:stop].astype(np.float32) / np.float32(step)
+    run_bands(depth.shape[0], 128, convert,
+              scratch_bytes=min(128, depth.shape[0]) * depth.shape[1] * 8)
     return result

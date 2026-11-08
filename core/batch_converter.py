@@ -281,6 +281,8 @@ def convert_one(source, output_dir, ext, page=0, pages=1, cancelled=lambda: Fals
                 operation.cancel()
             if destination is not None:
                 os.unlink(destination)
+            if isinstance(exc, RegistrationCancelled):
+                raise InterruptedError() from exc
             raise
         finally:
             if part and os.path.exists(part):
