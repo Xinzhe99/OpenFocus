@@ -87,6 +87,8 @@ EN = {
     "mosaic_cp_b": "Image B",
     "mosaic_cp_point_a": "A (x, y)",
     "mosaic_cp_point_b": "B (x, y)",
+    "mosaic_cp_frame_outside": "Image index {index} is outside the available range 0–{last}.",
+    "mosaic_cp_point_outside": "Point ({x}, {y}) is outside image {frame} ({width} × {height} pixels).",
     "mosaic_cp_source": "Source",
     "mosaic_cp_active": "Enabled",
     "mosaic_cp_residual": "Residual (px)",

@@ -117,11 +117,13 @@ def test_burn_changes_whole_canvas_and_is_a_copy():
         assert np.any(result[ys, xs] != image[ys, xs])
 
 
-def test_density_changes_the_number_of_cells():
-    sparse = wm.plan(_config(density="sparse"), 800, 600)
-    standard = wm.plan(_config(density="standard"), 800, 600)
-    dense = wm.plan(_config(density="dense"), 800, 600)
-    assert len(sparse.cells) < len(standard.cells) < len(dense.cells)
+def test_density_changes_visible_watermark_coverage():
+    image = np.full((600, 800, 3), 127, np.uint8)
+    coverage = {}
+    for density in ("sparse", "standard", "dense"):
+        result = wm.burn(image, _config(density=density))
+        coverage[density] = np.count_nonzero(np.any(result != image, axis=2))
+    assert coverage["sparse"] < coverage["standard"] < coverage["dense"]
 
 
 def test_single_pixel_regions_match_full_canvas_including_stroke_only():

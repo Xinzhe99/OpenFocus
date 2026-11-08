@@ -18,7 +18,7 @@ import cv2
 import numpy as np
 from PIL import Image
 
-from core.frame_storage import store_frame
+from core.frame_storage import is_mapped_frame, store_frame
 from utils.image_utils import read_image_exif
 
 logger = logging.getLogger(__name__)
@@ -898,8 +898,7 @@ def materialize_frames(frames, should_cancel=None, *, staging_bytes=0,
 
     def save(image):
         check_cancel()
-        mapped = isinstance(image, np.memmap) and getattr(image, 'filename', None) is not None
-        return image if mapped else store_frame(image, prefer_ram=prefer_ram)
+        return image if is_mapped_frame(image) else store_frame(image, prefer_ram=prefer_ram)
 
     with scratch_directory():
         check_cancel()
@@ -907,8 +906,7 @@ def materialize_frames(frames, should_cancel=None, *, staging_bytes=0,
         total = len(frames) if known else 0
         workers = 1
         if known:
-            size = sum(frame.nbytes for frame in frames
-                       if not (isinstance(frame, np.memmap) and frame.filename is not None))
+            size = sum(frame.nbytes for frame in frames if not is_mapped_frame(frame))
             paths = [frame.path for frame in frames if isinstance(frame, SourceFrame)]
             select_scratch(size + staging_bytes, paths,
                            preferred_size=size + staging_bytes + preferred_staging_bytes)
@@ -937,7 +935,7 @@ def materialize_frames(frames, should_cancel=None, *, staging_bytes=0,
             for frame in frames:
                 check_cancel()
                 if not known:
-                    mapped = isinstance(frame, np.memmap) and frame.filename is not None
+                    mapped = is_mapped_frame(frame)
                     select_scratch((0 if mapped else frame.nbytes) + staging_bytes,
                                    [frame.path] if isinstance(frame, SourceFrame) else ())
                     staging_bytes = 0

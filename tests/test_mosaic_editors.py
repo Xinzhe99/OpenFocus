@@ -182,3 +182,143 @@ def test_adding_multiple_control_pairs_keeps_uncaptured_editor_interactive(qapp)
         parent.close()
         parent.deleteLater()
         qapp.processEvents()
+
+
+def test_preview_fit_ignores_hidden_placements_and_refits_when_restored(qapp):
+    from PyQt6.QtWidgets import QWidget
+    from core.mosaic import make_frame
+    from dialogs.mosaic import MosaicDialog
+    from utils.image_utils import cv2_to_pixmap
+
+    parent = QWidget()
+    dialog = MosaicDialog(parent)
+    try:
+        dialog._append_frames([make_frame('source', np.full((80, 96, 3), 100, np.uint8))])
+        dialog.items[0].setPos(5000, 3000)
+        dialog.show()
+        qapp.processEvents()
+        dialog.items[0].setVisible(False)
+        dialog._preview_item = dialog.scene.addPixmap(
+            cv2_to_pixmap(np.full((40, 60, 3), 220, np.uint8)))
+        dialog._preview_item.setPos(-250, -100)
+        dialog._fit()
+        visible_center = dialog.canvas.mapFromScene(dialog._preview_item.sceneBoundingRect().center())
+        center = dialog.canvas.viewport().rect().center()
+        assert abs(visible_center.x() - center.x()) <= 2
+        assert abs(visible_center.y() - center.y()) <= 2
+        dialog._show_placement()
+        source_center = dialog.canvas.mapFromScene(dialog.items[0].sceneBoundingRect().center())
+        assert dialog.items[0].isVisible()
+        assert abs(source_center.x() - center.x()) <= 2
+        assert abs(source_center.y() - center.y()) <= 2
+    finally:
+        dialog.close()
+        dialog.deleteLater()
+        parent.close()
+        parent.deleteLater()
+        qapp.processEvents()
+
+
+def test_imported_mask_file_is_preserved_when_selected_as_export(qapp, tmp_path, monkeypatch):
+    import time
+    from PyQt6.QtWidgets import QMessageBox, QWidget
+    from core.mosaic import make_frame
+    from dialogs.mosaic import MosaicDialog
+    from utils.image_utils import imwrite_auto
+
+    parent = QWidget()
+    dialog = MosaicDialog(parent)
+    frame = make_frame('source', np.full((48, 64, 3), 160, np.uint8))
+    dialog._append_frames([frame])
+    editor = MosaicMaskDialog(frame.preview, frame.image.shape[:2], parent=dialog)
+    path = tmp_path / 'mask.png'
+    assert imwrite_auto(str(path), np.full((48, 64), 255, np.uint8))
+    original = path.read_bytes()
+    warnings = []
+    monkeypatch.setattr(QMessageBox, 'warning', lambda *args: warnings.append(args[2]))
+    monkeypatch.setattr('dialogs.mosaic.FileDialog.getSaveFileName',
+                        lambda *args, **kwargs: (str(path), ''))
+
+    def settled():
+        deadline = time.monotonic() + 10
+        while dialog.worker is not None and time.monotonic() < deadline:
+            QTest.qWait(10)
+        assert dialog.worker is None
+
+    try:
+        dialog._import_mask(str(path), frame, editor)
+        settled()
+        np.testing.assert_array_equal(dialog._mask_imported, 255)
+        dialog._save()
+        settled()
+        assert path.read_bytes() == original
+        assert len(warnings) == 1
+    finally:
+        if dialog.worker is not None:
+            dialog._cancel()
+            settled()
+        editor.close()
+        editor.deleteLater()
+        dialog.close()
+        dialog.deleteLater()
+        parent.close()
+        parent.deleteLater()
+        qapp.processEvents()
+
+
+def test_invalid_camera_reports_error_and_control_points_can_reopen(qapp, monkeypatch):
+    from PyQt6.QtCore import QTimer
+    from PyQt6.QtWidgets import QMessageBox, QWidget
+    from core.mosaic import make_frame
+    from dialogs.mosaic import MosaicDialog
+
+    parent = QWidget()
+    dialog = MosaicDialog(parent)
+    warnings, opened = [], []
+    monkeypatch.setattr(QMessageBox, 'warning', lambda *args: warnings.append(args[2]))
+    try:
+        dialog._append_frames([make_frame(str(i), np.zeros((48, 64, 3), np.uint8))
+                               for i in range(2)])
+        dialog.settings.projection.setCurrentIndex(1)
+        dialog.settings._camera['a'].setValue(1)
+        dialog._edit_control_points()
+        assert len(warnings) == 1 and dialog._cp_dialog is None
+        assert dialog.settings._camera['a'].value() == 1
+        dialog.settings._camera['a'].setValue(0)
+
+        def close_editor():
+            opened.append(isinstance(dialog._cp_dialog, MosaicControlPointsDialog))
+            dialog._cp_dialog.reject()
+
+        QTimer.singleShot(0, close_editor)
+        dialog._edit_control_points()
+        assert opened == [True] and len(warnings) == 1
+        assert len(dialog.frames) == 2
+    finally:
+        dialog.close()
+        dialog.deleteLater()
+        parent.close()
+        parent.deleteLater()
+        qapp.processEvents()
+
+
+def test_control_point_rejects_smaller_frame_and_reports_coordinate_bounds(qapp, monkeypatch):
+    from PyQt6.QtWidgets import QMessageBox
+
+    frames = _frames(2) + (MosaicFrame('small', np.zeros((60, 80, 3), np.uint8),
+                                      np.zeros((15, 20, 3), np.uint8)),)
+    point = MosaicControlPoint(0, 1, (250, 100), (250, 100))
+    dialog = MosaicControlPointsDialog(frames, (np.eye(3),) * 3, (point,))
+    warnings = []
+    monkeypatch.setattr(QMessageBox, 'warning', lambda *args: warnings.append(args[2]))
+    try:
+        dialog.table.item(0, 2).setText('2')
+        assert dialog.points == (point,)
+        assert all(value in warnings[-1] for value in ('250', '100', '80', '60'))
+        dialog.table.item(0, 2).setText('99')
+        assert dialog.points == (point,)
+        assert all(value in warnings[-1] for value in ('99', '0', '2'))
+    finally:
+        dialog.close()
+        dialog.deleteLater()
+        qapp.processEvents()

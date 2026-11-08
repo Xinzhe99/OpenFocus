@@ -83,6 +83,8 @@ PACK = {
     "mosaic_cp_b": "Afbeelding B",
     "mosaic_cp_point_a": "A (x, y)",
     "mosaic_cp_point_b": "B (x, y)",
+    "mosaic_cp_frame_outside": "Afbeeldingsindex {index} valt buiten het beschikbare bereik 0–{last}.",
+    "mosaic_cp_point_outside": "Punt ({x}, {y}) ligt buiten afbeelding {frame} ({width} × {height} pixels).",
     "mosaic_cp_source": "Herkomst",
     "mosaic_cp_active": "Ingeschakeld",
     "mosaic_cp_residual": "Residu (px)",

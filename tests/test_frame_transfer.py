@@ -281,3 +281,28 @@ def test_ram_snapshot_reports_live_transient_reservations(monkeypatch):
     del frame
     gc.collect()
     assert frame_storage.ram_snapshot_bytes() == before
+
+
+@pytest.mark.parametrize('source_kind', ['sequence', 'iterator'])
+def test_materializing_reopened_strided_frames_reuses_owned_storage(tmp_path, source_kind):
+    from core.source_frames import materialize_frames
+
+    frame_storage.configure_storage_directory(tmp_path)
+    pixels = np.arange(12 * 10 * 3, dtype=np.uint16).reshape(12, 10, 3)
+    mapped = frame_storage.store_frame(pixels, prefer_ram=False)
+    path = mapped.filename
+    reopened = frame_storage.open_frame(
+        frame_storage.describe_frame(mapped[::-1, ::2]), owned=True)
+    expected = pixels[::-1, ::2].copy()
+    argument = [reopened] if source_kind == 'sequence' else iter((reopened,))
+    result = materialize_frames(argument, prefer_ram=False)
+    assert set(tmp_path.iterdir()) == {tmp_path / os.path.basename(path)}
+    assert frame_storage.describe_frame(result[0])['path'] == path
+    assert result[0].strides == reopened.strides
+    del argument, reopened, mapped
+    gc.collect()
+    assert os.path.exists(path)
+    np.testing.assert_array_equal(result[0], expected)
+    del result
+    gc.collect()
+    assert not os.path.exists(path)

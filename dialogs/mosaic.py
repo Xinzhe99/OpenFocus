@@ -552,8 +552,8 @@ class MosaicDialog(QDialog):
         self.progress.setValue(value)
 
     def _error(self, error):
-        detail = f"{self.status.text()}\n{error}"
         self.status.setText(trans.t('alignment_report_failed'))
+        detail = f"{self.status.text()}\n{error}"
         QMessageBox.warning(self, trans.t('mosaic_title'), detail)
 
     @staticmethod
@@ -924,7 +924,8 @@ class MosaicDialog(QDialog):
             self.size_label.setText(trans.t('mosaic_invalid'))
 
     def _fit(self):
-        bounds = self.scene.itemsBoundingRect()
+        bounds = (self._preview_item.sceneBoundingRect()
+                  if self._preview_item is not None else self.scene.itemsBoundingRect())
         if not bounds.isEmpty():
             self.scene.setSceneRect(bounds.adjusted(-20, -20, 20, 20))
             self.canvas.fitInView(self.scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
@@ -994,11 +995,14 @@ class MosaicDialog(QDialog):
         self._show_placement()
 
     def _show_placement(self):
-        if self._preview_item is not None:
+        had_preview = self._preview_item is not None
+        if had_preview:
             self.scene.removeItem(self._preview_item)
             self._preview_item = None
         for item in self.items:
             item.setVisible(True)
+        if had_preview:
+            self._fit()
 
     def _settings_changed(self):
         if not self._updating:
@@ -1068,8 +1072,12 @@ class MosaicDialog(QDialog):
     def _edit_control_points(self):
         if self.worker is not None or len(self.frames) < 2 or self._cp_dialog is not None:
             return
-        cameras = (self.settings.camera_specs()
-                   if self.settings.projection.currentData() is not None else ())
+        try:
+            cameras = (self.settings.camera_specs()
+                       if self.settings.projection.currentData() is not None else ())
+        except (ValueError, TypeError) as error:
+            self._error(str(error))
+            return
         dialog = MosaicControlPointsDialog(tuple(self.frames),
             tuple(matrix.copy() for matrix in self._current_transforms()), self.control_points,
             self, cameras=cameras)
@@ -1171,6 +1179,8 @@ class MosaicDialog(QDialog):
             if pending:
                 mask, preview = pending[0]
                 self._mask_imported = mask
+                if path not in self._output_source_paths:
+                    self._output_source_paths.append(path)
                 dialog.set_mask_preview(preview)
             else:
                 dialog.set_import_failed()

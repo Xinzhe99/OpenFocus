@@ -412,7 +412,11 @@ class MosaicControlPointsDialog(QDialog):
             if column == 0:
                 cp = replace(cp, enabled=item.checkState() == Qt.CheckState.Checked)
             elif column in (1, 2):
-                cp = replace(cp, **{('frame_a' if column == 1 else 'frame_b'): int(item.text())})
+                index = int(item.text())
+                if not 0 <= index < len(self.frames):
+                    raise ValueError(trans.t('mosaic_cp_frame_outside').format(
+                        index=index, last=len(self.frames) - 1))
+                cp = replace(cp, **{('frame_a' if column == 1 else 'frame_b'): index})
             elif column in (3, 4):
                 cp = replace(cp, **{('point_a' if column == 3 else 'point_b'): tuple(float(value.strip()) for value in item.text().split(','))})
             else:
@@ -420,7 +424,8 @@ class MosaicControlPointsDialog(QDialog):
             for index, point in ((cp.frame_a, cp.point_a), (cp.frame_b, cp.point_b)):
                 height, width = self.frames[index].image.shape[:2]
                 if not (0 <= point[0] <= width - 1 and 0 <= point[1] <= height - 1):
-                    raise ValueError(trans.t('mosaic_cp_point_a' if index == cp.frame_a else 'mosaic_cp_point_b'))
+                    raise ValueError(trans.t('mosaic_cp_point_outside').format(
+                        frame=index, x=point[0], y=point[1], width=width, height=height))
         except (ValueError, IndexError) as error:
             self._refresh_table()
             QMessageBox.warning(self, trans.t('mosaic_control_points'), trans.t('mosaic_error').format(error=str(error)))

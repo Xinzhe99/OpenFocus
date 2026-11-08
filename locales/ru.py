@@ -83,6 +83,8 @@ PACK = {
     "mosaic_cp_b": "Изображение B",
     "mosaic_cp_point_a": "A (x, y)",
     "mosaic_cp_point_b": "B (x, y)",
+    "mosaic_cp_frame_outside": "Индекс изображения {index} вне доступного диапазона 0–{last}.",
+    "mosaic_cp_point_outside": "Точка ({x}, {y}) находится вне изображения {frame} ({width} × {height} пикселей).",
     "mosaic_cp_source": "Источник",
     "mosaic_cp_active": "Включено",
     "mosaic_cp_residual": "Невязка (пкс)",
