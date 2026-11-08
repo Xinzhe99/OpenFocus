@@ -25,7 +25,7 @@ from typing import Iterable, Optional, Sequence, Tuple
 import cv2
 import numpy as np
 from core.algorithms import alignment_steps
-from core.frame_storage import store_frame
+from core.frame_storage import frame_region, is_mapped_frame, store_frame
 from core.source_frames import (
     SourceFrame as LazySourceFrame, ProcessedFrame, crop_frame, resolve_frame, store_preview,
 )
@@ -294,12 +294,13 @@ def build_render_context(
         if source.size == 0:
             return None
         if source is not image:
-            if isinstance(source, np.memmap):
+            if is_mapped_frame(source):
                 # A crop of a mapped aligned frame is still a view: it pins
                 # the whole mapping and its temporary file for as long as this
                 # output stays in the history.  Store just the crop as its own
                 # mapping so releasing the full frames really frees them.
-                source = store_frame(source)
+                with frame_region(source) as crop:
+                    source = store_frame(crop)
             elif isinstance(source, np.ndarray):
                 # In-memory crop: own it so the full aligned frame can be
                 # freed; copy() preserves the dtype (8/16-bit).

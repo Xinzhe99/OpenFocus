@@ -38,6 +38,7 @@ OpenFocus is a professional multi-focus image fusion desktop application designe
 - **Multi-page TIFF**: single-file Z-stacks load page-by-page and export back into one file
 - **Depth Map**: per-pixel focus-position maps with custom pseudo-color schemes
 - **Scale Bar**: publication-grade scale bars with automatic µm/px calibration
+- **Watermark**: visible tiled attribution text burned into exported copies
 - **Crash Auto-Recovery**: the last working session is offered for restore after a crash
 - **Multi-language**: twelve UI languages — English, 中文, 日本語, Español, Deutsch, Français, Русский, 한국어, Português, Italiano, Nederlands, Polski — with automatic system-language detection
 - **Headless and Agent CLIs**: Script headless pipelines for CI, or drive a running window through the local control channel
@@ -159,49 +160,126 @@ The top menu bar provides access to all functions:
 
 - **File**: import/export operations, projects, processing templates and the recent-files list
 - **Edit**: Undo/redo, reset the current stack, image transformations and retouching
-- **Tools**: Image stitching, batch processing and conversion, method comparison, depth map, flat-field correction, scale bar and labels
+- **Tools**: Image stitching, batch processing and conversion, method comparison, depth map, flat-field correction, scale bar, watermark and labels
 - **Settings**: Advanced Settings (performance, registration and alignment diagnostics, sensor cleanup, output naming, AI, startup), GPU acceleration, theme and language
 - **Help**: Environment info, contact information, update check, and the log folder
 
-Image stitching is experimental and unfinished. Inspect its placement and
-seams before using an exported result.
-
 **Tools → Stitch Images…** opens a separate workspace for already-fused
-microscope regions. Add image files or select existing output results, choose
-**Auto-align**, then inspect each overlap. Drag an image or enter X/Y in pixels
-to correct its placement; the opacity slider changes only the preview. Images
-without reliable shared features stay marked unmatched and can be positioned
-manually, including with known stage coordinates expressed in pixels. No
-image-only method can infer the position of a featureless, non-overlapping
-region. Automatic matching estimates planar rotation, scale and translation;
-verify repeated patterns and specimen motion before saving.
+microscope regions and camera panoramas; it does not modify the current stack.
+The **Project assistant** tab gathers import, alignment and control points;
+**Source images** holds the list, grid and manual placement; **Panorama editor**
+holds seam, blend, exposure/color, output, projection, camera and HDR settings
+plus preview overlays. Use **Add files**, **Open folder**, or **Add results** to
+copy chosen outputs from the current session, or drag files or folders onto the
+list or canvas. Folder import includes supported files directly inside the
+folder, not subfolders. Imports use natural filename order, ignore duplicate
+paths, and add multi-page TIFF pages as separate images. Select an image and
+press Delete or Backspace to remove it from the workspace without deleting the
+file.
 
-Drop image files or folders onto the list or canvas to import them. Folder
-imports include supported files directly inside the folder; subfolders are not
-scanned. Imports use natural filename order and ignore duplicates. Select an
-image in the list or canvas and press Delete or Backspace to remove that item.
+**Auto-align** finds shared features on bounded thumbnails, ignoring masked and
+transparent pixels, and fits each connected overlap. Planar mode estimates
+rotation, scale and translation; panorama mode also fits the camera and lens
+model. Images without enough common features remain marked unmatched. In planar
+mode, drag them or enter X/Y in pixels, scale as a percentage and rotation in degrees,
+including coordinates derived from a known stage. Image content cannot infer
+the position of a featureless, non-overlapping region, and automatic matching
+is not a physical calibration. For a declared stage grid, set rows, columns,
+capture order, direction, start corner and estimated overlap, then press
+**Apply grid positions**. The cell count must equal the image count, and grid
+placement applies only to planar mode. Editing the controls leaves current
+positions untouched until Apply, which replaces them and clears match
+connections. In planar mode, inspect every overlap and adjust X/Y, scale and rotation before
+saving.
 
-For a declared stage grid, set rows, columns, capture order, direction, start
-corner and estimated overlap, then choose **Apply grid positions**. The cell
-count must match the image count. Changing controls preserves manual placement
-until Apply is pressed; applying replaces the positions. Inspect overlaps and
-adjust X/Y afterward. Preview opacity survives imports and layout changes and
-does not alter the exported blend.
+**Control points** opens a two-preview editor. Choose image A and B, click the
+same feature in each preview, and press **Add point pair**; stored coordinates
+are native source pixels even though previews and markers are scaled. The table
+lists each pair's enabled state, images, A/B coordinates, manual or automatic
+source, and residual in pixels. Correct coordinates, clear **Enabled** on
+suspect points, or use **Delete selected**, **Delete worst 10%**, and **Delete
+non-adjacent pairs**. **Optimize** fits all enabled pairs and reports alignment
+quality: active points, weak pairs, disconnected images and p95 residual in
+pixels. A pair needs at least four enabled points to constrain a fit. Automatic
+points survive manual edits; verify repeated texture, parallax and specimen
+motion. Control-point edits do not create a new full preview: press **Preview
+blend** after editing or optimizing to inspect the result.
 
-Save as TIFF or PNG. TIFF uses disk-backed tiled composition and strip-based
-writing, including BigTIFF for large files; allow enough temporary and output
-disk space. TIFF strip buffers target 4 MiB per strip, but one full output row
-is the minimum. Large PNGs are also encoded in row bands. Overlaps use edge
-feathering, so differences in exposure or specimen content can remain visible.
-Eight-bit inputs remain 8-bit, while 16-bit or mixed-depth inputs produce
-16-bit output. Preview opacity is not baked into the image. The mosaic does
-not infer physical scale or carry individual image EXIF/ICC metadata into a
-combined image.
+**Source mask** edits one image's native-resolution mask. Paint with a radius
+expressed in source pixels; **Exclude** marks pixels red and **Include**
+restores them; **Clear mask** removes the base; **Import mask…** accepts one
+PNG (alpha, grayscale or BGR) or TIFF without alpha (grayscale or BGR), whose
+dimensions exactly match the source. **Apply** commits the strokes, while
+**Cancel** keeps the previous mask.
+Excluded pixels do not contribute to seams, feature matching or output pixels,
+and a mask or RGBA source makes transparency available in the output.
+
+The **Panorama editor** controls the actual blend. Under **Find optimum
+seams**, **Content seam (DP)** searches content seams; **Graph cut** is offered
+only when the OpenCV build provides it; **Feather** skips content-seam search.
+Seam precision 1/2/4/8, transition half-width, color or color-and-gradient cost
+and overlap-loop refinement tune that search; precision, cost and loop
+refinement are disabled for Feather. **Blending** is a true multiband pyramid
+(1–7 levels, default 5), feather, or zero-overlap hard selection. **Exposure
+and color** offers off, exposure compensation, color balance, or a local gain
+field, with optional **Blend in linear light**. Per-image lens fields are
+enabled in panorama mode: yaw, pitch, roll, horizontal field of view, radial
+a/b/c distortion and lens-center shifts. Vignetting k1–k3 and exposure time in
+seconds (0 keeps the frame's metadata when available) apply to any selected
+image. These are user-supplied or fitted estimates, not inferred physical
+calibration.
+
+**Projection** chooses **Planar microscope mosaic**, which uses affine
+X/Y/scale/rotation and supports the grid, or a **Rectilinear**, **Cylindrical**
+or **Equirectangular** panorama that maps every source through its camera yaw,
+pitch, roll, field of view and lens model; panorama scale is pixels per radian,
+and **Optimize field of view** may adjust the camera FOV. Rectilinear errors if
+the panorama crosses its horizon, and cylindrical errors at a pole; choose
+equirectangular for those scenes. Under **HDR / exposure fusion**, **Exposure
+fusion** blends each complete bracket of consecutive different exposures, while
+**HDR (Debevec + Reinhard)** calibrates a response and tone-maps it. Set the
+number of consecutive exposures per bracket, exposure times (0 uses each file's
+metadata when available) and the fusion width/target or HDR exposure
+scale/white point. Debevec requires a positive exposure time for every source
+and exposure compensation Off; HDR cannot be combined with linear-light
+blending, and incomplete brackets or incompatible photometric combinations
+report an error.
+
+**Preview blend** captures the current global plan and renders a bounded
+preview (up to 1024 pixels on the long edge). **Show seams**, **Show image
+numbers** and **Show excluded areas** overlay the chosen labels and mask, and
+selected control points appear as markers. Source opacity affects only the
+workspace preview and never enters the exported blend. X/Y, scale and rotation
+define the actual placement in planar mode. For an unmatched panorama image,
+adjust its camera yaw, pitch, roll and field of view instead.
+The preview opacity value is retained across
+imports and layout changes. Any source, placement, mask, control-point or
+editor change invalidates the plan, so press **Preview blend** again after edits
+or optimization. Save reuses the current captured plan only when sources and
+settings are unchanged; otherwise it plans and renders again. Output controls
+choose Automatic, 8-bit or 16-bit depth (Automatic is 16-bit for any 16-bit
+source or HDR, otherwise 8-bit), a 0.01–10 output size, normalized crop,
+Automatic/On/Off transparency (Automatic enables it for panorama projection,
+masked or RGBA sources, and an uncovered canvas), and a color-profile policy:
+Automatic preserves a common profile and converts mixed profiles to sRGB, sRGB
+converts, keep first copies the first tag without converting pixels, and no
+profile omits the tag. Mixed 16-bit profiles cannot be converted by this
+backend, so select keep first or no profile — there is no silent 8-bit
+reduction. **Keep source EXIF** embeds sanitized
+camera/lens/exposure/date/GPS EXIF from the first source, dropping pixel-layout
+tags and resetting orientation. Save as TIFF or PNG. TIFF uses disk-backed
+tiled composition, strip-based writing (4 MiB target strip, one full output row
+minimum) and BigTIFF when needed; large PNGs are encoded in row bands. Allow
+adequate temporary and output disk space and RAM: the full-size output is
+streamed to disk, but planning and previews still use memory. Enough shared
+features or manual points are required, and no image-only method infers
+physical scale. Source images and settings are frozen while an operation runs;
+use **Cancel** and wait for it to finish.
 
 **Edit → Reset Current Stack…** restores the imported images, their original
 order and import scale, including frames later removed or excluded. It clears
-all outputs (including unsaved work), labels and scale bars on every target,
-ROI and registration state, and the undo/redo history. The confirmation defaults
+all outputs (including unsaved work), labels, scale bars and the watermark on
+every target, ROI and registration state, and the undo/redo history. The confirmation defaults
 to Cancel. Files on disk are not deleted. Wait for active operations to finish
 before resetting; an empty stack cannot be reset.
 After reopening a project, reset uses the frames and loading scale saved in
@@ -330,6 +408,45 @@ source stack* and *From the result* narrow the dialog's "Apply to" scope to
 the remaining canvas, while *From everywhere* turns the bar off. Both
 canvases and the A/B wipe redraw immediately; removing a canvas that never
 showed the bar leaves the setting unchanged.
+
+### Watermark (Visible Attribution)
+
+**Tools → Watermark → Add or edit…** burns a visible, tiled text mark into
+exported copies. Choose the text (up to 80 characters), font, size (1–12% of
+the image short side, default 3.5%), opacity (5–90%, default 28%), white or
+black ink with an automatic opposite-colour outline, angle (−60° to 60°,
+default −25°) and density (sparse / standard / dense). The pattern is laid
+out in the rotated text coordinate system, anchored at the image centre and
+scaled from each output's own pixel rectangle, so equal-ratio resizes keep
+the same relative size, spacing and phase. Source files and in-memory arrays
+are never modified.
+
+Scope is independent per target: source frames, registered frames and
+fusion results (defaults: source + result), each keeping its own text and
+style. Editing one scope never rewrites another; checking several applies
+the same draft to each checked scope. The text is stored only in an explicitly
+saved project or the local recovery snapshot, never in global preferences.
+The editor previews the real
+selected frame or output and shows its pixel size and bit depth; switching
+the preview does not change the scope. Apply commits one undoable edit;
+Cancel, Esc and closing the window leave the committed configuration
+untouched. A newly loaded source stack does not inherit the previous stack's
+watermark text.
+
+Every GUI export path burns the frozen configuration at export start: single
+save/Save As, output-batch and drag-out, source/registered frame folders,
+multi-page TIFF, GIF, GUI batch output and aligned stacks, and representable
+Linear DNG. 8-bit and 16-bit images keep their depth; blending uses the
+original 16-bit values and leaves every pixel outside the anti-aliased mask
+bit-identical. PNG alpha is preserved and transparent pixels stay
+transparent. Set the angle to 0 for horizontal rows.
+
+Already-exported batch results whose pixels contain a watermark are marked
+in the output tooltip and cannot receive another one. Layered TIFF cannot
+include the live watermark and is blocked while one is active. If the text
+cannot be drawn legibly (tiny image, no installed glyph coverage, text too
+long for the chosen size), the dialog and the affected export report the
+reason instead of writing a file without the mark.
 
 ### Depth Map (Focus Position)
 
@@ -973,7 +1090,8 @@ frame selection, brush and editing shortcuts. Hover over a control for its help.
 
 Apply the retouch as a new output, then select it and choose **Save As**. Select layered TIFF in the format list to save the result with its source frames.
 Live labels and scale bars are not included; unsaved annotation changes remain
-protected. Source geometry and validity masks are retained. The result and
+protected. An active watermark blocks this export; remove it or export a normal
+image/image stack instead. Source geometry and validity masks are retained. The result and
 sources must be opaque RGB or grayscale images with matching 8-bit or 16-bit
 depth, and each source rectangle must fit within the result. Export supports
 up to 128 sources; source names are limited to 255 characters and
@@ -1552,6 +1670,19 @@ export names; existing results keep their names. You can still edit a name in
 the save dialog. This preference does not rename source files or change batch
 output names.
 
+
+### Sharing a Result
+
+Right-click an output and use the **Share** submenu. **Copy preview image
+(JPEG)** writes the current result at full resolution, including its labels and
+scale bar, to the clipboard as a real JPEG and also provides a decoded bitmap
+for desktop applications. **Copy file paths** copies persistent file URLs for
+every selected result; unsaved or outdated results ask for one folder and are
+written as PNG with their current 8/16-bit pixels and annotations. **Show in
+folder** opens Explorer, Finder or the desktop file manager with the file
+selected. Existing exported files are reused only while they still match the
+current image and annotations. **Create private share link** stays disabled
+until hosted sharing exists.
 
 ### Drag-out Export Format
 

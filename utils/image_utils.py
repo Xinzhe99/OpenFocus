@@ -39,16 +39,21 @@ def pixmap_to_cv2(pixmap) -> Optional[np.ndarray]:
         return None
 
 
-def composite_transparent_for_display(image: np.ndarray, *, origin=(0, 0), scale=(1, 1)) -> np.ndarray:
-    """Composite straight-alpha pixels on a checkerboard for display only."""
+def composite_transparent_for_display(image: np.ndarray, *, origin=(0, 0), scale=(1, 1), alpha=None) -> np.ndarray:
+    """Composite straight-alpha pixels, optionally supplied as a separate plane."""
     image = to_display_uint8(image)
-    if image.ndim != 3 or image.shape[2] != 4:
-        return image
+    if alpha is None:
+        if image.ndim != 3 or image.shape[2] != 4:
+            return image
+    else:
+        if image.ndim != 3 or image.shape[2] != 3 or np.shape(alpha) != image.shape[:2]:
+            raise ValueError('Separate alpha must match the BGR image dimensions')
+        alpha = to_display_uint8(alpha)
     h, w = image.shape[:2]
     rows = np.floor((origin[1] + np.arange(h) * scale[1]) / 12).astype(np.int64)
     cols = np.floor((origin[0] + np.arange(w) * scale[0]) / 12).astype(np.int64)
     checker = (((rows[:, None] + cols[None, :]) % 2) * 48 + 160).astype(np.uint16)
-    alpha = image[:, :, 3].astype(np.uint16)
+    alpha = (image[:, :, 3] if alpha is None else alpha).astype(np.uint16)
     out = np.empty((h, w, 3), dtype=np.uint8)
     for channel in range(3):
         out[:, :, channel] = ((image[:, :, channel].astype(np.uint16) * alpha
@@ -594,6 +599,7 @@ def _compressed_tiff_strip(strip, params):
 
 
 def _write_tiff_page(handle, image, exif, profile, params, should_cancel, bigtiff, rows=None):
+    from core.frame_storage import frame_region
     options = dict(zip(params[::2], params[1::2]))
     rows = _tiff_write_rows(image, exif, profile, options) if rows is None else rows
     compression = options.get(cv2.IMWRITE_TIFF_COMPRESSION, 1)
@@ -604,7 +610,8 @@ def _write_tiff_page(handle, image, exif, profile, params, should_cancel, bigtif
     first = None
     predictor = 1
     if compression != 1:
-        first, actual, predictor = _compressed_tiff_strip(image[:rows], params)
+        with frame_region(image, np.s_[:rows]) as first_strip:
+            first, actual, predictor = _compressed_tiff_strip(first_strip, params)
         if actual != compression:
             raise ValueError('TIFF codec changed the requested compression')
     header, next_pointer = _tiff_header(image.shape, image.dtype, exif, profile, rows, bigtiff=bigtiff,
@@ -615,25 +622,25 @@ def _write_tiff_page(handle, image, exif, profile, params, should_cancel, bigtif
     samples = image.shape[2] if image.ndim == 3 else 1
     for start in range(0, image.shape[0], rows):
         _check_write_cancelled(should_cancel)
-        strip = image[start:start + rows]
-        if compression != 1:
-            if start == 0:
-                pixels, first = first, None
+        with frame_region(image, np.s_[start:start + rows]) as strip:
+            if compression != 1:
+                if start == 0:
+                    pixels, first = first, None
+                else:
+                    pixels, actual, strip_predictor = _compressed_tiff_strip(strip, params)
+                    if actual != compression or strip_predictor != predictor:
+                        raise ValueError('TIFF codec changed strip layout')
             else:
-                pixels, actual, strip_predictor = _compressed_tiff_strip(strip, params)
-                if actual != compression or strip_predictor != predictor:
-                    raise ValueError('TIFF codec changed strip layout')
-        else:
-            if samples > 1:
-                code = cv2.COLOR_BGRA2RGBA if samples == 4 else cv2.COLOR_BGR2RGB
-                strip = cv2.cvtColor(strip, code)
-            strip = np.ascontiguousarray(strip, dtype=strip.dtype.newbyteorder('<'))
-            pixels = memoryview(strip).cast('B')
-        offsets.append(handle.tell())
-        counts.append(len(pixels))
-        if not bigtiff and handle.tell() + len(pixels) >= _CLASSIC_TIFF_LIMIT:
-            raise ValueError('Classic TIFF limit exceeded')
-        handle.write(pixels)
+                if samples > 1:
+                    code = cv2.COLOR_BGRA2RGBA if samples == 4 else cv2.COLOR_BGR2RGB
+                    strip = cv2.cvtColor(strip, code)
+                strip = np.ascontiguousarray(strip, dtype=strip.dtype.newbyteorder('<'))
+                pixels = memoryview(strip).cast('B')
+            offsets.append(handle.tell())
+            counts.append(len(pixels))
+            if not bigtiff and handle.tell() + len(pixels) >= _CLASSIC_TIFF_LIMIT:
+                raise ValueError('Classic TIFF limit exceeded')
+            handle.write(pixels)
     end = handle.tell()
     header, _ = _tiff_header(image.shape, image.dtype, exif, profile, rows, bigtiff=bigtiff, offset=offset,
                              strip_offsets=offsets, strip_counts=counts,
@@ -759,6 +766,7 @@ def _write_streamed_png(handle, image, params, exif, profile, should_cancel):
     """Write PNG scanline bands with zlib; never retain the encoded image."""
     import struct
     import zlib
+    from core.frame_storage import frame_region
     metadata_bytes = len(profile) + (len(exif.tobytes()) if exif is not None else 0)
     rows = _image_write_rows(image, scratch_factor=5, codec_scratch=512 * 1024,
                              metadata_bytes=metadata_bytes)
@@ -789,16 +797,16 @@ def _write_streamed_png(handle, image, params, exif, profile, should_cancel):
     row_bytes = image.shape[1] * samples * image.dtype.itemsize
     for start in range(0, image.shape[0], rows):
         _check_write_cancelled(should_cancel)
-        strip = image[start:start + rows]
-        if samples > 1:
-            strip = cv2.cvtColor(strip, cv2.COLOR_BGRA2RGBA if samples == 4 else cv2.COLOR_BGR2RGB)
-        strip = np.ascontiguousarray(strip, dtype=strip.dtype.newbyteorder('>'))
-        filtered = np.empty((len(strip), row_bytes + 1), np.uint8)
-        filtered[:, 0] = 0  # PNG's standard None filter
-        filtered[:, 1:] = strip.view(np.uint8).reshape(len(strip), row_bytes)
-        encoded = compressor.compress(memoryview(filtered).cast('B'))
-        if encoded:
-            chunk(b'IDAT', encoded)
+        with frame_region(image, np.s_[start:start + rows]) as strip:
+            if samples > 1:
+                strip = cv2.cvtColor(strip, cv2.COLOR_BGRA2RGBA if samples == 4 else cv2.COLOR_BGR2RGB)
+            strip = np.ascontiguousarray(strip, dtype=strip.dtype.newbyteorder('>'))
+            filtered = np.empty((len(strip), row_bytes + 1), np.uint8)
+            filtered[:, 0] = 0  # PNG's standard None filter
+            filtered[:, 1:] = strip.view(np.uint8).reshape(len(strip), row_bytes)
+            encoded = compressor.compress(memoryview(filtered).cast('B'))
+            if encoded:
+                chunk(b'IDAT', encoded)
     encoded = compressor.flush()
     if encoded:
         chunk(b'IDAT', encoded)
@@ -826,7 +834,8 @@ def _write_streamed_jpeg(handle, image, params, exif, profile, should_cancel):
     import mmap
     import tempfile
     from PIL import Image
-    from core.frame_storage import require_disk_space, scratch_directory, select_scratch
+    from core.frame_storage import (require_disk_space, scratch_directory, select_scratch,
+                                    frame_region)
     from core.resource_policy import require_memory
     options = dict(zip(params[::2], params[1::2]))
     supported = {cv2.IMWRITE_JPEG_QUALITY, cv2.IMWRITE_JPEG_PROGRESSIVE,
@@ -853,11 +862,12 @@ def _write_streamed_jpeg(handle, image, params, exif, profile, should_cancel):
         with tempfile.TemporaryFile(dir=directory) as raw:
             for start in range(0, image.shape[0], rows):
                 _check_write_cancelled(should_cancel)
-                strip = to_display_uint8(image[start:start + rows])
-                if not gray:
-                    code = cv2.COLOR_BGRA2RGBA if strip.shape[2] == 4 else cv2.COLOR_BGR2RGBA
-                    strip = cv2.cvtColor(strip, code)
-                raw.write(memoryview(np.ascontiguousarray(strip)).cast('B'))
+                with frame_region(image, np.s_[start:start + rows]) as source:
+                    strip = to_display_uint8(source)
+                    if not gray:
+                        code = cv2.COLOR_BGRA2RGBA if strip.shape[2] == 4 else cv2.COLOR_BGR2RGBA
+                        strip = cv2.cvtColor(strip, code)
+                    raw.write(memoryview(np.ascontiguousarray(strip)).cast('B'))
             raw.flush()
             with mmap.mmap(raw.fileno(), 0, access=mmap.ACCESS_READ) as mapping:
                 mode = 'L' if gray else 'RGBX'

@@ -66,3 +66,31 @@ def test_trimmed_context_releases_full_source_storage(mapped):
     if mapped:
         assert not os.path.exists(path)
     np.testing.assert_array_equal(context.frames[0].image, expected)
+
+
+def test_reopened_strided_roi_owns_an_admitted_crop_after_sources_release(tmp_path, monkeypatch):
+    from core import frame_storage
+    from core import resource_policy
+
+    monkeypatch.setattr(frame_storage, '_storage_directory', None)
+    frame_storage.configure_storage_directory(tmp_path)
+    monkeypatch.setattr(resource_policy, 'frame_ram_budget', lambda snapshot: 0)
+    source = frame_storage.store_frame(
+        np.arange(48 * 64 * 3, dtype=np.uint16).reshape(48, 64, 3), prefer_ram=False)
+    path = source.filename
+    reopened = frame_storage.open_frame(
+        frame_storage.describe_frame(source[::-1]), owned=True)
+    expected = np.array(reopened[8:24, 12:36])
+    context = build_render_context([reopened], expected.copy(), algorithm='test',
+                                   roi_rect=(12, 8, 24, 16), roi_mode='crop')
+    assert context is not None
+    description = frame_storage.describe_frame(context.frames[0].image)
+    assert description is not None and description['path'] != path
+    del source, reopened
+    gc.collect()
+    assert not os.path.exists(path)
+    np.testing.assert_array_equal(context.frames[0].image, expected)
+    crop_path = description['path']
+    del context
+    gc.collect()
+    assert not os.path.exists(crop_path)

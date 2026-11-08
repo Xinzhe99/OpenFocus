@@ -2,6 +2,7 @@
 import errno
 import os
 import math
+import operator
 import shutil
 import tempfile
 import weakref
@@ -13,7 +14,6 @@ import threading
 
 
 import numpy as np
-from constants import FRAME_RAM_BUDGET_BYTES
 
 _storage_directory = None
 _scratch = contextvars.ContextVar('openfocus_scratch', default=None)
@@ -40,8 +40,7 @@ def _try_ram_frame(shape, dtype):
         raise ValueError('Transient frames require nonnegative numeric storage')
     # Probing and allocating can collect arrays whose finalizers take this lock.
     snapshot = policy.probe_memory()
-    cap = (min(FRAME_RAM_BUDGET_BYTES, policy.ram_budget(snapshot) // 2)
-           if snapshot.ram_known else 0)
+    cap = policy.frame_ram_budget(snapshot)
     with _ram_lock:
         if size > cap - _ram_live_bytes:
             return None
@@ -374,21 +373,23 @@ def restore_storage_directory(path):
                           else os.path.abspath(os.fsdecode(path)))
 
 
-def _release_file(path, state):
-    try:
-        _remove(path)
-    finally:
-        if state is not None:
-            state.release()
+# Temporary frame files may be reopened by independent mappings in this or
+# another process, so deletion follows a path-keyed owner count instead of each
+# finalizer unlinking independently. A disowned path keeps its pixels after the
+# last mapping closes while still closing maps and releasing scratch references.
+_owner_lock = threading.RLock()
+_frame_owners = {}
+_observed_files = set()
+_disowned_files = set()
+_cleanup_directories = {}
+_temp_observers = []
 
 
-def track_temp_file(owner, path):
-    """Keep an owned scratch directory until this temporary file is released."""
-    state = _scratch.get()
-    state = state if state is not None and state.directory == os.path.dirname(path) else None
-    if state is not None:
-        state.retain()
-    weakref.finalize(owner, _release_file, path, state)
+
+def _file_key(path):
+    """Stable comparison key for a temporary path, including cross-thread."""
+    return os.path.normcase(os.path.abspath(os.fsdecode(os.fspath(path))))
+
 
 
 
@@ -398,13 +399,151 @@ def _remove(path):
     except FileNotFoundError:
         pass
 
-def _release(mapping, path, state):
+
+def _remove_dir(path):
     try:
-        mapping.close()
-        _remove(path)
+        os.rmdir(path)
+    except OSError:
+        pass
+
+
+def _observe_file(path):
+    """Report a fresh file before any caller fills it."""
+    key = _file_key(path)
+    with _owner_lock:
+        _observed_files.add(key)
+        callbacks = tuple(_temp_observers)
+    try:
+        for callback in callbacks:
+            callback(path)
+    except BaseException:
+        with _owner_lock:
+            _observed_files.discard(key)
+        raise
+
+
+def _own_file(path, cleanup_directory=None):
+    """Record one owner and return the path key used by its finalizer."""
+    key = _file_key(path)
+    directory = None if cleanup_directory is None else _file_key(cleanup_directory)
+    with _owner_lock:
+        _observed_files.add(key)
+        _frame_owners[key] = _frame_owners.get(key, 0) + 1
+        if directory is not None:
+            _cleanup_directories[key] = directory
+    return key
+
+
+def _release_file_owner(key):
+    """Drop one owner; the last owner removes the file unless it was disowned."""
+    with _owner_lock:
+        count = _frame_owners.get(key)
+        if count is not None:
+            count -= 1
+            if count > 0:
+                _frame_owners[key] = count
+                return
+            _frame_owners.pop(key, None)
+        elif key not in _observed_files:
+            return
+        _observed_files.discard(key)
+        directory = _cleanup_directories.pop(key, None)
+        suppress = key in _disowned_files
+        if suppress:
+            _disowned_files.discard(key)
+    if suppress:
+        return
+    _remove(key)
+    if directory is not None:
+        # Only an empty directory is removed; never recursive deletion.
+        _remove_dir(directory)
+
+
+def _release_file(key, state):
+    try:
+        _release_file_owner(key)
     finally:
         if state is not None:
             state.release()
+
+
+def track_temp_file(owner, path, *, cleanup_directory=None):
+    """Keep a temporary file and its scratch directory until ``owner`` dies.
+
+    The path shares one count with mappings of the same file. ``cleanup_directory``
+    is the auto-created scratch directory that may be removed once its last owned
+    file is gone; explicit/user directories are not removed.
+    """
+    state = _scratch.get()
+    state = state if state is not None and state.directory == os.path.dirname(path) else None
+    cleanup_directory = _check_cleanup_directory(cleanup_directory, path)
+    if state is not None:
+        state.retain()
+    key = _own_file(path, cleanup_directory)
+    weakref.finalize(owner, _release_file, key, state)
+
+
+def owns_temp_file(path):
+    """Whether this process created or explicitly adopted the temporary file.
+
+    A filename alone never establishes ownership of borrowed user pixels.
+    """
+    try:
+        key = _file_key(path)
+    except (TypeError, ValueError):
+        return False
+    with _owner_lock:
+        return key in _frame_owners or key in _observed_files
+
+
+def disown_temp_files(paths):
+    """Never delete these temporary files; closing maps still releases scratch."""
+    if isinstance(paths, (str, bytes, os.PathLike)):
+        paths = (paths,)
+    keys = {_file_key(path) for path in paths}
+    with _owner_lock:
+        for key in keys:
+            if key in _frame_owners or key in _observed_files:
+                _disowned_files.add(key)
+
+
+@contextlib.contextmanager
+def observe_temp_files(callback):
+    """Observe every temporary frame file created during this context.
+
+    The callback runs in the allocating producer thread immediately after the
+    file is created and before any pixel is written, so a supervising process
+    can remove partial results if the producer crashes.
+    """
+    if not callable(callback):
+        raise TypeError('Temporary file observer must be callable')
+    with _owner_lock:
+        _temp_observers.append(callback)
+    try:
+        yield callback
+    finally:
+        with _owner_lock:
+            try:
+                _temp_observers.remove(callback)
+            except ValueError:
+                pass
+
+
+def ram_snapshot_bytes():
+    """Bytes currently reserved by transient in-RAM frames in this process."""
+    with _ram_lock:
+        return _ram_live_bytes
+
+
+def _release(mapping, key, state):
+    try:
+        mapping.close()
+    finally:
+        try:
+            _release_file_owner(key)
+        finally:
+            if state is not None:
+                state.release()
 
 def require_disk_space(size, directory=None):
     """Check a point-in-time estimate, retaining space for the system.
@@ -427,11 +566,18 @@ def _storage_error(directory, size, exc):
     return ScratchSpaceError(directory, size, available, str(exc))
 
 
-def _frame_file(directory, size):
+def _frame_file(directory, size, *, prefix='openfocus-frame-'):
     try:
-        return tempfile.mkstemp(prefix="openfocus-frame-", suffix=".bin", dir=directory)
+        fd, path = tempfile.mkstemp(prefix=prefix, suffix=".bin", dir=directory)
     except OSError as exc:
         raise _storage_error(directory, size, exc) from exc
+    try:
+        _observe_file(path)
+    except BaseException:
+        os.close(fd)
+        _remove(path)
+        raise
+    return fd, path
 
 
 
@@ -441,6 +587,7 @@ def create_frame(shape, dtype, *, directory=None):
     size = math.prod(shape) * np.dtype(dtype).itemsize
     require_disk_space(size, directory)
     fd, path = _frame_file(directory, size)
+    key = _own_file(path)
     try:
         allocated = False
         if size and hasattr(os, 'posix_fallocate'):
@@ -457,17 +604,17 @@ def create_frame(shape, dtype, *, directory=None):
         state = state if state is not None and state.directory == directory else None
         if state is not None:
             state.retain()
-        weakref.finalize(mapped, _release, mapped._mmap, path, state)
+        weakref.finalize(mapped, _release, mapped._mmap, key, state)
         return mapped
     except OSError as exc:
         if fd is not None:
             os.close(fd)
-        _remove(path)
+        _release_file_owner(key)
         raise _storage_error(directory, size, exc) from exc
     except BaseException:
         if fd is not None:
             os.close(fd)
-        _remove(path)
+        _release_file_owner(key)
         raise
 
 
@@ -486,22 +633,223 @@ def store_frame(image, *, prefer_ram=True):
     directory = storage_directory()
     require_disk_space(image.nbytes, directory)
     fd, path = _frame_file(directory, image.nbytes)
+    key = _own_file(path)
     try:
         # Write through the file descriptor before mapping it. Filling a writable
         # mapping faults every source-stack page into this process even though
         # the caller only needs one frame/strip at a time afterward.
         with os.fdopen(fd, "wb") as stream:
+            fd = None
             np.asarray(image).tofile(stream)
         mapped = np.memmap(path, dtype=image.dtype, mode="r+", shape=image.shape)
         state = _scratch.get()
         state = state if state is not None and state.directory == directory else None
         if state is not None:
             state.retain()
-        weakref.finalize(mapped, _release, mapped._mmap, path, state)
+        weakref.finalize(mapped, _release, mapped._mmap, key, state)
         return mapped
     except OSError as exc:
-        _remove(path)
+        if fd is not None:
+            os.close(fd)
+        _release_file_owner(key)
         raise _storage_error(directory, image.nbytes, exc) from exc
     except BaseException:
-        _remove(path)
+        if fd is not None:
+            os.close(fd)
+        _release_file_owner(key)
         raise
+
+
+@contextlib.contextmanager
+def frame_region(image, key=Ellipsis, *, write=False):
+    """Borrow one region without retaining its mapped pages after the context.
+
+    The original array and its file owner remain valid. Consumers must copy
+    arrays retained after this context; disk views close with the lease.
+    ``None`` represents an absent optional source mask.
+    """
+    if image is None:
+        yield None
+        return
+    region = image[key]
+    if not isinstance(region, np.ndarray) or not region.size:
+        yield region
+        return
+    root = _mapped_base(region)
+    if root is None:
+        yield region
+        return
+    offset = root.offset + region.ctypes.data - root.ctypes.data
+    extent = [(size - 1) * stride for size, stride in zip(region.shape, region.strides)]
+    start = offset + sum(min(0, value) for value in extent)
+    stop = offset + sum(max(0, value) for value in extent) + region.dtype.itemsize
+    mapping = np.memmap(root.filename, dtype=np.uint8,
+                        mode='r+' if write else 'r', offset=start, shape=(stop - start,))
+    try:
+        borrowed = np.ndarray(region.shape, dtype=region.dtype, buffer=mapping,
+                              offset=offset - start, strides=region.strides)
+        if not write:
+            borrowed.flags.writeable = False
+        yield borrowed
+    finally:
+        mapping._mmap.close()
+
+
+def _mapped_base(image):
+    """The deepest real mapping in an ndarray's base chain, or None.
+
+    Stride tricks insert a small Python wrapper into the chain, so follow any
+    object that exposes ``base`` rather than only ndarray links.
+    """
+    mapped = None
+    current = image
+    seen = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if (isinstance(current, np.ndarray)
+                and getattr(current, '_mmap', None) is not None
+                and getattr(current, 'filename', None) is not None):
+            mapped = current
+        current = getattr(current, 'base', None)
+    return mapped
+
+
+def is_mapped_frame(image):
+    """Whether an array borrows mapped pixels, including reopened strided views.
+
+    Storage location does not imply ownership of the backing file.
+    """
+    return isinstance(image, np.ndarray) and _mapped_base(image) is not None
+
+
+def describe_frame(image):
+    """Describe a mapped ndarray for transfer without copying its pixels.
+
+    The base chain is followed to the mapping that owns the file so a view's
+    absolute byte offset and strides survive, including reversed and
+    non-contiguous views. Heap-backed arrays describe as None.
+    """
+    if not isinstance(image, np.ndarray):
+        return None
+    if image.dtype.hasobject or image.dtype.itemsize <= 0:
+        return None
+    mapped = _mapped_base(image)
+    if mapped is None:
+        return None
+    try:
+        path = os.path.abspath(os.fsdecode(os.fspath(mapped.filename)))
+    except (TypeError, ValueError):
+        return None
+    if not os.path.isfile(path):
+        return None
+    try:
+        base_pointer = int(mapped.__array_interface__['data'][0])
+        pointer = int(image.__array_interface__['data'][0])
+        base_offset = int(getattr(mapped, 'offset', 0) or 0)
+    except (KeyError, TypeError, ValueError):
+        return None
+    offset = base_offset + pointer - base_pointer
+    if offset < 0:
+        return None
+    dtype = image.dtype.str if image.dtype.fields is None else image.dtype.descr
+    return {'path': path,
+            'shape': tuple(int(value) for value in image.shape),
+            'dtype': dtype,
+            'offset': offset,
+            'strides': tuple(int(value) for value in image.strides)}
+
+
+def _close_mapping(mapping):
+    mapping.close()
+
+
+def _release_mapping(mapping, key):
+    try:
+        mapping.close()
+    finally:
+        _release_file_owner(key)
+
+
+def _cleanup_directory(description):
+    directory = description.get('cleanup_directory')
+    if directory is None:
+        return None
+    try:
+        value = os.fspath(directory)
+    except TypeError as exc:
+        raise ValueError('Frame cleanup_directory is not a path') from exc
+    return None if value in ('', b'') else os.fsdecode(value)
+
+
+def _check_cleanup_directory(directory, path):
+    """Only the file's own directory may be cleaned up later."""
+    if directory is None:
+        return None
+    if _file_key(directory) != _file_key(os.path.dirname(path)):
+        raise ValueError('Frame cleanup_directory must contain the frame file')
+    return directory
+
+
+def open_frame(description, *, owned=False):
+    """Reopen a mapped frame read without copying pixels.
+
+    The result is read-only and keeps its mapping alive until every view is
+    gone. ``owned`` explicitly adopts deletion after an ownership transfer;
+    borrowed user mappings must be opened with its default False value. A
+    ``cleanup_directory`` in the description is removed (empty only) after the
+    last owned file there is released.
+    """
+    path = os.fsdecode(os.fspath(description['path']))
+    dtype = np.dtype(description['dtype'])
+    if dtype.hasobject or dtype.itemsize <= 0:
+        raise ValueError('Frame description requires nonobjective numeric storage')
+    try:
+        shape = tuple(operator.index(value) for value in description['shape'])
+        strides = tuple(operator.index(value) for value in description['strides'])
+        offset = operator.index(description['offset'])
+    except (TypeError, ValueError) as exc:
+        raise ValueError('Frame description has nonnumeric layout') from exc
+    if len(shape) != len(strides):
+        raise ValueError('Frame description shape and strides disagree')
+    if any(value < 0 for value in shape) or offset < 0:
+        raise ValueError('Frame description has a negative extent')
+    cleanup = _check_cleanup_directory(
+        _cleanup_directory(description), path)
+    adopt = bool(owned)
+    file_size = os.path.getsize(path)
+    itemsize = dtype.itemsize
+    empty = math.prod(shape) == 0
+    if empty:
+        if offset > file_size:
+            raise ValueError('Frame description exceeds its file')
+        image = np.empty(shape, dtype=dtype)
+        image.flags.writeable = False
+        if adopt:
+            key = _own_file(path, cleanup)
+            weakref.finalize(image, _release_file, key, None)
+        return image
+    first = offset
+    end = offset + itemsize
+    for length, stride in zip(shape, strides):
+        extent = (length - 1) * stride
+        first += min(0, extent)
+        end += max(0, extent)
+    if first < 0 or end > file_size:
+        raise ValueError('Frame description exceeds its file')
+    span = end - first
+    # Map only the addressed bytes; NumPy handles page alignment for us.
+    mapping = np.memmap(path, dtype=np.uint8, mode='r', offset=first, shape=(span,))
+    relative = offset - first
+    # Anchor at the first element in the target dtype; as_strided keeps that
+    # dtype and accepts arbitrary byte strides, including negative ones.
+    anchor = np.ndarray(shape=(1,), dtype=dtype, buffer=mapping, offset=relative)
+    image = np.lib.stride_tricks.as_strided(
+        anchor, shape=shape, strides=strides, writeable=False)
+    # The memmap is the base of every view, so its finalizer runs only after
+    # the last slice of the returned array is released.
+    if adopt:
+        key = _own_file(path, cleanup)
+        weakref.finalize(mapping, _release_mapping, mapping._mmap, key)
+    else:
+        weakref.finalize(mapping, _close_mapping, mapping._mmap)
+    return image
