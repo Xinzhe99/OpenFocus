@@ -1,5 +1,6 @@
 from typing import Optional
 
+from functools import partial
 from PyQt6.QtCore import QThread, pyqtSignal
 import time
 import os
@@ -559,10 +560,10 @@ class RenderWorker(QThread):
                         image_mask = SensorDefectMask(width, height, float(pixels.mean()), pixels)
                     if self._defer_warps or (lazy_fusion and not need_registration):
                         from core.source_frames import process_frame
-                        cleaned.append(process_frame(image, lambda pixels, image_mask=image_mask:
-                            cleanup_sensor_image(pixels, defect_mask_path=image_mask,
-                                sensor_denoise=self.sensor_denoise,
-                                cancel_callback=lambda: self.is_cancelled),
+                        cleanup_image = partial(cleanup_sensor_image, defect_mask_path=image_mask,
+                            sensor_denoise=self.sensor_denoise,
+                            cancel_callback=lambda: self.is_cancelled)
+                        cleaned.append(process_frame(image, cleanup_image,
                             should_cancel=lambda: self.is_cancelled))
                     else:
                         cleaned.append(store_frame(cleanup_sensor_image(image, defect_mask_path=image_mask,
@@ -1095,7 +1096,8 @@ class BatchWorker(QThread):
             return self.reg_downscale_width
         return max(64, int(round(widest * int(ratio) / 100.0)))
 
-    def _save_image(self, path: str, image, extension: str, scale_cfg=None) -> bool:
+    def _save_image(self, path: str, image, extension: str, scale_cfg=None,
+                    watermark_cfg=None) -> bool:
         """Commit a file and record only real, successful artifacts."""
         if self.is_cancelled:
             raise RegistrationCancelled()
@@ -1114,6 +1116,14 @@ class BatchWorker(QThread):
                 if scale_cfg:
                     from utils import scalebar
                     image = scalebar.burn(image, scale_cfg)
+                if watermark_cfg:
+                    from utils import watermark
+                    try:
+                        image = watermark.burn(
+                            image, watermark_cfg,
+                            should_cancel=lambda: self.is_cancelled)
+                    except watermark.WatermarkCancelled as exc:
+                        raise RegistrationCancelled() from exc
                 ok = imwrite_auto(path, image, params, exif=self._source_exif,
                                   icc_profile=self._source_icc_profile)
             except RegistrationCancelled:
@@ -1205,6 +1215,7 @@ class BatchWorker(QThread):
                     'failed': [f"{task['name']}: {task['error']}" for task in self.task_results if 'error' in task],
                     'cancelled': self.is_cancelled, 'outputs': list(self.written_paths),
                     'aligned_stacks': [item for item in self.aligned_stacks if item['files']],
+                    'watermark_outputs': bool(self._stack_watermark('output')),
                     'tasks': list(self.task_results), 'counts': counts})
             except Exception as exc:
                 operation.fail()
@@ -1244,6 +1255,24 @@ class BatchWorker(QThread):
             return None
         cfg['px_um'] = px_um
         return cfg
+
+    def _stack_watermark(self, target='output') -> Optional[dict]:
+        """Frozen watermark for this batch task, scoped to one artifact kind."""
+        from utils import watermark
+        raw = self.processing_settings.get('watermark')
+        if not isinstance(raw, dict):
+            return None
+        if any(item in raw for item in watermark.TARGETS):
+            cfg = watermark.safe_config(raw.get(target))
+            return cfg.to_dict() if cfg is not None else None
+        # Older callers stored one shared style plus a scope list.
+        targets = raw.get('targets') or ()
+        if target not in targets:
+            return None
+        mapping = {key: raw.get(key, default)
+                   for key, (_attr, default) in watermark.ATTRS.items()}
+        cfg = watermark.safe_config(mapping)
+        return cfg.to_dict() if cfg is not None else None
 
     def _process_single_stack(self, stack_images_with_times, output_dir,
                               stack_name, stack_index):
@@ -1410,24 +1439,29 @@ class BatchWorker(QThread):
                     save_aligned = True
         
                 stack_cfg = self._stack_scale_cfg()
+                stack_wm = self._stack_watermark('output')
                 saved = []
                 if result is not None:
                     output_path = unique_path(os.path.join(output_dir, f'{stack_name}.{output_format}'))
-                    ok = self._save_image(output_path, result, output_format, scale_cfg=stack_cfg)
+                    ok = self._save_image(output_path, result, output_format,
+                                          scale_cfg=stack_cfg, watermark_cfg=stack_wm)
                     saved.append(ok)
                     if ok:
                         self.written_paths.append(self._task_artifacts[-1])
         
                 if save_aligned and aligned_for_export is not None:
                     stack_cfg = self._stack_scale_cfg('registered')
+                    stack_wm = self._stack_watermark('registered')
                     directory = create_stack_directory(output_dir, f'{stack_name}_aligned')
                     artifact = {'path': directory, 'name': stack_name, 'files': [],
-                                'annotations_baked': bool(stack_cfg)}
+                                'annotations_baked': bool(stack_cfg),
+                                'watermark_baked': bool(stack_wm)}
                     self.aligned_stacks.append(artifact)
                     for index, image in enumerate(aligned_for_export):
                         filename = frame_export_name(export_names[index], index, output_format)
                         ok = self._save_image(os.path.join(directory, filename), image,
-                                              output_format, scale_cfg=stack_cfg)
+                                              output_format, scale_cfg=stack_cfg,
+                                              watermark_cfg=stack_wm)
                         saved.append(ok)
                         if ok:
                             artifact['files'].append(self._task_artifacts[-1])
@@ -1595,7 +1629,9 @@ class BatchWorker(QThread):
         output_format = settings.get('format', 'png').lstrip('.').lower()
         name = os.path.basename(os.path.normpath(folder_path))
         output = os.path.join(self._get_output_path_for_single_folder(folder_path), f'{name}.{output_format}')
-        if not self._save_image(output, result, output_format, scale_cfg=self._stack_scale_cfg()):
+        if not self._save_image(output, result, output_format,
+                                scale_cfg=self._stack_scale_cfg(),
+                                watermark_cfg=self._stack_watermark('output')):
             raise OSError(f'No files were written for {name}')
         self.written_paths.append(self._task_artifacts[-1])
 
@@ -1622,7 +1658,7 @@ class GifSaverWorker(QThread):
     finished_signal = pyqtSignal(bool, str)  # success, message
 
     def __init__(self, images, file_path, duration_sec, label_manager, target_type, scale_cfg=None,
-                 linear_dng_metadata=None):
+                 linear_dng_metadata=None, watermark_cfg=None):
         super().__init__()
         self.images = tuple(images)
         self.file_path = file_path
@@ -1630,6 +1666,7 @@ class GifSaverWorker(QThread):
         self.label_manager = label_manager
         self.target_type = target_type
         self.scale_cfg = scale_cfg
+        self.watermark_cfg = watermark_cfg
         self.linear_dng_metadata = linear_dng_metadata
         self.is_cancelled = False
 
@@ -1671,6 +1708,14 @@ class GifSaverWorker(QThread):
                         if self.scale_cfg:
                             from utils import scalebar
                             image = scalebar.burn(image, self.scale_cfg)
+                        if self.watermark_cfg:
+                            from utils import watermark
+                            try:
+                                image = watermark.burn(
+                                    image, self.watermark_cfg,
+                                    should_cancel=lambda: self.is_cancelled)
+                            except watermark.WatermarkCancelled as exc:
+                                raise RegistrationCancelled() from exc
                         image = to_display_uint8(image)
                         if image.ndim == 2:
                             image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)

@@ -12,6 +12,10 @@ import os
 # something a user install can do.
 os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 
+if __name__ == "__main__":
+    import multiprocessing
+    multiprocessing.freeze_support()
+
 # Windowed PyInstaller builds may set Python's streams to None even when a CLI
 # caller supplied inherited handles. Never attach or create a console.
 def _is_cli_invocation(argv):
@@ -218,6 +222,46 @@ def _restore_scalebar_state(host, saved) -> None:
     if restore is None:
         return
     restore(saved)
+
+
+def _restore_watermark_state(host, saved) -> None:
+    """Apply a snapshot watermark state, ignoring hosts without a window."""
+    if not isinstance(saved, dict) or not saved:
+        return
+    restore = getattr(host, "_restore_watermark_state", None)
+    if restore is not None:
+        restore(saved)
+        return
+    from utils import watermark
+    watermark.restore_state(host, saved)
+
+
+def _capture_watermark_snapshot(host) -> dict:
+    """Watermark state for an undo snapshot, tolerant of partial test hosts."""
+    from utils import watermark
+    try:
+        return watermark.capture_state(host)
+    except Exception:
+        return {}
+
+
+def _resolve_wipe_right_record(host, image, target):
+    """Record owning the B-side pixels, including independent aligned history."""
+    record = host.output_manager.record_for_image(image)
+    if record is None and target == "registered":
+        record_for_row = getattr(host.output_manager, "record_for_row", None)
+        if record_for_row is not None:
+            for row in range(host.output_list.count()):
+                candidate = record_for_row(row)
+                if (candidate is not None and candidate.kind == "aligned"
+                        and any(frame is image
+                                for frame in (candidate.aligned_frames or ()))):
+                    return candidate
+        selected = host.output_manager.record_for_item(
+            host.output_list.currentItem())
+        if selected is not None and selected.kind == "aligned":
+            record = selected
+    return record
 
 
 def _restore_label_state(host, label_state) -> None:
@@ -827,6 +871,7 @@ class OpenFocus(QMainWindow):
             "unrecoverable_source_changes": list(getattr(
                 self, "unrecoverable_source_changes", []) or []),
             "scalebar": self._capture_scalebar_state(),
+            "watermark": _capture_watermark_snapshot(self),
             "labels": _capture_label_state(self),
             "parameters": self._capture_parameter_state(),
         }
@@ -834,6 +879,41 @@ class OpenFocus(QMainWindow):
     def _capture_scalebar_state(self) -> dict:
         from utils.scalebar import capture_state
         return capture_state(self)
+
+    def _capture_watermark_state(self) -> dict:
+        from utils import watermark
+        return watermark.capture_state(self)
+
+    def push_watermark_undo(self, previous: dict) -> None:
+        """Record a watermark configuration change as one undoable step."""
+        if getattr(self, "_undo_guard", False):
+            return
+        state = self._capture_stack_state()
+        state["watermark"] = dict(previous or {})
+        state["annotations_only"] = True
+        self._mark_project_dirty()
+        self._undo_stack.append(state)
+        if len(self._undo_stack) > self.UNDO_LIMIT:
+            self._undo_stack.pop(0)
+        self._redo_stack.clear()
+        self._refresh_undo_actions()
+
+    def _restore_watermark_state(self, saved) -> None:
+        if not isinstance(saved, dict) or not saved:
+            return
+        from utils import watermark
+        before = watermark.capture_state(self)
+        watermark.restore_state(self, saved)
+        if watermark.capture_state(self) == before:
+            return
+        # Undo/redo of a watermark change is committed state, exactly like an
+        # apply or a removal: a crash must restore it instead of a stale
+        # snapshot that would resurrect a removed watermark.
+        try:
+            from utils import recovery
+            recovery.write_snapshot(self)
+        except Exception:
+            pass
 
     def _capture_label_state(self):
         """Label set as plain data, for undo snapshots.
@@ -961,6 +1041,7 @@ class OpenFocus(QMainWindow):
         if state.get("annotations_only"):
             _restore_label_state(self, state.get("labels"))
             _restore_scalebar_state(self, state.get("scalebar"))
+            _restore_watermark_state(self, state.get("watermark"))
             self.refresh_annotation_views()
             self._mark_project_dirty()
             return
@@ -985,6 +1066,7 @@ class OpenFocus(QMainWindow):
             "unrecoverable_source_changes", []) or [])
         _restore_label_state(self, state.get("labels"))
         _restore_scalebar_state(self, state.get("scalebar"))
+        _restore_watermark_state(self, state.get("watermark"))
         # The restored stack invalidates every derived result, exactly like
         # rotate/flip do.
         self.transform_manager.invalidate_processing_results(
@@ -2131,10 +2213,60 @@ class OpenFocus(QMainWindow):
         }.get(where, trans.t("scalebar_none_msg"))
         self.statusBar().showMessage(message, 6000)
 
+    def remove_watermark(self, where: str) -> None:
+        """Clear one watermark scope, leaving the other scopes intact."""
+        from utils import watermark
+        previous = self._capture_watermark_state()
+        item = getattr(self, "output_list", None)
+        selected = (self.output_manager.record_for_item(item.currentItem())
+                    if item is not None and item.currentItem() is not None else None)
+        watermark.remove_target(self, where, selected)
+        baked = any(getattr(record, "watermark_baked", False)
+                    for record in watermark._iter_records(self))
+        if self._capture_watermark_state() == previous:
+            self.statusBar().showMessage(
+                trans.t("watermark_baked_notice") if baked and where in ("output", "all")
+                else trans.t("watermark_none_msg"), 6000)
+            return
+        self.push_watermark_undo(previous)
+        self.persist_settings()
+        # Removal is committed state: without a fresh snapshot a crash or an
+        # update restart would restore the watermark the user just deleted.
+        try:
+            from utils import recovery
+            recovery.write_snapshot(self)
+        except Exception:
+            pass
+        self.refresh_annotation_views()
+        if where == "all" and baked:
+            message = trans.t("watermark_removed_all_baked")
+        else:
+            message = {
+                "source": trans.t("watermark_removed_source"),
+                "registered": trans.t("watermark_removed_registered"),
+                "output": trans.t("watermark_removed_output"),
+                "all": trans.t("watermark_removed_all"),
+            }.get(where, trans.t("watermark_none_msg"))
+        self.statusBar().showMessage(message, 6000)
+
+    def _sync_watermark_actions(self) -> None:
+        """Disable the editor when there is nothing it could preview."""
+        ui = getattr(self, "ui_objs", {})
+        action = ui.get("action_watermark_add")
+        if action is None:
+            return
+        has_target = bool(
+            getattr(self, "raw_images", ()) or
+            getattr(self, "registration_results", ()) or
+            getattr(self, "fusion_result", None) is not None or
+            getattr(self, "fusion_results", ()))
+        action.setEnabled(has_target)
+
     def refresh_annotation_views(self) -> None:
         """Redraw both canvases after label or scale-bar state changes."""
         self.invalidate_annotation_caches()
         self.output_manager.refresh_annotation_export_state()
+        self._sync_watermark_actions()
         try:
             if self.current_display_index is not None and self.stack_images:
                 self.update_source_view(self.current_display_index)
@@ -2163,6 +2295,11 @@ class OpenFocus(QMainWindow):
         """Configure the exported-image scale bar with a live preview."""
         from dialogs.scalebar import ScaleBarDialog
         ScaleBarDialog(self).exec()
+
+    def show_watermark_dialog(self) -> None:
+        """Configure the visible tiled watermark with a live preview."""
+        from dialogs.watermark import WatermarkDialog
+        WatermarkDialog(self).exec()
 
     def show_depth_map_dialog(self) -> None:
         """Focus-position (pseudo-depth) map viewer and exporter."""
@@ -2557,10 +2694,11 @@ class OpenFocus(QMainWindow):
         if not 0 <= index < len(self.raw_images) or id(self.raw_images[index]) != key[1]:
             return
         from core.source_previews import SourceRegionWorker
-        from utils import scalebar
+        from utils import scalebar, watermark
         frame = self.raw_images[index]
         worker = SourceRegionWorker(frame, key, labels=self.label_manager.snapshot(), index=index,
                                     scale_cfg=scalebar.export_cfg(self, target='source'),
+                                    watermark_cfg=watermark.export_cfg(self, target='source'),
                                     metadata=getattr(frame, 'linear_metadata', None) or self.linear_dng_metadata)
         workers[key] = worker
         def accept(decoded_key, region_request, image, rect):
@@ -2608,10 +2746,11 @@ class OpenFocus(QMainWindow):
             try:
                 # 获取原始图片并根据需要叠加标签
                 original_pixmap = self.get_or_create_source_pixmap(index)
-                from utils import scalebar
+                from utils import scalebar, watermark
                 display_pixmap = self.label_manager.apply_labels_to_source_pixmap(
                     original_pixmap, index,
-                    scale_cfg=scalebar.export_cfg(self, target="source"))
+                    scale_cfg=scalebar.export_cfg(self, target="source"),
+                    watermark_cfg=watermark.export_cfg(self, target="source"))
 
                 if not getattr(self, '_source_regions_connected', False):
                     self.lbl_source_img.sourceRegionRequested.connect(self._request_source_region)
@@ -2777,6 +2916,9 @@ class OpenFocus(QMainWindow):
         from core.source_frames import display_image
         return cv2_to_pixmap(display_image(image))
 
+    def _wipe_right_record(self, image, target):
+        return _resolve_wipe_right_record(self, image, target)
+
     def _wipe_pixmap(self, kind: str, index: int, image):
         """Pixmap for one side of the wipe, cached across slider steps.
 
@@ -2797,29 +2939,33 @@ class OpenFocus(QMainWindow):
         record = self.output_manager.record_for_image(image) if kind == "right" else None
         target = ("input" if kind == "left" else
                   "registered" if self._wipe_right_shows_registration() else "output")
+        if kind == "right":
+            record = _resolve_wipe_right_record(self, image, target)
         if target == "output":
             index = 0
         baked = record is not None and record.annotations_baked
         labeled = not baked and self.label_manager.is_enabled_for_target(target)
         label_revision = int(getattr(self.label_manager, "revision", 0))
-        from utils import scalebar
-        scale_cfg = scalebar.export_cfg(
-            self, target="source" if target == "input" else target, record=record)
-        # Include the scaled-bar configuration in the key: without it a
-        # cached pixmap kept showing a bar after it was removed (or kept
-        # hiding one after it was added), until the frame changed.
+        from utils import scalebar, watermark
+        wm_target = "source" if target == "input" else target
+        scale_cfg = scalebar.export_cfg(self, target=wm_target, record=record)
+        watermark_cfg = watermark.export_cfg(self, target=wm_target, record=record)
+        # Include the scaled-bar/watermark configuration in the key: without it
+        # a cached pixmap kept showing an annotation after it was removed (or
+        # kept hiding one after it was added), until the frame changed.
         scale_key = (None if scale_cfg is None
                      else tuple(sorted(scale_cfg.items())))
+        watermark_key = (None if watermark_cfg is None
+                         else tuple(sorted(watermark_cfg.items())))
         entry = cache.get(kind)
         if (entry is not None and entry[0] is image and entry[1] == index
                 and entry[2] == labeled and entry[3] == scale_key
-                and entry[4] == label_revision):
-            return entry[5]
+                and entry[4] == label_revision and entry[5] == watermark_key):
+            return entry[6]
         from core.source_frames import display_image
         display = display_image(image)
         if target == "registered":
-            selected = self.output_manager.record_for_item(self.output_list.currentItem())
-            metadata = (selected.linear_dng_metadata if selected is not None and selected.kind == "aligned"
+            metadata = (record.linear_dng_metadata if record is not None and record.kind == "aligned"
                         else getattr(self, "linear_dng_metadata", None))
         elif target == "output":
             metadata = getattr(record, "linear_dng_metadata", None)
@@ -2832,15 +2978,18 @@ class OpenFocus(QMainWindow):
         if metadata is not None and not getattr(image, 'preview_is_display', False):
             from utils.linear_dng import develop_linear
             display = develop_linear(display, metadata)
-        if labeled or scale_cfg:
+        if labeled or scale_cfg or watermark_cfg:
             display = self.label_manager.display_bgr_image(
                 target, display, index, scale_cfg=scale_cfg,
-                output_id=record.output_id if record else None)
+                output_id=record.output_id if record else None,
+                watermark_cfg=watermark_cfg,
+                watermark_canvas=image.shape,
+                annotations_baked=bool(record is not None and record.annotations_baked))
         pixmap = self._bgr_to_pixmap(display)
         if len(cache) > 4:
             cache.clear()
         cache[kind] = (image, index, labeled, scale_key, label_revision,
-                       pixmap)
+                       watermark_key, pixmap)
         return pixmap
 
     def set_wipe_mode(self, enabled: bool) -> None:

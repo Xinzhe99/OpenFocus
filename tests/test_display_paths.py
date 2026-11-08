@@ -126,6 +126,8 @@ class TestMagnifierRepaintsAfterResize:
 class TestWipePixmapCache:
     """The A/B wipe caches one pixmap per side across slider steps."""
 
+    pytestmark = pytest.mark.usefixtures("qapp")
+
     def _window(self):
         from types import SimpleNamespace
         from controllers.label_manager import LabelManager
@@ -180,6 +182,37 @@ class TestWipePixmapCache:
         window.caption.enabled = True
         plain = _rgb_array(window._wipe_pixmap("left", 0, image))
         assert tuple(plain[0, 0]) == (80, 80, 80)
+
+    def test_independent_aligned_history_keeps_its_watermark_and_baked_state(self):
+        from types import SimpleNamespace
+        from utils import watermark
+
+        window = self._window()
+        window.caption.enabled = True
+        first_pixels = np.full((160, 240, 3), 80, np.uint8)
+        first_cfg = watermark.normalize_config({'text': 'OWNER', 'size_percent': 10})
+        second_cfg = watermark.normalize_config({'text': 'BAKED', 'size_percent': 10})
+        second_pixels = watermark.burn(np.full_like(first_pixels, 150), second_cfg)
+        records = [SimpleNamespace(
+            kind='aligned', aligned_frames=(pixels,), output_id=str(index),
+            annotations_baked=baked, watermark_baked=baked,
+            watermark_initialized=True, watermark_config=config.to_dict(),
+            scale_bar_initialized=True, scale_bar_config=None, linear_dng_metadata=None)
+            for index, (pixels, config, baked) in enumerate(
+                ((first_pixels, first_cfg, False), (second_pixels, second_cfg, True)))]
+        selected = [0]
+        window.output_manager.record_for_item = lambda _item: records[selected[0]]
+        window.output_manager.record_for_row = lambda row: records[row]
+        window.output_list.count = lambda: len(records)
+        expected = _rgb_array(window._wipe_pixmap('right', 0, first_pixels))
+        assert not np.array_equal(expected, _rgb_array(cv2_to_pixmap(first_pixels)))
+        selected[0] = 1
+        window._wipe_pix_cache.clear()
+        np.testing.assert_array_equal(
+            _rgb_array(window._wipe_pixmap('right', 0, first_pixels)), expected)
+        np.testing.assert_array_equal(
+            _rgb_array(window._wipe_pixmap('right', 0, second_pixels)),
+            _rgb_array(cv2_to_pixmap(second_pixels)))
 
 
 

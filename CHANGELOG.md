@@ -5,6 +5,58 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- Add a panorama workspace with native-coordinate control-point editing,
+  connected-pair quality reports, per-source paint/import masks and preview
+  overlays for seams, image numbers and excluded pixels.
+- Plan stitching once for tiled full-resolution rendering, content seams,
+  feathering, hard selection and multiband pyramids; reuse the captured plan
+  between preview and export while its source and settings remain unchanged.
+- Add exposure/color compensation, local gain fields, linear-light blending,
+  explicit ICC policies and sanitized source EXIF for TIFF/PNG mosaics.
+- Add rectilinear, cylindrical and equirectangular camera projections, lens
+  and vignetting parameters, bracket exposure fusion and Debevec/Reinhard HDR.
+- Add an opt-in remote mosaic engineering gate with real uncompressed TIFF
+  decoding, native bit-depth and alpha checks, streamed export readback and
+  measured process memory. Alpha-sidecar reconstruction is reported explicitly
+  and does not claim transparent TIFF import support.
+- Add an output-list **Share** submenu. Copy the current result at full
+  resolution as a real JPEG plus a decoded bitmap, copy persistent file URLs
+  for one or many selected results, and reveal a result in Explorer, Finder or
+  the desktop file manager. Unsaved or outdated results are written as PNG
+  only after choosing a folder, with unique names and current annotations;
+  existing exports are reused only while they still match. The private-link
+  entry stays disabled until hosted sharing exists. Clipboard ownership is
+  verified after writing, so a locked clipboard reports an error instead of a
+  false success. Menu and feedback strings are translated in all twelve
+  language packs.
+- Add a visible tiled text watermark under Tools → Watermark for source
+  frames, registered frames and fusion results. Source, registered and output
+  scopes keep independent text/style; editing one never rewrites the others.
+  Text, font, relative size, opacity, ink colour, angle and density are
+  editable with a live preview of the real target; Apply commits one undoable
+  edit and Cancel leaves the committed configuration untouched. A newly
+  loaded stack does not inherit the previous stack's text, and the text is
+  never written to global preferences.
+- Burn the frozen watermark into every GUI export path: single save/Save As,
+  output batch and drag-out, source/registered frame folders, multi-page
+  TIFF, GIF, GUI batch output and aligned stacks, and representable Linear
+  DNG. 8-bit and 16-bit depth, PNG alpha and pixels outside the anti-aliased
+  mask are preserved; layered TIFF is blocked while a watermark is active,
+  and results whose pixels already contain one cannot receive another.
+- Persist watermark scope and style in projects and crash recovery; global
+  preferences store style defaults without the watermark text. Per-output
+  bindings survive reordering and renaming, and corrupt project fields are
+  handled safely.
+- Reject watermark text whose font produces no visible ink, and spill large
+  watermark copies directly to admitted disk storage when RAM is unavailable.
+- Keep result watermarks attached to their loaded stack through transforms
+  and undo, isolate reloaded stacks and historical results, apply registered
+  scope to the selected aligned result, and refresh recovery after removal,
+  undo and redo.
+- Include the frozen watermark in shared JPEG previews and preserve transparent
+  source coverage before compositing the display background.
+
 ### Changed
 - Default Batch Image Converter to lossless PNG, restore the last explicitly
   selected output format, and show the actual result extension below the
@@ -53,6 +105,27 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   desktop multipage exports and the public helper's historical LZW default.
 
 ### Fixed
+- Recognize reopened strided mappings during source materialization, fusion
+  return and ROI provenance capture, avoiding duplicate stacks and untracked
+  heap crops while preserving mapped-file ownership.
+- Resolve A/B registered-frame watermarks, baked annotations and linear-RAW
+  development from the displayed history record instead of the selected row.
+- Fit mosaic previews to the visible output geometry, restore placement framing
+  after edits, protect imported mask files from export overwrite, and report
+  invalid camera/control-point settings with actionable translated errors.
+- Clarify all twelve manuals: alpha masks require PNG; TIFF masks are grayscale
+  or BGR without alpha, and panorama placement uses camera orientation/FOV
+  instead of the planar X/Y/scale/rotation controls.
+- Keep HDR bracket planning samples and merged coverage in temporary mappings,
+  reuse bracket scratch for retained samples, and release borrowed pages between
+  groups so preview plans do not accumulate unadmitted resident canvases.
+- Report the completed seam-planning stage and remove unused pair-transform
+  fields from automatic control-point detection.
+- Isolate desktop renders in a spawned process so a native fault or killed
+  render preserves the open project and reports the worker's exit reason.
+  Preserve lazy source/alignment descriptors and the shared frame-memory cap;
+  acknowledge mapped results before transferring their file ownership and
+  remove unaccepted scratch after a failed or cancelled render.
 - Give macOS fusion, comparison, depth-map and batch threads enough native
   stack for cold LLVM compilation, preventing a crash at the stack guard page.
 - Explicitly disable OpenCV parallel regions inside native fusion jobs and

@@ -212,6 +212,9 @@ def _collect_state(window) -> Dict[str, Any]:
             "manual" if float(getattr(window, "scale_um_per_px_manual", 0.0) or 0.0) > 0
             else "metadata"),
     }
+    from utils import watermark
+    settings["watermark"] = watermark.settings_from_window(window)
+    settings["watermark"]["outputs"] = watermark.record_configs(window)
     if settings["defect_mask_path"]:
         settings["defect_mask_sha256"] = _sensor_mask_digest(settings["defect_mask_path"])
     settings["method_parameters"] = {
@@ -916,6 +919,9 @@ def _apply_settings(window, state: Dict[str, Any]) -> None:
     window.scale_bar_text_align = settings.get("scale_bar_text_align", "auto")
     window.scale_bar_custom_x = float(settings.get("scale_bar_custom_x", 0.95))
     window.scale_bar_custom_y = float(settings.get("scale_bar_custom_y", 0.95))
+
+    from utils import watermark
+    watermark.apply_settings(window, settings.get("watermark") or {})
 
     labels = state.get("labels", {})
     lm = getattr(window, "label_manager", None)

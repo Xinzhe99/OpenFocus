@@ -5,6 +5,7 @@ never cause a full-resolution decode; transforms retain that separation.
 """
 from collections import OrderedDict
 from dataclasses import dataclass, replace
+from functools import partial
 from io import BytesIO
 import logging
 import math
@@ -17,7 +18,7 @@ import cv2
 import numpy as np
 from PIL import Image
 
-from core.frame_storage import store_frame
+from core.frame_storage import is_mapped_frame, store_frame
 from utils.image_utils import read_image_exif
 
 logger = logging.getLogger(__name__)
@@ -78,11 +79,11 @@ class PreviewPixels:
     """A preview's disk lifetime without pinning its pixel allocation."""
     def __init__(self, image):
         from core.frame_storage import (storage_directory, require_disk_space,
-                                        track_temp_file, _storage_error)
+                                        track_temp_file, _storage_error, _frame_file)
         directory = storage_directory()
         require_disk_space(image.nbytes, directory)
         try:
-            fd, self.path = tempfile.mkstemp(prefix='openfocus-preview-', dir=directory)
+            fd, self.path = _frame_file(directory, image.nbytes, prefix='openfocus-preview-')
         except OSError as exc:
             raise _storage_error(directory, image.nbytes, exc) from exc
         self.shape, self.dtype = image.shape, image.dtype
@@ -641,14 +642,17 @@ def process_frame(frame, processor, *, shape=None, dtype=None, should_cancel=Non
     return ProcessedFrame(frame, processor, shape, dtype, should_cancel, scratch)
 
 
+def _crop_pixels(image, *, x, y, width, height, channels):
+    image = image[y:y + height, x:x + width]
+    return image if channels is None or image.ndim != 3 else image[:, :, :channels]
+
+
 def crop_frame(frame, x, y, width, height, *, channels=None, should_cancel=None):
     """Retain a repeatable crop rather than a view pinning a decoded source."""
     shape = (height, width) + frame.shape[2:]
     if channels is not None and frame.ndim == 3:
         shape = (height, width, channels)
-    def crop(image):
-        image = image[y:y + height, x:x + width]
-        return image if channels is None or image.ndim != 3 else image[:, :, :channels]
+    crop = partial(_crop_pixels, x=x, y=y, width=width, height=height, channels=channels)
     return process_frame(frame, crop, shape=shape, should_cancel=should_cancel, scratch_bytes=0)
 
 
@@ -894,8 +898,7 @@ def materialize_frames(frames, should_cancel=None, *, staging_bytes=0,
 
     def save(image):
         check_cancel()
-        mapped = isinstance(image, np.memmap) and getattr(image, 'filename', None) is not None
-        return image if mapped else store_frame(image, prefer_ram=prefer_ram)
+        return image if is_mapped_frame(image) else store_frame(image, prefer_ram=prefer_ram)
 
     with scratch_directory():
         check_cancel()
@@ -903,8 +906,7 @@ def materialize_frames(frames, should_cancel=None, *, staging_bytes=0,
         total = len(frames) if known else 0
         workers = 1
         if known:
-            size = sum(frame.nbytes for frame in frames
-                       if not (isinstance(frame, np.memmap) and frame.filename is not None))
+            size = sum(frame.nbytes for frame in frames if not is_mapped_frame(frame))
             paths = [frame.path for frame in frames if isinstance(frame, SourceFrame)]
             select_scratch(size + staging_bytes, paths,
                            preferred_size=size + staging_bytes + preferred_staging_bytes)
@@ -933,7 +935,7 @@ def materialize_frames(frames, should_cancel=None, *, staging_bytes=0,
             for frame in frames:
                 check_cancel()
                 if not known:
-                    mapped = isinstance(frame, np.memmap) and frame.filename is not None
+                    mapped = is_mapped_frame(frame)
                     select_scratch((0 if mapped else frame.nbytes) + staging_bytes,
                                    [frame.path] if isinstance(frame, SourceFrame) else ())
                     staging_bytes = 0

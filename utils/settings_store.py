@@ -88,6 +88,18 @@ _PERSISTED_FIELDS = {
     "scale_bar_text_align": ("export/scale_bar_text_align", "auto", "str"),
     "scale_bar_custom_x": ("export/scale_bar_custom_x", 0.95, "float"),
     "scale_bar_custom_y": ("export/scale_bar_custom_y", 0.95, "float"),
+    # Watermark text is intentionally NOT a global preference: the spec keeps
+    # it in explicit projects and local recovery snapshots only.  The style
+    # fields below are harmless defaults for the next explicit edit.
+    "watermark_font_family": ("export/watermark_font_family", "", "str"),
+    "watermark_size_percent": ("export/watermark_size_percent", 3.5, "float"),
+    "watermark_opacity": ("export/watermark_opacity", 0.28, "float"),
+    "watermark_color": ("export/watermark_color", "white", "str"),
+    "watermark_angle": ("export/watermark_angle", -25.0, "float"),
+    "watermark_density": ("export/watermark_density", "standard", "str"),
+    "watermark_source_enabled": ("export/watermark_source", True, "bool"),
+    "watermark_registered_enabled": ("export/watermark_registered", False, "bool"),
+    "watermark_output_enabled": ("export/watermark_output", True, "bool"),
     "base_frame_correct": ("fusion/base_frame_correct", False, "bool"),
     "exposure_match": ("fusion/exposure_match", True, "bool"),
     "stack_reverse_order": ("fusion/stack_reverse_order", False, "bool"),
@@ -341,6 +353,11 @@ def save_parameter_memories(window) -> None:
 def load_window_settings(window) -> None:
     """Restore persisted preferences onto window attributes (defaults kept)."""
     settings = get_settings()
+    # Privacy: older builds stored the watermark text globally.  Never read
+    # it back, and remove it as soon as the store is opened.
+    if settings.contains("export/watermark_text"):
+        settings.remove("export/watermark_text")
+        settings.sync()
     if getattr(window, "ui_theme", None) not in ("dark", "light"):
         window.ui_theme = DEFAULT_THEME
     for attr, (key, default, kind) in _PERSISTED_FIELDS.items():
@@ -352,6 +369,22 @@ def load_window_settings(window) -> None:
     # Must run after the scalar fields: the smoothing migration reads the
     # legacy ofb_depth_smoothing value restored just above.
     load_parameter_memories(window)
+
+    # Watermark text/style is free-form persisted data: validate it here so a
+    # corrupt INI value cannot raise on the first preview or silently render a
+    # different mark.  An unusable text disables the feature (empty text).
+    from utils import watermark
+    mapping = {key: getattr(window, attr, default)
+               for key, (attr, default) in watermark.ATTRS.items()}
+    # Never source the text from a previous in-memory window; only a project
+    # or recovery snapshot may restore it.
+    mapping["text"] = ""
+    cfg = watermark.safe_config(mapping)
+    if cfg is None:
+        window.watermark_text = ""
+    else:
+        for key, value in cfg.to_dict().items():
+            setattr(window, watermark.ATTRS[key][0], value)
 
     raw_recent = settings.value(RECENT_FILES_KEY, []) or []
     if not isinstance(raw_recent, list):
@@ -369,6 +402,10 @@ def save_window_settings(window) -> None:
     settings = get_settings()
     for attr, (key, default, _kind) in _PERSISTED_FIELDS.items():
         settings.setValue(key, getattr(window, attr, default))
+    # Privacy: older builds wrote the watermark text here.  Remove the stale
+    # key; the text belongs to projects/recovery snapshots only.
+    if settings.contains("export/watermark_text"):
+        settings.remove("export/watermark_text")
     settings.setValue(LANGUAGE_KEY, trans.current_lang)
     settings.setValue(RECENT_FILES_KEY, list(getattr(window, "recent_files", [])))
     settings.setValue(RECENT_PROJECTS_KEY, list(getattr(window, "recent_projects", [])))

@@ -115,6 +115,47 @@ Retained processing frames open the same scoped admission when resolved later,
 so temporary mappings survive until their final views are released. Explicit
 temporary-directory choices remain binding.
 
+HDR mosaic planning stages bracket colors and coverage in the captured scratch
+directory. It reuses the first bracket's mappings for the merged low sample and
+closes all region leases before retaining the plan. Merge workspaces remain
+admitted per bracket group; retaining multiple groups does not retain their
+decoded low canvases in RAM.
+
+### GUI render isolation
+
+`RenderManager` starts `RenderProcessWorker`, which runs the existing
+`RenderWorker` pipeline in a fresh `spawn` process for each render, preview or
+comparison-queue entry. A native fault or OOM kill becomes an error with the
+exit code, POSIX signal or Windows NTSTATUS; the GUI and its open project stay
+alive. The user can change settings and retry. No automatic retry or fallback
+to in-process rendering is performed.
+
+Path-backed sources retain their fingerprints and deferred processing steps.
+Existing arrays cross as read-only mapped descriptors with their dtype,
+offset and strides; heap arrays are staged to files without pickling pixels.
+The child retains result maps and previews until the parent opens them and
+acknowledges ownership. Parent-side owners keep transferred files until their
+last views are released. Only explicitly owned files may be deleted; a
+temporary-looking filename does not establish ownership. The parent records
+new child scratch files and removes unaccepted leftovers after child exit.
+
+Registered fusion/registration schemas travel as metadata; their runners retain
+the existing lazy `module:callable` imports, including composite registrations.
+
+The parent holds the heavy-job lease for the child's lifetime. Child admission
+uses the tighter of its current physical headroom and the parent-approved RAM
+budget, and its managed-frame allowance excludes live parent frame snapshots.
+Cancellation first sets the shared event. After three seconds without exit,
+only the isolated process is terminated; the GUI thread is never terminated.
+
+Fresh processes also re-import libraries, recompile uncached native kernels
+and create new inference sessions. That startup cost applies to every preview
+and comparison method; core warm-throughput tables below do not include it.
+Depth maps, batch jobs, background fill and viewport pixels retain their
+existing worker paths. Standalone callers may still use `RenderWorker`
+directly; the desktop render manager always uses the process boundary.
+
+
 GUI previews resolve these retained frames through the background pixel worker.
 Warm alignment plans validate the active stack while loading; their published
 frames retain job cancellation, not the active stack's later revision predicate.
@@ -181,7 +222,7 @@ are single runs on shared hosts; they do not establish an algorithm speed ratio
 across different CPU allocations or a memory bound for every image resolution.
 The user workstation retained its one-CPU/512-MiB local validation limits.
 
-macOS fusion, comparison, depth-map and GUI batch workers reserve at least
+In-process fusion, comparison, depth-map and GUI batch workers reserve at least
 8 MiB of native thread stack before starting. A captured ARM64 crash showed
 LLVM code generation exhausting Qt's approximately 544-KiB default stack;
 larger caller-configured stacks are preserved. The cold-process Qt regression

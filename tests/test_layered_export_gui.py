@@ -127,7 +127,8 @@ def test_export_tracks_omitted_annotations(qapp, monkeypatch, tmp_path, annotati
     manager.export_layered_tiff(record, record, path)
     manager._layered_tiff_completed(True, path)
     assert record.exported and record.exported_image is record.image
-    assert record.exported_annotations == {'labels': [], 'scale': None}
+    assert record.exported_annotations == {'labels': [], 'scale': None,
+                                           'watermark': None}
     assert record.protected == (annotation in ('label', 'scale'))
     if annotation == 'scale':
         record.scale_bar_config = None

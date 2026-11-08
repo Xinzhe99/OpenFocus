@@ -11,7 +11,8 @@ from utils import memory, resource_path
 from utils.image_utils import apply_exposure_gain, normalize_fuse_input
 from utils.sorting import natural_sort_key
 from core.algorithms import get_fusion, resolve_fusion_parameters, resolve_runner
-from core.frame_storage import capture_scratch, create_frame, run_with_scratch, store_frame
+from core.frame_storage import (capture_scratch, create_frame, is_mapped_frame,
+                                run_with_scratch, store_frame)
 
 
 # Tile 参数已改为 MultiFocusFusion 实例属性，见类构造函数中的默认值和访问器方法。
@@ -856,7 +857,7 @@ class MultiFocusFusion:
                     frame = frame.source
                 if isinstance(frame, SourceFrame):
                     frame.validate_source()
-        return result if isinstance(result, np.memmap) and result.filename is not None else store_frame(result)
+        return result if is_mapped_frame(result) else store_frame(result)
     
     def _fuse_guided_filter(self, 
                             input_source: Union[str, List[np.ndarray]], 
