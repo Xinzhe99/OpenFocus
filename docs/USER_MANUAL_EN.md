@@ -38,6 +38,7 @@ OpenFocus is a professional multi-focus image fusion desktop application designe
 - **Multi-page TIFF**: single-file Z-stacks load page-by-page and export back into one file
 - **Depth Map**: per-pixel focus-position maps with custom pseudo-color schemes
 - **Scale Bar**: publication-grade scale bars with automatic µm/px calibration
+- **Watermark**: visible tiled attribution text burned into exported copies
 - **Crash Auto-Recovery**: the last working session is offered for restore after a crash
 - **Multi-language**: twelve UI languages — English, 中文, 日本語, Español, Deutsch, Français, Русский, 한국어, Português, Italiano, Nederlands, Polski — with automatic system-language detection
 - **Headless and Agent CLIs**: Script headless pipelines for CI, or drive a running window through the local control channel
@@ -159,7 +160,7 @@ The top menu bar provides access to all functions:
 
 - **File**: import/export operations, projects, processing templates and the recent-files list
 - **Edit**: Undo/redo, reset the current stack, image transformations and retouching
-- **Tools**: Image stitching, batch processing and conversion, method comparison, depth map, flat-field correction, scale bar and labels
+- **Tools**: Image stitching, batch processing and conversion, method comparison, depth map, flat-field correction, scale bar, watermark and labels
 - **Settings**: Advanced Settings (performance, registration and alignment diagnostics, sensor cleanup, output naming, AI, startup), GPU acceleration, theme and language
 - **Help**: Environment info, contact information, update check, and the log folder
 
@@ -200,8 +201,8 @@ combined image.
 
 **Edit → Reset Current Stack…** restores the imported images, their original
 order and import scale, including frames later removed or excluded. It clears
-all outputs (including unsaved work), labels and scale bars on every target,
-ROI and registration state, and the undo/redo history. The confirmation defaults
+all outputs (including unsaved work), labels, scale bars and the watermark on
+every target, ROI and registration state, and the undo/redo history. The confirmation defaults
 to Cancel. Files on disk are not deleted. Wait for active operations to finish
 before resetting; an empty stack cannot be reset.
 After reopening a project, reset uses the frames and loading scale saved in
@@ -330,6 +331,45 @@ source stack* and *From the result* narrow the dialog's "Apply to" scope to
 the remaining canvas, while *From everywhere* turns the bar off. Both
 canvases and the A/B wipe redraw immediately; removing a canvas that never
 showed the bar leaves the setting unchanged.
+
+### Watermark (Visible Attribution)
+
+**Tools → Watermark → Add or edit…** burns a visible, tiled text mark into
+exported copies. Choose the text (up to 80 characters), font, size (1–12% of
+the image short side, default 3.5%), opacity (5–90%, default 28%), white or
+black ink with an automatic opposite-colour outline, angle (−60° to 60°,
+default −25°) and density (sparse / standard / dense). The pattern is laid
+out in the rotated text coordinate system, anchored at the image centre and
+scaled from each output's own pixel rectangle, so equal-ratio resizes keep
+the same relative size, spacing and phase. Source files and in-memory arrays
+are never modified.
+
+Scope is independent per target: source frames, registered frames and
+fusion results (defaults: source + result), each keeping its own text and
+style. Editing one scope never rewrites another; checking several applies
+the same draft to each checked scope. The text is stored only in an explicitly
+saved project or the local recovery snapshot, never in global preferences.
+The editor previews the real
+selected frame or output and shows its pixel size and bit depth; switching
+the preview does not change the scope. Apply commits one undoable edit;
+Cancel, Esc and closing the window leave the committed configuration
+untouched. A newly loaded source stack does not inherit the previous stack's
+watermark text.
+
+Every GUI export path burns the frozen configuration at export start: single
+save/Save As, output-batch and drag-out, source/registered frame folders,
+multi-page TIFF, GIF, GUI batch output and aligned stacks, and representable
+Linear DNG. 8-bit and 16-bit images keep their depth; blending uses the
+original 16-bit values and leaves every pixel outside the anti-aliased mask
+bit-identical. PNG alpha is preserved and transparent pixels stay
+transparent. Set the angle to 0 for horizontal rows.
+
+Already-exported batch results whose pixels contain a watermark are marked
+in the output tooltip and cannot receive another one. Layered TIFF cannot
+include the live watermark and is blocked while one is active. If the text
+cannot be drawn legibly (tiny image, no installed glyph coverage, text too
+long for the chosen size), the dialog and the affected export report the
+reason instead of writing a file without the mark.
 
 ### Depth Map (Focus Position)
 
@@ -973,7 +1013,8 @@ frame selection, brush and editing shortcuts. Hover over a control for its help.
 
 Apply the retouch as a new output, then select it and choose **Save As**. Select layered TIFF in the format list to save the result with its source frames.
 Live labels and scale bars are not included; unsaved annotation changes remain
-protected. Source geometry and validity masks are retained. The result and
+protected. An active watermark blocks this export; remove it or export a normal
+image/image stack instead. Source geometry and validity masks are retained. The result and
 sources must be opaque RGB or grayscale images with matching 8-bit or 16-bit
 depth, and each source rectangle must fit within the result. Export supports
 up to 128 sources; source names are limited to 255 characters and

@@ -22,6 +22,7 @@ class OutputListWidget(QListWidget):
         # Temp JPGs from the last finished drag; they stay on disk until the
         # next drag starts (or the app quits) so the drop target can copy them.
         self._temp_files: list[str] = []
+        self._temp_dirs: list[str] = []
 
     def set_window(self, window: Any) -> None:
         self._window = window
@@ -75,6 +76,45 @@ class OutputListWidget(QListWidget):
             except OSError:
                 pass
         self._temp_files = []
+        import shutil
+        for path in self._temp_dirs:
+            shutil.rmtree(path, ignore_errors=True)
+        self._temp_dirs = []
+
+    def _aligned_drag_folder(self, item, record):
+        """Folder URL for an aligned record, staging a watermarked copy."""
+        from utils import watermark
+        from locales import trans
+        from controllers.output_manager import ALIGNED_DIR_ROLE
+        folder = item.data(ALIGNED_DIR_ROLE)
+        wm_cfg = watermark.record_export_cfg(record)
+        if wm_cfg and not getattr(record, "watermark_baked", False):
+            # A watermark that is not in the pixels must be rendered into a
+            # staged copy; the original folder is never touched.
+            stage = tempfile.mkdtemp(prefix="openfocus-watermark-drag-")
+            self._temp_dirs.append(stage)
+            exporter = self._window.export_manager
+            frames = getattr(record, "aligned_frames", ())
+            names = getattr(record, "aligned_names", ())
+            if frames:
+                folder = exporter.save_aligned_frames_as(
+                    frames, names, record.label, destination=stage,
+                    extension='png', record=record)
+            elif getattr(record, "export_path", None) and os.path.isdir(record.export_path):
+                folder = exporter.save_aligned_stack_as(
+                    record.export_path, record.label,
+                    destination=stage, record=record)
+            else:
+                folder = None
+            if not folder or not os.path.isdir(folder):
+                raise OSError(trans.t("msg_save_failed_info_write"))
+            return folder
+        if not getattr(record, "aligned_frames", ()):
+            return folder if folder and os.path.isdir(folder) else None
+        folder = self._window.export_manager.save_aligned_frames_as(
+            record.aligned_frames, record.aligned_names, record.label,
+            record=record)
+        return folder if folder and os.path.isdir(folder) else None
 
     def startDrag(self, supportedActions: Qt.DropAction) -> None:  # noqa: N802
         if self._window is None:
@@ -92,14 +132,17 @@ class OutputListWidget(QListWidget):
             if row < 0:
                 continue
 
-            from controllers.output_manager import ALIGNED_DIR_ROLE
             record = self._window.output_manager.record_for_item(item)
             if record is not None and record.kind == 'aligned':
-                folder = item.data(ALIGNED_DIR_ROLE)
-                if not folder and record.aligned_frames:
-                    folder = self._window.export_manager.save_aligned_frames_as(
-                        record.aligned_frames, record.aligned_names, record.label)
-                if folder and os.path.isdir(folder):
+                from utils import show_error_box
+                from locales import trans
+                try:
+                    folder = self._aligned_drag_folder(item, record)
+                except Exception as exc:
+                    show_error_box(self._window, trans.t('msg_save_failed_title'),
+                                   trans.t('msg_save_failed_text'), str(exc))
+                    continue
+                if folder:
                     urls.append(QUrl.fromLocalFile(folder))
                 continue
             try:
@@ -144,13 +187,15 @@ class OutputListWidget(QListWidget):
         if record is not None and record.linear_dng_metadata is not None:
             from utils.linear_dng import develop_linear
             image = develop_linear(image, record.linear_dng_metadata)
-        if record is not None and record.annotations_baked:
-            return image
-        from utils import scalebar
-        labels = window.label_manager.snapshot()
-        image = labels.prepare_bgr_image('output', image, 0,
-                                        output_id=record.output_id if record else None)
-        return scalebar.burn(image, scalebar.export_cfg(window, target='output', record=record))
+        if record is None or not record.annotations_baked:
+            from utils import scalebar
+            labels = window.label_manager.snapshot()
+            image = labels.prepare_bgr_image('output', image, 0,
+                                            output_id=record.output_id if record else None)
+            image = scalebar.burn(image, scalebar.export_cfg(window, target='output', record=record))
+        from utils import watermark
+        return watermark.burn(
+            image, watermark.export_cfg(window, target='output', record=record))
 
     def _write_temp_jpg(self, image, base_name: str, record=None) -> str | None:
         window = self._window

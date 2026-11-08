@@ -5,6 +5,26 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- Add a visible tiled text watermark under Tools → Watermark for source
+  frames, registered frames and fusion results. Source, registered and output
+  scopes keep independent text/style; editing one never rewrites the others.
+  Text, font, relative size, opacity, ink colour, angle and density are
+  editable with a live preview of the real target; Apply commits one undoable
+  edit and Cancel leaves the committed configuration untouched. A newly
+  loaded stack does not inherit the previous stack's text, and the text is
+  never written to global preferences.
+- Burn the frozen watermark into every GUI export path: single save/Save As,
+  output batch and drag-out, source/registered frame folders, multi-page
+  TIFF, GIF, GUI batch output and aligned stacks, and representable Linear
+  DNG. 8-bit and 16-bit depth, PNG alpha and pixels outside the anti-aliased
+  mask are preserved; layered TIFF is blocked while a watermark is active,
+  and results whose pixels already contain one cannot receive another.
+- Persist watermark scope and style in projects and crash recovery; global
+  preferences store style defaults without the watermark text. Per-output
+  bindings survive reordering and renaming, and corrupt project fields are
+  handled safely.
+
 ### Changed
 - Default Batch Image Converter to lossless PNG, restore the last explicitly
   selected output format, and show the actual result extension below the

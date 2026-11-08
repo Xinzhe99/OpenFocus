@@ -57,6 +57,7 @@ def _menu_window(qapp):
             "show_retouch_dialog", "show_standalone_retouch", "show_batch_processing_dialog",
             "show_compare_dialog", "show_mosaic_dialog", "show_depth_map_dialog",
             "show_dust_map_dialog", "show_scale_bar_dialog",
+            "show_watermark_dialog", "remove_watermark",
             "remove_scale_bar", "show_advanced_settings_dialog",
             'restore_default_settings', 'set_use_gpu', 'apply_theme', 'set_language',
             "check_for_updates", "install_update_now", "open_logs_folder",
