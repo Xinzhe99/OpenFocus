@@ -9,6 +9,7 @@ from PyQt6.QtWidgets import QMessageBox, QProgressDialog
 from ui import styles as ui_styles
 from core.workers import BatchWorker
 from locales import trans
+from utils.platform_utils import configure_native_worker_stack
 
 # Threads still running when the manager is torn down. Never terminate() a
 # worker that may be inside OpenCV/NumPy native code; park the pair instead
@@ -99,6 +100,7 @@ class BatchManager:
         )
         self.last_error = None
         self._thread = QThread()
+        configure_native_worker_stack(self._thread)
         self._worker.moveToThread(self._thread)
 
         self._worker.progress_updated.connect(self._handle_progress_update)

@@ -46,6 +46,7 @@ from utils import colormap as cmap
 from utils.image_utils import imwrite_auto
 from utils.settings_store import get_settings, image_save_dir, remember_image_save
 from utils.logging_setup import frame_details, log_operation
+from utils.platform_utils import configure_native_worker_stack
 
 _DEFAULT_METHOD_COLORMAP = "turbo"
 
@@ -81,6 +82,7 @@ class DepthWorker(QThread):
 
     def __init__(self, images, method, use_gpu, parameters=None, parent=None):
         super().__init__(parent)
+        configure_native_worker_stack(self)
         self._images = images
         self._method = method
         self._use_gpu = use_gpu

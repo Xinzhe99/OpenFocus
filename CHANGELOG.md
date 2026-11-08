@@ -53,6 +53,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   desktop multipage exports and the public helper's historical LZW default.
 
 ### Fixed
+- Give macOS fusion, comparison, depth-map and batch threads enough native
+  stack for cold LLVM compilation, preventing a crash at the stack guard page.
 - Match OpenFocus C's native depth chain: fixed half-scale gray FMA resampling,
   vote-based confidence, square-root guide, horizontal-first Q12 smoothing,
   and truncating feather correction before expanding depth to the canvas. Preserve

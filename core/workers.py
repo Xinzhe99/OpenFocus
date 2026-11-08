@@ -15,6 +15,7 @@ from utils.image_utils import prepare_fusion_input, to_display_uint8
 from copy import deepcopy
 from utils.export_paths import create_stack_directory, frame_export_name, unique_path
 from utils.logging_setup import frame_details, get_logger, log_operation
+from utils.platform_utils import configure_native_worker_stack
 from constants import (
     TILE_BLOCK_SIZE, TILE_OVERLAP, TILE_THRESHOLD,
     DEFAULT_THREAD_COUNT
@@ -355,6 +356,7 @@ class RenderWorker(QThread):
                  load_scale_factor=1.0, source_paths=None,
                  collect_alignment_report=False):
         super().__init__()
+        configure_native_worker_stack(self)
         if algorithm is None:
             if need_fusion or fusion_parameters:
                 raise ValueError("A fusion render requires an explicit registered algorithm")
@@ -1033,6 +1035,7 @@ class BatchWorker(QThread):
                  exposure_match: bool = False, resource_preference="balanced",
                  runtime_settings=None, registration_parameters=None):
         super().__init__()
+        configure_native_worker_stack(self)
         self.resource_preference = resource_preference
         self.folder_paths = list(folder_paths)
         self.output_type = output_type

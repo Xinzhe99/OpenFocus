@@ -63,8 +63,8 @@ jobs:
           lldb --batch \
             -o 'settings set target.process.stop-on-exec false' \
             -o 'process handle SIGILL -s true -n false -p true' \
-            -o run -o 'thread backtrace all' -o 'register read' \
-            -o 'disassemble --pc --count 16' -o 'image list' \
+            -o run -k 'thread backtrace all' -k 'register read' \
+            -k 'disassemble --pc --count 16' -k 'image list' \
             -- python -m pytest -o addopts='' -vv -s -x \
                --timeout=90 --timeout-method=thread 2>&1 | tee "$RUNNER_TEMP/macos-lldb.txt"
 
