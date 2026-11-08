@@ -126,6 +126,8 @@ class TestMagnifierRepaintsAfterResize:
 class TestWipePixmapCache:
     """The A/B wipe caches one pixmap per side across slider steps."""
 
+    pytestmark = pytest.mark.usefixtures("qapp")
+
     def _window(self):
         from types import SimpleNamespace
         from controllers.label_manager import LabelManager

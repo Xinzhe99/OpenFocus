@@ -348,6 +348,36 @@ def setup_menus(window: QMainWindow) -> None:
     remove_menu.addAction(window.del_all_labels_action)
     window.ui_objs['action_del_all_labels'] = window.del_all_labels_action
 
+    # Watermark mirrors the scale bar: one submenu with "Add/Edit" and a
+    # "Remove" section, each target independent.
+    watermark_menu = batch_menu.addMenu(trans.t('menu_watermark'))
+    watermark_menu.setProperty("trans_key", 'menu_watermark')
+    window.ui_objs['menu_watermark'] = watermark_menu
+
+    watermark_add_action = QAction(trans.t('action_watermark_add'), window)
+    watermark_add_action.triggered.connect(window.show_watermark_dialog)
+    watermark_add_action.setEnabled(False)
+    watermark_menu.addAction(watermark_add_action)
+    watermark_add_action.setProperty("trans_key", 'action_watermark_add')
+    window.ui_objs['action_watermark_add'] = watermark_add_action
+
+    watermark_remove_menu = watermark_menu.addMenu(trans.t('menu_watermark_remove'))
+    watermark_remove_menu.setProperty("trans_key", 'menu_watermark_remove')
+    window.ui_objs['menu_watermark_remove'] = watermark_remove_menu
+
+    def _watermark_target_action(text_key, where):
+        act = QAction(trans.t(text_key), window)
+        act.setProperty("trans_key", text_key)
+        act.triggered.connect(lambda: window.remove_watermark(where))
+        watermark_remove_menu.addAction(act)
+        window.ui_objs[f'action_watermark_remove_{where}'] = act
+        return act
+
+    _watermark_target_action('watermark_remove_source', 'source')
+    _watermark_target_action('watermark_remove_registered', 'registered')
+    _watermark_target_action('watermark_remove_output', 'output')
+    _watermark_target_action('watermark_remove_all', 'all')
+
 
     # --- Settings Menu ---
     settings_menu = menubar.addMenu(trans.t('menu_settings'))

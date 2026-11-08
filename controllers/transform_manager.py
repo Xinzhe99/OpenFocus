@@ -133,6 +133,17 @@ class TransformManager:
                 window.resize_action.setEnabled(False)
                 window.lbl_source_img.clear()
                 window.lbl_source_img.setText(trans.t('drag_hint'))
+                from utils import watermark
+                watermark.reset_for_new_stack(window)
+                persist = getattr(window, "persist_settings", None)
+                if callable(persist):
+                    try:
+                        persist()
+                    except Exception:
+                        pass
+                sync = getattr(window, "_sync_watermark_actions", None)
+                if callable(sync):
+                    sync()
                 window.lbl_source_img.setFont(QFont(get_default_font(), 16))
                 
                 if hasattr(window, "update_loaded_status"):
@@ -176,6 +187,9 @@ class TransformManager:
                 window.source_control_bar.setVisible(True)
                 window.add_label_action.setEnabled(True)
                 window.resize_action.setEnabled(True)
+                sync = getattr(window, "_sync_watermark_actions", None)
+                if callable(sync):
+                    sync()
 
                 target_index = 0 if initial_index is None else int(initial_index)
                 target_index = max(0, min(target_index, len(window.stack_images) - 1))

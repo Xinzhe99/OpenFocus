@@ -1401,6 +1401,12 @@ class BatchProcessingDialog(QDialog):
         else:
             save_aligned = self.save_aligned_cb.isChecked()
 
+        # Only alignment: aligned frames exported; watermark scope travels with
+        # the frozen processing settings.
+        from utils import watermark
+        wm_settings = (watermark.settings_from_window(self.parent_window)
+                       if self.parent_window is not None else None)
+
         return {
             "format": format_str,
             "jpg_quality": jpg_quality,
@@ -1414,6 +1420,7 @@ class BatchProcessingDialog(QDialog):
             'group_overlap': self.group_overlap_spin.value(),
             "save_aligned": save_aligned,  # 是否保存对齐后的图像栈
             "scale_bar": scale_cfg,
+            "watermark": wm_settings,
             'flat_field_path': self.flat_field_path.text().strip(),
             'defect_mask_path': self.sensor_cleanup.path.text().strip(),
             'sensor_denoise': self.sensor_cleanup.denoise.isChecked(),

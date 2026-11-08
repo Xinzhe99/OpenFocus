@@ -228,13 +228,15 @@ class SourceRegionWorker(QThread):
     ready = pyqtSignal(object, object, object, object)
     failed = pyqtSignal(object, str)
 
-    def __init__(self, frame, key, *, labels=None, index=0, scale_cfg=None, metadata=None):
+    def __init__(self, frame, key, *, labels=None, index=0, scale_cfg=None,
+                 watermark_cfg=None, metadata=None):
         super().__init__()
         self.frame = frame
         self.key = key
         self.labels = labels
         self.index = index
         self.scale_cfg = scale_cfg
+        self.watermark_cfg = watermark_cfg
         self.metadata = getattr(frame, 'linear_metadata', None) if metadata is None else metadata
         self._scale_mean = None
         self.cancelled = False
@@ -257,7 +259,8 @@ class SourceRegionWorker(QThread):
     cancel = request_cancel
 
     def _decorate(self, tile, rect, image):
-        if tile is None or (self.labels is None and not self.scale_cfg):
+        if tile is None or (self.labels is None and not self.scale_cfg
+                            and not self.watermark_cfg):
             return tile
         if tile.ndim == 2:
             tile = cv2.cvtColor(tile, cv2.COLOR_GRAY2BGR)
@@ -296,6 +299,13 @@ class SourceRegionWorker(QThread):
                 return mean
             tile = scalebar.burn(tile, cfg, canvas_size=canvas,
                                 origin=(rect[0] * sx, rect[1] * sy), region_mean=region_mean)
+        if self.watermark_cfg:
+            from utils import watermark
+            tile = watermark.burn(
+                tile, self.watermark_cfg,
+                canvas_size=(image.shape[1], image.shape[0]),
+                origin=(rect[0], rect[1]),
+                scale=tile.shape[1] / max(1, rect[2]))
         return tile
 
     def run(self):

@@ -305,13 +305,16 @@ class LabelManager:
         return drawn, error
 
     def apply_labels_to_source_pixmap(self, pixmap, index: int,
-                                      scale_cfg=None):
-        """Annotated pixmap for the source canvas (labels + scale bar)."""
+                                      scale_cfg=None, watermark_cfg=None,
+                                      source_shape=None):
+        """Annotated pixmap for the source canvas (labels + scale bar + mark)."""
         image = pixmap_to_cv2(pixmap)
         if image is None:
             return pixmap
         source = (getattr(self.window, "raw_images", ()) or ())
-        source_shape = source[index].shape if 0 <= index < len(source) else image.shape
+        source_shape = (source_shape if source_shape is not None else
+                        source[index].shape if 0 <= index < len(source)
+                        else image.shape)
         if self._labels.any_enabled("input"):
             image = image.copy()
             image, _err = self._draw_for(image, "input", index, source_shape=source_shape)
@@ -320,6 +323,10 @@ class LabelManager:
             scale_cfg = preview_scale_config(scale_cfg, source_shape, image.shape)
             from utils import scalebar
             image = scalebar.burn(image, scale_cfg)
+        if watermark_cfg:
+            from utils import watermark
+            image = watermark.burn(image, watermark_cfg,
+                                   canvas_size=(source_shape[1], source_shape[0]))
         return cv2_to_pixmap(image)
 
     def apply_labels_to_registered_image(self, image, index: int):
@@ -348,26 +355,46 @@ class LabelManager:
         return drawn
 
     def display_bgr_image(self, target: str, image, index: int,
-                          scale_cfg=None, output_id=None, source_shape=None):
-        """BGR image ready to be shown, copying only when something draws."""
+                          scale_cfg=None, output_id=None, source_shape=None,
+                          watermark_cfg=None, watermark_canvas=None,
+                          annotations_baked: bool = False):
+        """BGR image ready to be shown, copying only when something draws.
+
+        ``annotations_baked`` keeps labels and the scale bar off pixels that
+        already contain them while still allowing an independent watermark to
+        be previewed on top.
+        """
         from utils.frame_pixels import preview_pixels as display_image
         from utils.frame_pixels import preview_scale_config
         source_shape = image.shape if source_shape is None else source_shape
         image = display_image(image)
-        scale_cfg = preview_scale_config(scale_cfg, source_shape, image.shape)
+        if annotations_baked:
+            scale_cfg = None
+        else:
+            scale_cfg = preview_scale_config(scale_cfg, source_shape, image.shape)
         wanted = normalize_target(target)
+        labels_enabled = (not annotations_baked
+                          and self._labels.any_enabled(wanted))
         if (image.ndim == 3 and image.shape[2] == 4
-                and (self._labels.any_enabled(wanted) or scale_cfg)):
+                and (labels_enabled or scale_cfg or watermark_cfg)):
             from utils.image_utils import composite_transparent_for_display
             image = composite_transparent_for_display(image)
         drawn = None
-        if self._labels.any_enabled(wanted):
+        if labels_enabled:
             drawn, _err = self._draw_for(image.copy(), wanted, index, output_id,
                                         source_shape=source_shape)
+        result = image if drawn is None else drawn
         if scale_cfg:
             from utils import scalebar
-            return scalebar.burn(image if drawn is None else drawn, scale_cfg)
-        return image if drawn is None else drawn
+            result = scalebar.burn(result, scale_cfg)
+        if watermark_cfg:
+            from utils import watermark
+            canvas = (watermark_canvas if watermark_canvas is not None
+                      else source_shape)
+            result = watermark.burn(
+                result, watermark_cfg,
+                canvas_size=(canvas[1], canvas[0]))
+        return result
 
     def is_enabled_for_target(self, target: str) -> bool:
         return self._labels.any_enabled(normalize_target(target))

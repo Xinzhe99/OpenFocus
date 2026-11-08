@@ -155,7 +155,8 @@ class BatchManager:
             outputs = results.get("outputs") or []
             if outputs and getattr(self.window, "output_manager", None) is not None:
                 # Only fused files enter pixel history; aligned stacks remain directories.
-                shown = self.window.output_manager.add_batch_outputs(outputs)
+                shown = self.window.output_manager.add_batch_outputs(
+                    outputs, watermark_baked=bool(results.get("watermark_outputs", False)))
                 if shown:
                     self.window.statusBar().showMessage(
                         trans.t("batch_added_to_outputs").format(n=shown), 8000)
