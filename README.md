@@ -296,8 +296,8 @@ its missing-data map:
 openfocus -i ./stack_folder -o ./result/fused.tif --auto-background auto --save-stacked --missing-data-map
 ```
 
-Folder inputs use EXIF focus steps when every frame supplies them, otherwise
-natural filename order. Use `--frame-order name` to force filename order;
+Folder inputs use EXIF focus steps when every frame supplies them and the
+near-to-far step direction is known; otherwise they keep natural filename order. Use `--frame-order name` to force filename order;
 explicitly listed files retain their supplied order.
 
 Recipes preserve native RAW conversion mode and batch output format. Run
