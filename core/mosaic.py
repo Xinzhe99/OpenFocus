@@ -1,4 +1,5 @@
 """Bounded microscope and camera mosaics with captured global render plans."""
+from contextlib import ExitStack
 from dataclasses import dataclass, field, replace
 import math
 
@@ -67,10 +68,8 @@ class MosaicAlignment:
 
 @dataclass(frozen=True)
 class _ControlPoints:
-    transform: np.ndarray
     source: np.ndarray
     target: np.ndarray
-    tolerance: float
 
 
 def _project(matrix, points):
@@ -222,8 +221,6 @@ def _pair_match(first, second, first_features, second_features, cameras=None):
         scale = math.hypot(float(affine[0, 0]), float(affine[1, 0]))
         if not 0.5 <= scale <= 2.0:
             return None
-        transform = np.eye(3, dtype=np.float64)
-        transform[:2] = affine
     else:
         ax, ay, av = undistort_points(target[:, 0], target[:, 1], cameras[0])
         bx, by, bv = undistort_points(source[:, 0], source[:, 1], cameras[1])
@@ -252,7 +249,7 @@ def _pair_match(first, second, first_features, second_features, cameras=None):
         order = np.lexsort((source[:, 0], source[:, 1]))
         keep = order[np.linspace(0, len(order) - 1, 512, dtype=int)]
         source, target = source[keep], target[keep]
-    return _ControlPoints(transform, source, target, max(scale_a, scale_b))
+    return _ControlPoints(source, target)
 
 
 def observations_from_control_points(control_points, frame_count):
@@ -902,21 +899,36 @@ def _hdr_low_groups(lows, groups, times, spec, response, directory, cancel,
                                     np.empty(shape, np.float32), (x0, y0)))
             continue
         require_memory(math.prod(shape) * len(group) * 64)
-        images, alpha = [], []
-        for index in group:
-            sample = lows[index]
-            colors = np.zeros((*shape, 3), np.float32)
-            opacity = np.zeros(shape, np.float32)
-            sx, sy, ex, ey = sample.box
-            colors[sy-y0:ey-y0, sx-x0:ex-x0] = sample.colors
-            opacity[sy-y0:ey-y0, sx-x0:ex-x0] = sample.alpha
-            images.append(np.clip(colors, 0, 1))
-            alpha.append(opacity)
-        hdr = replace(spec.hdr, levels=low_levels,
-                      exposure_times=tuple(times[i] for i in group) if times else ())
-        colors, opacity = merge_hdr_tile(images, hdr, alpha=alpha, response=response,
-                                         should_cancel=cancel)
-        result.append(LowSample(number, colors, opacity, (x0, y0)))
+        with ExitStack() as regions:
+            images, alpha = [], []
+            for index in group:
+                _cancel(cancel)
+                sample = lows[index]
+                colors = create_frame((*shape, 3), np.float32, directory=directory)
+                opacity = create_frame(shape, np.float32, directory=directory)
+                image = regions.enter_context(frame_region(colors, write=True))
+                mask = regions.enter_context(frame_region(opacity, write=True))
+                image.fill(0)
+                mask.fill(0)
+                sx, sy, ex, ey = sample.box
+                with frame_region(sample.colors) as source:
+                    image[sy-y0:ey-y0, sx-x0:ex-x0] = source
+                with frame_region(sample.alpha) as source:
+                    mask[sy-y0:ey-y0, sx-x0:ex-x0] = source
+                np.clip(image, 0, 1, out=image)
+                if not images:
+                    merged_colors, merged_alpha = colors, opacity
+                images.append(image)
+                alpha.append(mask)
+            hdr = replace(spec.hdr, levels=low_levels,
+                          exposure_times=tuple(times[i] for i in group) if times else ())
+            values, coverage = merge_hdr_tile(images, hdr, alpha=alpha, response=response,
+                                               should_cancel=cancel)
+            # Reuse the first bracket's mappings for the retained merged sample.
+            images[0][:] = values
+            alpha[0][:] = coverage
+            del values, coverage
+        result.append(LowSample(number, merged_colors, merged_alpha, (x0, y0)))
     return tuple(result)
 
 
@@ -979,6 +991,8 @@ def plan_mosaic(frames, transforms, *, spec=RenderSpec(), alignment=None,
         labels = build_labels(lows, low_shape, spec.seam,
             allocate=lambda shape, kind: create_frame(shape, kind, directory=directory),
             should_cancel=should_cancel)
+        if progress is not None:
+            progress(3, 4)
         labels.flags.writeable = False
         if spec.output.alpha == 'auto' and np.any(labels == 0):
             has_alpha = True

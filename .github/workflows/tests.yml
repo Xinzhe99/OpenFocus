@@ -37,11 +37,11 @@ jobs:
           python-version: '3.10'
           cache: 'pip'
 
-      - name: Install Qt system libraries (Linux)
+      - name: Install Qt system libraries and CJK fonts (Linux)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libegl1 libgl1 libxkbcommon0 libdbus-1-3 libglib2.0-0
+          sudo apt-get install -y libegl1 libgl1 libxkbcommon0 libdbus-1-3 libglib2.0-0 fonts-noto-cjk
 
       - name: Install dependencies
         run: |

@@ -436,11 +436,7 @@ def test_global_registration_uses_loop_controls_and_rejects_control_outliers(mon
         relative = np.linalg.inv(expected[i]) @ expected[j]
         target = mosaic._project(relative, source) + rng.normal(0, 0.1, source.shape)
         target[:5] += (25, -30)
-        # Biased pair estimates seed a drifting spanning tree; the joint fit
-        # must use the underlying controls and the third edge to correct it.
-        initial = relative.copy()
-        initial[:2, 2] += (4, -3)
-        edges[i, j] = mosaic._ControlPoints(initial, source, target, 1.0)
+        edges[i, j] = mosaic._ControlPoints(source, target)
     monkeypatch.setattr(mosaic, '_features', lambda *_: None)
     monkeypatch.setattr(mosaic, '_pair_match', lambda first, second, *_: edges.get((int(first.name), int(second.name))))
     placements = mosaic.initial_transforms(frames)
