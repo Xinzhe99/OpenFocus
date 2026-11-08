@@ -14,6 +14,7 @@ from PyQt6.QtCore import QThread, pyqtSignal
 from core.resource_policy import heavy_job
 from core.registration import RegistrationCancelled
 from utils.logging_setup import frame_details, log_operation
+from utils.platform_utils import configure_native_worker_stack
 from core.frame_storage import store_frame, scratch_directory
 from core.source_frames import materialize_frames
 
@@ -118,6 +119,7 @@ class PreviewWorker(_CancellableWorker):
     def __init__(self, images, methods, per_method, shared, region,
                  roi_only=True, parent=None):
         super().__init__(parent)
+        configure_native_worker_stack(self)
         self.images = images
         self.methods = tuple(methods)
         self.per_method = deepcopy(per_method)

@@ -178,6 +178,12 @@ are single runs on shared hosts; they do not establish an algorithm speed ratio
 across different CPU allocations or a memory bound for every image resolution.
 The user workstation retained its one-CPU/512-MiB local validation limits.
 
+macOS fusion, comparison, depth-map and GUI batch workers reserve at least
+8 MiB of native thread stack before starting. A captured ARM64 crash showed
+LLVM code generation exhausting Qt's approximately 544-KiB default stack;
+larger caller-configured stacks are preserved. The cold-process Qt regression
+compiles and runs the native depth path and verifies exact uint16 output.
+
 ### Small-stack engineering measurements (2026-11-08)
 
 These Windows measurements run `ImageStackLoader.load_from_filepaths` followed
