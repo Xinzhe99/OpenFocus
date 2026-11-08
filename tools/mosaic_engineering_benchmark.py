@@ -648,7 +648,8 @@ def tiff_bands(np, page, band_rows):
     if page.is_tiled or page.planarconfig != 1 or page.rowsperstrip > 128:
         raise ValueError('Export must use contiguous strips of at most 128 rows')
     expected_y = 0
-    for decoded, position, _shape in page.segments(maxworkers=1):
+    strip_bytes = page.imagewidth * page.samplesperpixel * page.dtype.itemsize * page.rowsperstrip
+    for decoded, position, _shape in page.segments(maxworkers=1, buffersize=strip_bytes):
         if (decoded is None or position[0] != 0 or position[1] != 0
                 or position[2] != expected_y or position[3] != 0 or position[4] != 0):
             raise ValueError('Unexpected TIFF strip geometry or missing strip')
@@ -667,6 +668,7 @@ def tiff_bands(np, page, band_rows):
 
 def read_export(np, tifffile, path, expected, band_rows):
     """TIFF reader is independent of production decoder/export implementation."""
+    from core.frame_storage import frame_region
     with tifffile.TiffFile(path) as container:
         page = container.pages[0]
         tags = {}
@@ -692,7 +694,8 @@ def read_export(np, tifffile, path, expected, band_rows):
             maximum = np.iinfo(expected.dtype).max
             for y, bgr in tiff_bands(np, page, band_rows):
                 digest.update(bgr.tobytes())
-                delta = np.abs(bgr.astype(np.int32) - expected[y:y+bgr.shape[0]].astype(np.int32))
+                with frame_region(expected, (slice(y, y + bgr.shape[0]), slice(None))) as region:
+                    delta = np.abs(bgr.astype(np.int32) - region.astype(np.int32))
                 max_difference = max(max_difference, int(delta.max()))
                 exact = exact and not bool(np.any(delta))
                 alpha = bgr[..., 3] if bgr.shape[2] == 4 else np.full(bgr.shape[:2], maximum, expected.dtype)
