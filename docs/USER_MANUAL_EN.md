@@ -804,8 +804,8 @@ selected method (range 0–8, step 0.2):
 
 A/B default kernel size: 17. Existing saved values remain in use; restore defaults to use the new defaults.
 
-For A, values from 0 through 2 use the same minimum spread; higher values spread
-energy farther. For B and C, larger values increase depth-map smoothing. Each
+OpenFocus A does not use this value, matching HF9 A. For B and C, larger values
+increase depth-map smoothing. Each
 method remembers its own value across sessions; batch processing uses the same rule.
 
 C has no Radius parameter, so its kernel slider is hidden.
@@ -1228,8 +1228,9 @@ removed. For detailed support logs, set `OPENFOCUS_LOG_LEVEL=DEBUG` before launc
 ### Tile Settings (Memory Optimization)
 
 Methods supporting external tiles can use them above the configured threshold.
-OpenFocus A/B/C process the whole image at the default threshold; changing the
-threshold explicitly enables their external tile path. Their bounded row/frame
+OpenFocus A/B/C process the whole image at the default threshold. For A and B,
+changing the threshold explicitly enables their external tile path; C does not
+support external tiles. Their bounded row/frame
 passes still reduce working memory while retaining global depth and reconstruction.
 
 Access via **Settings → Advanced Settings → Performance**:
