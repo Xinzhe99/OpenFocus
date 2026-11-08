@@ -1,13 +1,12 @@
-# HF9 完全对齐实施规范 v3(代码级 · 已对照当前 OpenFocus 代码逐项核对)
+# 参考基线完全对齐实施规范 v3(代码级 · 已对照当前 OpenFocus 代码逐项核对)
 
 **目标**:OpenFocus 的**对齐**、**OpenFocus A/B/C** 在算法、默认参数、工程行为
-(大栈秒开、融合快、内存有界)上与 Helicon Focus 9 对齐,可直接替代 HF9。
+(大栈秒开、融合快、内存有界)上与参考基线对齐,可直接替代参考基线。
 
 **读者**:修改 OpenFocus 代码的 agent。
-**基线代码**:`F:\Working\OpenFocus`,HEAD `e5e0e68` + 未提交改动(2026-11-07 核对)。
+**基线代码**:OpenFocus HEAD `e5e0e68` + 未提交改动(2026-11-07 核对)。
 **移植源(已验证,勿重写)**:
-`F:\REA_heliconfocus9\tools\scripts\{helicon_exact,fuse_a,fuse_b,helicon_align}.py`、
-`F:\REA_heliconfocus9\hf9.py`(统一 API)、`hf9_validate.py`(验收运行器)。
+内部研究快照中的参考算法模块与验收运行器(不随公开仓库分发)。
 **证据等级**:[实测] 黑盒/动态;[汇编] 反汇编;[RTTI] 类/符号直证;[推算] 行为学。
 
 > §0 保留 2026-11-07 迁移前基线；不代表当前实现。当前 C 路径与像素证据见 §2.3，工程验收见 §3.4；行号漂移时以函数名为准。
@@ -16,43 +15,43 @@
 
 # 0. 总览
 
-| 组件 | 迁移前基线(文件:函数:行) | 当时 HF9 目标(原型) | 当时差距 |
+| 组件 | 迁移前基线(文件:函数:行) | 当时参考基线目标(原型) | 当时差距 |
 |---|---|---|---|
 | 打开 | `image_loader.load_from_filepaths:878`;`source_frames.ensure_preview:124`、`FrameCache:32` | 只建预览、按需解码 | ✅ 已对齐,勿动 |
 | 解码窗口 | `source_frames.materialize_frames:525`(并行/有序/有界) | 流式队列+重叠 | 🟡 并行已有,仍"先全量物化" |
 | 渲染编排 | `workers.RenderWorker:299`、`run:371`、`_run_admitted:402`、`_run_registration:697`、`_run_fusion:749` | 解码↔计算重叠 | ❌ 三段串行 |
 | 融合入口 | `multi_focus_fusion.fuse:537`、`_fuse_under_lease:569`、list 物化 ~630 | 流式输入 | ❌ 先物化 |
 | A | `openfocus_a.openfocus_a_impl:43`、`_response:8` | `fuse_a.fuse_a` | ❌ 响应/输出不同 |
-| B | `openfocus_bc.openfocus_b_impl:117`、`openfocus_depth.depth_map:79` | `helicon_exact.fuse_noalign` | ❌ 码/拉伸/snap/merge 不同 |
+| B | `openfocus_bc.openfocus_b_impl:117`、`openfocus_depth.depth_map:79` | `reference.fuse_noalign` | ❌ 码/拉伸/snap/merge 不同 |
 | C | `openfocus_bc.openfocus_c_impl:159` | 原推测 `fuse_b.fuse_b`，已由 §2.3 原生捕获排除 | 旧金字塔假设不作为当前实现依据 |
-| 深度核 | `_depth_kernel.axis_block:19`(Numba Q12) | `helicon_exact.filter_type7` | 🟡 IIR 结构一致,细节待对账 |
-| 对齐 | `registration._align_helicon_impl`;`hf9_alignment.estimate_alignment_plan` | `helicon_align4d.align_pair_wide` | 已切换 verified wide4D；完整 S0–S16 尚未闭合，见 `HF9_TRANSLATION_CORE.md` |
+| 深度核 | `_depth_kernel.axis_block:19`(Numba Q12) | `reference.filter_type7` | 🟡 IIR 结构一致,细节待对账 |
+| 对齐 | `registration._align_openfocus_impl`;`openfocus_alignment.estimate_alignment_plan` | `reference.align_pair_wide` | 已切换 verified wide4D；完整 S0–S16 尚未闭合，见 `REFERENCE_TRANSLATION_CORE.md` |
 | 默认参数 | `algorithms.py:333-335,345-349` | GUI R8/S6 | ✅ 已对齐(17/1.44/3.6) |
-| 位深 | 8-bit/16-bit 双出口 | u8→v<<8/E-37;u16→v/原值 | ❌ 现为单一 0-255 浮点路径(§2.5) |
+| 位深 | 8-bit/16-bit 双出口 | u8→v<<8；A 的 u8 出口使用 E-37，B/C 使用合并码；u16→v | 迁移前为单一 0-255 浮点路径(§2.5) |
 | 输入格式 | JPG/PNG/TIFF/BMP/WebP/HEIC/RAW、灰度/RGBA/多页/混合栈 | 见 §2.6 矩阵 | ❌ float32 TIFF/CMYK 未显式处理;其余保持 |
 
 ---
 
-# 1. 对齐(HF9 链全量移植)
+# 1. 对齐(参考链全量移植)
 
 ## 1.1 当前实现与证据边界
 
-`core.registration._align_helicon_impl` 已接入 `core.hf9_alignment` 的 wide4D 金字塔搜索；旧 ECC 提案、NCC 判决、Lanczos 采样与缩略图引擎已移除。
+`core.registration._align_openfocus_impl` 已接入 `core.openfocus_alignment` 的 wide4D 金字塔搜索；旧 ECC 提案、NCC 判决、Lanczos 采样与缩略图引擎已移除。
 
-- 估计：直接移植 `helicon_align4d.align_pair_wide` 的候选顺序、float32 差分标准差、4D 缩放与无槽交错 rollback；分块控制搜索内存。
+- 估计：直接移植 `reference.align_pair_wide` 的候选顺序、float32 差分标准差、4D 缩放与无槽交错 rollback；分块控制搜索内存。
 - 参数：位移范围默认 0.05，旋转默认 0 度、放大率默认 3%；旋转与放大率通过现有注册表控件实际进入搜索。亮度固定 1，不推断 seed/autosort 控件。
 - 采样：等权整数灰度、原生 uint16、Q8.8 采样；精确恒等直接借用原像素。
 - 内存兼容：保留 `normalize_fuse_input` 已有的 float32/64 `[0,255]` 数组域与精确恒等；估计逐行还原 uint16 码值，非恒等采样保留浮点小数。文件描述符仍限定 uint8/uint16，不新增 float TIFF 格式。
 - 参考与失败：保留原始输出顺序、显式参考帧、continue/fail 策略与实际配准报告；默认首帧用前一已对齐灰度估计，结果已在锚点坐标中，直接使用，不再次累计前帧变换；显式后续参考帧保持固定几何锚点。
 - 生产端：默认返回 eager 数组；`defer_warps=True` 返回可重复解析的处理描述符，缓存只存带源指纹/校准/参数的不可变计划，不存 N 张已对齐图像。
 
-完整接口、裁边/内存/缓存约定及证据限制见 `HF9_TRANSLATION_CORE.md`。新事实以 `T5_ANSWERS_20261107.md` §10 为准；scale1.06 的逆放大率 0.94344 正确，rollback 已由静态反汇编裁决。seed 参数归属、autosort 触发与全 S0–S16 仍开放。
+完整接口、裁边/内存/缓存约定及证据限制见 `REFERENCE_TRANSLATION_CORE.md`。新事实以 `T5_ANSWERS_20261107.md` §10 为准；scale1.06 的逆放大率 0.94344 正确，rollback 已由静态反汇编裁决。seed 参数归属、autosort 触发与全 S0–S16 仍开放。
 
-## 1.2 HF9 链(S0–S16;移植 `helicon_align.py`)
+## 1.2 参考链(S0–S16;移植 参考对齐实现)
 
-以下表格保留最初移植前的差距基线；已落地的 wide4D 实现及未验证范围以上一节和 `HF9_TRANSLATION_CORE.md` 为准。
+以下表格保留最初移植前的差距基线；已落地的 wide4D 实现及未验证范围以上一节和 `REFERENCE_TRANSLATION_CORE.md` 为准。
 
-| 项 | 当前 | HF9(必须) |
+| 项 | 当前 | 参考基线(必须) |
 |---|---|---|
 | 灰度 | BT.601 float | **等权 mean(R,G,B) 整数,`v<<8`** |
 | 搜索 | ECC 提案 + NCC,480px | 4D 网格(dx,dy,rot,mag),金字塔,半径≈半幅 |
@@ -67,8 +66,8 @@
 ### 1.2.1 逐阶段规格
 
 ```python
-# core/registration.py 新增 _align_helicon_impl(伪代码,S 编号=spec_alignment_exact)
-def _align_helicon_impl(images, *, shift_percent=5.0, vertical_percent=5.0,
+# core/registration.py 新增 _align_openfocus_impl(伪代码,S 编号=spec_alignment_exact)
+def _align_openfocus_impl(images, *, shift_percent=5.0, vertical_percent=5.0,
                         rotation=0.0, magnification=3.0, brightness=1.0,
                         auto_sort=True, thread_count=4, should_cancel=None,
                         failure_policy='continue'):
@@ -112,14 +111,14 @@ BEST0=FLT_MAX; MAG_HOLE=1e6; ROT_SIGN=0x80000000
 
 ```python
 register_registration(RegistrationAlgorithm(
-  'helicon', 'check_align_helicon', 'HF9 Align', _ADAPTER+'registration_helicon',
+  'openfocus_alignment', 'check_align_openfocus', 'OpenFocus Align', _ADAPTER+'registration_openfocus',
   (ParameterSpec('shift_percent','label_align_shift_percent',5.0,0,50,1,1),
    ParameterSpec('vertical_percent','label_align_vertical_percent',5.0,0,50,1,1),
    ParameterSpec('rotation','label_align_rotation',0.0,-30,30,.1,1),
    ParameterSpec('magnification','label_align_magnification',3.0,0,50,1,1),
    ParameterSpec('brightness','label_align_brightness',1.0,0,4,.01,2),
    ParameterSpec('auto_sort','label_align_auto_sort',True,choices=(True,False)),
-   _ALIGN_FAILURE), hint_key='check_align_helicon_hint'))
+   _ALIGN_FAILURE), hint_key='check_align_openfocus_hint'))
 ```
 
 ### 1.2.4 验收
@@ -138,8 +137,8 @@ register_registration(RegistrationAlgorithm(
 | 项 | 原型实现 | 当前 OpenFocus |
 |---|---|---|
 | 灰度 | `gray16 = mean(R,G,B)//3 * 256`(等权整数) | `openfocus_depth` 前 3 通道 mean、u8→floor·256 ✅ |
-| 输出 A/C | **E-37**:`u8 = v-1 (v≥1), 0 (v=0)` | A/C 直接 clip 0..255,无 −1 ❌ |
-| 输出 B | merge 链 `(acc & 0xffff) >> 8` | `_output` clip → uint8/float32 ❌ |
+| 输出 A | **E-37**:`u8 = max(v-1, 0)` | 迁移前直接 clip；当前硬选择路径使用 E-37 |
+| 输出 B/C | 16 位合并码转为 u8：`acc >> 8` | 当前使用各自的合并结果，不对 C 额外减一；C 恒等栈的 u8/u16 原生输出均精确恒等 |
 | argmax | 严格 `>`,init 0,平局先帧 | depth_map 用 `>` ✅;A 用 `>` ✅ |
 
 ## 2.1 方法 A(移植 `fuse_a.fuse_a`)
@@ -176,7 +175,7 @@ resp = Σ_k up^k(|L_k|)  ; resp = min(resp, 0xffff)
 
 **验收**:S3_ties/S4_amp4 = **100% 逐位**(全 R×S);S1 ≈96.9%、S2 ≈96-97.7%。
 
-## 2.2 方法 B(移植 `helicon_exact.fuse_noalign`)
+## 2.2 方法 B(移植 `reference.fuse_noalign`)
 
 **生产深度链（2026-11-08 更新）**：`openfocus_depth.depth_map` 逐帧消费有界源，
 在原生 u16 码域计算 activity、严格 argmax 与逐帧截断的平均票数。
@@ -189,11 +188,11 @@ type7 强制偶数最小权重 2，H→V 两遍，零半径跳过。C 先在固�
 **目标全链**(与原型逐项对照):
 
 ```python
-# (a) 深度链 = helicon_exact.depth_map_noalign(核心差异如下)
+# (a) 深度链 = reference.depth_map_noalign(核心差异如下)
 R_chain = float(np.float64(R) * np.float64(np.float32(0.075)))
 blur1 = np.float32(R_chain * 0.5)        # op_k=(0.5,2.0)。注意:
 blur2 = np.float32(R_chain * 2.0)        # 原型把这两个"参数"传给 filter_type7,
-                                         # 内部 scaled_radius=maxdim*p/100(hf9 里
+                                         # 内部 scaled_radius=maxdim*p/100(参考基线里
                                          # p 是百分比形式)——与当前 OpenFocus 的
                                          # extent*R*0.0375/100、*0.15/100 等价 ✅
 # diff: 用魔法乘等价实现 /65535(当前 `//65535` 与原型逐值可能差 1):
@@ -208,7 +207,7 @@ d = min(0xffff, (110*|a-b|) // (den+10))
 # 平滑:Sf=float32((float32(S)*0.75)*0.03125);filter_type7(d,guide,Sf,Sf,Sf*64,Sf*64)×2
 #       两轴按 H→V 执行；wq 偶数、最小 2；参数为 0 时跳过该轴。
 # snap:feather_snap(d,ch,F)(公式见下),F=0
-# (b) merge = helicon_exact.merge_weighted_identity
+# (b) merge = reference.merge_weighted_identity
 stepw = 0xffff // max(1, N-1)
 for i, frame in enumerate(frames16):          # u8 → v<<8;u16 → v(§2.5)
     t = d - stepw*i
@@ -275,12 +274,12 @@ float32 `scale=dst/src`、`offset=0.5/scale-0.5`、`position/scale+offset`；
 S2_gradient（5 帧）、S4_amp4（2 帧）的 R22/S5/F0。每个样本的灰度、
 raw depth 和两次滤波输出匹配阶段导出；最终 u16 depth 和融合图都与
 官方 sidecar/`experiments/golden/mp3/*__c3_R22_S5_F0__noalign.tif`
-逐位一致、max0。`tests/test_hf9_native_resample.py` 保留原生灰度边界条带、
+逐位一致、max0。`tests/test_openfocus_native_resample.py` 保留原生灰度边界条带、
 完整 S1 原始四帧、官方 depth 与融合图，生产没有研究仓库运行时依赖。
 
 补充原生捕获 `c_gray_resize_odd_v1/call6_src.npy`（64×65）→
 `call6_dst_post.npy`（129×131，返回 RVA `0x40F469`）已逐位 100%/max0；
-`tests/fixtures/hf9_native_odd_depth_expand.npz` 保留完整捕获像素。
+`tests/fixtures/openfocus_native_odd_depth_expand.npz` 保留完整捕获像素。
 生产 C 的 S3_ties 也对新版 `mp3/S3_ties__c3...` 输出逐位一致；原先
 `f0-1` 的旧 C S3 golden 已隔离，新原生 `-mp:3 -dmap` 输出等于源帧。
 
@@ -291,7 +290,7 @@ raw depth 和两次滤波输出匹配阶段导出；最终 u16 depth 和融合�
 
 ## 2.4 默认参数(已对齐,勿回改)
 
-| 参数 | HF9 GUI | OpenFocus | 状态 |
+| 参数 | 参考基线 GUI | OpenFocus | 状态 |
 |---|---|---|---|
 | R | 8 | kernel_size=17 | ✅ |
 | S | 6 | B depth_smoothing=1.44(×5/1.2→6.0);C blend_smoothing=3.6(×5/3→6.0) | ✅ |
@@ -303,16 +302,16 @@ raw depth 和两次滤波输出匹配阶段导出；最终 u16 depth 和融合�
 
 ## 2.5 位深矩阵:必须按输入位数分别处理(8-bit / 16-bit / 混合)
 
-> **结论:必须分开处理。** HF9 的算法语义建立在 **u16 码域(0..65535)** 上,
+> **结论:必须分开处理。** 参考基线的算法语义建立在 **u16 码域(0..65535)** 上,
 > 8 位源走 `v<<8`(256 步进),16 位源走 `v`(65536 级)。同一场景 8-bit 与
-> 16-bit 输出**不是简单缩放关系**(u8 出口还有 E-37 的 −1),不能用一套
-> 0-255 浮点公式糊过去。
+> 16-bit 输出**不是简单缩放关系**(A 的 u8 出口有 E-37 的 −1；B/C 使用
+> 合并码出口),不能用一套 0-255 浮点公式糊过去。
 
 ### 2.5.1 映射表
 
 | 输入 | 典型来源 | 码域(`code`) | 输出 | 出口公式 |
 |---|---|---|---|---|
-| **uint8** | JPG/PNG8/TIFF8/WebP | `code = v << 8`(0..65535,步进 256) | uint8 | A/C:**E-37** `u8 = v-1`;B:`(acc&0xffff)>>8` |
+| **uint8** | JPG/PNG8/TIFF8/WebP | `code = v << 8`(0..65535,步进 256) | uint8 | A:**E-37** `u8 = max(v-1,0)`；B/C:`acc >> 8`，C 恒等栈保留原值 |
 | **uint16** | 16-bit TIFF/PNG | `code = v`(0..65535,满精度) | uint16 | **无 −1、无 >>8**:u16 = canvas 值 |
 | **混合栈**(8+16) | 文件夹里混放 | 逐帧:`u8→v<<8`,`u16→v` | 按"存在 u16 即 16 位" | 同 uint16 |
 | 灰度(2D) | 单通道 TIFF | `code = v<<8` / `v` | 同输入 | 同左 |
@@ -332,19 +331,19 @@ def frame_code(frame):                     # 返回 int64 码域
 #   改为 `np.rint(...)`(±0.004 误差 < 0.5,必回 v)或直接走规则 1。
 
 # 规则 3:输出按输入深度分支
-#   u8  : A/C → E-37(v-1);B → acc>>8
+#   u8  : A → E-37(v-1); B/C → acc>>8（C 恒等栈精确保留原值）
 #   u16 : 直接输出 u16 canvas(不 >>8、不 −1);
 #         若管线仍走 quantize_fuse_output(float 0..255),返回
 #         `u16_canvas * (255.0/65535.0)`(= u16/257),quantize 的
 #         `round(x*65535/255)` 可精确回 u16(24-bit 尾数足够)。
 
-# 规则 3b:HF9 黑盒恒等栈结果(2026-11-07,3 帧完全相同)
+# 规则 3b:参考基线黑盒恒等栈结果(2026-11-07,3 帧完全相同)
 #   A u8 : v-1(0.391% exact / ±1 100%)            = E-37
 #   A u16: v 或 v-1(95.861% / ±1 100%)            = trunc(f32(v/65535)*65535)
 #   B u8 : 66.975% exact / ±1 100%(δ 场)
 #   B u16: 13.760% / ±1 91.18%(max 2)——未复现(开放)
 #   C u8/u16: **100% 精确恒等**(64/128/256/512px 全部)
-# 注:HF9 自身只有 C 恒等;A/B 不是。产品若要求"恒等栈=输入",需在方法之上加
+# 注:参考基线自身只有 C 恒等;A/B 不是。产品若要求"恒等栈=输入",需在方法之上加
 #    恒等快速路径(全部帧相同→直接返回),这是产品决策。
 # 规则 4:对齐的 gray16 也按位深
 #   u8  : gray16 = mean(R,G,B)//3 * 256
@@ -369,9 +368,9 @@ def frame_code(frame):                     # 返回 int64 码域
 2. 新增:
    - 16-bit **恒等栈**(所有帧相同)→ 输出 == 输入(逐位);
    - 16-bit 渐变(>256 级)→ 输出保留 >256 个不同值;
-   - **8-bit 与 16-bit 分别**跑 A/B/C,确认两者走不同出口(E-37 vs 原值);
+   - **8-bit 与 16-bit 分别**跑 A/B/C,确认按各自码域和出口处理；A 的 u8 使用 E-37，B/C 使用合并码;
    - 混合栈(1 帧 u16 + 其余 u8)→ 逐帧码域正确、无白屏/黑屏;
-   - JPEG(8-bit)路径:码域 = v<<8、输出含 −1(A/C)。
+   - JPEG(8-bit)路径:码域 = v<<8；A 使用 E-37，C 的恒等栈保留原值。
 3. 性能:16-bit 帧内存是 u8 的 2×;有界窗口仍按 `estimate_fusion_space` 计,
    不得因位深翻倍而放大常驻帧数。
 
@@ -391,13 +390,13 @@ def frame_code(frame):                     # 返回 int64 码域
 | BMP / WebP | cv2 | uint8 | — |
 | HEIC/HEIF | Pillow(`pillow_heif` 注册) | uint8 | OpenCV 无 HEIC 解码;PIL 路径不旋转,由 `apply_exif_orientation` 统一处理 |
 | 相机 RAW(DNG/CR2/NEF/ARW/RAF/ORF/RW2/…) | rawpy(LibRaw) | **uint16** | `use_camera_wb=True, no_auto_bright=True`(逐帧自动亮度会破坏焦点度量);DNG-in-TIFF 由魔数识别;线性 DNG 走 `utils.linear_dng` 独立路径 |
-| 32-bit float / int32 TIFF | cv2 可能返回 float32/int32 | **不允许进入 A/B/C** | HF9 语义域是 u8/u16。**显式拒绝**:`UnsupportedDepth: 32-bit float/int TIFF 不受支持,请转 16-bit`(或在文档化后归一化:值域 [0,1]→×65535,[0,65535]→原值;首选拒绝) |
+| 32-bit float / int32 TIFF | cv2 可能返回 float32/int32 | **不允许进入 A/B/C** | 参考基线语义域是 u8/u16。**显式拒绝**:`UnsupportedDepth: 32-bit float/int TIFF 不受支持,请转 16-bit`(或在文档化后归一化:值域 [0,1]→×65535,[0,65535]→原值;首选拒绝) |
 | CMYK JPEG/TIFF(4ch) | cv2 结果不确定(可能 4ch) | **必须显式处理** | 当前 4 通道一律按 BGRA→BGR,对 CMYK 会误解;按 `colorspace` 检测→转 RGB 或明确拒绝 |
 | 视频/动画(GIF/WebP-anim/MP4) | 不支持作栈输入 | — | 仅 `SUPPORTED_VIDEO_FORMATS` 单独视频路径,不属融合 |
 
-### 2.6.1b HF9 黑盒实测(2026-11-07,9.0.7,`-silent -mp:1 -disable-opencl`)
+### 2.6.1b 参考基线黑盒实测(2026-11-07,9.0.7,`-silent -mp:1 -disable-opencl`)
 
-| 输入 | HF9 行为 | 证据 |
+| 输入 | 参考基线行为 | 证据 |
 |---|---|---|
 | uint8 TIFF/JPEG | **接受**;输出 uint8 | rc=0 |
 | uint16 TIFF | **接受**;输出 uint16,保持 **1 通道**(灰度不升 3 通道) | rc=0;日志 `save_image 256x256, 1 channels, 2 bytes` |
@@ -406,8 +405,8 @@ def frame_code(frame):                     # 返回 int64 码域
 | CMYK TIFF | **拒绝** | `Failed to load ... using tiff` |
 | CMYK JPEG | **崩溃**:`Heap corruption detected!`(rc=0xC0000374) | 日志 main.cpp:97 |
 
-> 结论:OpenFocus 对 float32/int32 与 HF9 一致地**拒绝**(错误信息需含路径+dtype);
-> CMYK 不能学 HF9(崩溃),必须优雅转换或明确拒绝。
+> 结论:OpenFocus 对 float32/int32 与参考基线一致地**拒绝**(错误信息需含路径+dtype);
+> CMYK 不能照搬参考基线(崩溃),必须优雅转换或明确拒绝。
 
 ### 2.6.2 位深与码域(与 §2.5 一致)
 
@@ -471,7 +470,7 @@ float32 : 拒绝(或按文档化规则归一化)
 | 存储 | `frame_storage.store_frame:420` | **总是**写临时文件 + memmap |
 | 预算 | `frame_storage.estimate_fusion_space:161`、`resource_policy.plan_execution:436` | 工作集估计 |
 
-## 3.2 HF9 对照([实测])
+## 3.2 参考基线对照([实测])
 
 - 打开 92×45MP:0.95s,commit 恒 228MB
 - 12000²×16(4.6GB)=43.9s;4000²×16≈15s;吞吐 100-160MB/s
@@ -532,7 +531,7 @@ def store_frame(image, *, prefer_ram=None):
 |---|---|
 | 92×45MP 打开 | <2s（当前大栈复验待运行） |
 | 点击融合→首进度 | <5s |
-| 92×45MP 融合 | ≤HF9×1.5;吞吐 ≥20MB/s |
+| 92×45MP 融合 | ≤参考基线×1.5;吞吐 ≥20MB/s |
 | 峰值内存 | 与帧数解耦(窗口+3-4 张图) |
 | 4000²×16 融合 | ≤20s |
 | 200+ 帧 | 不 OOM/不卡死 |
@@ -550,13 +549,13 @@ u16 TIFF；报告的吞吐按原始输入字节计。该测量只完成小栈验
 
 | # | 文件:位置 | 变更 | 参考 |
 |---|---|---|---|
-| 1 | `core/registration.py` 新增 | `_align_helicon_impl`、`_warp_q8_8`、`_grid_search`、`_compose` | `helicon_align.py` |
-| 2 | `core/algorithms.py:355` 旁 | 注册 `helicon` + 参数 schema | §1.2.3 |
-| 3 | `core/algorithm_adapters.py` | `registration_helicon` | — |
+| 1 | `core/registration.py` 新增 | `_align_openfocus_impl`、`_warp_q8_8`、`_grid_search`、`_compose` | 参考对齐实现 |
+| 2 | `core/algorithms.py:355` 旁 | 注册 `openfocus_alignment` + 参数 schema | §1.2.3 |
+| 3 | `core/algorithm_adapters.py` | `registration_openfocus` | — |
 | 4 | `fusion_methods/openfocus_a.py:8,43` | 响应=Σ\|L_k\|(nlev=floor(log2R)+3);S 失效;E-37 | `fuse_a.py` |
-| 5 | `fusion_methods/openfocus_depth.py:79` | diff 魔法乘;码截断;拉伸去 lo 减;snap 公式;平滑 guide 对账 | `helicon_exact.depth_map_noalign` |
-| 6 | `fusion_methods/_depth_kernel.py:19` | 与 `filter_type7` 逐行对账(含 w40/w44 语义) | `helicon_exact.filter_type7` |
-| 7 | `fusion_methods/openfocus_bc.py:117` | B = merge_weighted_identity;输出 `(acc&0xffff)>>8` | `helicon_exact.merge_weighted_identity` |
+| 5 | `fusion_methods/openfocus_depth.py:79` | diff 魔法乘;码截断;拉伸去 lo 减;snap 公式;平滑 guide 对账 | `reference.depth_map_noalign` |
+| 6 | `fusion_methods/_depth_kernel.py:19` | 与 `filter_type7` 逐行对账(含 w40/w44 语义) | `reference.filter_type7` |
+| 7 | `fusion_methods/openfocus_bc.py:117` | B = merge_weighted_identity;输出 `(acc&0xffff)>>8` | `reference.merge_weighted_identity` |
 | 8 | `fusion_methods/openfocus_bc.py:openfocus_c_impl` | 最终深度后全尺寸反向码带归并，输出 `acc>>8`；移除 RGB pyramid/levels | §2.3 原生捕获 |
 | 9 | `core/multi_focus_fusion.py:~630` | list 不再预物化 | §3.3.1 |
 | 10 | `core/workers.py:402,697,749` | 流式编排 | §3.3.3 |
@@ -576,8 +575,8 @@ u16 TIFF；报告的吞吐按原始输入字节计。该测量只完成小栈验
 | E5 | 流水线(§3.3) | 首进度 <5s;内存有界 |
 | E6 | 输入格式/位深矩阵(§2.6)+ 性能/文档/i18n | 格式与位深测试全绿;4000²×16 ≤20s;pytest 全绿 |
 
-**回归红线**:A/C 逐位 100%、B ±1 100%/PSNR 53dB、**8/16 位双出口**
-(§2.5:u8 → E-37 −1;u16 → 原值)、`tests/test_16bit_and_cache.py` 全绿、
+**回归红线**:A 和 C 在已验证的 S3/S4 上逐位 100%、B 在 S4 上 ±1 100%，并保留 **8/16 位双出口**
+(§2.5:A 的 u8 使用 E-37；B/C 按合并码输出；u16 保留原码)、`tests/test_16bit_and_cache.py` 全绿、
 源指纹、非 ASCII 路径、取消语义、默认参数 17/1.44/3.6。
 
 ---
@@ -589,11 +588,11 @@ u16 TIFF；报告的吞吐按原始输入字节计。该测量只完成小栈验
 1. RGB 金字塔与 `levels` 来自已排除的内部类假设，已移除；C 按 §2.3
    完成最终深度后，以完整源像素反向归并。
 2. C 没有半径控件；内部默认 kernel=17，参数映射沿用
-   `HF9_DEFAULT_PARAMETER_EQUIVALENCE.md`。
+   `REFERENCE_DEFAULT_PARAMETER_EQUIVALENCE.md`。
 3. B 第二遍只解码深度带参与源，同时验证未参与源的身份；C 使用有界
    帧窗口与反向归并。源、行带和输出继续受统一资源预算管理。
 4. 输入格式与产品位深约束仍按 §2.5/§2.6；A 的 u16 出口保留原值，
-   HF9 的一代码浮点往返损失只作证据记录。
+   参考基线的一代码浮点往返损失只作证据记录。
 
 **明确开放的范围**：
 
@@ -605,7 +604,7 @@ u16 TIFF；报告的吞吐按原始输入字节计。该测量只完成小栈验
 3. 研究侧 C 的 S5 13 帧 RGB 与 8192² 两帧，使用官方 depth 的归并已
    100%/max0；该证据不替代生产大栈的全链工程验收。
 4. 4D 对齐真实栈与 pixelization 的完整 S0–S16 证据边界见
-   `HF9_TRANSLATION_CORE.md`，保持已验证的恒等、位移及坐标语义。
+   `REFERENCE_TRANSLATION_CORE.md`，保持已验证的恒等、位移及坐标语义。
 5. 4000²×16 ≤20s、92×45MP 打开 <2s、峰值 ≤1GB 仍待授权后的
    受控测量；当前本机验证保持单核、512MiB、自动小栈 ≤1024²×8。
 

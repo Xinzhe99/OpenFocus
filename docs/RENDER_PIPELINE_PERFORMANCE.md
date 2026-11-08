@@ -1,8 +1,8 @@
-# 渲染性能分析:OpenFocus 当前代码 vs Helicon Focus 9
+# 渲染性能分析:OpenFocus 当前代码 vs 参考基线
 
 **写给:** 性能实现 agent(可独立执行)
-**基线代码:** `F:\Working\OpenFocus`,HEAD `68abf8c`("prepare v1.77.0 candidate")+ 未提交改动
-**示例栈:** `F:\Working\杂物\OpenFocus测试素材\20261104-Wechat-EachFOUND王恒`
+**基线代码:** OpenFocus integration 分支,HEAD `68abf8c`("prepare v1.77.0 candidate")+ 未提交改动
+**示例栈:** 45MP JPEG 测试栈(不随仓库分发)
 = 92 张 JPEG,8192×5464×3(45MP/张),磁盘 645MB,全解码 12.3GB
 **日期:** 2026-11-07
 
@@ -19,11 +19,11 @@
 | 打开 92×45MP | **预览优先**:只扫元数据 + 首帧预览;其余缩略图后台生成 | 否(已解决)|
 | 渲染启动 | `materialize_frames` **串行**全解码**全部 92 帧**后才开始对齐/融合(~22s,单线程) | **是** |
 | 对齐 | 全分辨率(可选降采样 `reg_downscale_width`) | 视配置 |
-| 融合 | NumPy 后端,**~6 MB/s**(4000²×16 实测 82.1s);HF9 SSE2+线程 ~33 MB/s | **是(主)** |
+| 融合 | NumPy 后端,**~6 MB/s**(4000²×16 实测 82.1s);参考基线 SSE2+线程 ~33 MB/s | **是(主)** |
 | 流水线重叠 | 解码→对齐→融合串行三段,无重叠、无有界队列 | **是(结构性)** |
 
 **一句话:** 打开已快;慢在"渲染前一次性串行解码全栈 + NumPy 单线程融合 + 三段不重叠"。
-HF9 是"边解码边算,有界队列,SSE2+多线程"。
+参考基线 是"边解码边算,有界队列,SSE2+多线程"。
 
 ---
 
@@ -55,7 +55,7 @@ HF9 是"边解码边算,有界队列,SSE2+多线程"。
   逐帧独立活动面 + 源序归约"(bounded 行/帧 pass),但**逐帧解码仍不参与该窗口**。
 - 早前实测(bf653c8 一代):`openfocus_b` 4000²×16 u16 = **82.1s ≈ 6 MB/s**
   (直接内层调用,无 sort/exposure/base 前置)。
-- HF9 对照:4000²×16 全流程 ≈15s;12000²×16(4.6GB) 43.9s(≈105 MB/s 全流程)。
+- 参考基线对照:4000²×16 全流程 ≈15s;12000²×16(4.6GB) 43.9s(≈105 MB/s 全流程)。
 
 > 注意:82.1s 是旧基线。HEAD 68abf8c 的 A/B/C 已含 bounded 生产改造,
 > **先在当前 HEAD 复测再定优化目标**(parent 统一串行跑)。
@@ -83,11 +83,11 @@ HF9 是"边解码边算,有界队列,SSE2+多线程"。
 |---|---|---|
 | R1 | 渲染前**串行**全解码全部帧(`materialize_frames` 单线程) | ≈22s 启动延迟,期间无进度/无重叠 |
 | R2 | 融合 NumPy 单线程,吞吐 ≈6 MB/s | 12.3GB ÷ 6MB/s ≈ **34 分钟**(按旧基线线性外推;需复测) |
-| R3 | 解码/对齐/融合三段**串行**,无有界队列 | 无法像 HF9 那样把解码藏进计算 |
+| R3 | 解码/对齐/融合三段**串行**,无有界队列 | 无法像参考基线那样把解码藏进计算 |
 | R4 | 全帧驻留(RAM 或 scratch) | 内存 12.3GB 级别;大栈 OOM 风险 |
 | R5 | 256MB `SOURCE_CACHE` 远小于全栈 | `materialize_frames` 期间缓存命中率低(每帧只解码一次,影响小)|
 
-### HF9 对照(逆向证据分级)
+### 参考基线对照(逆向证据分级)
 
 | 机制 | 级别 | 依据 |
 |---|---|---|
@@ -118,7 +118,7 @@ HF9 是"边解码边算,有界队列,SSE2+多线程"。
    - 深度图类(B/C):逐帧活动面累加(现有 bounded frame-pass 已具备)——解码第 k 帧
      时融合第 k-1 帧;
    - A/C:逐帧金字塔/权重累加同理。
-   - 有界窗口:同时在途 ≤ N 帧(参考 HF9 的几帧窗口;按 `estimate_fusion_space` 定)。
+   - 有界窗口:同时在途 ≤ N 帧(参考同类实现的几帧窗口;按 `estimate_fusion_space` 定)。
 5. 与 FusionStreaming agent 的"bounded frame-parallel activity + ordered
    reduction"对接(其设计已确认:活动面帧间独立、求和有序归约)。
 6. 对齐阶段若启用:先预览尺度算形变(现有 `reg_downscale_width`),再按需全分辨率应用;
@@ -145,7 +145,7 @@ HF9 是"边解码边算,有界队列,SSE2+多线程"。
 |---|---|
 | 92×45MP 打开 | <2s(现状已达标,防回退)|
 | 点击融合 → 首个进度 | <5s |
-| 92×45MP 全流程 | 不超过 HF9 同素材的 1.5× |
+| 92×45MP 全流程 | 不超过参考基线同素材的 1.5× |
 | 4000²×16 `openfocus_b` 融合 | 当前 HEAD 复测后定基线;<30s(目标)|
 | 峰值内存 | ≤ 预算,不随帧数线性增长 |
 | 回归 | `pytest -q` 全绿;方法 A/C 逐位 100% 不得回退;B ±1 100% 不得回退;16-bit 保真;源变更检测/指纹校验保留 |
@@ -164,7 +164,7 @@ HF9 是"边解码边算,有界队列,SSE2+多线程"。
 # 解码采样(8 帧,非 ASCII 路径安全)
 import glob, os, time, cv2, numpy as np
 from concurrent.futures import ThreadPoolExecutor
-d = r"F:\Working\杂物\OpenFocus测试素材\20261104-Wechat-EachFOUND王恒"
+d = "<45MP JPEG 测试栈目录>"
 paths = sorted(glob.glob(os.path.join(d, "*.*")))[:8]
 read = lambda p: cv2.imdecode(np.fromfile(p, np.uint8), cv2.IMREAD_COLOR)
 t0=time.time(); [read(p) for p in paths]; print("serial", (time.time()-t0)/len(paths)*1000, "ms/frame")
@@ -187,7 +187,7 @@ from core.multi_focus_fusion import MultiFocusFusion
 
 | 项 | 证据 |
 |---|---|
-| **默认参数已对齐 HF9 GUI(R=8,S=6)** | `get_fusion` 实测:openfocus_a kernel=17/2.0,openfocus_b kernel=17/**depth_smoothing=1.44(decimals=2)**,openfocus_c blend=**3.6**;`multi_focus_fusion.py` 内层 fallback 同步(11→17, 1.2→1.44, 3.0→3.6)|
+| **默认参数已对齐参考基线 GUI(R=8,S=6)** | `get_fusion` 实测:openfocus_a kernel=17/2.0,openfocus_b kernel=17/**depth_smoothing=1.44(decimals=2)**,openfocus_c blend=**3.6**;`multi_focus_fusion.py` 内层 fallback 同步(11→17, 1.2→1.44, 3.0→3.6)|
 | **解码并行 + 有界窗口** | `materialize_frames` 改为 `plan_execution` 计算 worker 数 + ThreadPool `pending` 窗口 + 有序 append + 取消安全;`RenderWorker`/`fuse()` 传入 `thread_count`/`resource_preference`/`preferred_staging_bytes`/进度回调 |
 | **scratch 暂存接线** | `RenderWorker.run`、`fuse()` 均包 `scratch_directory()`;`estimate_fusion_space` 作为 preferred staging |
 | **测试** | `tests/test_lazy_render_workers.py` + `tests/test_source_frames.py` 全绿(2026-11-07 实跑)|
@@ -200,7 +200,7 @@ from core.multi_focus_fusion import MultiFocusFusion
 | `materialize_frames` tc=1 | **1119 ms** | 串行物化(解码 + `store_frame` 落盘) |
 | `materialize_frames` tc=8 | **536 ms** | 并行后 2.1× 提升;仍受**有序消费者落盘**限制 |
 | 融合 `openfocus_b` 2000²×8 | **7.3 MB/s**(新默认 17/1.44) | 旧默认 11/1.2 = 10.3 MB/s → 新默认慢 ~42% |
-| HF9 对照 | ~33 MB/s | 仍是 3-4.5× 差距 |
+| 参考基线对照 | ~33 MB/s | 仍是 3-4.5× 差距 |
 
 ### 8.3 仍未改好的(剩余差距)
 
@@ -208,7 +208,7 @@ from core.multi_focus_fusion import MultiFocusFusion
 |---|---|---|
 | 1 | **仍"全量物化→再融合"**,解码与融合不重叠 | 92×45MP: 解码 ≈49s(tc=8)串在融合之前 |
 | 2 | **`store_frame` 强制落盘**: 每帧 128MB 写 scratch,融合再读回 | 消费者成为瓶颈(536 vs 70ms/帧原始并行解码);双份 I/O |
-| 3 | 融合吞吐 7.3 MB/s,NumPy,单一并行层 | 92×45MP 融合估算 ≈28 分钟(HF9 ≈6 分钟)|
+| 3 | 融合吞吐 7.3 MB/s,NumPy,单一并行层 | 92×45MP 融合估算 ≈28 分钟(参考基线 ≈6 分钟)|
 | 4 | 全栈落盘驻留,非"有界 RAM 窗口 + 淘汰" | 大栈占磁盘、I/O 放大 |
 | 5 | 82.1s 基线已失效(默认参数变了),需复测 | 定优化目标前先重测 |
 
@@ -264,7 +264,7 @@ their source descriptors. Unsupported transparent registration restrictions
 remain enforced; supported no-alignment alpha crops keep their original source
 and mask semantics.
 
-Integration fixtures in `tests/test_hf9_streaming.py` cover GUI cold/warm plan
+Integration fixtures in `tests/test_openfocus_streaming.py` cover GUI cold/warm plan
 reuse, reference/revision/source invalidation and corrupt cache recovery;
 CLI A/B/C with both integer bit depths and retained depth sources; comparison
 ROI, batch aligned exports, sensor cleanup, deferred/eager application equality,
@@ -286,7 +286,7 @@ Admission charges future cache growth through
 full decoded source sizes beneath ROI crops. Existing `SOURCE_CACHE.bytes`
 are already excluded from the operating system's available RAM and are not
 reserved a second time. Cold, partially filled and full cache cases have
-regression fixtures in `tests/test_hf9_streaming.py` (not run in this branch).
+regression fixtures in `tests/test_openfocus_streaming.py` (not run in this branch).
 
 Native producer admission also accounts for full-source int32 code storage and
 the float32 resize input for every input dtype, including uint8. A small
@@ -314,7 +314,7 @@ later source mutations. Views retain their allocation's byte reservation.
 384 MiB; the current resource-policy budget can lower that ceiling. This is a
 buffer-storage limit, excluding decoder workspaces and caller-owned input
 arrays. Producer admission charges decoder/warp workspace and future native
-cache growth separately. `HF9_MAX_IN_FLIGHT_FRAMES` bounds the source-order
+cache growth separately. `OPENFOCUS_MAX_IN_FLIGHT_FRAMES` bounds the source-order
 window at two, even when more cores or source frames are available.
 
 S1 (512² × 4, C, one thread) measured 0.020 s load, 0.919 s fusion and
@@ -334,16 +334,16 @@ same process limits.
 
 S3 retains B's depth pass, then resolves only sources used by the final depth
 band. Source fingerprints and processor checks still run for skipped inputs.
-C follows the verified online reference: each resolved source updates shared
-depth and its pyramid bands immediately; a separate collapse reads those
-accumulated bands without resolving sources again. External tile thresholds
-cannot split that state into independent domains. C smoothing controls the
-depth-map output.
+At S3, C used an online pyramid: each resolved source updated shared depth and
+its pyramid bands, then a separate collapse read those accumulated bands. This
+is historical measurement context, not the current C implementation. C now
+finishes its smoothed depth map first, then merges full-resolution sources in
+reverse order; external tile thresholds cannot split that shared depth domain.
 
 Both methods remain sample-exact against their verified reference functions.
-The supplied 512² HF9 stacks retain B's established ±1 results on S3/S4 and
+The supplied 512² reference stacks retain B's established ±1 results on S3/S4 and
 C's 100% S3/S4 results; C S1/S2 measure 95.87%/97.04% exact samples. These
-measurements do not establish general HF9 bit parity.
+measurements do not establish general reference bit parity.
 
 The same isolated S3 harness measured C at 0.404 s / 111 MiB for 512² × 4 and
 0.398 s / 125 MiB for 512² × 8. Throughput uses the source TIFF payload

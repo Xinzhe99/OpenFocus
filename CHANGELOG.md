@@ -24,7 +24,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   resolution as a real JPEG plus a decoded bitmap, copy persistent file URLs
   for one or many selected results, and reveal a result in Explorer, Finder or
   the desktop file manager. Unsaved or outdated results are written as PNG
-  only after choosing a folder, with unique names and current annotations;
+  in the system temporary directory, with unique names and current annotations;
   existing exports are reused only while they still match. The private-link
   entry stays disabled until hosted sharing exists. Clipboard ownership is
   verified after writing, so a locked clipboard reports an error instead of a
@@ -58,6 +58,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   source coverage before compositing the display background.
 
 ### Changed
+- All five GUI render options default to off for every fusion method; existing
+  saved choices remain in effect, and **Reset** returns them to off. Exposure
+  matching and base correction are optional extra operations and do not
+  reproduce the reference baseline's brightness adjustment. The CLI keeps its separate
+  exposure-matching default.
 - Default Batch Image Converter to lossless PNG, restore the last explicitly
   selected output format, and show the actual result extension below the
   selector. Its individual-file conversion, including RAW-to-DNG, remains
@@ -68,6 +73,15 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   into control tooltips, keeping relevant risks and status visible. Result
   adjustments include highlights, shadows, saturation and color temperature,
   with a larger side-by-side preview and draggable before/after comparison.
+- Align ROI selection with the next render: it uses the current registration
+  method and parameters plus the current fusion method's exposure-matching
+  reference; **No alignment** uses the original frames directly. Stack or
+  setting changes discard the old ROI stack instead of reusing it.
+- Open the Retouch workspace before decoding the source stack: thumbnails use
+  existing source previews and the selected frame updates to its processed
+  pixels, while only the selected frame resolves in the background and at most
+  two resolved frames stay cached. Whole-stack reads remain on demand, for
+  example Auto background, checkpoint save/load and the sharpness reference.
 - Import camera RAW and ordinary image folders through the same entry; a RAW-only
   stack can still use camera-linear import and Linear DNG export.
 - Prepare source frames with bounded parallel decoding and publish thumbnails
@@ -77,7 +91,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Set new OpenFocus A/B kernel defaults to 17, B depth smoothing to 1.44 and C
   blend smoothing to 3.6. Existing saved per-method values are preserved.
 - Match OpenFocus A's integer Burt-pyramid response and eight-bit E-37 output
-  to HF9. A smoothing is inert; sixteen-bit selected codes remain unchanged.
+  to the reference baseline. A smoothing is inert; sixteen-bit selected codes remain unchanged.
 - Show the localized OpenFocus smoothing hints in the registered parameter panels
   and update all twelve language packs and manuals for A and C's actual behavior.
 - Reuse A's exact Q4 hard-selection response for normalized float and resized
@@ -105,6 +119,21 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   desktop multipage exports and the public helper's historical LZW default.
 
 ### Fixed
+- Crop fast OpenFocus alignment to the common geometrically valid area in
+  normal and grouped renders, including cached and deferred plans, so warp
+  borders do not contaminate fusion while real dark pixels remain valid.
+- Serve cached deferred OpenFocus plans without decoding aligned full frames;
+  a miss estimates once on the render worker and publishes the plan after
+  fusion. A cache-write failure is logged and never fails a completed render.
+- Keep the render status in its actual stage and use a generic finalization
+  label after fusion, including while the alignment cache is written.
+- Read camera-linear RAW dimensions before parallel calibration so admission
+  covers the real per-worker cost: 64 MiB plus four times the largest sensor
+  frame, with at most four workers. Reading `rgb_xyz_matrix` and
+  `camera_whitebalance` still unpacks every sensor, while display previews no
+  longer repeat that calibration read (first-frame preview 7.7 s → 0.27 s on the
+  test machine). Ordered workers preserve calibration checks, progress and
+  cancellation.
 - Recognize reopened strided mappings during source materialization, fusion
   return and ROI provenance capture, avoiding duplicate stacks and untracked
   heap crops while preserving mapped-file ownership.

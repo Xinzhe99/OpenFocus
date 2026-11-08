@@ -22,7 +22,7 @@ through a bounded window in reverse order, using one completed canvas depth.
 A worker budget includes
 completed results waiting for reduction and original-size conversion before
 resizing. Explicit spatial tiles borrow the parent's lease and keep their
-private HF9 child execution serial.
+private reference-implementation child execution serial.
 
 Repeated source consumption retains each immutable source's exposure gain as
 a scalar; pixels still resolve through the same admitted window and source
@@ -113,7 +113,8 @@ before resolving pixels. Optional whole-stack staging and bounded live-workspace
 hints guide placement separately; they do not reserve disk for RAM-only work.
 Retained processing frames open the same scoped admission when resolved later,
 so temporary mappings survive until their final views are released. Explicit
-temporary-directory choices remain binding.
+temporary-directory choices stay saved; an unavailable directory falls back
+with a warning, while a full selected disk remains binding.
 
 HDR mosaic planning stages bracket colors and coverage in the captured scratch
 directory. It reuses the first bracket's mappings for the merged low sample and
@@ -193,7 +194,7 @@ Use `tools/fusion_streaming_benchmark.py` in fresh processes for stage timings,
 input order, implementation hashes, working/export pixel hashes, producer
 concurrency and RSS. Compare identical sources and options; the direct adapter
 entry excludes pipeline normalization/exposure/sorting/base preparation. The
-reported historical OpenFocus 82.1-s adapter run and HF9 approximately 15-s
+reported historical OpenFocus 82.1-s adapter run and the reference baseline's approximately 15-s
 workflow used different generated stacks and stage boundaries, so they do not
 establish a same-input speed ratio. Avoid simultaneous benchmarks or tests.
 
