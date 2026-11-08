@@ -45,15 +45,20 @@ class FrameCache:
                 logger.debug('source cache hit bytes=%d entries=%d', self.bytes, len(self._items))
             return image
 
+    def make_room(self, size):
+        """Drop old cache owners before allocation; live consumers keep their views."""
+        with self._lock:
+            while self._items and self.bytes + size > self.max_bytes:
+                _, removed = self._items.popitem(last=False)
+                self.bytes -= removed.nbytes
+                logger.debug('source cache eviction bytes=%d released=%d', self.bytes, removed.nbytes)
+
     def put(self, key, image):
         with self._lock:
             previous = self._items.pop(key, None)
             if previous is not None:
                 self.bytes -= previous.nbytes
-            while self._items and self.bytes + image.nbytes > self.max_bytes:
-                _, removed = self._items.popitem(last=False)
-                self.bytes -= removed.nbytes
-                logger.debug('source cache eviction bytes=%d released=%d', self.bytes, removed.nbytes)
+            self.make_room(image.nbytes)
             if image.nbytes <= self.max_bytes:
                 self._items[key] = image
                 self.bytes += image.nbytes
@@ -491,6 +496,7 @@ class SourceFrame:
         from core.image_loader import decode_image, _has_transparency, UnsupportedTransparency
         from utils.logging_setup import log_operation
         from core.resource_policy import require_memory
+        SOURCE_CACHE.make_room(self.nbytes)
         require_memory(frame_resolution_bytes(self))
         with log_operation('source_decode', path=self.path, page=self.page, scale=self.scale):
             scaled_raw = False

@@ -100,6 +100,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Restore local scratch-volume selection before deferred registration, fusion
   and retained-frame resolution, without reserving disk for RAM-only work.
   Explicit temporary-directory choices remain binding.
+- Evict old source-cache owners before the next full decode, avoiding a full
+  old cache overlapping the incoming image while preserving live consumer views.
+- Keep OpenFocus A's native hard-selected codes in uint16 and release its
+  response/cache before the common float output conversion.
+- Resolve macOS temporary subdirectories to their actual disk device before
+  checking whether the volume is internal and fixed.
 
 ## [1.77.0] - 2026-11-06
 
