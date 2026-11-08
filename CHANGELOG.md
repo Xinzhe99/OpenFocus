@@ -105,6 +105,17 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   desktop multipage exports and the public helper's historical LZW default.
 
 ### Fixed
+- Recognize reopened strided mappings during source materialization, fusion
+  return and ROI provenance capture, avoiding duplicate stacks and untracked
+  heap crops while preserving mapped-file ownership.
+- Resolve A/B registered-frame watermarks, baked annotations and linear-RAW
+  development from the displayed history record instead of the selected row.
+- Fit mosaic previews to the visible output geometry, restore placement framing
+  after edits, protect imported mask files from export overwrite, and report
+  invalid camera/control-point settings with actionable translated errors.
+- Clarify all twelve manuals: alpha masks require PNG; TIFF masks are grayscale
+  or BGR without alpha, and panorama placement uses camera orientation/FOV
+  instead of the planar X/Y/scale/rotation controls.
 - Keep HDR bracket planning samples and merged coverage in temporary mappings,
   reuse bracket scratch for retained samples, and release borrowed pages between
   groups so preview plans do not accumulate unadmitted resident canvases.

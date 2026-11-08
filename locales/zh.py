@@ -87,6 +87,8 @@ ZH = {
     "mosaic_cp_b": "图像 B",
     "mosaic_cp_point_a": "A（x，y）",
     "mosaic_cp_point_b": "B（x，y）",
+    "mosaic_cp_frame_outside": "图像编号 {index} 超出可用范围 0–{last}。",
+    "mosaic_cp_point_outside": "点（{x}，{y}）超出图像 {frame} 的边界（{width} × {height} 像素）。",
     "mosaic_cp_source": "来源",
     "mosaic_cp_active": "启用",
     "mosaic_cp_residual": "残差（像素）",

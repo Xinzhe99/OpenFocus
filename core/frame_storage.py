@@ -714,6 +714,14 @@ def _mapped_base(image):
     return mapped
 
 
+def is_mapped_frame(image):
+    """Whether an array borrows mapped pixels, including reopened strided views.
+
+    Storage location does not imply ownership of the backing file.
+    """
+    return isinstance(image, np.ndarray) and _mapped_base(image) is not None
+
+
 def describe_frame(image):
     """Describe a mapped ndarray for transfer without copying its pixels.
 

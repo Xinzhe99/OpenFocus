@@ -83,6 +83,8 @@ PACK = {
     "mosaic_cp_b": "이미지 B",
     "mosaic_cp_point_a": "A (x, y)",
     "mosaic_cp_point_b": "B (x, y)",
+    "mosaic_cp_frame_outside": "이미지 번호 {index}가 사용 가능한 범위 0–{last}를 벗어납니다.",
+    "mosaic_cp_point_outside": "점 ({x}, {y})가 이미지 {frame}의 경계({width} × {height}픽셀)를 벗어납니다.",
     "mosaic_cp_source": "출처",
     "mosaic_cp_active": "사용",
     "mosaic_cp_residual": "잔차 (px)",

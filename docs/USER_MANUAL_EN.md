@@ -180,8 +180,8 @@ file.
 **Auto-align** finds shared features on bounded thumbnails, ignoring masked and
 transparent pixels, and fits each connected overlap. Planar mode estimates
 rotation, scale and translation; panorama mode also fits the camera and lens
-model. Images without enough common features remain marked unmatched: drag
-them or enter X/Y in pixels, scale as a percentage and rotation in degrees,
+model. Images without enough common features remain marked unmatched. In planar
+mode, drag them or enter X/Y in pixels, scale as a percentage and rotation in degrees,
 including coordinates derived from a known stage. Image content cannot infer
 the position of a featureless, non-overlapping region, and automatic matching
 is not a physical calibration. For a declared stage grid, set rows, columns,
@@ -189,7 +189,7 @@ capture order, direction, start corner and estimated overlap, then press
 **Apply grid positions**. The cell count must equal the image count, and grid
 placement applies only to planar mode. Editing the controls leaves current
 positions untouched until Apply, which replaces them and clears match
-connections. Inspect every overlap and adjust X/Y, scale and rotation before
+connections. In planar mode, inspect every overlap and adjust X/Y, scale and rotation before
 saving.
 
 **Control points** opens a two-preview editor. Choose image A and B, click the
@@ -208,8 +208,9 @@ blend** after editing or optimizing to inspect the result.
 **Source mask** edits one image's native-resolution mask. Paint with a radius
 expressed in source pixels; **Exclude** marks pixels red and **Include**
 restores them; **Clear mask** removes the base; **Import mask…** accepts one
-PNG or TIFF whose dimensions exactly match the source (alpha, grayscale or
-BGR). **Apply** commits the strokes, while **Cancel** keeps the previous mask.
+PNG (alpha, grayscale or BGR) or TIFF without alpha (grayscale or BGR), whose
+dimensions exactly match the source. **Apply** commits the strokes, while
+**Cancel** keeps the previous mask.
 Excluded pixels do not contribute to seams, feature matching or output pixels,
 and a mask or RGBA source makes transparency available in the output.
 
@@ -248,8 +249,10 @@ report an error.
 preview (up to 1024 pixels on the long edge). **Show seams**, **Show image
 numbers** and **Show excluded areas** overlay the chosen labels and mask, and
 selected control points appear as markers. Source opacity affects only the
-workspace preview and never enters the exported blend; X/Y, scale and rotation
-define the actual placement. The preview opacity value is retained across
+workspace preview and never enters the exported blend. X/Y, scale and rotation
+define the actual placement in planar mode. For an unmatched panorama image,
+adjust its camera yaw, pitch, roll and field of view instead.
+The preview opacity value is retained across
 imports and layout changes. Any source, placement, mask, control-point or
 editor change invalidates the plan, so press **Preview blend** again after edits
 or optimization. Save reuses the current captured plan only when sources and

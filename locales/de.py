@@ -83,6 +83,8 @@ PACK = {
     "mosaic_cp_b": "Bild B",
     "mosaic_cp_point_a": "A (x, y)",
     "mosaic_cp_point_b": "B (x, y)",
+    "mosaic_cp_frame_outside": "Bildindex {index} liegt außerhalb des verfügbaren Bereichs 0–{last}.",
+    "mosaic_cp_point_outside": "Punkt ({x}, {y}) liegt außerhalb von Bild {frame} ({width} × {height} Pixel).",
     "mosaic_cp_source": "Herkunft",
     "mosaic_cp_active": "Aktiv",
     "mosaic_cp_residual": "Restfehler (px)",

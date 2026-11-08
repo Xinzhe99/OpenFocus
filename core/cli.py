@@ -381,7 +381,7 @@ def _load_images(paths: List[str], thread_count: int = 0,
 def _load_images_admitted(paths, thread_count, resource_preference,
                           should_cancel, registration_steps, exposure_match, lazy=False):
     from core.image_loader import iter_decoded_sources, _DecodeCancelled
-    from core.frame_storage import store_frame
+    from core.frame_storage import is_mapped_frame, store_frame
     from core.frame_storage import select_scratch, estimate_registration_space, estimate_fusion_space
     from core.source_frames import scan_source
     # Admit known headers without consuming the decoder's streaming iterator.
@@ -417,7 +417,7 @@ def _load_images_admitted(paths, thread_count, resource_preference,
                     # The CLI is strict: one unreadable frame is an error,
                     # never a silently shorter stack.
                     raise RuntimeError(f"Failed to decode image: {item.path}: {item.error}")
-                images.extend(page if isinstance(page, np.memmap) else store_frame(page)
+                images.extend(page if is_mapped_frame(page) else store_frame(page)
                               for page in item.pages)
                 del item
         finally:

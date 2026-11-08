@@ -246,14 +246,17 @@ def _capture_watermark_snapshot(host) -> dict:
 
 
 def _resolve_wipe_right_record(host, image, target):
-    """Record owning the A/B right-side pixels, including aligned stacks.
-
-    Aligned records have no `image`: their frames are shown instead, so the
-    selected aligned record supplies the configuration.  Kept module-level so
-    test hosts can bind `_wipe_pixmap` without the full window class.
-    """
+    """Record owning the B-side pixels, including independent aligned history."""
     record = host.output_manager.record_for_image(image)
     if record is None and target == "registered":
+        record_for_row = getattr(host.output_manager, "record_for_row", None)
+        if record_for_row is not None:
+            for row in range(host.output_list.count()):
+                candidate = record_for_row(row)
+                if (candidate is not None and candidate.kind == "aligned"
+                        and any(frame is image
+                                for frame in (candidate.aligned_frames or ()))):
+                    return candidate
         selected = host.output_manager.record_for_item(
             host.output_list.currentItem())
         if selected is not None and selected.kind == "aligned":
@@ -2962,8 +2965,7 @@ class OpenFocus(QMainWindow):
         from core.source_frames import display_image
         display = display_image(image)
         if target == "registered":
-            selected = self.output_manager.record_for_item(self.output_list.currentItem())
-            metadata = (selected.linear_dng_metadata if selected is not None and selected.kind == "aligned"
+            metadata = (record.linear_dng_metadata if record is not None and record.kind == "aligned"
                         else getattr(self, "linear_dng_metadata", None))
         elif target == "output":
             metadata = getattr(record, "linear_dng_metadata", None)
