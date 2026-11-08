@@ -1,4 +1,4 @@
-"""Build the OpenFocus marketing site into site/dist.
+"""Build the OpenFocus product site into site/dist.
 
 Zero dependencies beyond Pillow (already a runtime dependency of the app).
 
