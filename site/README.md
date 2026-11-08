@@ -1,6 +1,6 @@
 # OpenFocus website
 
-Static marketing site for OpenFocus: English at `/`, Simplified Chinese at
+Static product site for OpenFocus: English at `/`, Simplified Chinese at
 `/zh/`. No framework, no runtime, no third-party requests — one HTML file per
 language with CSS and JavaScript inlined, deployed as Cloudflare Workers
 static assets.
