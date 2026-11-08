@@ -5,8 +5,9 @@ The authoritative release build commands are in [release.yml](../.github/workflo
 For a local build, use a supported Python environment, install the requirements and PyInstaller, and adapt the corresponding release job to the target platform. The package must collect `onnxruntime`, place the three `.onnx` inference checkpoints in `weights`, and exclude `torch` from the frozen application. The Windows x64 requirements select ONNX Runtime DirectML; the other declared platforms use ONNX Runtime. A provider being installed or available does not establish that a real inference ran on a GPU; see [GPU support](GPU_SUPPORT.md).
 
 The macOS job uses `macos-latest`, matching the test matrix. The former
-`macos-14` hosted configuration is no longer available; preview builds exercise
-the current runner before any tag can publish a release.
+`macos-14` hosted configuration is no longer available. A manual preview build
+can exercise the current runner before tagging, but it is optional: a tag push
+publishes after its own build jobs.
 
 Linux regression runs need `fonts-noto-cjk` alongside the Qt system libraries
 to exercise Chinese watermark text with real glyphs. Install that package

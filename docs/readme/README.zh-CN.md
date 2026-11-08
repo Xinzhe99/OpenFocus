@@ -274,7 +274,7 @@ openfocus -i ./stack_folder -o ./result/fused.png
 openfocus -i ./stack_folder -o ./result/fused.tif --auto-background auto --save-stacked --missing-data-map
 ```
 
-文件夹中的帧在都有 EXIF 对焦步数时按近到远排序，否则使用自然文件名顺序；
+文件夹中的帧在都有 EXIF 对焦步数且能确定近远方向时按近到远排序，否则使用自然文件名顺序；
 `--frame-order name` 可强制按文件名排序。显式列出的文件保持传入顺序。
 配方会保留原生 RAW 转换模式和批量输出格式；临时的重复帧检查与对齐报告应通过
 直接 CLI 命令运行。

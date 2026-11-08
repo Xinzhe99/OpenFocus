@@ -5,8 +5,8 @@ these approaches:
 
 | Method | Approach | Main controls |
 |---|---|---|
-| A | Selects pixels using the sum of absolute Burt-pyramid Laplacians. | Radius (`--kernel`); smoothing is inert as in HF9 A |
-| B | Blends neighboring frames according to a smoothed depth map. | Kernel radius and depth smoothing (`--kernel`, `--depth-smoothing`) |
+| A | Selects pixels using the sum of absolute Burt-pyramid Laplacians. | Kernel size (`--kernel`); smoothing is inert as in HF9 A |
+| B | Blends neighboring frames according to a smoothed depth map. | Kernel size and depth smoothing (`--kernel`, `--depth-smoothing`) |
 | C | Blends source pixels using the completed, smoothed depth map. | Blend smoothing (`--blend-smoothing`); no radius control |
 
 Default parameters are kernel size 17 for A and B, blend smoothing 2.0 for A,
