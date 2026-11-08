@@ -1,6 +1,7 @@
 """Translation and wide similarity search with reusable Q8.8 warps.
 
-Plans retain immutable source identities.
+The wide detector preserves the measured float32 evaluation order. Plans
+retain immutable source identities, never decoded frame stacks. See
 """
 from dataclasses import dataclass
 import hashlib
@@ -941,9 +942,31 @@ class AlignmentTransform:
         h, w = self.source.shape[:2]
         if self.is_identity:
             return 0, 0, w, h
+        fields = gpu_params(self.f8)
+        if self.f8[4] == 0:
+            # The inverse map is separable and increasing in each axis. Find
+            # its exact half-open pixel bounds using the warp's float32 math.
+            def first_at_least(length, axis, threshold):
+                low, high = 0, length
+                while low < high:
+                    middle = (low + high) // 2
+                    x = np.float32(middle if axis == 0 else 0)
+                    y = np.float32(middle if axis == 1 else 0)
+                    coord = map_coords(fields, x, y)[axis].item()
+                    if coord < threshold:
+                        low = middle + 1
+                    else:
+                        high = middle
+                return low
+
+            left = first_at_least(w, 0, 0)
+            right = first_at_least(w, 0, w)
+            top = first_at_least(h, 1, 0)
+            bottom = first_at_least(h, 1, h)
+            return ((left, top, right, bottom) if left < right and top < bottom
+                    else (0, 0, 0, 0))
         # An affine image of a rectangle is convex. A centered output
         # rectangle whose four corners are valid is therefore wholly valid.
-        fields = gpu_params(self.f8)
         def valid(left, top, right, bottom):
             x = np.array([left, right - 1], np.float32)
             y = np.array([top, bottom - 1], np.float32)

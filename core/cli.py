@@ -589,6 +589,24 @@ def _fuse_stack(images, args):
 
 
 def _fuse_stack_admitted(images, args):
+    from core.algorithms import alignment_steps, get_fusion
+    from core.frame_resolution_cache import (mandatory_staging_bytes,
+                                             render_scope)
+    frames = list(images) if isinstance(images, (list, tuple)) else []
+    mandatory = 0
+    if frames:
+        steps = (len(alignment_steps(args.align))
+                 if getattr(args, "align", "none") != "none" else 0)
+        mandatory = mandatory_staging_bytes(
+            frames, alignment_steps=steps,
+            exposure_match=bool(getattr(args, "exposure_match", True)),
+            deferred=bool(get_fusion(args.method).streaming_sources))
+    with render_scope(frames, mandatory_bytes=mandatory,
+                      should_cancel=getattr(args, '_should_cancel', None)):
+        return _fuse_stack_admitted_body(images, args)
+
+
+def _fuse_stack_admitted_body(images, args):
     """Register and fuse one stack; returns the fused image."""
     import cv2
     from core.registration import ImageRegistration

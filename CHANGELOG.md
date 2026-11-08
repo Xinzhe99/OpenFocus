@@ -119,6 +119,26 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   desktop multipage exports and the public helper's historical LZW default.
 
 ### Fixed
+- Keep the selected source preview responsive while a background thumbnail
+  batch waits for a render; selected previews still observe the memory budget.
+- Lock render settings until a render or comparison completes. A quick-preview
+  draft clears the output selection and cannot be saved as a finished result;
+  manually selected history entries can still be exported.
+- Mark project processing settings as unsaved when changed, including resets,
+  while project restoration keeps the saved state clean.
+- Attach each result and aligned frame to its own source EXIF snapshot, so
+  saving a historical result after loading another stack keeps the original
+  metadata. Oversized JPEG metadata and excessive source EXIF now report
+  specific errors.
+- Reuse compiled fusion kernels between isolated render processes when a
+  writable cache is available. Concurrent cache access is serialized without
+  blocking renders; unavailable or damaged caches fall back to compilation.
+- Reuse decoded and processed source frames within a render when its selected
+  temporary volume has sufficient space; otherwise retain the normal bounded
+  decoding path.
+- Use consistent half-resolution depth for OpenFocus B fusion, depth export
+  and tiled rendering, preserving high-frequency details. Correct B/C color
+  conversion before focus evaluation for 8-bit and 16-bit sources.
 - Crop fast OpenFocus alignment to the common geometrically valid area in
   normal and grouped renders, including cached and deferred plans, so warp
   borders do not contaminate fusion while real dark pixels remain valid.
@@ -208,8 +228,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Explicit temporary-directory choices remain binding.
 - Evict old source-cache owners before the next full decode, avoiding a full
   old cache overlapping the incoming image while preserving live consumer views.
-- Keep OpenFocus A's native hard-selected codes in uint16 and release its
-  response/cache before the common float output conversion.
+- Reduce OpenFocus A background noise by blending frames where focus response
+  is weak; keep sharp-region selection, first-frame ties and 16-bit precision.
 - Resolve macOS temporary subdirectories to their actual disk device before
   checking whether the volume is internal and fixed.
 - Quantize fusion results in bounded sample chunks instead of allocating

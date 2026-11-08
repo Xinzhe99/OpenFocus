@@ -476,7 +476,7 @@ class PerspectiveStage:
 
 @dataclass(frozen=True)
 class PerspectiveAlignmentPlan:
-    """Ordered OpenCV resamplings; independent of the OpenFocus f8 plan schema."""
+    """Ordered OpenCV resamplings; independent of the wide alignment plan schema."""
     stages: tuple
     parameters: str
     downscale_width: int
@@ -659,15 +659,14 @@ def apply_alignment_plan(sources, plan, *, defer_warps=False, should_cancel=None
         _report_openfocus_transform(transform, plan.reference_index)
     h, w = sources[0].shape[:2]
     left, top, right, bottom = 0, 0, w, h
-    if grouped_crop_offsets.get() is not None:
-        bounds = [transform.valid_bounds for transform in plan.transforms]
-        left = max(bound[0] for bound in bounds)
-        top = max(bound[1] for bound in bounds)
-        right = min(bound[2] for bound in bounds)
-        bottom = min(bound[3] for bound in bounds)
-        if top >= bottom or left >= right:
-            raise ValueError('Registration transforms have no common valid crop')
-        _record_grouped_crop(top, bottom, left, right)
+    bounds = [transform.valid_bounds for transform in plan.transforms]
+    left = max(bound[0] for bound in bounds)
+    top = max(bound[1] for bound in bounds)
+    right = min(bound[2] for bound in bounds)
+    bottom = min(bound[3] for bound in bounds)
+    if top >= bottom or left >= right:
+        raise ValueError('Registration transforms have no common valid crop')
+    _record_grouped_crop(top, bottom, left, right)
     result = []
     for source, transform in zip(sources, plan.transforms):
         _check_cancel(should_cancel)
@@ -692,7 +691,7 @@ def _align_openfocus_impl(input_source, output_path=None, img_filenames=None, *,
                         should_cancel=None, max_shift_ratio=.05, failure_policy='continue',
                         reference_frame=1, rotation=0., magnification=3.,
                         defer_warps=False, plan_callback=None):
-    """Verified OpenFocus wide detector; no alternate estimator or native fit."""
+    """Wide detector using the verified search and sampling behavior."""
     from core.openfocus_alignment import estimate_alignment_plan, AlignmentEstimationError
     images = input_source
     if isinstance(input_source, str):

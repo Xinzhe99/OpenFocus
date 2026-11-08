@@ -612,6 +612,17 @@ def test_large_dng_bitmap_subifd_is_real_oriented_display_only(tmp_path, monkeyp
             sources.resolve_frame(frame)
 
 
+def test_linear_raw_preview_uses_embedded_pixels_without_reloading_calibration(tmp_path, monkeypatch):
+    from dataclasses import replace
+    path, rgb = _dng_preview_fixture(tmp_path, monkeypatch)
+    frame = sources.scan_source(path, header_only=True)[0]
+    frame = replace(frame, linear_metadata=object())
+    preview = sources.ensure_preview(frame)
+    expected = cv2.rotate(np.ascontiguousarray(rgb[:, :, ::-1]), cv2.ROTATE_90_CLOCKWISE)
+    np.testing.assert_array_equal(preview, expected)
+    assert frame.preview_is_display and frame.preview_is_available
+
+
 def test_dng_cfa_pyramid_never_masquerades_as_display_pixels(tmp_path, monkeypatch):
     path, _ = _dng_preview_fixture(tmp_path, monkeypatch, bitmap=False)
     frame = sources.scan_source(path)[0]
@@ -667,6 +678,50 @@ def test_large_raf_embedded_jpeg_is_admitted_without_libraw_thumbnail(tmp_path):
     with Image.open(BytesIO(payload)) as image:
         expected = cv2.rotate(np.asarray(image)[:, :, ::-1].copy(), cv2.ROTATE_90_CLOCKWISE)
     np.testing.assert_array_equal(preview, expected)
+
+
+@pytest.mark.parametrize('linear', [False, True])
+def test_raf_manifest_uses_embedded_display_preview(tmp_path, monkeypatch, linear):
+    from io import BytesIO
+    from types import SimpleNamespace
+    import struct
+    rawpy = pytest.importorskip('rawpy')
+    from utils import linear_dng
+
+    encoded = BytesIO()
+    Image.new('RGB', (96, 64), (20, 80, 160)).save(encoded, format='JPEG')
+    payload = encoded.getvalue()
+    header = bytearray(92)
+    header[:16] = b'FUJIFILMCCD-RAW '
+    struct.pack_into('>II', header, 84, len(header), len(payload))
+    paths = [tmp_path / f'帧{i}.raf' for i in range(2)]
+    for path in paths:
+        path.write_bytes(header + payload)
+
+    class HeaderRaw:
+        sizes = SimpleNamespace(width=10000, height=8000, pixel_aspect=1.0, flip=0)
+        rgb_xyz_matrix = np.eye(4, 3)
+        camera_whitebalance = [2.0, 1.0, 1.5, 1.0]
+        def __enter__(self): return self
+        def __exit__(self, *_args): pass
+        def open_file(self, _path): pass
+        def unpack(self): pytest.fail('workspace import unpacked sensor')
+        def postprocess(self, **_kwargs): pytest.fail('workspace import developed sensor')
+        def extract_thumb(self): pytest.fail('workspace import extracted unbounded thumbnail')
+
+    monkeypatch.setattr(rawpy, 'RawPy', HeaderRaw)
+    monkeypatch.setattr(linear_dng, '_camera_identity', lambda *_: ('FUJIFILM', 'Camera'))
+    loader = image_loader.ImageStackLoader()
+    result = (loader.load_linear_raw_stack(paths) if linear else
+              loader.load_from_filepaths(paths, thread_count=1))
+    assert result[0], result[1]
+    frames = result[2]
+    assert len(frames) == 2
+    assert all(frame.shape == (8000, 10000, 3) and frame.dtype == np.uint16 for frame in frames)
+    assert (frames[0].linear_metadata is not None) == linear
+    assert frames[0].preview_is_available and frames[0].preview_is_display
+    assert sources.display_image(frames[0]).shape == (64, 96, 3)
+    assert frames[1].preview is None
 
 
 @pytest.mark.parametrize('rows_per_strip', [1, 24])

@@ -53,7 +53,8 @@ def algorithm_host(qapp, extension):
                  "set_registration_parameters", "refresh_algorithm_parameters",
                  "refresh_registration_parameters", "brightness_option_for",
                  "_set_fusion_option_available", "_sync_brightness_checkboxes", "_capture_parameter_state",
-                 "_restore_parameter_state", "_restore_scope"):
+                 "_restore_parameter_state", "_restore_scope", "_mark_project_setting_changed",
+                 "_mark_project_dirty", "_update_project_title"):
         setattr(host, name, MethodType(getattr(OpenFocus, name), host))
     host.combo_fusion.currentIndexChanged.connect(host.refresh_algorithm_parameters)
     host.combo_align.currentIndexChanged.connect(host.refresh_registration_parameters)

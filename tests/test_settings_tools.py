@@ -159,7 +159,9 @@ def test_storage_directory_rolls_back_when_save_fails(settings_window, tmp_path,
     dialog = advanced_settings.AdvancedSettingsDialog(settings_window)
     dialog.storage_directory.setText(str(requested))
     dialog._apply()
-    assert frame_storage.storage_directory() == settings_window.storage_directory == str(previous)
+    assert frame_storage._storage_directory == settings_window.storage_directory == str(previous)
+    effective = str(previous) if previous_exists else frame_storage.tempfile.gettempdir()
+    assert frame_storage.storage_directory() == effective
     assert dialog.result() != QDialog.DialogCode.Accepted
 
 
@@ -175,8 +177,9 @@ def test_saved_storage_directory_restores_or_reports_unavailable(tmp_path, monke
     window.storage_directory = missing
     warning = main._restore_storage_directory(window)
     assert window.storage_directory == missing
-    assert frame_storage.storage_directory() == missing
-    assert missing in warning
+    assert frame_storage.storage_directory() == frame_storage.tempfile.gettempdir()
+    assert frame_storage._storage_directory == missing
+    assert missing in warning and frame_storage.tempfile.gettempdir() in warning
 
 
 def test_settings_preserve_supported_tile_and_registration_ranges(settings_window):

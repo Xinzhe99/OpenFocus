@@ -135,7 +135,7 @@ class RenderManager:
         method = method or window.current_fusion_method()
         getter = getattr(window, "brightness_option_for", None)
         brightness = (bool(getter("exposure_match", method)) if callable(getter)
-                      else bool(getattr(window, "exposure_match", True)))
+                      else bool(getattr(window, "exposure_match", False)))
         alignment = window.current_alignment_method()
         parameters = window.registration_parameters_for(alignment)
         return (getattr(window, "source_revision", 0), tuple(included),
@@ -144,6 +144,16 @@ class RenderManager:
                 getattr(window, "reg_downscale_width", None), brightness,
                 bool(getattr(window, "stack_reverse_order", False)),
                 bool(getattr(window, "defect_mask_path", "") or getattr(window, "sensor_denoise", False)))
+
+    def _source_exif_snapshot(self, included) -> tuple:
+        """Per-included-frame EXIF, aligned with the current source list."""
+        window = self.window
+        raw = getattr(window, "raw_images", ()) or ()
+        exifs = tuple(getattr(window, "image_source_exifs", ()) or ())
+        if len(exifs) != len(raw):
+            return ()
+        return tuple(bytes(exifs[index]) if 0 <= index < len(exifs) else b""
+                     for index in included)
 
     def _processing_parameters(self, method):
         window = self.window
@@ -352,6 +362,30 @@ class RenderManager:
             self._compare_current = None
             self._restore_ui_controls()
 
+    _RENDER_SETTING_NAMES = (
+        "chk_quick_preview", "chk_exposure_match", "chk_base_correct",
+        "chk_reverse_order", "chk_sharpen_output", "btn_render_settings",
+    )
+
+    def _render_setting_widgets(self):
+        """Yield the render-setting widgets even on duck-typed test hosts."""
+        window = self.window
+        components = getattr(window, "right_panel_components", None)
+        for name in self._RENDER_SETTING_NAMES:
+            widget = getattr(window, name, None)
+            if widget is None and components is not None:
+                widget = getattr(components, name, None)
+            if widget is not None:
+                yield widget
+
+    def _set_render_settings_enabled(self, enabled: bool) -> None:
+        """Lock every setting that would invalidate an in-flight result."""
+        for widget in self._render_setting_widgets():
+            try:
+                widget.setEnabled(bool(enabled))
+            except Exception:
+                pass
+
     def _restore_ui_controls(self) -> None:
         """Re-enable every control disabled by start_render (safe to call anywhere)."""
         window = self.window
@@ -360,6 +394,7 @@ class RenderManager:
             # A comparison queue is still running - keep controls locked and
             # show progress instead. The Compare button stays enabled because
             # it is the only way to stop the run.
+            self._set_render_settings_enabled(False)
             window.btn_render.setEnabled(False)
             done = self._compare_total - len(self._compare_queue)
             window.btn_render.setText(
@@ -379,10 +414,7 @@ class RenderManager:
             window.combo_align.setEnabled(True)
         except Exception:
             pass
-        try:
-            window.chk_quick_preview.setEnabled(True)
-        except Exception:
-            pass
+        self._set_render_settings_enabled(True)
         try:
             window.btn_reset.setEnabled(True)
         except Exception:
@@ -633,19 +665,17 @@ class RenderManager:
             # A single render owns the pipeline; Compare-all cannot start
             # until it ends, so do not leave an enabled silent no-op.
             self._set_compare_button("disabled")
-        try:
-            # Quick-preview toggling mid-run fragments a comparison: later
-            # methods would render as drafts and vanish from the history.
-            window.chk_quick_preview.setEnabled(False)
-        except Exception:
-            pass
+        # Every control that changes the input to the running result must stay
+        # locked until completion, cancellation or failure restores it. A
+        # mid-run change used to discard the finished render as stale.
+        self._set_render_settings_enabled(False)
 
         def _brightness(win, option, method):
             """Per-method brightness option (duck-typed hosts may not have it)."""
             getter = getattr(win, "brightness_option_for", None)
             if callable(getter):
                 return bool(getter(option, method))
-            return bool(getattr(win, "exposure_match", True)) if option == (
+            return bool(getattr(win, "exposure_match", False)) if option == (
                 "exposure_match") else bool(
                     getattr(win, "base_frame_correct", False))
 
@@ -692,6 +722,7 @@ class RenderManager:
                     getattr(window, "source_revision", 0)
                     or list(getattr(window, "roi_included_indices", None) or []) != list(included_idx)
                     or getattr(window, "roi_reg_downscale_width", None) != window.reg_downscale_width
+                    or getattr(window, "roi_alignment_key", None) != alignment_key
                     or len(window.roi_aligned_images) != len(stack_images)):
                 window.transform_manager.reset_roi_selection()
                 self._restore_ui_controls()
@@ -780,8 +811,9 @@ class RenderManager:
             source_images = window.roi_aligned_images
             effective_alignment = "none"
             effective_aligned_images = window.roi_aligned_images
-            effective_is_aligned = True
-            effective_last_alignment_options = (("ecc",), {})
+            effective_is_aligned = bool(requested_steps)
+            effective_last_alignment_options = ((requested_steps, registration_parameters)
+                                                if requested_steps else None)
         elif self._preview_mode:
             # Quick preview: downscale the stack so the draft render finishes
             # in a fraction of the time.
@@ -880,7 +912,7 @@ class RenderManager:
             # "source" is a filtered copy, so identity must be checked against
             # this, never against "source".
             "source_ref": window.raw_images,
-            "alignment_options": (("ecc",) if use_roi_aligned_images else requested_steps),
+            "alignment_options": requested_steps,
             "alignment_identity": (requested_steps, registration_parameters),
             "preview": self._preview_mode,
             "roi": roi_rect is not None,
@@ -899,7 +931,14 @@ class RenderManager:
             "full_filenames": list(window.image_filenames),
             "icc_profile": stack_icc_profile(window, included_idx),
             "linear_dng_metadata": deepcopy(getattr(window, "linear_dng_metadata", None)),
-            "source_paths": tuple(getattr(window, "image_source_paths", ()) or ()),
+            # Match the frames actually sent to the worker, not every loaded
+            # file: EXIF/source provenance is indexed by processed_images.
+            "source_paths": tuple(
+                window.image_source_paths[i]
+                for i in included_idx
+                if 0 <= i < len(getattr(window, "image_source_paths", ()) or ())
+            ),
+            "frame_exif": self._source_exif_snapshot(included_idx),
             "parameters": self._processing_parameters(force_algorithm or fusion_method),
         }
         if compare:
@@ -915,9 +954,9 @@ class RenderManager:
             source_scale_factor=getattr(window, "current_scale_factor", 1.0))
 
         from utils.logging_setup import log_action
-        log_action("render_start", method=fusion_method,
+        log_action("render_start", method=force_algorithm or fusion_method,
                    align=alignment_method, preview=self._preview_mode,
-                   frames=len(window.raw_images or []))
+                   frames=len(stack_images), loaded_frames=len(window.raw_images or []))
         self.last_error = None
         self.last_result = None
         self._control_progress = None
@@ -1047,6 +1086,10 @@ class RenderManager:
 
         try:
             window._wipe_preview_record = None
+            if not preview:
+                # A published full-resolution result supersedes any draft
+                # marker; Save must not keep refusing it as a preview.
+                window.preview_result = None
             if fusion_result is not None:
                 if preview and not (context or {}).get("roi"):
                     try:
@@ -1061,6 +1104,8 @@ class RenderManager:
                             frame_ids=ctx.get("frame_ids"),
                             source_revision=ctx.get("source_revision", 0),
                             linear_dng_metadata=ctx.get("linear_dng_metadata"),
+                            source_exif=((ctx.get("frame_exif") or (b"",))[0]),
+                            frame_exif=ctx.get("frame_exif"),
                             source_paths=ctx.get("source_paths"))
                         if preview_context is not None:
                             window._wipe_preview_record = OutputRecord.create(
@@ -1069,6 +1114,11 @@ class RenderManager:
                         import logging
                         logging.getLogger("openfocus").exception("could not record preview provenance")
                 window.fusion_result = fusion_result
+                if preview:
+                    # Identity, not just a boolean: Save refuses this exact
+                    # canvas until a full result replaces it, while a
+                    # historical output selected by hand still exports.
+                    window.preview_result = fusion_result
                 self.last_result = {
                     "shape": list(fusion_result.shape),
                     "dtype": str(fusion_result.dtype),
@@ -1102,6 +1152,15 @@ class RenderManager:
                         window.btn_preview_roi.blockSignals(False)
 
                 window.output_manager.show_fusion_result()
+                if preview:
+                    # The draft is on the canvas, not in the history. Clear
+                    # the old row so Ctrl+S cannot mistake a previous formal
+                    # result for the draft the user is looking at.
+                    try:
+                        window.output_list.clearSelection()
+                        window.output_list.setCurrentRow(-1)
+                    except Exception:
+                        pass
                 new_context = None
                 if not preview:
                     try:
@@ -1132,6 +1191,8 @@ class RenderManager:
                             source_px_um=ctx.get("source_px_um"),
                             source_scale_factor=ctx.get("source_scale_factor", 1.0),
                             icc_profile=ctx.get("icc_profile", b""),
+                            source_exif=((ctx.get("frame_exif") or (b"",))[0]),
+                            frame_exif=ctx.get("frame_exif"),
                             linear_dng_metadata=ctx.get("linear_dng_metadata"),
                             source_paths=ctx.get("source_paths"),
                         )
@@ -1358,11 +1419,15 @@ class RenderManager:
         try:
             from controllers.output_manager import publish_aligned_stack
 
+            ctx = self._render_context or {}
+            frame_exif = tuple(ctx.get("frame_exif") or ())
             publish_aligned_stack(window, frames,
-                                  filenames=(self._render_context or {}).get("filenames"),
-                                  icc_profile=(self._render_context or {}).get("icc_profile", b""),
-                                  linear_dng_metadata=(self._render_context or {}).get("linear_dng_metadata"),
-                                  source_frames=(self._render_context or {}).get("comparison_source"),
+                                  filenames=ctx.get("filenames"),
+                                  icc_profile=ctx.get("icc_profile", b""),
+                                  linear_dng_metadata=ctx.get("linear_dng_metadata"),
+                                  source_exif=(frame_exif[0] if frame_exif else b""),
+                                  frame_exif=frame_exif,
+                                  source_frames=ctx.get("comparison_source"),
                                   source_indices=(self._render_context or {}).get("included"),
                                   source_revision=(self._render_context or {}).get("source_revision", 0))
             if getattr(window, "wipe_active", False):
@@ -1452,8 +1517,9 @@ class RenderManager:
         else:
             key = {'waiting': 'render_stage_waiting', 'prepare': 'render_stage_prepare',
                    'align': 'render_stage_align', 'fuse': 'render_stage_fuse',
-                   'finish': 'render_stage_finish'}.get(stage, 'render_progress')
+                   'finish': 'render_progress'}.get(stage, 'render_progress')
             text = trans.t(key)
+        self._control_progress = None
         self._progress_first_t = None
         self._progress_last_t = None
         self._show_progress_bar(text)
@@ -1487,8 +1553,9 @@ class RenderManager:
                 eta = f" · ~{int(remaining) + 1}s"
             else:
                 self._progress_first_t = now
-            key = ('render_stage_prepare' if getattr(self, '_render_progress_stage', None) == 'prepare'
-                   else 'render_progress')
+            key = {'prepare': 'render_stage_prepare', 'align': 'render_stage_align',
+                   'fuse': 'render_stage_fuse'}.get(
+                       getattr(self, '_render_progress_stage', None), 'render_progress')
             window.statusBar().showMessage(
                 f"{trans.t(key)} {pct}% ({done}/{total}){eta}", 5000)
 

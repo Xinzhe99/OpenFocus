@@ -6,7 +6,7 @@ maps camera rays into world rays (positive pitch therefore looks upward).
 All point functions broadcast x/y, return float64 coordinates and boolean masks,
 and put NaN in invalid coordinates. Callers choose their own tile sizes.
 
-The radial model is PTGui's r_source = a*r**4+b*r**3+c*r**2+d*r,
+The radial model is r_source = a*r**4+b*r**3+c*r**2+d*r,
 d=1-a-b-c, normalized by half the shorter source dimension. Ideal pixel
 coordinates use the unshifted image center; distortion then adds the source
 pixel shifts. Only the strictly increasing branch attached to r=0 is usable.

@@ -74,6 +74,17 @@ def _native_sources(tmp_path):
     return sources, pixels
 
 
+def test_b_active_sources_include_fractional_neighbors_across_row_bands():
+    count = 92
+    step = 65535 // (count - 1)
+    depth = np.zeros((129, 4), np.uint16)
+    depth[0, 0] = 7 * step
+    depth[128, 0] = 23 * step + 1
+    depth[128, 1] = 65535
+    active = bc._active_sources(depth, count, None)
+    assert np.flatnonzero(active).tolist() == [0, 7, 23, 24, 91]
+
+
 @pytest.mark.parametrize('method', [bc.openfocus_b_impl, bc.openfocus_c_impl])
 def test_source_decode_count_follows_consumed_bands(tmp_path, monkeypatch, method):
     from core import image_loader

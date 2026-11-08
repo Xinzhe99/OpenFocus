@@ -122,11 +122,13 @@ def apply_template(window, settings):
     settings["registration_parameters"] = {
         name: resolve_registration_parameters(name, values)
         for name, values in registrations.items()}
+    before = template_from_state(_collect_state(window))
     state = _collect_state(window)
     state["settings"].update(settings)
     _apply_after_load(window, state)
+    after = template_from_state(_collect_state(window))
     mark = getattr(window, "_mark_project_dirty", None)
-    if callable(mark):
+    if after != before and callable(mark):
         mark()
 
 
@@ -342,7 +344,10 @@ def _persist_pathless_sources(window, state, project_path):
         for index, image in pending:
             fd, destination = tempfile.mkstemp(suffix=".tif", dir=directory)
             os.close(fd)
-            if not imwrite_auto(destination, image):
+            # Internal project sidecar: never inherit the current stack's
+            # global SOURCE_EXIF or the exported snapshot would gain metadata
+            # that does not belong to this in-memory source.
+            if not imwrite_auto(destination, image, exif=b""):
                 raise OSError("Cannot preserve project source: " + destination)
             result[index] = destination
         return result

@@ -17,15 +17,15 @@ _ALGORITHM = 'stackmffv2'
 
 def _prepare_inference(frames, model_path, use_gpu, thread_count=None,
                        resource_preference='balanced', execution_plan=None,
-                       result_count=1, fixed_bytes=0):
+                       result_count=1, fixed_bytes=0, height=None, width=None, device=None):
     """Admit the retrained model and its attention workspace."""
     from fusion_methods import neural_runtime
-    device = neural_runtime.resolve_device(use_gpu)
+    device = device if device is not None else neural_runtime.resolve_device(use_gpu)
     return common.plan_attention_inference(
         _ALGORITHM, frames, model_path, device,
         thread_count=thread_count, resource_preference=resource_preference,
         execution_plan=execution_plan, result_count=result_count,
-        fixed_bytes=fixed_bytes)
+        fixed_bytes=fixed_bytes, height=height, width=width)
 
 
 def _inference_depth(planes, model, device, should_cancel=None, threads=1):

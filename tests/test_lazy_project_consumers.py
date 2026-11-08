@@ -145,6 +145,41 @@ def test_retouch_preparation_retains_original_pixels(tmp_path):
     assert max(doc.source_previews[0].shape[:2]) <= 1024
 
 
+def test_retouch_resolves_selected_processed_frame_and_replays_checkpoint(tmp_path):
+    from core.source_frames import process_frame
+    from utils.retouch import prepare_retouch_document
+
+    base = np.full((32, 40, 3), 20, np.uint16)
+    calls = []
+
+    def processed(value):
+        def apply(image):
+            calls.append(value)
+            return image + value
+        return process_frame(base, apply)
+
+    frames = [processed(1000), processed(2000), processed(3000)]
+    context = build_render_context(frames, base)
+    doc = prepare_retouch_document(base, context)
+    assert calls == []
+    assert doc.set_frame(1)
+    np.testing.assert_array_equal(doc.source_pixels(1), base + 2000)
+    assert calls == [2000]
+    doc.set_brush(diameter=4, hardness=1.0, opacity=1.0)
+    assert doc.begin_stroke(10, 10)
+    assert doc.end_stroke() == "committed"
+    assert doc.working[10, 10, 0] == 2020
+    assert doc.working[0, 0, 0] == 20
+
+    doc.initialize_checkpoint()
+    path = tmp_path / "retouch.json"
+    doc.save_checkpoint(str(path))
+    restored = prepare_retouch_document(base, context)
+    restored.initialize_checkpoint()
+    restored.load_checkpoint(str(path))
+    np.testing.assert_array_equal(restored.working, doc.working)
+
+
 def test_multipage_export_resolves_sequentially_and_preserves_uint16(tmp_path, monkeypatch):
     import tifffile
     from controllers import export_manager

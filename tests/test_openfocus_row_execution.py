@@ -1,4 +1,4 @@
-"""Observable OpenFocus spatial execution, resource boundaries and worker lifetimes."""
+"""Spatial execution, resource boundaries and worker lifetimes."""
 import os
 from pathlib import Path
 import subprocess

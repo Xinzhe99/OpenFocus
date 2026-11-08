@@ -262,6 +262,7 @@ class TransformManager:
         window.roi_mode_active = False
         window.roi_source_revision = None
         window.roi_included_indices = None
+        window.roi_alignment_key = None
 
         result_view = getattr(window, "lbl_result_img", None)
         if result_view is not None:

@@ -30,7 +30,8 @@ try:
 except ImportError:
     RAWPY_AVAILABLE = False
 
-from utils.image_utils import _sanitize_exif, export_exif, read_image_exif, to_display_uint8
+from utils.image_utils import (SourceExifTooLarge, _sanitize_exif, export_exif,
+                               read_image_exif, to_display_uint8)
 from utils.sorting import natural_sort_key
 
 # LibRaw recognizes file contents, not extensions. This shared allow-list
@@ -286,7 +287,11 @@ def _read_raw(path: str, scale_factor: float = 1.0) -> Optional[np.ndarray]:
     if not RAWPY_AVAILABLE:
         return None
     try:
-        with open(path, 'rb') as stream, rawpy.imread(stream) as raw:
+        # Opening a pathname lets LibRaw read directly; rawpy.imread(file)
+        # first copies the entire encoded RAW into a Python bytes object.
+        with rawpy.RawPy() as raw:
+            raw.open_file(os.fspath(path))
+            raw.unpack()
             rgb = raw.postprocess(use_camera_wb=True, output_bps=16,
                                   no_auto_bright=True, gamma=(2.4, 12.92))
         # Resize while still RGB to avoid a second full-size channel-swapped
@@ -427,6 +432,32 @@ def _read_exif_bytes(path: str) -> bytes:
             return safe.tobytes() if safe is not None else b""
     except Exception:
         return b""
+
+
+_EXIF_SNAPSHOT_LIMIT = 16 * 1024 * 1024
+
+
+def _read_safe_exif(path: str) -> bytes:
+    """Read and sanitize EXIF for a result snapshot.
+
+    Non-exported payloads (notably MakerNote) are stripped with the same
+    ``export_exif`` path used by writers.  If the sanitized blob still exceeds
+    the snapshot budget, fail explicitly instead of silently dropping user
+    metadata; the error names the file whose metadata must be reduced.
+    """
+    raw = _read_exif_bytes(path) or b""
+    if not raw:
+        return b""
+    try:
+        cleaned = export_exif(raw)
+        data = cleaned.tobytes() if cleaned is not None else b""
+    except Exception:
+        # A malformed block is retained for the writer to reject explicitly;
+        # do not turn it into an empty metadata result.
+        data = raw
+    if len(data) > _EXIF_SNAPSHOT_LIMIT:
+        raise SourceExifTooLarge(path, len(data), _EXIF_SNAPSHOT_LIMIT)
+    return data
 
 
 def _read_icc_profile(path: str, page: Optional[int] = None) -> bytes:
@@ -838,6 +869,8 @@ class ImageStackLoader:
         self.px_size_um = None
         self.source_icc_profile = b""
         self.source_icc_profiles = {}
+        self.source_exif = b""
+        self.source_exifs = ()
         self.should_cancel = lambda: False
         self.progress_callback = None
         self.failed_count = 0
@@ -866,10 +899,14 @@ class ImageStackLoader:
         return kept
 
     def load_linear_raw_stack(self, filepaths, scale_factor=1.0, *,
-                              resource_preference="balanced", expected_metadata=None):
+                              thread_count=0, resource_preference="balanced", expected_metadata=None):
         """Load a complete camera-linear stack, committing state only on success."""
+        from collections import deque
+        from concurrent.futures import ThreadPoolExecutor
+        from core.resource_policy import Workload, plan_execution
         from core.source_frames import scan_source, ensure_display_preview
         from locales import trans
+        from utils.logging_setup import log_operation
         # Camera calibration is inspected while building the source manifest.
         from utils.scalebar import detect_px_size_um
 
@@ -878,6 +915,7 @@ class ImageStackLoader:
             return False, trans.t("linear_raw_invalid"), [], []
         images = []
         px_sizes = []
+        exifs = []
         metadata = expected_metadata
         def unknown_camera(profile):
             return (not profile.camera_make or not profile.camera_model
@@ -885,38 +923,87 @@ class ImageStackLoader:
 
         if expected_metadata is not None and unknown_camera(expected_metadata):
             return False, trans.t("linear_raw_unknown_camera"), [], []
+        if self.should_cancel():
+            return False, 'CANCELLED', [], []
         if self.progress_callback is not None:
             self.progress_callback(0, len(paths))
-        for index, path in enumerate(paths):
+
+        # rawpy unpacks the sensor when reading camera calibration. Inspect
+        # only cheap headers first so parallel admission accounts for that
+        # native allocation, not just the embedded JPEG and parser buffers.
+        import rawpy
+        sensor_pixels = 0
+        for path in paths:
             if self.should_cancel():
                 return False, 'CANCELLED', [], []
             if not is_raw_source(path):
-                return False, trans.t("linear_raw_invalid"), [], []
-
+                continue
             try:
-                image = scan_source(path, scale_factor, linear=True, header_only=True,
-                                    should_cancel=self.should_cancel)[0]
-                profile = image.linear_metadata
-            except InterruptedError:
-                return False, 'CANCELLED', [], []
-            except MemoryError:
-                raise
-            except Exception as exc:
-                return False, f"{trans.t('linear_raw_invalid')}\n{path}: {exc}", [], []
+                with rawpy.RawPy() as raw:
+                    raw.open_file(os.fspath(path))
+                    sizes = raw.sizes
+                    width = max(getattr(sizes, 'raw_width', 0), sizes.width)
+                    height = max(getattr(sizes, 'raw_height', 0), sizes.height)
+                    sensor_pixels = max(sensor_pixels, width * height)
+            except (OSError, ValueError, rawpy.LibRawError):
+                # The ordered scan reports the original file error below.
+                continue
+        per_worker = 64 * 1024 * 1024 + sensor_pixels * 4
+        plan = plan_execution(Workload(algorithm='source_manifest', frames=len(paths),
+                                       fixed_bytes=0, per_worker_bytes=per_worker,
+                                       outer_tasks=len(paths)),
+                              preference=resource_preference,
+                              user_threads=min(4, max(1, int(thread_count or 4))))
+
+        def inspect(path):
             if self.should_cancel():
-                return False, 'CANCELLED', [], []
-            if (expected_metadata is not None or len(paths) > 1) and unknown_camera(profile):
-                return False, f"{trans.t('linear_raw_unknown_camera')}\n{path}", [], []
-            if metadata is not None and not linear_raw_metadata_matches(metadata, profile):
-                return False, f"{trans.t('linear_raw_mismatch')}\n{path}", [], []
-            metadata = profile if metadata is None else metadata
-            # Native DNG may carry the same microscopy calibration as TIFF.
-            # Keep the file's native unit here; source_manager divides by the
-            # load scale when it publishes source_px_um for working pixels.
-            px_sizes.append(detect_px_size_um(path))
-            images.append(image)
-            if self.progress_callback is not None:
-                self.progress_callback(index + 1, len(paths))
+                raise InterruptedError('Source manifest cancelled')
+            if not is_raw_source(path):
+                return None
+            return scan_source(path, scale_factor, linear=True, header_only=True,
+                               should_cancel=self.should_cancel)[0]
+
+        with log_operation('linear_source_manifest', count=len(paths), workers=plan.workers), \
+                ThreadPoolExecutor(max_workers=plan.workers) as pool:
+            pending = deque()
+            next_index = 0
+            while next_index < min(len(paths), plan.workers):
+                pending.append(pool.submit(inspect, paths[next_index]))
+                next_index += 1
+            while pending:
+                index = len(images)
+                path = paths[index]
+                try:
+                    image = pending.popleft().result()
+                except InterruptedError:
+                    return False, 'CANCELLED', [], []
+                except MemoryError:
+                    raise
+                except Exception as exc:
+                    if self.should_cancel():
+                        return False, 'CANCELLED', [], []
+                    return False, f"{trans.t('linear_raw_invalid')}\n{path}: {exc}", [], []
+                if self.should_cancel():
+                    return False, 'CANCELLED', [], []
+                if image is None:
+                    return False, trans.t("linear_raw_invalid"), [], []
+                profile = image.linear_metadata
+                if (expected_metadata is not None or len(paths) > 1) and unknown_camera(profile):
+                    return False, f"{trans.t('linear_raw_unknown_camera')}\n{path}", [], []
+                if metadata is not None and not linear_raw_metadata_matches(metadata, profile):
+                    return False, f"{trans.t('linear_raw_mismatch')}\n{path}", [], []
+                metadata = profile if metadata is None else metadata
+                # Preserve native calibration; source_manager applies the load scale.
+                px_sizes.append(detect_px_size_um(path))
+                exifs.append(_read_safe_exif(path))
+                images.append(image)
+                if self.progress_callback is not None:
+                    self.progress_callback(index + 1, len(paths))
+                if next_index < len(paths) and not self.should_cancel():
+                    pending.append(pool.submit(inspect, paths[next_index]))
+                    next_index += 1
+        if self.should_cancel():
+            return False, 'CANCELLED', [], []
         try:
             ensure_display_preview(images[0], should_cancel=self.should_cancel)
         except InterruptedError:
@@ -927,7 +1014,8 @@ class ImageStackLoader:
             return False, 'CANCELLED', [], []
         self.images = images
         self.image_paths = paths
-        self.source_exif = _read_exif_bytes(paths[0])
+        self.source_exif = exifs[0] if exifs else _read_safe_exif(paths[0])
+        self.source_exifs = tuple(exifs)
         self.source_icc_profile = b""
         self.source_icc_profiles = {}
         self.px_size_um = _consistent_px_size_um(px_sizes)
@@ -1011,6 +1099,7 @@ class ImageStackLoader:
         self.images = loaded_images
         self.image_paths = [video_path] * len(loaded_images)
         self.source_exif = b""
+        self.source_exifs = tuple(b"" for _ in loaded_images)
         self.source_icc_profile = b""
         self.source_icc_profiles = {}
         self.px_size_um = None
@@ -1039,9 +1128,10 @@ class ImageStackLoader:
         sources = _collapse_repeats(list(filepaths))
         if not sources:
             return False, "No file paths provided", [], []
-        images, names, paths, px_sizes = [], [], [], []
+        images, names, paths, px_sizes, exifs = [], [], [], [], []
         failed = 0
         exif = b""
+        exif_cache = {}
         workers = min(4, max(1, int(thread_count or 4)))
         def inspect(path):
             if self.should_cancel():
@@ -1049,6 +1139,8 @@ class ImageStackLoader:
             try:
                 return scan_source(path, scale_factor, header_only=True,
                                    should_cancel=self.should_cancel), None
+            except SourceExifTooLarge:
+                raise
             except Exception as exc:
                 return [], exc
         if self.progress_callback is not None:
@@ -1072,12 +1164,16 @@ class ImageStackLoader:
                             import logging
                             logging.getLogger(__name__).warning('Source preview failed path=%s: %s', path, error)
                         else:
+                            if path not in exif_cache:
+                                exif_cache[path] = _read_safe_exif(path)
+                            path_exif = exif_cache[path]
                             if not exif:
-                                exif = _read_exif_bytes(path)
+                                exif = path_exif
                             px_sizes.append(detect_px_size_um(path))
                             stem = os.path.splitext(os.path.basename(path))[0]
                             images.extend(frames)
                             paths.extend([path] * len(frames))
+                            exifs.extend([path_exif] * len(frames))
                             names.extend(f'{stem}_page_{frame.page + 1:03d}.tif' if len(frames) > 1
                                          else os.path.basename(path) for frame in frames)
                         if self.progress_callback is not None:
@@ -1102,6 +1198,7 @@ class ImageStackLoader:
             return False, 'CANCELLED', [], []
         self.images, self.image_paths = images, paths
         self.source_exif = exif
+        self.source_exifs = tuple(exifs)
         self.px_size_um = _consistent_px_size_um(px_sizes)
         self.source_icc_profiles = {path: _read_icc_profile(path) for path in dict.fromkeys(paths)}
         self.source_icc_profile = common_profile_values(self.source_icc_profiles.values())

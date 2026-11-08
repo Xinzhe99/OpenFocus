@@ -22,6 +22,7 @@ import uuid
 from dataclasses import dataclass, field, fields
 from typing import Iterable, Optional, Sequence, Tuple
 
+
 import cv2
 import numpy as np
 from core.algorithms import alignment_steps
@@ -182,6 +183,10 @@ class RenderContext:
     source_revision: int = 0
     parameters: dict = field(default_factory=dict)
     icc_profile: bytes = b""
+    #: Raw EXIF of the first participating source, snapshotted at publish time.
+    source_exif: bytes = b""
+    #: Raw EXIF per context frame, same order as ``frames``.
+    frame_exif: Tuple[bytes, ...] = ()
     linear_dng_metadata: object = None
     source_paths: Tuple[str, ...] = ()
 
@@ -244,6 +249,8 @@ def build_render_context(
     parameters: Optional[dict] = None,
     frame_ids: Optional[Sequence[str]] = None,
     icc_profile: bytes = b"",
+    source_exif: bytes = b"",
+    frame_exif: Optional[Sequence[bytes]] = None,
     linear_dng_metadata=None,
     source_paths: Optional[Sequence[str]] = None,
 ) -> Optional[RenderContext]:
@@ -318,6 +325,19 @@ def build_render_context(
             aligned=bool(aligned),
         ))
 
+    paths = tuple(str(path) if path else "" for path in (source_paths or ()))
+    # EXIF is snapshotted by the background load/render worker and passed in.
+    # Never open source files here: build_render_context runs on the GUI thread.
+    frame_exif = tuple(frame_exif or ())
+    # Align the snapshot with the frames actually used; a missing path or an
+    # older caller yields empty metadata rather than borrowing the current
+    # global stack.
+    if len(frame_exif) < len(frames):
+        frame_exif = frame_exif + (b"",) * (len(frames) - len(frame_exif))
+    elif len(frame_exif) > len(frames):
+        frame_exif = frame_exif[:len(frames)]
+    source_exif = bytes(source_exif or (frame_exif[0] if frame_exif else b""))
+
     return RenderContext(
         context_id=new_context_id(),
         algorithm=str(algorithm or "unknown"),
@@ -336,6 +356,8 @@ def build_render_context(
         source_revision=source_revision,
         parameters=dict(parameters or {}),
         icc_profile=icc_profile,
+        source_exif=source_exif,
+        frame_exif=frame_exif,
         linear_dng_metadata=linear_dng_metadata,
-        source_paths=tuple(source_paths or ()),
+        source_paths=paths,
     )

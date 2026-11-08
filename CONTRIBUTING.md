@@ -324,8 +324,9 @@ imports in the backend or lazy hook, not the metadata module.
 `roi(parameters, width, height)` returns `(halo_pixels, grid_pixels)` for local
 comparison. Declare a proven dependency radius and transform grid. If the radius
 is unknown or global, omit `roi`: comparison computes the full frame and then
-crops. Do not guess a halo. `tile_decider(frames, threshold)` is available when
-an existing backend needs a different criterion from image dimensions.
+crops. Do not guess a halo. `tile_decider(frames, threshold, *, height, width, device)`
+receives the effective dimensions after any requested resize and the selected device;
+it is available when an existing backend needs a different criterion.
 `sort_frames=True` declares the existing OpenFocus sweep ordering semantics.
 `default_exposure_match` and `default_base_correct` describe common brightness
 defaults; exposure matching and base correction remain outside algorithm parameters.

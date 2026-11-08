@@ -1,5 +1,6 @@
 """Independent snapshots and bounded RAM scratch whose lifetime follows views."""
 import errno
+import logging
 import os
 import math
 import operator
@@ -16,6 +17,9 @@ import threading
 import numpy as np
 
 _storage_directory = None
+_storage_notice_lock = threading.Lock()
+_storage_notice_path = None
+_storage_fallback_notifier = None
 _scratch = contextvars.ContextVar('openfocus_scratch', default=None)
 
 # Shared across jobs and copied producer contexts. Views keep their allocating
@@ -217,9 +221,54 @@ def estimate_fusion_space(images, exposure_match=False):
     return sum(image.nbytes for image in images) if exposure_match else 0
 
 
+def set_storage_fallback_notifier(notifier):
+    """Register a thread-safe callback for a configured directory fallback."""
+    global _storage_fallback_notifier, _storage_notice_path
+    with _storage_notice_lock:
+        _storage_fallback_notifier = notifier
+        _storage_notice_path = None
+
+
+def _usable_storage_directory():
+    """Use the saved directory if writable, otherwise the system temp folder."""
+    global _storage_notice_path
+    directory = _storage_directory
+    if directory is None:
+        return None
+    try:
+        fd, probe = tempfile.mkstemp(prefix='openfocus-probe-', dir=directory)
+        try:
+            os.close(fd)
+        finally:
+            os.unlink(probe)
+    except OSError as exc:
+        # A full selected disk stays binding: silently switching to another
+        # volume would defeat the user's explicit space and privacy choice.
+        if exc.errno in (errno.ENOSPC, getattr(errno, 'EDQUOT', -1)):
+            return directory
+        fallback = tempfile.gettempdir()
+        with _storage_notice_lock:
+            first_notice = _storage_notice_path != directory
+            notify = _storage_fallback_notifier if first_notice else None
+            _storage_notice_path = directory
+        if first_notice:
+            logging.getLogger(__name__).warning(
+                'Temporary directory %s is unavailable; using %s: %s',
+                directory, fallback, exc)
+        if notify is not None:
+            try:
+                notify(directory, str(exc), fallback)
+            except RuntimeError:
+                logging.getLogger(__name__).exception('Could not display temporary-directory warning')
+        return fallback
+    with _storage_notice_lock:
+        _storage_notice_path = None
+    return directory
+
+
 class _Scratch:
     def __init__(self):
-        self.explicit_directory = _storage_directory
+        self.explicit_directory = _usable_storage_directory()
         self.directory = None
         self.owned = False
         self.closed = False
@@ -348,7 +397,7 @@ def storage_directory():
     state = _scratch.get()
     if state is not None:
         return state.directory or state.explicit_directory or tempfile.gettempdir()
-    return _storage_directory if _storage_directory is not None else tempfile.gettempdir()
+    return _usable_storage_directory() or tempfile.gettempdir()
 
 
 def configure_storage_directory(path):

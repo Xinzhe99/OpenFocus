@@ -34,18 +34,25 @@ and signed truncation; it does not allocate RGB reconstruction pyramids.
 The decoded source cache evicts old entries before admitting an incoming decode.
 An existing consumer keeps its array views valid after eviction; the cache no
 longer pins an entire old cache while the decoder allocates its next frame.
-A's native hard-selection canvas uses uint16 codes, and its response/cache
-owners are released before conversion to the common float32 output domain.
+A stores selected codes as uint16 and accumulates source codes for low-detail
+background blending. Its response and accumulation planes are released before
+conversion to the common float32 output domain.
 
-OpenFocus C estimates depth on floor-half gray planes at a fixed 0.5 scale.
-Its 64-node gray kernel stores normalized float32 coefficients and evaluates
+OpenFocus B and C estimate depth on floor-half gray planes at a fixed 0.5 scale.
+Their 64-node gray kernel stores normalized float32 coefficients and evaluates
 vertical then horizontal taps with explicit LLVM float32 FMA. Intermediate
 float storage is limited to 128 rows per worker. B/C confidence uses the
 absolute difference between maximum activity and the sum of per-frame
 activity divided by frame count, followed by a 4096-node percentile/square-root
 guide. Q12 smoothing runs horizontally then vertically with an even minimum
-weight of two; a zero smoothing radius skips filtering. C snaps the half-size
-depth with correction truncated toward zero, then expands it to the canvas.
+weight of two; a zero smoothing radius skips filtering. Both snap the half-size
+depth with correction truncated toward zero, then expand it to the canvas.
+B also measures full-resolution fine detail and corrects the depth when a
+strong, unambiguous signal was lost during downsampling. The corrected depth
+is shared by B's depth export and whole-frame or tiled fusion.
+For color sources, both methods form depth gray codes before resizing using an
+equal-channel sum scaled by 85/256. Eight-bit samples enter that calculation
+at 256 codes per value; 16-bit samples retain their input code precision.
 
 A guarded single-core, 512-MiB smoke compared production C at native R22/S5/F0
 against S1/S2/S4 captures. Gray planes, raw depth and both guided-filter outputs
@@ -149,9 +156,16 @@ budget, and its managed-frame allowance excludes live parent frame snapshots.
 Cancellation first sets the shared event. After three seconds without exit,
 only the isolated process is terminated; the GUI thread is never terminated.
 
-Fresh processes also re-import libraries, recompile uncached native kernels
-and create new inference sessions. That startup cost applies to every preview
-and comparison method; core warm-throughput tables below do not include it.
+Fresh processes still re-import libraries and create new inference sessions.
+Numba kernels may reuse compiled code from a writable cache across render
+processes; an unavailable, busy or damaged cache falls back to compilation.
+The first render still pays compilation costs.
+
+Within a render, decoded and deferred processed frames may be reused from the
+job's selected temporary volume. The cache checks source fingerprints, leaves
+space for the pipeline's mandatory staging and falls back to normal decoding
+if storage is insufficient or unavailable. Its temporary files remain owned
+until the last view releases them.
 Depth maps, batch jobs, background fill and viewport pixels retain their
 existing worker paths. Standalone callers may still use `RenderWorker`
 directly; the desktop render manager always uses the process boundary.

@@ -15,6 +15,8 @@ from core import frame_storage, workers
 @pytest.fixture(autouse=True)
 def isolated_storage_directory(monkeypatch):
     monkeypatch.setattr(frame_storage, '_storage_directory', None)
+    monkeypatch.setattr(frame_storage, '_storage_notice_path', None)
+    monkeypatch.setattr(frame_storage, '_storage_fallback_notifier', None)
 
 
 def test_switching_directories_preserves_existing_mapping(tmp_path):
@@ -80,7 +82,7 @@ def test_invalid_directory_keeps_previous_configuration(monkeypatch, tmp_path):
     monkeypatch.setattr(frame_storage.tempfile, 'mkstemp', denied)
     with pytest.raises(OSError):
         frame_storage.configure_storage_directory(tmp_path)
-    assert frame_storage.storage_directory() == str(tmp_path)
+    assert frame_storage._storage_directory == str(tmp_path)
 
 
 def test_mapping_checks_and_creates_in_same_captured_directory(monkeypatch, tmp_path):
@@ -468,14 +470,57 @@ def test_independent_scopes_keep_their_own_directory(monkeypatch, tmp_path):
     assert first == str(default) and os.path.dirname(second) == str(alternative)
 
 
-def test_restored_unavailable_directory_is_not_replaced(monkeypatch, tmp_path):
-    missing = tmp_path / 'missing'
-    frame_storage.restore_storage_directory(missing)
-    assert frame_storage.storage_directory() == str(missing)
-    with pytest.raises(frame_storage.ScratchSpaceError) as error:
-        from core.source_frames import materialize_frames
-        materialize_frames([np.zeros((2, 2), np.uint8)])
-    assert error.value.directory == str(missing)
+def test_unavailable_saved_directory_falls_back_and_recovers(monkeypatch, tmp_path):
+    from core import resource_policy
+    from core.source_frames import materialize_frames
+
+    configured = tmp_path / 'missing'
+    fallback = tmp_path / 'system-temp'
+    fallback.mkdir()
+    monkeypatch.setattr(frame_storage.tempfile, 'gettempdir', lambda: str(fallback))
+    monkeypatch.setattr(resource_policy, 'frame_ram_budget', lambda snapshot: 0)
+    notices = []
+    frame_storage.set_storage_fallback_notifier(lambda *args: notices.append(args))
+    frame_storage.restore_storage_directory(configured)
+    assert frame_storage.storage_directory() == str(fallback)
+
+    with frame_storage.scratch_directory():
+        frame_storage.select_scratch(4)
+        frames = materialize_frames([np.arange(4, dtype=np.uint8).reshape(2, 2)], prefer_ram=False)
+        assert os.path.dirname(frames[0].filename) == str(fallback)
+        np.testing.assert_array_equal(frames[0], [[0, 1], [2, 3]])
+    assert frame_storage._storage_directory == str(configured)
+    assert len(notices) == 1 and notices[0][0] == str(configured)
+    del frames
+    gc.collect()
+
+    configured.mkdir()
+    with frame_storage.scratch_directory():
+        assert frame_storage.select_scratch(4) == str(configured)
+    assert frame_storage._storage_directory == str(configured)
+
+
+
+def test_full_explicit_directory_does_not_switch_volumes(monkeypatch, tmp_path):
+    import errno
+
+    configured = tmp_path / 'configured'
+    fallback = tmp_path / 'fallback'
+    configured.mkdir()
+    fallback.mkdir()
+    frame_storage.restore_storage_directory(configured)
+    monkeypatch.setattr(frame_storage.tempfile, 'gettempdir', lambda: str(fallback))
+    original = frame_storage.tempfile.mkstemp
+    def full(*args, **kwargs):
+        if kwargs.get('dir') == str(configured):
+            raise OSError(errno.ENOSPC, 'disk full')
+        return original(*args, **kwargs)
+    monkeypatch.setattr(frame_storage.tempfile, 'mkstemp', full)
+    with frame_storage.scratch_directory():
+        with pytest.raises(frame_storage.ScratchSpaceError) as error:
+            frame_storage.select_scratch(4)
+    assert error.value.directory == str(configured)
+    assert not list(fallback.iterdir())
 
 
 def test_preview_keeps_alternative_directory_alive(monkeypatch, tmp_path):
