@@ -539,14 +539,32 @@ curl -sS -o /dev/null -D - https://www.openfocus.top/zh/
 
 ## 10. Cost and limits
 
-- Cloudflare Workers Free: Worker invocations are 100k/day. Because
-  `run_worker_first: true` routes every page and asset request through the
-  Worker before `env.ASSETS`, static traffic counts against that limit; static
-  asset bandwidth itself is free. `/`, `/api/latest`, `/download/latest/*` and
-  `www` are handled in the Worker, while other paths forward to the asset
+Decision recorded 2026-11-09: the site stays on the Workers Free plan until a
+limit is actually observed. The only recurring cash cost is the domain
+registration; nothing is pre-purchased. The account service shares the same
+account-wide quota, and its upgrade triggers live in the private
+`openfocus-cloud` repository (`ops/RESOURCES.md`, "Cost posture").
+
+- Cloudflare Workers Free: Worker invocations are 100k/day **for the whole
+  account**, shared with `account.openfocus.top` and the desktop update checks.
+  Because `run_worker_first: true` routes every page and asset request through
+  the Worker before `env.ASSETS`, static traffic counts against that limit;
+  static asset bandwidth itself is free. `/`, `/api/latest`, `/download/latest/*`
+  and `www` are handled in the Worker, while other paths forward to the asset
   binding.
+- Budget per visit: the HTML inlines CSS and JS, but the document, its images
+  and the favicon each invoke the Worker, so a first page view costs roughly
+  six to eight requests; repeat views hit the browser cache and cost less.
+- Exceeding the limit is a hard stop, not throttling: matching requests receive
+  429 (Cloudflare error 1027) instead of falling back to static assets, so the
+  site and the account service fail together. Upgrade path: Workers Paid,
+  $5/month, 10 million requests included.
 - R2: egress free; 10 GB-month storage, 1M Class A, 10M Class B per month.
-  Overage: $0.015/GB-month, $4.50/M Class A, $0.36/M Class B.
+  Overage: $0.015/GB-month, $4.50/M Class A, $0.36/M Class B. One mirrored
+  release is about 825 MB (setup.exe, Windows zip, macOS dmg and arm64 zip);
+  pruning keeps only the latest tag, so storage stays around 1 GB.
+- Resend, used by the account service rather than the site, is free at 100
+  emails/day and 3,000/month; login and marketing mail share that cap.
 - The website itself has no paid services beyond the domain registration.
 
 OSS (Alibaba Cloud) and COS (Tencent Cloud) are alternative object stores, but
