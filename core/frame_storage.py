@@ -505,3 +505,40 @@ def store_frame(image, *, prefer_ram=True):
     except BaseException:
         _remove(path)
         raise
+
+
+@contextlib.contextmanager
+def frame_region(image, key=Ellipsis, *, write=False):
+    """Borrow one region without retaining its mapped pages after the context.
+
+    The original array and its file owner remain valid. Consumers must copy
+    arrays retained after this context; disk views close with the lease.
+    ``None`` represents an absent optional source mask.
+    """
+    if image is None:
+        yield None
+        return
+    region = image[key]
+    if not isinstance(region, np.ndarray) or not region.size:
+        yield region
+        return
+    root = region
+    while isinstance(root.base, np.ndarray):
+        root = root.base
+    if not isinstance(root, np.memmap) or root.filename is None:
+        yield region
+        return
+    offset = root.offset + region.ctypes.data - root.ctypes.data
+    extent = [(size - 1) * stride for size, stride in zip(region.shape, region.strides)]
+    start = offset + sum(min(0, value) for value in extent)
+    stop = offset + sum(max(0, value) for value in extent) + region.dtype.itemsize
+    mapping = np.memmap(root.filename, dtype=np.uint8,
+                        mode='r+' if write else 'r', offset=start, shape=(stop - start,))
+    try:
+        borrowed = np.ndarray(region.shape, dtype=region.dtype, buffer=mapping,
+                              offset=offset - start, strides=region.strides)
+        if not write:
+            borrowed.flags.writeable = False
+        yield borrowed
+    finally:
+        mapping._mmap.close()
