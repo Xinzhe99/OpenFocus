@@ -26,6 +26,7 @@ from typing import Optional
 
 import numpy as np
 
+from constants import FRAME_RAM_BUDGET_BYTES
 from utils import memory
 from utils.platform_utils import cpu_limits
 from core.algorithms import get_fusion
@@ -115,6 +116,27 @@ class ExecutionPlan:
                 f"ram={memory.mb(self.ram_budget):.0f}MB, "
                 f"vram={memory.mb(self.vram_budget):.0f}MB, "
                 f"device={self.device_kind}")
+
+
+@dataclass(frozen=True)
+class ProcessBudget:
+    """Envelope for one isolated child job, frozen when the job is admitted.
+
+    Values are newly allocated bytes, like the snapshot budgets they come
+    from. Zero means unknown or exhausted, never unlimited. ``frame_ram`` is
+    the slice of the job-wide managed frame RAM this process may hold, so a
+    child never re-grants the part its parent is still using.
+    """
+
+    comfortable_ram: int = 0
+    maximum_ram: int = 0
+    frame_ram: int = 0
+
+    def __post_init__(self):
+        if min(self.comfortable_ram, self.maximum_ram, self.frame_ram) < 0:
+            raise ValueError("Process budget limits must be nonnegative")
+        if self.comfortable_ram > self.maximum_ram:
+            raise ValueError("comfortable_ram must not exceed maximum_ram")
 
 
 _DIRECTML_ADAPTER_INDEX = 0
@@ -322,12 +344,18 @@ def ram_budget(snapshot: ResourceSnapshot) -> int:
 
     The source stack is already counted in ``available_ram``'s complement, so
     it is not subtracted a second time here; what this bounds is the new
-    allocation the stage is about to make.
+    allocation the stage is about to make. An active process budget can only
+    lower this share, never raise it.
     """
+    return _apply_comfortable(_detected_ram_budget(snapshot))
+
+
+def _detected_ram_budget(snapshot: ResourceSnapshot) -> int:
+    """Comfortable share the machine offers, before any child-job envelope."""
     if not snapshot.ram_known:
         return 0
     return max(0, int(min(BUDGET_RATIO * snapshot.available_ram,
-                          ram_ceiling(snapshot))))
+                          _detected_ram_ceiling(snapshot))))
 
 
 def vram_budget(snapshot: ResourceSnapshot) -> int:
@@ -356,13 +384,46 @@ class ResourceLimitError(MemoryError):
     """The minimum working set cannot safely be admitted."""
 
 
+# One isolated child job owns its process, so every producer thread reads the
+# same envelope from here instead of carrying a per-thread copy.
+_ACTIVE_PROCESS_BUDGET: Optional[ProcessBudget] = None
+
+
+def _active_process_budget() -> Optional[ProcessBudget]:
+    """Envelope currently in force, if this process is a child job.
+
+    A single reference to an immutable object, so a producer thread observes
+    either the previous or the new envelope, never a partly applied one.
+    """
+    return _ACTIVE_PROCESS_BUDGET
+
+
+def _apply_comfortable(limit: int) -> int:
+    active = _active_process_budget()
+    if active is None:
+        return limit
+    return min(limit, max(0, int(active.comfortable_ram)))
+
+
+def _apply_maximum(limit: int) -> int:
+    active = _active_process_budget()
+    if active is None:
+        return limit
+    return min(limit, max(0, int(active.maximum_ram)))
+
+
 def ram_ceiling(snapshot: ResourceSnapshot) -> int:
     """Most new RAM one stage may take: everything above the desktop reserve.
 
     ``ram_budget`` is the comfortable share used to size concurrency; this is
     the hard limit for admitting a single minimum working set that does not
-    fit in that share.
+    fit in that share. An active process budget can only lower it.
     """
+    return _apply_maximum(_detected_ram_ceiling(snapshot))
+
+
+def _detected_ram_ceiling(snapshot: ResourceSnapshot) -> int:
+    """Reserve-protected headroom the machine offers, before any envelope."""
     if not snapshot.ram_known:
         return 0
     reserve = max(RESERVE_BYTES,
@@ -377,7 +438,8 @@ def require_memory(required_bytes: int, snapshot: Optional[ResourceSnapshot] = N
     Within the comfortable share the whole share is returned, so callers can
     add workers. A larger minimum working set is still admitted up to the
     reserve-protected ceiling, but then the budget is exactly that working
-    set, leaving no room for extra concurrency.
+    set, leaving no room for extra concurrency. Both limits, and any user
+    limit, are clamped again by an active process budget.
     """
     if required_bytes < 0:
         raise ValueError("required_bytes must be nonnegative")
@@ -396,6 +458,84 @@ def require_memory(required_bytes: int, snapshot: Optional[ResourceSnapshot] = N
     raise ResourceLimitError(
         f"Insufficient memory: need {memory.mb(required_bytes):.0f} MB "
         f"of new allocations; at most {memory.mb(ceiling):.0f} MB is available")
+
+
+def make_process_budget(parent_frame_bytes: int = 0,
+                        snapshot: Optional[ResourceSnapshot] = None) -> ProcessBudget:
+    """Freeze the envelope for one isolated child job before it starts work.
+
+    ``snapshot`` is the admission reading, possibly taken before this process
+    existed. Whatever this process has loaded since is already missing from a
+    fresh reading, so the current one may only tighten the snapshot: a child
+    never gains headroom its parent did not admit against. ``parent_frame_bytes``
+    is the managed frame RAM the parent still holds; the job-wide frame cap is
+    shared, so the child's slice is only the remainder.
+    """
+    if parent_frame_bytes < 0:
+        raise ValueError("parent_frame_bytes must be nonnegative")
+    if snapshot is None:
+        snapshot = probe_memory()
+    else:
+        snapshot = _account_consumed_headroom(snapshot)
+    comfortable = _detected_ram_budget(snapshot)
+    maximum = _detected_ram_ceiling(snapshot)
+    frame = (min(FRAME_RAM_BUDGET_BYTES, comfortable // 2)
+             if snapshot.ram_known else 0)
+    return ProcessBudget(comfortable_ram=comfortable, maximum_ram=maximum,
+                         frame_ram=max(0, frame - int(parent_frame_bytes)))
+
+
+def _account_consumed_headroom(snapshot: ResourceSnapshot) -> ResourceSnapshot:
+    """Lower an admission snapshot by the headroom this process already used.
+
+    ``available_ram`` excludes everything already resident, so a current
+    reading covers this process's own RSS growth (imports, decoders) without
+    subtracting RSS a second time. It is a tightening pass only: a machine
+    that freed memory meanwhile does not widen the admitted envelope.
+    """
+    if not snapshot.ram_known:
+        return snapshot
+    current = probe_memory()
+    if not current.ram_known or current.available_ram >= snapshot.available_ram:
+        return snapshot
+    return replace(snapshot, available_ram=int(current.available_ram))
+
+
+@contextmanager
+def process_budget(budget: Optional[ProcessBudget] = None):
+    """Apply one child job's envelope to every thread in this process.
+
+    Entered by the job's owner thread before producers start; producer threads
+    read the active envelope directly, so no per-thread plumbing is needed.
+    ``None`` leaves the ordinary policy in place. Exit restores the previous
+    envelope, which is the ordinary policy for a job-scoped context.
+    """
+    global _ACTIVE_PROCESS_BUDGET
+    if budget is None:
+        yield None
+        return
+    previous = _ACTIVE_PROCESS_BUDGET
+    _ACTIVE_PROCESS_BUDGET = budget
+    try:
+        yield budget
+    finally:
+        _ACTIVE_PROCESS_BUDGET = previous
+
+
+def frame_ram_budget(snapshot: ResourceSnapshot) -> int:
+    """Managed frame RAM this process may hold in RAM right now.
+
+    Snapshots and numerical scratch share ``FRAME_RAM_BUDGET_BYTES`` and at
+    most half the comfortable budget; an active child job's slice is the
+    tighter bound. Unknown memory keeps the disk-mapping fallback (zero).
+    """
+    if not snapshot.ram_known:
+        return 0
+    cap = min(FRAME_RAM_BUDGET_BYTES, max(0, ram_budget(snapshot)) // 2)
+    active = _active_process_budget()
+    if active is not None:
+        cap = min(cap, max(0, int(active.frame_ram)))
+    return max(0, int(cap))
 
 
 def estimate_working_set(workload: Workload) -> tuple:

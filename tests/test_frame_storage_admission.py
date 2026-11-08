@@ -48,8 +48,9 @@ def test_switching_directories_preserves_existing_mapping(tmp_path):
 @pytest.mark.parametrize('prefer_ram', [False, True])
 @pytest.mark.parametrize('layout', ['crop', 'transpose', 'reverse'])
 def test_stored_frame_preserves_strides_pixels_and_live_views(tmp_path, monkeypatch, layout, prefer_ram):
+    from core import resource_policy
     frame_storage.configure_storage_directory(tmp_path)
-    monkeypatch.setattr(frame_storage, 'FRAME_RAM_BUDGET_BYTES', 0)
+    monkeypatch.setattr(resource_policy, 'FRAME_RAM_BUDGET_BYTES', 0)
     source = np.arange(21 * 27 * 3, dtype=np.uint16).reshape(21, 27, 3)
     pixels = {'crop': source[2:-2, 3:-3],
               'transpose': source.transpose(1, 0, 2),
@@ -639,7 +640,7 @@ def test_collecting_snapshot_during_admission_reclaims_budget_without_deadlock(t
         snapshot = policy.ResourceSnapshot(available_ram=8 * 1024**3,
                                            total_ram=16 * 1024**3)
         policy.probe_memory = lambda: snapshot
-        storage.FRAME_RAM_BUDGET_BYTES = 64
+        policy.FRAME_RAM_BUDGET_BYTES = 64
         storage.configure_storage_directory(sys.argv[1])
         gc.disable()
         first = storage.create_transient_frame((8, 8), np.uint8)
