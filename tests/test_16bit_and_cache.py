@@ -11,6 +11,7 @@ from utils.image_utils import (
 )
 from utils import align_cache
 from core.multi_focus_fusion import MultiFocusFusion
+from tests.test_algorithms import extension
 
 
 class TestDisplayConversion:
@@ -83,6 +84,32 @@ class TestFuseBitDepth:
         assert not is16 and norm[0] is frames[0]
         out = quantize_fuse_output(frames[0], is16)
         assert out is frames[0]
+
+    def test_quantize_retains_low_bits_with_bounded_scratch(self):
+        import tracemalloc
+
+        codes = np.arange(513 * 1025 * 3, dtype=np.uint16).reshape(513, 1025, 3)
+        working = codes.astype(np.float32) * (255.0 / 65535.0)
+        tracemalloc.start()
+        try:
+            output = quantize_fuse_output(working, True)
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        np.testing.assert_array_equal(output, codes)
+        assert peak <= 8 * 1024 ** 2
+
+    @pytest.mark.parametrize('dtype', [np.float32, np.float64])
+    @pytest.mark.parametrize('is16', [False, True])
+    def test_quantize_rounds_strided_readonly_input(self, dtype, is16):
+        values = [-1, 0, .5, 1.5, 2.5, 127.5, 254.5, 255, 256]
+        source = np.tile(np.array(values, dtype=dtype), (257, 1))[:, ::-1]
+        source.setflags(write=False)
+        expected = ([0, 0, 128, 386, 642, 32768, 65406, 65535, 65535]
+                    if is16 else [0, 0, 0, 2, 2, 128, 254, 255, 255])
+        output = quantize_fuse_output(source, is16)
+        np.testing.assert_array_equal(output, np.tile(expected[::-1], (257, 1)))
+        np.testing.assert_array_equal(source, np.tile(values[::-1], (257, 1)))
 
     @pytest.mark.parametrize("algorithm,kwargs", [
         ("guided_filter", {"kernel_size": 9}),
@@ -219,10 +246,15 @@ class TestAlignCache:
 class TestAlignCacheIsNotOnTheGuiThread:
     """Reading a cache hit used to decode every PNG synchronously in the GUI."""
 
+    @pytest.fixture(autouse=True)
+    def _array_extension(self, extension):
+        """Extensions without streaming source support retain the array cache."""
+        return extension
+
     def _worker(self, tmp_path, frames, request, parameters=None):
         from core.workers import RenderWorker
         worker = RenderWorker(
-            frames, algorithm='guided_filter', alignment='homography', need_fusion=False,
+            frames, algorithm='extension', alignment='homography', need_fusion=True,
             registration_parameters=parameters, use_gpu=False, disk_cache=request,
         )
         return worker

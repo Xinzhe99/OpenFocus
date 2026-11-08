@@ -116,7 +116,7 @@ def test_failed_dng_write_preserves_destination(tmp_path, camera_metadata, monke
     def fail(*args, **kwargs):
         raise OSError("disk full")
 
-    monkeypatch.setattr(linear_dng.tifffile, "imwrite", fail)
+    monkeypatch.setattr(linear_dng.tifffile.TiffWriter, "write", fail)
     with pytest.raises(OSError):
         linear_dng.write_linear_dng(path, np.zeros((16, 16, 3), np.uint16), camera_metadata)
     assert path.read_bytes() == b"old content"

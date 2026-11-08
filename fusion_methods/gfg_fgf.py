@@ -8,10 +8,11 @@ import re
 import cv2
 import numpy as np
 from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 
 from fusion_methods.dct import _ensure_color_image
 from utils.image_utils import fuse_output_dtype
-from core.frame_storage import create_frame, store_frame
+from core.frame_storage import create_frame, store_frame, capture_scratch, run_with_scratch
 
 # -----------------------------------------------------------------------------
 # 全局辅助与核心算法实现
@@ -173,11 +174,12 @@ def gfgfgf_impl(input_source, img_resize=None, kernel_size=7, thread_count: int 
             raise RegistrationCancelled()
 
     check_cancel()
+    scratch = capture_scratch()
     # -------------------------------------------------------------------------
     # 1. 图像加载与预处理
     # -------------------------------------------------------------------------
     if isinstance(input_source, str):
-        from core.image_loader import admit_image_decode, decode_image
+        from core.source_frames import scan_source
 
         # 文件夹读取逻辑
         if not os.path.exists(input_source):
@@ -203,11 +205,7 @@ def gfgfgf_impl(input_source, img_resize=None, kernel_size=7, thread_count: int 
         stack_ori = []
         for path in img_paths:
             check_cancel()
-            admit_image_decode(path)
-            image = decode_image(path, preserve_grayscale=True)
-            if image is None:
-                raise ValueError(f"Failed to read image: {path}")
-            stack_ori.append(store_frame(image))
+            stack_ori.extend(scan_source(path, header_only=True, should_cancel=check_cancel))
     else:
         # 列表输入
         stack_ori = input_source
@@ -219,12 +217,14 @@ def gfgfgf_impl(input_source, img_resize=None, kernel_size=7, thread_count: int 
     prepared = []
     resize = (img_resize is not None
               and (stack_ori[0].shape[1], stack_ori[0].shape[0]) != img_resize)
+    from core.source_frames import process_frame, resolve_frame
+    def prepare(image):
+        image = _ensure_color_image(image)
+        return cv2.resize(image, img_resize) if resize else image
     for img in stack_ori:
         check_cancel()
-        img = _ensure_color_image(img)
-        if resize:
-            img = cv2.resize(img, img_resize)
-        prepared.append(img if isinstance(img, np.memmap) else store_frame(img))
+        shape = ((img_resize[1], img_resize[0]) if resize else img.shape[:2]) + (3,)
+        prepared.append(process_frame(img, prepare, shape=shape, should_cancel=should_cancel))
     stack_ori = prepared
     del prepared
 
@@ -234,13 +234,17 @@ def gfgfgf_impl(input_source, img_resize=None, kernel_size=7, thread_count: int 
     h, w = stack_ori[0].shape[:2]
     out_dtype = fuse_output_dtype(stack_ori)
 
-    def normalized_frame(index, channel=None, rows=None):
-        img = stack_ori[index] if rows is None else stack_ori[index][rows]
+    def normalized_pixels(img, channel=None, rows=None):
+        if rows is not None:
+            img = img[rows]
         if channel is not None:
             img = img[:, :, channel]
         if img.dtype == np.uint16:
             img = img.astype(np.float32) * (255.0 / 65535.0)
         return img.astype(np.float32) / 255.0
+
+    def normalized_frame(index, channel=None):
+        return normalized_pixels(resolve_frame(stack_ori[index]), channel)
 
     first = normalized_frame(0)
     channel_idx = int(np.argmax(first.sum(axis=(0, 1))))
@@ -285,7 +289,7 @@ def gfgfgf_impl(input_source, img_resize=None, kernel_size=7, thread_count: int 
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             for start in range(0, num_imgs, max_workers):
                 check_cancel()
-                for i, val in executor.map(compute_focus_score,
+                for i, val in executor.map(partial(run_with_scratch, scratch, compute_focus_score),
                                            range(start, min(num_imgs, start + max_workers))):
                     check_cancel()
                     focus_vals[i] = val
@@ -317,7 +321,7 @@ def gfgfgf_impl(input_source, img_resize=None, kernel_size=7, thread_count: int 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         for start in range(0, num_imgs, max_workers):
             check_cancel()
-            for i, res in executor.map(compute_afm_map,
+            for i, res in executor.map(partial(run_with_scratch, scratch, compute_afm_map),
                                        range(start, min(num_imgs, start + max_workers))):
                 check_cancel()
                 if res is not None:
@@ -361,18 +365,19 @@ def gfgfgf_impl(input_source, img_resize=None, kernel_size=7, thread_count: int 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         for start in range(0, num_imgs, max_workers):
             check_cancel()
-            for res in executor.map(compute_fusion_component,
+            for res in executor.map(partial(run_with_scratch, scratch, compute_fusion_component),
                                     range(start, min(num_imgs, start + max_workers))):
                 check_cancel()
                 if res is None:
                     continue
                 i, fdm_weight = res
                 sum_fdms += fdm_weight
+                image = resolve_frame(stack_ori[i])
                 for start in range(0, h, 128):
                     check_cancel()
                     rows = slice(start, min(h, start + 128))
-                    imfu_result[rows] += normalized_frame(i, rows=rows) * fdm_weight[rows, :, None]
-                del res, fdm_weight
+                    imfu_result[rows] += normalized_pixels(image, rows=rows) * fdm_weight[rows, :, None]
+                del image, res, fdm_weight
 
     # -------------------------------------------------------------------------
     # 6. 归一化与输出
@@ -403,12 +408,18 @@ def gfgfgf_impl(input_source, img_resize=None, kernel_size=7, thread_count: int 
         # 除法
         # 使用 np.divide 的 out 参数
         np.divide(ch_data, sum_fdms, out=ch_data, where=nonzero_mask)
-        # 权重和退化（各帧引导图不同，平滑后的权重和不保证为 1）处直接取
-        # 决策帧像素，避免出现黑点
-        if not nonzero_mask.all():
-            for i in np.unique(idm_map[~nonzero_mask]):
-                sel = (~nonzero_mask) & (idm_map == i)
-                ch_data[sel] = normalized_frame(i, c)[sel]
+    if not nonzero_mask.all():
+        for i in np.unique(idm_map[~nonzero_mask]):
+            image = resolve_frame(stack_ori[i])
+            for start in range(0, h, 128):
+                check_cancel()
+                rows = slice(start, min(h, start + 128))
+                sel = (~nonzero_mask[rows]) & (idm_map[rows] == i)
+                np.copyto(imfu_result[rows], normalized_pixels(image, rows=rows),
+                          where=sel[:, :, None])
+            del image
+    for c in range(3):
+        ch_data = imfu_result[:, :, c]
         # Clip 并写回源位深
         for start in range(0, h, 128):
             check_cancel()

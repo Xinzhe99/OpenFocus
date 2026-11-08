@@ -544,6 +544,8 @@ class LabelManager:
         self.y_location_spin = StepperSpinBox(
             minimum=0, maximum=20000, decimals=0, step=1)
         self.y_location_spin.setValue(80)
+        for spin in (self.x_location_spin, self.y_location_spin):
+            spin.setToolTip(trans.t('label_position_hint'))
         position.addWidget(QLabel("X"))
         position.addWidget(self.x_location_spin)
         position.addSpacing(8)
@@ -551,9 +553,6 @@ class LabelManager:
         position.addWidget(self.y_location_spin)
         position.addStretch()
         look_form.addRow(trans.t('label_position'), position)
-        position_hint = QLabel(trans.t('label_position_hint'))
-        position_hint.setWordWrap(True)
-        look_form.addRow(position_hint)
 
         self.transparent_bg_checkbox = QCheckBox(
             trans.t('label_transparent_bg'))

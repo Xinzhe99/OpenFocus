@@ -130,9 +130,6 @@ class DustMapDialog(QDialog):
         self._scroll.setWidget(content)
         outer.addWidget(self._scroll, 1)
 
-        intro = QLabel(trans.t("dust_intro"))
-        intro.setWordWrap(True)
-        lay.addWidget(intro)
         self.lbl_context = QLabel()
         self.lbl_context.setWordWrap(True)
         lay.addWidget(self.lbl_context)
@@ -141,6 +138,8 @@ class DustMapDialog(QDialog):
         # 对话框里会被挤到第一个按钮上（实测文字互相重叠）。
         self.rb_file = QRadioButton(trans.t("dust_from_file"))
         self.rb_stack = QRadioButton(trans.t("dust_from_stack"))
+        self.rb_file.setToolTip(trans.t("dust_intro"))
+        self.rb_stack.setToolTip(trans.t("dust_intro"))
         self.rb_file.setChecked(True)
         lay.addWidget(self.rb_file)
         lay.addWidget(self.rb_stack)

@@ -26,7 +26,9 @@ import cv2
 import numpy as np
 from core.algorithms import alignment_steps
 from core.frame_storage import store_frame
-from core.source_frames import SourceFrame as LazySourceFrame, resolve_frame, store_preview
+from core.source_frames import (
+    SourceFrame as LazySourceFrame, ProcessedFrame, crop_frame, resolve_frame, store_preview,
+)
 
 
 @dataclass(frozen=True, eq=False)
@@ -55,6 +57,12 @@ def display_image(image):
 
 
 def _source_region(image, x, y, width, height):
+    if isinstance(image, ProcessedFrame):
+        width = min(width, image.shape[1] - x)
+        height = min(height, image.shape[0] - y)
+        if width <= 0 or height <= 0:
+            return np.empty((0, 0) + image.shape[2:], dtype=image.dtype)
+        return crop_frame(image, x, y, width, height)
     if not isinstance(image, LazySourceFrame):
         return image[y:y + height, x:x + width]
     width = min(width, image.shape[1] - x)
@@ -250,7 +258,7 @@ def build_render_context(
     if result is None or not processed_images:
         return None
     frames_in = list(processed_images)
-    if not frames_in or not isinstance(frames_in[0], (np.ndarray, LazySourceFrame)):
+    if not frames_in or not isinstance(frames_in[0], (np.ndarray, LazySourceFrame, ProcessedFrame)):
         return None
 
     names = list(filenames or [])
@@ -260,7 +268,7 @@ def build_render_context(
 
     frames = []
     for index, image in enumerate(frames_in):
-        if image is None or not isinstance(image, (np.ndarray, LazySourceFrame)):
+        if image is None or not isinstance(image, (np.ndarray, LazySourceFrame, ProcessedFrame)):
             return None
         ox = oy = 0
         source = image

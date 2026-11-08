@@ -282,6 +282,7 @@ class BatchProcessingDialog(QDialog):
         self.format_combo = QComboBox()
         self.format_combo.addItems(["JPG", "PNG", "BMP", "TIFF"])
         self.format_combo.setCurrentText('PNG')
+        self.format_combo.setToolTip(trans.t('export_depth_hint'))
         self.format_combo.currentTextChanged.connect(self.on_format_changed)
         format_row.addWidget(self.format_combo)
 
@@ -302,9 +303,10 @@ class BatchProcessingDialog(QDialog):
         format_row.addLayout(self.quality_layout)
         format_row.addStretch()
         output_layout.addLayout(format_row)
-        depth_hint = QLabel(trans.t('export_depth_hint'))
-        depth_hint.setWordWrap(True)
-        output_layout.addWidget(depth_hint)
+        self.depth_hint = QLabel(trans.t('export_depth_hint'))
+        self.depth_hint.setWordWrap(True)
+        self.depth_hint.hide()
+        output_layout.addWidget(self.depth_hint)
         self.quality_label.setVisible(False)
         self.quality_slider.setVisible(False)
         self.quality_value_label.setVisible(False)
@@ -418,6 +420,7 @@ class BatchProcessingDialog(QDialog):
         params.addWidget(self.downscale_label, 4, 0)
         scale_row = QHBoxLayout()
         self.downscale_slider = QSlider(Qt.Orientation.Horizontal)
+        self.downscale_slider.setToolTip(trans.t('batch_downscale_hint'))
         self.downscale_slider.setRange(20, 100)
         self.downscale_slider.setSingleStep(5)
         self.downscale_slider.setPageStep(10)
@@ -1042,6 +1045,7 @@ class BatchProcessingDialog(QDialog):
         self.quality_label.setVisible(is_jpg)
         self.quality_slider.setVisible(is_jpg)
         self.quality_value_label.setVisible(is_jpg)
+        self.depth_hint.setVisible(format_text.upper() in ("JPG", "BMP"))
     
     def update_single_folder_preview(self):
         """更新单文件夹预览"""

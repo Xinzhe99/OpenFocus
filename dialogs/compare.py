@@ -335,10 +335,6 @@ class CompareDialog(QDialog):
         root.addWidget(self.param_scroll)
         self._build_param_rows()
 
-        hint = QLabel(trans.t("compare_hint"))
-        hint.setWordWrap(True)
-        hint.setObjectName("mutedLabel")
-        root.addWidget(hint)
         self.preview_note = QLabel(trans.t("compare_preview_note"))
         self.preview_note.setWordWrap(True)
         self.preview_note.setObjectName("mutedLabel")
@@ -351,6 +347,7 @@ class CompareDialog(QDialog):
         left_layout = QVBoxLayout(left)
         left_layout.setContentsMargins(0, 0, 0, 0)
         self.ref_canvas = SourceCanvas(trans.t("compare_reference"), left)
+        self.ref_canvas.setToolTip(trans.t("compare_hint"))
         self.ref_canvas.set_detail_size(self._detail_size)
         self.ref_canvas.regionChanged.connect(self._region_changed)
         self.fit_button.clicked.connect(self.ref_canvas.fit)
@@ -400,10 +397,6 @@ class CompareDialog(QDialog):
         size_label.setBuddy(self.preview_size_spin.lineEdit())
         size_row.addWidget(self.preview_size_spin)
         right_layout.addLayout(size_row)
-        candidate_hint = QLabel(trans.t("compare_candidate_hint"))
-        candidate_hint.setWordWrap(True)
-        candidate_hint.setObjectName("mutedLabel")
-        right_layout.addWidget(candidate_hint)
         self.preview_size_slider.valueChanged.connect(
             self._preview_size_changed)
         self.preview_size_spin.valueChanged.connect(self._preview_size_changed)
@@ -427,6 +420,7 @@ class CompareDialog(QDialog):
         for method in self._checks:
             canvas = DetailCanvas(_method_label(method), self.grid_host)
             canvas.setFixedSize(self._detail_size, self._detail_size)
+            canvas.setToolTip(trans.t("compare_candidate_hint"))
             canvas.hide()
             canvas.installEventFilter(self)
             canvas.setProperty("compare_method", method)
@@ -582,13 +576,15 @@ class CompareDialog(QDialog):
         frame = self._frames[self._ref_index]
         self.ref_canvas.setToolTip("")
         from core.source_frames import preview_ready
-        if preview_ready(frame):
+        from core.image_loader import is_raw_source
+        if (preview_ready(frame) and
+                (getattr(frame, 'preview_is_available', True) or not is_raw_source(frame.path))):
             self._set_reference_image(frame)
         else:
             with QSignalBlocker(self.ref_canvas):
                 self.ref_canvas.set_pixmap(None)
             request = self._source_preview_generation
-            worker = SourcePreviewWorker(self._frames, request, [self._ref_index])
+            worker = SourcePreviewWorker(self._frames, request, [self._ref_index], selected_display=True)
             self._source_preview_workers[worker] = request
             worker.ready.connect(self._source_preview_ready)
             worker.failed.connect(self._source_preview_failed)

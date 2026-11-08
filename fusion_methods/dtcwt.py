@@ -12,8 +12,7 @@ import cv2
 
 from utils.image_utils import fuse_output_dtype
 from fusion_methods.dct import _ensure_color_image
-from utils.sorting import natural_sort_key
-from core.frame_storage import create_frame, store_frame
+from core.frame_storage import create_frame, store_frame, capture_scratch, run_with_scratch
 
 # NumPy 2.0 compatibility shims
 if not hasattr(np, "asfarray"):
@@ -77,9 +76,9 @@ def estimate_working_set(height: int, width: int, nlevels: int,
                          new_source_bytes: int = 0) -> tuple:
     """(fixed_bytes, per_worker_bytes) for one DTCWT stage.
 
-    Counts active transform and reconstruction scratch. Retained source,
-    decision and low-pass weight planes are disk-backed, so adding source
-    frames changes disk use rather than the admitted RAM working set.
+    Counts active transform and reconstruction scratch. Source descriptors do
+    not retain decoded pixels; decision and low-pass weight planes are mapped.
+    Source decoding and cache growth are added by the stage owner.
     """
     height = max(1, int(height))
     width = max(1, int(width))
@@ -131,6 +130,7 @@ def _iter_forward(transform, planes, nlevels, workers=None, should_cancel=None,
     from threading import local
 
     state = local()
+    scratch = capture_scratch()
 
     def forward(item):
         check_cancel()
@@ -147,7 +147,7 @@ def _iter_forward(transform, planes, nlevels, workers=None, should_cancel=None,
                 item = next(it, None)
                 if item is None:
                     break
-                window.append(pool.submit(forward, item))
+                window.append(pool.submit(run_with_scratch, scratch, forward, item))
             while window:
                 check_cancel()
                 future = window[0]
@@ -168,7 +168,7 @@ def _iter_forward(transform, planes, nlevels, workers=None, should_cancel=None,
                 check_cancel()
                 item = next(it, None)
                 if item is not None:
-                    window.append(pool.submit(forward, item))
+                    window.append(pool.submit(run_with_scratch, scratch, forward, item))
         finally:
             for future in window:
                 future.cancel()
@@ -200,14 +200,19 @@ def _dtcwt_impl(input_source, img_resize, N, use_gpu, thread_count=None,
             execution_plan)
 
     from core import resource_policy as policy
-    from core.registration import RegistrationCancelled
 
     with policy.heavy_job(should_cancel):
         _check_cancelled(should_cancel)
-        height, width, frames, new_bytes = _peek_source(
-            input_source, img_resize, should_cancel)
-        fixed, per_worker = estimate_working_set(
-            height, width, N, frames, new_source_bytes=new_bytes)
+        input_source = _load_images(input_source, img_resize, should_cancel)
+        img_resize = None
+        if not input_source:
+            raise ValueError('Fusion requires a non-empty image stack')
+        height, width = input_source[0].shape[:2]
+        frames = len(input_source)
+        fixed, per_worker = estimate_working_set(height, width, N, frames)
+        from core.source_frames import frame_resolution_bytes, source_cache_growth_bytes
+        fixed += source_cache_growth_bytes(input_source)
+        per_worker += max(frame_resolution_bytes(frame) for frame in input_source)
         plan = policy.plan_execution(
             policy.Workload(
                 algorithm="dtcwt", frames=frames, height=height, width=width,
@@ -228,39 +233,6 @@ def _check_cancelled(should_cancel):
         raise RegistrationCancelled()
 
 
-def _peek_source(input_source, img_resize, should_cancel=None):
-    """(height, width, frames, new bytes this call will allocate) up front."""
-    import os
-    if isinstance(input_source, str) and os.path.isdir(input_source):
-        from core.image_loader import admit_image_decode, decode_image
-        names = sorted(
-            (f for f in os.listdir(input_source)
-             if os.path.splitext(f)[1].lower() in
-             ('.png', '.jpg', '.jpeg', '.jpe', '.jfif', '.bmp', '.tif',
-              '.tiff', '.webp')),
-            key=natural_sort_key)
-        if not names:
-            raise ValueError(f"No image files found in directory: {input_source}")
-        path = os.path.join(input_source, names[0])
-        admit_image_decode(path)
-        first = decode_image(path)
-        if first is None:
-            raise RuntimeError(f"Unable to read image: {names[0]}")
-        height, width = first.shape[:2]
-        frames = len(names)
-        # Directory decode and resize retain one RAM source at a time.
-        channels = first.shape[2] if first.ndim == 3 else 3
-        new_bytes = height * width * channels * np.dtype(first.dtype).itemsize
-    else:
-        frames = len(input_source)
-        if not frames:
-            raise ValueError("Fusion requires a non-empty image stack")
-        first = input_source[0]
-        height, width = first.shape[:2]
-        new_bytes = 0
-    if img_resize:
-        height, width = int(img_resize[1]), int(img_resize[0])
-    return max(1, height), max(1, width), max(1, frames), int(new_bytes)
 
 
 def _dtcwt_impl_planned(input_source, img_resize, N, thread_count,
@@ -408,7 +380,8 @@ def _dtcwt_impl_planned(input_source, img_resize, N, thread_count,
 
         def prepare_channel(index, _channel=c):
             _check_cancel()
-            image = images[index]
+            from core.source_frames import resolve_frame
+            image = resolve_frame(images[index])
             # BGR->RGB is a channel permutation. Select the plane before
             # float conversion so a view cannot pin a full RGB float frame.
             plane = (image if image.ndim == 2 else
@@ -472,9 +445,9 @@ def _dtcwt_impl_planned(input_source, img_resize, N, thread_count,
 def _load_images(input_source: Union[str, List[np.ndarray]], img_resize: Optional[Tuple[int, int]],
                  should_cancel=None) -> List[np.ndarray]:
     """Helper to load images from a path or list."""
+    from core.source_frames import scan_source, process_frame
     images = []
     if isinstance(input_source, str):
-        from core.image_loader import admit_image_decode, decode_image
 
         if not os.path.exists(input_source):
              raise ValueError(f"Input path does not exist: {input_source}")
@@ -501,19 +474,18 @@ def _load_images(input_source: Union[str, List[np.ndarray]], img_resize: Optiona
             if should_cancel is not None and should_cancel():
                 from core.registration import RegistrationCancelled
                 raise RegistrationCancelled()
-            admit_image_decode(p)
-            img = decode_image(p, preserve_grayscale=True)
-            if img is not None:
-                if img_resize:
-                    img = cv2.resize(img, img_resize)
-                images.append(store_frame(img))
+            images.extend(scan_source(p, header_only=True,
+                                      should_cancel=lambda: _check_cancelled(should_cancel)))
     else:
         for img in input_source:
             if should_cancel is not None and should_cancel():
                 from core.registration import RegistrationCancelled
                 raise RegistrationCancelled()
-            if img_resize:
-                img = cv2.resize(img, img_resize)
-            images.append(img if isinstance(img, np.memmap) else store_frame(img))
+            images.append(img)
             
+    if img_resize:
+        images = [process_frame(img, lambda image: cv2.resize(image, img_resize),
+                                shape=(img_resize[1], img_resize[0]) + (img.shape[2:]
+                                    if img.ndim != 3 or img.shape[2] != 1 else ()),
+                                should_cancel=should_cancel) for img in images]
     return images

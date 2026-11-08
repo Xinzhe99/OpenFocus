@@ -53,6 +53,36 @@ def test_full_pixels_use_original_and_cache_evicts_by_bytes(tmp_path, monkeypatc
     np.testing.assert_array_equal(first, original(paths[0]))
 
 
+@pytest.mark.parametrize('cached_frames', [1, 2])
+def test_cache_releases_old_pixels_before_next_decode(tmp_path, monkeypatch, cached_frames):
+    import weakref
+    from utils.image_utils import imwrite_auto
+
+    pixels = [np.full((32, 40, 3), value, np.uint16) for value in (257, 19001, 65001)]
+    paths = [str(tmp_path / f'cache-{index}.png') for index in range(len(pixels))]
+    for path, expected in zip(paths, pixels):
+        assert imwrite_auto(path, expected)
+    frames = [sources.scan_source(path, header_only=True)[0] for path in paths]
+    cache = sources.FrameCache(cached_frames * pixels[0].nbytes)
+    monkeypatch.setattr(sources, 'SOURCE_CACHE', cache)
+    original = image_loader.decode_image
+    decoded = []
+
+    def decode(path, **kwargs):
+        live_bytes = sum(image.nbytes for ref in decoded if (image := ref()) is not None)
+        assert live_bytes + pixels[0].nbytes <= cache.max_bytes
+        image = original(path, **kwargs)
+        decoded.append(weakref.ref(image))
+        return image
+
+    monkeypatch.setattr(image_loader, 'decode_image', decode)
+    for frame, expected in zip(frames, pixels):
+        actual = sources.resolve_frame(frame)
+        np.testing.assert_array_equal(actual, expected)
+        del actual
+    np.testing.assert_array_equal(sources.resolve_frame(frames[0]), pixels[0])
+
+
 def test_oversized_frame_is_not_retained(tmp_path, monkeypatch):
     cache = sources.FrameCache(1)
     monkeypatch.setattr(sources, 'SOURCE_CACHE', cache)
@@ -74,7 +104,6 @@ def test_transforms_remain_lazy_then_materialize_exact_pixels(tmp_path, monkeypa
     assert max(sources.display_image(resized).shape[:2]) <= sources.PREVIEW_EDGE
     monkeypatch.setattr(image_loader, 'decode_image', original_decoder)
     materialized = sources.materialize_frames([resized])
-    assert isinstance(materialized[0], np.memmap)
     expected = cv2.resize(cv2.rotate(original_decoder(path), cv2.ROTATE_90_CLOCKWISE),
                           (450, 600), interpolation=cv2.INTER_AREA)
     np.testing.assert_array_equal(materialized[0], expected)
@@ -123,8 +152,112 @@ def test_pathless_result_arrays_remain_supported():
     assert sources.display_image(image) is image
     assert sources.resolve_frame(image) is image
     materialized = sources.materialize_frames([image])
-    assert isinstance(materialized[0], np.memmap)
     np.testing.assert_array_equal(materialized[0], image)
+
+
+def test_materialize_parallel_window_preserves_order_and_progress(tmp_path, monkeypatch):
+    import threading
+    from types import SimpleNamespace
+    from core import frame_storage
+    from core import resource_policy
+
+    paths = [_jpeg(tmp_path, f'parallel-{i}.jpg', (8, 10)) for i in range(4)]
+    frames = [sources.scan_source(path, header_only=True)[0] for path in paths]
+    monkeypatch.setattr(resource_policy, 'plan_execution', lambda *a, **k:
+                        SimpleNamespace(workers=2, max_in_flight=2))
+    second_started = threading.Event()
+    lock = threading.Lock()
+    active = peak = 0
+
+    def decode(frame):
+        nonlocal active, peak
+        index = paths.index(frame.path)
+        assert frame_storage._scratch.get() is not None
+        with lock:
+            active += 1
+            peak = max(peak, active)
+        try:
+            if index == 0:
+                assert second_started.wait(5)
+            elif index == 1:
+                second_started.set()
+            return np.full(frame.shape, index, frame.dtype)
+        finally:
+            with lock:
+                active -= 1
+
+    monkeypatch.setattr(sources, 'resolve_frame', decode)
+    progress = []
+    result = sources.materialize_frames(frames, progress_callback=lambda done, total:
+                                        progress.append((done, total)))
+    assert peak == 2
+    assert progress == [(1, 4), (2, 4), (3, 4), (4, 4)]
+    for index, image in enumerate(result):
+        np.testing.assert_array_equal(
+            image, np.full(frames[index].shape, index, frames[index].dtype))
+
+
+def test_materialize_waits_for_running_decode_after_failure(tmp_path, monkeypatch):
+    import threading
+    from types import SimpleNamespace
+    from core import resource_policy
+
+    paths = [_jpeg(tmp_path, f'failure-{i}.jpg', (8, 10)) for i in range(2)]
+    frames = [sources.scan_source(path, header_only=True)[0] for path in paths]
+    monkeypatch.setattr(resource_policy, 'plan_execution', lambda *a, **k:
+                        SimpleNamespace(workers=2, max_in_flight=2))
+    started = threading.Event()
+    completed = threading.Event()
+    release = threading.Event()
+
+    def decode(frame):
+        if frame is frames[0]:
+            started.set()
+            assert release.wait(5)
+            completed.set()
+            return np.zeros(frame.shape, frame.dtype)
+        assert started.wait(5)
+        threading.Timer(0.1, release.set).start()
+        raise ValueError('decode failure')
+
+    monkeypatch.setattr(sources, 'resolve_frame', decode)
+    with pytest.raises(ValueError, match='decode failure'):
+        sources.materialize_frames(frames)
+    assert completed.is_set()
+
+
+def test_materialize_cancellation_waits_for_running_decode(tmp_path, monkeypatch):
+    import threading
+    from types import SimpleNamespace
+    from core import resource_policy
+    from core.registration import RegistrationCancelled
+
+    paths = [_jpeg(tmp_path, f'cancel-{i}.jpg', (8, 10)) for i in range(2)]
+    frames = [sources.scan_source(path, header_only=True)[0] for path in paths]
+    monkeypatch.setattr(resource_policy, 'plan_execution', lambda *a, **k:
+                        SimpleNamespace(workers=2, max_in_flight=2))
+    cancelled = threading.Event()
+    released = threading.Event()
+    completed = threading.Event()
+    started = threading.Barrier(2)
+
+    def decode(frame):
+        started.wait(timeout=5)
+        if frame is frames[0]:
+            cancelled.set()
+            threading.Timer(0.1, released.set).start()
+        assert released.wait(5)
+        if frame is frames[1]:
+            completed.set()
+        return np.zeros(frame.shape, frame.dtype)
+
+    monkeypatch.setattr(sources, 'resolve_frame', decode)
+    progress = []
+    with pytest.raises(RegistrationCancelled):
+        sources.materialize_frames(frames, cancelled.is_set,
+                                   progress_callback=lambda *args: progress.append(args))
+    assert completed.is_set()
+    assert not progress
 
 
 def test_manifest_opens_before_remaining_previews(tmp_path, monkeypatch):
@@ -196,6 +329,7 @@ def test_large_raw_missing_preview_never_unpacks_sensor(monkeypatch):
 
 def test_large_nondraft_preview_never_calls_pillow_decoder():
     class HeaderImage:
+        mode = 'RGB'
         size = (20000, 12000)
         width, height = size
         def getbands(self): return ('R', 'G', 'B')
@@ -212,6 +346,8 @@ def test_large_single_strip_tiff_preview_refuses_before_decode():
     def forbidden(**_kwargs):
         raise AssertionError('oversized TIFF strip decoded')
     page = SimpleNamespace(imagelength=12000, imagewidth=20000, samplesperpixel=3,
+                           parent=SimpleNamespace(filehandle=SimpleNamespace(path='header-only.tif')),
+                           photometric=2,
                            planarconfig=1, dtype=np.dtype(np.uint16), is_memmappable=False,
                            is_tiled=False, rowsperstrip=12000, databytecounts=(1000,),
                            segments=forbidden)
@@ -229,6 +365,7 @@ def test_mappable_tiff_preview_samples_without_segment_decoder():
         return mapped
     def forbidden(**_kwargs): raise AssertionError('mapped TIFF invoked strip decoder')
     page = SimpleNamespace(imagelength=4000, imagewidth=5000, samplesperpixel=3,
+                           parent=SimpleNamespace(filehandle=SimpleNamespace(path='mapped-header.tif')),
                            planarconfig=1, dtype=np.dtype(np.uint16), is_memmappable=True,
                            asarray=asarray, segments=forbidden, photometric=2)
     preview = sources._tiff_preview(page)
@@ -239,6 +376,7 @@ def test_mappable_tiff_preview_samples_without_segment_decoder():
 
 def test_progressive_jpeg_admits_original_coefficient_scratch():
     class ProgressiveHeader:
+        mode = 'RGB'
         size = (6000, 4000)
         width, height = size
         info = {'progressive': True}
@@ -272,6 +410,8 @@ def test_oversized_lzw_preview_never_calls_full_decoder(monkeypatch):
     def forbidden(*_args, **_kwargs): raise AssertionError('oversized LZW decode')
     monkeypatch.setattr(cv2, 'imdecodemulti', forbidden)
     page = SimpleNamespace(imagelength=12000, imagewidth=20000, samplesperpixel=3,
+                           parent=SimpleNamespace(filehandle=SimpleNamespace(path='lzw-header.tif')),
+                           photometric=2,
                            planarconfig=1, dtype=np.dtype(np.uint16), compression=5, tags={})
     preview = sources._tiff_preview(page)
     assert isinstance(preview, sources._UnavailablePreview)
@@ -581,6 +721,142 @@ def test_raf_preview_rejects_unbounded_or_invalid_encoded_range(tmp_path, monkey
     assert list(batch_converter._embedded_raw_jpegs(path)) == []
 
 
+def _preview_jpeg(color=(41, 91, 161)):
+    from io import BytesIO
+    with BytesIO() as output:
+        Image.new('RGB', (8, 6), color).save(output, format='JPEG')
+        return output.getvalue()
+
+
+def _interchange_tiff(tmp_path, payloads, name='interchange.tif'):
+    """TIFF IFD whose 513/514 tags point at independently encoded JPEGs."""
+    import tifffile
+    path = tmp_path / name
+    count = len(payloads)
+    with tifffile.TiffWriter(path) as writer:
+        writer.write(np.zeros((2, 2, 3), np.uint8), photometric='rgb',
+                     extratags=[(513, 'I', count, (0,) * count, False),
+                                (514, 'I', count, (0,) * count, False)])
+    ranges = []
+    with path.open('ab') as stream:
+        for payload in payloads:
+            ranges.append((stream.tell(), len(payload)))
+            stream.write(payload)
+    return path, ranges
+
+
+def _set_interchange_tags(path, offsets, lengths):
+    import tifffile
+    with tifffile.TiffFile(path, mode='r+b') as tif:
+        page = tif.pages[0]
+        page.tags['JPEGInterchangeFormat'].overwrite(tuple(offsets))
+        page.tags['JPEGInterchangeFormatLength'].overwrite(tuple(lengths))
+
+
+@pytest.mark.parametrize('value,expected', [
+    (163096, (163096,)),
+    ((163096,), (163096,)),
+    ((163096, 595456), (163096, 595456)),
+    ([163096], (163096,)),
+])
+def test_tiff_offset_tags_accept_scalars_and_vectors(value, expected):
+    from types import SimpleNamespace
+    from core import batch_converter
+    assert batch_converter._tiff_tag_integers(SimpleNamespace(value=value)) == expected
+
+
+@pytest.mark.parametrize('value', [
+    None, '', '163096', [], (), (163096, 'length'), (163096, 595456.5), (-1,),
+])
+def test_tiff_offset_tags_reject_malformed_values(value):
+    from types import SimpleNamespace
+    from core import batch_converter
+    assert batch_converter._tiff_tag_integers(SimpleNamespace(value=value)) is None
+
+
+def test_embedded_raw_jpegs_read_singleton_tuple_interchange_tags(tmp_path):
+    import tifffile
+    from core import batch_converter
+    payload = _preview_jpeg()
+    path, ranges = _interchange_tiff(tmp_path, [payload])
+    _set_interchange_tags(path, (ranges[0][0],), (ranges[0][1],))
+    with tifffile.TiffFile(path) as tif:
+        # The real NEFs report these single-value tags as one-element tuples.
+        assert tif.pages[0].tags['JPEGInterchangeFormat'].value == (ranges[0][0],)
+    assert list(batch_converter._embedded_raw_jpegs(path)) == [payload]
+
+
+def test_raw_preview_decodes_singleton_tuple_interchange_tag(tmp_path):
+    from io import BytesIO
+    from types import SimpleNamespace
+    pytest.importorskip('rawpy')
+    payload = _preview_jpeg((10, 80, 140))
+    path, ranges = _interchange_tiff(tmp_path, [payload])
+    _set_interchange_tags(path, (ranges[0][0],), (ranges[0][1],))
+    class HeaderRaw:
+        sizes = SimpleNamespace(width=8000, height=6000)
+        def extract_thumb(self):
+            raise AssertionError('tuple preview fell back to LibRaw')
+    preview = sources._raw_preview(HeaderRaw(), 1, path)
+    with Image.open(BytesIO(payload)) as image:
+        expected = np.asarray(image)[:, :, ::-1]
+    np.testing.assert_array_equal(preview, expected)
+
+
+def test_embedded_raw_jpegs_accept_paired_multiple_interchange_values(tmp_path):
+    from core import batch_converter
+    payloads = [_preview_jpeg((220, 30, 40)), _preview_jpeg((20, 180, 60))]
+    path, ranges = _interchange_tiff(tmp_path, payloads)
+    _set_interchange_tags(path, [item[0] for item in ranges], [item[1] for item in ranges])
+    assert list(batch_converter._embedded_raw_jpegs(path)) == payloads
+
+
+@pytest.mark.parametrize('offset_count,length_count', [(2, 1), (1, 2)])
+def test_embedded_raw_jpegs_reject_unequal_interchange_vector_lengths(
+        tmp_path, offset_count, length_count):
+    from core import batch_converter
+    payloads = [_preview_jpeg((220, 30, 40)), _preview_jpeg((20, 180, 60))]
+    path, ranges = _interchange_tiff(tmp_path, payloads)
+    _set_interchange_tags(path,
+                          [item[0] for item in ranges[:offset_count]],
+                          [item[1] for item in ranges[:length_count]])
+    # Neither a truncated prefix nor one broadcast length may be admitted.
+    assert list(batch_converter._embedded_raw_jpegs(path)) == []
+
+
+def test_embedded_raw_jpegs_ignore_malformed_interchange_ranges(tmp_path):
+    from core import batch_converter
+    payload = _preview_jpeg()
+    path, ranges = _interchange_tiff(tmp_path, [payload])
+    offset, length = ranges[0]
+    file_size = path.stat().st_size
+    for bad_offset, bad_length in ((0, 8), (offset, 0), (file_size + 1024, length),
+                                   (offset, 33 * 1024 * 1024)):
+        _set_interchange_tags(path, (bad_offset,), (bad_length,))
+        assert list(batch_converter._embedded_raw_jpegs(path)) == []
+
+
+def test_embedded_raw_jpegs_cancel_between_paired_values(tmp_path):
+    from core import batch_converter
+    payloads = [_preview_jpeg((220, 30, 40)), _preview_jpeg((20, 180, 60))]
+    path, ranges = _interchange_tiff(tmp_path, payloads)
+    _set_interchange_tags(path, [item[0] for item in ranges], [item[1] for item in ranges])
+    cancelled = False
+    iterator = batch_converter._embedded_raw_jpegs(path, should_cancel=lambda: cancelled)
+    assert next(iterator) == payloads[0]
+    cancelled = True
+    with pytest.raises(InterruptedError, match='cancelled'):
+        next(iterator)
+
+
+def test_embedded_raw_jpegs_cancel_before_reading_any_range(tmp_path):
+    from core import batch_converter
+    payload = _preview_jpeg()
+    path, _ranges = _interchange_tiff(tmp_path, [payload])
+    with pytest.raises(InterruptedError, match='cancelled'):
+        next(batch_converter._embedded_raw_jpegs(path, should_cancel=lambda: True))
+
+
 def _multiple_raw_jpegs(tmp_path, monkeypatch):
     """Real progressive and baseline JPEG strips in a RAW TIFF container."""
     from io import BytesIO
@@ -724,9 +1000,9 @@ def test_materialization_discards_last_frame_after_cancellation(tmp_path, monkey
         cancelled = cancel_at == 'decode'
         return pixels
 
-    def store_and_cancel(image):
+    def store_and_cancel(image, **kwargs):
         nonlocal cancelled
-        mapped = store(image)
+        mapped = store(image, **kwargs)
         cancelled = True
         return mapped
 
@@ -739,3 +1015,57 @@ def test_materialization_discards_last_frame_after_cancellation(tmp_path, monkey
     monkeypatch.setattr(sources, 'store_frame', store)
     mapped = sources.materialize_frames([frame])[0]
     np.testing.assert_array_equal(mapped, decode(path))
+
+
+def test_materialization_rejects_known_stack_before_decode(monkeypatch, tmp_path):
+    from core import frame_storage
+    paths = [_jpeg(tmp_path, f'early-{i}.jpg', (30, 40)) for i in range(2)]
+    frames = [sources.scan_source(path, header_only=True)[0] for path in paths]
+    monkeypatch.setattr(frame_storage, '_storage_directory', str(tmp_path))
+    monkeypatch.setattr(frame_storage, '_space', lambda path: (None, 0, frames[0].nbytes))
+    def forbidden(*args, **kwargs):
+        raise AssertionError('decoded before stack admission')
+    monkeypatch.setattr(sources.SourceFrame, 'full_resolution', forbidden)
+    with pytest.raises(frame_storage.ScratchSpaceError) as error:
+        sources.materialize_frames(frames, staging_bytes=10)
+    assert error.value.required == 2 * frames[0].nbytes + 10
+    assert not list(tmp_path.glob('openfocus-frame-*.bin'))
+
+
+def test_existing_maps_are_not_charged_as_new_allocations(monkeypatch, tmp_path):
+    from core import frame_storage
+    monkeypatch.setattr(frame_storage, '_storage_directory', str(tmp_path))
+    existing = frame_storage.store_frame(np.arange(16, dtype=np.uint8), prefer_ram=False)
+    monkeypatch.setattr(frame_storage, '_space', lambda path: (None, 0, 20))
+    result = sources.materialize_frames([existing, np.zeros(10, np.uint8)], staging_bytes=10)
+    assert result[0] is existing
+    np.testing.assert_array_equal(result[1], np.zeros(10, np.uint8))
+
+
+def test_generator_is_not_consumed_before_processing(monkeypatch, tmp_path):
+    from core import frame_storage
+    monkeypatch.setattr(frame_storage, '_storage_directory', str(tmp_path))
+    first = np.arange(10, dtype=np.uint8)
+    stored = []
+    original = sources.store_frame
+    def record(image, **kwargs):
+        stored.append(True)
+        return original(image, **kwargs)
+    def frames():
+        yield first
+        assert stored, 'generator was exhausted before the first frame was stored'
+        yield first
+    monkeypatch.setattr(sources, 'store_frame', record)
+    mapped = sources.materialize_frames(frames())
+    assert len(mapped) == 2
+    np.testing.assert_array_equal(mapped[1], first)
+
+
+def test_scratch_headers_skip_unreadable_and_propagate_cancel(monkeypatch, tmp_path):
+    from core.registration import RegistrationCancelled
+    path = _jpeg(tmp_path, shape=(20, 30))
+    headers = sources.scratch_source_headers([path, str(tmp_path / 'missing.jpg')])
+    assert len(headers) == 1 and headers[0].shape == (20, 30, 3)
+    monkeypatch.setattr(sources, 'scan_source', lambda *args, **kwargs: (_ for _ in ()).throw(InterruptedError()))
+    with pytest.raises(RegistrationCancelled):
+        sources.scratch_source_headers([path])

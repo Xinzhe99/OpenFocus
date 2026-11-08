@@ -74,10 +74,12 @@ def source_dimensions(path, page=0):
         import tifffile
         with tifffile.TiffFile(path) as tif:
             entry = tif.pages[page]
+            validate_tiff_page(path, entry)
             return entry.imagewidth, entry.imagelength
     if not PIL_AVAILABLE:
         raise ValueError('Image header support is unavailable (Pillow).')
     with PILImage.open(path) as image:
+        validate_pil_header(path, image)
         return image.size
 
 def admit_image_decode(path, *, user_limit=None):
@@ -125,6 +127,144 @@ class UnsupportedTransparency(ValueError):
     """The source cannot be processed without losing transparency."""
 
 
+class UnsupportedDepth(ValueError):
+    """A display source has samples outside the supported uint8/uint16 domain."""
+
+
+class UnsupportedColorSpace(ValueError):
+    """A source cannot be converted to RGB without guessing its color layout."""
+
+
+def _validate_depth(path, dtype):
+    dtype = np.dtype(dtype)
+    if dtype.kind != 'u' or dtype.itemsize not in (1, 2):
+        raise UnsupportedDepth(
+            f"Unsupported input depth: {path} (dtype={dtype}). "
+            "Convert this image to unsigned 8-bit or 16-bit RGB; samples are not scaled automatically.")
+
+
+def _cmyk_profiles(path, profile):
+    """Validate a CMYK source profile and its usable CMYK -> sRGB transform."""
+    from io import BytesIO
+    from PIL import ImageCms
+    from utils.image_utils import srgb_icc_profile
+
+    try:
+        destination = ImageCms.ImageCmsProfile(BytesIO(srgb_icc_profile()))
+        if not profile:
+            return None, destination
+        if (not isinstance(profile, bytes) or len(profile) < 128
+                or profile[16:20] != b'CMYK' or profile[36:40] != b'acsp'
+                or int.from_bytes(profile[:4], 'big') != len(profile)):
+            raise ValueError('expected an embedded CMYK ICC profile')
+        source = ImageCms.ImageCmsProfile(BytesIO(profile))
+        transform = ImageCms.buildTransformFromOpenProfiles(source, destination, 'CMYK', 'RGB')
+        return transform, destination
+    except (OSError, ValueError, TypeError, ImageCms.PyCMSError) as exc:
+        raise UnsupportedColorSpace(f"Invalid or incompatible CMYK ICC profile: {path}: {exc}") from exc
+
+
+def cmyk_to_bgr(image, path, profile=b''):
+    """Convert uint8 CMYK samples, using embedded ICC or Pillow's standard conversion.
+
+    Without an ICC profile Pillow uses its documented CMYK -> RGB decoder
+    conversion. The returned pixels are attributed to sRGB by _read_icc_profile.
+    TIFF callers supply an in-memory CMYK image; Pillow never decodes TIFF pixels.
+    """
+    from PIL import ImageCms
+
+    if image.mode != 'CMYK':
+        raise UnsupportedColorSpace(f"Expected CMYK samples: {path} (mode={image.mode})")
+    transform, _destination = _cmyk_profiles(path, profile)
+    rgb = ImageCms.applyTransform(image, transform) if transform is not None else image.convert('RGB')
+    return cv2.cvtColor(np.asarray(rgb), cv2.COLOR_RGB2BGR)
+
+
+def validate_pil_header(path, image):
+    """Reject unsupported display sample types and CMYK profiles without decoding."""
+    if image.mode == 'F':
+        _validate_depth(path, np.float32)
+    if image.mode == 'I':
+        # Pillow exposes unsigned 16-bit PNG grayscale as mode I on some versions.
+        with open(path, 'rb') as stream:
+            header = stream.read(26)
+        if not (header[:8] == b'\x89PNG\r\n\x1a\n' and len(header) == 26 and header[24] == 16):
+            _validate_depth(path, np.int32)
+    if image.mode == 'CMYK':
+        _cmyk_profiles(path, image.info.get('icc_profile', b''))
+
+
+def validate_tiff_page(path, page):
+    """Validate display TIFF metadata only; return whether samples are CMYK.
+
+    Call only after RAW/DNG dispatch: camera-linear metadata has its own domain.
+    CMYK TIFF is limited to unsigned 8-bit contiguous four-ink samples with a
+    tifffile decoder available for its lossless compression. No 16-bit CMYK
+    conversion is attempted because Pillow/ImageCms would discard precision.
+    """
+    _validate_depth(path, page.dtype)
+    if int(page.photometric) != 5:
+        return False
+    import tifffile
+
+    def tag_value(name, default):
+        tag = page.tags.get(name)
+        return tag.value if tag is not None else default
+
+    if (np.dtype(page.dtype).itemsize != 1 or page.bitspersample != 8
+            or page.samplesperpixel != 4 or int(page.planarconfig) != 1
+            or page.extrasamples or tag_value('InkSet', 1) != 1
+            or tag_value('NumberOfInks', 4) != 4 or int(page.predictor) not in (1, 2)):
+        raise UnsupportedColorSpace(
+            f"Unsupported CMYK TIFF layout: {path} (dtype={page.dtype}, "
+            f"bits={page.bitspersample}, samples={page.samplesperpixel}, "
+            f"planar={page.planarconfig}). Convert to 8-bit or 16-bit RGB TIFF.")
+    compression = int(page.compression)
+    try:
+        if compression not in (1, 5, 8, 32946, 32773):
+            raise ValueError('only supported lossless CMYK codecs are accepted')
+        tifffile.TIFF.DECOMPRESSORS[compression]
+    except (KeyError, ImportError, ValueError) as exc:
+        raise UnsupportedColorSpace(
+            f"Unsupported CMYK TIFF compression: {path} ({page.compression}). "
+            "Convert to uncompressed RGB TIFF or install the required TIFF codec.") from exc
+    _cmyk_profiles(path, tag_value('InterColorProfile', b''))
+    return True
+
+
+def decode_tiff_page(path, page_index=0, *, preserve_grayscale=False):
+    """Decode a validated display TIFF page, applying its orientation exactly once."""
+    import tifffile
+
+    with tifffile.TiffFile(path) as tif:
+        page = tif.pages[page_index]
+        cmyk = validate_tiff_page(path, page)
+        if cmyk:
+            samples = page.asarray()
+            _validate_depth(path, samples.dtype)
+            if samples.dtype != np.uint8 or samples.shape != (page.imagelength, page.imagewidth, 4):
+                raise UnsupportedColorSpace(f"Unexpected CMYK TIFF decoded layout: {path}: {samples.shape}/{samples.dtype}")
+            profile_tag = page.tags.get('InterColorProfile')
+            image = cmyk_to_bgr(PILImage.fromarray(samples, 'CMYK'), path,
+                                profile_tag.value if profile_tag is not None else b'')
+            orientation_tag = page.tags.get('Orientation')
+            transform = _EXIF_TRANSFORMS.get(int(orientation_tag.value) if orientation_tag is not None else 1)
+            return np.ascontiguousarray(transform(image)) if transform is not None else image
+    data = np.memmap(path, dtype=np.uint8, mode='r')
+    success, decoded = cv2.imdecodemulti(data, flags=cv2.IMREAD_UNCHANGED,
+                                        range=(page_index, page_index + 1))
+    if not success or len(decoded) != 1:
+        raise ValueError(f"Could not decode TIFF page {page_index + 1}: {path}")
+    image = decoded[0]
+    _validate_depth(path, image.dtype)
+    if _has_transparency(image):
+        raise UnsupportedTransparency(f"Transparent TIFF pages are unsupported: {path}")
+    if image.ndim == 2:
+        return image if preserve_grayscale else cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+    if image.ndim == 3 and image.shape[2] == 4:
+        return cv2.cvtColor(image, cv2.COLOR_BGRA2BGR)
+    return image
+
 def _has_transparency(image: np.ndarray) -> bool:
     from core.source_frames import SourceFrame
     if isinstance(image, SourceFrame):
@@ -159,11 +299,23 @@ def _read_raw(path: str, scale_factor: float = 1.0) -> Optional[np.ndarray]:
 
 
 def decode_image(path: str, *, allow_transparent_png: bool = False,
-                 preserve_grayscale: bool = False) -> Optional[np.ndarray]:
-    """Decode an oriented still image, rejecting unsupported transparency."""
+                 preserve_grayscale: bool = False, scale_factor: float = 1.0) -> Optional[np.ndarray]:
+    """Decode an oriented still image, rejecting unsupported transparency.
+
+    ``scale_factor`` applies to RAW decoding only; other callers resize after
+    orientation and transparency handling.
+    """
     ext = os.path.splitext(path)[1].lower()
     if is_raw_source(path):
-        return _read_raw(path)
+        return _read_raw(path, scale_factor)
+    if ext in ('.tif', '.tiff'):
+        return decode_tiff_page(path, preserve_grayscale=preserve_grayscale)
+    if PIL_AVAILABLE:
+        with PILImage.open(path) as header:
+            validate_pil_header(path, header)
+            if header.mode == 'CMYK':
+                image = cmyk_to_bgr(header, path, header.info.get('icc_profile', b''))
+                return apply_exif_orientation(path, image)
     # IMREAD_IGNORE_ORIENTATION is required: modern OpenCV already rotates by
     # the EXIF Orientation tag itself, so letting apply_exif_orientation run
     # afterwards applied every transform twice (portrait phone shots loaded
@@ -171,14 +323,15 @@ def decode_image(path: str, *, allow_transparent_png: bool = False,
     # single explicit pass is the only orientation step for both paths.
     data = np.fromfile(path, dtype=np.uint8)
     unchanged = cv2.imdecode(data, cv2.IMREAD_UNCHANGED)
+    if unchanged is not None:
+        _validate_depth(path, unchanged.dtype)
     if unchanged is not None and _has_transparency(unchanged):
         if allow_transparent_png and ext == '.png':
             return apply_exif_orientation(path, unchanged)
         raise UnsupportedTransparency(
             f"Transparent input is unsupported here: {path}. "
             "Matching rectangular PNG transparency is supported in the desktop and CLI workflows; see the manual.")
-    # Standard uint8/uint16 decoders already return the BGR samples used by
-    # the previous color-read path. Exotic sample types retain that path.
+    # Preserve unsigned sample precision; unsupported depths never reach a color conversion.
     img = None
     if (unchanged is not None and unchanged.dtype in (np.uint8, np.uint16)
             and ext in ('.png', '.jpg', '.jpeg', '.jpe', '.jfif', '.bmp', '.webp', '.tif', '.tiff')):
@@ -195,6 +348,7 @@ def decode_image(path: str, *, allow_transparent_png: bool = False,
         # OpenCV ships no HEIC/HEIF decoder: fall back to Pillow
         img = _read_via_pil(path)
     if img is not None:
+        _validate_depth(path, img.dtype)
         img = apply_exif_orientation(path, img)
     return img
 
@@ -301,6 +455,11 @@ def _read_icc_profile(path: str, page: Optional[int] = None) -> bytes:
                     profile = image.tag_v2.get(34675, b"")
                 else:
                     profile = image.info.get("icc_profile", b"")
+                if image.mode == 'CMYK':
+                    from utils.image_utils import srgb_icc_profile
+                    _cmyk_profiles(path, profile)
+                    profiles.append(srgb_icc_profile())
+                    continue
                 if not (isinstance(profile, bytes) and len(profile) >= 128
                         and profile[16:20] == b"RGB " and profile[36:40] == b"acsp"):
                     return b""
@@ -309,6 +468,8 @@ def _read_icc_profile(path: str, page: Optional[int] = None) -> bytes:
                 ImageCms.ImageCmsProfile(BytesIO(profile))
                 profiles.append(profile)
             return common_profile_values(profiles)
+    except UnsupportedColorSpace:
+        raise
     except (OSError, ValueError, TypeError, EOFError, ImageCms.PyCMSError):
         return b""
 
@@ -397,6 +558,9 @@ def _read_via_pil(path: str) -> Optional[np.ndarray]:
         return None
     try:
         with PILImage.open(path) as pil_img:
+            validate_pil_header(path, pil_img)
+            if pil_img.mode == 'CMYK':
+                return cmyk_to_bgr(pil_img, path, pil_img.info.get('icc_profile', b''))
             if pil_img.mode in ('I', 'I;16', 'I;16B'):
                 arr = np.array(pil_img).astype(np.uint16)
             elif 'A' in pil_img.getbands() or 'transparency' in pil_img.info:
@@ -412,7 +576,7 @@ def _read_via_pil(path: str) -> Optional[np.ndarray]:
         if arr.shape[2] == 4:
             return cv2.cvtColor(arr, cv2.COLOR_RGBA2BGR)
         return cv2.cvtColor(arr, cv2.COLOR_RGB2BGR)
-    except UnsupportedTransparency:
+    except (UnsupportedTransparency, UnsupportedDepth, UnsupportedColorSpace):
         raise
     except Exception as e:
         print(f"Unsupported image for PIL fallback {path}: {e}")
@@ -426,22 +590,11 @@ def _read_tiff_pages(path: str, scale_factor=1.0, should_cancel=None) -> Optiona
     count = count_frames(path)
     if count < 2:
         return None
-    data = np.memmap(path, dtype=np.uint8, mode='r')
     pages = []
     for index in range(count):
         if should_cancel is not None and should_cancel():
             raise _DecodeCancelled()
-        success, decoded = cv2.imdecodemulti(data, flags=cv2.IMREAD_UNCHANGED,
-                                            range=(index, index + 1))
-        if not success or len(decoded) != 1:
-            raise ValueError(f"Could not decode TIFF page {index + 1}: {path}")
-        page = decoded[0]
-        if _has_transparency(page):
-            raise UnsupportedTransparency(f"Transparent TIFF pages are unsupported: {path}")
-        if page.ndim == 2:
-            page = cv2.cvtColor(page, cv2.COLOR_GRAY2BGR)
-        elif page.ndim == 3 and page.shape[2] == 4:
-            page = cv2.cvtColor(page, cv2.COLOR_BGRA2BGR)
+        page = decode_tiff_page(path, index)
         pages.append(store_frame(_downscale_page(page, scale_factor)))
     return pages
 
@@ -449,19 +602,16 @@ def _read_tiff_pages(path: str, scale_factor=1.0, should_cancel=None) -> Optiona
 def count_frames(path: str) -> int:
     """Frames a path contributes to a stack, without decoding pixels.
 
-    A multi-page TIFF counts as all of its pages (PIL exposes the page count
-    from the directory, so counting a 40-page Z-stack costs a metadata read
-    instead of a full decode); anything else counts as one.
+    A multi-page TIFF counts all image directories with tifffile, including
+    sample types Pillow cannot open; anything else counts as one.
     """
     if os.path.splitext(path)[1].lower() in (".tif", ".tiff"):
         if _is_dng_tiff(path):
             return 1
         try:
-            from PIL import Image
-            with Image.open(path) as im:
-                frames = int(getattr(im, "n_frames", 1) or 1)
-            if frames > 1:
-                return frames
+            import tifffile
+            with tifffile.TiffFile(path) as tif:
+                return len(tif.pages)
         except Exception:
             pass
     return 1
@@ -718,7 +868,7 @@ class ImageStackLoader:
     def load_linear_raw_stack(self, filepaths, scale_factor=1.0, *,
                               resource_preference="balanced", expected_metadata=None):
         """Load a complete camera-linear stack, committing state only on success."""
-        from core.source_frames import scan_source, ensure_preview
+        from core.source_frames import scan_source, ensure_display_preview
         from locales import trans
         # Camera calibration is inspected while building the source manifest.
         from utils.scalebar import detect_px_size_um
@@ -768,9 +918,11 @@ class ImageStackLoader:
             if self.progress_callback is not None:
                 self.progress_callback(index + 1, len(paths))
         try:
-            ensure_preview(images[0], should_cancel=self.should_cancel)
+            ensure_display_preview(images[0], should_cancel=self.should_cancel)
         except InterruptedError:
             return False, 'CANCELLED', [], []
+        except (OSError, ValueError) as exc:
+            return False, f'Could not load source preview: {exc}', [], []
         if self.should_cancel():
             return False, 'CANCELLED', [], []
         self.images = images
@@ -878,9 +1030,9 @@ class ImageStackLoader:
     def load_from_filepaths(self, filepaths: list[str], scale_factor: float = 1.0, *,
                             thread_count: int = 0,
                             resource_preference: str = "balanced"):
-        """Open paths and bounded previews; original pixels remain on disk."""
+        """Open headers and prepare the first display in an admitted background job."""
         from concurrent.futures import ThreadPoolExecutor
-        from core.source_frames import scan_source, ensure_preview
+        from core.source_frames import scan_source, ensure_display_preview
         from utils.logging_setup import log_operation
         from utils.scalebar import detect_px_size_um
 
@@ -938,7 +1090,7 @@ class ImageStackLoader:
         if self.should_cancel():
             return False, 'CANCELLED', [], []
         try:
-            ensure_preview(images[0], should_cancel=self.should_cancel)
+            ensure_display_preview(images[0], should_cancel=self.should_cancel)
         except InterruptedError:
             return False, 'CANCELLED', [], []
         except UnsupportedTransparency:

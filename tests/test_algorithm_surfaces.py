@@ -289,3 +289,18 @@ def test_method_dropdown_groups_families_in_a_stable_order(qapp, algorithm_host)
             assert not item.isEnabled()
             if combo.font().pointSizeF() > 0:
                 assert item.font().pointSizeF() < combo.font().pointSizeF()
+
+
+def test_openfocus_b_default_precision_and_saved_value(qapp, algorithm_host):
+    host = algorithm_host
+    host.set_fusion_method('openfocus_b')
+    editors = host.fusion_parameter_panel.editors
+    assert editors['kernel_size'].value() == 17
+    assert editors['depth_smoothing'].value() == pytest.approx(1.44)
+    assert editors['depth_smoothing'].text() == editors['depth_smoothing'].locale().toString(1.44, 'f', 2)
+
+    editors['depth_smoothing'].setValue(1.2)
+    host.set_fusion_method('openfocus_c')
+    assert host.fusion_parameter_panel.editors['blend_smoothing'].value() == pytest.approx(3.6)
+    host.set_fusion_method('openfocus_b')
+    assert host.fusion_parameter_panel.editors['depth_smoothing'].value() == pytest.approx(1.2)

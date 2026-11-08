@@ -23,6 +23,7 @@ class WipeCompareWidget(QWidget):
         self._right_pixmap: Optional[QPixmap] = None
         self._left_offset = (0, 0)
         self._independent = False
+        self._comparison_enabled = True
         self._notice = ""
         self._left_title: str = ""
         self._right_title: str = ""
@@ -45,6 +46,12 @@ class WipeCompareWidget(QWidget):
         self._left_offset = left_offset
         self._independent = independent
         self._notice = notice
+        self.update()
+
+    def set_comparison_enabled(self, enabled: bool) -> None:
+        """Switch between the adjusted image and the draggable comparison."""
+        self._comparison_enabled = bool(enabled)
+        self._drag_mode = ""
         self.update()
 
     def set_titles(self, left_title: str, right_title: str) -> None:
@@ -108,10 +115,14 @@ class WipeCompareWidget(QWidget):
         target = self._target_rect()
         divider_x = self._divider_x()
 
-        for pixmap, offset, clip_rect in (
-            (self._left_pixmap, self._left_offset, QRect(0, 0, int(divider_x), self.height())),
-            (self._right_pixmap, (0, 0), QRect(int(divider_x), 0, self.width() - int(divider_x), self.height())),
-        ):
+        if self._comparison_enabled:
+            regions = (
+                (self._left_pixmap, self._left_offset, QRect(0, 0, int(divider_x), self.height())),
+                (self._right_pixmap, (0, 0), QRect(int(divider_x), 0, self.width() - int(divider_x), self.height())),
+            )
+        else:
+            regions = ((self._right_pixmap, (0, 0), self.rect()),)
+        for pixmap, offset, clip_rect in regions:
             if pixmap is None or pixmap.isNull() or clip_rect.width() <= 0:
                 continue
             if self._independent:
@@ -132,17 +143,22 @@ class WipeCompareWidget(QWidget):
             painter.drawPixmap(image_rect, pixmap, QRectF(pixmap.rect()))
             painter.restore()
 
-        # Divider line and handle
-        pen = QPen(QColor("#ffffff"), 2)
-        painter.setPen(pen)
-        painter.drawLine(QPointF(divider_x, 0), QPointF(divider_x, self.height()))
-        handle_y = self.height() / 2.0
-        painter.setBrush(QColor("#ffffff"))
-        painter.drawEllipse(QPointF(divider_x, handle_y), 7, 7)
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.drawEllipse(QPointF(divider_x, handle_y), 11, 11)
-
-        self._draw_title_chip(painter, self._left_title, left=True)
+        if self._comparison_enabled and self.has_images():
+            # A dark outline keeps the divider visible over both light and dark images.
+            painter.setPen(QPen(QColor(0, 0, 0, 170), 4))
+            painter.drawLine(QPointF(divider_x, 0), QPointF(divider_x, self.height()))
+            painter.setPen(QPen(QColor("#ffffff"), 2))
+            painter.drawLine(QPointF(divider_x, 0), QPointF(divider_x, self.height()))
+            handle_y = self.height() / 2.0
+            painter.setPen(QPen(QColor(0, 0, 0, 170), 2))
+            painter.setBrush(QColor("#ffffff"))
+            painter.drawEllipse(QPointF(divider_x, handle_y), 11, 11)
+            painter.setPen(QPen(QColor("#333333"), 1))
+            for direction in (-1, 1):
+                tip = QPointF(divider_x + direction * 6, handle_y)
+                painter.drawLine(tip, QPointF(divider_x + direction * 3, handle_y - 3))
+                painter.drawLine(tip, QPointF(divider_x + direction * 3, handle_y + 3))
+            self._draw_title_chip(painter, self._left_title, left=True)
         self._draw_title_chip(painter, self._right_title, left=False)
         if self._notice:
             flags = Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap
@@ -209,7 +225,7 @@ class WipeCompareWidget(QWidget):
     def mousePressEvent(self, event) -> None:  # noqa: N802
         pos = event.position()
         if event.button() == Qt.MouseButton.LeftButton:
-            if abs(pos.x() - self._divider_x()) <= DIVIDER_HIT_RADIUS:
+            if self._comparison_enabled and abs(pos.x() - self._divider_x()) <= DIVIDER_HIT_RADIUS:
                 self._drag_mode = "divider"
             elif self.has_images():
                 self._drag_mode = "pan"
@@ -228,7 +244,8 @@ class WipeCompareWidget(QWidget):
             self._last_pos = pos
             self.update()
         else:
-            near_divider = abs(pos.x() - self._divider_x()) <= DIVIDER_HIT_RADIUS
+            near_divider = (self._comparison_enabled
+                            and abs(pos.x() - self._divider_x()) <= DIVIDER_HIT_RADIUS)
             self.setCursor(
                 Qt.CursorShape.SizeHorCursor if near_divider else Qt.CursorShape.OpenHandCursor
             )

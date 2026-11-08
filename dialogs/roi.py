@@ -6,6 +6,11 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt
 from locales import trans
+import numpy as np
+
+
+# A closed dialog may still have an uncancellable native warp finishing.
+_ROI_PREVIEW_WORKERS = set()
 
 
 class ROIRenderOptionsDialog(QDialog):
@@ -22,17 +27,19 @@ class ROIRenderOptionsDialog(QDialog):
         self._output_size = tuple(output_size) if output_size else None
         self._frames = list(frames or [])
         self._frame_indices = list(frame_indices) if frame_indices is not None else list(range(num_frames))
+        self._preview_key = None
+        self._preview_workers = set()
+        self._pending_preview = None
+        self.finished.connect(self._cancel_previews)
 
         self.mode = "crop" # 'crop' or 'paste'
         self.base_frame_index = 0
 
         layout = QVBoxLayout(self)
 
-        lbl = QLabel(trans.t("dialog_roi_msg"))
-        layout.addWidget(lbl)
-
         # Options Group
         group = QGroupBox(trans.t("dialog_roi_group_output"))
+        group.setToolTip(trans.t("dialog_roi_msg"))
         vbox = QVBoxLayout()
 
         self.rb_crop = QRadioButton(trans.t("dialog_roi_opt_crop"))
@@ -111,21 +118,13 @@ class ROIRenderOptionsDialog(QDialog):
         self.frame_container.setVisible(not crop)
         index = self.combo_frames.currentIndex()
         if 0 <= index < len(self._frames):
-            import cv2
-            from utils.image_utils import cv2_to_pixmap
-            image = self._frames[index]
-            height, width = image.shape[:2]
-            factor = min(1.0, 240.0 / width, 120.0 / height)
-            if factor < 1.0:
-                image = cv2.resize(image, (max(1, round(width * factor)),
-                                           max(1, round(height * factor))),
-                                   interpolation=cv2.INTER_AREA)
-            metadata = getattr(self.parent(), 'linear_dng_metadata', None)
-            if metadata is not None:
-                from utils.linear_dng import develop_linear
-                image = develop_linear(image, metadata)
-            self.lbl_preview.setPixmap(cv2_to_pixmap(image))
+            frame = self._frames[index]
+            height, width = frame.shape[:2]
             self._output_size = (width, height)
+            if not crop:
+                self._show_base_preview(index, frame)
+        if crop:
+            self._cancel_previews()
         self.lbl_preview.setVisible(not crop)
         size = self._roi_size if crop else self._output_size
         text = trans.t("dialog_roi_size_crop") if crop else trans.t(
@@ -134,6 +133,65 @@ class ROIRenderOptionsDialog(QDialog):
             text += " " + trans.t("dialog_roi_size_px").format(
                 w=size[0], h=size[1])
         self.lbl_output.setText(text)
+
+    def _cancel_previews(self, *_args):
+        self._preview_key = None
+        self._pending_preview = None
+        for worker in tuple(self._preview_workers):
+            worker.request_cancel()
+
+    def _show_base_preview(self, index, frame):
+        key = (index, id(frame))
+        if self._preview_key == key:
+            return
+        self._cancel_previews()
+        self._preview_key = key
+        self.lbl_preview.clear()
+        metadata = getattr(frame, 'linear_metadata', None) or getattr(self.parent(), 'linear_dng_metadata', None)
+        if isinstance(frame, np.ndarray):
+            # Already owned arrays need no source resolution. Bound development
+            # and Qt upload to the thumbnail, as for background region delivery.
+            from core.source_previews import render_source_region
+            from utils.image_utils import cv2_to_pixmap
+            image, _ = render_source_region(frame, (0, 0, frame.shape[1], frame.shape[0]),
+                                             (238, 118), metadata)
+            self.lbl_preview.setPixmap(cv2_to_pixmap(image))
+            return
+        if self._preview_workers:
+            # A cancelled native operation must retire before the latest
+            # selected descriptor can start another QThread.
+            self._pending_preview = (index, frame)
+            return
+        from core.workers import ROIFramePreviewWorker
+        from utils.image_utils import cv2_to_pixmap
+        request = ('preview', 0, (0, 0, frame.shape[1], frame.shape[0]), (238, 118))
+        worker = ROIFramePreviewWorker(frame, key, request, metadata=metadata)
+        self._preview_workers.add(worker)
+        _ROI_PREVIEW_WORKERS.add(worker)
+
+        def ready(decoded_key, request, image, rect):
+            worker.request_cancel()
+            if decoded_key == self._preview_key and image is not None:
+                self.lbl_preview.setPixmap(cv2_to_pixmap(image))
+
+        def failed(decoded_key, message):
+            if decoded_key == self._preview_key:
+                self.lbl_preview.setText(message)
+
+        def finished():
+            self._preview_workers.discard(worker)
+            _ROI_PREVIEW_WORKERS.discard(worker)
+            worker.deleteLater()
+            pending = self._pending_preview
+            self._pending_preview = None
+            if pending is not None and self._preview_key == (pending[0], id(pending[1])):
+                self._preview_key = None
+                self._show_base_preview(*pending)
+
+        worker.ready.connect(ready)
+        worker.failed.connect(failed)
+        worker.finished.connect(finished)
+        worker.start()
 
     def accept(self):
         if self.rb_paste.isChecked():

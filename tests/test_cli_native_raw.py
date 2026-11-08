@@ -129,10 +129,10 @@ def test_native_cli_warns_when_complex_profile_is_developed(tmp_path, monkeypatc
 
 @pytest.mark.parametrize('alignment', ['none', 'ecc'])
 @pytest.mark.parametrize('tiled', [False, True])
-def test_native_cli_materializes_before_registration_and_normalizes_at_pixel_boundary(
+def test_native_cli_preserves_sensor_codes_and_depth_sources(
         native_stack, tmp_path, monkeypatch, alignment, tiled):
     from core import cli, frame_storage, registration
-    from core.source_frames import SourceFrame
+    from core.source_frames import SourceFrame, resolve_frame
 
     _, paths, original, metadata = native_stack
     monkeypatch.setattr(frame_storage, '_storage_directory', str(tmp_path))
@@ -145,7 +145,7 @@ def test_native_cli_materializes_before_registration_and_normalizes_at_pixel_bou
 
     registered = []
     def process(self, images, **kwargs):
-        assert all(isinstance(image, np.memmap) and image.dtype == np.uint16 for image in images)
+        assert all(image.dtype == np.uint16 for image in images)
         for image in images:
             np.testing.assert_array_equal(image, original)
         registered.extend(images)
@@ -157,6 +157,7 @@ def test_native_cli_materializes_before_registration_and_normalizes_at_pixel_bou
     assert bool(registered) == (alignment != 'none')
     assert fused.dtype == np.uint16 and fused.shape == original.shape
     np.testing.assert_allclose(fused, original, rtol=0, atol=4)
-    assert all(isinstance(image, np.memmap) for image in args._depth_frames)
-    assert all(image.shape == original.shape for image in args._depth_frames)
+    for image in args._depth_frames:
+        assert image.dtype == np.uint16
+        np.testing.assert_array_equal(resolve_frame(image), original)
 

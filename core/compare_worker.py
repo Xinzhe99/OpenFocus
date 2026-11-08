@@ -14,7 +14,8 @@ from PyQt6.QtCore import QThread, pyqtSignal
 from core.resource_policy import heavy_job
 from core.registration import RegistrationCancelled
 from utils.logging_setup import frame_details, log_operation
-from core.frame_storage import store_frame
+from utils.platform_utils import configure_native_worker_stack
+from core.frame_storage import store_frame, scratch_directory
 from core.source_frames import materialize_frames
 
 
@@ -44,11 +45,17 @@ def align_frames(images, alignment, shared, should_cancel):
         raise ValueError("The image stack is empty.")
     if should_cancel():
         return None
-    frames = materialize_frames(frames, should_cancel)
+    from core.algorithms import alignment_steps
+    defer_warps = all(step in ('openfocus', 'homography', 'ecc') for step in alignment_steps(alignment))
+    if alignment != 'none' and not defer_warps:
+        from core.workers import _processing_space
+        staging = _processing_space(frames, len(alignment_steps(alignment)))
+        frames = materialize_frames(frames, should_cancel, preferred_staging_bytes=staging)
     if alignment != "none":
         settings = {"method": alignment, "brightness_reference": shared.get(
             "brightness_reference", "last" if shared.get("exposure_match", False) else "first"),
-            "use_gpu": False, "parameters": shared.get('registration_parameters')}
+            "use_gpu": False, "parameters": shared.get('registration_parameters'),
+            "defer_warps": defer_warps}
         if shared.get('reg_downscale_width') is not None:
             settings['downscale_width'] = shared['reg_downscale_width']
         registration = ImageRegistration(**settings)
@@ -60,7 +67,7 @@ def align_frames(images, alignment, shared, should_cancel):
 
 
 class AlignmentWorker(_CancellableWorker):
-    """Register once; ready carries a list of aligned arrays without conversion."""
+    """Register once; ready retains repeatable deferred sources for each render."""
 
     ready = pyqtSignal(object)
     failed = pyqtSignal(str)
@@ -79,8 +86,11 @@ class AlignmentWorker(_CancellableWorker):
                 operation.cancel()
                 return
             try:
-                with heavy_job(self._should_cancel):
-                    images = align_frames(self.images, self.alignment, self.shared, self._should_cancel)
+                with heavy_job(self._should_cancel), scratch_directory():
+                    # Returned descriptors outlive this QThread's native object.
+                    # cancel() sets the event even before the thread starts.
+                    images = align_frames(self.images, self.alignment, self.shared,
+                                          self._cancelled.is_set)
                 if images is not None and not self._should_cancel():
                     self.ready.emit(images)
                 else:
@@ -109,6 +119,7 @@ class PreviewWorker(_CancellableWorker):
     def __init__(self, images, methods, per_method, shared, region,
                  roi_only=True, parent=None):
         super().__init__(parent)
+        configure_native_worker_stack(self)
         self.images = images
         self.methods = tuple(methods)
         self.per_method = deepcopy(per_method)
@@ -171,9 +182,12 @@ class PreviewWorker(_CancellableWorker):
 
         if not self.images:
             raise ValueError("The image stack is empty.")
-        if self._materialized_images is None:
-            self._materialized_images = materialize_frames(self.images, self._should_cancel)
-        frames = self._materialized_images
+        if get_fusion(method).streaming_sources:
+            frames = list(self.images)
+        else:
+            if self._materialized_images is None:
+                self._materialized_images = materialize_frames(self.images, self._should_cancel)
+            frames = self._materialized_images
         height, width = frames[0].shape[:2]
         if any(image.shape[:2] != (height, width) for image in frames):
             raise ValueError("Comparison images must have the same aligned dimensions.")
@@ -183,7 +197,9 @@ class PreviewWorker(_CancellableWorker):
         if context == (0, 0, width, height):
             inputs = list(frames)
         else:
-            inputs = [frame[y0:y0 + ch, x0:x0 + cw] for frame in frames]
+            from core.source_frames import crop_frame
+            inputs = [crop_frame(frame, x0, y0, cw, ch, should_cancel=self._should_cancel)
+                      for frame in frames]
         # Fusion owns normalization under its processing lease.
         fusion = MultiFocusFusion(**constructor)
         inputs, is_16bit = prepare_fusion_input(inputs, self._should_cancel)
@@ -208,7 +224,7 @@ class PreviewWorker(_CancellableWorker):
                            shared_parameters=self.shared, region=self.region, roi_only=self.roi_only,
                            **frame_details(self.images)) as operation:
             try:
-                with heavy_job(self._should_cancel):
+                with heavy_job(self._should_cancel), scratch_directory():
                     failed = self._run_admitted()
                 if failed:
                     operation.fail()

@@ -1,6 +1,7 @@
 """Incremental bounded previews; never decode original pixels on the GUI thread."""
 import threading
 import math
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 
 import numpy as np
 
@@ -11,60 +12,165 @@ from core.source_frames import ensure_preview
 from utils.image_utils import to_display_uint8
 from utils.logging_setup import log_operation
 
-_PREVIEW_DECODE = threading.Semaphore(1)
+_PREVIEW_CONDITION = threading.Condition()
+_PREVIEW_ACTIVE = False
+_PREVIEW_PRIORITY_WAITERS = 0
+# The decoder itself admits at most 32 MiB; allow another 32 MiB for encoded
+# RAW thumbnails, preview storage, conversion and temporary decoder buffers.
+_PREVIEW_WORKING_BYTES = 64 * 1024 * 1024
+
+
+def _preview_parallelism():
+    from core.resource_policy import (PREFERENCE_RESPONSIVE, cpu_capacity,
+                                      probe_resources, ram_budget)
+    snapshot = probe_resources()
+    return max(1, min(2, cpu_capacity(snapshot, PREFERENCE_RESPONSIVE),
+                      ram_budget(snapshot) // _PREVIEW_WORKING_BYTES))
+
+
+def _acquire_preview_turn(cancelled, priority):
+    """Admit one worker at a time, giving selected-frame requests first turn."""
+    global _PREVIEW_ACTIVE, _PREVIEW_PRIORITY_WAITERS
+    with _PREVIEW_CONDITION:
+        if priority:
+            _PREVIEW_PRIORITY_WAITERS += 1
+            _PREVIEW_CONDITION.notify_all()
+        try:
+            while not cancelled():
+                if not _PREVIEW_ACTIVE and (priority or not _PREVIEW_PRIORITY_WAITERS):
+                    _PREVIEW_ACTIVE = True
+                    return True
+                _PREVIEW_CONDITION.wait(.05)
+            return False
+        finally:
+            if priority:
+                _PREVIEW_PRIORITY_WAITERS -= 1
+                _PREVIEW_CONDITION.notify_all()
+
+
+def _release_preview_turn():
+    global _PREVIEW_ACTIVE
+    with _PREVIEW_CONDITION:
+        _PREVIEW_ACTIVE = False
+        _PREVIEW_CONDITION.notify_all()
+
+
+def _make_thumbnail(frame, cancelled):
+    image = ensure_preview(frame, should_cancel=cancelled)
+    h, w = image.shape[:2]
+    factor = min(1, 40 / max(h, w))
+    thumb = cv2.resize(image, (max(1, round(w * factor)), max(1, round(h * factor))),
+                       interpolation=cv2.INTER_AREA)
+    if getattr(frame, 'linear_metadata', None) is not None and not frame.preview_is_display:
+        from utils.linear_dng import develop_linear
+        thumb = develop_linear(thumb, frame.linear_metadata)
+    return to_display_uint8(thumb)
+
+
+def _make_display_thumbnail(frame, cancelled):
+    from core.source_frames import ensure_display_preview
+    ensure_display_preview(frame, should_cancel=cancelled)
+    return _make_thumbnail(frame, cancelled)
 
 
 class SourcePreviewWorker(QThread):
     ready = pyqtSignal(object, int, object, object)  # request, index, identity, thumbnail
     failed = pyqtSignal(object, str)
 
-    def __init__(self, frames, request, indices=None):
+    def __init__(self, frames, request, indices=None, *, selected_display=False):
         super().__init__()
         self.frames = tuple(frames)
         self.request = request
         self.indices = tuple(range(len(self.frames))) if indices is None else tuple(indices)
         self.cancelled = False
+        self._cancel_event = threading.Event()
+        self.selected_display = selected_display
 
     def request_cancel(self):
         self.cancelled = True
+        self._cancel_event.set()
         self.requestInterruption()
 
     cancel = request_cancel
 
     def run(self):
+        from core.resource_policy import heavy_job
+
+        def cancelled():
+            if self.isInterruptionRequested():
+                self.cancelled = True
+                self._cancel_event.set()
+            return self._cancel_event.is_set()
+
         with log_operation('source_previews', frames=len(self.indices)) as operation:
-            for index in self.indices:
-                if self.cancelled:
+            executor = None
+            position = 0
+            try:
+                while position < len(self.indices):
+                    if not _acquire_preview_turn(cancelled, len(self.indices) == 1):
+                        operation.cancel()
+                        return
+                    try:
+                        # Yield to rendering between small batches. The lease also
+                        # prevents previews from competing with an active render.
+                        with heavy_job(cancelled):
+                            # A selected request may have arrived while this
+                            # batch waited for an active heavy job to finish.
+                            with _PREVIEW_CONDITION:
+                                if len(self.indices) != 1 and _PREVIEW_PRIORITY_WAITERS:
+                                    continue
+                            if cancelled():
+                                operation.cancel()
+                                return
+                            count = 1 if self.selected_display else _preview_parallelism()
+                            batch = []
+                            identities = set()
+                            while position < len(self.indices) and len(batch) < count:
+                                index = self.indices[position]
+                                identity = id(self.frames[index])
+                                if identity in identities:
+                                    break
+                                identities.add(identity)
+                                batch.append(index)
+                                position += 1
+                            if executor is None:
+                                executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix='source-preview')
+                            futures = {}
+                            try:
+                                for index in batch:
+                                    make = _make_display_thumbnail if self.selected_display else _make_thumbnail
+                                    futures[executor.submit(make, self.frames[index],
+                                                            self._cancel_event.is_set)] = index
+                                pending = set(futures)
+                                while pending:
+                                    done, pending = wait(pending, timeout=.05, return_when=FIRST_COMPLETED)
+                                    cancelled()
+                                    for future in done:
+                                        index = futures[future]
+                                        try:
+                                            thumb = future.result()
+                                            if not cancelled():
+                                                self.ready.emit(self.request, index, id(self.frames[index]), thumb)
+                                        except Exception as exc:
+                                            if not cancelled():
+                                                operation.fail(exc)
+                                                self.failed.emit(self.request, str(exc))
+                            finally:
+                                wait(futures)
+                            if cancelled():
+                                operation.cancel()
+                                return
+                    finally:
+                        _release_preview_turn()
+            except Exception as exc:
+                if cancelled():
                     operation.cancel()
-                    return
-                while not _PREVIEW_DECODE.acquire(timeout=.05):
-                    if self.cancelled:
-                        operation.cancel()
-                        return
-                try:
-                    if self.cancelled:
-                        operation.cancel()
-                        return
-                    frame = self.frames[index]
-                    image = ensure_preview(frame, should_cancel=lambda: self.cancelled or self.isInterruptionRequested())
-                    h, w = image.shape[:2]
-                    factor = min(1, 40 / max(h, w))
-                    thumb = cv2.resize(image, (max(1, round(w * factor)), max(1, round(h * factor))),
-                                       interpolation=cv2.INTER_AREA)
-                    if getattr(frame, 'linear_metadata', None) is not None and not frame.preview_is_display:
-                        from utils.linear_dng import develop_linear
-                        thumb = develop_linear(thumb, frame.linear_metadata)
-                    thumb = to_display_uint8(thumb)
-                    if not self.cancelled:
-                        self.ready.emit(self.request, index, id(frame), thumb)
-                except Exception as exc:
-                    if self.cancelled or self.isInterruptionRequested():
-                        operation.cancel()
-                        return
+                else:
                     operation.fail(exc)
                     self.failed.emit(self.request, str(exc))
-                finally:
-                    _PREVIEW_DECODE.release()
+            finally:
+                if executor is not None:
+                    executor.shutdown(wait=True, cancel_futures=True)
 
 
 DISPLAY_REGION_MAX_SIDE = 4096

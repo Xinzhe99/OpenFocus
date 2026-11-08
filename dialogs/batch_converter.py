@@ -14,8 +14,10 @@ from PyQt6.QtWidgets import (QComboBox, QDialog, QHBoxLayout, QLabel,
                              QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QProgressBar,
                              QPushButton, QScrollArea, QVBoxLayout, QWidget)
 
-from core.batch_converter import INPUT_EXTENSIONS, OUTPUT_EXTENSIONS, convert_batch, thumbnail_rgb
+from core.batch_converter import (INPUT_EXTENSIONS, OUTPUT_EXTENSIONS, OUTPUT_FORMAT_ORDER,
+                                  convert_batch, thumbnail_rgb)
 from utils.file_dialogs import FileDialog, expand_dialog_path
+from utils.settings_store import get_converter_output_format, set_converter_output_format
 from utils.sorting import natural_sort_key
 from utils.logging_setup import get_logger
 from locales import trans
@@ -110,9 +112,6 @@ class BatchConverterDialog(QDialog):
         body = QWidget()
         scroll.setWidget(body)
         layout = QVBoxLayout(body)
-        warning = QLabel(trans.t('converter_warning'))
-        warning.setWordWrap(True)
-        layout.addWidget(warning)
         buttons = QHBoxLayout()
         self.add_files = QPushButton(trans.t('converter_add_files'))
         self.add_folder = QPushButton(trans.t('batch_btn_add'))
@@ -120,6 +119,7 @@ class BatchConverterDialog(QDialog):
         for button in (self.add_files, self.add_folder, self.remove):
             buttons.addWidget(button)
         layout.addLayout(buttons)
+        self.remove.setToolTip(trans.t('converter_warning'))
         self.list = QListWidget()
         self.list.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
         self.list.setIconSize(QSize(96, 72))
@@ -136,6 +136,7 @@ class BatchConverterDialog(QDialog):
         for shortcut in (self.delete_shortcut, self.backspace_shortcut):
             shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
             shortcut.activated.connect(self._remove)
+        self.list.setToolTip(trans.t('converter_warning'))
         layout.addWidget(self.list)
         self.queue_count = QLabel()
         layout.addWidget(self.queue_count)
@@ -149,8 +150,23 @@ class BatchConverterDialog(QDialog):
         layout.addLayout(row)
         layout.addWidget(QLabel(trans.t('batch_output_format')))
         self.format = QComboBox()
-        self.format.addItems(OUTPUT_EXTENSIONS)
+        self.format.addItems(OUTPUT_FORMAT_ORDER)
+        self.format.setCurrentText(get_converter_output_format())
+        self.format.setAccessibleName(trans.t('batch_output_format'))
+        self.format.setToolTip(trans.t('converter_warning'))
         layout.addWidget(self.format)
+        self.format_example = QLabel()
+        self.format_example.setObjectName('mutedLabel')
+        self.format_example.setWordWrap(True)
+        layout.addWidget(self.format_example)
+        self.format_scope = QLabel(trans.t('converter_output_scope'))
+        self.format_scope.setObjectName('mutedLabel')
+        self.format_scope.setWordWrap(True)
+        layout.addWidget(self.format_scope)
+        self.format_warning = QLabel()
+        self.format_warning.setWordWrap(True)
+        self.format_warning.setObjectName('mutedLabel')
+        layout.addWidget(self.format_warning)
         self.progress = QProgressBar()
         layout.addWidget(self.progress)
         self.summary = QLabel('')
@@ -177,9 +193,31 @@ class BatchConverterDialog(QDialog):
         self.list.itemSelectionChanged.connect(self._update_controls)
         self.directory.textChanged.connect(self._update_controls)
         self.directory.returnPressed.connect(self._start_if_ready)
+        self.format.currentTextChanged.connect(self._format_changed)
         for button in (*self.controls[:3], self.browse, self.start, self.cancel, close):
             button.setAutoDefault(False)
         self._update_controls()
+        self._update_format_selection(self.format.currentText())
+
+    def _format_changed(self, image_format):
+        self._update_format_selection(image_format)
+        set_converter_output_format(image_format)
+
+    def _update_format_selection(self, image_format):
+        self._update_format_warning(image_format)
+        ext = OUTPUT_EXTENSIONS.get(image_format, '')
+        self.format_example.setText(
+            trans.t('converter_output_example').format(ext=ext) if ext else '')
+        self.format_example.setVisible(bool(ext))
+
+    def _update_format_warning(self, image_format):
+        keys = {'DNG': 'converter_dng_risk', 'JPEG': 'converter_jpeg_risk',
+                'BMP': 'converter_8bit_risk', 'WebP': 'converter_8bit_risk',
+                'TIFF': 'converter_transparency_risk'}
+        key = keys.get(image_format)
+        text = trans.t(key).format(format=image_format) if key else ''
+        self.format_warning.setText(text)
+        self.format_warning.setVisible(bool(text))
 
     def _output_directory(self):
         text = self.directory.text().strip()
@@ -193,7 +231,8 @@ class BatchConverterDialog(QDialog):
         self.remove.setEnabled(editable and selected)
         self.delete_shortcut.setEnabled(editable and selected)
         self.backspace_shortcut.setEnabled(editable and selected)
-        valid_directory = os.path.isdir(self._output_directory())
+        directory = self._output_directory()
+        valid_directory = bool(directory) and (not os.path.exists(directory) or os.path.isdir(directory))
         self.start.setEnabled(editable and bool(self.sources) and valid_directory)
         self.directory.setToolTip('' if valid_directory or not self.directory.text().strip()
                                   else trans.t('converter_required'))
@@ -337,7 +376,7 @@ class BatchConverterDialog(QDialog):
         if self._busy or self._close_pending:
             return
         directory = self._output_directory()
-        if not self.sources or not os.path.isdir(directory):
+        if not self.sources or not directory or (os.path.exists(directory) and not os.path.isdir(directory)):
             QMessageBox.warning(self, trans.t('converter_title'), trans.t('converter_required'))
             return
         for index, path in enumerate(self.sources):

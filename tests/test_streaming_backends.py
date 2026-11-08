@@ -212,9 +212,10 @@ def test_distinguishable_flat_ties_and_last_frame_prior(method):
 
 @pytest.mark.parametrize("method", ["a", "b", "c", "gff", "dct", "gfg"])
 def test_deep_stack_selects_frame_259(method):
-    flat = np.full((17, 19, 3), 64, np.uint8)
-    texture = np.indices(flat.shape[:2]).sum(axis=0) % 2 * 192 + 32
-    sharp = np.repeat(texture[:, :, None], 3, axis=2).astype(np.uint8)
+    flat = np.full((33, 35, 3), 64, np.uint8)
+    # Broad-band texture remains distinguishable after C's half-gray reduction.
+    texture = np.random.default_rng(259).integers(32, 225, flat.shape[:2], dtype=np.uint8)
+    sharp = np.repeat(texture[:, :, None], 3, axis=2)
     frames = [flat] * 259 + [sharp]
     if method == "b":
         result = OPENFOCUS[method](frames, depth_smoothing=0)
@@ -233,14 +234,27 @@ def test_deep_stack_selects_frame_259(method):
         assert np.abs(result.astype(int) - sharp.astype(int)).max() <= 1
 
 
-@pytest.mark.parametrize("method", ["a", "b", "c", "gff", "dct", "gfg"])
-def test_cancel_after_real_frame_work_stops_before_next_frame(monkeypatch, method):
+@pytest.mark.parametrize("method", ["a", "b", "c"])
+def test_cancel_after_completed_frame_progress(method):
+    cancelled = threading.Event()
+    completed = []
+
+    def progress(done, total):
+        if done:
+            completed.append(done)
+            cancelled.set()
+
+    with pytest.raises(RegistrationCancelled):
+        OPENFOCUS[method](_stack(n=6), thread_count=1,
+                         should_cancel=cancelled.is_set, progress_callback=progress)
+    assert completed == [1]
+
+
+@pytest.mark.parametrize("method", ["gff", "dct", "gfg"])
+def test_classical_cancel_after_real_frame_work_stops_before_next_frame(monkeypatch, method):
     cancelled = threading.Event()
     calls = []
-    if method in ("a", "b", "c"):
-        module, symbol = (openfocus_a, "_response") if method == "a" else (openfocus_depth, "_filter")
-        call = OPENFOCUS[method]
-    elif method == "gff":
+    if method == "gff":
         module, symbol = cv2, "Laplacian"
         call = lambda frames, **kw: gff.gff_impl(frames, None, **kw)
     elif method == "dct":
@@ -346,16 +360,20 @@ def test_depth_override_selects_source_without_recomputing(monkeypatch, method, 
         OPENFOCUS[method](frames, depth_override=np.zeros((1, 1), np.float32))
 
 
-def test_c_coarse_bands_change_visible_fusion():
-    shape = (32, 32)
-    frames = [np.full(shape, 32, np.uint8), np.full(shape, 224, np.uint8)]
-    depth = np.zeros(shape, np.float32)
-    depth[:, 15:] = 1
-    single = openfocus_bc.openfocus_c_impl(frames, levels=1, depth_override=depth)
-    multiscale = openfocus_bc.openfocus_c_impl(frames, levels=3, depth_override=depth)
-    assert single[16, 14] == 32 and single[16, 15] == 224
-    assert np.any(multiscale != single)
-    assert 32 < multiscale[16, 14] < 224
+
+
+
+
+
+@pytest.mark.parametrize("dtype", [np.uint8, np.uint16])
+def test_c_zero_depth_preserves_first_source(dtype):
+    shape = (255, 257)
+    frames = [np.full(shape, np.iinfo(dtype).max // 4, dtype),
+              np.full(shape, np.iinfo(dtype).max * 3 // 4, dtype)]
+    actual = openfocus_bc.openfocus_c_impl(
+        frames, depth_override=np.zeros(shape, np.float32))
+    expected = frames[0] if dtype == np.uint8 else frames[0].astype(np.float32) * (255 / 65535)
+    np.testing.assert_allclose(actual, expected, atol=0.004)
 
 
 @pytest.mark.parametrize("method", ["b", "c"])

@@ -28,6 +28,7 @@ class UpdateBanner(QWidget):
     def __init__(self, parent: Any | None = None) -> None:
         super().__init__(parent)
         self._tag = ""
+        self._current_version = ""
         self._ready = False
         self._theme = "dark"
         self.setObjectName("updateBanner")
@@ -114,9 +115,8 @@ class UpdateBanner(QWidget):
         of starting a download.
         """
         self._tag = tag or ""
+        self._current_version = current_version
         self.set_ready(ready)
-        self.lbl_hint.setText(
-            trans.t("update_banner_hint").format(current=current_version))
         self.show()
 
     def set_ready(self, ready: bool) -> None:
@@ -129,6 +129,8 @@ class UpdateBanner(QWidget):
             self.lbl_text.setText(
                 trans.t("update_banner_new_version").format(version=self._tag))
             self.btn_update.setText(trans.t("btn_update_now"))
+        self.lbl_hint.setText(
+            trans.t("update_banner_hint").format(current=self._current_version))
         self.btn_details.setText(trans.t("btn_see_whats_new"))
         self.btn_details.setVisible(True)
 

@@ -344,10 +344,6 @@ class _StubSettings:
 class TestUpdateManagerState:
     """The manager must reuse a staged build instead of downloading again."""
 
-    @pytest.fixture()
-    def qapp(self):
-        from PyQt6.QtWidgets import QApplication
-        return QApplication.instance() or QApplication([])
 
     def test_ready_without_network_when_already_staged(self, tmp_path, monkeypatch, qapp):
         from controllers import update_manager as um
@@ -519,10 +515,6 @@ class TestStartupUpdateBanner:
     logic without the window.
     """
 
-    @pytest.fixture()
-    def qapp(self):
-        from PyQt6.QtWidgets import QApplication
-        return QApplication.instance() or QApplication([])
 
     def _host(self, qapp, dismissed="", ready_staged=""):
         import main
