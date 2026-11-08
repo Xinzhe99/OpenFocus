@@ -105,13 +105,16 @@ def _select_linux(path: str, *, runner=None, opener=None) -> bool:
     """Ask the desktop file manager to select the file, else open its folder."""
     path = os.path.abspath(os.fspath(path))
     if shutil.which("dbus-send"):
-        uri = QUrl.fromLocalFile(path).toString()
+        # dbus-send parses its argv itself; quotes would become part of the
+        # URI. A literal comma separates array elements, so the path's commas
+        # are percent-encoded and decoded again by the file manager.
+        uri = QUrl.fromLocalFile(path).toString().replace(",", "%2C")
         arguments = [
             "dbus-send", "--session", "--print-reply",
             "--dest=org.freedesktop.FileManager1",
             "/org/freedesktop/FileManager1",
             "org.freedesktop.FileManager1.ShowItems",
-            f'array:string:"{uri}"', 'string:""',
+            f"array:string:{uri}", "string:",
         ]
         runner = runner or subprocess.run
         try:

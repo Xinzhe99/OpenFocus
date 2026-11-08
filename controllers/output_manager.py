@@ -281,6 +281,7 @@ class OutputManager:
         self.linear_dng_progress = None
         self._stack_thumbnail_worker = None
         self._stack_thumbnail_queue = []
+        self._share_preview_active = False
 
     # ------------------------------------------------------------------
     # UI helpers
@@ -973,7 +974,11 @@ class OutputManager:
         if not self._share_record_supported(record):
             return ""
         path = record.export_path
-        if not path or not os.path.isfile(path) or os.path.getsize(path) <= 0:
+        try:
+            if not path or not os.path.isfile(path) or os.path.getsize(path) <= 0:
+                return ""
+        except OSError:
+            # The file disappeared between the checks: do not reuse it.
             return ""
         if not record.exported:
             return ""
@@ -1072,22 +1077,31 @@ class OutputManager:
                 ok=ok, failed=len(failures)), detail)
 
     def share_copy_preview(self, target_item) -> None:
+        # The modal pixel progress keeps the window state stable; this flag
+        # also rejects a programmatic reentry before it can race the clipboard.
+        if self._share_preview_active:
+            return
         record = self._share_record_for_item(target_item, attach=True)
         if not self._share_record_supported(record):
             return
+        self._share_preview_active = True
         window = self.window
         try:
             labels = window.label_manager.snapshot()
+            snapshot = replace(
+                record, scale_bar_config=deepcopy(record.scale_bar_config))
             jpeg = run_pixel_worker(
                 window, trans.t("share_copy_preview"),
                 lambda: encode_jpeg_preview(
-                    self._share_preview_pixels(record, labels)),
-                show_progress=False)
+                    self._share_preview_pixels(snapshot, labels)),
+                show_progress=True)
             QApplication.clipboard().setMimeData(jpeg_mime_data(jpeg))
         except Exception as exc:
             show_error_box(window, trans.t("msg_share_failed_title"),
                            trans.t("msg_share_preview_failed"), str(exc))
             return
+        finally:
+            self._share_preview_active = False
         window.statusBar().showMessage(
             trans.t("msg_share_preview_copied").replace("\n", " "), 5000)
 
@@ -1130,7 +1144,13 @@ class OutputManager:
             if not paths:
                 return
             path = paths[0]
-        if select_in_file_manager(path):
+        try:
+            opened = select_in_file_manager(path)
+        except Exception as exc:
+            show_error_box(self.window, trans.t("msg_share_failed_title"),
+                           trans.t("msg_share_reveal_failed"), str(exc))
+            return
+        if opened:
             return
         show_error_box(self.window, trans.t("msg_share_failed_title"),
                        trans.t("msg_share_reveal_failed"), path)

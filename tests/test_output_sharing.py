@@ -13,8 +13,7 @@ from controllers.export_manager import ExportManager, _read_image_any
 from controllers.output_manager import OutputManager, OutputRecord
 import controllers.output_manager as output_module
 from locales import trans
-from utils.file_manager import (_select_windows, select_in_file_manager,
-                                selection_argv)
+from utils.file_manager import select_in_file_manager
 from utils.image_utils import imwrite_auto
 from utils.output_share import encode_jpeg_preview
 from widgets.output_list import OutputListWidget
@@ -270,6 +269,32 @@ def test_copy_preview_applies_annotations_once_and_respects_baked_output(qapp):
     assert window.label_manager.calls == []
 
 
+def test_copy_preview_freezes_state_and_ignores_reentry(qapp, monkeypatch):
+    window = host(qapp)
+    image = np.full((40, 40, 3), 90, np.uint8)
+    item, record = add_record(window, image, "annotated")
+    calls = []
+
+    def fake_worker(parent, title, operation, *, show_progress=True):
+        calls.append(show_progress)
+        # A state change while the pixels encode must not alter this payload.
+        record.annotations_baked = True
+        # A second request must not race the first clipboard write.
+        window.output_manager.share_copy_preview(item)
+        return operation()
+
+    monkeypatch.setattr(output_module, "run_pixel_worker", fake_worker)
+    window.output_manager.share_copy_preview(item)
+
+    assert calls == [True]
+    assert record.annotations_baked
+    assert window.label_manager.calls == [("output", 0, record.output_id)]
+    payload = bytes(clipboard_mime(qapp).data("image/jpeg"))
+    decoded = cv2.imdecode(np.frombuffer(payload, np.uint8), cv2.IMREAD_COLOR)
+    assert int(decoded[2, 2, 1]) > 140
+    assert window.status.messages == [trans.t("msg_share_preview_copied")]
+
+
 def test_copy_preview_handles_grayscale_and_transparency(qapp):
     window = host(qapp)
     gray = np.tile(np.arange(32, dtype=np.uint8), (24, 1))
@@ -301,6 +326,7 @@ def test_copy_preview_failure_does_not_claim_success(qapp, monkeypatch):
     assert errors and errors[0][1] == trans.t("msg_share_failed_title")
     assert qapp.clipboard().text() == "sentinel"
     assert not window.status.messages
+    assert not window.output_manager._share_preview_active
 
 
 # ----------------------------------------------------------------------
@@ -509,98 +535,66 @@ def test_aligned_folder_is_never_copied_as_a_fusion_file(qapp, tmp_path):
 # ----------------------------------------------------------------------
 # Reveal
 # ----------------------------------------------------------------------
-def test_selection_argv_keeps_spaces_and_unicode_as_one_argument(tmp_path):
-    path = tmp_path / "结果 一.png"
-    path.write_bytes(b"x")
-    assert selection_argv(str(path), platform="win32") == []
-    mac = selection_argv(str(path), platform="darwin")
-    assert mac == ["open", "-R", str(path)]
+def test_disappearing_exported_file_is_not_reused(qapp, tmp_path, monkeypatch):
+    window = host(qapp)
+    saved = tmp_path / "vanishing.png"
+    assert imwrite_auto(str(saved), np.zeros((4, 4, 3), np.uint8), [])
+    item, record = add_record(
+        window, np.zeros((4, 4, 3), np.uint8), "saved", exported=True,
+        export_path=str(saved), annotations_baked=True)
+    monkeypatch.setattr(
+        output_module.os.path, "getsize",
+        lambda path: (_ for _ in ()).throw(OSError("file disappeared")))
+    assert window.output_manager._share_persistent_path(record) == ""
+    errors = []
+    monkeypatch.setattr(output_module, "show_error_box",
+                        lambda *args: errors.append(args))
+    monkeypatch.setattr(output_module.FileDialog, "getExistingDirectory",
+                        lambda *args, **kwargs: str(tmp_path))
+    window.output_manager.share_copy_paths(item)
+    assert not errors
+    assert record.export_path != str(saved)
 
 
-def test_select_in_file_manager_uses_the_platform_argument_vector(tmp_path):
-    path = tmp_path / "a b.png"
-    path.write_bytes(b"x")
-    calls = []
-
-    def starter(program, arguments):
-        calls.append((program, arguments))
-        return True, 123
-
-    assert select_in_file_manager(
-        str(path), platform="darwin", starter=starter)
-    assert calls == [("open", ["-R", str(path)])]
-
-
-def test_windows_selection_uses_a_shell_item_identifier(tmp_path):
-    path = tmp_path / "结果 一.png"
-    path.write_bytes(b"x")
-    calls = []
-
-    class FakeApi:
-        def il_create(self, value):
-            calls.append(("create", value))
-            return 1234
-
-        def open_and_select(self, pidl):
-            calls.append(("open", pidl))
-            return 0
-
-        def il_free(self, pidl):
-            calls.append(("free", pidl))
-
-        def release(self):
-            calls.append(("release",))
-
-    assert select_in_file_manager(
-        str(path), platform="win32",
-        windows_select=lambda value: _select_windows(value, api=FakeApi()))
-    assert calls == [
-        ("create", str(path)), ("open", 1234), ("free", 1234), ("release",)]
+def test_reveal_surfaces_a_file_manager_exception(qapp, tmp_path, monkeypatch):
+    window = host(qapp)
+    saved = tmp_path / "saved.png"
+    assert imwrite_auto(str(saved), np.zeros((4, 4, 3), np.uint8), [])
+    item, _ = add_record(window, np.zeros((4, 4, 3), np.uint8), "saved",
+                         exported=True, export_path=str(saved),
+                         annotations_baked=True)
+    errors = []
+    monkeypatch.setattr(output_module, "show_error_box",
+                        lambda *args: errors.append(args))
+    monkeypatch.setattr(
+        output_module, "select_in_file_manager",
+        lambda path: (_ for _ in ()).throw(RuntimeError("no file manager")))
+    window.output_manager.share_reveal(item)
+    assert errors and errors[0][1] == trans.t("msg_share_failed_title")
+    assert errors[0][2] == trans.t("msg_share_reveal_failed")
+    assert "no file manager" in errors[0][3]
 
 
-def test_windows_selection_reports_failure_and_still_frees(tmp_path):
-    calls = []
-
-    class FakeApi:
-        def il_create(self, value):
-            return 99
-
-        def open_and_select(self, pidl):
-            calls.append(("open", pidl))
-            return -2147467259
-
-        def il_free(self, pidl):
-            calls.append(("free", pidl))
-
-        def release(self):
-            calls.append(("release",))
-
-    assert not _select_windows(str(tmp_path / "x.png"), api=FakeApi())
-    assert calls == [("open", 99), ("free", 99), ("release",)]
-
-
-def test_linux_selection_tries_dbus_then_opens_the_parent(tmp_path, monkeypatch):
+def test_linux_selection_falls_back_only_when_selection_fails(
+        tmp_path, monkeypatch):
     path = tmp_path / "结果 一.png"
     path.write_bytes(b"x")
     monkeypatch.setattr(
         "utils.file_manager.shutil.which",
         lambda name: "/usr/bin/dbus-send" if name == "dbus-send" else None)
 
-    calls = []
-
-    def runner(arguments, **kwargs):
-        calls.append(arguments)
-        return SimpleNamespace(returncode=0)
-
-    assert select_in_file_manager(str(path), platform="linux", runner=runner)
-    assert calls and "org.freedesktop.FileManager1.ShowItems" in calls[0]
-    assert any("结果 一.png" in argument for argument in calls[0])
-
     fallback = []
+    opener = lambda directory: fallback.append(directory) or True
+    assert select_in_file_manager(
+        str(path), platform="linux",
+        runner=lambda arguments, **kwargs: SimpleNamespace(returncode=0),
+        opener=opener)
+    assert fallback == []
+
     assert select_in_file_manager(
         str(path), platform="linux",
         runner=lambda arguments, **kwargs: SimpleNamespace(returncode=1),
-        opener=lambda directory: fallback.append(directory) or True)
+        opener=opener)
     assert fallback == [str(tmp_path)]
 
 
