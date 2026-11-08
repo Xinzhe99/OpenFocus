@@ -813,6 +813,10 @@ A janela de lote mostra o progresso em tempo real. Você pode cancelar o process
 
 Em **Configurações → Configurações avançadas → Nomes de saída**, um prefixo de nome de arquivo opcional ajuda a identificar resultados recém-renderizados. O exemplo é atualizado enquanto você digita; use até 40 letras, números, sublinhados ou hífens. Deixe vazio para a nomenclatura original. Confirme com **OK** para lembrar, ou cancele para descartar a mudança. O prefixo passa a fazer parte dos novos nomes da lista de saídas e de seus nomes de exportação sugeridos; resultados existentes mantêm seus nomes. Você ainda pode editar um nome na janela de salvamento. Essa preferência não renomeia arquivos de origem nem muda nomes de saída de lotes.
 
+### Compartilhar um resultado
+
+Clique com o botão direito em uma saída e abra **Compartilhar**. **Copiar imagem de pré-visualização (JPEG)** coloca o resultado atual em resolução total, incluindo rótulos e barra de escala, na área de transferência como um JPEG real e também fornece um bitmap decodificado. **Copiar caminhos de arquivo** copia URLs de arquivos persistentes de todos os resultados selecionados; resultados não salvos ou desatualizados pedem uma pasta e são gravados como PNG com os pixels de 8/16 bits e anotações atuais. **Mostrar na pasta** abre o Explorer, o Finder ou o gerenciador de arquivos com o arquivo selecionado. Exportações existentes só são reutilizadas enquanto ainda correspondem à imagem e às anotações atuais. **Criar link de compartilhamento privado** permanece desativado até existir compartilhamento hospedado.
+
 ### Formato de arrastar para exportação
 
 Arrastar resultados da lista de saídas grava arquivos de imagem no formato escolhido no menu de contexto da lista (**Formato ao arrastar**: JPG, PNG, WebP ou TIFF). A escolha é lembrada.

@@ -20,6 +20,16 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   decoding, native bit-depth and alpha checks, streamed export readback and
   measured process memory. Alpha-sidecar reconstruction is reported explicitly
   and does not claim transparent TIFF import support.
+- Add an output-list **Share** submenu. Copy the current result at full
+  resolution as a real JPEG plus a decoded bitmap, copy persistent file URLs
+  for one or many selected results, and reveal a result in Explorer, Finder or
+  the desktop file manager. Unsaved or outdated results are written as PNG
+  only after choosing a folder, with unique names and current annotations;
+  existing exports are reused only while they still match. The private-link
+  entry stays disabled until hosted sharing exists. Clipboard ownership is
+  verified after writing, so a locked clipboard reports an error instead of a
+  false success. Menu and feedback strings are translated in all twelve
+  language packs.
 
 ### Changed
 - Default Batch Image Converter to lossless PNG, restore the last explicitly
