@@ -5,6 +5,22 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- Add a panorama workspace with native-coordinate control-point editing,
+  connected-pair quality reports, per-source paint/import masks and preview
+  overlays for seams, image numbers and excluded pixels.
+- Plan stitching once for tiled full-resolution rendering, content seams,
+  feathering, hard selection and multiband pyramids; reuse the captured plan
+  between preview and export while its source and settings remain unchanged.
+- Add exposure/color compensation, local gain fields, linear-light blending,
+  explicit ICC policies and sanitized source EXIF for TIFF/PNG mosaics.
+- Add rectilinear, cylindrical and equirectangular camera projections, lens
+  and vignetting parameters, bracket exposure fusion and Debevec/Reinhard HDR.
+- Add an opt-in remote mosaic engineering gate with real uncompressed TIFF
+  decoding, native bit-depth and alpha checks, streamed export readback and
+  measured process memory. Alpha-sidecar reconstruction is reported explicitly
+  and does not claim transparent TIFF import support.
+
 ### Changed
 - Default Batch Image Converter to lossless PNG, restore the last explicitly
   selected output format, and show the actual result extension below the

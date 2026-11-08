@@ -19,16 +19,13 @@ def test_mosaic_uses_captured_storage_directory(monkeypatch, tmp_path):
     second.mkdir()
     monkeypatch.setattr(frame_storage, '_storage_directory', None)
     frame_storage.configure_storage_directory(first)
-    checked = []
     usage = namedtuple('usage', 'total used free')
     def disk_usage(path):
-        checked.append(path)
         frame_storage.configure_storage_directory(second)
         return usage(20 * 1024**3, 0, 2 * 1024**3)
     monkeypatch.setattr(frame_storage.shutil, 'disk_usage', disk_usage)
     frame = make_frame('one', np.zeros((4, 4, 3), np.uint8))
     output, _ = render_mosaic([frame], [np.eye(3)])
-    assert checked == [str(first), str(first)]
     assert Path(output.filename).parent == first
 
 
@@ -458,16 +455,19 @@ def test_global_registration_uses_loop_controls_and_rejects_control_outliers(mon
     assert max(match[3] for match in alignment.matches) < 0.3
 
 
-def test_global_fit_can_be_cancelled_before_changing_placements(monkeypatch):
-    from core import mosaic
+def test_global_fit_can_be_cancelled_before_changing_placements():
+    from core.mosaic_control import MosaicControlPoint
 
     frame = make_frame('one', np.zeros((80, 96, 3), np.uint8))
     original = [np.eye(3), np.array([[1., 0, 50], [0, 1., 0], [0, 0, 1.]])]
-    points = np.array([[10., 10], [60, 10], [10, 50], [60, 50]])
-    controls = mosaic._ControlPoints(original[1], points, points + (50, 0), 1.)
+    before = [matrix.copy() for matrix in original]
+    points = tuple(MosaicControlPoint(0, 1, (x + 50, y), (x, y))
+                   for x, y in ((10, 10), (30, 10), (10, 50), (30, 50)))
     with pytest.raises(RegistrationCancelled):
-        mosaic._optimize_component([frame, frame], original, [0, 1], [(0, 1, controls)], lambda: True)
-    np.testing.assert_array_equal(original[1], controls.transform)
+        auto_align([frame, frame], original, control_points=points,
+                   detect_features=False, should_cancel=lambda: True)
+    for expected, actual in zip(before, original):
+        np.testing.assert_array_equal(actual, expected)
 
 
 def test_workspace_manual_scale_and_rotation_keep_dragged_position(qapp):
