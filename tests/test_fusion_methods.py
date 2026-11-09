@@ -261,7 +261,7 @@ def test_tiled_progress_reports_every_tile_once(two_focus_stack):
     fusion = MultiFocusFusion(algorithm="openfocus_a", use_gpu=False,
                               tile_enabled=True, tile_block_size=64,
                               tile_overlap=16, tile_threshold=10)
-    out = fusion.fuse(input_source=list(stack), img_resize=None, kernel_size=7,
+    out = fusion.fuse(input_source=list(stack), img_resize=None, radius=3,
                       progress_callback=lambda done, total: seen.append((done, total)))
     assert out.shape[:2] == (192, 192)
     assert seen, "tiled fusion reported no progress"
