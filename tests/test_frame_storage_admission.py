@@ -536,6 +536,42 @@ def test_preview_keeps_alternative_directory_alive(monkeypatch, tmp_path):
     assert not os.path.exists(directory)
 
 
+@pytest.mark.parametrize('source', ['files', 'folder'])
+@pytest.mark.parametrize('explicit', [False, True])
+def test_import_preview_respects_available_temporary_storage(monkeypatch, tmp_path, source, explicit):
+    from core.image_loader import ImageStackLoader
+    from core.source_frames import display_image
+    from utils.image_utils import imwrite_auto
+
+    images_dir = tmp_path / 'images'
+    images_dir.mkdir()
+    path = images_dir / 'small.png'
+    pixels = np.arange(16 * 16 * 3, dtype=np.uint8).reshape(16, 16, 3)
+    assert imwrite_auto(str(path), pixels, exif=b'')
+    default, alternative = _fake_volumes(monkeypatch, tmp_path, 0, 10000)
+    if explicit:
+        frame_storage.configure_storage_directory(default)
+    loader = ImageStackLoader()
+    if source == 'folder':
+        ok, message, frames, _ = loader.load_from_folder(str(images_dir))
+    else:
+        ok, message, frames, _ = loader.load_from_filepaths([str(path)])
+    if explicit:
+        assert not ok and str(default) in message
+        assert not list(alternative.iterdir())
+        return
+    assert ok, message
+    preview_path = frames[0].preview.path
+    directory = os.path.dirname(preview_path)
+    assert os.path.dirname(directory) == str(alternative)
+    np.testing.assert_array_equal(display_image(frames[0]), pixels)
+    assert not list(default.iterdir())
+    del frames, loader
+    gc.collect()
+    assert not os.path.exists(preview_path)
+    assert not os.path.exists(directory)
+
+
 def test_headless_error_keeps_space_information(monkeypatch, tmp_path):
     import builtins
     original = builtins.__import__

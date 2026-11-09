@@ -34,12 +34,13 @@ A computes an equal-channel integer mean, excluding alpha. Eight-bit source
 values enter the code domain as `v << 8`; sixteen-bit values retain their
 original code. Radius `R = max(1, kernel_size // 2)` chooses
 `floor(log2(R)) + 3` Burt-pyramid levels. Each level uses a truncated 2×2 mean
-with replicated odd edges and bilinear expansion at phase −0.5. The response
-is the sum of nearest-expanded absolute Laplacians, saturated at 65535.
-Smoothing does not change A's response. Clear focus selects the highest-response
-frame; low-response regions blend similarly focused frames to reduce background
-noise while retaining clear low-contrast detail. When all responses tie, A
-retains the first frame. Eight-bit output uses the
+with replicated odd edges and bilinear expansion at phase −0.5. Absolute
+Laplacians are bilinearly expanded to the source canvas, rounded in Q4 and
+summed with saturation at 65535. Smoothing does not change A's response.
+Clear focus selects the highest-response frame; low-response regions blend
+similarly focused frames to reduce background noise while retaining clear
+low-contrast detail. When all responses tie, A retains the first frame.
+Eight-bit output uses the
 E-37 exit (`max(v-1, 0)`); sixteen-bit output keeps its code precision.
 Mixed stacks map each input according to its own source depth.
 
@@ -53,16 +54,18 @@ Identical C inputs retain the original 8-bit and 16-bit samples.
 
 B and C compute activity on floor-sized half-resolution gray planes using a
 fixed-half-scale LUT and ordered float32 FMA resampling. Votes and a square-root
-guide feed horizontal-then-vertical depth smoothing. Feather correction is
-truncated before bilinear expansion to the exact source canvas. B additionally
+guide feed horizontal-then-vertical depth smoothing. The fixed F0 feather
+correction is truncated before bilinear expansion to the exact source canvas. B additionally
 retains strong full-resolution detail that downsampling would erase. Expansion
 keeps the float32 scale and half-pixel offset operations separate, including
 when the requested width or height is odd.
 
-The supplied 512×512 reference-product CPU golden stacks were exercised with the production
-implementation. A covers R=1/5/10/22, S=0/5/20 and F=0/10; B/C below use
-R=22, S=5 and F=0. C uses the actual `mp:3` reference, not the obsolete
-`mp:2` files. Percentages count output samples in the 8-bit code domain.
+The supplied 512×512 reference-product CPU golden stacks produced the results
+below for the recorded implementations. The A rows used the previous nearest-
+expanded response and do not establish parity for the current A. B/C used
+R=22, S=5 and F=0; the C comparison used the reference's `mp:3` legacy B
+method. The reference GUI C corresponds to `mp:2`; these rows do not establish
+parity with it. Percentages count 8-bit output samples.
 
 | Method | Golden stack | Exact samples | Within one code |
 |---|---|---:|---:|
@@ -73,13 +76,14 @@ R=22, S=5 and F=0. C uses the actual `mp:3` reference, not the obsolete
 | C | S1 zones, four frames | 100% | 100% |
 | C | S2 gradient, five frames | 100% | 100% |
 
-These results establish the tested configurations. Other B reconstruction details,
-non-identical sixteen-bit C stacks and other parameter/image-size combinations remain
-outside general bit-exactness claims. Odd-canvas depth expansion matches a native
-129×131 capture. C identity
-is separately checked at 64–512 pixels in both source depths, including odd
-dimensions. A preserves 16-bit code precision for both selected and blended
-pixels.
+These results apply to the recorded configurations. The current OpenFocus C
+uses a single-layer reverse merge; its GUI C reference algorithm remains under
+investigation. Other B reconstruction details, non-identical sixteen-bit C
+stacks and other parameter/image-size combinations remain outside general
+bit-exactness claims. Odd-canvas depth expansion matches a native 129×131
+capture. C identity is separately checked at 64–512 pixels in both source
+depths, including odd dimensions. A preserves 16-bit code precision for both
+selected and blended pixels.
 
 
 StackMFF V1 and V2 use retrained single-scale attention networks, each with

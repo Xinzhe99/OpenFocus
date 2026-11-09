@@ -87,7 +87,7 @@ def _response(code, radius, should_cancel, check_cancel, *, u8=False):
 
 
 def _hard_response(gray, radius, should_cancel, check_cancel):
-    """Exact Burt response in Q4; dyadic interpolation needs no float plane."""
+    """Accumulate bilinearly expanded Burt responses in the Q4 code domain."""
     from fusion_methods._openfocus_kernels import (
         down2_rows, burt_laplacian_rows, burt_accumulate_rows,
     )

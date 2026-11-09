@@ -90,15 +90,17 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the source list while preserving temporary render and update messages.
 - Set new OpenFocus A/B kernel defaults to 17, B depth smoothing to 1.44 and C
   blend smoothing to 3.6. Existing saved per-method values are preserved.
-- Match OpenFocus A's integer Burt-pyramid response and eight-bit E-37 output
-  to the reference baseline. A smoothing is inert; sixteen-bit selected codes remain unchanged.
+- Compute OpenFocus A's Burt-pyramid response in the integer code domain and use
+  the reference baseline's eight-bit E-37 output. A smoothing is inert; sixteen-bit
+  selected codes remain unchanged.
 - Show the localized OpenFocus smoothing hints in the registered parameter panels
   and update all twelve language packs and manuals for A and C's actual behavior.
 - Reuse A's exact Q4 hard-selection response for normalized float and resized
   sources, removing full-size double-precision response and expansion buffers.
-- Match OpenFocus C's native reverse, full-resolution source merge using the
-  completed depth map. Remove the unrelated RGB pyramid reconstruction and
-  its layer-count option; smoothing affects fusion and exported depth together.
+- Compute OpenFocus C with a reverse, full-resolution source merge using the
+  completed depth map; smoothing affects fusion and exported depth together.
+  The historical `-mp:3` comparison uses the reference's legacy B method and
+  does not establish equivalence to its GUI C method.
 - Store independent frame snapshots in a shared, bounded RAM pool before
   spilling to admitted temporary mappings. OpenFocus producers retain at most
   two in-flight frames and use the same resource planner and memory ceiling.
@@ -119,6 +121,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   desktop multipage exports and the public helper's historical LZW default.
 
 ### Fixed
+- Reduce block-shaped focus boundaries in OpenFocus A by bilinearly expanding
+  each pyramid response before selecting source pixels.
+- Choose an available local temporary volume for source previews when the system
+  temp volume lacks space, while respecting explicitly configured directories.
+  Release automatically created preview directories when their last frame closes.
 - Keep the selected source preview responsive while a background thumbnail
   batch waits for a render; selected previews still observe the memory budget.
 - Lock render settings until a render or comparison completes. A quick-preview
@@ -179,10 +186,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   stack for cold LLVM compilation, preventing a crash at the stack guard page.
 - Explicitly disable OpenCV parallel regions inside native fusion jobs and
   preserve an existing serial setting when restoring macOS GCD thread state.
-- Match OpenFocus C's native depth chain: fixed half-scale gray FMA resampling,
+- Compute OpenFocus C's depth chain with fixed half-scale gray FMA resampling,
   vote-based confidence, square-root guide, horizontal-first Q12 smoothing,
   and truncating feather correction before expanding depth to the canvas. Preserve
-  native float32 coordinate order when expanding to odd canvas dimensions.
+  float32 coordinate order when expanding to odd canvas dimensions.
 - Preserve normalized float32 exposure and nearest-code rounding for native
   sixteen-bit OpenFocus sources, with admitted row-band quantization scratch.
 - Include a bounded RGB display preview when converting camera RAW to DNG and

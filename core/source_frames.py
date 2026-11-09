@@ -78,25 +78,25 @@ PREVIEW_CACHE = FrameCache(64 * 1024 * 1024)
 class PreviewPixels:
     """A preview's disk lifetime without pinning its pixel allocation."""
     def __init__(self, image):
-        from core.frame_storage import (storage_directory, require_disk_space,
+        from core.frame_storage import (scratch_directory, select_scratch,
                                         track_temp_file, _storage_error, _frame_file)
-        directory = storage_directory()
-        require_disk_space(image.nbytes, directory)
-        try:
-            fd, self.path = _frame_file(directory, image.nbytes, prefix='openfocus-preview-')
-        except OSError as exc:
-            raise _storage_error(directory, image.nbytes, exc) from exc
-        self.shape, self.dtype = image.shape, image.dtype
-        try:
-            with os.fdopen(fd, 'wb') as stream:
-                image.tofile(stream)
-        except OSError as exc:
-            os.unlink(self.path)
-            raise _storage_error(directory, image.nbytes, exc) from exc
-        except BaseException:
-            os.unlink(self.path)
-            raise
-        track_temp_file(self, self.path)
+        with scratch_directory():
+            directory = select_scratch(image.nbytes)
+            try:
+                fd, self.path = _frame_file(directory, image.nbytes, prefix='openfocus-preview-')
+            except OSError as exc:
+                raise _storage_error(directory, image.nbytes, exc) from exc
+            self.shape, self.dtype = image.shape, image.dtype
+            try:
+                with os.fdopen(fd, 'wb') as stream:
+                    image.tofile(stream)
+            except OSError as exc:
+                os.unlink(self.path)
+                raise _storage_error(directory, image.nbytes, exc) from exc
+            except BaseException:
+                os.unlink(self.path)
+                raise
+            track_temp_file(self, self.path)
 
     @property
     def nbytes(self):
