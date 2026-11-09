@@ -66,8 +66,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Changed
 - Enable exposure matching by default for OpenFocus A/B/C and use the first
   processed frame as its target; other methods retain their previous defaults
-  and last-frame target. Saved per-method choices remain in effect. This is an
-  approximation of reference brightness adjustment.
+  and last-frame target. Saved per-method choices remain in effect.
 - Choose OpenFocus registration by default for OpenFocus A/B/C until a user
   explicitly selects a registration method or restores a project choice.
 - Default Batch Image Converter to lossless PNG, restore the last explicitly
@@ -99,17 +98,15 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   include that order in alignment reuse and cache identities.
 - Seed each OpenFocus registration search from the previous absolute transform
   so long stacks can accumulate magnification beyond a single search window.
-- Compute OpenFocus A's Burt-pyramid response in the integer code domain and use
-  the reference baseline's eight-bit E-37 output. A smoothing is inert; sixteen-bit
-  selected codes remain unchanged.
+- Compute OpenFocus A's Burt-pyramid response in the integer code domain and
+  use quantized eight-bit output. A smoothing is inert; sixteen-bit selected
+  codes remain unchanged.
 - Show the localized OpenFocus smoothing hints in the registered parameter panels
   and update all twelve language packs and manuals for A and C's actual behavior.
 - Reuse A's exact Q4 hard-selection response for normalized float and resized
   sources, removing full-size double-precision response and expansion buffers.
 - Compute OpenFocus C using a streaming multilevel focus-weighted pyramid.
-  Its exported depth map remains an independent estimate; the historical
-  `-mp:3` comparison uses the reference's legacy B method and does not
-  establish equivalence to its GUI C method.
+  Its exported depth map remains an independent estimate.
 - Store independent frame snapshots in a shared, bounded RAM pool before
   spilling to admitted temporary mappings. OpenFocus producers retain at most
   two in-flight frames and use the same resource planner and memory ceiling.

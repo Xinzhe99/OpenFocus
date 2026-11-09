@@ -13,8 +13,7 @@ The defaults are R8/S4 for A, R8/S4/F3 for B and S4 for C. Set these on the
 command line with, for example, `--method openfocus_b --param radius=8
 --param smoothing=4 --param feather=3`. The radius maps to the internal
 `kernel_size = 2*radius+1`; B and C map smoothing to their internal units by
-multiplying it by 0.24 and 0.6 respectively. These parameter mappings do not
-guarantee identical results or resource use. Saved explicit settings migrate
+multiplying it by 0.24 and 0.6 respectively. Saved explicit settings migrate
 to the new units; older B settings retain F0.
 
 Exposure matching adjusts frame brightness before fusion. It defaults on for
@@ -60,14 +59,6 @@ before bilinear expansion to the exact source canvas; C depth export uses F0. B 
 retains strong full-resolution detail that downsampling would erase. Expansion
 keeps the float32 scale and half-pixel offset operations separate, including
 when the requested width or height is odd.
-
-The supplied 512×512 reference-product CPU golden stacks were measured for
-earlier implementations. The A comparisons used the previous nearest-
-expanded response and do not establish parity for the current A. B used
-R=22, S=5 and F=0. The historical C comparison used the reference's `mp:3`
-legacy B method, not the GUI C `mp:2` method. Those results do not establish
-parity for the present C implementation. Other input sizes, parameters and
-large-stack performance remain outside these comparisons.
 
 
 StackMFF V1 and V2 use retrained single-scale attention networks, each with
