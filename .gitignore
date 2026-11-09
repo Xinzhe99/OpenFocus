@@ -62,6 +62,13 @@ Desktop.ini
 docs/OpenFocus.spec
 .wrangler/
 
+# Cloudflare website local config (account IDs, secrets)
+.env
+.env.*
+!.env.example
+.dev.vars
+wrangler.analytics.jsonc
+
 # Local build spec and stray export screenshots in repo root
 /OpenFocus.spec
 /docs/OpenFocus.spec
@@ -114,6 +121,12 @@ shot_tmp.py
 
 # Local WeChat bot workspace (local only: QR session, .env, message cache)
 /wechat-bot/
+
+# WeChat official account operations (separate private repository)
+/wechat-ops/
+
+# Xiaohongshu (RedNote) operations (separate private repository)
+/rednote-ops/
 
 # 推广运营档案：已迁移至私密仓库 Xinzhe99/openfocus-outreach（原地 git 仓库，勿提交主仓库）
 promo-video/outreach/
