@@ -247,3 +247,28 @@ class TestWipeZoomAnchor:
                             f"wipe anchor drifted {drift:.3%} of the image")
         finally:
             widget.close()
+
+
+def test_result_controls_survive_shutdown_in_either_qobject_order():
+    """A deleted translator must not crash the process while the panel closes."""
+    import os
+    import subprocess
+    import sys
+
+    script = '''
+from PyQt6 import sip
+from PyQt6.QtWidgets import QApplication
+from locales import trans
+from ui.image_panels import create_result_panel
+app = QApplication([])
+first = create_result_panel()
+sip.delete(first.widget)
+trans.set_language("zh")
+second = create_result_panel()
+sip.delete(trans)
+sip.delete(second.widget)
+'''
+    environment = dict(os.environ, QT_QPA_PLATFORM='offscreen')
+    result = subprocess.run([sys.executable, '-c', script], env=environment,
+                            capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr

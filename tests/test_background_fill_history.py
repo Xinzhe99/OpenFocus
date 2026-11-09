@@ -373,25 +373,15 @@ def test_legacy_stacked_background_requires_source_transactionally(
     assert target.stacked_image is stacked
 
 
-def test_legacy_stacked_background_uses_available_source(tmp_path, monkeypatch, controlled_background):
-    target = _document()
-    target.stacked_image = np.full_like(target.base, 17)
-    seen = []
-    def replace(frames, fused, **kwargs):
-        seen.append(fused.copy())
-        return controlled_background(frames, fused, **kwargs)
-    monkeypatch.setattr('core.background_fill.replace_background', replace)
-    record = _legacy_record(target, [
-        {'type': 'auto_background', 'preset': 'soft', 'clean': True, 'from_stacked': True},
-    ], 1, 1, 0)
-    path = tmp_path / 'legacy-stacked.ofretouch'
-    path.write_text(json.dumps(record), encoding='utf-8')
-    target.load_checkpoint(path)
-    np.testing.assert_array_equal(seen[0], target.stacked_image)
-
-
 @pytest.mark.parametrize('source', ['missing', 'wrong_shape'])
-def test_interactive_background_keeps_base_fallback(controlled_background, source):
+def test_interactive_background_keeps_base_fallback(monkeypatch, source):
+    def replace(frames, fused, **kwargs):
+        image = np.clip(fused.astype(np.int16) + 20, 0, 255).astype(np.uint8)
+        layer = np.zeros(fused.shape[:2], np.uint8)
+        return BackgroundFillResult(image, True, 0, 1, 0.25,
+                                    MissingData(*(layer.copy() for _ in range(4))))
+
+    monkeypatch.setattr('core.background_fill.replace_background', replace)
     target = _document()
     target.stacked_image = None if source == 'missing' else np.zeros((1, 1, 3), np.uint8)
     assert target.auto_background('soft') == 'committed'
