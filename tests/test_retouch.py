@@ -520,57 +520,69 @@ def test_closed_parented_dialog_releases_document_without_deleting_worker(qapp, 
 
 def test_global_tone_dialog_previews_cancels_and_applies(qapp):
     from PyQt6.QtCore import QEventLoop, QPoint, QTimer, Qt
-    from PyQt6.QtTest import QTest
+    from PyQt6.QtTest import QSignalSpy, QTest
     from PyQt6.QtWidgets import QDialog
     from dialogs.retouch import _ToneDialog
 
     parent, published = _dialog(qapp)
-    dialog = _ToneDialog(parent.doc, parent)
-    dialog.show()
-    qapp.processEvents()
-    dialog.exposure.spin.setValue(100)
-    QTest.qWait(100)
-    preview = dialog.preview
-    image_rect = preview._target_rect()
-    y = int(image_rect.top() + image_rect.height() * .7)
-    left = int(image_rect.left() + image_rect.width() * .25)
-    right = int(image_rect.left() + image_rect.width() * .75)
-    image = preview.grab().toImage()
-    assert image.pixelColor(left, y).red() == 220
-    assert image.pixelColor(right, y).red() == 220
+    dialog = None
+    try:
+        dialog = _ToneDialog(parent.doc, parent)
+        dialog.show()
+        qapp.processEvents()
+        preview_ready = QSignalSpy(dialog._preview_timer.timeout)
+        dialog.exposure.spin.setValue(100)
+        assert preview_ready.wait(5000), "Tone preview did not update"
+        preview = dialog.preview
+        image_rect = preview._target_rect()
+        y = int(image_rect.top() + image_rect.height() * .7)
+        left = int(image_rect.left() + image_rect.width() * .25)
+        right = int(image_rect.left() + image_rect.width() * .75)
 
-    dialog.compare_box.setChecked(True)
-    qapp.processEvents()
-    image = preview.grab().toImage()
-    assert image.pixelColor(left, y).red() == 110
-    assert image.pixelColor(right, y).red() == 220
-    start = QPoint(preview.width() // 2, preview.height() // 2)
-    end = QPoint(int(preview.width() * .85), preview.height() // 2)
-    QTest.mousePress(preview, Qt.MouseButton.LeftButton, pos=start)
-    QTest.mouseMove(preview, end, 10)
-    QTest.mouseRelease(preview, Qt.MouseButton.LeftButton, pos=end)
-    qapp.processEvents()
-    assert preview.grab().toImage().pixelColor(right, y).red() == 110
+        def red_at(image, x, y):
+            ratio = image.devicePixelRatio()
+            return image.pixelColor(round(x * ratio), round(y * ratio)).red()
 
-    dialog.reset_button.click()
-    assert all(row.value() == 0 for row in dialog.tone_rows)
-    assert preview.grab().toImage().pixelColor(right, y).red() == 110
-    dialog.reject()
-    assert (parent.doc.working == 110).all() and not parent.doc.can_undo
+        image = preview.grab().toImage()
+        assert red_at(image, left, y) == 220
+        assert red_at(image, right, y) == 220
 
-    dialog = _ToneDialog(parent.doc, parent)
-    dialog.exposure.spin.setValue(100)
-    dialog._apply()
-    loop = QEventLoop()
-    dialog.worker.finished.connect(loop.quit)
-    QTimer.singleShot(5000, loop.quit)
-    loop.exec()
-    assert dialog.result() == QDialog.DialogCode.Accepted
-    assert (parent.doc.working == 220).all()
-    parent._update_dirty_ui()
-    assert parent._apply()
-    assert (published[0][1] == 220).all()
-    parent.close()
+        dialog.compare_box.setChecked(True)
+        qapp.processEvents()
+        image = preview.grab().toImage()
+        assert red_at(image, left, y) == 110
+        assert red_at(image, right, y) == 220
+        start = QPoint(preview.width() // 2, preview.height() // 2)
+        end = QPoint(int(preview.width() * .85), preview.height() // 2)
+        QTest.mousePress(preview, Qt.MouseButton.LeftButton, pos=start)
+        QTest.mouseMove(preview, end, 10)
+        QTest.mouseRelease(preview, Qt.MouseButton.LeftButton, pos=end)
+        qapp.processEvents()
+        assert red_at(preview.grab().toImage(), right, y) == 110
+
+        dialog.reset_button.click()
+        assert all(row.value() == 0 for row in dialog.tone_rows)
+        assert red_at(preview.grab().toImage(), right, y) == 110
+        dialog.reject()
+        assert (parent.doc.working == 110).all() and not parent.doc.can_undo
+
+        dialog = _ToneDialog(parent.doc, parent)
+        dialog.exposure.spin.setValue(100)
+        dialog._apply()
+        loop = QEventLoop()
+        dialog.worker.finished.connect(loop.quit)
+        QTimer.singleShot(5000, loop.quit)
+        loop.exec()
+        assert dialog.result() == QDialog.DialogCode.Accepted
+        assert (parent.doc.working == 220).all()
+        parent._update_dirty_ui()
+        assert parent._apply()
+        assert (published[0][1] == 220).all()
+    finally:
+        if dialog is not None:
+            dialog.reject()
+        parent._allow_close = True
+        parent.close()
 
 def test_global_tone_controls_preview_and_commit(qapp):
     from PyQt6.QtCore import QEventLoop, QTimer

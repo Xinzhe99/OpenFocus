@@ -41,6 +41,33 @@ def caption(target="input", text="A"):
     config.y_location = 40
     return Label(config)
 
+@pytest.mark.parametrize("transparent", [False, True])
+def test_display_orders_label_scale_and_watermark(manager, transparent):
+    from utils import scalebar, watermark
+    from utils.image_utils import composite_transparent_for_display
+
+    image = np.full((180, 240, 3), 100, np.uint8)
+    if transparent:
+        image = np.dstack((image, np.full(image.shape[:2], 128, np.uint8)))
+        image[:, :80, 3] = 0
+    manager.labels.add(caption(target="output", text="Label"))
+    scale = {"px_um": 0.5, "position": "bottom-right", "color": "auto"}
+    mark = watermark.WatermarkConfig(text="Creator", size_percent=6.0)
+    labelled = manager.prepare_bgr_image("output", image[..., :3], 0)
+    labelled = scalebar.burn(labelled, scale)
+    if transparent:
+        decorated = image.copy()
+        decorated[..., :3] = labelled
+    else:
+        decorated = labelled
+    expected = watermark.burn(decorated, mark)
+    if transparent:
+        expected = composite_transparent_for_display(expected)
+    actual = manager.display_bgr_image(
+        "output", image, 0, scale_cfg=scale, watermark_cfg=mark)
+    assert np.array_equal(actual, expected)
+
+
 
 def edit_dialog(monkeypatch, manager, callback):
     def execute(dialog):

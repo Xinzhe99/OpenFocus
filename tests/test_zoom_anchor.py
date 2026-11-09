@@ -74,6 +74,33 @@ class TestMagnifierZoomAnchor:
         return label
 
 
+    def test_button_zoom_centres_and_respects_limits(self, qapp):
+        label = self._label(qapp)
+        try:
+            label.zoom_view(True)
+            _pan(label, 30, 20)
+            centre = QPointF(label.width() / 2, label.height() / 2)
+            before = label._map_to_base(centre)
+            label.zoom_view(True)
+            after = label._map_to_base(centre)
+            assert after.x() == pytest.approx(before.x())
+            assert after.y() == pytest.approx(before.y())
+
+            label._zoom_factor = label._view_max_zoom()
+            label.zoom_view(True)
+            assert label._zoom_factor == label._view_max_zoom()
+            label._zoom_factor = label._min_zoom
+            label.zoom_view(False)
+            assert label._zoom_factor == label._min_zoom
+            label.reset_view()
+            assert label.view_zoom_state()[0] == 1.0
+            label.clear()
+            assert not label.view_zoom_state()[3]
+            label.zoom_view(True)
+            assert label.view_zoom_state()[0] == 1.0
+        finally:
+            label.close()
+
     def test_repeated_zoom_steps_stay_anchored(self, qapp):
         label = self._label(qapp)
         try:
@@ -220,3 +247,28 @@ class TestWipeZoomAnchor:
                             f"wipe anchor drifted {drift:.3%} of the image")
         finally:
             widget.close()
+
+
+def test_result_controls_survive_shutdown_in_either_qobject_order():
+    """A deleted translator must not crash the process while the panel closes."""
+    import os
+    import subprocess
+    import sys
+
+    script = '''
+from PyQt6 import sip
+from PyQt6.QtWidgets import QApplication
+from locales import trans
+from ui.image_panels import create_result_panel
+app = QApplication([])
+first = create_result_panel()
+sip.delete(first.widget)
+trans.set_language("zh")
+second = create_result_panel()
+sip.delete(trans)
+sip.delete(second.widget)
+'''
+    environment = dict(os.environ, QT_QPA_PLATFORM='offscreen')
+    result = subprocess.run([sys.executable, '-c', script], env=environment,
+                            capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr

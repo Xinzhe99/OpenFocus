@@ -370,6 +370,8 @@ def _legacy_background_states(operations, analyses, first):
 def _replay_background(replay, operation, cancelled, expected_status):
     _validate_background_operation(operation)
     stacked = replay.stacked_image
+    if operation.get('from_stacked') and (stacked is None or stacked.shape != replay.working.shape):
+        raise ValueError('Auto background replay requires the original stacked image with matching shape')
     # Older v1 records analysed the then-current pixels. New operations name
     # their immutable analysis source explicitly; snapshots never recompute it.
     if not operation.get('from_stacked'):
