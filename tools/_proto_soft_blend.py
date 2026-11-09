@@ -12,15 +12,17 @@ sys.path.insert(0, 'tools')
 import numpy as np
 import cv2
 from synthetic_benchmark import make_texture, make_stack, SCENES, score
+from fusion_methods._hf9_pixels import frame_codes
 from fusion_methods.openfocus_a import _response
+from fusion_methods.openfocus_ab import _check_cancel
 
 
 def responses(frames, kernel_size=11):
-    fine = max(1.0, kernel_size / 5.5)
+    radius = max(1, int(kernel_size) // 2)
     out = []
     for f in frames:
-        g = cv2.cvtColor(f, cv2.COLOR_BGR2GRAY) if f.ndim == 3 else f
-        out.append(_response(g.astype(np.float32), fine, 1.0, None, lambda *_: False))
+        code = frame_codes(f, None, None)
+        out.append(_response(code, radius, None, _check_cancel, u8=f.dtype == np.uint8))
     return np.stack(out)
 
 

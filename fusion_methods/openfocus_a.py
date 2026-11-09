@@ -258,9 +258,11 @@ def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 17,
             for index, (frame, response) in produced:
                 _check_cancel(should_cancel)
                 lr = _log_rows(response)
-                m = lr.max(axis=0)
-                log_max = m if log_max is None else np.maximum(log_max, m)
-                del frame, response, lr, m
+                if log_max is None:
+                    log_max = lr
+                else:
+                    np.maximum(log_max, lr, out=log_max)
+                del frame, response, lr
                 step += 1
                 if progress_callback is not None:
                     progress_callback(step, total_steps)
@@ -278,7 +280,7 @@ def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 17,
                 def denominator(start, stop):
                     _check_cancel(should_cancel)
                     rows = slice(start, stop)
-                    denom[rows] += np.exp(_soft_gamma * (lr[rows] - log_max[rows, None]))
+                    denom[rows] += np.exp(_soft_gamma * (lr[rows] - log_max[rows]))
                 run_bands(denom.shape[0], 128, denominator,
                           scratch_bytes=min(128, denom.shape[0]) * denom.shape[1] * 24)
                 del frame, response, lr
@@ -300,7 +302,7 @@ def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 17,
                 def accumulate_soft(start, stop):
                     _check_cancel(should_cancel)
                     rows = slice(start, stop)
-                    weight = np.exp(_soft_gamma * (lr[rows] - log_max[rows, None])) / \
+                    weight = np.exp(_soft_gamma * (lr[rows] - log_max[rows])) / \
                         np.where(denom[rows] > 0, denom[rows], 1.0)
                     if frame.ndim == 3:
                         accumulated[rows] += weight[:, :, None] * frame[rows]

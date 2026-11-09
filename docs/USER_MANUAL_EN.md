@@ -1940,6 +1940,11 @@ metadata and NumPy payloads: the exact working image, reachable undo/redo tiles,
 diagnostic states and source provenance. Loading v2 does not recompute the
 background. Ordinary brush/tone sessions may use compact JSON v1; older JSON v1
 background checkpoints remain replayable.
+Legacy v1 operations recorded as using the original stacked image require that
+image to be available in the retouch session with the same shape; otherwise
+loading fails without changing the current edits. The legacy record does not
+fingerprint that image, so a different image of the same shape cannot be
+detected. The headless replay command does not supply a separate stacked image.
 
 Source verification runs in a cancellable background operation. Before replacing
 the destination, saving reloads the candidate file and checks exact equality of
