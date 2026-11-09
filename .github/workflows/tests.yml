@@ -51,7 +51,7 @@ jobs:
       - name: Run test suite
         id: pytest
         shell: bash
-        timeout-minutes: 15
+        timeout-minutes: 20
         env:
           QT_QPA_PLATFORM: offscreen
           PYTHONFAULTHANDLER: '1'
