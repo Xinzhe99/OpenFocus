@@ -15,10 +15,11 @@ import tempfile
 from typing import Any, Dict, List, Optional, Tuple
 
 from core.algorithms import (fusion_algorithms, get_fusion, get_registration,
-                             resolve_fusion_parameters, resolve_registration_parameters)
+                             migrate_openfocus_parameters, resolve_fusion_parameters,
+                             resolve_registration_parameters)
 
 PROJECT_SUFFIX = ".ofproj"
-FORMAT_VERSION = 3
+FORMAT_VERSION = 4
 
 def _sensor_mask_digest(path):
     import hashlib
@@ -29,7 +30,7 @@ def _sensor_mask_digest(path):
     return digest.hexdigest()
 
 TEMPLATE_SUFFIX = ".oftemplate"
-TEMPLATE_VERSION = 1
+TEMPLATE_VERSION = 2
 TEMPLATE_SETTINGS = (
     "fusion_method", "alignment_method", "stack_reverse_order",
     "base_frame_correct", "exposure_match", "thread_count", "tile_enabled",
@@ -39,7 +40,7 @@ TEMPLATE_SETTINGS = (
 )
 
 
-def validate_template_settings(settings):
+def validate_template_settings(settings, *, old_parameters=False):
     """Validate processing settings without retaining source-specific state."""
     if not isinstance(settings, dict) or set(settings) - set(TEMPLATE_SETTINGS):
         raise ValueError("invalid template settings")
@@ -56,7 +57,7 @@ def validate_template_settings(settings):
             raise ValueError(f"invalid {key}")
     if settings.get("tile_overlap", 0) >= settings.get("tile_block_size", 1024):
         raise ValueError("tile overlap must be smaller than the tile size")
-    _normalize_algorithm_settings(settings, legacy=False)
+    _normalize_algorithm_settings(settings, legacy=False, old_parameters=old_parameters)
     return settings
 
 
@@ -108,9 +109,11 @@ def load_template(path):
         if "project_settings" not in recipe:
             raise ValueError("recipe has no project settings")
         return validate_template_settings(recipe["project_settings"])
-    if not isinstance(data, dict) or set(data) != {"openfocus_template", "settings"} or type(data["openfocus_template"]) is not int or data["openfocus_template"] != TEMPLATE_VERSION:
+    if (not isinstance(data, dict) or set(data) != {"openfocus_template", "settings"}
+            or type(data["openfocus_template"]) is not int
+            or data["openfocus_template"] not in (1, TEMPLATE_VERSION)):
         raise ValueError("unsupported or invalid template")
-    return validate_template_settings(data["settings"])
+    return validate_template_settings(data["settings"], old_parameters=data["openfocus_template"] == 1)
 
 
 def apply_template(window, settings):
@@ -527,7 +530,8 @@ def validate_project(path: str, source_root: Optional[str] = None, *, require_so
 
     settings = state.setdefault("settings", {})
     try:
-        _normalize_algorithm_settings(settings, legacy=version < 3)
+        _normalize_algorithm_settings(settings, legacy=version < 3, old_parameters=version < 4)
+        state['openfocus_project'] = FORMAT_VERSION
     except (TypeError, ValueError) as exc:
         return False, str(exc), {}
     _num("thread_count", int, 4)
@@ -557,7 +561,7 @@ def validate_project(path: str, source_root: Optional[str] = None, *, require_so
     return True, "", state
 
 
-def _normalize_algorithm_settings(settings, *, legacy=True):
+def _normalize_algorithm_settings(settings, *, legacy=True, old_parameters=False):
     """Strict canonical validation with legacy fields translated only on read."""
     method = settings.get("fusion_method", "none")
     if method != "none":
@@ -593,6 +597,8 @@ def _normalize_algorithm_settings(settings, *, legacy=True):
                         or not math.isfinite(smoothing) or not 0 <= smoothing <= 8:
                     raise ValueError("invalid legacy method smoothing")
             declared = {parameter.key for parameter in get_fusion(name).parameters}
+            if name in ('openfocus_a', 'openfocus_b'):
+                declared.add('kernel_size')
             # Historical snapshots emitted unused kernel/smoothing copies.
             if "kernel_size" not in declared:
                 values.pop("kernel_size", None)
@@ -605,6 +611,10 @@ def _normalize_algorithm_settings(settings, *, legacy=True):
                 smoothing = values.pop("smoothing")
                 key = "depth_smoothing" if name == "openfocus_b" else "blend_smoothing"
                 values.setdefault(key, smoothing)
+        if old_parameters and not legacy and name in ('openfocus_a', 'openfocus_b', 'openfocus_c'):
+            unknown = set(values) & {'radius', 'smoothing', 'feather'}
+            if unknown:
+                raise ValueError(f"invalid legacy method parameters: {sorted(unknown)}")
         canonical[name] = values
     if legacy:
         for old, owner, key in (("ai_mode", "stackmffv3", "mode"),
@@ -616,6 +626,10 @@ def _normalize_algorithm_settings(settings, *, legacy=True):
         spec = get_fusion(method)
         values = canonical.setdefault(method, {})
         declared = {parameter.key for parameter in spec.parameters}
+        if legacy and method in ('openfocus_a', 'openfocus_b', 'openfocus_c'):
+            declared.add('depth_smoothing' if method == 'openfocus_b' else 'blend_smoothing')
+            if method != 'openfocus_c':
+                declared.add('kernel_size')
         if legacy and "kernel_size" in settings and "kernel_size" in declared:
             kernel = settings["kernel_size"]
             if isinstance(kernel, bool) or not isinstance(kernel, int) or kernel < 1:
@@ -639,6 +653,8 @@ def _normalize_algorithm_settings(settings, *, legacy=True):
                 raise ValueError("invalid method brightness")
     settings["method_parameters"] = {}
     for name, values in canonical.items():
+        if old_parameters:
+            values = migrate_openfocus_parameters(name, values)
         resolved = resolve_fusion_parameters(name, values)
         settings["method_parameters"][name] = {key: resolved[key] for key in values}
     for name, values in registrations.items():
@@ -848,7 +864,9 @@ def _apply_settings(window, state: Dict[str, Any]) -> None:
     window.unrecoverable_source_changes = list(state.get("unrecoverable_source_changes", []))
     window.defect_mask_path = settings.get("defect_mask_path", "")
     window.sensor_denoise = settings.get("sensor_denoise", False)
-    _normalize_algorithm_settings(settings, legacy=state.get("openfocus_project", 2) < 3)
+    version = state.get("openfocus_project", 2)
+    _normalize_algorithm_settings(settings, legacy=version < 3, old_parameters=version < 4)
+    state["openfocus_project"] = FORMAT_VERSION
     method = settings.get("fusion_method")
     for name, values in settings["method_parameters"].items():
         window.set_fusion_parameters(name, {**window.fusion_parameters_for(name), **values})

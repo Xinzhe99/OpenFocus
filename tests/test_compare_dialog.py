@@ -477,7 +477,7 @@ def test_full_adoption_keeps_exact_uint16_pixels_and_source_snapshot(dialog, qap
     assert records[0].image is image
     np.testing.assert_array_equal(records[0].image, image)
     assert records[0].context.source_indices == tuple(dialog._source_indices)
-    assert records[0].context.parameters['fusion_parameters']['kernel_size'] == dialog._method_params['openfocus_a']['kernel_size']
+    assert records[0].context.parameters['fusion_parameters']['radius'] == dialog._method_params['openfocus_a']['radius']
 
 
 def _registered_fusion(fusion, input_source, img_resize=None, lift=0, selection='first', **execution):

@@ -28,11 +28,11 @@ def roi_neural(parameters, width, height):
 
 
 def roi_openfocus_a(parameters, width, height):
-    return max(96, parameters['kernel_size'] // 2 + ceil(4 * parameters['blend_smoothing']) + 2), 1
+    return max(96, parameters['radius'] + 2), 1
 
 
 def roi_openfocus_b(parameters, width, height):
-    return max(96, parameters['kernel_size'] // 2 + ceil(4 * parameters['depth_smoothing']) + 2), 1
+    return max(96, parameters['radius'] + ceil(4 * parameters['smoothing'] * .24) + 2), 1
 
 
 def roi_openfocus_c(parameters, width, height):
@@ -186,15 +186,13 @@ def stackmffv2_needs_tiles(frames, threshold, *, height=None, width=None,
 
 def depth_openfocus_b(images, progress_callback=None, should_cancel=None, **parameters):
     from fusion_methods.openfocus_depth import depth_map
-    smoothing = parameters['depth_smoothing'] * (5.0 / 1.2)
-    return depth_map(images, None, parameters['kernel_size'], smoothing,
+    return depth_map(images, None, 2 * parameters['radius'] + 1, parameters['smoothing'],
                      should_cancel, progress_callback,
                      thread_count=parameters.get('thread_count'), half_resolution=True,
-                     preserve_detail=True)
+                     preserve_detail=True, feather=parameters['feather'])
 
 
 def depth_openfocus_c(images, progress_callback=None, should_cancel=None, **parameters):
     from fusion_methods.openfocus_depth import depth_map
-    smoothing = parameters['blend_smoothing'] * (5.0 / 3.0)
-    return depth_map(images, None, 17, smoothing, should_cancel, progress_callback,
+    return depth_map(images, None, 17, parameters['smoothing'], should_cancel, progress_callback,
                      thread_count=parameters.get('thread_count'), half_resolution=True)

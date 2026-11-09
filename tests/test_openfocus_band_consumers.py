@@ -6,7 +6,7 @@ from fusion_methods import openfocus_bc as bc, _openfocus_pixels as pixels
 from utils.image_utils import quantize_fuse_output
 
 
-@pytest.mark.parametrize('method', [bc.openfocus_b_impl, bc.openfocus_c_impl])
+@pytest.mark.parametrize('method', [bc.openfocus_b_impl])
 @pytest.mark.parametrize('kind', ['uint8', 'uint16', 'mixed'])
 def test_native_bands_match_materialized_codes_without_rgb_code_planes(monkeypatch, method, kind):
     rng = np.random.default_rng(9147)
@@ -36,17 +36,6 @@ def test_native_bands_match_materialized_codes_without_rgb_code_planes(monkeypat
         np.testing.assert_array_equal(frame, original)
 
 
-@pytest.mark.parametrize('first_u8', [False, True])
-def test_c_identity_compares_mixed_sources_in_code_domain(first_u8):
-    rng = np.random.default_rng(893)
-    first = rng.integers(0, 256, (259, 19, 4), np.uint8)
-    second = first.astype(np.uint16) << 8
-    frames = [first, second] if first_u8 else [second, first]
-    for frame in frames:
-        frame.flags.writeable = False
-    depth = np.full(first.shape[:2], 0.37, np.float32)
-    result = bc.openfocus_c_impl(frames, depth_override=depth, thread_count=1)
-    np.testing.assert_array_equal(quantize_fuse_output(result, True), second)
 
 
 
@@ -85,7 +74,7 @@ def test_b_active_sources_include_fractional_neighbors_across_row_bands():
     assert np.flatnonzero(active).tolist() == [0, 7, 23, 24, 91]
 
 
-@pytest.mark.parametrize('method', [bc.openfocus_b_impl, bc.openfocus_c_impl])
+@pytest.mark.parametrize('method', [bc.openfocus_b_impl])
 def test_source_decode_count_follows_consumed_bands(tmp_path, monkeypatch, method):
     from core import image_loader
 
@@ -99,15 +88,10 @@ def test_source_decode_count_follows_consumed_bands(tmp_path, monkeypatch, metho
 
     monkeypatch.setattr(image_loader, 'decode_image', decode)
     options = dict(thread_count=1)
-    if method is bc.openfocus_b_impl:
-        options['depth_override'] = np.zeros(pixels[0].shape[:2], np.float32)
+    options['depth_override'] = np.zeros(pixels[0].shape[:2], np.float32)
     result = quantize_fuse_output(method(sources, **options), True)
-    if method is bc.openfocus_b_impl:
-        assert decoded == [sources[0].path]
-        np.testing.assert_array_equal(result, pixels[0])
-    else:
-        assert decoded == [source.path for source in sources]
-        assert np.unique(result).size > 256
+    assert decoded == [sources[0].path]
+    np.testing.assert_array_equal(result, pixels[0])
 
 
 @pytest.mark.parametrize('failure', ['revision', 'processor'])

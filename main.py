@@ -418,8 +418,11 @@ class OpenFocus(QMainWindow):
         self._gpu_pending_enable = False
         # 基底校正（消除亮度漂移）：默认关闭，右面板开关控制
         self.base_frame_correct = False
-        # 融合前曝光匹配默认关闭；启用时把整栈标定到末帧。
+        # The current method's brightness option is synchronized after UI setup.
         self.exposure_match = False
+        # Explicit choices and restored projects take priority over method defaults.
+        self._alignment_choice_explicit = False
+        self._applying_alignment_default = False
         # 恢复持久化设置与最近文件（语言需在菜单构建前应用）
         load_window_settings(self)
         load_drag_export_format(self)
@@ -665,10 +668,11 @@ class OpenFocus(QMainWindow):
         for combo in (self.combo_fusion, self.combo_align):
             combo.currentIndexChanged.connect(
                 lambda *_: self._mark_project_setting_changed())
+        self.combo_align.currentIndexChanged.connect(self._remember_alignment_choice)
+        self.combo_align.activated.connect(self._remember_alignment_choice)
 
-        # 两个亮度开关按当前算法取值（OpenFocus A/B/C 默认两者都开，
-        # 其余算法沿用历史默认）。不能直接用全局属性：那会把上一次
-        # 会话里别的算法的选择带进来。
+        # Brightness options are remembered independently for each method;
+        # do not carry the last method's global mirror into another one.
         self._sync_brightness_checkboxes()
         self.chk_reverse_order.blockSignals(True)
         self.chk_reverse_order.setChecked(bool(
@@ -1186,6 +1190,7 @@ class OpenFocus(QMainWindow):
 
             # 重置配准选项 - 默认 ECC
             self.set_alignment_method("ecc")
+            self._alignment_choice_explicit = False
 
             # 五项渲染设置都恢复为关闭。
             self.chk_quick_preview.setChecked(False)
@@ -1891,7 +1896,7 @@ class OpenFocus(QMainWindow):
         self._set_brightness_option("base_correct", enabled)
 
     def set_exposure_match(self, enabled: bool) -> None:
-        """右面板开关：融合前把整栈曝光标定到末帧（按算法记忆）。"""
+        """Match exposure to the OpenFocus first frame or other methods' last frame."""
         self._set_brightness_option("exposure_match", enabled)
 
     def _show_update_result(self, state: str, tag: str, page_url: str,
@@ -2860,6 +2865,10 @@ class OpenFocus(QMainWindow):
                 )
     
     
+    def _remember_alignment_choice(self, *_args) -> None:
+        if not self._applying_alignment_default:
+            self._alignment_choice_explicit = True
+
     def current_fusion_method(self) -> str:
         code = self.combo_fusion.currentData()
         return "none" if code == "none" else get_fusion(code).id
@@ -2885,6 +2894,8 @@ class OpenFocus(QMainWindow):
         index = self.combo_align.findData(code)
         if index < 0:
             raise ValueError(f"Registration method is not in the selector: {code}")
+        if not getattr(self, '_applying_alignment_default', False):
+            self._alignment_choice_explicit = True
         if index == self.combo_align.currentIndex():
             return
         self.combo_align.setCurrentIndex(index)
@@ -2956,6 +2967,13 @@ class OpenFocus(QMainWindow):
 
     def refresh_algorithm_parameters(self, *_args) -> None:
         method = self.current_fusion_method()
+        if getattr(self, 'combo_align', None) is not None and not getattr(self, '_alignment_choice_explicit', False):
+            target = 'openfocus' if method in ('openfocus_a', 'openfocus_b', 'openfocus_c') else 'ecc'
+            self._applying_alignment_default = True
+            try:
+                self.set_alignment_method(target)
+            finally:
+                self._applying_alignment_default = False
         spec = None if method == "none" else get_fusion(method)
         specs = () if spec is None else spec.parameters
         self.fusion_parameter_panel.set_parameters(specs, self.fusion_parameters_for(method))
@@ -3464,6 +3482,7 @@ class OpenFocus(QMainWindow):
                 alignment=alignment_method,
                 registration_parameters=self.registration_parameters_for(alignment_method),
                 exposure_match=self.brightness_option_for('exposure_match'),
+                reverse_registration=alignment_key[-1] == 'reverse-registration-v1',
             )
             self.roi_alignment_worker.finished_signal.connect(self._on_roi_alignment_finished)
             self.roi_alignment_worker.error_signal.connect(self._on_roi_alignment_error)

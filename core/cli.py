@@ -111,22 +111,22 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--align", "-a", default="none",
                         choices=[spec.id for spec in registration_algorithms()],
                         help="Registration applied before fusion (default: none); openfocus = "
-                             "fast bounded similarity search with brightness equalization")
+                             "fast bounded similarity search with auto-crop")
     parser.add_argument("--param", action="append", default=[], metavar="KEY=JSON_VALUE",
                         help="Fusion parameter; repeat for multiple keys. Overrides legacy flags.")
     parser.add_argument("--align-param", action="append", default=[], metavar="KEY=JSON_VALUE",
                         help="Registration parameter; repeat for multiple keys.")
     parser.add_argument("--align-shift-limit", type=float, default=None, metavar="RATIO",
                         help="openfocus alignment only: translation search domain as a fraction "
-                             "of the frame size (default 0.05)")
+                             "of the frame size (default 0.03)")
     parser.add_argument("--base-frame", default="none", choices=["none", "last", "first"],
                         help="Optional post-fusion base correction: match the output's low "
                              "frequencies to the last/first frame (default: none).")
     parser.add_argument("--exposure-match", dest="exposure_match",
                         action=argparse.BooleanOptionalAction, default=True,
-                        help="Match every frame's exposure to the last frame before fusion "
-                             "(default: on; --no-exposure-match disables it). Computed on the "
-                             "whole stack before tiling, for every fusion method.")
+                        help="Match exposure before fusion: OpenFocus A/B/C use the first "
+                             "processed frame, other methods use the last (default: on; "
+                             "--no-exposure-match disables it). Applied before tiling.")
     parser.add_argument("--sharpen-output", action="store_true",
                         help="Apply mild unsharp masking to the fused output (off by default).")
     parser.add_argument("--sort", default="asc", choices=["asc", "desc", "off"],
@@ -141,13 +141,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--sensor-denoise", action="store_true",
                         help="Apply conservative sensor denoising before registration")
     parser.add_argument("--kernel", "-k", type=int, default=None,
-                        help="Odd kernel size; for OpenFocus A/B, controls focus-response scale")
-    parser.add_argument("--depth-smoothing", type=float, default=None, metavar="VALUE",
-                        help="openfocus_b only: depth-map transition smoothing "
-                             "(default 1.44; larger values smooth transitions more)")
-    parser.add_argument("--blend-smoothing", type=float, default=None, metavar="VALUE",
-                        help="openfocus_a / openfocus_c only: transition smoothing "
-                             "(defaults 2.0 for A and 3.6 for C)")
+                        help="Odd kernel size for methods with a kernel_size parameter; "
+                             "use --param radius=8 for OpenFocus A/B")
     parser.add_argument("--threads", "-t", type=int, default=0,
                         help="Worker thread upper limit (0 = automatic; default: 0)")
     parser.add_argument("--resource-preference", default="balanced",
@@ -240,16 +235,15 @@ def _resolve_algorithm_arguments(args):
     get_registration(args.align)
     declared = {parameter.key for parameter in spec.parameters}
     values = {}
-    if getattr(args, "kernel", None) is not None and "kernel_size" in declared:
+    if getattr(args, "kernel", None) is not None:
+        if "kernel_size" not in declared:
+            raise ValueError("--kernel is not available for this method; use --param radius=... for OpenFocus A/B")
         default = next(parameter.default for parameter in spec.parameters if parameter.key == "kernel_size")
         values["kernel_size"] = _normalize_kernel(args.kernel, default)
-    for old, key in (("depth_smoothing", "depth_smoothing"),
-                     ("blend_smoothing", "blend_smoothing"), ("ai_mode", "mode")):
-        value = getattr(args, old, None)
-        if value is not None and key in declared:
-            if key.endswith("smoothing") and not math.isfinite(value):
-                raise ValueError(f"{old} must be finite")
-            values[key] = max(0.0, value) if key.endswith("smoothing") else value
+    if getattr(args, "ai_mode", None) is not None:
+        if "mode" not in declared:
+            raise ValueError("--ai-mode is not available for this method")
+        values["mode"] = args.ai_mode
     provided = getattr(args, "fusion_parameters", {})
     registration = getattr(args, "registration_parameters", {})
     if not isinstance(provided, dict) or not isinstance(registration, dict):
@@ -644,6 +638,13 @@ def _fuse_stack_admitted_body(images, args):
                                  should_cancel=should_cancel) for image in images]
                   if streaming_sources else [store_frame(apply_flat_field(image, gain)) for image in images])
         _say(f"Flat-field (dust map) correction applied from {dust_white}")
+    preordered = (args.align == 'openfocus' and get_fusion(args.method).sort_frames
+                  and getattr(args, 'sort', 'asc') == 'desc')
+    if preordered:
+        images = list(reversed(images))
+    args._alignment_reversed = preordered
+    fusion_order = 'asc' if preordered else getattr(args, 'sort', 'asc')
+
 
     if args.align != "none":
         defer_warps = streaming_sources
@@ -666,7 +667,7 @@ def _fuse_stack_admitted_body(images, args):
                          fusion_parameters=args._fusion_parameters,
                          resource_preference=getattr(args, "resource_preference", "balanced"),
                          base_frame=getattr(args, "base_frame", "none"),
-                         sort_mode=getattr(args, "sort", "asc"),
+                         sort_mode=fusion_order,
                          exposure_match=getattr(args, "exposure_match", True),
                          ai_batch_size=args.batch_size)
     log_action("cli.fusion", method=args.method, alignment=args.align,
@@ -709,7 +710,7 @@ def _fuse_stack_admitted_body(images, args):
         if spec.sort_frames:
             from fusion_methods.openfocus_ab import sort_frames_for_openfocus
             depth_frames, _flipped = sort_frames_for_openfocus(
-                depth_frames, getattr(args, "sort", "asc"))
+                depth_frames, fusion_order)
         args._depth_frames = depth_frames
     _say(f"Fusion ({args.method}, device={info['device']}) done in {time.time() - t0:.1f}s")
     return fused
@@ -1661,7 +1662,7 @@ def _run_cli_admitted(argv: List[str]) -> int:
             if not isinstance(override, dict):
                 raise ValueError(f"Overrides for {folder} must be an object")
             unknown = set(override) - {
-                "method", "align", "kernel", "depth_smoothing", "blend_smoothing",
+                "method", "align", "kernel",
                 "ai_mode", "base_frame", "sort", "exposure_match", "sharpen_output", "cpu", "threads",
                 "batch_size", "downscale", "tile_size", "align_shift_limit",
                 "resource_preference", "fusion_parameters", "registration_parameters",
@@ -1867,6 +1868,11 @@ def _run_cli_admitted(argv: List[str]) -> int:
             _save_depth(args, args.output)
             outputs.append(_depth_out_path(args, args.output))
         if args.alignment_report:
+            if getattr(args, '_alignment_reversed', False):
+                for entry in entries:
+                    for key in ('frame_index', 'reference_index'):
+                        if entry.get(key) is not None:
+                            entry[key] = frame_count - 1 - entry[key]
             _write_alignment_report(args.alignment_report, {
                 "method": args.align,
                 "input": args.input,

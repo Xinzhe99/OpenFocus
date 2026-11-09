@@ -129,6 +129,27 @@ def test_default_chain_preserves_aligned_reference_and_cumulative_slots():
     np.testing.assert_allclose(offsets, shifts, atol=.6, rtol=0)
 
 
+@pytest.mark.parametrize('count,reference,ends', [(21, 0, (20,)), (41, 20, (0, 40))])
+def test_alignment_tracks_cumulative_magnification_across_stack(count, reference, ends):
+    rng = np.random.default_rng(101)
+    noise = rng.integers(0, 256, (56, 64), dtype=np.uint8)
+    base = cv2.resize(noise, (256, 224), interpolation=cv2.INTER_CUBIC)
+    base = cv2.GaussianBlur(base, (0, 0), .6)
+    frames = []
+    for index in range(count):
+        matrix = cv2.getRotationMatrix2D((127.5, 111.5), 0, 1.0 + index * .004)
+        frames.append(cv2.warpAffine(base, matrix, (256, 224),
+                                     flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT))
+    engine = ImageRegistration('openfocus', parameters={
+        'max_shift_ratio': .03, 'magnification': 5., 'rotation': 0.,
+        'reference_frame': reference + 1, 'failure_policy': 'fail'})
+    aligned = engine.process(frames, thread_count=1)
+    for index in ends:
+        original_error = np.abs(frames[reference].astype(np.int16) - frames[index].astype(np.int16)).mean()
+        aligned_error = np.abs(aligned[reference].astype(np.int16) - aligned[index].astype(np.int16)).mean()
+        assert aligned_error < original_error * .65
+
+
 def test_selected_reference_visits_both_sides_without_reordering():
     base = _image(160)
     shifts = (-12, -6, 0, 6, 12)
@@ -317,6 +338,14 @@ def test_plan_cache_warm_reuse_never_decodes_sources(cached_plan, monkeypatch):
     assert len(result) == len(sources)
     with pytest.raises(RegistrationCancelled):
         align_cache.load_alignment_plan(folder, names, sources, identity=identity, should_cancel=lambda: True)
+
+
+def test_alignment_cache_separates_estimator_versions(cached_plan, monkeypatch):
+    folder, names, sources, plan, identity = cached_plan
+    with monkeypatch.context() as old:
+        old.setattr(align_cache, '_plan_backend', lambda _identity: 'openfocus-wide4d-v1')
+        assert align_cache.load_alignment_plan(folder, names, sources, identity=identity) is None
+    assert align_cache.load_alignment_plan(folder, names, sources, identity=identity) == plan
 
 
 @pytest.mark.parametrize('change', ['corruption', 'checksum', 'shape', 'order', 'parameters', 'file', 'calibration'])

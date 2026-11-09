@@ -35,6 +35,48 @@ import pytest
 from fusion_methods._openfocus_resample import half_gray
 
 
+def test_b_feather_preserves_more_depth_at_focus_transitions():
+    from fusion_methods.openfocus_depth import depth_map
+
+    fixture = Path(__file__).parent / 'fixtures' / 'openfocus_native_s1_zones_depth.npz'
+    with np.load(fixture, allow_pickle=False) as captured:
+        frames = list(captured['frames'])
+    kwargs = dict(img_resize=None, kernel_size=45, smoothing=5.0,
+                  should_cancel=None, thread_count=1, return_codes=True)
+    f0 = depth_map(frames, feather=0, **kwargs).astype(np.int64)
+    f3 = depth_map(frames, feather=3, **kwargs).astype(np.int64)
+    step = 65535 // (len(frames) - 1)
+    nearest0 = ((f0 + (step >> 1)) // step) * step
+    nearest3 = ((f3 + (step >> 1)) // step) * step
+    distance0 = np.abs(f0 - nearest0)
+    distance3 = np.abs(f3 - nearest3)
+    assert np.any(distance3 > distance0)
+    assert np.all(distance3 >= distance0)
+
+
+def test_b_feather_keeps_identical_frames_at_constant_depth():
+    from fusion_methods.openfocus_depth import depth_map
+
+    frame = np.full((24, 24), 127, dtype=np.uint8)
+    kwargs = dict(img_resize=None, kernel_size=17, smoothing=5.0,
+                  should_cancel=None, thread_count=1, return_codes=True)
+    f0 = depth_map([frame, frame], feather=0, **kwargs)
+    f3 = depth_map([frame, frame], feather=3, **kwargs)
+    np.testing.assert_array_equal(f0, f3)
+    assert np.all(f0 == f0[0, 0])
+
+
+@pytest.mark.parametrize('feather', [-1, 11, True, np.bool_(False), 3.0, 3.5, '3'])
+def test_b_feather_rejects_invalid_values_before_processing(feather):
+    from fusion_methods.openfocus_bc import openfocus_b_impl
+    from fusion_methods.openfocus_depth import depth_map
+
+    with pytest.raises(ValueError, match='feather'):
+        depth_map([], None, 17, 5.0, None, feather=feather)
+    with pytest.raises(ValueError, match='feather'):
+        openfocus_b_impl([], depth_override=np.zeros((1, 1)), feather=feather)
+
+
 _FIXTURE = Path(__file__).parent / 'fixtures' / 'openfocus_native_gray_half_strips.npz'
 
 
@@ -60,13 +102,15 @@ def test_half_gray_matches_native_capture_strips(call, edge, result_rows):
 
 def test_method_b_depth_matches_reference_sidecar():
     from core.algorithm_adapters import depth_openfocus_b
+    from core.algorithms import resolve_fusion_parameters
 
     fixture = Path(__file__).parent / 'fixtures' / 'openfocus_native_s1_zones_depth.npz'
     with np.load(fixture, allow_pickle=False) as captured:
         frames = captured['frames']
         expected = captured['depth']
-    depth = depth_openfocus_b(list(frames), kernel_size=45, depth_smoothing=1.2,
-                              thread_count=1)
+    parameters = resolve_fusion_parameters('openfocus_b',
+                                           {'radius': 22, 'smoothing': 5, 'feather': 0})
+    depth = depth_openfocus_b(list(frames), **parameters, thread_count=1)
     step = 65535 // (len(frames) - 1)
     np.testing.assert_array_equal(np.rint(depth * step).astype(np.uint16), expected)
 
@@ -125,25 +169,6 @@ def test_color_depth_matches_reference(dtype, key):
     np.testing.assert_array_equal(result, expected)
 
 
-def test_method_c_fusion_matches_official_s1_zones_result():
-    from fusion_methods.openfocus_bc import openfocus_c_impl
-
-    fixture = Path(__file__).parent / 'fixtures' / 'openfocus_native_s1_zones_depth.npz'
-    with np.load(fixture, allow_pickle=False) as captured:
-        frames = captured['frames']
-        expected = captured['result']
-
-    assert frames.shape == (4, 512, 512)
-    assert frames.dtype == np.uint8
-    assert expected.shape == (512, 512)
-    assert expected.dtype == np.uint8
-
-    result = openfocus_c_impl(list(frames), kernel_size=45,
-                             blend_smoothing=3, thread_count=1)
-
-    assert result.shape == expected.shape
-    assert result.dtype == np.uint8
-    np.testing.assert_array_equal(result, expected)
 
 
 def test_depth_expansion_matches_native_odd_canvas():

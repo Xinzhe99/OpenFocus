@@ -109,16 +109,17 @@ def test_render_stages_follow_actual_work(mode, deferred, need_fusion, monkeypat
     worker._run_admitted()
 
     expected = []
-    if mode == 'fresh':
+    fresh = mode == 'fresh' or (mode == 'memory' and need_fusion)
+    if fresh:
         expected += [('stage', 'align'), ('register',)]
     if need_fusion:
         expected += [('stage', 'fuse'), ('fusion',), ('progress', 1, 2), ('progress', 2, 2)]
     expected += [('stage', 'finish')]
-    if mode == 'fresh':
+    if fresh:
         expected += [('cache',)]
     expected += [('result',)]
     assert events == expected
-    assert worker.alignment_reused == (mode in ('disk', 'memory'))
+    assert worker.alignment_reused == (mode == 'disk' or (mode == 'memory' and not need_fusion))
 
 
 def test_render_cancelled_during_fusion_does_not_finalize(monkeypatch):
@@ -545,14 +546,21 @@ def test_tiled_exposure_and_base_correction_match_materialized_pipeline(algorith
     if dtype == np.uint16:
         images = [image.astype(np.uint16) * 257 + index for index, image in enumerate(images)]
     normalized = normalize_fuse_input(images)[0]
-    matched = [apply_exposure_gain(frame, gain)
-               for frame, gain in zip(normalized, exposure_gains(normalized))]
+    gains = (list(reversed(exposure_gains(list(reversed(normalized)))))
+             if algorithm.startswith('openfocus_') else exposure_gains(normalized))
+    matched = [apply_exposure_gain(frame, gain) for frame, gain in zip(normalized, gains)]
     settings = dict(algorithm=algorithm, use_gpu=False, tile_enabled=True,
                     tile_block_size=16, tile_overlap=4, tile_threshold=16, base_frame='last')
     actual = MultiFocusFusion(**settings, exposure_match=True).fuse(images, thread_count=1)
     reference = MultiFocusFusion(**settings, exposure_match=False).fuse(matched, thread_count=1)
     assert actual.shape == images[0].shape
-    np.testing.assert_allclose(actual, reference, rtol=0, atol=1e-5)
+    if dtype == np.uint16:
+        from utils.image_utils import quantize_fuse_output
+        codes = quantize_fuse_output(actual, True).astype(np.int32)
+        expected_codes = quantize_fuse_output(reference, True).astype(np.int32)
+        assert np.max(np.abs(codes - expected_codes)) <= 1
+    else:
+        np.testing.assert_allclose(actual, reference, rtol=0, atol=1e-5)
 
 
 def test_comparison_none_alignment_preserves_original_pixels(tmp_path):

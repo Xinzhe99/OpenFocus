@@ -225,13 +225,13 @@ class TestSortInFusion:
         from core.multi_focus_fusion import MultiFocusFusion
         frames = self._descending_stack()
         asc = MultiFocusFusion(algorithm="openfocus_b", base_frame="last",
-                               sort_mode="asc").fuse(
+                               sort_mode="asc", exposure_match=False).fuse(
             input_source=[f.copy() for f in frames], img_resize=None,
-            kernel_size=7)
+            radius=3)
         desc = MultiFocusFusion(algorithm="openfocus_b", base_frame="last",
-                                sort_mode="desc").fuse(
+                                sort_mode="desc", exposure_match=False).fuse(
             input_source=[f.copy() for f in frames], img_resize=None,
-            kernel_size=7)
+            radius=3)
         # asc 的 base=文件末帧（暗），desc 的 base=文件首帧（亮）
         assert float(desc.mean()) > float(asc.mean()) + 2.0
 
@@ -255,11 +255,11 @@ class TestSortInFusion:
             cv2.imwrite(str(tmp_path / f"f{i}.png"), f)
         listed = MultiFocusFusion(algorithm="openfocus_b",
                                   sort_mode="desc").fuse(
-            input_source=str(tmp_path), img_resize=None, kernel_size=7)
+            input_source=str(tmp_path), img_resize=None, radius=3)
         manual = MultiFocusFusion(algorithm="openfocus_b",
                                   sort_mode="desc").fuse(
             input_source=[f.copy() for f in frames], img_resize=None,
-            kernel_size=7)
+            radius=3)
         assert listed.shape == manual.shape
         assert np.abs(listed.astype(float) - manual.astype(float)).mean() < 1.0
 

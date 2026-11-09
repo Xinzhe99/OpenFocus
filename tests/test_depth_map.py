@@ -38,6 +38,8 @@ class TestComputeFocusIndex:
                                         "dtcwt", "openfocus_b",
                                         "openfocus_c"])
     def test_thirds_identified(self, method):
+        if method == 'dtcwt':
+            pytest.importorskip('dtcwt')
         idx = compute_focus_index(_synthetic_thirds(), method)
         assert idx.shape == (240, 320)
         assert idx.dtype == np.float32
@@ -47,8 +49,8 @@ class TestComputeFocusIndex:
         assert idx[:, 220:].mean() == pytest.approx(1.0, abs=0.1)
 
     @pytest.mark.parametrize("method,parameter", [
-        ("openfocus_b", "depth_smoothing"),
-        ("openfocus_c", "blend_smoothing"),
+        ("openfocus_b", "smoothing"),
+        ("openfocus_c", "smoothing"),
     ])
     def test_openfocus_smoothing_changes_depth_transition(self, method, parameter):
         frames = _synthetic_thirds(80, 120)
@@ -217,7 +219,7 @@ def test_raw_depth_export_requires_tiff(qapp, monkeypatch, tmp_path):
         ui_theme = "dark"
         use_gpu = False
         fusion_result = None
-        current_fusion_method = lambda self: "dtcwt"
+        current_fusion_method = lambda self: "dct"
 
     dlg = dm.DepthMapDialog(_Stub())
     try:
@@ -349,7 +351,7 @@ def test_physical_roi_export_keeps_outside_as_nan(qapp, monkeypatch, tmp_path):
     window = QWidget()
     frames = [np.full((12, 16, 3), value, np.uint8) for value in (20, 40)]
     image = frames[0].copy()
-    context = build_render_context(frames, image, algorithm="dtcwt", roi_rect=(3, 2, 6, 5),
+    context = build_render_context(frames, image, algorithm="dct", roi_rect=(3, 2, 6, 5),
                                    roi_mode="paste", source_indices=[0, 5])
     window.raw_images = frames
     window.output_list = QListWidget(window)

@@ -5,29 +5,36 @@ these approaches:
 
 | Method | Approach | Main controls |
 |---|---|---|
-| A | Uses the Burt-pyramid focus response and blends low-detail backgrounds. | Kernel size (`--kernel`); smoothing has no effect |
-| B | Blends neighboring frames according to a smoothed depth map. | Kernel size and depth smoothing (`--kernel`, `--depth-smoothing`) |
-| C | Blends source pixels using the completed, smoothed depth map. | Blend smoothing (`--blend-smoothing`); no radius control |
+| A | Uses the Burt-pyramid focus response and blends low-detail backgrounds. | Radius and smoothing; smoothing currently has no effect |
+| B | Blends neighboring frames according to a smoothed depth map. | Radius, smoothing and feather |
+| C | Combines focus information across image pyramid levels. | Smoothing; no radius control |
 
-Default parameters are kernel size 17 for A and B, blend smoothing 2.0 for A,
-depth smoothing 1.44 for B, and blend smoothing 3.6 for C. B and C retain
-their respective smoothing multipliers of 5/1.2 and 5/3.0. These defaults are
-a parameter mapping calibrated to the reference product's GUI radius 8 and smoothing
-6, not a guarantee of equivalent algorithms, visual results or resource use.
-Existing per-method saved values remain in use; restore defaults to use the new
-defaults.
+The defaults are R8/S4 for A, R8/S4/F3 for B and S4 for C. Set these on the
+command line with, for example, `--method openfocus_b --param radius=8
+--param smoothing=4 --param feather=3`. The radius maps to the internal
+`kernel_size = 2*radius+1`; B and C map smoothing to their internal units by
+multiplying it by 0.24 and 0.6 respectively. These parameter mappings do not
+guarantee identical results or resource use. Saved explicit settings migrate
+to the new units; older B settings retain F0.
 
-Exposure matching can compensate for brightness differences across the stack
-before fusion. OpenFocus A/B/C input can be sorted with `--sort asc|desc|off`;
+Exposure matching adjusts frame brightness before fusion. It defaults on for
+OpenFocus A/B/C and uses the first frame in processing order; other methods use
+the last frame. This is an approximation and does not establish equivalence to
+the reference brightness adjustment. An existing enabled OpenFocus exposure
+option now uses the first processed frame instead of the last; its saved on/off
+choice is retained. OpenFocus A/B/C input can be sorted with `--sort asc|desc|off`;
 StackMFF V2 keeps its original focus order. The pipeline
 supports 8-bit and 16-bit output. The depth-map dialog uses the shared B/C
-depth estimator. B and C use the completed smoothed depth map for fusion;
-C merges full-resolution source codes in reverse source order during its second pass.
-B's external tiles share a full-image depth map; resizing uses whole frames.
+depth estimator. B's external tiles share a full-image depth map; resizing uses
+whole frames.
+The C pyramid's four-tap binomial downsampling, level count and first-frame
+initialization are engineering approximations. Their exact correspondence to
+the reference implementation has not been established.
 
-OpenFocus A/B/C use whole-image processing at the default tile threshold, even
-when the general tile option is enabled. A non-default threshold opts A/B into
-external tiling. C keeps a single depth and source-merge domain at every threshold.
+
+OpenFocus A/B/C use whole-image processing at the default tile threshold. A
+non-default threshold opts A/B into external tiling. C keeps a single
+whole-image processing domain at every threshold.
 Bounded rows and frame windows control memory within that domain.
 
 A computes an equal-channel integer mean, excluding alpha. Eight-bit source
@@ -44,46 +51,26 @@ Eight-bit output uses the
 E-37 exit (`max(v-1, 0)`); sixteen-bit output keeps its code precision.
 Mixed stacks map each input according to its own source depth.
 
-B and C use the integer activity/depth chain and ordered Q10 code-band merge.
+B uses the integer activity/depth chain and ordered Q10 code-band merge.
 Signed division truncates toward zero; frames outside the current depth band do
 not write to the accumulated image. B computes smoothed depth first, then decodes
 only sources contributing to that depth band. Unused sources still undergo
-identity and processor validation. C computes final depth first, then merges
-full-resolution frames in reverse source order through a bounded window.
-Identical C inputs retain the original 8-bit and 16-bit samples.
-
-B and C compute activity on floor-sized half-resolution gray planes using a
-fixed-half-scale LUT and ordered float32 FMA resampling. Votes and a square-root
-guide feed horizontal-then-vertical depth smoothing. The fixed F0 feather
-correction is truncated before bilinear expansion to the exact source canvas. B additionally
+identity and processor validation. The separate B/C depth-map exporter computes
+activity on floor-sized half-resolution gray planes using a fixed-half-scale LUT
+and ordered float32 FMA resampling. Votes and a square-root guide feed
+horizontal-then-vertical depth smoothing. B applies the selected feather value
+before bilinear expansion to the exact source canvas; C depth export uses F0. B additionally
 retains strong full-resolution detail that downsampling would erase. Expansion
 keeps the float32 scale and half-pixel offset operations separate, including
 when the requested width or height is odd.
 
-The supplied 512×512 reference-product CPU golden stacks produced the results
-below for the recorded implementations. The A rows used the previous nearest-
-expanded response and do not establish parity for the current A. B/C used
-R=22, S=5 and F=0; the C comparison used the reference's `mp:3` legacy B
-method. The reference GUI C corresponds to `mp:2`; these rows do not establish
-parity with it. Percentages count 8-bit output samples.
-
-| Method | Golden stack | Exact samples | Within one code |
-|---|---|---:|---:|
-| A | S3 ties | 100% | 100% |
-| A | S4 amplitude | 99.98% | 99.99% |
-| B | S4 amplitude | 69.54% | 100% |
-| C | S3 ties / S4 amplitude | 100% | 100% |
-| C | S1 zones, four frames | 100% | 100% |
-| C | S2 gradient, five frames | 100% | 100% |
-
-These results apply to the recorded configurations. The current OpenFocus C
-uses a single-layer reverse merge; its GUI C reference algorithm remains under
-investigation. Other B reconstruction details, non-identical sixteen-bit C
-stacks and other parameter/image-size combinations remain outside general
-bit-exactness claims. Odd-canvas depth expansion matches a native 129×131
-capture. C identity is separately checked at 64–512 pixels in both source
-depths, including odd dimensions. A preserves 16-bit code precision for both
-selected and blended pixels.
+The supplied 512×512 reference-product CPU golden stacks were measured for
+earlier implementations. The A comparisons used the previous nearest-
+expanded response and do not establish parity for the current A. B used
+R=22, S=5 and F=0. The historical C comparison used the reference's `mp:3`
+legacy B method, not the GUI C `mp:2` method. Those results do not establish
+parity for the present C implementation. Other input sizes, parameters and
+large-stack performance remain outside these comparisons.
 
 
 StackMFF V1 and V2 use retrained single-scale attention networks, each with

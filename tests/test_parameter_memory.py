@@ -75,18 +75,18 @@ def test_openfocus_brightness_defaults_preserve_explicit_choices(clean_store, me
 
     window = _window()
     window._fusion = method
-    assert not OpenFocus.brightness_option_for(window, 'exposure_match')
+    assert OpenFocus.brightness_option_for(window, 'exposure_match')
     assert not OpenFocus.brightness_option_for(window, 'base_correct')
     assert not OpenFocus.brightness_option_for(window, 'exposure_match', 'guided_filter')
 
-    window._brightness_by_method = {('exposure_match', method): True,
+    window._brightness_by_method = {('exposure_match', method): False,
                                     ('base_correct', method): True}
     save_window_settings(window)
     reset_settings_singleton()
     restored = _window()
     restored._fusion = method
     load_window_settings(restored)
-    assert OpenFocus.brightness_option_for(restored, 'exposure_match')
+    assert not OpenFocus.brightness_option_for(restored, 'exposure_match')
     assert OpenFocus.brightness_option_for(restored, 'base_correct')
 
 
@@ -136,13 +136,58 @@ def test_legacy_shared_kernel_migration_is_deterministic(clean_store):
     restored = _window()
     load_window_settings(restored)
     memory = restored._fusion_parameters_by_method
-    assert memory["openfocus_a"]["kernel_size"] == 13
-    assert memory["openfocus_b"]["kernel_size"] == 13
-    assert memory["openfocus_c"] == {"blend_smoothing": 3.6}
+    assert memory["openfocus_a"]["radius"] == 6
+    assert memory["openfocus_b"]["radius"] == 6
+    assert memory["openfocus_c"]["smoothing"] == pytest.approx(6)
     assert memory["dct"]["kernel_size"] == 7
     assert memory["stackmffv3"]["mode"] == "hard"
     assert memory["dtcwt"]["N"] == 3
 
+
+def test_saved_openfocus_parameters_migrate_before_new_settings_are_written(clean_store):
+    settings = get_settings()
+    settings.setValue(METHOD_PARAMETERS_KEY, json.dumps({
+        'openfocus_b': {'kernel_size': 15, 'depth_smoothing': 2.4},
+        'openfocus_c': {'blend_smoothing': 1.2}}))
+    window = _window()
+    load_window_settings(window)
+    b = window.fusion_parameters_for('openfocus_b')
+    assert b == {'radius': 7, 'smoothing': 10., 'feather': 0}
+    assert window.fusion_parameters_for('openfocus_c')['smoothing'] == pytest.approx(2.)
+    save_window_settings(window)
+    reset_settings_singleton()
+    restored = _window()
+    load_window_settings(restored)
+    assert restored.fusion_parameters_for('openfocus_b') == b
+
+def test_version_three_project_converts_explicit_units_and_feather(tmp_path):
+    from utils import project_file
+    source = tmp_path / 'frame.png'
+    source.write_bytes(b'reference')
+    path = tmp_path / 'legacy.ofproj'
+    path.write_text(json.dumps({'openfocus_project': 3, 'sources': [str(source)],
+        'settings': {'fusion_method': 'openfocus_b', 'method_parameters': {
+            'openfocus_b': {'kernel_size': 13, 'depth_smoothing': 1.2},
+            'openfocus_c': {'blend_smoothing': 3.6}}}}), encoding='utf-8')
+    ok, error, state = project_file.validate_project(str(path))
+    assert ok, error
+    values = state['settings']['method_parameters']
+    assert values['openfocus_b'] == {'radius': 6, 'smoothing': 5., 'feather': 0}
+    assert values['openfocus_c']['smoothing'] == pytest.approx(6.)
+
+
+def test_version_two_project_old_smoothing_unit_is_not_new_unit(tmp_path):
+    from utils import project_file
+    source = tmp_path / 'frame.png'
+    source.write_bytes(b'reference')
+    path = tmp_path / 'legacy.ofproj'
+    path.write_text(json.dumps({'openfocus_project': 2, 'sources': [str(source)],
+        'settings': {'fusion_method': 'openfocus_b', 'method_parameters': {
+            'openfocus_b': {'kernel_size': 17, 'smoothing': 1.2}}}}), encoding='utf-8')
+    ok, error, state = project_file.validate_project(str(path))
+    assert ok, error
+    assert state['settings']['method_parameters']['openfocus_b'] == {
+        'radius': 8, 'smoothing': 5., 'feather': 0}
 
 def test_malformed_setting_does_not_discard_neighbors(clean_store, extra_methods):
     get_settings().setValue(METHOD_PARAMETERS_KEY,
@@ -157,7 +202,7 @@ def test_malformed_setting_does_not_discard_neighbors(clean_store, extra_methods
 def test_project_layers_only_recorded_method_parameters(extra_methods):
     from utils import project_file
     restored = _window()
-    restored.set_fusion_parameters("openfocus_c", {"blend_smoothing": 5.5})
+    restored.set_fusion_parameters("openfocus_c", {"smoothing": 5.5})
     project_file._apply_after_load(restored, {"settings": {
         "fusion_method": "memory_extra", "alignment_method": "memory_align",
         "method_parameters": {"memory_extra": {"gain": 2.5, "selection": "last"}},
@@ -165,7 +210,7 @@ def test_project_layers_only_recorded_method_parameters(extra_methods):
         "brightness_by_method": {"exposure_match": {"memory_extra": False}},
     }})
     assert restored.fusion_parameters_for("memory_extra") == {"gain": 2.5, "selection": "last"}
-    assert restored.fusion_parameters_for("openfocus_c") == {"blend_smoothing": 5.5}
+    assert restored.fusion_parameters_for("openfocus_c") == {"smoothing": 5.5}
     assert restored.registration_parameters_for("memory_align") == {"offset": 3}
     assert restored._brightness_by_method[("exposure_match", "memory_extra")] is False
 
@@ -218,7 +263,7 @@ def test_new_method_project_file_roundtrip(tmp_path, extra_methods):
     assert ok, error
     ok, error, state = project_file.validate_project(str(target))
     assert ok, error
-    assert state["openfocus_project"] == 3
+    assert state["openfocus_project"] == 4
     for legacy in ("kernel_size", "ai_mode", "dtcwt_levels", "align_ecc", "align_homography"):
         assert legacy not in state["settings"]
     restored = project_window([str(source)], str(tmp_path))
@@ -234,9 +279,9 @@ def test_legacy_smoothing_scalars_migrate_without_creating_new_scalar_state(clea
     get_settings().setValue("fusion/of_blend_smoothing", 2.4)
     restored = _window()
     load_window_settings(restored)
-    assert restored.fusion_parameters_for("openfocus_b")["depth_smoothing"] == .6
-    assert restored.fusion_parameters_for("openfocus_a")["blend_smoothing"] == 2.4
-    assert restored.fusion_parameters_for("openfocus_c")["blend_smoothing"] == 2.4
+    assert restored.fusion_parameters_for("openfocus_b")["smoothing"] == pytest.approx(2.5)
+    assert restored.fusion_parameters_for("openfocus_a")["smoothing"] == 2.4
+    assert restored.fusion_parameters_for("openfocus_c")["smoothing"] == pytest.approx(4)
     assert not hasattr(restored, "ofb_depth_smoothing")
 
 
@@ -245,9 +290,9 @@ def test_canonical_project_rejects_legacy_parameter_aliases(tmp_path):
     source = tmp_path / "source.png"
     source.write_bytes(b"reference")
     path = tmp_path / "strict.ofproj"
-    path.write_text(json.dumps({"openfocus_project": 3, "sources": [str(source)],
+    path.write_text(json.dumps({"openfocus_project": 4, "sources": [str(source)],
                                 "settings": {"method_parameters": {
-                                    "openfocus_a": {"smoothing": 2.0}}}}), encoding="utf-8")
+                                    "openfocus_a": {"blend_smoothing": 2.0}}}}), encoding="utf-8")
     ok, error, _ = project_file.validate_project(str(path))
     assert not ok and "smoothing" in error
 
@@ -276,7 +321,7 @@ def test_partial_project_keeps_unspecified_method_preferences(extra_methods):
         parameters=(ParameterSpec("offset", "offset", 0, -10, 10),
                     ParameterSpec("policy", "policy", "nearest", choices=("nearest", "reflect")))))
     restored = _window()
-    restored.set_fusion_parameters("openfocus_a", {"blend_smoothing": 5.5})
+    restored.set_fusion_parameters("openfocus_a", {"smoothing": 5.5})
     restored.set_registration_parameters("memory_pair", {"offset": 2, "policy": "reflect"})
     project_file._apply_after_load(restored, {"openfocus_project": 2, "settings": {
         "fusion_method": "openfocus_a", "alignment_method": "memory_pair",
@@ -284,6 +329,6 @@ def test_partial_project_keeps_unspecified_method_preferences(extra_methods):
         "registration_parameters": {"memory_pair": {"offset": 7}},
     }})
     assert restored.fusion_parameters_for("openfocus_a") == {
-        "kernel_size": 9, "blend_smoothing": 5.5}
+        "radius": 4, "smoothing": 5.5}
     assert restored.registration_parameters_for("memory_pair") == {
         "offset": 7, "policy": "reflect"}
