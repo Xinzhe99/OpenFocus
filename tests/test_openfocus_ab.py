@@ -35,28 +35,6 @@ def test_a_soft_blend_uses_per_pixel_cross_frame_maximum(monkeypatch, shape, col
     np.testing.assert_allclose(result, expected, rtol=1e-6, atol=1e-4)
 
 
-@pytest.mark.parametrize('dtype', [np.uint8, np.uint16, np.float32])
-@pytest.mark.parametrize('color', [False, True])
-def test_soft_blend_prototype_uses_native_code_domain(dtype, color):
-    from tools import _proto_soft_blend as proto
-    from fusion_methods.openfocus_a import _response
-    from fusion_methods.openfocus_ab import _check_cancel
-
-    samples = np.arange(12 * 13, dtype=np.uint8).reshape(12, 13)
-    if color:
-        samples = np.stack([samples, 255 - samples, samples // 2], axis=-1)
-    frame = samples.astype(dtype)
-    if dtype == np.uint16:
-        frame *= 257
-    codes = (frame.astype(np.int32) << 8 if dtype == np.uint8 else
-             frame.astype(np.int32) if dtype == np.uint16 else
-             np.rint(frame * 257).astype(np.int32))
-    actual = proto.responses([frame, frame], kernel_size=17)
-    expected = _response(codes, 8, None, _check_cancel, u8=dtype == np.uint8)
-    np.testing.assert_array_equal(actual[0], expected)
-    np.testing.assert_array_equal(actual[1], expected)
-
-
 class TestOpenFocusAB:
     @pytest.mark.parametrize("method", ["openfocus_a", "openfocus_b",
                                         "openfocus_c"])

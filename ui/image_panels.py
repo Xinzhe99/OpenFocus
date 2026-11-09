@@ -100,6 +100,47 @@ class ResultPanel:
     lbl_wipe_right_index: QLabel
 
 
+class _ResultZoomBar(QWidget):
+    """Zoom controls whose signal connections follow the widget lifetime."""
+
+    def __init__(self, image_label):
+        super().__init__()
+        self._image_label = image_label
+        self.setObjectName("panelControlBar")
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(8, 2, 8, 2)
+        layout.addStretch()
+        self._zoom_out = QPushButton("−")
+        self._zoom_in = QPushButton("+")
+        self._zoom_level = QLabel()
+        self._zoom_level.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._zoom_level.setMinimumWidth(55)
+        layout.addWidget(self._zoom_out)
+        layout.addWidget(self._zoom_level)
+        layout.addWidget(self._zoom_in)
+        self._zoom_out.clicked.connect(lambda: image_label.zoom_view(False))
+        self._zoom_in.clicked.connect(lambda: image_label.zoom_view(True))
+        image_label.viewStateChanged.connect(self._update_controls)
+        trans.languageChanged.connect(self._translate_controls)
+        self._translate_controls()
+
+    def _update_controls(self):
+        zoom, minimum, maximum, available = self._image_label.view_zoom_state()
+        self._zoom_out.setEnabled(available and zoom > minimum)
+        self._zoom_in.setEnabled(available and zoom < maximum)
+        self._zoom_level.setText(f"{zoom:.2f}×" if available else "—")
+        self._zoom_level.setAccessibleName(
+            trans.t('result_zoom_level').format(zoom=f"{zoom:.2f}×")
+            if available else trans.t('result_zoom_empty'))
+
+    def _translate_controls(self):
+        for button, key in ((self._zoom_out, 'result_zoom_out'),
+                            (self._zoom_in, 'result_zoom_in')):
+            button.setToolTip(trans.t(key))
+            button.setAccessibleName(trans.t(key))
+        self._update_controls()
+
+
 def create_source_panel() -> SourcePanel:
     container = QWidget()
     container.setMinimumWidth(200)
@@ -295,41 +336,7 @@ def create_result_panel() -> ResultPanel:
     wipe_page_layout.addWidget(wipe_widget, 1)
     wipe_page_layout.addWidget(wipe_bar)
 
-    # Keep these controls on the normal result page, separate from Wipe.
-    zoom_bar = QWidget()
-    zoom_bar.setObjectName("panelControlBar")
-    zoom_layout = QHBoxLayout(zoom_bar)
-    zoom_layout.setContentsMargins(8, 2, 8, 2)
-    zoom_layout.addStretch()
-    zoom_out = QPushButton("−")
-    zoom_in = QPushButton("+")
-    zoom_level = QLabel()
-    zoom_level.setAlignment(Qt.AlignmentFlag.AlignCenter)
-    zoom_level.setMinimumWidth(55)
-    zoom_layout.addWidget(zoom_out)
-    zoom_layout.addWidget(zoom_level)
-    zoom_layout.addWidget(zoom_in)
-
-    def update_zoom_controls():
-        zoom, minimum, maximum, available = image_label.view_zoom_state()
-        zoom_out.setEnabled(available and zoom > minimum)
-        zoom_in.setEnabled(available and zoom < maximum)
-        zoom_level.setText(f"{zoom:.2f}×" if available else "—")
-        zoom_level.setAccessibleName(trans.t('result_zoom_level').format(zoom=f"{zoom:.2f}×")
-                                     if available else trans.t('result_zoom_empty'))
-
-    def translate_zoom_controls():
-        for button, key in ((zoom_out, 'result_zoom_out'), (zoom_in, 'result_zoom_in')):
-            button.setToolTip(trans.t(key))
-            button.setAccessibleName(trans.t(key))
-        update_zoom_controls()
-
-    zoom_out.clicked.connect(lambda: image_label.zoom_view(False))
-    zoom_in.clicked.connect(lambda: image_label.zoom_view(True))
-    image_label.viewStateChanged.connect(update_zoom_controls)
-    trans.languageChanged.connect(translate_zoom_controls)
-    container.destroyed.connect(lambda: trans.languageChanged.disconnect(translate_zoom_controls))
-    translate_zoom_controls()
+    zoom_bar = _ResultZoomBar(image_label)
 
     result_page = QWidget()
     result_page_layout = QVBoxLayout(result_page)
