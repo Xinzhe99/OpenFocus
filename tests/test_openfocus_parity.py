@@ -7,7 +7,7 @@ from utils.image_utils import quantize_fuse_output
 
 
 @pytest.mark.parametrize('dtype', [np.uint8, np.uint16])
-@pytest.mark.parametrize('shape', [(5, 4), (4, 5), (5, 5), (65, 67)])
+@pytest.mark.parametrize('shape', [(1, 1), (1, 9), (9, 1), (5, 4), (4, 5), (5, 5), (65, 67)])
 def test_a_identity_uses_the_source_depth_exit(dtype, shape):
     values = np.arange(np.prod(shape) * 3, dtype=np.uint32).reshape(shape + (3,))
     frame = (values * 13 % (256 if dtype == np.uint8 else 65536)).astype(dtype)
@@ -24,6 +24,28 @@ def test_a_smoothing_is_inert_and_sharp_frame_pixels_are_selected():
         result = openfocus_a_impl(frames, kernel_size=17,
                                  blend_smoothing=smoothing, thread_count=1)
         np.testing.assert_array_equal(result, pattern - 1)
+
+
+def test_a_fuses_synthetic_focus_boundaries_without_block_artifacts():
+    from tools.synthetic_benchmark import make_depth, make_stack, make_texture, score
+
+    truth = make_texture(384, 384).astype(np.uint8)
+    frames = make_stack(truth, make_depth(384, 384), 8, noise=3)
+    result = openfocus_a_impl(frames, kernel_size=17, thread_count=1)
+    psnr, _, ghost_percent = score(result, truth)
+    assert psnr > 26.0
+    assert ghost_percent < 32.0
+
+
+@pytest.mark.parametrize('channels', [1, 3])
+def test_a_float_sources_match_equivalent_16bit_sources(channels):
+    rng = np.random.default_rng(978)
+    shape = (33, 35) if channels == 1 else (33, 35, channels)
+    floats = [rng.uniform(0, 255, shape).astype(np.float32) for _ in range(3)]
+    integers = [np.rint(frame * np.float32(257)).astype(np.uint16) for frame in floats]
+    expected = openfocus_a_impl(integers, thread_count=1)
+    actual = openfocus_a_impl(floats, thread_count=1)
+    np.testing.assert_array_equal(actual, expected)
 
 
 def test_a_mixed_stack_uses_256_for_eight_bit_pixels():

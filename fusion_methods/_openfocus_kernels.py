@@ -78,11 +78,41 @@ def burt_laplacian_rows(gray, reduced, output, start, stop):
 
 @njit(nogil=True)
 def burt_accumulate_rows(laplacian, response, level, start, stop):
+    """Accumulate half-pixel bilinear response without a full-size buffer."""
+    if level == 0:
+        for y in range(start, stop):
+            for x in range(response.shape[1]):
+                value = np.int64(response[y, x]) + np.int64(laplacian[y, x])
+                response[y, x] = min(value, 65535 * 16)
+        return
+    shift = level + 1
+    factor = 1 << level
+    den = 1 << shift
+    width, height = laplacian.shape[1], laplacian.shape[0]
+    rounding = 1 << (2 * shift - 1)
     for y in range(start, stop):
-        row = y >> level
+        py = 2 * y + 1 - factor
+        y0 = py >> shift
+        fy = py - (y0 << shift)
+        ya = max(0, min(y0, height - 1))
+        yb = max(0, min(y0 + 1, height - 1))
+        px = 1 - factor
+        x0 = px >> shift
+        fx = px - (x0 << shift)
+        xa = max(0, min(x0, width - 1))
+        xb = max(0, min(x0 + 1, width - 1))
+        left = np.int64(laplacian[ya, xa]) * (den - fy) + np.int64(laplacian[yb, xa]) * fy
+        right = np.int64(laplacian[ya, xb]) * (den - fy) + np.int64(laplacian[yb, xb]) * fy
         for x in range(response.shape[1]):
-            value = np.int64(response[y, x]) + np.int64(laplacian[row, x >> level])
-            response[y, x] = min(value, 65535 * 16)
+            value = ((left << shift) + (right - left) * fx + rounding) >> (2 * shift)
+            response[y, x] = min(np.int64(response[y, x]) + value, 65535 * 16)
+            fx += 2
+            if fx >= den and x + 1 < response.shape[1]:
+                fx -= den
+                x0 += 1
+                left = right
+                xb = max(0, min(x0 + 1, width - 1))
+                right = np.int64(laplacian[ya, xb]) * (den - fy) + np.int64(laplacian[yb, xb]) * fy
 
 
 @njit(nogil=True)

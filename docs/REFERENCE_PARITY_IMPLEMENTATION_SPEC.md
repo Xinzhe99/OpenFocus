@@ -10,6 +10,11 @@
 **证据等级**:[实测] 黑盒/动态;[汇编] 反汇编;[RTTI] 类/符号直证;[推算] 行为学。
 
 > §0 保留 2026-11-07 迁移前基线；不代表当前实现。当前 C 路径与像素证据见 §2.3，工程验收见 §3.4；行号漂移时以函数名为准。
+> **2026-11-09 方法映射更正**：同一 92 帧栈及 GUI A/B/C 输出的逐像素
+> 对照确认，参考 CLI 的 `-mp:0/1/2` 分别对应 GUI A/B/C；`-mp:3` 是旧版
+> B（Bl）。本文原先将 `-mp:3` 记作 C 的捕获、golden 和层数结论只适用于
+> 旧版 B，不能证明 GUI C 的实现或排除其金字塔。生产 C 当前使用该单层
+> 路径，真正 GUI C 的融合路径和验收仍待完成。
 
 ---
 
@@ -23,7 +28,7 @@
 | 融合入口 | `multi_focus_fusion.fuse:537`、`_fuse_under_lease:569`、list 物化 ~630 | 流式输入 | ❌ 先物化 |
 | A | `openfocus_a.openfocus_a_impl:43`、`_response:8` | `fuse_a.fuse_a` | ❌ 响应/输出不同 |
 | B | `openfocus_bc.openfocus_b_impl:117`、`openfocus_depth.depth_map:79` | `reference.fuse_noalign` | ❌ 码/拉伸/snap/merge 不同 |
-| C | `openfocus_bc.openfocus_c_impl:159` | 原推测 `fuse_b.fuse_b`，已由 §2.3 原生捕获排除 | 旧金字塔假设不作为当前实现依据 |
+| C | `openfocus_bc.openfocus_c_impl:159` | GUI C 对应 `-mp:2`，路径仍待核实 | 当前单层实现的 `-mp:3` 捕获属于旧版 B，见 §2.3 |
 | 深度核 | `_depth_kernel.axis_block:19`(Numba Q12) | `reference.filter_type7` | 🟡 IIR 结构一致,细节待对账 |
 | 对齐 | `registration._align_openfocus_impl`;`openfocus_alignment.estimate_alignment_plan` | `reference.align_pair_wide` | 已切换 verified wide4D；完整 S0–S16 尚未闭合，见 `REFERENCE_TRANSLATION_CORE.md` |
 | 默认参数 | `algorithms.py:333-335,345-349` | GUI R8/S6 | ✅ 已对齐(17/1.44/3.6) |
@@ -143,7 +148,11 @@ register_registration(RegistrationAlgorithm(
 
 ## 2.1 方法 A(移植 `fuse_a.fuse_a`)
 
-**当前**(`openfocus_a.py`):
+**生产状态**：为减少焦点边界的网格伪影，当前 A 将各层响应双线性扩展后
+累加，并在低响应区域混合源帧。下文是历史参考原型及其验收记录，不能证明
+当前生产结果与参考逐位一致；参考 A 的原生软权重仍在调查。
+
+**历史迁移前状态**(`openfocus_a.py`):
 - `_response:8` = `(gray − Gaussian(gray, kernel/5.5))²` 再 Gaussian(`smoothing/2`)(75-76)
 - hard 模式:严格 `>` → 胜者像素;soft/feather 实验分支
 - 输出 clip 0..255 → 直接 uint8
@@ -182,8 +191,8 @@ resp = Σ_k up^k(|L_k|)  ; resp = min(resp, 0xffff)
 guide 来自 `abs(best-votes)` 的 1%/99% 直方图阈值及 4096 节点 sqrt LUT；
 type7 强制偶数最小权重 2，H→V 两遍，零半径跳过。C 先在固定 0.5
 尺度、floor 半尺寸灰度上计算和 snap，再 FMA 双线性扩展到画布。
-生产 S1/S2/S4 的 R22/S5/F0 最终 depth 与官方 u16 sidecar 逐位一致；
-完整 C 融合也与官方 mp3 输出逐位一致、max0，见下一节的原生归并证据。
+生产 S1/S2/S4 的 R22/S5/F0 最终 depth 与 `-mp:3` 的 u16 sidecar 逐位一致；
+生产 C 融合也与该旧版 B 输出逐位一致、max0，不代表 GUI C 一致。
 
 **目标全链**(与原型逐项对照):
 
@@ -231,15 +240,16 @@ corr = corr >> 10 if corr >= 0 else -((-corr) >> 10)  # 修正量朝零截断
 out = (snapped + corr) & 0xffff
 ```
 
-> 当前 OpenFocus 用 `nearest=(block*count+32767)//65535` 路线 —— **不同**,替换。
+> 当前生产使用上述 LUT 的 F=0；F3 参考需要匹配羽化设置，不能用默认 F0
+> 的结果宣称参数一致。
 
 **验收**:S4 **±1 = 100%**(exact 69.5%,PSNR 53.29dB);S2 ±1 99.5%;S1 ±1 97.3%。
 
-## 2.3 方法 C：原生全尺寸反向归并
+## 2.3 当前 OpenFocus C：参考旧版 B 的全尺寸反向归并
 
-2026-11-08 的现场捕获修正了原先把其它内部类的 RGB 金字塔/collapse
-套到 CLI `-mp:3` 的假设。生产 `openfocus_c_impl` 不再构造该 RGB 重建链，
-也不再提供由该假设产生的 `levels` 参数。
+2026-11-08 的现场捕获针对 CLI `-mp:3`，该方法现已确认是旧版 B，
+不是 GUI C。生产 `openfocus_c_impl` 当前使用此单层归并，不构造 RGB
+重建链，也不提供 `levels` 参数；GUI C 的真实融合路径仍需独立捕获。
 
 **直接证据**：`outputs/c_merge_worker_512_v1/c_worker_capture.npz` 中，
 四次 `frame_pre` 分别与原始 f03/f02/f01/f00 左移八位逐位一致；
@@ -283,9 +293,9 @@ raw depth 和两次滤波输出匹配阶段导出；最终 u16 depth 和融合�
 生产 C 的 S3_ties 也对新版 `mp3/S3_ties__c3...` 输出逐位一致；原先
 `f0-1` 的旧 C S3 golden 已隔离，新原生 `-mp:3 -dmap` 输出等于源帧。
 
-原生其它金字塔类及 B 的 centered canvas/层级重建应单独对账，不能用其
-类名、层数或 collapse 公式推断这里的 C 输出。上述证据不代替其它参数组合、
-16-bit 非恒等原生差分和大栈性能验收。
+这些 `-mp:3` 捕获不能排除 GUI C 的金字塔，也不能证明其帧顺序、深度
+或重建方式。GUI C（`-mp:2`）还须以同输入、参数和位深单独对账，并
+验证其它参数组合、16-bit 非恒等输入及大栈性能。
 
 
 ## 2.4 默认参数(已对齐,勿回改)
@@ -556,7 +566,7 @@ u16 TIFF；报告的吞吐按原始输入字节计。该测量只完成小栈验
 | 5 | `fusion_methods/openfocus_depth.py:79` | diff 魔法乘;码截断;拉伸去 lo 减;snap 公式;平滑 guide 对账 | `reference.depth_map_noalign` |
 | 6 | `fusion_methods/_depth_kernel.py:19` | 与 `filter_type7` 逐行对账(含 w40/w44 语义) | `reference.filter_type7` |
 | 7 | `fusion_methods/openfocus_bc.py:117` | B = merge_weighted_identity;输出 `(acc&0xffff)>>8` | `reference.merge_weighted_identity` |
-| 8 | `fusion_methods/openfocus_bc.py:openfocus_c_impl` | 最终深度后全尺寸反向码带归并，输出 `acc>>8`；移除 RGB pyramid/levels | §2.3 原生捕获 |
+| 8 | `fusion_methods/openfocus_bc.py:openfocus_c_impl` | 当前为最终深度后全尺寸反向码带归并；§2.3 捕获属于旧版 B，GUI C 待核实 | `-mp:3` 原生捕获 |
 | 9 | `core/multi_focus_fusion.py:~630` | list 不再预物化 | §3.3.1 |
 | 10 | `core/workers.py:402,697,749` | 流式编排 | §3.3.3 |
 | 11 | `core/frame_storage.py:420` | `store_frame` RAM-first | §3.3.2 |
@@ -568,16 +578,16 @@ u16 TIFF；报告的吞吐按原始输入字节计。该测量只完成小栈验
 
 | 阶段 | 内容 | 验收 |
 |---|---|---|
-| E1 | A 对齐(响应/E-37/S 失效) | A 100%(S3/S4) |
+| E1 | A 工程画质(响应/E-37/S 失效) | 合成真值、边界及位深通过；参考软权重待闭合 |
 | E2 | C 对齐(最终深度/反向全尺寸归并) | C 100%(S3/S4)；补充 S1/S2 100% |
 | E3 | B 对齐(码/拉伸/snap/merge) | B ±1 100%(S4),exact ≥69.5% |
 | E4 | 对齐链移植(P0–P5) | 恒等门逐位;±6/±4/±160 精确 |
 | E5 | 流水线(§3.3) | 首进度 <5s;内存有界 |
 | E6 | 输入格式/位深矩阵(§2.6)+ 性能/文档/i18n | 格式与位深测试全绿;4000²×16 ≤20s;pytest 全绿 |
 
-**回归红线**:A 和 C 在已验证的 S3/S4 上逐位 100%、B 在 S4 上 ±1 100%，并保留 **8/16 位双出口**
-(§2.5:A 的 u8 使用 E-37；B/C 按合并码输出；u16 保留原码)、`tests/test_16bit_and_cache.py` 全绿、
-源指纹、非 ASCII 路径、取消语义、默认参数 17/1.44/3.6。
+**回归红线**:C 在已验证的 S3/S4 上逐位 100%、B 在 S4 上 ±1 100%；A 需保持
+合成焦点质量和边界、低响应背景及 **8/16 位双出口**（§2.5:A 的 u8 使用 E-37；
+B/C 按合并码输出；u16 保留原码）、源指纹、非 ASCII 路径与取消语义。
 
 ---
 
@@ -596,9 +606,10 @@ u16 TIFF；报告的吞吐按原始输入字节计。该测量只完成小栈验
 
 **明确开放的范围**：
 
-1. B 的原生最终 collapse temp、A 多帧 response 尚未闭合；不把全参数
-   bit-exact 临时新增为门槛。当前生产矩阵 A S3/S4 逐位 100%，B S4
-   exact 69.5419%、within1 100%、max1，C S1/S2/S3/S4 逐位 100%。
+1. B 的原生最终 collapse temp、A 多帧软权重尚未闭合；不把全参数
+   bit-exact 临时新增为门槛。原 A 最近邻响应的 S3/S4 逐位记录属于历史
+   基线，不代表当前双线性响应。B S4 历史矩阵 exact 69.5419%、within1
+   100%、max1，C S1/S2/S3/S4 逐位 100%。
 2. C 非恒等 u16、其它半径/平滑/画幅组合尚无通用逐位一致保证。
    旧金字塔原型的 C 残差不再作为当前生产路径的结果。
 3. 研究侧 C 的 S5 13 帧 RGB 与 8192² 两帧，使用官方 depth 的归并已
