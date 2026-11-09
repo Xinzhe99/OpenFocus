@@ -8,6 +8,33 @@ from tests.conftest import make_two_focus_stack, laplacian_sharpness
 pytest.importorskip("cv2")
 
 
+@pytest.mark.parametrize('shape', [(137, 7), (7, 137)])
+@pytest.mark.parametrize('color', [False, True])
+@pytest.mark.parametrize('gamma', [1.0, 200.0])
+def test_a_soft_blend_uses_per_pixel_cross_frame_maximum(monkeypatch, shape, color, gamma):
+    from fusion_methods import openfocus_a
+
+    frame_shape = (*shape, 3) if color else shape
+    frames = [np.full(frame_shape, value, np.float32) for value in (40, 200)]
+    yy, xx = np.indices(shape)
+    first = np.where((yy + xx) % 2, 1.0, 2.0)
+    second = np.where((yy + xx) % 2, 2.0, 1.0)
+    first[0, :] = 65535.0
+    second[0, :] = 65535.0
+    def response(code, radius, should_cancel, check_cancel, *, u8=False):
+        return (first if code.flat[0] < 30000 else second).copy()
+    monkeypatch.setattr(openfocus_a, '_response', response)
+    result = openfocus_a.openfocus_a_impl(frames, blend_mode='soft', soft_gamma=gamma,
+                                         thread_count=1)
+    logs = np.log(np.stack([first, second])) * gamma
+    weights = np.exp(logs - logs.max(axis=0, keepdims=True))
+    weights /= weights.sum(axis=0, keepdims=True)
+    expected = weights[0] * 40 + weights[1] * 200
+    if color:
+        expected = np.repeat(expected[:, :, None], 3, axis=2)
+    np.testing.assert_allclose(result, expected, rtol=1e-6, atol=1e-4)
+
+
 class TestOpenFocusAB:
     @pytest.mark.parametrize("method", ["openfocus_a", "openfocus_b",
                                         "openfocus_c"])
