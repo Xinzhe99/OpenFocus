@@ -782,7 +782,7 @@ def grid_level_4d(img_a, img_b, base8, ranges4, coef=1.0, grid_half=8,
 
 def align_pair_wide(ref_u16, test_u16, h_pct=12.0, v_pct=12.0, rot_deg=6.0,
                     mag_pct=6.0, min_dim=64, divisor=100, grid_half=8,
-                    max_rounds=24, verbose=False, should_cancel=None):
+                    max_rounds=24, verbose=False, should_cancel=None, initial_f8=None):
     """Coarse-to-fine 4D search over the shared pyramid.
 
     Coarsest level: grid_level_4d with the user percentage ranges (same
@@ -804,7 +804,7 @@ def align_pair_wide(ref_u16, test_u16, h_pct=12.0, v_pct=12.0, rot_deg=6.0,
         n -= 1
         A_pyr, B_pyr = A_pyr[:n], B_pyr[:n]
 
-    base = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0], dtype=np.float32)
+    base = np.array(_IDENTITY_F8 if initial_f8 is None else initial_f8, dtype=np.float32)
     rounds_total = 0
     for lvl in range(n - 1, -1, -1):
         _check_cancel(should_cancel)
@@ -1120,11 +1120,10 @@ def estimate_alignment_plan(sources, *, max_shift_ratio=.05, reference_frame=1,
                             progress_callback=None, failure_policy='fail'):
     """Sequential wide search; rotation in degrees, magnification in percent.
 
-    Source one follows the previous aligned reference. Each pair estimate
-    already maps to the anchor, so no previous transform is added again.
-    An explicitly selected later reference is a fixed geometric anchor,
-    visited first, then frames to its left descending and right ascending.
-    No content autosort or unproven seed ownership is inferred.
+    Source one follows the previous aligned reference. Each estimate maps to
+    the anchor and starts from the previous absolute transform, so the local
+    search can follow cumulative focus breathing across a long stack. A later
+    reference anchors two independent chains, one on either side.
     """
     _check_cancel(should_cancel)
     ratio = float(max_shift_ratio)
@@ -1166,7 +1165,7 @@ def estimate_alignment_plan(sources, *, max_shift_ratio=.05, reference_frame=1,
         identity.validate_file()
         gray = _alignment_gray16(image, should_cancel)
         del image
-        if index != ref and ref > 0:
+        if ref > 0 and index == ref + 1:
             previous, previous_index = anchor, ref
         pair = np.array(_IDENTITY_F8, np.float32)
         rounds, failure = 0, ''
@@ -1174,7 +1173,7 @@ def estimate_alignment_plan(sources, *, max_shift_ratio=.05, reference_frame=1,
             try:
                 pair, rounds = align_pair_wide(previous, gray, h_pct=ratio * 100,
                     v_pct=ratio * 100, rot_deg=rotation, mag_pct=magnification,
-                    should_cancel=should_cancel)
+                    should_cancel=should_cancel, initial_f8=transforms[previous_index].f8)
             except AlignmentEstimationError as error:
                 if failure_policy == 'fail':
                     failure = AlignmentEstimationError(f'OpenFocus alignment failed at frame {index + 1}: {error}')
@@ -1184,7 +1183,7 @@ def estimate_alignment_plan(sources, *, max_shift_ratio=.05, reference_frame=1,
                 failure = str(error)
                 pair = np.array(_IDENTITY_F8, np.float32)
         total = pair.copy()
-        if (not failure and ref == 0 and previous_index != ref
+        if (not failure and previous_index != ref
                 and transforms[previous_index].failure):
             failure = 'reference alignment fell back'
         transform = AlignmentTransform(index, tuple(float(v) for v in total),

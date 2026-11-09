@@ -40,6 +40,222 @@ def _original(frame):
     return frame
 
 
+def test_preview_and_roi_alignment_identity_tracks_effective_registration_order():
+    from controllers.render_manager import RenderManager
+    frames = [np.full((8, 8), i, np.uint8) for i in range(3)]
+    window = types.SimpleNamespace(raw_images=frames, source_revision=1,
+        current_fusion_method=lambda: 'openfocus_b', current_alignment_method=lambda: 'openfocus',
+        registration_parameters_for=lambda method: {}, stack_reverse_order=True)
+    manager = RenderManager(window)
+    reverse = manager._alignment_key([0, 1, 2])
+    assert reverse[-1] == 'reverse-registration-v1'
+    assert manager._alignment_key([0, 1, 2], 'guided_filter') != reverse
+    window.stack_reverse_order = False
+    assert manager._alignment_key([0, 1, 2]) != reverse
+
+
+@pytest.mark.parametrize('algorithm,alignment,sort_mode,expected', [
+    ('openfocus_a', 'openfocus', 'desc', [2, 1, 0]),
+    ('openfocus_b', 'openfocus', 'desc', [2, 1, 0]),
+    ('openfocus_c', 'openfocus', 'desc', [2, 1, 0]),
+    ('openfocus_a', 'openfocus', 'asc', [0, 1, 2]),
+    ('openfocus_a', 'ecc', 'desc', [0, 1, 2]),
+])
+def test_render_registration_direction_preserves_source_order(
+        qapp, monkeypatch, algorithm, alignment, sort_mode, expected):
+    from core import workers
+    from core.multi_focus_fusion import MultiFocusFusion
+
+    frames = [np.full((8, 8), i, np.uint8) for i in range(3)]
+    worker = workers.RenderWorker(frames, algorithm=algorithm, alignment=alignment,
+                                  sort_mode=sort_mode, thread_count=1)
+    seen, published = [], []
+    def register(images, should_cancel=None):
+        seen.extend(int(image[0, 0]) for image in images)
+        return images, 0.0
+    def fuse(images, should_cancel=None, progress_callback=None):
+        assert [int(image[0, 0]) for image in images] == [0, 1, 2]
+        fusion = MultiFocusFusion(algorithm=algorithm, sort_mode=worker.sort_mode)
+        sorted_images = fusion._maybe_sort_input(images)
+        assert [int(image[0, 0]) for image in sorted_images] == (
+            [2, 1, 0] if sort_mode == 'desc' else [0, 1, 2])
+        return images[0], 'CPU'
+    monkeypatch.setattr(worker, '_run_registration', register)
+    monkeypatch.setattr(worker, '_run_fusion', fuse)
+    worker.finished_signal.connect(lambda *args: published.append(args))
+    worker._run_admitted()
+    assert seen == expected
+    assert [int(image[0, 0]) for image in published[0][0]] == [0, 1, 2]
+
+@pytest.mark.parametrize('sort_mode,cached_reverse,expected_start', [
+    ('asc', False, 100), ('desc', True, 100),
+    ('asc', True, 10), ('desc', False, 10),
+])
+def test_openfocus_alignment_reuse_requires_matching_direction(
+        qapp, monkeypatch, sort_mode, cached_reverse, expected_start):
+    from core import workers
+    frames = [np.full((8, 8), i, np.uint8) for i in range(3)]
+    cached = [frame + 100 for frame in frames]
+    worker = workers.RenderWorker(
+        frames, cached, True, algorithm='openfocus_b', alignment='openfocus',
+        sort_mode=sort_mode, thread_count=1)
+    worker.last_alignment_options = (worker.alignment, worker.registration_parameters, cached_reverse)
+    monkeypatch.setattr(worker, '_run_registration',
+                        lambda images, **kwargs: ([image + 10 for image in images], 0.0))
+    monkeypatch.setattr(worker, '_run_fusion',
+                        lambda images, **kwargs: (images[0], 'CPU'))
+    published = []
+    worker.finished_signal.connect(lambda *args: published.append(args))
+    worker._run_admitted()
+    assert [int(image[0, 0]) for image in published[0][0]] == [
+        expected_start, expected_start + 1, expected_start + 2]
+
+
+def test_reverse_roi_registration_keeps_source_indices(qapp, monkeypatch):
+    from core import workers
+    frames = [np.full((8, 8), i, np.uint8) for i in range(3)]
+    seen, published = [], []
+    class Registration:
+        def __init__(self, **kwargs):
+            pass
+        def process(self, images, **kwargs):
+            seen.extend(int(image[0, 0]) for image in images)
+            return images
+    monkeypatch.setattr(workers, 'ImageRegistration', Registration)
+    worker = workers.ROIAlignmentWorker(frames, alignment='openfocus', reverse_registration=True)
+    worker.finished_signal.connect(lambda images, elapsed: published.append(images))
+    worker._run_admitted()
+    assert seen == [2, 1, 0]
+    assert [int(image[0, 0]) for image in published[0]] == [0, 1, 2]
+
+
+def test_reverse_registration_failure_names_original_frame(qapp, monkeypatch):
+    from core import workers
+    from core.openfocus_alignment import AlignmentEstimationError
+    frames = [np.full((8, 8), i, np.uint8) for i in range(3)]
+    class Registration:
+        def __init__(self, **kwargs):
+            pass
+        def process(self, images, **kwargs):
+            error = AlignmentEstimationError('OpenFocus alignment failed at frame 1: failure')
+            error.frame_index = 0
+            raise error
+    monkeypatch.setattr(workers, 'ImageRegistration', Registration)
+    worker = workers.RenderWorker(frames, algorithm='openfocus_b', alignment='openfocus',
+                                  sort_mode='desc', thread_count=1)
+    published = []
+    worker.finished_signal.connect(lambda *args: published.append(args))
+    with pytest.raises(AlignmentEstimationError, match='frame 3') as raised:
+        worker._run_admitted()
+    assert raised.value.frame_index == 2
+    assert not published
+
+
+def test_reverse_registration_roi_paste_uses_original_base_index(qapp, monkeypatch):
+    from PyQt6.QtCore import QRect
+    from core import workers
+    frames = [np.full((8, 8), i * 50, np.uint8) for i in range(3)]
+    worker = workers.RenderWorker(frames, algorithm='openfocus_b', alignment='openfocus',
+        sort_mode='desc', thread_count=1, roi_rect=QRect(2, 2, 3, 3),
+        roi_mode='paste', roi_base_index=0)
+    monkeypatch.setattr(worker, '_run_registration', lambda images, **kwargs: (images, 0.0))
+    monkeypatch.setattr(worker, '_run_fusion', lambda images, **kwargs: (
+        np.full(images[0].shape, 200, np.uint8), 'CPU'))
+    published = []
+    worker.finished_signal.connect(lambda *args: published.append(args))
+    worker._run_admitted()
+    result = published[0][1]
+    assert result[0, 0] == 0
+    assert np.all(result[2:5, 2:5] == 200)
+
+
+def test_cancelled_reverse_registration_does_not_publish_or_cache(qapp, monkeypatch):
+    from core import workers
+    frames = [np.full((8, 8), i, np.uint8) for i in range(3)]
+    worker = workers.RenderWorker(frames, algorithm='openfocus_b', alignment='openfocus',
+                                  sort_mode='desc', thread_count=1)
+    def register(images, should_cancel=None):
+        worker.cancel()
+        return images, 0.0
+    monkeypatch.setattr(worker, '_run_registration', register)
+    monkeypatch.setattr(worker, '_save_cached_alignment', lambda images: pytest.fail('saved cancelled plan'))
+    published = []
+    worker.finished_signal.connect(lambda *args: published.append(args))
+    with pytest.raises(registration.RegistrationCancelled):
+        worker._run_admitted()
+    assert not published
+
+
+def test_reverse_cache_plan_binds_names_and_sources_in_registration_order(qapp, tmp_path, monkeypatch):
+    from core import workers
+    from utils import align_cache
+    frames = [np.full((8, 8), i, np.uint8) for i in range(3)]
+    request = dict(mode='load', save=True, folder=str(tmp_path),
+                   filenames=['a.png', 'b.png', 'c.png'], identity={})
+    worker = workers.RenderWorker(frames, algorithm='openfocus_b', alignment='openfocus',
+                                  sort_mode='desc', thread_count=1, disk_cache=request)
+    worker._cache_source_images = list(reversed(frames))
+    worker._alignment_plan = object()
+    seen = []
+    def save(folder, names, plan, sources, identity, should_cancel):
+        seen.append((names, [int(source[0, 0]) for source in sources], dict(identity)))
+    monkeypatch.setattr(align_cache, 'save_alignment_plan', save)
+    worker._save_cached_alignment(list(reversed(frames)))
+    assert seen[0][0] == ['c.png', 'b.png', 'a.png']
+    assert seen[0][1] == [2, 1, 0]
+    assert seen[0][2]['registration_order'] == 'reverse-v1'
+    plan = worker._alignment_plan
+    def load(folder, names, sources, identity, should_cancel):
+        assert names == seen[0][0]
+        assert [int(source[0, 0]) for source in sources] == seen[0][1]
+        assert identity == seen[0][2]
+        return plan
+    monkeypatch.setattr(align_cache, 'load_alignment_plan', load)
+    monkeypatch.setattr(registration, 'apply_alignment_plan',
+                        lambda sources, plan, **kwargs: list(sources))
+    cached = worker._load_cached_alignment()
+    assert [int(source[0, 0]) for source in cached] == [2, 1, 0]
+    assert worker.alignment_reused is False  # The caller marks a completed cache hit.
+    asc = workers.RenderWorker(frames, algorithm='openfocus_b', alignment='openfocus',
+                               sort_mode='asc', thread_count=1, disk_cache=request)
+    asc._prepare_cache_identity()
+    assert 'registration_order' not in asc.disk_cache['identity']
+
+
+def test_batch_reverse_registration_keeps_export_names(qapp, tmp_path, monkeypatch):
+    from core import workers
+    frames = [np.full((8, 8), i * 50, np.uint8) for i in range(3)]
+    output = tmp_path / 'batch'
+    output.mkdir()
+    worker = workers.BatchWorker([], 'custom', str(output), {
+        'alignment': 'openfocus', 'fusion_method': 'openfocus_b', 'format': 'png',
+        'save_aligned': True,
+    }, use_gpu=False, thread_count=1, exposure_match=False, tile_enabled=False,
+        runtime_settings={'sort_mode': 'desc'})
+    seen = []
+    class Registration:
+        def __init__(self, **kwargs):
+            pass
+        def process(self, images, **kwargs):
+            seen.extend(int(image[0, 0]) for image in images)
+            return images
+    monkeypatch.setattr(workers, 'ImageRegistration', Registration)
+    def fuse(fusion, method, images, params):
+        assert fusion.sort_mode == 'desc'
+        assert [int(image[0, 0]) for image in images] == [0, 50, 100]
+        return images[0]
+    monkeypatch.setattr(worker, '_fuse_one_stack', fuse)
+    entries = [(str(tmp_path / f'{i}.png'), frame, None) for i, frame in enumerate(frames)]
+    worker._process_single_stack(entries, str(output), 'stack', 0)
+    assert seen == [100, 50, 0]
+    files = worker.aligned_stacks[0]['files']
+    assert len(files) == 3
+    for index, artifact in enumerate(files):
+        image = cv2.imdecode(np.fromfile(artifact, np.uint8), cv2.IMREAD_UNCHANGED)
+        assert np.all(image == index * 50)
+        assert str(index) in artifact
+
+
 @pytest.mark.parametrize('method', ['homography', 'ecc', 'both', ('ecc', 'homography')])
 @pytest.mark.parametrize('dtype,channels,source_kind', [
     (np.uint8, 1, 'array'), (np.uint16, 3, 'array'), (np.float32, 1, 'array'),

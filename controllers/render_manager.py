@@ -138,12 +138,16 @@ class RenderManager:
                       else bool(getattr(window, "exposure_match", False)))
         alignment = window.current_alignment_method()
         parameters = window.registration_parameters_for(alignment)
+        from core.workers import _ordered_openfocus_registration
+        reverse_registration = _ordered_openfocus_registration(
+            alignment, method, 'desc' if getattr(window, 'stack_reverse_order', False) else 'asc')
         return (getattr(window, "source_revision", 0), tuple(included),
                 tuple(id(window.raw_images[i]) for i in included),
                 alignment_steps(alignment), tuple(sorted(parameters.items())),
                 getattr(window, "reg_downscale_width", None), brightness,
                 bool(getattr(window, "stack_reverse_order", False)),
-                bool(getattr(window, "defect_mask_path", "") or getattr(window, "sensor_denoise", False)))
+                bool(getattr(window, "defect_mask_path", "") or getattr(window, "sensor_denoise", False)),
+                'reverse-registration-v1' if reverse_registration else None)
 
     def _source_exif_snapshot(self, included) -> tuple:
         """Per-included-frame EXIF, aligned with the current source list."""
@@ -913,7 +917,10 @@ class RenderManager:
             # this, never against "source".
             "source_ref": window.raw_images,
             "alignment_options": requested_steps,
-            "alignment_identity": (requested_steps, registration_parameters),
+            "alignment_identity": ((requested_steps, registration_parameters,
+                                    alignment_key[-1] == 'reverse-registration-v1')
+                                   if 'openfocus' in requested_steps
+                                   else (requested_steps, registration_parameters)),
             "preview": self._preview_mode,
             "roi": roi_rect is not None,
             "roi_rect": ((float(roi_rect.x()), float(roi_rect.y()),

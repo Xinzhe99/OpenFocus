@@ -301,6 +301,29 @@ class ROIFramePreviewWorker(QThread):
             self.frame = None
 
 
+def _ordered_openfocus_registration(alignment, algorithm, sort_mode):
+    return (algorithm in ('openfocus_a', 'openfocus_b', 'openfocus_c')
+            and 'openfocus' in alignment_steps(alignment)
+            and get_fusion(algorithm).sort_frames and sort_mode == 'desc')
+
+
+def _registration_process(registration, images, reverse, **kwargs):
+    if not reverse:
+        return registration.process(images, **kwargs)
+    from core.openfocus_alignment import AlignmentEstimationError
+    try:
+        return registration.process(images, **kwargs)
+    except AlignmentEstimationError as error:
+        index = getattr(error, 'frame_index', None)
+        if index is not None:
+            source_index = len(images) - 1 - index
+            old = f'OpenFocus alignment failed at frame {index + 1}:'
+            new = f'OpenFocus alignment failed at frame {source_index + 1}:'
+            error.args = (str(error).replace(old, new, 1),)
+            error.frame_index = source_index
+        raise
+
+
 class ROIAlignmentWorker(QThread):
     """Align the selected stack for ROI selection on a background thread."""
 
@@ -309,7 +332,7 @@ class ROIAlignmentWorker(QThread):
 
     def __init__(self, raw_images, reg_downscale_width=None, thread_count: int = DEFAULT_THREAD_COUNT,
                  resource_preference="balanced", alignment="ecc",
-                 registration_parameters=None, exposure_match=False):
+                 registration_parameters=None, exposure_match=False, reverse_registration=False):
         super().__init__()
         self.raw_images = raw_images
         self.reg_downscale_width = reg_downscale_width
@@ -318,6 +341,7 @@ class ROIAlignmentWorker(QThread):
         self.alignment = alignment
         self.registration_parameters = dict(registration_parameters or {})
         self.exposure_match = bool(exposure_match)
+        self.reverse_registration = bool(reverse_registration)
         try:
             self.thread_count = max(0, int(thread_count))
         except (TypeError, ValueError):
@@ -356,10 +380,13 @@ class ROIAlignmentWorker(QThread):
             brightness_reference='last' if self.exposure_match else 'first',
             use_gpu=False, defer_warps=True)
 
-        aligned_images = registration.process(
-            self.raw_images, output_path=None, thread_count=self.thread_count,
+        inputs = list(reversed(self.raw_images)) if self.reverse_registration else self.raw_images
+        aligned_images = _registration_process(
+            registration, inputs, self.reverse_registration, output_path=None, thread_count=self.thread_count,
             resource_preference=self.resource_preference,
             should_cancel=lambda: self._cancelled)
+        if self.reverse_registration:
+            aligned_images = list(reversed(aligned_images))
         alignment_time = time.time() - alignment_start_time
         if self._cancelled:
             raise RegistrationCancelled()
@@ -418,6 +445,7 @@ class RenderWorker(QThread):
         self.use_gpu = bool(use_gpu)
         self.base_frame = base_frame
         self.sort_mode = sort_mode
+        self._reverse_registration = _ordered_openfocus_registration(self.alignment, algorithm, sort_mode)
         self.exposure_match = bool(exposure_match)
         self.sharpen_output = bool(sharpen_output)
         self.defect_mask_path = defect_mask_path or ''
@@ -427,7 +455,7 @@ class RenderWorker(QThread):
         self._cache_source_images = self.raw_images
         self.is_cancelled = False
         self.disk_cache = deepcopy(disk_cache) if disk_cache else None
-        if self.disk_cache is not None and (self.registration_parameters or self.defect_mask_path or self.sensor_denoise):
+        if self.disk_cache is not None and (self.registration_parameters or self.defect_mask_path or self.sensor_denoise or self._reverse_registration):
             self.disk_cache['identity'] = dict(self.disk_cache.get('identity') or {})
         self._cache_identity_prepared = False
         self._defer_warps = (bool(self.alignment) and not self.preview
@@ -509,6 +537,8 @@ class RenderWorker(QThread):
                 raise ValueError(trans.t('transparent_desktop_unsupported').format(path=''))
     
         current_alignment_options = (self.alignment, self.registration_parameters)
+        if 'openfocus' in self.alignment:
+            current_alignment_options += (self._reverse_registration,)
         need_registration = bool(self.alignment)
         can_reuse_aligned_images = (
             self.alignment_report is None
@@ -613,7 +643,8 @@ class RenderWorker(QThread):
                                        sensor_denoise=self.sensor_denoise,
                                        cancel_callback=lambda: self.is_cancelled)))
                 processed_images = cleaned
-            self._cache_source_images = processed_images
+            self._cache_source_images = (list(reversed(processed_images))
+                                         if self._reverse_registration else processed_images)
             registration_performed = False
     
             if need_registration:
@@ -634,18 +665,30 @@ class RenderWorker(QThread):
                     self.stage_signal.emit("align")
                     if self.alignment_report is None:
                         processed_images, alignment_time = self._run_registration(
-                            processed_images, should_cancel=lambda: self.is_cancelled)
+                            self._cache_source_images, should_cancel=lambda: self.is_cancelled)
                     else:
                         from core.registration import alignment_report
                         token = alignment_report.set(self.alignment_report)
                         try:
                             processed_images, alignment_time = self._run_registration(
-                                processed_images, should_cancel=lambda: self.is_cancelled)
+                                self._cache_source_images, should_cancel=lambda: self.is_cancelled)
                         finally:
                             alignment_report.reset(token)
+                            if self._reverse_registration:
+                                for entry in self.alignment_report:
+                                    index = entry.get('frame_index')
+                                    if index is not None and 'reason' in entry:
+                                        old = f'OpenFocus alignment failed at frame {index + 1}:'
+                                        new = f'OpenFocus alignment failed at frame {len(self.raw_images) - index}:'
+                                        entry['reason'] = entry['reason'].replace(old, new, 1)
+                                    for key in ('frame_index', 'reference_index'):
+                                        if entry.get(key) is not None:
+                                            entry[key] = len(self.raw_images) - 1 - entry[key]
                         self.alignment_report_provenance = 'fresh'
                     registration_performed = True
                     self.alignment_computed = True
+                if self._reverse_registration:
+                    processed_images = list(reversed(processed_images))
     
         if self.is_cancelled:
             raise RegistrationCancelled()
@@ -682,7 +725,8 @@ class RenderWorker(QThread):
         # not another alignment stage.
         self.stage_signal.emit("finish")
         if self.alignment_computed:
-            self._save_cached_alignment(processed_images)
+            self._save_cached_alignment(list(reversed(processed_images))
+                                        if self._reverse_registration else processed_images)
         if self.is_cancelled:
             raise RegistrationCancelled()
     
@@ -708,9 +752,11 @@ class RenderWorker(QThread):
             if self._cache_identity_prepared:
                 return
             identity = dict(request.get('identity') or {})
+            if self._reverse_registration:
+                identity['registration_order'] = 'reverse-v1'
             identity.update(alignment_steps=list(self.alignment),
                             registration_parameters=dict(self.registration_parameters),
-                            registration_backend=('openfocus-wide4d' if self.alignment == ('openfocus',)
+                            registration_backend=('openfocus-wide4d-v2' if self.alignment == ('openfocus',)
                                                   else 'opencv-perspective-v1'),
                             downscale_width=self.reg_downscale_width,
                             scale_factor=request.get('scale_factor', 1.0),
@@ -723,6 +769,10 @@ class RenderWorker(QThread):
             return
         request['align_options'] = self.alignment
         request['identity']['alignment_steps'] = list(self.alignment)
+        if 'openfocus' in self.alignment:
+            request['identity']['registration_backend'] = 'openfocus-wide4d-v2'
+        if self._reverse_registration:
+            request['identity']['registration_order'] = 'reverse-v1'
         request['identity']['registration_parameters'] = dict(self.registration_parameters)
         import hashlib
         digest = hashlib.sha256()
@@ -755,7 +805,7 @@ class RenderWorker(QThread):
             self._prepare_cache_identity()
             if self._defer_warps:
                 plan = align_cache.load_alignment_plan(
-                    request.get('folder', ''), list(request.get('filenames') or []),
+                    request.get('folder', ''), self._cache_filenames(),
                     self._cache_source_images, identity=request.get('identity'),
                     should_cancel=lambda: self.is_cancelled or not is_current())
                 if plan is None:
@@ -767,7 +817,7 @@ class RenderWorker(QThread):
             else:
                 cached = align_cache.load_aligned(
                     request.get("folder", ""),
-                    list(request.get("filenames") or []),
+                    self._cache_filenames(),
                     tuple(request.get("align_options") or ()),
                     request.get("downscale_width"),
                     request.get("scale_factor", 1.0),
@@ -789,6 +839,10 @@ class RenderWorker(QThread):
         print("Registration cache hit — skipping alignment")
         return cached
 
+    def _cache_filenames(self):
+        names = list(self.disk_cache.get('filenames') or [])
+        return list(reversed(names)) if self._reverse_registration else names
+
     def _save_cached_alignment(self, images) -> None:
         """Persist the alignment produced by this run (worker thread only).
 
@@ -809,14 +863,14 @@ class RenderWorker(QThread):
             self._prepare_cache_identity()
             if self._defer_warps:
                 align_cache.save_alignment_plan(
-                    request.get('folder', ''), list(request.get('filenames') or []),
+                    request.get('folder', ''), self._cache_filenames(),
                     self._alignment_plan, self._cache_source_images,
                     identity=request.get('identity'),
                     should_cancel=lambda: self.is_cancelled or not is_current())
             else:
                 align_cache.save_aligned(
                     request.get("folder", ""),
-                    list(request.get("filenames") or []),
+                    self._cache_filenames(),
                     list(images),
                     tuple(request.get("align_options") or ()),
                     request.get("downscale_width"),
@@ -839,8 +893,9 @@ class RenderWorker(QThread):
             downscale_width=self.reg_downscale_width,
             brightness_reference='last' if self.exposure_match else 'first',
             use_gpu=False, defer_warps=self._defer_warps)
-        images = registration.process(images, thread_count=self.thread_count,
-            resource_preference=self.resource_preference, should_cancel=should_cancel)
+        images = _registration_process(registration, images, self._reverse_registration,
+            thread_count=self.thread_count, resource_preference=self.resource_preference,
+            should_cancel=should_cancel)
         self._alignment_plan = registration.alignment_plan if self._defer_warps else None
         return images, time.time() - started
 
@@ -1431,9 +1486,16 @@ class BatchWorker(QThread):
                         downscale_width=self._registration_width(aligned_images),
                         brightness_reference='last' if self.exposure_match else 'first',
                         use_gpu=False, defer_warps=lazy_fusion)
-                    aligned_images = registration.process(aligned_images,
-                        thread_count=self.thread_count, resource_preference=self.resource_preference,
+                    reverse_registration = _ordered_openfocus_registration(
+                        alignment, method, self.runtime_settings.get('sort_mode', 'asc'))
+                    registration_inputs = (list(reversed(aligned_images))
+                                           if reverse_registration else aligned_images)
+                    aligned_images = _registration_process(registration, registration_inputs,
+                        reverse_registration, thread_count=self.thread_count,
+                        resource_preference=self.resource_preference,
                         should_cancel=lambda: self.is_cancelled)
+                    if reverse_registration:
+                        aligned_images = list(reversed(aligned_images))
         
                 output_format = self.processing_settings.get('format', 'png').lstrip('.').lower()
                 fusion_method = self.processing_settings.get('fusion_method')

@@ -38,9 +38,14 @@ def _weight(radius):
     return max(weight, 2)
 
 
-@lru_cache(maxsize=1)
-def _snap_lut():
-    exponent = np.float32(np.float32(13) / np.float32(3))
+def _validate_feather(feather):
+    if isinstance(feather, (bool, np.bool_)) or not isinstance(feather, (int, np.integer)) or not 0 <= feather <= 10:
+        raise ValueError('feather must be an integer between 0 and 10')
+
+
+@lru_cache(maxsize=128)
+def _snap_lut(feather=0):
+    exponent = np.float32((np.float32(13) - np.float32(feather)) / np.float32(3))
     return np.array([int(np.float32(_powf32(np.float32(k) / np.float32(1024),
                                           exponent) * np.float32(1024)))
                      for k in range(1025)], dtype=np.int64)
@@ -198,8 +203,9 @@ def _activity_frames(frames, img_resize, kernel_size, thread_count, should_cance
 @execution_job
 def depth_map(frames, img_resize, kernel_size, smoothing, should_cancel,
               progress_callback=None, thread_count=1, *, return_codes=False,
-              half_resolution=False, preserve_detail=False):
-    """Estimate depth, optionally retaining detail lost by half-size sampling."""
+              half_resolution=False, preserve_detail=False, feather: int = 0):
+    """Estimate depth with the specified integer feather, defaulting to F0."""
+    _validate_feather(feather)
     from fusion_methods.openfocus_ab import _check_cancel
     from fusion_methods._depth_kernel import prepare_depth_kernel
     from fusion_methods._openfocus_depth_rows import (
@@ -304,7 +310,7 @@ def depth_map(frames, img_resize, kernel_size, smoothing, should_cancel,
     del guide
     half = step >> 1
     if half:
-        lut = _snap_lut()
+        lut = _snap_lut(feather)
         def snap(start, stop):
             cancel()
             snap_rows(depth, lut, step, start, stop)

@@ -385,11 +385,11 @@ Die Bildregistrierung korrigiert räumliche Fehlausrichtungen zwischen den Bilde
 
 #### OpenFocus (schnell)
 
-- Begrenzte Ähnlichkeitsausrichtung (Verschiebung + Rotation + Skalierung), mit Helligkeitsabgleich pro Bild und automatischem Zuschnitt
+- Begrenzte Ähnlichkeitsausrichtung (Verschiebung + Rotation + Skalierung) mit automatischem Zuschnitt
 - Sucht begrenzte Ähnlichkeitstransformationen über abgetastete Bilddifferenzen und verzerrt mit Lanczos-Interpolation
-- Bilder, die sich um mehr als **8 % der Bildgröße verschieben, bleiben unausgerichtet**, statt teilweise korrigiert zu werden. Über die CLI-Option `--align-shift-limit` änderbar
+- Der Suchbereich für Verschiebungen beträgt standardmäßig 3 % der Bildgröße und lässt sich mit `--align-shift-limit` ändern. Die Suche verwendet das zuvor ausgerichtete Bild und die kumulierte Bewegung als Ausgangspunkt; die Gesamtverschiebung kann 3 % überschreiten.
 - Für nicht-starre oder extreme Geometrien stattdessen ECC oder Homographie wählen
-- **Behandlung abgelehnter Bilder** ist standardmäßig „Mit nicht ausgerichtetem Bild fortfahren“. **Bei abgelehntem Bild stoppen** lässt das Rendering oder das Stapel-Element fehlschlagen, bevor ein Ergebnis entsteht, wenn die Detektorqualität unter 0,06 liegt oder die geschätzte Bewegung das konfigurierte Verschiebungslimit, 8° Rotation oder 5 % Skalierungsänderung überschreitet. Bilder werden in der verarbeiteten Stapelreihenfolge ab 1 nummeriert. Die geometrische Referenz ist standardmäßig Bild 1; eine schwache direkte Übereinstimmung kann gegen das näher an der Referenz liegende Nachbarbild erneut versucht werden. Diese Richtlinie erkennt abgelehnte Schätzungen, nicht alle falschen Zuordnungen: geringe Textur, wiederholte Muster, Verdeckung, große Bewegung oder Fokusänderungen können die Registrierung weiterhin täuschen. Prüfen Sie das Ergebnis.
+- Bei einem tatsächlichen Schätzfehler behält `failure_policy=continue` (Standard) das Bild unausgerichtet; `fail` bricht ab. Wenig Struktur, wiederholte Muster und Fokusänderungen können dennoch ungenaue Zuordnungen verursachen.
 - In der CLI dieselbe Richtlinie mit `--align openfocus --align-param 'failure_policy="fail"'` wählen (shellgerechte Anführungszeichen verwenden). Stapel-Elemente verwenden die gewählte Richtlinie unabhängig. Standard ist `"continue"`.
 - **Referenzbild** auf eine 1-basierte Nummer in der einbezogenen, verarbeiteten Stapelreihenfolge setzen, um die Geometrie an diesem Bild auszurichten. Die Bildreihenfolge bleibt erhalten; der Helligkeitsabgleich verwendet seine eigene Referenz. Jeder Stapel in der Stapelverarbeitung muss diese Nummer enthalten, sonst schlägt das Element fehl. CLI-Beispiel: `--align openfocus --align-param reference_frame=3`. Eine Referenz kann Parallaxe oder eine schlechte Zuordnung nicht korrigieren; prüfen Sie das Ergebnis.
 
@@ -490,28 +490,15 @@ Ist kein temporäres Verzeichnis angegeben, schätzt OpenFocus den Bedarf anhand
 
 ### OpenFocus A / B / C
 
-- **OpenFocus A**: nutzt eine mehrskalige Fokusantwort und mischt detailarme Hintergründe.
-- **OpenFocus B**: mischt benachbarte Bilder anhand einer geglätteten Tiefenkarte.
-- **OpenFocus C**: mischt Quellpixel anhand der fertigen, geglätteten Tiefenkarte.
-- **Parameter**: A und B verwenden den Kernelregler für die Skala der Fokusantwort; C hat keinen Radius. Die Glättung von A hat wie beim Referenzprodukt A keine Wirkung. B und C glätten die für die Fusion verwendete Tiefenkarte.
+A nutzt eine mehrskalige Fokusantwort (Radius 8, Glättung 4); seine Glättung ist derzeit inaktiv. A ist nicht gleich HF9 A.
 
-**Glättung**: ein Drehfeld unter dem Kernelregler, dessen Bedeutung von der gewählten Methode abhängt (Bereich 0–8, Schrittweite 0,2):
+B verwendet eine Tiefenkarte (Radius 8, Glättung 4, Feather 3). C verwendet eine gewichtete mehrstufige Pyramide (Glättung 4) und hat keinen Radius.
 
-| Methode | Bezeichnung | Standard | Wirkung |
-|---|---|---|---|
-| OpenFocus A | Mischungsglättung | 2,0 | Wie bei Referenzprodukt A ohne Wirkung |
-| OpenFocus B | Tiefenglättung | 1,44 | Steuert die Glättung der Tiefenkarte, die die Mischung führt |
-| OpenFocus C | Mischungsglättung | 3,6 | Steuert die Glättung der Tiefenkarte und die Fusionsübergänge |
+CLI: `--method openfocus_b --param radius=8 --param smoothing=4 --param feather=3`.
 
-Standard-Kernelgröße für A/B: 17. Gespeicherte Werte bleiben erhalten; stellen Sie die Standardwerte wieder her, um die neuen Vorgaben zu verwenden.
+In der Oberfläche ist für A/B/C standardmäßig an und nutzt das erste verarbeitete Bild; für andere Methoden ist er standardmäßig aus und nutzt das letzte. Explizit gespeicherte Einstellungen bleiben erhalten; bei aktiviertem A/B/C gilt das erste Bild. Dies ist eine Annäherung; Gleichheit mit der HF9-Helligkeitsanpassung ist nicht nachgewiesen. Die Korrektur der Helligkeitsdrift bleibt standardmäßig aus. Zurücksetzen stellt die Vorgaben jeder Methode wieder her. In der CLI ist der Belichtungsabgleich für alle Methoden standardmäßig an; `--no-exposure-match` schaltet ihn aus.
 
-Höhere Werte verstärken die Übergangsglättung. Jede Methode merkt sich ihren eigenen Wert über Sitzungen hinweg, und die Stapelverarbeitung verwendet dieselbe Regel.
-
-C hat keinen Radiusparameter, daher ist sein Kernelregler ausgeblendet.
-
-CLI: `--depth-smoothing VALUE` (B) und `--blend-smoothing VALUE` (A, C).
-
-**Helligkeitsoptionen gelten pro Methode.** *Belichtung vor der Fusion angleichen* und *Helligkeitsdrift entfernen* werden separat pro Fusionsmethode gespeichert. In der Oberfläche sind beide für alle Methoden standardmäßig aus; es sind zusätzliche Korrekturen, nicht die Helligkeitsanpassung des Referenzprodukts. Der Belichtungsabgleich skaliert jedes Quellbild vor der Fusion auf das letzte Bild; das Entfernen der Helligkeitsdrift korrigiert danach die niedrigen Frequenzen des Fusionsergebnisses. Beim Methodenwechsel werden die jeweiligen Werte angezeigt und über Neustarts hinweg gespeichert. In der CLI bleibt der Belichtungsabgleich standardmäßig an; `--no-exposure-match` deaktiviert ihn. **Zurücksetzen** löscht die gemerkten Helligkeits-, Glättungs- und Radiuswerte aller Methoden und schaltet beide Helligkeitsoptionen wieder aus.
+Bei Auswahl von A/B/C wird die OpenFocus-Ausrichtung verwendet, sofern keine Ausrichtung ausdrücklich gewählt oder ein Projekt wiederhergestellt wurde. Ihre Vorgaben sind Verschiebung 0,03 und Vergrößerung 5 %.
 
 **Fusionsergebnis schärfen** wendet nach der Fusion eine milde Unscharfmaskierung an, bevor das Ergebnis in seine Ausgabebittiefe überführt wird. Sie ist standardmäßig aus und kann in den Haupt-Fusionsoptionen oder den Stapeloptionen aktiviert werden; die entsprechende CLI-Option ist `--sharpen-output`. Sie betrifft das fusionierte Bild, nicht registrierte Bilder oder Tiefenkarten. Kanten können deutlicher werden, Rauschen und Halos aber ebenfalls zunehmen. Die Einstellung wird im Projekt gespeichert und zwischen Sitzungen gemerkt.
 
@@ -539,7 +526,7 @@ CLI: `--depth-smoothing VALUE` (B) und `--blend-smoothing VALUE` (A, C).
 | StackMFF V3 | Langsam (GPU) | Hervorragend | Beste Qualität |
 | OpenFocus A | Abhängig vom Stapel | Abhängig vom Stapel | Mehrskalige Fokusantwort und Mischung detailarmer Bereiche |
 | OpenFocus B | Abhängig vom Stapel | Abhängig vom Stapel | Tiefenkartengesteuerte Mischung benachbarter Bilder |
-| OpenFocus C | Abhängig vom Stapel | Abhängig vom Stapel | Mischung von Quellpixeln anhand der fertigen Tiefenkarte |
+| OpenFocus C | — | — | Gewichtete mehrstufige Pyramide |
 
 **Werkzeuge → Methoden vergleichen…** öffnet einen Dialog, in dem mehrere Verfahren unabhängig eingestellt werden. Name, Parameterbeschriftungen und Bedienelemente jeder Methode bleiben zusammen, wenn das Fenster schmaler wird. Änderungen aktualisieren die Vorschau automatisch. **ROI-Vorschau (schnell)** fusioniert den ausgewählten Bereich mit umgebendem Kontext; **Ganzbild-Fusion** prüft das Ergebnis des gesamten Bildes und erlaubt die Untersuchung eines anderen Bereichs ohne erneutes Rendern. ROI-Ergebnisse können von Ganzbild-Ergebnissen abweichen, weil Belichtungsstatistiken und einige Algorithmen von der Bildausdehnung abhängen.
 Die **Ganzbild-Fusion** ist standardmäßig ausgewählt.
@@ -942,18 +929,16 @@ Für ein einzelnes Rendering lässt sich beispielsweise `--align openfocus --ali
 | `--align, -a` | `none` (Standard), `homography`, `ecc`, `both`, `openfocus` |
 | `--param KEY=JSON_VALUE` | Fusionsparameter; für mehrere Schlüssel wiederholen; überschreibt ältere Flags |
 | `--align-param KEY=JSON_VALUE` | Registrierungsparameter; für mehrere Schlüssel wiederholen |
-| `--align-shift-limit` | Nur `openfocus`: maximal akzeptierte Verschiebung als Anteil der Bildgröße (Standard 0,08; darüber liegende Bilder bleiben unausgerichtet) |
+| `--align-shift-limit` | Suchbereich für Verschiebungen als Anteil der Bildgröße (Standard 0,03); kumulierte Verschiebungen können größer sein. |
 | `--alignment-report PATH` | Ergebnisse der Ausrichtung pro Bild als JSON für ein einzelnes, nicht gruppiertes Rendering mit aktivierter Ausrichtung speichern; Stapel- und gruppierte Renderings werden nicht unterstützt |
-| `--exposure-match` | Den Mittelwert jedes Bildes vor der Fusion an das letzte Bild angleichen (Standard: an; `--no-exposure-match` deaktiviert). Verstärkungen gelten für den ganzen Stapel, sodass gekachelte Ausgaben nahtlos bleiben; wirkt bei jeder Methode und auf die Helligkeitsreferenz des OpenFocus-Ausrichters |
+| `--exposure-match` | In der CLI für alle Methoden standardmäßig an; A/B/C verwenden das erste verarbeitete Bild, andere Methoden das letzte. `--no-exposure-match` schaltet aus. |
 | `--base-frame` | Optionaler Schritt nach der Fusion: die niedrigen Frequenzen der Ausgabe an das `last`/`first`-Bild angleichen (Standard `none`) |
 | `--sort` | Bildreihenfolge für `openfocus_a/b/c`: `asc` (Standard, Dateireihenfolge), `desc` (kehrt einen Fern-nach-Nah-Durchlauf um), `off` |
 | `--frame-order` | Ordner als Eingabe: `auto` (Standard) sortiert die Bilder von nah nach fern nach den EXIF-Fokusschritten, wenn alle Bilder sie haben (OM-SYSTEM-Fokus-Bracketing beginnt in der Mitte), sonst nach Namen; `name` immer nach Dateiname. Einzeln angegebene Dateien behalten ihre Reihenfolge |
 | `--dust-map WHITE` | Flat-Field-Korrektur (Staubkarte) aus einer defokussierten Weißfeldaufnahme |
 | `--defect-mask-path MASK` | Sensordefektmaske; Werte ungleich null werden vor der Registrierung repariert |
 | `--sensor-denoise` | Behutsame Sensorentrauschung vor der Registrierung |
-| `--kernel, -k` | Kernelgröße (ungerade; steuert bei OpenFocus A/B die Skala der Fokusantwort; C hat keinen Radius) |
-| `--depth-smoothing VALUE` | Nur `openfocus_b`: Stärke der Tiefenglättung (Standard 1,44) |
-| `--blend-smoothing VALUE` | Nur `openfocus_a` / `openfocus_c`: Stärke der Mischungsglättung (Standard 2,0 für A, 3,6 für C) |
+| `--kernel, -k` | Nur für Methoden mit deklariertem `kernel_size` |
 | `--sharpen-output` | Mildes Unscharfmaskieren auf das Fusionsergebnis anwenden (standardmäßig aus) |
 | `--threads, -t` | Thread-Obergrenze; `0` = automatisch (Standard), positive Werte begrenzen die Parallelität |
 | `--resource-preference` | Ressourcenmodus: `balanced` (Standard), `responsive` oder `maximum` |

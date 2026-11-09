@@ -385,11 +385,11 @@ Beeldregistratie corrigeert ruimtelijke misuitlijning tussen frames in je beelds
 
 #### OpenFocus (snel)
 
-- Begrensde similariteitsuitlijning (translatie + rotatie + schaal), met helderheidsvereffening per frame en automatische bijsnijding
+- Begrensde similariteitsuitlijning (translatie + rotatie + schaal) met automatische bijsnijding
 - Zoekt begrensde similariteitstransformaties met bemonsterde beeldverschillen en warpt met Lanczos-interpolatie
-- Frames die meer dan **8 % van de frameafmeting verschuiven, blijven onuitgelijnd** in plaats van half gecorrigeerd. Aan te passen met de CLI-optie `--align-shift-limit`
+- Het zoekgebied voor verschuiving is standaard 3% van de frameafmeting en wordt ingesteld met `--align-shift-limit`. De zoekopdracht gebruikt het vorige uitgelijnde frame en de cumulatieve beweging als uitgangspunt; de totale verschuiving kan groter zijn dan 3%.
 - Kies voor niet-rigide of extreme geometrie in plaats daarvan ECC of homografie
-- **Afgewezen beelden verwerken** staat standaard op „Doorgaan met niet-uitgelijnd beeld”. **Stoppen bij afgewezen beeld** laat de rendering of het batchitem mislukken voordat een resultaat wordt geproduceerd wanneer de detectorkwaliteit onder 0,06 ligt of de geschatte beweging de ingestelde verschuivingslimiet, 8° rotatie of 5 % schaalverandering overschrijdt. Frames worden vanaf 1 genummerd in de verwerkte stapelvolgorde. De geometrische referentie is standaard frame 1; een zwakke directe match kan opnieuw worden geprobeerd tegen het aangrenzende frame dat dichter bij de referentie ligt. Dit beleid detecteert afgewezen schattingen, niet alle onjuiste matches: weinig textuur, herhaalde patronen, occlusie, grote beweging of focusveranderingen kunnen registratie nog steeds misleiden. Controleer het resultaat.
+- Bij een daadwerkelijke schattingsfout behoudt `failure_policy=continue` (standaard) het niet-uitgelijnde frame; `fail` breekt af. Weinig textuur, herhaalde patronen en focusveranderingen kunnen nog steeds onnauwkeurige overeenkomsten veroorzaken.
 - Kies in de CLI hetzelfde beleid met `--align openfocus --align-param 'failure_policy="fail"'` (gebruik shell-passende aanhalingstekens). Batchitems gebruiken het gekozen beleid onafhankelijk. De standaard is `"continue"`.
 - Stel **Referentiebeeld** in op een 1-gebaseerd nummer in de opgenomen, verwerkte stapelvolgorde om de geometrie op dat frame te verankeren. De framevolgorde blijft behouden; helderheidsvereffening gebruikt zijn eigen referentie. Elke batchstapel moet dat nummer bevatten, anders mislukt het item. CLI-voorbeeld: `--align openfocus --align-param reference_frame=3`. Een referentie kan parallax of een slechte match niet corrigeren; controleer het resultaat.
 
@@ -490,28 +490,15 @@ Als geen tijdelijke map is opgegeven, schat OpenFocus de benodigde ruimte op bas
 
 ### OpenFocus A / B / C
 
-- **OpenFocus A**: gebruikt een meerschalige focusrespons en mengt achtergronden met weinig detail.
-- **OpenFocus B**: mengt naburige frames op basis van een afgeplatte dieptekaart.
-- **OpenFocus C**: mengt bronpixels op basis van de voltooide, afgevlakte dieptekaart.
-- **Parameters**: A en B gebruiken de kernelregelaar voor de schaal van de focusrespons; C heeft geen straal. Afvlakking heeft bij A geen effect, net als bij het referentieproduct A; B en C vlakken de dieptekaart voor de fusie af.
+A gebruikt een meerschalige focusrespons (straal 8, afvlakking 4); de afvlakking is momenteel inactief. A is niet gelijk aan HF9 A.
 
-**Afvlakking**: één draaischijf onder de kernelregelaar, met een betekenis die afhangt van de gekozen methode (bereik 0–8, stap 0,2):
+B gebruikt een dieptekaart (straal 8, afvlakking 4, feather 3). C gebruikt een gewogen piramide met meerdere niveaus (afvlakking 4), zonder straal.
 
-| Methode | Label | Standaard | Effect |
-|---|---|---|---|
-| OpenFocus A | Mengingsafvlakking | 2,0 | Geen effect, net als bij het referentieproduct A |
-| OpenFocus B | Diepteafvlakking | 1,44 | Regelt de afvlakking van de dieptekaart die de menging stuurt |
-| OpenFocus C | Mengingsafvlakking | 3,6 | Regelt de afvlakking van de dieptekaart en de fusieovergangen |
+CLI: `--method openfocus_b --param radius=8 --param smoothing=4 --param feather=3`.
 
-Standaardkernelgrootte voor A/B: 17. Opgeslagen waarden blijven behouden; herstel de standaardwaarden om de nieuwe te gebruiken.
+In de interface staat belichtingsafstemming bij A/B/C standaard aan en gebruikt het eerste verwerkte frame; bij andere methoden staat die standaard uit en gebruikt het laatste frame. Expliciet opgeslagen keuzes blijven behouden; bij ingeschakelde A/B/C geldt het eerste frame. Dit is een benadering; gelijkheid aan de helderheidsaanpassing van HF9 is niet bewezen. Helderheidsdriftcorrectie blijft standaard uit. Herstellen zet de standaardwaarden van elke methode terug. In de CLI staat die voor alle methoden standaard aan; `--no-exposure-match` schakelt uit.
 
-Hogere waarden versterken de overgangsafvlakking. Elke methode onthoudt zijn eigen waarde tussen sessies, en batchverwerking gebruikt dezelfde regel.
-
-C heeft geen straalparameter, dus de kernelregelaar is verborgen.
-
-CLI: `--depth-smoothing VALUE` (B) en `--blend-smoothing VALUE` (A, C).
-
-**Helderheidsopties gelden per methode.** *Belichting afstemmen vóór fusie* en *Helderheidsdrift verwijderen* worden afzonderlijk per methode bewaard. In de interface staan beide standaard uit voor alle methoden; dit zijn extra correcties, verschillend van de helderheidsaanpassing van het referentieproduct. Belichtingsafstemming schaalt elk bronframe vóór de fusie naar het laatste frame; helderheidsdrift verwijderen corrigeert daarna de lage frequenties van het fusieresultaat. Bij het wisselen van methode worden de eigen waarden getoond; die blijven na herstart behouden. In de CLI blijft belichtingsafstemming standaard aan; gebruik `--no-exposure-match` om die uit te schakelen. **Herstellen** wist de onthouden helderheids-, afvlakkings- en straalwaarden van elke methode en zet beide helderheidsopties weer uit.
+Bij keuze van A/B/C wordt OpenFocus-uitlijning gebruikt, tenzij expliciet een uitlijning is gekozen of een project is hersteld. De standaardwaarden zijn verschuiving 0,03 en vergroting 5%.
 
 **Gefuseerd resultaat verscherpen** past na de fusie een milde onscherpe maskering toe, voordat het resultaat naar zijn uitvoerbitdiepte wordt omgezet. Dit staat standaard uit en kan in de hoofdfusie-opties of batchopties worden ingeschakeld; de equivalente CLI-optie is `--sharpen-output`. Dit beïnvloedt het gefuseerde beeld, niet geregistreerde frames of dieptekaarten. Het kan randen duidelijker maken, maar ook ruis en halo's versterken. De instelling wordt in het project opgeslagen en tussen sessies onthouden.
 
@@ -539,7 +526,7 @@ Kies **Alleen uitlijning (geen fusie)** om de stapel te registreren en één sta
 | StackMFF V3 | Langzaam (GPU) | Uitstekend | Beste kwaliteit |
 | OpenFocus A | Afhankelijk van stapel | Afhankelijk van stapel | Meerschalige focusrespons en menging van detailarme gebieden |
 | OpenFocus B | Afhankelijk van stapel | Afhankelijk van stapel | Dieptegestuurde menging van naburige frames |
-| OpenFocus C | Afhankelijk van stapel | Afhankelijk van stapel | Bronpixels mengen op basis van de voltooide dieptekaart |
+| OpenFocus C | — | — | Gewogen piramide met meerdere niveaus |
 
 **Extra → Methoden vergelijken…** opent een dialoog waarin meerdere methoden onafhankelijk worden ingesteld. Naam, parameterlabels en bedieningselementen van elke methode blijven bij elkaar wanneer het venster smaller wordt. Wijzigingen werken het voorbeeld automatisch bij. **ROI-voorbeeld (snel)** fuseert het geselecteerde gebied met omringende context; **Fusie van het hele beeld** controleert het resultaat van het hele beeld en laat je een ander gebied bekijken zonder opnieuw te renderen. ROI-resultaten kunnen afwijken van resultaten van het hele beeld, omdat belichtingsstatistieken en sommige algoritmen van de beeldomvang afhangen.
 **Fusie van het hele beeld** is standaard geselecteerd.
@@ -942,18 +929,16 @@ Voeg voor één rendering bijvoorbeeld `--align openfocus --alignment-report ali
 | `--align, -a` | `none` (standaard), `homography`, `ecc`, `both`, `openfocus` |
 | `--param KEY=JSON_VALUE` | Fusieparameter; herhaal voor meerdere sleutels; overschrijft oudere flags |
 | `--align-param KEY=JSON_VALUE` | Registratieparameter; herhaal voor meerdere sleutels |
-| `--align-shift-limit` | Alleen `openfocus`: maximaal geaccepteerde verschuiving als fractie van de frameafmeting (standaard 0,08; frames erboven blijven onuitgelijnd) |
+| `--align-shift-limit` | Zoekgebied voor verschuiving als fractie van de frameafmeting (standaard 0,03); cumulatieve verschuiving kan groter zijn. |
 | `--alignment-report PATH` | Uitlijningsresultaten per frame als JSON opslaan voor één niet-gegroepeerde rendering met uitlijning; batch- en gegroepeerde renders worden niet ondersteund |
-| `--exposure-match` | Het gemiddelde van elk frame vóór fusie op het laatste frame afstemmen (standaard: aan; `--no-exposure-match` schakelt uit). Versterkingen gelden voor de hele stapel, zodat getegelde uitvoer naadloos blijft; geldt voor elke methode en voor de helderheidsreferentie van de OpenFocus-uitlijner |
+| `--exposure-match` | In de CLI standaard aan voor alle methoden; A/B/C gebruiken het eerste verwerkte frame, andere methoden het laatste. `--no-exposure-match` schakelt uit. |
 | `--base-frame` | Optionele stap na fusie: de laagfrequentie van de uitvoer op het `last`/`first`-frame afstemmen (standaard `none`) |
 | `--sort` | Framevolgorde voor `openfocus_a/b/c`: `asc` (standaard, bestandsvolgorde), `desc` (keert een ver-naar-dichtbij-reeks om), `off` |
 | `--frame-order` | Map als invoer: `auto` (standaard) sorteert de beelden van dichtbij naar veraf op EXIF-focusstappen als alle beelden die hebben (OM SYSTEM-focusbracketing begint halverwege de diepte), anders op naam; `name` altijd op bestandsnaam. Expliciet opgegeven bestanden behouden hun volgorde |
 | `--dust-map WHITE` | Flat-field-correctie (stofkaart) uit een onscherpe witveldsopname |
 | `--defect-mask-path MASK` | Sensordefectmasker; waarden die niet nul zijn worden vóór registratie gerepareerd |
 | `--sensor-denoise` | Voorzichtige sensorruisonderdrukking vóór registratie |
-| `--kernel, -k` | Kernelgrootte (oneven; regelt bij OpenFocus A/B de schaal van de focusrespons; C heeft geen straal) |
-| `--depth-smoothing VALUE` | Alleen `openfocus_b`: sterkte van diepteafvlakking (standaard 1,44) |
-| `--blend-smoothing VALUE` | Alleen `openfocus_a` / `openfocus_c`: sterkte van mengingsafvlakking (standaard 2,0 voor A, 3,6 voor C) |
+| `--kernel, -k` | Alleen voor methoden die `kernel_size` declareren |
 | `--sharpen-output` | Milde onscherpe maskering op het gefuseerde resultaat toepassen (standaard uit) |
 | `--threads, -t` | Bovengrens voor workerthreads; `0` = automatisch (standaard), positieve waarden beperken de gelijktijdigheid |
 | `--resource-preference` | Resourcemodus: `balanced` (standaard), `responsive` of `maximum` |

@@ -219,8 +219,8 @@ class MultiFocusFusion:
             algorithm (str): 融合算法名称,可选 'guided_filter', 'dct', 'dtcwt', 'stackmffv3'
             use_gpu (bool): 是否使用GPU加速(CUDA/ROCm/XPU/MPS),默认为False
             ai_batch_size (int): StackMFF V3 批量处理大小，默认为2
-            exposure_match (bool): 融合前把每帧均值标定到末帧。整栈计算、
-                分块前应用；对所有算法生效。默认 True。
+            exposure_match (bool): 融合前匹配整栈曝光；OpenFocus A/B/C 使用
+                处理序首帧，其余算法使用末帧。分块前统一计算，默认 True。
         """
         self._ensure_supported_algorithm(algorithm)
         self.algorithm = algorithm
@@ -295,43 +295,43 @@ class MultiFocusFusion:
     def _fuse_openfocus_a(self,
                           input_source: Union[str, List[np.ndarray]],
                           img_resize: Optional[Tuple[int, int]] = None,
-                          kernel_size: int = 17,
+                          radius: int = 8,
                           **kwargs) -> np.ndarray:
         """OpenFocus A: high-frequency energy source selection."""
         from fusion_methods.openfocus_a import openfocus_a_impl
         return openfocus_a_impl(input_source, img_resize,
-                                kernel_size=kernel_size,
+                                kernel_size=2 * radius + 1,
                                 thread_count=kwargs.get('thread_count', None),
-                                blend_smoothing=kwargs.get('blend_smoothing', None),
+                                blend_smoothing=kwargs.get('smoothing', 4.),
                                 should_cancel=kwargs.get('should_cancel'),
                                 progress_callback=kwargs.get('progress_callback'))
 
     def _fuse_openfocus_b(self,
                           input_source: Union[str, List[np.ndarray]],
                           img_resize: Optional[Tuple[int, int]] = None,
-                          kernel_size: int = 17,
+                          radius: int = 8,
                           **kwargs) -> np.ndarray:
         """OpenFocus B: depth-guided source blending."""
         from fusion_methods.openfocus_bc import openfocus_b_impl
         return openfocus_b_impl(input_source, img_resize,
-                                kernel_size=kernel_size,
+                                kernel_size=2 * radius + 1,
                                 thread_count=kwargs.get('thread_count', None),
-                                depth_smoothing=kwargs.get('depth_smoothing', None),
+                                depth_smoothing=kwargs.get('smoothing', 4.) * .24,
                                 should_cancel=kwargs.get('should_cancel'),
                                 depth_override=kwargs.get('depth_override'),
+                                feather=kwargs.get('feather', 3),
                                 progress_callback=kwargs.get('progress_callback'))
 
     def _fuse_openfocus_c(self,
                           input_source: Union[str, List[np.ndarray]],
                           img_resize: Optional[Tuple[int, int]] = None,
                           **kwargs) -> np.ndarray:
-        """OpenFocus C: native reverse source merge using completed depth."""
+        """OpenFocus C: multilevel focus-weighted source fusion."""
         from fusion_methods.openfocus_bc import openfocus_c_impl
         return openfocus_c_impl(input_source, img_resize,
                                 thread_count=kwargs.get('thread_count', None),
-                                blend_smoothing=kwargs.get('blend_smoothing', None),
+                                blend_smoothing=kwargs.get('smoothing', 4.) * .6,
                                 should_cancel=kwargs.get('should_cancel'),
-                                depth_override=kwargs.get('depth_override'),
                                 progress_callback=kwargs.get('progress_callback'))
 
     # ------------------------------------------------------------------
@@ -703,9 +703,7 @@ class MultiFocusFusion:
 
         if self.algorithm in ('openfocus_b', 'openfocus_c'):
             from fusion_methods._depth_kernel import prepare_depth_kernel
-            smoothing_key = ('depth_smoothing' if self.algorithm == 'openfocus_b'
-                             else 'blend_smoothing')
-            smoothing = kwargs[smoothing_key]
+            smoothing = kwargs['smoothing']
             prepare_depth_kernel(guided=smoothing is None or smoothing > 0,
                                  should_cancel=should_cancel)
 
@@ -784,7 +782,7 @@ class MultiFocusFusion:
         exposure_gains_ = None
         if self.exposure_match and native_codes:
             from core.source_frames import match_exposure_frames
-            input_source = match_exposure_frames(input_source, should_cancel)
+            input_source = match_exposure_frames(input_source, should_cancel, reference_index=0)
         elif self.exposure_match:
             exposure_gains_ = self._exposure_gains_for_source(
                 input_source, should_cancel,
@@ -1400,15 +1398,14 @@ class MultiFocusFusion:
                 depth_images = [prepare_tile_frame(frame,
                                     exposure_gains[index] if match_depth else None)
                                 for index, frame in enumerate(imgs)]
-            kernel = kwargs.get('kernel_size', 17)
-            smoothing = kwargs.get('depth_smoothing')
-            smoothing = (1.44 if smoothing is None else smoothing) * (5.0 / 1.2)
+            kernel = 2 * kwargs.get('radius', 8) + 1
+            smoothing = kwargs.get('smoothing', 4.)
             depth_threads = policy.cpu_capacity(policy.probe_resources(), self.resource_preference)
             if thread_count is not None and thread_count > 0:
                 depth_threads = min(depth_threads, thread_count)
             global_depth = depth_map(depth_images, None, kernel, smoothing, should_cancel,
                                      thread_count=depth_threads, half_resolution=True,
-                                     preserve_detail=True)
+                                     preserve_detail=True, feather=kwargs.get('feather', 3))
             del depth_images
 
         if get_fusion(algorithm).resource_estimator:

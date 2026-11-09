@@ -73,6 +73,21 @@ def algorithm_host(qapp, extension):
     qapp.processEvents()
 
 
+def test_openfocus_default_alignment_respects_explicit_selection(algorithm_host):
+    window = algorithm_host
+    window._alignment_choice_explicit = False
+    window.set_fusion_method('openfocus_a')
+    assert window.current_alignment_method() == 'openfocus'
+    window.set_fusion_method('guided_filter')
+    assert window.current_alignment_method() == 'ecc'
+    window.set_alignment_method('ecc')  # An explicit choice, even if already selected.
+    window.set_fusion_method('openfocus_b')
+    assert window.current_alignment_method() == 'ecc'
+    window.set_alignment_method('openfocus')
+    window.set_fusion_method('openfocus_c')
+    assert window.current_alignment_method() == 'openfocus'
+
+
 def _edit_fraction(editors, fraction, direction):
     editors["fraction"].setValue(fraction)
     editor = editors["direction"]
@@ -296,12 +311,12 @@ def test_openfocus_b_default_precision_and_saved_value(qapp, algorithm_host):
     host = algorithm_host
     host.set_fusion_method('openfocus_b')
     editors = host.fusion_parameter_panel.editors
-    assert editors['kernel_size'].value() == 17
-    assert editors['depth_smoothing'].value() == pytest.approx(1.44)
-    assert editors['depth_smoothing'].text() == editors['depth_smoothing'].locale().toString(1.44, 'f', 2)
+    assert editors['radius'].value() == 8
+    assert editors['smoothing'].value() == pytest.approx(4)
+    assert editors['feather'].value() == 3
 
-    editors['depth_smoothing'].setValue(1.2)
+    editors['smoothing'].setValue(1.2)
     host.set_fusion_method('openfocus_c')
-    assert host.fusion_parameter_panel.editors['blend_smoothing'].value() == pytest.approx(3.6)
+    assert host.fusion_parameter_panel.editors['smoothing'].value() == pytest.approx(4)
     host.set_fusion_method('openfocus_b')
-    assert host.fusion_parameter_panel.editors['depth_smoothing'].value() == pytest.approx(1.2)
+    assert host.fusion_parameter_panel.editors['smoothing'].value() == pytest.approx(1.2)

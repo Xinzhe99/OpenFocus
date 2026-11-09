@@ -1191,10 +1191,8 @@ def _exposure_mean(frame, should_cancel=None, *, normalize_uint16=False):
 def exposure_gains(frames):
     """Per-frame gains that put every frame at the last frame's mean level.
 
-    The reference A/B/C pipeline matches each frame's exposure to the last
-    frame (the base reference) before the focus measure. Doing it once here,
-    on the whole stack and before tiling, keeps the decision independent of
-    tile boundaries; a per-tile implementation would show brightness seams.
+    Non-OpenFocus methods match each frame to the last frame before focus
+    measurement. Whole-stack gains keep tiled output free of exposure seams.
     """
     n = len(frames)
     if n == 0:

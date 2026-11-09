@@ -348,11 +348,11 @@ O registro corrige o desalinhamento espacial entre os quadros da pilha. É essen
 
 #### OpenFocus (rápido)
 
-- Alinhamento por similaridade limitada (translação + rotação + escala), com equalização de brilho por quadro e corte automático
+- Alinhamento por similaridade limitada (translação + rotação + escala) com corte automático
 - Busca transformações de similaridade limitadas usando diferenças de imagem amostradas e aplica warp com interpolação Lanczos
-- Quadros com deslocamento superior a **8% do tamanho do quadro permanecem sem alinhamento** em vez de serem corrigidos parcialmente. Altere o limite com `--align-shift-limit` na CLI
+- O domínio de busca do deslocamento é, por padrão, 3% do tamanho do quadro e pode ser alterado com `--align-shift-limit`. A busca usa o quadro anterior alinhado e parte do movimento acumulado; o deslocamento total pode superar 3%.
 - Para geometria não rígida ou extrema, escolha ECC ou homografia
-- **Tratamento de quadros rejeitados**: por padrão, continua com o quadro não alinhado. Escolha **Parar em quadro rejeitado** para falhar a renderização ou o item de lote antes de produzir um resultado quando a qualidade do detector for inferior a 0,06 ou o movimento estimado exceder o limite de deslocamento configurado, 8° de rotação ou 5% de mudança de escala. Os quadros são numerados a partir de 1 na ordem da pilha processada. A referência geométrica é o quadro 1 por padrão; uma correspondência direta fraca pode ser tentada novamente no quadro adjacente mais próximo da referência. Essa política detecta estimativas rejeitadas, não todas as correspondências incorretas: baixa textura, padrões repetidos, oclusão, movimento amplo ou mudanças de foco ainda podem enganar o registro. Inspecione o resultado.
+- Em um erro real de estimativa, `failure_policy=continue` (padrão) mantém o quadro sem alinhamento; `fail` interrompe o processamento. Pouca textura, padrões repetidos e mudanças de foco ainda podem causar correspondências imprecisas.
 - Na CLI, selecione a mesma política com `--align openfocus --align-param 'failure_policy="fail"'` (use as aspas adequadas ao shell). Itens de lote usam a política selecionada de forma independente. O padrão é `"continue"`.
 - Defina **Quadro de referência** como um número baseado em 1 na ordem da pilha incluída e processada para ancorar a geometria nesse quadro. A ordem é preservada; a equalização de brilho usa sua própria referência. Cada pilha de lote deve conter esse número, ou o item falha. Exemplo de CLI: `--align openfocus --align-param reference_frame=3`. Escolher uma referência não corrige paralaxe nem uma correspondência ruim; inspecione o resultado.
 
@@ -453,28 +453,15 @@ Se nenhum diretório temporário for especificado, o OpenFocus estima o espaço 
 
 ### OpenFocus A / B / C
 
-- **OpenFocus A**: usa uma resposta de foco multiescala e mistura fundos com poucos detalhes.
-- **OpenFocus B**: mistura quadros vizinhos guiado por um mapa de profundidade suavizado.
-- **OpenFocus C**: mistura os pixels de origem com base no mapa de profundidade final suavizado.
-- **Parâmetros**: A e B usam o controle de kernel para a escala de resposta de foco; C não tem raio. A suavização de A não tem efeito, como no produto de referência A; B e C suavizam o mapa de profundidade usado para a fusão.
+A usa uma resposta de foco multiescala (raio 8, suavização 4); sua suavização está atualmente inativa. A não equivale ao HF9 A.
 
-**Suavização**: um único campo numérico abaixo do controle de kernel, cujo significado depende do método selecionado (intervalo 0–8, passo 0,2):
+B usa um mapa de profundidade (raio 8, suavização 4, feather 3). C usa uma pirâmide multinível ponderada (suavização 4), sem raio.
 
-| Método | Rótulo | Padrão | Efeito |
-|---|---|---|---|
-| OpenFocus A | Suavização da mistura | 2,0 | Sem efeito, como no produto de referência A |
-| OpenFocus B | Suavização da profundidade | 1,44 | Controla a suavização do mapa de profundidade que guia a mistura |
-| OpenFocus C | Suavização da mistura | 3,6 | Controla a suavização do mapa de profundidade e as transições de fusão |
+CLI: `--method openfocus_b --param radius=8 --param smoothing=4 --param feather=3`.
 
-Tamanho de kernel padrão para A/B: 17. Os valores salvos são mantidos; restaure os padrões para usar os novos valores.
+Na interface, a igualação de exposição fica ativada por padrão em A/B/C e usa o primeiro quadro processado; nos demais métodos fica desativada por padrão e usa o último. As escolhas salvas explicitamente são preservadas; quando A/B/C está ativado, usa-se o primeiro. É uma aproximação sem equivalência comprovada ao ajuste de brilho do HF9. A correção de deriva de brilho permanece desativada por padrão. Redefinir restaura os padrões de cada método. Na CLI fica ativada por padrão para todos os métodos; `--no-exposure-match` desativa.
 
-Valores mais altos aumentam a suavização das transições. Cada método lembra seu próprio valor entre sessões, e o processamento em lote aplica a mesma regra.
-
-C não tem parâmetro de raio, então seu controle de kernel fica oculto.
-
-CLI: `--depth-smoothing VALUE` (B) e `--blend-smoothing VALUE` (A, C).
-
-**As opções de brilho são por método.** *Igualar exposição antes da fusão* e *Remover deriva de brilho* são lembradas separadamente para cada método. Na interface, ambas ficam desativadas por padrão em todos os métodos; são correções adicionais, diferentes do ajuste de brilho do produto de referência. A igualação de exposição escala cada quadro de origem ao último antes da fusão; a remoção da deriva de brilho corrige depois as baixas frequências do resultado fundido. Trocar de método mostra seus valores, preservados após reiniciar. Na CLI, a igualação de exposição continua ativada por padrão; use `--no-exposure-match` para desativá-la. **Redefinir** limpa os valores lembrados de brilho, suavização e raio de todos os métodos e volta a deixar as duas opções de brilho desativadas.
+Ao selecionar A/B/C, usa-se o alinhamento OpenFocus, salvo se um alinhamento tiver sido escolhido explicitamente ou um projeto restaurado. Os padrões são deslocamento 0,03 e ampliação 5%.
 
 **Nitidez da saída fundida** aplica uma máscara de nitidez suave após a fusão, antes de o resultado ser convertido para sua profundidade de saída. Fica desativada por padrão e pode ser ativada em **Configurações de renderização** ou nas opções do lote; o sinalizador equivalente da CLI é `--sharpen-output`. Afeta a imagem fundida, não os quadros registrados nem os mapas de profundidade. Pode tornar as bordas mais distintas, mas amplificar ruído e halos. É salva com o projeto e lembrada entre sessões.
 
@@ -502,7 +489,7 @@ Selecione **Somente alinhamento (sem fusão)** para registrar a pilha e adiciona
 | StackMFF V3 | Lenta (GPU) | Excelente | Qualidade máxima |
 | OpenFocus A | Depende da pilha | Depende da pilha | Resposta multiescala e mistura de áreas pouco detalhadas |
 | OpenFocus B | Depende da pilha | Depende da pilha | Mistura de quadros vizinhos guiada por profundidade |
-| OpenFocus C | Depende da pilha | Depende da pilha | Mistura de pixels de origem com base no mapa de profundidade final |
+| OpenFocus C | — | — | Pirâmide multinível ponderada |
 
 Abra **Ferramentas → Comparação de métodos** para ajustar vários métodos independentemente. Nome, rótulos de parâmetros e controles de cada método permanecem juntos quando a janela estreita. As mudanças atualizam a prévia automaticamente. **Prévia ROI (rápida)** funde a área selecionada com o contexto ao redor; **Fusão de imagem inteira** verifica o resultado da imagem toda e permite inspecionar outra área sem renderizar novamente. Resultados ROI podem diferir dos de imagem inteira porque estatísticas de exposição e alguns algoritmos dependem da extensão da imagem.
 A **fusão de imagem inteira** é selecionada por padrão.
@@ -901,9 +888,9 @@ Por exemplo, adicione `--align openfocus --alignment-report alignment.json` a um
 | `--param KEY=JSON_VALUE` | Define qualquer parâmetro de fusão; repetível e prevalece sobre opções legadas |
 | `--align, -a` | `none` (padrão), `homography`, `ecc`, `both`, `openfocus` |
 | `--align-param KEY=JSON_VALUE` | Define qualquer parâmetro de registro; repetível |
-| `--align-shift-limit` | Somente alinhamento `openfocus`: deslocamento máximo aceito como fração do tamanho do quadro (0,08 padrão; acima disso o quadro fica sem alinhamento) |
+| `--align-shift-limit` | Domínio de busca do deslocamento como fração do tamanho do quadro (0,03 por padrão); o deslocamento acumulado pode ser maior. |
 | `--alignment-report PATH` | Salva os resultados de alinhamento por quadro como JSON para uma renderização única não agrupada com alinhamento ativo; lote e grupos não são suportados |
-| `--exposure-match` | Iguala a média de cada quadro à do último antes da fusão (ativado por padrão; `--no-exposure-match` desativa). Ganhos para toda a pilha, então a saída em blocos permanece sem emendas; aplica-se a todos os métodos e à referência de brilho do alinhador OpenFocus |
+| `--exposure-match` | Na CLI fica ativada por padrão para todos os métodos; A/B/C usam o primeiro quadro processado, os demais o último. `--no-exposure-match` desativa. |
 | `--base-frame` | Etapa opcional pós-fusão: iguala as baixas frequências da saída ao quadro `last`/`first` (`none` padrão) |
 | `--sort` | Ordem de quadros para `openfocus_a/b/c`: `asc` (padrão, ordem de arquivo), `desc` (inverte uma varredura de longe para perto), `off` |
 | `--frame-order` | Pasta de entrada: `auto` (padrão) ordena os quadros de perto para longe pelos passos de foco EXIF quando todos os têm (o bracketing de foco da OM SYSTEM começa no meio da profundidade); senão, por nome; `name` sempre pelo nome do arquivo. Arquivos listados explicitamente mantêm sua ordem |
@@ -911,9 +898,7 @@ Por exemplo, adicione `--align openfocus --alignment-report alignment.json` a um
 | `--dust-map WHITE` | Correção de campo plano (mapa de poeira) a partir de uma tomada de campo branco desfocada |
 | `--defect-mask-path MASK` | Máscara de defeitos em coordenadas do sensor reparada antes do registro |
 | `--sensor-denoise` | Redução de ruído conservadora do sensor antes do registro |
-| `--kernel, -k` | Tamanho do kernel (forçado ímpar); controla a escala de resposta de foco em `openfocus_a` e `openfocus_b`; C não tem raio |
-| `--depth-smoothing VALUE` | Apenas `openfocus_b`: força da suavização de transição de profundidade (1,44 padrão) |
-| `--blend-smoothing VALUE` | Apenas `openfocus_a` / `openfocus_c`: força da suavização de transição (2,0 para A, 3,6 para C por padrão) |
+| `--kernel, -k` | Somente para métodos que declaram `kernel_size` |
 | `--ai-mode {soft,hard}` | Saída do StackMFF V3: mistura ponderada por probabilidade (padrão) ou quadro mais provável por pixel |
 | `--threads, -t` | Limite superior de threads de trabalho; `0` = automático (padrão), valores positivos limitam a concorrência |
 | `--resource-preference` | `balanced` (padrão), `responsive` ou `maximum`; controla o agendamento de recursos |

@@ -742,13 +742,13 @@ def exposure_frames(frames, gains, should_cancel=None):
             for frame, gain in zip(frames, gains)]
 
 
-def match_exposure_frames(frames, should_cancel=None):
-    """Resolve the target mean once and retain only one gain per immutable source."""
+def match_exposure_frames(frames, should_cancel=None, *, reference_index=-1):
+    """Resolve the selected target mean once and retain one gain per source."""
     from utils.image_utils import (
         _exposure_mean, apply_exposure_gain, normalize_fuse_input, quantize_fuse_output,
     )
     from core.frame_storage import create_transient_frame
-    reference = frames[-1]
+    reference = frames[reference_index]
     target = _exposure_mean(resolve_frame(reference), should_cancel, normalize_uint16=True)
 
     def matcher(gain):

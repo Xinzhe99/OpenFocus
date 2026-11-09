@@ -463,8 +463,8 @@ StackMFF V2 and StackMFF V3 — require an explicit **Compute** click. StackMFF 
 has no depth map. Opening the dialog or changing the measure,
 source, registration or parameters never starts computation. The parameter editor
 appears directly below the measure selector: DCT median kernel and GFG initial kernel
-use odd values 1–51 (default 7). OpenFocus B uses a focus-response radius
-and depth smoothing; OpenFocus C uses **Blend smoothing** to smooth its depth map, without a radius. DTCWT decomposition levels
+use odd values 1–51 (default 7). OpenFocus B uses Radius, Smoothing and Feather;
+OpenFocus C's depth export uses Smoothing without a radius. DTCWT decomposition levels
 are editable here as a local draft, initialized from the source parameters. StackMFF V3
 shows its own AI output mode (Soft blend by default, or Hard pick) and an explanation
 instead of a numeric kernel: the map reports a continuous frame position, not a
@@ -738,22 +738,19 @@ Image registration corrects spatial misalignment between frames in your image st
 
 #### OpenFocus (fast)
 
-- Bounded similarity alignment (translation + rotation + scale),
-  with per-frame brightness equalization and auto-crop
-- Searches bounded similarity transforms using sampled image differences and warps with Lanczos interpolation
-- Frames shifting more than **8% of the frame size are left unaligned**
-  rather than partially corrected. Override with the CLI
-  `--align-shift-limit`
+- Bounded similarity alignment (translation + rotation + scale) with auto-crop.
+- Searches sampled image differences and warps with Lanczos interpolation.
+  The translation search range defaults to 3% of the frame size and can be
+  changed with `--align-shift-limit`. Successive estimates can accumulate beyond
+  that range; it is not a guaranteed rejection threshold.
 - For non-rigid or extreme geometry, pick ECC or Homography instead
-- **Rejected frame handling** defaults to continuing with the unaligned frame.
-  Choose **Stop on rejected frame** to fail the render or batch item before
-  producing a result when detector quality is below 0.06 or the estimated
-  motion exceeds the configured shift limit, 8° rotation, or 5% scale change.
-  Frames are numbered from 1 in the processed stack order. The geometric
-  reference defaults to frame 1; a weak direct match may be retried against
-  the adjacent frame closer to the reference. This policy detects rejected estimates, not all
-  incorrect matches: low texture, repeated patterns, occlusion, large motion,
-  or focus changes can still defeat registration. Inspect the result.
+- **Rejected frame handling** defaults to continuing with the unaligned frame
+  when estimation fails. Choose **Stop on rejected frame** to fail the render
+  or batch item instead. Frames are numbered from 1 in the processed stack;
+  geometry defaults to frame 1 and successive estimates follow the adjacent
+  aligned frame. Low texture, repeated patterns, occlusion, large motion, or
+  focus changes can still produce an inaccurate match without an error.
+  Inspect the result.
 - In the CLI, select the same policy with `--align openfocus --align-param
   'failure_policy="fail"'` (use shell-appropriate quoting). Batch items use
   the selected policy independently. The default is `"continue"`.
@@ -919,40 +916,27 @@ Each neural tile uses every frame. Source frames and alignment scratch can be di
 
 - **OpenFocus A**: uses a multiscale focus response and blends low-detail backgrounds; ties keep the first frame, and 16-bit precision is preserved.
 - **OpenFocus B**: blends neighboring frames guided by a smoothed depth map.
-- **OpenFocus C**: blends source pixels using the completed, smoothed depth map.
-- **Parameters**: A and B use the kernel slider for focus-response scale; C has no radius. A's smoothing setting has no effect, matching the reference A method; B and C smooth the depth map used for fusion.
+- **OpenFocus C**: combines source detail across a multilevel weighted pyramid.
+- **Parameters**: A and B expose Radius and Smoothing; B also exposes Feather.
+  The defaults are R8/S4 for A, R8/S4/F3 for B and S4 for C. A's Smoothing
+  control currently has no effect, unlike the reference method. B smooths its
+  depth map; C smooths its multilevel fusion weights. C has no Radius control.
 
-**Smoothing**: one spin box under the kernel slider, with the meaning of the
-selected method (range 0–8, step 0.2):
+If no registration method has been explicitly selected, choosing A/B/C selects
+OpenFocus alignment. Explicit selections and restored project choices take priority.
 
-| Method | Label | Default | Effect |
-|---|---|---|---|
-| OpenFocus A | Blend smoothing | 2.0 | No effect, matching the reference A method |
-| OpenFocus B | Depth smoothing | 1.44 | Controls smoothing of the depth map that guides blending |
-| OpenFocus C | Blend smoothing | 3.6 | Controls depth-map smoothing and fusion transitions |
+Each method remembers its own settings. For example, use `--method openfocus_b
+--param radius=8 --param smoothing=4 --param feather=3` in the CLI. Existing
+saved values are converted to the new units when read.
 
-A/B default kernel size: 17. Existing saved values remain in use; restore defaults to use the new defaults.
-
-OpenFocus A does not use this value, matching HF9 A. For B and C, larger values
-increase depth-map smoothing. Each
-method remembers its own value across sessions; batch processing uses the same rule.
-
-C has no Radius parameter, so its kernel slider is hidden.
-
-CLI: `--depth-smoothing VALUE` (B) and `--blend-smoothing VALUE` (A, C).
-
-**Brightness options are per method.** *Match exposure before fusion* and
-*Remove brightness drift* are remembered separately for each fusion method,
-because they answer a per-stack question rather than a global preference.
-In the GUI both default to off for every method. They are optional extra
-corrections, distinct from the reference product's brightness adjustment. Exposure matching scales
-every source frame to the last frame before fusion; removing brightness drift
-corrects the fused result's low frequencies afterwards. Switching methods shows
-that method's own values, and those values survive a restart. The CLI retains
-its separate exposure-matching default; use `--no-exposure-match` to disable it.
-**Reset** clears the remembered
-brightness, smoothing and Radius values of every method and returns both
-brightness options to off.
+**Brightness options are per method.** *Match exposure before fusion* defaults
+on for OpenFocus A/B/C and matches the first frame in processing order; other
+methods default off and use the last frame. *Remove brightness drift* defaults
+off and adjusts the fused result's low frequencies. Exposure matching is an
+approximation, not an exact reproduction of the reference brightness adjustment.
+Explicit saved choices remain in use. **Reset** clears remembered choices and
+restores the method defaults. The CLI defaults exposure matching on and accepts
+`--no-exposure-match` to disable it.
 
 **Sharpen fused output** applies a mild unsharp mask after fusion, before the
 result is converted to its output bit depth. It is off by default and can be
@@ -1852,9 +1836,9 @@ an input or another output. Batch, grouped and dry-run modes reject this option.
 | `--param KEY=JSON_VALUE` | Set any fusion parameter; repeatable and overrides legacy flags |
 | `--align, -a` | `none` (default), `homography`, `ecc`, `both`, `openfocus` |
 | `--align-param KEY=JSON_VALUE` | Set any registration parameter; repeatable |
-| `--align-shift-limit` | `openfocus` align only: max accepted shift as a fraction of the frame size (default 0.08; frames above it are left unaligned) |
+| `--align-shift-limit` | `openfocus` alignment search range as a fraction of the frame size (default 0.03) |
 | `--alignment-report PATH` | Save per-frame alignment outcomes as JSON for a single, non-grouped render with alignment enabled; batch and grouped renders are not supported |
-| `--exposure-match` | Match every frame's mean to the last frame before fusion (default: on; `--no-exposure-match` disables). Whole-stack gains, so tiled output stays seamless; applies to every method and to the OpenFocus aligner's brightness reference |
+| `--exposure-match` | Match mean brightness to the first processed frame for OpenFocus A/B/C, or the last for other methods (default: on; `--no-exposure-match` disables). Gains are computed before tiling. |
 | `--base-frame` | Optional post-fusion step: match the output's low frequencies to the `last`/`first` frame (`none` default) |
 | `--sort` | Frame order for `openfocus_a/b/c`: `asc` (default, file order), `desc` (reverse a far-to-near sweep), `off` |
 | `--frame-order` | Folder input: `auto` (default) orders frames near to far by EXIF focus steps when every frame has them (OM SYSTEM focus bracketing starts mid-depth), otherwise by name; `name` always sorts by filename. Explicit file lists keep their order |
@@ -1862,9 +1846,7 @@ an input or another output. Batch, grouped and dry-run modes reject this option.
 | `--dust-map WHITE` | Flat-field (dust map) correction from a defocused white-field shot |
 | `--defect-mask-path MASK` | Sensor-coordinate defect mask repaired before registration |
 | `--sensor-denoise` | Conservative sensor denoising before registration |
-| `--kernel, -k` | Kernel size (forced odd); controls focus-response scale for `openfocus_a` and `openfocus_b`; C has no radius |
-| `--depth-smoothing VALUE` | `openfocus_b` only: depth-transition smoothing strength (default 1.44) |
-| `--blend-smoothing VALUE` | `openfocus_a` / `openfocus_c` only: transition smoothing strength (defaults 2.0 for A, 3.6 for C) |
+| `--kernel, -k` | Odd kernel size for methods that declare `kernel_size`; OpenFocus A/B use `--param radius=...` |
 | `--ai-mode {soft,hard}` | StackMFF V3 output: probability-weighted blend (default) or most probable frame per pixel |
 | `--threads, -t` | Worker thread upper limit; `0` = automatic (default), positive values cap concurrency |
 | `--resource-preference` | `balanced` (default), `responsive`, or `maximum`; controls resource scheduling |

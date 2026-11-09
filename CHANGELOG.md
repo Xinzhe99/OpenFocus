@@ -6,6 +6,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- Expose OpenFocus radius, smoothing and B feather in HF-style units, with
+  R8/S4/F3 defaults and 3% shift/5% magnification alignment defaults.
+  Saved projects, templates, recipes and preferences migrate earlier units;
+  OpenFocus A smoothing remains inactive.
 - Add keyboard-accessible zoom controls to the result view, synchronized with
   wheel zoom and available in all twelve interface languages.
 - Add a panorama workspace with native-coordinate control-point editing,
@@ -60,11 +64,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   source coverage before compositing the display background.
 
 ### Changed
-- All five GUI render options default to off for every fusion method; existing
-  saved choices remain in effect, and **Reset** returns them to off. Exposure
-  matching and base correction are optional extra operations and do not
-  reproduce the reference baseline's brightness adjustment. The CLI keeps its separate
-  exposure-matching default.
+- Enable exposure matching by default for OpenFocus A/B/C and use the first
+  processed frame as its target; other methods retain their previous defaults
+  and last-frame target. Saved per-method choices remain in effect. This is an
+  approximation of reference brightness adjustment.
+- Choose OpenFocus registration by default for OpenFocus A/B/C until a user
+  explicitly selects a registration method or restores a project choice.
 - Default Batch Image Converter to lossless PNG, restore the last explicitly
   selected output format, and show the actual result extension below the
   selector. Its individual-file conversion, including RAW-to-DNG, remains
@@ -90,8 +95,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   incrementally, while respecting the configured thread and memory budgets.
 - Move frame-review messages to the bottom status bar, leaving more room for
   the source list while preserving temporary render and update messages.
-- Set new OpenFocus A/B kernel defaults to 17, B depth smoothing to 1.44 and C
-  blend smoothing to 3.6. Existing saved per-method values are preserved.
+- Apply explicit descending frame order before OpenFocus registration, and
+  include that order in alignment reuse and cache identities.
+- Seed each OpenFocus registration search from the previous absolute transform
+  so long stacks can accumulate magnification beyond a single search window.
 - Compute OpenFocus A's Burt-pyramid response in the integer code domain and use
   the reference baseline's eight-bit E-37 output. A smoothing is inert; sixteen-bit
   selected codes remain unchanged.
@@ -99,10 +106,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and update all twelve language packs and manuals for A and C's actual behavior.
 - Reuse A's exact Q4 hard-selection response for normalized float and resized
   sources, removing full-size double-precision response and expansion buffers.
-- Compute OpenFocus C with a reverse, full-resolution source merge using the
-  completed depth map; smoothing affects fusion and exported depth together.
-  The historical `-mp:3` comparison uses the reference's legacy B method and
-  does not establish equivalence to its GUI C method.
+- Compute OpenFocus C using a streaming multilevel focus-weighted pyramid.
+  Its exported depth map remains an independent estimate; the historical
+  `-mp:3` comparison uses the reference's legacy B method and does not
+  establish equivalence to its GUI C method.
 - Store independent frame snapshots in a shared, bounded RAM pool before
   spilling to admitted temporary mappings. OpenFocus producers retain at most
   two in-flight frames and use the same resource planner and memory ceiling.

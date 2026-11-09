@@ -632,7 +632,7 @@ def bind_right_panel(window, components: RightPanelComponents) -> None:
 
     # 基底校正开关（消除亮度漂移）：立即持久化，渲染时读取
     components.chk_base_correct.toggled.connect(window.set_base_correct)
-    # 融合前曝光匹配（整栈标定到末帧）：立即持久化
+    # Exposure matching is remembered per method and applied before fusion.
     components.chk_exposure_match.toggled.connect(window.set_exposure_match)
     components.chk_sharpen_output.toggled.connect(window.set_sharpen_output)
     # 反转帧序（倒序栈）：仅影响 openfocus 族的帧序方向语义

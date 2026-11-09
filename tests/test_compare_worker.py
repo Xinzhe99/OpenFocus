@@ -71,7 +71,7 @@ def _expected(frames, method, **params):
 @pytest.mark.parametrize("dtype", [np.uint8, np.uint16])
 def test_full_render_matches_real_fusion_and_keeps_dtype(method, dtype):
     frames = _stack(dtype=dtype)
-    params = {} if method == "openfocus_c" else {"kernel_size": 5}
+    params = ({} if method == "openfocus_c" else {"radius": 2} if method.startswith("openfocus_") else {"kernel_size": 5})
     worker = PreviewWorker(frames, [method], {method: params},
                            {"tile_enabled": False, "thread_count": 0},
                            (10, 11, 9, 9), roi_only=False)
@@ -167,23 +167,23 @@ def test_own_method_settings_and_configuration_snapshot():
     frames = _stack()
     methods = ["openfocus_a", "openfocus_b", "openfocus_c"]
     own = {
-        "openfocus_a": {"kernel_size": 3, "blend_smoothing": 0.0},
-        "openfocus_b": {"kernel_size": 5, "depth_smoothing": 0.0},
-        'openfocus_c': {'blend_smoothing': 0.0},
+        "openfocus_a": {"radius": 1, "smoothing": 0.0},
+        "openfocus_b": {"radius": 2, "smoothing": 0.0},
+        'openfocus_c': {'smoothing': 0.0},
     }
     shared = {"kernel_size": 31, "blend_smoothing": 8.0,
               "depth_smoothing": 8.0, "tile_enabled": False}
     worker = PreviewWorker(frames, methods, own, shared, None, roi_only=False)
-    own["openfocus_a"]["blend_smoothing"] = 8.0
+    own["openfocus_a"]["smoothing"] = 8.0
     shared["kernel_size"] = 41
     methods.clear()
     results, errors, _ = _run(worker)
     assert errors == []
     assert [row[0] for row in results] == ["openfocus_a", "openfocus_b", "openfocus_c"]
     for (method, result, _), settings in zip(results, [
-        {"kernel_size": 3, "blend_smoothing": 0.0},
-        {"kernel_size": 5, "depth_smoothing": 0.0},
-        {"blend_smoothing": 0.0},
+        {"radius": 1, "smoothing": 0.0},
+        {"radius": 2, "smoothing": 0.0},
+        {"smoothing": 0.0},
     ]):
         np.testing.assert_array_equal(result, _expected(frames, method, **settings))
 
@@ -191,14 +191,14 @@ def test_own_method_settings_and_configuration_snapshot():
 def test_shared_brightness_settings_are_separate_from_algorithm_parameters():
     frames = _stack()
     frames[0] //= 2
-    own = {'openfocus_a': {'kernel_size': 5}}
+    own = {'openfocus_a': {'radius': 2}}
     results, errors, _ = _run(PreviewWorker(
         frames, ['openfocus_a'], own,
         {'exposure_match': False, 'base_frame': 'none', 'tile_enabled': False},
         None, roi_only=False))
     assert errors == []
     np.testing.assert_array_equal(results[0][1],
-        _expected(frames, 'openfocus_a', kernel_size=5))
+        _expected(frames, 'openfocus_a', radius=2))
 
 
 def test_dtcwt_uses_own_decomposition_depth():
@@ -442,7 +442,7 @@ def test_cold_background_depth_render_preserves_uint16():
         results, errors = [], []
         worker = PreviewWorker(
             [flat, sharp], ['openfocus_b'],
-            {'openfocus_b': {'kernel_size': 5}},
+            {'openfocus_b': {'radius': 2}},
             {'tile_enabled': False, 'thread_count': 2}, None,
             roi_only=False)
         direct = Qt.ConnectionType.DirectConnection
