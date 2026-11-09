@@ -371,6 +371,7 @@ def test_legacy_stacked_replay_rejects_missing_source_transactionally(
     path.write_text(json.dumps(record), encoding='utf-8')
     target.stacked_image = (None if stacked == 'missing'
                             else np.zeros((63, 64, 3), np.uint8))
+    original_stacked = target.stacked_image
 
     with pytest.raises(ValueError, match='Stacked image required'):
         target.load_checkpoint(path)
@@ -378,6 +379,7 @@ def test_legacy_stacked_replay_rejects_missing_source_transactionally(
     assert target.history is history and target.background_fill is fill
     assert target._operations == operations and target._cursor == cursor
     assert target._background_analyses is analyses and target._background_fills is fills
+    assert target.stacked_image is original_stacked
     assert target.can_undo and target.can_redo
 
 
