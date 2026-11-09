@@ -110,6 +110,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   scroll phase, including X11, where only angle deltas are reliable.
 
 ### Fixed
+- Allow the cross-platform test suite more time on slower hosted runners while
+  retaining the per-test timeout.
 - Preview watermarks on transparent outputs using the original alpha before
   compositing the display background, matching the saved PNG.
 - Reject legacy Auto Background checkpoint replay when its recorded stacked
