@@ -375,10 +375,10 @@ class LabelManager:
         wanted = normalize_target(target)
         labels_enabled = (not annotations_baked
                           and self._labels.any_enabled(wanted))
-        if (image.ndim == 3 and image.shape[2] == 4
-                and (labels_enabled or scale_cfg or watermark_cfg)):
-            from utils.image_utils import composite_transparent_for_display
-            image = composite_transparent_for_display(image)
+        transparent = image.ndim == 3 and image.shape[2] == 4
+        alpha_image = image if transparent and (labels_enabled or scale_cfg) else None
+        if alpha_image is not None:
+            image = image[..., :3].copy()
         drawn = None
         if labels_enabled:
             drawn, _err = self._draw_for(image.copy(), wanted, index, output_id,
@@ -387,6 +387,10 @@ class LabelManager:
         if scale_cfg:
             from utils import scalebar
             result = scalebar.burn(result, scale_cfg)
+        if alpha_image is not None:
+            combined = alpha_image.copy()
+            combined[..., :3] = result
+            result = combined
         if watermark_cfg:
             from utils import watermark
             canvas = (watermark_canvas if watermark_canvas is not None
@@ -394,6 +398,9 @@ class LabelManager:
             result = watermark.burn(
                 result, watermark_cfg,
                 canvas_size=(canvas[1], canvas[0]))
+        if transparent and (labels_enabled or scale_cfg or watermark_cfg):
+            from utils.image_utils import composite_transparent_for_display
+            result = composite_transparent_for_display(result)
         return result
 
     def is_enabled_for_target(self, target: str) -> bool:

@@ -6,6 +6,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- Add keyboard-accessible zoom controls to the result view, synchronized with
+  wheel zoom and available in all twelve interface languages.
 - Add a panorama workspace with native-coordinate control-point editing,
   connected-pair quality reports, per-source paint/import masks and preview
   overlays for seams, image numbers and excluded pixels.
@@ -119,6 +121,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Preserve advanced JPEG parameters with explicit whole-codec memory admission,
   choose classic TIFF for known small page layouts, and retain uncompressed
   desktop multipage exports and the public helper's historical LZW default.
+- A two-finger touchpad scroll pans the image instead of zooming it (Ctrl still
+  zooms); mouse wheels keep zooming. Touchpads are recognised by device type or
+  scroll phase, including X11, where only angle deltas are reliable.
 
 ### Fixed
 - Reduce block-shaped focus boundaries in OpenFocus A by bilinearly expanding
@@ -161,6 +166,14 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   longer repeat that calibration read (first-frame preview 7.7 s → 0.27 s on the
   test machine). Ordered workers preserve calibration checks, progress and
   cancellation.
+- Allow the cross-platform test suite more time on slower hosted runners while
+  retaining the per-test timeout.
+- Preview watermarks on transparent outputs using the original alpha before
+  compositing the display background, matching the saved PNG.
+- Reject legacy Auto Background checkpoint replay when its recorded stacked
+  image is unavailable or has a different shape; leave the current edits intact.
+- Stabilize the experimental A soft blend per pixel and repair its prototype
+  tool's response call.
 - Recognize reopened strided mappings during source materialization, fusion
   return and ROI provenance capture, avoiding duplicate stacks and untracked
   heap crops while preserving mapped-file ownership.
