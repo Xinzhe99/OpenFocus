@@ -649,6 +649,7 @@ Clearing the stack removes review status and disables the review button.
 ### Zooming and Panning
 
 - **Zoom In/Out**: Mouse wheel over the source or result image, including with `Ctrl` held
+- **Result zoom controls**: In the single-result view, use **−** and **+** below the image (or focus a button with Tab and press Space). The value is relative to the fit-to-window size; the buttons are disabled when no result is displayed or the corresponding limit is reached. Zooming keeps the view centre in place where pan bounds allow.
 - **Magnifier**: Hold the left mouse button over either image. While holding it,
   use the wheel to change magnification or `Ctrl` + wheel to resize the square.
   The size is retained between presses, independently for each panel.
@@ -1965,6 +1966,11 @@ metadata and NumPy payloads: the exact working image, reachable undo/redo tiles,
 diagnostic states and source provenance. Loading v2 does not recompute the
 background. Ordinary brush/tone sessions may use compact JSON v1; older JSON v1
 background checkpoints remain replayable.
+Legacy v1 operations recorded as using the original stacked image require that
+image to be available in the retouch session with the same shape; otherwise
+loading fails without changing the current edits. The legacy record does not
+fingerprint that image, so a different image of the same shape cannot be
+detected. The headless replay command does not supply a separate stacked image.
 
 Source verification runs in a cancellable background operation. Before replacing
 the destination, saving reloads the candidate file and checks exact equality of

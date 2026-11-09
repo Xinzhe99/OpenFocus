@@ -24,12 +24,25 @@ def _send_mouse(widget, kind, pos, button, buttons):
     QApplication.processEvents()
 
 
-def _send_wheel(widget, pos, delta):
+def _touchpad():
+    from PyQt6.QtGui import QInputDevice, QPointingDevice
+    return QPointingDevice("test touchpad", 4242, QInputDevice.DeviceType.TouchPad,
+                           QPointingDevice.PointerType.Finger,
+                           QInputDevice.Capability.Position | QInputDevice.Capability.Scroll,
+                           2, 0)
+
+
+def _send_wheel(widget, pos, delta, *, pixels=QPoint(0, 0), control=False,
+                phase=Qt.ScrollPhase.NoScrollPhase, device=None, angle_x=0):
     from PyQt6.QtWidgets import QApplication
-    event = QWheelEvent(QPointF(pos), QPointF(pos), QPoint(0, 0),
-                        QPoint(0, delta), Qt.MouseButton.NoButton,
-                        Qt.KeyboardModifier.NoModifier,
-                        Qt.ScrollPhase.NoScrollPhase, False)
+    args = (QPointF(pos), QPointF(pos), pixels,
+            QPoint(angle_x, delta), Qt.MouseButton.NoButton,
+            (Qt.KeyboardModifier.ControlModifier if control
+             else Qt.KeyboardModifier.NoModifier),
+            phase, False)
+    if device is not None:
+        args += (Qt.MouseEventSource.MouseEventNotSynthesized, device)
+    event = QWheelEvent(*args)
     QApplication.sendEvent(widget, event)
     QApplication.processEvents()
 
@@ -60,6 +73,33 @@ class TestMagnifierZoomAnchor:
         qapp.processEvents()
         return label
 
+
+    def test_button_zoom_centres_and_respects_limits(self, qapp):
+        label = self._label(qapp)
+        try:
+            label.zoom_view(True)
+            _pan(label, 30, 20)
+            centre = QPointF(label.width() / 2, label.height() / 2)
+            before = label._map_to_base(centre)
+            label.zoom_view(True)
+            after = label._map_to_base(centre)
+            assert after.x() == pytest.approx(before.x())
+            assert after.y() == pytest.approx(before.y())
+
+            label._zoom_factor = label._view_max_zoom()
+            label.zoom_view(True)
+            assert label._zoom_factor == label._view_max_zoom()
+            label._zoom_factor = label._min_zoom
+            label.zoom_view(False)
+            assert label._zoom_factor == label._min_zoom
+            label.reset_view()
+            assert label.view_zoom_state()[0] == 1.0
+            label.clear()
+            assert not label.view_zoom_state()[3]
+            label.zoom_view(True)
+            assert label.view_zoom_state()[0] == 1.0
+        finally:
+            label.close()
 
     def test_repeated_zoom_steps_stay_anchored(self, qapp):
         label = self._label(qapp)
@@ -94,6 +134,77 @@ class TestMagnifierZoomAnchor:
                 QPointF(label.width() / 2, label.height() / 2))
             assert 0 <= centre_base.x() <= pix.width()
             assert 0 <= centre_base.y() <= pix.height()
+        finally:
+            label.close()
+
+    def test_touchpad_two_finger_scroll_pans_without_zooming(self, qapp, monkeypatch):
+        import widgets.magnifier_label as ml
+        monkeypatch.setattr(ml, "_platform_name", lambda: "windows")
+        label = self._label(qapp)
+        try:
+            label._zoom_factor = 2.0
+            label.refresh_display()
+            before_zoom = label._zoom_factor
+            before_pan = QPointF(label._pan_offset)
+            _send_wheel(label, QPointF(200, 150), 18, pixels=QPoint(34, -27),
+                        phase=Qt.ScrollPhase.ScrollUpdate)
+            assert label._zoom_factor == before_zoom
+            assert label._pan_offset == before_pan + QPointF(34, -27)
+        finally:
+            label.close()
+
+    def test_x11_touchpad_scroll_without_pixel_deltas_pans(self, qapp):
+        # X11 reports touchpad scrolling as angle deltas from a TouchPad
+        # device, with no pixel deltas and no scroll phase.
+        from widgets.magnifier_label import ANGLE_UNITS_PER_PIXEL
+        label = self._label(qapp)
+        device = _touchpad()
+        try:
+            label._zoom_factor = 2.0
+            label.refresh_display()
+            before_zoom = label._zoom_factor
+            before_pan = QPointF(label._pan_offset)
+            _send_wheel(label, QPointF(200, 150), -48, angle_x=36, device=device)
+            assert label._zoom_factor == before_zoom
+            assert label._pan_offset == before_pan + QPointF(36, -48) / ANGLE_UNITS_PER_PIXEL
+            # Ctrl still zooms from the same device.
+            _send_wheel(label, QPointF(200, 150), 24, control=True, device=device)
+            assert label._zoom_factor > before_zoom
+        finally:
+            label.close()
+
+    def test_x11_touchpad_pan_ignores_unreliable_pixel_deltas(self, qapp, monkeypatch):
+        # On xcb Qt's pixel deltas are driver-specific; angle deltas are used.
+        import widgets.magnifier_label as ml
+        monkeypatch.setattr(ml, "_platform_name", lambda: "xcb")
+        label = self._label(qapp)
+        try:
+            label._zoom_factor = 2.0
+            label.refresh_display()
+            before_pan = QPointF(label._pan_offset)
+            _send_wheel(label, QPointF(200, 150), -48, pixels=QPoint(300, -200), angle_x=36,
+                        phase=Qt.ScrollPhase.ScrollUpdate)
+            assert label._pan_offset == before_pan + QPointF(36, -48) / ml.ANGLE_UNITS_PER_PIXEL
+        finally:
+            label.close()
+
+    def test_control_touchpad_scroll_still_zooms(self, qapp):
+        label = self._label(qapp)
+        try:
+            before = label._zoom_factor
+            _send_wheel(label, QPointF(200, 150), 18, pixels=QPoint(0, 12),
+                        control=True, phase=Qt.ScrollPhase.ScrollUpdate)
+            assert label._zoom_factor > before
+        finally:
+            label.close()
+
+    def test_high_resolution_mouse_wheel_still_zooms(self, qapp):
+        # macOS and some Wayland wheels report pixel deltas without a phase.
+        label = self._label(qapp)
+        try:
+            before = label._zoom_factor
+            _send_wheel(label, QPointF(200, 150), 120, pixels=QPoint(0, 40))
+            assert label._zoom_factor > before
         finally:
             label.close()
 
@@ -136,3 +247,28 @@ class TestWipeZoomAnchor:
                             f"wipe anchor drifted {drift:.3%} of the image")
         finally:
             widget.close()
+
+
+def test_result_controls_survive_shutdown_in_either_qobject_order():
+    """A deleted translator must not crash the process while the panel closes."""
+    import os
+    import subprocess
+    import sys
+
+    script = '''
+from PyQt6 import sip
+from PyQt6.QtWidgets import QApplication
+from locales import trans
+from ui.image_panels import create_result_panel
+app = QApplication([])
+first = create_result_panel()
+sip.delete(first.widget)
+trans.set_language("zh")
+second = create_result_panel()
+sip.delete(trans)
+sip.delete(second.widget)
+'''
+    environment = dict(os.environ, QT_QPA_PLATFORM='offscreen')
+    result = subprocess.run([sys.executable, '-c', script], env=environment,
+                            capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
