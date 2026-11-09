@@ -796,6 +796,13 @@ def align_pair_wide(ref_u16, test_u16, h_pct=12.0, v_pct=12.0, rot_deg=6.0,
         A_pyr, B_pyr = A_pyr[:n], B_pyr[:n]
 
     base = np.array(_IDENTITY_F8 if initial_f8 is None else initial_f8, dtype=np.float32)
+    fixed_center = h_pct == 0 and v_pct == 0
+    if fixed_center:
+        # Keep the existing map but rotate and scale around the frame center.
+        cx = F32((ref_u16.shape[1] - 1) / 2)
+        cy = F32((ref_u16.shape[0] - 1) / 2)
+        tx, ty = map_coords(gpu_params(base), cx, cy)
+        base[:4] = (tx.item(), ty.item(), cx, cy)
     rounds_total = 0
     for lvl in range(n - 1, -1, -1):
         _check_cancel(should_cancel)
@@ -823,7 +830,7 @@ def align_pair_wide(ref_u16, test_u16, h_pct=12.0, v_pct=12.0, rot_deg=6.0,
         mag_rng = F32(mag_pct) / F32(100.0) * s
         rot_rng = F32(rot_deg) * s
         rot_cov = float(np.sin(np.radians(float(rot_rng)))) * 0.5
-        sf = max(float(shift_frac[0]), rot_cov)
+        sf = 0.0 if fixed_center else max(float(shift_frac[0]), rot_cov)
         rng = [F32(sf), F32(sf), mag_rng, rot_rng]
         level_grid = grid_half
         if rot_rng == 0 and mag_rng == 0:
@@ -1160,7 +1167,7 @@ def estimate_alignment_plan(sources, *, max_shift_ratio=.05, reference_frame=1,
             previous, previous_index = anchor, ref
         pair = np.array(_IDENTITY_F8, np.float32)
         rounds, failure = 0, ''
-        if index != ref and ratio and not np.array_equal(previous, gray):
+        if index != ref and (ratio or rotation or magnification) and not np.array_equal(previous, gray):
             try:
                 pair, rounds = align_pair_wide(previous, gray, h_pct=ratio * 100,
                     v_pct=ratio * 100, rot_deg=rotation, mag_pct=magnification,

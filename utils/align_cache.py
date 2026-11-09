@@ -244,7 +244,7 @@ PLAN_CACHE_VERSION = 2
 
 def _plan_backend(identity):
     return ('opencv-perspective-v1' if (identity or {}).get('registration_backend') ==
-            'opencv-perspective-v1' else 'openfocus-wide4d-v2')
+            'opencv-perspective-v1' else 'openfocus-wide4d-v3')
 
 
 def _plan_signature(folder, filenames, sources, identity):
@@ -288,7 +288,7 @@ def _validate_plan_request(plan, identity):
                 or int(request.get('downscale_width') or 1024) != plan.downscale_width):
             raise ValueError('Perspective plan parameters differ from cache request')
         return
-    if _plan_backend(identity) != 'openfocus-wide4d-v2':
+    if _plan_backend(identity) != 'openfocus-wide4d-v3':
         raise ValueError('OpenFocus plan backend differs from cache request')
     parameters = (identity or {}).get('effective_params', {})
     if ('max_shift_ratio' in parameters and float(parameters['max_shift_ratio']) != plan.max_shift_ratio
