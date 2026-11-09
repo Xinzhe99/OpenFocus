@@ -128,6 +128,60 @@ def _image(shape=(320, 420, 3)):
     return np.full(shape, 140, np.uint8)
 
 
+@pytest.mark.parametrize("dtype", [np.uint8, np.uint16])
+@pytest.mark.parametrize("target", ["source", "output"])
+def test_transparent_dialog_preview_matches_export_pixels(qapp, dtype, target):
+    from dialogs.watermark import WatermarkDialog
+    from utils.image_utils import composite_transparent_for_display, pixmap_to_cv2
+
+    maximum = np.iinfo(dtype).max
+    image = np.empty((320, 420, 4), dtype)
+    image[..., :3] = (maximum // 5, maximum // 3, maximum // 2)
+    image[:, :140, 3] = 0
+    image[:, 140:280, 3] = maximum // 2
+    image[:, 280:, 3] = maximum
+    original = image.copy()
+    record = _Record(image, context=_Context(image))
+    window = _DialogHost([record], source=image)
+    dialog = WatermarkDialog(window)
+    dialog.preview_target_combo.setCurrentIndex(dialog.preview_target_combo.findData(target))
+    dialog.text_edit.setText("Creator")
+    dialog._refresh_preview()
+    actual = pixmap_to_cv2(dialog.preview_lbl._base_pixmap)
+    expected = composite_transparent_for_display(wm.burn(image, dialog._draft_config()))
+    plain = composite_transparent_for_display(image)
+    assert np.array_equal(actual[:, :140], plain[:, :140])
+    assert np.any(actual[:, 140:280] != plain[:, 140:280])
+    assert np.any(actual[:, 280:] != plain[:, 280:])
+    assert np.max(np.abs(actual.astype(np.int16) - expected.astype(np.int16))) <= 2
+    assert np.array_equal(image, original)
+    dialog.close()
+
+
+@pytest.mark.parametrize("dtype", [np.uint8, np.uint16])
+def test_transparent_canvas_preview_matches_export_pixels(qapp, dtype):
+    from controllers.label_manager import LabelManager
+    from utils.image_utils import composite_transparent_for_display
+
+    maximum = np.iinfo(dtype).max
+    image = np.empty((320, 420, 4), dtype)
+    image[..., :3] = (maximum // 5, maximum // 3, maximum // 2)
+    image[:, :140, 3] = 0
+    image[:, 140:280, 3] = maximum // 2
+    image[:, 280:, 3] = maximum
+    before = image.copy()
+    manager = LabelManager(QWidget())
+    cfg = wm.WatermarkConfig(text="Creator", size_percent=6.0)
+    actual = manager.display_bgr_image("output", image, 0, watermark_cfg=cfg)
+    expected = composite_transparent_for_display(wm.burn(image, cfg))
+    plain = composite_transparent_for_display(image)
+    assert np.array_equal(actual, expected)
+    assert np.array_equal(actual[:, :140], plain[:, :140])
+    assert np.any(actual[:, 140:280] != plain[:, 140:280])
+    assert np.any(actual[:, 280:] != plain[:, 280:])
+    assert np.array_equal(image, before)
+
+
 def test_dialog_cancel_never_commits(qapp):
     from dialogs.watermark import WatermarkDialog
 
