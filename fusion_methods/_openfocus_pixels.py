@@ -1,4 +1,4 @@
-"""Integer pixel-domain boundary shared by the OpenFocus methods."""
+"""Integer pixel-domain boundary shared by the OpenFocus-compatible methods."""
 import cv2
 import numpy as np
 

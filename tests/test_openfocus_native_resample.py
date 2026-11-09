@@ -1,4 +1,4 @@
-"""Exact OpenFocus Method C resampling and depth regressions."""
+"""Regression coverage for grayscale resampling and Method C output."""
 from pathlib import Path
 
 import numpy as np
@@ -13,10 +13,10 @@ _FIXTURE = Path(__file__).parent / 'fixtures' / 'openfocus_native_gray_half_stri
 @pytest.mark.parametrize('call', [1, 3])
 @pytest.mark.parametrize('edge, result_rows', [('top', slice(0, 6)),
                                               ('bottom', slice(2, 8))])
-def test_half_gray_matches_native_capture_strips(call, edge, result_rows):
-    with np.load(_FIXTURE, allow_pickle=False) as captured:
-        source = captured[f'call{call}_src_{edge}']
-        expected = captured[f'call{call}_dst_{edge}']
+def test_half_gray_matches_fixture_strips(call, edge, result_rows):
+    with np.load(_FIXTURE, allow_pickle=False) as fixture_data:
+        source = fixture_data[f'call{call}_src_{edge}']
+        expected = fixture_data[f'call{call}_dst_{edge}']
 
     assert source.shape == (16, 512)
     assert source.dtype == np.uint16
@@ -30,13 +30,13 @@ def test_half_gray_matches_native_capture_strips(call, edge, result_rows):
     np.testing.assert_array_equal(result[result_rows, :], expected)
 
 
-def test_method_c_depth_matches_official_s1_zones_sidecar():
+def test_method_c_depth_matches_s1_zones_fixture():
     from fusion_methods.openfocus_depth import depth_map
 
     fixture = Path(__file__).parent / 'fixtures' / 'openfocus_native_s1_zones_depth.npz'
-    with np.load(fixture, allow_pickle=False) as captured:
-        frames = captured['frames']
-        expected = captured['depth']
+    with np.load(fixture, allow_pickle=False) as fixture_data:
+        frames = fixture_data['frames']
+        expected = fixture_data['depth']
 
     assert frames.shape == (4, 512, 512)
     assert frames.dtype == np.uint8
@@ -51,13 +51,13 @@ def test_method_c_depth_matches_official_s1_zones_sidecar():
     np.testing.assert_array_equal(result, expected)
 
 
-def test_method_c_fusion_matches_official_s1_zones_result():
+def test_method_c_fusion_matches_s1_zones_fixture():
     from fusion_methods.openfocus_bc import openfocus_c_impl
 
     fixture = Path(__file__).parent / 'fixtures' / 'openfocus_native_s1_zones_depth.npz'
-    with np.load(fixture, allow_pickle=False) as captured:
-        frames = captured['frames']
-        expected = captured['result']
+    with np.load(fixture, allow_pickle=False) as fixture_data:
+        frames = fixture_data['frames']
+        expected = fixture_data['result']
 
     assert frames.shape == (4, 512, 512)
     assert frames.dtype == np.uint8
@@ -72,13 +72,13 @@ def test_method_c_fusion_matches_official_s1_zones_result():
     np.testing.assert_array_equal(result, expected)
 
 
-def test_depth_expansion_matches_native_odd_canvas():
+def test_depth_expansion_matches_odd_canvas_fixture():
     from fusion_methods._openfocus_resample import expand_depth
 
     fixture = Path(__file__).parent / 'fixtures' / 'openfocus_native_odd_depth_expand.npz'
-    with np.load(fixture, allow_pickle=False) as captured:
-        source = captured['source']
-        expected = captured['result']
+    with np.load(fixture, allow_pickle=False) as fixture_data:
+        source = fixture_data['source']
+        expected = fixture_data['result']
 
     assert source.shape == (64, 65)
     assert source.dtype == np.uint16

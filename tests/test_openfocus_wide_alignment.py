@@ -1,4 +1,4 @@
-"""OpenFocus wide alignment regressions."""
+"""Wide detector, plan reuse, cache integrity and public deferred regressions."""
 from dataclasses import FrozenInstanceError, replace
 import hashlib
 import json
@@ -307,9 +307,6 @@ def test_arbitrary_processors_are_in_memory_only(cached_plan):
     plan.validate_sources(processed)
     align_cache.save_alignment_plan(folder, names, plan, processed, identity=identity)
     assert align_cache.load_alignment_plan(folder, names, processed, identity=identity) is None
-
-
-
 
 
 

@@ -25,7 +25,7 @@ def _down2(gray, should_cancel, check_cancel):
 
 
 def _expand_burt(gray, shape, should_cancel, check_cancel):
-    """Prototype bilinear phase (dst+0.5)/2-0.5, with edge clamping."""
+    """Bilinear phase (dst+0.5)/2-0.5, with edge clamping."""
     result = create_frame(shape, np.float64)
     sx = (np.arange(shape[1], dtype=np.float64) + 0.5) / 2.0 - 0.5
     x0 = np.floor(sx).astype(np.int32)
@@ -122,9 +122,9 @@ def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 17,
     """Select source pixels with the OpenFocus Burt-pyramid response.
 
     ``kernel_size=2*R+1`` controls ``floor(log2(R))+3`` levels. Smoothing is
-    intentionally inert, Strict source-order argmax keeps
-    the first frame on ties. Eight-bit output applies E-37; sixteen-bit codes
-    retain all bits through the application's float32 output boundary.
+    intentionally inert. Strict source-order argmax keeps the first frame on
+    ties. Eight-bit output is quantized; sixteen-bit codes retain all bits
+    through the application's float32 output boundary.
 
     ``soft`` and ``feather`` are experimental, unregistered merge modes.
     Their historical blending stays separate from the default hard path.

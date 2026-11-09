@@ -78,7 +78,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the source list while preserving temporary render and update messages.
 - Set new OpenFocus A/B kernel defaults to 17, B depth smoothing to 1.44 and C
   blend smoothing to 3.6. Existing saved per-method values are preserved.
-- Match OpenFocus A's integer Burt-pyramid response and eight-bit E-37 output
+- Use an integer Burt-pyramid response and quantized eight-bit output for
   OpenFocus A. A smoothing is inert; sixteen-bit selected codes remain unchanged.
 - Show the localized OpenFocus smoothing hints in the registered parameter panels
   and update all twelve language packs and manuals for A and C's actual behavior.

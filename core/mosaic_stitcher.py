@@ -3,9 +3,6 @@
 将多张已融合的平面图像(显微多区域拍摄)按网格声明对齐、光度校正、
 min-cut 接缝分割、窄带多频段融合为一张无缝大图。
 
-算法逆向自 PTGui 13(NewhouseLib)网格拼接流程,经真实素材端到端验证
-(与 PTGui 输出 margin 对齐后 band NCC 0.976/0.960)。
-复现规范:docs/MOSAIC_STITCHING_MIGRATION_SPEC.md
 
 支持两种邻接方向:
     H(右邻):垂直条带(前图右缘 vs 当前图左缘),接缝 = 逐行的列路径
