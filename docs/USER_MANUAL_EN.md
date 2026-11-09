@@ -649,6 +649,7 @@ Clearing the stack removes review status and disables the review button.
 ### Zooming and Panning
 
 - **Zoom In/Out**: Mouse wheel over the source or result image, including with `Ctrl` held
+- **Result zoom controls**: In the single-result view, use **−** and **+** below the image (or focus a button with Tab and press Space). The value is relative to the fit-to-window size; the buttons are disabled when no result is displayed or the corresponding limit is reached. Zooming keeps the view centre in place where pan bounds allow.
 - **Magnifier**: Hold the left mouse button over either image. While holding it,
   use the wheel to change magnification or `Ctrl` + wheel to resize the square.
   The size is retained between presses, independently for each panel.
