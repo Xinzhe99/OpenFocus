@@ -737,8 +737,7 @@ def test_b_interpolates_only_the_two_neighboring_depth_layers(dtype, grayscale):
     if dtype == np.uint16:
         frames = [frame.astype(np.uint16) * 256 + 7 for frame in frames]
     depth = np.broadcast_to(np.arange(9, dtype=np.float32) / 4, (9, 9))
-    # Fixed samples from the verified MergeWeighted prototype, including
-    # signed-division rounding at quarter-depth code-band boundaries.
+    # Fixed samples include signed-division rounding at quarter-depth bands.
     offsets = ([2567, 6422, 10262, 14087, 17927, 23067, 28167, 33287, 38407]
                if dtype == np.uint16 else [10, 25, 40, 55, 70, 90, 110, 130, 150])
     expected = ramp * (256 if dtype == np.uint16 else 1) + np.asarray(offsets)

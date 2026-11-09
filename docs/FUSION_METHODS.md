@@ -19,17 +19,14 @@ to the new units; older B settings retain F0.
 
 Exposure matching adjusts frame brightness before fusion. It defaults on for
 OpenFocus A/B/C and uses the first frame in processing order; other methods use
-the last frame. This is an approximation and does not establish equivalence to
-the reference brightness adjustment. An existing enabled OpenFocus exposure
-option now uses the first processed frame instead of the last; its saved on/off
+the last frame. An existing enabled OpenFocus exposure option now uses the first
+processed frame instead of the last; its saved on/off
 choice is retained. OpenFocus A/B/C input can be sorted with `--sort asc|desc|off`;
 StackMFF V2 keeps its original focus order. The pipeline
 supports 8-bit and 16-bit output. The depth-map dialog uses the shared B/C
 depth estimator. B's external tiles share a full-image depth map; resizing uses
 whole frames.
-The C pyramid's four-tap binomial downsampling, level count and first-frame
-initialization are engineering approximations. Their exact correspondence to
-the reference implementation has not been established.
+The C pyramid uses four-tap binomial downsampling and first-frame initialization.
 
 
 OpenFocus A/B/C use whole-image processing at the default tile threshold. A

@@ -294,7 +294,7 @@ def resolve_fusion_parameters(id, values=None, depth=False):
 
 
 def migrate_openfocus_parameters(method, values):
-    """Translate pre-HF parameter units at versioned persistence boundaries."""
+    """Translate earlier parameter units at versioned persistence boundaries."""
     values = dict(values)
     if method not in ('openfocus_a', 'openfocus_b', 'openfocus_c'):
         return values
