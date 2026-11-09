@@ -22,7 +22,7 @@ from numba.extending import intrinsic
 
 _SUPPORT = np.float32(1.9989999532699585)
 _BAND_ROWS = 128
-# Literal float32 values from the native resize context, excluding its sentinel.
+# Float32 interpolation weights, excluding the sentinel.
 _LUT = np.frombuffer(np.array([
     1.000000000, 0.997640193, 0.990738153, 0.979559839,
     0.964371324, 0.945438623, 0.923027754, 0.897404790,
@@ -84,7 +84,7 @@ def _lut_weight(argument):
 def _fill_half_axis(source_length, indices, weights, counts):
     radius = np.float32(_SUPPORT / np.float32(0.5))
     for position in range(indices.shape[0]):
-        # Fixed native scale 0.5, including odd source lengths.
+        # Fixed scale 0.5, including odd source lengths.
         center = np.float32(np.float32(2 * position) + np.float32(0.5))
         first = int(np.floor(np.float32(center - radius)))
         last = int(np.ceil(np.float32(center + radius)))

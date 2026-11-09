@@ -22,7 +22,7 @@ through a bounded window in reverse order, using one completed canvas depth.
 A worker budget includes
 completed results waiting for reduction and original-size conversion before
 resizing. Explicit spatial tiles borrow the parent's lease and keep their
-private reference-implementation child execution serial.
+private OpenFocus child execution serial.
 
 Repeated source consumption retains each immutable source's exposure gain as
 a scalar; pixels still resolve through the same admitted window and source
@@ -54,16 +54,6 @@ is shared by B's depth export and whole-frame or tiled fusion.
 For color sources, both methods form depth gray codes before resizing using an
 equal-channel sum scaled by 85/256. Eight-bit samples enter that calculation
 at 256 codes per value; 16-bit samples retain their input code precision.
-
-A guarded single-core, 512-MiB smoke compared production C at native R22/S5/F0
-against S1/S2/S4 captures. Gray planes, raw depth and both guided-filter outputs
-matched the exported native stages; final 512-square depth matched each
-official uint16 sidecar exactly. Complete production fusion also matched each
-official output exactly, with maximum error zero. This proves those captured
-R22/S5/F0 cases; it does not establish all parameter combinations or large-stack
-performance. Dynamic capture records reverse frame indices, first/last flags
-and the active merge object's vtable; an unrelated legacy pyramid class must
-not be used to infer this path's RGB reconstruction.
 
 B/C's Q12 recurrence runs in a lazily compiled, GIL-free Numba CPU kernel.
 A separate 256-MiB startup check covers compilation before workspace planning;
@@ -208,10 +198,7 @@ single-run observation, not a universal decoder or Qt allocation bound.
 Use `tools/fusion_streaming_benchmark.py` in fresh processes for stage timings,
 input order, implementation hashes, working/export pixel hashes, producer
 concurrency and RSS. Compare identical sources and options; the direct adapter
-entry excludes pipeline normalization/exposure/sorting/base preparation. The
-reported historical OpenFocus 82.1-s adapter run and the reference baseline's approximately 15-s
-workflow used different generated stacks and stage boundaries, so they do not
-establish a same-input speed ratio. Avoid simultaneous benchmarks or tests.
+entry excludes pipeline normalization/exposure/sorting/base preparation.
 
 ### Remote large-stack acceptance (2026-11-08)
 
