@@ -316,25 +316,37 @@ def test_depth_source_and_texture_bind_selected_output(qapp):
 
 
 
-def test_depth_registration_precedes_reverse_and_never_writes_files(monkeypatch):
+@pytest.mark.parametrize('method', ['openfocus_b', 'openfocus_c'])
+def test_reversed_depth_map_uses_same_registration_as_fusion(method, qapp):
+    from core.registration import ImageRegistration
+    from core.source_frames import resolve_frame
     from dialogs.depthmap import DepthWorker
-    import core.compare_worker as compare_worker
-    import core.depth_map as depth_map
-    frames = [np.full((8, 8, 3), i + 1, np.uint8) for i in range(3)]
-    seen = []
-    def align(images, method, settings, should_cancel):
-        seen.append((method, [int(image[0, 0, 0]) for image in images]))
-        return images
-    def compute(images, method, **kwargs):
-        seen.append((method, [int(image[0, 0, 0]) for image in images]))
-        return np.zeros((8, 8), np.float32)
-    monkeypatch.setattr(compare_worker, "align_frames", align)
-    monkeypatch.setattr(depth_map, "compute_focus_index", compute)
-    worker = DepthWorker(frames, "openfocus_b", False)
-    worker.alignment = "ecc"
+
+    source = _synthetic_thirds(160, 192)
+    frames = [np.roll(image, shift, axis=1)
+              for image, shift in zip(source, (0, 6, 12))]
+    registration = {'max_shift_ratio': .2, 'magnification': 0.,
+                    'reference_frame': 1, 'failure_policy': 'fail'}
+    expected_frames = ImageRegistration('openfocus', parameters=registration).process(
+        list(reversed(frames)), thread_count=1)
+    expected = compute_focus_index(expected_frames, method, thread_count=1)
+
+    worker = DepthWorker(frames, method, False)
+    worker.alignment = 'openfocus'
     worker.reverse_order = True
+    worker.registration_settings = {'thread_count': 1,
+                                    'registration_parameters': registration}
+    results, errors = [], []
+    worker.ok.connect(results.append)
+    worker.failed.connect(errors.append)
     worker.run()
-    assert seen == [("ecc", [1, 2, 3]), ("openfocus_b", [3, 2, 1])]
+
+    assert not errors
+    assert len(results) == 1
+    np.testing.assert_array_equal(results[0], expected)
+    assert [frame.frame_id for frame in worker.source_frames] == ['2', '1', '0']
+    for actual, expected_frame in zip(worker.source_frames, expected_frames):
+        np.testing.assert_array_equal(resolve_frame(actual.image), expected_frame)
 
 
 def test_physical_roi_export_keeps_outside_as_nan(qapp, monkeypatch, tmp_path):
