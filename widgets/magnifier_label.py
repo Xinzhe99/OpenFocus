@@ -1,7 +1,7 @@
 from typing import Optional
 
 from PyQt6.QtCore import QPointF, QRectF, QSizeF, Qt, QTimer, QPropertyAnimation, QEasingCurve, pyqtProperty, pyqtSignal
-from PyQt6.QtGui import QColor, QFont, QPainter, QPixmap, QPen, QRegion
+from PyQt6.QtGui import QColor, QFont, QInputDevice, QPainter, QPixmap, QPen, QRegion
 from PyQt6.QtWidgets import QLabel
 
 from locales import trans
@@ -9,6 +9,44 @@ from locales import trans
 
 MAGNIFIER_MIN_SIZE = 64.0
 MAGNIFIER_MAX_SIZE = 1024.0
+
+
+# Pixels a touchpad pan moves per wheel-notch equivalent (120 angle units)
+# when the platform reports only angle deltas: three 20 px lines, the same
+# distance QAbstractScrollArea scrolls for one notch.
+ANGLE_UNITS_PER_PIXEL = 2.0
+
+
+def _is_touchpad_gesture(event):
+    """True for a two-finger touchpad scroll, False for a mouse wheel.
+
+    pixelDelta() is neither necessary nor sufficient: macOS and some
+    high-resolution wheels report pixel deltas for an ordinary mouse wheel,
+    while X11 reports touchpad scrolling with angle deltas only. Touchpad
+    gestures are identified by their device type or by a scroll phase
+    (begin/update/end, plus momentum on macOS); plain wheels have neither.
+    """
+    device = event.pointingDevice()
+    if device is not None and device.type() == QInputDevice.DeviceType.TouchPad:
+        return True
+    return event.phase() != Qt.ScrollPhase.NoScrollPhase
+
+
+def _platform_name():
+    from PyQt6.QtGui import QGuiApplication
+    return QGuiApplication.platformName()
+
+
+def _gesture_pan(event):
+    """How far a touchpad gesture moves the image, in pixels.
+
+    Pixel deltas are used where the platform provides reliable ones.  On X11
+    (xcb) Qt documents them as driver-specific and unreliable, so the angle
+    deltas are converted there even when pixel deltas are present."""
+    pixels = event.pixelDelta()
+    if not pixels.isNull() and _platform_name() != "xcb":
+        return QPointF(pixels)
+    return QPointF(event.angleDelta()) / ANGLE_UNITS_PER_PIXEL
 
 
 class MagnifierLabel(QLabel):
@@ -322,6 +360,17 @@ class MagnifierLabel(QLabel):
 
         if self._base_pixmap is None or self._base_pixmap.isNull():
             super().wheelEvent(event)
+            return
+
+        # A two-finger touchpad gesture moves the image like a drag; Ctrl keeps
+        # zooming. Space+drag is unusable on laptops where libinput disables
+        # the touchpad while a key is held.
+        if (_is_touchpad_gesture(event)
+                and not event.modifiers() & Qt.KeyboardModifier.ControlModifier):
+            self._pan_offset += _gesture_pan(event)
+            self._clamp_pan_offset()
+            self._update_scaled_pixmap()
+            event.accept()
             return
 
         delta = event.angleDelta().y()
