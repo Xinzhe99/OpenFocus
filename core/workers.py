@@ -756,7 +756,7 @@ class RenderWorker(QThread):
                 identity['registration_order'] = 'reverse-v1'
             identity.update(alignment_steps=list(self.alignment),
                             registration_parameters=dict(self.registration_parameters),
-                            registration_backend=('openfocus-wide4d-v2' if self.alignment == ('openfocus',)
+                            registration_backend=('openfocus-wide4d-v3' if self.alignment == ('openfocus',)
                                                   else 'opencv-perspective-v1'),
                             downscale_width=self.reg_downscale_width,
                             scale_factor=request.get('scale_factor', 1.0),
@@ -770,7 +770,7 @@ class RenderWorker(QThread):
         request['align_options'] = self.alignment
         request['identity']['alignment_steps'] = list(self.alignment)
         if 'openfocus' in self.alignment:
-            request['identity']['registration_backend'] = 'openfocus-wide4d-v2'
+            request['identity']['registration_backend'] = 'openfocus-wide4d-v3'
         if self._reverse_registration:
             request['identity']['registration_order'] = 'reverse-v1'
         request['identity']['registration_parameters'] = dict(self.registration_parameters)

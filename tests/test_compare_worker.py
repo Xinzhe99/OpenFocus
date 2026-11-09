@@ -320,6 +320,28 @@ def test_alignment_runs_real_registration_on_background_thread(monkeypatch):
     after = np.mean(np.abs(resolve_frame(aligned[0]).astype(float) - resolve_frame(aligned[1])))
     assert after < before * 0.5
 
+@pytest.mark.parametrize('reverse', [False, True])
+def test_alignment_anchors_the_selected_order_and_preserves_source_indices(reverse):
+    from core.source_frames import resolve_frame
+    rng = np.random.default_rng(442)
+    base = cv2.GaussianBlur(rng.integers(0, 256, (160, 192, 3), dtype=np.uint8),
+                            (0, 0), 1.2)
+    frames = [np.roll(base, shift, axis=1) for shift in (0, 5, 10)]
+    shared = {'registration_parameters': {'max_shift_ratio': .2, 'magnification': 0}}
+    results, errors, _ = _run(AlignmentWorker(frames, 'openfocus', shared,
+                                              reverse_registration=reverse))
+    assert errors == []
+    aligned = [resolve_frame(frame) for frame in results[0]]
+    anchor_index = 2 if reverse else 0
+    anchor = aligned[anchor_index]
+    _, _, (x, y), _ = cv2.minMaxLoc(cv2.matchTemplate(frames[anchor_index], anchor, cv2.TM_SQDIFF))
+    height, width = anchor.shape[:2]
+    np.testing.assert_array_equal(anchor, frames[anchor_index][y:y + height, x:x + width])
+    assert (x <= 1) if not reverse else (x >= 9)
+    target = anchor[16:-16, 16:-16].astype(np.float32)
+    for image in aligned:
+        assert np.abs(target - image[16:-16, 16:-16]).mean() < 5
+
 
 @pytest.mark.parametrize('dtype', [np.uint8, np.uint16])
 def test_alignment_none_preserves_pixels_and_bit_depth(dtype):

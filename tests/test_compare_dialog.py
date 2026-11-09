@@ -480,6 +480,74 @@ def test_full_adoption_keeps_exact_uint16_pixels_and_source_snapshot(dialog, qap
     assert records[0].context.parameters['fusion_parameters']['radius'] == dialog._method_params['openfocus_a']['radius']
 
 
+def test_mixed_methods_share_registration_and_invalidate_on_order_change(dialog, qapp):
+    import cv2
+    import numpy as np
+    from types import SimpleNamespace
+    from core.source_frames import resolve_frame
+
+    def anchor_crop(aligned, source, reverse):
+        image = resolve_frame(aligned)
+        _, _, (x, y), _ = cv2.minMaxLoc(cv2.matchTemplate(source, image, cv2.TM_SQDIFF))
+        height, width = image.shape[:2]
+        np.testing.assert_array_equal(image, source[y:y + height, x:x + width])
+        assert (x <= 1) if not reverse else (x >= 11)
+        return image
+
+    rng = np.random.default_rng(442)
+    base = cv2.GaussianBlur(rng.integers(0, 256, (160, 560, 3), dtype=np.uint8),
+                            (0, 0), 1.2)
+    frames = [np.roll(base, shift, axis=1) for shift in (0, 6, 12)]
+    dialog._raw_frames = frames
+    dialog._frames = frames
+    dialog._source_names = ['a', 'b', 'c']
+    dialog._source_indices = [0, 2, 4]
+    dialog._shared['sort_mode'] = 'desc'
+    records = []
+    dialog.window_main.output_manager = SimpleNamespace(publish_compare_output=records.append)
+    dialog.align_combo.setCurrentIndex(dialog.align_combo.findData('openfocus'))
+    dialog._registration_drafts['openfocus']['magnification'] = 0
+    dialog._alignment_changed(0)
+    dialog._checks['openfocus_a'].setChecked(False)
+    dialog._checks['dct'].setChecked(True)
+    dialog._preview_timer.stop()
+    dialog._start_request()
+    _until(qapp, lambda: _finished(dialog), timeout=30)
+    anchor_crop(dialog._aligned_frames[0], frames[0], False)
+    assert 'dct' in dialog._full_results
+
+    dialog._checks['openfocus_a'].setChecked(True)
+    assert dialog._aligned_frames is None
+    assert not dialog._full_results
+    dialog._preview_timer.stop()
+    dialog._start_request()
+    _until(qapp, lambda: _finished(dialog), timeout=30)
+    assert {'dct', 'openfocus_a'} <= dialog._full_results.keys()
+    aligned = [resolve_frame(frame) for frame in dialog._aligned_frames]
+    anchor = anchor_crop(dialog._aligned_frames[-1], frames[-1], True)
+    target = anchor[16:-16, 16:-16].astype(np.float32)
+    for image in aligned:
+        assert np.abs(target - image[16:-16, 16:-16]).mean() < 5
+
+    dialog._checks['openfocus_a'].setChecked(False)
+    assert dialog._aligned_frames is None
+    dialog._preview_timer.stop()
+    dialog._start_request()
+    _until(qapp, lambda: _finished(dialog), timeout=30)
+    anchor_crop(dialog._aligned_frames[0], frames[0], False)
+
+    dialog._checks['openfocus_a'].setChecked(True)
+    dialog._preview_timer.stop()
+    dialog._start_request()
+    _until(qapp, lambda: _finished(dialog), timeout=30)
+    anchor = resolve_frame(dialog._aligned_frames[-1])
+    dialog._select_method('openfocus_a')
+    dialog._adopt_output()
+    assert len(records) == 1
+    assert records[0].context.source_indices == (0, 2, 4)
+    np.testing.assert_array_equal(resolve_frame(records[0].context.frames[-1].image), anchor)
+
+
 def _registered_fusion(fusion, input_source, img_resize=None, lift=0, selection='first', **execution):
     import numpy as np
     frame = input_source[0 if selection == 'first' else -1]

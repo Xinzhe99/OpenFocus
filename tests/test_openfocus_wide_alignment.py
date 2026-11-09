@@ -122,6 +122,36 @@ def test_default_chain_preserves_aligned_reference_and_cumulative_slots():
     np.testing.assert_allclose(offsets, shifts, atol=.6, rtol=0)
 
 
+@pytest.mark.parametrize('angle,scale,rotation,magnification', [
+    (0., 1.025, 0., 5.),
+    (2., 1., 4., 0.),
+])
+def test_zero_shift_allows_centered_rotation_and_magnification(angle, scale, rotation, magnification):
+    rng = np.random.default_rng(442)
+    base = cv2.GaussianBlur(rng.integers(0, 256, (256, 256), dtype=np.uint8), (0, 0), 1.2)
+    center = (127.5, 127.5)
+    matrix = cv2.getRotationMatrix2D(center, angle, scale)
+    moved = cv2.warpAffine(base, matrix, (256, 256), flags=cv2.INTER_LINEAR,
+                           borderMode=cv2.BORDER_REFLECT)
+    plan = alignment.estimate_alignment_plan([base, moved], max_shift_ratio=0,
+                                              rotation=rotation, magnification=magnification)
+    transform = plan.transforms[1]
+    np.testing.assert_allclose(transform.inverse_matrix @ [*center, 1], [*center, 1], atol=1e-4)
+    aligned = alignment.apply_alignment(moved, transform)
+    target = base[16:-16, 16:-16].astype(np.float32)
+    before = np.abs(target - moved[16:-16, 16:-16]).mean()
+    after = np.abs(target - aligned[16:-16, 16:-16]).mean()
+    assert after < before * .3
+
+
+def test_zero_shift_rotation_and_magnification_disable_alignment():
+    base = _image(160)
+    moved = np.roll(base, 6, axis=1)
+    plan = alignment.estimate_alignment_plan([base, moved], max_shift_ratio=0,
+                                              rotation=0, magnification=0)
+    assert plan.transforms[1].is_identity
+    assert alignment.apply_alignment(moved, plan.transforms[1]) is moved
+
 @pytest.mark.parametrize('count,reference,ends', [(21, 0, (20,)), (41, 20, (0, 40))])
 def test_alignment_tracks_cumulative_magnification_across_stack(count, reference, ends):
     rng = np.random.default_rng(101)
@@ -336,7 +366,7 @@ def test_plan_cache_warm_reuse_never_decodes_sources(cached_plan, monkeypatch):
 def test_alignment_cache_separates_estimator_versions(cached_plan, monkeypatch):
     folder, names, sources, plan, identity = cached_plan
     with monkeypatch.context() as old:
-        old.setattr(align_cache, '_plan_backend', lambda _identity: 'openfocus-wide4d-v1')
+        old.setattr(align_cache, '_plan_backend', lambda _identity: 'openfocus-wide4d-v2')
         assert align_cache.load_alignment_plan(folder, names, sources, identity=identity) is None
     assert align_cache.load_alignment_plan(folder, names, sources, identity=identity) == plan
 

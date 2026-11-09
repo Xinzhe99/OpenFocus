@@ -67,6 +67,7 @@ class CompareDialog(QDialog):
         self._total_frames = len(getattr(window_main, "raw_images", None) or [])
         self._frames = self._raw_frames
         self._aligned_frames = None
+        self._reverse_registration = False
         self._epoch = 0
         self._revision = 0
         self._worker = None
@@ -512,6 +513,10 @@ class CompareDialog(QDialog):
 
     def _methods_changed(self, _checked):
         selected = self._selected_methods()
+        reverse = self._registration_is_reversed(selected)
+        if reverse != self._reverse_registration:
+            self._reverse_registration = reverse
+            self._invalidate_alignment()
         for method, group in self._param_rows.items():
             group.setVisible(method in selected)
         self.param_scroll.setVisible(any(method in self._param_rows for method in selected))
@@ -529,6 +534,14 @@ class CompareDialog(QDialog):
         self._errors.pop(method, None)
         self._update_adopt_actions()
         self._request_changed()
+
+    def _registration_is_reversed(self, methods):
+        # One coordinate system for every candidate. If any selected method
+        # requires reverse registration, all candidates use that same stack.
+        from core.workers import _ordered_openfocus_registration
+        alignment = self.align_combo.currentData()
+        return any(_ordered_openfocus_registration(alignment, method, self._shared['sort_mode'])
+                   for method in methods)
 
     def _sync_registration_parameters(self):
         method = self.align_combo.currentData()
@@ -548,6 +561,12 @@ class CompareDialog(QDialog):
 
     def _alignment_changed(self, _index):
         self._sync_registration_parameters()
+        self._reverse_registration = self._registration_is_reversed(self._selected_methods())
+        self._invalidate_alignment()
+        self._request_changed()
+
+    def _invalidate_alignment(self):
+        self._stale_methods.update(self._results)
         self._epoch += 1
         self._aligned_frames = None
         self._frames = self._raw_frames
@@ -556,7 +575,6 @@ class CompareDialog(QDialog):
         self._errors.clear()
         self._show_frame(self._ref_index)
         self._update_adopt_actions()
-        self._request_changed()
 
     def _mode_changed(self, _index):
         roi = bool(self.mode_combo.currentData())
@@ -768,7 +786,8 @@ class CompareDialog(QDialog):
                 self._frames = self._aligned_frames
                 self._show_frame(self._ref_index)
             else:
-                worker = AlignmentWorker(self._raw_frames, alignment, self._shared, self)
+                worker = AlignmentWorker(self._raw_frames, alignment, self._shared, self,
+                                         reverse_registration=self._reverse_registration)
                 worker.ready.connect(self._alignment_ready)
                 worker.failed.connect(self._alignment_failed)
                 self.status_label.setText(trans.t("render_stage_align"))
@@ -989,7 +1008,7 @@ class CompareDialog(QDialog):
         # become an output, and it must not round-trip through the pixmap.
         x, y, width, height = tuple(bounds)
         if (not key[1] and x == 0 and y == 0
-                and (height, width) == self._raw_frames[0].shape[:2]
+                and (height, width) == self._aligned_frames[0].shape[:2]
                 and (height, width) == image.shape[:2]):
             self._full_results[method] = {
                 "key": key, "image": image, "bounds": tuple(bounds)}
