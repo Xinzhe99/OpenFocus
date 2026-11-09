@@ -130,6 +130,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   scroll phase, including X11, where only angle deltas are reliable.
 
 ### Fixed
+- Match reversed OpenFocus B/C depth maps to the same registration direction
+  and source-frame geometry used by fusion.
 - Reduce block-shaped focus boundaries in OpenFocus A by bilinearly expanding
   each pyramid response before selecting source pixels.
 - Choose an available local temporary volume for source previews when the system

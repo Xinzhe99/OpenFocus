@@ -129,10 +129,16 @@ class DepthWorker(QThread):
         self._images = materialize_frames(self._images, should_cancel=lambda: self._cancelled)
         if self.alignment != "none":
             from core.compare_worker import align_frames
-            self._images = align_frames(self._images, self.alignment,
+            from core.workers import _ordered_openfocus_registration
+            reverse_registration = _ordered_openfocus_registration(
+                self.alignment, self._method, 'desc' if self.reverse_order else 'asc')
+            inputs = list(reversed(self._images)) if reverse_registration else self._images
+            self._images = align_frames(inputs, self.alignment,
                 self.registration_settings, lambda: self._cancelled)
             if self._images is None:
                 raise DepthMapCancelled()
+            if reverse_registration:
+                self._images = list(reversed(self._images))
             from core.render_context import SourceFrame
             self.source_frames = tuple(SourceFrame(str(i), "", image, aligned=True)
                                        for i, image in enumerate(self._images))
