@@ -59,6 +59,7 @@ class MagnifierLabel(QLabel):
     roiModeExitRequested = pyqtSignal()  # 请求退出ROI模式（点击X按钮或右键）
     sourceRegionRequested = pyqtSignal(object, object)  # generation key, bounded region request
     sourceRegionsReleased = pyqtSignal(object)
+    viewStateChanged = pyqtSignal()
 
     def __init__(self, text: Optional[str] = "", parent=None):
         super().__init__(parent)
@@ -225,6 +226,7 @@ class MagnifierLabel(QLabel):
             self._source_size = QSizeF()
             super().clear()
             self._magnifier_active = False
+            self.viewStateChanged.emit()
             self.update()
             return
         self._source_size = QSizeF(*source_size) if source_size is not None else QSizeF(pixmap.size())
@@ -233,6 +235,7 @@ class MagnifierLabel(QLabel):
         if changed_source and self._magnifier_active:
             self._ensure_native_loupe()
         self._update_scaled_pixmap()
+        self.viewStateChanged.emit()
         self._request_source_regions()
 
     def set_source_region(self, pixmap, rect, *, source_key, request) -> bool:
@@ -302,9 +305,36 @@ class MagnifierLabel(QLabel):
     def refresh_display(self):
         self._update_scaled_pixmap()
 
+    def view_zoom_state(self):
+        """Return the fit-relative zoom, its limits, and image availability."""
+        available = self._base_pixmap is not None and not self._base_pixmap.isNull()
+        return self._zoom_factor, self._min_zoom, self._view_max_zoom(), available
+
+    def zoom_view(self, zoom_in):
+        """Zoom around the view centre, keeping the image within pan bounds."""
+        old_zoom, minimum, maximum, available = self.view_zoom_state()
+        if not available or (zoom_in and old_zoom >= maximum) or (not zoom_in and old_zoom <= minimum):
+            return
+        new_zoom = (min(old_zoom * 1.1, maximum) if zoom_in
+                    else max(old_zoom / 1.1, minimum))
+        if new_zoom == old_zoom:
+            return
+        centre = QPointF(self.width() / 2.0, self.height() / 2.0)
+        base_point = self._map_to_base(centre)
+        self._zoom_factor = new_zoom
+        after = self._map_from_base(base_point)
+        self._pan_offset += centre - after
+        scaled_w, scaled_h = self._display_size()
+        if scaled_w <= self.width() and scaled_h <= self.height():
+            self._pan_offset = QPointF(0, 0)
+        self._update_scaled_pixmap()
+        self._show_zoom_indicator()
+        self.viewStateChanged.emit()
+
     def reset_view(self):
         self._zoom_factor = 1.0
         self._pan_offset = QPointF(0, 0)
+        self.viewStateChanged.emit()
         if self._base_pixmap is None or self._base_pixmap.isNull():
             super().clear()
             self._last_cursor_state = None
@@ -329,6 +359,7 @@ class MagnifierLabel(QLabel):
         self._last_cursor_state = None
         self.unsetCursor()
         super().clear()
+        self.viewStateChanged.emit()
 
     def wheelEvent(self, event):
         if self._is_panning:
@@ -437,6 +468,7 @@ class MagnifierLabel(QLabel):
             else:
                 self._update_scaled_pixmap(clamp=False)
             self._show_zoom_indicator()
+            self.viewStateChanged.emit()
 
         event.accept()
 
@@ -458,6 +490,7 @@ class MagnifierLabel(QLabel):
         super().resizeEvent(event)
         if self._base_pixmap is not None and not self._base_pixmap.isNull():
             self._update_scaled_pixmap()
+            self.viewStateChanged.emit()
 
     def keyPressEvent(self, event):
         if self._roi_mode and (event.key() == Qt.Key.Key_Delete or event.key() == Qt.Key.Key_Backspace):

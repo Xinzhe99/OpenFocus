@@ -295,8 +295,51 @@ def create_result_panel() -> ResultPanel:
     wipe_page_layout.addWidget(wipe_widget, 1)
     wipe_page_layout.addWidget(wipe_bar)
 
+    # Keep these controls on the normal result page, separate from Wipe.
+    zoom_bar = QWidget()
+    zoom_bar.setObjectName("panelControlBar")
+    zoom_layout = QHBoxLayout(zoom_bar)
+    zoom_layout.setContentsMargins(8, 2, 8, 2)
+    zoom_layout.addStretch()
+    zoom_out = QPushButton("−")
+    zoom_in = QPushButton("+")
+    zoom_level = QLabel()
+    zoom_level.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    zoom_level.setMinimumWidth(55)
+    zoom_layout.addWidget(zoom_out)
+    zoom_layout.addWidget(zoom_level)
+    zoom_layout.addWidget(zoom_in)
+
+    def update_zoom_controls():
+        zoom, minimum, maximum, available = image_label.view_zoom_state()
+        zoom_out.setEnabled(available and zoom > minimum)
+        zoom_in.setEnabled(available and zoom < maximum)
+        zoom_level.setText(f"{zoom:.2f}×" if available else "—")
+        zoom_level.setAccessibleName(trans.t('result_zoom_level').format(zoom=f"{zoom:.2f}×")
+                                     if available else trans.t('result_zoom_empty'))
+
+    def translate_zoom_controls():
+        for button, key in ((zoom_out, 'result_zoom_out'), (zoom_in, 'result_zoom_in')):
+            button.setToolTip(trans.t(key))
+            button.setAccessibleName(trans.t(key))
+        update_zoom_controls()
+
+    zoom_out.clicked.connect(lambda: image_label.zoom_view(False))
+    zoom_in.clicked.connect(lambda: image_label.zoom_view(True))
+    image_label.viewStateChanged.connect(update_zoom_controls)
+    trans.languageChanged.connect(translate_zoom_controls)
+    container.destroyed.connect(lambda: trans.languageChanged.disconnect(translate_zoom_controls))
+    translate_zoom_controls()
+
+    result_page = QWidget()
+    result_page_layout = QVBoxLayout(result_page)
+    result_page_layout.setContentsMargins(0, 0, 0, 0)
+    result_page_layout.setSpacing(0)
+    result_page_layout.addWidget(image_label, 1)
+    result_page_layout.addWidget(zoom_bar)
+
     view_stack = QStackedWidget()
-    view_stack.addWidget(image_label)  # index 0: normal result view
+    view_stack.addWidget(result_page)  # index 0: normal result view
     view_stack.addWidget(wipe_page)    # index 1: wipe compare view
 
     layout.addWidget(title_bar)
