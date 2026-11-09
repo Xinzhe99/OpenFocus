@@ -561,9 +561,6 @@ class WatermarkDialog(QDialog):
             from utils.frame_pixels import preview_pixels
             display = preview_pixels(image, parent=self)
         display = np.array(to_display_uint8(display), copy=True)
-        if display.ndim == 3 and display.shape[2] == 4:
-            from utils.image_utils import composite_transparent_for_display
-            display = composite_transparent_for_display(display)
         if display.ndim == 2:
             display = cv2.cvtColor(display, cv2.COLOR_GRAY2BGR)
         h, w = display.shape[:2]
