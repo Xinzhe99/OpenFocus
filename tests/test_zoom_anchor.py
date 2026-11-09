@@ -110,7 +110,9 @@ class TestMagnifierZoomAnchor:
         finally:
             label.close()
 
-    def test_touchpad_two_finger_scroll_pans_without_zooming(self, qapp):
+    def test_touchpad_two_finger_scroll_pans_without_zooming(self, qapp, monkeypatch):
+        import widgets.magnifier_label as ml
+        monkeypatch.setattr(ml, "_platform_name", lambda: "windows")
         label = self._label(qapp)
         try:
             label._zoom_factor = 2.0
