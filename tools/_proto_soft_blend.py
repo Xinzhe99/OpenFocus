@@ -12,7 +12,7 @@ sys.path.insert(0, 'tools')
 import numpy as np
 import cv2
 from synthetic_benchmark import make_texture, make_stack, SCENES, score
-from fusion_methods._hf9_pixels import frame_codes
+from fusion_methods._openfocus_pixels import frame_codes
 from fusion_methods.openfocus_a import _response
 from fusion_methods.openfocus_ab import _check_cancel
 

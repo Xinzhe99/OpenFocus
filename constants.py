@@ -22,7 +22,7 @@ BYTES_TO_GB = 1024 ** 3
 
 # Shared snapshots and numerical scratch leave room for source/preview caches.
 FRAME_RAM_BUDGET_BYTES = 384 * 1024 ** 2
-HF9_MAX_IN_FLIGHT_FRAMES = 2
+OPENFOCUS_MAX_IN_FLIGHT_FRAMES = 2
 
 FEATURE_MAX_KEYPOINTS = 200
 FEATURE_MATCH_THRESHOLD = 0.01

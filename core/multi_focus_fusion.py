@@ -1333,7 +1333,7 @@ class MultiFocusFusion:
 
         native_codes = algorithm in ('openfocus_a', 'openfocus_b', 'openfocus_c')
         if native_codes:
-            from fusion_methods._hf9_execution import (
+            from fusion_methods._openfocus_execution import (
                 native_execution_scope, serial_execution_scope, _worker_native_limit,
             )
         normalize_16bit = (not native_codes and (any(frame.dtype == np.uint16 for frame in imgs)

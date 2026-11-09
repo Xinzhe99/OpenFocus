@@ -114,8 +114,8 @@ def registration_ecc(registration, images, thread_count=4, should_cancel=None, *
 
 
 def registration_openfocus(registration, images, thread_count=4, should_cancel=None, **parameters):
-    from core.registration import _align_helicon_impl
-    return _align_helicon_impl(images, should_cancel=should_cancel,
+    from core.registration import _align_openfocus_impl
+    return _align_openfocus_impl(images, should_cancel=should_cancel,
         max_shift_ratio=parameters['max_shift_ratio'],
         failure_policy=parameters['failure_policy'], reference_frame=parameters['reference_frame'],
         rotation=parameters['rotation'], magnification=parameters['magnification'],

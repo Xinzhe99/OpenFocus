@@ -1,8 +1,6 @@
-"""HF9 translation and wide similarity search with reusable Q8.8 warps.
+"""Translation and wide similarity search with reusable Q8.8 warps.
 
-The wide detector follows helicon_align4d.align_pair_wide in float32 order.
-Plans retain immutable source identities, never decoded frame stacks. See
-docs/HF9_TRANSLATION_CORE.md for the verified scope and open evidence.
+Plans retain immutable source identities, never decoded frame stacks.
 """
 from dataclasses import dataclass
 import hashlib
@@ -281,7 +279,7 @@ def _pyramid(gray, should_cancel):
 
 
 def _axis_samples(coords, length, *, padding=0):
-    """Sampler indices/weights with prototype float32 clamp ordering."""
+    """Sampler indices and weights with float32 clamp ordering."""
     coords = np.asarray(coords, dtype=np.float32).copy()
     extent = length + 2 * padding
     invalid = (coords >= _F32(extent)) | (coords < 0)
@@ -320,7 +318,7 @@ def _refine_level(a, b, c_dx, c_dy, *, half, step, crop, should_cancel):
     offsets = (np.arange(count) - (count - 1) // 2) * step
     best = None
     best_score = _F32(np.finfo(np.float32).max)
-    # Preserve the prototype order: dy outermost, dx fastest; strict '<'.
+    # Evaluate dy outermost and dx fastest; ties keep the first candidate.
     for ody in offsets:
         _check_cancel(should_cancel)
         dy = c_dy + ody
@@ -401,7 +399,7 @@ def estimate_translation_plan(sources, *, max_shift_ratio=0.05,
     h, w = shape[:2]
     # One sequential owner. No nested executor/native thread pool is created.
     resource_policy.plan_execution(resource_policy.Workload(
-        algorithm='hf9_translation', frames=len(sources), height=h, width=w,
+        algorithm='openfocus_translation', frames=len(sources), height=h, width=w,
         fixed_bytes=needed, per_worker_bytes=0, outer_tasks=1), user_threads=1)
     transforms = []
     previous = None
@@ -454,15 +452,15 @@ def apply_translation(image, transform, *, should_cancel=None):
 
 F32 = np.float32
 
-_PI_F32 = F32(math.pi)          # 0x140eb9c98
-_180_F32 = F32(180.0)           # 0x140eba174
-_HALF_F32 = F32(0.5)            # 0x140eb8e5c
-_ONE_F32 = F32(1.0)             # 0x140eb90a0
-_FLIP = np.uint32(0x80000000)   # 0x140ebce60
-_BIG = F32(1.0e6)               # 0x140eba310
+_PI_F32 = F32(math.pi)
+_180_F32 = F32(180.0)
+_HALF_F32 = F32(0.5)
+_ONE_F32 = F32(1.0)
+_FLIP = np.uint32(0x80000000)
+_BIG = F32(1.0e6)
 
 def fast_downsize(img, should_cancel=None):
-    """HF fast_downsize: 2x2 mean (sum+2)>>2, ceil dims, edge tail."""
+    """Downsize by a 2x2 mean (sum+2)>>2, using ceil dimensions."""
     h, w = img.shape
     out = np.empty(((h + 1) // 2, (w + 1) // 2), np.uint16)
     xs = np.arange(0, w, 2)
@@ -495,7 +493,7 @@ def gpu_params(f8):
         f8 = f8[None, :]
     rot_bits = f8[..., 4].view(np.uint32) ^ _FLIP
     rot_flipped = rot_bits.view(np.float32)
-    rad = rot_flipped * _PI_F32 / _180_F32          # MULSS then DIVSS
+    rad = rot_flipped * _PI_F32 / _180_F32
     s = np.sin(rad).astype(np.float32)              # sinf
     c = np.cos(rad).astype(np.float32)              # cosf
     magx = f8[..., 5]
@@ -545,7 +543,7 @@ def enumerate_candidates(cfg8, cnts, steps, M, start=0, stop=None):
         return N, None
     i = np.arange(start, N if stop is None else min(stop, N), dtype=np.int64)
     N = len(i)
-    # C-style truncated remainder (IDIV semantics) — cnts may go negative
+    # Use C-style truncated remainder; counts may be negative.
     def _crem(ii, n):
         q = np.trunc(ii / n).astype(np.int64)
         return ii - q * n
@@ -648,15 +646,9 @@ def _score_chunk(img_a, img_b, xs, ys, cand):
 
 
 def _decide(ssum, ssq, cnt):
-    """ba90 decision: float-domain variance, strict '<'.
+    """Choose the first minimum float-domain variance with at least two samples.
 
-    Candidate eligibility: cnt >= 2. The binary's gate is `COMISS cnt,0; JBE`
-    (cnt<=0 dropped, XMM8=0 at 0x14083bb1a) — but a single valid sample makes
-    var == msq - msu^2 == 0 EXACTLY in f32, so every exactly-one-sample
-    candidate would tie at 0.0 and win by enumeration order, which contradicts
-    the observed convergence (E-23: rot 6 deg -> 0.021 deg residual). The
-    effective behaviour must exclude cnt<=1; flagged [INFERENCE], validated
-    against the aligrange ground truth.
+    A single sample has zero variance and would spuriously win the search.
     """
     cnt_f = cnt.astype(np.float32)
     denom = np.maximum(cnt_f, _ONE_F32).astype(np.float64)
@@ -693,7 +685,7 @@ def _cnt_step(rng, div, grid_half):
     cnt = a if a < cap else cap
     cnt = int(np.int32(cnt | np.int32(1)))
     if cnt > 1:
-        step = F32(2.0) * F32(rng) / F32(cnt - 1)   # ADDSS self, CVTDQ2PS, DIVSS
+        step = F32(2.0) * F32(rng) / F32(cnt - 1)
     else:
         step = F32(0.0)
     return cnt, step
@@ -722,7 +714,7 @@ def grid_level_4d(img_a, img_b, base8, ranges4, coef=1.0, grid_half=8,
     div_rot = _div_rot(coef_eff, half_dim)
     divs = (div_shift, div_shift, div_mag, div_rot)
 
-    # rect: degenerate -> {0,0,W,H} (imgB dims per ba90); clamp A then B
+    # Clamp the full image rectangle to each source.
     x0, y0, x1, y1 = 0, 0, W, H
     x0 = min(max(x0, 0), W); x1 = min(max(x1, 0), W)
     y0 = min(max(y0, 0), H); y1 = min(max(y1, 0), H)
@@ -1120,7 +1112,7 @@ def estimate_alignment_plan(sources, *, max_shift_ratio=.05, reference_frame=1,
         raise ValueError(f'OpenFocus reference frame {reference_frame} is outside the stack of {len(sources)} frames')
     h, w = sources[0].shape[:2]
     resource_policy.plan_execution(resource_policy.Workload(
-        algorithm='hf9_alignment', frames=len(sources), height=h, width=w,
+        algorithm='openfocus_alignment', frames=len(sources), height=h, width=w,
         fixed_bytes=needed, per_worker_bytes=0, outer_tasks=1), user_threads=1)
     ref = reference_frame - 1
     order = (ref, *range(ref - 1, -1, -1), *range(ref + 1, len(sources)))

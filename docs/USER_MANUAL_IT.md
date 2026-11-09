@@ -456,13 +456,13 @@ Se non viene indicata una cartella temporanea, OpenFocus stima lo spazio necessa
 - **OpenFocus A**: seleziona i pixel sorgente tramite una risposta di fuoco multi-scala.
 - **OpenFocus B**: miscela fotogrammi vicini guidato da una mappa di profondità levigata.
 - **OpenFocus C**: miscela i pixel sorgente in base alla mappa di profondità finale levigata.
-- **Parametri**: A e B usano il cursore del kernel per controllare la scala di risposta di fuoco; C non ha raggio. La levigatura di A non ha effetto, come in HF9 A; B e C levigano la mappa di profondità usata per la fusione.
+- **Parametri**: A e B usano il cursore del kernel per controllare la scala di risposta di fuoco; C non ha raggio. La levigatura di A non ha effetto; B e C levigano la mappa di profondità usata per la fusione.
 
 **Levigatura**: un unico campo numerico sotto il cursore del kernel, il cui significato dipende dal metodo selezionato (intervallo 0–8, passo 0,2):
 
 | Metodo | Etichetta | Predefinito | Effetto |
 |---|---|---|---|
-| OpenFocus A | Levigatura della miscelazione | 2,0 | Nessun effetto, come in HF9 A |
+| OpenFocus A | Levigatura della miscelazione | 2,0 | Nessun effetto |
 | OpenFocus B | Levigatura della profondità | 1,44 | Controlla la levigatura della mappa di profondità che guida la miscelazione |
 | OpenFocus C | Levigatura della miscelazione | 3,6 | Controlla la levigatura della mappa di profondità e le transizioni di fusione |
 

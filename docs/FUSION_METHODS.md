@@ -5,17 +5,14 @@ these approaches:
 
 | Method | Approach | Main controls |
 |---|---|---|
-| A | Selects pixels using the sum of absolute Burt-pyramid Laplacians. | Kernel size (`--kernel`); smoothing is inert as in HF9 A |
+| A | Selects pixels using the sum of absolute Burt-pyramid Laplacians. | Kernel size (`--kernel`); smoothing has no effect |
 | B | Blends neighboring frames according to a smoothed depth map. | Kernel size and depth smoothing (`--kernel`, `--depth-smoothing`) |
 | C | Blends source pixels using the completed, smoothed depth map. | Blend smoothing (`--blend-smoothing`); no radius control |
 
 Default parameters are kernel size 17 for A and B, blend smoothing 2.0 for A,
 depth smoothing 1.44 for B, and blend smoothing 3.6 for C. B and C retain
-their respective smoothing multipliers of 5/1.2 and 5/3.0. These defaults are
-a parameter mapping calibrated to Helicon Focus 9's GUI radius 8 and smoothing
-6, not a guarantee of equivalent algorithms, visual results or resource use.
-Existing per-method saved values remain in use; restore defaults to use the new
-defaults.
+their respective smoothing multipliers of 5/1.2 and 5/3.0. Existing per-method
+saved values remain in use; restore defaults to use the current defaults.
 
 Exposure matching can compensate for brightness differences across the stack
 before fusion. OpenFocus A/B/C input can be sorted with `--sort asc|desc|off`;
@@ -37,8 +34,8 @@ original code. Radius `R = max(1, kernel_size // 2)` chooses
 with replicated odd edges and bilinear expansion at phase −0.5. The response
 is the sum of nearest-expanded absolute Laplacians, saturated at 65535.
 Smoothing does not change A's response or selection. Strict source-order
-comparison retains the first frame on ties. Eight-bit output uses HF9's E-37
-exit (`max(v-1, 0)`); sixteen-bit output keeps the selected code, without that
+comparison retains the first frame on ties. Eight-bit output uses
+`max(v-1, 0)`; sixteen-bit output keeps the selected code, without that
 subtraction. Mixed stacks map each input according to its own source depth.
 
 B and C use the integer activity/depth chain and ordered Q10 code-band merge.
@@ -55,27 +52,6 @@ guide feed horizontal-then-vertical depth smoothing. Feather correction is
 truncated before bilinear expansion to the exact source canvas. Expansion keeps
 the native float32 scale and half-pixel offset operations separate, including
 when the requested width or height is odd.
-
-The supplied 512×512 HF9 CPU golden stacks were exercised with the production
-implementation. A covers R=1/5/10/22, S=0/5/20 and F=0/10; B/C below use
-R=22, S=5 and F=0. C uses the actual `mp:3` reference, not the obsolete
-`mp:2` files. Percentages count output samples in the 8-bit code domain.
-
-| Method | Golden stack | Exact samples | Within one code |
-|---|---|---:|---:|
-| A | S3 ties / S4 amplitude | 100% | 100% |
-| B | S4 amplitude | 69.54% | 100% |
-| C | S3 ties / S4 amplitude | 100% | 100% |
-| C | S1 zones, four frames | 100% | 100% |
-| C | S2 gradient, five frames | 100% | 100% |
-
-These results establish the tested configurations. Other B reconstruction details,
-non-identical sixteen-bit C stacks and other parameter/image-size combinations remain
-outside general bit-exactness claims. Odd-canvas depth expansion matches a native
-129×131 capture. C identity
-is separately checked at 64–512 pixels in both source depths, including odd
-dimensions. The product preserves A's 16-bit source codes rather than copying
-HF9's occasional one-code float round-trip loss.
 
 
 StackMFF V1 and V2 use retrained single-scale attention networks, each with

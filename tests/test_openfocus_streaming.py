@@ -1,4 +1,4 @@
-"""Bounded HF9 source preparation, ownership, and producer lifecycle contracts."""
+"""Bounded OpenFocus source preparation, ownership, and producer lifecycle contracts."""
 import gc
 import threading
 from types import SimpleNamespace
@@ -194,7 +194,7 @@ def test_native_fusion_rejects_pre_materialization_and_preserves_sources(tmp_pat
     last, _ = _source(tmp_path, f'{method}-16.png', 16003)
 
     def forbidden(*args, **kwargs):
-        raise AssertionError('HF9 path eagerly materialized the source stack')
+        raise AssertionError('OpenFocus path eagerly materialized the source stack')
 
     monkeypatch.setattr(source_frames, 'materialize_frames', forbidden)
     fusion = MultiFocusFusion(algorithm=method, tile_enabled=False, exposure_match=True)

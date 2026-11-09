@@ -1,4 +1,4 @@
-"""Integer pixel-domain boundary shared by the HF9-compatible methods."""
+"""Integer pixel-domain boundary shared by the OpenFocus-compatible methods."""
 import cv2
 import numpy as np
 
@@ -74,7 +74,7 @@ def frame_gray_codes(source, img_resize, should_cancel):
     frame = resolve_frame(source)
     _check_cancel(should_cancel)
     if img_resize is None and frame.dtype in (np.uint8, np.uint16):
-        from fusion_methods._hf9_kernels import gray_rows
+        from fusion_methods._openfocus_kernels import gray_rows
 
         gray = create_frame(frame.shape[:2], np.uint16)
         scale = 256 if frame.dtype == np.uint8 else 1

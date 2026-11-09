@@ -667,7 +667,7 @@ class RenderWorker(QThread):
             identity = dict(request.get('identity') or {})
             identity.update(alignment_steps=list(self.alignment),
                             registration_parameters=dict(self.registration_parameters),
-                            registration_backend=('hf9-wide4d' if self.alignment == ('openfocus',)
+                            registration_backend=('openfocus-wide4d' if self.alignment == ('openfocus',)
                                                   else 'opencv-perspective-v1'),
                             downscale_width=self.reg_downscale_width,
                             scale_factor=request.get('scale_factor', 1.0),

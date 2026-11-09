@@ -177,14 +177,14 @@ def test_openfocus_rejects_mismatched_native_geometry(dtype, channels):
 
 @pytest.mark.parametrize("reference", [2, 3])
 def test_openfocus_selected_reference_aligns_both_sides_without_reordering(reference):
-    from core.registration import _align_helicon_impl
+    from core.registration import _align_openfocus_impl
     frames, _ = _shifted_stack(dx=4, dy=2)
     base = frames[0]
     frames = [base, cv2.warpAffine(base, np.float32([[1, 0, 4], [0, 1, 2]]),
                                    (base.shape[1], base.shape[0]), borderMode=cv2.BORDER_REFLECT),
               cv2.warpAffine(base, np.float32([[1, 0, 8], [0, 1, 4]]),
                              (base.shape[1], base.shape[0]), borderMode=cv2.BORDER_REFLECT)]
-    aligned = _align_helicon_impl(frames, reference_frame=reference,
+    aligned = _align_openfocus_impl(frames, reference_frame=reference,
                                  failure_policy="fail")
     anchor = aligned[reference - 1]
     # The anchor retains its native canvas; compare only the common interior.
@@ -232,7 +232,7 @@ def test_openfocus_strict_policy_reports_real_unestimable_geometry():
 
 
 def test_openfocus_equal_channel_mean_uses_verified_gray_rule():
-    from core.hf9_alignment import _gray16
+    from core.openfocus_alignment import _gray16
     green = np.arange(64, dtype=np.uint8).reshape(8, 8)
     base = np.dstack([np.full_like(green, 50), green, 200 - green])
     np.testing.assert_array_equal(_gray16(base, None), np.full((8, 8), (250 // 3) << 8, np.uint16))

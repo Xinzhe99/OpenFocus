@@ -493,13 +493,13 @@ Als geen tijdelijke map is opgegeven, schat OpenFocus de benodigde ruimte op bas
 - **OpenFocus A**: selecteert bronpixels op basis van een meerschalige focusrespons.
 - **OpenFocus B**: mengt naburige frames op basis van een afgeplatte dieptekaart.
 - **OpenFocus C**: mengt bronpixels op basis van de voltooide, afgevlakte dieptekaart.
-- **Parameters**: A en B gebruiken de kernelregelaar voor de schaal van de focusrespons; C heeft geen straal. Afvlakking heeft bij A geen effect, net als bij HF9 A; B en C vlakken de dieptekaart voor de fusie af.
+- **Parameters**: A en B gebruiken de kernelregelaar voor de schaal van de focusrespons; C heeft geen straal. Afvlakking heeft bij A geen effect; B en C vlakken de dieptekaart voor de fusie af.
 
 **Afvlakking**: één draaischijf onder de kernelregelaar, met een betekenis die afhangt van de gekozen methode (bereik 0–8, stap 0,2):
 
 | Methode | Label | Standaard | Effect |
 |---|---|---|---|
-| OpenFocus A | Mengingsafvlakking | 2,0 | Geen effect, net als bij HF9 A |
+| OpenFocus A | Mengingsafvlakking | 2,0 | Geen effect |
 | OpenFocus B | Diepteafvlakking | 1,44 | Regelt de afvlakking van de dieptekaart die de menging stuurt |
 | OpenFocus C | Mengingsafvlakking | 3,6 | Regelt de afvlakking van de dieptekaart en de fusieovergangen |
 

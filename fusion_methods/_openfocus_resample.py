@@ -1,4 +1,4 @@
-"""Bounded HF9 Method C gray reduction and final depth expansion.
+"""Bounded OpenFocus Method C gray reduction and final depth expansion.
 
 Axis plans belong to one job. Pixel passes use ordered float32 LLVM FMA calls,
 vertical before horizontal, with only a bounded band of float32 intermediates.
@@ -12,7 +12,7 @@ from core.algorithm_adapters import DEPTH_KERNEL_STARTUP_BYTES
 from core.frame_storage import create_transient_frame
 from core.resource_policy import require_memory
 from fusion_methods._depth_kernel import njit
-from fusion_methods._hf9_execution import cancellation_check, run_bands
+from fusion_methods._openfocus_execution import cancellation_check, run_bands
 
 # Import the compiler extensions only after _depth_kernel's memory admission.
 from llvmlite import ir
@@ -22,7 +22,7 @@ from numba.extending import intrinsic
 
 _SUPPORT = np.float32(1.9989999532699585)
 _BAND_ROWS = 128
-# Literal float32 values from the native resize context, excluding its sentinel.
+# Float32 interpolation weights, excluding the sentinel.
 _LUT = np.frombuffer(np.array([
     1.000000000, 0.997640193, 0.990738153, 0.979559839,
     0.964371324, 0.945438623, 0.923027754, 0.897404790,
@@ -84,7 +84,7 @@ def _lut_weight(argument):
 def _fill_half_axis(source_length, indices, weights, counts):
     radius = np.float32(_SUPPORT / np.float32(0.5))
     for position in range(indices.shape[0]):
-        # Fixed native scale 0.5, including odd source lengths.
+        # Fixed scale 0.5, including odd source lengths.
         center = np.float32(np.float32(2 * position) + np.float32(0.5))
         first = int(np.floor(np.float32(center - radius)))
         last = int(np.ceil(np.float32(center + radius)))
@@ -113,7 +113,7 @@ def _fill_linear_axis(source_length, indices, weights, counts):
     scale = np.float32(np.float32(target_length) / np.float32(source_length))
     offset = np.float32(np.float32(np.float32(0.5) / scale) - np.float32(0.5))
     for position in range(target_length):
-        # Native divss/addss order matters for odd target dimensions.
+        # Operation order matters for odd target dimensions.
         phase = np.float32(np.float32(np.float32(position) / scale) + offset)
         lower = int(np.floor(phase))
         fraction = np.float32(phase - np.float32(lower))
@@ -147,7 +147,7 @@ def half_gray_axes(height, width):
     """Build an immutable (vertical, horizontal) plan pair once for a job."""
     height, width = index(height), index(width)
     if height <= 0 or width <= 0:
-        raise ValueError('HF9 gray source dimensions must be positive')
+        raise ValueError('OpenFocus gray source dimensions must be positive')
     return (_axis_plan(height, max(1, height // 2)),
             _axis_plan(width, max(1, width // 2)))
 
@@ -210,17 +210,17 @@ def _resample(source, axes, should_cancel):
 
 
 def half_gray(gray, should_cancel=None, *, axes=None):
-    """Reduce a gray plane to max(1, floor(axis/2)) using native HF9 taps."""
+    """Reduce a gray plane to max(1, floor(axis/2)) using native OpenFocus taps."""
     gray = np.asarray(gray)
     if gray.ndim != 2 or min(gray.shape) <= 0:
-        raise ValueError('HF9 gray reduction requires a nonempty 2D plane')
+        raise ValueError('OpenFocus gray reduction requires a nonempty 2D plane')
     if axes is None:
         axes = half_gray_axes(*gray.shape)
     else:
         for axis, length in zip(axes, gray.shape):
             if (axis.source_length != length
                     or axis.indices.shape[0] != max(1, length // 2)):
-                raise ValueError('HF9 gray axis plan does not match the source')
+                raise ValueError('OpenFocus gray axis plan does not match the source')
     return _resample(gray, axes, should_cancel)
 
 
@@ -228,10 +228,10 @@ def expand_depth(depth, shape, should_cancel=None):
     """Expand a depth plane to the exact requested (height, width) canvas."""
     depth = np.asarray(depth)
     if depth.ndim != 2 or min(depth.shape) <= 0:
-        raise ValueError('HF9 depth expansion requires a nonempty 2D plane')
+        raise ValueError('OpenFocus depth expansion requires a nonempty 2D plane')
     height, width = map(index, shape)
     if height <= 0 or width <= 0:
-        raise ValueError('HF9 depth canvas dimensions must be positive')
+        raise ValueError('OpenFocus depth canvas dimensions must be positive')
     axes = (_axis_plan(depth.shape[0], height, linear=True),
             _axis_plan(depth.shape[1], width, linear=True))
     return _resample(depth, axes, should_cancel)

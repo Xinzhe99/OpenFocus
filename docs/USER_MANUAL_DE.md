@@ -493,13 +493,13 @@ Ist kein temporäres Verzeichnis angegeben, schätzt OpenFocus den Bedarf anhand
 - **OpenFocus A**: wählt Quellpixel anhand einer mehrskaligen Fokusantwort aus.
 - **OpenFocus B**: mischt benachbarte Bilder anhand einer geglätteten Tiefenkarte.
 - **OpenFocus C**: mischt Quellpixel anhand der fertigen, geglätteten Tiefenkarte.
-- **Parameter**: A und B verwenden den Kernelregler für die Skala der Fokusantwort; C hat keinen Radius. Die Glättung von A hat wie bei HF9 A keine Wirkung. B und C glätten die für die Fusion verwendete Tiefenkarte.
+- **Parameter**: A und B verwenden den Kernelregler für die Skala der Fokusantwort; C hat keinen Radius. Die Glättung von A hat keine Wirkung. B und C glätten die für die Fusion verwendete Tiefenkarte.
 
 **Glättung**: ein Drehfeld unter dem Kernelregler, dessen Bedeutung von der gewählten Methode abhängt (Bereich 0–8, Schrittweite 0,2):
 
 | Methode | Bezeichnung | Standard | Wirkung |
 |---|---|---|---|
-| OpenFocus A | Mischungsglättung | 2,0 | Wie bei HF9 A ohne Wirkung |
+| OpenFocus A | Mischungsglättung | 2,0 | Ohne Wirkung |
 | OpenFocus B | Tiefenglättung | 1,44 | Steuert die Glättung der Tiefenkarte, die die Mischung führt |
 | OpenFocus C | Mischungsglättung | 3,6 | Steuert die Glättung der Tiefenkarte und die Fusionsübergänge |
 

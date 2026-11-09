@@ -475,13 +475,13 @@ Jeśli nie wskazano katalogu tymczasowego, OpenFocus szacuje potrzebne miejsce n
 - **OpenFocus A**: wybiera piksele źródłowe według wieloskalowej odpowiedzi ostrości
 - **OpenFocus B**: miesza sąsiednie klatki według wygładzonej mapy głębi
 - **OpenFocus C**: miesza piksele źródłowe według końcowej wygładzonej mapy głębi
-- **Parametry**: A i B używają suwaka jądra do skali odpowiedzi ostrości; C nie ma promienia. Wygładzanie A nie wpływa na wynik, tak jak w HF9 A; B i C wygładzają mapę głębi używaną do łączenia
+- **Parametry**: A i B używają suwaka jądra do skali odpowiedzi ostrości; C nie ma promienia. Wygładzanie A nie wpływa na wynik; B i C wygładzają mapę głębi używaną do łączenia
 
 **Wygładzanie**: jedno pole pod suwakiem jądra, znaczenie zależy od wybranej metody (zakres 0–8, krok 0,2):
 
 | Metoda | Etykieta | Domyślnie | Efekt |
 |---|---|---|---|
-| OpenFocus A | Wygładzanie mieszania | 2,0 | Bez wpływu na wynik, tak jak w HF9 A |
+| OpenFocus A | Wygładzanie mieszania | 2,0 | Bez wpływu na wynik |
 | OpenFocus B | Wygładzanie głębi | 1,44 | Kontroluje wygładzanie mapy głębi kierującej mieszaniem |
 | OpenFocus C | Wygładzanie mieszania | 3,6 | Kontroluje wygładzanie mapy głębi i przejścia łączenia |
 

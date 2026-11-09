@@ -456,13 +456,13 @@ Se nenhum diretório temporário for especificado, o OpenFocus estima o espaço 
 - **OpenFocus A**: seleciona os pixels de origem por uma resposta de foco multiescala.
 - **OpenFocus B**: mistura quadros vizinhos guiado por um mapa de profundidade suavizado.
 - **OpenFocus C**: mistura os pixels de origem com base no mapa de profundidade final suavizado.
-- **Parâmetros**: A e B usam o controle de kernel para a escala de resposta de foco; C não tem raio. A suavização de A não tem efeito, como no HF9 A; B e C suavizam o mapa de profundidade usado para a fusão.
+- **Parâmetros**: A e B usam o controle de kernel para a escala de resposta de foco; C não tem raio. A suavização de A não tem efeito; B e C suavizam o mapa de profundidade usado para a fusão.
 
 **Suavização**: um único campo numérico abaixo do controle de kernel, cujo significado depende do método selecionado (intervalo 0–8, passo 0,2):
 
 | Método | Rótulo | Padrão | Efeito |
 |---|---|---|---|
-| OpenFocus A | Suavização da mistura | 2,0 | Sem efeito, como no HF9 A |
+| OpenFocus A | Suavização da mistura | 2,0 | Sem efeito |
 | OpenFocus B | Suavização da profundidade | 1,44 | Controla a suavização do mapa de profundidade que guia a mistura |
 | OpenFocus C | Suavização da mistura | 3,6 | Controla a suavização do mapa de profundidade e as transições de fusão |
 

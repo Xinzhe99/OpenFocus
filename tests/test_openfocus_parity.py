@@ -1,4 +1,4 @@
-"""Consumer-visible HF9 integer-domain, source selection and identity boundaries."""
+"""Consumer-visible OpenFocus integer-domain, source selection and identity boundaries."""
 import numpy as np
 import pytest
 

@@ -2,7 +2,7 @@
 import numpy as np
 import pytest
 
-from fusion_methods import openfocus_bc as bc, _hf9_pixels as pixels
+from fusion_methods import openfocus_bc as bc, _openfocus_pixels as pixels
 from utils.image_utils import quantize_fuse_output
 
 

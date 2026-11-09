@@ -456,13 +456,13 @@ Si no se especifica un directorio temporal, OpenFocus estima el espacio necesari
 - **OpenFocus A**: selecciona los píxeles de origen mediante una respuesta de enfoque multiescala.
 - **OpenFocus B**: mezcla fotogramas vecinos guiándose por un mapa de profundidad suavizado.
 - **OpenFocus C**: mezcla los píxeles de origen según el mapa de profundidad final suavizado.
-- **Parámetros**: A y B usan el deslizador de núcleo para controlar la escala de respuesta de enfoque; C no tiene radio. El suavizado de A no tiene efecto, como en HF9 A; B y C suavizan el mapa de profundidad utilizado para la fusión.
+- **Parámetros**: A y B usan el deslizador de núcleo para controlar la escala de respuesta de enfoque; C no tiene radio. El suavizado de A no tiene efecto; B y C suavizan el mapa de profundidad utilizado para la fusión.
 
 **Suavizado**: un único campo numérico bajo el deslizador de núcleo, cuyo significado depende del método seleccionado (rango 0–8, paso 0,2):
 
 | Método | Etiqueta | Predeterminado | Efecto |
 |---|---|---|---|
-| OpenFocus A | Suavizado de mezcla | 2,0 | Sin efecto, como en HF9 A |
+| OpenFocus A | Suavizado de mezcla | 2,0 | Sin efecto |
 | OpenFocus B | Suavizado de profundidad | 1,44 | Controla el suavizado del mapa de profundidad que guía la mezcla |
 | OpenFocus C | Suavizado de mezcla | 3,6 | Controla el suavizado del mapa de profundidad y las transiciones de fusión |
 

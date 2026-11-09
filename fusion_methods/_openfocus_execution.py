@@ -1,4 +1,4 @@
-"""One bounded execution layer for an HF9 job and its ordered row passes."""
+"""One bounded execution layer for an OpenFocus job and its ordered row passes."""
 from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -8,7 +8,7 @@ from threading import Event
 
 from core.frame_storage import capture_scratch, run_with_scratch, scratch_directory
 
-_current = ContextVar('hf9_execution', default=None)
+_current = ContextVar('openfocus_execution', default=None)
 # Below this size scheduling competes with the native row kernels themselves.
 _ROW_PARALLEL_PIXELS = 512 * 512
 

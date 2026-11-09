@@ -87,8 +87,8 @@ def test_homography_failed_frame_keeps_last_accepted_reference():
 def test_cancel_after_final_native_warp_never_publishes(method, monkeypatch, tmp_path):
     cancelled = Event()
     if method == 'openfocus':
-        from core import hf9_alignment
-        target, function = hf9_alignment, 'apply_alignment'
+        from core import openfocus_alignment
+        target, function = openfocus_alignment, 'apply_alignment'
     else:
         target, function = cv2, 'warpPerspective'
     original = getattr(target, function)
@@ -195,7 +195,7 @@ def test_openfocus_cancels_between_search_candidates():
         calls += 1
         return calls >= 3
 
-    from core.hf9_alignment import align_pair_wide
+    from core.openfocus_alignment import align_pair_wide
     gray = cv2.cvtColor(_stack(1)[0], cv2.COLOR_BGR2GRAY).astype(np.uint16)
     with pytest.raises(registration.RegistrationCancelled):
         align_pair_wide(gray, gray, should_cancel=should_cancel)
@@ -303,7 +303,7 @@ def test_combined_alignment_admits_disk_backed_stack_by_active_working_set(
 @pytest.mark.parametrize('dtype', [np.uint8, np.uint16])
 @pytest.mark.parametrize('shape', [(1, 9, 3), (37, 41, 3), (259, 311, 3)])
 def test_native_gray_keeps_equal_mean_and_uint16_codes(dtype, shape):
-    from core.hf9_alignment import _gray16
+    from core.openfocus_alignment import _gray16
     rng = np.random.default_rng(177)
     image = rng.integers(0, 256, shape, dtype=np.uint16).astype(dtype)
     if dtype == np.uint16:
@@ -315,7 +315,7 @@ def test_native_gray_keeps_equal_mean_and_uint16_codes(dtype, shape):
 
 
 def test_grayscale_preparation_cancels_between_rows():
-    from core.hf9_alignment import _gray16
+    from core.openfocus_alignment import _gray16
     calls = 0
 
     def cancelled():
@@ -331,6 +331,6 @@ def test_grayscale_preparation_cancels_between_rows():
 @pytest.mark.parametrize('dtype', [np.uint8, np.uint16])
 def test_openfocus_fixed_brightness_preserves_identity_codes(dtype):
     frame = np.full((32, 40, 3), 80, dtype)
-    output = registration._align_helicon_impl([frame, frame.copy()])
+    output = registration._align_openfocus_impl([frame, frame.copy()])
     for image in output:
         np.testing.assert_array_equal(image, frame)

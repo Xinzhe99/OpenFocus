@@ -909,20 +909,20 @@ Each neural tile uses every frame. Source frames and alignment scratch can be di
 - **OpenFocus A**: selects source pixels using a multiscale focus response; first-frame ties and 16-bit precision are preserved.
 - **OpenFocus B**: blends neighboring frames guided by a smoothed depth map.
 - **OpenFocus C**: blends source pixels using the completed, smoothed depth map.
-- **Parameters**: A and B use the kernel slider for focus-response scale; C has no radius. A's smoothing setting has no effect, matching HF9 A; B and C smooth the depth map used for fusion.
+- **Parameters**: A and B use the kernel slider for focus-response scale; C has no radius. A's smoothing setting has no effect; B and C smooth the depth map used for fusion.
 
 **Smoothing**: one spin box under the kernel slider, with the meaning of the
 selected method (range 0–8, step 0.2):
 
 | Method | Label | Default | Effect |
 |---|---|---|---|
-| OpenFocus A | Blend smoothing | 2.0 | No effect, matching HF9 A |
+| OpenFocus A | Blend smoothing | 2.0 | No effect |
 | OpenFocus B | Depth smoothing | 1.44 | Controls smoothing of the depth map that guides blending |
 | OpenFocus C | Blend smoothing | 3.6 | Controls depth-map smoothing and fusion transitions |
 
 A/B default kernel size: 17. Existing saved values remain in use; restore defaults to use the new defaults.
 
-OpenFocus A does not use this value, matching HF9 A. For B and C, larger values
+OpenFocus A does not use this value. For B and C, larger values
 increase depth-map smoothing. Each
 method remembers its own value across sessions; batch processing uses the same rule.
 

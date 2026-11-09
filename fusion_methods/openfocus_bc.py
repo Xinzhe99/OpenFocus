@@ -1,4 +1,4 @@
-"""Bounded HF9 depth-guided fusion in the native integer code domain.
+"""Bounded OpenFocus depth-guided fusion in the native integer code domain.
 
 C consumes the completed canvas depth in reverse source order. Its RGB
 output is the full-resolution merge; it has no reconstruction pyramid.
@@ -7,7 +7,7 @@ import numpy as np
 
 from fusion_methods.openfocus_depth import depth_map
 from core.frame_storage import create_transient_frame as create_frame
-from fusion_methods._hf9_execution import (
+from fusion_methods._openfocus_execution import (
     execution_job, configure_rows, run_bands,
 )
 
@@ -44,7 +44,7 @@ def _source_codes(source, img_resize, should_cancel):
     """Borrow native samples; allocate code planes only at the legacy boundary."""
     from core.source_frames import resolve_frame
     from fusion_methods.openfocus_ab import _check_cancel
-    from fusion_methods._hf9_pixels import frame_codes
+    from fusion_methods._openfocus_pixels import frame_codes
     _check_cancel(should_cancel)
     frame = resolve_frame(source)
     _check_cancel(should_cancel)
@@ -57,7 +57,7 @@ def _merge_codes(accumulator, current, depth, index, count, should_cancel,
                  *, source_scale=1, reverse=False):
     """Ordered MergeWeighted bands, skipping inactive samples before color reads."""
     from fusion_methods.openfocus_ab import _check_cancel
-    from fusion_methods._hf9_kernels import merge_rows
+    from fusion_methods._openfocus_kernels import merge_rows
     step = 65535 // max(1, count - 1)
     first = index == (count - 1 if reverse else 0)
     def merge(start, stop):
@@ -109,7 +109,7 @@ def _active_sources(depth, count, should_cancel):
 def openfocus_b_impl(input_source, img_resize=None, kernel_size: int = 17,
                      thread_count: int = None, depth_smoothing: float = 1.44,
                      should_cancel=None, depth_override=None, progress_callback=None):
-    """Fuse integer source codes with the HF9 ordered MergeWeighted bands."""
+    """Fuse integer source codes with the OpenFocus ordered MergeWeighted bands."""
     from core import source_frames
     from fusion_methods.openfocus_ab import _check_cancel
     frames, shape = _inputs(input_source, img_resize, should_cancel)

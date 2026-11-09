@@ -456,13 +456,13 @@ Si aucun dossier temporaire n'est indiqué, OpenFocus estime les besoins à part
 - **OpenFocus A** : sélectionne les pixels sources selon une réponse de netteté multi-échelles.
 - **OpenFocus B** : mélange les images voisines guidé par une carte de profondeur lissée.
 - **OpenFocus C** : mélange les pixels sources selon la carte de profondeur finale lissée.
-- **Paramètres** : A et B utilisent le curseur de noyau pour régler l'échelle de réponse de netteté ; C n'a pas de rayon. Le lissage de A est sans effet, comme dans HF9 A ; B et C lissent la carte de profondeur utilisée pour la fusion.
+- **Paramètres** : A et B utilisent le curseur de noyau pour régler l'échelle de réponse de netteté ; C n'a pas de rayon. Le lissage de A est sans effet ; B et C lissent la carte de profondeur utilisée pour la fusion.
 
 **Lissage** : un seul champ numérique sous le curseur de noyau, dont le sens dépend de la méthode sélectionnée (plage 0–8, pas 0,2) :
 
 | Méthode | Libellé | Défaut | Effet |
 |---|---|---|---|
-| OpenFocus A | Lissage du mélange | 2,0 | Sans effet, comme dans HF9 A |
+| OpenFocus A | Lissage du mélange | 2,0 | Sans effet |
 | OpenFocus B | Lissage de profondeur | 1,44 | Contrôle le lissage de la carte de profondeur qui guide le mélange |
 | OpenFocus C | Lissage du mélange | 3,6 | Contrôle le lissage de la carte de profondeur et les transitions de fusion |
 

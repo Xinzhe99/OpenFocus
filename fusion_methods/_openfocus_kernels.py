@@ -1,4 +1,4 @@
-"""Exact integer rows for HF9 source preparation and weighted merges.
+"""Exact integer rows for OpenFocus source preparation and weighted merges.
 
 The caller owns allocation and checks cancellation between bounded row calls.
 Use the existing admitted compiler import; frozen installs need no disk cache.

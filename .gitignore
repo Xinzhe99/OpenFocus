@@ -51,6 +51,7 @@ Desktop.ini
 
 # Documentation
 **/AGENTS.md
+!/AGENTS.md
 
 # build
 *.spec
@@ -94,7 +95,6 @@ assets/demo_stack/.openfocus_cache/
 # portable-mode user data (created beside the exe next to the marker)
 /OpenFocusData/
 
-# Local-only: disassembly/strings of third-party binaries must never be published
 # Local GUI screenshots / scratch
 .shots/
 shot_tmp.py

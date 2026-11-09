@@ -376,7 +376,7 @@ def _check_cancel(should_cancel):
 
 
 def _perspective_source(frame, image, should_cancel):
-    from core.hf9_alignment import (SourceFingerprint, _source_file_identity,
+    from core.openfocus_alignment import (SourceFingerprint, _source_file_identity,
                                     _pixel_digest, _source_context)
     path, page, stamp = _source_file_identity(frame)
     source = SourceFingerprint(tuple(image.shape), image.dtype.str,
@@ -445,7 +445,7 @@ class PerspectiveStage:
                 raise ValueError('Invalid perspective transform or source')
 
     def validate_sources(self, sources, *, should_cancel=None):
-        from core.hf9_alignment import _source_context, _source_file_identity
+        from core.openfocus_alignment import _source_context, _source_file_identity
         from core.source_frames import ProcessedFrame
         if len(sources) != len(self.sources):
             raise ValueError('Perspective source count changed')
@@ -476,7 +476,7 @@ class PerspectiveStage:
 
 @dataclass(frozen=True)
 class PerspectiveAlignmentPlan:
-    """Ordered OpenCV resamplings; independent of the HF9 f8 plan schema."""
+    """Ordered OpenCV resamplings; independent of the OpenFocus f8 plan schema."""
     stages: tuple
     parameters: str
     downscale_width: int
@@ -505,7 +505,7 @@ class PerspectiveAlignmentPlan:
 
     @classmethod
     def from_dict(cls, data):
-        from core.hf9_alignment import SourceFingerprint
+        from core.openfocus_alignment import SourceFingerprint
         if data['version'] != 1 or data['backend'] != 'opencv-perspective-v1':
             raise ValueError('Unsupported perspective plan version')
         stages = []
@@ -626,7 +626,7 @@ def _save_registration(images, output_path, filenames, should_cancel):
 
 
 
-def _report_helicon_transform(transform, reference_index):
+def _report_openfocus_transform(transform, reference_index):
     if alignment_report.get() is None:
         return
     _report_alignment(transform.source_index, 'openfocus',
@@ -651,12 +651,12 @@ def apply_alignment_plan(sources, plan, *, defer_warps=False, should_cancel=None
         from core.source_frames import resolve_frame
         return [store_frame(resolve_frame(frame)) for frame in result]
     from functools import partial
-    from core.hf9_alignment import apply_alignment, alignment_resolution_bytes
+    from core.openfocus_alignment import apply_alignment, alignment_resolution_bytes
     from core.source_frames import resolve_frame
     plan.validate_sources(sources, should_cancel=should_cancel)
     for transform in plan.transforms:
         _check_cancel(should_cancel)
-        _report_helicon_transform(transform, plan.reference_index)
+        _report_openfocus_transform(transform, plan.reference_index)
     h, w = sources[0].shape[:2]
     left, top, right, bottom = 0, 0, w, h
     if grouped_crop_offsets.get() is not None:
@@ -688,12 +688,12 @@ def apply_alignment_plan(sources, plan, *, defer_warps=False, should_cancel=None
     return result
 
 
-def _align_helicon_impl(input_source, output_path=None, img_filenames=None, *,
+def _align_openfocus_impl(input_source, output_path=None, img_filenames=None, *,
                         should_cancel=None, max_shift_ratio=.05, failure_policy='continue',
                         reference_frame=1, rotation=0., magnification=3.,
                         defer_warps=False, plan_callback=None):
-    """Verified HF9 wide detector; no alternate estimator or native fit."""
-    from core.hf9_alignment import estimate_alignment_plan, AlignmentEstimationError
+    """Verified OpenFocus wide detector; no alternate estimator or native fit."""
+    from core.openfocus_alignment import estimate_alignment_plan, AlignmentEstimationError
     images = input_source
     if isinstance(input_source, str):
         from dataclasses import replace
@@ -718,7 +718,7 @@ def _align_helicon_impl(input_source, output_path=None, img_filenames=None, *,
                 failure_policy=failure_policy)
         except AlignmentEstimationError as error:
             for transform in getattr(error, 'completed_transforms', ()):
-                _report_helicon_transform(transform, reference_frame - 1)
+                _report_openfocus_transform(transform, reference_frame - 1)
             _report_alignment(getattr(error, 'frame_index', None), 'openfocus', 'failed', reason=str(error))
             raise
         if plan_callback is not None:

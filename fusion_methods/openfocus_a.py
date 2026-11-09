@@ -1,10 +1,10 @@
-"""HF9 method A: Burt pyramid response and ordered hard source selection."""
+"""OpenFocus method A: Burt pyramid response and ordered hard source selection."""
 
 import cv2
 import numpy as np
 from core.frame_storage import create_transient_frame as create_frame
-from fusion_methods._hf9_pixels import frame_codes, frame_gray_codes, gray_codes, output_codes
-from fusion_methods._hf9_execution import execution_job, configure_rows, run_bands
+from fusion_methods._openfocus_pixels import frame_codes, frame_gray_codes, gray_codes, output_codes
+from fusion_methods._openfocus_execution import execution_job, configure_rows, run_bands
 
 
 def _down2(gray, should_cancel, check_cancel):
@@ -25,7 +25,7 @@ def _down2(gray, should_cancel, check_cancel):
 
 
 def _expand_burt(gray, shape, should_cancel, check_cancel):
-    """Prototype bilinear phase (dst+0.5)/2-0.5, with edge clamping."""
+    """Bilinear phase (dst+0.5)/2-0.5, with edge clamping."""
     result = create_frame(shape, np.float64)
     sx = (np.arange(shape[1], dtype=np.float64) + 0.5) / 2.0 - 0.5
     x0 = np.floor(sx).astype(np.int32)
@@ -83,7 +83,7 @@ def _response(code, radius, should_cancel, check_cancel, *, u8=False):
 
 def _hard_response(gray, radius, should_cancel, check_cancel):
     """Exact Burt response in Q4; dyadic interpolation needs no float plane."""
-    from fusion_methods._hf9_kernels import (
+    from fusion_methods._openfocus_kernels import (
         down2_rows, burt_laplacian_rows, burt_accumulate_rows,
     )
 
@@ -119,12 +119,12 @@ def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 17,
                      blend_mode: str = 'hard', soft_gamma: float = 1.0,
                      feather_theta: float = 0.9,
                      should_cancel=None, progress_callback=None):
-    """Select source pixels with the HF9 Burt-pyramid response.
+    """Select source pixels with the OpenFocus Burt-pyramid response.
 
     ``kernel_size=2*R+1`` controls ``floor(log2(R))+3`` levels. Smoothing is
-    intentionally inert, as in HF9 method A. Strict source-order argmax keeps
-    the first frame on ties. Eight-bit output applies E-37; sixteen-bit codes
-    retain all bits through the application's float32 output boundary.
+    intentionally inert. Strict source-order argmax keeps the first frame on
+    ties. Eight-bit output is quantized; sixteen-bit codes retain all bits
+    through the application's float32 output boundary.
 
     ``soft`` and ``feather`` are experimental, unregistered merge modes.
     Their historical blending stays separate from the default hard path.
@@ -333,7 +333,7 @@ def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 17,
                 def select(start, stop):
                     _check_cancel(should_cancel)
                     if fast_hard:
-                        from fusion_methods._hf9_kernels import select_rows
+                        from fusion_methods._openfocus_kernels import select_rows
 
                         select_rows(frame, response, best, output, start, stop,
                                     256 if frame.dtype == np.uint8 else 1, index == 0)
