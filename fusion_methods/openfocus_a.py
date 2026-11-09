@@ -30,7 +30,7 @@ def _down2(gray, should_cancel, check_cancel):
 
 
 def _expand_burt(gray, shape, should_cancel, check_cancel):
-    """Prototype bilinear phase (dst+0.5)/2-0.5, with edge clamping."""
+    """Bilinear phase (dst+0.5)/2-0.5, with edge clamping."""
     result = create_frame(shape, np.float64)
     sx = (np.arange(shape[1], dtype=np.float64) + 0.5) / 2.0 - 0.5
     x0 = np.floor(sx).astype(np.int32)

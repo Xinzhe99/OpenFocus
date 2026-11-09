@@ -6,7 +6,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
-- Expose OpenFocus radius, smoothing and B feather in HF-style units, with
+- Expose OpenFocus radius, smoothing and B feather in method-specific units, with
   R8/S4/F3 defaults and 3% shift/5% magnification alignment defaults.
   Saved projects, templates, recipes and preferences migrate earlier units;
   OpenFocus A smoothing remains inactive.

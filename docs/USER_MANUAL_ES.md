@@ -453,13 +453,13 @@ Si no se especifica un directorio temporal, OpenFocus estima el espacio necesari
 
 ### OpenFocus A / B / C
 
-A usa una respuesta de enfoque multiescala (radio 8, suavizado 4); su suavizado está inactivo actualmente. A no equivale a HF9 A.
+A usa una respuesta de enfoque multiescala (radio 8, suavizado 4); su suavizado está inactivo actualmente.
 
 B usa un mapa de profundidad (radio 8, suavizado 4, feather 3). C usa una pirámide multinivel ponderada (suavizado 4) y no tiene radio.
 
 CLI: `--method openfocus_b --param radius=8 --param smoothing=4 --param feather=3`.
 
-En la interfaz, la igualación de exposición está activada por defecto en A/B/C y usa el primer fotograma procesado; en los demás métodos está desactivada y usa el último. Se conservan las opciones guardadas explícitamente; al activarla en A/B/C se usa el primero. Es una aproximación sin equivalencia demostrada con el ajuste de brillo de HF9. La corrección de deriva de brillo permanece desactivada por defecto. Restablecer recupera los valores de cada método. En la CLI está activada por defecto para todos los métodos; `--no-exposure-match` la desactiva.
+En la interfaz, la igualación de exposición está activada por defecto en A/B/C y usa el primer fotograma procesado; en los demás métodos está desactivada y usa el último. Se conservan las opciones guardadas explícitamente; al activarla en A/B/C se usa el primero. La corrección de deriva de brillo permanece desactivada por defecto. Restablecer recupera los valores de cada método. En la CLI está activada por defecto para todos los métodos; `--no-exposure-match` la desactiva.
 
 Al seleccionar A/B/C se usa la alineación OpenFocus salvo que se haya elegido explícitamente otra alineación o restaurado un proyecto. Sus valores predeterminados son desplazamiento 0,03 y aumento 5 %.
 

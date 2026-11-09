@@ -490,13 +490,13 @@ Ist kein temporäres Verzeichnis angegeben, schätzt OpenFocus den Bedarf anhand
 
 ### OpenFocus A / B / C
 
-A nutzt eine mehrskalige Fokusantwort (Radius 8, Glättung 4); seine Glättung ist derzeit inaktiv. A ist nicht gleich HF9 A.
+A nutzt eine mehrskalige Fokusantwort (Radius 8, Glättung 4); seine Glättung ist derzeit inaktiv.
 
 B verwendet eine Tiefenkarte (Radius 8, Glättung 4, Feather 3). C verwendet eine gewichtete mehrstufige Pyramide (Glättung 4) und hat keinen Radius.
 
 CLI: `--method openfocus_b --param radius=8 --param smoothing=4 --param feather=3`.
 
-In der Oberfläche ist für A/B/C standardmäßig an und nutzt das erste verarbeitete Bild; für andere Methoden ist er standardmäßig aus und nutzt das letzte. Explizit gespeicherte Einstellungen bleiben erhalten; bei aktiviertem A/B/C gilt das erste Bild. Dies ist eine Annäherung; Gleichheit mit der HF9-Helligkeitsanpassung ist nicht nachgewiesen. Die Korrektur der Helligkeitsdrift bleibt standardmäßig aus. Zurücksetzen stellt die Vorgaben jeder Methode wieder her. In der CLI ist der Belichtungsabgleich für alle Methoden standardmäßig an; `--no-exposure-match` schaltet ihn aus.
+In der Oberfläche ist der Belichtungsabgleich für A/B/C standardmäßig an und nutzt das erste verarbeitete Bild; für andere Methoden ist er standardmäßig aus und nutzt das letzte. Explizit gespeicherte Einstellungen bleiben erhalten; bei aktiviertem A/B/C gilt das erste Bild. Die Korrektur der Helligkeitsdrift bleibt standardmäßig aus. Zurücksetzen stellt die Vorgaben jeder Methode wieder her. In der CLI ist der Belichtungsabgleich für alle Methoden standardmäßig an; `--no-exposure-match` schaltet ihn aus.
 
 Bei Auswahl von A/B/C wird die OpenFocus-Ausrichtung verwendet, sofern keine Ausrichtung ausdrücklich gewählt oder ein Projekt wiederhergestellt wurde. Ihre Vorgaben sind Verschiebung 0,03 und Vergrößerung 5 %.
 

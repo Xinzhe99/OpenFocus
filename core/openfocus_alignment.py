@@ -1,8 +1,7 @@
 """Translation and wide similarity search with reusable Q8.8 warps.
 
-The wide detector preserves the measured float32 evaluation order. Plans
-retain immutable source identities, never decoded frame stacks. See
-docs/REFERENCE_TRANSLATION_CORE.md for the verified scope and open evidence.
+The wide detector uses float32 evaluation order. Plans retain immutable source
+identities, never decoded frame stacks.
 """
 from dataclasses import dataclass
 import hashlib
@@ -281,7 +280,7 @@ def _pyramid(gray, should_cancel):
 
 
 def _axis_samples(coords, length, *, padding=0):
-    """Sampler indices/weights with prototype float32 clamp ordering."""
+    """Sampler indices and weights with float32 clamp ordering."""
     coords = np.asarray(coords, dtype=np.float32).copy()
     extent = length + 2 * padding
     invalid = (coords >= _F32(extent)) | (coords < 0)
@@ -320,7 +319,7 @@ def _refine_level(a, b, c_dx, c_dy, *, half, step, crop, should_cancel):
     offsets = (np.arange(count) - (count - 1) // 2) * step
     best = None
     best_score = _F32(np.finfo(np.float32).max)
-    # Preserve the prototype order: dy outermost, dx fastest; strict '<'.
+    # Evaluate dy outermost and dx fastest; ties keep the first candidate.
     for ody in offsets:
         _check_cancel(should_cancel)
         dy = c_dy + ody
@@ -454,15 +453,15 @@ def apply_translation(image, transform, *, should_cancel=None):
 
 F32 = np.float32
 
-_PI_F32 = F32(math.pi)          # 0x140eb9c98
-_180_F32 = F32(180.0)           # 0x140eba174
-_HALF_F32 = F32(0.5)            # 0x140eb8e5c
-_ONE_F32 = F32(1.0)             # 0x140eb90a0
-_FLIP = np.uint32(0x80000000)   # 0x140ebce60
-_BIG = F32(1.0e6)               # 0x140eba310
+_PI_F32 = F32(math.pi)
+_180_F32 = F32(180.0)
+_HALF_F32 = F32(0.5)
+_ONE_F32 = F32(1.0)
+_FLIP = np.uint32(0x80000000)
+_BIG = F32(1.0e6)
 
 def fast_downsize(img, should_cancel=None):
-    """HF fast_downsize: 2x2 mean (sum+2)>>2, ceil dims, edge tail."""
+    """2x2 mean (sum+2)>>2, ceil dimensions and edge tail."""
     h, w = img.shape
     out = np.empty(((h + 1) // 2, (w + 1) // 2), np.uint16)
     xs = np.arange(0, w, 2)
@@ -495,7 +494,7 @@ def gpu_params(f8):
         f8 = f8[None, :]
     rot_bits = f8[..., 4].view(np.uint32) ^ _FLIP
     rot_flipped = rot_bits.view(np.float32)
-    rad = rot_flipped * _PI_F32 / _180_F32          # MULSS then DIVSS
+    rad = rot_flipped * _PI_F32 / _180_F32
     s = np.sin(rad).astype(np.float32)              # sinf
     c = np.cos(rad).astype(np.float32)              # cosf
     magx = f8[..., 5]
@@ -519,7 +518,7 @@ def gpu_params(f8):
 
 
 def map_coords(uv_fields, xs, ys):
-    """Detector inverse map (piece 01 section 3, exact op order).
+    """Detector inverse map using float32 operations.
 
     xs/ys: f32 sample coordinate grids broadcastable against the candidate
     leading dims. Returns (u, v) f32 arrays of the broadcast shape.
@@ -537,7 +536,7 @@ def map_coords(uv_fields, xs, ys):
 def enumerate_candidates(cfg8, cnts, steps, M, start=0, stop=None):
     """cfg8: 8 f32 {rng0,rng1,rng2,rng3,rot,magx,magy,bright}.
 
-    Returns (N, f8 (N,8) f32) in ae10 order (dx fastest, rot slowest).
+    Returns (N, f8 (N,8) f32), with dx fastest and rotation slowest.
     """
     n0, n1, n2, n3 = (int(c) for c in cnts)
     N = n0 * n1 * n2 * n3
@@ -545,7 +544,7 @@ def enumerate_candidates(cfg8, cnts, steps, M, start=0, stop=None):
         return N, None
     i = np.arange(start, N if stop is None else min(stop, N), dtype=np.int64)
     N = len(i)
-    # C-style truncated remainder (IDIV semantics) — cnts may go negative
+    # Truncated remainder: cnts may go negative.
     def _crem(ii, n):
         q = np.trunc(ii / n).astype(np.int64)
         return ii - q * n
@@ -648,15 +647,9 @@ def _score_chunk(img_a, img_b, xs, ys, cand):
 
 
 def _decide(ssum, ssq, cnt):
-    """ba90 decision: float-domain variance, strict '<'.
+    """Select the lowest float-domain variance with at least two samples.
 
-    Candidate eligibility: cnt >= 2. The binary's gate is `COMISS cnt,0; JBE`
-    (cnt<=0 dropped, XMM8=0 at 0x14083bb1a) — but a single valid sample makes
-    var == msq - msu^2 == 0 EXACTLY in f32, so every exactly-one-sample
-    candidate would tie at 0.0 and win by enumeration order, which contradicts
-    the observed convergence (E-23: rot 6 deg -> 0.021 deg residual). The
-    effective behaviour must exclude cnt<=1; flagged [INFERENCE], validated
-    against the aligrange ground truth.
+    A single sample has zero variance and would otherwise win spuriously.
     """
     cnt_f = cnt.astype(np.float32)
     denom = np.maximum(cnt_f, _ONE_F32).astype(np.float64)
@@ -684,16 +677,16 @@ def _div_rot(coef_eff, half_dim):
 def _cnt_step(rng, div, grid_half):
     """cnt = min((2*trunc(rng/div))|1, (2*gridHalf)|1)|1; step = 2*rng/(cnt-1).
 
-    The counter math is 32-bit (asm ECX/EAX), so 2*n wraps like C int."""
-    n = int(np.trunc(F32(rng) / F32(div)))       # CVTTSS2SI toward zero
+    The counter math is 32-bit, so 2*n wraps like C int."""
+    n = int(np.trunc(F32(rng) / F32(div)))
     n32 = np.int32(n)
-    two_n = np.int32(n32 * np.int32(2))          # wraps like the asm LEA
+    two_n = np.int32(n32 * np.int32(2))
     a = np.int32(two_n | np.int32(1))
     cap = np.int32((2 * grid_half) | 1)
     cnt = a if a < cap else cap
     cnt = int(np.int32(cnt | np.int32(1)))
     if cnt > 1:
-        step = F32(2.0) * F32(rng) / F32(cnt - 1)   # ADDSS self, CVTDQ2PS, DIVSS
+        step = F32(2.0) * F32(rng) / F32(cnt - 1)
     else:
         step = F32(0.0)
     return cnt, step
@@ -701,11 +694,9 @@ def _cnt_step(rng, div, grid_half):
 
 def grid_level_4d(img_a, img_b, base8, ranges4, coef=1.0, grid_half=8,
                   divisor=4, max_rounds=16, verbose=False, tag="", should_cancel=None):
-    """One b490 invocation.
+    """Search a single pyramid level.
 
-    base8: the 8-float candidate BASE f8 (driver: identity {0,0,0,0,0,1,1,1};
-    b16a: radius4*++carried). ranges4: the 4-float range buffer the cnt/step
-    machinery consumes ([RBX], MINSS-written back).
+    base8 is the initial eight-value candidate; ranges4 contains search ranges.
 
     Returns (f8 (8,) f32, ranges (4,) f32, rounds). f8 = {tx,ty,cx,cy,rot,
     magx,magy,bright}.
@@ -715,14 +706,14 @@ def grid_level_4d(img_a, img_b, base8, ranges4, coef=1.0, grid_half=8,
     H, W = A.shape
     coef = F32(coef)
     coef_eff = F32(0.2) if coef == F32(1.0) else F32(0.5)
-    half_dim = F32(max(W, H) // 2)          # sar 1 of maxDim
+    half_dim = F32(max(W, H) // 2)
     M = half_dim
     div_shift = F32(coef_eff * _HALF_F32 / M)
     div_mag = F32(coef_eff / M)
     div_rot = _div_rot(coef_eff, half_dim)
     divs = (div_shift, div_shift, div_mag, div_rot)
 
-    # rect: degenerate -> {0,0,W,H} (imgB dims per ba90); clamp A then B
+    # Clamp the full image rectangle to both images.
     x0, y0, x1, y1 = 0, 0, W, H
     x0 = min(max(x0, 0), W); x1 = min(max(x1, 0), W)
     y0 = min(max(y0, 0), H); y1 = min(max(y1, 0), H)
@@ -790,7 +781,7 @@ def align_pair_wide(ref_u16, test_u16, h_pct=12.0, v_pct=12.0, rot_deg=6.0,
     +-1.5 full-res-px-equivalent shift radius (s/maxDim fraction), +-0.5 deg
     rot, +-1.5% mag. Found {tx,ty,cx,cy} slots are carried to the next finer
     level scaled by 2 (level px -> coarser level px); rot/mag carry as-is
-    (S12 compose semantics: acc.mag *=, acc.rot +=).
+    with scale composed multiplicatively and rotation additively.
 
     Returns (f8 full-res {tx,ty,cx,cy,rot,magx,magy,bright}, rounds_total).
     """
@@ -824,8 +815,8 @@ def align_pair_wide(ref_u16, test_u16, h_pct=12.0, v_pct=12.0, rot_deg=6.0,
             # only shift_frac[0] is consumed below.
             shift_frac = [F32(1.5 / max(float(A_pyr[0].shape[1]),
                                         float(A_pyr[0].shape[0])))] * 2
-        # rot/mag ranges scale with the level (S11 radius*s semantics in
-        # degree/mag space): tiny at coarse levels (no shift aliasing on
+        # Rotation and magnification ranges scale with the level, remaining
+        # tiny at coarse levels (no shift aliasing on
         # small textures), full user range at lvl0 where rotation is
         # resolvable. The shift range at fine levels must cover the
         # displacement induced by the level's rot range (joint valley).

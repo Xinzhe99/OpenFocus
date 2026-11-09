@@ -453,13 +453,13 @@ Se non viene indicata una cartella temporanea, OpenFocus stima lo spazio necessa
 
 ### OpenFocus A / B / C
 
-A usa una risposta di fuoco multiscala (raggio 8, levigatura 4); la sua levigatura è attualmente inattiva. A non equivale a HF9 A.
+A usa una risposta di fuoco multiscala (raggio 8, levigatura 4); la sua levigatura è attualmente inattiva.
 
 B usa una mappa di profondità (raggio 8, levigatura 4, feather 3). C usa una piramide multilivello ponderata (levigatura 4), senza raggio.
 
 CLI: `--method openfocus_b --param radius=8 --param smoothing=4 --param feather=3`.
 
-Nell’interfaccia, l’abbinamento esposizione è attivo per A/B/C per impostazione predefinita e usa il primo fotogramma elaborato; per gli altri metodi è disattivato e usa l’ultimo. Le scelte salvate esplicitamente sono mantenute; quando A/B/C è attivo si usa il primo. È un’approssimazione la cui equivalenza alla regolazione di luminosità HF9 non è dimostrata. La correzione della deriva di luminosità resta disattivata per impostazione predefinita. Reimposta ripristina i valori di ogni metodo. Nella CLI è attivo per impostazione predefinita per tutti i metodi; `--no-exposure-match` lo disattiva.
+Nell’interfaccia, l’abbinamento esposizione è attivo per A/B/C per impostazione predefinita e usa il primo fotogramma elaborato; per gli altri metodi è disattivato e usa l’ultimo. Le scelte salvate esplicitamente sono mantenute; quando A/B/C è attivo si usa il primo. La correzione della deriva di luminosità resta disattivata per impostazione predefinita. Reimposta ripristina i valori di ogni metodo. Nella CLI è attivo per impostazione predefinita per tutti i metodi; `--no-exposure-match` lo disattiva.
 
 Selezionando A/B/C si usa l’allineamento OpenFocus, salvo scelta esplicita di un allineamento o ripristino di un progetto. I valori predefiniti sono spostamento 0,03 e ingrandimento 5%.
 

@@ -472,13 +472,13 @@ Jeśli nie wskazano katalogu tymczasowego, OpenFocus szacuje potrzebne miejsce n
 
 ### OpenFocus A / B / C
 
-A używa wieloskalowej odpowiedzi ostrości (promień 8, wygładzanie 4); jego wygładzanie jest obecnie nieaktywne. A nie jest odpowiednikiem HF9 A.
+A używa wieloskalowej odpowiedzi ostrości (promień 8, wygładzanie 4); jego wygładzanie jest obecnie nieaktywne.
 
 B używa mapy głębi (promień 8, wygładzanie 4, feather 3). C używa ważonej piramidy wielopoziomowej (wygładzanie 4) i nie ma promienia.
 
 CLI: `--method openfocus_b --param radius=8 --param smoothing=4 --param feather=3`.
 
-W interfejsie dopasowanie ekspozycji jest domyślnie włączone dla A/B/C i odnosi się do pierwszej przetworzonej klatki; dla innych metod jest domyślnie wyłączone i odnosi się do ostatniej. Jawnie zapisane wybory są zachowane; włączone A/B/C używa pierwszej klatki. Jest to przybliżenie, którego zgodności z regulacją jasności HF9 nie wykazano. Korekcja dryfu jasności pozostaje domyślnie wyłączona. Przywrócenie ustawień przywraca wartości domyślne każdej metody. W CLI jest domyślnie włączone dla wszystkich metod; `--no-exposure-match` je wyłącza.
+W interfejsie dopasowanie ekspozycji jest domyślnie włączone dla A/B/C i odnosi się do pierwszej przetworzonej klatki; dla innych metod jest domyślnie wyłączone i odnosi się do ostatniej. Jawnie zapisane wybory są zachowane; włączone A/B/C używa pierwszej klatki. Korekcja dryfu jasności pozostaje domyślnie wyłączona. Przywrócenie ustawień przywraca wartości domyślne każdej metody. W CLI jest domyślnie włączone dla wszystkich metod; `--no-exposure-match` je wyłącza.
 
 Wybór A/B/C włącza wyrównanie OpenFocus, chyba że jawnie wybrano wyrównanie lub przywrócono projekt. Domyślne przesunięcie wynosi 0,03, a powiększenie 5%.
 

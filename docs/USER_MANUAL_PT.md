@@ -453,13 +453,13 @@ Se nenhum diretório temporário for especificado, o OpenFocus estima o espaço 
 
 ### OpenFocus A / B / C
 
-A usa uma resposta de foco multiescala (raio 8, suavização 4); sua suavização está atualmente inativa. A não equivale ao HF9 A.
+A usa uma resposta de foco multiescala (raio 8, suavização 4); sua suavização está atualmente inativa.
 
 B usa um mapa de profundidade (raio 8, suavização 4, feather 3). C usa uma pirâmide multinível ponderada (suavização 4), sem raio.
 
 CLI: `--method openfocus_b --param radius=8 --param smoothing=4 --param feather=3`.
 
-Na interface, a igualação de exposição fica ativada por padrão em A/B/C e usa o primeiro quadro processado; nos demais métodos fica desativada por padrão e usa o último. As escolhas salvas explicitamente são preservadas; quando A/B/C está ativado, usa-se o primeiro. É uma aproximação sem equivalência comprovada ao ajuste de brilho do HF9. A correção de deriva de brilho permanece desativada por padrão. Redefinir restaura os padrões de cada método. Na CLI fica ativada por padrão para todos os métodos; `--no-exposure-match` desativa.
+Na interface, a igualação de exposição fica ativada por padrão em A/B/C e usa o primeiro quadro processado; nos demais métodos fica desativada por padrão e usa o último. As escolhas salvas explicitamente são preservadas; quando A/B/C está ativado, usa-se o primeiro. A correção de deriva de brilho permanece desativada por padrão. Redefinir restaura os padrões de cada método. Na CLI fica ativada por padrão para todos os métodos; `--no-exposure-match` desativa.
 
 Ao selecionar A/B/C, usa-se o alinhamento OpenFocus, salvo se um alinhamento tiver sido escolhido explicitamente ou um projeto restaurado. Os padrões são deslocamento 0,03 e ampliação 5%.
 

@@ -490,13 +490,13 @@ Als geen tijdelijke map is opgegeven, schat OpenFocus de benodigde ruimte op bas
 
 ### OpenFocus A / B / C
 
-A gebruikt een meerschalige focusrespons (straal 8, afvlakking 4); de afvlakking is momenteel inactief. A is niet gelijk aan HF9 A.
+A gebruikt een meerschalige focusrespons (straal 8, afvlakking 4); de afvlakking is momenteel inactief.
 
 B gebruikt een dieptekaart (straal 8, afvlakking 4, feather 3). C gebruikt een gewogen piramide met meerdere niveaus (afvlakking 4), zonder straal.
 
 CLI: `--method openfocus_b --param radius=8 --param smoothing=4 --param feather=3`.
 
-In de interface staat belichtingsafstemming bij A/B/C standaard aan en gebruikt het eerste verwerkte frame; bij andere methoden staat die standaard uit en gebruikt het laatste frame. Expliciet opgeslagen keuzes blijven behouden; bij ingeschakelde A/B/C geldt het eerste frame. Dit is een benadering; gelijkheid aan de helderheidsaanpassing van HF9 is niet bewezen. Helderheidsdriftcorrectie blijft standaard uit. Herstellen zet de standaardwaarden van elke methode terug. In de CLI staat die voor alle methoden standaard aan; `--no-exposure-match` schakelt uit.
+In de interface staat belichtingsafstemming bij A/B/C standaard aan en gebruikt het eerste verwerkte frame; bij andere methoden staat die standaard uit en gebruikt het laatste frame. Expliciet opgeslagen keuzes blijven behouden; bij ingeschakelde A/B/C geldt het eerste frame. Helderheidsdriftcorrectie blijft standaard uit. Herstellen zet de standaardwaarden van elke methode terug. In de CLI staat die voor alle methoden standaard aan; `--no-exposure-match` schakelt uit.
 
 Bij keuze van A/B/C wordt OpenFocus-uitlijning gebruikt, tenzij expliciet een uitlijning is gekozen of een project is hersteld. De standaardwaarden zijn verschuiving 0,03 en vergroting 5%.
 

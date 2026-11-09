@@ -453,13 +453,13 @@ Si aucun dossier temporaire n'est indiqué, OpenFocus estime les besoins d'aprè
 
 ### OpenFocus A / B / C
 
-A utilise une réponse de netteté multi-échelles (rayon 8, lissage 4) ; son lissage est actuellement inactif. A n’est pas équivalent à HF9 A.
+A utilise une réponse de netteté multi-échelles (rayon 8, lissage 4) ; son lissage est actuellement inactif.
 
 B utilise une carte de profondeur (rayon 8, lissage 4, feather 3). C utilise une pyramide multiniveau pondérée (lissage 4), sans rayon.
 
 CLI: `--method openfocus_b --param radius=8 --param smoothing=4 --param feather=3`.
 
-Dans l’interface, l’égalisation d’exposition est activée par défaut pour A/B/C et utilise la première image traitée ; pour les autres méthodes, elle est désactivée par défaut et utilise la dernière. Les choix explicitement enregistrés sont conservés ; si A/B/C est activé, la première image sert de référence. C’est une approximation dont l’équivalence avec le réglage de luminosité HF9 n’est pas démontrée. La correction de dérive de luminosité reste désactivée par défaut. Réinitialiser rétablit les valeurs propres à chaque méthode. Dans la CLI, elle est activée par défaut pour toutes les méthodes ; `--no-exposure-match` la désactive.
+Dans l’interface, l’égalisation d’exposition est activée par défaut pour A/B/C et utilise la première image traitée ; pour les autres méthodes, elle est désactivée par défaut et utilise la dernière. Les choix explicitement enregistrés sont conservés ; si A/B/C est activé, la première image sert de référence. La correction de dérive de luminosité reste désactivée par défaut. Réinitialiser rétablit les valeurs propres à chaque méthode. Dans la CLI, elle est activée par défaut pour toutes les méthodes ; `--no-exposure-match` la désactive.
 
 La sélection de A/B/C utilise le recalage OpenFocus sauf si un recalage a été explicitement choisi ou un projet restauré. Ses valeurs par défaut sont un décalage de 0,03 et un grossissement de 5 %.
 

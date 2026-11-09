@@ -113,7 +113,7 @@ def _fill_linear_axis(source_length, indices, weights, counts):
     scale = np.float32(np.float32(target_length) / np.float32(source_length))
     offset = np.float32(np.float32(np.float32(0.5) / scale) - np.float32(0.5))
     for position in range(target_length):
-        # Native divss/addss order matters for odd target dimensions.
+        # Float32 division and addition order matters for odd target dimensions.
         phase = np.float32(np.float32(np.float32(position) / scale) + offset)
         lower = int(np.floor(phase))
         fraction = np.float32(phase - np.float32(lower))
@@ -210,7 +210,7 @@ def _resample(source, axes, should_cancel):
 
 
 def half_gray(gray, should_cancel=None, *, axes=None):
-    """Reduce a gray plane to max(1, floor(axis/2)) using the measured taps."""
+    """Reduce a gray plane to max(1, floor(axis/2)) with separable taps."""
     gray = np.asarray(gray)
     if gray.ndim != 2 or min(gray.shape) <= 0:
         raise ValueError('Gray reduction requires a nonempty 2D plane')

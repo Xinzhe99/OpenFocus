@@ -1,7 +1,6 @@
 """Streaming weighted-pyramid fusion used by OpenFocus C.
 
-The normalized detail representation and reconstruction filter are measured
-approximations to the corresponding Helicon Focus 9 method C pipeline.
+The pyramid stores normalized detail and reconstructs it with a synthesis filter.
 """
 import numpy as np
 from fusion_methods._depth_kernel import njit
