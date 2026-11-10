@@ -192,6 +192,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   scroll phase, including X11, where only angle deltas are reliable.
 
 ### Fixed
+- Give automatic-background processing sufficient native thread stack on macOS.
 - Keep loading-scale resolution details readable when source metadata arrives.
 - Show the installed version when a manual update check finds no update.
 - Open retouch promptly by loading only the selected source frame in the

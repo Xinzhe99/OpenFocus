@@ -30,6 +30,7 @@ from PyQt6.QtWidgets import (
 from locales import trans
 from utils.image_utils import thumbnail_bgr, to_display_uint8
 from utils.path_identity import same_path
+from utils.platform_utils import configure_native_worker_stack
 from utils.retouch import RetouchDocument, adjust_tones, prepare_retouch_document
 from core.source_frames import display_image
 from utils.frame_pixels import run_pixel_worker
@@ -538,6 +539,7 @@ class _AutoBackgroundWorker(QThread):
 
     def __init__(self, doc, preset, clean, keep_soft_parts=False):
         super().__init__()
+        configure_native_worker_stack(self)
         self.doc = doc
         self.preset = preset
         self.clean = clean
