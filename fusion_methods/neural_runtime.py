@@ -294,8 +294,9 @@ def _session(path, shape, device, threads):
         # alive across scales. CPU retains both scales without ORT's arena.
         limit = 2 if device == 'CPU' else 1
         while len(_SESSIONS) >= limit:
-            evicted, _ = _SESSIONS.popitem(last=False)
+            evicted, session = _SESSIONS.popitem(last=False)
             _end_trace(evicted)
+            del session
             _LOG.debug('Neural session evicted shape=%s device=%s threads=%s for shape=%s',
                        evicted[3], evicted[4], evicted[6], shape)
             if profile.enabled:

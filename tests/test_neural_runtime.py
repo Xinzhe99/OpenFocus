@@ -98,6 +98,57 @@ def test_sessions_isolate_checkpoint_shape_and_directml_adapter(monkeypatch, tmp
     assert calls[-1][1][0] == ('DmlExecutionProvider', {'device_id': 2})
 
 
+def test_traced_session_released_before_replacement(monkeypatch, tmp_path):
+    from utils import performance_profile
+
+    events = []
+
+    class Options:
+        def add_free_dimension_override_by_name(self, *args):
+            pass
+
+    class Session:
+        def __init__(self, path, sess_options, providers):
+            events.append(('construct', sess_options.shape))
+
+        def disable_fallback(self):
+            pass
+
+        def end_profiling(self):
+            events.append(('end_trace', self.shape))
+            return ''
+
+        def __del__(self):
+            events.append(('destroy', self.shape))
+
+    def make_session(path, sess_options, providers):
+        sess_options.shape = sess_options.dimensions
+        session = Session(path, sess_options, providers)
+        session.shape = sess_options.shape
+        return session
+
+    def remember_dimension(self, name, value):
+        if name == 'height':
+            self.dimensions = value
+
+    monkeypatch.setattr(Options, 'add_free_dimension_override_by_name', remember_dimension)
+    monkeypatch.setitem(sys.modules, 'onnxruntime', SimpleNamespace(
+        SessionOptions=Options, InferenceSession=make_session))
+    monkeypatch.setattr(neural_runtime, '_SESSIONS', OrderedDict())
+    monkeypatch.setattr(neural_runtime, '_TRACED', {})
+    monkeypatch.setattr(neural_runtime, 'operator_trace_directory', lambda: str(tmp_path))
+    model = tmp_path / 'model.onnx'
+    model.write_bytes(b'model')
+    profile = performance_profile.PerformanceProfile()
+    with performance_profile.active(profile):
+        for height in (64, 128, 192):
+            neural_runtime._session(str(model), (2, height, 64), 'CPU', 1)
+    assert events.index(('end_trace', 64)) < events.index(('destroy', 64))
+    assert events.index(('destroy', 64)) < events.index(('construct', 192))
+    assert profile.report('completed')['sessions']['evictions'] == 1
+    neural_runtime._clear_sessions()
+
+
 @pytest.mark.parametrize('hardware', [
     [(2, 'Discrete adapter', 0x10de, 8 * 1024 ** 3)],
     [(0, 'Intel UHD integrated adapter', 0x8086, 0)],
