@@ -15,6 +15,8 @@ import urllib.parse
 import urllib.request
 import uuid
 
+from constants import APP_VERSION
+
 BASE_URL = "https://account.openfocus.top"
 MAX_BUNDLE_BYTES = 2 * 1024 * 1024
 MAX_METADATA_BYTES = 16 * 1024
@@ -213,7 +215,7 @@ class ReportClient:
         try:
             metadata = dict(entry["metadata"], installation_id=state["installation_id"])
             body = json.dumps(metadata, ensure_ascii=True, allow_nan=False).encode("utf-8")
-            headers = {"Content-Type": "application/json"}
+            headers = {"Content-Type": "application/json", "User-Agent": f"OpenFocus/{APP_VERSION}"}
             if bearer_token:
                 headers["Authorization"] = "Bearer " + bearer_token
             request = urllib.request.Request(self._base_url + "/v1/reports", body, headers, method="POST")
@@ -229,7 +231,9 @@ class ReportClient:
             bundle = base64.b64decode(entry["bundle"], validate=True)
             if len(bundle) > MAX_BUNDLE_BYTES:
                 raise ValueError
-            request = urllib.request.Request(url, bundle, {"Content-Type": "application/zip"}, method="PUT")
+            request = urllib.request.Request(url, bundle, {
+                "Content-Type": "application/zip", "User-Agent": f"OpenFocus/{APP_VERSION}"
+            }, method="PUT")
             with self._opener.open(request, timeout=self._timeout) as response:
                 result = json.loads(response.read(MAX_METADATA_BYTES + 1))
                 success = response.status == 200 and result.get("ok") is True and result.get("bytes") == len(bundle)
