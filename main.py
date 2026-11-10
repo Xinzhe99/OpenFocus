@@ -3052,11 +3052,11 @@ class OpenFocus(QMainWindow):
         specs = () if spec is None else spec.parameters
         self.fusion_parameter_panel.set_parameters(specs, self.fusion_parameters_for(method))
         self._sync_brightness_checkboxes(method)
-        # Base correction, sharpening and frame reversal are consumed only by
-        # the fusion step, so with "Alignment only" they must not look active.
-        # Exposure matching stays enabled: it also feeds the registration
-        # brightness reference when no fusion runs.
+        # These options are consumed only by the fusion step.
         no_fusion = spec is None
+        self._set_fusion_option_available(
+            getattr(self, "chk_exposure_match", None), not no_fusion,
+            "radio_no_fusion_hint" if no_fusion else "chk_exposure_match_hint")
         self._set_fusion_option_available(
             getattr(self, "chk_base_correct", None), not no_fusion,
             "radio_no_fusion_hint" if no_fusion else "chk_base_correct_hint")

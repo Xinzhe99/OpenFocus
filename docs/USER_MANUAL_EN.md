@@ -977,11 +977,12 @@ saved values are converted to the new units when read.
 
 **Brightness options are per method.** *Match exposure before fusion* defaults
 on for every fusion method. OpenFocus A/B/C match the first frame in processing
-order; other methods use the last frame. *Remove brightness drift* defaults
-off and adjusts the fused result's low frequencies. Exposure matching is an
-approximation, not an exact reproduction of the reference brightness adjustment.
-Explicit saved choices remain in use. **Reset** clears remembered choices and
-restores the method defaults. The CLI defaults exposure matching on and accepts
+order; other methods use the last frame. *Remove brightness drift* is optional
+and defaults off. It adjusts the fused result's low frequencies toward the first
+processed frame for OpenFocus A/B/C, or the last for other methods. Reversing
+the stack changes processing order and therefore the reference frame. Explicit
+saved choices remain in use. **Reset** clears remembered choices and restores
+the method defaults. The CLI defaults exposure matching on and accepts
 `--no-exposure-match` to disable it.
 
 **Sharpen fused output** applies a mild unsharp mask after fusion, before the

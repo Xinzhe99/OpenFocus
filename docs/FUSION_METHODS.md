@@ -25,6 +25,10 @@ StackMFF V2 keeps its original focus order. The pipeline
 supports 8-bit and 16-bit output. The depth-map dialog uses the shared B/C
 depth estimator. B's external tiles share a full-image depth map; resizing uses
 whole frames.
+
+Optional base correction is off by default. When enabled, it adjusts the fused
+result toward the first processed frame for OpenFocus A/B/C and the last for
+other methods. Reversing the stack changes processing order and the reference.
 The C pyramid uses four-tap binomial downsampling and first-frame initialization.
 
 The desktop application processes OpenFocus A/B/C as whole images, regardless

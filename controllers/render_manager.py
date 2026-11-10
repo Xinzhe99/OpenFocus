@@ -20,6 +20,12 @@ from core.algorithms import fusion_algorithms, get_fusion, get_registration, ali
 _STORAGE_UNSET = object()
 
 
+def _base_frame(method, enabled):
+    if not enabled:
+        return "none"
+    return "first" if method in ("openfocus_a", "openfocus_b", "openfocus_c") else "last"
+
+
 class _StorageProbe(QObject):
     completed = pyqtSignal(object)
 
@@ -389,7 +395,7 @@ class RenderManager:
         values["sharpen_output"] = bool(getattr(window, "sharpen_output", False))
         values["defect_mask_path"] = getattr(window, "defect_mask_path", "")
         values["sensor_denoise"] = bool(getattr(window, "sensor_denoise", False))
-        values["base_frame"] = "last" if values["base_correct"] else "none"
+        values["base_frame"] = _base_frame(method, values["base_correct"])
         values["sort_mode"] = "desc" if values["stack_reverse_order"] else "asc"
         return values
 
@@ -1404,8 +1410,8 @@ class RenderManager:
             roi_mode=roi_mode,
             roi_base_index=roi_base_index,
             use_gpu=getattr(window, "use_gpu", True),
-            base_frame="last" if _brightness(window, "base_correct",
-                                             force_algorithm or fusion_method) else "none",
+            base_frame=_base_frame(force_algorithm or fusion_method,
+                                   _brightness(window, "base_correct", force_algorithm or fusion_method)),
             sort_mode="desc" if getattr(window, "stack_reverse_order", False)
                 else "asc",
             exposure_match=_brightness(window, "exposure_match", force_algorithm or fusion_method),

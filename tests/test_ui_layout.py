@@ -206,13 +206,13 @@ def test_alignment_only_disables_fusion_only_options(qapp):
     assert not host.chk_base_correct.isEnabled()
     assert not host.chk_sharpen_output.isEnabled()
     assert not host.chk_reverse_order.isEnabled()
-    assert host.chk_exposure_match.isEnabled(), (
-        "exposure matching still feeds the registration brightness reference")
+    assert not host.chk_exposure_match.isEnabled()
     assert _t.t("radio_no_fusion_hint") in host.chk_base_correct.toolTip()
     assert _t.t("radio_no_fusion_hint") in host.chk_reverse_order.toolTip()
 
     host.method = "guided_filter"
     refresh()
+    assert host.chk_exposure_match.isEnabled()
     assert host.chk_base_correct.isEnabled()
     assert host.chk_sharpen_output.isEnabled()
     assert host.chk_reverse_order.isEnabled()

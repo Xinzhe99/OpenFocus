@@ -369,7 +369,8 @@ def capture_project_recipe(path, project_path, argv):
     processing = ["--input", *args.input,
                   "--output" if args.output else "--output-dir", args.output or args.output_dir,
                   "--method", method, "--align", alignment,
-                  "--base-frame", "last" if base else "none",
+                  "--base-frame", ("first" if method in ("openfocus_a", "openfocus_b", "openfocus_c")
+                                   else "last") if base else "none",
                   "--sort", "desc" if settings.get("stack_reverse_order", False) else "asc",
                   "--exposure-match" if exposure else "--no-exposure-match",
                   # The desktop app loads folders in filename order; a recipe

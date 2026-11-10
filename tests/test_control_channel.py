@@ -565,8 +565,12 @@ def test_mouse_keyboard_and_context(server, control_window):
     QTest.qWait(20)
 
 
-def test_generic_action_answers_file_dialog_and_loads_stack(server, stack_frames):
+def test_generic_action_answers_file_dialog_and_loads_stack(server, stack_frames, monkeypatch):
     from PyQt6.QtCore import QTimer
+    from utils import file_dialogs
+
+    # The control channel can address Qt dialogs, not the native OS picker.
+    monkeypatch.setattr(file_dialogs, '_use_native_folder_dialog', lambda: False)
 
     token = server.token
     answered = {}
