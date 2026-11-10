@@ -430,6 +430,7 @@ def test_pending_storage_preserves_previous_result(window, fake_worker, monkeypa
     manager = window.render_manager
     previous = {'output': 'earlier result'}
     manager.last_result = previous
+    manager.last_state, manager.last_error = 'error', 'earlier render failed'
     assert manager.start_render(interactive=False) == 'preflight'
     assert _render_state(window)['result'] == previous
     if outcome == 'cancel':
@@ -440,6 +441,12 @@ def test_pending_storage_preserves_previous_result(window, fake_worker, monkeypa
     qapp.processEvents()
     assert manager.last_result is previous
     assert _render_state(window)['result'] == previous
+    state = _render_state(window)
+    if outcome == 'advisory':
+        assert state['state'] == 'error' and state['error'] == 'earlier render failed'
+    else:
+        assert state['state'] == ('cancelled' if outcome == 'cancel' else 'discarded')
+        assert state['error'] is None
     assert not fake_worker.created
 
 
