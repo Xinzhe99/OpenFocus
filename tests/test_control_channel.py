@@ -347,7 +347,7 @@ try:
     assert session.call("ping")["pong"] is True
     deadline = time.monotonic() + 10
     context = session.call("ui.context")
-    while not any(dialog["class"] == "WelcomeDialog"
+    while not any(dialog["class"] == "AccountDialog"
                   and dialog["visible"] and dialog["modal"]
                   for dialog in context["dialogs"]):
         assert time.monotonic() < deadline, context
