@@ -150,6 +150,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   scroll phase, including X11, where only angle deltas are reliable.
 
 ### Fixed
+- Finalize partial CLI performance reports when a render is interrupted, and
+  release evicted neural sessions before constructing their replacements.
 - Keep rotation and magnification alignment active when maximum shift is zero,
   while fixing the image center and invalidating older alignment caches.
 - Use the fusion registration order for descending OpenFocus comparisons;

@@ -1593,21 +1593,28 @@ def _run_cli_profiled(args) -> int:
     profile.unmeasured('source decoding runs lazily inside registration/fusion for streaming '
                        'methods; see concurrent.source_decode (summed across threads)')
     profile.unmeasured('peak live scratch bytes')
-    with performance_profile.active(profile):
-        result = _run_cli_parsed(args)
-    if not getattr(args, '_performance_started', False):
-        return result  # Usage errors stop before any work is done.
+    outcome = 'failed'
     try:
-        report = _cli_performance_report(args, profile,
-                                         'completed' if result == EXIT_OK else 'failed')
-        log_action('render.performance', **performance_profile.compact(report))
-        print(performance_profile.summary(report), file=sys.stderr)
-        if isinstance(args.profile_performance, str):
-            # After a long render: a failed write must not cost an earlier report.
-            _replace_text_file(args.profile_performance,
-                               performance_profile.dumps(report) + '\n', ".openfocus_profile_")
-    except Exception as exc:
-        print(f"warning: --profile-performance: {exc}", file=sys.stderr)
+        with performance_profile.active(profile):
+            result = _run_cli_parsed(args)
+        outcome = 'completed' if result == EXIT_OK else 'failed'
+    except KeyboardInterrupt:
+        outcome = 'cancelled'
+        raise
+    finally:
+        if getattr(args, '_performance_started', False):
+            try:
+                report = _cli_performance_report(args, profile, outcome)
+                if outcome == 'cancelled':
+                    report['outcome'] = outcome
+                log_action('render.performance', **performance_profile.compact(report))
+                print(performance_profile.summary(report), file=sys.stderr)
+                if isinstance(args.profile_performance, str):
+                    # After a long render: a failed write must not cost an earlier report.
+                    _replace_text_file(args.profile_performance,
+                                       performance_profile.dumps(report) + '\n', ".openfocus_profile_")
+            except Exception as exc:
+                print(f"warning: --profile-performance: {exc}", file=sys.stderr)
     return result
 
 
