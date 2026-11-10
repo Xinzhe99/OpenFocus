@@ -239,6 +239,19 @@ another checkout; `tiling --diff-images DIR` writes per-configuration
 difference images. Sweeps use the Maximum resource mode, and thread counts
 above its capacity are listed as skipped.
 
+Each run writes completed configurations to a JSON Lines checkpoint and prints
+its path to stderr. With `--json-output FILE`, the checkpoint starts at
+`FILE.partial.jsonl`; otherwise it starts at `BENCHMARK.partial.jsonl` in the
+current directory. If that path already exists, a numbered suffix selects a new
+file, preserving earlier runs. Planning alone creates no checkpoint. A successful
+JSON-output run removes its own checkpoint after writing the result; stdout runs
+keep theirs. Interrupted runs and runs with worker failures retain their
+checkpoints. Worker failures produce a nonzero exit status while other
+configurations continue and their results remain available.
+Overhead results list failures by arm and repetition; checkpoints identify the
+arm for each measurement, including baseline runs. Output identity is reported
+as indeterminate when any requested arm has no successful measurement.
+
 #### Measurements (2026-11-09)
 
 One machine: i7-10875H (8 cores, 16 threads, no CPU quota), Linux, Python
