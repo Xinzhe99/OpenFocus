@@ -210,6 +210,85 @@ With the common `kernel.perf_event_paranoid` = 2, only user-space samples of
 your own processes are available. Many virtual machines expose no hardware
 counters; `task-clock` and `perf record -e cpu-clock` still work.
 
+### StackMFF V3 CPU benchmarks
+
+`tools/stackmff_cpu_benchmark.py` measures the StackMFF V3 CPU path with the
+render profile above. Each configuration runs in its own subprocess with an
+isolated data, log and scratch directory, so user settings and photographs are
+never touched. Input is a deterministic synthetic stack, recorded with its seed
+and SHA-256 hashes. A result records the commit and dirty flag, the tool's own
+SHA-256, dependency versions, CPU topology, and both requested and effective
+settings. All runs are CPU-only.
+
+```bash
+python tools/stackmff_cpu_benchmark.py sweep    --smoke   # thread sweep, one tile
+python tools/stackmff_cpu_benchmark.py sessions --smoke   # recorded + synthetic eviction replay
+python tools/stackmff_cpu_benchmark.py tiling   --smoke   # overlap / tile size + image differences
+python tools/stackmff_cpu_benchmark.py cache    --smoke   # resolution cache by entry kind
+python tools/stackmff_cpu_benchmark.py overhead --smoke   # profiling off vs on, alternating
+```
+
+`--smoke` finishes in seconds and checks that the counters work; its timings
+are not performance figures. `--full` uses the geometry of a recorded 82-frame
+render, which the tool calls historical: a 1040×778 output, tile 389, overlap
+256. On its own it only prints the plan with a time and RAM estimate; add
+`--confirm` to run it. `--json-output FILE` writes a result that compares with another run
+using any JSON diff. `--threads`, `--frames`, `--height`, `--width`, `--block`
+and `--overlap` change the workload; `overhead --baseline-root DIR` also times
+another checkout; `tiling --diff-images DIR` writes per-configuration
+difference images. Sweeps use the Maximum resource mode, and thread counts
+above its capacity are listed as skipped.
+
+#### Measurements (2026-11-09)
+
+One machine: i7-10875H (8 cores, 16 threads, no CPU quota), Linux, Python
+3.13.18, ONNX Runtime 1.23.2, NumPy 2.5.4, OpenCV 5.0.0. Synthetic 82-frame
+1040×778 stack, seed 20261108, soft mode, 2 threads unless stated, clean
+checkouts of the revisions that introduced the tool. They are single-machine
+observations, not a specification.
+
+- **Threads** (`sweep`, one 82×448² tile, warm median of 3): 1 thread 20.43 s,
+  2 16.88 s, **4 12.74 s**, 6 13.25 s, 8 14.79 s; output identical at every
+  count. More threads than four were slower on this CPU.
+- **Sessions** (`sessions`): replaying 40 logged lookups that build 20 sessions
+  takes 4.2 s (0.21 s per session, model hash 0.05 s). Session churn is cheap
+  next to roughly 10 s of inference per tile.
+- **One render** (`cache`, tile 389, 20 tiles, 314 s): `session.run` 283 s
+  (90 %); region resolution 20.4 s (6.5 %), of which 1,640 one-use crop puts
+  (697 MB, never read again) cost 14.3 s (4.6 %); session acquisition 4.6 s;
+  per-tile `plan_attention_inference` 1.6 ms.
+- **Tile size and overlap** (`tiling`, reference 448 / 224):
+
+| Tile / overlap (requested→effective) | Tiles | Sessions | Padded area | Fusion | Mean / max difference |
+|---|---:|---:|---:|---:|---|
+| 389 / 256→194 | 20 | 20 | 4.65× | 339 s | 0.060 / 13 |
+| 448 / 224 | 15 | 2 | 3.72× | 289 s | reference |
+| 448 / 128 | 9 | 2 | 2.23× | 148 s | 0.051 / 6 |
+| 448 / 64 | 6 | 2 | 1.49× | 99 s | 0.055 / 9 |
+| 256 / 224→128 | 48 | 2 | 3.89× | 287 s | 0.076 / 13 |
+
+  Fusion time follows the padded inference area. The same 389 render took 314 s
+  in `cache` and 339 s here, so differences under about 8 % are within
+  run-to-run spread. The differences are on synthetic data and say nothing
+  about visible seams on real photographs; do not choose a default from speed
+  alone.
+- **Memory:** measured peak RSS was 1.6–1.7× the planner's working-set
+  estimate (8.0 GB for one 448 tile, 9.41 GB for the 389 render), and a
+  640-pixel tile exceeded a 14 GiB limit.
+- **Profiling overhead** (`overhead`, 5 off / 5 on alternating, the 389 render):
+  off median 303.56 s (302.29–329.36), on 303.49 s (302.22–355.52), −0.02 %;
+  all ten outputs identical. A 12-frame workload measured +0.59 % for
+  profiling off against the code before profiling and −0.98 % for on against
+  off, both inside the spread. These used the profiler's first revision, on
+  an idle machine; a later 12-frame run on a busy machine spread from 25 to
+  38 s within each arm and was discarded. Run `overhead` on an idle machine.
+
+A 1040×778 output is narrower than the default 1024 tile, so the tile is
+clamped to 778 and then halved for memory to 389. Edge tiles then pad to 384
+instead of 448, which gives seven session shapes for a two-entry CPU session
+cache: the reason for 20 sessions in the first row of the table. A 448 tile
+needs two.
+
 ## Current bounded execution (unreleased)
 
 OpenFocus A/B/C choose either a RAM-admitted frame window or one reusable row
