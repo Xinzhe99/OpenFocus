@@ -23,6 +23,7 @@ def _exercise():
                                  QSlider, QSpinBox, QTabWidget, QVBoxLayout, QWidget)
     from core.app import OpenFocusApplication
     import ui.activity as activity
+    from widgets.wipe_compare import WipeCompareWidget
 
     events = []
     activity.log_action = lambda event, **details: events.append((event, details))
@@ -42,7 +43,9 @@ def _exercise():
     panel.tabs = QTabWidget()
     panel.tabs.addTab(QWidget(), 'private tab one')
     panel.tabs.addTab(QWidget(), 'private tab two')
-    for widget in (panel.check, panel.spin, panel.slider, panel.combo, panel.secret, panel.items, panel.tabs):
+    panel.canvas = WipeCompareWidget()
+    panel.canvas.setMinimumSize(100, 60)
+    for widget in (panel.check, panel.spin, panel.slider, panel.combo, panel.secret, panel.items, panel.tabs, panel.canvas):
         layout.addWidget(widget)
     action = QAction('private menu text', window)
     window.ui_objs = {'action_export': action}
@@ -72,6 +75,9 @@ def _exercise():
                      pos=panel.items.visualItemRect(panel.items.item(1)).center())
     QTest.mouseClick(panel.tabs.tabBar(), Qt.MouseButton.LeftButton,
                      pos=panel.tabs.tabBar().tabRect(1).center())
+    QTest.mousePress(panel.canvas, Qt.MouseButton.LeftButton, pos=QPoint(10, 10))
+    QTest.mouseMove(panel.canvas, QPoint(30, 20))
+    QTest.mouseRelease(panel.canvas, Qt.MouseButton.LeftButton, pos=QPoint(40, 30))
     menu.popup(window.mapToGlobal(window.rect().center()))
     app.processEvents()
     QTest.mouseClick(menu, Qt.MouseButton.LeftButton, pos=menu.actionGeometry(action).center())
@@ -85,6 +91,10 @@ def _exercise():
     assert any(name.endswith('.combo') for name in controls)
     assert any(name.endswith('.secret') for name in controls)
     assert any(name.endswith('.items') for name in controls)
+    gestures = [details for event, details in events if event == 'ui.gesture']
+    assert [gesture['action'] for gesture in gestures] == ['press', 'release']
+    assert gestures[0]['points'] == [[10, 10]]
+    assert gestures[-1]['points'][-1] == [40, 30]
     assert any('QTabBar' in name for name in controls)
     assert any(name.endswith('.ui_objs.action_export') for name in controls)
     assert next(r for r in records if r['control'].endswith('.check'))['value'] is False

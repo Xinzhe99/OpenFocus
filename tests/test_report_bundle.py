@@ -116,12 +116,15 @@ def test_fusion_report_keeps_reproduction_settings_without_private_text():
     }
     text = _event('fusion.effective', fields)
     text += _event('ui.action', {'control': 'OpenFocus.ui_objs.action_save', 'value': True})
+    text += _event('ui.gesture', {'control': 'OpenFocus.preview', 'action': 'release',
+                                  'points': [[1, 2], [3, 4]], 'path': '/private/photo.jpg'})
     events = _contents(report_bundle.build_report_bundle(log_text=text, crash_text='', facts={}))['events.json']
     assert events[0]['parameters']['settings']['exposure_match'] is True
     assert events[0]['parameters']['settings']['fusion_parameters'] == {'mode': 'soft'}
     assert events[0]['parameters']['fusion_order'] == [0, 1]
     assert events[0]['parameters']['sources'][1]['shape'] == [10, 20, 3]
     assert events[1]['parameters']['control'] == 'OpenFocus.ui_objs.action_save'
+    assert events[2]['parameters']['points'] == [[1, 2], [3, 4]]
     assert '/private/photo.jpg' not in repr(events)
 
 

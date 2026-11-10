@@ -22,7 +22,7 @@ MAX_BUNDLE_BYTES = 2 * 1024 * 1024
 _MAX_LOG_BYTES = 2 * 1024 * 1024
 _MAX_EVENTS = 2000
 _MAX_FRAMES = 12
-_EVENTS = frozenset('''session.started startup shutdown.started shutdown.completed ui.action
+_EVENTS = frozenset('''session.started startup shutdown.started shutdown.completed ui.action ui.gesture
 batch_finished render_start render_finished render.fusion_region load_stack export_image export_image_write
 converter.page converter.item converter.batch converter.output converter.resources
 converter.admission_failed converter.admitted cli cli.fusion cli.exit render.performance
@@ -44,7 +44,8 @@ inference_bytes ram_ceiling waited_ms exit_code total_bytes radius sigma thresho
 iterations kernel_size strength quality compression downscale width height smoothing feather N
 max_shift_ratio rotation magnification reference_frame exposure_reference_index
 tile_block_size tile_overlap tile_threshold ai_batch_size registration_downscale_width
-group_number group_size group_overlap load_scale_factor roi_base_index'''.split())
+group_number group_size group_overlap load_scale_factor roi_base_index button
+angle_dx angle_dy pixel_dx pixel_dy'''.split())
 _SHAPES = frozenset(('shape', 'first_shape'))
 _DTYPES = frozenset(('uint8', 'uint16', 'uint32', 'int8', 'int16', 'int32', 'float16', 'float32', 'float64', 'bool'))
 _NESTED = frozenset(('settings', 'parameters', 'fusion_parameters', 'registration_parameters'))
@@ -68,6 +69,7 @@ _ENUMS = {
     'mode': frozenset(('soft', 'hard')),
     'failure_policy': frozenset(('continue', 'fail')),
     'roi_mode': frozenset(('crop', 'paste')),
+    'action': frozenset(('press', 'move', 'release', 'scroll')),
 }
 _GPU_MODEL = re.compile(r'^(?:NVIDIA (?:GeForce (?:RTX|GTX) [1-9][0-9]{2,3}(?: Ti| SUPER| Laptop GPU)?|RTX [1-9][0-9]{3}(?: Ada Generation)?)|AMD Radeon (?:RX [1-9][0-9]{3}(?: XT| XTX)?|Graphics)|Intel (?:Arc A[0-9]{3}M?|Iris Xe Graphics|UHD Graphics [0-9]{3,4}))$')
 _STACK_FUNCTIONS = {
@@ -120,6 +122,10 @@ def _numeric_fields(fields, depth=0):
             result[key] = list(value)
         elif key == 'fusion_order' and isinstance(value, list) and len(value) <= 4096 and all(type(x) is int and 0 <= x <= 10**9 for x in value):
             result[key] = list(value)
+        elif key == 'points' and isinstance(value, list) and len(value) <= 128 and all(
+                isinstance(point, list) and len(point) == 2 and all(type(x) is int and abs(x) <= 10**7 for x in point)
+                for point in value):
+            result[key] = value
         elif key == 'sources' and isinstance(value, list) and len(value) <= 4096:
             result[key] = [_numeric_fields(item, depth + 1) for item in value if isinstance(item, dict)]
         elif key == 'dtype' and isinstance(value, str) and value in _DTYPES:
