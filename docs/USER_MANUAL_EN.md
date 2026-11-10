@@ -116,6 +116,13 @@ The first launch opens the welcome dialog, where you can choose the theme and
 load the bundled demo stack. A fresh profile defaults to the light theme; the
 choice is remembered.
 
+On first launch and after an update, the optional account screen offers email,
+GitHub and Google sign-in. You can continue without an account or network. To
+sign in, review the current service terms and privacy policy and accept them.
+Use **Help → OpenFocus account** to open the screen again, sign out or delete
+the account. Signing in can enable automatic error reports; you can turn them
+off under **Settings → Advanced Settings → Diagnostics**.
+
 ### Quick Start Workflow
 
 1. Import your image sequence (File → Open Folder or drag-and-drop)
@@ -1401,7 +1408,13 @@ scale, still requires exporting the corrected source stack before saving a
 project. If the working scale changes after correction, restore it to the
 correction scale before saving or export the corrected stack.
 
-**Help → Send feedback** opens local logs. Copy copies the visible session log; the feedback ZIP contains the session/full application logs and environment information. Review the package before submitting it yourself. Opening GitHub only opens the tracker. Export cancellation leaves files unchanged; an error keeps the previous destination file and shows the failed path.
+**Help → Send feedback** opens local logs. Copy copies the visible session log;
+the local feedback ZIP can contain file paths, so review it before sharing.
+**Review error report** shows the sanitized diagnostics that will be sent;
+nothing is uploaded until you choose **Send to OpenFocus**. Automatic reports
+are sent only after a session with an error when enabled. A previous native
+crash requires confirmation on the next launch. Reports contain no images,
+user file names or paths. See [Privacy Policy](PRIVACY.md) for details.
 
 Each launch writes its own rotating log, so concurrent GUI/CLI jobs keep separate
 records. Task IDs link parameters, elapsed time and completed/cancelled/failed

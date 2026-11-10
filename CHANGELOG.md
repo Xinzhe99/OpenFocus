@@ -6,6 +6,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- Offer optional account sign-in with a skippable first-launch and update prompt.
+- Allow users to review and send sanitized error reports, and choose whether to
+  send reports automatically after an error. Previous native crashes require
+  separate confirmation; queued reports respect account and consent choices.
 - Add an off-by-default Advanced Settings opt-in for experimental desktop fusion
   and registration methods and image stitching. These features are under
   development and may have performance, quality or availability limitations;

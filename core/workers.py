@@ -226,7 +226,7 @@ class StackLoadWorker(QThread):
                             paths, scale_factor=self.scale, **options)
                     if ok:
                         self.source_icc_profiles = dict(getattr(self.loader, 'source_icc_profiles', {}))
-                    logger.info("stack decoded %s", frame_details(imgs))
+                    log_action("stack_load.decoded", **frame_details(imgs))
                     # Video decoding does not populate the image failure counter.
                     image_load = bool(self.folder) or not self.video
                     if not ok or (image_load and getattr(self.loader, 'failed_count', 0)):
