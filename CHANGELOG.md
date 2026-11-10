@@ -208,6 +208,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   services can distinguish them from generic automated traffic.
 - Cancel and finish account background work before quitting, including when the
   first-run account prompt is open.
+- Deliver account operation results before releasing their background workers.
 - Avoid accessing a deleted main window when Qt delivers late shutdown events.
 - Prevent an in-flight usage report from signalling Qt after shutdown.
 - Connect dynamically created controls when interacted with to avoid Qt

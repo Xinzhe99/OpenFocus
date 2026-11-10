@@ -20,15 +20,17 @@ class _AccountJob(QObject):
     def __init__(self, call):
         super().__init__()
         self.call = call
-        self.finished.connect(self._release)
+        self._thread = None
 
     def _release(self, _result, _error):
+        self._thread.join()
         _ACTIVE_JOBS.discard(self)
         self.deleteLater()
 
     def start(self):
         _ACTIVE_JOBS.add(self)
-        threading.Thread(target=self._run, daemon=True).start()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
 
     def _run(self):
         try:
@@ -143,6 +145,7 @@ class AccountDialog(QDialog):
         self._job = job
         job.started.connect(self._started)
         job.finished.connect(self._finished)
+        job.finished.connect(job._release)
         self._refresh_controls(busy=True)
         job.start()
 
