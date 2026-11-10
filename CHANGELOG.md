@@ -400,6 +400,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   checking whether the volume is internal and fixed.
 - Quantize fusion results in bounded sample chunks instead of allocating
   whole-image float copies, preserving 8/16-bit rounding and strided inputs.
+- Show CPU in the status bar and the About dialog when a verified GPU provider
+  cannot report its free memory, because AI jobs then run on the CPU. The
+  GPU Acceleration action follows the same rule, and a failing memory probe no
+  longer fails the job.
 
 ## [1.77.0] - 2026-11-06
 
