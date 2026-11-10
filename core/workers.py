@@ -136,6 +136,7 @@ class StackLoadWorker(QThread):
                  thread_count: int = 0, resource_preference: str = "balanced", exclude_paths=(),
                  linear_raw=False, expected_metadata=None):
         super().__init__()
+        configure_native_worker_stack(self)
         self.loader = loader
         self.folder = folder
         self.video = video
@@ -273,6 +274,7 @@ class ROIFramePreviewWorker(QThread):
 
     def __init__(self, frame, key, request, *, metadata=None):
         super().__init__()
+        configure_native_worker_stack(self)
         self.frame = frame
         self.key = key
         self.request = request
@@ -337,6 +339,7 @@ class ROIAlignmentWorker(QThread):
                  resource_preference="balanced", alignment="ecc",
                  registration_parameters=None, exposure_match=False, reverse_registration=False):
         super().__init__()
+        configure_native_worker_stack(self)
         self.raw_images = raw_images
         self.reg_downscale_width = reg_downscale_width
         self._cancelled = False
@@ -1086,6 +1089,7 @@ class BatchImportWorker(QThread):
                  thread_count: int = 0, resource_preference: str = "balanced",
                  parent=None, exclude_paths=()):
         super().__init__(parent)
+        configure_native_worker_stack(self)
         self.mode = mode
         self.folder_paths = list(folder_paths or [])
         self.folder_path = folder_path
@@ -1858,6 +1862,7 @@ class GifSaverWorker(QThread):
     def __init__(self, images, file_path, duration_sec, label_manager, target_type, scale_cfg=None,
                  linear_dng_metadata=None, watermark_cfg=None):
         super().__init__()
+        configure_native_worker_stack(self)
         self.images = tuple(images)
         self.file_path = file_path
         self.duration_sec = duration_sec

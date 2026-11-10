@@ -193,6 +193,7 @@ class DepthProductExportWorker(QThread):
     def __init__(self, path, index, frames, valid_mask, context, metadata, profile, render,
                  linear_dng_metadata=None, parent=None):
         super().__init__(parent)
+        configure_native_worker_stack(self)
         self.path, self.index, self.frames = path, index, frames
         self.valid_mask, self.context, self.metadata = valid_mask, context, metadata
         self.profile, self.render = profile, render

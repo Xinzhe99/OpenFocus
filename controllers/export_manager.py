@@ -24,6 +24,7 @@ from utils import scalebar
 from utils.export_paths import create_stack_directory, frame_export_name, unique_path
 from core.source_frames import resolve_frame, materialize_frames
 from utils.frame_pixels import run_pixel_worker
+from utils.platform_utils import configure_native_worker_stack
 
 _IMAGE_WRITE_MESSAGE_KEYS = {
     "exif_too_large": "image_write_exif_too_large",
@@ -85,6 +86,7 @@ class LayeredTiffWorker(QThread):
 
     def __init__(self, path, image, context, icc_profile):
         super().__init__()
+        configure_native_worker_stack(self)
         self.path = path
         self.image = image
         self.context = context
