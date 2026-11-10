@@ -1,6 +1,8 @@
 """Application file pickers with an always reachable, editable address bar."""
 from __future__ import annotations
 
+from contextlib import contextmanager
+from contextvars import ContextVar
 import os
 import re
 import sys
@@ -11,6 +13,18 @@ from PyQt6.QtWidgets import (QFileDialog, QLineEdit, QListView, QTreeView,
                              QAbstractItemView, QMessageBox, QComboBox, QSizePolicy)
 
 from utils.ui_utils import make_folder_path_editable
+
+_control_picker = ContextVar("control_picker", default=False)
+
+
+@contextmanager
+def control_picker_context():
+    """Use addressable Qt pickers during a control-initiated interaction."""
+    token = _control_picker.set(True)
+    try:
+        yield
+    finally:
+        _control_picker.reset(token)
 
 
 def expand_dialog_path(text: str, directory: str) -> str:
@@ -68,7 +82,7 @@ def _remember_dialog_directory(path):
     add_recent_dialog_dir(path)
 
 def _use_native_folder_dialog():
-    return True
+    return not _control_picker.get()
 
 def _windows_folder_paths(parent, caption, directory, multiple):
     """Show the Windows shell folder picker and return filesystem paths."""
@@ -358,7 +372,7 @@ class _NativeFolderDialog:
 
 
 def _use_native_file_dialog():
-    return True
+    return not _control_picker.get()
 
 
 def _pick_native_file(parent, caption, directory, file_filter, selected_filter,

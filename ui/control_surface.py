@@ -678,7 +678,9 @@ def click_widget(widget, asynchronous=False):
             def fire():
                 if sip.isdeleted(widget) or not widget.isVisible():
                     return
-                widget.click()
+                from utils.file_dialogs import control_picker_context
+                with control_picker_context():
+                    widget.click()
 
             QTimer.singleShot(100, fire)
             return {"scheduled": True}

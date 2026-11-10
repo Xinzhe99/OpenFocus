@@ -124,6 +124,7 @@ class TransformManager:
         window = self.window
         try:
             if not window.raw_images:
+                self._update_sharpness_curve(window)
                 window.stack_images = []
                 window.source_manager.update_file_list([], [])
                 window.source_manager.update_slider_range()
@@ -242,13 +243,14 @@ class TransformManager:
                 img = display_image(img)
                 h, w = img.shape[:2]
                 scale = 320.0 / max(h, w)
-                small = cv2.resize(img, (int(w * scale), int(h * scale)),
+                small = cv2.resize(img, (max(1, int(w * scale)), max(1, int(h * scale))),
                                    interpolation=cv2.INTER_AREA) if scale < 1.0 else img
-                gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
+                gray = small if small.ndim == 2 else cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
                 values.append(float(cv2.Laplacian(gray, cv2.CV_64F).var()))
             curve.set_data(values)
             curve.set_current(window.current_display_index)
         except Exception as exc:
+            curve.clear()
             print(f"sharpness analysis failed: {exc}")
 
     def reset_roi_selection(self) -> None:

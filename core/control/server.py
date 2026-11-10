@@ -644,7 +644,9 @@ class ControlServer(QObject):
             if handler is None:
                 raise ControlError("not_found", f"Unknown command: {command}",
                                    f"Known commands: {', '.join(_COMMANDS)}")
-            result = handler(args)
+            from utils.file_dialogs import control_picker_context
+            with control_picker_context():
+                result = handler(args)
             if isinstance(result, _DeferredResponse):
                 result.request_id = request_id
                 result.started = started
@@ -1608,7 +1610,12 @@ class ControlServer(QObject):
             raise ControlError("busy", f"Action is disabled: {key}")
         # Let the response reach the socket before a modal exec() starts; a
         # 0 ms timer runs before the buffered write is flushed.
-        QTimer.singleShot(100, action.trigger)
+        def fire():
+            from utils.file_dialogs import control_picker_context
+            with control_picker_context():
+                action.trigger()
+
+        QTimer.singleShot(100, fire)
         return {"scheduled": True, "key": key}
 
     def _cmd_ui_tree(self, args):
@@ -1716,7 +1723,9 @@ class ControlServer(QObject):
 
         def fire(action=selected):
             if not sip.isdeleted(action):
-                action.trigger()
+                from utils.file_dialogs import control_picker_context
+                with control_picker_context():
+                    action.trigger()
 
         # Delete / Save As open modal dialogs inside trigger(); the reply must
         # reach the client before that nested event loop starts.
