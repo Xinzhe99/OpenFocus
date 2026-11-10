@@ -197,6 +197,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   scroll phase, including X11, where only angle deltas are reliable.
 
 ### Fixed
+- Hide redundant button and option tooltips when their full labels are visible;
+  keep explanatory hints and the full text of elided labels.
 - Safely ignore unhandled application events when their target has already closed.
 - Give automatic-background, image-loading, preview and export workers sufficient native
   thread stack on macOS.
