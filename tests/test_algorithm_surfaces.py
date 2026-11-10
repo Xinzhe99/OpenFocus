@@ -25,10 +25,12 @@ def algorithm_host(qapp, extension):
     from ui.right_panel import create_right_panel
 
     host = QWidget()
+    host.experimental_features = True
     parts = create_right_panel()
     for name in ("combo_fusion", "combo_align", "fusion_parameter_panel",
                  "registration_parameter_panel", "chk_base_correct",
-                 "chk_exposure_match", "chk_reverse_order"):
+                 "chk_exposure_match", "chk_reverse_order", "chk_quick_preview",
+                 "chk_sharpen_output"):
         setattr(host, name, getattr(parts, name))
     host.raw_images = [np.full((48, 64, 3), value, np.uint8) for value in (20, 100)]
     host.image_filenames = ["near.png", "far.png"]
@@ -53,7 +55,8 @@ def algorithm_host(qapp, extension):
                  "set_registration_parameters", "refresh_algorithm_parameters",
                  "refresh_registration_parameters", "brightness_option_for",
                  "_set_fusion_option_available", "_sync_brightness_checkboxes", "_capture_parameter_state",
-                 "_restore_parameter_state", "_restore_scope"):
+                 "_restore_parameter_state", "_restore_scope", "reset_parameter_memories",
+                 "_mark_project_setting_changed", "_mark_project_dirty", "_update_project_title"):
         setattr(host, name, MethodType(getattr(OpenFocus, name), host))
     host.combo_fusion.currentIndexChanged.connect(host.refresh_algorithm_parameters)
     host.combo_align.currentIndexChanged.connect(host.refresh_registration_parameters)
@@ -72,10 +75,43 @@ def algorithm_host(qapp, extension):
     qapp.processEvents()
 
 
+def test_openfocus_default_alignment_respects_explicit_selection(algorithm_host):
+    window = algorithm_host
+    window._alignment_choice_explicit = False
+    window.set_fusion_method('openfocus_a')
+    assert window.current_alignment_method() == 'ecc'
+    window.set_fusion_method('guided_filter')
+    assert window.current_alignment_method() == 'ecc'
+    window.set_alignment_method('ecc')
+    window.set_fusion_method('openfocus_b')
+    assert window.current_alignment_method() == 'ecc'
+    window.set_alignment_method('openfocus')
+    window.set_fusion_method('openfocus_c')
+    assert window.current_alignment_method() == 'openfocus'
+
+
 def _edit_fraction(editors, fraction, direction):
     editors["fraction"].setValue(fraction)
     editor = editors["direction"]
     editor.setCurrentIndex(editor.findData(direction))
+
+
+def test_openfocus_registration_panel_is_hidden_but_retains_values(algorithm_host):
+    from core.algorithms import registration_defaults
+
+    host = algorithm_host
+    host.set_registration_parameters('openfocus', {'rotation': 6, 'reference_frame': 3})
+    host.set_alignment_method('openfocus')
+    assert host.registration_parameter_panel.isHidden()
+    assert host.registration_parameter_panel.values()['rotation'] == 6
+    assert host.registration_parameter_panel.values()['reference_frame'] == 3
+    host.set_alignment_method('shift')
+    assert not host.registration_parameter_panel.isHidden()
+    assert host.registration_parameter_panel.values()['delta'] == 7
+    host.reset_parameter_memories()
+    host.set_alignment_method('openfocus')
+    assert host.registration_parameter_panel.isHidden()
+    assert host.registration_parameter_panel.values() == registration_defaults('openfocus')
 
 
 def test_new_parameters_edited_in_main_and_batch_change_actual_pixels(
@@ -205,6 +241,38 @@ def test_brightness_snapshot_restores_registration_reference(qapp, algorithm_hos
     assert not host.brightness_option_for("exposure_match", "extension")
 
 
+def test_exposure_defaults_on_preserves_choice_and_reset(algorithm_host):
+    from types import SimpleNamespace
+    from core.algorithms import fusion_algorithms
+    from main import OpenFocus
+
+    host = algorithm_host
+    host._brightness_by_method.clear()
+    for method in (spec.id for spec in fusion_algorithms()):
+        host.set_fusion_method(method)
+        assert host.chk_exposure_match.isChecked()
+        assert not host.chk_base_correct.isChecked()
+
+    host._brightness_by_method[("exposure_match", "openfocus_a")] = False
+    host._brightness_by_method[("base_correct", "openfocus_a")] = True
+    host.set_fusion_method("openfocus_a")
+    assert not host.chk_exposure_match.isChecked()
+    assert host.chk_base_correct.isChecked()
+    host.chk_quick_preview.setChecked(True)
+    host.chk_reverse_order.setChecked(True)
+    host.chk_sharpen_output.setChecked(True)
+    host.lbl_source_img = SimpleNamespace(reset_view=lambda: None)
+    host.lbl_result_img = SimpleNamespace(reset_view=lambda: None)
+    OpenFocus.reset_to_default(host)
+    assert host.current_fusion_method() == "openfocus_b"
+    assert host.current_alignment_method() == "ecc"
+    assert host.chk_exposure_match.isChecked()
+    assert not any(option.isChecked() for option in (
+        host.chk_quick_preview, host.chk_reverse_order,
+        host.chk_base_correct, host.chk_sharpen_output))
+    assert host._brightness_by_method == {}
+
+
 def test_fusion_gpu_preference_does_not_change_ecc_backend(qapp):
     from core.workers import RenderWorker
     from core.registration import ImageRegistration
@@ -295,12 +363,17 @@ def test_openfocus_b_default_precision_and_saved_value(qapp, algorithm_host):
     host = algorithm_host
     host.set_fusion_method('openfocus_b')
     editors = host.fusion_parameter_panel.editors
-    assert editors['kernel_size'].value() == 17
-    assert editors['depth_smoothing'].value() == pytest.approx(1.44)
-    assert editors['depth_smoothing'].text() == editors['depth_smoothing'].locale().toString(1.44, 'f', 2)
+    assert editors['radius'].value() == 8
+    assert editors['smoothing'].value() == pytest.approx(4)
+    assert editors['feather'].value() == 3
+    assert editors['smoothing'].text().endswith('4.0')
 
-    editors['depth_smoothing'].setValue(1.2)
+    editors['smoothing'].setValue(6.666667)
+    assert editors['smoothing'].value() == pytest.approx(6.666667)
+    assert editors['smoothing'].text().endswith('6.666667')
+
+    editors['smoothing'].setValue(1.2)
     host.set_fusion_method('openfocus_c')
-    assert host.fusion_parameter_panel.editors['blend_smoothing'].value() == pytest.approx(3.6)
+    assert host.fusion_parameter_panel.editors['smoothing'].value() == pytest.approx(4)
     host.set_fusion_method('openfocus_b')
-    assert host.fusion_parameter_panel.editors['depth_smoothing'].value() == pytest.approx(1.2)
+    assert host.fusion_parameter_panel.editors['smoothing'].value() == pytest.approx(1.2)

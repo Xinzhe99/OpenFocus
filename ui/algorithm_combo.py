@@ -6,11 +6,13 @@ depth dialog all present the same order and grouping.
 """
 import importlib.util
 
-from PyQt6.QtCore import QSignalBlocker, Qt
+from PyQt6.QtCore import QEvent, QObject, QSignalBlocker, Qt
 from PyQt6.QtGui import QBrush, QFont, QPalette
-from PyQt6.QtWidgets import QComboBox
+from PyQt6.QtWidgets import QComboBox, QToolTip
 
 from core.algorithms import fusion_algorithms
+from core.experimental import (alignment_is_experimental, experimental_enabled,
+                               fusion_is_experimental)
 from locales import trans
 
 CATEGORY_ORDER = ('ai', 'spatial', 'transform')
@@ -19,6 +21,31 @@ CATEGORY_KEYS = {
     'spatial': 'group_spatial_methods',
     'transform': 'group_transform_methods',
 }
+_LOCKED_HINT_ROLE = Qt.ItemDataRole.UserRole + 101
+
+
+class _LockedItemHint(QObject):
+    def __init__(self, combo):
+        super().__init__(combo)
+        self.combo = combo
+
+    def eventFilter(self, watched, event):
+        if event.type() in (QEvent.Type.MouseButtonPress, QEvent.Type.ToolTip):
+            position = event.position().toPoint() if hasattr(event, 'position') else event.pos()
+            index = self.combo.view().indexAt(position)
+            hint = index.data(_LOCKED_HINT_ROLE) if index.isValid() else None
+            if hint:
+                global_pos = event.globalPosition().toPoint() if hasattr(event, 'globalPosition') else event.globalPos()
+                QToolTip.showText(global_pos, hint, watched)
+                return True
+        return super().eventFilter(watched, event)
+
+
+def _install_locked_item_hint(combo):
+    if not hasattr(combo, '_experimental_hint_filter'):
+        combo._experimental_hint_filter = _LockedItemHint(combo)
+        combo.view().viewport().installEventFilter(combo._experimental_hint_filter)
+
 
 
 def _package_available(name):
@@ -35,6 +62,48 @@ def fusion_unavailable_reason(spec, ai_available):
     if spec.id == "dtcwt" and not _package_available("dtcwt"):
         return trans.t("env_dtcwt_unavailable")
     return ""
+
+def experimental_method_label(spec, *, alignment=False):
+    label = trans.t(spec.label_key)
+    is_experimental = (alignment_is_experimental(spec.id) if alignment
+                       else fusion_is_experimental(spec.id))
+    if is_experimental:
+        label = f"{label} ({trans.t('experimental_label')})"
+    return label
+
+
+def apply_method_availability(combo, specs, window, *, alignment=False,
+                              ai_available=None, recommended=None):
+    """Update labels and disabled explanations without changing the selection."""
+    _install_locked_item_hint(combo)
+    enabled = experimental_enabled(window)
+    for spec in specs:
+        index = combo.findData(spec.id)
+        if index < 0:
+            continue
+        experimental = (alignment_is_experimental(spec.id) if alignment
+                        else fusion_is_experimental(spec.id))
+        label = experimental_method_label(spec, alignment=alignment)
+        if spec.id == recommended:
+            label += f" ({trans.t('recommended')})"
+        combo.setItemText(index, label)
+        dependency = '' if alignment else fusion_unavailable_reason(spec, ai_available)
+        locked = trans.t('experimental_locked_hint') if experimental and not enabled else ''
+        combo.setItemData(index, locked or None, _LOCKED_HINT_ROLE)
+        reason = '\n\n'.join(text for text in (locked, dependency) if text)
+        item = combo.model().item(index)
+        if item is not None:
+            item.setEnabled(not reason)
+        hint = trans.t(spec.hint_key) if spec.hint_key else ''
+        combo.setItemData(index, '\n\n'.join(text for text in (hint, reason) if text),
+                          Qt.ItemDataRole.ToolTipRole)
+
+
+def selected_item_enabled(combo):
+    index = combo.currentIndex()
+    item = combo.model().item(index) if index >= 0 else None
+    return item is not None and item.isEnabled()
+
 
 
 def _grouped(specs):
@@ -76,7 +145,7 @@ def fill_fusion_combo(combo, specs=None, *, none_label=None, none_hint=None):
             if spec.category != last:
                 _add_header(combo, spec.category)
                 last = spec.category
-            combo.addItem(trans.t(spec.label_key), spec.id)
+            combo.addItem(experimental_method_label(spec), spec.id)
             if spec.hint_key:
                 combo.setItemData(combo.count() - 1, trans.t(spec.hint_key),
                                   Qt.ItemDataRole.ToolTipRole)

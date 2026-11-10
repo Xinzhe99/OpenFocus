@@ -348,11 +348,11 @@ O registro corrige o desalinhamento espacial entre os quadros da pilha. É essen
 
 #### OpenFocus (rápido)
 
-- Alinhamento por similaridade limitada (translação + rotação + escala), com equalização de brilho por quadro e corte automático
+- Alinhamento por similaridade limitada (translação + rotação + escala) com corte automático
 - Busca transformações de similaridade limitadas usando diferenças de imagem amostradas e aplica warp com interpolação Lanczos
-- Quadros com deslocamento superior a **8% do tamanho do quadro permanecem sem alinhamento** em vez de serem corrigidos parcialmente. Altere o limite com `--align-shift-limit` na CLI
+- O domínio de busca do deslocamento é, por padrão, 3% do tamanho do quadro e pode ser alterado com `--align-shift-limit`. A busca usa o quadro anterior alinhado e parte do movimento acumulado; o deslocamento total pode superar 3%.
 - Para geometria não rígida ou extrema, escolha ECC ou homografia
-- **Tratamento de quadros rejeitados**: por padrão, continua com o quadro não alinhado. Escolha **Parar em quadro rejeitado** para falhar a renderização ou o item de lote antes de produzir um resultado quando a qualidade do detector for inferior a 0,06 ou o movimento estimado exceder o limite de deslocamento configurado, 8° de rotação ou 5% de mudança de escala. Os quadros são numerados a partir de 1 na ordem da pilha processada. A referência geométrica é o quadro 1 por padrão; uma correspondência direta fraca pode ser tentada novamente no quadro adjacente mais próximo da referência. Essa política detecta estimativas rejeitadas, não todas as correspondências incorretas: baixa textura, padrões repetidos, oclusão, movimento amplo ou mudanças de foco ainda podem enganar o registro. Inspecione o resultado.
+- Em um erro real de estimativa, `failure_policy=continue` (padrão) mantém o quadro sem alinhamento; `fail` interrompe o processamento. Pouca textura, padrões repetidos e mudanças de foco ainda podem causar correspondências imprecisas.
 - Na CLI, selecione a mesma política com `--align openfocus --align-param 'failure_policy="fail"'` (use as aspas adequadas ao shell). Itens de lote usam a política selecionada de forma independente. O padrão é `"continue"`.
 - Defina **Quadro de referência** como um número baseado em 1 na ordem da pilha incluída e processada para ancorar a geometria nesse quadro. A ordem é preservada; a equalização de brilho usa sua própria referência. Cada pilha de lote deve conter esse número, ou o item falha. Exemplo de CLI: `--align openfocus --align-param reference_frame=3`. Escolher uma referência não corrige paralaxe nem uma correspondência ruim; inspecione o resultado.
 
@@ -448,33 +448,20 @@ O OpenFocus oferece dez algoritmos de fusão (além de um modo somente alinhamen
 
 Cada bloco neural usa todos os quadros. Quadros de origem e dados temporários de alinhamento podem usar o disco; espaço livre e memória disponível limitam o tamanho da pilha. Os blocos espaciais de V2 aproximam a inferência da imagem inteira.
 
-Se nenhum diretório temporário for especificado, o OpenFocus estima o espaço necessário a partir das entradas conhecidas e dos dados temporários. Se faltar espaço no disco temporário do sistema, ele pode considerar discos locais fixos graváveis. Um diretório escolhido explicitamente não é substituído automaticamente. A verificação de espaço é uma estimativa naquele momento, não uma reserva; o espaço pode acabar depois. Em caso de erro de armazenamento, escolha um diretório gravável nas configurações avançadas.
+Se nenhum diretório temporário for especificado, o OpenFocus estima o espaço necessário com base nas entradas e nos dados temporários e pode considerar discos locais fixos graváveis quando faltar espaço. Se o diretório escolhido estiver indisponível, avisa e usa temporariamente o diretório do sistema; cada nova tarefa tenta novamente a escolha salva. Um disco escolhido cheio não provoca troca automática. A verificação é uma estimativa, não uma reserva. Em caso de erro, escolha um diretório gravável nas configurações avançadas.
 
 
 ### OpenFocus A / B / C
 
-- **OpenFocus A**: seleciona os pixels de origem por uma resposta de foco multiescala.
-- **OpenFocus B**: mistura quadros vizinhos guiado por um mapa de profundidade suavizado.
-- **OpenFocus C**: mistura os pixels de origem com base no mapa de profundidade final suavizado.
-- **Parâmetros**: A e B usam o controle de kernel para a escala de resposta de foco; C não tem raio. A suavização de A não tem efeito; B e C suavizam o mapa de profundidade usado para a fusão.
+A usa uma resposta de foco multiescala (raio 8, suavização 4); sua suavização está atualmente inativa.
 
-**Suavização**: um único campo numérico abaixo do controle de kernel, cujo significado depende do método selecionado (intervalo 0–8, passo 0,2):
+B usa um mapa de profundidade (raio 8, suavização 4, feather 3). C usa uma pirâmide multinível ponderada (suavização 4), sem raio.
 
-| Método | Rótulo | Padrão | Efeito |
-|---|---|---|---|
-| OpenFocus A | Suavização da mistura | 2,0 | Sem efeito |
-| OpenFocus B | Suavização da profundidade | 1,44 | Controla a suavização do mapa de profundidade que guia a mistura |
-| OpenFocus C | Suavização da mistura | 3,6 | Controla a suavização do mapa de profundidade e as transições de fusão |
+CLI: `--method openfocus_b --param radius=8 --param smoothing=4 --param feather=3`.
 
-Tamanho de kernel padrão para A/B: 17. Os valores salvos são mantidos; restaure os padrões para usar os novos valores.
+Na interface, a igualação de exposição fica ativada por padrão em A/B/C e usa o primeiro quadro processado; nos demais métodos fica desativada por padrão e usa o último. As escolhas salvas explicitamente são preservadas; quando A/B/C está ativado, usa-se o primeiro. A correção de deriva de brilho permanece desativada por padrão. Redefinir restaura os padrões de cada método. Na CLI fica ativada por padrão para todos os métodos; `--no-exposure-match` desativa.
 
-Valores mais altos aumentam a suavização das transições. Cada método lembra seu próprio valor entre sessões, e o processamento em lote aplica a mesma regra.
-
-C não tem parâmetro de raio, então seu controle de kernel fica oculto.
-
-CLI: `--depth-smoothing VALUE` (B) e `--blend-smoothing VALUE` (A, C).
-
-**As opções de brilho são por método.** *Igualar exposição antes da fusão* e *Remover deriva de brilho* são lembradas separadamente para cada método de fusão, porque respondem a uma questão de cada pilha e não a uma preferência global. Ambas ficam ativadas por padrão em OpenFocus A/B/C (que não têm calibração de exposição integrada); os outros métodos mantêm os padrões históricos (igualação de exposição ativada, remoção de deriva desativada). Trocar de método mostra os valores daquele método, e esses valores sobrevivem ao reinício. **Redefinir** limpa os valores lembrados de brilho, suavização e raio de todos os métodos.
+Ao selecionar A/B/C, usa-se o alinhamento OpenFocus, salvo se um alinhamento tiver sido escolhido explicitamente ou um projeto restaurado. Os padrões são deslocamento 0,03 e ampliação 5%.
 
 **Nitidez da saída fundida** aplica uma máscara de nitidez suave após a fusão, antes de o resultado ser convertido para sua profundidade de saída. Fica desativada por padrão e pode ser ativada em **Configurações de renderização** ou nas opções do lote; o sinalizador equivalente da CLI é `--sharpen-output`. Afeta a imagem fundida, não os quadros registrados nem os mapas de profundidade. Pode tornar as bordas mais distintas, mas amplificar ruído e halos. É salva com o projeto e lembrada entre sessões.
 
@@ -500,9 +487,9 @@ Selecione **Somente alinhamento (sem fusão)** para registrar a pilha e adiciona
 | StackMFF (V1) | Lenta (GPU) | Não avaliada aqui | Luminância independente da ordem; crominância pode variar em caso de empate nas distâncias de luminância |
 | StackMFF V2 | Rápida (GPU) | Não avaliada aqui | Varreduras contínuas com um modelo minúsculo |
 | StackMFF V3 | Lenta (GPU) | Excelente | Qualidade máxima |
-| OpenFocus A | Depende da pilha | Depende da pilha | Seleção multiescala de pixels em foco |
+| OpenFocus A | Depende da pilha | Depende da pilha | Resposta multiescala e mistura de áreas pouco detalhadas |
 | OpenFocus B | Depende da pilha | Depende da pilha | Mistura de quadros vizinhos guiada por profundidade |
-| OpenFocus C | Depende da pilha | Depende da pilha | Mistura de pixels de origem com base no mapa de profundidade final |
+| OpenFocus C | — | — | Pirâmide multinível ponderada |
 
 Abra **Ferramentas → Comparação de métodos** para ajustar vários métodos independentemente. Nome, rótulos de parâmetros e controles de cada método permanecem juntos quando a janela estreita. As mudanças atualizam a prévia automaticamente. **Prévia ROI (rápida)** funde a área selecionada com o contexto ao redor; **Fusão de imagem inteira** verifica o resultado da imagem toda e permite inspecionar outra área sem renderizar novamente. Resultados ROI podem diferir dos de imagem inteira porque estatísticas de exposição e alguns algoritmos dependem da extensão da imagem.
 A **fusão de imagem inteira** é selecionada por padrão.
@@ -740,7 +727,7 @@ Crie um arquivo vazio chamado `OpenFocus.portable` ao lado de `OpenFocus.exe` (o
 
 ### Metadados EXIF
 
-Os metadados de origem (modelo da câmera, exposição, orientação e assim por diante) são mantidos: a orientação é aplicada ao carregar, e exportações PNG/TIFF/WebP incorporam o EXIF original automaticamente. Exportações JPG/BMP não armazenam o EXIF completo e são gravadas sem ele.
+As exportações PNG/TIFF/JPEG/WebP preservam metadados sanitizados de câmera, lente, exposição, data e GPS e definem Orientation como 1. O BMP não incorpora EXIF. Se os dados EXIF ou ICC de um JPEG excederem o limite do formato, o OpenFocus mostra um erro claro; escolha PNG ou TIFF. Se o EXIF sanitizado de uma origem exceder 16 MiB, o OpenFocus recusa carregá-la; remova ou reduza primeiro o EXIF desse arquivo.
 
 ### Entrada HEIC/HEIF
 
@@ -815,7 +802,7 @@ Em **Configurações → Configurações avançadas → Nomes de saída**, um pr
 
 ### Compartilhar um resultado
 
-Clique com o botão direito em uma saída e abra **Compartilhar**. **Copiar imagem de pré-visualização (JPEG)** coloca o resultado atual em resolução total, incluindo rótulos e barra de escala, na área de transferência como um JPEG real e também fornece um bitmap decodificado. **Copiar caminhos de arquivo** copia URLs de arquivos persistentes de todos os resultados selecionados; resultados não salvos ou desatualizados pedem uma pasta e são gravados como PNG com os pixels de 8/16 bits e anotações atuais. **Mostrar na pasta** abre o Explorer, o Finder ou o gerenciador de arquivos com o arquivo selecionado. Exportações existentes só são reutilizadas enquanto ainda correspondem à imagem e às anotações atuais. **Criar link de compartilhamento privado** permanece desativado até existir compartilhamento hospedado.
+Clique com o botão direito em uma saída e abra **Compartilhar**. **Copiar imagem de pré-visualização (JPEG)** coloca o resultado em resolução total, com rótulos e barra de escala, na área de transferência como JPEG real e bitmap decodificado. **Copiar caminhos de arquivo** copia os caminhos locais como texto e URLs de arquivo. Um resultado salvo e inalterado usa o arquivo existente; um resultado não salvo, alterado ou sem arquivo é gravado automaticamente como PNG na pasta temporária do sistema, sem ser marcado como salvo. O sistema pode excluir arquivos temporários; use **Salvar como** para guardá-los. **Mostrar na pasta** abre o Explorer, o Finder ou o gerenciador de arquivos com o arquivo selecionado, sem pedir uma pasta. **Criar link de compartilhamento privado** permanece desativado até existir compartilhamento hospedado.
 
 ### Formato de arrastar para exportação
 
@@ -847,7 +834,7 @@ Arrastar resultados da lista de saídas grava arquivos de imagem no formato esco
 
 ## 14. Interface de linha de comando
 
-`pip install openfocus` inclui o modelo de IA, seus pesos e a decodificação HEIC e RAW de câmera. O `dtcwt` é ignorado no Python 3.13 ou superior, onde a entrada DTCWT permanece desabilitada com uma dica.
+`pip install openfocus` inclui o modelo de IA, seus pesos e a decodificação HEIC e RAW. Para DTCWT no Python 3.13+, execute em seguida `python -m pip install --no-deps dtcwt==0.14.0`. O OpenFocus fornece o adaptador para NumPy 2; `pip check` continuará indicando a restrição NumPy do pacote original.
 
 O OpenFocus pode rodar sem a interface gráfica — útil para pipelines com script e integração contínua. O script de console `openfocus` (instalado por `pip install openfocus`) e `python main.py` de uma cópia do código expõem os mesmos comandos. As opções de fusão funcionam com ambas as formas; os subcomandos são:
 
@@ -901,9 +888,9 @@ Por exemplo, adicione `--align openfocus --alignment-report alignment.json` a um
 | `--param KEY=JSON_VALUE` | Define qualquer parâmetro de fusão; repetível e prevalece sobre opções legadas |
 | `--align, -a` | `none` (padrão), `homography`, `ecc`, `both`, `openfocus` |
 | `--align-param KEY=JSON_VALUE` | Define qualquer parâmetro de registro; repetível |
-| `--align-shift-limit` | Somente alinhamento `openfocus`: deslocamento máximo aceito como fração do tamanho do quadro (0,08 padrão; acima disso o quadro fica sem alinhamento) |
+| `--align-shift-limit` | Domínio de busca do deslocamento como fração do tamanho do quadro (0,03 por padrão); o deslocamento acumulado pode ser maior. |
 | `--alignment-report PATH` | Salva os resultados de alinhamento por quadro como JSON para uma renderização única não agrupada com alinhamento ativo; lote e grupos não são suportados |
-| `--exposure-match` | Iguala a média de cada quadro à do último antes da fusão (ativado por padrão; `--no-exposure-match` desativa). Ganhos para toda a pilha, então a saída em blocos permanece sem emendas; aplica-se a todos os métodos e à referência de brilho do alinhador OpenFocus |
+| `--exposure-match` | Na CLI fica ativada por padrão para todos os métodos; A/B/C usam o primeiro quadro processado, os demais o último. `--no-exposure-match` desativa. |
 | `--base-frame` | Etapa opcional pós-fusão: iguala as baixas frequências da saída ao quadro `last`/`first` (`none` padrão) |
 | `--sort` | Ordem de quadros para `openfocus_a/b/c`: `asc` (padrão, ordem de arquivo), `desc` (inverte uma varredura de longe para perto), `off` |
 | `--frame-order` | Pasta de entrada: `auto` (padrão) ordena os quadros de perto para longe pelos passos de foco EXIF quando todos os têm (o bracketing de foco da OM SYSTEM começa no meio da profundidade); senão, por nome; `name` sempre pelo nome do arquivo. Arquivos listados explicitamente mantêm sua ordem |
@@ -911,9 +898,7 @@ Por exemplo, adicione `--align openfocus --alignment-report alignment.json` a um
 | `--dust-map WHITE` | Correção de campo plano (mapa de poeira) a partir de uma tomada de campo branco desfocada |
 | `--defect-mask-path MASK` | Máscara de defeitos em coordenadas do sensor reparada antes do registro |
 | `--sensor-denoise` | Redução de ruído conservadora do sensor antes do registro |
-| `--kernel, -k` | Tamanho do kernel (forçado ímpar); controla a escala de resposta de foco em `openfocus_a` e `openfocus_b`; C não tem raio |
-| `--depth-smoothing VALUE` | Apenas `openfocus_b`: força da suavização de transição de profundidade (1,44 padrão) |
-| `--blend-smoothing VALUE` | Apenas `openfocus_a` / `openfocus_c`: força da suavização de transição (2,0 para A, 3,6 para C por padrão) |
+| `--kernel, -k` | Somente para métodos que declaram `kernel_size` |
 | `--ai-mode {soft,hard}` | Saída do StackMFF V3: mistura ponderada por probabilidade (padrão) ou quadro mais provável por pixel |
 | `--threads, -t` | Limite superior de threads de trabalho; `0` = automático (padrão), valores positivos limitam a concorrência |
 | `--resource-preference` | `balanced` (padrão), `responsive` ou `maximum`; controla o agendamento de recursos |

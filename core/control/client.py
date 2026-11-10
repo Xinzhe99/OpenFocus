@@ -126,7 +126,7 @@ def require_ok(response):
         error = response.get("error") or {}
         raise ControlError(error.get("code", "internal"),
                            error.get("message", "Command failed"),
-                           error.get("hint"))
+                           error.get("hint"), error.get("details"))
     return response.get("result")
 
 

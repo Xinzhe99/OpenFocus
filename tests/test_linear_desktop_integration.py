@@ -32,7 +32,7 @@ def test_linear_stack_load_is_atomic_and_checks_calibration(monkeypatch):
     loader.images = [old]
     loader.image_paths = ['previous.dng']
     loader.linear_dng_metadata = previous_profile
-    ok, _, images, _ = loader.load_linear_raw_stack(['a.cr3', 'b.cr3'], .25)
+    ok, _, images, _ = loader.load_linear_raw_stack(['a.cr3', 'b.cr3'], .25, thread_count=1)
     assert not ok and images == []
     assert loader.images[0] is old
     assert loader.image_paths == ['previous.dng']
@@ -54,9 +54,75 @@ def test_linear_stack_cancel_does_not_replace_previous_stack(monkeypatch):
         cancelled[0] = True
         return [SimpleNamespace(linear_metadata=_metadata())]
     monkeypatch.setattr(source_frames, 'scan_source', inspect)
-    ok, message, frames, _ = loader.load_linear_raw_stack(['a.cr3', 'b.cr3'])
+    ok, message, frames, _ = loader.load_linear_raw_stack(['a.cr3', 'b.cr3'], thread_count=1)
     assert not ok and message == 'CANCELLED' and frames == []
     assert loader.images[0] is old and calls == ['a.cr3']
+
+
+@pytest.mark.parametrize('mismatch', [False, True])
+def test_linear_manifest_preserves_input_order_when_scans_finish_out_of_order(monkeypatch, mismatch):
+    import threading
+    from core import resource_policy, source_frames
+    from locales import trans
+    second_finished = threading.Event()
+    calls = []
+    def plan(workload, *, preference, user_threads):
+        assert user_threads == 2 and preference == 'responsive'
+        assert workload.per_worker_bytes == 64 * 1024 * 1024
+        return SimpleNamespace(workers=2)
+    def inspect(path, scale, *, linear, header_only, should_cancel=None):
+        if path == 'a.cr3':
+            assert second_finished.wait(5)
+            calls.append(path)
+        else:
+            calls.append(path)
+            second_finished.set()
+        model = 'Different' if mismatch and path == 'b.cr3' else 'Camera'
+        return [SimpleNamespace(path=path, linear_metadata=_metadata(model=model))]
+    monkeypatch.setattr(resource_policy, 'plan_execution', plan)
+    monkeypatch.setattr(source_frames, 'scan_source', inspect)
+    monkeypatch.setattr(source_frames, 'ensure_display_preview', lambda *_a, **_kw: None)
+    loader = ImageStackLoader()
+    old = object()
+    loader.images = [old]
+    ok, message, frames, names = loader.load_linear_raw_stack(
+        ['a.cr3', 'b.cr3'], thread_count=2, resource_preference='responsive')
+    assert calls == ['b.cr3', 'a.cr3']
+    if mismatch:
+        assert not ok and trans.t('linear_raw_mismatch') in message and 'b.cr3' in message
+        assert not frames and loader.images == [old]
+    else:
+        assert ok and [frame.path for frame in frames] == ['a.cr3', 'b.cr3']
+        assert names == ['a.cr3', 'b.cr3']
+
+
+def test_linear_manifest_cancel_does_not_schedule_remaining_or_commit(monkeypatch):
+    import threading
+    from core import resource_policy, source_frames
+    second_started = threading.Event()
+    cancelled = threading.Event()
+    calls = []
+    def inspect(path, scale, *, linear, header_only, should_cancel=None):
+        calls.append(path)
+        if path == 'a.cr3':
+            assert second_started.wait(5)
+            cancelled.set()
+        else:
+            second_started.set()
+        return [SimpleNamespace(linear_metadata=_metadata())]
+    monkeypatch.setattr(resource_policy, 'plan_execution',
+                        lambda *_a, **_kw: SimpleNamespace(workers=2))
+    monkeypatch.setattr(source_frames, 'scan_source', inspect)
+    monkeypatch.setattr(source_frames, 'ensure_display_preview',
+                        lambda *_a, **_kw: pytest.fail('cancelled manifest prepared preview'))
+    loader = ImageStackLoader()
+    old = object()
+    loader.images = [old]
+    loader.should_cancel = cancelled.is_set
+    ok, message, frames, _ = loader.load_linear_raw_stack(
+        ['a.cr3', 'b.cr3', 'c.cr3'], thread_count=2)
+    assert not ok and message == 'CANCELLED' and not frames
+    assert set(calls) == {'a.cr3', 'b.cr3'} and loader.images == [old]
 
 
 

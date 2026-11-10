@@ -130,3 +130,10 @@ shot_tmp.py
 
 # 推广运营档案：已迁移至私密仓库 Xinzhe99/openfocus-outreach（原地 git 仓库，勿提交主仓库）
 promo-video/outreach/
+
+# Local outreach and research workspaces
+/ego/
+/.tmp/
+/.tmp-ytemails/
+/research/
+/send-results/

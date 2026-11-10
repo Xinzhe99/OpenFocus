@@ -35,9 +35,13 @@ def _menu_window(qapp):
         "save_stack_as_multipage_tiff": staticmethod(stub),
         "save_processed_input_stack": staticmethod(stub),
     })()
+    window.output_manager = type("O", (), {
+        "export_all_results": staticmethod(stub),
+    })()
     window.source_manager = type("S", (), {
         "clear_image_stack": staticmethod(stub),
         "reset_current_stack": staticmethod(stub),
+        "prompt_and_load_frames": staticmethod(stub),
     })()
     window.label_manager = type("L", (), {
         "show_add_label_dialog": staticmethod(stub),

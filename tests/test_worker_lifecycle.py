@@ -27,7 +27,7 @@ def _frames(dtype=np.uint8):
 def _render(frames, request=None):
     return RenderWorker(
         frames, algorithm='openfocus_a', alignment='openfocus' if request is not None else 'none',
-        fusion_parameters={'kernel_size': 11}, tile_enabled=False,
+        fusion_parameters={'radius': 5}, tile_enabled=False,
         thread_count=1, use_gpu=False, exposure_match=False, disk_cache=request,
     )
 
@@ -201,7 +201,7 @@ def test_cached_alignment_remains_resolvable_after_stack_revision(tmp_path, alig
         parameters = {'max_shift_ratio': .2, 'magnification': 0} if alignment == 'openfocus' else {}
         worker = RenderWorker(frames, algorithm='openfocus_a', alignment=alignment,
             registration_parameters=parameters,
-            fusion_parameters={'kernel_size': 17}, need_fusion=False,
+            fusion_parameters={'radius': 8}, need_fusion=False,
             thread_count=1, use_gpu=False, exposure_match=False, disk_cache=request)
         results, errors = _capture(worker)
         worker.run()
@@ -448,7 +448,7 @@ def test_grouped_batch_only_draws_a_shared_physical_calibration(tmp_path, calibr
     outputs = []
     for annotated in (False, True):
         settings = {'format': 'png', 'fusion_method': 'openfocus_a', 'group_size': 2,
-                    'fusion_params': {'kernel_size': 3}}
+                    'fusion_params': {'radius': 1}}
         if annotated:
             settings['scale_bar'] = {'target': 'output', **style}
         worker = BatchWorker([str(source)], 'custom', str(tmp_path / str(annotated)),

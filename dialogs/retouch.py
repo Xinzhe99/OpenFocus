@@ -30,7 +30,8 @@ from PyQt6.QtWidgets import (
 from locales import trans
 from utils.image_utils import thumbnail_bgr, to_display_uint8
 from utils.path_identity import same_path
-from utils.retouch import adjust_tones, prepare_retouch_document
+from utils.platform_utils import configure_native_worker_stack
+from utils.retouch import RetouchDocument, adjust_tones, prepare_retouch_document
 from core.source_frames import display_image
 from utils.frame_pixels import run_pixel_worker
 from widgets.flow_layout import FlowPanel
@@ -69,6 +70,39 @@ def _add_wrapped_option(layout, option):
     return row
 
 _SHARPNESS_WORKERS = set()
+_SOURCE_WORKERS = set()
+
+
+class _SourceWorker(QThread):
+    """Load just the selected source and prepare its display off the GUI thread."""
+
+    def __init__(self, frame, index, request, metadata):
+        super().__init__()
+        configure_native_worker_stack(self)
+        self.input_frame = frame
+        self.index = index
+        self.request = request
+        self.metadata = metadata
+        self.frame = None
+        self.display = None
+        self.valid = None
+        self.error = None
+
+    def run(self):
+        try:
+            self.frame = RetouchDocument.resolve_source_frame(
+                self.input_frame, self.isInterruptionRequested)
+            if self.isInterruptionRequested():
+                return
+            image = self.frame.image
+            if self.metadata is not None:
+                from utils.linear_dng import develop_linear
+                image = develop_linear(image, self.metadata)
+            self.display = to_display_uint8(image)
+            self.valid = self.frame.valid_mask()
+        except Exception as exc:
+            self.error = exc
+
 
 def _release_dialog_buffers(dialog_ref):
     """Drop large Python-owned buffers even if a Qt callback retains the wrapper."""
@@ -76,8 +110,8 @@ def _release_dialog_buffers(dialog_ref):
     if dialog is None:
         return
     for name in ("doc", "record", "_source_qimage", "_pure_source_qimage",
-                 "_source_display", "_before_qimage", "_result_display",
-                 "_result_qimage", "_sharpness_maps"):
+                 "_source_display", "_source_clean_display", "_source_valid",
+                 "_before_qimage", "_result_display", "_result_qimage", "_sharpness_maps"):
         setattr(dialog, name, None)
 
 
@@ -183,7 +217,10 @@ class _SharpnessWorker(QThread):
             for index, frame in enumerate(self.frames):
                 if self.isInterruptionRequested():
                     return
-                image = display_image(frame.image)
+                from core.source_frames import ProcessedFrame, resolve_frame
+                image = (resolve_frame(frame.image, should_cancel=self.isInterruptionRequested)
+                         if isinstance(frame.image, ProcessedFrame)
+                         else display_image(frame.image))
                 if image is None or image.size == 0:
                     continue
                 h, w = image.shape[:2]
@@ -256,10 +293,7 @@ class _CheckpointWorker(QThread):
                 self.doc.load_checkpoint(self.path, self.isInterruptionRequested)
         except Exception as exc:
             self.error = exc
-            self.cancelled = (self.isInterruptionRequested() and isinstance(exc, ValueError)
-                              and str(exc) in ("Retouch replay cancelled",
-                                               "Retouch checkpoint saving cancelled",
-                                               "Retouch checkpoint initialization cancelled"))
+            self.cancelled = self.isInterruptionRequested()
 
 
 class _CheckpointDialog(QDialog):
@@ -506,6 +540,7 @@ class _AutoBackgroundWorker(QThread):
 
     def __init__(self, doc, preset, clean, keep_soft_parts=False):
         super().__init__()
+        configure_native_worker_stack(self)
         self.doc = doc
         self.preset = preset
         self.clean = clean
@@ -522,7 +557,10 @@ class _AutoBackgroundWorker(QThread):
         except MemoryError as exc:
             self.error = str(exc) or trans.t("retouch_auto_bg_failed")
         except Exception as exc:
-            self.error = str(exc) or trans.t("retouch_auto_bg_failed")
+            if self.isInterruptionRequested():
+                self.status = "cancelled"
+            else:
+                self.error = str(exc) or trans.t("retouch_auto_bg_failed")
 
 
 class _AutoBackgroundDialog(QDialog):
@@ -885,9 +923,12 @@ class RetouchDialog(QDialog):
         self._source_ready = False
         self._source_request = 0
         self._source_loading = False
+        self._source_worker = None
         self._source_qimage = None
         self._pure_source_qimage = None
         self._source_display = None
+        self._source_clean_display = None
+        self._source_valid = None
         self._before_qimage = None
         self._result_display = None
         self._result_qimage = None
@@ -1322,14 +1363,11 @@ class RetouchDialog(QDialog):
         self.frame_list.clear()
         for index, frame in enumerate(self.doc.frames):
             image = self.doc.source_previews[index]
-            h, w = image.shape[:2]
-            scale = min(1.0, 64 / max(h, w))
-            small = cv2.resize(image, (max(1, int(w * scale)), max(1, int(h * scale))),
-                               interpolation=cv2.INTER_AREA)
-            thumb = thumbnail_bgr(self._display_image(small), 64)
-            item = QListWidgetItem(
-                QIcon(QPixmap.fromImage(_qimage_from_bgr(thumb))),
-                str(index + 1))
+            item = QListWidgetItem(str(index + 1))
+            if image is not None:
+                metadata = None if self.doc.source_previews_are_display[index] else ...
+                thumb = thumbnail_bgr(self._display_image(image, metadata), 64)
+                item.setIcon(QIcon(QPixmap.fromImage(_qimage_from_bgr(thumb))))
             item.setToolTip(frame.name)
             item.setSizeHint(QSize(76, 82))
             item.setTextAlignment(Qt.AlignmentFlag.AlignHCenter
@@ -1423,6 +1461,15 @@ class RetouchDialog(QDialog):
             i=index + 1, n=self.doc.frame_count,
             name=os.path.basename(frame.name)) + "…")
         self._source_ready = False
+        self._source_loading = True
+        self._source_qimage = None
+        self._pure_source_qimage = None
+        self._source_display = None
+        self._source_clean_display = None
+        self._source_valid = None
+        self.source_canvas.update()
+        if self._source_worker is not None:
+            self._source_worker.requestInterruption()
         self._source_request += 1
         request = self._source_request
         self._update_controls()
@@ -1434,15 +1481,7 @@ class RetouchDialog(QDialog):
             return
         if index != self.doc.frame_index or self.doc.stroke_active:
             return
-        if not self._refresh_source_display():
-            return
-        self._source_ready = True
-        frame = self.doc.frames[index]
-        self.lbl_source_header.setText(trans.t("retouch_frame").format(
-            i=index + 1, n=self.doc.frame_count,
-            name=os.path.basename(frame.name)))
-        self._update_controls()
-        self._update_status()
+        self._refresh_source_display()
 
     def _on_frame_selected(self, row: int) -> None:
         if self._syncing_frames or row < 0:
@@ -1475,51 +1514,82 @@ class RetouchDialog(QDialog):
         return to_display_uint8(image)
 
     def _refresh_source_display(self) -> bool:
-        if self._source_loading or self._closing:
+        if self._closing or self._source_worker is not None:
             return False
-        frame = self.doc.active_frame
         index = self.doc.frame_index
         request = self._source_request
-        doc = self.doc
         metadata = getattr(self.record.context, 'linear_dng_metadata', None)
+        worker = _SourceWorker(self.doc.frames[index], index, request, metadata)
+        self._source_worker = worker
         self._source_loading = True
         self._update_controls()
-        try:
-            display, valid = run_pixel_worker(
-                self, trans.t("retouch_title"),
-                lambda: (self._display_image(frame.image, metadata), doc.mask_for(index)),
-                show_progress=False)
-        except Exception as exc:
-            if not self._closing and request == self._source_request:
-                self._set_notice(trans.t('retouch_source_failed').format(error=str(exc)))
-            return False
-        finally:
-            self._source_loading = False
-            if not self._closing:
-                self._update_controls()
-            if not self._closing and request != self._source_request:
-                latest, selected = self._source_request, self.doc.frame_index
-                QTimer.singleShot(0, lambda: self._finish_source_request(latest, selected))
-        if self._closing or request != self._source_request:
-            return False
+        _SOURCE_WORKERS.add(worker)
+        dialog_ref = weakref.ref(self)
+        def finished():
+            _SOURCE_WORKERS.discard(worker)
+            dialog = dialog_ref()
+            if dialog is not None and not dialog._closing:
+                dialog._source_finished(worker)
+            worker.deleteLater()
+        worker.finished.connect(finished)
+        worker.start()
+        return True
+
+    def _source_finished(self, worker):
+        if self._source_worker is not worker:
+            return
+        self._source_worker = None
+        self._source_loading = False
+        if worker.request != self._source_request or worker.index != self.doc.frame_index:
+            self._finish_source_request(self._source_request, self.doc.frame_index)
+            return
+        if worker.error is not None:
+            self._set_notice(trans.t('retouch_source_failed').format(error=str(worker.error)))
+            self._update_controls()
+            return
+        if worker.display is None:
+            self._update_controls()
+            return
+        self.doc.frames[worker.index] = worker.frame
+        if worker.frame.aligned:
+            self.doc._mask_cache[worker.index] = worker.valid
+            while len(self.doc._mask_cache) > 2:
+                self.doc._mask_cache.popitem(last=False)
+        display, valid = worker.display, worker.valid
+        thumb = thumbnail_bgr(display, 64)
+        self.frame_list.item(worker.index).setIcon(QIcon(QPixmap.fromImage(_qimage_from_bgr(thumb))))
         if display.ndim == 2:
             display = cv2.cvtColor(display, cv2.COLOR_GRAY2BGR)
+        self._source_clean_display = display
+        self._source_valid = valid
         self._pure_source_qimage = _qimage_from_bgr(display)
+        self._render_source_overlay()
+        self._source_ready = True
+        frame = self.doc.frames[worker.index]
+        self.lbl_source_header.setText(trans.t("retouch_frame").format(
+            i=worker.index + 1, n=self.doc.frame_count,
+            name=os.path.basename(frame.name)))
+        self._update_controls()
+        self._update_status()
+
+    def _render_source_overlay(self):
+        display = self._source_clean_display
+        if display is None:
+            return
         if self.chk_sharp.isChecked() and self._sharpness_maps:
             heat = self._sharpness_maps.get(self.doc.frame_index)
             if heat is not None:
                 heat = cv2.resize(heat, (display.shape[1], display.shape[0]),
                                   interpolation=cv2.INTER_LINEAR)
                 display = cv2.addWeighted(display, 0.45, heat, 0.55, 0)
-        if valid is not None:
+        if self._source_valid is not None:
             display = display.copy()
-            display[~valid] = (80, 80, 160)
+            display[~self._source_valid] = (80, 80, 160)
         self._source_display = display
         self._source_qimage = _qimage_from_bgr(display)
         self.source_canvas.update()
         if self.preview_mode == "source":
             self.result_canvas.update()
-        return True
 
     def _refresh_before_display(self) -> None:
         display = self._display_image(self.doc.base)
@@ -2232,8 +2302,7 @@ class RetouchDialog(QDialog):
         self._set_sharp_state(
             "computing" if checked and not self._sharpness_maps
             else ("ready" if checked else ""))
-        if self._source_display is not None:
-            self._refresh_source_display()
+        self._render_source_overlay()
 
     def _set_sharp_state(self, state: str) -> None:
         """Show computing or failure; a finished overlay needs no extra label."""
@@ -2300,7 +2369,7 @@ class RetouchDialog(QDialog):
         self._sharpness_maps = maps or {}
         if self.chk_sharp.isChecked() and self._source_display is not None:
             self._set_sharp_state("ready")
-            self._refresh_source_display()
+            self._render_source_overlay()
 
     def _on_focus_changed(self, old, new) -> None:
         if self._closing:
@@ -2318,6 +2387,9 @@ class RetouchDialog(QDialog):
 
     def _shutdown_sharpness(self, *_args) -> None:
         self._closing = True
+        if self._source_worker is not None:
+            self._source_worker.requestInterruption()
+            self._source_worker = None
         try:
             self._focus_signal.disconnect(self._on_focus_changed)
         except (TypeError, RuntimeError):

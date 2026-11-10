@@ -1,4 +1,4 @@
-"""Wide detector, plan reuse, cache integrity and public deferred regressions."""
+"""Wide detector, plan reuse, cache integrity and deferred regressions."""
 from dataclasses import FrozenInstanceError, replace
 import hashlib
 import json
@@ -122,6 +122,57 @@ def test_default_chain_preserves_aligned_reference_and_cumulative_slots():
     np.testing.assert_allclose(offsets, shifts, atol=.6, rtol=0)
 
 
+@pytest.mark.parametrize('angle,scale,rotation,magnification', [
+    (0., 1.025, 0., 5.),
+    (2., 1., 4., 0.),
+])
+def test_zero_shift_allows_centered_rotation_and_magnification(angle, scale, rotation, magnification):
+    rng = np.random.default_rng(442)
+    base = cv2.GaussianBlur(rng.integers(0, 256, (256, 256), dtype=np.uint8), (0, 0), 1.2)
+    center = (127.5, 127.5)
+    matrix = cv2.getRotationMatrix2D(center, angle, scale)
+    moved = cv2.warpAffine(base, matrix, (256, 256), flags=cv2.INTER_LINEAR,
+                           borderMode=cv2.BORDER_REFLECT)
+    plan = alignment.estimate_alignment_plan([base, moved], max_shift_ratio=0,
+                                              rotation=rotation, magnification=magnification)
+    transform = plan.transforms[1]
+    np.testing.assert_allclose(transform.inverse_matrix @ [*center, 1], [*center, 1], atol=1e-4)
+    aligned = alignment.apply_alignment(moved, transform)
+    target = base[16:-16, 16:-16].astype(np.float32)
+    before = np.abs(target - moved[16:-16, 16:-16]).mean()
+    after = np.abs(target - aligned[16:-16, 16:-16]).mean()
+    assert after < before * .3
+
+
+def test_zero_shift_rotation_and_magnification_disable_alignment():
+    base = _image(160)
+    moved = np.roll(base, 6, axis=1)
+    plan = alignment.estimate_alignment_plan([base, moved], max_shift_ratio=0,
+                                              rotation=0, magnification=0)
+    assert plan.transforms[1].is_identity
+    assert alignment.apply_alignment(moved, plan.transforms[1]) is moved
+
+@pytest.mark.parametrize('count,reference,ends', [(21, 0, (20,)), (41, 20, (0, 40))])
+def test_alignment_tracks_cumulative_magnification_across_stack(count, reference, ends):
+    rng = np.random.default_rng(101)
+    noise = rng.integers(0, 256, (56, 64), dtype=np.uint8)
+    base = cv2.resize(noise, (256, 224), interpolation=cv2.INTER_CUBIC)
+    base = cv2.GaussianBlur(base, (0, 0), .6)
+    frames = []
+    for index in range(count):
+        matrix = cv2.getRotationMatrix2D((127.5, 111.5), 0, 1.0 + index * .004)
+        frames.append(cv2.warpAffine(base, matrix, (256, 224),
+                                     flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT))
+    engine = ImageRegistration('openfocus', parameters={
+        'max_shift_ratio': .03, 'magnification': 5., 'rotation': 0.,
+        'reference_frame': reference + 1, 'failure_policy': 'fail'})
+    aligned = engine.process(frames, thread_count=1)
+    for index in ends:
+        original_error = np.abs(frames[reference].astype(np.int16) - frames[index].astype(np.int16)).mean()
+        aligned_error = np.abs(aligned[reference].astype(np.int16) - aligned[index].astype(np.int16)).mean()
+        assert aligned_error < original_error * .65
+
+
 def test_selected_reference_visits_both_sides_without_reordering():
     base = _image(160)
     shifts = (-12, -6, 0, 6, 12)
@@ -178,31 +229,69 @@ def test_public_deferred_plan_never_materializes_the_stack(monkeypatch):
 
 @pytest.mark.parametrize('deferred', [False, True])
 @pytest.mark.parametrize('grouped', [False, True])
-def test_full_canvas_unless_grouped_crop_is_requested(deferred, grouped):
+@pytest.mark.parametrize('f8', [
+    (0, 0, 6, 4, 0, 1, 1, 1),
+    (0, 0, -2.25, 1.5, 5, 1.02, 1.02, 1),
+])
+def test_common_crop_is_applied_for_fresh_and_cached_plans(deferred, grouped, f8):
     from core.registration import grouped_crop_offsets
     from core.source_frames import resolve_frame
 
-    image = _image(32)
+    image = np.full((32, 32), 12000, np.uint16)
+    image[13:19, 13:19] = 0  # Real black pixels must survive the crop.
+    sources = [image, image.copy()]
+    identity = alignment.estimate_alignment_plan(sources)
+    shifted = replace(_transform(image, f8), source_index=1)
+    plan = replace(identity, transforms=(identity.transforms[0], shifted))
+    cached = alignment.AlignmentPlan.from_dict(json.loads(json.dumps(plan.to_dict())))
+    left, top, right, bottom = shifted.valid_bounds
+    if f8[4] == 0:
+        assert (left, top, right, bottom) == (6, 4, 32, 32)
+    assert alignment.alignment_valid_mask(shifted)[top:bottom, left:right].all()
+    assert not alignment.alignment_valid_mask(shifted).all()
+    expected = [image[top:bottom, left:right],
+                alignment.apply_alignment(image, shifted)[top:bottom, left:right]]
+    assert all(np.any(frame == 0) for frame in expected)
+    for candidate in (plan, cached):
+        crops = []
+        token = grouped_crop_offsets.set(crops if grouped else None)
+        try:
+            result = apply_alignment_plan(sources, candidate, defer_warps=deferred)
+        finally:
+            grouped_crop_offsets.reset(token)
+        assert crops == ([(left, top, right, bottom)] if grouped else [])
+        for actual, pixels in zip(result, expected):
+            np.testing.assert_array_equal(resolve_frame(actual), pixels)
+
+
+def test_axis_aligned_common_crop_can_exclude_the_image_center():
+    image = np.full((32, 32), 1000, np.uint16)
+    identity = alignment.estimate_alignment_plan([image, image.copy()])
+    shifted = replace(_transform(image, (0, 0, 20, 0, 0, 1, 1, 1)), source_index=1)
+    plan = replace(identity, transforms=(identity.transforms[0], shifted))
+    assert shifted.valid_bounds == (20, 0, 32, 32)
+    result = apply_alignment_plan([image, image.copy()], plan)
+    assert all(frame.shape == (32, 12) for frame in result)
+    assert all(np.all(frame) for frame in result)
+
+
+def test_openfocus_c_fuses_the_cropped_aligned_images():
+    from core.multi_focus_fusion import MultiFocusFusion
+
+    image = np.full((64, 64, 3), 18000, np.uint16)
+    image[24:40, 24:40] = 0
     sources = [image, image.copy()]
     identity = alignment.estimate_alignment_plan(sources)
     shifted = replace(_transform(image, (0, 0, 6, 4, 0, 1, 1, 1)), source_index=1)
     plan = replace(identity, transforms=(identity.transforms[0], shifted))
-    crops = []
-    token = grouped_crop_offsets.set(crops if grouped else None)
-    try:
-        result = apply_alignment_plan(sources, plan, defer_warps=deferred)
-    finally:
-        grouped_crop_offsets.reset(token)
-    if grouped:
-        assert crops == [(6, 6, 26, 26)]
-        np.testing.assert_array_equal(resolve_frame(result[0]), image[6:26, 6:26])
-        np.testing.assert_array_equal(resolve_frame(result[1]), image[2:22, :20])
-    else:
-        expected = np.zeros_like(image)
-        expected[4:, 6:] = image[:-4, :-6]
-        np.testing.assert_array_equal(resolve_frame(result[0]), image)
-        np.testing.assert_array_equal(resolve_frame(result[1]), expected)
-        assert crops == []
+    aligned = apply_alignment_plan(sources, plan, defer_warps=True)
+    fusion = MultiFocusFusion(algorithm='openfocus_c', tile_enabled=False)
+    result = fusion.fuse(aligned, thread_count=1)
+    expected_inputs = [image[4:, 6:], alignment.apply_alignment(image, shifted)[4:, 6:]]
+    expected = fusion.fuse(expected_inputs, thread_count=1)
+    assert result.shape == (60, 58, 3)
+    np.testing.assert_array_equal(result, expected)
+    assert all(np.any(frame == 0) for frame in expected_inputs)
 
 def test_cancel_during_wide_candidate_chunk_and_warp(monkeypatch):
     image = _image()
@@ -274,6 +363,14 @@ def test_plan_cache_warm_reuse_never_decodes_sources(cached_plan, monkeypatch):
         align_cache.load_alignment_plan(folder, names, sources, identity=identity, should_cancel=lambda: True)
 
 
+def test_alignment_cache_separates_estimator_versions(cached_plan, monkeypatch):
+    folder, names, sources, plan, identity = cached_plan
+    with monkeypatch.context() as old:
+        old.setattr(align_cache, '_plan_backend', lambda _identity: 'openfocus-wide4d-v2')
+        assert align_cache.load_alignment_plan(folder, names, sources, identity=identity) is None
+    assert align_cache.load_alignment_plan(folder, names, sources, identity=identity) == plan
+
+
 @pytest.mark.parametrize('change', ['corruption', 'checksum', 'shape', 'order', 'parameters', 'file', 'calibration'])
 def test_plan_cache_rejects_corrupt_or_changed_request(cached_plan, change):
     folder, names, sources, plan, identity = cached_plan
@@ -307,6 +404,7 @@ def test_arbitrary_processors_are_in_memory_only(cached_plan):
     plan.validate_sources(processed)
     align_cache.save_alignment_plan(folder, names, plan, processed, identity=identity)
     assert align_cache.load_alignment_plan(folder, names, processed, identity=identity) is None
+
 
 
 

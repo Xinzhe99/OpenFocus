@@ -60,13 +60,10 @@ def jpeg_mime_data(jpeg_bytes: bytes) -> QMimeData:
 
 def file_urls_mime_data(paths) -> QMimeData:
     """Build a file-list clipboard payload from persistent local paths."""
-    urls = []
-    for path in paths:
-        if not path:
-            continue
-        urls.append(QUrl.fromLocalFile(os.path.abspath(os.fspath(path))))
+    local_paths = [os.path.abspath(os.fspath(path)) for path in paths if path]
     mime = QMimeData()
-    mime.setUrls(urls)
+    mime.setUrls([QUrl.fromLocalFile(path) for path in local_paths])
+    mime.setText('\n'.join(local_paths))
     return mime
 
 
@@ -78,7 +75,9 @@ def clipboard_mime_matches(expected: QMimeData, actual: QMimeData | None) -> boo
         if not actual.hasUrls():
             return False
         return (sorted(url.toString() for url in actual.urls())
-                == sorted(url.toString() for url in expected.urls()))
+                == sorted(url.toString() for url in expected.urls())
+                and (not expected.hasText() or
+                     actual.text().replace("\r\n", "\n") == expected.text()))
     if expected.hasFormat("image/jpeg"):
         if not actual.hasImage() or not actual.hasFormat("image/jpeg"):
             return False
@@ -101,3 +100,13 @@ def set_clipboard_payload(mime: QMimeData, clipboard=None) -> bool:
         return clipboard_mime_matches(mime, clipboard.mimeData())
     except Exception:
         return False
+
+
+def notify_saved_path(window, path):
+    """Copy a successfully saved image path and report the actual outcome."""
+    if set_clipboard_payload(file_urls_mime_data([path])):
+        message = trans.t('msg_saved_path_copied').format(path=path)
+    else:
+        message = (trans.t('msg_image_saved_info').format(path=path).replace('\n', ' ')
+                   + ' — ' + trans.t('msg_share_clipboard_failed'))
+    window.statusBar().showMessage(message.replace('\n', ' '), 8000)

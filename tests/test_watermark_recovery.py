@@ -60,7 +60,8 @@ class _Manager:
 
 def _record(label, text):
     record = OutputRecord.create(None, label)
-    wm.set_record_config(record, wm.WatermarkConfig(text=text))
+    wm.set_record_config(record, wm.WatermarkConfig(
+        text=text, copyright_enabled=True, copyright_position="suffix"))
     return record
 
 
@@ -87,6 +88,8 @@ def _window(tmp_path, records=()):
     window.refreshed = 0
     window.dirty_marks = 0
     window.messages = []
+    window._capture_label_state = MethodType(OpenFocus._capture_label_state, window)
+    window._capture_scalebar_state = MethodType(OpenFocus._capture_scalebar_state, window)
     window._capture_watermark_state = lambda: wm.capture_state(window)
     window._capture_stack_state = lambda: {
         "watermark": wm.capture_state(window), "labels": None, "scalebar": None,
@@ -183,6 +186,8 @@ def test_undo_and_redo_refresh_recovery_for_record_binding(tmp_path, monkeypatch
     assert wm.record_export_cfg(record)["text"] == RECORD_TEXT
     restored = _snapshot_watermark()
     assert restored["outputs"][record.output_id]["config"]["text"] == RECORD_TEXT
+    assert restored["outputs"][record.output_id]["config"]["copyright_enabled"] is True
+    assert restored["outputs"][record.output_id]["config"]["copyright_position"] == "suffix"
     # Undo must not disturb the scopes the removal never touched.
     assert restored["source"]["text"] == SOURCE_TEXT
     assert restored["registered"]["text"] == REGISTERED_TEXT

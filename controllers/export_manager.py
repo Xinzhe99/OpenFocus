@@ -19,11 +19,28 @@ from utils import (
 )
 from core.workers import GifSaverWorker
 from locales import trans
-from utils.image_utils import imwrite_auto
+from utils.image_utils import ImageWriteError, imwrite_auto
 from utils import scalebar
 from utils.export_paths import create_stack_directory, frame_export_name, unique_path
 from core.source_frames import resolve_frame, materialize_frames
 from utils.frame_pixels import run_pixel_worker
+from utils.platform_utils import configure_native_worker_stack
+
+_IMAGE_WRITE_MESSAGE_KEYS = {
+    "exif_too_large": "image_write_exif_too_large",
+    "icc_too_large": "image_write_icc_too_large",
+    "tiff_too_large": "image_write_tiff_too_large",
+}
+
+
+def image_write_error_text(exc: Exception) -> str:
+    """Localize a metadata write failure without importing PyQt in the CLI."""
+    if isinstance(exc, ImageWriteError):
+        key = _IMAGE_WRITE_MESSAGE_KEYS.get(getattr(exc, "code", ""))
+        if key:
+            return trans.t(key)
+    return str(exc)
+
 
 ALLOWED_EXPORT_EXTENSION_MAP = {
     ".png": ".png",
@@ -69,6 +86,7 @@ class LayeredTiffWorker(QThread):
 
     def __init__(self, path, image, context, icc_profile):
         super().__init__()
+        configure_native_worker_stack(self)
         self.path = path
         self.image = image
         self.context = context
@@ -322,8 +340,8 @@ class ExportManager:
                 self.window.output_manager._mark_record_exported(
                     self._layered_record, self.layered_worker.image, message,
                     {'labels': [], 'scale': None, 'watermark': None})
-            self.window.statusBar().showMessage(
-                trans.t('msg_image_saved_info').format(path=message).replace('\n', ' '), 8000)
+            from utils.output_share import notify_saved_path
+            notify_saved_path(self.window, message)
         elif message:
             show_error_box(self.window, trans.t('action_export_layered_tiff'),
                            f"{trans.t('msg_save_failed_text')}\n{message}")
@@ -340,7 +358,22 @@ class ExportManager:
         output_list = getattr(window, 'output_list', None)
         output_manager = getattr(window, 'output_manager', None)
         if output_list is not None and output_manager is not None and output_list.currentItem() is not None:
+            # A manually selected historical result stays exportable while a
+            # quick-preview draft is shown on the canvas.
             output_manager.save_output_image_as(output_list.currentItem())
+            return
+
+        # Quick preview is a throwaway canvas draft and never enters the
+        # output history. With no historical row selected, Ctrl+S used to
+        # fall through to window.fusion_result and write the draft.
+        preview_result = getattr(window, "preview_result", None)
+        if (preview_result is not None
+                and window.fusion_result is preview_result):
+            show_warning_box(
+                window,
+                trans.t("info_preview_quality"),
+                trans.t("chk_quick_preview_hint"),
+            )
             return
 
         # An align-only result is a folder, not a picture. There is no fused
@@ -424,7 +457,14 @@ class ExportManager:
                     record, None, file_path, labels,
                     px_size_um=scalebar.effective_px_um(window))
                 return
-            profile = getattr(getattr(window, 'last_render_context', None), 'icc_profile', b'')
+            render_context = getattr(record, 'context', None) if record is not None else None
+            if render_context is None and result_to_save is window.fusion_result:
+                render_context = getattr(window, 'last_render_context', None)
+            source_exif = (getattr(render_context, 'source_exif', b'')
+                           if render_context is not None else
+                           getattr(record, 'source_exif', b'') if record is not None else b'')
+            profile = (getattr(render_context, 'icc_profile', b'')
+                       if render_context is not None else b'')
             def write_result():
                 image = resolve_frame(result_to_save)
                 icc = profile
@@ -445,16 +485,14 @@ class ExportManager:
                 with log_operation("export_image_write", path=file_path, extension=ext,
                                    shape=image.shape, dtype=str(image.dtype)) as operation:
                     written = imwrite_auto(file_path, image, get_imwrite_params(ext),
-                                           exif=b'', icc_profile=icc)
+                                           exif=source_exif, icc_profile=icc)
                     if not written:
                         operation.fail()
                     return written
             self._safe_export_path(file_path)
             if run_pixel_worker(window, trans.t('action_save'), write_result):
-                # Non-blocking confirmation (errors still get a dialog)
-                window.statusBar().showMessage(
-                    trans.t("msg_image_saved_info").format(path=file_path).replace("\n", " "),
-                    8000)
+                from utils.output_share import notify_saved_path
+                notify_saved_path(window, file_path)
             else:
                 show_message_box(
                     window,
@@ -463,6 +501,16 @@ class ExportManager:
                     trans.t("msg_save_failed_info_write"),
                     QMessageBox.Icon.Critical,
                 )
+        except ImageWriteError as exc:
+            from utils.logging_setup import get_logger
+            get_logger(__name__).exception("Image export metadata error: %s", file_path)
+            show_message_box(
+                window,
+                trans.t("msg_save_failed_title"),
+                trans.t("msg_save_failed_text"),
+                image_write_error_text(exc),
+                QMessageBox.Icon.Critical,
+            )
         except cv2.error as exc:
             from utils.logging_setup import get_logger
             get_logger(__name__).exception("Image export failed: %s", file_path)
@@ -480,7 +528,7 @@ class ExportManager:
                 window,
                 trans.t("msg_save_failed_title"),
                 trans.t("msg_save_failed_text"),
-                trans.t("msg_save_failed_info_unexpected").format(error=str(exc)),
+                trans.t("msg_save_failed_info_unexpected").format(error=image_write_error_text(exc)),
                 QMessageBox.Icon.Critical,
             )
 
@@ -550,9 +598,37 @@ class ExportManager:
         directory = create_stack_directory(base, self.filename_from_label(folder_name))
         failures = []
         from core.image_loader import stack_icc_profile
-        exif = (b'' if baked else getattr(getattr(window, 'image_loader', None), 'source_exif', b''))
-        profile = (getattr(record, 'icc_profile', b'') if record is not None else
+        record_context = getattr(record, 'context', None) if record is not None else None
+        stored_frame_exif = tuple(getattr(record_context, 'frame_exif', ()) or ()) if record_context is not None else ()
+        if not stored_frame_exif and record is not None:
+            stored_frame_exif = tuple(getattr(record, 'frame_exif', ()) or ())
+        stored_source_exif = (bytes(getattr(record_context, 'source_exif', b'') or b'')
+                              if record_context is not None else
+                              bytes(getattr(record, 'source_exif', b'') or b''))
+        if record is None:
+            # Current-stack export has no historical record. Use the load
+            # worker's per-frame snapshot; for registered frames map through
+            # the source indices that produced them.
+            current_exifs = tuple(getattr(window, "image_source_exifs", ()) or ())
+            raw_count = len(getattr(window, "raw_images", ()) or ())
+            if target == 'input' and len(current_exifs) == len(frames):
+                stored_frame_exif = current_exifs
+            elif target == 'registered':
+                indices = tuple(getattr(window, "registered_source_indices", ()) or ())
+                if (len(indices) == len(frames) and len(current_exifs) == raw_count):
+                    stored_frame_exif = tuple(
+                        current_exifs[index] if 0 <= index < len(current_exifs) else b""
+                        for index in indices)
+                elif len(current_exifs) == len(frames):
+                    stored_frame_exif = current_exifs
+            if not stored_source_exif and stored_frame_exif:
+                stored_source_exif = stored_frame_exif[0]
+        profile = (getattr(record_context, 'icc_profile', b'')
+                   if record_context is not None else
+                   getattr(record, 'icc_profile', b'') if record is not None else
                    stack_icc_profile(window))
+        if not profile and record is not None:
+            profile = getattr(record, 'icc_profile', b'')
         metadata = (getattr(record, 'linear_dng_metadata', None) if record is not None
                     else getattr(window, 'linear_dng_metadata', None))
         if metadata is not None and not baked:
@@ -582,17 +658,21 @@ class ExportManager:
                         image = scalebar.burn(image, cfg)
                     if wm_cfg:
                         image = watermark.burn(image, wm_cfg)
-                    frame_exif, frame_profile = exif, profile
+                    frame_exif, frame_profile = b'', profile
                     if baked:
                         from core.image_loader import _read_exif_bytes, _read_icc_profile
                         frame_exif = _read_exif_bytes(frame)
                         frame_profile = _read_icc_profile(frame)
+                    elif index < len(stored_frame_exif):
+                        frame_exif = stored_frame_exif[index]
+                    elif index == 0:
+                        frame_exif = stored_source_exif
                     if not imwrite_auto(path, image, get_imwrite_params('.' + extension.lower()),
                                         exif=frame_exif, icc_profile=frame_profile):
                         raise OSError(trans.t('msg_save_failed_info_write'))
                     saved += 1
                 except Exception as exc:
-                    failures.append(f'{path}: {exc}')
+                    failures.append(f'{path}: {image_write_error_text(exc)}')
             return saved
         saved = run_pixel_worker(window, trans.t('action_save'), write_frames)
         if failures:
@@ -802,7 +882,7 @@ class ExportManager:
                                trans.t("msg_save_failed_info_write"))
         except Exception as exc:  # pylint: disable=broad-except
             show_error_box(window, trans.t("msg_error"),
-                           trans.t("msg_save_failed_text"), f"Error: {exc}")
+                           trans.t("msg_save_failed_text"), image_write_error_text(exc))
 
     def save_processed_input_stack(self) -> None:
         window = self.window

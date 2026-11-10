@@ -21,6 +21,7 @@ import cv2
 import numpy as np
 
 from utils.image_utils import fuse_output_dtype
+from utils.performance_profile import current as _profile
 from fusion_methods import neural_common as common
 
 
@@ -174,21 +175,29 @@ def _stackmffv3_batch_impl(tiles_list, model_path, use_gpu, mode='soft',
             return []
         _validate_tiles(tiles_list)
         mode = normalize_mode(mode)
-        model, device, plan = _prepare_inference(
-            tiles_list[0], model_path, use_gpu, thread_count,
-            resource_preference, execution_plan, len(tiles_list))
+        profile = _profile()
+        with profile.stage('plan_attention_inference'):
+            model, device, plan = _prepare_inference(
+                tiles_list[0], model_path, use_gpu, thread_count,
+                resource_preference, execution_plan, len(tiles_list))
+        if profile.enabled:
+            profile.add('threads', 'plan_attention_inference', plan.native_threads)
         results = []
         for tile in tiles_list:
             _cancel(should_cancel)
             frames = tile
             is_16bit = any(frame.dtype == np.uint16 for frame in frames)
-            batch_input = _stage_gray(frames, should_cancel)
-            probs = _probabilities(batch_input, model, device, mode, should_cancel, plan.native_threads)
+            with profile.stage('stage_gray'):
+                batch_input = _stage_gray(frames, should_cancel)
+            with profile.stage('probabilities'):
+                probs = _probabilities(batch_input, model, device, mode, should_cancel,
+                                       plan.native_threads)
             del batch_input
             h, w = frames[0].shape[:2]
             # Color mixing does not need an N-frame color stack.
             grayscale = frames[0].ndim == 2
-            fused = _blend_tile(probs[0, :, :h, :w], frames, mode, should_cancel)
+            with profile.stage('blend_tile'):
+                fused = _blend_tile(probs[0, :, :h, :w], frames, mode, should_cancel)
             del probs
             if not is_16bit and fuse_output_dtype(frames) is np.uint8:
                 fused = np.clip(np.round(fused), 0, 255).astype(np.uint8)

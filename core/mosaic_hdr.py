@@ -1,8 +1,8 @@
 """Bounded, tile-only HDR preparation; no I/O or production integration.
 
-The Pro project sample motivates exposure_target=.5 and exposure_sigma=.2;
-these are not claims about PTGui defaults or pixel equivalence. Inputs are aligned
-encoded BGR. Fusion operates in encoded space; Debevec estimates log radiance
+The sample project motivates exposure_target=.5 and exposure_sigma=.2;
+these are not claims about another application's defaults or pixel equivalence.
+Inputs are aligned encoded BGR. Fusion operates in encoded space; Debevec estimates log radiance
 and applies luminance Reinhard followed by the sRGB encoding transfer.
 
 The caller supplies tile halos and a common pyramid phase (tile origins divisible

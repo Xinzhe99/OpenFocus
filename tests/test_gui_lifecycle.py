@@ -27,10 +27,12 @@ def test_close_does_not_open_overdue_first_run_dialog(tmp_path):
         site.getusersitepackages(), env.get("PYTHONPATH"),
     )))
     bootstrap = '''
-import runpy, sys, time
+import faulthandler, runpy, sys, time
 from PyQt6.QtCore import QSettings, QTimer
 from PyQt6.QtWidgets import QApplication, QMainWindow
 from utils.usage_analytics import UsageAnalytics
+
+faulthandler.dump_traceback_later(15, repeat=False)
 
 QSettings.setDefaultFormat(QSettings.Format.IniFormat)
 QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, sys.argv[2])
@@ -62,10 +64,13 @@ except SystemExit as stopped:
 else:
     raise AssertionError("GUI entry point did not exit")
 '''
-    result = subprocess.run(
-        [sys.executable, "-c", bootstrap, str(root / "main.py"),
-         str(tmp_path / "settings")],
-        cwd=root, env=env, capture_output=True, text=True, timeout=30,
-    )
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", bootstrap, str(root / "main.py"),
+             str(tmp_path / "settings")],
+            cwd=root, env=env, capture_output=True, text=True, timeout=30,
+        )
+    except subprocess.TimeoutExpired as exc:
+        pytest.fail((exc.stderr or b'').decode('utf-8', 'replace'))
     assert result.returncode == 0, result.stdout + result.stderr
     assert not discovery.exists()

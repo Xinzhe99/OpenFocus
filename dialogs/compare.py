@@ -1,12 +1,12 @@
 """Interactive comparison using one aligned stack and one inspection region."""
 import os
 
-from PyQt6.QtCore import QEvent, QPointF, QSignalBlocker, Qt, QTimer
+from PyQt6.QtCore import QEvent, QPointF, QSize, QSignalBlocker, Qt, QTimer
 from PyQt6.QtGui import QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QFrame, QGridLayout,
     QHBoxLayout, QLabel, QProgressBar, QPushButton, QScrollArea, QSizePolicy,
-    QSlider, QSplitter, QVBoxLayout, QWidget,
+    QSlider, QSplitter, QToolTip, QVBoxLayout, QWidget,
 )
 
 from core.compare_worker import AlignmentWorker, PreviewWorker
@@ -18,6 +18,10 @@ from core.algorithms import (alignment_steps, fusion_algorithms, get_fusion,
     registration_parameter_specs, registration_algorithms, resolve_fusion_parameters,
     resolve_registration_parameters)
 from ui.algorithm_parameters import AlgorithmParameterPanel
+from ui.algorithm_combo import (apply_method_availability, experimental_method_label,
+                                selected_item_enabled)
+from core.experimental import (alignment_is_experimental, experimental_enabled,
+                               fusion_is_experimental)
 from widgets.compare_canvas import (
     DEFAULT_DETAIL_SIZE, DetailCanvas, SourceCanvas,
 )
@@ -27,6 +31,26 @@ from widgets.stepper import StepperSpinBox
 
 def _method_label(method):
     return trans.t(get_fusion(method).label_key)
+
+
+class _ActionFlowPanel(FlowPanel):
+    """Prefer one row while retaining the flow layout's wrapping minimum."""
+
+    def sizeHint(self):  # noqa: N802
+        items = [self._flow.itemAt(index) for index in range(self._flow.count())]
+        hints = [item.sizeHint() for item in items if not item.isEmpty()]
+        width = sum(hint.width() for hint in hints) + 8 * max(0, len(hints) - 1)
+        return QSize(width, self.heightForWidth(width))
+
+
+class _MethodFlowPanel(FlowPanel):
+    def mousePressEvent(self, event):  # noqa: N802
+        child = self.childAt(event.position().toPoint())
+        if child is not None and child.property('experimentalLocked'):
+            QToolTip.showText(event.globalPosition().toPoint(),
+                              trans.t('experimental_locked_hint'), self)
+            return
+        super().mousePressEvent(event)
 
 
 class CompareDialog(QDialog):
@@ -67,6 +91,7 @@ class CompareDialog(QDialog):
         self._total_frames = len(getattr(window_main, "raw_images", None) or [])
         self._frames = self._raw_frames
         self._aligned_frames = None
+        self._reverse_registration = False
         self._epoch = 0
         self._revision = 0
         self._worker = None
@@ -117,6 +142,9 @@ class CompareDialog(QDialog):
             "linear_dng_metadata": getattr(window_main, "linear_dng_metadata", None),
             "source_paths": [window_main.image_source_paths[i] for i in self._source_indices]
                 if len(getattr(window_main, "image_source_paths", ())) == self._total_frames else [],
+            "frame_exif": [getattr(window_main, "image_source_exifs", ())[i]
+                           for i in self._source_indices]
+                if len(getattr(window_main, "image_source_exifs", ())) == self._total_frames else [],
         }
 
         self._preview_timer = QTimer(self)
@@ -136,10 +164,10 @@ class CompareDialog(QDialog):
             method = self._first_available_method()
         get_fusion(method)
         box = self._checks.get(method)
-        # An unavailable inherited method stays unchecked (it stays visible and
-        # disabled with its dependency tooltip): silently swapping the request
-        # would compare something the user did not choose.
-        if box is not None and box.isEnabled():
+        # Preserve a locked inherited choice; the execution guard reports why.
+        if box is not None and (box.isEnabled() or
+                                (fusion_is_experimental(method) and
+                                 not experimental_enabled(self.window_main))):
             box.setChecked(True)
         if not self._selected_methods():
             # Only when the inherited method is unavailable: keep the empty
@@ -170,8 +198,15 @@ class CompareDialog(QDialog):
             box = self._checks.get(spec.id)
             if box is None:
                 continue
-            reason = fusion_unavailable_reason(spec, available)
+            locked = (fusion_is_experimental(spec.id)
+                      and not experimental_enabled(self.window_main))
+            dependency = fusion_unavailable_reason(spec, available)
+            reason = '\n\n'.join(text for text in
+                                (trans.t('experimental_locked_hint') if locked else '',
+                                 dependency) if text)
+            box.setText(experimental_method_label(spec))
             box.setEnabled(not reason)
+            box.setProperty('experimentalLocked', locked)
             box.setProperty("unavailableReason", reason)
             hint = trans.t(spec.hint_key) if spec.hint_key else ""
             box.setToolTip("\n\n".join(text for text in (hint, reason) if text))
@@ -195,7 +230,7 @@ class CompareDialog(QDialog):
             "thread_count": max(0, int(getattr(window, "thread_count", 0))),
             "resource_preference": getattr(window, "resource_preference", "balanced"),
             "reg_downscale_width": int(getattr(window, "reg_downscale_width", 1024)),
-            "exposure_match": bool(getattr(window, "exposure_match", True)),
+            "exposure_match": bool(getattr(window, "exposure_match", False)),
             "sharpen_output": bool(getattr(window, "sharpen_output", False)),
             "sort_mode": "desc" if getattr(window, "stack_reverse_order", False) else "asc",
         }
@@ -206,9 +241,12 @@ class CompareDialog(QDialog):
         settings['method_options'] = {}
         getter = getattr(window, 'brightness_option_for', None)
         for spec in fusion_algorithms():
+            base_correct = (bool(getter('base_correct', spec.id)) if callable(getter)
+                            else spec.default_base_correct)
             settings['method_options'][spec.id] = {
                 'exposure_match': bool(getter('exposure_match', spec.id)) if callable(getter) else spec.default_exposure_match,
-                'base_frame': 'last' if (bool(getter('base_correct', spec.id)) if callable(getter) else spec.default_base_correct) else 'none',
+                'base_frame': ('first' if spec.id in ('openfocus_a', 'openfocus_b', 'openfocus_c')
+                               else 'last') if base_correct else 'none',
             }
         return settings
 
@@ -247,7 +285,7 @@ class CompareDialog(QDialog):
                 header = QLabel(trans.t(CATEGORY_KEYS[spec.category]))
                 header.setObjectName("sectionLabel")
                 methods_layout.addWidget(header)
-                flow = FlowPanel(h_spacing=12, v_spacing=6)
+                flow = _MethodFlowPanel(h_spacing=12, v_spacing=6)
                 methods_layout.addWidget(flow)
                 last_category = spec.category
             box = QCheckBox(trans.t(spec.label_key), flow)
@@ -276,6 +314,8 @@ class CompareDialog(QDialog):
         self.align_combo = QComboBox()
         for spec in registration_algorithms():
             self.align_combo.addItem(trans.t(spec.label_key), spec.id)
+        apply_method_availability(self.align_combo, registration_algorithms(),
+                                  self.window_main, alignment=True)
         current_align = (self.window_main.current_alignment_method()
                          if hasattr(self.window_main, "current_alignment_method") else "none")
         self.align_combo.setCurrentIndex(max(0, self.align_combo.findData(current_align)))
@@ -445,6 +485,7 @@ class CompareDialog(QDialog):
         self.progress.hide()
         footer.addWidget(self.progress)
         root.addLayout(footer)
+        actions_row = QHBoxLayout()
         actions = FlowPanel(h_spacing=8, v_spacing=4)
         self.btn_verify = QPushButton(trans.t("compare_verify_full"))
         self.btn_verify.clicked.connect(self._verify_full)
@@ -452,19 +493,22 @@ class CompareDialog(QDialog):
         self.btn_retry = QPushButton(trans.t("compare_retry_method"))
         self.btn_retry.clicked.connect(self._retry_method)
         actions.add(self.btn_retry)
+        actions_row.addWidget(actions, 1)
+        primary_actions = _ActionFlowPanel(h_spacing=8, v_spacing=4)
         self.btn_adopt_params = QPushButton(trans.t("compare_adopt_params"))
         self.btn_adopt_params.clicked.connect(self._adopt_params)
         self.btn_adopt_params.setEnabled(False)
-        actions.add(self.btn_adopt_params)
+        primary_actions.add(self.btn_adopt_params)
         self.btn_adopt_output = QPushButton(trans.t("compare_adopt_output"))
         self.btn_adopt_output.setObjectName("primaryButton")
         self.btn_adopt_output.clicked.connect(self._adopt_output)
         self.btn_adopt_output.setEnabled(False)
-        actions.add(self.btn_adopt_output)
+        primary_actions.add(self.btn_adopt_output)
         close_button = QPushButton(trans.t("btn_close"))
         close_button.clicked.connect(self.reject)
-        actions.add(close_button)
-        outer.addWidget(actions)
+        primary_actions.add(close_button)
+        actions_row.addWidget(primary_actions)
+        outer.addLayout(actions_row)
         self._layout_timer.start(0)
 
     def _initial_params(self, method):
@@ -483,32 +527,32 @@ class CompareDialog(QDialog):
             group = QFrame(self.param_host)
             group.setFrameShape(QFrame.Shape.StyledPanel)
             group.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-            row = QHBoxLayout(group)
+            row = QVBoxLayout(group)
             row.setContentsMargins(8, 4, 8, 4)
             row.setSpacing(6)
             title = QLabel(_method_label(method), group)
             font = title.font()
             font.setBold(True)
             title.setFont(font)
-            row.addWidget(title, 0, Qt.AlignmentFlag.AlignTop)
+            row.addWidget(title)
             panel = AlgorithmParameterPanel(group)
             panel.set_parameters(specs, params)
             panel.valuesChanged.connect(lambda values, m=method: self._params_changed(m, values))
-            row.addWidget(panel, 0, Qt.AlignmentFlag.AlignTop)
+            row.addWidget(panel)
             self.param_widgets[method] = panel.editors
             self.param_host.add(group)
             self._param_rows[method] = group
             group.hide()
-        height = max((group.sizeHint().height() for group in self._param_rows.values()),
-                     default=0)
-        for group in self._param_rows.values():
-            group.setFixedHeight(height)
 
     def _selected_methods(self):
         return [m for m, check in self._checks.items() if check.isChecked()]
 
     def _methods_changed(self, _checked):
         selected = self._selected_methods()
+        reverse = self._registration_is_reversed(selected)
+        if reverse != self._reverse_registration:
+            self._reverse_registration = reverse
+            self._invalidate_alignment()
         for method, group in self._param_rows.items():
             group.setVisible(method in selected)
         self.param_scroll.setVisible(any(method in self._param_rows for method in selected))
@@ -527,6 +571,14 @@ class CompareDialog(QDialog):
         self._update_adopt_actions()
         self._request_changed()
 
+    def _registration_is_reversed(self, methods):
+        # One coordinate system for every candidate. If any selected method
+        # requires reverse registration, all candidates use that same stack.
+        from core.workers import _ordered_openfocus_registration
+        alignment = self.align_combo.currentData()
+        return any(_ordered_openfocus_registration(alignment, method, self._shared['sort_mode'])
+                   for method in methods)
+
     def _sync_registration_parameters(self):
         method = self.align_combo.currentData()
         if method not in self._registration_drafts:
@@ -536,7 +588,7 @@ class CompareDialog(QDialog):
         self._editing_alignment = method
         specs = registration_parameter_specs(method)
         self.registration_parameter_panel.set_parameters(specs, self._registration_drafts[method])
-        self.registration_parameter_panel.setVisible(bool(self.registration_parameter_panel.editors))
+        self.registration_parameter_panel.setVisible(method != 'openfocus' and bool(self.registration_parameter_panel.editors))
         self._shared['registration_parameters'] = dict(self._registration_drafts[method])
 
     def _registration_parameters_changed(self, values):
@@ -545,6 +597,12 @@ class CompareDialog(QDialog):
 
     def _alignment_changed(self, _index):
         self._sync_registration_parameters()
+        self._reverse_registration = self._registration_is_reversed(self._selected_methods())
+        self._invalidate_alignment()
+        self._request_changed()
+
+    def _invalidate_alignment(self):
+        self._stale_methods.update(self._results)
         self._epoch += 1
         self._aligned_frames = None
         self._frames = self._raw_frames
@@ -553,7 +611,6 @@ class CompareDialog(QDialog):
         self._errors.clear()
         self._show_frame(self._ref_index)
         self._update_adopt_actions()
-        self._request_changed()
 
     def _mode_changed(self, _index):
         roi = bool(self.mode_combo.currentData())
@@ -754,6 +811,21 @@ class CompareDialog(QDialog):
     def _start_request(self):
         if self._closing or not self._auto_enabled or self._worker is not None:
             return
+        if not selected_item_enabled(self.align_combo):
+            self._set_idle()
+            self.status_label.setText(self.align_combo.currentData(Qt.ItemDataRole.ToolTipRole))
+            return
+        if not experimental_enabled(self.window_main) and (
+                alignment_is_experimental(self.align_combo.currentData()) or any(
+                    fusion_is_experimental(method) for method in self._selected_methods())):
+            self._set_idle()
+            self.status_label.setText(trans.t('experimental_locked_hint'))
+            return
+        for method in self._selected_methods():
+            if not self._checks[method].isEnabled():
+                self._set_idle()
+                self.status_label.setText(self._checks[method].property('unavailableReason'))
+                return
         methods = self._selected_methods()
         if not methods or len(self._raw_frames) < 2:
             self._set_idle()
@@ -765,7 +837,8 @@ class CompareDialog(QDialog):
                 self._frames = self._aligned_frames
                 self._show_frame(self._ref_index)
             else:
-                worker = AlignmentWorker(self._raw_frames, alignment, self._shared, self)
+                worker = AlignmentWorker(self._raw_frames, alignment, self._shared, self,
+                                         reverse_registration=self._reverse_registration)
                 worker.ready.connect(self._alignment_ready)
                 worker.failed.connect(self._alignment_failed)
                 self.status_label.setText(trans.t("render_stage_align"))
@@ -986,7 +1059,7 @@ class CompareDialog(QDialog):
         # become an output, and it must not round-trip through the pixmap.
         x, y, width, height = tuple(bounds)
         if (not key[1] and x == 0 and y == 0
-                and (height, width) == self._raw_frames[0].shape[:2]
+                and (height, width) == self._aligned_frames[0].shape[:2]
                 and (height, width) == image.shape[:2]):
             self._full_results[method] = {
                 "key": key, "image": image, "bounds": tuple(bounds)}

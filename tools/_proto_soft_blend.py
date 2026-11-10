@@ -22,7 +22,8 @@ def responses(frames, kernel_size=11):
     out = []
     for f in frames:
         code = frame_codes(f, None, None)
-        out.append(_response(code, radius, None, _check_cancel, u8=f.dtype == np.uint8))
+        out.append(_response(code, radius, None, _check_cancel,
+                             u8=f.dtype == np.uint8))
     return np.stack(out)
 
 
@@ -33,7 +34,7 @@ def fuse_hard(frames, resp):
 
 
 def fuse_soft(frames, resp, gamma):
-    r = resp.astype(np.float64)
+    r = np.log(np.maximum(resp.astype(np.float64), 1e-12))
     r = r - r.max(axis=0, keepdims=True)
     w = np.exp(gamma * r)
     w /= w.sum(axis=0, keepdims=True)

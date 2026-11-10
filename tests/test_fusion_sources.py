@@ -431,3 +431,101 @@ def test_direct_v2_long_resized_sources_stage_once_and_keep_identity(tmp_path, m
         stream.write(b'changed after V2 staging')
     with pytest.raises(OSError, match='Source changed'):
         source.get(0, (0, 0, 13, 11))
+
+
+@pytest.mark.parametrize('exposure', [False, True])
+def test_tiled_v3_stages_deferred_frames_once_and_preserves_pixels(tmp_path, monkeypatch, exposure):
+    from collections import Counter
+    from fusion_methods import stackmffv3
+
+    arrays, descriptors = _sources(tmp_path, count=3, mixed=False)
+    transformed = [cv2.flip(image, 1) for image in arrays]
+    processed = Counter()
+    def flip(image, index):
+        processed[index] += 1
+        return cv2.flip(image, 1)
+    deferred = [source_frames.process_frame(frame, lambda image, i=i: flip(image, i))
+                for i, frame in enumerate(descriptors)]
+    monkeypatch.setattr(stackmffv3, '_probabilities',
+                        lambda batch, *args: np.full_like(batch, 1 / batch.shape[1]))
+    expected = _fusion('stackmffv3', tiled=True, exposure=exposure).fuse(
+        transformed, thread_count=1)
+    monkeypatch.setattr(source_frames, 'SOURCE_CACHE', source_frames.FrameCache(0))
+    decodes = Counter()
+    decode = image_loader.decode_image
+    def tracked_decode(path, **kwargs):
+        decodes[path] += 1
+        return decode(path, **kwargs)
+    monkeypatch.setattr(image_loader, 'decode_image', tracked_decode)
+    preparation, tiles = [], []
+    def progress(done, total):
+        tiles.append((done, total))
+    progress.preparation = lambda done, total: preparation.append((done, total))
+
+    actual = _fusion('stackmffv3', tiled=True, exposure=exposure).fuse(
+        deferred, thread_count=1, progress_callback=progress)
+    np.testing.assert_array_equal(actual, expected)
+    passes = 2 if exposure else 1  # Exposure statistics precede the snapshot.
+    assert decodes == {frame.path: passes for frame in descriptors}
+    assert processed == {index: passes for index in range(len(descriptors))}
+    assert preparation == [(0, 3), (1, 3), (2, 3), (3, 3)]
+    assert tiles[0][0] == 0 and tiles[-1][0] == tiles[-1][1] and tiles[-1][1] > 1
+
+
+def test_tiled_v3_rechecks_staged_source_after_last_tile(tmp_path, monkeypatch):
+    from fusion_methods import stackmffv3
+
+    _arrays, descriptors = _sources(tmp_path, count=2, mixed=False)
+    monkeypatch.setattr(stackmffv3, '_probabilities',
+                        lambda batch, *args: np.full_like(batch, 1 / batch.shape[1]))
+    changed = []
+    def progress(done, total):
+        if done == total:
+            with open(descriptors[0].path, 'ab') as stream:
+                stream.write(b'changed')
+            changed.append(True)
+    with pytest.raises(OSError, match='Source changed'):
+        _fusion('stackmffv3', tiled=True, exposure=False).fuse(
+            descriptors, thread_count=1, progress_callback=progress)
+    assert changed
+
+
+def test_neural_source_staging_cancellation_stops_before_next_decode(tmp_path, monkeypatch):
+    _arrays, descriptors = _sources(tmp_path, count=3, mixed=False)
+    monkeypatch.setattr(source_frames, 'SOURCE_CACHE', source_frames.FrameCache(0))
+    decode = image_loader.decode_image
+    decoded = []
+    def tracked_decode(path, **kwargs):
+        decoded.append(path)
+        return decode(path, **kwargs)
+    monkeypatch.setattr(image_loader, 'decode_image', tracked_decode)
+    cancelled = []
+    def progress(done, total):
+        if done == 1:
+            cancelled.append(True)
+    with pytest.raises(RegistrationCancelled):
+        source_frames.materialize_for_repeated_access(
+            descriptors, lambda: bool(cancelled), thread_count=1,
+            progress_callback=progress)
+    assert decoded == [descriptors[0].path]
+
+
+def test_neural_source_staging_falls_back_only_before_writing(tmp_path, monkeypatch):
+    _arrays, descriptors = _sources(tmp_path, count=2, mixed=False)
+    error = frame_storage.ScratchSpaceError(str(tmp_path), 100, 0)
+    def no_space(*args, **kwargs):
+        raise error
+    monkeypatch.setattr(frame_storage, 'select_scratch', no_space)
+    monkeypatch.setattr(source_frames, 'materialize_frames',
+                        lambda *args, **kwargs: pytest.fail('staging started'))
+    assert source_frames.materialize_for_repeated_access(descriptors) is descriptors
+
+
+def test_neural_source_staging_propagates_write_failure(tmp_path, monkeypatch):
+    _arrays, descriptors = _sources(tmp_path, count=2, mixed=False)
+    monkeypatch.setattr(frame_storage, 'select_scratch', lambda *args, **kwargs: str(tmp_path))
+    def write_failure(*args, **kwargs):
+        raise frame_storage.ScratchSpaceError(str(tmp_path), 100, 0)
+    monkeypatch.setattr(source_frames, 'materialize_frames', write_failure)
+    with pytest.raises(frame_storage.ScratchSpaceError):
+        source_frames.materialize_for_repeated_access(descriptors)

@@ -144,3 +144,65 @@ def test_direct_neural_mixed_depth_matches_normalized_consumer(method, exposure_
     np.testing.assert_array_equal(outputs[0], outputs[1])
     for frame, original in zip(frames, originals):
         np.testing.assert_array_equal(frame, original)
+
+
+@pytest.mark.parametrize('exposure_match', [False, True])
+def test_tiled_preparation_survives_transport_and_rejects_changed_source(
+        tmp_path, monkeypatch, exposure_match):
+    import os
+    from core import frame_storage, source_frames
+    from core.frame_transport import FrameDecoder, FrameEncoder
+    from core.multi_focus_fusion import MultiFocusFusion
+    from core.registration import RegistrationCancelled
+    from utils.image_utils import imwrite_auto
+
+    frames = []
+    for index, pixels in enumerate(_mixed_frames()):
+        path = tmp_path / f'{index}.tif'
+        assert imwrite_auto(str(path), pixels)
+        frames.append(source_frames.scan_source(str(path))[0])
+
+    calls = []
+    original_decode = source_frames.SourceFrame._decode
+    def decode(frame, key, cache):
+        calls.append(frame.path)
+        return original_decode(frame, key, cache)
+    monkeypatch.setattr(source_frames.SourceFrame, '_decode', decode)
+
+    def consume(_self, images, **kwargs):
+        return sum(source_frames.resolve_frame(frame).astype(np.float32)
+                   for frame in images)
+    monkeypatch.setattr(MultiFocusFusion, '_fuse_tiled', consume)
+    monkeypatch.setattr(MultiFocusFusion, '_validate_environment', lambda self: None)
+    def fusion():
+        return MultiFocusFusion('stackmffv3', use_gpu=False, tile_enabled=True,
+                                tile_threshold=1, exposure_match=exposure_match)
+
+    first = fusion()
+    first.retain_preparation = True
+    with frame_storage.scratch_directory():
+        expected = first._fuse_under_lease(frames, None, None, None, thread_count=1)
+    assert first.prepared_cache is not None
+    snapshot_paths = [frame_storage.describe_frame(frame.source)['path']
+                      for frame in first.prepared_cache]
+    encoder = FrameEncoder()
+    transferred = FrameDecoder().decode(encoder.encode(first.prepared_cache))
+    source_frames.SOURCE_CACHE.clear()
+    decoded_count = len(calls)
+    second = fusion()
+    second.prepared_cache = transferred
+    with frame_storage.scratch_directory():
+        actual = second._fuse_under_lease(frames, None, None, None, thread_count=1)
+    np.testing.assert_array_equal(actual, expected)
+    assert len(calls) == decoded_count
+
+    with frame_storage.scratch_directory(), pytest.raises(RegistrationCancelled):
+        second._fuse_under_lease(frames, None, lambda: True, None, thread_count=1)
+    stat = os.stat(frames[0].path)
+    os.utime(frames[0].path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
+    with frame_storage.scratch_directory(), pytest.raises(OSError, match='Source changed'):
+        second._fuse_under_lease(frames, None, None, None, thread_count=1)
+    del second, first, transferred, encoder
+    import gc
+    gc.collect()
+    assert all(not os.path.exists(path) for path in snapshot_paths)

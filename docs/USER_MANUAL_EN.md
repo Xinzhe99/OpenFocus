@@ -151,6 +151,7 @@ The right panel contains all configuration options organized vertically:
 1. **Fusion Settings**: Select fusion algorithm and kernel size
 2. **Registration Settings**: Enable/disable alignment methods
 3. **Action Buttons**: Start Render, plus reset, **Render settings**, and render all methods. The render settings dialog contains quick preview, frame order, exposure matching, brightness drift removal, and output sharpening
+   Exposure matching is enabled by default; the other options are unchecked for new settings and after reset. Saved choices are preserved.
 4. **Source Images List**: Shows all loaded images with filenames
 5. **Output List**: Shows generated results
 
@@ -161,7 +162,7 @@ The top menu bar provides access to all functions:
 - **File**: import/export operations, projects, processing templates and the recent-files list
 - **Edit**: Undo/redo, reset the current stack, image transformations and retouching
 - **Tools**: Image stitching, batch processing and conversion, method comparison, depth map, flat-field correction, scale bar, watermark and labels
-- **Settings**: Advanced Settings (performance, registration and alignment diagnostics, sensor cleanup, output naming, AI, startup), GPU acceleration, theme and language
+- **Settings**: Advanced Settings (performance, registration and alignment diagnostics, sensor cleanup, output naming, AI, diagnostics, startup), GPU acceleration, theme and language
 - **Help**: Environment info, contact information, update check, and the log folder
 
 **Tools → Stitch Images…** opens a separate workspace for already-fused
@@ -295,15 +296,18 @@ project and cannot be recovered by resetting.
 1. Go to **File → Open Folder** or press `Ctrl+O`
 2. Select a folder containing your image sequence, or type or paste its path
    in the address bar and press Enter to navigate before choosing it
-3. A loading-scale dialog appears — choose the scale (100% = full resolution)
+3. Choose a loading percentage or a 2K, 4K or 8K preset based on the first
+   frame's longest side (100% = full resolution)
 4. Click OK to load the images
+
+File and folder selection uses the system dialog and its navigation controls.
 
 The status bar shows processed file counts while loading. The count may stay
 unchanged while one RAW file is being decoded; cancellation takes effect after
 the current file finishes decoding.
 
-Tick **Don't ask again** in that dialog to always load at the chosen scale
-without a prompt; **Settings → Advanced Settings → Startup & updates → Ask for
+Tick **Don't ask again** to reuse the chosen percentage for later imports;
+presets are not recalculated for later images. **Settings → Advanced Settings → Startup & updates → Ask for
 Loading Scale on Import** turns the prompt back on. A loaded stack can still be
 downscaled later with **Edit → Resize**.
 
@@ -311,6 +315,19 @@ The software will automatically:
 - Detect and sort image files by filename
 - Display the first image in the source panel
 - Populate the source images list with all frames
+
+Hover over a source frame to see its working dimensions, file path, original
+dimensions and available camera metadata. File details load in the background.
+
+### Opening Selected Image Frames
+
+Choose **File → Open Image Frames…** and select the image files to include.
+You can type or paste a folder path into the address bar. After choosing the
+loading scale, the selected files form a new stack in natural filename order.
+
+The Windows installer can add **Import into OpenFocus** to File Explorer. Select
+a folder or multiple image files and choose the command; on Windows 11 it may
+appear under **Show more options**. Imports append to an existing stack.
 
 ### Opening Video Files
 
@@ -421,6 +438,10 @@ scaled from each output's own pixel rectangle, so equal-ratio resizes keep
 the same relative size, spacing and phase. Source files and in-memory arrays
 are never modified.
 
+For a new watermark, **Add ©** is selected and places the symbol before the
+text. Turn it off or choose the position after the text. Existing watermarks
+retain their original text and appearance.
+
 Scope is independent per target: source frames, registered frames and
 fusion results (defaults: source + result), each keeping its own text and
 style. Editing one scope never rewrites another; checking several applies
@@ -463,8 +484,8 @@ StackMFF V2 and StackMFF V3 — require an explicit **Compute** click. StackMFF 
 has no depth map. Opening the dialog or changing the measure,
 source, registration or parameters never starts computation. The parameter editor
 appears directly below the measure selector: DCT median kernel and GFG initial kernel
-use odd values 1–51 (default 7). OpenFocus B uses a focus-response radius
-and depth smoothing; OpenFocus C uses **Blend smoothing** to smooth its depth map, without a radius. DTCWT decomposition levels
+use odd values 1–51 (default 7). OpenFocus B uses Radius, Smoothing and Feather;
+OpenFocus C's depth export uses Smoothing without a radius. DTCWT decomposition levels
 are editable here as a local draft, initialized from the source parameters. StackMFF V3
 shows its own AI output mode (Soft blend by default, or Hard pick) and an explanation
 instead of a numeric kernel: the map reports a continuous frame position, not a
@@ -585,6 +606,10 @@ other ordinary exports also use the developed appearance. When the camera profil
 allows it, DNG annotations are burned into the exported pixels. If an annotation color cannot be represented
 in the camera color space, DNG export fails; choose a different color or export
 a developed TIFF or PNG. Regular RAW import continues to produce developed sRGB.
+For camera-linear Bayer RAW at a loading scale of 50% or less, OpenFocus uses
+half-size decoding before the final resize to reduce memory use. Its pixels can
+differ slightly from full-size decoding followed by downsampling; decoding still
+requires workspace based on the native sensor dimensions.
 For DNG inputs with complex camera profiles, the saved Linear DNG retains the
 supported color profile metadata for a DNG-aware editor. OpenFocus uses a simplified D65 matrix
 for its preview and developed TIFF/PNG; it does not apply DNG profile transforms
@@ -738,22 +763,19 @@ Image registration corrects spatial misalignment between frames in your image st
 
 #### OpenFocus (fast)
 
-- Bounded similarity alignment (translation + rotation + scale),
-  with per-frame brightness equalization and auto-crop
-- Searches bounded similarity transforms using sampled image differences and warps with Lanczos interpolation
-- Frames shifting more than **8% of the frame size are left unaligned**
-  rather than partially corrected. Override with the CLI
-  `--align-shift-limit`
+- Bounded similarity alignment (translation + rotation + scale) with auto-crop.
+- Searches sampled image differences and warps with Lanczos interpolation.
+  The translation search range defaults to 3% of the frame size and can be
+  changed with `--align-shift-limit`. Successive estimates can accumulate beyond
+  that range; it is not a guaranteed rejection threshold.
 - For non-rigid or extreme geometry, pick ECC or Homography instead
-- **Rejected frame handling** defaults to continuing with the unaligned frame.
-  Choose **Stop on rejected frame** to fail the render or batch item before
-  producing a result when detector quality is below 0.06 or the estimated
-  motion exceeds the configured shift limit, 8° rotation, or 5% scale change.
-  Frames are numbered from 1 in the processed stack order. The geometric
-  reference defaults to frame 1; a weak direct match may be retried against
-  the adjacent frame closer to the reference. This policy detects rejected estimates, not all
-  incorrect matches: low texture, repeated patterns, occlusion, large motion,
-  or focus changes can still defeat registration. Inspect the result.
+- **Rejected frame handling** defaults to continuing with the unaligned frame
+  when estimation fails. Choose **Stop on rejected frame** to fail the render
+  or batch item instead. Frames are numbered from 1 in the processed stack;
+  geometry defaults to frame 1 and successive estimates follow the adjacent
+  aligned frame. Low texture, repeated patterns, occlusion, large motion, or
+  focus changes can still produce an inaccurate match without an error.
+  Inspect the result.
 - In the CLI, select the same policy with `--align openfocus --align-param
   'failure_policy="fail"'` (use shell-appropriate quoting). Batch items use
   the selected policy independently. The default is `"continue"`.
@@ -789,7 +811,9 @@ and grouped renders do not provide this report.
 1. In the right panel, locate the **Registration** group
 2. Pick one method from the dropdown: **No alignment**, **OpenFocus (fast)**,
    **ECC**, **Homography**, or **Homography → ECC**
-3. For OpenFocus (fast), choose a reference frame. Set **Rejected frame handling** under **Settings → Advanced Settings → Registration**; changes apply to the methods
+3. The defaults work without further adjustment. For OpenFocus (fast), adjust
+   the reference frame and search limits under **Settings → Advanced Settings → Registration**.
+   Set **Rejected frame handling** there for all registration methods.
 4. **Collect alignment diagnostics** now lives in Advanced Settings (see above)
 
 ### When to Use Registration
@@ -798,6 +822,16 @@ and grouped renders do not provide this report.
 - Images were captured handheld
 - The scene has parallax (closer objects shift between frames)
 - Results show ghosting or doubling artifacts
+
+### ROI (Region) Rendering
+
+**Preview ROI** prepares the included frames with the current registration
+method and its parameters, and uses the current fusion method's exposure-matching setting
+to choose the brightness reference. With **No alignment**, ROI selection uses the original
+frames directly. Changing the stack, included frames, registration method or
+parameters, downscale width, frame order, sensor cleanup, or exposure-matching
+setting discards the old ROI stack; entering ROI again prepares a new one. The
+selected rectangle is then fused by the normal render path.
 
 ### Registration Settings
 
@@ -813,9 +847,8 @@ Access additional settings via **Settings → Advanced Settings → Registration
 ## 8. Image Fusion Methods
 
 OpenFocus offers ten fusion algorithms (plus an alignment-only mode). A fresh
-profile starts on **StackMFF V3** with **ECC** registration; the lists below
-describe every choice. Each has different characteristics suitable for
-various image types.
+desktop profile uses **OpenFocus B** with **ECC** registration; both are marked
+as recommended. Existing user selections are preserved. CLI defaults are separate.
 
 ### Guided Filter
 
@@ -895,49 +928,63 @@ For large stacks, leave space in the temporary directory for source frames and
 any additional aligned or corrected frames. If no directory is specified,
 OpenFocus estimates needs from known inputs and scratch data. If the system
 temporary disk lacks space, it may consider writable fixed local disks. An
-explicitly selected directory is never automatically replaced. Choose an
-existing writable folder under **Settings → Advanced Settings → Performance →
-Temporary directory** if a storage error occurs. Free-space checks are estimates
-at a moment in time, not reservations; space may run out later. Changes apply
-to newly created data; already loaded frames stay in their original directory
-until released.
+explicitly selected directory stays in the settings. If it becomes unavailable,
+OpenFocus warns and temporarily uses the system temporary directory; each new
+job retries the saved choice. A full selected disk is not replaced automatically.
+Choose an existing writable folder under **Settings → Advanced Settings →
+Performance → Temporary directory** if a storage error occurs. Free-space
+checks are estimates, not reservations; space may run out later. Existing
+frames remain in their original directory until released.
+
+Before a full render starts, OpenFocus estimates the temporary space it will
+need and compares it with the space left after its safety reserve. When space
+looks low, **Low temporary storage space** shows the directory, the space
+available and the estimate. **Choose another directory** opens a folder picker;
+the folder must exist and be writable, and its space is checked again before
+the render starts. You can keep the new folder for future renders or use it for
+this render only. **Continue anyway** is available when the estimate does not
+establish that the required storage is insufficient. When automatic selection
+could use more than one volume, OpenFocus warns if all available volumes look
+short of space. If their capacity differs, the result may remain unknown until
+the run starts. On macOS, automatic volume discovery runs in the background
+before rendering, keeping the interface responsive. A chosen directory is
+also checked before rendering. Caches may be disabled and processing can still fail if storage
+fills. Quick previews,
+ROI renders and **Compare all** do not ask. On the command line, warnings go to
+standard error and do not stop the run; batch warnings identify each folder.
+Grouped fusion skips this estimate. Use `--temp-dir DIR` to choose a directory
+for that invocation. The command line
+does not use the GUI's Temporary directory setting.
 
 Each neural tile uses every frame. Source frames and alignment scratch can be disk-backed, but free disk space and available memory still limit stack size. V2 spatial tiling approximates whole-image inference.
 
 ### OpenFocus A / B / C
 
-- **OpenFocus A**: selects source pixels using a multiscale focus response; first-frame ties and 16-bit precision are preserved.
+- **OpenFocus A**: uses a multiscale focus response and blends low-detail backgrounds; ties keep the first frame, and 16-bit precision is preserved.
 - **OpenFocus B**: blends neighboring frames guided by a smoothed depth map.
-- **OpenFocus C**: blends source pixels using the completed, smoothed depth map.
-- **Parameters**: A and B use the kernel slider for focus-response scale; C has no radius. A's smoothing setting has no effect; B and C smooth the depth map used for fusion.
+- **OpenFocus C**: combines source detail across a multilevel weighted pyramid.
+- **Parameters**: A and B expose Radius and Smoothing; B also exposes Feather.
+  The defaults are R8/S4 for A, R8/S4/F3 for B and S4 for C. A's Smoothing
+  control currently has no effect, unlike the reference method. B smooths its
+  depth map; C smooths its multilevel fusion weights. C has no Radius control.
 
-**Smoothing**: one spin box under the kernel slider, with the meaning of the
-selected method (range 0–8, step 0.2):
+ECC remains the default registration method for A/B/C even when experimental
+features are enabled. OpenFocus alignment is used when explicitly selected;
+saved explicit choices are preserved when allowed by the experimental setting.
 
-| Method | Label | Default | Effect |
-|---|---|---|---|
-| OpenFocus A | Blend smoothing | 2.0 | No effect |
-| OpenFocus B | Depth smoothing | 1.44 | Controls smoothing of the depth map that guides blending |
-| OpenFocus C | Blend smoothing | 3.6 | Controls depth-map smoothing and fusion transitions |
+Each method remembers its own settings. For example, use `--method openfocus_b
+--param radius=8 --param smoothing=4 --param feather=3` in the CLI. Existing
+saved values are converted to the new units when read.
 
-A/B default kernel size: 17. Existing saved values remain in use; restore defaults to use the new defaults.
-
-OpenFocus A does not use this value. For B and C, larger values
-increase depth-map smoothing. Each
-method remembers its own value across sessions; batch processing uses the same rule.
-
-C has no Radius parameter, so its kernel slider is hidden.
-
-CLI: `--depth-smoothing VALUE` (B) and `--blend-smoothing VALUE` (A, C).
-
-**Brightness options are per method.** *Match exposure before fusion* and
-*Remove brightness drift* are remembered separately for each fusion method,
-because they answer a per-stack question rather than a global preference.
-Both default to on for OpenFocus A/B/C (which have no built-in exposure
-calibration); the other methods keep the historical defaults (exposure
-matching on, drift removal off). Switching methods shows that method's own
-values, and those values survive a restart. **Reset** clears the remembered
-brightness, smoothing and Radius values of every method.
+**Brightness options are per method.** *Match exposure before fusion* defaults
+on for every fusion method. OpenFocus A/B/C match the first frame in processing
+order; other methods use the last frame. *Remove brightness drift* is optional
+and defaults off. It adjusts the fused result's low frequencies toward the first
+processed frame for OpenFocus A/B/C, or the last for other methods. Reversing
+the stack changes processing order and therefore the reference frame. Explicit
+saved choices remain in use. **Reset** clears remembered choices and restores
+the method defaults. The CLI defaults exposure matching on and accepts
+`--no-exposure-match` to disable it.
 
 **Sharpen fused output** applies a mild unsharp mask after fusion, before the
 result is converted to its output bit depth. It is off by default and can be
@@ -974,7 +1021,7 @@ filename stems are retained, with the extension of the format you select.
 | StackMFF (V1) | Slow (GPU) | Not benchmarked here | Luma is order-invariant; chroma may differ on luma-distance ties |
 | StackMFF V2 | Fast (GPU) | Not benchmarked here | Continuous sweeps with a tiny model |
 | StackMFF V3 | Slow (GPU) | Excellent | Best quality |
-| OpenFocus A | Depends on stack | Depends on stack | Multiscale focus-response source-pixel selection |
+| OpenFocus A | Depends on stack | Depends on stack | Multiscale focus response and low-detail blending |
 | OpenFocus B | Depends on stack | Depends on stack | Depth-guided blending of neighboring frames |
 | OpenFocus C | Depends on stack | Depends on stack | Source blending using the final depth map |
 
@@ -1043,10 +1090,11 @@ pollutes the full-resolution alignment cache.
 
 ### Resizing
 
-1. Go to **Edit → Resize**
-2. A dialog will appear for resizing options
-3. Enter new dimensions or scale percentage
-4. All images in the stack will be resized proportionally
+1. Go to **Edit → Resize**.
+2. Choose a 2K, 4K or 8K preset, or enter a scale percentage. Presets specify
+   the longest side in pixels and preserve the aspect ratio.
+3. Presets larger than the available base images are disabled; the available
+   resolution option restores those base images without upscaling.
 
 ### Transformation Order
 
@@ -1062,15 +1110,25 @@ Fusion can still leave a local defect — a halo around a high-contrast edge,
 a bristle taken from the wrong frame, noise in a flat area. The workspace
 copies pixels from the exact frames that produced the selected result:
 
+The workspace opens as soon as the result and any available thumbnails are
+ready. Thumbnails use existing source previews where present, and the selected
+frame's thumbnail is replaced with its processed pixels once the frame resolves.
+Only the source frame you select is resolved, in the background; at most two
+resolved frames stay cached. Some actions still read every frame on demand, for
+example **Auto background**, checkpoint save/load, or turning on the sharpness
+reference.
+
 1. Select one output and click **Retouch Result…** in the output header, or press
    `Ctrl+T`. You can also right-click an output and choose the same action. The
    menu and shortcut require one selected output.
 2. The source frame is on the left, the result on the right. Both share zoom
    and position: wheel zooms, right/middle-drag (or Space+drag) pans, `F`
    fits, `1` shows 100 %.
-3. Pick a thumbnail, drag the frame slider, or press `,` / `.`. A stroke is locked
-   to that frame and the current brush settings; the frame cannot change
-   until the stroke ends.
+3. Pick a numbered frame, drag the frame slider, or press `,` / `.`. The
+   selected source loads in the background; its thumbnail appears when it is
+   ready. You can navigate or close the workspace while it loads. Painting is
+   available once the selected frame is ready. A stroke is locked to that
+   frame and the current brush settings until the stroke ends.
 4. Choose **Source Brush** (`B`) or **Restore Brush** (`E`). Diameter,
    hardness and opacity have both sliders and numeric fields; `[` / `]`
    adjusts the diameter. Hold `Ctrl` and scroll up to increase the diameter or
@@ -1235,8 +1293,18 @@ export an image to write the annotations to a file.
 
 ## 11. Settings and Configuration
 
+**Enable experimental features** in **Settings → Advanced Settings** is off by
+default and is remembered for this installation. With it off, desktop fusion
+offers OpenFocus A/B/C and No fusion; registration offers ECC and No alignment.
+Other fusion and registration methods and image stitching remain visible as
+experimental but cannot be used. Enable the option and click **OK** to unlock
+them; required dependencies may still limit availability. The experimental
+features are under development and may have performance, quality or availability
+limitations. Projects and templates do not override this preference. Restoring
+default settings turns it off again.
+
 Open **Settings → Advanced Settings** for performance, registration, sensor
-cleanup, output naming, StackMFF AI and startup preferences. Changes remain
+cleanup, output naming, StackMFF AI, diagnostics and startup preferences. Changes remain
 drafts until **OK**; Cancel, Esc and closing discard them. Reducing the tile
 size immediately updates the visible overlap limit to half a tile. The AI
 section's saved batch limit is retained, but inference currently submits one
@@ -1341,8 +1409,10 @@ outcomes; unexpected errors include a full traceback. The feedback ZIP also
 includes the current crash report and dependency versions. Use **Help → Open Logs
 Folder** or the path shown on the feedback page to find the files. Logs rotate at
 1 MB with three backups per process; inactive session logs older than 14 days are
-removed. For detailed support logs, set `OPENFOCUS_LOG_LEVEL=DEBUG` before launch;
-`OPENFOCUS_LOG_DIR` optionally selects a different log folder.
+removed. For detailed support logs, enable **Settings → Advanced Settings →
+Diagnostics → Detailed logging** (see [Diagnostics](#diagnostics)), or set
+`OPENFOCUS_LOG_LEVEL=DEBUG` before launch; `OPENFOCUS_LOG_DIR` optionally selects
+a different log folder.
 
 ### Tile Settings (Memory Optimization)
 
@@ -1379,6 +1449,29 @@ high-resolution input.
 
 The status panel shows used and total physical memory when the operating
 system can provide both readings; otherwise it shows `N/A`.
+
+### Diagnostics
+
+Access via **Settings → Advanced Settings → Diagnostics**. Both switches are
+off by default, are remembered for this installation only (not in projects or
+templates) and do not change the rendered image.
+
+- **Profile rendering performance** times the stages of each following render,
+  preview and comparison render. **Performance report** shows the most recent
+  report with its finish time: where the time went, the stage tree in execution order with CPU time
+  and peak-memory growth, tile geometry, thread counts and cache activity. A
+  cancelled or failed render still reports the part that ran. **Save as JSON…**
+  exports the full report; reports are otherwise kept only until the
+  application closes. Collecting the report adds negligible time to a render.
+- **Detailed logging** records why a render was planned as it was: resource
+  plans, tile size and count, the temporary directory chosen, memory before
+  and after, and the time of every tile. It takes effect immediately, including
+  for the next render, and makes log files grow faster. **Open Logs Folder**
+  opens the same folder as **Help → Open Logs Folder**.
+
+Turn both on before reproducing a slow render, then attach the saved report
+and a feedback package. [PERFORMANCE.md](./PERFORMANCE.md#diagnosing-a-slow-render)
+explains how to read them.
 
 ### Thread Count Settings
 
@@ -1445,10 +1538,11 @@ stick. Delete the marker to switch back to the normal profile.
 
 ### EXIF Metadata
 
-Source metadata (camera model, exposure, orientation and so on) is kept:
-orientation is applied on load, and PNG/TIFF/WebP exports embed the
-original EXIF automatically. JPG/BMP exports cannot store full EXIF and
-are written without it.
+PNG/TIFF/JPEG/WebP exports keep sanitized camera, lens, exposure, date and
+GPS metadata and set Orientation to 1. BMP output embeds no EXIF. If a JPEG's
+EXIF or ICC payload exceeds the format limit, OpenFocus reports a clear error;
+choose PNG or TIFF instead. If a source's sanitized EXIF exceeds 16 MiB,
+OpenFocus refuses to load it; remove or reduce that file's EXIF first.
 
 ### HEIC/HEIF Input
 
@@ -1663,6 +1757,10 @@ each page's own valid RGB profile independently.
 3. Choose format and location
 4. Click Save
 
+Choose **File → Export All Results to Folder** and select a destination to
+export every output-list entry. Image results are saved as PNG and aligned
+stacks as folders. Existing files and folders are not overwritten.
+
 In **Settings → Advanced Settings → Output naming**, an optional filename
 prefix helps identify newly rendered results. The example updates as you type;
 use up to 40 letters, numbers, underscores or hyphens. Leave it empty for the
@@ -1678,13 +1776,16 @@ output names.
 Right-click an output and use the **Share** submenu. **Copy preview image
 (JPEG)** writes the current result at full resolution, including its labels and
 scale bar, to the clipboard as a real JPEG and also provides a decoded bitmap
-for desktop applications. **Copy file paths** copies persistent file URLs for
-every selected result; unsaved or outdated results ask for one folder and are
-written as PNG with their current 8/16-bit pixels and annotations. **Show in
-folder** opens Explorer, Finder or the desktop file manager with the file
-selected. Existing exported files are reused only while they still match the
-current image and annotations. **Create private share link** stays disabled
-until hosted sharing exists.
+for desktop applications. **Copy file paths** copies the last saved path for
+each selected result as both text and file URLs. Unsaved or missing files must
+be saved first; this command never creates a file. If a result has changed
+since saving, the copied path still points to the last saved version.
+**Show in folder** opens Explorer, Finder or the desktop file manager with a
+matching saved file selected. If the result is unsaved, changed or its file is
+missing, it creates a temporary PNG without marking the result saved. Temporary
+files may be removed by the operating system; use **Save As** to keep one.
+Saving a result also copies its actual file path to the clipboard.
+**Create private share link** stays disabled until hosted sharing exists.
 
 ### Drag-out Export Format
 
@@ -1747,7 +1848,7 @@ Cancellation or a failed write leaves an existing destination file intact.
 
 ## 14. Command Line Interface
 
-Installing with `pip install openfocus` includes the AI model and weights, HEIC and camera-RAW decoding. `dtcwt` is skipped on Python 3.13+, where the DTCWT entry stays disabled with a tooltip.
+Installing with `pip install openfocus` includes the AI model and weights, HEIC and camera-RAW decoding. On Python 3.13+, upstream `dtcwt` is omitted because its metadata requires NumPy < 2. To enable DTCWT after installing OpenFocus, run `python -m pip install --no-deps dtcwt==0.14.0`. OpenFocus installs its prerequisites (NumPy, SciPy and six) and supplies the NumPy 2 compatibility adapter. Upstream's declared constraint remains unsatisfied, so `pip check` reports it; future upstream releases may resolve this conflict.
 
 OpenFocus can run without the GUI — useful for scripted pipelines and CI. The
 `openfocus` console script (installed by `pip install openfocus`) and
@@ -1827,9 +1928,9 @@ an input or another output. Batch, grouped and dry-run modes reject this option.
 | `--param KEY=JSON_VALUE` | Set any fusion parameter; repeatable and overrides legacy flags |
 | `--align, -a` | `none` (default), `homography`, `ecc`, `both`, `openfocus` |
 | `--align-param KEY=JSON_VALUE` | Set any registration parameter; repeatable |
-| `--align-shift-limit` | `openfocus` align only: max accepted shift as a fraction of the frame size (default 0.08; frames above it are left unaligned) |
+| `--align-shift-limit` | `openfocus` alignment search range as a fraction of the frame size (default 0.03) |
 | `--alignment-report PATH` | Save per-frame alignment outcomes as JSON for a single, non-grouped render with alignment enabled; batch and grouped renders are not supported |
-| `--exposure-match` | Match every frame's mean to the last frame before fusion (default: on; `--no-exposure-match` disables). Whole-stack gains, so tiled output stays seamless; applies to every method and to the OpenFocus aligner's brightness reference |
+| `--exposure-match` | Match mean brightness to the first processed frame for OpenFocus A/B/C, or the last for other methods (default: on; `--no-exposure-match` disables). Gains are computed before tiling. |
 | `--base-frame` | Optional post-fusion step: match the output's low frequencies to the `last`/`first` frame (`none` default) |
 | `--sort` | Frame order for `openfocus_a/b/c`: `asc` (default, file order), `desc` (reverse a far-to-near sweep), `off` |
 | `--frame-order` | Folder input: `auto` (default) orders frames near to far by EXIF focus steps when every frame has them (OM SYSTEM focus bracketing starts mid-depth), otherwise by name; `name` always sorts by filename. Explicit file lists keep their order |
@@ -1837,9 +1938,7 @@ an input or another output. Batch, grouped and dry-run modes reject this option.
 | `--dust-map WHITE` | Flat-field (dust map) correction from a defocused white-field shot |
 | `--defect-mask-path MASK` | Sensor-coordinate defect mask repaired before registration |
 | `--sensor-denoise` | Conservative sensor denoising before registration |
-| `--kernel, -k` | Kernel size (forced odd); controls focus-response scale for `openfocus_a` and `openfocus_b`; C has no radius |
-| `--depth-smoothing VALUE` | `openfocus_b` only: depth-transition smoothing strength (default 1.44) |
-| `--blend-smoothing VALUE` | `openfocus_a` / `openfocus_c` only: transition smoothing strength (defaults 2.0 for A, 3.6 for C) |
+| `--kernel, -k` | Odd kernel size for methods that declare `kernel_size`; OpenFocus A/B use `--param radius=...` |
 | `--ai-mode {soft,hard}` | StackMFF V3 output: probability-weighted blend (default) or most probable frame per pixel |
 | `--threads, -t` | Worker thread upper limit; `0` = automatic (default), positive values cap concurrency |
 | `--resource-preference` | `balanced` (default), `responsive`, or `maximum`; controls resource scheduling |
@@ -1863,6 +1962,8 @@ an input or another output. Batch, grouped and dry-run modes reject this option.
 | `--missing-data-map [path]` | With `--auto-background`, also save the missing-data map and one 8-bit mask per class (default `<output>_missing.png`). In batch mode only the default path is allowed |
 | `--json FILE` | Write a machine-readable result summary to FILE when done |
 | `--json-progress` | Print one JSON progress object per step to stdout (NDJSON); prose goes to stderr |
+| `--profile-performance [FILE]` | Time the render's stages for a single, non-grouped run. Prints a summary to stderr, adds the report to `--json` under `performance`, and writes it to FILE when given. See [PERFORMANCE.md](./PERFORMANCE.md#diagnosing-a-slow-render) |
+| `--log-level LEVEL` | Detail of this run's log file: `debug`, `info` (default), `warning` or `error`. Overrides `OPENFOCUS_LOG_LEVEL` and prints the log file path to stderr |
 | `--dry-run` | Validate inputs and print the plan without fusing |
 
 There is no `--method none` value: the CLI always fuses. Use the desktop
@@ -2063,6 +2164,9 @@ Exit codes: `0` success, `1` processing error, `2` usage error. Running
 - Use Maximum resource mode for an unattended batch, or Guided Filter /
   GFG-FGF instead of an AI method
 - Reduce image resolution or use **Quick preview** while tuning
+- To see which stage takes the time, enable **Settings → Advanced Settings →
+  Diagnostics → Profile rendering performance**, render again and open
+  **Performance report**
 
 #### Windows SmartScreen Warning on First Launch
 

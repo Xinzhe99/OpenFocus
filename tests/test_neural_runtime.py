@@ -47,6 +47,20 @@ def test_public_consumers_keep_v1_v3_models_and_reconstruction_distinct(tiled):
             frames, None, weights_path('stackmff_v3_final.onnx'), False, thread_count=1))
 
 
+@pytest.mark.parametrize('method', ['stackmff', 'stackmffv2', 'stackmffv3'])
+@pytest.mark.parametrize('shape,block', [((65, 129), 64), ((190, 259), 128)])
+def test_neural_tiles_cover_short_edge_without_black_seams(method, shape, block):
+    pytest.importorskip('onnxruntime')
+    from core.multi_focus_fusion import MultiFocusFusion
+
+    frames = [np.full((*shape, 3), 100, np.uint8) for _ in range(2)]
+    result = MultiFocusFusion(method, use_gpu=False, exposure_match=False,
+                              tile_threshold=32, tile_block_size=block,
+                              tile_overlap=block // 4).fuse(frames, thread_count=1)
+    assert result.shape == frames[0].shape
+    assert result.min() >= 95 and result.max() <= 105
+
+
 def test_sessions_isolate_checkpoint_shape_and_directml_adapter(monkeypatch, tmp_path):
     calls = []
 
@@ -82,6 +96,150 @@ def test_sessions_isolate_checkpoint_shape_and_directml_adapter(monkeypatch, tmp
     monkeypatch.setattr(neural_runtime, '_DIRECTML_ADAPTER_INDEX', 2)
     assert neural_runtime._session(str(first), (2, 64, 64), 'DIRECTML', 1) is not gpu
     assert calls[-1][1][0] == ('DmlExecutionProvider', {'device_id': 2})
+
+
+def test_accelerator_sessions_keep_two_shapes_and_evict_oldest(monkeypatch, tmp_path):
+    created = []
+
+    class Options:
+        def add_free_dimension_override_by_name(self, *args):
+            pass
+
+    class Session:
+        def __init__(self, path, sess_options, providers):
+            created.append(self)
+
+        def disable_fallback(self):
+            pass
+
+        def get_providers(self):
+            return ['DmlExecutionProvider', 'CPUExecutionProvider']
+
+    monkeypatch.setitem(sys.modules, 'onnxruntime', SimpleNamespace(
+        SessionOptions=Options, InferenceSession=Session,
+        ExecutionMode=SimpleNamespace(ORT_SEQUENTIAL=0)))
+    monkeypatch.setattr(neural_runtime, '_SESSIONS', OrderedDict())
+    path = tmp_path / 'model.onnx'
+    path.write_bytes(b'model')
+    full = neural_runtime._session(str(path), (3, 256, 256), 'DIRECTML', 1)
+    small = neural_runtime._session(str(path), (3, 192, 192), 'DIRECTML', 1)
+    assert neural_runtime._session(str(path), (3, 256, 256), 'DIRECTML', 1) is full
+    assert neural_runtime._session(str(path), (3, 192, 192), 'DIRECTML', 1) is small
+    assert len(created) == 2
+    neural_runtime._session(str(path), (3, 128, 128), 'DIRECTML', 1)
+    assert neural_runtime._session(str(path), (3, 256, 256), 'DIRECTML', 1) is not full
+
+
+def test_cached_gpu_workspace_is_not_charged_again(monkeypatch, tmp_path):
+    from core import resource_policy
+
+    path = tmp_path / 'model.onnx'
+    path.write_bytes(b'model')
+    planes = np.zeros((1, 2, 64, 64), np.float32)
+    class Session:
+        actual_device = 'DIRECTML'
+
+        def run(self, outputs, inputs):
+            return [inputs['input']]
+
+    session = Session()
+    key = neural_runtime._session_key(str(path), planes.shape[1:], 'DIRECTML', 1)
+    monkeypatch.setattr(neural_runtime, '_SESSIONS', OrderedDict([(key, session)]))
+    monkeypatch.setattr(neural_runtime, '_session', lambda *args: session)
+    monkeypatch.setattr(resource_policy, 'probe_resources', lambda *_: pytest.fail('cached workspace was charged again'))
+    neural_runtime.start_inference_job()
+    try:
+        np.testing.assert_array_equal(neural_runtime.logits(planes, str(path), 'DIRECTML', 1), planes)
+        assert neural_runtime.actual_device() == 'DIRECTML'
+    finally:
+        neural_runtime.start_inference_job()
+
+
+def test_gpu_readmission_releases_old_session_before_fallback(monkeypatch, tmp_path):
+    from core import resource_policy
+
+    path = tmp_path / 'model.onnx'
+    path.write_bytes(b'model')
+    planes = np.zeros((1, 2, 64, 64), np.float32)
+    class Session:
+        actual_device = 'DIRECTML'
+
+        def run(self, outputs, inputs):
+            return [inputs['input']]
+
+    old_key = neural_runtime._session_key(str(path), (2, 128, 128), 'DIRECTML', 1)
+    monkeypatch.setattr(neural_runtime, '_SESSIONS', OrderedDict([(old_key, Session())]))
+    snapshots = iter([
+        resource_policy.ResourceSnapshot(free_vram=1, total_vram=1),
+        resource_policy.ResourceSnapshot(free_vram=8 * 1024 ** 3, total_vram=8 * 1024 ** 3),
+    ])
+    monkeypatch.setattr(resource_policy, 'probe_resources', lambda *_: next(snapshots))
+    requests = []
+    def session(path, shape, device, threads):
+        requests.append(device)
+        return Session()
+
+    monkeypatch.setattr(neural_runtime, '_session', session)
+    neural_runtime.start_inference_job()
+    try:
+        neural_runtime.logits(planes, str(path), 'DIRECTML', 1)
+        assert requests == ['DIRECTML']
+        assert not neural_runtime.device_diagnostics()['fallback_cpu']
+    finally:
+        neural_runtime.start_inference_job()
+
+
+def test_traced_session_released_before_replacement(monkeypatch, tmp_path):
+    from utils import performance_profile
+
+    events = []
+
+    class Options:
+        def add_free_dimension_override_by_name(self, name, value):
+            if name == 'height':
+                self.dimensions = value
+
+    class Session:
+        def __init__(self, path, sess_options, providers):
+            self.shape = sess_options.dimensions
+            events.append(('construct', self.shape))
+
+        def disable_fallback(self):
+            pass
+
+        def end_profiling(self):
+            events.append(('end_trace', self.shape))
+            return ''
+
+        def __del__(self):
+            events.append(('destroy', self.shape))
+
+    def make_session(path, sess_options, providers):
+        sess_options.shape = sess_options.dimensions
+        session = Session(path, sess_options, providers)
+        session.shape = sess_options.shape
+        return session
+
+    def remember_dimension(self, name, value):
+        if name == 'height':
+            self.dimensions = value
+
+    monkeypatch.setattr(Options, 'add_free_dimension_override_by_name', remember_dimension)
+    monkeypatch.setitem(sys.modules, 'onnxruntime', SimpleNamespace(
+        SessionOptions=Options, InferenceSession=make_session))
+    monkeypatch.setattr(neural_runtime, '_SESSIONS', OrderedDict())
+    monkeypatch.setattr(neural_runtime, '_TRACED', {})
+    monkeypatch.setattr(neural_runtime, 'operator_trace_directory', lambda: str(tmp_path))
+    model = tmp_path / 'model.onnx'
+    model.write_bytes(b'model')
+    profile = performance_profile.PerformanceProfile()
+    with performance_profile.active(profile):
+        for height in (64, 128, 192):
+            neural_runtime._session(str(model), (2, height, 64), 'CPU', 1)
+    assert events.index(('end_trace', 64)) < events.index(('destroy', 64))
+    assert events.index(('destroy', 64)) < events.index(('construct', 192))
+    assert profile.report('completed')['sessions']['evictions'] == 1
+    neural_runtime._clear_sessions()
 
 
 @pytest.mark.parametrize('hardware', [

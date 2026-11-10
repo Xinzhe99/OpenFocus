@@ -39,6 +39,9 @@ from PyQt6.QtWidgets import (
 from core.algorithms import (alignment_steps, depth_algorithms, get_fusion, registration_parameter_specs,
     registration_algorithms, resolve_fusion_parameters, resolve_registration_parameters)
 from ui.algorithm_parameters import AlgorithmParameterPanel
+from ui.algorithm_combo import apply_method_availability, selected_item_enabled
+from core.experimental import (alignment_is_experimental, experimental_enabled,
+                               fusion_is_experimental)
 from locales import trans
 from widgets.flow_layout import FlowPanel
 from widgets.stepper import StepperSpinBox
@@ -129,8 +132,12 @@ class DepthWorker(QThread):
         self._images = materialize_frames(self._images, should_cancel=lambda: self._cancelled)
         if self.alignment != "none":
             from core.compare_worker import align_frames
+            from core.workers import _ordered_openfocus_registration
+            reverse_registration = _ordered_openfocus_registration(
+                self.alignment, self._method, 'desc' if self.reverse_order else 'asc')
             self._images = align_frames(self._images, self.alignment,
-                self.registration_settings, lambda: self._cancelled)
+                self.registration_settings, lambda: self._cancelled,
+                reverse_registration=reverse_registration)
             if self._images is None:
                 raise DepthMapCancelled()
             from core.render_context import SourceFrame
@@ -186,6 +193,7 @@ class DepthProductExportWorker(QThread):
     def __init__(self, path, index, frames, valid_mask, context, metadata, profile, render,
                  linear_dng_metadata=None, parent=None):
         super().__init__(parent)
+        configure_native_worker_stack(self)
         self.path, self.index, self.frames = path, index, frames
         self.valid_mask, self.context, self.metadata = valid_mask, context, metadata
         self.profile, self.render = profile, render
@@ -584,6 +592,8 @@ class DepthMapDialog(QDialog):
         self.align_combo = QComboBox()
         for spec in registration_algorithms():
             self.align_combo.addItem(trans.t(spec.label_key), spec.id)
+        apply_method_availability(self.align_combo, registration_algorithms(),
+                                  self.window_main, alignment=True)
         self.align_combo.setEnabled(self._source_mode == "current")
         form.addRow(trans.t("group_registration"), self.align_combo)
         current_alignment = getattr(self.window_main, 'current_alignment_method', lambda: 'none')()
@@ -977,27 +987,19 @@ class DepthMapDialog(QDialog):
     def _available_depth_method_id(self):
         from ui.algorithm_combo import fusion_unavailable_reason
         for spec in depth_algorithms():
-            if not fusion_unavailable_reason(spec, self._ai_fusion_available):
+            if (not fusion_unavailable_reason(spec, self._ai_fusion_available)
+                    and (experimental_enabled(self.window_main)
+                         or not fusion_is_experimental(spec.id))):
                 return spec.id
         return depth_algorithms()[0].id
 
     def _apply_method_availability(self):
-        """Keep unavailable methods visible with a dependency explanation."""
+        """Keep unavailable methods visible with their explanations."""
         from core.multi_focus_fusion import is_ai_fusion_available
-        from ui.algorithm_combo import fusion_unavailable_reason
 
         self._ai_fusion_available = bool(is_ai_fusion_available())
-        for index in range(self.method_combo.count()):
-            method = self.method_combo.itemData(index)
-            if not method:
-                continue
-            reason = fusion_unavailable_reason(get_fusion(method), self._ai_fusion_available)
-            if not reason:
-                continue
-            item = self.method_combo.model().item(index)
-            if item is not None:
-                item.setEnabled(False)
-            self.method_combo.setItemData(index, reason, Qt.ItemDataRole.ToolTipRole)
+        apply_method_availability(self.method_combo, depth_algorithms(), self.window_main,
+                                  ai_available=self._ai_fusion_available)
 
     def _current_window_method(self):
         w = self.window_main
@@ -1151,7 +1153,7 @@ class DepthMapDialog(QDialog):
                 else resolve_registration_parameters(method))
         specs = registration_parameter_specs(method)
         self.registration_parameter_panel.set_parameters(specs, self._registration_drafts[method])
-        self.registration_parameter_panel.setVisible(bool(self.registration_parameter_panel.editors))
+        self.registration_parameter_panel.setVisible(method != 'openfocus' and bool(self.registration_parameter_panel.editors))
 
     def _on_alignment_changed(self):
         self._sync_registration_controls()
@@ -1241,6 +1243,17 @@ class DepthMapDialog(QDialog):
 
     def _compute(self):
         if self._closing or self._worker is not None or self._export_worker is not None:
+            return
+        uses_alignment = self._source_context() is None
+        combos = (self.method_combo, self.align_combo) if uses_alignment else (self.method_combo,)
+        for combo in combos:
+            if not selected_item_enabled(combo):
+                self.status_lbl.setText(combo.currentData(Qt.ItemDataRole.ToolTipRole) or '')
+                return
+        if not experimental_enabled(self.window_main) and (
+                fusion_is_experimental(self.method_combo.currentData()) or
+                (uses_alignment and alignment_is_experimental(self.align_combo.currentData()))):
+            self.status_lbl.setText(trans.t('experimental_locked_hint'))
             return
         method = self.method_combo.currentData()
         for panel in (self.fusion_parameter_panel, self.registration_parameter_panel):

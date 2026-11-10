@@ -58,12 +58,18 @@ def test_scaled_raw_preserves_full_decode_colors_and_size(monkeypatch, tmp_path)
 
         def __exit__(self, *_args):
             pass
+        def open_file(self, path):
+            assert path == str(tmp_path / 'frame.raf')
+
+        def unpack(self):
+            pass
+
 
         def postprocess(self, **_kwargs):
             return rgb.copy()
 
     monkeypatch.setattr(il, 'RAWPY_AVAILABLE', True)
-    monkeypatch.setattr(il, 'rawpy', SimpleNamespace(imread=lambda _path: Raw()), raising=False)
+    monkeypatch.setattr(il, 'rawpy', SimpleNamespace(RawPy=Raw), raising=False)
     path = tmp_path / 'frame.raf'
     path.touch()
     original = np.ascontiguousarray(rgb[:, :, ::-1])

@@ -122,6 +122,7 @@ def test_button_caption_recovers_after_temporary_width_constraint(qapp):
         button.setMaximumWidth(18)
         qapp.processEvents()
         assert button.text() != caption
+        assert button.toolTip() == caption
 
         button.setMaximumWidth(host.width())
         button.setText(caption)
@@ -129,6 +130,9 @@ def test_button_caption_recovers_after_temporary_width_constraint(qapp):
         layout.activate()
         qapp.processEvents()
         assert button.text() == caption
+        assert not button.toolTip()
+        button.setToolTip('Opens stack review')
+        assert button.toolTip() == 'Opens stack review'
     finally:
         host.close()
         host.deleteLater()
@@ -144,12 +148,13 @@ def test_main_selector_explains_missing_dtcwt(qapp, monkeypatch):
 
     combo = QComboBox()
     algorithm_combo.fill_fusion_combo(combo)
-    host = SimpleNamespace(combo_fusion=combo, _stackmff_available=True)
+    host = SimpleNamespace(combo_fusion=combo, combo_align=QComboBox(),
+                           _stackmff_available=True, experimental_features=True)
     monkeypatch.setattr(algorithm_combo, '_package_available', lambda _name: False)
     main.OpenFocus.refresh_method_availability(host)
     index = combo.findData('dtcwt')
     assert not combo.model().item(index).isEnabled()
-    assert combo.itemData(index, Qt.ItemDataRole.ToolTipRole) == trans.t('env_dtcwt_unavailable')
+    assert trans.t('env_dtcwt_unavailable') in combo.itemData(index, Qt.ItemDataRole.ToolTipRole)
     monkeypatch.setattr(algorithm_combo, '_package_available', lambda _name: True)
     main.OpenFocus.refresh_method_availability(host)
     assert combo.model().item(index).isEnabled()
@@ -206,13 +211,13 @@ def test_alignment_only_disables_fusion_only_options(qapp):
     assert not host.chk_base_correct.isEnabled()
     assert not host.chk_sharpen_output.isEnabled()
     assert not host.chk_reverse_order.isEnabled()
-    assert host.chk_exposure_match.isEnabled(), (
-        "exposure matching still feeds the registration brightness reference")
+    assert not host.chk_exposure_match.isEnabled()
     assert _t.t("radio_no_fusion_hint") in host.chk_base_correct.toolTip()
     assert _t.t("radio_no_fusion_hint") in host.chk_reverse_order.toolTip()
 
     host.method = "guided_filter"
     refresh()
+    assert host.chk_exposure_match.isEnabled()
     assert host.chk_base_correct.isEnabled()
     assert host.chk_sharpen_output.isEnabled()
     assert host.chk_reverse_order.isEnabled()
@@ -526,6 +531,7 @@ def test_batch_downscale_is_a_ratio_of_the_stack():
 def test_retouch_paints_a_locked_frame(qapp):
     """Retouching copies from the frame the user locked, and auto-pick is off."""
     import numpy as np
+    from PyQt6.QtTest import QTest
 
     from controllers.output_manager import OutputRecord
     from core.render_context import build_render_context
@@ -544,8 +550,10 @@ def test_retouch_paints_a_locked_frame(qapp):
         assert not hasattr(dlg, "chk_auto"), "auto-pick is gone"
         assert dlg.frame_list.count() == 3
         dlg._select_frame(2)
-        qapp.processEvents()
-        qapp.processEvents()
+        for _ in range(500):
+            if dlg._source_ready and not dlg._source_loading:
+                break
+            QTest.qWait(10)
         assert dlg.doc.frame_index == 2
         assert dlg._source_ready
         before = dlg.doc.working.copy()
@@ -605,6 +613,22 @@ def test_stepper_uses_native_spinbox_and_theme(qapp):
         assert spin.styleSheet() == sheet
         assert "QDoubleSpinBox::up-button" in sheet
         assert "QDoubleSpinBox::down-button" in sheet
+    spin.deleteLater()
+
+
+def test_stepper_trims_zeros_without_rounding(qapp):
+    from PyQt6.QtCore import QLocale
+    from widgets.stepper import StepperSpinBox
+
+    spin = StepperSpinBox(minimum=0, maximum=100, decimals=9, value=4)
+    assert spin.text() == '4.0'
+    spin.setValue(0.000000125)
+    assert spin.text() == '0.000000125'
+    spin.setLocale(QLocale(QLocale.Language.German, QLocale.Country.Germany))
+    spin.setValue(1.25)
+    assert spin.text() == '1,25'
+    spin.interpretText()
+    assert spin.value() == 1.25
     spin.deleteLater()
 
 
@@ -762,6 +786,9 @@ def test_batch_parameter_editors_fit_their_content(qapp):
 def test_batch_ai_mode_survives_a_method_switch(qapp):
     from dialogs.batch import BatchProcessingDialog
     dlg = BatchProcessingDialog(None)
+    from types import SimpleNamespace
+    dlg.parent_window = SimpleNamespace(experimental_features=True)
+    dlg._apply_fusion_availability()
     try:
         dlg.show()
         dlg.fusion_combo.setCurrentIndex(dlg.fusion_combo.findData("stackmffv3"))
@@ -832,12 +859,14 @@ def test_batch_import_mode_group_stays_compact(qapp):
         dlg.deleteLater()
 
 
-def test_folder_picker_has_no_empty_extra_column(qapp, tmp_path):
+def test_folder_picker_has_no_empty_extra_column(qapp, tmp_path, monkeypatch):
     """The picker must not get a second, empty list widget.
 
     Inserting a QListWidget into Qt's splitter put an empty column beside the
     real place list - the blank box reported in the screenshot.
     """
+    from utils import file_dialogs
+    monkeypatch.setattr(file_dialogs, "_use_native_folder_dialog", lambda: False)
     from PyQt6.QtWidgets import QApplication, QSplitter, QListView
 
     from dialogs.batch import BatchProcessingDialog
@@ -877,13 +906,15 @@ def test_folder_picker_has_no_empty_extra_column(qapp, tmp_path):
 
 
 
-def test_folder_picker_keeps_only_qt_places(qapp, tmp_path):
+def test_folder_picker_keeps_only_qt_places(qapp, tmp_path, monkeypatch):
     """No custom entries in the place sidebar.
 
     "Last used" and "Queued: <name>" were appended to Qt's place model; they
     duplicated what the picker already offers and pushed the useful entries
     down. The sidebar must keep exactly the standard locations.
     """
+    from utils import file_dialogs
+    monkeypatch.setattr(file_dialogs, "_use_native_folder_dialog", lambda: False)
     from PyQt6.QtWidgets import QApplication, QFileDialog, QSplitter
 
     from dialogs.batch import BatchProcessingDialog

@@ -191,7 +191,7 @@ def test_project_roundtrips_per_method_parameters(tmp_path):
     window = _window(paths, str(tmp_path))
     window._brightness_by_method = {("base_correct", "openfocus_b"): True,
                                     ("exposure_match", "openfocus_b"): False}
-    window.set_fusion_parameters("openfocus_c", {"blend_smoothing": 3.5})
+    window.set_fusion_parameters("openfocus_c", {"smoothing": 3.5})
     window.set_fusion_parameters("dct", {"kernel_size": 11})
     window.set_registration_parameters("openfocus", {"max_shift_ratio": .12, "failure_policy": "fail", "reference_frame": 2})
     state = project_file._collect_state(window)
@@ -199,9 +199,9 @@ def test_project_roundtrips_per_method_parameters(tmp_path):
     project_file._apply_after_load(restored, state)
     assert restored._brightness_by_method[("base_correct", "openfocus_b")] is True
     assert restored._brightness_by_method[("exposure_match", "openfocus_b")] is False
-    assert restored.fusion_parameters_for("openfocus_c") == {"blend_smoothing": 3.5}
+    assert restored.fusion_parameters_for("openfocus_c") == {"smoothing": 3.5}
     assert restored.fusion_parameters_for("dct") == {"kernel_size": 11}
-    assert restored.registration_parameters_for("openfocus") == {"max_shift_ratio": .12, "rotation": 0., "magnification": 3., "failure_policy": "fail", "reference_frame": 2}
+    assert restored.registration_parameters_for("openfocus") == {"max_shift_ratio": .12, "rotation": 0., "magnification": 5., "failure_policy": "fail", "reference_frame": 2}
 
 
 def test_project_does_not_rebind_missing_absolute_source_to_same_basename(tmp_path):
@@ -453,7 +453,8 @@ def test_sensor_controls_inspect_mask_and_reject_source_frame(qapp, tmp_path):
     controls.close()
 
 
-def test_roi_startup_rejects_replacement_dispatched_before_worker_completion(qapp, monkeypatch):
+@pytest.mark.parametrize('changed', ['source', 'method', 'parameters', 'brightness'])
+def test_roi_startup_rejects_stale_results(qapp, monkeypatch, changed):
     from PyQt6.QtCore import QTimer
     from PyQt6.QtWidgets import QPushButton, QSlider, QWidget
     import main
@@ -472,6 +473,7 @@ def test_roi_startup_rejects_replacement_dispatched_before_worker_completion(qap
     monkeypatch.setattr(main, 'show_message_box', lambda *args: None)
     original = [np.full((12, 16, 3), 1000, np.uint16) for _ in range(2)]
     replacement = [np.full((12, 16, 3), 60000, np.uint16) for _ in range(2)]
+    settings = {'method': 'ecc', 'failure_policy': 'continue', 'brightness': False}
     window = SimpleNamespace(
         raw_images=original, image_filenames=['first.tif', 'second.tif'],
         source_revision=0, roi_aligned_images=[], roi_mode_active=False,
@@ -479,6 +481,12 @@ def test_roi_startup_rejects_replacement_dispatched_before_worker_completion(qap
         result_slider=QSlider(), result_control_bar=QWidget(),
         btn_preview_roi=QPushButton(), label_manager=SimpleNamespace(
             frame_ids=lambda target: ['first', 'second']))
+    from controllers.render_manager import RenderManager
+    window.current_alignment_method = lambda: settings['method']
+    window.current_fusion_method = lambda: 'guided_filter'
+    window.registration_parameters_for = lambda method: {'failure_policy': settings['failure_policy']}
+    window.brightness_option_for = lambda option, method=None: settings['brightness']
+    window.render_manager = RenderManager(window)
     window.effective_stack = lambda: (list(window.raw_images), list(window.image_filenames), [0, 1])
     displayed = []
     window._display_roi_aligned_image = displayed.append
@@ -488,15 +496,23 @@ def test_roi_startup_rejects_replacement_dispatched_before_worker_completion(qap
     window._release_roi_worker = main.OpenFocus._release_roi_worker.__get__(window)
 
     def replace():
-        window.raw_images = replacement
-        window.source_revision += 1
+        if changed == 'source':
+            window.raw_images = replacement
+            window.source_revision += 1
+        elif changed == 'method':
+            settings['method'] = 'homography'
+        elif changed == 'parameters':
+            settings['failure_policy'] = 'fail'
+        else:
+            settings['brightness'] = True
 
     QTimer.singleShot(0, replace)
     main.OpenFocus.toggle_roi_mode(window, True)
     qapp.processEvents()
     window._on_roi_alignment_finished(window.roi_alignment_worker.frames, 0.1)
 
-    assert window.raw_images is replacement
+    if changed == 'source':
+        assert window.raw_images is replacement
     assert not window.roi_mode_active
     assert window.roi_aligned_images == []
     assert displayed == []

@@ -1,8 +1,13 @@
 """CPU Q12 recurrence, advanced in cancellable blocks.
 
-Import only from the processing path. Keep the JIT cache in memory because
-installed/frozen modules need not have a writable source/cache directory.
+Import only from the processing path. Compiled kernels use Numba's cache so
+isolated render processes can reuse them; an unavailable cache keeps the
+same in-memory compilation path.
 """
+from contextlib import contextmanager
+import logging
+import os
+import pickle
 from threading import Lock
 
 from core.algorithm_adapters import DEPTH_KERNEL_STARTUP_BYTES
@@ -10,7 +15,88 @@ from core.resource_policy import require_memory
 
 
 require_memory(DEPTH_KERNEL_STARTUP_BYTES)
-from numba import njit  # noqa: E402 - admit compiler memory before loading it
+from numba import njit as _numba_njit  # noqa: E402 - admit compiler memory first
+
+
+@contextmanager
+def _cache_access(directory):
+    """Serialize a Numba index/data transaction without waiting for other jobs."""
+    descriptor = None
+    locked = False
+    try:
+        descriptor = os.open(os.path.join(directory, '.openfocus-numba.lock'),
+                             os.O_CREAT | os.O_RDWR, 0o600)
+        if os.name == 'nt':
+            import msvcrt
+            if os.fstat(descriptor).st_size == 0:
+                os.write(descriptor, b'\0')
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        locked = True
+    except OSError:
+        pass
+    try:
+        yield locked
+    finally:
+        if descriptor is not None:
+            try:
+                if locked and os.name == 'nt':
+                    os.lseek(descriptor, 0, os.SEEK_SET)
+                    msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+                elif locked:
+                    fcntl.flock(descriptor, fcntl.LOCK_UN)
+            finally:
+                os.close(descriptor)
+
+
+class _GuardedCache:
+    """Make Numba's cache optional when storage or its index is unavailable."""
+    def __init__(self, cache):
+        self._cache = cache
+        self.cache_path = cache.cache_path
+
+    def _call(self, method, *args):
+        with _cache_access(self.cache_path) as locked:
+            if not locked:
+                return None
+            try:
+                return getattr(self._cache, method)(*args)
+            except (OSError, EOFError, pickle.UnpicklingError) as exc:
+                logging.getLogger(__name__).debug('Numba cache unavailable: %s', exc)
+                return None
+
+    def load_overload(self, *args):
+        return self._call('load_overload', *args)
+
+    def save_overload(self, *args):
+        return self._call('save_overload', *args)
+
+    def flush(self):
+        return self._call('flush')
+
+
+def njit(*args, **kwargs):
+    """Cache kernels when possible, retaining in-memory compilation otherwise."""
+    def decorate(function):
+        try:
+            dispatcher = _numba_njit(*args, cache=True, **kwargs)(function)
+        except RuntimeError as exc:
+            if 'cannot cache function' not in str(exc):
+                raise
+            return _numba_njit(*args, **kwargs)(function)
+        # Numba's public dispatcher does not provide a cache error policy;
+        # wrap its cache so index and data stay paired across render processes.
+        cache = getattr(dispatcher, '_cache', None)
+        if (not isinstance(getattr(cache, 'cache_path', None), (str, os.PathLike))
+                or any(not callable(getattr(cache, name, None))
+                       for name in ('load_overload', 'save_overload', 'flush'))):
+            return _numba_njit(*args, **kwargs)(function)
+        dispatcher._cache = _GuardedCache(cache)
+        return dispatcher
+    return decorate
 
 
 _prepare_lock = Lock()

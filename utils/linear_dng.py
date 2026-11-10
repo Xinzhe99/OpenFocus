@@ -418,7 +418,8 @@ def load_linear_raw(path, scale_factor=1.0, *, before_decode=None):
     if os.path.splitext(os.fspath(path))[1].lower() == '.dng' and not is_dng:
         raise ValueError("Invalid DNG: DNGVersion tag is missing or unreadable")
     dng_metadata = _linear_dng_calibration(path) if is_dng else None
-    with open(path, 'rb') as stream, rawpy.imread(stream) as raw:
+    with rawpy.RawPy() as raw:
+        raw.open_file(os.fspath(path))
         sizes = raw.sizes
         aspect = float(sizes.pixel_aspect)
         if not math.isfinite(aspect) or aspect <= 0:
@@ -429,8 +430,26 @@ def load_linear_raw(path, scale_factor=1.0, *, before_decode=None):
             raise ValueError("Invalid RAW dimensions")
         if before_decode is not None:
             before_decode(width, height)
-        # LibRaw's unpacking, demosaic and output may coexist during postprocess.
-        require_memory(width * height * 64)
+        # RawPy's sensor properties implicitly unpack, so admit that allocation
+        # before inspecting the mosaic or choosing a postprocess route.
+        require_memory(width * height * 16)
+        raw.unpack()
+        # Bayer half-size decoding combines each sensor block before demosaic.
+        # Other mosaics and LinearRaw DNGs keep the full-resolution path.
+        pattern = raw.raw_pattern if raw.raw_type == rawpy.RawType.Flat else None
+        half_size = (scale_factor <= 0.5 and pattern is not None
+                     and np.shape(pattern) == (2, 2))
+        if half_size:
+            output_width, output_height = sizes.width, sizes.height
+            if aspect < 1:
+                output_height = round(output_height / aspect)
+            elif aspect > 1:
+                output_width = round(output_width * aspect)
+            if sizes.flip in (4, 5, 6, 7):
+                output_width, output_height = output_height, output_width
+            target_size = (max(1, int(output_width * scale_factor)),
+                           max(1, int(output_height * scale_factor)))
+        require_memory(width * height * (24 if half_size else 64))
         if raw.num_colors != 3:
             raise ValueError("Only three-color RAW files are supported")
         if dng_metadata is not None:
@@ -454,7 +473,8 @@ def load_linear_raw(path, scale_factor=1.0, *, before_decode=None):
             raise ValueError("Invalid RAW white level")
         rgb = raw.postprocess(output_color=rawpy.ColorSpace.raw,
                               user_wb=[1, 1, 1, 1], no_auto_scale=True,
-                              no_auto_bright=True, gamma=(1, 1), output_bps=16)
+                              no_auto_bright=True, gamma=(1, 1), output_bps=16,
+                              half_size=half_size)
     if rgb.dtype != np.uint16 or rgb.ndim != 3 or rgb.shape[2] != 3:
         raise ValueError("LibRaw returned an unsupported image")
     require_memory(rgb.nbytes * 2 + 65536 * 10)
@@ -465,8 +485,9 @@ def load_linear_raw(path, scale_factor=1.0, *, before_decode=None):
                                  (65535.0 / white)), 65535).astype(np.uint16)
         rgb = lut[rgb]
     if scale_factor != 1:
-        width = max(1, int(rgb.shape[1] * scale_factor))
-        height = max(1, int(rgb.shape[0] * scale_factor))
+        width, height = (target_size if half_size else
+                         (max(1, int(rgb.shape[1] * scale_factor)),
+                          max(1, int(rgb.shape[0] * scale_factor))))
         rgb = cv2.resize(rgb, (width, height), interpolation=cv2.INTER_AREA)
     return np.ascontiguousarray(rgb[:, :, ::-1]), metadata
 

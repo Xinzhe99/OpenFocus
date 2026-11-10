@@ -1,8 +1,36 @@
 import cv2
 
+from PyQt6.QtCore import QEvent, QObject
 from PyQt6.QtGui import QAction, QActionGroup
-from PyQt6.QtWidgets import QMainWindow
+from PyQt6.QtWidgets import QMainWindow, QToolTip
 from locales import trans
+from core.experimental import experimental_enabled
+
+
+class _LockedMosaicHint(QObject):
+    def __init__(self, menu, action):
+        super().__init__(menu)
+        self.menu = menu
+        self.action = action
+
+    def eventFilter(self, watched, event):
+        if event.type() == QEvent.Type.MouseButtonPress and not self.action.isEnabled():
+            point = event.position().toPoint()
+            if self.menu.actionAt(point) is self.action:
+                QToolTip.showText(event.globalPosition().toPoint(), self.action.toolTip(), self.menu)
+                return True
+        return super().eventFilter(watched, event)
+
+
+def update_mosaic_experimental_action(window: QMainWindow) -> None:
+    """Refresh the mosaic action after settings or language changes."""
+    action = getattr(window, 'ui_objs', {}).get('mosaic_title')
+    if action is None:
+        return
+    enabled = experimental_enabled(window)
+    action.setText(f"{trans.t('mosaic_title')} ({trans.t('experimental_label')})")
+    action.setEnabled(enabled)
+    action.setToolTip('' if enabled else trans.t('experimental_locked_hint'))
 
 
 def setup_menus(window: QMainWindow) -> None:
@@ -22,6 +50,11 @@ def setup_menus(window: QMainWindow) -> None:
     open_action.triggered.connect(window.open_folder_dialog)
     file_menu.addAction(open_action)
     window.ui_objs['action_open_folder'] = open_action
+
+    open_frames_action = QAction(trans.t('action_open_frames'), window)
+    open_frames_action.triggered.connect(window.source_manager.prompt_and_load_frames)
+    file_menu.addAction(open_frames_action)
+    window.ui_objs['action_open_frames'] = open_frames_action
 
     open_video_action = QAction(trans.t('action_open_video'), window)
     open_video_action.setShortcut("Ctrl+Shift+O")
@@ -74,6 +107,11 @@ def setup_menus(window: QMainWindow) -> None:
     save_action.triggered.connect(window.export_manager.save_result)
     file_menu.addAction(save_action)
     window.ui_objs['action_save'] = save_action
+
+    export_all_action = QAction(trans.t('menu_export_all'), window)
+    export_all_action.triggered.connect(window.output_manager.export_all_results)
+    file_menu.addAction(export_all_action)
+    window.ui_objs['menu_export_all'] = export_all_action
 
     save_stack_menu = file_menu.addMenu(trans.t('menu_save_stack'))
     window.ui_objs['menu_save_stack'] = save_stack_menu
@@ -225,6 +263,7 @@ def setup_menus(window: QMainWindow) -> None:
 
     # --- Tools Menu ---
     batch_menu = menubar.addMenu(trans.t('menu_tools'))
+    batch_menu.setToolTipsVisible(True)
     window.ui_objs['menu_tools'] = batch_menu
 
     batch_action = QAction(trans.t('action_batch_process'), window)
@@ -243,6 +282,9 @@ def setup_menus(window: QMainWindow) -> None:
     mosaic_action.triggered.connect(window.show_mosaic_dialog)
     batch_menu.addAction(mosaic_action)
     window.ui_objs['mosaic_title'] = mosaic_action
+    batch_menu._locked_mosaic_hint = _LockedMosaicHint(batch_menu, mosaic_action)
+    batch_menu.installEventFilter(batch_menu._locked_mosaic_hint)
+    update_mosaic_experimental_action(window)
 
     def open_converter():
         from dialogs.batch_converter import BatchConverterDialog

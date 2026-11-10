@@ -373,6 +373,7 @@ def test_copy_paths_sets_multiple_file_urls_including_unicode(qapp, tmp_path):
     urls = mime.urls()
     assert {Path(url.toLocalFile()) for url in urls} == {
         first_path.resolve(), second_path.resolve()}
+    assert set(clipboard_text(qapp).splitlines()) == {str(first_path.resolve()), str(second_path.resolve())}
     assert all(Path(url.toLocalFile()).is_file() for url in urls)
     assert window.status.messages[-1] == trans.t("msg_share_files_copied").format(n=2)
 
@@ -435,98 +436,79 @@ def test_copy_paths_single_selection_ignores_other_selected_history(qapp, tmp_pa
         only.resolve()]
 
 
-def test_unsaved_output_saves_one_16bit_png_once_and_marks_the_record(
-        qapp, tmp_path, monkeypatch):
+def test_unsaved_output_copy_path_does_not_open_picker_or_create_file(qapp, tmp_path, monkeypatch):
     window = host(qapp)
-    image = np.full((12, 16, 3), 1200, np.uint16)
-    item, record = add_record(window, image, "结果 A")
-    (tmp_path / "结果_A.png").write_bytes(b"keep")
-    dialogs = []
-
-    def pick(*args, **kwargs):
-        dialogs.append(args)
-        return str(tmp_path)
-
-    monkeypatch.setattr(output_module.FileDialog, "getExistingDirectory", pick)
+    item, record = add_record(window, np.full((12, 16, 3), 1200, np.uint16), 'unsaved')
+    monkeypatch.setattr(output_module.FileDialog, 'getExistingDirectory',
+                        lambda *args, **kwargs: pytest.fail('copying a path opened a picker'))
+    qapp.clipboard().setText('sentinel')
     window.output_manager.share_copy_paths(item)
-
-    assert len(dialogs) == 1
-    written = tmp_path / "结果_A_2.png"
-    assert (tmp_path / "结果_A.png").read_bytes() == b"keep"
-    saved = _read_image_any(str(written))
-    assert saved.dtype == np.uint16 and saved.shape == image.shape
-    assert int(saved[10, 10, 0]) == 1200
-    assert int(saved[0, 0, 1]) == 255
-    assert window.label_manager.calls == [("output", 0, record.output_id)]
-    assert record.exported and record.export_path == str(written)
-    assert record.exported_image is record.image
-    assert [Path(url.toLocalFile()) for url in clipboard_mime(qapp).urls()] == [
-        written.resolve()]
-
-
-def test_multiple_unsaved_outputs_choose_one_folder_and_write_both(
-        qapp, tmp_path, monkeypatch):
-    window = host(qapp)
-    first, first_record = add_record(window, np.full((6, 8, 3), 500, np.uint16), "A")
-    second, second_record = add_record(window, np.full((6, 8, 3), 900, np.uint16), "B")
-    window.output_list.clearSelection()
-    first.setSelected(True)
-    second.setSelected(True)
-    calls = []
-    monkeypatch.setattr(
-        output_module.FileDialog, "getExistingDirectory",
-        lambda *args, **kwargs: calls.append(args) or str(tmp_path))
-
-    window.output_manager.share_copy_paths(first)
-    assert len(calls) == 1
-    assert {Path(url.toLocalFile()) for url in clipboard_mime(qapp).urls()} == {
-        (tmp_path / "A.png").resolve(),
-        (tmp_path / "B.png").resolve()}
-    assert first_record.exported and second_record.exported
-
-
-def test_cancelled_destination_keeps_clipboard_and_export_state(
-        qapp, tmp_path, monkeypatch):
-    window = host(qapp)
-    item, record = add_record(window, np.zeros((6, 8, 3), np.uint8), "cancel")
-    qapp.clipboard().setText("sentinel")
-    calls = []
-    monkeypatch.setattr(
-        output_module.FileDialog, "getExistingDirectory",
-        lambda *args, **kwargs: calls.append(args) or "")
-
-    window.output_manager.share_copy_paths(item)
-    assert len(calls) == 1
-    assert qapp.clipboard().text() == "sentinel"
-    assert not record.exported and record.export_path == ""
+    assert clipboard_text(qapp) == 'sentinel'
+    assert window.status.messages[-1] == trans.t('msg_share_save_first')
+    assert not record.exported and not record.export_path
     assert not list(tmp_path.iterdir())
 
 
-def test_partial_save_failure_keeps_written_file_and_skips_clipboard(
-        qapp, tmp_path, monkeypatch):
+def test_mixed_saved_and_unsaved_selection_preserves_clipboard(qapp, tmp_path, monkeypatch):
     window = host(qapp)
-    good, good_record = add_record(
-        window, np.full((6, 8, 3), 30, np.uint8), "good")
-    bad, bad_record = add_record(
-        window, np.zeros((8, 8, 2), np.uint8), "bad", annotations_baked=True)
+    saved = tmp_path / 'saved.png'
+    assert imwrite_auto(str(saved), np.zeros((4, 4, 3), np.uint8), [])
+    first, _ = add_record(window, np.zeros((4, 4, 3), np.uint8), 'saved',
+                          exported=True, export_path=str(saved))
+    second, _ = add_record(window, np.zeros((4, 4, 3), np.uint8), 'unsaved')
     window.output_list.clearSelection()
-    good.setSelected(True)
-    bad.setSelected(True)
-    errors = []
-    monkeypatch.setattr(output_module, "show_error_box",
-                        lambda *args: errors.append(args))
-    monkeypatch.setattr(output_module.FileDialog, "getExistingDirectory",
-                        lambda *args, **kwargs: str(tmp_path))
-    qapp.clipboard().setText("sentinel")
+    first.setSelected(True)
+    second.setSelected(True)
+    monkeypatch.setattr(output_module.FileDialog, 'getExistingDirectory',
+                        lambda *args, **kwargs: pytest.fail('copying a path opened a picker'))
+    qapp.clipboard().setText('sentinel')
+    window.output_manager.share_copy_paths(first)
+    assert clipboard_text(qapp) == 'sentinel'
+    assert window.status.messages[-1] == trans.t('msg_share_save_first')
 
-    window.output_manager.share_copy_paths(good)
-    assert qapp.clipboard().text() == "sentinel"
-    assert errors and errors[0][1] == trans.t("msg_share_failed_title")
-    assert good_record.exported and (tmp_path / "good.png").is_file()
-    assert not bad_record.exported
-    written = tmp_path / "bad.png"
-    assert not written.exists() or written.stat().st_size == 0
 
+def test_save_as_copies_actual_written_unicode_path(qapp, tmp_path, monkeypatch):
+    window = host(qapp)
+    item, record = add_record(window, np.full((12, 16, 3), 1200, np.uint16), 'result')
+    target = tmp_path / '融合 结果'
+    monkeypatch.setattr(output_module.FileDialog, 'getSaveFileName',
+                        lambda *args, **kwargs: (str(target), 'TIFF (*.tif *.tiff)'))
+    window.output_manager.save_output_image_as(item)
+    written = target.with_suffix('.tif')
+    assert written.is_file() and record.export_path == str(written)
+    assert _read_image_any(str(written)).dtype == np.uint16
+    assert clipboard_text(qapp) == str(written.resolve())
+    assert [Path(url.toLocalFile()) for url in clipboard_mime(qapp).urls()] == [written.resolve()]
+    assert window.status.messages[-1] == trans.t('msg_saved_path_copied').format(path=str(written))
+
+
+@pytest.mark.parametrize('cancel', [True, False])
+def test_save_as_cancel_or_failure_does_not_change_clipboard(qapp, tmp_path, monkeypatch, cancel):
+    window = host(qapp)
+    item, record = add_record(window, np.zeros((8, 8, 3), np.uint8), 'result')
+    monkeypatch.setattr(output_module.FileDialog, 'getSaveFileName',
+                        lambda *args, **kwargs: ('' if cancel else str(tmp_path / 'fail.png'), ''))
+    monkeypatch.setattr(output_module, 'show_error_box', lambda *args: None)
+    if not cancel:
+        monkeypatch.setattr(window.output_manager, '_write_record',
+                            lambda *args: (_ for _ in ()).throw(OSError('write failed')))
+    qapp.clipboard().setText('sentinel')
+    window.output_manager.save_output_image_as(item)
+    assert clipboard_text(qapp) == 'sentinel'
+    assert not record.exported
+
+
+def test_saved_file_is_retained_when_clipboard_is_unavailable(qapp, tmp_path, monkeypatch):
+    from utils import output_share
+    window = host(qapp)
+    item, record = add_record(window, np.zeros((8, 8, 3), np.uint8), 'result')
+    path = tmp_path / 'saved.png'
+    monkeypatch.setattr(output_module.FileDialog, 'getSaveFileName',
+                        lambda *args, **kwargs: (str(path), ''))
+    monkeypatch.setattr(output_share, 'set_clipboard_payload', lambda mime: False)
+    window.output_manager.save_output_image_as(item)
+    assert path.is_file() and record.exported and record.export_path == str(path)
+    assert trans.t('msg_share_clipboard_failed') in window.status.messages[-1]
 
 def test_valid_exported_jpeg_is_reused_without_rewriting(
         qapp, tmp_path, monkeypatch):
@@ -549,34 +531,24 @@ def test_valid_exported_jpeg_is_reused_without_rewriting(
         saved.resolve()]
 
 
-def test_stale_or_missing_export_is_rewritten(qapp, tmp_path, monkeypatch):
+def test_copy_path_uses_last_saved_file_and_reports_missing_file(qapp, tmp_path, monkeypatch):
     window = host(qapp)
-    stale = tmp_path / "stale.png"
-    missing = tmp_path / "missing.png"
-    assert imwrite_auto(str(stale), np.zeros((8, 8, 3), np.uint8), [])
-    stale_item, stale_record = add_record(
-        window, np.full((8, 8, 3), 10, np.uint8), "stale", exported=True,
-        export_path=str(stale))
-    stale_record.exported_image = stale_record.image
-    stale_record.annotations_changed = True
-    missing_item, missing_record = add_record(
-        window, np.full((8, 8, 3), 20, np.uint8), "missing", exported=True,
-        export_path=str(missing))
-    missing_record.exported_image = missing_record.image
-    missing_record.annotations_baked = True
-    window.output_list.clearSelection()
-    stale_item.setSelected(True)
-    missing_item.setSelected(True)
-    monkeypatch.setattr(output_module.FileDialog, "getExistingDirectory",
-                        lambda *args, **kwargs: str(tmp_path))
-
-    window.output_manager.share_copy_paths(stale_item)
-    paths = {Path(url.toLocalFile()) for url in clipboard_mime(qapp).urls()}
-    assert paths == {(tmp_path / "stale_2.png").resolve(),
-                     (tmp_path / "missing.png").resolve()}
-    assert stale_record.export_path == str(tmp_path / "stale_2.png")
-    assert missing_record.export_path == str(tmp_path / "missing.png")
-    assert stale.read_bytes() != (tmp_path / "stale_2.png").read_bytes()
+    saved = tmp_path / 'saved.png'
+    assert imwrite_auto(str(saved), np.zeros((8, 8, 3), np.uint8), [])
+    original = saved.read_bytes()
+    item, record = add_record(window, np.full((8, 8, 3), 10, np.uint8), 'changed',
+                              exported=True, export_path=str(saved))
+    record.annotations_changed = True
+    monkeypatch.setattr(output_module.FileDialog, 'getExistingDirectory',
+                        lambda *args, **kwargs: pytest.fail('copying a path opened a picker'))
+    window.output_manager.share_copy_paths(item)
+    assert clipboard_text(qapp) == str(saved.resolve())
+    assert saved.read_bytes() == original
+    saved.unlink()
+    qapp.clipboard().setText('sentinel')
+    window.output_manager.share_copy_paths(item)
+    assert clipboard_text(qapp) == 'sentinel'
+    assert window.status.messages[-1] == trans.t('msg_share_save_first')
 
 
 def test_aligned_folder_is_never_copied_as_a_fusion_file(qapp, tmp_path):
@@ -603,18 +575,21 @@ def test_disappearing_exported_file_is_not_reused(qapp, tmp_path, monkeypatch):
     item, record = add_record(
         window, np.zeros((4, 4, 3), np.uint8), "saved", exported=True,
         export_path=str(saved), annotations_baked=True)
-    monkeypatch.setattr(
-        output_module.os.path, "getsize",
-        lambda path: (_ for _ in ()).throw(OSError("file disappeared")))
+    getsize = output_module.os.path.getsize
+    monkeypatch.setattr(output_module.os.path, "getsize", lambda path:
+                        (_ for _ in ()).throw(OSError("file disappeared"))
+                        if str(path) == str(saved) else getsize(path))
     assert window.output_manager._share_persistent_path(record) == ""
     errors = []
     monkeypatch.setattr(output_module, "show_error_box",
                         lambda *args: errors.append(args))
-    monkeypatch.setattr(output_module.FileDialog, "getExistingDirectory",
-                        lambda *args, **kwargs: str(tmp_path))
-    window.output_manager.share_copy_paths(item)
+    window.output_manager._share_temp_dir = str(tmp_path)
+    opened = []
+    monkeypatch.setattr(output_module, 'select_in_file_manager', lambda path: opened.append(path) or True)
+    window.output_manager.share_reveal(item)
     assert not errors
-    assert record.export_path != str(saved)
+    assert record.export_path == str(saved)
+    assert len(opened) == 1 and Path(opened[0]) != saved.resolve()
 
 
 def test_reveal_surfaces_a_file_manager_exception(qapp, tmp_path, monkeypatch):
@@ -673,45 +648,34 @@ def test_reveal_opens_the_persistent_file_for_the_target(qapp, tmp_path, monkeyp
     assert called == [str(saved)]
 
 
-def test_reveal_saves_an_unsaved_output_before_opening(
+def test_reveal_opens_temp_for_unsaved_result_without_marking_it_saved(
         qapp, tmp_path, monkeypatch):
     window = host(qapp)
+    window.output_manager._share_temp_dir = str(tmp_path)
     item, record = add_record(window, np.zeros((6, 8, 3), np.uint8), "reveal")
     monkeypatch.setattr(output_module.FileDialog, "getExistingDirectory",
-                        lambda *args, **kwargs: str(tmp_path))
+                        lambda *args, **kwargs: pytest.fail("no folder picker"))
     called = []
     monkeypatch.setattr(output_module, "select_in_file_manager",
                         lambda path: called.append(path) or True)
     window.output_manager.share_reveal(item)
     expected = str(tmp_path / "reveal.png")
-    assert called == [expected]
-    assert record.exported and record.export_path == expected
+    assert called == [expected] and Path(expected).is_file()
+    assert not record.exported and record.export_path == ""
 
 
-def test_reveal_failure_is_visible_and_cancel_does_not_open(
-        qapp, tmp_path, monkeypatch):
+def test_reveal_failure_is_visible(qapp, tmp_path, monkeypatch):
     window = host(qapp)
     saved = tmp_path / "saved.png"
     assert imwrite_auto(str(saved), np.zeros((4, 4, 3), np.uint8), [])
     item, _ = add_record(window, np.zeros((4, 4, 3), np.uint8), "saved",
-                         exported=True, export_path=str(saved),
-                         annotations_baked=True)
+                         exported=True, export_path=str(saved), annotations_baked=True)
     errors = []
-    monkeypatch.setattr(output_module, "show_error_box",
-                        lambda *args: errors.append(args))
+    monkeypatch.setattr(output_module, "show_error_box", lambda *args: errors.append(args))
     monkeypatch.setattr(output_module, "select_in_file_manager", lambda path: False)
     window.output_manager.share_reveal(item)
     assert errors and errors[0][1] == trans.t("msg_share_failed_title")
     assert errors[0][2] == trans.t("msg_share_reveal_failed")
-
-    cancel_item, record = add_record(window, np.zeros((6, 8, 3), np.uint8), "cancel")
-    monkeypatch.setattr(output_module.FileDialog, "getExistingDirectory",
-                        lambda *args, **kwargs: "")
-    called = []
-    monkeypatch.setattr(output_module, "select_in_file_manager",
-                        lambda path: called.append(path) or True)
-    window.output_manager.share_reveal(cancel_item)
-    assert called == [] and not record.exported
 
 
 def test_encode_jpeg_preview_rejects_non_image_values():

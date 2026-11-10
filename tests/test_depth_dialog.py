@@ -70,6 +70,7 @@ def depth_dialog(qapp, monkeypatch, tmp_path):
         from PyQt6.QtWidgets import QListWidget, QListWidgetItem
         from controllers.output_manager import OutputManager, OutputRecord, OUTPUT_RECORD_ROLE
         window = QWidget()
+        window.experimental_features = True
         window.raw_images = frames if frames is not None else _synthetic_thirds(48, 64)
         window.image_filenames = [f"capture-{i}.tif" for i in range(len(window.raw_images))]
         window.current_fusion_method = lambda: method
@@ -149,7 +150,12 @@ def test_depth_open_and_switch_require_explicit_compute(depth_dialog, qapp, monk
             from core.algorithms import get_fusion
             assert set(dialog.fusion_parameter_panel.editors) == {
                 spec.key for spec in get_fusion(selected).depth.parameters}
-            _idle_actions(dialog)
+            item = dialog.method_combo.model().item(dialog.method_combo.currentIndex())
+            if item.isEnabled():
+                _idle_actions(dialog)
+            else:
+                assert not dialog.compute_btn.isEnabled()
+                assert dialog.cancel_btn.isHidden()
     dialog.gamma_spin.setValue(1.7)
     dialog.smooth_spin.setValue(2)
     dialog.invert_chk.setChecked(True)
@@ -245,8 +251,8 @@ def _openfocus_transition_frames():
 
 
 @pytest.mark.parametrize("method,control", [
-    ("openfocus_b", "depth_smoothing"),
-    ("openfocus_c", "blend_smoothing"),
+    ("openfocus_b", "smoothing"),
+    ("openfocus_c", "smoothing"),
 ])
 def test_openfocus_depth_smoothing_edit_changes_measurement(
         depth_dialog, qapp, method, control):
@@ -271,8 +277,8 @@ def test_depth_parameter_drafts_are_local_and_not_overridden(depth_dialog, monke
     from copy import deepcopy
     from core.algorithms import resolve_fusion_parameters
     drafts = {'dct': {'kernel_size': 9},
-              'openfocus_b': {'kernel_size': 15, 'depth_smoothing': 2.0},
-              'openfocus_c': {'blend_smoothing': 4.0}, 'dtcwt': {'N': 5}}
+              'openfocus_b': {'radius': 7, 'smoothing': 2.0 / .24},
+              'openfocus_c': {'smoothing': 4.0 / .6}, 'dtcwt': {'N': 5}}
     before = deepcopy(drafts)
     def parameters_for(method, depth=False):
         return resolve_fusion_parameters(method, drafts.get(method), depth=depth)
@@ -286,20 +292,20 @@ def test_depth_parameter_drafts_are_local_and_not_overridden(depth_dialog, monke
     editors['kernel_size'].setValue(23)
     _select(dialog.method_combo, "openfocus_b")
     editors = dialog.fusion_parameter_panel.editors
-    assert editors['kernel_size'].value() == 15
-    assert editors['depth_smoothing'].value() == pytest.approx(2.0)
-    editors['kernel_size'].setValue(3)
-    editors['depth_smoothing'].setValue(6.0)
+    assert editors['radius'].value() == 7
+    assert editors['smoothing'].value() == pytest.approx(2.0 / .24)
+    editors['radius'].setValue(1)
+    editors['smoothing'].setValue(6.0)
     _select(dialog.method_combo, "openfocus_c")
     editors = dialog.fusion_parameter_panel.editors
     # C exposes only its fusion smoothing to the depth map.
-    assert set(editors) == {'blend_smoothing'}
-    assert editors['blend_smoothing'].value() == pytest.approx(4.0)
-    editors['blend_smoothing'].setValue(5.0)
+    assert set(editors) == {'smoothing'}
+    assert editors['smoothing'].value() == pytest.approx(4.0 / .6)
+    editors['smoothing'].setValue(5.0)
     _select(dialog.method_combo, "openfocus_b")
     editors = dialog.fusion_parameter_panel.editors
-    assert editors['kernel_size'].value() == 3
-    assert editors['depth_smoothing'].value() == pytest.approx(6.0)
+    assert editors['radius'].value() == 1
+    assert editors['smoothing'].value() == pytest.approx(6.0)
     _select(dialog.method_combo, "dtcwt")
     assert 'mode' not in dialog.fusion_parameter_panel.editors
     _select(dialog.method_combo, "dct")
@@ -389,12 +395,15 @@ def test_depth_change_cancels_without_restart(depth_dialog, monkeypatch, qapp):
         return _ramp(images, method)
 
     monkeypatch.setattr(depth_map, "compute_focus_index", compute)
+    # The measurement backend is mocked; exercise DTCWT selection even when
+    # its optional package is unavailable on this Python installation.
+    monkeypatch.setattr('ui.algorithm_combo._package_available', lambda _name: True)
     dialog, _ = depth_dialog()
     dialog.compute_btn.click()
     _wait(qapp, entered.is_set)
     first = dialog._worker
     _select(dialog.method_combo, "openfocus_b")
-    dialog.fusion_parameter_panel.editors['kernel_size'].setValue(3)
+    dialog.fusion_parameter_panel.editors['radius'].setValue(1)
     _select(dialog.method_combo, "dtcwt")
     _select(dialog.method_combo, "stackmffv3")
     assert dialog._worker is first
@@ -514,6 +523,8 @@ def test_depth_stale_map_blocks_every_export(depth_dialog, monkeypatch, qapp, ch
     from core import depth_map
     from utils.file_dialogs import FileDialog
     monkeypatch.setattr(depth_map, "compute_focus_index", _ramp)
+    if change == 'levels':
+        monkeypatch.setattr('ui.algorithm_combo._package_available', lambda _name: True)
     frames = _synthetic_thirds(48, 64)
     image = frames[0].copy()
     dialog, _ = depth_dialog("dtcwt" if change == "levels" else "dct", frames, image,
@@ -1075,6 +1086,7 @@ def test_depth_dtcwt_levels_seed_from_main_and_preserve_local_draft(depth_dialog
         return _ramp(images, "dtcwt")
 
     monkeypatch.setattr(depth_map, "_measure_dtcwt", measure)
+    monkeypatch.setattr('ui.algorithm_combo._package_available', lambda _name: True)
     from core.algorithms import resolve_fusion_parameters
     def parameters_for(method, depth=False):
         values = {'N': 3} if method == 'dtcwt' else None
@@ -1448,17 +1460,17 @@ def test_unavailable_depth_methods_are_disabled_with_a_reason(
         index = dialog.method_combo.findData(method)
         assert index >= 0
         assert not dialog.method_combo.model().item(index).isEnabled()
-        assert (dialog.method_combo.itemData(index, Qt.ItemDataRole.ToolTipRole)
-                == trans.t("msg_stackmff_unavailable_text"))
+        assert trans.t('msg_stackmff_unavailable_text') in dialog.method_combo.itemData(
+            index, Qt.ItemDataRole.ToolTipRole)
     dtcwt = dialog.method_combo.findData('dtcwt')
     assert not dialog.method_combo.model().item(dtcwt).isEnabled()
-    assert dialog.method_combo.itemData(
-        dtcwt, Qt.ItemDataRole.ToolTipRole) == trans.t('env_dtcwt_unavailable')
+    assert trans.t('env_dtcwt_unavailable') in dialog.method_combo.itemData(
+        dtcwt, Qt.ItemDataRole.ToolTipRole)
     assert dialog.method_combo.currentData() == "openfocus_b"
 
     selected, _ = depth_dialog(method="dtcwt")
     assert selected.method_combo.currentData() == "dtcwt"
     assert not selected.compute_btn.isEnabled()
-    assert selected.status_lbl.text() == trans.t("env_dtcwt_unavailable")
+    assert trans.t('env_dtcwt_unavailable') in selected.status_lbl.text()
     _select(selected.method_combo, "dct")
     assert selected.compute_btn.isEnabled()
