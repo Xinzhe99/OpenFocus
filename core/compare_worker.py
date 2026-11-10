@@ -210,6 +210,12 @@ class PreviewWorker(_CancellableWorker):
                       for frame in frames]
         # Fusion owns normalization under its processing lease.
         fusion = MultiFocusFusion(**constructor)
+        from core.fusion_diagnostics import log_effective_fusion
+        log_effective_fusion(fusion, inputs, origin='comparison',
+                              thread_count=params['thread_count'], roi_only=self.roi_only,
+                              requested_region=self.region, input_region=context, output_region=bounds,
+                              sharpen_output=bool(self.shared.get('sharpen_output', False)),
+                              registration_parameters=self.shared.get('registration_parameters'))
         inputs, is_16bit = prepare_fusion_input(inputs, self._should_cancel)
         if self._should_cancel():
             return None

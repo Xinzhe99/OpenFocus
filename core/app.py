@@ -88,6 +88,15 @@ class OpenFocusApplication(QApplication):
         self._import_timer.timeout.connect(self._drain_import_queue)
 
     def notify(self, receiver, event):
+        logger = getattr(getattr(self, 'main_window', None), '_activity_logger', None)
+        active = logger is not None and logger.begin_input(event)
+        try:
+            return self._notify(receiver, event)
+        finally:
+            if active:
+                logger.end_input()
+
+    def _notify(self, receiver, event):
         if event.type() == QEvent.Type.Wheel and isinstance(receiver, QWidget):
             widget = receiver
             window = receiver.window()

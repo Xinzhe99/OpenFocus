@@ -4177,6 +4177,10 @@ class OpenFocus(QMainWindow):
             return
         if timer is not None:
             timer.stop()
+        activity = getattr(self, '_activity_logger', None)
+        if activity is not None:
+            activity.stop()
+            self._activity_logger = None
 
         from time import perf_counter
         from utils.logging_setup import log_action, get_logger

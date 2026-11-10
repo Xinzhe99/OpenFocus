@@ -692,12 +692,6 @@ def _fuse_stack_admitted_body(images, args):
                          sort_mode=fusion_order,
                          exposure_match=getattr(args, "exposure_match", True),
                          ai_batch_size=args.batch_size)
-    log_action("cli.fusion", method=args.method, alignment=args.align,
-               fusion_parameters=args._fusion_parameters,
-               registration_parameters=args._registration_parameters,
-               threads=args.threads, use_gpu=not args.cpu,
-               tile_size=args.tile_size, base_frame=fusion_kwargs['base_frame'],
-               exposure_match=fusion_kwargs['exposure_match'], **frame_details(images))
     if args.tile_size:
         fusion_kwargs["tile_block_size"] = args.tile_size
     if not getattr(args, "tile_enabled", True):
@@ -707,6 +701,15 @@ def _fuse_stack_admitted_body(images, args):
     if getattr(args, "tile_threshold", None) is not None:
         fusion_kwargs["tile_threshold"] = args.tile_threshold
     fusion = MultiFocusFusion(**fusion_kwargs)
+    from core.fusion_diagnostics import log_effective_fusion
+    log_effective_fusion(fusion, images, origin='cli', thread_count=args.threads,
+        registration=alignment_steps(args.align), registration_parameters=args._registration_parameters,
+        registration_downscale_width=args.downscale,
+        registration_brightness_reference='last' if getattr(args, 'exposure_match', True) else 'first',
+        reverse_registration=preordered, sharpen_output=bool(getattr(args, 'sharpen_output', False)),
+        sensor_denoise=bool(getattr(args, 'sensor_denoise', False)),
+        defect_mask=bool(getattr(args, 'defect_mask_path', None)),
+        flat_field=bool(getattr(args, 'dust_map', None)), grouped=bool(getattr(args, '_grouped', False)))
     profile = performance_profile.current()
     with profile.stage('prepare_input'):
         images, is_16bit = prepare_fusion_input(images, getattr(args, "_should_cancel", None))
