@@ -125,6 +125,7 @@ class RenderManager:
         probe.completed.connect(lambda result: self._finish_storage_preflight(request, result),
                                 Qt.ConnectionType.QueuedConnection)
         self.last_state = 'running'
+        self.last_error = None
         self.refresh_action_labels()
         try:
             probe.start(estimate)
