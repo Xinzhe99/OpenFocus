@@ -57,6 +57,7 @@ def test_account_requires_review_and_consent_then_remembers_reporting(qapp, sett
     client = window._account_client = _Account()
     dialog = AccountDialog(window)
     try:
+        assert not dialog.auto_reports.isChecked()
         assert not dialog.terms.isEnabled()
         dialog.github_button.click()
         assert client.calls == []
@@ -67,8 +68,11 @@ def test_account_requires_review_and_consent_then_remembers_reporting(qapp, sett
         dialog.github_button.click()
         _wait(qapp, lambda: dialog._job is None)
         assert client.calls[1][0:2] == ('github', '2026-11-08')
+        assert not settings.value('reports/auto_send', type=bool)
+        assert not window.auto_error_reports
+        dialog.auto_reports.setChecked(True)
+        dialog.reject()
         assert settings.value('reports/auto_send', type=bool)
-        assert window.auto_error_reports
     finally:
         dialog.reject()
         window.deleteLater()
