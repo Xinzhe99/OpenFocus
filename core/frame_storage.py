@@ -548,6 +548,8 @@ def select_scratch(size, source_paths=(), *, preferred_size=None, working_size=N
                     state.directory = candidate
                 else:
                     state.directory = tempfile.mkdtemp(prefix='openfocus-', dir=candidate)
+                    from core.scratch_registry import register
+                    register(state.directory)
                     state.owned = True
                 from utils.logging_setup import log_debug
                 log_debug('scratch_selected', directory=state.directory, required_bytes=size,
@@ -787,6 +789,10 @@ def _frame_file(directory, size, *, prefix='openfocus-frame-'):
         os.close(fd)
         _remove(path)
         raise
+    # Recorded for the startup sweep of scratch left by a crashed session;
+    # registration never raises, so upstream's cleanup above stays complete.
+    from core.scratch_registry import register
+    register(path)
     return fd, path
 
 

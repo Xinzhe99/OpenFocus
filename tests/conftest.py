@@ -11,6 +11,19 @@ sys.path.insert(0, PROJECT_ROOT)
 os.chdir(PROJECT_ROOT)
 
 
+@pytest.fixture(autouse=True, scope="session")
+def isolate_scratch_registry(tmp_path_factory):
+    """Keep scratch bookkeeping out of the user's data folder, and never sweep
+    the real temporary folder when a test constructs the main window or CLI."""
+    from core import scratch_registry
+    scratch_registry._directory_override = tmp_path_factory.mktemp("scratch-sessions")
+    real_sweep = scratch_registry.sweep_abandoned
+    scratch_registry.sweep_abandoned = lambda extra_directories=(): (0, 0)
+    scratch_registry.sweep_in_background = lambda extra_directories=(): None
+    scratch_registry._real_sweep_abandoned = real_sweep
+    yield
+
+
 @pytest.fixture(autouse=True)
 def isolate_gui_usage_reports(request, monkeypatch):
     """GUI tests cannot write synthetic installation IDs to production."""

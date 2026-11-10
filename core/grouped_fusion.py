@@ -128,6 +128,8 @@ def grouped_fuse(paths, group_size, overlap, fuse_group, *, scale_factor=1.0,
         raise ValueError('Grouped fusion scale produces an empty image')
 
     with tempfile.TemporaryDirectory(prefix="openfocus-grouped-", dir=storage_directory()) as scratch:
+        from core.scratch_registry import register
+        register(scratch)
         current = [(path, False, (0, 0, width, height)) for path in paths]
         stage = 1
         while True:

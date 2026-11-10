@@ -148,6 +148,11 @@ def _render_child(connection, cancel_event, request, budget, directory, language
                     return
             if connection.recv() == 'accepted':
                 storage.disown_temp_files(paths)
+                # The window now owns these and records them itself; leaving
+                # them in this worker's registry would let a later startup
+                # sweep remove them while the window still uses them.
+                from core import scratch_registry
+                scratch_registry.forget([*paths, *relay.directories])
     except RegistrationCancelled:
         relay.send(('error', 'CANCELLED: render cancelled', None))
     except Exception as exc:
@@ -190,6 +195,12 @@ class _RenderExchange:
     def receive(self, message, connection):
         kind = message[0]
         if kind == 'scratch':
+            # Recorded here as soon as the worker creates it, so scratch from a
+            # worker (or this window) that crashes is removed at the next start.
+            from core import scratch_registry
+            scratch_registry.register(message[1])
+            if message[2] is not None and message[2] not in self.directories:
+                scratch_registry.register(message[2])
             self.files.add(message[1])
             if message[2] is not None:
                 self.directories.add(message[2])

@@ -469,6 +469,9 @@ class OpenFocus(QMainWindow):
         if self.debug_logging:
             from utils.logging_setup import set_debug_logging
             set_debug_logging(True)
+        # Scratch stranded by a crashed earlier session, in the background.
+        from core.scratch_registry import sweep_in_background
+        sweep_in_background([self.storage_directory])
         self.recent_files = getattr(self, 'recent_files', [])
         self.recent_projects = getattr(self, 'recent_projects', [])
         self._undo_stack = []
