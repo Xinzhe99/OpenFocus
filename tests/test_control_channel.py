@@ -1297,6 +1297,27 @@ def test_option_set_keeps_checkboxes_in_sync(server, control_window, monkeypatch
     call(server, "option.set", name="reverse_order", value=False)
 
 
+def test_diagnostic_options_are_reachable_and_take_effect_at_once(server, control_window):
+    from utils import logging_setup as logs
+    assert call(server, "app.state")["result"]["options"]["profile_performance"] is False
+    try:
+        call(server, "option.set", name="profile_performance", value=True)
+        call(server, "option.set", name="debug_logging", value=True)
+        options = call(server, "app.state")["result"]["options"]
+        assert options["profile_performance"] is True and options["debug_logging"] is True
+        assert control_window.profile_performance is True
+        assert logs.debug_enabled()
+        refused = call(server, "option.set", name="debug_logging", value="false")
+        assert refused["ok"] is False and refused["error"]["code"] == "invalid_argument"
+        assert logs.debug_enabled()                 # a string does not change the switch
+        control_window.render_manager.performance_report = {"outcome": "completed"}
+        assert call(server, "render.result")["result"]["performance"] == {"outcome": "completed"}
+    finally:
+        call(server, "option.set", name="debug_logging", value=False)
+        call(server, "option.set", name="profile_performance", value=False)
+    assert not logs.debug_enabled()
+
+
 def test_output_delete_clears_the_result_and_protects_retouch(server, stack_frames):
     token = server.token
     call(server, "stack.load", token=token, folder=str(stack_frames))

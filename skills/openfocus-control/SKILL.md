@@ -133,6 +133,16 @@ openfocus ctl output.list
 openfocus ctl output.export --path 'F:/out/result.tif' --index 0
 ```
 
+To learn why a render was slow, profile the next one and read the report; add
+`debug_logging` for the plans, tile sizes and directories behind it:
+
+```bash
+openfocus ctl option.set --name profile_performance --value true
+openfocus ctl option.set --name debug_logging --value true     # optional, DEBUG log detail
+openfocus ctl render.start --wait --timeout 300
+openfocus ctl render.result     # .performance: stages, tiling, threads, cache
+```
+
 `render.start --wait` exits when the returned `render_id` reaches `done`,
 `error`, `cancelled` or `discarded`, or when a newer render supersedes it;
 only completion of the requested render is success. Without it poll

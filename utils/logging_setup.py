@@ -35,6 +35,9 @@ _handler = None
 _directory = None
 _session_marker = None
 _session_started = False
+# A level chosen while running (Advanced Settings, --log-level). It outlives
+# repeated setup_logging() calls, which would otherwise restore the default.
+_runtime_level = None
 _context = ContextVar("openfocus_operation", default=None)
 _SESSION_FILE = re.compile(
     r"openfocus-\d{8}T\d{6}_\d{6}-(\d+)\.(?:log(?:\.\d+)?|crash\.txt)$")
@@ -120,24 +123,68 @@ def _prune_old_logs(directory):
         pass
 
 
+def _resolve_level(level=None) -> int:
+    """An explicit level, else the runtime choice, else the environment, else INFO."""
+    if level is None:
+        level = _runtime_level
+    if level is None:
+        level = os.environ.get("OPENFOCUS_LOG_LEVEL", "INFO")
+    if isinstance(level, str):
+        level = logging.getLevelName(level.strip().upper())
+    return level if isinstance(level, int) and not isinstance(level, bool) else logging.INFO
+
+
+def debug_enabled() -> bool:
+    """True when DEBUG detail is recorded; guard costly diagnostics with it."""
+    return _logger.isEnabledFor(logging.DEBUG)
+
+
+def set_log_level(level) -> int:
+    """Change the level of the running process and return the level applied.
+
+    ``None`` returns to the default (OPENFOCUS_LOG_LEVEL, else INFO). The
+    choice is per process: a caller that starts a worker process passes it on,
+    as the render process does. Changes are recorded so a log shows where its
+    detail starts and stops.
+    """
+    global _runtime_level
+    with _lock:
+        previous = _logger.getEffectiveLevel()
+        _runtime_level = None if level is None else _resolve_level(level)
+        applied = _resolve_level()
+        if applied != previous:
+            # Record the change while the more detailed of the two levels is
+            # in force, at a level that it lets through.
+            detailed = min(applied, previous)
+            _logger.setLevel(detailed)
+            _event("log_level.changed", {"level": logging.getLevelName(applied),
+                                         "previous": logging.getLevelName(previous)},
+                   level=max(detailed, logging.INFO))
+        _logger.setLevel(applied)
+        return applied
+
+
+def set_debug_logging(enabled) -> int:
+    """Detailed (DEBUG) logging on, or back to the default level."""
+    return set_log_level(logging.DEBUG if enabled else None)
+
+
 def setup_logging(log_dir=None, level=None) -> Path:
     """Install one owned handler; repeated calls never duplicate log records.
 
     OPENFOCUS_LOG_DIR and OPENFOCUS_LOG_LEVEL override the defaults for support
     and development. An unwritable directory must not prevent image processing.
     """
-    global _handler, _directory, _session_started
+    global _handler, _directory, _session_started, _runtime_level
     with _lock:
         directory = Path(log_dir) if log_dir is not None else logs_dir()
-        selected_level = level if level is not None else os.environ.get("OPENFOCUS_LOG_LEVEL", "INFO")
-        if isinstance(selected_level, str):
-            selected_level = logging.getLevelName(selected_level.upper())
-        if not isinstance(selected_level, int):
-            selected_level = logging.INFO
+        selected_level = _resolve_level(level)
         if _handler is not None and directory == _directory:
             _logger.setLevel(selected_level)
             return directory
+        runtime_level = _runtime_level
         shutdown_logging()
+        _runtime_level = runtime_level  # Moving the log keeps the chosen detail.
         _directory = directory
         try:
             directory.mkdir(parents=True, exist_ok=True)
@@ -161,7 +208,7 @@ def setup_logging(log_dir=None, level=None) -> Path:
 
 def shutdown_logging() -> None:
     """Close only OpenFocus's handler; leave embedding/test handlers intact."""
-    global _handler, _directory, _session_started
+    global _handler, _directory, _session_started, _runtime_level
     with _lock:
         if _handler is not None:
             _logger.removeHandler(_handler)
@@ -169,6 +216,7 @@ def shutdown_logging() -> None:
             _handler = None
         _directory = None
         _session_started = False
+        _runtime_level = None
 
 
 def get_logger(name: str = "openfocus") -> logging.Logger:
@@ -192,6 +240,17 @@ def _event(event, details, *, level=logging.INFO, exc_info=None):
 def log_action(event: str, **details) -> None:
     """Record a user action as unambiguous, escaped JSON fields."""
     _event(event, details)
+
+
+def log_debug(event: str, **details) -> None:
+    """Record a diagnostic event only when DEBUG detail is on.
+
+    For decisions and measurements that explain a result (a plan, a chosen
+    directory, one tile's time), never per pixel or per progress tick. When
+    building ``details`` is itself costly, test ``debug_enabled()`` first.
+    """
+    if _logger.isEnabledFor(logging.DEBUG):
+        _event(event, details, level=logging.DEBUG)
 
 
 def log_session_start() -> None:
