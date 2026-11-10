@@ -241,13 +241,11 @@ class _ActivityLogger(QObject):
         if _is_canvas(obj) and kind in (QEvent.Type.MouseButtonPress, QEvent.Type.MouseMove,
                                        QEvent.Type.MouseButtonRelease, QEvent.Type.Wheel):
             self._canvas_event(obj, event)
-        if kind == QEvent.Type.Show and isinstance(obj, QWidget):
-            self._connect_tree(obj)
-            if isinstance(obj, QMenu):
-                for action in obj.actions():
-                    self._connect(action)
         if kind not in _INPUT_EVENTS:
             return False
+        if isinstance(obj, QMenu):
+            for action in obj.actions():
+                self._connect(action)
         if isinstance(obj, QMenu) and kind == QEvent.Type.MouseButtonRelease:
             action = obj.actionAt(event.position().toPoint())
             if action is not None and action.isEnabled() and not action.isSeparator() and action.menu() is None:
