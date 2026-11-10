@@ -115,7 +115,8 @@ class RenderManager:
         request = {'identity': self._storage_request_identity(), 'completion': None,
                    'force_algorithm': force_algorithm, 'interactive': interactive,
                    'confirmed': confirmed, 'cpu_confirmed': cpu_confirmed,
-                   'roi_choice': deepcopy(roi_choice)}
+                   'roi_choice': deepcopy(roi_choice), 'previous_state': self.last_state,
+                   'previous_error': self.last_error}
         estimate = self._storage_estimate(frames)
         probe = _StorageProbe(self.window)
         request['probe'] = probe
@@ -124,7 +125,6 @@ class RenderManager:
         probe.completed.connect(lambda result: self._finish_storage_preflight(request, result),
                                 Qt.ConnectionType.QueuedConnection)
         self.last_state = 'running'
-        self.last_error = None
         self.refresh_action_labels()
         try:
             probe.start(estimate)
@@ -176,7 +176,11 @@ class RenderManager:
                                            _storage_assessment=assessment,
                                            _cpu_confirmed=request['cpu_confirmed'])
                 if status != 'started':
-                    self.last_state = 'cancelled' if status == 'cancelled' else None
+                    if status in ('confirm_storage', 'insufficient_storage'):
+                        self.last_state = request['previous_state']
+                        self.last_error = request['previous_error']
+                    else:
+                        self.last_state = 'cancelled' if status == 'cancelled' else None
                     self._hide_progress_bar()
                     self.refresh_action_labels()
         except Exception as exc:

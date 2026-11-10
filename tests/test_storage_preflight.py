@@ -443,6 +443,36 @@ def test_pending_storage_preserves_previous_result(window, fake_worker, monkeypa
     assert not fake_worker.created
 
 
+@pytest.mark.parametrize('storage_status,expected', [
+    ('advisory', 'confirm_storage'), ('critical', 'insufficient_storage'),
+])
+def test_rejected_storage_preflight_preserves_previous_control_error(
+        window, fake_worker, monkeypatch, tmp_path, qapp, storage_status, expected):
+    from controllers import render_manager
+    from core.control.server import ControlServer
+
+    probes = []
+    monkeypatch.setattr(frame_storage, 'automatic_preflight_may_block', lambda: True)
+    monkeypatch.setattr(frame_storage, '_storage_directory', None)
+    monkeypatch.setattr(render_manager._StorageProbe, 'start', lambda probe, estimate: probes.append(probe))
+    manager = window.render_manager
+    manager.last_state, manager.last_error = 'error', 'earlier render failed'
+    server = ControlServer(window, socket_name=f'OpenFocus-previous-error-{os.getpid()}-{id(tmp_path)}')
+    try:
+        assert manager.start_render(interactive=False) == 'preflight'
+        outcomes = []
+        manager.set_storage_completion(outcomes.append)
+        probes[0].completed.emit(_assessment(storage_status))
+        qapp.processEvents()
+        assert outcomes == [expected]
+        state = server._cmd_render_state({})
+        assert state['state'] == 'error' and state['error'] == 'earlier render failed'
+        assert not state['busy'] and not fake_worker.created
+    finally:
+        manager.cancel_storage_preflight()
+        server.close()
+
+
 def test_gui_still_assesses_explicit_directory_on_slow_platform(window, monkeypatch, tmp_path):
     from types import SimpleNamespace
 
