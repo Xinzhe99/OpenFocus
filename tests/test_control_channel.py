@@ -886,6 +886,34 @@ def test_gpu_action_disables_after_backend_probe_fails(qapp, tmp_path, monkeypat
         _destroy_main_window(qapp, window)
 
 
+def test_gpu_action_follows_admission_not_verification(qapp, tmp_path, monkeypatch):
+    import core.multi_focus_fusion as mff
+    from fusion_methods import neural_runtime
+    from locales import trans
+    from main import OpenFocus
+
+    monkeypatch.setattr(OpenFocus, "_probe_stackmff_availability_async", lambda self: None)
+    monkeypatch.setattr(OpenFocus, "_probe_device_kind_async", lambda self: None)
+    monkeypatch.setattr(mff, "neural_device_kind", lambda: "CUDA")
+    window = _new_main_window(qapp, tmp_path, monkeypatch)
+    try:
+        window.use_gpu = True
+        action = window.ui_objs["action_gpu_accel"]
+        monkeypatch.setattr(neural_runtime, "_UNADMITTED", "CUDA")
+        window._update_dynamic_status()
+        assert not action.isEnabled() and not action.isChecked()
+        tooltip = window.lbl_status_gpu.toolTip()
+        assert trans.t('env_gpu_memory_unknown').format(device="CUDA") in tooltip
+        assert trans.t('env_no_gpu') not in tooltip
+        # Admission returns (a later job could read the memory): the action
+        # comes back with the user's preference intact.
+        monkeypatch.setattr(neural_runtime, "_UNADMITTED", None)
+        window._update_dynamic_status()
+        assert action.isEnabled() and action.isChecked() and window.use_gpu
+    finally:
+        _destroy_main_window(qapp, window)
+
+
 def test_gpu_action_can_turn_off_while_probe_is_pending(qapp, tmp_path, monkeypatch):
     import core.multi_focus_fusion as mff
     from main import OpenFocus

@@ -895,6 +895,10 @@ class OpenFocus(QMainWindow):
             neural = self._ai_method_selected()
             checkpoint = (get_fusion(self.combo_fusion.currentData()).weights or ''
                           if neural else '')
+            # A verified provider whose free memory cannot be read is never
+            # admitted by AI jobs; show the CPU they will actually run on.
+            unadmitted = neural_runtime.unadmitted_accelerator()
+            capability = neural_runtime.admitted_kind(capability)
             device, state = neural_runtime.execution_status(
                 neural, getattr(self, 'use_gpu', True), checkpoint, capability)
             kind = ('…' if state == 'pending'
@@ -907,7 +911,10 @@ class OpenFocus(QMainWindow):
                 hardware,
                 'ONNX Runtime: ' + ', '.join(diagnostics['providers']),
                 trans.t('env_gpu_accel') + ': ' + neural_runtime.display_name(capability)
-                if neural_runtime.is_accelerator(capability) else trans.t('env_no_gpu'),
+                if neural_runtime.is_accelerator(capability)
+                else trans.t('env_gpu_memory_unknown').format(
+                    device=neural_runtime.display_name(unadmitted)) if unadmitted
+                else trans.t('env_no_gpu'),
                 trans.t('status_gpu').format(kind),
                 trans.t('msg_gpu_accel_hint'),
                 '\n'.join(diagnostics['probe_errors'])))))
@@ -1439,7 +1446,9 @@ class OpenFocus(QMainWindow):
         from fusion_methods import neural_runtime
         from core.multi_focus_fusion import (is_ai_fusion_available,
                                              neural_device_kind)
-        kind = neural_device_kind()
+        # Jobs never use an unadmitted accelerator, so it does not enable the
+        # action; diagnostics keep the verified kind.
+        kind = neural_runtime.admitted_kind(neural_device_kind())
         enabled, checked = neural_runtime.gpu_toggle_state(
             kind, getattr(self, 'use_gpu', True),
             is_ai_fusion_available() if kind is None else False)

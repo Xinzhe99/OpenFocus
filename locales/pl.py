@@ -1172,6 +1172,7 @@ PACK = {
     "env_mps_avail": "MPS dostępne (Apple Silicon)",
     "env_gpu_accel": "AI: dostawca akceleracji sprawdzony",
     "env_no_gpu": "AI: brak sprawdzonego dostawcy akceleracji",
+    "env_gpu_memory_unknown": "{device} przeszedł sprawdzenie dostawcy, ale nie można odczytać jego wolnej pamięci, więc zadania AI działają na CPU",
     "env_cpu_mode": "AI: dostępne (tryb CPU — wolniej)",
     "env_stackmff_unavailable": "Fuzja AI niedostępna",
     "env_dtcwt_unavailable": "Nie zainstalowano (fuzja DTCWT niedostępna)",

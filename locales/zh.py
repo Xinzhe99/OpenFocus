@@ -1208,6 +1208,7 @@ ZH = {
     "env_mps_avail": "MPS 可用 (Apple Silicon)",
     "env_gpu_accel": "AI: 加速提供程序已验证",
     "env_no_gpu": "AI: 无已验证的加速提供程序",
+    "env_gpu_memory_unknown": "{device} 已通过提供程序检查，但无法读取其可用显存，因此 AI 任务在 CPU 上运行",
     "env_cpu_mode": "AI: 可用 (CPU 模式 - 较慢)",
     "env_stackmff_unavailable": "AI 融合不可用",
     "env_dtcwt_unavailable": "未安装 (DTCWT 融合不可用)",

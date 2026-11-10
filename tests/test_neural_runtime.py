@@ -289,6 +289,13 @@ def test_unknown_vram_does_not_erase_verified_provider_capability(monkeypatch, t
     assert diagnostics['actual'] is None
     assert 'DmlExecutionProvider' in diagnostics['providers']
     assert neural_runtime._DIRECTML_ADAPTER_INDEX == hardware[0][0]
+    # Capability is kept, but jobs cannot be admitted to it, so nothing may
+    # describe it as the device AI work will run on.
+    assert diagnostics['unadmitted'] == 'DIRECTML'
+    assert neural_runtime.unadmitted_accelerator() == 'DIRECTML'
+    assert neural_runtime.admitted_kind('DIRECTML') == 'CPU'
+    assert neural_runtime.execution_status(
+        True, True, 'model.onnx', neural_runtime.admitted_kind('DIRECTML')) == ('CPU', 'selected')
 
 
 def test_fusion_info_does_not_borrow_another_jobs_actual_device(monkeypatch):
@@ -518,3 +525,69 @@ def test_execution_status_separates_capability_preference_and_actual_model(
     monkeypatch.setattr(neural_runtime, '_ACTUAL_DEVICE', actual)
     monkeypatch.setattr(neural_runtime, '_ACTUAL_CHECKPOINT', actual_model)
     assert neural_runtime.execution_status(neural, use_gpu, checkpoint, capability) == expected
+
+
+@pytest.mark.parametrize('known', [True, False])
+def test_status_shows_the_device_jobs_are_admitted_to(monkeypatch, known):
+    from core import resource_policy
+    snapshot = (resource_policy.ResourceSnapshot(free_vram=4 * 1024 ** 3, total_vram=8 * 1024 ** 3)
+                if known else resource_policy.ResourceSnapshot())
+    monkeypatch.setattr(resource_policy, 'probe_resources', lambda *args: snapshot)
+    for kind in neural_runtime.VRAM_GATED_KINDS:
+        assert neural_runtime._memory_unreadable(kind) is (not known)
+    # Providers logits() does not gate on device memory are always admitted.
+    assert neural_runtime._memory_unreadable('COREML') is False
+    monkeypatch.setattr(neural_runtime, '_UNADMITTED', None if known else 'CUDA')
+    assert neural_runtime.admitted_kind('CUDA') == ('CUDA' if known else 'CPU')
+    assert neural_runtime.admitted_kind(None) is None
+    assert neural_runtime.admitted_kind('CPU') == 'CPU'
+
+
+
+@pytest.mark.parametrize('probe', ['raises', 'unknown', 'known'])
+def test_job_probe_keeps_reported_admission_in_step_with_job_placement(monkeypatch, probe):
+    """Whatever a job's own memory probe finds is what the status reports:
+    a probe error or unreadable memory runs the job on CPU (never fails it)
+    and marks the accelerator unadmitted; readable memory admits it again."""
+    from core import resource_policy
+
+    def probe_resources(*_):
+        if probe == 'raises':
+            raise OSError('driver query failed')
+        if probe == 'unknown':
+            return resource_policy.ResourceSnapshot(available_ram=8 * 1024 ** 3, total_ram=16 * 1024 ** 3)
+        return resource_policy.ResourceSnapshot(
+            available_ram=8 * 1024 ** 3, total_ram=16 * 1024 ** 3,
+            free_vram=8 * 1024 ** 3, total_vram=8 * 1024 ** 3)
+
+    requested = []
+
+    class Session:
+        actual_device = 'CPU'
+
+        def run(self, outputs, inputs):
+            return [inputs['input'] + np.float32(1)]
+
+    def session(path, shape, device, threads):
+        requested.append(device)
+        result = Session()
+        result.actual_device = device
+        return result
+
+    monkeypatch.setattr(neural_runtime, '_session', session)
+    monkeypatch.setattr(neural_runtime, '_SESSIONS', OrderedDict())
+    monkeypatch.setattr(resource_policy, 'probe_resources', probe_resources)
+    monkeypatch.setattr(resource_policy, 'require_memory', lambda *_: None)
+    # Provider selection saw the opposite of what this job's probe sees.
+    monkeypatch.setattr(neural_runtime, '_UNADMITTED', 'CUDA' if probe == 'known' else None)
+    neural_runtime.start_inference_job()
+    try:
+        planes = np.zeros((1, 2, 64, 64), np.float32)
+        result = neural_runtime.logits(planes, 'model.onnx', 'CUDA', 1)
+        np.testing.assert_array_equal(result, planes + 1)
+        admitted = probe == 'known'
+        assert requested == ['CUDA' if admitted else 'CPU']
+        assert neural_runtime.unadmitted_accelerator() == (None if admitted else 'CUDA')
+        assert neural_runtime.admitted_kind('CUDA') == ('CUDA' if admitted else 'CPU')
+    finally:
+        neural_runtime.start_inference_job()

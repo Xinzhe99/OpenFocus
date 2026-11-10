@@ -1172,6 +1172,7 @@ PACK = {
     "env_mps_avail": "MPS verfügbar (Apple Silicon)",
     "env_gpu_accel": "KI: Beschleunigungsanbieter geprüft",
     "env_no_gpu": "KI: kein geprüfter Beschleunigungsanbieter",
+    "env_gpu_memory_unknown": "{device} hat die Anbieterprüfung bestanden, aber sein freier Speicher ist nicht lesbar; KI-Aufgaben laufen daher auf der CPU",
     "env_cpu_mode": "KI: verfügbar (CPU-Modus – langsamer)",
     "env_stackmff_unavailable": "KI-Fusion nicht verfügbar",
     "env_dtcwt_unavailable": "Nicht installiert (DTCWT-Fusion nicht verfügbar)",
