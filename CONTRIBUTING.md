@@ -114,6 +114,32 @@ replace a processing error or prevent image processing.
 For support/development, set `OPENFOCUS_LOG_LEVEL=DEBUG`; `OPENFOCUS_LOG_DIR` can
 isolate logs from another checkout or an automated job. The feedback page shows
 the actual active path. Reports remain local until a person submits them.
+Users switch the same detail with **Advanced Settings → Diagnostics → Detailed
+logging** or `--log-level debug`; `set_log_level()` applies it to a running
+process, and a process that starts a worker process passes the choice on.
+
+Record what explains a result with `log_debug("event_name", **facts)`: the plan
+chosen and the numbers it was chosen from, a directory, a fallback, one tile's
+time. It is free when detail is off; guard only costly facts with
+`debug_enabled()`. Keep `INFO` for outcomes a support reader always needs.
+
+A new processing stage that can take noticeable time should be visible in the
+render profile (`utils/performance_profile.py`, read in
+[PERFORMANCE.md](docs/PERFORMANCE.md#diagnosing-a-slow-render)):
+
+```python
+from utils.performance_profile import current as _profile
+
+with _profile().stage("my_stage"):          # nests under the caller's stage
+    result = compute()
+```
+
+`current()` is a shared no-op unless a render is being profiled, so the call
+needs no guard; test `profile.enabled` before building values only the report
+uses. Name stages for what they do, time boundaries rather than per-pixel or
+per-row loops, and leave control flow unchanged: a stage never catches,
+reorders or retries. Work on pool threads is recorded under `concurrent`
+automatically. Pass `resources=True` only for a few top-level stages.
 
 Changes to task boundaries need failure/cancellation and partial-success checks,
 plus a real GUI/CLI smoke run. Compare output pixels with the previous behavior

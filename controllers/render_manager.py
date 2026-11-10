@@ -85,6 +85,8 @@ class RenderManager:
         self.alignment_diagnostics = None
         # Temporary-storage assessment of the last render start, if computed.
         self.last_storage_assessment: Optional[dict] = None
+        # Most recent render performance report (memory only, this session).
+        self.performance_report: Optional[dict] = None
         # An interactive request made while source frames are loading.  Keep
         # the forced algorithm and comparison ownership, not just a Boolean,
         # so the deferred render cannot be mislabeled or outlive cancellation.
@@ -104,7 +106,7 @@ class RenderManager:
                 tuple(getattr(window, name, None) for name in (
                     'thread_count', 'resource_preference', 'current_scale_factor',
                     'align_cache_enabled', 'collect_alignment_report', 'roi_mode_active',
-                    'current_folder_path', 'tile_enabled')),
+                    'current_folder_path', 'tile_enabled', 'profile_performance', 'debug_logging')),
                 bool(window.chk_quick_preview.isChecked()), frame_storage._storage_directory,
                 self._compare_token)
 
@@ -199,6 +201,60 @@ class RenderManager:
         buttons.rejected.connect(dialog.reject)
         layout.addWidget(buttons)
         dialog.exec()
+
+    def show_performance_report(self, *, parent=None) -> None:
+        from PyQt6.QtGui import QFontDatabase
+        from utils.performance_profile import summary
+        dialog = QDialog(parent or self.window)
+        dialog.setWindowTitle(trans.t('perf_report_title'))
+        dialog.resize(900, 620)
+        layout = QVBoxLayout(dialog)
+        text = QPlainTextEdit(dialog)
+        text.setReadOnly(True)
+        # The summary is a table and a tree: its columns need a fixed pitch.
+        # A widget style sheet, because the application's own overrides setFont().
+        fixed = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
+        text.setFont(fixed)
+        text.setStyleSheet(f'QPlainTextEdit {{ font-family: "{fixed.family()}", monospace; }}')
+        report = self.performance_report
+        text.setPlainText(summary(report) if report else trans.t('perf_report_unavailable'))
+        layout.addWidget(text)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close, parent=dialog)
+        buttons.button(QDialogButtonBox.StandardButton.Close).setText(trans.t('dialog_close'))
+        save = buttons.addButton(trans.t('perf_report_save'), QDialogButtonBox.ButtonRole.ActionRole)
+        save.setProperty('controlId', 'btn_performance_report_save')
+        save.setEnabled(bool(report))
+        save.clicked.connect(lambda: self.save_performance_report(parent=dialog))
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        dialog.exec()
+
+    def save_performance_report(self, path: Optional[str] = None, *, parent=None) -> Optional[str]:
+        """Write the latest report as JSON; asks for a path when none is given."""
+        from utils.file_dialogs import FileDialog
+        from utils.performance_profile import dumps
+        if not self.performance_report:
+            return None
+        if path is None:
+            path, _ = FileDialog.getSaveFileName(
+                parent or self.window, trans.t('perf_report_save'),
+                'openfocus-performance.json', 'JSON (*.json)')
+            if not path:
+                return None
+        try:
+            with open(path, 'w', encoding='utf-8') as stream:
+                stream.write(dumps(self.performance_report) + '\n')
+        except OSError as exc:
+            show_warning_box(parent or self.window, trans.t('perf_report_title'),
+                             trans.t('perf_report_save_failed').format(error=str(exc)))
+            return None
+        return path
+
+    def _capture_performance_report(self) -> None:
+        """Keep the finished worker's report, including a partial one."""
+        report = getattr(self.worker, 'performance_report', None)
+        if report:
+            self.performance_report = report
 
     def alignment_report_text(self) -> str:
         diagnostic = self.alignment_diagnostics
@@ -1309,6 +1365,7 @@ class RenderManager:
             disk_cache=disk_cache_request,
             collect_alignment_report=collect_report and not use_roi_aligned_images,
             preview=self._preview_mode,
+            profile_performance=bool(getattr(window, "profile_performance", False)),
         )
         self.worker.storage_directory = storage_override
 
@@ -1393,6 +1450,7 @@ class RenderManager:
             list((context or {}).get('filenames', [])),
             list((context or {}).get('included', [])),
         )
+        self._capture_performance_report()
 
         try:
             window._wipe_preview_record = None
@@ -1908,6 +1966,7 @@ class RenderManager:
             if not error_message.startswith('CANCELLED') else [],
             list(context.get('filenames', [])), list(context.get('included', [])),
         )
+        self._capture_performance_report()
         # Every exit path clears the draft flag: a failed or cancelled render
         # must not leave the controller in preview mode.
         self._preview_mode = False

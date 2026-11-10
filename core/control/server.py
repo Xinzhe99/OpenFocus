@@ -736,6 +736,8 @@ class ControlServer(QObject):
                 "resource_preference": getattr(window, "resource_preference", "balanced"),
                 "reg_downscale_width": int(getattr(window, "reg_downscale_width", 1024)),
                 "storage_directory": getattr(window, "storage_directory", "") or "",
+                "profile_performance": bool(getattr(window, "profile_performance", False)),
+                "debug_logging": bool(getattr(window, "debug_logging", False)),
             },
             "render": _render_state(window),
             "outputs": {"count": window.output_list.count(),
@@ -910,6 +912,13 @@ class ControlServer(QObject):
                 raise ControlError("invalid_argument",
                                    f"Temporary directory is not writable: {error}") from error
             window.storage_directory = path
+        elif name == "profile_performance":
+            window.profile_performance = _boolean(args, "value", required=True)
+        elif name == "debug_logging":
+            # A string such as "false" must not switch detail on.
+            from utils.logging_setup import set_debug_logging
+            window.debug_logging = _boolean(args, "value", required=True)
+            set_debug_logging(window.debug_logging)
         else:
             raise ControlError("invalid_argument", f"Unknown option: {name}")
         window.persist_settings()
@@ -1056,6 +1065,10 @@ class ControlServer(QObject):
         row = self.window.output_list.currentRow()
         result["output"] = next((record for record in outputs["records"]
                                  if record["index"] == row), None)
+        # The last profiled render's report, also for a failed or cancelled one.
+        report = getattr(self.window.render_manager, "performance_report", None)
+        if report:
+            result["performance"] = report
         return result
 
     # ------------------------------------------------------------- outputs

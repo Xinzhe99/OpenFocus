@@ -6,6 +6,32 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- Add opt-in render profiling: **Advanced Settings → Diagnostics → Profile
+  rendering performance** and CLI `--profile-performance [FILE]`. A report
+  ranks where the time went, then lists every stage in execution order with
+  inclusive and self time; major stages add process CPU time and how far they
+  raised peak memory. It also records tile geometry with the reason a tile was
+  resized, every thread count from the request to ONNX Runtime, neural session
+  creation with miss reasons, resolution-cache activity by entry kind and the
+  ten slowest tiles. All fusion methods and registration are covered. Reports
+  are shown and saved as JSON from **Performance report**, embedded in CLI
+  `--json`, returned by the control channel's `render.result`, and logged once
+  as a compact `render.performance` event. Off by default; output is identical
+  with profiling on or off.
+- Add **Advanced Settings → Diagnostics → Detailed logging** and CLI
+  `--log-level`. Detailed logging takes effect immediately, including in the
+  isolated render process, and records resource plans, neural tile planning,
+  tile geometry, the temporary directory chosen, memory around a render and
+  the time of each tile. `OPENFOCUS_LOG_LEVEL` keeps working. The control
+  channel gains `option.set` names `profile_performance` and `debug_logging`.
+- Add `OPENFOCUS_ORT_OPERATOR_PROFILE` / `OPENFOCUS_ORT_PROFILE_DIR` for ONNX
+  Runtime operator traces of CPU sessions.
+- Add `tools/stackmff_cpu_benchmark.py`: reproducible StackMFF V3 CPU thread
+  sweeps, session replay, overlap and tile-size comparisons with image
+  differences, cache activity and profiling overhead, in subprocesses with
+  isolated settings and scratch, with smoke and opt-in full modes. Each run
+  preserves earlier checkpoints and retains recoverable measurements after
+  interruption or worker failure; failures produce a nonzero exit status.
 - Expose OpenFocus radius, smoothing and B feather in method-specific units, with
   R8/S4/F3 defaults and 3% shift/5% magnification alignment defaults.
   Saved projects, templates, recipes and preferences migrate earlier units;
@@ -143,6 +169,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   scroll phase, including X11, where only angle deltas are reliable.
 
 ### Fixed
+- Preserve focus selection in OpenFocus C for small or narrow images.
+- Finalize partial CLI performance reports when a render is interrupted, and
+  release evicted neural sessions before constructing their replacements.
 - Keep rotation and magnification alignment active when maximum shift is zero,
   while fixing the image center and invalidating older alignment caches.
 - Use the fusion registration order for descending OpenFocus comparisons;
