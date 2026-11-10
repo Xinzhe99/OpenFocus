@@ -23,11 +23,11 @@ _MAX_LOG_BYTES = 2 * 1024 * 1024
 _MAX_EVENTS = 2000
 _MAX_FRAMES = 12
 _EVENTS = frozenset('''session.started startup shutdown.started shutdown.completed ui.action
-batch_finished render_start render_finished load_stack export_image export_image_write
+batch_finished render_start render_finished render.fusion_region load_stack export_image export_image_write
 converter.page converter.item converter.batch converter.output converter.resources
 converter.admission_failed converter.admitted cli cli.fusion cli.exit render.performance
 comparison_alignment comparison_preview comparison_method scratch_selected
-linear_source_manifest source_manifest fusion fusion_result fusion_tiling fusion_tile
+linear_source_manifest source_manifest fusion fusion.effective fusion_result fusion_tiling fusion_tile
 registration_warp registration_plan registration_stage render_resources execution_plan
 neural_tile_plan heavy_job.waited source_decode source_previews stack_load stack_load.decoded roi_alignment
 render batch_import batch_image_write batch batch_folder batch_stack gif_save
@@ -35,23 +35,40 @@ settings.applied depth_map neural_provider_probe neural_provider_selected neural
 ort_operator_trace'''.split())
 _NUMBERS = frozenset('''elapsed_ms seconds frame_count frames loaded_frames file_count
 folder_count count workers preview_threads thread_count native_threads page pages files
-success total index stack_index scale scale_factor reg_downscale_width duration_sec
+success total index column stack_index scale scale_factor reg_downscale_width duration_sec
 block_requested block_after_image_clamp block_after_memory_plan block block_size
 overlap_requested overlap tiles required_bytes goal_bytes available_bytes budget
 need_ram free_ram need_disk free_disk in_flight ram_budget vram_budget rss_bytes
 peak_rss_bytes available_ram_bytes total_ram_bytes fixed_bytes per_worker_bytes
 inference_bytes ram_ceiling waited_ms exit_code total_bytes radius sigma threshold levels
 iterations kernel_size strength quality compression downscale width height smoothing feather N
-max_shift_ratio rotation magnification reference_frame'''.split())
+max_shift_ratio rotation magnification reference_frame exposure_reference_index
+tile_block_size tile_overlap tile_threshold ai_batch_size registration_downscale_width
+group_number group_size group_overlap load_scale_factor roi_base_index'''.split())
 _SHAPES = frozenset(('shape', 'first_shape'))
 _DTYPES = frozenset(('uint8', 'uint16', 'uint32', 'int8', 'int16', 'int32', 'float16', 'float32', 'float64', 'bool'))
-_NESTED = frozenset(('parameters', 'fusion_parameters', 'registration_parameters'))
+_NESTED = frozenset(('settings', 'parameters', 'fusion_parameters', 'registration_parameters'))
 _METHODS = frozenset('''stackmffv3 stackmffv2 stackmff openfocus_a openfocus_b
 openfocus_c guided_filter gfgfgf dct dtcwt none homography ecc openfocus both'''.split())
-_METHOD_FIELDS = frozenset(('method', 'registration', 'align', 'alignment'))
-_BOOL_FIELDS = frozenset(('preview', 'use_gpu', 'gpu_requested', 'cancelled', 'tile_enabled', 'roi_only', 'reverse_order', 'fallback', 'fallback_cpu'))
+_METHOD_FIELDS = frozenset(('method', 'algorithm', 'registration', 'align', 'alignment'))
+_BOOL_FIELDS = frozenset(('preview', 'use_gpu', 'gpu_requested', 'cancelled', 'tile_enabled',
+    'roi_only', 'reverse_order', 'fallback', 'fallback_cpu', 'exposure_match',
+    'sharpen_output', 'reverse_registration', 'source_order_reversed', 'sensor_denoise',
+    'defect_mask', 'flat_field', 'grouped', 'need_fusion', 'full_frame_roi',
+    'alignment_reused', 'alignment_computed'))
 _CONTROLS = frozenset('''fusion_method alignment_method render compare_all quick_preview
 exposure_match base_correct reverse_order sharpen_output wipe source_frame result_frame roi'''.split())
+_CONTROL_ID = re.compile(r'^[A-Za-z_][A-Za-z_0-9]*(?:\.[A-Za-z_][A-Za-z_0-9]*){0,20}$')
+_ENUMS = {
+    'origin': frozenset(('render', 'batch', 'batch_group', 'cli', 'comparison')),
+    'base_frame': frozenset(('none', 'first', 'last')),
+    'sort_mode': frozenset(('asc', 'desc', 'off')),
+    'registration_brightness_reference': frozenset(('first', 'last')),
+    'resource_preference': frozenset(('balanced', 'responsive', 'maximum')),
+    'mode': frozenset(('soft', 'hard')),
+    'failure_policy': frozenset(('continue', 'fail')),
+    'roi_mode': frozenset(('crop', 'paste')),
+}
 _GPU_MODEL = re.compile(r'^(?:NVIDIA (?:GeForce (?:RTX|GTX) [1-9][0-9]{2,3}(?: Ti| SUPER| Laptop GPU)?|RTX [1-9][0-9]{3}(?: Ada Generation)?)|AMD Radeon (?:RX [1-9][0-9]{3}(?: XT| XTX)?|Graphics)|Intel (?:Arc A[0-9]{3}M?|Iris Xe Graphics|UHD Graphics [0-9]{3,4}))$')
 _STACK_FUNCTIONS = {
     'workers.py': frozenset(('run', '_run_admitted')),
@@ -99,6 +116,14 @@ def _numeric_fields(fields, depth=0):
             result[key] = value
         elif key in _SHAPES and isinstance(value, (list, tuple)) and 1 <= len(value) <= 4 and all(type(x) is int and 0 <= x <= 10**9 for x in value):
             result[key] = list(value)
+        elif key in ('roi_rect', 'requested_region', 'input_region', 'output_region') and isinstance(value, (list, tuple)) and len(value) == 4 and all(type(x) is int and 0 <= x <= 10**9 for x in value):
+            result[key] = list(value)
+        elif key == 'fusion_order' and isinstance(value, list) and len(value) <= 4096 and all(type(x) is int and 0 <= x <= 10**9 for x in value):
+            result[key] = list(value)
+        elif key == 'sources' and isinstance(value, list) and len(value) <= 4096:
+            result[key] = [_numeric_fields(item, depth + 1) for item in value if isinstance(item, dict)]
+        elif key == 'dtype' and isinstance(value, str) and value in _DTYPES:
+            result[key] = value
         elif key == 'frame_shapes' and isinstance(value, list):
             shapes = []
             if len(value) > 32:
@@ -122,13 +147,15 @@ def _numeric_fields(fields, depth=0):
             result[key] = value
         elif key == 'adapter' and isinstance(value, str) and _GPU_MODEL.fullmatch(value):
             result['gpu_model'] = value
-        elif key == 'control' and isinstance(value, str) and value in _CONTROLS:
+        elif key == 'control' and isinstance(value, str) and len(value) <= 200 and (value in _CONTROLS or _CONTROL_ID.fullmatch(value)):
+            result[key] = value
+        elif key in _ENUMS and isinstance(value, str) and value in _ENUMS[key]:
             result[key] = value
         elif key == 'value' and type(value) is bool:
             result[key] = value
         elif key == 'value' and type(value) in (int, float) and abs(value) <= 10**15 and math.isfinite(value):
             result[key] = value
-        elif key in _NESTED and depth == 0:
+        elif key in _NESTED and depth < 2:
             nested = _numeric_fields(value, depth + 1)
             if nested:
                 result[key] = nested

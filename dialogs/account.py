@@ -20,6 +20,11 @@ class _AccountJob(QObject):
     def __init__(self, call):
         super().__init__()
         self.call = call
+        self.finished.connect(self._release)
+
+    def _release(self, _result, _error):
+        _ACTIVE_JOBS.discard(self)
+        self.deleteLater()
 
     def start(self):
         _ACTIVE_JOBS.add(self)
@@ -33,8 +38,6 @@ class _AccountJob(QObject):
             self.finished.emit(None, exc)
         except Exception:
             self.finished.emit(None, AccountError('unknown'))
-        finally:
-            _ACTIVE_JOBS.discard(self)
 
 
 class AccountDialog(QDialog):

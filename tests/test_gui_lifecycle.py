@@ -31,6 +31,13 @@ import faulthandler, runpy, sys, time
 from PyQt6.QtCore import QSettings, QTimer
 from PyQt6.QtWidgets import QApplication, QMainWindow
 from utils.usage_analytics import UsageAnalytics
+from dialogs.account import AccountDialog
+
+original_account_exec = AccountDialog.exec
+def skip_account(dialog):
+    QTimer.singleShot(0, dialog.reject)
+    return original_account_exec(dialog)
+AccountDialog.exec = skip_account
 
 faulthandler.dump_traceback_later(15, repeat=False)
 

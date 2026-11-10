@@ -45,7 +45,8 @@ def _details(record):
 
 
 def _assert_outcome(records, name, status):
-    events = _events(records, name)
+    events = [record for record in _events(records, name)
+              if record.event in (name + '.started', name + '.' + status)]
     assert [record.event for record in events] == [name + ".started", name + "." + status]
     assert events[0].operation_id == events[1].operation_id != "-"
     assert events[0].session_id == events[1].session_id
@@ -280,3 +281,41 @@ def test_successful_video_load_after_corrupt_image_is_not_a_failure(tmp_path, di
     assert means[0] < means[1]
     assert results[0][2][0].dtype == np.uint8
     _assert_outcome(diagnostics, "stack_load", "completed")
+
+
+def test_effective_fusion_records_order_and_reference_without_source_paths(diagnostics):
+    from types import SimpleNamespace
+    from core.fusion_diagnostics import log_effective_fusion
+    from utils.logging_setup import log_operation
+
+    fusion = SimpleNamespace(algorithm='openfocus_a', fusion_parameters={'radius': 2},
+        use_gpu=False, resource_preference='balanced', tile_enabled=False,
+        tile_block_size=512, tile_overlap=64, tile_threshold=1024, ai_batch_size=2,
+        base_frame='last', sort_mode='desc', exposure_match=True)
+    frames = [SimpleNamespace(shape=(8, 12, 3), dtype=np.dtype('uint16'),
+                              path='private/source.png') for _ in range(3)]
+    with log_operation('test_fusion') as operation:
+        log_effective_fusion(fusion, frames, origin='render', thread_count=3,
+                              sharpen_output=True)
+    record = next(record for record in diagnostics if record.event == 'fusion.effective')
+    details = _details(record)
+    assert record.operation_id == operation.operation_id
+    assert details['settings']['fusion_parameters'] == {'radius': 2}
+    assert details['settings']['tile_block_size'] == 512
+    assert details['fusion_order'] == [2, 1, 0]
+    assert details['exposure_reference_index'] == 2
+    assert [source['index'] for source in details['sources']] == [0, 1, 2]
+    assert all(source['shape'] == [8, 12, 3] and source['dtype'] == 'uint16'
+               for source in details['sources'])
+    assert 'private/source.png' not in record.getMessage()
+
+
+def test_effective_fusion_exposure_reference_for_unsorted_method(diagnostics):
+    from types import SimpleNamespace
+    from core.fusion_diagnostics import log_effective_fusion
+
+    fusion = SimpleNamespace(algorithm='dct', sort_mode='desc', exposure_match=True)
+    log_effective_fusion(fusion, _frames(), origin='batch')
+    details = _details(next(record for record in diagnostics if record.event == 'fusion.effective'))
+    assert details['fusion_order'] == [0, 1]
+    assert details['exposure_reference_index'] == 1

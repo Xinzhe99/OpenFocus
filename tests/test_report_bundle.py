@@ -103,6 +103,28 @@ def test_safe_processing_events_and_shape_overflow():
     assert events[3]['parameters'] == {}
 
 
+def test_fusion_report_keeps_reproduction_settings_without_private_text():
+    fields = {
+        'origin': 'render', 'thread_count': 4, 'exposure_reference_index': 1,
+        'fusion_order': [0, 1], 'registration': ['ecc'],
+        'settings': {'algorithm': 'stackmffv3', 'exposure_match': True,
+                     'sort_mode': 'asc', 'base_frame': 'none', 'tile_enabled': True,
+                     'tile_block_size': 1024, 'fusion_parameters': {'mode': 'soft', 'path': '/private/photo.jpg'}},
+        'sources': [{'index': 0, 'shape': [10, 20, 3], 'dtype': 'uint8', 'path': '/private/photo.jpg'},
+                    {'index': 1, 'shape': [10, 20, 3], 'dtype': 'uint8'}],
+        'path': '/private/photo.jpg',
+    }
+    text = _event('fusion.effective', fields)
+    text += _event('ui.action', {'control': 'OpenFocus.ui_objs.action_save', 'value': True})
+    events = _contents(report_bundle.build_report_bundle(log_text=text, crash_text='', facts={}))['events.json']
+    assert events[0]['parameters']['settings']['exposure_match'] is True
+    assert events[0]['parameters']['settings']['fusion_parameters'] == {'mode': 'soft'}
+    assert events[0]['parameters']['fusion_order'] == [0, 1]
+    assert events[0]['parameters']['sources'][1]['shape'] == [10, 20, 3]
+    assert events[1]['parameters']['control'] == 'OpenFocus.ui_objs.action_save'
+    assert '/private/photo.jpg' not in repr(events)
+
+
 def test_safe_hardware_and_stack_identifiers():
     trace = ('Traceback (most recent call last):\n'
              '  File "/private/workers.py", line 42, in run\n'
