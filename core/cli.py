@@ -210,6 +210,11 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Write registration diagnostics as JSON (requires alignment; single stack only; no grouped fusion or dry run)")
     parser.add_argument("--json-progress", action="store_true",
                         help="Print one JSON progress object per step to stdout (NDJSON)")
+    parser.add_argument("--temp-dir", default=None, metavar="DIR",
+                        help="Directory for temporary data (must exist and be writable). "
+                             "Default: the system temporary directory or the local volume "
+                             "with the most space; the GUI's Temporary directory setting "
+                             "is not used by the CLI")
     parser.add_argument("--config", default=None, metavar="FILE",
                         help="Batch mode: JSON file with per-folder overrides, "
                              "e.g. {\"stackA\": {\"method\": \"dct\", \"kernel\": 9}}")
@@ -1521,8 +1526,42 @@ def _run_with_logging(argv: List[str]) -> int:
             return EXIT_ERROR
 
 
+def _warn_low_storage(args, paths):
+    """Print a stderr warning when temporary storage looks low; never blocks."""
+    try:
+        from core.frame_storage import assess_scratch, readable_bytes
+        from core.source_frames import scan_source
+        from core.storage_preflight import render_storage_estimate
+        frames = []
+        for path in paths:
+            # Every page: a multipage TIFF is rendered as a whole stack.
+            frames.extend(scan_source(path, header_only=True))
+        minimum, expected, optional, sources = render_storage_estimate(
+            frames, algorithm=args.method, alignment=args.align,
+            exposure_match=bool(getattr(args, "exposure_match", False)),
+            cleanup=bool(args.defect_mask_path or args.sensor_denoise))
+        assessment = assess_scratch(minimum, expected, optional, sources)
+    except Exception:
+        _log.info("storage preflight unavailable", exc_info=True)
+        return None
+    if assessment["status"] in ("advisory", "critical"):
+        print(f"warning: low temporary storage in {assessment['directory']}: "
+              f"{readable_bytes(assessment['available_bytes'])} available after the safety "
+              f"reserve, an estimated {readable_bytes(assessment['required_bytes'])} needed "
+              f"(an estimate; caches may be disabled or the render may fail). "
+              f"Use --temp-dir DIR to choose another directory.", file=sys.stderr)
+    return assessment
+
+
 def _run_cli_admitted(argv: List[str]) -> int:
     args = build_parser().parse_args(argv)
+    if args.temp_dir is not None:
+        from core.frame_storage import configure_storage_directory
+        try:
+            configure_storage_directory(args.temp_dir)
+        except OSError as exc:
+            print(f"error: --temp-dir is not a writable directory: {exc}", file=sys.stderr)
+            return EXIT_USAGE
     if args.native_batch_format and (not args.native_raw or not args.output_dir):
         print("error: --native-batch-format requires --native-raw and --output-dir", file=sys.stderr)
         return EXIT_USAGE
@@ -1809,6 +1848,8 @@ def _run_cli_admitted(argv: List[str]) -> int:
                             "output": args.output})
                 return EXIT_OK
 
+            if not args.native_raw and not args.group_size:
+                _warn_low_storage(args, paths)
             _progress(event="load", done=1, total=1, frames=len(paths))
             if args.native_raw:
                 images, native_metadata = _load_native_stack(paths, args)
