@@ -910,6 +910,20 @@ Performance → Temporary directory** if a storage error occurs. Free-space
 checks are estimates, not reservations; space may run out later. Existing
 frames remain in their original directory until released.
 
+Before a full render starts, OpenFocus estimates the temporary space it will
+need and compares it with the space left after its safety reserve. When space
+looks low, **Low temporary storage space** shows the directory, the space
+available and the estimate. **Choose another directory** opens a folder picker;
+the folder must exist and be writable, and its space is checked again before
+the render starts. You can keep the new folder for future renders or use it for
+this render only. **Continue anyway** appears only when the render can still
+run (caches may be disabled, and it may still fail if the disk fills). When the
+render cannot fit at all, only choosing another directory or cancelling is
+offered. Quick previews, ROI renders and **Compare all** do not ask. On the
+command line, the same check prints a warning to standard error and never stops
+the run; use `--temp-dir DIR` to choose the directory. The command line does
+not use the GUI's Temporary directory setting.
+
 Each neural tile uses every frame. Source frames and alignment scratch can be disk-backed, but free disk space and available memory still limit stack size. V2 spatial tiling approximates whole-image inference.
 
 ### OpenFocus A / B / C

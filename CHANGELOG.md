@@ -12,6 +12,16 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   OpenFocus A smoothing remains inactive.
 - Add keyboard-accessible zoom controls to the result view, synchronized with
   wheel zoom and available in all twelve interface languages.
+- Warn before a full render when temporary storage looks low. The dialog shows
+  the directory, the available space after OpenFocus's safety reserve and the
+  estimated need, and offers **Choose another directory** (validated and
+  re-checked, kept for future renders or used for this render only). It offers
+  **Continue anyway** only when the render can still run. Previews, ROI and
+  Compare-all renders do not ask. The control channel returns the assessment as
+  `confirm_required` or the new `insufficient_storage` error with
+  `details.storage`, and includes it in successful `render.start` replies. A new
+  `storage_directory` option sets the directory. The CLI prints a warning to
+  stderr and adds `--temp-dir DIR`.
 - Add a panorama workspace with native-coordinate control-point editing,
   connected-pair quality reports, per-source paint/import masks and preview
   overlays for seams, image numbers and excluded pixels.
