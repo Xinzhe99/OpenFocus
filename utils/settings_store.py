@@ -76,6 +76,8 @@ _PERSISTED_FIELDS = {
     "use_gpu": ("rendering/use_gpu", True, "bool"),
     "align_cache_enabled": ("rendering/align_cache_enabled", True, "bool"),
     "collect_alignment_report": ("rendering/collect_alignment_report", False, "bool"),
+    "profile_performance": ("diagnostics/profile_performance", False, "bool"),
+    "debug_logging": ("diagnostics/debug_logging", False, "bool"),
     "output_name_prefix": ("export/name_prefix", "", "str"),
     "restore_last_stack": ("ui/restore_last_stack", False, "bool"),
     "ui_theme": ("ui/theme", DEFAULT_THEME, "str"),

@@ -18,12 +18,12 @@ from core.resource_policy import heavy_job, make_process_budget, process_budget
 from core.registration import RegistrationCancelled
 from core.workers import RenderWorker
 from locales import trans
-from utils.logging_setup import get_logger
+from utils.logging_setup import debug_enabled, get_logger
 
 logger = get_logger(__name__)
 _CANCEL_GRACE_SECONDS = 3.0
 _STATE_FIELDS = ('alignment_reused', 'alignment_computed', 'alignment_report',
-                 'alignment_report_provenance')
+                 'alignment_report_provenance', 'performance_report')
 
 
 def _exit_reason(code):
@@ -108,7 +108,7 @@ def _restore_algorithms(fusions, registrations):
 
 def _render_child(connection, cancel_event, request, budget, directory, language):
     """Top-level spawn target; image computation never runs in the GUI process."""
-    from utils.logging_setup import setup_logging
+    from utils.logging_setup import set_debug_logging, setup_logging
     from utils.diagnostics import install_exception_hooks
     setup_logging()
     install_exception_hooks()
@@ -118,6 +118,9 @@ def _render_child(connection, cancel_event, request, budget, directory, language
     try:
         with process_budget(budget), storage.observe_temp_files(relay.temporary_file):
             inputs = FrameDecoder(should_cancel=cancel_event.is_set).decode(request)
+            if inputs.get('detailed_logging'):
+                # Record the same detail as the window that started this render.
+                set_debug_logging(True)
             _restore_algorithms(inputs['fusions'], inputs['registrations'])
             worker = _ChildRenderWorker(cancel_event, *inputs['args'], **inputs['kwargs'])
             results, errors = [], []
@@ -261,7 +264,8 @@ class RenderProcessWorker(RenderWorker):
         try:
             encoder = FrameEncoder(self._check_current)
             request = encoder.encode({'args': self._render_args, 'kwargs': self._render_kwargs,
-                'fusions': fusion_algorithms(), 'registrations': registration_algorithms()})
+                'fusions': fusion_algorithms(), 'registrations': registration_algorithms(),
+                'detailed_logging': debug_enabled()})
             budget = make_process_budget(storage.ram_snapshot_bytes())
             scratch = storage.capture_scratch()
             directory = scratch.explicit_directory if scratch is not None else None

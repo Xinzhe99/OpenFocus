@@ -505,10 +505,12 @@ class SourceFrame:
             return cached
         from core.image_loader import decode_image, _has_transparency, UnsupportedTransparency
         from utils.logging_setup import log_operation
+        from utils.performance_profile import current as current_profile
         from core.resource_policy import require_memory
         SOURCE_CACHE.make_room(self.nbytes)
         require_memory(frame_resolution_bytes(self))
-        with log_operation('source_decode', path=self.path, page=self.page, scale=self.scale):
+        with log_operation('source_decode', path=self.path, page=self.page, scale=self.scale), \
+                current_profile().stage('source_decode'):
             scaled_raw = False
             if self.linear_metadata is not None:
                 from utils.linear_dng import load_linear_raw

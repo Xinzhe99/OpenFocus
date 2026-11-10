@@ -940,3 +940,63 @@ def test_enabling_sharpening_reveals_risk_in_small_render_dialog(qapp):
     finally:
         dialog.close()
         window.deleteLater()
+
+
+def test_performance_profiling_is_a_persisted_diagnostic_draft(settings_window):
+    from dialogs.advanced_settings import AdvancedSettingsDialog
+    from utils.project_file import TEMPLATE_SETTINGS
+
+    dialog = AdvancedSettingsDialog(settings_window)
+    assert not dialog.chk_profile_performance.isChecked()
+    assert dialog.chk_profile_performance.property('controlId') == 'chk_profile_performance'
+    dialog.chk_profile_performance.setChecked(True)
+    dialog.reject()
+    assert not getattr(settings_window, 'profile_performance', False)
+    dialog.deleteLater()
+
+    dialog = AdvancedSettingsDialog(settings_window)
+    dialog.chk_profile_performance.setChecked(True)
+    dialog._apply()
+    assert settings_window.profile_performance is True
+    assert settings_window.saved
+    dialog.deleteLater()
+    # A machine diagnostic, never a processing setting carried by templates.
+    assert 'profile_performance' not in TEMPLATE_SETTINGS
+
+
+def test_performance_report_viewer_and_json_export(settings_window, qapp, tmp_path):
+    import json
+    from PyQt6.QtCore import QTimer
+    from PyQt6.QtWidgets import QApplication, QPlainTextEdit
+    from controllers.render_manager import RenderManager
+    from dialogs.advanced_settings import AdvancedSettingsDialog
+
+    manager = settings_window.render_manager = RenderManager(settings_window)
+    manager.worker = type('Finished', (), {'performance_report': {
+        'schema_version': 1, 'outcome': 'completed', 'wall_ms': 12.0,
+        'stages': {'render': {'count': 1, 'total_ms': 12.0, 'self_ms': 12.0,
+                              'mean_ms': 12.0, 'min_ms': 12.0, 'max_ms': 12.0,
+                              'parent': None, 'pct_of_parent': None}},
+        'threads': {'requested': 2}}})()
+    manager._capture_performance_report()
+    assert manager.performance_report['threads']['requested'] == 2
+
+    settings = AdvancedSettingsDialog(settings_window)
+    settings.show()
+    shown = []
+
+    def close_report():
+        report = QApplication.activeModalWidget()
+        text = report.findChild(QPlainTextEdit) if report is not None else None
+        shown.append(text.toPlainText() if text else None)
+        if report is not None:
+            report.reject()
+
+    try:
+        QTimer.singleShot(0, close_report)
+        settings.btn_performance_report.click()
+        assert shown and 'Outcome: completed' in shown[0]
+    finally:
+        settings.reject()
+    path = manager.save_performance_report(str(tmp_path / 'report.json'))
+    assert json.loads(open(path, encoding='utf-8').read())['threads']['requested'] == 2

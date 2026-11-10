@@ -131,7 +131,11 @@ reports `finished:true` with the reason and leaves the previous frames alone.
 `option.set` names: `base_correct`, `exposure_match`, `reverse_order`,
 `thread_count`, `use_gpu`, `tile_enabled`, `tile_block_size`, `tile_overlap`,
 `tile_threshold`, `preview`, `ai_batch_size`, `resource_preference`,
-`reg_downscale_width`.
+`reg_downscale_width`, `profile_performance`, `debug_logging`. The last two are
+the Advanced Settings diagnostics and take a JSON boolean (anything else is
+`invalid_argument`): `profile_performance` profiles the following renders, and
+`debug_logging` switches detailed (`DEBUG`) logging at once, for the window and
+its render process. `app.state` reports both under `options`.
 
 ### Render
 
@@ -140,7 +144,12 @@ reports `finished:true` with the reason and leaves the previous frames alone.
 | `render.start` | `preview?`, `confirm?`, `roi_mode?`, `roi_base_index?` | `{started, render_id, method, alignment, preview}` |
 | `render.cancel` | — | `{cancelling:true}` |
 | `render.state` | — | `{state, render_id, busy, progress:{done,total}, method, result, error}` |
-| `render.result` | — | result metadata + selected output record |
+| `render.result` | — | result metadata + selected output record + `performance?` |
+
+`performance` is the report of the most recent profiled render (see
+`docs/PERFORMANCE.md`), present once a render has run with
+`profile_performance` on. A cancelled or failed render reports the part that
+ran, with `outcome` set accordingly.
 
 `state` is `idle`, `rendering`, `done`, `cancelled`, `discarded` or `error`.
 A cancelled render and a result discarded because the stack changed while it

@@ -554,6 +554,90 @@ def test_suggest_duplicates_handles_keyboard_interrupt(tmp_path, capsys, monkeyp
     assert "interrupted" in captured.err and not captured.out
 
 
+@pytest.mark.parametrize('destination', ['file', 'stderr', 'off'])
+def test_interrupted_render_finalizes_profile(tmp_path, capsys, monkeypatch, destination):
+    from core import cli
+    folder, _, _ = _make_stacks(tmp_path)
+    profile_path = tmp_path / 'profile.json'
+    events = []
+
+    def interrupt(*args, **kwargs):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(cli, '_load_images', interrupt)
+    monkeypatch.setattr(cli, 'log_action', lambda name, **fields: events.append((name, fields)))
+    argv = ['-i', folder, '-o', str(tmp_path / 'out.png'), '-m', 'dct']
+    if destination != 'off':
+        argv.append('--profile-performance')
+        if destination == 'file':
+            argv.append(str(profile_path))
+    assert run_cli(argv) == cli.EXIT_ERROR
+    stderr = capsys.readouterr().err
+    assert 'interrupted' in stderr
+    reports = [fields for name, fields in events if name == 'render.performance']
+    if destination == 'off':
+        assert not reports
+        assert 'Outcome:' not in stderr
+    else:
+        assert len(reports) == 1
+        assert reports[0]['outcome'] == 'cancelled'
+        assert reports[0]['stages']['load']['count'] == 1
+        assert 'Outcome: cancelled' in stderr
+    if destination == 'file':
+        report = json.loads(profile_path.read_text(encoding='utf-8'))
+        assert report['outcome'] == 'cancelled'
+        assert report['stages']['load']['count'] == 1
+    else:
+        assert not profile_path.exists()
+
+
+def test_profile_does_not_finalize_before_render_starts(tmp_path, capsys, monkeypatch):
+    from core import cli
+    events = []
+    monkeypatch.setattr(cli, 'log_action', lambda name, **fields: events.append(name))
+    profile_path = tmp_path / 'profile.json'
+    assert run_cli(['-i', str(tmp_path), '-o', str(tmp_path / 'out.png'),
+                    '--dry-run', '--profile-performance', str(profile_path)]) == cli.EXIT_USAGE
+    assert 'render.performance' not in events
+    assert 'Outcome:' not in capsys.readouterr().err
+    assert not profile_path.exists()
+
+
+def test_interruption_before_render_does_not_finalize_profile(tmp_path, capsys, monkeypatch):
+    from core import cli
+    folder, _, _ = _make_stacks(tmp_path)
+    profile_path = tmp_path / 'profile.json'
+    events = []
+
+    def interrupt(*args, **kwargs):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(cli, '_resolve_stack', interrupt)
+    monkeypatch.setattr(cli, 'log_action', lambda name, **fields: events.append(name))
+    assert run_cli(['-i', folder, '-o', str(tmp_path / 'out.png'), '-m', 'dct',
+                    '--profile-performance', str(profile_path)]) == cli.EXIT_ERROR
+    stderr = capsys.readouterr().err
+    assert 'interrupted' in stderr
+    assert 'Outcome:' not in stderr
+    assert 'render.performance' not in events
+    assert not profile_path.exists()
+
+
+def test_profile_finalizes_failed_render(tmp_path, capsys, monkeypatch):
+    from core import cli
+    folder, _, _ = _make_stacks(tmp_path)
+    profile_path = tmp_path / 'profile.json'
+
+    def fail(*args, **kwargs):
+        raise RuntimeError('load failed')
+
+    monkeypatch.setattr(cli, '_load_images', fail)
+    assert run_cli(['-i', folder, '-o', str(tmp_path / 'out.png'), '-m', 'dct',
+                    '--profile-performance', str(profile_path)]) == cli.EXIT_ERROR
+    assert json.loads(profile_path.read_text(encoding='utf-8'))['outcome'] == 'failed'
+    assert 'Outcome: failed' in capsys.readouterr().err
+
+
 @pytest.mark.parametrize('enabled', [False, True])
 def test_registration_receives_cleaned_native_depth_pixels(tmp_path, monkeypatch, enabled):
     from core import cli, registration

@@ -161,7 +161,7 @@ The top menu bar provides access to all functions:
 - **File**: import/export operations, projects, processing templates and the recent-files list
 - **Edit**: Undo/redo, reset the current stack, image transformations and retouching
 - **Tools**: Image stitching, batch processing and conversion, method comparison, depth map, flat-field correction, scale bar, watermark and labels
-- **Settings**: Advanced Settings (performance, registration and alignment diagnostics, sensor cleanup, output naming, AI, startup), GPU acceleration, theme and language
+- **Settings**: Advanced Settings (performance, registration and alignment diagnostics, sensor cleanup, output naming, AI, diagnostics, startup), GPU acceleration, theme and language
 - **Help**: Environment info, contact information, update check, and the log folder
 
 **Tools → Stitch Images…** opens a separate workspace for already-fused
@@ -1243,7 +1243,7 @@ export an image to write the annotations to a file.
 ## 11. Settings and Configuration
 
 Open **Settings → Advanced Settings** for performance, registration, sensor
-cleanup, output naming, StackMFF AI and startup preferences. Changes remain
+cleanup, output naming, StackMFF AI, diagnostics and startup preferences. Changes remain
 drafts until **OK**; Cancel, Esc and closing discard them. Reducing the tile
 size immediately updates the visible overlap limit to half a tile. The AI
 section's saved batch limit is retained, but inference currently submits one
@@ -1348,8 +1348,10 @@ outcomes; unexpected errors include a full traceback. The feedback ZIP also
 includes the current crash report and dependency versions. Use **Help → Open Logs
 Folder** or the path shown on the feedback page to find the files. Logs rotate at
 1 MB with three backups per process; inactive session logs older than 14 days are
-removed. For detailed support logs, set `OPENFOCUS_LOG_LEVEL=DEBUG` before launch;
-`OPENFOCUS_LOG_DIR` optionally selects a different log folder.
+removed. For detailed support logs, enable **Settings → Advanced Settings →
+Diagnostics → Detailed logging** (see [Diagnostics](#diagnostics)), or set
+`OPENFOCUS_LOG_LEVEL=DEBUG` before launch; `OPENFOCUS_LOG_DIR` optionally selects
+a different log folder.
 
 ### Tile Settings (Memory Optimization)
 
@@ -1386,6 +1388,29 @@ high-resolution input.
 
 The status panel shows used and total physical memory when the operating
 system can provide both readings; otherwise it shows `N/A`.
+
+### Diagnostics
+
+Access via **Settings → Advanced Settings → Diagnostics**. Both switches are
+off by default, are remembered for this installation only (not in projects or
+templates) and do not change the rendered image.
+
+- **Profile rendering performance** times the stages of each following render,
+  preview and comparison render. **Performance report** shows the most recent
+  report with its finish time: where the time went, the stage tree in execution order with CPU time
+  and peak-memory growth, tile geometry, thread counts and cache activity. A
+  cancelled or failed render still reports the part that ran. **Save as JSON…**
+  exports the full report; reports are otherwise kept only until the
+  application closes. Collecting the report adds negligible time to a render.
+- **Detailed logging** records why a render was planned as it was: resource
+  plans, tile size and count, the temporary directory chosen, memory before
+  and after, and the time of every tile. It takes effect immediately, including
+  for the next render, and makes log files grow faster. **Open Logs Folder**
+  opens the same folder as **Help → Open Logs Folder**.
+
+Turn both on before reproducing a slow render, then attach the saved report
+and a feedback package. [PERFORMANCE.md](./PERFORMANCE.md#diagnosing-a-slow-render)
+explains how to read them.
 
 ### Thread Count Settings
 
@@ -1870,6 +1895,8 @@ an input or another output. Batch, grouped and dry-run modes reject this option.
 | `--missing-data-map [path]` | With `--auto-background`, also save the missing-data map and one 8-bit mask per class (default `<output>_missing.png`). In batch mode only the default path is allowed |
 | `--json FILE` | Write a machine-readable result summary to FILE when done |
 | `--json-progress` | Print one JSON progress object per step to stdout (NDJSON); prose goes to stderr |
+| `--profile-performance [FILE]` | Time the render's stages for a single, non-grouped run. Prints a summary to stderr, adds the report to `--json` under `performance`, and writes it to FILE when given. See [PERFORMANCE.md](./PERFORMANCE.md#diagnosing-a-slow-render) |
+| `--log-level LEVEL` | Detail of this run's log file: `debug`, `info` (default), `warning` or `error`. Overrides `OPENFOCUS_LOG_LEVEL` and prints the log file path to stderr |
 | `--dry-run` | Validate inputs and print the plan without fusing |
 
 There is no `--method none` value: the CLI always fuses. Use the desktop
@@ -2070,6 +2097,9 @@ Exit codes: `0` success, `1` processing error, `2` usage error. Running
 - Use Maximum resource mode for an unattended batch, or Guided Filter /
   GFG-FGF instead of an AI method
 - Reduce image resolution or use **Quick preview** while tuning
+- To see which stage takes the time, enable **Settings → Advanced Settings →
+  Diagnostics → Profile rendering performance**, render again and open
+  **Performance report**
 
 #### Windows SmartScreen Warning on First Launch
 
