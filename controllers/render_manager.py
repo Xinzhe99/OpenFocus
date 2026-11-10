@@ -2,7 +2,7 @@ from typing import Any, List, Optional
 from copy import deepcopy
 
 
-from PyQt6.QtCore import QTimer
+from PyQt6.QtCore import QObject, QTimer, Qt, pyqtSignal
 from PyQt6.QtWidgets import (QApplication, QMessageBox, QDialog, QDialogButtonBox,
                              QPlainTextEdit, QVBoxLayout)
 
@@ -15,6 +15,41 @@ from dialogs import ROIRenderOptionsDialog  # Import the new dialog
 from locales import trans
 from core.algorithms import fusion_algorithms, get_fusion, get_registration, alignment_steps
 
+
+
+_STORAGE_UNSET = object()
+
+
+class _StorageProbe(QObject):
+    completed = pyqtSignal(object)
+
+    def start(self, estimate):
+        import threading
+
+        def run():
+            from core.frame_storage import assess_scratch, scratch_directory
+            try:
+                with scratch_directory(separate=True, explicit_directory=None):
+                    result = assess_scratch(*estimate)
+            except Exception as exc:
+                from utils.logging_setup import get_logger
+                get_logger(__name__).info('storage preflight unavailable', exc_info=True)
+                result = {'status': 'unknown', 'directory': None, 'explicit': False,
+                          'reason': str(exc)}
+            try:
+                self.completed.emit(result)
+            except RuntimeError:
+                pass  # The window was destroyed while discovery was running.
+
+        threading.Thread(target=run, name='openfocus-storage-preflight', daemon=True).start()
+
+
+class _StorageCancellation:
+    def __init__(self, manager, request):
+        self.manager, self.request = manager, request
+
+    def cancel(self):
+        self.manager.cancel_storage_preflight(self.request)
 
 
 class RenderManager:
@@ -48,12 +83,116 @@ class RenderManager:
         self._render_interactive = True
         self._control_progress: Optional[tuple] = None
         self.alignment_diagnostics = None
+        # Temporary-storage assessment of the last render start, if computed.
+        self.last_storage_assessment: Optional[dict] = None
         # Most recent render performance report (memory only, this session).
         self.performance_report: Optional[dict] = None
         # An interactive request made while source frames are loading.  Keep
         # the forced algorithm and comparison ownership, not just a Boolean,
         # so the deferred render cannot be mislabeled or outlive cancellation.
         self._render_after_load: Optional[dict] = None
+        self._pending_storage = None
+
+    def _storage_request_identity(self):
+        window = self.window
+        frames, names, included = window.effective_stack()
+        method = window.current_fusion_method()
+        from core import frame_storage
+        return (id(window.raw_images), getattr(window, 'source_revision', 0),
+                tuple(id(frame) for frame in frames), tuple(names), tuple(included),
+                tuple(getattr(window, 'image_source_paths', ()) or ()),
+                method, window.current_alignment_method(),
+                deepcopy(self._processing_parameters(method)),
+                tuple(getattr(window, name, None) for name in (
+                    'thread_count', 'resource_preference', 'current_scale_factor',
+                    'align_cache_enabled', 'collect_alignment_report', 'roi_mode_active',
+                    'current_folder_path', 'tile_enabled', 'profile_performance', 'debug_logging')),
+                bool(window.chk_quick_preview.isChecked()), frame_storage._storage_directory,
+                self._compare_token)
+
+    def _begin_storage_preflight(self, frames, force_algorithm, interactive, confirmed, roi_choice,
+                                 cpu_confirmed):
+        request = {'identity': self._storage_request_identity(), 'completion': None,
+                   'force_algorithm': force_algorithm, 'interactive': interactive,
+                   'confirmed': confirmed, 'cpu_confirmed': cpu_confirmed,
+                   'roi_choice': deepcopy(roi_choice), 'previous_state': self.last_state,
+                   'previous_error': self.last_error}
+        estimate = self._storage_estimate(frames)
+        probe = _StorageProbe(self.window)
+        request['probe'] = probe
+        self._pending_storage = request
+        self.last_storage_assessment = None
+        probe.completed.connect(lambda result: self._finish_storage_preflight(request, result),
+                                Qt.ConnectionType.QueuedConnection)
+        self.last_state = 'running'
+        self.last_error = None
+        self.refresh_action_labels()
+        try:
+            probe.start(estimate)
+        except Exception:
+            self._pending_storage = None
+            probe.deleteLater()
+            self._hide_progress_bar()
+            self.refresh_action_labels()
+            raise
+
+    def set_storage_completion(self, completion):
+        request = self._pending_storage
+        if request is None:
+            raise RuntimeError('Storage preflight is no longer pending')
+        request['completion'] = completion
+        return _StorageCancellation(self, request)
+
+    def cancel_storage_preflight(self, request=None):
+        pending = self._pending_storage
+        if pending is None or (request is not None and request is not pending):
+            return False
+        self._pending_storage = None
+        self.last_state = 'cancelled'
+        self._hide_progress_bar()
+        self.refresh_action_labels()
+        completion = pending['completion']
+        if completion is not None:
+            completion('cancelled')
+        return True
+
+    def _finish_storage_preflight(self, request, assessment):
+        request['probe'].deleteLater()
+        if self._pending_storage is not request:
+            return
+        self._pending_storage = None
+        try:
+            stale = (getattr(self.window, '_shutting_down', False)
+                     or self._storage_request_identity() != request['identity']
+                     or getattr(getattr(self.window, 'source_manager', None), '_load_worker', None) is not None)
+            if stale:
+                self.last_state = 'discarded'
+                self._hide_progress_bar()
+                self.window.statusBar().showMessage(trans.t('msg_render_stack_changed'), 8000)
+                self.refresh_action_labels()
+                status = 'stack_changed'
+            else:
+                status = self.start_render(request['force_algorithm'], interactive=request['interactive'],
+                                           confirmed=request['confirmed'], roi_choice=request['roi_choice'],
+                                           _storage_assessment=assessment,
+                                           _cpu_confirmed=request['cpu_confirmed'])
+                if status != 'started':
+                    if status in ('confirm_storage', 'insufficient_storage'):
+                        self.last_state = request['previous_state']
+                        self.last_error = request['previous_error']
+                    else:
+                        self.last_state = 'cancelled' if status == 'cancelled' else None
+                    self._hide_progress_bar()
+                    self.refresh_action_labels()
+        except Exception as exc:
+            self.last_state = 'error'
+            self.last_error = str(exc)
+            self._hide_progress_bar()
+            self.refresh_action_labels()
+            status = 'error'
+        completion = request['completion']
+        if completion is not None:
+            completion(status)
 
     def show_alignment_report(self, *, parent=None) -> None:
         dialog = QDialog(parent or self.window)
@@ -323,6 +462,135 @@ class RenderManager:
             settings.sync()
         return box.clickedButton() is start_btn
 
+    def _storage_preflight(self, force_algorithm: str | None, frames) -> Optional[dict]:
+        """Assess temporary storage for a full render; no UI, no allocation.
+
+        Drafts, ROI renders and compare-all runs are skipped: they are small or
+        driven programmatically. An estimate that cannot be made returns None
+        (logged), so a render never prompts on a guess.
+        """
+        window = self.window
+        preview = getattr(window, 'chk_quick_preview', None)
+        if (force_algorithm is not None or getattr(window, 'roi_mode_active', False)
+                or (preview is not None and preview.isChecked())):
+            return None
+        try:
+            from core.frame_storage import assess_scratch
+            return assess_scratch(*self._storage_estimate(frames))
+        except Exception:
+            from utils.logging_setup import get_logger
+            get_logger(__name__).info('storage preflight unavailable', exc_info=True)
+            return None
+
+    def _storage_estimate(self, frames):
+        """(minimum, expected, optional, source paths) for the current settings."""
+        from core.storage_preflight import render_storage_estimate
+        window = self.window
+        fusion = window.current_fusion_method()
+        getter = getattr(window, 'brightness_option_for', None)
+        exposure = (bool(getter('exposure_match', fusion)) if callable(getter)
+                    else bool(getattr(window, 'exposure_match', False)))
+        return render_storage_estimate(
+            frames, algorithm=None if fusion == 'none' else fusion,
+            alignment=window.current_alignment_method(), need_fusion=fusion != 'none',
+            exposure_match=exposure,
+            cleanup=bool(getattr(window, 'defect_mask_path', '')
+                         or getattr(window, 'sensor_denoise', False)))
+
+    def _storage_message(self, assessment: dict) -> str:
+        from core.frame_storage import readable_bytes
+        neutral = assessment['directory'] is None
+        text = trans.t('storage_low_text').format(
+            path=assessment['directory'] or '—',
+            free='—' if neutral else readable_bytes(assessment['free_bytes']),
+            available=(trans.t('storage_available_upper_bound').format(
+                size=readable_bytes(assessment['available_bytes'])) if neutral
+                else readable_bytes(assessment['available_bytes'])),
+            required=readable_bytes(assessment['required_bytes']))
+        if assessment['status'] == 'critical':
+            text += '\n\n' + trans.t('storage_low_critical').format(
+                minimum=readable_bytes(assessment['minimum_bytes']))
+        return text
+
+    def _confirm_storage(self, assessment: dict, frames) -> Optional[dict]:
+        """Ask how to proceed with low temporary storage; None cancels the render.
+
+        Returns ``{'directory': path or None, 'keep': bool}``. A chosen
+        directory is validated and re-assessed; a critical result never offers
+        Continue, because the job's own admission would reject it anyway.
+        """
+        from PyQt6.QtWidgets import QMessageBox
+        from core.frame_storage import assess_scratch, validate_storage_directory
+        from utils import style_message_box
+        from utils.file_dialogs import FileDialog
+        window = self.window
+        chosen = None
+        while True:
+            box = QMessageBox(window)
+            style_message_box(box)
+            box.setIcon(QMessageBox.Icon.Warning)
+            box.setWindowTitle(trans.t('storage_low_title'))
+            box.setText(self._storage_message(assessment))
+            choose = box.addButton(trans.t('storage_choose'), QMessageBox.ButtonRole.ActionRole)
+            choose.setProperty('controlId', 'btn_storage_choose')
+            proceed = None
+            if assessment['status'] != 'critical':
+                proceed = box.addButton(trans.t('storage_continue'), QMessageBox.ButtonRole.AcceptRole)
+                proceed.setProperty('controlId', 'btn_storage_continue')
+            cancel = box.addButton(trans.t('storage_cancel'), QMessageBox.ButtonRole.RejectRole)
+            cancel.setProperty('controlId', 'btn_storage_cancel')
+            box.setDefaultButton(choose)
+            box.exec()
+            clicked = box.clickedButton()
+            if proceed is not None and clicked is proceed:
+                return {'directory': chosen, 'keep': chosen is not None and self._keep_storage(chosen)}
+            if clicked is not choose:
+                return None
+            path = FileDialog.getExistingDirectory(window, trans.t('storage_choose'),
+                                                   assessment['directory'] or '')
+            if not path:
+                continue
+            try:
+                path = validate_storage_directory(path)
+            except OSError as exc:
+                show_warning_box(window, trans.t('storage_low_title'),
+                                 trans.t('advanced_storage_invalid').format(error=str(exc)))
+                continue
+            chosen, assessment = path, assess_scratch(*self._storage_estimate(frames),
+                                                      directory=path)
+            self.last_storage_assessment = assessment
+            if assessment['status'] in ('ok', 'unknown'):
+                return {'directory': chosen, 'keep': self._keep_storage(chosen)}
+
+    def _keep_storage(self, path: str) -> bool:
+        from PyQt6.QtWidgets import QMessageBox
+        from utils import style_message_box
+        box = QMessageBox(self.window)
+        style_message_box(box)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle(trans.t('storage_keep_title'))
+        box.setText(trans.t('storage_keep_text').format(path=path))
+        keep = box.addButton(trans.t('storage_keep_yes'), QMessageBox.ButtonRole.YesRole)
+        keep.setProperty('controlId', 'btn_storage_keep')
+        once = box.addButton(trans.t('storage_keep_no'), QMessageBox.ButtonRole.NoRole)
+        once.setProperty('controlId', 'btn_storage_once')
+        box.setDefaultButton(once)
+        box.exec()
+        return box.clickedButton() is keep
+
+    def _apply_storage_choice(self, choice: dict) -> Optional[str]:
+        """Persist a kept directory like Advanced Settings; return a one-render override."""
+        directory = choice.get('directory')
+        if directory is None or not choice.get('keep'):
+            return directory
+        from core.frame_storage import configure_storage_directory
+        configure_storage_directory(directory)
+        self.window.storage_directory = directory
+        persist = getattr(self.window, 'persist_settings', None)
+        if callable(persist):
+            persist()
+        return None
+
     def _compare_button(self):
         return getattr(self.window, "btn_compare_all", None)
 
@@ -366,7 +634,7 @@ class RenderManager:
         window = self.window
         render = getattr(window, "btn_render", None)
         busy = self.worker is not None and self.worker.isRunning()
-        if self._render_after_load is not None:
+        if self._render_after_load is not None or self._pending_storage is not None:
             self._show_progress_bar(trans.t('render_stage_loading'))
             if render is not None:
                 render.setEnabled(True)
@@ -519,7 +787,8 @@ class RenderManager:
                 'depth_cancelling' if running else 'msg_render_cancelled'), 0)
             return
 
-        if getattr(self, "_render_pending", False) or self._render_after_load is not None:
+        if (getattr(self, "_render_pending", False) or self._render_after_load is not None
+                or self._pending_storage is not None):
             key = 'msg_render_queued_after_load' if self._render_after_load is not None else 'btn_render_processing'
             window.statusBar().showMessage(trans.t(key), 3000)
             return
@@ -568,7 +837,8 @@ class RenderManager:
 
     def start_render(self, force_algorithm: str | None = None, *,
                      interactive: bool = True, confirmed: bool = False,
-                     roi_choice: dict | None = None):
+                     roi_choice: dict | None = None, _storage_assessment=_STORAGE_UNSET,
+                     _cpu_confirmed: bool = False):
         """Start a render and report why it did or did not start.
 
         ``interactive=False`` is the control-channel path: it never opens a
@@ -579,6 +849,11 @@ class RenderManager:
         # 会重入并把 self.worker 覆盖掉——正在运行的 RenderWorker 失去引用
         # 被 C++ 析构，QThread 直接 qFatal abort。守卫必须在任何
         # processEvents 之前设置。
+        if self._pending_storage is not None:
+            if interactive:
+                self.cancel_storage_preflight()
+                return 'cancelled'
+            return 'busy'
         if getattr(self, "_render_pending", False):
             return "busy"
         if (self._compare_mode and self._render_after_load is None
@@ -587,7 +862,8 @@ class RenderManager:
         self._render_pending = True
         try:
             self._start_render_inner(force_algorithm, interactive=interactive,
-                                     confirmed=confirmed, roi_choice=roi_choice)
+                                     confirmed=confirmed, roi_choice=roi_choice,
+                                     storage_assessment=_storage_assessment, cpu_confirmed=_cpu_confirmed)
         except Exception as exc:
             self.last_state = "error"
             self.last_error = str(exc)
@@ -603,7 +879,8 @@ class RenderManager:
 
     def _start_render_inner(self, force_algorithm: str | None = None, *,
                             interactive: bool = True, confirmed: bool = False,
-                            roi_choice: dict | None = None) -> None:
+                            roi_choice: dict | None = None, storage_assessment=_STORAGE_UNSET,
+                            cpu_confirmed: bool = False) -> None:
         window = self.window
         # Why the last start returned; "started" only when a worker runs.
         self._start_status = "started"
@@ -692,7 +969,7 @@ class RenderManager:
                 return
 
 
-        if self._ai_confirmation_needed(force_algorithm) and not confirmed:
+        if self._ai_confirmation_needed(force_algorithm) and not (confirmed or cpu_confirmed):
             if not interactive:
                 self._start_status = "confirm_ai"
                 self._abort_compare_run()
@@ -700,6 +977,42 @@ class RenderManager:
             if not self._confirm_cpu_ai_render(force_algorithm):
                 self._start_status = "cancelled"
                 self._abort_compare_run()
+                return
+            cpu_confirmed = True
+
+        # One storage assessment per render start, before any UI is locked.
+        storage_override = None
+        from core.frame_storage import automatic_preflight_may_block
+        preview = getattr(window, 'chk_quick_preview', None)
+        if (storage_assessment is _STORAGE_UNSET and force_algorithm is None
+                and not getattr(window, 'roi_mode_active', False)
+                and not (preview is not None and preview.isChecked())
+                and automatic_preflight_may_block()):
+            self._begin_storage_preflight(stack_images, force_algorithm, interactive, confirmed, roi_choice,
+                                          cpu_confirmed)
+            self._start_status = 'preflight'
+            return
+        self.last_storage_assessment = assessment = (
+            self._storage_preflight(force_algorithm, stack_images)
+            if storage_assessment is _STORAGE_UNSET else storage_assessment)
+        status = assessment['status'] if assessment else 'ok'
+        if status == 'critical' or (status == 'advisory' and not confirmed):
+            if not interactive:
+                self._start_status = ("insufficient_storage" if status == 'critical'
+                                      else "confirm_storage")
+                self._abort_compare_run()
+                return
+            choice = self._confirm_storage(assessment, stack_images)
+            if choice is None:
+                self._start_status = "cancelled"
+                self._abort_compare_run()
+                return
+            try:
+                storage_override = self._apply_storage_choice(choice)
+            except OSError as exc:
+                show_warning_box(window, trans.t('storage_low_title'),
+                                 trans.t('advanced_storage_invalid').format(error=str(exc)))
+                self._start_status = "cancelled"
                 return
 
         if force_algorithm:
@@ -1065,6 +1378,7 @@ class RenderManager:
             preview=self._preview_mode,
             profile_performance=bool(getattr(window, "profile_performance", False)),
         )
+        self.worker.storage_directory = storage_override
 
         self._progress_first_t = None
         self._progress_last_t = None

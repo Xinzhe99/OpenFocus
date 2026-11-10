@@ -58,6 +58,17 @@ class TranslationManager(QObject):
                     ('label_of_radius', 'label_of_smoothing', 'label_of_feather',
                      'label_of_smoothing_a_hint'), values)))
 
+        upper_bounds = {
+            'en': 'at most {size}', 'zh': '最多 {size}', 'ja': '最大 {size}',
+            'es': 'como máximo {size}', 'de': 'höchstens {size}',
+            'fr': 'au maximum {size}', 'ru': 'не более {size}',
+            'ko': '최대 {size}', 'pt': 'no máximo {size}', 'it': 'al massimo {size}',
+            'nl': 'maximaal {size}', 'pl': 'co najwyżej {size}',
+        }
+        for code, text in upper_bounds.items():
+            if code in self.translations:
+                self.translations[code]['storage_available_upper_bound'] = text
+
         # Apply the detected language only now: the packs had to exist first,
         # otherwise a locale whose pack failed to load would leave
         # current_lang pointing at a table that is not in the dict.

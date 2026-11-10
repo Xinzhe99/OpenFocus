@@ -31,23 +31,26 @@ COMMANDS = (
 
 ERROR_CODES = (
     "bad_request", "unauthorized", "not_found", "invalid_argument", "busy",
-    "confirm_required", "unsupported", "internal", "not_running",
+    "confirm_required", "insufficient_storage", "unsupported", "internal", "not_running",
 )
 
 
 class ControlError(Exception):
-    def __init__(self, code, message, hint=None):
+    def __init__(self, code, message, hint=None, details=None):
         super().__init__(message)
         if code not in ERROR_CODES:
             code = "internal"
         self.code = code
         self.message = str(message)
         self.hint = hint
+        self.details = details
 
     def as_dict(self):
         payload = {"code": self.code, "message": self.message}
         if self.hint:
             payload["hint"] = self.hint
+        if self.details:
+            payload["details"] = self.details
         return payload
 
 

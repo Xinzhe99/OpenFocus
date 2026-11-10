@@ -3907,6 +3907,8 @@ class OpenFocus(QMainWindow):
         stack load runs."""
         running = []
         render_manager = getattr(self, 'render_manager', None)
+        if render_manager is not None and getattr(render_manager, '_pending_storage', None) is not None:
+            running.append(True)
         if render_manager is not None and getattr(render_manager, 'worker', None):
             running.append(render_manager.worker.isRunning())
         batch_manager = getattr(self, 'batch_manager', None)
@@ -3993,6 +3995,7 @@ class OpenFocus(QMainWindow):
                 self._shutting_down = False
                 event.ignore()
                 return
+        self.render_manager.cancel_storage_preflight()
 
         # Keep modal owners and their documents alive while native work stops.
         # A Python reference to a QThread cannot protect it from destruction
