@@ -372,7 +372,7 @@ def test_gui_defers_slow_automatic_discovery(window, fake_worker, monkeypatch, q
         release.set()
 
 
-@pytest.mark.parametrize('change', ['source', 'settings', 'cancel'])
+@pytest.mark.parametrize('change', ['source', 'source_replaced', 'settings', 'cancel'])
 def test_delayed_storage_preflight_rejects_stale_or_cancelled_request(
         window, fake_worker, monkeypatch, qapp, change):
     from controllers import render_manager
@@ -384,7 +384,9 @@ def test_delayed_storage_preflight_rejects_stale_or_cancelled_request(
     manager = window.render_manager
     assert manager.start_render() == 'preflight'
     if change == 'source':
-        window.source_revision += 1
+        window.source_revision = getattr(window, 'source_revision', 0) + 1
+    elif change == 'source_replaced':
+        window.raw_images = list(window.raw_images)
     elif change == 'settings':
         window.thread_count += 1
     else:
