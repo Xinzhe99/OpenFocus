@@ -207,6 +207,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Identify account and diagnostic report requests as OpenFocus so supported
   services can distinguish them from generic automated traffic.
 - Close cleanly when quitting while the first-run account prompt is open.
+- Refresh the source sharpness curve after lazy frame previews finish loading.
+- Make file and folder pickers opened through the control channel addressable,
+  while retaining native pickers for ordinary desktop interactions.
 - Hide redundant button and option tooltips when their full labels are visible;
   keep explanatory hints and the full text of elided labels.
 - Shorten isolated Unix instance socket names when the temporary path is long.

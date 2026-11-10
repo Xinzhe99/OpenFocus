@@ -2828,6 +2828,8 @@ class OpenFocus(QMainWindow):
             if getattr(self, '_shutting_down', False):
                 return
             current = (getattr(self, 'source_revision', 0), id(self.raw_images))
+            if request[:2] == current:
+                TransformManager._update_sharpness_curve(self)
             if pending is not None and pending[:2] == current:
                 selected = pending[2]
                 if selected is not None and selected != getattr(self, 'current_display_index', -1):

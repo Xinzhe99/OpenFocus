@@ -568,11 +568,11 @@ def test_mouse_keyboard_and_context(server, control_window):
 
 def test_generic_action_answers_file_dialog_and_loads_stack(server, stack_frames, monkeypatch):
     from PyQt6.QtCore import QTimer
+    from PyQt6.QtWidgets import QFileDialog
     from utils import file_dialogs
 
-    # The control channel can address Qt dialogs, not the native OS picker.
-    monkeypatch.setattr(file_dialogs, '_use_native_folder_dialog', lambda: False)
-
+    # Avoid blocking the test in the OS picker if routing regresses.
+    monkeypatch.setattr(file_dialogs, "_native_folder_paths", lambda *args: [])
     token = server.token
     answered = {}
 
@@ -595,11 +595,21 @@ def test_generic_action_answers_file_dialog_and_loads_stack(server, stack_frames
     timer.setInterval(30)
     timer.timeout.connect(answer_when_open)
     timer.start()
+    watchdog = QTimer()
+    watchdog.setSingleShot(True)
+    def close_stranded():
+        for widget in QApplication.topLevelWidgets():
+            if isinstance(widget, QFileDialog) and widget.isVisible():
+                widget.reject()
+    watchdog.timeout.connect(close_stranded)
+    watchdog.start(5000)
     scheduled = call(server, "ui.trigger", token=token, key="action_open_folder")
     assert scheduled["result"]["scheduled"] is True
     deadline = time.monotonic() + 20
     while time.monotonic() < deadline and "value" not in answered:
         QTest.qWait(20)
+    watchdog.stop()
+    timer.stop()
     assert "error" not in answered, answered.get("error")
     assert answered["value"]["accepted"] is True
     deadline = time.monotonic() + 20
@@ -608,6 +618,89 @@ def test_generic_action_answers_file_dialog_and_loads_stack(server, stack_frames
         QTest.qWait(20)
         frames = call(server, "stack.frames", token=token)["result"]
     assert frames["count"] == 3
+
+
+@pytest.mark.parametrize("picker,cancel", [
+    ("file", False), ("file", True), ("save", False),
+    ("folder", False), ("folder", True),
+])
+def test_control_action_uses_addressable_picker_and_restores_native(
+        server, control_window, tmp_path, monkeypatch, picker, cancel):
+    from PyQt6.QtCore import QTimer
+    from PyQt6.QtGui import QAction
+    from PyQt6.QtWidgets import QFileDialog
+    from ui import control_surface
+    from utils import file_dialogs
+
+    source = tmp_path / "frame.tif"
+    source.write_bytes(b"picker test")
+    target = tmp_path if picker == "folder" else source
+    if picker == "save":
+        target = tmp_path / "output.tif"
+    result = {}
+    action = QAction(control_window)
+
+    def open_picker():
+        if picker == "folder":
+            result["selection"] = file_dialogs.FileDialog.getExistingDirectory(
+                control_window, "Choose folder", str(tmp_path))
+        elif picker == "save":
+            result["selection"] = file_dialogs.FileDialog.getSaveFileName(
+                control_window, "Save file", str(tmp_path), "TIFF (*.tif)")[0]
+        else:
+            result["selection"] = file_dialogs.FileDialog.getOpenFileName(
+                control_window, "Open file", str(tmp_path), "TIFF (*.tif)")[0]
+
+    action.triggered.connect(open_picker)
+    monkeypatch.setattr(control_surface, "find_action", lambda window, key: action)
+    # If the control context is missing, fail instead of showing an OS dialog.
+    def native_unexpected(*args, **kwargs):
+        result["native_called"] = True
+        return ([], "") if picker != "folder" else []
+    monkeypatch.setattr(file_dialogs, "_pick_native_file", native_unexpected)
+    monkeypatch.setattr(file_dialogs, "_native_folder_paths", native_unexpected)
+
+    def answer():
+        dialogs = call(server, "dialog.list")["result"]["dialogs"]
+        if any(item["class"] == "QFileDialog" for item in dialogs):
+            result["response"] = call(server, "dialog.file", cancel=cancel,
+                                      **({} if cancel else {"path": str(target)}))
+            if "error" in result["response"]:
+                call(server, "dialog.file", cancel=True)
+            timer.stop()
+
+    timer = QTimer()
+    timer.setInterval(20)
+    timer.timeout.connect(answer)
+    timer.start()
+    # A failed enumeration must not leave the nested dialog loop hanging.
+    def close_stranded():
+        for widget in QApplication.topLevelWidgets():
+            if isinstance(widget, QFileDialog) and widget.isVisible():
+                widget.reject()
+    watchdog = QTimer()
+    watchdog.setSingleShot(True)
+    watchdog.timeout.connect(close_stranded)
+    watchdog.start(3000)
+    assert call(server, "ui.trigger", key="picker")["result"]["scheduled"]
+    assert wait_until(lambda: "selection" in result, timeout=5), result
+    timer.stop()
+    watchdog.stop()
+    assert "native_called" not in result
+    assert "result" in result["response"], result
+    if cancel:
+        assert result["selection"] == ""
+    else:
+        assert Path(result["selection"]) == target
+    assert file_dialogs._use_native_file_dialog()
+    assert file_dialogs._use_native_folder_dialog()
+
+    # A subsequent ordinary picker still takes the native backend.
+    if picker == "folder":
+        file_dialogs.FileDialog.getExistingDirectory(control_window, "Ordinary")
+    else:
+        file_dialogs.FileDialog.getOpenFileName(control_window, "Ordinary")
+    assert result["native_called"]
 
 
 def test_unmanaged_message_box_is_addressable(server, control_window):
