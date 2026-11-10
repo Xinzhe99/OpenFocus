@@ -430,13 +430,15 @@ class ExportManager:
         filters = ('PNG 8/16-bit (*.png);;TIFF 8/16-bit (*.tif *.tiff);;'
                    'JPG 8-bit (*.jpg);;BMP 8-bit (*.bmp);;WebP 8-bit (*.webp);;'
                    + trans.t('linear_dng_filter'))
-        from utils.settings_store import image_save_default, remember_image_save
+        from utils.settings_store import (image_save_default, image_save_filter,
+                                          remember_image_save)
         file_path, selected_filter = FileDialog.getSaveFileName(
-            window, title, image_save_default(default_filename), filters)
+            window, title, image_save_default(default_filename, filters), filters,
+            image_save_filter(filters))
 
         if not file_path:
             return
-        remember_image_save(file_path)
+        remember_image_save(file_path, selected_filter)
 
         try:
             file_path = self.normalize_export_path(file_path, selected_filter=selected_filter)

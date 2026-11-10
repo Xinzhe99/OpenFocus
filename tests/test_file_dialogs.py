@@ -134,6 +134,36 @@ def test_new_save_filename_navigates_without_creating_file(qapp, tmp_path, monke
     assert not target.exists()
 
 
+def test_bare_save_name_gets_the_selected_filters_suffix_before_overwrite_check(
+        qapp, tmp_path, monkeypatch):
+    """Qt confirms replacing the file it returns, so the suffix the export
+    adds for a bare name must already be in that path."""
+    from PyQt6.QtWidgets import QComboBox
+    monkeypatch.setattr(file_dialogs, "_use_native_file_dialog", lambda: False)
+    filters = "TIFF image (*.tif *.tiff);;PNG image (*.png);;All files (*)"
+
+    def answer(dialog):
+        name = dialog.findChild(QLineEdit, "fileNameEdit")
+        name.setText("out")
+        assert dialog.defaultSuffix() == "png"
+        assert same_path(dialog.selectedFiles()[0], tmp_path / "out.png")
+        combo = dialog.findChild(QComboBox, "fileTypeCombo")
+        combo.setFocus()
+        # Real key presses: Qt only reports a filter change made by the user.
+        for key, suffix in ((Qt.Key.Key_Down, ""), (Qt.Key.Key_Up, "png"), (Qt.Key.Key_Up, "tif")):
+            QTest.keyClick(combo, key)
+            assert dialog.defaultSuffix() == suffix
+        name.setText("typed.png")
+        assert same_path(dialog.selectedFiles()[0], tmp_path / "typed.png")
+        name.setText("out")
+        dialog.accept()
+
+    result = answer_picker(qapp, answer, lambda: FileDialog.getSaveFileName(
+        None, "Save", str(tmp_path), filters, "PNG image (*.png)"))
+    assert same_path(result[0], tmp_path / "out.tif")
+    assert result[1] == "TIFF image (*.tif *.tiff)"
+
+
 def test_open_multiple_files_retains_multiple_selection(qapp, tmp_path, monkeypatch):
     monkeypatch.setattr(file_dialogs, "_use_native_file_dialog", lambda: False)
     paths = [tmp_path / "first frame.tif", tmp_path / "第二帧.tif"]
@@ -522,12 +552,14 @@ def test_native_file_dialog_returns_results_and_preserves_options(qapp, monkeypa
         def __init__(self, parent, caption, directory, name_filter):
             self.arguments = (parent, caption, directory, name_filter)
             self.directoryEntered, self.finished = Signal(), Signal()
+            self.filterSelected, self.suffix = Signal(), None
             dialogs.append(self)
 
         def setOptions(self, value): self.options = value
         def setFileMode(self, value): self.mode = value
         def setAcceptMode(self, value): self.accept = value
         def selectNameFilter(self, value): self.name_filter = value
+        def setDefaultSuffix(self, value): self.suffix = value
         def layout(self): return None
         def open(self): self.finished.callback(actual.DialogCode.Accepted if accepted else actual.DialogCode.Rejected)
         def selectedFiles(self): return [str(tmp_path / "文件.tif")]
@@ -544,6 +576,10 @@ def test_native_file_dialog_returns_results_and_preserves_options(qapp, monkeypa
     assert dialog.arguments == (None, "Save", str(tmp_path / "文件.tif"), "TIFF (*.tif)")
     assert dialog.options == actual.Option.DontConfirmOverwrite
     assert dialog.mode == actual.FileMode.AnyFile and dialog.accept == actual.AcceptMode.AcceptSave
+    # A bare name is completed inside the platform dialog too, and follows the filter.
+    assert dialog.suffix == "tif"
+    dialog.filterSelected.callback("PNG (*.png)")
+    assert dialog.suffix == "png"
     assert result == (([str(tmp_path / "文件.tif")], "TIFF (*.tif)") if accepted else ([], ""))
     assert remembered == ([str(tmp_path)] if accepted else [])
     assert dialog.deleted

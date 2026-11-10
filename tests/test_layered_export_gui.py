@@ -188,7 +188,7 @@ def test_save_as_explains_unavailable_dng_without_overwriting(qapp, monkeypatch,
     target.write_bytes(b'previous file')
     offered, warnings = [], []
 
-    def select_dng(_parent, _title, _default, filters):
+    def select_dng(_parent, _title, _default, filters, *_):
         offered.extend(filters.split(';;'))
         return str(target), trans.t('linear_dng_filter')
 
