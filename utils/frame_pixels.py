@@ -4,6 +4,8 @@ from copy import copy
 from PyQt6.QtCore import QEventLoop, QThread, QTimer, Qt
 from PyQt6.QtWidgets import QApplication, QDialog, QLabel, QVBoxLayout, QWidget
 
+from utils.platform_utils import configure_native_worker_stack
+
 
 def preview_label_config(config, source_shape, preview_shape):
     """Map absolute working-image label coordinates onto a preview."""
@@ -32,6 +34,7 @@ def preview_scale_config(config, source_shape, preview_shape):
 class _PixelWorker(QThread):
     def __init__(self, operation):
         super().__init__()
+        configure_native_worker_stack(self)
         self.operation = operation
         self.result = None
         self.error = None
