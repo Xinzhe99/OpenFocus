@@ -128,6 +128,9 @@ def apply_template(window, settings):
     before = template_from_state(_collect_state(window))
     state = _collect_state(window)
     state["settings"].update(settings)
+    if settings.get("thread_count") is not None:
+        # Applying a template is an explicit choice of processing settings.
+        window.thread_count = int(settings["thread_count"])
     _apply_after_load(window, state)
     after = template_from_state(_collect_state(window))
     mark = getattr(window, "_mark_project_dirty", None)
@@ -917,8 +920,10 @@ def _apply_settings(window, state: Dict[str, Any]) -> None:
     if exp_chk is not None:
         exp_chk.setChecked(exposure_match)
 
-    if settings.get("thread_count") is not None:
-        window.thread_count = int(settings["thread_count"])
+    # thread_count is still saved for provenance, but it describes the computer
+    # that saved the file. Applying it on open, crash recovery or the
+    # after-update restore overrode this machine's Advanced Settings value, and
+    # persist_settings() then wrote it back. Templates apply it explicitly.
     window.tile_enabled = bool(settings.get("tile_enabled", True))
     window.tile_block_size = int(settings.get("tile_block_size", 1024))
     window.tile_overlap = int(settings.get("tile_overlap", 256))
