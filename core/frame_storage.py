@@ -386,6 +386,10 @@ def select_scratch(size, source_paths=(), *, preferred_size=None, working_size=N
                 else:
                     state.directory = tempfile.mkdtemp(prefix='openfocus-', dir=candidate)
                     state.owned = True
+                from utils.logging_setup import log_debug
+                log_debug('scratch_selected', directory=state.directory, required_bytes=size,
+                          goal_bytes=goal, available_bytes=available,
+                          explicit=state.explicit_directory is not None)
                 return state.directory
             except OSError:
                 continue

@@ -22,10 +22,12 @@ from __future__ import annotations
 
 import contextlib
 import threading
+import time
 
 import numpy as np
 
 from utils.logging_setup import get_logger
+from utils.performance_profile import current as _profile
 
 logger = get_logger(__name__)
 
@@ -154,6 +156,20 @@ def _validate_source(frame):
             return
 
 
+def entry_kind(frame):
+    """Classify a cache key for performance counters (never for admission)."""
+    from functools import partial
+    from core.source_frames import ProcessedFrame, SourceFrame, _crop_pixels
+    if isinstance(frame, SourceFrame):
+        return 'source'
+    if isinstance(frame, ProcessedFrame):
+        processor = frame.processor
+        if isinstance(processor, partial) and processor.func is _crop_pixels:
+            return 'crop'
+        return 'processed'
+    return 'other'
+
+
 class ResolutionCache:
     """Disk-backed resolution results for one job; never raises into callers."""
 
@@ -192,6 +208,9 @@ class ResolutionCache:
             return None
         with self._lock:
             image = self._entries.get(frame)
+        profile = _profile()
+        if profile.enabled:
+            profile.cache_event(entry_kind(frame), 'miss' if image is None else 'hit')
         if image is None:
             return None
         _validate_source(frame)
@@ -220,6 +239,8 @@ class ResolutionCache:
         if self._cancel_requested():
             return None
         size = int(image.nbytes)
+        profile = _profile()
+        started = time.perf_counter_ns() if profile.enabled else 0
         with self._lock:
             if frame in self._entries:
                 stored = self._entries[frame]
@@ -231,6 +252,7 @@ class ResolutionCache:
                     # write. Admission failure is a cache failure, never a
                     # render failure.
                     self._degraded = True
+                    profile.cache_state(degraded=True)
                     logger.info('frame resolution cache degraded: %s', exc)
                     return None
                 if not admitted:
@@ -238,6 +260,7 @@ class ResolutionCache:
                     # working set; the ceiling and the staging reserve decide
                     # whether another mapping is safe. Never exceed them.
                     self._degraded = True
+                    profile.cache_state(degraded=True)
                     logger.info('frame resolution cache degraded: used=%d need=%d max=%d',
                                 self._used, size, self.max_bytes)
                     return None
@@ -246,10 +269,15 @@ class ResolutionCache:
                     stored = frame_storage.store_frame(image, prefer_ram=False)
                 except OSError as exc:  # ScratchSpaceError and disk/permission failures
                     self._degraded = True
+                    profile.cache_state(degraded=True)
                     logger.info('frame resolution cache degraded: %s', exc)
                     return None
                 self._entries[frame] = stored
                 self._used += size
+                if profile.enabled:
+                    profile.cache_event(entry_kind(frame), 'put', size,
+                                        time.perf_counter_ns() - started)
+                    profile.cache_state(retained_bytes=self._used)
                 if self._used > self.budget:
                     self.budget = self._used
                     logger.info('frame resolution cache grew: used=%d max=%d',
@@ -263,6 +291,8 @@ class ResolutionCache:
             if self._closed:
                 return
             self._closed = True
+            logger.debug('frame resolution cache closed entries=%d used=%d max=%d degraded=%s',
+                         len(self._entries), self._used, self.max_bytes, self._degraded)
             self._entries.clear()
             self._used = 0
 
