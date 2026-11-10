@@ -37,6 +37,7 @@ def _isolated_preview_size(qapp):
 @pytest.fixture
 def dialog(qapp):
     window = QWidget()
+    window.experimental_features = True
     window.raw_images = make_two_focus_stack((160, 560))
     window.current_fusion_method = lambda: "openfocus_a"
     window.current_alignment_method = lambda: "none"
@@ -394,6 +395,7 @@ def test_unavailable_methods_stay_visible_with_a_reason(
     monkeypatch.setattr(mff, "is_ai_fusion_available", lambda: False)
     monkeypatch.setattr(algorithm_combo, '_package_available', lambda _name: False)
     window = QWidget()
+    window.experimental_features = True
     window.raw_images = make_two_focus_stack((160, 560))
     window.current_fusion_method = lambda: "stackmffv3"
     window.current_alignment_method = lambda: "none"
@@ -644,6 +646,7 @@ def test_registered_parameters_cross_dialogs_and_adoption(qapp, extra_algorithms
     monkeypatch.setattr(depthmap, 'get_settings', lambda: QSettings(
         str(tmp_path / 'depth.ini'), QSettings.Format.IniFormat))
     window = QWidget()
+    window.experimental_features = True
     window.raw_images = [np.full((24, 32, 3), value, np.uint8) for value in (20, 180)]
     window.raw_images[-1][:, :8] = 50
     window.current_fusion_method = lambda: 'dialog_extra'

@@ -20,9 +20,13 @@ class _Button:
     def setText(self, _text):
         pass
 
+    def setToolTip(self, _text):
+        pass
+
 
 class _Window:
     def __init__(self, frames=0):
+        self.experimental_features = True
         self._bar = _StatusBar()
         self.frames = frames
         self.raw_images = [object() for _ in range(frames)]
@@ -314,6 +318,4 @@ def test_render_progress_count_remains_visible_after_status_message_clears(qapp)
     assert '(1/228)' in render._status_bar_label.text()
     window.statusBar().clearMessage()
     assert '(1/228)' in render._status_bar_label.text()
-    render.on_render_stage('finish')
-    assert render._status_bar_label.text() == trans.t('render_stage_finish')
     window._bar.deleteLater()

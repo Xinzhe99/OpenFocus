@@ -254,6 +254,7 @@ def window(qapp, monkeypatch, tmp_path):
     monkeypatch.setattr(recovery, '_base_dir', lambda: str(tmp_path / 'recovery'))
     monkeypatch.setenv('OPENFOCUS_CONTROL_FILE', str(tmp_path / 'control.json'))
     instance = OpenFocus()
+    instance.experimental_features = True
     instance.use_gpu = False
     instance.restore_last_stack = False
     instance.set_alignment_method('none')

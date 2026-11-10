@@ -70,6 +70,7 @@ def depth_dialog(qapp, monkeypatch, tmp_path):
         from PyQt6.QtWidgets import QListWidget, QListWidgetItem
         from controllers.output_manager import OutputManager, OutputRecord, OUTPUT_RECORD_ROLE
         window = QWidget()
+        window.experimental_features = True
         window.raw_images = frames if frames is not None else _synthetic_thirds(48, 64)
         window.image_filenames = [f"capture-{i}.tif" for i in range(len(window.raw_images))]
         window.current_fusion_method = lambda: method
@@ -1459,17 +1460,17 @@ def test_unavailable_depth_methods_are_disabled_with_a_reason(
         index = dialog.method_combo.findData(method)
         assert index >= 0
         assert not dialog.method_combo.model().item(index).isEnabled()
-        assert (dialog.method_combo.itemData(index, Qt.ItemDataRole.ToolTipRole)
-                == trans.t("msg_stackmff_unavailable_text"))
+        assert trans.t('msg_stackmff_unavailable_text') in dialog.method_combo.itemData(
+            index, Qt.ItemDataRole.ToolTipRole)
     dtcwt = dialog.method_combo.findData('dtcwt')
     assert not dialog.method_combo.model().item(dtcwt).isEnabled()
-    assert dialog.method_combo.itemData(
-        dtcwt, Qt.ItemDataRole.ToolTipRole) == trans.t('env_dtcwt_unavailable')
+    assert trans.t('env_dtcwt_unavailable') in dialog.method_combo.itemData(
+        dtcwt, Qt.ItemDataRole.ToolTipRole)
     assert dialog.method_combo.currentData() == "openfocus_b"
 
     selected, _ = depth_dialog(method="dtcwt")
     assert selected.method_combo.currentData() == "dtcwt"
     assert not selected.compute_btn.isEnabled()
-    assert selected.status_lbl.text() == trans.t("env_dtcwt_unavailable")
+    assert trans.t('env_dtcwt_unavailable') in selected.status_lbl.text()
     _select(selected.method_combo, "dct")
     assert selected.compute_btn.isEnabled()

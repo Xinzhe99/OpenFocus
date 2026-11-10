@@ -254,6 +254,17 @@ def alignment_items():
 FUSION_DEFAULT = "openfocus_b"
 ALIGN_DEFAULT = "ecc"
 
+def refresh_experimental_selectors(window):
+    """Refresh labels and availability without changing selected methods."""
+    from ui.algorithm_combo import apply_method_availability
+
+    apply_method_availability(window.combo_fusion, fusion_algorithms(), window,
+                              ai_available=getattr(window, '_stackmff_available', None),
+                              recommended=FUSION_DEFAULT)
+    apply_method_availability(window.combo_align, registration_algorithms(), window,
+                              alignment=True, recommended=ALIGN_DEFAULT)
+
+
 def label_recommended(combo: QComboBox, method: str) -> None:
     """Decorate a selector entry without changing its stable identifier."""
     index = combo.findData(method)

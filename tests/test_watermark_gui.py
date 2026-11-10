@@ -729,6 +729,7 @@ def test_linear_dng_watermark_keeps_unpainted_raw_pixels(tmp_path, qapp):
 
 
 def test_gif_worker_burns_the_frozen_watermark(tmp_path, qapp):
+    from PIL import Image
     from core.workers import GifSaverWorker
 
     frames = [np.full((120, 160, 3), 90, np.uint8) for _ in range(2)]
@@ -742,9 +743,13 @@ def test_gif_worker_burns_the_frozen_watermark(tmp_path, qapp):
         worker.finished_signal.connect(lambda ok, message: result.append((ok, message)))
         worker.run()
         assert result and result[0][0], result
-    assert os.path.getsize(marked) != os.path.getsize(plain)
-    first = cv2.imread(marked, cv2.IMREAD_UNCHANGED)
-    assert first is not None and np.any(first != frames[0])
+    with Image.open(plain) as image:
+        plain_first = np.asarray(image.convert("RGB"))
+    with Image.open(marked) as image:
+        marked_first = np.asarray(image.convert("RGB"))
+    assert np.array_equal(plain_first, frames[0])
+    assert marked_first.shape == plain_first.shape
+    assert np.any(marked_first != plain_first)
 
 
 def _write_stack(path, size=(120, 160), count=2):

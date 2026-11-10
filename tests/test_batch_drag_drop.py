@@ -68,7 +68,7 @@ def _drop_on(target, folders, app):
     return enter, drop
 
 
-def _select_fusion(dialog, method='guided_filter'):
+def _select_fusion(dialog, method='openfocus_b'):
     """Pick a real fusion method; grouping is unavailable without one."""
     index = dialog.fusion_combo.findData(method)
     assert index >= 0, method
@@ -551,6 +551,10 @@ def test_batch_freezes_method_base_and_processing_order(qapp, method, expected, 
     from core.workers import BatchWorker
 
     dialog = BatchProcessingDialog(None)
+    if method == 'guided_filter':
+        from types import SimpleNamespace
+        dialog.parent_window = SimpleNamespace(experimental_features=True)
+        dialog._apply_fusion_availability()
     try:
         _select_fusion(dialog, method)
         dialog.chk_base_correct.setChecked(enabled)
@@ -623,6 +627,7 @@ def test_batch_disables_unavailable_methods_without_dropping_selection(
     monkeypatch.setattr(mff, 'is_ai_fusion_available', lambda: False)
     monkeypatch.setattr(algorithm_combo, '_package_available', lambda _name: False)
     parent = QWidget()
+    parent.experimental_features = True
     parent.current_fusion_method = lambda: 'stackmffv3'
     parent.current_alignment_method = lambda: 'none'
     parent.stack_reverse_order = False
@@ -634,13 +639,12 @@ def test_batch_disables_unavailable_methods_without_dropping_selection(
             index = dialog.fusion_combo.findData(method)
             assert index >= 0
             assert not dialog.fusion_combo.model().item(index).isEnabled()
-            assert dialog.fusion_combo.itemData(
-                index, Qt.ItemDataRole.ToolTipRole) == trans.t(
-                    'msg_stackmff_unavailable_text')
+            assert trans.t('msg_stackmff_unavailable_text') in dialog.fusion_combo.itemData(
+                index, Qt.ItemDataRole.ToolTipRole)
         dtcwt = dialog.fusion_combo.findData('dtcwt')
         assert not dialog.fusion_combo.model().item(dtcwt).isEnabled()
-        assert dialog.fusion_combo.itemData(
-            dtcwt, Qt.ItemDataRole.ToolTipRole) == trans.t('env_dtcwt_unavailable')
+        assert trans.t('env_dtcwt_unavailable') in dialog.fusion_combo.itemData(
+            dtcwt, Qt.ItemDataRole.ToolTipRole)
         guided = dialog.fusion_combo.findData('guided_filter')
         assert dialog.fusion_combo.model().item(guided).isEnabled()
     finally:

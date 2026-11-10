@@ -239,7 +239,7 @@ def test_roi_alignment_preserves_original_descriptors(tmp_path, monkeypatch):
 def test_source_decode_cancellation_discards_native_completion(tmp_path, monkeypatch, fail):
     frame, original = _source(tmp_path)
     worker = SourceRegionWorker(frame, ('raw', 12))
-    def resolve(_frame):
+    def resolve(_frame, *, should_cancel=None):
         worker.cancel()
         if fail:
             raise OSError('decode failed after cancellation')
@@ -264,7 +264,7 @@ def test_source_decode_emits_key_and_worker_developed_original(tmp_path, monkeyp
         threads.append(get_ident())
         return image + 1
     monkeypatch.setattr(linear_dng, 'develop_linear', develop)
-    monkeypatch.setattr(source_frames, 'resolve_frame', lambda frame: original)
+    monkeypatch.setattr(source_frames, 'resolve_frame', lambda frame, *, should_cancel=None: original)
     worker = SourceRegionWorker(frame, ('raw', 5))
     request = ('loupe', 1, (0, 0, 56, 40), (56, 40))
     worker.submit(request)
@@ -286,7 +286,7 @@ def test_queued_cancelled_decode_never_enters_native_decoder(monkeypatch):
     entered, release = Event(), Event()
     calls = []
     image = np.zeros((4, 5, 3), np.uint8)
-    def resolve(frame):
+    def resolve(frame, *, should_cancel=None):
         calls.append(frame)
         if frame == 'first':
             entered.set()
@@ -341,7 +341,7 @@ def test_source_decode_waits_for_shared_processing_budget(tmp_path):
 
 
 def test_source_decode_failure_keeps_request_key(monkeypatch):
-    def fail(frame):
+    def fail(frame, *, should_cancel=None):
         raise OSError('missing source')
     monkeypatch.setattr(source_frames, 'resolve_frame', fail)
     worker = SourceRegionWorker(object(), ('registered', 7))

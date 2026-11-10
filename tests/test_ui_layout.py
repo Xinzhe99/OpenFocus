@@ -144,12 +144,13 @@ def test_main_selector_explains_missing_dtcwt(qapp, monkeypatch):
 
     combo = QComboBox()
     algorithm_combo.fill_fusion_combo(combo)
-    host = SimpleNamespace(combo_fusion=combo, _stackmff_available=True)
+    host = SimpleNamespace(combo_fusion=combo, combo_align=QComboBox(),
+                           _stackmff_available=True, experimental_features=True)
     monkeypatch.setattr(algorithm_combo, '_package_available', lambda _name: False)
     main.OpenFocus.refresh_method_availability(host)
     index = combo.findData('dtcwt')
     assert not combo.model().item(index).isEnabled()
-    assert combo.itemData(index, Qt.ItemDataRole.ToolTipRole) == trans.t('env_dtcwt_unavailable')
+    assert trans.t('env_dtcwt_unavailable') in combo.itemData(index, Qt.ItemDataRole.ToolTipRole)
     monkeypatch.setattr(algorithm_combo, '_package_available', lambda _name: True)
     main.OpenFocus.refresh_method_availability(host)
     assert combo.model().item(index).isEnabled()
@@ -526,6 +527,7 @@ def test_batch_downscale_is_a_ratio_of_the_stack():
 def test_retouch_paints_a_locked_frame(qapp):
     """Retouching copies from the frame the user locked, and auto-pick is off."""
     import numpy as np
+    from PyQt6.QtTest import QTest
 
     from controllers.output_manager import OutputRecord
     from core.render_context import build_render_context
@@ -544,8 +546,10 @@ def test_retouch_paints_a_locked_frame(qapp):
         assert not hasattr(dlg, "chk_auto"), "auto-pick is gone"
         assert dlg.frame_list.count() == 3
         dlg._select_frame(2)
-        qapp.processEvents()
-        qapp.processEvents()
+        for _ in range(500):
+            if dlg._source_ready and not dlg._source_loading:
+                break
+            QTest.qWait(10)
         assert dlg.doc.frame_index == 2
         assert dlg._source_ready
         before = dlg.doc.working.copy()
@@ -778,6 +782,9 @@ def test_batch_parameter_editors_fit_their_content(qapp):
 def test_batch_ai_mode_survives_a_method_switch(qapp):
     from dialogs.batch import BatchProcessingDialog
     dlg = BatchProcessingDialog(None)
+    from types import SimpleNamespace
+    dlg.parent_window = SimpleNamespace(experimental_features=True)
+    dlg._apply_fusion_availability()
     try:
         dlg.show()
         dlg.fusion_combo.setCurrentIndex(dlg.fusion_combo.findData("stackmffv3"))

@@ -77,6 +77,13 @@ class AdvancedSettingsDialog(QDialog):
         root.addWidget(scroll, 1)
 
         w = window
+        self.chk_experimental_features = QCheckBox(trans.t("experimental_features"))
+        self.chk_experimental_features.setProperty("controlId", "chk_experimental_features")
+        self.chk_experimental_features.setChecked(bool(getattr(w, "experimental_features", False)))
+        self.chk_experimental_features.setToolTip(trans.t("experimental_features_hint"))
+        page_lay.addWidget(self.chk_experimental_features)
+        _note(page_lay, trans.t("experimental_features_hint"))
+
 
         # ---- Performance -------------------------------------------------
         perf = _section(page_lay, trans.t("advanced_tab_performance"))
@@ -350,6 +357,7 @@ class AdvancedSettingsDialog(QDialog):
             self.status.setText(sensor_error)
             return
         draft = {
+            "experimental_features": self.chk_experimental_features.isChecked(),
             "tile_enabled": self.chk_tile.isChecked(),
             "tile_block_size": (int(self.spin_block.value()) if self.chk_tile.isChecked()
                                 else getattr(w, "tile_block_size", 1024)),
@@ -439,6 +447,9 @@ class AdvancedSettingsDialog(QDialog):
                 pass
             self.status.setText(str(exc))
             return
+        apply_experimental = getattr(w, "apply_experimental_features", None)
+        if callable(apply_experimental):
+            apply_experimental()
         analytics = getattr(w, "usage_analytics", None)
         if analytics is not None and analytics.enabled() != self.chk_usage.isChecked():
             analytics.set_enabled(self.chk_usage.isChecked())
@@ -448,7 +459,7 @@ class AdvancedSettingsDialog(QDialog):
         log_action("settings.applied", changed=sorted(
             key for key in draft if previous[key] != draft[key]),
             usage_enabled=self.chk_usage.isChecked())
-        processing = set(draft) - {"restore_last_stack", "ask_load_scale", "output_name_prefix", "collect_alignment_report", "profile_performance", "debug_logging", "storage_directory"}
+        processing = set(draft) - {"experimental_features", "restore_last_stack", "ask_load_scale", "output_name_prefix", "collect_alignment_report", "profile_performance", "debug_logging", "storage_directory"}
         if any(previous[key] != draft[key] for key in processing):
             mark_dirty = getattr(w, "_mark_project_dirty", None)
             if mark_dirty is not None:
