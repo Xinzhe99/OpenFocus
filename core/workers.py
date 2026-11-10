@@ -1858,6 +1858,7 @@ class GifSaverWorker(QThread):
     def __init__(self, images, file_path, duration_sec, label_manager, target_type, scale_cfg=None,
                  linear_dng_metadata=None, watermark_cfg=None):
         super().__init__()
+        configure_native_worker_stack(self)
         self.images = tuple(images)
         self.file_path = file_path
         self.duration_sec = duration_sec

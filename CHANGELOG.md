@@ -198,8 +198,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 - Safely ignore unhandled application events when their target has already closed.
-- Give automatic-background and aligned-preview workers sufficient native thread
-  stack on macOS.
+- Give automatic-background, preview and export workers sufficient native
+  thread stack on macOS.
 - Keep new projects clean at startup and restore a saved alignment choice.
 - Keep loading-scale resolution details readable when source metadata arrives.
 - Show the installed version when a manual update check finds no update.
