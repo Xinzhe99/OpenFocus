@@ -92,12 +92,15 @@ class TestMagnifierRepaintsAfterResize:
         label.set_display_pixmap(pixmap)
         qapp.processEvents()
         try:
-            for size in ((480, 320), (640, 460), (600, 400)):
+            for size in ((481, 321), (641, 461), (601, 401)):
                 label.resize(*size)
                 qapp.processEvents()
                 composite = label.pixmap()
                 assert composite is not None and not composite.isNull()
-                assert (composite.width(), composite.height()) == size
+                ratio = label.devicePixelRatioF()
+                assert composite.devicePixelRatioF() == pytest.approx(ratio)
+                assert (composite.width(), composite.height()) == tuple(
+                    round(dimension * ratio) for dimension in size)
                 assert _rgb_array(composite).std() > 1.0
         finally:
             label.close()

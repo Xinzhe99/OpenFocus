@@ -82,6 +82,37 @@ def qapp():
     yield app
 
 
+@pytest.fixture
+def isolated_clipboard(qapp, monkeypatch):
+    """Use real Qt MIME data without reading or modifying the desktop clipboard."""
+    from PyQt6.QtCore import QMimeData
+    from PyQt6.QtWidgets import QApplication
+
+    class Clipboard:
+        def __init__(self):
+            self.data = QMimeData()
+
+        def setMimeData(self, mime):
+            self.data = mime
+
+        def mimeData(self):
+            return self.data
+
+        def setText(self, text):
+            self.data = QMimeData()
+            self.data.setText(text)
+
+        def text(self):
+            return self.data.text()
+
+        def clear(self):
+            self.data = QMimeData()
+
+    clipboard = Clipboard()
+    monkeypatch.setattr(QApplication, 'clipboard', staticmethod(lambda: clipboard))
+    return clipboard
+
+
 @pytest.fixture(scope="session")
 def two_focus_stack():
     return make_two_focus_stack()
