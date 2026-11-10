@@ -68,7 +68,7 @@ class _Host:
         self._project_dirty = False
         self._restore_depth = 0
         self.titles = []
-        self.combo_fusion = _Combo(["stackmffv3", "dct"])
+        self.combo_fusion = _Combo(["stackmffv3", "dct", "openfocus_b"])
         self.combo_align = _Combo(["none", "ecc"])
         self._fusion_parameters_by_method = {}
         self._registration_parameters_by_method = {}

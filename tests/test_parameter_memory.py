@@ -102,6 +102,21 @@ def test_algorithm_selection_persists_by_id_and_invalid_values_are_ignored(clean
     assert not hasattr(restored, "_preferred_alignment_method")
 
 
+def test_window_keeps_saved_alignment_without_marking_project_dirty(qapp, clean_store):
+    from main import OpenFocus
+    from utils.settings_store import ALIGNMENT_METHOD_KEY
+
+    get_settings().setValue(ALIGNMENT_METHOD_KEY, 'ecc')
+    window = OpenFocus()
+    try:
+        assert window.current_alignment_method() == 'ecc'
+        assert not getattr(window, '_project_dirty', False)
+    finally:
+        window._force_quit = True
+        window.close()
+        window.deleteLater()
+
+
 def test_brightness_rejects_coercions_and_keeps_adjacent_valid_values():
     raw = {"exposure_match": {"dct": False, "dtcwt": "false"},
            "base_correct": {"gfgfgf": True, "unknown": False}}

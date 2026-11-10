@@ -456,6 +456,7 @@ class OpenFocus(QMainWindow):
         self._applying_alignment_default = False
         # 恢复持久化设置与最近文件（语言需在菜单构建前应用）
         load_window_settings(self)
+        self._alignment_choice_explicit = getattr(self, '_preferred_alignment_method', None) is not None
         load_drag_export_format(self)
         saved_lang = get_saved_language()
         if saved_lang:
@@ -497,8 +498,9 @@ class OpenFocus(QMainWindow):
         # 主题应用必须在 init_ui 之后：light 模式要剥离控件的内联暗样式，
         # UI 未建时剥离是空操作，之后创建的控件会带着暗色内联样式覆盖
         # 应用级亮色 QSS（白底白字，整个右侧面板不可读）
-        self.init_ui()
-        self.apply_dark_theme()
+        with self._restore_scope():
+            self.init_ui()
+            self.apply_dark_theme()
         self.storage_fallback_notice.connect(self._show_storage_fallback)
         window_ref = weakref.ref(self)
         def notify_storage_fallback(path, error, fallback):
