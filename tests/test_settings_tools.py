@@ -121,6 +121,23 @@ def test_storage_directory_browse_cancel_and_save(settings_window, tmp_path, mon
     assert store.value('rendering/storage_directory') == ''
 
 
+def test_unavailable_saved_storage_does_not_block_other_settings(settings_window, tmp_path, monkeypatch):
+    from core import frame_storage
+    from dialogs import advanced_settings
+
+    monkeypatch.setattr(frame_storage, '_storage_directory', None)
+    missing = str(tmp_path / 'missing')
+    settings_window.storage_directory = missing
+    frame_storage.restore_storage_directory(missing)
+    dialog = advanced_settings.AdvancedSettingsDialog(settings_window)
+    dialog.spin_block.setValue(512)
+    dialog._apply()
+    assert dialog.result() == QDialog.DialogCode.Accepted
+    assert settings_window.tile_block_size == 512
+    assert settings_window.storage_directory == frame_storage._storage_directory == missing
+    assert frame_storage.storage_directory() == frame_storage.tempfile.gettempdir()
+
+
 def test_invalid_storage_directory_keeps_previous_settings(settings_window, tmp_path, monkeypatch):
     from core import frame_storage
     from dialogs import advanced_settings
@@ -180,6 +197,22 @@ def test_saved_storage_directory_restores_or_reports_unavailable(tmp_path, monke
     assert frame_storage.storage_directory() == frame_storage.tempfile.gettempdir()
     assert frame_storage._storage_directory == missing
     assert missing in warning and frame_storage.tempfile.gettempdir() in warning
+
+
+def test_full_saved_storage_does_not_claim_fallback(tmp_path, monkeypatch):
+    import errno
+    import main
+    from core import frame_storage
+
+    monkeypatch.setattr(frame_storage, '_storage_directory', None)
+    def full(path):
+        raise OSError(errno.ENOSPC, 'disk full')
+    monkeypatch.setattr(main, 'configure_storage_directory', full)
+    window = SimpleNamespace(storage_directory=str(tmp_path))
+    warning = main._restore_storage_directory(window)
+    assert 'disk full' in warning
+    assert frame_storage._storage_directory == str(tmp_path)
+    assert frame_storage.tempfile.gettempdir() not in warning
 
 
 def test_settings_preserve_supported_tile_and_registration_ranges(settings_window):

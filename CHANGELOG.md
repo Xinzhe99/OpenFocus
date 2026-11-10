@@ -219,6 +219,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   sessions and retry GPU memory admission before falling back to CPU.
 - Draw bounded source previews in their original image coordinates in the wipe
   comparison, keeping them aligned with full-resolution fusion results.
+- Correct the experimental soft-blend benchmark to use response power weights,
+  including equal weights for zero-response pixels.
+- Allow other Advanced Settings to be saved while the saved temporary folder
+  is unavailable, and report a full selected disk without claiming a fallback.
 - Preserve focus selection in OpenFocus C for small or narrow images.
 - Finalize partial CLI performance reports when a render is interrupted, and
   release evicted neural sessions before constructing their replacements.

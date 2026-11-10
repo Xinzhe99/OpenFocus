@@ -67,3 +67,13 @@ def test_prototype_responses_use_code_domain_and_current_radius(dtype):
                                              u8=dtype == np.uint8))
     assert np.any(actual > 0)
     np.testing.assert_array_equal(actual, np.stack(expected))
+
+
+def test_prototype_soft_blend_uses_power_weights():
+    from tools import _proto_soft_blend
+
+    frames = [np.full((1, 2, 3), value, np.uint8) for value in (20, 100)]
+    responses = np.array([[[1.0, 0.0]], [[3.0, 0.0]]])
+    result = _proto_soft_blend.fuse_soft(frames, responses, gamma=2.0)
+    np.testing.assert_allclose(result[0, 0], [92.0, 92.0, 92.0])
+    np.testing.assert_allclose(result[0, 1], [60.0, 60.0, 60.0])
