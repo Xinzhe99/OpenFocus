@@ -348,11 +348,11 @@ La registrazione corregge il disallineamento spaziale tra i fotogrammi dello sta
 
 #### OpenFocus (veloce)
 
-- Allineamento per similarità limitata (traslazione + rotazione + scala), con equalizzazione della luminosità per fotogramma e ritaglio automatico
+- Allineamento per similarità limitata (traslazione + rotazione + scala) con ritaglio automatico
 - Cerca trasformazioni di similarità limitate usando differenze di immagine campionate e applica warp con interpolazione Lanczos
-- I fotogrammi con uno spostamento superiore all'**8% della dimensione del fotogramma restano non allineati** invece di essere corretti parzialmente. Modifica il limite con `--align-shift-limit` nella CLI
+- Il dominio di ricerca dello spostamento è pari per impostazione predefinita al 3% della dimensione del fotogramma e si modifica con `--align-shift-limit`. La ricerca usa il fotogramma precedente allineato e parte dal movimento cumulativo; lo spostamento totale può superare il 3%.
 - Per geometrie non rigide o estreme, scegli ECC o omografia
-- **Gestione dei fotogrammi rifiutati**: per impostazione predefinita si continua con il fotogramma non allineato. Scegli **Interrompi su fotogramma rifiutato** per far fallire il rendering o l'elemento batch prima di produrre un risultato quando la qualità del rilevatore è inferiore a 0,06 o il movimento stimato supera il limite di spostamento configurato, 8° di rotazione o un cambio di scala del 5%. I fotogrammi sono numerati da 1 nell'ordine dello stack elaborato. Il riferimento geometrico è il fotogramma 1 per impostazione predefinita; una corrispondenza diretta debole può essere ritentata sul fotogramma adiacente più vicino al riferimento. Questa politica rileva le stime rifiutate, non tutte le corrispondenze errate: bassa texture, pattern ripetuti, occlusione, movimento ampio o cambi di fuoco possono ancora ingannare la registrazione. Ispeziona il risultato.
+- In caso di errore effettivo di stima, `failure_policy=continue` (predefinito) mantiene il fotogramma non allineato; `fail` interrompe il processo. Scarsa trama, motivi ripetuti e variazioni di fuoco possono comunque causare corrispondenze imprecise.
 - Nella CLI, seleziona la stessa politica con `--align openfocus --align-param 'failure_policy="fail"'` (usa le virgolette adatte alla shell). Gli elementi batch usano la politica scelta in modo indipendente. Il valore predefinito è `"continue"`.
 - Imposta **Fotogramma di riferimento** su un numero basato su 1 nell'ordine dello stack incluso ed elaborato per ancorare la geometria a quel fotogramma. L'ordine viene conservato; l'equalizzazione della luminosità usa un proprio riferimento. Ogni stack batch deve contenere quel numero, altrimenti l'elemento fallisce. Esempio CLI: `--align openfocus --align-param reference_frame=3`. Scegliere un riferimento non corregge la parallasse né una corrispondenza scadente; ispeziona il risultato.
 
@@ -448,33 +448,20 @@ OpenFocus offre dieci algoritmi di fusione (più una modalità solo allineamento
 
 Ogni tile neurale usa tutti i fotogrammi. I fotogrammi e i dati temporanei di allineamento possono usare il disco; spazio libero e memoria disponibile limitano lo stack. La suddivisione spaziale V2 approssima l’inferenza sull’intera immagine.
 
-Se non viene indicata una cartella temporanea, OpenFocus stima lo spazio necessario in base agli input noti e ai dati temporanei. Se il disco temporaneo di sistema non ha spazio sufficiente, può prendere in considerazione dischi locali fissi scrivibili. Una cartella specificata esplicitamente non viene sostituita automaticamente. Il controllo è una stima del momento, non una prenotazione; lo spazio può esaurirsi in seguito. In caso di errore di archiviazione, scegli una cartella scrivibile nelle impostazioni avanzate.
+Se non viene indicata una cartella temporanea, OpenFocus stima lo spazio necessario in base agli input e ai dati temporanei e può considerare dischi locali fissi scrivibili se lo spazio manca. Se la cartella scelta non è disponibile, avvisa e usa temporaneamente la cartella di sistema; ogni nuovo processo riprova la scelta salvata. Un disco scelto pieno non provoca un cambio automatico. Il controllo è una stima del momento, non una prenotazione. In caso di errore, scegli una cartella scrivibile nelle impostazioni avanzate.
 
 
 ### OpenFocus A / B / C
 
-- **OpenFocus A**: seleziona i pixel sorgente tramite una risposta di fuoco multi-scala.
-- **OpenFocus B**: miscela fotogrammi vicini guidato da una mappa di profondità levigata.
-- **OpenFocus C**: miscela i pixel sorgente in base alla mappa di profondità finale levigata.
-- **Parametri**: A e B usano il cursore del kernel per controllare la scala di risposta di fuoco; C non ha raggio. La levigatura di A non ha effetto; B e C levigano la mappa di profondità usata per la fusione.
+A usa una risposta di fuoco multiscala (raggio 8, levigatura 4); la sua levigatura è attualmente inattiva.
 
-**Levigatura**: un unico campo numerico sotto il cursore del kernel, il cui significato dipende dal metodo selezionato (intervallo 0–8, passo 0,2):
+B usa una mappa di profondità (raggio 8, levigatura 4, feather 3). C usa una piramide multilivello ponderata (levigatura 4), senza raggio.
 
-| Metodo | Etichetta | Predefinito | Effetto |
-|---|---|---|---|
-| OpenFocus A | Levigatura della miscelazione | 2,0 | Nessun effetto |
-| OpenFocus B | Levigatura della profondità | 1,44 | Controlla la levigatura della mappa di profondità che guida la miscelazione |
-| OpenFocus C | Levigatura della miscelazione | 3,6 | Controlla la levigatura della mappa di profondità e le transizioni di fusione |
+CLI: `--method openfocus_b --param radius=8 --param smoothing=4 --param feather=3`.
 
-Dimensione kernel predefinita per A/B: 17. I valori salvati restano in uso; ripristina i valori predefiniti per usare quelli nuovi.
+Nell’interfaccia, l’abbinamento esposizione è attivo per A/B/C per impostazione predefinita e usa il primo fotogramma elaborato; per gli altri metodi è disattivato e usa l’ultimo. Le scelte salvate esplicitamente sono mantenute; quando A/B/C è attivo si usa il primo. La correzione della deriva di luminosità resta disattivata per impostazione predefinita. Reimposta ripristina i valori di ogni metodo. Nella CLI è attivo per impostazione predefinita per tutti i metodi; `--no-exposure-match` lo disattiva.
 
-Valori più alti aumentano la levigatura delle transizioni. Ogni metodo ricorda il proprio valore tra le sessioni e l'elaborazione batch applica la stessa regola.
-
-C non ha il parametro Raggio, quindi il suo cursore del kernel è nascosto.
-
-CLI: `--depth-smoothing VALUE` (B) e `--blend-smoothing VALUE` (A, C).
-
-**Le opzioni di luminosità sono per metodo.** *Abbina l'esposizione prima della fusione* e *Rimuovi la deriva di luminosità* sono ricordate separatamente per ogni metodo di fusione, perché rispondono a una domanda specifica dello stack più che a una preferenza globale. Entrambe sono attive per impostazione predefinita in OpenFocus A/B/C (che non hanno calibrazione dell'esposizione integrata); gli altri metodi mantengono i valori storici (abbinamento esposizione attivo, rimozione deriva disattivata). Cambiando metodo vengono mostrati i valori di quel metodo, che sopravvivono al riavvio. **Reimposta** cancella i valori memorizzati di luminosità, levigatura e raggio di tutti i metodi.
+Selezionando A/B/C si usa l’allineamento OpenFocus, salvo scelta esplicita di un allineamento o ripristino di un progetto. I valori predefiniti sono spostamento 0,03 e ingrandimento 5%.
 
 **Nitidezza dell'output fuso** applica una leggera maschera di contrasto dopo la fusione, prima che il risultato venga convertito nella profondità di output. È disattivata per impostazione predefinita e può essere attivata in **Impostazioni di rendering** o nelle opzioni batch; il flag CLI equivalente è `--sharpen-output`. Influisce sull'immagine fusa, non sui fotogrammi registrati né sulle mappe di profondità. Può rendere i bordi più distinti, ma può amplificare rumore e aloni. Viene salvata con il progetto e ricordata tra le sessioni.
 
@@ -500,9 +487,9 @@ Seleziona **Solo allineamento (nessuna fusione)** per registrare lo stack e aggi
 | StackMFF (V1) | Lenta (GPU) | Non valutata qui | Luminanza indipendente dall'ordine; crominanza variabile in caso di parità delle distanze di luminanza |
 | StackMFF V2 | Veloce (GPU) | Non valutata qui | Scansioni continue con un modello minuscolo |
 | StackMFF V3 | Lenta (GPU) | Eccellente | Massima qualità |
-| OpenFocus A | Dipende dallo stack | Dipende dallo stack | Selezione multi-scala dei pixel a fuoco |
+| OpenFocus A | Dipende dallo stack | Dipende dallo stack | Risposta multiscala e miscela delle aree poco dettagliate |
 | OpenFocus B | Dipende dallo stack | Dipende dallo stack | Miscelazione di fotogrammi vicini guidata dalla profondità |
-| OpenFocus C | Dipende dallo stack | Dipende dallo stack | Miscelazione dei pixel sorgente in base alla mappa di profondità finale |
+| OpenFocus C | — | — | Piramide multilivello ponderata |
 
 Apri **Strumenti → Confronto metodi** per regolare più metodi in modo indipendente. Nome, etichette dei parametri e controlli di ogni metodo restano insieme quando la finestra si restringe. Le modifiche aggiornano automaticamente l'anteprima. **Anteprima ROI (veloce)** fonde l'area selezionata con il contesto circostante; **Fusione immagine intera** verifica il risultato sull'intera immagine e permette di ispezionare un'altra area senza renderizzare di nuovo. I risultati ROI possono differire da quelli a immagine intera perché le statistiche di esposizione e alcuni algoritmi dipendono dall'estensione dell'immagine.
 La **fusione immagine intera** è selezionata per impostazione predefinita.
@@ -743,7 +730,7 @@ Crea un file vuoto chiamato `OpenFocus.portable` accanto a `OpenFocus.exe` (lo Z
 
 ### Metadati EXIF
 
-I metadati di origine (modello di fotocamera, esposizione, orientamento e così via) vengono conservati: l'orientamento viene applicato al caricamento e le esportazioni PNG/TIFF/WebP incorporano automaticamente l'EXIF originale. Le esportazioni JPG/BMP non possono memorizzare l'EXIF completo e vengono scritte senza.
+Le esportazioni PNG/TIFF/JPEG/WebP conservano i metadati ripuliti di fotocamera, obiettivo, esposizione, data e GPS e impostano Orientation su 1. Il BMP non incorpora EXIF. Se i dati EXIF o ICC di un JPEG superano il limite del formato, OpenFocus mostra un errore chiaro; scegli PNG o TIFF. Se l'EXIF ripulito di un'immagine di origine supera 16 MiB, OpenFocus rifiuta di caricarla; rimuovi o riduci prima l'EXIF di quel file.
 
 ### Input HEIC/HEIF
 
@@ -818,7 +805,7 @@ In **Impostazioni → Impostazioni avanzate → Nomi dei risultati**, un prefiss
 
 ### Condividere un risultato
 
-Fai clic con il pulsante destro su un output e apri **Condividi**. **Copia immagine di anteprima (JPEG)** inserisce negli appunti il risultato corrente a piena risoluzione, incluse etichette e barra di scala, come vero JPEG e fornisce anche una bitmap decodificata. **Copia percorsi dei file** copia gli URL dei file persistenti di tutti i risultati selezionati; i risultati non salvati o obsoleti richiedono una cartella e vengono scritti come PNG con gli attuali pixel 8/16 bit e annotazioni. **Mostra nella cartella** apre Esplora file, Finder o il gestore file con il file selezionato. Le esportazioni esistenti vengono riutilizzate solo finché corrispondono all'immagine e alle annotazioni correnti. **Crea link di condivisione privato** resta disattivato finché non esiste la condivisione ospitata.
+Fai clic con il pulsante destro su un output e apri **Condividi**. **Copia immagine di anteprima (JPEG)** inserisce negli appunti il risultato a piena risoluzione, con etichette e barra di scala, come vero JPEG e bitmap decodificata. **Copia percorsi dei file** copia i percorsi locali come testo e URL di file. Un risultato salvato e invariato usa il file esistente; uno non salvato, modificato o con file mancante viene scritto automaticamente come PNG nella cartella temporanea di sistema, senza essere segnato come salvato. Il sistema può eliminare i file temporanei; usa **Salva con nome** per conservarli. **Mostra nella cartella** apre Esplora file, Finder o il gestore file con il file selezionato, senza chiedere una cartella. **Crea link di condivisione privato** resta disattivato finché non esiste la condivisione ospitata.
 
 ### Formato di esportazione per trascinamento
 
@@ -904,9 +891,9 @@ Ad esempio, aggiungi `--align openfocus --alignment-report alignment.json` a un 
 | `--param KEY=JSON_VALUE` | Imposta qualsiasi parametro di fusione; ripetibile e prevale sulle opzioni legacy |
 | `--align, -a` | `none` (predefinito), `homography`, `ecc`, `both`, `openfocus` |
 | `--align-param KEY=JSON_VALUE` | Imposta qualsiasi parametro di registrazione; ripetibile |
-| `--align-shift-limit` | Solo allineamento `openfocus`: spostamento massimo accettato come frazione della dimensione del fotogramma (0,08 predefinito; oltre resta non allineato) |
+| `--align-shift-limit` | Dominio di ricerca dello spostamento come frazione della dimensione del fotogramma (0,03 predefinito); lo spostamento cumulativo può essere maggiore. |
 | `--alignment-report PATH` | Salva gli esiti di allineamento per fotogramma in JSON per un rendering singolo non raggruppato con allineamento attivo; batch e gruppi non supportati |
-| `--exposure-match` | Abbina la media di ogni fotogramma a quella dell'ultimo prima della fusione (attivo per impostazione predefinita; `--no-exposure-match` lo disattiva). Guadagni sull'intero stack, quindi l'output a tasselli resta senza cuciture; si applica a ogni metodo e al riferimento di luminosità dell'allineatore OpenFocus |
+| `--exposure-match` | Nella CLI è attivo per impostazione predefinita per tutti i metodi; A/B/C usano il primo fotogramma elaborato, gli altri l’ultimo. `--no-exposure-match` disattiva. |
 | `--base-frame` | Passo facoltativo post-fusione: abbina le basse frequenze dell'output al fotogramma `last`/`first` (`none` predefinito) |
 | `--sort` | Ordine fotogrammi per `openfocus_a/b/c`: `asc` (predefinito, ordine file), `desc` (inverte una scansione da lontano a vicino), `off` |
 | `--frame-order` | Cartella in ingresso: `auto` (predefinito) ordina i fotogrammi da vicino a lontano secondo i passi di messa a fuoco EXIF quando tutti li hanno (il bracketing di fuoco OM SYSTEM parte da metà profondità), altrimenti per nome; `name` ordina sempre per nome file. I file elencati esplicitamente mantengono il loro ordine |
@@ -914,9 +901,7 @@ Ad esempio, aggiungi `--align openfocus --alignment-report alignment.json` a un 
 | `--dust-map WHITE` | Correzione di campo piatto (mappa polvere) da uno scatto di campo bianco sfocato |
 | `--defect-mask-path MASK` | Maschera difetti in coordinate sensore riparata prima della registrazione |
 | `--sensor-denoise` | Riduzione prudente del rumore del sensore prima della registrazione |
-| `--kernel, -k` | Dimensione kernel (forzata dispari); controlla la scala di risposta di fuoco per `openfocus_a` e `openfocus_b`; C non ha raggio |
-| `--depth-smoothing VALUE` | Solo `openfocus_b`: forza della levigatura delle transizioni di profondità (1,44 predefinito) |
-| `--blend-smoothing VALUE` | Solo `openfocus_a` / `openfocus_c`: forza della levigatura delle transizioni (2,0 per A, 3,6 per C predefiniti) |
+| `--kernel, -k` | Solo per metodi che dichiarano `kernel_size` |
 | `--ai-mode {soft,hard}` | Output StackMFF V3: miscelazione ponderata per probabilità (predefinita) o fotogramma più probabile per pixel |
 | `--threads, -t` | Limite superiore dei thread di lavoro; `0` = automatico (predefinito), i valori positivi limitano la concorrenza |
 | `--resource-preference` | `balanced` (predefinito), `responsive` o `maximum`; controlla la pianificazione delle risorse |

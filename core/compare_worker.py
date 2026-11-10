@@ -37,7 +37,7 @@ class _CancellableWorker(QThread):
         return self._cancelled.is_set() or self.isInterruptionRequested()
 
 
-def align_frames(images, alignment, shared, should_cancel):
+def align_frames(images, alignment, shared, should_cancel, reverse_registration=False):
     """Register a captured stack without writing files or reading live UI state."""
     from core.registration import ImageRegistration
     frames = list(images)
@@ -45,6 +45,8 @@ def align_frames(images, alignment, shared, should_cancel):
         raise ValueError("The image stack is empty.")
     if should_cancel():
         return None
+    if reverse_registration:
+        frames.reverse()
     from core.algorithms import alignment_steps
     defer_warps = all(step in ('openfocus', 'homography', 'ecc') for step in alignment_steps(alignment))
     if alignment != 'none' and not defer_warps:
@@ -59,10 +61,13 @@ def align_frames(images, alignment, shared, should_cancel):
         if shared.get('reg_downscale_width') is not None:
             settings['downscale_width'] = shared['reg_downscale_width']
         registration = ImageRegistration(**settings)
-        frames = registration.process(frames, output_path=None,
+        from core.workers import _registration_process
+        frames = _registration_process(registration, frames, reverse_registration, output_path=None,
             thread_count=max(0, int(shared.get("thread_count", 0))),
             resource_preference=shared.get("resource_preference", "balanced"),
             should_cancel=should_cancel)
+    if reverse_registration:
+        frames = list(reversed(frames))
     return None if should_cancel() else frames
 
 
@@ -72,11 +77,12 @@ class AlignmentWorker(_CancellableWorker):
     ready = pyqtSignal(object)
     failed = pyqtSignal(str)
 
-    def __init__(self, images, alignment, shared, parent=None):
+    def __init__(self, images, alignment, shared, parent=None, *, reverse_registration=False):
         super().__init__(parent)
         self.images = images
         self.alignment = alignment
         self.shared = deepcopy(shared)
+        self.reverse_registration = reverse_registration
 
     def run(self):
         with log_operation("comparison_alignment", registration=self.alignment,
@@ -90,7 +96,8 @@ class AlignmentWorker(_CancellableWorker):
                     # Returned descriptors outlive this QThread's native object.
                     # cancel() sets the event even before the thread starts.
                     images = align_frames(self.images, self.alignment, self.shared,
-                                          self._cancelled.is_set)
+                                          self._cancelled.is_set,
+                                          reverse_registration=self.reverse_registration)
                 if images is not None and not self._should_cancel():
                     self.ready.emit(images)
                 else:

@@ -156,7 +156,8 @@ def _stack_info(window):
 def _render_state(window):
     manager = getattr(window, "render_manager", None)
     worker = getattr(manager, "worker", None)
-    busy = bool(worker is not None and worker.isRunning())
+    busy = bool((worker is not None and worker.isRunning())
+                or getattr(manager, '_pending_storage', None) is not None)
     error = getattr(manager, "last_error", None)
     last_state = getattr(manager, "last_state", None)
     if busy or last_state == "running":
@@ -496,9 +497,9 @@ class ControlServer(QObject):
 
     def _drop(self, connection):
         worker = self._pending_replies.pop(connection, None)
+        self._buffers.pop(connection, None)
         if worker is not None:
             worker.cancel()
-        self._buffers.pop(connection, None)
         connection.deleteLater()
 
     def _read(self, connection):
@@ -531,11 +532,13 @@ class ControlServer(QObject):
                         if c not in self._buffers:
                             return
                         if success:
-                            reply = ok_response(deferred.request_id, deferred.result,
+                            result = message if isinstance(message, dict) else deferred.result
+                            reply = ok_response(deferred.request_id, result,
                                                 (time.perf_counter() - deferred.started) * 1000)
                         else:
-                            reply = error_response(deferred.request_id, ControlError(
-                                'internal', message or 'Export cancelled'))
+                            error = message if isinstance(message, ControlError) else ControlError(
+                                'internal', message or 'Export cancelled')
+                            reply = error_response(deferred.request_id, error)
                         if self._send_response(c, reply):
                             QTimer.singleShot(0, lambda: self._read(c))
                     try:
@@ -732,6 +735,9 @@ class ControlServer(QObject):
                 "ai_batch_size": int(getattr(window, "ai_batch_size", 2)),
                 "resource_preference": getattr(window, "resource_preference", "balanced"),
                 "reg_downscale_width": int(getattr(window, "reg_downscale_width", 1024)),
+                "storage_directory": getattr(window, "storage_directory", "") or "",
+                "profile_performance": bool(getattr(window, "profile_performance", False)),
+                "debug_logging": bool(getattr(window, "debug_logging", False)),
             },
             "render": _render_state(window),
             "outputs": {"count": window.output_list.count(),
@@ -897,6 +903,22 @@ class ControlServer(QObject):
             window.resource_preference = choice
         elif name == "reg_downscale_width":
             window.reg_downscale_width = max(64, int(value))
+        elif name == "storage_directory":
+            from core.frame_storage import configure_storage_directory
+            path = "" if value is None else _string(args, "value", required=False) or ""
+            try:
+                configure_storage_directory(path)
+            except OSError as error:
+                raise ControlError("invalid_argument",
+                                   f"Temporary directory is not writable: {error}") from error
+            window.storage_directory = path
+        elif name == "profile_performance":
+            window.profile_performance = _boolean(args, "value", required=True)
+        elif name == "debug_logging":
+            # A string such as "false" must not switch detail on.
+            from utils.logging_setup import set_debug_logging
+            window.debug_logging = _boolean(args, "value", required=True)
+            set_debug_logging(window.debug_logging)
         else:
             raise ControlError("invalid_argument", f"Unknown option: {name}")
         window.persist_settings()
@@ -906,7 +928,8 @@ class ControlServer(QObject):
     def _cmd_render_start(self, args):
         manager = self.window.render_manager
         worker = getattr(manager, "worker", None)
-        if worker is not None and worker.isRunning():
+        if ((worker is not None and worker.isRunning())
+                or getattr(manager, '_pending_storage', None) is not None):
             raise ControlError("busy", "A render is already running",
                                "Wait for render.state to leave 'rendering' or call render.cancel.")
         preview = _boolean(args, "preview", default=False)
@@ -939,14 +962,48 @@ class ControlServer(QObject):
                                           roi_choice=roi_choice)
         except ValueError as error:
             raise ControlError("invalid_argument", str(error)) from error
+        if status == 'preflight':
+            def start(complete):
+                def finished(final_status):
+                    try:
+                        result = self._render_start_response(final_status, before, method, alignment, preview)
+                    except ControlError as error:
+                        complete(False, error)
+                    else:
+                        complete(True, result)
+                return manager.set_storage_completion(finished)
+            return _DeferredResponse(start)
+        return self._render_start_response(status, before, method, alignment, preview)
+
+    def _render_start_response(self, status, before, method, alignment, preview):
+        manager = self.window.render_manager
+        storage = getattr(manager, "last_storage_assessment", None)
         if status == "started":
             if self._render_id == before:
                 # A monkeypatched/test renderer bypassed the generation
                 # wrapper; keep the id accurate for --wait all the same.
                 self._render_id += 1
-            return {"started": True, "render_id": self._render_id,
-                    "method": method, "alignment": alignment,
-                    "preview": preview}
+            reply = {"started": True, "render_id": self._render_id,
+                     "method": method, "alignment": alignment,
+                     "preview": preview}
+            if storage is not None:
+                # Also after confirm=true: a pre-confirming client still sees it.
+                reply["storage"] = storage
+            return reply
+        if status == "confirm_storage":
+            raise ControlError(
+                "confirm_required",
+                "Temporary storage is low for this render",
+                "Choose another directory with option.set name=storage_directory, "
+                "or retry with confirm=true to continue.",
+                details={"storage": storage})
+        if status == "insufficient_storage":
+            raise ControlError(
+                "insufficient_storage",
+                "The temporary directory cannot hold this render",
+                "Choose another directory with option.set name=storage_directory "
+                "and retry; confirm=true does not override this.",
+                details={"storage": storage})
         if status == "busy":
             raise ControlError("busy", "A render is already running",
                                "Wait for render.state to leave 'rendering' or "
@@ -983,6 +1040,9 @@ class ControlServer(QObject):
         raise ControlError("internal", f"Render did not start ({status})")
 
     def _cmd_render_cancel(self, args):
+        cancel = getattr(self.window.render_manager, 'cancel_storage_preflight', None)
+        if callable(cancel) and cancel():
+            return {"cancelling": True, "render_id": self._render_id}
         worker = getattr(self.window.render_manager, "worker", None)
         if worker is None:
             return {"cancelling": False}
@@ -1005,6 +1065,10 @@ class ControlServer(QObject):
         row = self.window.output_list.currentRow()
         result["output"] = next((record for record in outputs["records"]
                                  if record["index"] == row), None)
+        # The last profiled render's report, also for a failed or cancelled one.
+        report = getattr(self.window.render_manager, "performance_report", None)
+        if report:
+            result["performance"] = report
         return result
 
     # ------------------------------------------------------------- outputs

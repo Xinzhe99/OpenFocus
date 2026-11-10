@@ -316,6 +316,23 @@ def test_old_load_completion_after_clear_is_ignored(monkeypatch):
     assert not w.raw_images and manager._stack_baseline is None
 
 
+def test_cancel_after_load_result_before_delivery_discards_result(monkeypatch):
+    w, _ = host(monkeypatch)
+    monkeypatch.setattr(source, "StackLoadWorker", LoadWorker)
+    manager = w.source_manager
+    monkeypatch.setattr(manager, "_show_load_status", lambda: None)
+    manager._start_load_worker(filepaths=["new"])
+    worker = manager._load_worker
+    restored = []
+    worker.restore_loader_state = restored.append
+    decoded = [np.ones((3, 3), np.uint8)]
+    worker.request_cancel()
+    worker.finished_load.callback(True, "", decoded, ["new"])
+    assert not w.raw_images
+    assert restored == [decoded]
+    assert not worker._load_applied
+
+
 def test_clear_releases_loader_sources_without_dropping_existing_undo(monkeypatch):
     import gc
     import weakref
@@ -491,3 +508,29 @@ def test_legacy_project_retains_detected_working_calibration(monkeypatch):
     w.source_manager._apply_load_options(options)
     assert w.source_px_um == 4.0
     assert w.source_manager._stack_baseline["source_px_um"] == 4.0
+
+
+def test_loader_rollback_restores_per_frame_exif(qapp, monkeypatch):
+    from core.image_loader import ImageStackLoader
+    from core.workers import StackLoadWorker
+
+    w, _ = host(monkeypatch)
+    loader = w.image_loader = ImageStackLoader()
+    old_images = [np.zeros((4, 4, 3), np.uint16)]
+    loader.images = old_images
+    loader.image_paths = ["old.tif"]
+    loader.source_exif = b"old-first"
+    loader.source_exifs = (b"old-first", b"old-second")
+    worker = w.source_manager._load_worker = StackLoadWorker(loader, filepaths=[])
+
+    new_images = [np.ones((4, 4, 3), np.uint16)]
+    loader.images = new_images
+    loader.image_paths = ["new.tif"]
+    loader.source_exif = b"new-first"
+    loader.source_exifs = (b"new-first",)
+
+    worker.restore_loader_state(new_images)
+
+    assert loader.source_exif == b"old-first"
+    assert loader.source_exifs == (b"old-first", b"old-second")
+    assert loader.image_paths == ["old.tif"]

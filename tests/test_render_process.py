@@ -72,6 +72,50 @@ def _sources(tmp_path):
     return frames
 
 
+def test_isolated_render_reports_preparation_after_admission(qapp, monkeypatch):
+    from core.render_process import RenderProcessWorker, _Relay
+
+    worker = RenderProcessWorker([], algorithm='openfocus_a')
+    stages = []
+    worker.stage_signal.connect(stages.append)
+
+    def run_process():
+        assert stages == ['waiting', 'prepare']
+        return None
+
+    monkeypatch.setattr(worker, '_run_process', run_process)
+    worker.run()
+    assert stages == ['waiting', 'prepare']
+
+    messages = []
+    relay = _Relay(None, None)
+    monkeypatch.setattr(relay, 'send', messages.append)
+    relay.stage('waiting')
+    relay.stage('prepare')
+    assert messages == [('stage', 'prepare')]
+
+
+def test_relay_keeps_stage_order_and_first_progress_per_stage(monkeypatch):
+    from core import render_process
+
+    messages = []
+    relay = render_process._Relay(None, None)
+    monkeypatch.setattr(relay, 'send', messages.append)
+    monkeypatch.setattr(render_process.time, 'monotonic', lambda: 10.0)
+    relay.stage('prepare')
+    relay.progress(1, 4)
+    relay.progress(2, 4)
+    relay.stage('align')
+    relay.stage('fuse')
+    relay.progress(1, 3)
+    relay.progress(3, 3)
+    relay.stage('finish')
+    assert messages == [('stage', 'prepare'), ('progress', 1, 4),
+                        ('stage', 'align'), ('stage', 'fuse'),
+                        ('progress', 1, 3), ('progress', 3, 3),
+                        ('stage', 'finish')]
+
+
 @pytest.mark.parametrize('alignment', ['none', 'openfocus'])
 def test_spawned_render_preserves_uint16_and_lazy_alignment(qapp, tmp_path, scratch, alignment):
     from core.render_process import RenderProcessWorker

@@ -552,6 +552,86 @@ def test_preview_waits_for_active_render_and_can_be_cancelled(qapp, monkeypatch)
         assert worker.wait(2000)
 
 
+def test_selected_preview_is_available_during_heavy_work(qapp, tmp_path):
+    import cv2
+    from core import resource_policy, source_previews, source_frames
+
+    image = np.full((64, 96, 3), (20, 80, 140), np.uint8)
+    path = tmp_path / 'selected.png'
+    assert cv2.imwrite(str(path), image)
+    frame = source_frames.scan_source(str(path), header_only=True)[0]
+    started, release = threading.Event(), threading.Event()
+
+    def active_job():
+        with resource_policy.heavy_job():
+            started.set()
+            assert release.wait(5)
+
+    owner = threading.Thread(target=active_job)
+    owner.start()
+    worker = source_previews.SourcePreviewWorker([frame], 'selected', [0], selected_display=True)
+    received = QSignalSpy(worker.ready)
+    try:
+        assert started.wait(2)
+        worker.start()
+        if not received:
+            assert received.wait(2000)
+        assert not release.is_set()
+        np.testing.assert_array_equal(received[0][3][0, 0], image[0, 0])
+    finally:
+        release.set()
+        owner.join(2)
+        worker.request_cancel()
+        assert worker.wait(2000)
+
+
+def test_selected_preview_bypasses_bulk_preview_waiting_for_render(qapp, tmp_path, monkeypatch):
+    import cv2
+    from contextlib import contextmanager
+    from core import resource_policy, source_previews, source_frames
+
+    image = np.full((64, 96, 3), (20, 80, 140), np.uint8)
+    path = tmp_path / 'selected-during-bulk.png'
+    assert cv2.imwrite(str(path), image)
+    frame = source_frames.scan_source(str(path), header_only=True)[0]
+    started, release, bulk_waiting = threading.Event(), threading.Event(), threading.Event()
+    original_heavy_job = resource_policy.heavy_job
+
+    @contextmanager
+    def observed_heavy_job(*args, **kwargs):
+        bulk_waiting.set()
+        with original_heavy_job(*args, **kwargs):
+            yield
+
+    monkeypatch.setattr(resource_policy, 'heavy_job', observed_heavy_job)
+
+    def active_job():
+        with original_heavy_job():
+            started.set()
+            release.wait(5)
+
+    owner = threading.Thread(target=active_job)
+    bulk = source_previews.SourcePreviewWorker([frame, frame], 'bulk')
+    selected = source_previews.SourcePreviewWorker([frame], 'selected', [0], selected_display=True)
+    received = QSignalSpy(selected.ready)
+    owner.start()
+    try:
+        assert started.wait(2)
+        bulk.start()
+        assert bulk_waiting.wait(2)
+        selected.start()
+        if not received:
+            assert received.wait(1000)
+        assert not release.is_set()
+        np.testing.assert_array_equal(received[0][3][0, 0], image[0, 0])
+    finally:
+        release.set()
+        owner.join(2)
+        bulk.request_cancel()
+        selected.request_cancel()
+        assert bulk.wait(2000) and selected.wait(2000)
+
+
 @pytest.mark.parametrize('dtype,channels', [(np.uint16, 3), (np.float32, 3), (np.uint8, 4)])
 def test_preview_thumbnail_preserves_original_pixels(qapp, dtype, channels):
     import cv2

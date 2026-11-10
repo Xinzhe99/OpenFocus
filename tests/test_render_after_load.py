@@ -276,10 +276,21 @@ def test_resource_wait_preparation_fusion_and_late_cancel_stages_are_truthful(qa
                        ('prepare', 'render_stage_prepare'),
                        ('align', 'render_stage_align'),
                        ('fuse', 'render_stage_fuse'),
-                       ('finish', 'render_stage_finish')]:
+                       ('finish', 'render_progress')]:
         render.on_render_stage(stage)
         assert render._status_bar_label.text() == trans.t(key)
         assert window.statusBar().currentMessage() == trans.t(key)
+    render.on_render_stage('prepare')
+    render.on_render_progress(1, 2)
+    assert window.statusBar().currentMessage().startswith(trans.t('render_stage_prepare'))
+    assert render._control_progress == (1, 2)
+    render.on_render_stage('fuse')
+    assert render._control_progress is None
+    render.on_render_progress(1, 3)
+    assert window.statusBar().currentMessage().startswith(trans.t('render_stage_fuse'))
+    render.on_render_stage('finish')
+    assert render._control_progress is None
+    assert window.statusBar().currentMessage() == trans.t('render_progress')
     render.worker.is_cancelled = True
     render.on_render_stage('fuse')
     render.on_render_progress(1, 10)

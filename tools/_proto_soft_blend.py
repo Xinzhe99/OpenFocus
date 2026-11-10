@@ -22,7 +22,8 @@ def responses(frames, kernel_size=11):
     out = []
     for f in frames:
         code = frame_codes(f, None, None)
-        out.append(_response(code, radius, None, _check_cancel, u8=f.dtype == np.uint8))
+        out.append(_response(code, radius, None, _check_cancel,
+                             u8=f.dtype == np.uint8))
     return np.stack(out)
 
 

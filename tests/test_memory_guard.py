@@ -262,6 +262,24 @@ def test_streaming_workspace_depends_on_geometry_not_stack_depth(method):
     assert deep == small
 
 
+@pytest.mark.parametrize('hook', ['neural_needs_tiles', 'openfocus_a_needs_tiles',
+                                 'openfocus_b_needs_tiles'])
+def test_tile_decision_uses_resized_dimensions(hook):
+    from core import algorithm_adapters
+    decide = getattr(algorithm_adapters, hook)
+    large = [np.zeros((300, 300, 3), np.uint8) for _ in range(2)]
+    small = [np.zeros((96, 96, 3), np.uint8) for _ in range(2)]
+    assert not decide(large, 256, height=120, width=120, device='CPU')
+    assert decide(small, 256, height=320, width=320, device='CPU')
+
+
+def test_neural_tile_decision_accounts_for_resized_stack_footprint():
+    from core.algorithm_adapters import neural_needs_tiles
+    frames = [np.zeros((32, 32, 3), np.uint8) for _ in range(5)]
+    assert not neural_needs_tiles(frames[:2], 256, height=120, width=120)
+    assert neural_needs_tiles(frames, 256, height=200, width=200)
+
+
 
 
 

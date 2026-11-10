@@ -1359,7 +1359,12 @@ class RetouchDialog(QDialog):
         self.frame_list.blockSignals(True)
         self.frame_list.clear()
         for index, frame in enumerate(self.doc.frames):
+            image = self.doc.source_previews[index]
             item = QListWidgetItem(str(index + 1))
+            if image is not None:
+                metadata = None if self.doc.source_previews_are_display[index] else ...
+                thumb = thumbnail_bgr(self._display_image(image, metadata), 64)
+                item.setIcon(QIcon(QPixmap.fromImage(_qimage_from_bgr(thumb))))
             item.setToolTip(frame.name)
             item.setSizeHint(QSize(76, 82))
             item.setTextAlignment(Qt.AlignmentFlag.AlignHCenter

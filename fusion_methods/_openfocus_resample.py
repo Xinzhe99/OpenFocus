@@ -1,4 +1,4 @@
-"""Bounded OpenFocus Method C gray reduction and final depth expansion.
+"""Bounded OpenFocus C gray reduction and final depth expansion.
 
 Axis plans belong to one job. Pixel passes use ordered float32 LLVM FMA calls,
 vertical before horizontal, with only a bounded band of float32 intermediates.
@@ -113,7 +113,7 @@ def _fill_linear_axis(source_length, indices, weights, counts):
     scale = np.float32(np.float32(target_length) / np.float32(source_length))
     offset = np.float32(np.float32(np.float32(0.5) / scale) - np.float32(0.5))
     for position in range(target_length):
-        # Operation order matters for odd target dimensions.
+        # Float32 division and addition order matters for odd target dimensions.
         phase = np.float32(np.float32(np.float32(position) / scale) + offset)
         lower = int(np.floor(phase))
         fraction = np.float32(phase - np.float32(lower))
@@ -147,7 +147,7 @@ def half_gray_axes(height, width):
     """Build an immutable (vertical, horizontal) plan pair once for a job."""
     height, width = index(height), index(width)
     if height <= 0 or width <= 0:
-        raise ValueError('OpenFocus gray source dimensions must be positive')
+        raise ValueError('Gray source dimensions must be positive')
     return (_axis_plan(height, max(1, height // 2)),
             _axis_plan(width, max(1, width // 2)))
 
@@ -210,17 +210,17 @@ def _resample(source, axes, should_cancel):
 
 
 def half_gray(gray, should_cancel=None, *, axes=None):
-    """Reduce a gray plane to max(1, floor(axis/2)) using native OpenFocus taps."""
+    """Reduce a gray plane to max(1, floor(axis/2)) with separable taps."""
     gray = np.asarray(gray)
     if gray.ndim != 2 or min(gray.shape) <= 0:
-        raise ValueError('OpenFocus gray reduction requires a nonempty 2D plane')
+        raise ValueError('Gray reduction requires a nonempty 2D plane')
     if axes is None:
         axes = half_gray_axes(*gray.shape)
     else:
         for axis, length in zip(axes, gray.shape):
             if (axis.source_length != length
                     or axis.indices.shape[0] != max(1, length // 2)):
-                raise ValueError('OpenFocus gray axis plan does not match the source')
+                raise ValueError('Gray axis plan does not match the source')
     return _resample(gray, axes, should_cancel)
 
 
@@ -228,10 +228,10 @@ def expand_depth(depth, shape, should_cancel=None):
     """Expand a depth plane to the exact requested (height, width) canvas."""
     depth = np.asarray(depth)
     if depth.ndim != 2 or min(depth.shape) <= 0:
-        raise ValueError('OpenFocus depth expansion requires a nonempty 2D plane')
+        raise ValueError('Depth expansion requires a nonempty 2D plane')
     height, width = map(index, shape)
     if height <= 0 or width <= 0:
-        raise ValueError('OpenFocus depth canvas dimensions must be positive')
+        raise ValueError('Depth canvas dimensions must be positive')
     axes = (_axis_plan(depth.shape[0], height, linear=True),
             _axis_plan(depth.shape[1], width, linear=True))
     return _resample(depth, axes, should_cancel)

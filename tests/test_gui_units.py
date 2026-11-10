@@ -232,6 +232,8 @@ class _StubLabelManager:
 
 
 def _source_window(filenames):
+    from core.image_loader import ImageStackLoader
+
     class FakeWindow:
         def push_undo(self):
             pass
@@ -246,6 +248,7 @@ def _source_window(filenames):
         pass
 
     w = FakeWindow()
+    w.image_loader = ImageStackLoader()
     w.file_list = QListWidget()
     for name in filenames:
         w.file_list.addItem(name)
@@ -490,6 +493,7 @@ def test_deleting_a_middle_frame_keeps_names_aligned_with_images(qapp):
     frames = [np.full((8, 8, 3), i, dtype=np.uint8) for i in range(4)]
 
     w = _source_window(names)
+    w.image_loader.source_exifs = (b"exif0", b"exif1", b"exif2", b"exif3")
     sm = SourceManager(w)
     sm._load_source = (folder, None, None)
     sm._apply_load_options(sm._build_load_options(frames, names, 0.5))
@@ -498,6 +502,7 @@ def test_deleting_a_middle_frame_keeps_names_aligned_with_images(qapp):
     assert w.raw_images is not w.base_images
     assert [id(x) for x in w.raw_images] == [id(x) for x in w.base_images]
     assert w.image_source_paths == [os.path.join(folder, n) for n in names]
+    assert w.image_source_exifs == [b"exif0", b"exif1", b"exif2", b"exif3"]
 
     sm.delete_source_image(w.file_list.item(1))  # delete a middle frame
 
@@ -506,6 +511,7 @@ def test_deleting_a_middle_frame_keeps_names_aligned_with_images(qapp):
     assert [int(img[0, 0, 0]) for img in w.base_images] == [0, 2, 3]
     assert w.image_source_paths == [os.path.join(folder, n)
                                     for n in ("f0.png", "f2.png", "f3.png")]
+    assert w.image_source_exifs == [b"exif0", b"exif2", b"exif3"]
     assert len(w.image_filenames) == len(w.raw_images) == len(w.base_images)
 
 
@@ -947,6 +953,7 @@ def test_algorithm_parameters_survive_method_switches(qapp):
     host = SimpleNamespace(method="guided_filter", _fusion_parameters_by_method={})
     host.current_fusion_method = lambda: host.method
     host.persist_settings = lambda: None
+    host._mark_project_setting_changed = lambda: None
     host._sync_brightness_checkboxes = lambda *_: None
     host.fusion_parameter_panel = AlgorithmParameterPanel()
     for name in ("fusion_parameters_for", "set_fusion_parameters",

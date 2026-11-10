@@ -10,6 +10,39 @@ import pytest
 from core import algorithms
 
 
+def test_openfocus_parameters_reach_fusion_and_depth_in_backend_units(monkeypatch):
+    from core.algorithm_adapters import depth_openfocus_b
+    from core.multi_focus_fusion import MultiFocusFusion
+    from fusion_methods import openfocus_bc, openfocus_depth
+
+    calls = {}
+    def b_backend(*args, **kwargs):
+        calls['fusion'] = kwargs
+    def depth_backend(*args, **kwargs):
+        calls['depth'] = (args, kwargs)
+    monkeypatch.setattr(openfocus_bc, 'openfocus_b_impl', b_backend)
+    monkeypatch.setattr(openfocus_depth, 'depth_map', depth_backend)
+    params = algorithms.resolve_fusion_parameters('openfocus_b',
+        {'radius': 6, 'smoothing': 5, 'feather': 7})
+    MultiFocusFusion._fuse_openfocus_b(None, [], **params)
+    depth_openfocus_b([], **params)
+    assert calls['fusion']['kernel_size'] == 13
+    assert calls['fusion']['depth_smoothing'] == pytest.approx(1.2)
+    assert calls['fusion']['feather'] == 7
+    assert calls['depth'][0][2:4] == (13, 5.)
+    assert calls['depth'][1]['feather'] == 7
+
+
+def test_openfocus_c_smoothing_reaches_backend_in_original_units(monkeypatch):
+    from core.multi_focus_fusion import MultiFocusFusion
+    from fusion_methods import openfocus_bc
+    calls = {}
+    monkeypatch.setattr(openfocus_bc, 'openfocus_c_impl', lambda *args, **kwargs: calls.update(kwargs))
+    MultiFocusFusion._fuse_openfocus_c(None, [], smoothing=5)
+    assert calls['blend_smoothing'] == pytest.approx(3.)
+    assert 'depth_override' not in calls
+
+
 class Extension:
     @staticmethod
     def blend(fusion, images, img_resize=None, fraction=.25, direction='forward', **runtime):

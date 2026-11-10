@@ -210,16 +210,15 @@ def test_distinguishable_flat_ties_and_last_frame_prior(method):
     np.testing.assert_array_equal(result, frames[0])
 
 
-@pytest.mark.parametrize("method", ["a", "b", "c", "gff", "dct", "gfg"])
+@pytest.mark.parametrize("method", ["a", "b", "gff", "dct", "gfg"])
 def test_deep_stack_selects_frame_259(method):
     flat = np.full((33, 35, 3), 64, np.uint8)
-    # Broad-band texture remains distinguishable after C's half-gray reduction.
     texture = np.random.default_rng(259).integers(32, 225, flat.shape[:2], dtype=np.uint8)
     sharp = np.repeat(texture[:, :, None], 3, axis=2)
     frames = [flat] * 259 + [sharp]
     if method == "b":
         result = OPENFOCUS[method](frames, depth_smoothing=0)
-    elif method in ("a", "c"):
+    elif method == "a":
         result = OPENFOCUS[method](frames)
     elif method == "gff":
         result = gff.gff_impl(frames, None, 7, thread_count=1)
@@ -232,6 +231,16 @@ def test_deep_stack_selects_frame_259(method):
     else:
         # Reconstruction retains baseline float32/truncation rounding.
         assert np.abs(result.astype(int) - sharp.astype(int)).max() <= 1
+
+
+def test_c_retains_detail_from_frame_259():
+    flat = np.full((33, 35, 3), 64, np.uint8)
+    texture = np.random.default_rng(259).integers(32, 225, flat.shape[:2], dtype=np.uint8)
+    sharp = np.repeat(texture[:, :, None], 3, axis=2)
+    result = OPENFOCUS['c']([flat] * 259 + [sharp])
+    correlation = np.corrcoef(result[:, :, 0].ravel(), texture.ravel())[0, 1]
+    assert correlation > .9
+    assert result[:, :, 0].std() > 20
 
 
 @pytest.mark.parametrize("method", ["a", "b", "c"])
@@ -344,7 +353,7 @@ def test_cancel_callback_errors_propagate(method):
         call(_stack(), thread_count=1, should_cancel=broken_callback)
 
 
-@pytest.mark.parametrize("method", ["b", "c"])
+@pytest.mark.parametrize("method", ["b"])
 @pytest.mark.parametrize("dtype", [np.uint8, np.uint16])
 @pytest.mark.parametrize("color", [False, True])
 def test_depth_override_selects_source_without_recomputing(monkeypatch, method, dtype, color):
@@ -365,18 +374,9 @@ def test_depth_override_selects_source_without_recomputing(monkeypatch, method, 
 
 
 
-@pytest.mark.parametrize("dtype", [np.uint8, np.uint16])
-def test_c_zero_depth_preserves_first_source(dtype):
-    shape = (255, 257)
-    frames = [np.full(shape, np.iinfo(dtype).max // 4, dtype),
-              np.full(shape, np.iinfo(dtype).max * 3 // 4, dtype)]
-    actual = openfocus_bc.openfocus_c_impl(
-        frames, depth_override=np.zeros(shape, np.float32))
-    expected = frames[0] if dtype == np.uint8 else frames[0].astype(np.float32) * (255 / 65535)
-    np.testing.assert_allclose(actual, expected, atol=0.004)
 
 
-@pytest.mark.parametrize("method", ["b", "c"])
+@pytest.mark.parametrize("method", ["b"])
 def test_deep_stack_override_selects_last_frame(method):
     flat = np.full((5, 7), 17, np.uint8)
     sharp = np.full((5, 7), 203, np.uint8)

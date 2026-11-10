@@ -85,6 +85,51 @@ def test_fusion_guided_filter_tiled_matches_reference_within_tolerance(two_focus
     assert np.percentile(diff, 99) <= 8, f"tiled fusion deviates too much (p99={np.percentile(diff, 99)})"
 
 
+@pytest.mark.parametrize('algorithm', ['guided_filter', 'dct', 'gfgfgf'])
+def test_tiled_flat_stack_preserves_integer_values(algorithm):
+    frames = [np.full((120, 160, 3), 100, np.uint8) for _ in range(2)]
+    fusion = MultiFocusFusion(algorithm=algorithm, tile_threshold=64,
+                              tile_block_size=64, tile_overlap=16,
+                              exposure_match=False)
+    result = fusion.fuse(frames, thread_count=1)
+    assert result.dtype == np.uint8
+    np.testing.assert_array_equal(result, frames[0])
+
+
+@pytest.mark.parametrize('algorithm', ['guided_filter', 'dct', 'gfgfgf', 'openfocus_a'])
+def test_tiled_flat_16bit_retains_fractional_precision(algorithm):
+    frames = [np.full((120, 160, 3), 10001, np.uint16) for _ in range(2)]
+    result = MultiFocusFusion(algorithm=algorithm, exposure_match=False,
+                              tile_threshold=64, tile_block_size=64,
+                              tile_overlap=16).fuse(frames, thread_count=1)
+    assert result.dtype == np.float32
+    np.testing.assert_allclose(result, 10001 / 257, rtol=0, atol=1e-4)
+
+
+def test_dct_tiles_follow_the_global_block_grid():
+    h, w = 300, 400
+    sharp = np.random.default_rng(2).integers(0, 255, (h, w, 3), np.uint8).astype(np.float32)
+    small = cv2.resize(sharp, ((w + 3) // 4, (h + 3) // 4), interpolation=cv2.INTER_AREA)
+    blurred = cv2.resize(small, (w, h), interpolation=cv2.INTER_LINEAR)
+    first, second = sharp.copy(), blurred.copy()
+    first[h // 2:] = blurred[h // 2:]
+    second[h // 2:] = sharp[h // 2:]
+    frames = [image.astype(np.uint16) * 257 for image in (first, second)]
+    whole = MultiFocusFusion('dct', tile_enabled=False, exposure_match=False).fuse(frames, thread_count=1)
+    tiled = MultiFocusFusion('dct', tile_threshold=64, tile_block_size=256,
+                             tile_overlap=128, exposure_match=False).fuse(frames, thread_count=1)
+    np.testing.assert_allclose(tiled, whole, rtol=0, atol=1.0)
+
+
+@pytest.mark.parametrize('shape,block,overlap', [((300, 400), 300, 150),
+                                                ((65, 129), 64, 16)])
+def test_dct_tiles_cover_non_grid_sized_edges(shape, block, overlap):
+    frames = [np.full((*shape, 3), 100, np.uint8) for _ in range(2)]
+    result = MultiFocusFusion('dct', tile_threshold=1, tile_block_size=block,
+                              tile_overlap=overlap, exposure_match=False).fuse(frames, thread_count=1)
+    np.testing.assert_array_equal(result, frames[0])
+
+
 def test_get_info_without_torch_query():
     info = MultiFocusFusion(algorithm="guided_filter", use_gpu=False).get_info()
     assert info["device"] == "CPU"
@@ -216,7 +261,7 @@ def test_tiled_progress_reports_every_tile_once(two_focus_stack):
     fusion = MultiFocusFusion(algorithm="openfocus_a", use_gpu=False,
                               tile_enabled=True, tile_block_size=64,
                               tile_overlap=16, tile_threshold=10)
-    out = fusion.fuse(input_source=list(stack), img_resize=None, kernel_size=7,
+    out = fusion.fuse(input_source=list(stack), img_resize=None, radius=3,
                       progress_callback=lambda done, total: seen.append((done, total)))
     assert out.shape[:2] == (192, 192)
     assert seen, "tiled fusion reported no progress"

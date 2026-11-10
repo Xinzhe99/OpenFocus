@@ -12,7 +12,8 @@ from typing import Any, Optional
 from PyQt6.QtCore import QSettings
 
 from core.algorithms import (fusion_algorithms, get_fusion, get_registration,
-                             resolve_fusion_parameters, resolve_registration_parameters)
+                             migrate_openfocus_parameters, resolve_fusion_parameters,
+                             resolve_registration_parameters)
 from locales import trans
 from utils import app_paths
 from utils.validators import normalize_kernel_size
@@ -55,6 +56,7 @@ AI_CPU_WARNING_DISMISSED_KEY = "rendering/ai_cpu_warning_dismissed"
 # a restart no longer reverts the user's per-algorithm choices.
 BRIGHTNESS_BY_METHOD_KEY = "fusion/brightness_by_method"
 METHOD_PARAMETERS_KEY = "fusion/method_parameters"
+METHOD_PARAMETERS_VERSION_KEY = "fusion/method_parameters_version"
 REGISTRATION_PARAMETERS_KEY = "registration/parameters"
 FUSION_METHOD_KEY = "fusion/method"
 ALIGNMENT_METHOD_KEY = "registration/method"
@@ -78,6 +80,8 @@ _PERSISTED_FIELDS = {
     "use_gpu": ("rendering/use_gpu", True, "bool"),
     "align_cache_enabled": ("rendering/align_cache_enabled", True, "bool"),
     "collect_alignment_report": ("rendering/collect_alignment_report", False, "bool"),
+    "profile_performance": ("diagnostics/profile_performance", False, "bool"),
+    "debug_logging": ("diagnostics/debug_logging", False, "bool"),
     "output_name_prefix": ("export/name_prefix", "", "str"),
     "restore_last_stack": ("ui/restore_last_stack", False, "bool"),
     "ui_theme": ("ui/theme", DEFAULT_THEME, "str"),
@@ -107,7 +111,7 @@ _PERSISTED_FIELDS = {
     "watermark_registered_enabled": ("export/watermark_registered", False, "bool"),
     "watermark_output_enabled": ("export/watermark_output", True, "bool"),
     "base_frame_correct": ("fusion/base_frame_correct", False, "bool"),
-    "exposure_match": ("fusion/exposure_match", False, "bool"),
+    "exposure_match": ("fusion/exposure_match", True, "bool"),
     "stack_reverse_order": ("fusion/stack_reverse_order", False, "bool"),
     "sharpen_output": ("fusion/sharpen_output", False, "bool"),
     "ask_load_scale": ("ui/ask_load_scale", True, "bool"),
@@ -291,9 +295,10 @@ def _legacy_kernel_memory(raw):
     for mode, value in _loads_object(raw).items():
         if mode in _LEGACY_KERNEL_METHODS and isinstance(value, int) \
                 and not isinstance(value, bool) and value > 0:
-            method = _LEGACY_KERNEL_METHODS[mode][0]
-            spec = next(p for p in get_fusion(method).parameters if p.key == "kernel_size")
-            memory[mode] = normalize_kernel_size(min(value, spec.maximum))
+            maximum = 21 if mode == 'ofab' else next(
+                p.maximum for p in get_fusion(_LEGACY_KERNEL_METHODS[mode][0]).parameters
+                if p.key == 'kernel_size')
+            memory[mode] = normalize_kernel_size(min(value, maximum))
     return memory
 
 
@@ -318,14 +323,14 @@ def _legacy_parameters(settings):
                         ("openfocus_c", "blend_smoothing")):
         value = _finite_number(smoothing.get(method))
         if value is not None:
-            spec = next(p for p in get_fusion(method).parameters if p.key == key)
-            memory.setdefault(method, {})[key] = min(max(value, spec.minimum), spec.maximum)
+            memory.setdefault(method, {})[key] = min(max(value, 0), 8)
     if settings.contains("fusion/ai_mode"):
         memory.setdefault("stackmffv3", {})["mode"] = settings.value("fusion/ai_mode")
     raw_levels = settings.value("fusion/dtcwt_levels")
     if settings.contains("fusion/dtcwt_levels") and not isinstance(raw_levels, bool):
         memory.setdefault("dtcwt", {})["N"] = _cast(raw_levels, int, None)
-    return parameter_memory_from_json(memory)
+    return parameter_memory_from_json({method: migrate_openfocus_parameters(method, values)
+                                       for method, values in memory.items()})
 
 
 def load_parameter_memories(window) -> None:
@@ -334,9 +339,25 @@ def load_parameter_memories(window) -> None:
     if settings.contains(BRIGHTNESS_BY_METHOD_KEY):
         window._brightness_by_method = brightness_memory_from_json(
             settings.value(BRIGHTNESS_BY_METHOD_KEY))
-    window._fusion_parameters_by_method = (
-        parameter_memory_from_json(settings.value(METHOD_PARAMETERS_KEY))
-        if settings.contains(METHOD_PARAMETERS_KEY) else _legacy_parameters(settings))
+    if settings.contains(METHOD_PARAMETERS_KEY):
+        memory = _loads_object(settings.value(METHOD_PARAMETERS_KEY))
+        if _cast(settings.value(METHOD_PARAMETERS_VERSION_KEY), int, 0) < 1:
+            migrated = {}
+            for method, values in memory.items():
+                if isinstance(values, dict):
+                    converted = {}
+                    for key, value in values.items():
+                        try:
+                            converted.update(migrate_openfocus_parameters(method, {key: value}))
+                        except (TypeError, ValueError):
+                            continue
+                    if method == 'openfocus_b':
+                        converted.setdefault('feather', 0)
+                    migrated[method] = converted
+            memory = migrated
+        window._fusion_parameters_by_method = parameter_memory_from_json(memory)
+    else:
+        window._fusion_parameters_by_method = _legacy_parameters(settings)
     window._registration_parameters_by_method = parameter_memory_from_json(
         settings.value(REGISTRATION_PARAMETERS_KEY), registration=True)
 
@@ -348,6 +369,7 @@ def save_parameter_memories(window) -> None:
         getattr(window, "_brightness_by_method", {})))
     settings.setValue(METHOD_PARAMETERS_KEY, parameter_memory_to_json(
         getattr(window, "_fusion_parameters_by_method", {})))
+    settings.setValue(METHOD_PARAMETERS_VERSION_KEY, 1)
     settings.setValue(REGISTRATION_PARAMETERS_KEY, parameter_memory_to_json(
         getattr(window, "_registration_parameters_by_method", {}), registration=True))
     for key in (SMOOTHING_BY_METHOD_KEY, KERNEL_BY_MODE_KEY, "fusion/ai_mode",

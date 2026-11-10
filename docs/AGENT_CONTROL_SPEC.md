@@ -82,7 +82,10 @@ Responses always carry the request `id`. `ui.trigger` schedules the action and
 returns before it runs, because menu actions may open a modal dialog.
 
 Errors: `bad_request`, `unauthorized`, `not_found`, `invalid_argument`,
-`busy`, `confirm_required`, `unsupported`, `internal`, `not_running`.
+`busy`, `confirm_required`, `insufficient_storage`, `unsupported`, `internal`,
+`not_running`. An error may carry a `details` object with structured data;
+`confirm_required` and `insufficient_storage` for temporary storage put the
+assessment under `details.storage` (see Render).
 
 ## 5. Commands
 
@@ -131,16 +134,28 @@ reports `finished:true` with the reason and leaves the previous frames alone.
 `option.set` names: `base_correct`, `exposure_match`, `reverse_order`,
 `thread_count`, `use_gpu`, `tile_enabled`, `tile_block_size`, `tile_overlap`,
 `tile_threshold`, `preview`, `ai_batch_size`, `resource_preference`,
-`reg_downscale_width`.
+`reg_downscale_width`, `profile_performance`, `debug_logging`, `storage_directory`.
+The diagnostics options take a JSON boolean (anything else is
+`invalid_argument`): `profile_performance` profiles the following renders, and
+`debug_logging` switches detailed (`DEBUG`) logging at once, for the window and
+its render process. `storage_directory` takes a writable directory path, or
+`""` for the system default, and is validated like the Advanced Settings field
+(`invalid_argument` when it cannot be written). It is persisted and applies to
+the next render. `app.state` reports these options.
 
 ### Render
 
 | Command | Args | Result |
 |---|---|---|
-| `render.start` | `preview?`, `confirm?`, `roi_mode?`, `roi_base_index?` | `{started, render_id, method, alignment, preview}` |
+| `render.start` | `preview?`, `confirm?`, `roi_mode?`, `roi_base_index?` | `{started, render_id, method, alignment, preview, storage?}` |
 | `render.cancel` | — | `{cancelling:true}` |
 | `render.state` | — | `{state, render_id, busy, progress:{done,total}, method, result, error}` |
-| `render.result` | — | result metadata + selected output record |
+| `render.result` | — | result metadata + selected output record + `performance?` |
+
+`performance` is the report of the most recent profiled render (see
+`docs/PERFORMANCE.md`), present once a render has run with
+`profile_performance` on. A cancelled or failed render reports the part that
+ran, with `outcome` set accordingly.
 
 `state` is `idle`, `rendering`, `done`, `cancelled`, `discarded` or `error`.
 A cancelled render and a result discarded because the stack changed while it
@@ -149,6 +164,25 @@ still exists. `render.start` answers `confirm_required` instead of opening the
 CPU-AI or ROI modal; retry with `confirm:true` or `roi_mode` plus
 `roi_base_index`. Renders started by the render button advance the same
 `render_id`, so `--wait` never accepts a previous render's completion.
+
+Before a full render (not a preview, ROI or compare run) the GUI estimates the
+temporary storage it needs. The assessment is an object with `status`
+(`ok`, `advisory`, `critical` or `unknown`), `directory`, `explicit`,
+`free_bytes`, `reserve_bytes`, `available_bytes` (after OpenFocus's safety
+reserve), `minimum_bytes`, `expected_bytes`, `optional_bytes` and
+`required_bytes`. It is an estimate, not a reservation. Whenever it was
+computed, a successful reply includes it as `storage`, so a client that passed
+`confirm:true` still sees it.
+
+- `advisory` (the render can run, but optional caches will be disabled or the
+  staging reserve may run out) answers `confirm_required` with the assessment
+  in `details.storage`. Choose another directory with
+  `option.set name=storage_directory`, then retry; or retry with `confirm:true`.
+- `critical` (the job's own admission would reject it) answers
+  `insufficient_storage` with `details.storage`. `confirm:true` does not override
+  it; choose another directory and retry.
+- A render that runs out of space later still fails with the existing
+  actionable error. Nothing restarts automatically.
 
 ### Outputs and export
 

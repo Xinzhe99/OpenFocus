@@ -348,11 +348,11 @@ Le recalage corrige le désalignement spatial entre les images de votre pile. Il
 
 #### OpenFocus (rapide)
 
-- Alignement par similarité bornée (translation + rotation + échelle), avec égalisation de luminosité par image et recadrage automatique
+- Alignement par similarité bornée (translation + rotation + échelle) avec recadrage automatique
 - Recherche des transformations de similarité bornées par différences d'images échantillonnées et applique un warp par interpolation Lanczos
-- Les images décalées de plus de **8 % de la taille de l'image restent non alignées** plutôt que partiellement corrigées. Modifiez la limite avec `--align-shift-limit` en CLI
+- Le domaine de recherche du décalage vaut par défaut 3 % de la taille de l’image et se modifie avec `--align-shift-limit`. La recherche utilise l’image précédente alignée et part du mouvement cumulé ; le déplacement total peut dépasser 3 %.
 - Pour une géométrie non rigide ou extrême, préférez ECC ou l'homographie
-- **Gestion des images rejetées** : par défaut, le traitement continue avec l'image non alignée. Choisissez **Arrêter sur image rejetée** pour faire échouer le rendu ou l'élément de lot avant de produire un résultat lorsque la qualité du détecteur est inférieure à 0,06 ou que le mouvement estimé dépasse la limite de décalage configurée, 8° de rotation ou 5 % de changement d'échelle. Les images sont numérotées à partir de 1 dans l'ordre de la pile traitée. La référence géométrique est l'image 1 par défaut ; une correspondance directe faible peut être retentée sur l'image adjacente plus proche de la référence. Cette politique détecte les estimations rejetées, pas toutes les correspondances incorrectes : une texture faible, des motifs répétés, une occlusion, un mouvement important ou des changements de mise au point peuvent encore tromper le recalage. Inspectez le résultat.
+- En cas d’erreur réelle d’estimation, `failure_policy=continue` (défaut) conserve l’image non alignée ; `fail` interrompt le traitement. Un manque de texture, des motifs répétés ou des changements de mise au point peuvent néanmoins produire des correspondances imprécises.
 - En CLI, sélectionnez la même politique avec `--align openfocus --align-param 'failure_policy="fail"'` (avec le quoting adapté à votre shell). Les éléments de lot appliquent la politique choisie indépendamment. La valeur par défaut est `"continue"`.
 - Réglez **Image de référence** sur un nombre à base 1 dans l'ordre de la pile incluse et traitée pour ancrer la géométrie sur cette image. L'ordre est conservé ; l'égalisation de luminosité utilise sa propre référence. Chaque pile de lot doit contenir ce numéro, sinon l'élément échoue. Exemple CLI : `--align openfocus --align-param reference_frame=3`. Choisir une référence ne corrige ni la parallaxe ni une mauvaise correspondance ; inspectez le résultat.
 
@@ -448,33 +448,20 @@ C'est la méthode présélectionnée dans une nouvelle installation.
 
 Chaque tuile neuronale utilise toutes les images. Les images et les données temporaires de recalage peuvent être stockées sur disque ; l’espace libre et la mémoire disponible limitent la pile. Le pavage spatial V2 est une approximation de l’inférence sur l’image entière.
 
-Si aucun dossier temporaire n'est indiqué, OpenFocus estime les besoins à partir des entrées connues et des données temporaires. Si le disque temporaire du système manque d'espace, il peut envisager des disques locaux fixes accessibles en écriture. Un dossier explicitement choisi n'est jamais remplacé automatiquement. La vérification est une estimation ponctuelle, pas une réservation ; l'espace peut manquer par la suite. En cas d'erreur de stockage, choisissez un dossier accessible en écriture dans les paramètres avancés.
+Si aucun dossier temporaire n'est indiqué, OpenFocus estime les besoins d'après les entrées et les données temporaires et peut envisager des disques locaux fixes accessibles en écriture si l'espace manque. Si le dossier choisi est indisponible, un avertissement indique l'utilisation temporaire du dossier système ; chaque nouvelle tâche réessaie le choix enregistré. Un disque choisi plein ne provoque pas de changement automatique. La vérification est une estimation ponctuelle, pas une réservation. En cas d'erreur, choisissez un dossier accessible en écriture dans les paramètres avancés.
 
 
 ### OpenFocus A / B / C
 
-- **OpenFocus A** : sélectionne les pixels sources selon une réponse de netteté multi-échelles.
-- **OpenFocus B** : mélange les images voisines guidé par une carte de profondeur lissée.
-- **OpenFocus C** : mélange les pixels sources selon la carte de profondeur finale lissée.
-- **Paramètres** : A et B utilisent le curseur de noyau pour régler l'échelle de réponse de netteté ; C n'a pas de rayon. Le lissage de A est sans effet ; B et C lissent la carte de profondeur utilisée pour la fusion.
+A utilise une réponse de netteté multi-échelles (rayon 8, lissage 4) ; son lissage est actuellement inactif.
 
-**Lissage** : un seul champ numérique sous le curseur de noyau, dont le sens dépend de la méthode sélectionnée (plage 0–8, pas 0,2) :
+B utilise une carte de profondeur (rayon 8, lissage 4, feather 3). C utilise une pyramide multiniveau pondérée (lissage 4), sans rayon.
 
-| Méthode | Libellé | Défaut | Effet |
-|---|---|---|---|
-| OpenFocus A | Lissage du mélange | 2,0 | Sans effet |
-| OpenFocus B | Lissage de profondeur | 1,44 | Contrôle le lissage de la carte de profondeur qui guide le mélange |
-| OpenFocus C | Lissage du mélange | 3,6 | Contrôle le lissage de la carte de profondeur et les transitions de fusion |
+CLI: `--method openfocus_b --param radius=8 --param smoothing=4 --param feather=3`.
 
-Taille de noyau par défaut pour A/B : 17. Les valeurs enregistrées sont conservées ; réinitialisez les paramètres pour utiliser les nouvelles valeurs par défaut.
+Dans l’interface, l’égalisation d’exposition est activée par défaut pour A/B/C et utilise la première image traitée ; pour les autres méthodes, elle est désactivée par défaut et utilise la dernière. Les choix explicitement enregistrés sont conservés ; si A/B/C est activé, la première image sert de référence. La correction de dérive de luminosité reste désactivée par défaut. Réinitialiser rétablit les valeurs propres à chaque méthode. Dans la CLI, elle est activée par défaut pour toutes les méthodes ; `--no-exposure-match` la désactive.
 
-Des valeurs plus élevées augmentent le lissage des transitions. Chaque méthode mémorise sa propre valeur entre les sessions, et le traitement par lots applique la même règle.
-
-C n'a pas de paramètre Rayon ; son curseur de noyau est donc masqué.
-
-CLI : `--depth-smoothing VALUE` (B) et `--blend-smoothing VALUE` (A, C).
-
-**Les options de luminosité sont propres à chaque méthode.** *Égaliser l'exposition avant la fusion* et *Supprimer la dérive de luminosité* sont mémorisées séparément pour chaque méthode de fusion, car elles répondent à une question propre à chaque pile plutôt qu'à une préférence globale. Les deux sont activées par défaut pour OpenFocus A/B/C (qui n'ont pas de calibration d'exposition intégrée) ; les autres méthodes conservent les valeurs historiques (égalisation activée, suppression de dérive désactivée). Changer de méthode affiche les valeurs de cette méthode, qui survivent au redémarrage. **Réinitialiser** efface les valeurs mémorisées de luminosité, lissage et rayon de toutes les méthodes.
+La sélection de A/B/C utilise le recalage OpenFocus sauf si un recalage a été explicitement choisi ou un projet restauré. Ses valeurs par défaut sont un décalage de 0,03 et un grossissement de 5 %.
 
 **Accentuer la sortie fusionnée** applique un léger masque flou après la fusion, avant la conversion du résultat vers sa profondeur de sortie. Désactivé par défaut, il s'active dans les options de fusion principales ou du lot ; l'option CLI équivalente est `--sharpen-output`. Cela affecte l'image fusionnée, pas les images recalées ni les cartes de profondeur. Cela peut rendre les contours plus nets, mais aussi amplifier le bruit et les halos. Le réglage est enregistré avec le projet et mémorisé entre les sessions.
 
@@ -500,9 +487,9 @@ Sélectionnez **Alignement seul (sans fusion)** pour recaler la pile et ajouter 
 | StackMFF (V1) | Lente (GPU) | Non évaluée ici | Luminance indépendante de l'ordre ; chrominance variable en cas d'égalité des écarts de luminance |
 | StackMFF V2 | Rapide (GPU) | Non évaluée ici | Balayages continus avec un modèle minuscule |
 | StackMFF V3 | Lente (GPU) | Excellente | Qualité maximale |
-| OpenFocus A | Dépend de la pile | Dépend de la pile | Sélection multi-échelles des pixels nets |
+| OpenFocus A | Dépend de la pile | Dépend de la pile | Réponse multi-échelles et mélange des zones peu détaillées |
 | OpenFocus B | Dépend de la pile | Dépend de la pile | Mélange d'images voisines guidé par la profondeur |
-| OpenFocus C | Dépend de la pile | Dépend de la pile | Mélange des pixels sources selon la carte de profondeur finale |
+| OpenFocus C | — | — | Pyramide multiniveau pondérée |
 
 Ouvrez **Outils → Comparaison de méthodes** pour régler plusieurs méthodes indépendamment. Le nom, les libellés de paramètres et les contrôles de chaque méthode restent groupés lorsque la fenêtre se rétrécit. Les modifications actualisent l'aperçu automatiquement. **Aperçu ROI (rapide)** fusionne la zone sélectionnée avec le contexte environnant ; **Fusion pleine image** vérifie le résultat sur toute l'image et permet d'inspecter une autre zone sans relancer le rendu. Les résultats ROI peuvent différer de ceux en pleine image, car les statistiques d'exposition et certains algorithmes dépendent de l'étendue de l'image.
 La **fusion pleine image** est sélectionnée par défaut.
@@ -745,7 +732,7 @@ Créez un fichier vide nommé `OpenFocus.portable` à côté de `OpenFocus.exe` 
 
 ### Métadonnées EXIF
 
-Les métadonnées source (modèle d'appareil, exposition, orientation, etc.) sont conservées : l'orientation est appliquée au chargement, et les exports PNG/TIFF/WebP intègrent automatiquement l'EXIF d'origine. Les exports JPG/BMP ne peuvent pas stocker l'EXIF complet et sont écrits sans lui.
+Les exports PNG/TIFF/JPEG/WebP conservent les métadonnées assainies de l'appareil, de l'objectif, de l'exposition, de la date et du GPS, et règlent Orientation sur 1. Le BMP n'intègre pas d'EXIF. Si les données EXIF ou ICC d'un JPEG dépassent la limite du format, OpenFocus affiche une erreur explicite ; choisissez PNG ou TIFF. Si l'EXIF assaini d'une source dépasse 16 MiB, OpenFocus refuse de la charger ; supprimez ou réduisez d'abord l'EXIF de ce fichier.
 
 ### Entrée HEIC/HEIF
 
@@ -820,7 +807,7 @@ Dans **Paramètres → Paramètres avancés → Nommage des sorties**, un préfi
 
 ### Partager un résultat
 
-Cliquez avec le bouton droit sur une sortie et ouvrez **Partager**. **Copier l'image d'aperçu (JPEG)** place le résultat actuel en pleine résolution, annotations et barre d'échelle comprises, dans le presse-papiers sous forme de vrai JPEG et fournit aussi un bitmap décodé. **Copier les chemins de fichiers** copie les URL de fichiers persistants de tous les résultats sélectionnés ; les résultats non enregistrés ou obsolètes demandent un dossier puis sont écrits en PNG avec leurs pixels 8/16 bits et annotations actuels. **Afficher dans le dossier** ouvre l'Explorateur, le Finder ou le gestionnaire de fichiers avec le fichier sélectionné. Un export existant n'est réutilisé que s'il correspond encore à l'image et aux annotations actuelles. **Créer un lien de partage privé** reste désactivé tant que le partage hébergé n'existe pas.
+Cliquez avec le bouton droit sur une sortie et ouvrez **Partager**. **Copier l'image d'aperçu (JPEG)** place le résultat en pleine résolution, avec annotations et barre d'échelle, dans le presse-papiers sous forme de vrai JPEG et de bitmap décodé. **Copier les chemins de fichiers** copie les chemins locaux comme texte et URL de fichier. Un résultat enregistré et inchangé utilise son fichier existant ; un résultat non enregistré, modifié ou dont le fichier manque est automatiquement écrit en PNG dans le dossier temporaire du système, sans être marqué comme enregistré. Le système peut supprimer les fichiers temporaires ; utilisez **Enregistrer sous** pour les conserver. **Afficher dans le dossier** ouvre l'Explorateur, le Finder ou le gestionnaire de fichiers avec le fichier sélectionné, sans demander de dossier. **Créer un lien de partage privé** reste désactivé tant que le partage hébergé n'existe pas.
 
 ### Format d'export par glisser-déposer
 
@@ -906,9 +893,9 @@ Par exemple, ajoutez `--align openfocus --alignment-report alignment.json` à un
 | `--param KEY=JSON_VALUE` | Définit tout paramètre de fusion ; répétable et prioritaire sur les options héritées |
 | `--align, -a` | `none` (défaut), `homography`, `ecc`, `both`, `openfocus` |
 | `--align-param KEY=JSON_VALUE` | Définit tout paramètre de recalage ; répétable |
-| `--align-shift-limit` | Recalage `openfocus` uniquement : décalage maximal accepté en fraction de la taille de l'image (0,08 par défaut ; au-delà, l'image reste non alignée) |
+| `--align-shift-limit` | Domaine de recherche du décalage en fraction de la taille de l’image (0,03 par défaut) ; le décalage cumulé peut être supérieur. |
 | `--alignment-report PATH` | Enregistre les résultats d'alignement par image en JSON pour un rendu unique non groupé avec alignement ; les lots et groupes ne sont pas pris en charge |
-| `--exposure-match` | Égalise la moyenne de chaque image sur celle de la dernière avant la fusion (activé par défaut ; `--no-exposure-match` le désactive). Gains pour toute la pile, donc la sortie tuilée reste sans couture ; s'applique à toutes les méthodes et à la référence de luminosité de l'aligneur OpenFocus |
+| `--exposure-match` | Dans la CLI, activée par défaut pour toutes les méthodes ; A/B/C utilisent la première image traitée, les autres la dernière. `--no-exposure-match` désactive. |
 | `--base-frame` | Étape post-fusion facultative : aligne les basses fréquences de la sortie sur l'image `last`/`first` (`none` par défaut) |
 | `--sort` | Ordre des images pour `openfocus_a/b/c` : `asc` (défaut, ordre des fichiers), `desc` (inverse un balayage de loin en proche), `off` |
 | `--frame-order` | Dossier en entrée : `auto` (défaut) ordonne les images du plus proche au plus lointain selon les pas de mise au point EXIF quand toutes les images en ont (le bracketing de mise au point OM SYSTEM commence à mi-profondeur), sinon par nom ; `name` trie toujours par nom de fichier. Les fichiers listés explicitement gardent leur ordre |
@@ -916,9 +903,7 @@ Par exemple, ajoutez `--align openfocus --alignment-report alignment.json` à un
 | `--dust-map WHITE` | Correction de champ plat (carte de poussière) à partir d'une prise de champ blanc défocalisée |
 | `--defect-mask-path MASK` | Masque de défauts en coordonnées capteur réparé avant le recalage |
 | `--sensor-denoise` | Réduction du bruit du capteur prudente avant le recalage |
-| `--kernel, -k` | Taille du noyau (forcée impaire) ; contrôle l'échelle de réponse de netteté pour `openfocus_a` et `openfocus_b` ; C n'a pas de rayon |
-| `--depth-smoothing VALUE` | `openfocus_b` uniquement : force du lissage des transitions de profondeur (1,44 par défaut) |
-| `--blend-smoothing VALUE` | `openfocus_a` / `openfocus_c` uniquement : force du lissage des transitions (2,0 pour A, 3,6 pour C par défaut) |
+| `--kernel, -k` | Uniquement pour les méthodes déclarant `kernel_size` |
 | `--ai-mode {soft,hard}` | Sortie StackMFF V3 : mélange pondéré par les probabilités (défaut) ou image la plus probable par pixel |
 | `--threads, -t` | Limite supérieure de threads de travail ; `0` = automatique (défaut), les valeurs positives plafonnent la concurrence |
 | `--resource-preference` | `balanced` (défaut), `responsive` ou `maximum` ; contrôle l'ordonnancement des ressources |
