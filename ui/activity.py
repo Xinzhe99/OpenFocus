@@ -17,6 +17,14 @@ _INPUT_EVENTS = frozenset((QEvent.Type.MouseButtonPress, QEvent.Type.MouseButton
                            QEvent.Type.MouseButtonDblClick, QEvent.Type.KeyPress,
                            QEvent.Type.KeyRelease, QEvent.Type.Shortcut,
                            QEvent.Type.Wheel))
+_CANVAS_MODULES = frozenset(('widgets.magnifier_label', 'widgets.wipe_compare',
+                            'widgets.compare_canvas', 'widgets.depth_surface'))
+
+
+def _is_canvas(widget):
+    cls = type(widget)
+    return cls.__module__ in _CANVAS_MODULES or (
+        cls.__module__ == 'dialogs.retouch' and cls.__name__ == '_RetouchCanvas')
 
 
 def _identifier(obj):
@@ -63,6 +71,7 @@ class _ActivityLogger(QObject):
         self._text_dirty = set()
         self._prelogged = set()
         self._pressed = set()
+        self._gestures = weakref.WeakKeyDictionary()
         self._connect_tree(window)
         QApplication.instance().installEventFilter(self)
 
@@ -153,6 +162,7 @@ class _ActivityLogger(QObject):
         self._text_dirty.clear()
         self._prelogged.clear()
         self._pressed.clear()
+        self._gestures.clear()
 
     def _text_finished(self, edit):
         if edit in self._text_dirty:
@@ -201,8 +211,36 @@ class _ActivityLogger(QObject):
                 self._slider_finished(widget)
         QTimer.singleShot(0, finish)
 
+    def _canvas_event(self, widget, event):
+        kind = event.type()
+        if kind == QEvent.Type.Wheel:
+            angle, pixel = event.angleDelta(), event.pixelDelta()
+            log_action('ui.gesture', control=_identifier(widget), action='scroll',
+                       angle_dx=angle.x(), angle_dy=angle.y(),
+                       pixel_dx=pixel.x(), pixel_dy=pixel.y())
+            return
+        if kind == QEvent.Type.MouseButtonPress:
+            point = event.position().toPoint()
+            self._gestures[widget] = []
+            log_action('ui.gesture', control=_identifier(widget), action='press',
+                       button=event.button().value, points=[[point.x(), point.y()]])
+        elif kind in (QEvent.Type.MouseMove, QEvent.Type.MouseButtonRelease) and widget in self._gestures:
+            point = event.position().toPoint()
+            points = self._gestures[widget]
+            points.append([point.x(), point.y()])
+            if len(points) >= 128 or kind == QEvent.Type.MouseButtonRelease:
+                log_action('ui.gesture', control=_identifier(widget),
+                           action='release' if kind == QEvent.Type.MouseButtonRelease else 'move',
+                           points=points)
+                self._gestures[widget] = []
+            if kind == QEvent.Type.MouseButtonRelease:
+                self._gestures.pop(widget, None)
+
     def eventFilter(self, obj, event):
         kind = event.type()
+        if _is_canvas(obj) and kind in (QEvent.Type.MouseButtonPress, QEvent.Type.MouseMove,
+                                       QEvent.Type.MouseButtonRelease, QEvent.Type.Wheel):
+            self._canvas_event(obj, event)
         if kind == QEvent.Type.Show and isinstance(obj, QWidget):
             self._connect_tree(obj)
             if isinstance(obj, QMenu):

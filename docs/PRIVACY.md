@@ -38,9 +38,9 @@ are independent of account sign-in and diagnostic reporting.
   an error; a previous native crash is offered for review and requires a separate
   confirmation. Reports can include a separate random report installation ID,
   software and system versions, selected hardware details, image counts and
-  dimensions, the order of supported interface actions and their control IDs,
-  effective processing options and numeric settings, error types and selected
-  application stack locations. They exclude image pixels, image and project
+  dimensions, the order of supported interface actions, control IDs and canvas
+  gesture coordinates, effective processing options and numeric settings, error
+  types and selected application stack locations. They exclude image pixels, image and project
   files, user file names and paths, credentials, and arbitrary user-entered text.
   Failed reports can be stored locally for bounded retries, with at most three
   pending reports and three attempts. Account-linked queued reports are retried
