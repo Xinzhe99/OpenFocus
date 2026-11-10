@@ -206,7 +206,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 - Identify account and diagnostic report requests as OpenFocus so supported
   services can distinguish them from generic automated traffic.
-- Close cleanly when quitting while the first-run account prompt is open.
+- Cancel and finish account background work before quitting, including when the
+  first-run account prompt is open.
 - Avoid accessing a deleted main window when Qt delivers late shutdown events.
 - Refresh the source sharpness curve after lazy frame previews finish loading.
 - Make file and folder pickers opened through the control channel addressable,
