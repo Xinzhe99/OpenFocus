@@ -152,8 +152,9 @@ class Smoke:
         assert method["id"] == "dct"
         self.call("option.set", name="thread_count", value=4)
         self.call("option.set", name="preview", value=False)
+        self.call("option.set", name="profile_performance", value=True)
         self.call("align.set", id="none")
-        return "dct, cpu, 4 threads"
+        return "dct, cpu, 4 threads, profiled"
 
     def render(self):
         state = self.call("render.start")
@@ -169,7 +170,12 @@ class Smoke:
         assert final["state"] == "done", final
         result = self.call("render.result")
         assert result["shape"][0] > 0
-        return f"{result['shape']} {result['dtype']}"
+        # The report crosses the render-process boundary with the result.
+        performance = result["performance"]
+        assert performance["outcome"] == "completed", performance
+        assert performance["stages"]["render/fusion"]["total_ms"] > 0
+        self.call("option.set", name="profile_performance", value=False)
+        return f"{result['shape']} {result['dtype']}, {performance['wall_ms']:.0f} ms profiled"
 
     def export(self):
         target = self.work / "result.png"
