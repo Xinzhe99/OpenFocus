@@ -1,7 +1,5 @@
-"""Inspect local logs, copy them, or export a report for manual submission.
+"""Review local logs and optionally send a sanitized diagnostic report."""
 
-Opening the issue tracker sends no report, logs, or images.
-"""
 import os
 import sys
 import webbrowser
@@ -72,7 +70,7 @@ class FeedbackDialog(QDialog):
         self.log_hint.setWordWrap(True)
         self.log_hint.setObjectName("mutedLabel")
         root.addWidget(self.log_hint)
-        scope = QLabel(trans.t("feedback_package_scope"))
+        scope = QLabel(trans.t("feedback_local_export_scope"))
         scope.setWordWrap(True)
         root.addWidget(scope)
         facts_button = QPushButton(trans.t("action_env_info"))
@@ -102,6 +100,9 @@ class FeedbackDialog(QDialog):
         buttons.addWidget(copy_btn)
         buttons.addWidget(issues_btn)
         buttons.addWidget(export_btn)
+        report_btn = QPushButton(trans.t('report_review'))
+        report_btn.clicked.connect(self._review_report)
+        buttons.addWidget(report_btn)
         buttons.addStretch()
         close_btn = QPushButton(trans.t("btn_close"))
         close_btn.clicked.connect(self.reject)
@@ -129,6 +130,10 @@ class FeedbackDialog(QDialog):
         The app's job is to hand over the log, not to host a second form.
         """
         webbrowser.open(ISSUES_URL)
+
+    def _review_report(self):
+        from dialogs.report_review import ReportReviewDialog
+        ReportReviewDialog(self.window_main, self).exec()
 
     def _export_package(self):
         dest, _ = FileDialog.getSaveFileName(

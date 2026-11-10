@@ -55,6 +55,13 @@ jobs:
           PYTHONFAULTHANDLER: '1'
         run: python -m pytest -o addopts='' tests/test_gui_lifecycle.py -x -q --timeout=60 --timeout-method=thread
 
+      - name: Check Windows GUI shutdown
+        if: runner.os == 'Windows'
+        env:
+          QT_QPA_PLATFORM: offscreen
+          PYTHONFAULTHANDLER: '1'
+        run: python -m pytest -o addopts='' tests/test_gui_lifecycle.py tests/test_control_channel.py::test_default_gui_launch_and_cross_process_client tests/test_activity_logging.py -x -q --timeout=90 --timeout-method=thread
+
       - name: Run test suite
         id: pytest
         shell: bash

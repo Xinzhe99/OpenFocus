@@ -6,6 +6,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- Offer optional account sign-in with a skippable first-launch and update prompt.
+- Allow users to review and send sanitized error reports, and choose whether to
+  send reports automatically after an error. Previous native crashes require
+  separate confirmation; queued reports respect account and consent choices.
+- Record effective fusion settings, frame order and supported interface actions
+  for troubleshooting; sanitized error reports retain these details.
 - Add File → Export All Results to Folder for the output history.
 - Add an off-by-default Advanced Settings opt-in for experimental desktop fusion
   and registration methods and image stitching. These features are under
@@ -198,6 +204,20 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   scroll phase, including X11, where only angle deltas are reliable.
 
 ### Fixed
+- Identify account and diagnostic report requests as OpenFocus so supported
+  services can distinguish them from generic automated traffic.
+- Cancel and finish account background work before quitting, including when the
+  first-run account prompt is open.
+- Deliver account operation results before releasing their background workers.
+- Avoid accessing a deleted main window when Qt delivers late shutdown events.
+- Prevent an in-flight usage report from signalling Qt after shutdown.
+- Connect dynamically created controls when interacted with to avoid Qt
+  teardown crashes while retaining action logging.
+- Refresh the source sharpness curve after lazy frame previews finish loading.
+- Make file and folder pickers opened through the control channel addressable,
+  while retaining native pickers for ordinary desktop interactions.
+- Isolate sharing tests from the desktop clipboard and report unexpected
+  clipboard failures without blocking on a modal dialog.
 - Hide redundant button and option tooltips when their full labels are visible;
   keep explanatory hints and the full text of elided labels.
 - Shorten isolated Unix instance socket names when the temporary path is long.

@@ -8,6 +8,7 @@ import cv2
 import numpy as np
 from core.registration import ImageRegistration, RegistrationCancelled
 from core.multi_focus_fusion import MultiFocusFusion
+from core.fusion_diagnostics import log_effective_fusion
 from core.frame_storage import store_frame, scratch_directory, estimate_fusion_space
 from core.source_frames import materialize_frames, processing_preview, resolve_frame
 from core.resource_policy import heavy_job, require_memory
@@ -227,7 +228,7 @@ class StackLoadWorker(QThread):
                             paths, scale_factor=self.scale, **options)
                     if ok:
                         self.source_icc_profiles = dict(getattr(self.loader, 'source_icc_profiles', {}))
-                    logger.info("stack decoded %s", frame_details(imgs))
+                    log_action("stack_load.decoded", **frame_details(imgs))
                     # Video decoding does not populate the image failure counter.
                     image_load = bool(self.folder) or not self.video
                     if not ok or (image_load and getattr(self.loader, 'failed_count', 0)):
@@ -304,6 +305,8 @@ class ROIFramePreviewWorker(QThread):
         finally:
             image = None
             self.frame = None
+
+
 
 
 def _ordered_openfocus_registration(alignment, algorithm, sort_mode):
@@ -493,6 +496,10 @@ class RenderWorker(QThread):
                            tile_overlap=self.tile_overlap, tile_threshold=self.tile_threshold,
                            ai_batch_size=self.ai_batch_size, base_frame=self.base_frame,
                            sort_mode=self.sort_mode, exposure_match=self.exposure_match,
+                           sharpen_output=self.sharpen_output, sensor_denoise=self.sensor_denoise,
+                           defect_mask=bool(self.defect_mask_path), load_scale_factor=self.load_scale_factor,
+                           registration_brightness_reference='last' if self.exposure_match else 'first',
+                           reverse_registration=self._reverse_registration,
                            **frame_details(self.raw_images)) as operation:
             profile = (performance_profile.PerformanceProfile() if self.profile_performance
                        else performance_profile.NULL_PROFILE)
@@ -759,6 +766,10 @@ class RenderWorker(QThread):
             full_frame_roi = roi_rect_int is not None and get_fusion(self.algorithm).roi is None
             fusion_images = (processed_images if full_frame_roi or cropped_images is None
                              else cropped_images)
+            log_action('render.fusion_region', roi_rect=roi_rect_int, full_frame_roi=full_frame_roi,
+                       roi_base_index=(max(0, min(self.roi_base_index, len(processed_images) - 1))
+                                       if self.roi_mode == 'paste' and processed_images else None),
+                       alignment_reused=self.alignment_reused, alignment_computed=self.alignment_computed)
             with profile.stage('fusion', resources=True):
                 fusion_result, device_name = self._run_fusion(
                     fusion_images, should_cancel=lambda: self.is_cancelled,
@@ -1032,6 +1043,11 @@ class RenderWorker(QThread):
             ai_batch_size=self.ai_batch_size, base_frame=self.base_frame,
             sort_mode=self.sort_mode, exposure_match=self.exposure_match,
             resource_preference=self.resource_preference)
+        log_effective_fusion(fusion, images, origin='render', thread_count=self.thread_count,
+                              sharpen_output=self.sharpen_output,
+                              registration=self.alignment, registration_parameters=self.registration_parameters,
+                              registration_brightness_reference='last' if self.exposure_match else 'first',
+                              reverse_registration=self._reverse_registration)
         fusion.prepared_cache = self.prepared_cache
         fusion.retain_preparation = self.retain_preparation
         profile = performance_profile.current()
@@ -1571,9 +1587,10 @@ class BatchWorker(QThread):
                             or self.processing_settings.get('save_aligned', False)):
                         raise ValueError(trans.t('transparent_desktop_unsupported').format(path=''))
                 if steps:
+                    registration_width = self._registration_width(aligned_images)
                     registration = ImageRegistration(method=alignment,
                         parameters=self.registration_parameters,
-                        downscale_width=self._registration_width(aligned_images),
+                        downscale_width=registration_width,
                         brightness_reference='last' if self.exposure_match else 'first',
                         use_gpu=False, defer_warps=lazy_fusion)
                     reverse_registration = _ordered_openfocus_registration(
@@ -1626,6 +1643,16 @@ class BatchWorker(QThread):
                         base_frame=runtime.get('base_frame', 'none'),
                         sort_mode=runtime.get('sort_mode', 'asc'),
                         exposure_match=self.exposure_match, **tile_kwargs)
+                    log_effective_fusion(fusion, color_frames, origin='batch',
+                        thread_count=self.thread_count, registration=steps,
+                        registration_parameters=self.registration_parameters,
+                        registration_downscale_width=registration_width if steps else None,
+                        registration_brightness_reference='last' if self.exposure_match else 'first',
+                        reverse_registration=(_ordered_openfocus_registration(alignment, method,
+                            runtime.get('sort_mode', 'asc')) if steps else False),
+                        sharpen_output=bool(runtime.get('sharpen_output', False)),
+                        sensor_denoise=denoise, defect_mask=bool(mask_path), flat_field=bool(reference),
+                        load_scale_factor=float(self.processing_settings.get('load_scale_factor', 1.0)))
                     fusion_input, is_16bit = prepare_fusion_input(color_frames, lambda: self.is_cancelled)
                     if aligned_for_export is None:
                         del aligned_images
@@ -1802,14 +1829,28 @@ class BatchWorker(QThread):
                     image = apply_flat_field(image, gain)
                 return image
 
+        group_number = 0
         def fuse_group(images):
+            nonlocal group_number
+            group_number += 1
+            registration_width = None
             if alignment_steps(alignment):
+                registration_width = self._registration_width(images)
                 registration = ImageRegistration(method=alignment, parameters=self.registration_parameters,
-                    downscale_width=self._registration_width(images),
+                    downscale_width=registration_width,
                     brightness_reference='last' if self.exposure_match else 'first', use_gpu=False,
                     defer_warps=get_fusion(method).streaming_sources)
                 images = registration.process(images, thread_count=self.thread_count,
                     resource_preference=self.resource_preference, should_cancel=lambda: self.is_cancelled)
+            log_effective_fusion(fusion, images, origin='batch_group', group_number=group_number,
+                group_size=size, group_overlap=overlap, thread_count=self.thread_count,
+                registration=alignment_steps(alignment), registration_parameters=self.registration_parameters,
+                registration_downscale_width=registration_width,
+                registration_brightness_reference='last' if self.exposure_match else 'first',
+                source_order_reversed=(runtime.get('sort_mode', 'asc') == 'desc' and get_fusion(method).sort_frames),
+                sharpen_output=bool(runtime.get('sharpen_output', False)),
+                sensor_denoise=denoise, defect_mask=bool(mask_path), flat_field=bool(reference),
+                load_scale_factor=float(settings.get('load_scale_factor', 1.0)))
             fusion_input, is_16bit = prepare_fusion_input(images)
             result = self._fuse_one_stack(fusion, method, fusion_input, params)
             return quantize_fuse_output(result, is_16bit)

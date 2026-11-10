@@ -289,6 +289,7 @@ def _en() -> dict:
         "privacy": {
             "title": "Privacy",
             "accounts": "The optional account service stores your email address, display name, linked sign-in provider identifiers, sessions and device labels, consent choices and the service records needed to operate your account. These records are separate from desktop usage statistics and are not covered by the 90-day statistics retention period.",
+            "reports": "Optional diagnostic reports can include software and device details, image counts and dimensions, processing settings, interface actions and sanitized error information. They exclude image pixels, image and project files, file names, paths and account credentials. You can review manual reports before sending them; automatic error reporting is off until enabled and can be turned off in Advanced Settings. Reports may be sent anonymously or linked to your account.",
             "controls": "You can revoke sessions or delete your account from the account page. Deletion removes your contact profile, linked sign-in identities and sessions; some account, consent and administrative records may remain. Product email is optional: choose whether to opt in during account setup, and use the unsubscribe link in those emails to opt out. Sign-in links and service notices are separate.",
             "manage": "Manage your account",
             "cookies": "The website remembers your language in a cookie and your theme in local storage. The account area also uses cookies for sign-in sessions, request protection, pending sign-in and language preferences.",
@@ -535,6 +536,7 @@ def _zh() -> dict:
         "privacy": {
             "title": "隐私",
             "accounts": "可选账号服务为提供账号功能，会保存你的邮箱、显示名称、关联登录平台的用户标识、会话与设备标签、同意选择，以及运营账号所需的服务记录。这些记录与桌面使用统计分开保存，不适用统计数据的 90 天保留期限。",
+            "reports": "可选错误报告可能包含软件和设备信息、图像数量与尺寸、处理设置、界面操作及脱敏后的错误信息，不包含图像像素、图像或项目文件、文件名、路径或账号凭据。手动发送前可查看报告；自动错误报告默认关闭，启用后可在高级设置中关闭。报告可以匿名发送，也可以关联账号。",
             "controls": "你可以在账号页面撤销会话或删除账号。删除会清除联系资料、关联登录身份和会话；部分账号、同意和管理记录可能保留。产品邮件为可选项：可在账号设置流程中自主选择接收，并通过邮件中的退订链接取消订阅。登录链接和服务通知另行发送。",
             "manage": "管理你的账号",
             "cookies": "网站使用 Cookie 记住语言偏好，使用本地存储记住主题。账号区还使用 Cookie 维持登录会话、提供请求保护、跟踪待完成的登录和记住语言偏好。",
