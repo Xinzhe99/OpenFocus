@@ -101,7 +101,7 @@ def is_linux() -> bool:
 
 
 def configure_native_worker_stack(worker) -> None:
-    """Set before start: LLVM code generation overflows macOS's 512-KiB stack."""
+    """Provide macOS workers enough stack for native numerical libraries."""
     if sys.platform == 'darwin':
         worker.setStackSize(max(worker.stackSize(), NATIVE_WORKER_STACK_BYTES))
 
