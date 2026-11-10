@@ -254,3 +254,10 @@ class AccountDialog(QDialog):
             self._save_report_preference()
         self._cancel.set()
         super().reject()
+
+
+def cancel_account_jobs(window):
+    """Cancel pending sign-ins and report whether account workers remain."""
+    for dialog in window.findChildren(AccountDialog):
+        dialog._cancel.set()
+    return bool(_ACTIVE_JOBS)

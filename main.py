@@ -4121,8 +4121,9 @@ class OpenFocus(QMainWindow):
         # A Python reference to a QThread cannot protect it from destruction
         # with its QObject parent. Retry the authorized close on the GUI loop
         # instead of waiting here or orphaning a dialog-owned worker.
+        from dialogs.account import AccountDialog, cancel_account_jobs
         from dialogs.retouch import RetouchDialog, _SHARPNESS_WORKERS
-        shutdown_running = False
+        shutdown_running = cancel_account_jobs(self)
         for dialog in self.findChildren(RetouchDialog):
             dialog.setEnabled(False)
             dialog_busy = False
@@ -4267,7 +4268,6 @@ class OpenFocus(QMainWindow):
             start_shutdown_reports(self)
         except Exception:
             get_logger(__name__).exception('Could not start error reporting')
-        from dialogs.account import AccountDialog
         for dialog in self.findChildren(AccountDialog):
             dialog.reject()
         super().closeEvent(event)
