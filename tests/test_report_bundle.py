@@ -128,6 +128,15 @@ def test_fusion_report_keeps_reproduction_settings_without_private_text():
     assert '/private/photo.jpg' not in repr(events)
 
 
+def test_report_discloses_omitted_history(monkeypatch):
+    monkeypatch.setattr(report_bundle, '_MAX_EVENTS', 2)
+    text = '...(older lines trimmed; export recent log tails for more context)...\n'
+    text += ''.join(_event('ui.action', {'control': 'render', 'index': i}) for i in range(3))
+    contents = _contents(report_bundle.build_report_bundle(log_text=text, crash_text='', facts={}))
+    assert [event['parameters']['index'] for event in contents['events.json']] == [1, 2]
+    assert contents['capture.json'] == {'events_omitted': 1, 'log_tail_trimmed': True}
+
+
 def test_safe_hardware_and_stack_identifiers():
     trace = ('Traceback (most recent call last):\n'
              '  File "/private/workers.py", line 42, in run\n'
