@@ -178,7 +178,7 @@ def _collect_state(window) -> Dict[str, Any]:
         "base_frame_correct": bool(brightness("base_correct", method))
         if callable(brightness) else bool(getattr(window, "base_frame_correct", False)),
         "exposure_match": bool(brightness("exposure_match", method))
-        if callable(brightness) else bool(getattr(window, "exposure_match", True)),
+        if callable(brightness) else bool(getattr(window, "exposure_match", False)),
         "thread_count": getattr(window, "thread_count", 4),
         "tile_enabled": getattr(window, "tile_enabled", True),
         "tile_block_size": getattr(window, "tile_block_size", 1024),
@@ -886,7 +886,7 @@ def _apply_settings(window, state: Dict[str, Any]) -> None:
         base_chk.setChecked(base_correct)
 
     exposure_match = window._brightness_by_method.get(
-        ("exposure_match", method), settings.get("exposure_match", True))
+        ("exposure_match", method), settings.get("exposure_match", False))
     if method:
         window._brightness_by_method[("exposure_match", method)] = exposure_match
     window.exposure_match = exposure_match

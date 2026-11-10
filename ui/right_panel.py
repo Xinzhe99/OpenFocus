@@ -251,8 +251,14 @@ def alignment_items():
     return tuple((spec.id, spec.label_key, spec.hint_key)
                  for spec in registration_algorithms())
 
-FUSION_DEFAULT = "stackmffv3"
+FUSION_DEFAULT = "openfocus_b"
 ALIGN_DEFAULT = "ecc"
+
+def label_recommended(combo: QComboBox, method: str) -> None:
+    """Decorate a selector entry without changing its stable identifier."""
+    index = combo.findData(method)
+    if index >= 0:
+        combo.setItemText(index, f"{combo.itemText(index)} ({trans.t('recommended')})")
 
 
 @dataclass
@@ -328,6 +334,7 @@ def create_right_panel() -> RightPanelComponents:
     combo_fusion = QComboBox()
     fill_fusion_combo(combo_fusion, none_label="radio_no_fusion",
                       none_hint="radio_no_fusion_hint")
+    label_recommended(combo_fusion, FUSION_DEFAULT)
     idx = combo_fusion.findData(FUSION_DEFAULT)
     combo_fusion.setCurrentIndex(max(0, idx))
     # "?" sits on the dropdown's row: a row of its own wasted half the
@@ -351,6 +358,7 @@ def create_right_panel() -> RightPanelComponents:
     # 对齐算法：下拉单选（none / 单应性 / ECC / OpenFocus 快速）
     combo_align = QComboBox()
     _fill_combo(combo_align, alignment_items())
+    label_recommended(combo_align, ALIGN_DEFAULT)
     idx = combo_align.findData(ALIGN_DEFAULT)
     combo_align.setCurrentIndex(max(0, idx))
     # "?" sits on the dropdown's row: a row of its own wasted half the
@@ -423,7 +431,7 @@ def create_right_panel() -> RightPanelComponents:
 
     chk_quick_preview = _option('chk_quick_preview', False)
     chk_reverse_order = _option('chk_reverse_order', False)
-    chk_exposure_match = _option('chk_exposure_match', True)
+    chk_exposure_match = _option('chk_exposure_match', False)
     chk_base_correct = _option('chk_base_correct', False)
     chk_sharpen_output = _option('chk_sharpen_output', False)
 
@@ -619,6 +627,14 @@ def bind_right_panel(window, components: RightPanelComponents) -> None:
         window.refresh_algorithm_parameters)
     components.combo_align.currentIndexChanged.connect(
         window.refresh_registration_parameters)
+    def remember_selection(combo, attribute):
+        setattr(window, attribute, combo.currentData())
+        window.persist_settings()
+
+    components.combo_fusion.activated.connect(
+        lambda _index: remember_selection(components.combo_fusion, "_preferred_fusion_method"))
+    components.combo_align.activated.connect(
+        lambda _index: remember_selection(components.combo_align, "_preferred_alignment_method"))
     components.fusion_parameter_panel.valuesChanged.connect(
         lambda values: window.set_fusion_parameters(window.current_fusion_method(), values))
     components.registration_parameter_panel.valuesChanged.connect(

@@ -57,7 +57,7 @@ def test_open_folder_loads_raf_and_photos_in_natural_order(qapp, monkeypatch, tm
     monkeypatch.setattr(source_manager.FileDialog, 'for_directories', lambda *args: selected)
     monkeypatch.setattr(settings_store, 'get_last_dialog_dir', lambda: '')
     monkeypatch.setattr(settings_store, 'set_last_dialog_dir', lambda path: None)
-    monkeypatch.setattr(manager, '_ask_load_scale', lambda: 0.5)
+    monkeypatch.setattr(manager, '_ask_load_scale', lambda **kwargs: 0.5)
     results = []
 
     def load(**kwargs):
@@ -193,7 +193,7 @@ def test_cancelled_folder_scale_keeps_existing_stack(qapp, monkeypatch, tmp_path
     frame = object()
     window = SimpleNamespace(raw_images=[frame], current_folder_path='previous')
     manager = source_manager.SourceManager(window)
-    monkeypatch.setattr(manager, '_ask_load_scale', lambda: None)
+    monkeypatch.setattr(manager, '_ask_load_scale', lambda **kwargs: None)
     loads = []
     monkeypatch.setattr(manager, '_start_load_worker', lambda **kwargs: loads.append(kwargs))
     manager.load_image_stack(str(tmp_path))
@@ -207,7 +207,7 @@ def test_native_raw_drop_accepts_dng_and_rejects_mixed_tiff(qapp, monkeypatch, t
     manager = source_manager.SourceManager(window)
     window.linear_dng_metadata = object()
     loads, warnings = [], []
-    monkeypatch.setattr(manager, '_ask_load_scale', lambda: 1.0)
+    monkeypatch.setattr(manager, '_ask_load_scale', lambda **kwargs: 1.0)
     monkeypatch.setattr(manager, '_start_load_worker', lambda **kwargs: loads.append(kwargs))
     monkeypatch.setattr(source_manager, 'show_warning_box', lambda *args: warnings.append(args))
 
@@ -241,7 +241,7 @@ def test_native_icon_append_rejects_non_raw_before_starting_worker(qapp, monkeyp
     manager = source_manager.SourceManager(window)
     window.linear_dng_metadata = object()
     warnings = []
-    monkeypatch.setattr(manager, '_ask_load_scale', lambda: 1.0)
+    monkeypatch.setattr(manager, '_ask_load_scale', lambda **kwargs: 1.0)
     monkeypatch.setattr(source_manager, 'show_warning_box', lambda *args: warnings.append(args))
     manager.load_image_files_from_icon([dng, tiff])
     assert len(warnings) == 1

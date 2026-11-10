@@ -230,7 +230,7 @@ def _align_homography_impl(input_source, output_path=None, img_filenames=None, d
     def get_features_task(img):
         from core.source_frames import resolve_frame
         source = img
-        img = resolve_frame(img)
+        img = resolve_frame(img, should_cancel=should_cancel)
         identity = _perspective_source(source, img, should_cancel)
         # 在线程中创建独立的检测器，确保线程安全
         local_detector = cv2.SIFT_create()
@@ -778,7 +778,7 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
     def preprocess(img):
         from core.source_frames import resolve_frame
         source = img
-        img = resolve_frame(img)
+        img = resolve_frame(img, should_cancel=should_cancel)
         identity = _perspective_source(source, img, should_cancel)
         h, w = img.shape[:2]
         scale = downscale_width / float(w) if w > downscale_width else 1.0
@@ -1201,7 +1201,7 @@ class ImageRegistration:
                     images = []
                     for path in paths:
                         _check_cancel(should_cancel)
-                        for source in scan_source(path, header_only=True, page_index=0,
+                        for source in scan_source(path, header_only=True, page_index=-1,
                                                   should_cancel=should_cancel):
                             # Match decode_image's directory contract: validate
                             # alpha before retaining an opaque BGR producer.

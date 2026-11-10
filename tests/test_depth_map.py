@@ -3,6 +3,9 @@
 import cv2
 import numpy as np
 import pytest
+import importlib.util
+import subprocess
+import sys
 
 from core.depth_map import (
     DepthMapCancelled,
@@ -31,6 +34,23 @@ def _synthetic_thirds(h=240, w=320):
     f1[:, third:2 * third] = sharp[:, third:2 * third]
     f2[:, 2 * third:] = sharp[:, 2 * third:]
     return [f0, f1, f2]
+
+
+@pytest.mark.skipif(importlib.util.find_spec("dtcwt") is None,
+                    reason="dtcwt backend not installed")
+def test_dtcwt_depth_first_in_fresh_process():
+    # Depth must initialize the compatibility adapter without a prior fusion.
+    script = """
+import numpy as np
+from core.depth_map import compute_focus_index
+checker = (np.indices((32, 32)).sum(axis=0) % 2 * 255).astype(np.uint8)
+sharp = np.repeat(checker[:, :, None], 3, axis=2)
+flat = np.full_like(sharp, 127)
+index = compute_focus_index([flat, sharp], 'dtcwt', {'N': 2})
+assert index.shape == (32, 32)
+assert index.mean() > 0.9
+"""
+    subprocess.run([sys.executable, "-c", script], check=True)
 
 
 class TestComputeFocusIndex:

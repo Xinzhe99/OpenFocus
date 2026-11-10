@@ -37,6 +37,54 @@ def test_linear_raw_decode_preserves_unbalanced_color_and_scales(tmp_path, camer
     assert (metadata.camera_make, metadata.camera_model) == ('Example', 'Example Camera')
     assert len(admissions) == 1 and admissions[0][0] * admissions[0][1] >= 128 * 128
 
+@pytest.mark.parametrize('flip, expected', [(0, (21, 22)), (6, (22, 21))])
+def test_scaled_bayer_admits_before_unpack_and_preserves_oriented_size(
+        tmp_path, monkeypatch, camera_metadata, flip, expected):
+    from types import SimpleNamespace
+
+    path = tmp_path / 'sensor.raf'
+    path.write_bytes(b'RAW')
+    events = []
+
+    class Sensor:
+        sizes = SimpleNamespace(raw_width=103, raw_height=99, width=103, height=99,
+                                pixel_aspect=1.0, flip=flip)
+        raw_type = rawpy.RawType.Flat
+        raw_pattern = np.array([[0, 1], [3, 2]], np.uint8)
+        num_colors = 3
+        rgb_xyz_matrix = np.asarray(camera_metadata.color_matrix)
+        camera_whitebalance = [2, 1, 2, 1]
+        black_level_per_channel = [100, 100, 100, 100]
+        white_level = 1100
+
+        def __enter__(self): return self
+        def __exit__(self, *_args): pass
+        def open_file(self, _path): events.append('open')
+        def unpack(self):
+            assert events == ['open', 'admit']
+            events.append('unpack')
+        def postprocess(self, **kwargs):
+            assert kwargs['half_size']
+            assert kwargs['no_auto_scale'] and kwargs['output_color'] == rawpy.ColorSpace.raw
+            shape = (52, 50, 3) if flip else (50, 52, 3)
+            return np.full(shape, 500, np.uint16)
+
+    monkeypatch.setattr(rawpy, 'RawPy', Sensor)
+    monkeypatch.setattr(linear_dng, '_camera_identity', lambda *_args: ('Example', 'Camera'))
+    def admit(amount):
+        if events == ['open']:
+            assert amount == 103 * 99 * 16
+            events.append('admit')
+        elif events == ['open', 'admit', 'unpack']:
+            assert amount == 103 * 99 * 24
+            events.append('post_admit')
+    monkeypatch.setattr(linear_dng, 'require_memory', admit)
+    image, metadata = linear_dng.load_linear_raw(path, .22)
+    assert image.shape == (*expected, 3)
+    assert np.all(image == round(500 * 65535 / 1000))
+    assert metadata.camera_model == 'Camera'
+    assert events == ['open', 'admit', 'unpack', 'post_admit']
+
 
 def test_dng_round_trip_opens_in_libraw_and_preserves_linear_pixels(tmp_path, camera_metadata):
     y, x = np.indices((128, 128))

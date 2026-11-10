@@ -104,6 +104,106 @@ def test_safe_config_clamps_corrupt_style_but_keeps_text():
     assert wm.safe_config({"text": ""}) is None
 
 
+@pytest.mark.parametrize("position,rendered", [("prefix", "© Creator"),
+                                                ("suffix", "Creator ©")])
+@pytest.mark.parametrize("channels", [3, 4])
+def test_copyright_pixels_match_literal_text(position, rendered, channels):
+    image = np.full((300, 400, channels), 127, np.uint8)
+    if channels == 4:
+        image[:, :100, 3] = 0
+    config = _config(text="Creator", copyright_enabled=True,
+                     copyright_position=position)
+    expected = _config(text=rendered)
+    np.testing.assert_array_equal(wm.burn(image, config), wm.burn(image, expected))
+    assert config.text == "Creator"
+    assert wm.plan(config, 400, 300).stamp_width == wm.plan(expected, 400, 300).stamp_width
+
+
+def test_legacy_copyright_text_and_disabled_style_are_unchanged():
+    image = np.full((300, 400, 3), 127, np.uint8)
+    legacy = {"text": "© Creator", "size_percent": 6.0}
+    disabled = {**legacy, "copyright_enabled": False, "copyright_position": "suffix"}
+    old_constructor = wm.WatermarkConfig(text="© Creator", size_percent=6.0)
+    np.testing.assert_array_equal(wm.burn(image, legacy), wm.burn(image, disabled))
+    np.testing.assert_array_equal(wm.burn(image, legacy), wm.burn(image, old_constructor))
+    assert not wm.safe_config(legacy).copyright_enabled
+
+
+@pytest.mark.parametrize("field,value", [("copyright_enabled", 1),
+                                         ("copyright_enabled", "true"),
+                                         ("copyright_position", "middle"),
+                                         ("copyright_position", None)])
+def test_copyright_strict_validation_and_safe_restore(field, value):
+    data = {"text": "Creator", field: value}
+    with pytest.raises(wm.WatermarkError):
+        wm.normalize_config(data)
+    with pytest.raises(wm.WatermarkError):
+        wm.normalize_config(wm.WatermarkConfig(**data))
+    restored = wm.safe_config(data)
+    assert restored.copyright_enabled is False
+    assert restored.copyright_position == "prefix"
+
+
+def test_copyright_keeps_original_text_limits():
+    assert wm.normalize_config({"text": "x" * 80, "copyright_enabled": True}).text == "x" * 80
+    for text in ("", " ", "x" * 81):
+        with pytest.raises(wm.WatermarkError):
+            wm.normalize_config({"text": text, "copyright_enabled": True})
+
+
+def test_copyright_round_trips_state_records_and_legacy_restore():
+    window = _Window()
+    window.watermark_text = "Creator"
+    window.watermark_copyright_enabled = True
+    window.watermark_copyright_position = "suffix"
+    cfg = wm.draft_config(window)
+    wm.set_target_config(window, "source", cfg)
+    record = _Record("r")
+    window.output_list.records = [record]
+    wm.set_record_config(record, cfg)
+    snapshot = wm.capture_state(window)
+    window.watermark_copyright_enabled = False
+    wm.set_record_config(record, None)
+    wm.restore_state(window, snapshot)
+    assert wm.export_cfg(window, "source")["copyright_position"] == "suffix"
+    assert wm.record_export_cfg(record)["copyright_enabled"] is True
+    assert window.watermark_copyright_enabled is True
+    wm.apply_settings(window, {"text": "© Legacy", "targets": ["source"]})
+    assert wm.export_cfg(window, "source")["copyright_enabled"] is False
+
+
+def test_empty_draft_retains_copyright_style_in_project_settings():
+    window = _Window()
+    window.watermark_copyright_enabled = True
+    window.watermark_copyright_position = "suffix"
+    settings = wm.settings_from_window(window)
+    restored = _Window()
+    wm.apply_settings(restored, settings)
+    assert restored.watermark_text == ""
+    assert restored.watermark_copyright_enabled is True
+    assert restored.watermark_copyright_position == "suffix"
+
+def test_global_preferences_restore_copyright_without_text(tmp_path, monkeypatch):
+    pytest.importorskip("PyQt6")
+    from PyQt6.QtCore import QSettings
+    from utils import settings_store
+
+    settings = QSettings(str(tmp_path / "preferences.ini"), QSettings.Format.IniFormat)
+    monkeypatch.setattr(settings_store, "get_settings", lambda: settings)
+    window = _Window()
+    window.watermark_text = "private creator"
+    window.watermark_copyright_enabled = True
+    window.watermark_copyright_position = "suffix"
+    settings_store.save_window_settings(window)
+    assert not settings.contains("export/watermark_text")
+    restored = _Window()
+    settings_store.load_window_settings(restored)
+    assert restored.watermark_text == ""
+    assert restored.watermark_copyright_enabled is True
+    assert restored.watermark_copyright_position == "suffix"
+
+
+
 def test_burn_changes_whole_canvas_and_is_a_copy():
     image = np.full((480, 640, 3), 180, np.uint8)
     result = wm.burn(image, _config())
@@ -311,7 +411,8 @@ def test_project_round_trip_keeps_independent_target_texts(tmp_path):
     stack_dir = str(tmp_path / "stack")
     paths = _make_stack(stack_dir)
     window = project_window(paths, stack_dir)
-    window.watermark_source_config = wm.WatermarkConfig(text="SOURCE").to_dict()
+    window.watermark_source_config = wm.WatermarkConfig(
+        text="SOURCE", copyright_enabled=True, copyright_position="suffix").to_dict()
     window.watermark_output_config = wm.WatermarkConfig(text="OUTPUT").to_dict()
     window.watermark_source_enabled = True
     window.watermark_output_enabled = True
@@ -324,6 +425,8 @@ def test_project_round_trip_keeps_independent_target_texts(tmp_path):
     restored = project_window(paths, stack_dir)
     project_file._apply_settings(restored, state)
     assert wm.config_for_target(restored, "source").text == "SOURCE"
+    assert wm.config_for_target(restored, "source").copyright_enabled is True
+    assert wm.config_for_target(restored, "source").copyright_position == "suffix"
     assert wm.config_for_target(restored, "output").text == "OUTPUT"
     assert wm.config_for_target(restored, "registered") is None
 
@@ -348,12 +451,15 @@ def test_batch_freezes_each_target_config_independently():
 
     worker = BatchWorker([], "custom", "", {
         "watermark": {
-            "source": wm.WatermarkConfig(text="SOURCE").to_dict(),
+            "source": wm.WatermarkConfig(text="SOURCE", copyright_enabled=True,
+                                         copyright_position="suffix").to_dict(),
             "registered": wm.WatermarkConfig(text="REGISTERED").to_dict(),
             "output": None,
             "targets": ["source", "registered"],
         }}, use_gpu=False)
     assert worker._stack_watermark("source")["text"] == "SOURCE"
+    assert worker._stack_watermark("source")["copyright_enabled"] is True
+    assert worker._stack_watermark("source")["copyright_position"] == "suffix"
     assert worker._stack_watermark("registered")["text"] == "REGISTERED"
     assert worker._stack_watermark("output") is None
 

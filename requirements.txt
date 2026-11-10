@@ -10,7 +10,10 @@ tifffile==2024.8.30
 rawpy>=0.25.1
 threadpoolctl>=3.5
 numba>=0.61.2
-dtcwt
+# Upstream dtcwt 0.14.0 requires NumPy < 2; on Python 3.13+ install it
+# separately with: python -m pip install --no-deps dtcwt==0.14.0
+dtcwt==0.14.0; python_version < '3.13'
+six
 scipy
 onnxruntime-directml==1.23.0; sys_platform == 'win32' and platform_machine == 'AMD64'
 onnxruntime>=1.23,<1.24; sys_platform != 'win32' or platform_machine != 'AMD64'

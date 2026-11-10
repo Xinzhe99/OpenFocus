@@ -141,8 +141,37 @@ def test_retouch_preparation_retains_original_pixels(tmp_path):
     frame, pixels = _source(tmp_path)
     context = build_render_context([frame], pixels, filenames=[frame.path])
     doc = prepare_retouch_document(pixels, context)
-    assert np.array_equal(doc.frames[0].image, pixels)
-    assert max(doc.source_previews[0].shape[:2]) <= 1024
+    assert doc.frames[0].image is context.frames[0].image
+    resolved = doc.resolve_source(0)
+    assert np.array_equal(resolved.image, pixels)
+
+
+def test_retouch_whole_stack_operations_resolve_sources_when_requested(tmp_path, monkeypatch):
+    from core.source_frames import process_frame
+    from utils import retouch
+
+    frame, pixels = _source(tmp_path)
+    calls = []
+    def transform(image):
+        calls.append(1)
+        return image
+
+    processed = [process_frame(frame, transform) for _ in range(2)]
+    context = build_render_context(processed, pixels, filenames=[frame.path] * 2)
+    doc = retouch.prepare_retouch_document(pixels, context)
+    assert calls == []
+    doc.initialize_checkpoint()
+    assert calls == [1, 1] and doc.checkpoint_ready
+    assert all(isinstance(item.image, np.ndarray) for item in doc.context.frames)
+
+    calls.clear()
+    other = retouch.prepare_retouch_document(pixels, context)
+    def stop_after_resolution(*_args, **_kwargs):
+        assert calls == [1, 1]
+        raise RuntimeError("analysis reached")
+    monkeypatch.setattr(retouch, "compute_auto_background", stop_after_resolution)
+    with pytest.raises(RuntimeError, match="analysis reached"):
+        other.auto_background()
 
 
 def test_multipage_export_resolves_sequentially_and_preserves_uint16(tmp_path, monkeypatch):

@@ -6,6 +6,24 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- Use system-native dialogs for opening and saving files and selecting folders.
+- Show source and resulting pixel dimensions as the loading scale changes.
+- Show output pixel dimensions and aligned stack frame counts in result details.
+- Arrange comparison parameters under each method name and place output actions
+  at the lower right of the comparison window.
+- Move OpenFocus fast registration search controls into Advanced Settings.
+- Show source image dimensions, paths and available camera metadata on hover.
+- Add aspect-preserving 2K, 4K and 8K presets for import and resizing,
+  calculated from the available source dimensions.
+- Add an optional copyright symbol before or after watermark text.
+- Copy the saved image path to the clipboard after a successful Save As; copy
+  existing paths without prompting to create files for unsaved outputs.
+- Add an optional Windows Explorer context-menu command to import selected
+  images or folders as a stack, including large multi-selections.
+- Default the five desktop render options to unchecked and restore those
+  defaults on reset, while preserving explicitly saved choices.
+- Add **File → Open Image Frames…** to import selected images as one stack,
+  with an editable folder address in the file picker.
 - Add keyboard-accessible zoom controls to the result view, synchronized with
   wheel zoom and available in all twelve interface languages.
 - Add a panorama workspace with native-coordinate control-point editing,
@@ -60,6 +78,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   source coverage before compositing the display background.
 
 ### Changed
+- Recommend OpenFocus B and ECC as the default desktop methods while retaining
+  explicitly saved selections.
 - Default Batch Image Converter to lossless PNG, restore the last explicitly
   selected output format, and show the actual result extension below the
   selector. Its individual-file conversion, including RAW-to-DNG, remains
@@ -110,6 +130,38 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   scroll phase, including X11, where only angle deltas are reliable.
 
 ### Fixed
+- Keep loading-scale resolution details readable when source metadata arrives.
+- Show the installed version when a manual update check finds no update.
+- Open retouch promptly by loading only the selected source frame in the
+  background; load remaining sources when whole-stack operations need them.
+- Keep mouse-wheel scrolling from changing dropdown and numeric control values.
+- Keep desktop OpenFocus A/B/C in the whole-image domain when global tile
+  settings change; prepare large aligned B sources on disk before fusion.
+- Reuse eligible prepared StackMFF frames for repeated renders, releasing their
+  temporary snapshots when source geometry or selection changes.
+- Coalesce rapid source-preview requests so an obsolete thumbnail does not
+  restart or delay the current frame's sharper viewport.
+- Browse align-only results using cached registered previews and refine the
+  selected frame asynchronously, without blocking on full-resolution decoding.
+- Reclaim source-frame caches and let concurrent decodes finish before
+  rejecting a render under temporary memory pressure; preserve cancellation and
+  the existing limit for genuinely insufficient memory.
+- Decode downsampled Bayer RAW images at half size before the final resize,
+  with memory admission before sensor unpacking. Camera-linear metadata and
+  requested output dimensions are retained.
+- Exclude embedded reduced-resolution TIFF pages from image stacks and use
+  suitable embedded previews for their original pages, preserving full-size
+  decoding and genuine multi-page stacks.
+- Prepare deferred StackMFF source frames once for tiled fusion instead of
+  decoding and processing every frame for every tile; show persistent frame
+  preparation and tile progress during rendering.
+- Restore DTCWT fusion and depth maps with NumPy 2 in source environments;
+  document the separate installation needed for Python 3.13 and newer.
+- Reuse the two compiled StackMFF inference scales when GPU memory permits,
+  avoiding repeated accelerator graph compilation for each tile. Release cached
+  sessions and retry GPU memory admission before falling back to CPU.
+- Draw bounded source previews in their original image coordinates in the wipe
+  comparison, keeping them aligned with full-resolution fusion results.
 - Allow the cross-platform test suite more time on slower hosted runners while
   retaining the per-test timeout.
 - Preview watermarks on transparent outputs using the original alpha before

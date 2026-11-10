@@ -36,9 +36,15 @@ class _SourceRegion(LazySourceFrame):
     source: object = None
     region: tuple = ()
 
-    def full_resolution(self):
+    def full_resolution(self, *, should_cancel=None):
+        from core.registration import RegistrationCancelled
+        if should_cancel is not None and should_cancel():
+            raise RegistrationCancelled()
         x, y, width, height = self.region
-        return resolve_frame(self.source)[y:y + height, x:x + width]
+        image = resolve_frame(self.source, should_cancel=should_cancel)
+        if should_cancel is not None and should_cancel():
+            raise RegistrationCancelled()
+        return image[y:y + height, x:x + width]
 
 
 def display_image(image):

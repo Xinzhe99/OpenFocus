@@ -891,7 +891,7 @@ Wanneer je resultaten uit de uitvoerlijst sleept, worden beeldbestanden geschrev
 
 ## 14. Opdrachtregelinterface
 
-`pip install openfocus` installeert het AI-model, de gewichten en de HEIC- en camera-RAW-decodering. Op Python 3.13+ vervalt `dtcwt`; daar blijft de DTCWT-optie uitgeschakeld met uitleg.
+`pip install openfocus` installeert het AI-model, de gewichten en HEIC- en RAW-decodering. Voer voor DTCWT op Python 3.13+ daarna `python -m pip install --no-deps dtcwt==0.14.0` uit. OpenFocus biedt een NumPy 2-adapter; `pip check` blijft de NumPy-eis van het oorspronkelijke pakket melden.
 
 OpenFocus kan zonder GUI draaien — nuttig voor gescripte pijplijnen en CI. Het consolescript `openfocus` (geïnstalleerd door `pip install openfocus`) en `python main.py` uit een checkout bieden dezelfde opdrachten. Fusieopties werken in beide vormen; de subopdrachten zijn:
 

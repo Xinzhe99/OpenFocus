@@ -137,7 +137,8 @@ class PreviewWorker(_CancellableWorker):
             'fusion_parameters': resolve_fusion_parameters(method, own),
             'use_gpu': bool(shared.get('use_gpu', False)),
             'resource_preference': shared.get('resource_preference', 'balanced'),
-            'tile_enabled': bool(shared.get('tile_enabled', True)),
+            'tile_enabled': (False if method in ('openfocus_a', 'openfocus_b', 'openfocus_c')
+                             else bool(shared.get('tile_enabled', True))),
             'ai_batch_size': int(shared.get('ai_batch_size', 2)),
             'base_frame': options.get('base_frame', 'none'),
             'sort_mode': shared.get('sort_mode', 'asc'),

@@ -27,6 +27,9 @@ class RenderManager:
     def __init__(self, window: Any):
         self.window = window
         self.worker: Optional[RenderProcessWorker] = None
+        self._prepared_cache = None
+        self._prepared_cache_key = None
+        self._prepared_cache_source = None
         self._compare_mode = False
         self._compare_cancelling = False
         self._compare_queue: List[str] = []
@@ -52,6 +55,18 @@ class RenderManager:
         # the forced algorithm and comparison ownership, not just a Boolean,
         # so the deferred render cannot be mislabeled or outlive cancellation.
         self._render_after_load: Optional[dict] = None
+        app = QApplication.instance()
+        if app is not None:
+            app.aboutToQuit.connect(self.clear_prepared_cache)
+        destroyed = getattr(window, 'destroyed', None)
+        if destroyed is not None:
+            destroyed.connect(self.clear_prepared_cache)
+
+    def clear_prepared_cache(self):
+        """Release the retained temporary snapshots for an obsolete stack."""
+        self._prepared_cache = None
+        self._prepared_cache_key = None
+        self._prepared_cache_source = None
 
     def show_alignment_report(self, *, parent=None) -> None:
         dialog = QDialog(parent or self.window)
@@ -155,8 +170,10 @@ class RenderManager:
             window.current_alignment_method())
         values["exposure_match"] = window.brightness_option_for("exposure_match", method)
         values["base_correct"] = window.brightness_option_for("base_correct", method)
-        from core.multi_focus_fusion import _DEFAULT_TILE_THRESHOLD
-        if method != 'none':
+        if method in ('openfocus_a', 'openfocus_b', 'openfocus_c'):
+            values['tile_enabled'] = False
+        elif method != 'none':
+            from core.multi_focus_fusion import _DEFAULT_TILE_THRESHOLD
             values['tile_enabled'] = bool(values['tile_enabled'] and (
                 get_fusion(method).external_tiling_default
                 or values['tile_threshold'] != _DEFAULT_TILE_THRESHOLD))
@@ -926,6 +943,30 @@ class RenderManager:
         all_source_paths = list(getattr(window, "image_source_paths", None) or [])
         source_paths = ([all_source_paths[i] for i in included_idx]
                         if len(all_source_paths) == len(window.raw_images) else [])
+        # The cache contains the exact post-alignment, post-exposure pixels.
+        # Keep one stack only, and bound the retained temporary files to 2 GiB.
+        from core.source_frames import SourceFrame
+        import numpy as np
+        method = (force_algorithm or fusion_method) if need_fusion else None
+        normalized = any(frame.dtype == np.uint16 for frame in stack_images)
+        snapshot_bytes = sum(frame.size * (4 if normalized else frame.dtype.itemsize)
+                             for frame in stack_images)
+        retain_preparation = bool(
+            method and get_fusion(method).neural and not self._preview_mode
+            and roi_rect is None and not use_roi_aligned_images and not collect_report
+            and not getattr(window, 'defect_mask_path', '')
+            and not getattr(window, 'sensor_denoise', False)
+            and snapshot_bytes <= 2 * 1024 ** 3
+            and all(isinstance(frame, SourceFrame) and
+                    not (frame.ndim == 3 and frame.shape[2] == 4)
+                    for frame in stack_images))
+        preparation_key = (alignment_key, method)
+        if (not retain_preparation or self._prepared_cache_source is not source_ref
+                or self._prepared_cache_key != preparation_key
+                or (requested_steps and not reusable)):
+            self.clear_prepared_cache()
+        prepared_cache = (self._prepared_cache if not requested_steps or reusable else None)
+        self._render_context['preparation_key'] = preparation_key if retain_preparation else None
         self.worker = RenderProcessWorker(
             source_images,
             effective_aligned_images,
@@ -960,6 +1001,8 @@ class RenderManager:
             load_scale_factor=getattr(window, "current_scale_factor", 1.0),
             disk_cache=disk_cache_request,
             collect_alignment_report=collect_report and not use_roi_aligned_images,
+            prepared_cache=prepared_cache,
+            retain_preparation=retain_preparation,
             preview=self._preview_mode,
         )
 
@@ -1038,6 +1081,11 @@ class RenderManager:
             self._dispose_worker()
             self._restore_ui_controls()
             return
+        if context and context.get('preparation_key') is not None:
+            self._prepared_cache = getattr(self.worker, 'prepared_cache', None)
+            self._prepared_cache_key = context['preparation_key'] if self._prepared_cache is not None else None
+            self._prepared_cache_source = context['source_ref'] if self._prepared_cache is not None else None
+
 
         self.alignment_diagnostics = (
             list(getattr(self.worker, 'alignment_report', None) or []),
@@ -1263,6 +1311,9 @@ class RenderManager:
             total_time = alignment_time + fusion_time
 
             info_lines = []
+            if fusion_result is not None:
+                height, width = fusion_result.shape[:2]
+                info_lines.append(trans.t("status_res_fmt").format(width, height))
 
             if preview:
                 info_lines.append(trans.t("info_preview_quality"))
@@ -1317,8 +1368,14 @@ class RenderManager:
                     and window.output_list.count() > 0):
                 newest = window.output_list.item(0)
                 if newest is not None:
-                    # Long names are cut off in the list: lead with the name
-                    newest.setToolTip("\n".join([newest.text(), ""] + info_lines))
+                    record_for_row = getattr(window.output_manager, "record_for_row", None)
+                    record = record_for_row(0) if callable(record_for_row) else None
+                    refresh = getattr(window.output_manager, "_refresh_output_tooltip", None)
+                    if record is not None and callable(refresh):
+                        record.tooltip_details = tuple(info_lines)
+                        refresh(0)
+                    else:
+                        newest.setToolTip("\n".join([newest.text(), ""] + info_lines))
             self.last_state = "done" if self.last_result is not None else "error"
             if self.last_state == "error":
                 self.last_error = "Render completed without producing a result"
@@ -1364,6 +1421,7 @@ class RenderManager:
                                   linear_dng_metadata=(self._render_context or {}).get("linear_dng_metadata"),
                                   source_frames=(self._render_context or {}).get("comparison_source"),
                                   source_indices=(self._render_context or {}).get("included"),
+                                  alignment_options=(self._render_context or {}).get("alignment_options"),
                                   source_revision=(self._render_context or {}).get("source_revision", 0))
             if getattr(window, "wipe_active", False):
                 window.refresh_wipe_controls()
@@ -1447,6 +1505,7 @@ class RenderManager:
 
     def on_render_stage(self, stage: str) -> None:
         self._render_progress_stage = stage
+        self._control_progress = None
         if self.worker is not None and getattr(self.worker, 'is_cancelled', False):
             text = trans.t('depth_cancelling')
         else:
@@ -1477,7 +1536,7 @@ class RenderManager:
         self._control_progress = (int(done), int(total))
         now = _time.time()
         last = getattr(self, '_progress_last_t', None)
-        if last is None or now - last > 1.0:  # throttle to 1 Hz
+        if last is None or now - last > 1.0 or (total > 0 and done >= total):
             self._progress_last_t = now
             pct = int(done * 100 / max(1, total))
             eta = ''
@@ -1487,10 +1546,14 @@ class RenderManager:
                 eta = f" · ~{int(remaining) + 1}s"
             else:
                 self._progress_first_t = now
-            key = ('render_stage_prepare' if getattr(self, '_render_progress_stage', None) == 'prepare'
-                   else 'render_progress')
-            window.statusBar().showMessage(
-                f"{trans.t(key)} {pct}% ({done}/{total}){eta}", 5000)
+            key = {'prepare': 'render_stage_prepare', 'align': 'render_stage_align',
+                   'fuse': 'render_stage_fuse'}.get(
+                       getattr(self, '_render_progress_stage', None), 'render_progress')
+            text = f"{trans.t(key)} {pct}% ({done}/{total}){eta}"
+            label = getattr(self, '_status_bar_label', None)
+            if label is not None:
+                label.setText(text)
+            window.statusBar().showMessage(text, 5000)
 
     def _finish_compare_run(self) -> None:
         """End a comparison run: unlock the UI and report skipped methods."""

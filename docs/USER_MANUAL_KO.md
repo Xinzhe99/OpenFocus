@@ -1299,7 +1299,7 @@ GIMP 3.2.6은 오프셋과 투명 정합 여백을 포함한 레이어를 열 �
 
 ## 14. 명령줄 인터페이스
 
-`pip install openfocus`에는 AI 모델과 가중치, HEIC와 카메라 RAW 디코딩이 포함됩니다. Python 3.13 이상에서는 `dtcwt`가 생략되며 DTCWT 항목은 안내와 함께 비활성화됩니다.
+`pip install openfocus`에는 AI 모델과 가중치, HEIC 및 카메라 RAW 디코딩이 포함됩니다. Python 3.13 이상에서 DTCWT를 사용하려면 이어서 `python -m pip install --no-deps dtcwt==0.14.0`을 실행하세요. OpenFocus가 NumPy 2 호환 어댑터를 제공하지만 `pip check`는 원본 패키지의 NumPy 제약을 보고합니다.
 
 OpenFocus는 GUI 없이도 실행할 수 있어 스크립트 파이프라인과 CI에 유용합니다. pip
 패키지를 설치하면 `openfocus` 명령을 바로 쓸 수 있고, 소스에서 실행할 때는 `openfocus`를
