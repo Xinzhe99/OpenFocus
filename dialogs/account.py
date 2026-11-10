@@ -77,7 +77,7 @@ class AccountDialog(QDialog):
         root.addWidget(self.privacy_link)
         self.auto_reports = QCheckBox(trans.t('account_auto_reports'))
         settings = get_settings()
-        self.auto_reports.setChecked(settings.value('reports/auto_send', True, type=bool))
+        self.auto_reports.setChecked(settings.value('reports/auto_send', False, type=bool))
         root.addWidget(self.auto_reports)
         self.email_button = QPushButton(trans.t('account_email_send'))
         self.github_button = QPushButton(trans.t('account_github'))
