@@ -12,6 +12,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   separate confirmation; queued reports respect account and consent choices.
 - Record effective fusion settings, frame order and supported interface actions
   for troubleshooting; sanitized error reports retain these details.
+- Add File → Export All Results to Folder for the output history.
 - Add an off-by-default Advanced Settings opt-in for experimental desktop fusion
   and registration methods and image stitching. These features are under
   development and may have performance, quality or availability limitations;
@@ -205,6 +206,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 - Hide redundant button and option tooltips when their full labels are visible;
   keep explanatory hints and the full text of elided labels.
+- Shorten isolated Unix instance socket names when the temporary path is long.
 - Safely ignore unhandled application events when their target has already closed.
 - Give automatic-background, image-loading, preview, pixel-processing and export
   workers sufficient native thread stack on macOS.

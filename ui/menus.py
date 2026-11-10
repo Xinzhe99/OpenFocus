@@ -108,6 +108,11 @@ def setup_menus(window: QMainWindow) -> None:
     file_menu.addAction(save_action)
     window.ui_objs['action_save'] = save_action
 
+    export_all_action = QAction(trans.t('menu_export_all'), window)
+    export_all_action.triggered.connect(window.output_manager.export_all_results)
+    file_menu.addAction(export_all_action)
+    window.ui_objs['menu_export_all'] = export_all_action
+
     save_stack_menu = file_menu.addMenu(trans.t('menu_save_stack'))
     window.ui_objs['menu_save_stack'] = save_stack_menu
 

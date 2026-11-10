@@ -1770,6 +1770,10 @@ each page's own valid RGB profile independently.
 3. Choose format and location
 4. Click Save
 
+Choose **File → Export All Results to Folder** and select a destination to
+export every output-list entry. Image results are saved as PNG and aligned
+stacks as folders. Existing files and folders are not overwritten.
+
 In **Settings → Advanced Settings → Output naming**, an optional filename
 prefix helps identify newly rendered results. The example updates as you type;
 use up to 40 letters, numbers, underscores or hyphens. Leave it empty for the
