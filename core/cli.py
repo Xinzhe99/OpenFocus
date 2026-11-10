@@ -25,6 +25,7 @@ os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 import numpy as np
 from typing import List, Optional, Tuple
 
+from utils import performance_profile
 from utils.sorting import natural_sort_key
 from utils.path_identity import file_identity, path_key
 from core.resource_policy import heavy_job, require_memory
@@ -210,6 +211,15 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Write registration diagnostics as JSON (requires alignment; single stack only; no grouped fusion or dry run)")
     parser.add_argument("--json-progress", action="store_true",
                         help="Print one JSON progress object per step to stdout (NDJSON)")
+    parser.add_argument("--profile-performance", nargs="?", const=True, default=None, metavar="FILE",
+                        help="Time supported render stages; print a summary to stderr, embed the "
+                             "report in --json, and optionally write it as JSON to FILE "
+                             "(single, non-grouped run only)")
+    parser.add_argument("--log-level", default=None, type=str.upper, metavar="LEVEL",
+                        choices=("DEBUG", "INFO", "WARNING", "ERROR"),
+                        help="Detail of this run's log file: debug, info (default), warning "
+                             "or error. Overrides OPENFOCUS_LOG_LEVEL; the log path is "
+                             "printed to stderr")
     parser.add_argument("--config", default=None, metavar="FILE",
                         help="Batch mode: JSON file with per-folder overrides, "
                              "e.g. {\"stackA\": {\"method\": \"dct\", \"kernel\": 9}}")
@@ -595,9 +605,15 @@ def _fuse_stack_admitted(images, args):
             frames, alignment_steps=steps,
             exposure_match=bool(getattr(args, "exposure_match", True)),
             deferred=bool(get_fusion(args.method).streaming_sources))
-    with render_scope(frames, mandatory_bytes=mandatory,
-                      should_cancel=getattr(args, '_should_cancel', None)):
-        return _fuse_stack_admitted_body(images, args)
+    from core.resource_policy import log_render_resources
+    log_render_resources('start', getattr(args, "resource_preference", "balanced"))
+    try:
+        with render_scope(frames, mandatory_bytes=mandatory,
+                          should_cancel=getattr(args, '_should_cancel', None)), \
+                performance_profile.current().stage('render', resources=True):
+            return _fuse_stack_admitted_body(images, args)
+    finally:
+        log_render_resources('end')
 
 
 def _fuse_stack_admitted_body(images, args):
@@ -657,9 +673,10 @@ def _fuse_stack_admitted_body(images, args):
             brightness_reference=("last" if getattr(args, "exposure_match", True)
                                   else "first"),
             use_gpu=False, defer_warps=defer_warps)
-        images = reg.process(images, output_path=None, thread_count=args.threads,
-                             resource_preference=getattr(args, "resource_preference", "balanced"),
-                             should_cancel=should_cancel)
+        with performance_profile.current().stage('registration', resources=True):
+            images = reg.process(images, output_path=None, thread_count=args.threads,
+                                 resource_preference=getattr(args, "resource_preference", "balanced"),
+                                 should_cancel=should_cancel)
         _say(f"Registration ({args.align}) done in {time.time() - t0:.1f}s")
 
     spec = get_fusion(args.method)
@@ -685,14 +702,26 @@ def _fuse_stack_admitted_body(images, args):
     if getattr(args, "tile_threshold", None) is not None:
         fusion_kwargs["tile_threshold"] = args.tile_threshold
     fusion = MultiFocusFusion(**fusion_kwargs)
-    images, is_16bit = prepare_fusion_input(images, getattr(args, "_should_cancel", None))
+    profile = performance_profile.current()
+    with profile.stage('prepare_input'):
+        images, is_16bit = prepare_fusion_input(images, getattr(args, "_should_cancel", None))
     t0 = time.time()
     fuse_kwargs = dict(input_source=images, img_resize=None, thread_count=args.threads,
                        should_cancel=should_cancel)
     model_weights = _method_weights(spec)
     if model_weights:
         fuse_kwargs["model_path"] = model_weights
-    fused = fusion.fuse(**fuse_kwargs)
+    with profile.stage('fusion', resources=True):
+        fused = fusion.fuse(**fuse_kwargs)
+    if profile.enabled and fused is not None:
+        profile.set('render', algorithm=args.method,
+                    mode=args._fusion_parameters.get('mode'), frames=len(images),
+                    source_dtype=str(images[0].dtype) if len(images) else None,
+                    output_shape=list(fused.shape), device=fusion.get_info()['device'],
+                    resource_preference=getattr(args, "resource_preference", "balanced"),
+                    use_gpu_requested=not args.cpu, tile_block_size=fusion.tile_block_size,
+                    tile_overlap=fusion.tile_overlap, tile_enabled=fusion.tile_enabled)
+        profile.set('threads', requested=args.threads)
     info = fusion.get_info()
     if fused is None:
         raise RuntimeError("Fusion returned no result")
@@ -815,7 +844,8 @@ def _validate_alignment_report_path(args, paths=()):
         raise ValueError("--alignment-report must differ from input and output paths")
 
 
-def _write_alignment_report(path, payload):
+def _replace_text_file(path, text, prefix):
+    """Create the folder, then replace ``path`` only once ``text`` is fully written."""
     import tempfile
 
     directory = os.path.dirname(os.path.abspath(path))
@@ -823,16 +853,20 @@ def _write_alignment_report(path, payload):
     temporary = None
     try:
         with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=directory,
-                                         prefix=".openfocus_alignment_", suffix=".tmp",
+                                         prefix=prefix, suffix=".tmp",
                                          delete=False) as stream:
             temporary = stream.name
-            json.dump(payload, stream, ensure_ascii=False, indent=2, allow_nan=False)
-            stream.write("\n")
+            stream.write(text)
         os.replace(temporary, path)
         temporary = None
     finally:
         if temporary is not None:
             os.unlink(temporary)
+
+
+def _write_alignment_report(path, payload):
+    _replace_text_file(path, json.dumps(payload, ensure_ascii=False, indent=2,
+                                        allow_nan=False) + "\n", ".openfocus_alignment_")
 
 
 def _save_depth(args, fused_out: str) -> None:
@@ -907,11 +941,18 @@ def _result_outputs(args, fused_out: str):
     return outputs
 
 
+def _profile_destination(args):
+    """The --profile-performance FILE, or None when no file was requested."""
+    path = getattr(args, "profile_performance", None)
+    return path if isinstance(path, str) else None
+
+
 def _run_outputs(args, fused_out: str):
-    """`_result_outputs` plus the run-wide JSON summary and alignment report."""
+    """`_result_outputs` plus the run-wide JSON summary, alignment report and profile."""
     outputs = _result_outputs(args, fused_out)
     for flag, path in (("--json", getattr(args, "json", None)),
-                       ("--alignment-report", getattr(args, "alignment_report", None))):
+                       ("--alignment-report", getattr(args, "alignment_report", None)),
+                       ("--profile-performance", _profile_destination(args))):
         if path:
             outputs.append((flag, path))
     return outputs
@@ -1523,6 +1564,54 @@ def _run_with_logging(argv: List[str]) -> int:
 
 def _run_cli_admitted(argv: List[str]) -> int:
     args = build_parser().parse_args(argv)
+    if args.log_level is not None:
+        from utils.logging_setup import session_log_path, set_log_level
+        set_log_level(args.log_level)
+        print(f"Log file: {session_log_path()}", file=sys.stderr)
+    if args.profile_performance is None:
+        return _run_cli_parsed(args)
+    return _run_cli_profiled(args)
+
+
+def _cli_performance_report(args, profile, outcome):
+    """Finalize the CLI report once; --json and FILE share the same object."""
+    report = getattr(args, '_performance_report', None)
+    if report is None:
+        report = profile.report(outcome)
+        report['finished_at'] = performance_profile.finished_now()
+        report['runtime'] = performance_profile.runtime_metadata()
+        from core.resource_policy import cpu_facts
+        report['runtime'].update(cpu_facts(getattr(args, 'resource_preference', 'balanced')))
+        args._performance_report = report
+    return report
+
+
+def _run_cli_profiled(args) -> int:
+    """Run with an active profile; a profiling failure never changes the exit code."""
+    profile = performance_profile.PerformanceProfile()
+    args._performance_profile = profile
+    profile.unmeasured('source decoding runs lazily inside registration/fusion for streaming '
+                       'methods; see concurrent.source_decode (summed across threads)')
+    profile.unmeasured('peak live scratch bytes')
+    with performance_profile.active(profile):
+        result = _run_cli_parsed(args)
+    if not getattr(args, '_performance_started', False):
+        return result  # Usage errors stop before any work is done.
+    try:
+        report = _cli_performance_report(args, profile,
+                                         'completed' if result == EXIT_OK else 'failed')
+        log_action('render.performance', **performance_profile.compact(report))
+        print(performance_profile.summary(report), file=sys.stderr)
+        if isinstance(args.profile_performance, str):
+            # After a long render: a failed write must not cost an earlier report.
+            _replace_text_file(args.profile_performance,
+                               performance_profile.dumps(report) + '\n', ".openfocus_profile_")
+    except Exception as exc:
+        print(f"warning: --profile-performance: {exc}", file=sys.stderr)
+    return result
+
+
+def _run_cli_parsed(args) -> int:
     if args.native_batch_format and (not args.native_raw or not args.output_dir):
         print("error: --native-batch-format requires --native-raw and --output-dir", file=sys.stderr)
         return EXIT_USAGE
@@ -1535,6 +1624,10 @@ def _run_cli_admitted(argv: List[str]) -> int:
                 (args.output_dir and (args.native_batch_format or "dng") == "dng") or
                 (args.output and os.path.splitext(args.output)[1].lower() == ".dng")):
             print("error: scale bars are not supported in native DNG output", file=sys.stderr)
+            return EXIT_USAGE
+    if args.profile_performance is not None:
+        if args.suggest_duplicates or args.output_dir or args.group_size or args.dry_run:
+            print("error: --profile-performance requires a single, non-grouped fusion run", file=sys.stderr)
             return EXIT_USAGE
     if args.alignment_report:
         if args.suggest_duplicates or args.output_dir or args.group_size or args.dry_run:
@@ -1678,6 +1771,13 @@ def _run_cli_admitted(argv: List[str]) -> int:
         if not args.json:
             return
         import json
+        profile = getattr(args, '_performance_profile', None)
+        if profile is not None and getattr(args, '_performance_started', False):
+            try:
+                payload = {**payload, "performance": _cli_performance_report(
+                    args, profile, 'failed' if 'error' in payload else 'completed')}
+            except Exception as exc:
+                print(f"warning: --profile-performance: {exc}", file=sys.stderr)
         try:
             os.makedirs(os.path.dirname(os.path.abspath(args.json)), exist_ok=True)
             with open(args.json, "w", encoding="utf-8") as f:
@@ -1748,7 +1848,7 @@ def _run_cli_admitted(argv: List[str]) -> int:
                 if batch_mode:
                     _validate_native_paths(paths)
             _validate_native_paths(all_paths)
-            destinations = [args.json, args.alignment_report]
+            destinations = [args.json, args.alignment_report, _profile_destination(args)]
             if batch_mode:
                 destinations.extend(os.path.join(args.output_dir,
                     (os.path.basename(os.path.abspath(folder)) or "stack") + args._batch_ext)
@@ -1810,15 +1910,17 @@ def _run_cli_admitted(argv: List[str]) -> int:
                 return EXIT_OK
 
             _progress(event="load", done=1, total=1, frames=len(paths))
+            args._performance_started = True
             if args.native_raw:
                 images, native_metadata = _load_native_stack(paths, args)
             elif not args.group_size:
-                images = _load_images(
-                    paths, thread_count=getattr(args, "threads", 0) or 0,
-                    resource_preference=getattr(args, "resource_preference", "balanced"),
-                    registration_steps=int(args.align != 'none'),
-                    exposure_match=getattr(args, 'exposure_match', False),
-                    lazy=get_fusion(args.method).streaming_sources)
+                with performance_profile.current().stage('load', resources=True):
+                    images = _load_images(
+                        paths, thread_count=getattr(args, "threads", 0) or 0,
+                        resource_preference=getattr(args, "resource_preference", "balanced"),
+                        registration_steps=int(args.align != 'none'),
+                        exposure_match=getattr(args, 'exposure_match', False),
+                        lazy=get_fusion(args.method).streaming_sources)
             if paths:
                 from utils.image_utils import set_source_exif
                 from core.image_loader import _read_exif_bytes
@@ -1853,10 +1955,11 @@ def _run_cli_admitted(argv: List[str]) -> int:
                 background = _auto_background(args, fused)
                 fused = background.image
 
-        if args.native_raw:
-            _save_native(args.output, fused, native_metadata, scale_cfg)
-        else:
-            _save(args.output, fused, scale_cfg, source_icc_profile)
+        with performance_profile.current().stage('save'):
+            if args.native_raw:
+                _save_native(args.output, fused, native_metadata, scale_cfg)
+            else:
+                _save(args.output, fused, scale_cfg, source_icc_profile)
         _say(f"Saved: {args.output}")
         _progress(event="save", output=args.output)
         outputs = [args.output]
