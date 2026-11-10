@@ -110,10 +110,12 @@ class RenderManager:
                 bool(window.chk_quick_preview.isChecked()), frame_storage._storage_directory,
                 self._compare_token)
 
-    def _begin_storage_preflight(self, frames, force_algorithm, interactive, confirmed, roi_choice):
+    def _begin_storage_preflight(self, frames, force_algorithm, interactive, confirmed, roi_choice,
+                                 cpu_confirmed):
         request = {'identity': self._storage_request_identity(), 'completion': None,
                    'force_algorithm': force_algorithm, 'interactive': interactive,
-                   'confirmed': confirmed, 'roi_choice': deepcopy(roi_choice)}
+                   'confirmed': confirmed, 'cpu_confirmed': cpu_confirmed,
+                   'roi_choice': deepcopy(roi_choice)}
         estimate = self._storage_estimate(frames)
         probe = _StorageProbe(self.window)
         request['probe'] = probe
@@ -123,7 +125,6 @@ class RenderManager:
                                 Qt.ConnectionType.QueuedConnection)
         self.last_state = 'running'
         self.last_error = None
-        self.last_result = None
         self.refresh_action_labels()
         try:
             probe.start(estimate)
@@ -172,7 +173,8 @@ class RenderManager:
             else:
                 status = self.start_render(request['force_algorithm'], interactive=request['interactive'],
                                            confirmed=request['confirmed'], roi_choice=request['roi_choice'],
-                                           _storage_assessment=assessment)
+                                           _storage_assessment=assessment,
+                                           _cpu_confirmed=request['cpu_confirmed'])
                 if status != 'started':
                     self.last_state = 'cancelled' if status == 'cancelled' else None
                     self._hide_progress_bar()
@@ -830,7 +832,8 @@ class RenderManager:
 
     def start_render(self, force_algorithm: str | None = None, *,
                      interactive: bool = True, confirmed: bool = False,
-                     roi_choice: dict | None = None, _storage_assessment=_STORAGE_UNSET):
+                     roi_choice: dict | None = None, _storage_assessment=_STORAGE_UNSET,
+                     _cpu_confirmed: bool = False):
         """Start a render and report why it did or did not start.
 
         ``interactive=False`` is the control-channel path: it never opens a
@@ -855,7 +858,7 @@ class RenderManager:
         try:
             self._start_render_inner(force_algorithm, interactive=interactive,
                                      confirmed=confirmed, roi_choice=roi_choice,
-                                     storage_assessment=_storage_assessment)
+                                     storage_assessment=_storage_assessment, cpu_confirmed=_cpu_confirmed)
         except Exception as exc:
             self.last_state = "error"
             self.last_error = str(exc)
@@ -871,7 +874,8 @@ class RenderManager:
 
     def _start_render_inner(self, force_algorithm: str | None = None, *,
                             interactive: bool = True, confirmed: bool = False,
-                            roi_choice: dict | None = None, storage_assessment=_STORAGE_UNSET) -> None:
+                            roi_choice: dict | None = None, storage_assessment=_STORAGE_UNSET,
+                            cpu_confirmed: bool = False) -> None:
         window = self.window
         # Why the last start returned; "started" only when a worker runs.
         self._start_status = "started"
@@ -960,7 +964,7 @@ class RenderManager:
                 return
 
 
-        if self._ai_confirmation_needed(force_algorithm) and not confirmed:
+        if self._ai_confirmation_needed(force_algorithm) and not (confirmed or cpu_confirmed):
             if not interactive:
                 self._start_status = "confirm_ai"
                 self._abort_compare_run()
@@ -969,6 +973,7 @@ class RenderManager:
                 self._start_status = "cancelled"
                 self._abort_compare_run()
                 return
+            cpu_confirmed = True
 
         # One storage assessment per render start, before any UI is locked.
         storage_override = None
@@ -978,7 +983,8 @@ class RenderManager:
                 and not getattr(window, 'roi_mode_active', False)
                 and not (preview is not None and preview.isChecked())
                 and automatic_preflight_may_block()):
-            self._begin_storage_preflight(stack_images, force_algorithm, interactive, confirmed, roi_choice)
+            self._begin_storage_preflight(stack_images, force_algorithm, interactive, confirmed, roi_choice,
+                                          cpu_confirmed)
             self._start_status = 'preflight'
             return
         self.last_storage_assessment = assessment = (
