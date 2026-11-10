@@ -620,15 +620,16 @@ def test_generic_action_answers_file_dialog_and_loads_stack(server, stack_frames
     assert frames["count"] == 3
 
 
+@pytest.mark.parametrize("trigger", ["action", "click"])
 @pytest.mark.parametrize("picker,cancel", [
     ("file", False), ("file", True), ("save", False),
     ("folder", False), ("folder", True),
 ])
 def test_control_action_uses_addressable_picker_and_restores_native(
-        server, control_window, tmp_path, monkeypatch, picker, cancel):
+        server, control_window, tmp_path, monkeypatch, picker, cancel, trigger):
     from PyQt6.QtCore import QTimer
     from PyQt6.QtGui import QAction
-    from PyQt6.QtWidgets import QFileDialog
+    from PyQt6.QtWidgets import QFileDialog, QPushButton
     from ui import control_surface
     from utils import file_dialogs
 
@@ -652,6 +653,10 @@ def test_control_action_uses_addressable_picker_and_restores_native(
                 control_window, "Open file", str(tmp_path), "TIFF (*.tif)")[0]
 
     action.triggered.connect(open_picker)
+    button = QPushButton("Open picker", control_window)
+    button.setObjectName("test_picker_button")
+    button.clicked.connect(open_picker)
+    button.show()
     monkeypatch.setattr(control_surface, "find_action", lambda window, key: action)
     # If the control context is missing, fail instead of showing an OS dialog.
     def native_unexpected(*args, **kwargs):
@@ -682,7 +687,13 @@ def test_control_action_uses_addressable_picker_and_restores_native(
     watchdog.setSingleShot(True)
     watchdog.timeout.connect(close_stranded)
     watchdog.start(3000)
-    assert call(server, "ui.trigger", key="picker")["result"]["scheduled"]
+    if trigger == "action":
+        assert call(server, "ui.trigger", key="picker")["result"]["scheduled"]
+    else:
+        matches = call(server, "ui.find", object_name="test_picker_button")["result"]["matches"]
+        assert len(matches) == 1
+        assert call(server, "ui.click", path=matches[0]["path"],
+                    **{"async": True})["result"]["scheduled"]
     assert wait_until(lambda: "selection" in result, timeout=5), result
     timer.stop()
     watchdog.stop()
