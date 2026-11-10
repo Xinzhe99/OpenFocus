@@ -509,6 +509,12 @@ def setup_menus(window: QMainWindow) -> None:
     # --- Help Menu ---
     help_menu = menubar.addMenu(trans.t('menu_help'))
     window.ui_objs['menu_help'] = help_menu
+    account_action = QAction(trans.t('account_title'), window)
+    account_action.setProperty('trans_key', 'account_title')
+    account_action.triggered.connect(window.show_account_dialog)
+    help_menu.addAction(account_action)
+    window.ui_objs['action_account'] = account_action
+
 
     env_action = QAction(trans.t('action_env_info'), window)
     env_action.triggered.connect(window.show_environment_info)

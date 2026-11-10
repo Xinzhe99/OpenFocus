@@ -78,6 +78,8 @@ def system_facts() -> dict:
 
 
 def _report(kind, exc_info):
+    from utils.logging_setup import mark_session_error
+    mark_session_error()
     _logger.critical("%s", kind, exc_info=exc_info)
     with _lock:
         if _crash_stream is not None:

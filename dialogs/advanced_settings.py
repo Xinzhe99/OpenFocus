@@ -261,6 +261,11 @@ class AdvancedSettingsDialog(QDialog):
         self.btn_open_logs.setProperty("controlId", "btn_open_logs")
         self.btn_open_logs.clicked.connect(lambda: w.open_logs_folder())
         diagnostics.addRow(self.btn_open_logs)
+        self.chk_auto_error_reports = QCheckBox()
+        self.chk_auto_error_reports.setProperty('controlId', 'chk_auto_error_reports')
+        self.chk_auto_error_reports.setChecked(bool(getattr(w, 'auto_error_reports', False)))
+        self.chk_auto_error_reports.setToolTip(trans.t('report_auto_hint'))
+        diagnostics.addRow(trans.t('report_auto_setting'), self.chk_auto_error_reports)
 
         # ---- Startup & updates -------------------------------------------
         other = _section(page_lay, trans.t("advanced_tab_other"))
@@ -358,6 +363,7 @@ class AdvancedSettingsDialog(QDialog):
             return
         draft = {
             "experimental_features": self.chk_experimental_features.isChecked(),
+            "auto_error_reports": self.chk_auto_error_reports.isChecked(),
             "tile_enabled": self.chk_tile.isChecked(),
             "tile_block_size": (int(self.spin_block.value()) if self.chk_tile.isChecked()
                                 else getattr(w, "tile_block_size", 1024)),
@@ -450,6 +456,9 @@ class AdvancedSettingsDialog(QDialog):
         apply_experimental = getattr(w, "apply_experimental_features", None)
         if callable(apply_experimental):
             apply_experimental()
+        if previous['auto_error_reports'] and not draft['auto_error_reports']:
+            from ui.report_retry import discard_automatic_reports
+            discard_automatic_reports()
         analytics = getattr(w, "usage_analytics", None)
         if analytics is not None and analytics.enabled() != self.chk_usage.isChecked():
             analytics.set_enabled(self.chk_usage.isChecked())
@@ -459,7 +468,7 @@ class AdvancedSettingsDialog(QDialog):
         log_action("settings.applied", changed=sorted(
             key for key in draft if previous[key] != draft[key]),
             usage_enabled=self.chk_usage.isChecked())
-        processing = set(draft) - {"experimental_features", "restore_last_stack", "ask_load_scale", "output_name_prefix", "collect_alignment_report", "profile_performance", "debug_logging", "storage_directory"}
+        processing = set(draft) - {"experimental_features", "auto_error_reports", "restore_last_stack", "ask_load_scale", "output_name_prefix", "collect_alignment_report", "profile_performance", "debug_logging", "storage_directory"}
         if any(previous[key] != draft[key] for key in processing):
             mark_dirty = getattr(w, "_mark_project_dirty", None)
             if mark_dirty is not None:

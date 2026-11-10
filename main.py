@@ -506,6 +506,8 @@ class OpenFocus(QMainWindow):
             self.init_ui()
             self.apply_experimental_features()
             self.apply_dark_theme()
+        from ui.activity import install_activity_logging
+        install_activity_logging(self)
         self.storage_fallback_notice.connect(self._show_storage_fallback)
         window_ref = weakref.ref(self)
         def notify_storage_fallback(path, error, fallback):
@@ -3472,6 +3474,11 @@ class OpenFocus(QMainWindow):
         """打开视频文件选择对话框"""
         self.source_manager.prompt_and_load_video()
     
+    def show_account_dialog(self) -> None:
+        """Open optional account and reporting preferences."""
+        from dialogs.account import AccountDialog
+        AccountDialog(self).exec()
+
     def show_feedback_dialog(self) -> None:
         """Report a bug or suggestion, with the session log attached."""
         from dialogs.feedback import FeedbackDialog
@@ -4249,6 +4256,11 @@ class OpenFocus(QMainWindow):
 
         log_action("shutdown.completed", elapsed_ms=round(
             (perf_counter() - shutdown_started) * 1000, 3))
+        try:
+            from ui.shutdown_reports import start_shutdown_reports
+            start_shutdown_reports(self)
+        except Exception:
+            get_logger(__name__).exception('Could not start error reporting')
         super().closeEvent(event)
 
     # --- Language ---
@@ -4797,7 +4809,8 @@ if __name__ == "__main__":
     # Report how the previous in-place update ended (a failed swap used to
     # look exactly like the user simply closing the app).
     from utils import self_update as _self_update
-    for tag_res, ok_res, detail_res in _self_update.consume_results():
+    _update_results = _self_update.consume_results()
+    for tag_res, ok_res, detail_res in _update_results:
         if ok_res:
             _log.info("in-place update to %s succeeded", tag_res)
             QTimer.singleShot(900, lambda t=tag_res: window._show_status_message(
@@ -4806,6 +4819,21 @@ if __name__ == "__main__":
             _log.warning("in-place update to %s failed: %s", tag_res, detail_res)
             show_warning_box(window, trans.t('update_check_failed_title'),
                              trans.t('update_failed_after_restart'))
+
+    # The optional account prompt precedes the main window on first launch and
+    # after an update; skipping it never requires network access.
+    from constants import APP_VERSION
+    from utils.settings_store import get_settings
+    _account_settings = get_settings()
+    _shown_version = str(_account_settings.value('account/intro_version', '') or '')
+    if _shown_version != APP_VERSION or any(ok for _, ok, _ in _update_results):
+        _quit_on_last_window = app.quitOnLastWindowClosed()
+        app.setQuitOnLastWindowClosed(False)
+        try:
+            window.show_account_dialog()
+        finally:
+            app.setQuitOnLastWindowClosed(_quit_on_last_window)
+        _account_settings.setValue('account/intro_version', APP_VERSION)
 
     # Crash auto-recovery: a leftover lock means the last session died
     # without a clean close. Offer the saved snapshot before anything else.
@@ -4840,6 +4868,15 @@ if __name__ == "__main__":
         app.queue_import(_shell_paths, explorer=True, request_path=_shell_request)
 
     window.show()
+    from utils.app_paths import user_data_dir
+    if (user_data_dir() / 'reports' / 'reports.json').exists():
+        from ui.report_retry import schedule_report_retries
+        schedule_report_retries(window)
+    try:
+        from ui.crash_report import offer_previous_crash
+        offer_previous_crash(window)
+    except Exception:
+        _log.exception('Could not offer the previous crash report')
     _log.info("entering event loop")
 
     # Background updates: reuse an already staged build, then check quietly

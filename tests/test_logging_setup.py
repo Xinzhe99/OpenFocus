@@ -24,6 +24,25 @@ def log_folder(monkeypatch, tmp_path):
     logs.shutdown_logging()
 
 
+def test_frame_details_records_each_distinct_geometry_without_pixels():
+    class Frame:
+        def __init__(self, shape, dtype, size):
+            self.shape, self.dtype, self.nbytes = shape, dtype, size
+
+        def __array__(self):
+            raise AssertionError('diagnostics must not read image pixels')
+
+    first = Frame((40, 60, 3), 'uint8', 7200)
+    second = Frame((20, 30), 'uint16', 1200)
+    result = logs.frame_details([first, second, first])
+    assert result['frame_count'] == 3
+    assert result['total_bytes'] == 15600
+    assert result['frame_shapes'] == [
+        {'shape': (40, 60, 3), 'dtype': 'uint8', 'count': 2},
+        {'shape': (20, 30), 'dtype': 'uint16', 'count': 1},
+    ]
+
+
 def test_repeated_setup_preserves_records_and_debug_selection(log_folder):
     logs.log_session_start()
     logs.setup_logging()
