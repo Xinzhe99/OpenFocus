@@ -229,10 +229,17 @@ def test_logout_revokes_the_token_rotated_by_inflight_refresh():
         return {'ok': True}
     store = MemoryStore(session())
     client = account.AccountClient(store=store, request=request)
+    waiting = threading.Event()
+    class ObservedCondition(threading.Condition):
+        def wait(self, timeout=None):
+            waiting.set()
+            return super().wait(timeout)
+    client._condition = ObservedCondition(threading.RLock())
     with ThreadPoolExecutor(max_workers=2) as pool:
         refresh = pool.submit(client.refresh)
         assert entered.wait(5)
         logout = pool.submit(client.logout)
+        assert waiting.wait(5)
         release.set()
         assert refresh.result()
         logout.result()
