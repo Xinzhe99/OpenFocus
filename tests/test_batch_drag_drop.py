@@ -512,6 +512,7 @@ def test_batch_fusion_only_options_follow_the_selected_method(qapp):
         for box in (dialog.chk_exposure_match, dialog.chk_base_correct,
                     dialog.chk_sharpen_output, dialog.chk_reverse_order):
             assert box.isEnabled()
+        assert dialog.chk_exposure_match.isChecked()
 
         dialog.chk_exposure_match.setChecked(True)
         _select_fusion(dialog, 'none')
