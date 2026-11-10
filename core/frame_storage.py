@@ -270,9 +270,13 @@ def _usable_storage_directory():
     return directory
 
 
+_INHERIT_STORAGE = object()
+
+
 class _Scratch:
-    def __init__(self):
-        self.explicit_directory = _usable_storage_directory()
+    def __init__(self, explicit_directory=_INHERIT_STORAGE):
+        self.explicit_directory = (_usable_storage_directory() if explicit_directory is _INHERIT_STORAGE
+                                   else explicit_directory)
         self.directory = None
         self.owned = False
         self.closed = False
@@ -302,13 +306,15 @@ class _Scratch:
 
 
 @contextlib.contextmanager
-def scratch_directory(*, separate=False):
+def scratch_directory(*, separate=False, explicit_directory=_INHERIT_STORAGE):
     """Keep one scratch decision local to this job and its copied contexts."""
     existing = _scratch.get()
     if existing is not None and not separate:
         yield existing
         return
-    state = _Scratch()
+    if explicit_directory is _INHERIT_STORAGE and existing is not None:
+        explicit_directory = existing.explicit_directory
+    state = _Scratch(explicit_directory)
     token = _scratch.set(state)
     try:
         yield state
@@ -353,43 +359,126 @@ def _scratch_candidates(explicit, source_paths):
     yield from mounts
 
 
-def assess_scratch(minimum, expected, optional=0, source_paths=(), *, directory=None):
+def _scratch_volume(directory):
+    """Return a filesystem identity only when the platform can identify it."""
+    try:
+        if sys.platform == 'win32':
+            import ctypes
+            kernel = ctypes.windll.kernel32
+            mount = ctypes.create_unicode_buffer(32768)
+            volume = ctypes.create_unicode_buffer(32768)
+            if (kernel.GetVolumePathNameW(os.path.abspath(directory), mount, len(mount))
+                    and kernel.GetVolumeNameForVolumeMountPointW(mount.value, volume, len(volume))):
+                return volume.value.lower()
+            return None
+        return os.stat(directory).st_dev
+    except (OSError, ValueError):
+        return None
+
+
+def automatic_preflight_may_block():
+    """Whether automatic volume discovery may invoke slow platform tools."""
+    return sys.platform == 'darwin' and _storage_directory is None
+
+
+def assess_scratch(minimum, expected, optional=0, source_paths=(), *, directory=None,
+                   placement_goal=None):
     """Classify the prospective scratch directory before a job starts.
 
-    A point-in-time estimate: it binds nothing, creates nothing and reserves
-    nothing; every runtime check still applies. ``minimum`` is what the job
-    cannot run without, ``expected`` adds the pipeline's own staging reserve,
-    and ``optional`` is cache space that degrades gracefully when missing.
-    The directory is ``directory`` when given, else the configured one, else
-    the one select_scratch would choose for ``expected + optional``.
+    A point-in-time estimate: it probes candidates but binds and reserves
+    nothing; every runtime check still applies. ``minimum`` is required space,
+    ``expected`` adds staging, and ``optional`` is degradable cache space.
+    When the actual placement goal is known, automatic selection follows its
+    runtime candidate order. Otherwise capacity is assessed only when every
+    usable candidate has the same outcome. Automatic selection is never critical.
 
-    Status: ``critical`` when ``minimum`` exceeds the space left after the
-    safety reserve (the job would be rejected), ``advisory`` when ``expected
-    + optional`` does not fit (caches will be disabled or staging may run out),
-    ``ok`` otherwise, and ``unknown`` when the volume cannot be queried.
+    Status: ``critical`` when a fixed directory cannot meet ``minimum``,
+    ``advisory`` when estimated needs may not fit, ``ok`` otherwise, and
+    ``unknown`` when the volume cannot be queried.
     """
     minimum, expected, optional = (max(0, int(value)) for value in (minimum, expected, optional))
     expected = max(expected, minimum)
-    explicit = directory if directory is not None else _usable_storage_directory()
+    state = _scratch.get()
+    explicit = (directory if directory is not None else
+                (state.directory or state.explicit_directory) if state is not None
+                else _usable_storage_directory())
     chosen = None
+    unavailable = False
     if explicit is None:
-        best = None
-        for candidate in _scratch_candidates(None, source_paths):
-            try:
-                available = _space(candidate)[2]
-            except OSError:
-                continue
-            if best is None or available > best[1]:
-                best = (candidate, available)
-            if available >= expected + optional:
-                chosen = candidate
+        if placement_goal is None:
+            candidates = []
+            seen = set()
+            default = tempfile.gettempdir()
+            for candidate in _scratch_candidates(None, source_paths):
+                identity = os.path.normcase(os.path.abspath(candidate))
+                if identity in seen:
+                    continue
+                seen.add(identity)
+                try:
+                    usage, reserve, available = _space(candidate)
+                    if candidate == default:
+                        validate_storage_directory(candidate)
+                    else:
+                        probe = tempfile.mkdtemp(prefix='openfocus-', dir=candidate)
+                        os.rmdir(probe)
+                except OSError:
+                    continue
+                candidates.append((candidate, usage, reserve, available, _scratch_volume(candidate)))
+            if candidates:
+                required = expected + optional
+                short = [item[3] < required for item in candidates]
+                volumes = [item[4] for item in candidates]
+                volume_count = len(set(volumes)) if all(volume is not None for volume in volumes) else None
+                result = {'directory': os.path.abspath(candidates[0][0]) if len(candidates) == 1 else None,
+                          'explicit': False, 'volume_count': volume_count,
+                          'minimum_bytes': minimum, 'expected_bytes': expected,
+                          'optional_bytes': optional, 'required_bytes': required}
+                if all(short) or not any(short):
+                    best = max(candidates, key=lambda item: item[3])
+                    result.update(status='advisory' if all(short) else 'ok',
+                                  free_bytes=int(best[1].free), reserve_bytes=int(best[2]),
+                                  available_bytes=int(best[3]))
+                else:
+                    result.update(status='unknown', reason='Automatic scratch placement depends on runtime needs')
+                return result
+            placement_goal = minimum
+        goal = max(minimum, int(placement_goal))
+        default = tempfile.gettempdir()
+        best = (default, None)
+        for target in sorted({goal, minimum}, reverse=True):
+            seen = set()
+            for candidate in _scratch_candidates(None, source_paths):
+                identity = os.path.normcase(os.path.abspath(candidate))
+                if identity in seen:
+                    continue
+                seen.add(identity)
+                try:
+                    available = _space(candidate)[2]
+                    if best[1] is None or available > best[1]:
+                        best = (candidate, available)
+                    if available < target:
+                        continue
+                    if candidate == default:
+                        validate_storage_directory(candidate)
+                    else:
+                        probe = tempfile.mkdtemp(prefix='openfocus-', dir=candidate)
+                        os.rmdir(probe)
+                    chosen = candidate
+                    break
+                except OSError:
+                    continue
+            if chosen is not None:
                 break
-        chosen = chosen or (best[0] if best else tempfile.gettempdir())
+        if chosen is None:
+            chosen = best[0]
+            unavailable = True
     else:
         chosen = explicit
     result = {'directory': os.path.abspath(chosen), 'explicit': explicit is not None,
               'minimum_bytes': minimum, 'expected_bytes': expected, 'optional_bytes': optional,
               'required_bytes': expected + optional}
+    if unavailable:
+        return {**result, 'status': 'unknown', 'reason': 'No writable scratch candidate meets the minimum'}
     try:
         usage, reserve, available = _space(chosen)
     except OSError as exc:
@@ -397,7 +486,7 @@ def assess_scratch(minimum, expected, optional=0, source_paths=(), *, directory=
     result.update(free_bytes=int(usage.free), reserve_bytes=int(reserve),
                   available_bytes=int(available))
     if minimum > available:
-        result['status'] = 'critical'
+        result['status'] = 'critical' if explicit is not None else 'advisory'
     elif expected + optional > available:
         result['status'] = 'advisory'
     else:

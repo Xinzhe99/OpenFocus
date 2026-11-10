@@ -156,7 +156,8 @@ def _stack_info(window):
 def _render_state(window):
     manager = getattr(window, "render_manager", None)
     worker = getattr(manager, "worker", None)
-    busy = bool(worker is not None and worker.isRunning())
+    busy = bool((worker is not None and worker.isRunning())
+                or getattr(manager, '_pending_storage', None) is not None)
     error = getattr(manager, "last_error", None)
     last_state = getattr(manager, "last_state", None)
     if busy or last_state == "running":
@@ -496,9 +497,9 @@ class ControlServer(QObject):
 
     def _drop(self, connection):
         worker = self._pending_replies.pop(connection, None)
+        self._buffers.pop(connection, None)
         if worker is not None:
             worker.cancel()
-        self._buffers.pop(connection, None)
         connection.deleteLater()
 
     def _read(self, connection):
@@ -531,11 +532,13 @@ class ControlServer(QObject):
                         if c not in self._buffers:
                             return
                         if success:
-                            reply = ok_response(deferred.request_id, deferred.result,
+                            result = message if isinstance(message, dict) else deferred.result
+                            reply = ok_response(deferred.request_id, result,
                                                 (time.perf_counter() - deferred.started) * 1000)
                         else:
-                            reply = error_response(deferred.request_id, ControlError(
-                                'internal', message or 'Export cancelled'))
+                            error = message if isinstance(message, ControlError) else ControlError(
+                                'internal', message or 'Export cancelled')
+                            reply = error_response(deferred.request_id, error)
                         if self._send_response(c, reply):
                             QTimer.singleShot(0, lambda: self._read(c))
                     try:
@@ -916,7 +919,8 @@ class ControlServer(QObject):
     def _cmd_render_start(self, args):
         manager = self.window.render_manager
         worker = getattr(manager, "worker", None)
-        if worker is not None and worker.isRunning():
+        if ((worker is not None and worker.isRunning())
+                or getattr(manager, '_pending_storage', None) is not None):
             raise ControlError("busy", "A render is already running",
                                "Wait for render.state to leave 'rendering' or call render.cancel.")
         preview = _boolean(args, "preview", default=False)
@@ -949,6 +953,21 @@ class ControlServer(QObject):
                                           roi_choice=roi_choice)
         except ValueError as error:
             raise ControlError("invalid_argument", str(error)) from error
+        if status == 'preflight':
+            def start(complete):
+                def finished(final_status):
+                    try:
+                        result = self._render_start_response(final_status, before, method, alignment, preview)
+                    except ControlError as error:
+                        complete(False, error)
+                    else:
+                        complete(True, result)
+                return manager.set_storage_completion(finished)
+            return _DeferredResponse(start)
+        return self._render_start_response(status, before, method, alignment, preview)
+
+    def _render_start_response(self, status, before, method, alignment, preview):
+        manager = self.window.render_manager
         storage = getattr(manager, "last_storage_assessment", None)
         if status == "started":
             if self._render_id == before:
@@ -1012,6 +1031,9 @@ class ControlServer(QObject):
         raise ControlError("internal", f"Render did not start ({status})")
 
     def _cmd_render_cancel(self, args):
+        cancel = getattr(self.window.render_manager, 'cancel_storage_preflight', None)
+        if callable(cancel) and cancel():
+            return {"cancelling": True, "render_id": self._render_id}
         worker = getattr(self.window.render_manager, "worker", None)
         if worker is None:
             return {"cancelling": False}

@@ -20,8 +20,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Compare-all renders do not ask. The control channel returns the assessment as
   `confirm_required` or the new `insufficient_storage` error with
   `details.storage`, and includes it in successful `render.start` replies. A new
-  `storage_directory` option sets the directory. The CLI prints a warning to
-  stderr and adds `--temp-dir DIR`.
+  `storage_directory` option sets the directory. The CLI warns per batch folder
+  on stderr (except for grouped fusion), and `--temp-dir DIR` applies only to
+  the current invocation. Automatic volume selection and backend-dependent
+  storage needs are advisory when the actual required space cannot be
+  established in advance; macOS volume discovery runs in the background.
 - Add a panorama workspace with native-coordinate control-point editing,
   connected-pair quality reports, per-source paint/import masks and preview
   overlays for seams, image numbers and excluded pixels.
