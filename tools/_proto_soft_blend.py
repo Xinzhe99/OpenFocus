@@ -34,7 +34,7 @@ def fuse_hard(frames, resp):
 
 
 def fuse_soft(frames, resp, gamma):
-    r = resp.astype(np.float64)
+    r = np.log(np.maximum(resp.astype(np.float64), 1e-12))
     r = r - r.max(axis=0, keepdims=True)
     w = np.exp(gamma * r)
     w /= w.sum(axis=0, keepdims=True)

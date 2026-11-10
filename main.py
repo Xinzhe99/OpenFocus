@@ -370,6 +370,9 @@ def _restore_storage_directory(window):
     except OSError as exc:
         path = window.storage_directory
         restore_storage_directory(path)
+        import errno
+        if exc.errno in (errno.ENOSPC, getattr(errno, 'EDQUOT', -1)):
+            return trans.t("advanced_storage_invalid").format(error=str(exc))
         return trans.t("advanced_storage_fallback").format(
             path=path, error=str(exc), fallback=tempfile.gettempdir())
     return None

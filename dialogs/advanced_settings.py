@@ -402,12 +402,13 @@ class AdvancedSettingsDialog(QDialog):
         manager = getattr(w, "update_manager", None)
         previous_auto = manager.auto_download if manager is not None else None
         previous_storage = getattr(w, "storage_directory", "") or ""
-        try:
-            configure_storage_directory(draft["storage_directory"])
-        except OSError as exc:
-            self.status.setText(trans.t("advanced_storage_invalid").format(error=str(exc)))
-            self.storage_directory.setFocus()
-            return
+        if draft["storage_directory"] != previous_storage:
+            try:
+                configure_storage_directory(draft["storage_directory"])
+            except OSError as exc:
+                self.status.setText(trans.t("advanced_storage_invalid").format(error=str(exc)))
+                self.storage_directory.setFocus()
+                return
         try:
             if manager is not None:
                 manager.set_auto_download(self.chk_auto_update.isChecked())
