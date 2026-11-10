@@ -33,6 +33,7 @@ from utils.output_share import (encode_jpeg_preview, file_urls_mime_data,
 from core.source_frames import resolve_frame
 from utils.frame_pixels import preview_pixels as source_display_image, run_pixel_worker
 
+from utils.platform_utils import configure_native_worker_stack
 # Item-data roles: the folder of an align-only result, and the stable
 # provenance record of every output (identity, source context, export state).
 ALIGNED_DIR_ROLE = int(Qt.ItemDataRole.UserRole) + 1
@@ -50,6 +51,7 @@ class _RegistrationPreviewWorker(QThread):
 
     def __init__(self, frame, *, prefetch=False):
         super().__init__()
+        configure_native_worker_stack(self)
         self.frame = frame
         self.prefetch = prefetch
         self.image = None
@@ -88,6 +90,7 @@ class _StackThumbnailWorker(QThread):
 
     def __init__(self, source, metadata):
         super().__init__()
+        configure_native_worker_stack(self)
         self.source = source
         self.metadata = metadata
         self.thumbnail = None
