@@ -897,6 +897,55 @@ def test_image_save_dialogs_start_where_the_last_image_was_saved(tmp_path, monke
     assert store.image_save_dir() == str(home)
 
 
+def test_image_save_dialogs_remember_the_chosen_format(tmp_path, monkeypatch):
+    from PyQt6.QtCore import QSettings
+    import utils.settings_store as store
+    settings = QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat)
+    monkeypatch.setattr(store, "get_settings", lambda: settings)
+    saved = tmp_path / "exports"
+    saved.mkdir()
+    output = ("PNG 8/16-bit (*.png);;TIFF 8/16-bit (*.tif *.tiff);;JPG 8-bit (*.jpg);;"
+              "Linear DNG (*.dng);;Layered TIFF (*.tif *.tiff)")
+    # Nothing chosen yet: callers keep their own defaults.
+    assert store.image_save_filter(output) == ""
+    assert Path(store.image_save_default("next.png", output)).name == "next.png"
+
+    store.remember_image_save(str(saved / "stack.tif"), "TIFF 8/16-bit (*.tif *.tiff)")
+    assert store.image_save_default("next.png", output) == str(saved / "next.tif")
+    assert store.image_save_filter(output) == "TIFF 8/16-bit (*.tif *.tiff)"
+
+    # Layered and plain TIFF share an extension; the exact choice comes back.
+    store.remember_image_save(str(saved / "layers.tif"), "Layered TIFF (*.tif *.tiff)")
+    assert store.image_save_filter(output) == "Layered TIFF (*.tif *.tiff)"
+
+    # A typed name without a suffix records the chosen filter's type.
+    store.remember_image_save(str(saved / "noext"), "JPG 8-bit (*.jpg)")
+    assert store.image_save_default("next.png", output) == str(saved / "next.jpg")
+
+    # Fixed-format exports (GIF, multi-page TIFF, depth maps) keep the folder
+    # but never change the default format.
+    store.remember_image_save(str(saved / "anim.gif"))
+    store.remember_image_save(str(saved / "depth.tif"))
+    assert store.image_save_type(output) == ".jpg"
+
+    # A dialog that cannot write the remembered type is left alone.
+    mosaic = "TIFF image (*.tif *.tiff);;PNG image (*.png)"
+    assert store.image_save_filter(mosaic) == ""
+    assert store.image_save_default("mask.png", "PNG (*.png)") == str(saved / "mask.png")
+    assert store.image_save_default("animation.gif") == str(saved / "animation.gif")
+
+    # A stale label (for example after a language change) falls back to the type.
+    settings.setValue(store.LAST_IMAGE_SAVE_FILTER_KEY, "JPEG-Bild (*.jpg)")
+    assert store.image_save_filter(output) == "JPG 8-bit (*.jpg)"
+
+    # A typed suffix the selected filter does not offer is what was written,
+    # so it is the format remembered, not the filter's.
+    store.remember_image_save(str(saved / "typed.png"), "TIFF image (*.tif *.tiff)")
+    assert store.image_save_type(output) == ".png"
+    assert store.image_save_filter(output) == "PNG 8/16-bit (*.png)"
+    assert store.image_save_filter(mosaic) == "PNG image (*.png)"
+
+
 def test_restore_preferences_keeps_workspace_and_user_data(qapp, tmp_path, monkeypatch):
     from PyQt6.QtCore import QSettings
     from utils import settings_store as store

@@ -499,3 +499,33 @@ def test_large_manual_canvas_coordinates_preserve_native_pixels():
     output, origin = render_mosaic([frame], [matrix], tile_size=32)
     assert origin == (1000000000, -1000000000)
     np.testing.assert_array_equal(output, image)
+
+
+def test_suffixless_mosaic_name_uses_the_selected_filter(qapp, tmp_path, monkeypatch):
+    """A remembered TIFF must not override PNG chosen in this dialog."""
+    from PyQt6.QtWidgets import QWidget
+    import dialogs.mosaic as mosaic
+    from dialogs.mosaic import MosaicDialog
+
+    monkeypatch.setattr(mosaic, 'image_save_filter', lambda filters: 'TIFF image (*.tif *.tiff)')
+    monkeypatch.setattr(mosaic, 'remember_image_save', lambda *args: None)
+    monkeypatch.setattr(mosaic.FileDialog, 'getSaveFileName',
+                        lambda *args: (str(tmp_path / 'out'), 'PNG image (*.png)'))
+    started = []
+    parent = QWidget()
+    dialog = MosaicDialog(parent)
+    try:
+        dialog._append_frames([make_frame('a', np.zeros((20, 40, 3), np.uint8))])
+        monkeypatch.setattr(dialog, '_run', lambda operation, *_: started.append(operation))
+        dialog._save()
+        assert len(started) == 1
+        written = []
+        monkeypatch.setattr(mosaic, 'imwrite_auto',
+                            lambda path, *args, **kwargs: written.append((path, kwargs)) or True)
+        monkeypatch.setattr(mosaic, 'require_memory', lambda *_: None)
+        started[0](lambda: False, lambda *_: None)      # returns the stitching plan now
+        assert written[0][0] == str(tmp_path / 'out.png')
+        assert written[0][1]['stream_tiff'] is False
+    finally:
+        dialog.deleteLater()
+        parent.deleteLater()

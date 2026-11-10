@@ -44,6 +44,26 @@ def expand_dialog_path(text: str, directory: str) -> str:
     return os.path.normpath(text if os.path.isabs(text) else os.path.join(directory, text))
 
 
+def filter_suffix(name_filter: str) -> str:
+    """First concrete extension a name filter offers, without the dot.
+
+    "TIFF image (*.tif *.tiff)" -> "tif"; "All files (*)" -> "".
+    """
+    match = re.search(r"\*\.([A-Za-z0-9]+)", name_filter or "")
+    return match.group(1).lower() if match else ""
+
+
+def _follow_filter_suffix(dialog):
+    """Give a bare save name the selected filter's suffix inside the dialog.
+
+    The replace-file confirmation then checks the file that is actually
+    written, for Qt's own dialog and for a platform one.
+    """
+    dialog.setDefaultSuffix(filter_suffix(dialog.selectedNameFilter()))
+    dialog.filterSelected.connect(
+        lambda name: dialog.setDefaultSuffix(filter_suffix(name)))
+
+
 def _sidebar_urls(dialog):
     """Use Qt's filesystem places and real folders visited in this app."""
     from utils.settings_store import get_recent_dialog_dirs
@@ -388,6 +408,8 @@ def _pick_native_file(parent, caption, directory, file_filter, selected_filter,
         dialog.setAcceptMode(accept)
         if selected_filter:
             dialog.selectNameFilter(selected_filter)
+        if accept == FileDialog.AcceptMode.AcceptSave:
+            _follow_filter_suffix(dialog)
         dialog.directoryEntered.connect(_remember_dialog_directory)
 
         # Qt creates its widget layout only when no platform helper exists.
@@ -479,6 +501,8 @@ class FileDialog(QFileDialog):
         dialog.setAcceptMode(accept)
         if selectedFilter:
             dialog.selectNameFilter(selectedFilter)
+        if accept == cls.AcceptMode.AcceptSave:
+            _follow_filter_suffix(dialog)
         screen = parent.screen() if parent is not None else dialog.screen()
         if screen is not None:
             available_width = screen.availableGeometry().width()
