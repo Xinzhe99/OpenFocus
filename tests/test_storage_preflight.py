@@ -243,6 +243,8 @@ def window(qapp, monkeypatch, tmp_path):
     from PyQt6.QtCore import QSettings
     from main import OpenFocus
     from utils import recovery, settings_store
+    # Individual asynchronous tests opt in explicitly, independent of platform.
+    monkeypatch.setattr(frame_storage, 'automatic_preflight_may_block', lambda: False)
     settings = QSettings(str(tmp_path / 'settings.ini'), QSettings.Format.IniFormat)
     settings.clear()
     settings.setValue('ui/first_run_done', '1')
