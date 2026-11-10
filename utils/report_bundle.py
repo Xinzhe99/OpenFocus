@@ -170,6 +170,7 @@ def _numeric_fields(fields, depth=0):
 
 def _events_and_error(text):
     events = []
+    omitted = 0
     has_error = False
     frames = []
     error_name = None
@@ -195,6 +196,7 @@ def _events_and_error(text):
             events.append({'timestamp': stamp.isoformat(timespec='milliseconds'), 'event': name, 'parameters': _numeric_fields(parsed)})
             if len(events) > _MAX_EVENTS:
                 del events[0]
+                omitted += 1
             continue
         if line.strip() == 'Traceback (most recent call last):':
             in_traceback = True
@@ -212,7 +214,7 @@ def _events_and_error(text):
                 error_message = line.partition(':')[2].strip()
                 has_error = True
                 in_traceback = False
-    return events, has_error, error_name, error_message, frames
+    return events, has_error, error_name, error_message, frames, omitted
 
 
 def _normalize_message(message):
@@ -298,8 +300,8 @@ def build_report_bundle(*, log_text=None, crash_text=None, facts=None, exc=None)
     if facts is None:
         facts = diagnostics.system_facts()
     platform = _platform()
-    events, event_error, kind, message, frames = _events_and_error(log_text)
-    _, crash_error, crash_kind, crash_message, crash_frames = _events_and_error(crash_text)
+    events, event_error, kind, message, frames, omitted = _events_and_error(log_text)
+    _, crash_error, crash_kind, crash_message, crash_frames, _ = _events_and_error(crash_text)
     if crash_kind:
         kind, message, frames = crash_kind, crash_message, crash_frames
     if exc is not None:
@@ -319,10 +321,13 @@ def build_report_bundle(*, log_text=None, crash_text=None, facts=None, exc=None)
             stack.append({'file': basename, 'line': line, 'function': func})
     if stack:
         error['stack'] = stack
+    capture = {'events_omitted': omitted,
+               'log_tail_trimmed': log_text.startswith('...(older lines trimmed;')}
     excerpt = json.dumps(events[-25:], ensure_ascii=True, separators=(',', ':'))[-8000:]
     output = io.BytesIO()
     with zipfile.ZipFile(output, 'w', compression=zipfile.ZIP_DEFLATED) as archive:
-        for name, value in (('system.json', _safe_facts(facts, platform)), ('events.json', events), ('error.json', error)):
+        for name, value in (('system.json', _safe_facts(facts, platform)), ('events.json', events),
+                            ('error.json', error), ('capture.json', capture)):
             archive.writestr(name, json.dumps(value, ensure_ascii=True, separators=(',', ':'), allow_nan=False))
     data = output.getvalue()
     if len(data) > MAX_BUNDLE_BYTES:

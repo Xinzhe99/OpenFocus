@@ -42,6 +42,8 @@ are independent of account sign-in and diagnostic reporting.
   gesture coordinates, effective processing options and numeric settings, error
   types and selected application stack locations. They exclude image pixels, image and project
   files, user file names and paths, credentials, and arbitrary user-entered text.
+  Reports retain at most the most recent 2,000 recognized events from a bounded
+  log tail and indicate detected omissions; older rotated logs may already be gone.
   Failed reports can be stored locally for bounded retries, with at most three
   pending reports and three attempts. Account-linked queued reports are retried
   only with the same account. Turning automatic reporting off stops new automatic
