@@ -732,6 +732,7 @@ class ControlServer(QObject):
                 "ai_batch_size": int(getattr(window, "ai_batch_size", 2)),
                 "resource_preference": getattr(window, "resource_preference", "balanced"),
                 "reg_downscale_width": int(getattr(window, "reg_downscale_width", 1024)),
+                "storage_directory": getattr(window, "storage_directory", "") or "",
             },
             "render": _render_state(window),
             "outputs": {"count": window.output_list.count(),
@@ -897,6 +898,15 @@ class ControlServer(QObject):
             window.resource_preference = choice
         elif name == "reg_downscale_width":
             window.reg_downscale_width = max(64, int(value))
+        elif name == "storage_directory":
+            from core.frame_storage import configure_storage_directory
+            path = "" if value is None else _string(args, "value", required=False) or ""
+            try:
+                configure_storage_directory(path)
+            except OSError as error:
+                raise ControlError("invalid_argument",
+                                   f"Temporary directory is not writable: {error}") from error
+            window.storage_directory = path
         else:
             raise ControlError("invalid_argument", f"Unknown option: {name}")
         window.persist_settings()
@@ -939,14 +949,33 @@ class ControlServer(QObject):
                                           roi_choice=roi_choice)
         except ValueError as error:
             raise ControlError("invalid_argument", str(error)) from error
+        storage = getattr(manager, "last_storage_assessment", None)
         if status == "started":
             if self._render_id == before:
                 # A monkeypatched/test renderer bypassed the generation
                 # wrapper; keep the id accurate for --wait all the same.
                 self._render_id += 1
-            return {"started": True, "render_id": self._render_id,
-                    "method": method, "alignment": alignment,
-                    "preview": preview}
+            reply = {"started": True, "render_id": self._render_id,
+                     "method": method, "alignment": alignment,
+                     "preview": preview}
+            if storage is not None:
+                # Also after confirm=true: a pre-confirming client still sees it.
+                reply["storage"] = storage
+            return reply
+        if status == "confirm_storage":
+            raise ControlError(
+                "confirm_required",
+                "Temporary storage is low for this render",
+                "Choose another directory with option.set name=storage_directory, "
+                "or retry with confirm=true to continue.",
+                details={"storage": storage})
+        if status == "insufficient_storage":
+            raise ControlError(
+                "insufficient_storage",
+                "The temporary directory cannot hold this render",
+                "Choose another directory with option.set name=storage_directory "
+                "and retry; confirm=true does not override this.",
+                details={"storage": storage})
         if status == "busy":
             raise ControlError("busy", "A render is already running",
                                "Wait for render.state to leave 'rendering' or "

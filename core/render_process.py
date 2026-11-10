@@ -213,6 +213,10 @@ class RenderProcessWorker(RenderWorker):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        # A directory chosen for this render only (set before start). It binds
+        # the parent's job scope and therefore the child (see _run_process).
+        # Not a constructor argument: the arguments are RenderWorker's own.
+        self.storage_directory = None
         self._render_args = args
         self._render_kwargs = kwargs
         self._process = None
@@ -235,7 +239,9 @@ class RenderProcessWorker(RenderWorker):
         error = None
         try:
             self.stage_signal.emit('waiting')
-            with heavy_job(self._check_current), storage.scratch_directory():
+            with heavy_job(self._check_current), storage.scratch_directory() as scratch:
+                if self.storage_directory is not None:
+                    scratch.explicit_directory = self.storage_directory
                 self.stage_signal.emit('prepare')
                 result = self._run_process()
         except RegistrationCancelled:

@@ -154,6 +154,22 @@ def _validate_source(frame):
             return
 
 
+def planned_cache_bytes(frames):
+    """What a render's cache asks for when planned: ``(bytes, source paths)``.
+
+    The working set of every lazy frame plus one frame of staging floor, as
+    ``ScopedCache`` admits it. Zero for in-memory arrays, which are never
+    cached. For estimates made before a job binds its scratch directory.
+    """
+    frames = list(frames)
+    need = _frame_need(frames)
+    return (need + _staging_floor(frames) if need else 0), _source_paths(frames)
+
+
+def _staging_floor(frames):
+    return max(64 * 1024 * 1024, _largest_frame_bytes(frames))
+
+
 class ResolutionCache:
     """Disk-backed resolution results for one job; never raises into callers."""
 
@@ -319,7 +335,7 @@ class ScopedCache:
                 return None
             try:
                 import shutil
-                floor = max(64 * 1024 * 1024, _largest_frame_bytes(self._frames))
+                floor = _staging_floor(self._frames)
                 # Admission reserves the whole initial set, the caller's staging
                 # estimate and one frame of staging floor. Derived frames may
                 # extend the cache later, but only inside the plan-time ceiling.
