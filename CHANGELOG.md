@@ -6,6 +6,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- Add File → Export All Results to Folder for the output history.
 - Add an off-by-default Advanced Settings opt-in for experimental desktop fusion
   and registration methods and image stitching. These features are under
   development and may have performance, quality or availability limitations;
