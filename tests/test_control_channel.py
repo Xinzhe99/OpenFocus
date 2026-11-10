@@ -362,7 +362,7 @@ finally:
         client = subprocess.run([sys.executable, "-c", script], cwd=root, env=env,
                                 capture_output=True, text=True, timeout=45)
         assert client.returncode == 0, client.stderr
-        assert gui.wait(timeout=30) == 0
+        assert gui.wait(timeout=30) == 0, log_path.read_text(encoding="utf-8", errors="replace")
         assert not discovery.exists()
     finally:
         if gui.poll() is None:
