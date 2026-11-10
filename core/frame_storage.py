@@ -194,14 +194,18 @@ class ScratchSpaceError(OSError):
                         'Estimated additional space needed: {required}; available after reserve: {available}. '
                         'Later processing may need more. Free space or choose a writable Temporary directory '
                         'in Advanced settings.')
-        def readable(value):
-            if value < 1024:
-                return f'{value} B'
-            for unit, factor in (('GiB', 1024 ** 3), ('MiB', 1024 ** 2), ('KiB', 1024)):
-                if value >= factor:
-                    return f'{value / factor:.2f} {unit}'
-        available = '—' if self.available is None else readable(self.available)
-        return template.format(path=self.directory, required=readable(self.required), available=available)
+        available = '—' if self.available is None else readable_bytes(self.available)
+        return template.format(path=self.directory, required=readable_bytes(self.required),
+                               available=available)
+
+
+def readable_bytes(value):
+    """Binary-unit size as shown in scratch-space messages."""
+    if value < 1024:
+        return f'{value} B'
+    for unit, factor in (('GiB', 1024 ** 3), ('MiB', 1024 ** 2), ('KiB', 1024)):
+        if value >= factor:
+            return f'{value / factor:.2f} {unit}'
 
 
 def estimate_registration_space(images, steps):
@@ -325,6 +329,93 @@ def run_with_scratch(state, function, *args, **kwargs):
         _scratch.reset(token)
 
 
+def _scratch_candidates(explicit, source_paths):
+    """Directories select_scratch considers, in preference order."""
+    default = explicit or tempfile.gettempdir()
+    if explicit is not None or _default_is_local(default):
+        yield default
+    if explicit is not None:
+        return
+    mounts = _local_mounts()
+    # Prefer a source's fixed local volume, not an arbitrary source folder.
+    for source in source_paths:
+        source = os.path.normcase(os.path.abspath(source))
+        for mount in sorted(mounts, key=len, reverse=True):
+            root = os.path.normcase(os.path.abspath(mount))
+            try:
+                if (os.path.commonpath((source, root)) == root
+                        and os.stat(source).st_dev == os.stat(mount).st_dev):
+                    yield os.path.dirname(source)
+                    yield mount
+                    break
+            except (OSError, ValueError):
+                pass
+    yield from mounts
+
+
+def assess_scratch(minimum, expected, optional=0, source_paths=(), *, directory=None):
+    """Classify the prospective scratch directory before a job starts.
+
+    A point-in-time estimate: it binds nothing, creates nothing and reserves
+    nothing; every runtime check still applies. ``minimum`` is what the job
+    cannot run without, ``expected`` adds the pipeline's own staging reserve,
+    and ``optional`` is cache space that degrades gracefully when missing.
+    The directory is ``directory`` when given, else the configured one, else
+    the one select_scratch would choose for ``expected + optional``.
+
+    Status: ``critical`` when ``minimum`` exceeds the space left after the
+    safety reserve (the job would be rejected), ``advisory`` when ``expected
+    + optional`` does not fit (caches will be disabled or staging may run out),
+    ``ok`` otherwise, and ``unknown`` when the volume cannot be queried.
+    """
+    minimum, expected, optional = (max(0, int(value)) for value in (minimum, expected, optional))
+    expected = max(expected, minimum)
+    explicit = directory if directory is not None else _usable_storage_directory()
+    chosen = None
+    if explicit is None:
+        best = None
+        for candidate in _scratch_candidates(None, source_paths):
+            try:
+                available = _space(candidate)[2]
+            except OSError:
+                continue
+            if best is None or available > best[1]:
+                best = (candidate, available)
+            if available >= expected + optional:
+                chosen = candidate
+                break
+        chosen = chosen or (best[0] if best else tempfile.gettempdir())
+    else:
+        chosen = explicit
+    result = {'directory': os.path.abspath(chosen), 'explicit': explicit is not None,
+              'minimum_bytes': minimum, 'expected_bytes': expected, 'optional_bytes': optional,
+              'required_bytes': expected + optional}
+    try:
+        usage, reserve, available = _space(chosen)
+    except OSError as exc:
+        return {**result, 'status': 'unknown', 'reason': str(exc)}
+    result.update(free_bytes=int(usage.free), reserve_bytes=int(reserve),
+                  available_bytes=int(available))
+    if minimum > available:
+        result['status'] = 'critical'
+    elif expected + optional > available:
+        result['status'] = 'advisory'
+    else:
+        result['status'] = 'ok'
+    return result
+
+
+def validate_storage_directory(path):
+    """Raise OSError unless ``path`` is an existing writable directory."""
+    directory = os.path.abspath(os.fsdecode(path))
+    fd, probe = tempfile.mkstemp(prefix='openfocus-probe-', dir=directory)
+    try:
+        os.close(fd)
+    finally:
+        os.unlink(probe)
+    return directory
+
+
 def select_scratch(size, source_paths=(), *, preferred_size=None, working_size=None):
     """Admit an estimate and bind a writable directory to the current job.
 
@@ -338,26 +429,9 @@ def select_scratch(size, source_paths=(), *, preferred_size=None, working_size=N
         require_disk_space(size, state.directory)
         return state.directory
     default = state.explicit_directory or tempfile.gettempdir()
+
     def candidates():
-        if state.explicit_directory is not None or _default_is_local(default):
-            yield default
-        if state.explicit_directory is not None:
-            return
-        mounts = _local_mounts()
-        # Prefer a source's fixed local volume, not an arbitrary source folder.
-        for source in source_paths:
-            source = os.path.normcase(os.path.abspath(source))
-            for mount in sorted(mounts, key=len, reverse=True):
-                root = os.path.normcase(os.path.abspath(mount))
-                try:
-                    if (os.path.commonpath((source, root)) == root
-                            and os.stat(source).st_dev == os.stat(mount).st_dev):
-                        yield os.path.dirname(source)
-                        yield mount
-                        break
-                except (OSError, ValueError):
-                    pass
-        yield from mounts
+        return _scratch_candidates(state.explicit_directory, source_paths)
     best = (default, None)
     # Optional staging and bounded-workspace estimates guide placement without
     # rejecting RAM-only work or jobs that fit the known required allocation.
@@ -406,13 +480,7 @@ def configure_storage_directory(path):
     if path is None or os.fspath(path) in ('', b''):
         _storage_directory = None
         return
-    directory = os.path.abspath(os.fsdecode(path))
-    fd, probe = tempfile.mkstemp(prefix='openfocus-probe-', dir=directory)
-    try:
-        os.close(fd)
-    finally:
-        os.unlink(probe)
-    _storage_directory = directory
+    _storage_directory = validate_storage_directory(path)
 
 
 def restore_storage_directory(path):

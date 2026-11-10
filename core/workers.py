@@ -16,6 +16,7 @@ from utils.image_utils import prepare_fusion_input, to_display_uint8
 from copy import deepcopy
 from utils.export_paths import create_stack_directory, frame_export_name, unique_path
 from utils.logging_setup import frame_details, get_logger, log_operation
+from core.storage_preflight import defers_warps
 from utils.platform_utils import configure_native_worker_stack
 from constants import (
     TILE_BLOCK_SIZE, TILE_OVERLAP, TILE_THRESHOLD,
@@ -458,9 +459,8 @@ class RenderWorker(QThread):
         if self.disk_cache is not None and (self.registration_parameters or self.defect_mask_path or self.sensor_denoise or self._reverse_registration):
             self.disk_cache['identity'] = dict(self.disk_cache.get('identity') or {})
         self._cache_identity_prepared = False
-        self._defer_warps = (bool(self.alignment) and not self.preview
-                             and all(step in ('openfocus', 'homography', 'ecc') for step in self.alignment)
-                             and (not self.need_fusion or get_fusion(self.algorithm).streaming_sources))
+        self._defer_warps = defers_warps(self.alignment, self.preview, self.need_fusion,
+                                         self.algorithm)
         self._alignment_plan = None
         self.resource_preference = resource_preference
         self.alignment_reused = False
