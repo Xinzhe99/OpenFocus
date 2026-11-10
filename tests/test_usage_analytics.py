@@ -210,6 +210,36 @@ def test_failed_report_retries_while_application_remains_open(qapp, tmp_path, mo
         reporter.shutdown()
 
 
+def test_inflight_report_does_not_signal_after_shutdown(qapp, tmp_path):
+    from threading import Event
+
+    started, release = Event(), Event()
+    notifications = []
+    settings = QSettings(str(tmp_path / 'shutdown.ini'), QSettings.Format.IniFormat)
+
+    def blocked_send(_payload):
+        started.set()
+        assert release.wait(5)
+        return True
+
+    reporter = usage.UsageAnalytics(settings=settings, sender=blocked_send)
+    reporter._finished.connect(lambda *args: notifications.append(args))
+    reporter.start()
+    worker = reporter._thread
+    try:
+        assert started.wait(5)
+        reporter.shutdown()
+        release.set()
+        worker.join(5)
+        assert not worker.is_alive()
+        qapp.processEvents()
+        assert notifications == []
+    finally:
+        release.set()
+        worker.join(5)
+        reporter.shutdown()
+
+
 def test_http_reporting_survives_default_python_agent_block(monkeypatch):
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
     from threading import Thread

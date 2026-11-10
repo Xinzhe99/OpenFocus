@@ -53,6 +53,9 @@ class UsageAnalytics(QObject):
         self.clock = clock if clock is not None else time.time
         self._thread = None
         self._closed = False
+        self._signal_gate = threading.RLock()
+        self._completion_allowed = threading.Event()
+        self._completion_allowed.set()
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
         self._timer.timeout.connect(self.start)
@@ -111,16 +114,23 @@ class UsageAnalytics(QObject):
         self._cancel = cancel
         payload = {"installation_id": installation_id, "version": APP_VERSION,
                    "platform": platform}
+        sender = self.sender
+        finished = self._finished
+        gate = self._signal_gate
+        allowed = self._completion_allowed
 
         def run():
             try:
-                success = not cancel.is_set() and bool(self.sender(payload))
+                success = not cancel.is_set() and bool(sender(payload))
             except Exception:
                 success = False
-            try:
-                self._finished.emit(installation_id, success)
-            except RuntimeError:
-                pass  # Qt has already destroyed the receiver during shutdown.
+            # Do not touch Qt after shutdown: the request may outlive its owner.
+            with gate:
+                if allowed.is_set():
+                    try:
+                        finished.emit(installation_id, success)
+                    except RuntimeError:
+                        pass
 
         try:
             self._thread = threading.Thread(target=run, daemon=True, name="usage-analytics")
@@ -146,6 +156,8 @@ class UsageAnalytics(QObject):
 
     def shutdown(self):
         self._closed = True
+        with self._signal_gate:
+            self._completion_allowed.clear()
         self._timer.stop()
         if self._cancel is not None:
             self._cancel.set()

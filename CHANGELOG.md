@@ -209,6 +209,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Cancel and finish account background work before quitting, including when the
   first-run account prompt is open.
 - Avoid accessing a deleted main window when Qt delivers late shutdown events.
+- Prevent an in-flight usage report from signalling Qt after shutdown.
 - Refresh the source sharpness curve after lazy frame previews finish loading.
 - Make file and folder pickers opened through the control channel addressable,
   while retaining native pickers for ordinary desktop interactions.
