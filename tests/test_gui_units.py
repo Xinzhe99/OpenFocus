@@ -279,6 +279,7 @@ def _render_window(frames):
         pass
 
     w = FakeWindow()
+    w.experimental_features = True
     w.raw_images = list(frames)
     w.base_images = list(frames)
     w.image_filenames = [f"f{i}.png" for i in range(len(frames))]
