@@ -220,9 +220,12 @@ class CompareDialog(QDialog):
         settings['method_options'] = {}
         getter = getattr(window, 'brightness_option_for', None)
         for spec in fusion_algorithms():
+            base_correct = (bool(getter('base_correct', spec.id)) if callable(getter)
+                            else spec.default_base_correct)
             settings['method_options'][spec.id] = {
                 'exposure_match': bool(getter('exposure_match', spec.id)) if callable(getter) else spec.default_exposure_match,
-                'base_frame': 'last' if (bool(getter('base_correct', spec.id)) if callable(getter) else spec.default_base_correct) else 'none',
+                'base_frame': ('first' if spec.id in ('openfocus_a', 'openfocus_b', 'openfocus_c')
+                               else 'last') if base_correct else 'none',
             }
         return settings
 

@@ -501,18 +501,25 @@ def test_batch_fusion_only_options_follow_the_selected_method(qapp):
     dialog = BatchProcessingDialog(None)
     try:
         assert dialog.fusion_combo.currentData() == 'none'
-        for box in (dialog.chk_base_correct, dialog.chk_sharpen_output,
-                    dialog.chk_reverse_order):
+        for box in (dialog.chk_exposure_match, dialog.chk_base_correct,
+                    dialog.chk_sharpen_output, dialog.chk_reverse_order):
             assert not box.isEnabled()
             assert box.toolTip() == trans.t('radio_no_fusion_hint')
         dialog.align_combo.setCurrentIndex(dialog.align_combo.findData('ecc'))
-        assert dialog.chk_exposure_match.isEnabled(), (
-            "registration still uses exposure matching as its brightness reference")
+        assert not dialog.chk_exposure_match.isEnabled()
 
         _select_fusion(dialog)
-        for box in (dialog.chk_base_correct, dialog.chk_sharpen_output,
-                    dialog.chk_reverse_order):
+        for box in (dialog.chk_exposure_match, dialog.chk_base_correct,
+                    dialog.chk_sharpen_output, dialog.chk_reverse_order):
             assert box.isEnabled()
+
+        dialog.chk_exposure_match.setChecked(True)
+        _select_fusion(dialog, 'none')
+        assert not dialog.chk_exposure_match.isEnabled()
+        assert dialog.chk_exposure_match.isChecked()
+        _select_fusion(dialog)
+        assert dialog.chk_exposure_match.isEnabled()
+        assert dialog.chk_exposure_match.isChecked()
 
         dialog.chk_reverse_order.setChecked(True)
         index = dialog.fusion_combo.findData('stackmffv2')
@@ -526,6 +533,31 @@ def test_batch_fusion_only_options_follow_the_selected_method(qapp):
         _select_fusion(dialog)
         assert dialog.chk_reverse_order.isEnabled()
         assert dialog.chk_reverse_order.isChecked()
+    finally:
+        dialog.close()
+        dialog.deleteLater()
+        qapp.processEvents()
+
+
+@pytest.mark.parametrize('method,expected', [
+    ('openfocus_a', 'first'), ('openfocus_b', 'first'),
+    ('openfocus_c', 'first'), ('guided_filter', 'last'),
+])
+@pytest.mark.parametrize('enabled', [False, True])
+@pytest.mark.parametrize('reverse', [False, True])
+def test_batch_freezes_method_base_and_processing_order(qapp, method, expected, enabled, reverse):
+    from dialogs.batch import BatchProcessingDialog
+    from core.workers import BatchWorker
+
+    dialog = BatchProcessingDialog(None)
+    try:
+        _select_fusion(dialog, method)
+        dialog.chk_base_correct.setChecked(enabled)
+        dialog.chk_reverse_order.setChecked(reverse)
+        settings = dialog.get_processing_settings()
+        worker = BatchWorker([], 'custom', '', settings)
+        assert worker.runtime_settings['base_frame'] == (expected if enabled else 'none')
+        assert worker.runtime_settings['sort_mode'] == ('desc' if reverse else 'asc')
     finally:
         dialog.close()
         dialog.deleteLater()

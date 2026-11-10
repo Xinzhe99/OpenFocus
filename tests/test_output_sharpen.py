@@ -100,3 +100,24 @@ def test_sharpening_does_not_invalidate_alignment_cache():
     window.sharpen_output = True
     assert manager._alignment_key([0, 1]) == before
     assert manager._processing_parameters('guided_filter')['sharpen_output'] is True
+
+
+@pytest.mark.parametrize('method,expected', [
+    ('openfocus_a', 'first'), ('openfocus_b', 'first'),
+    ('openfocus_c', 'first'), ('guided_filter', 'last'),
+])
+@pytest.mark.parametrize('enabled', [False, True])
+@pytest.mark.parametrize('reverse', [False, True])
+def test_render_parameters_choose_base_in_processing_order(method, expected, enabled, reverse):
+    from types import SimpleNamespace
+    from controllers.render_manager import RenderManager
+
+    window = SimpleNamespace(
+        current_alignment_method=lambda: 'none',
+        registration_parameters_for=lambda alignment: {},
+        fusion_parameters_for=lambda selected: {},
+        brightness_option_for=lambda option, selected: enabled if option == 'base_correct' else False,
+        stack_reverse_order=reverse)
+    settings = RenderManager(window)._processing_parameters(method)
+    assert settings['base_frame'] == (expected if enabled else 'none')
+    assert settings['sort_mode'] == ('desc' if reverse else 'asc')

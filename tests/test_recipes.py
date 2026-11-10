@@ -283,6 +283,38 @@ def test_project_recipe_keeps_filename_order(tmp_path):
     assert load_recipe(recipe)["options"]["frame_order"] == "name"
 
 
+@pytest.mark.parametrize('method,expected', [
+    ('openfocus_a', 'first'), ('openfocus_b', 'first'),
+    ('openfocus_c', 'first'), ('dct', 'last'),
+])
+@pytest.mark.parametrize('enabled', [False, True])
+@pytest.mark.parametrize('reverse', [False, True])
+def test_project_recipe_keeps_method_base_and_processing_order(tmp_path, method, expected, enabled, reverse):
+    from core.recipes import capture_project_recipe
+
+    project = tmp_path / 'source.ofproj'
+    project.write_text(json.dumps({
+        'openfocus_project': 3, 'sources': [str(tmp_path / 'gone.png')],
+        'settings': {'fusion_method': method, 'base_frame_correct': not enabled,
+                     'brightness_by_method': {'base_correct': {method: enabled}},
+                     'stack_reverse_order': reverse},
+    }), encoding='utf-8')
+    recipe = tmp_path / 'recipe.json'
+    capture_project_recipe(recipe, project, ['-i', str(tmp_path / 'new'),
+                                             '-o', str(tmp_path / 'out.png')])
+    options = load_recipe(recipe)['options']
+    assert options['base_frame'] == (expected if enabled else 'none')
+    assert options['sort'] == ('desc' if reverse else 'asc')
+
+
+@pytest.mark.parametrize('base_frame', ['first', 'last', 'none'])
+def test_cli_recipe_preserves_explicit_base_frame(tmp_path, base_frame):
+    recipe = tmp_path / 'recipe.json'
+    capture_recipe(recipe, ['-i', str(tmp_path / 'stack'), '-o', str(tmp_path / 'out.png'),
+                            '-m', 'openfocus_a', '--base-frame', base_frame])
+    assert load_recipe(recipe)['options']['base_frame'] == base_frame
+
+
 @pytest.mark.parametrize("extension", ["dng", "tiff", "png"])
 def test_native_recipe_preserves_processing_mode(tmp_path, extension):
     path = tmp_path / "recipe.json"

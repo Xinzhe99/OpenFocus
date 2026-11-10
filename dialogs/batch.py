@@ -1268,9 +1268,7 @@ class BatchProcessingDialog(QDialog):
 
         Grouping needs multi-folder input plus a fusion step and cannot share
         the run with the aligned-stack copy; alignment-only output has no
-        fusion step, so base correction, sharpening and frame reversal have no
-        consumer. Exposure matching stays live because registration uses it as
-        its brightness reference even without fusion.
+        fusion step, so fusion options have no consumer.
         """
         method = self.fusion_combo.currentData()
         fusion_off = method in (None, 'none')
@@ -1322,6 +1320,7 @@ class BatchProcessingDialog(QDialog):
 
         fusion_only_hint = trans.t('radio_no_fusion_hint')
         for box, hint_key in (
+                (self.chk_exposure_match, 'chk_exposure_match_hint'),
                 (self.chk_base_correct, 'chk_base_correct_hint'),
                 (self.chk_sharpen_output, 'chk_sharpen_output_hint')):
             box.setEnabled(not fusion_off)
@@ -1359,7 +1358,8 @@ class BatchProcessingDialog(QDialog):
         fusion_method = self.fusion_combo.currentData() or "none"
         fusion_params = self.fusion_parameter_panel.values()
         runtime = dict(self._runtime_settings)
-        runtime['base_frame'] = 'last' if self.chk_base_correct.isChecked() else 'none'
+        runtime['base_frame'] = ('first' if fusion_method in ('openfocus_a', 'openfocus_b', 'openfocus_c')
+                                 else 'last') if self.chk_base_correct.isChecked() else 'none'
         runtime['exposure_match'] = self.chk_exposure_match.isChecked()
         runtime['sharpen_output'] = self.chk_sharpen_output.isChecked()
         runtime['sort_mode'] = 'desc' if self.chk_reverse_order.isChecked() else 'asc'

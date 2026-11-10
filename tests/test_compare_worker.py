@@ -20,6 +20,37 @@ def _application(qapp):
     return qapp
 
 
+@pytest.mark.parametrize('reverse', [False, True])
+def test_compare_uses_each_methods_base_setting_in_processing_order(reverse):
+    from types import SimpleNamespace
+    from dialogs.compare import CompareDialog
+
+    choices = {'openfocus_a': True, 'openfocus_b': True, 'openfocus_c': False,
+               'guided_filter': True}
+    window = SimpleNamespace(stack_reverse_order=reverse,
+        brightness_option_for=lambda option, method: choices.get(method, False)
+            if option == 'base_correct' else False)
+    shared = CompareDialog._collect_shared_settings(SimpleNamespace(window_main=window))
+    shared['thread_count'] = 1
+    shared['tile_enabled'] = False
+    methods = list(choices)
+    worker = PreviewWorker([np.full((40, 40, 3), value, np.uint8)
+                            for value in (40, 180)], methods, {}, shared, None, roi_only=False)
+    expected = {'openfocus_a': 'first', 'openfocus_b': 'first',
+                'openfocus_c': 'none', 'guided_filter': 'last'}
+    for method in methods:
+        constructor, _ = worker._settings(method)
+        assert constructor['base_frame'] == expected[method]
+        assert constructor['sort_mode'] == ('desc' if reverse else 'asc')
+    results, errors, _ = _run(worker)
+    assert errors == []
+    images = {method: image for method, image, _ in results}
+    first = 180 if reverse else 40
+    for method, target in [('openfocus_a', first), ('openfocus_b', first),
+                           ('guided_filter', 180)]:
+        assert abs(float(images[method].mean()) - target) < 3
+
+
 def _stack(height=80, width=112, dtype=np.uint8):
     rng = np.random.default_rng(319)
     sharp = rng.integers(15, 240, (height, width, 3), dtype=np.uint8)

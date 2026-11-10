@@ -128,6 +128,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Enable exposure matching by default for all fusion methods. OpenFocus A/B/C
   match the first processed frame; other methods match the last. Saved
   per-method choices remain in effect.
+- Keep optional base correction off by default; when enabled, OpenFocus A/B/C
+  use the first processed frame and other methods use the last. Reversing the
+  stack changes processing order and the reference frame.
 - Default Batch Image Converter to lossless PNG, restore the last explicitly
   selected output format, and show the actual result extension below the
   selector. Its individual-file conversion, including RAW-to-DNG, remains
