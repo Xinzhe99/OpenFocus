@@ -6,7 +6,7 @@ import os
 import cv2
 from PyQt6.QtCore import QThread, pyqtSignal
 from PyQt6.QtWidgets import (
-    QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QGroupBox,
+    QCheckBox, QComboBox, QFormLayout, QGroupBox,
     QLabel, QSpinBox, QVBoxLayout, QWidget,
 )
 
@@ -16,6 +16,7 @@ from core.mosaic_photo import PhotometricSpec
 from core.mosaic_projection import CameraSpec, LensSpec, ProjectionSpec
 from core.mosaic_seam import SeamSpec
 from locales import trans
+from widgets.stepper import StepperSpinBox
 
 
 class MosaicSettingsPanel(QWidget):
@@ -164,7 +165,7 @@ class MosaicSettingsPanel(QWidget):
         return self._row(form, key, widget)
 
     def _real(self, form, key, low, high, default, decimals):
-        widget = QDoubleSpinBox()
+        widget = StepperSpinBox()
         widget.setDecimals(decimals)
         widget.setRange(low, high)
         widget.setValue(default)
