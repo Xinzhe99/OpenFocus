@@ -28,6 +28,10 @@ from utils.image_utils import imwrite_auto
 def control_window(qapp, monkeypatch, tmp_path):
     from main import OpenFocus
     from utils import recovery, settings_store
+    from core import frame_storage
+
+    # Deferred storage replies are exercised separately in test_storage_preflight.
+    monkeypatch.setattr(frame_storage, "automatic_preflight_may_block", lambda: False)
 
     settings = QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat)
     settings.clear()

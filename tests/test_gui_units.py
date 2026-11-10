@@ -405,6 +405,11 @@ def _patched_render_manager(monkeypatch, window, ai_available=False):
     the recorded save_aligned calls, the recorded worker stack)."""
     from controllers import render_manager as render_module
     from utils import align_cache
+    from core import frame_storage
+
+    # These unit tests exercise the render pipeline with a non-QObject window.
+    # The asynchronous storage probe is covered by the preflight tests.
+    monkeypatch.setattr(frame_storage, "automatic_preflight_may_block", lambda: False)
 
     monkeypatch.setattr(render_module, "RenderProcessWorker", _fake_worker_class())
     monkeypatch.setattr(render_module, "is_ai_fusion_available", lambda: ai_available)
@@ -1291,6 +1296,7 @@ def _retouch_shutdown_window(monkeypatch, force):
             self._project_dirty = True
             self.output_manager = SimpleNamespace(
                 confirm_unexported_on_exit=lambda: record("output"))
+            self.render_manager = SimpleNamespace(cancel_storage_preflight=lambda: None, worker=None)
             self.usage_analytics = SimpleNamespace(shutdown=lambda: record("shutdown"))
 
         def _confirm_discard_project_changes(self, *_args):
