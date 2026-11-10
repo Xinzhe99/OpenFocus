@@ -69,9 +69,109 @@ def test_without_explicit_directory_select_scratch_candidates_are_used(tmp_path,
                         lambda explicit, paths: iter([str(small), str(large)]))
     monkeypatch.setattr(frame_storage, '_space', _fake_space(
         {str(small): 6 * GIB, str(large): 60 * GIB}))
-    result = frame_storage.assess_scratch(GIB, 2 * GIB, GIB)
+    result = frame_storage.assess_scratch(GIB, 2 * GIB, GIB, placement_goal=3 * GIB)
     assert result['directory'] == str(large) and result['explicit'] is False
     assert result['status'] == 'ok'
+
+
+def test_automatic_assessment_skips_unwritable_candidate(tmp_path, monkeypatch):
+    unwritable, fallback = tmp_path / 'unwritable', tmp_path / 'fallback'
+    unwritable.mkdir(), fallback.mkdir()
+    monkeypatch.setattr(frame_storage, '_storage_directory', None)
+    monkeypatch.setattr(frame_storage, '_scratch_candidates',
+                        lambda explicit, paths: iter([str(unwritable), str(fallback)]))
+    monkeypatch.setattr(frame_storage, '_space', _fake_space(
+        {str(unwritable): 60 * GIB, str(fallback): 5 * GIB}))
+    real_mkdtemp = frame_storage.tempfile.mkdtemp
+
+    def mkdtemp(*args, **kwargs):
+        if kwargs.get('dir') == str(unwritable):
+            raise PermissionError('unwritable')
+        return real_mkdtemp(*args, **kwargs)
+
+    monkeypatch.setattr(frame_storage.tempfile, 'mkdtemp', mkdtemp)
+    assessment = frame_storage.assess_scratch(0, 3 * GIB, GIB, placement_goal=GIB)
+    assert assessment['directory'] == str(fallback)
+    assert assessment['status'] == 'advisory'
+    with frame_storage.scratch_directory():
+        selected = frame_storage.select_scratch(0, preferred_size=GIB)
+        assert os.path.dirname(selected) == str(fallback)
+
+
+def test_automatic_assessment_searches_all_candidates_for_placement_goal(tmp_path, monkeypatch):
+    small, large = tmp_path / 'small', tmp_path / 'large'
+    small.mkdir(), large.mkdir()
+    monkeypatch.setattr(frame_storage, '_storage_directory', None)
+    monkeypatch.setattr(frame_storage, '_scratch_candidates',
+                        lambda explicit, paths: iter([str(small), str(large)]))
+    monkeypatch.setattr(frame_storage, '_space', _fake_space(
+        {str(small): 5 * GIB, str(large): 60 * GIB}))
+    assessment = frame_storage.assess_scratch(0, 3 * GIB, GIB, placement_goal=2 * GIB)
+    assert assessment['directory'] == str(large)
+    assert assessment['status'] == 'ok'
+    with frame_storage.scratch_directory():
+        selected = frame_storage.select_scratch(0, preferred_size=2 * GIB)
+        assert os.path.dirname(selected) == str(large)
+
+
+def test_automatic_assessment_ignores_later_full_volume(tmp_path, monkeypatch):
+    roomy, full = tmp_path / 'roomy', tmp_path / 'full'
+    roomy.mkdir(), full.mkdir()
+    monkeypatch.setattr(frame_storage, '_storage_directory', None)
+    monkeypatch.setattr(frame_storage, '_scratch_candidates',
+                        lambda explicit, paths: iter([str(roomy), str(full)]))
+    monkeypatch.setattr(frame_storage, '_space', _fake_space(
+        {str(roomy): 60 * GIB, str(full): 4 * GIB}))
+    assessment = frame_storage.assess_scratch(GIB, 3 * GIB, GIB, placement_goal=4 * GIB)
+    assert assessment['status'] == 'ok'
+    assert assessment['directory'] == str(roomy)
+    with frame_storage.scratch_directory():
+        selected = frame_storage.select_scratch(GIB, preferred_size=4 * GIB)
+        assert os.path.dirname(selected) == str(roomy)
+
+
+@pytest.mark.parametrize('same_volume', [True, False])
+def test_automatic_low_space_warns_without_claiming_directory(tmp_path, monkeypatch, same_volume):
+    first, second = tmp_path / 'first', tmp_path / 'second'
+    first.mkdir(), second.mkdir()
+    monkeypatch.setattr(frame_storage, '_storage_directory', None)
+    monkeypatch.setattr(frame_storage, '_scratch_candidates',
+                        lambda explicit, paths: iter([str(first), str(second)]))
+    monkeypatch.setattr(frame_storage, '_space', _fake_space(
+        {str(first): 5 * GIB, str(second): 5 * GIB}))
+    monkeypatch.setattr(frame_storage, '_scratch_volume',
+                        lambda path: 1 if same_volume or path == str(first) else 2)
+    assessment = frame_storage.assess_scratch(0, 2 * GIB, GIB)
+    assert assessment['status'] == 'advisory'
+    assert assessment['directory'] is None
+    assert assessment['volume_count'] == (1 if same_volume else 2)
+    assert assessment['available_bytes'] == GIB
+
+
+def test_automatic_assessment_warns_about_volume_selected_at_runtime(tmp_path, monkeypatch):
+    small, large = tmp_path / 'small', tmp_path / 'large'
+    small.mkdir(), large.mkdir()
+    monkeypatch.setattr(frame_storage, '_storage_directory', None)
+    monkeypatch.setattr(frame_storage, '_scratch_candidates',
+                        lambda explicit, paths: iter([str(small), str(large)]))
+    monkeypatch.setattr(frame_storage, '_space', _fake_space(
+        {str(small): 5 * GIB, str(large): 60 * GIB}))
+    assessment = frame_storage.assess_scratch(0, 3 * GIB, GIB, placement_goal=GIB)
+    assert assessment['status'] == 'advisory'
+    assert assessment['directory'] == str(small)
+    with frame_storage.scratch_directory() as scratch:
+        selected = frame_storage.select_scratch(0, preferred_size=GIB)
+        assert os.path.dirname(selected) == str(small)
+
+
+def test_untiled_dct_output_estimate_never_causes_critical(tmp_path, monkeypatch):
+    from core.storage_preflight import render_storage_estimate
+
+    frames = [np.zeros((40, 50, 3), np.uint8) for _ in range(2)]
+    estimate = render_storage_estimate(frames, algorithm='dct', alignment='none')
+    assert estimate[0] == 0
+    monkeypatch.setattr(frame_storage, '_space', _fake_space({str(tmp_path): 4 * GIB}))
+    assert frame_storage.assess_scratch(*estimate, directory=str(tmp_path))['status'] == 'advisory'
 
 
 def test_directory_validation(tmp_path):
@@ -106,13 +206,12 @@ def test_estimate_follows_the_pipeline_materialization_rules(tmp_path, monkeypat
     from core.storage_preflight import render_storage_estimate
     from utils.image_utils import imwrite_auto
     arrays = [np.zeros((40, 50, 3), np.uint8) for _ in range(3)]
-    output = 40 * 50 * (3 * 4 + 4 + 3)
-    # Streaming StackMFF with deferred ECC warps admits no materialization.
+    # Streaming sources do not require a tiled output buffer in every backend.
     minimum, expected, optional, _ = render_storage_estimate(
         arrays, algorithm='stackmffv3', alignment='ecc')
-    assert minimum == output and expected >= minimum
+    assert minimum == 0 and expected > minimum
     assert optional == 0          # in-memory arrays are never cached
-    # A non-streaming extension materializes the in-memory stack first.
+    # Aligned sources may already be reusable without materialization.
     descriptor = replace(get_fusion('dct'), streaming_sources=False)
     with monkeypatch.context() as patch:
         patch.setattr(storage_preflight, 'get_fusion', lambda algorithm: descriptor)
@@ -120,11 +219,11 @@ def test_estimate_follows_the_pipeline_materialization_rules(tmp_path, monkeypat
         # ... and then stores one cleaned copy of every frame.
         cleaned, *_ = render_storage_estimate(arrays, algorithm='dct', alignment='ecc',
                                               cleanup=True)
-    assert minimum == output + sum(a.nbytes for a in arrays)
-    assert cleaned == output + 2 * sum(a.nbytes for a in arrays)
+    assert minimum == 0
+    assert cleaned == minimum
     # A streaming render keeps sensor cleanup lazy: it adds no mandatory disk.
     lazy, *_ = render_storage_estimate(arrays, algorithm='dct', alignment='none', cleanup=True)
-    assert lazy == output
+    assert lazy == 0
     paths = []
     for index, image in enumerate(arrays):
         path = tmp_path / f'f{index}.png'
@@ -223,8 +322,89 @@ def test_small_render_never_prompts(window, fake_worker, monkeypatch):
     manager = window.render_manager
     monkeypatch.setattr(manager, '_confirm_storage', lambda *a: pytest.fail('prompted'))
     assert manager.start_render() == 'started'
-    assert manager.last_storage_assessment['status'] == 'ok'
     assert fake_worker.created[0].storage_directory is None
+
+
+@pytest.mark.parametrize('language', ['en', 'zh', 'ja', 'es', 'de', 'fr', 'ru', 'ko', 'pt', 'it', 'nl', 'pl'])
+def test_neutral_storage_warning_displays_localized_upper_bound(window, monkeypatch, language):
+    from locales import trans
+
+    monkeypatch.setattr(trans, 'current_lang', language)
+    assessment = _assessment('advisory', None)
+    message = window.render_manager._storage_message(assessment)
+    bound = trans.t('storage_available_upper_bound').format(
+        size=frame_storage.readable_bytes(assessment['available_bytes']))
+    assert bound in message
+    assert frame_storage.readable_bytes(assessment['required_bytes']) in message
+    assert 'None' not in message
+
+
+def test_gui_defers_slow_automatic_discovery(window, fake_worker, monkeypatch, qapp):
+    import threading
+    from PyQt6.QtCore import QTimer
+    from PyQt6.QtTest import QTest
+
+    entered, release = threading.Event(), threading.Event()
+    monkeypatch.setattr(frame_storage, 'automatic_preflight_may_block', lambda: True)
+    monkeypatch.setattr(frame_storage, '_storage_directory', None)
+
+    def slow_assess(*args, **kwargs):
+        entered.set()
+        assert release.wait(5)
+        return _assessment('ok')
+
+    monkeypatch.setattr(frame_storage, 'assess_scratch', slow_assess)
+    events = []
+    QTimer.singleShot(0, lambda: events.append('responsive'))
+    manager = window.render_manager
+    try:
+        assert manager.start_render() == 'preflight'
+        qapp.processEvents()
+        assert events == ['responsive'] and not fake_worker.created
+        release.set()
+        for _ in range(100):
+            if fake_worker.created:
+                break
+            QTest.qWait(10)
+        assert entered.is_set() and len(fake_worker.created) == 1
+        assert manager.last_storage_assessment['status'] == 'ok'
+    finally:
+        release.set()
+
+
+@pytest.mark.parametrize('change', ['source', 'settings', 'cancel'])
+def test_delayed_storage_preflight_rejects_stale_or_cancelled_request(
+        window, fake_worker, monkeypatch, qapp, change):
+    from controllers import render_manager
+
+    probes = []
+    monkeypatch.setattr(frame_storage, 'automatic_preflight_may_block', lambda: True)
+    monkeypatch.setattr(frame_storage, '_storage_directory', None)
+    monkeypatch.setattr(render_manager._StorageProbe, 'start', lambda probe, estimate: probes.append(probe))
+    manager = window.render_manager
+    assert manager.start_render() == 'preflight'
+    if change == 'source':
+        window.source_revision += 1
+    elif change == 'settings':
+        window.thread_count += 1
+    else:
+        assert manager.start_render() == 'cancelled'
+    probes[0].completed.emit(_assessment('ok'))
+    qapp.processEvents()
+    assert not fake_worker.created
+    assert manager._pending_storage is None
+    assert manager.last_state == ('cancelled' if change == 'cancel' else 'discarded')
+
+
+def test_gui_still_assesses_explicit_directory_on_slow_platform(window, monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(frame_storage, 'sys', SimpleNamespace(platform='darwin'))
+    monkeypatch.setattr(frame_storage, '_storage_directory', str(tmp_path))
+    calls = _assess_as(monkeypatch, 'critical')
+    assessment = window.render_manager._storage_preflight(None, window.raw_images)
+    assert assessment['status'] == 'critical'
+    assert calls == [None]
 
 
 @pytest.mark.parametrize('setup', ['preview', 'roi', 'compare'])
@@ -347,6 +527,76 @@ def test_critical_dialog_offers_no_continue(window, qapp):
     finally:
         timer.stop()
     assert seen[0] == {'btn_storage_choose', 'btn_storage_cancel'}
+
+
+@pytest.mark.parametrize('status,confirmed,expected', [
+    ('advisory', False, 'confirm_required'),
+    ('critical', True, 'insufficient_storage'),
+    ('advisory', True, 'started'),
+])
+def test_control_render_reply_waits_for_storage_preflight(
+        window, fake_worker, monkeypatch, tmp_path, qapp, status, confirmed, expected):
+    from controllers import render_manager
+    from core.control.protocol import encode
+    from core.control.server import ControlServer, _DeferredResponse
+
+    probes = []
+    monkeypatch.setattr(frame_storage, 'automatic_preflight_may_block', lambda: True)
+    monkeypatch.setattr(frame_storage, '_storage_directory', None)
+    monkeypatch.setattr(render_manager._StorageProbe, 'start', lambda probe, estimate: probes.append(probe))
+    server = ControlServer(window, socket_name=f'OpenFocus-async-storage-{os.getpid()}-{id(tmp_path)}')
+    try:
+        response = server.handle_line(encode({'id': '1', 'cmd': 'render.start',
+                                              'args': {'confirm': confirmed},
+                                              'token': server.token}), token=server.token)
+        assert isinstance(response, _DeferredResponse)
+        delivered = []
+        response.start(lambda success, value: delivered.append((success, value)))
+        assert server._cmd_render_state({})['busy'] is True
+        assert not fake_worker.created and not delivered
+        probes[0].completed.emit(_assessment(status))
+        qapp.processEvents()
+        assert len(delivered) == 1
+        success, value = delivered[0]
+        if expected == 'started':
+            assert success and value['started'] and value['storage']['status'] == status
+            assert len(fake_worker.created) == 1
+        else:
+            assert not success and value.code == expected
+            assert value.details['storage']['status'] == status
+            assert not fake_worker.created
+    finally:
+        window.render_manager.cancel_storage_preflight()
+        server.close()
+
+
+@pytest.mark.parametrize('action', ['disconnect', 'cancel'])
+def test_control_cancels_pending_storage_request(
+        window, fake_worker, monkeypatch, tmp_path, qapp, action):
+    from controllers import render_manager
+    from core.control.protocol import encode
+    from core.control.server import ControlServer
+
+    probes = []
+    monkeypatch.setattr(frame_storage, 'automatic_preflight_may_block', lambda: True)
+    monkeypatch.setattr(frame_storage, '_storage_directory', None)
+    monkeypatch.setattr(render_manager._StorageProbe, 'start', lambda probe, estimate: probes.append(probe))
+    server = ControlServer(window, socket_name=f'OpenFocus-cancel-storage-{os.getpid()}-{id(tmp_path)}')
+    try:
+        response = server.handle_line(encode({'id': '1', 'cmd': 'render.start',
+                                              'args': {}, 'token': server.token}), token=server.token)
+        delivered = []
+        handle = response.start(lambda success, value: delivered.append((success, value)))
+        if action == 'disconnect':
+            handle.cancel()
+        else:
+            assert server._cmd_render_cancel({})['cancelling'] is True
+        assert delivered and delivered[0][1].code == 'internal'
+        probes[0].completed.emit(_assessment('ok'))
+        qapp.processEvents()
+        assert not fake_worker.created and window.render_manager._pending_storage is None
+    finally:
+        server.close()
 
 
 def test_control_channel_statuses_and_storage_in_replies(window, fake_worker, monkeypatch, tmp_path):

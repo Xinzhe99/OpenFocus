@@ -1257,6 +1257,8 @@ def _run_batch(args, _emit_json=None) -> int:
             paths = _filter_stack_paths(_folder_stack_paths(folder, loader, folder_args), folder_args.dust_map)
             paths = _filter_stack_paths(paths, getattr(folder_args, "defect_mask_path", None))
             _validate_sensor_sources(paths, folder_args)
+            if not folder_args.group_size:
+                _warn_low_storage(folder_args, paths, folder=folder)
             # Count frames, not files: a folder holding one multi-page TIFF
             # Z-stack is a complete stack (same rule as single-stack mode).
             from core.image_loader import count_frames
@@ -1514,8 +1516,17 @@ def _run_recipe_command(argv: List[str]) -> int:
 def _run_with_logging(argv: List[str]) -> int:
     with log_operation("cli", args=argv) as operation:
         try:
-            with heavy_job(), scratch_directory():
-                result = _run_cli_admitted(argv)
+            args = build_parser().parse_args(argv)
+            directory = None
+            if args.temp_dir is not None:
+                from core.frame_storage import validate_storage_directory
+                try:
+                    directory = validate_storage_directory(args.temp_dir)
+                except OSError as exc:
+                    print(f"error: --temp-dir is not a writable directory: {exc}", file=sys.stderr)
+                    return EXIT_USAGE
+            with heavy_job(), scratch_directory(separate=True, explicit_directory=directory):
+                result = _run_cli_admitted(args)
             if result == EXIT_ERROR:
                 operation.fail()
             log_action("cli.exit", exit_code=result)
@@ -1526,7 +1537,7 @@ def _run_with_logging(argv: List[str]) -> int:
             return EXIT_ERROR
 
 
-def _warn_low_storage(args, paths):
+def _warn_low_storage(args, paths, *, folder=None):
     """Print a stderr warning when temporary storage looks low; never blocks."""
     try:
         from core.frame_storage import assess_scratch, readable_bytes
@@ -1545,23 +1556,19 @@ def _warn_low_storage(args, paths):
         _log.info("storage preflight unavailable", exc_info=True)
         return None
     if assessment["status"] in ("advisory", "critical"):
-        print(f"warning: low temporary storage in {assessment['directory']}: "
-              f"{readable_bytes(assessment['available_bytes'])} available after the safety "
+        location = f" for {folder}" if folder is not None else ""
+        directory = assessment['directory']
+        where = f" in {directory}" if directory is not None else " across available volumes"
+        bound = '' if directory is not None else 'at most '
+        print(f"warning: low temporary storage{where}{location}: "
+              f"{bound}{readable_bytes(assessment['available_bytes'])} available after the safety "
               f"reserve, an estimated {readable_bytes(assessment['required_bytes'])} needed "
               f"(an estimate; caches may be disabled or the render may fail). "
               f"Use --temp-dir DIR to choose another directory.", file=sys.stderr)
     return assessment
 
 
-def _run_cli_admitted(argv: List[str]) -> int:
-    args = build_parser().parse_args(argv)
-    if args.temp_dir is not None:
-        from core.frame_storage import configure_storage_directory
-        try:
-            configure_storage_directory(args.temp_dir)
-        except OSError as exc:
-            print(f"error: --temp-dir is not a writable directory: {exc}", file=sys.stderr)
-            return EXIT_USAGE
+def _run_cli_admitted(args) -> int:
     if args.native_batch_format and (not args.native_raw or not args.output_dir):
         print("error: --native-batch-format requires --native-raw and --output-dir", file=sys.stderr)
         return EXIT_USAGE

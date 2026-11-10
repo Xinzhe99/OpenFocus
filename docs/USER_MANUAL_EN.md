@@ -916,13 +916,19 @@ looks low, **Low temporary storage space** shows the directory, the space
 available and the estimate. **Choose another directory** opens a folder picker;
 the folder must exist and be writable, and its space is checked again before
 the render starts. You can keep the new folder for future renders or use it for
-this render only. **Continue anyway** appears only when the render can still
-run (caches may be disabled, and it may still fail if the disk fills). When the
-render cannot fit at all, only choosing another directory or cancelling is
-offered. Quick previews, ROI renders and **Compare all** do not ask. On the
-command line, the same check prints a warning to standard error and never stops
-the run; use `--temp-dir DIR` to choose the directory. The command line does
-not use the GUI's Temporary directory setting.
+this render only. **Continue anyway** is available when the estimate does not
+establish that the required storage is insufficient. When automatic selection
+could use more than one volume, OpenFocus warns if all available volumes look
+short of space. If their capacity differs, the result may remain unknown until
+the run starts. On macOS, automatic volume discovery runs in the background
+before rendering, keeping the interface responsive. A chosen directory is
+also checked before rendering. Caches may be disabled and processing can still fail if storage
+fills. Quick previews,
+ROI renders and **Compare all** do not ask. On the command line, warnings go to
+standard error and do not stop the run; batch warnings identify each folder.
+Grouped fusion skips this estimate. Use `--temp-dir DIR` to choose a directory
+for that invocation. The command line
+does not use the GUI's Temporary directory setting.
 
 Each neural tile uses every frame. Source frames and alignment scratch can be disk-backed, but free disk space and available memory still limit stack size. V2 spatial tiling approximates whole-image inference.
 
