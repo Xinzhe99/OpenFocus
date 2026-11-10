@@ -85,6 +85,7 @@ _PERSISTED_FIELDS = {
     "output_name_prefix": ("export/name_prefix", "", "str"),
     "restore_last_stack": ("ui/restore_last_stack", False, "bool"),
     "experimental_features": ("ui/experimental_features", False, "bool"),
+    "auto_error_reports": ("reports/auto_send", False, "bool"),
     "ui_theme": ("ui/theme", DEFAULT_THEME, "str"),
     "scale_bar_enabled": ("export/scale_bar_enabled", False, "bool"),
     "scale_um_per_px_manual": ("export/scale_um_per_px_manual", 0.0, "float"),

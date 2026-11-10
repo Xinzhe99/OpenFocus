@@ -12,6 +12,7 @@ import os
 from typing import List, Optional
 from urllib.parse import unquote
 
+from PyQt6 import sip
 from PyQt6.QtWidgets import QApplication, QAbstractSpinBox, QComboBox, QWidget
 from PyQt6.QtGui import QFileOpenEvent, QWheelEvent
 from PyQt6.QtCore import QEvent, QPointF, QTimer, QUrl
@@ -88,6 +89,17 @@ class OpenFocusApplication(QApplication):
         self._import_timer.timeout.connect(self._drain_import_queue)
 
     def notify(self, receiver, event):
+        window = getattr(self, 'main_window', None)
+        logger = (getattr(window, '_activity_logger', None)
+                  if window is not None and not sip.isdeleted(window) else None)
+        active = logger is not None and logger.begin_input(event)
+        try:
+            return self._notify(receiver, event)
+        finally:
+            if active:
+                logger.end_input()
+
+    def _notify(self, receiver, event):
         if event.type() == QEvent.Type.Wheel and isinstance(receiver, QWidget):
             widget = receiver
             window = receiver.window()

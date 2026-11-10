@@ -31,6 +31,13 @@ import faulthandler, runpy, sys, time
 from PyQt6.QtCore import QSettings, QTimer
 from PyQt6.QtWidgets import QApplication, QMainWindow
 from utils.usage_analytics import UsageAnalytics
+from dialogs.account import AccountDialog
+
+original_account_exec = AccountDialog.exec
+def skip_account(dialog):
+    QTimer.singleShot(0, dialog.reject)
+    return original_account_exec(dialog)
+AccountDialog.exec = skip_account
 
 faulthandler.dump_traceback_later(15, repeat=False)
 
@@ -74,3 +81,48 @@ else:
         pytest.fail((exc.stderr or b'').decode('utf-8', 'replace'))
     assert result.returncode == 0, result.stdout + result.stderr
     assert not discovery.exists()
+
+
+def test_close_waits_for_account_worker(qapp, tmp_path, monkeypatch):
+    from threading import Event
+    import time
+    from PyQt6.QtTest import QTest
+    from dialogs.account import AccountDialog
+    from tests.test_control_channel import _new_main_window
+
+    started, release = Event(), Event()
+
+    class Account:
+        def current_user(self):
+            return None
+
+        def is_signed_in(self):
+            return False
+
+        def terms(self):
+            started.set()
+            assert release.wait(5)
+            return {'version': '2026-11-08', 'url': 'https://account.openfocus.top/terms',
+                    'draft': True, 'required': False}
+
+    window = _new_main_window(qapp, tmp_path, monkeypatch)
+    window._account_client = Account()
+    dialog = AccountDialog(window)
+    dialog.show()
+    try:
+        dialog.terms_link.click()
+        assert started.wait(5)
+        window._force_quit = True
+        assert not window.close()
+        assert window.isVisible()
+        release.set()
+        deadline = time.monotonic() + 5
+        while window.isVisible() and time.monotonic() < deadline:
+            QTest.qWait(10)
+        assert not window.isVisible()
+    finally:
+        release.set()
+        window._force_quit = True
+        window.close()
+        window.deleteLater()
+        qapp.processEvents()

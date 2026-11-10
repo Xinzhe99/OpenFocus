@@ -1,4 +1,7 @@
 """Behavioral coverage for output sharing: selection, payloads, files, reveal."""
+import os
+import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -22,12 +25,33 @@ from widgets.output_list import OutputListWidget
 
 
 @pytest.fixture(autouse=True)
-def clean_clipboard(qapp):
-    qapp.clipboard().clear()
-    qapp.processEvents()
-    yield
-    qapp.clipboard().clear()
-    qapp.processEvents()
+def nonblocking_share_errors(isolated_clipboard, monkeypatch):
+
+    def unexpected_error(*args, **kwargs):
+        pytest.fail(f'Unexpected output-sharing error: {args[1:]}')
+
+    monkeypatch.setattr(output_module, 'show_error_box', unexpected_error)
+
+
+def test_file_urls_round_trip_on_qt_clipboard(tmp_path):
+    """Use a separate offscreen Qt process rather than the desktop clipboard."""
+    paths = [tmp_path / '结果 一.png', tmp_path / 'second image.png']
+    code = '''
+import sys
+from pathlib import Path
+from PyQt6.QtWidgets import QApplication
+from utils.output_share import file_urls_mime_data, set_clipboard_payload
+app = QApplication([])
+paths = [Path(value) for value in sys.argv[1:]]
+assert set_clipboard_payload(file_urls_mime_data(paths))
+mime = app.clipboard().mimeData()
+assert [Path(url.toLocalFile()) for url in mime.urls()] == paths
+assert mime.text().replace('\\r\\n', '\\n').splitlines() == [str(path) for path in paths]
+'''
+    result = subprocess.run([sys.executable, '-c', code, *(str(path) for path in paths)],
+                            env=dict(os.environ, QT_QPA_PLATFORM='offscreen'),
+                            capture_output=True, text=True, timeout=20)
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 class RecordingLabels:

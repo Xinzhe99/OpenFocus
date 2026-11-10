@@ -237,9 +237,10 @@ menus (`popup[N]`). Entries carry `root` (`dialog[N]`/`popup[N]`), `active`
 `dialog.open`). Startup prompts such as Session Recovery appear here too;
 handle them before starting a workflow.
 
-System file and folder pickers use native windows. Their controls are not
-reliably exposed through `dialog.list` or `dialog.file`; select or cancel them
-through the desktop interface.
+File and folder pickers opened by control-triggered actions or clicks use Qt
+dialogs so `dialog.list` and `dialog.file` can select or cancel them. Ordinary
+desktop interactions continue to use native system pickers; those native
+windows are not addressable through the control channel.
 
 Managed dialogs and `dialog.open` are modeless so commands continue to flow.
 Dialogs opened by a menu action with `exec()` are reachable in the same way:

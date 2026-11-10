@@ -74,13 +74,21 @@ def _marker_point(canvas):
     return canvas.image_to_widget(QPointF(x + width / 2, y))
 
 
-def _assert_marker_visible(canvas):
+def _pixel_at(image, point):
+    """Read a widget grab at a logical widget coordinate."""
+    dpr = image.devicePixelRatio()
+    return image.pixelColor(round(point.x() * dpr), round(point.y() * dpr))
+
+
+def _marker_colors(canvas):
     point = _marker_point(canvas)
     image = canvas.grab().toImage()
-    x, y = round(point.x()), round(point.y())
-    assert any(image.pixelColor(px, py) == QColor(Qt.GlobalColor.white)
-               for px in range(x - 1, x + 2)
-               for py in range(y - 1, y + 2))
+    return [_pixel_at(image, point + QPointF(dx, dy))
+            for dx in (-1, 0, 1) for dy in (-1, 0, 1)]
+
+
+def _assert_marker_visible(canvas):
+    assert QColor(Qt.GlobalColor.white) in _marker_colors(canvas)
 
 
 def test_drag_repaints_marker_and_release_leave_retain_region(host, qapp):
@@ -103,8 +111,7 @@ def test_drag_repaints_marker_and_release_leave_retain_region(host, qapp):
     assert isinstance(changed[-1], tuple)
     _assert_marker_visible(canvas)
     screenshot = canvas.grab().toImage()
-    assert screenshot.pixelColor(round(old_marker.x()), round(old_marker.y())) == QColor(
-        Qt.GlobalColor.black)
+    assert _pixel_at(screenshot, old_marker) == QColor(Qt.GlobalColor.black)
 
     # Release differs from the last move: its coordinate must be committed.
     _mouse(canvas, QEvent.Type.MouseButtonRelease,
@@ -137,12 +144,7 @@ def test_disabled_region_is_not_draggable_or_painted(host, qapp):
     _wheel(canvas, QPointF(300, 200), 120)
     assert canvas.region() == before
     assert canvas.magnification() == 4
-    point = _marker_point(canvas)
-    image = canvas.grab().toImage()
-    x, y = round(point.x()), round(point.y())
-    assert not any(image.pixelColor(px, py) == QColor(Qt.GlobalColor.white)
-                   for px in range(x - 1, x + 2)
-                   for py in range(y - 1, y + 2))
+    assert QColor(Qt.GlobalColor.white) not in _marker_colors(canvas)
     canvas.set_region_enabled(True)
     _assert_marker_visible(canvas)
 
@@ -306,15 +308,15 @@ def test_detail_crop_translates_nonzero_image_origin(host, qapp):
     assert canvas.has_region()
     image = canvas.grab().toImage()
     for point in (QPoint(20, 100), QPoint(170, 170), QPoint(320, 320)):
-        assert image.pixelColor(point) == QColor(Qt.GlobalColor.green)
+        assert _pixel_at(image, point) == QColor(Qt.GlobalColor.green)
     canvas.set_region((1000, 2050, 50, 50))
     assert canvas.has_region()
-    assert canvas.grab().toImage().pixelColor(170, 170) == QColor(Qt.GlobalColor.blue)
+    assert _pixel_at(canvas.grab().toImage(), QPoint(170, 170)) == QColor(Qt.GlobalColor.blue)
     canvas.setFixedSize(600, 600)
     qapp.processEvents()
     image = canvas.grab().toImage()
     for point in (QPoint(30, 100), QPoint(300, 300), QPoint(570, 570)):
-        assert image.pixelColor(point) == QColor(Qt.GlobalColor.blue)
+        assert _pixel_at(image, point) == QColor(Qt.GlobalColor.blue)
 
 
 @pytest.mark.parametrize("region", [(990, 2000, 50, 50), (1080, 2000, 50, 50),
@@ -332,9 +334,9 @@ def test_detail_missing_pixels_never_shift_the_requested_crop(host, qapp, region
     canvas.set_region(region)
     assert not canvas.has_region()
     image = canvas.grab().toImage()
-    assert image.pixelColor(50, 100) != QColor(Qt.GlobalColor.green)
+    assert _pixel_at(image, QPoint(50, 100)) != QColor(Qt.GlobalColor.green)
     canvas.set_region((1000, 2000, 50, 50))
     assert canvas.has_region()
     canvas.set_result(None, None)
     assert not canvas.has_region()
-    assert canvas.grab().toImage().pixelColor(50, 100) != QColor(Qt.GlobalColor.green)
+    assert _pixel_at(canvas.grab().toImage(), QPoint(50, 100)) != QColor(Qt.GlobalColor.green)

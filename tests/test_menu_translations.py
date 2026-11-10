@@ -66,7 +66,7 @@ def _menu_window(qapp):
             'restore_default_settings', 'set_use_gpu', 'apply_theme', 'set_language',
             "check_for_updates", "install_update_now", "open_logs_folder",
             "show_quick_start", "show_environment_info", "show_feedback_dialog",
-            "show_contact_info"):
+            "show_contact_info", "show_account_dialog"):
         setattr(window, name, stub)
     return window
 

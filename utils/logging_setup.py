@@ -35,6 +35,7 @@ _handler = None
 _directory = None
 _session_marker = None
 _session_started = False
+_session_had_error = False
 # A level chosen while running (Advanced Settings, --log-level). It outlives
 # repeated setup_logging() calls, which would otherwise restore the default.
 _runtime_level = None
@@ -65,8 +66,22 @@ def session_log_path() -> Path:
     return logs_dir() / f"openfocus-{session_id()}.log"
 
 
+def mark_session_error() -> None:
+    """Retain an error trigger even if its log entry is later rotated out."""
+    global _session_had_error
+    with _lock:
+        _session_had_error = True
+
+
+def session_had_error() -> bool:
+    with _lock:
+        return _session_had_error
+
+
 class _ContextFilter(logging.Filter):
     def filter(self, record):
+        if record.levelno >= logging.ERROR:
+            mark_session_error()
         context = _context.get()
         record.session_id = session_id()
         if not hasattr(record, "operation_id"):
@@ -227,6 +242,8 @@ def get_logger(name: str = "openfocus") -> logging.Logger:
 
 
 def _event(event, details, *, level=logging.INFO, exc_info=None):
+    if event.endswith('.failed'):
+        mark_session_error()
     context = _context.get()
     try:
         payload = json.dumps(details, ensure_ascii=False, sort_keys=True, default=str)
@@ -273,12 +290,31 @@ def frame_details(images) -> dict:
     except TypeError:
         return {"frame_count": None}
     details = {"frame_count": count}
-    if count:
-        first = images[0]
-        shape = getattr(first, "shape", None)
-        dtype = getattr(first, "dtype", None)
-        details.update(first_shape=tuple(shape) if shape is not None else None,
-                       first_dtype=str(dtype) if dtype is not None else None)
+    if not count:
+        return details
+    first = images[0]
+    shape = getattr(first, "shape", None)
+    dtype = getattr(first, "dtype", None)
+    details.update(first_shape=tuple(shape) if shape is not None else None,
+                   first_dtype=str(dtype) if dtype is not None else None)
+    shapes = {}
+    total_bytes = 0
+    sizes_known = True
+    for frame in images:
+        shape = getattr(frame, "shape", None)
+        dtype = getattr(frame, "dtype", None)
+        key = (tuple(shape) if shape is not None else None,
+               str(dtype) if dtype is not None else None)
+        shapes[key] = shapes.get(key, 0) + 1
+        size = getattr(frame, "nbytes", None)
+        if isinstance(size, int) and size >= 0:
+            total_bytes += size
+        else:
+            sizes_known = False
+    details["frame_shapes"] = [{"shape": shape, "dtype": dtype, "count": count}
+                               for (shape, dtype), count in shapes.items()]
+    if sizes_known:
+        details["total_bytes"] = total_bytes
     return details
 
 
