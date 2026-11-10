@@ -951,6 +951,8 @@ def test_project_open_sets_lifecycle_state(server, control_window, monkeypatch):
     from utils import project_file
 
     assert getattr(control_window, "project_path", None) in (None, "")
+    # Fixture settings can mark the untitled project dirty before this test.
+    control_window._clear_project_dirty()
     captured = {}
 
     def fake_apply(window, state, on_loaded=None, on_error=None):
@@ -959,7 +961,10 @@ def test_project_open_sets_lifecycle_state(server, control_window, monkeypatch):
     monkeypatch.setattr(project_file, "validate_project",
                         lambda path: (True, "", {"sources": []}))
     monkeypatch.setattr(project_file, "apply_project", fake_apply)
-    call(server, "project.open", path="life.ofproj")["result"]
+    result = call(server, "project.open", path="life.ofproj")
+    assert result["ok"], result
+    assert getattr(control_window, "project_path", None) in (None, "")
+    control_window._mark_project_dirty()
     captured["on_loaded"]()
     assert control_window.project_path == "life.ofproj"
     assert control_window._project_dirty is False
@@ -1290,6 +1295,27 @@ def test_option_set_keeps_checkboxes_in_sync(server, control_window, monkeypatch
     assert control_window.stack_reverse_order is True
     assert control_window.chk_reverse_order.isChecked() is True
     call(server, "option.set", name="reverse_order", value=False)
+
+
+def test_diagnostic_options_are_reachable_and_take_effect_at_once(server, control_window):
+    from utils import logging_setup as logs
+    assert call(server, "app.state")["result"]["options"]["profile_performance"] is False
+    try:
+        call(server, "option.set", name="profile_performance", value=True)
+        call(server, "option.set", name="debug_logging", value=True)
+        options = call(server, "app.state")["result"]["options"]
+        assert options["profile_performance"] is True and options["debug_logging"] is True
+        assert control_window.profile_performance is True
+        assert logs.debug_enabled()
+        refused = call(server, "option.set", name="debug_logging", value="false")
+        assert refused["ok"] is False and refused["error"]["code"] == "invalid_argument"
+        assert logs.debug_enabled()                 # a string does not change the switch
+        control_window.render_manager.performance_report = {"outcome": "completed"}
+        assert call(server, "render.result")["result"]["performance"] == {"outcome": "completed"}
+    finally:
+        call(server, "option.set", name="debug_logging", value=False)
+        call(server, "option.set", name="profile_performance", value=False)
+    assert not logs.debug_enabled()
 
 
 def test_output_delete_clears_the_result_and_protects_retouch(server, stack_frames):

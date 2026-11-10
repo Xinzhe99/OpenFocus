@@ -109,7 +109,7 @@ def normalized_frames(frames, should_cancel=None):
 def plan_attention_inference(algorithm, frames, model_path, device,
                              thread_count=None,
                              resource_preference='balanced', execution_plan=None,
-                             result_count=1, fixed_bytes=0):
+                             result_count=1, fixed_bytes=0, height=None, width=None):
     """Admit the compact runtime's working set before creating a session."""
     from core.resource_policy import Workload, plan_execution, probe_resources
     from fusion_methods.neural_runtime import estimate_inference_bytes
@@ -119,6 +119,8 @@ def plan_attention_inference(algorithm, frames, model_path, device,
         thread_count = min(thread_count or execution_plan.native_threads,
                            execution_plan.native_threads)
     h, w = frames[0].shape[:2]
+    h = int(height) if height is not None else h
+    w = int(width) if width is not None else w
     n = len(frames)
     c = frames[0].shape[2] if frames[0].ndim == 3 else 1
     hp, wp = h + (-h) % 64, w + (-w) % 64

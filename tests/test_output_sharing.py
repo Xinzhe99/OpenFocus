@@ -575,21 +575,21 @@ def test_disappearing_exported_file_is_not_reused(qapp, tmp_path, monkeypatch):
     item, record = add_record(
         window, np.zeros((4, 4, 3), np.uint8), "saved", exported=True,
         export_path=str(saved), annotations_baked=True)
-    monkeypatch.setattr(
-        output_module.os.path, "getsize",
-        lambda path: (_ for _ in ()).throw(OSError("file disappeared")))
+    getsize = output_module.os.path.getsize
+    monkeypatch.setattr(output_module.os.path, "getsize", lambda path:
+                        (_ for _ in ()).throw(OSError("file disappeared"))
+                        if str(path) == str(saved) else getsize(path))
     assert window.output_manager._share_persistent_path(record) == ""
     errors = []
     monkeypatch.setattr(output_module, "show_error_box",
                         lambda *args: errors.append(args))
-    monkeypatch.setattr(output_module.FileDialog, "getExistingDirectory",
-                        lambda *args, **kwargs: str(tmp_path))
+    window.output_manager._share_temp_dir = str(tmp_path)
     opened = []
     monkeypatch.setattr(output_module, 'select_in_file_manager', lambda path: opened.append(path) or True)
     window.output_manager.share_reveal(item)
     assert not errors
-    assert record.export_path != str(saved)
-    assert opened == [record.export_path]
+    assert record.export_path == str(saved)
+    assert len(opened) == 1 and Path(opened[0]) != saved.resolve()
 
 
 def test_reveal_surfaces_a_file_manager_exception(qapp, tmp_path, monkeypatch):
@@ -648,45 +648,34 @@ def test_reveal_opens_the_persistent_file_for_the_target(qapp, tmp_path, monkeyp
     assert called == [str(saved)]
 
 
-def test_reveal_saves_an_unsaved_output_before_opening(
+def test_reveal_opens_temp_for_unsaved_result_without_marking_it_saved(
         qapp, tmp_path, monkeypatch):
     window = host(qapp)
+    window.output_manager._share_temp_dir = str(tmp_path)
     item, record = add_record(window, np.zeros((6, 8, 3), np.uint8), "reveal")
     monkeypatch.setattr(output_module.FileDialog, "getExistingDirectory",
-                        lambda *args, **kwargs: str(tmp_path))
+                        lambda *args, **kwargs: pytest.fail("no folder picker"))
     called = []
     monkeypatch.setattr(output_module, "select_in_file_manager",
                         lambda path: called.append(path) or True)
     window.output_manager.share_reveal(item)
     expected = str(tmp_path / "reveal.png")
-    assert called == [expected]
-    assert record.exported and record.export_path == expected
+    assert called == [expected] and Path(expected).is_file()
+    assert not record.exported and record.export_path == ""
 
 
-def test_reveal_failure_is_visible_and_cancel_does_not_open(
-        qapp, tmp_path, monkeypatch):
+def test_reveal_failure_is_visible(qapp, tmp_path, monkeypatch):
     window = host(qapp)
     saved = tmp_path / "saved.png"
     assert imwrite_auto(str(saved), np.zeros((4, 4, 3), np.uint8), [])
     item, _ = add_record(window, np.zeros((4, 4, 3), np.uint8), "saved",
-                         exported=True, export_path=str(saved),
-                         annotations_baked=True)
+                         exported=True, export_path=str(saved), annotations_baked=True)
     errors = []
-    monkeypatch.setattr(output_module, "show_error_box",
-                        lambda *args: errors.append(args))
+    monkeypatch.setattr(output_module, "show_error_box", lambda *args: errors.append(args))
     monkeypatch.setattr(output_module, "select_in_file_manager", lambda path: False)
     window.output_manager.share_reveal(item)
     assert errors and errors[0][1] == trans.t("msg_share_failed_title")
     assert errors[0][2] == trans.t("msg_share_reveal_failed")
-
-    cancel_item, record = add_record(window, np.zeros((6, 8, 3), np.uint8), "cancel")
-    monkeypatch.setattr(output_module.FileDialog, "getExistingDirectory",
-                        lambda *args, **kwargs: "")
-    called = []
-    monkeypatch.setattr(output_module, "select_in_file_manager",
-                        lambda path: called.append(path) or True)
-    window.output_manager.share_reveal(cancel_item)
-    assert called == [] and not record.exported
 
 
 def test_encode_jpeg_preview_rejects_non_image_values():

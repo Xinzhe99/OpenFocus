@@ -25,6 +25,7 @@ os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 import numpy as np
 from typing import List, Optional, Tuple
 
+from utils import performance_profile
 from utils.sorting import natural_sort_key
 from utils.path_identity import file_identity, path_key
 from core.resource_policy import heavy_job, require_memory
@@ -111,22 +112,22 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--align", "-a", default="none",
                         choices=[spec.id for spec in registration_algorithms()],
                         help="Registration applied before fusion (default: none); openfocus = "
-                             "fast bounded similarity search with brightness equalization")
+                             "fast bounded similarity search with auto-crop")
     parser.add_argument("--param", action="append", default=[], metavar="KEY=JSON_VALUE",
                         help="Fusion parameter; repeat for multiple keys. Overrides legacy flags.")
     parser.add_argument("--align-param", action="append", default=[], metavar="KEY=JSON_VALUE",
                         help="Registration parameter; repeat for multiple keys.")
     parser.add_argument("--align-shift-limit", type=float, default=None, metavar="RATIO",
                         help="openfocus alignment only: translation search domain as a fraction "
-                             "of the frame size (default 0.05)")
+                             "of the frame size (default 0.03)")
     parser.add_argument("--base-frame", default="none", choices=["none", "last", "first"],
                         help="Optional post-fusion base correction: match the output's low "
                              "frequencies to the last/first frame (default: none).")
     parser.add_argument("--exposure-match", dest="exposure_match",
                         action=argparse.BooleanOptionalAction, default=True,
-                        help="Match every frame's exposure to the last frame before fusion "
-                             "(default: on; --no-exposure-match disables it). Computed on the "
-                             "whole stack before tiling, for every fusion method.")
+                        help="Match exposure before fusion: OpenFocus A/B/C use the first "
+                             "processed frame, other methods use the last (default: on; "
+                             "--no-exposure-match disables it). Applied before tiling.")
     parser.add_argument("--sharpen-output", action="store_true",
                         help="Apply mild unsharp masking to the fused output (off by default).")
     parser.add_argument("--sort", default="asc", choices=["asc", "desc", "off"],
@@ -141,13 +142,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--sensor-denoise", action="store_true",
                         help="Apply conservative sensor denoising before registration")
     parser.add_argument("--kernel", "-k", type=int, default=None,
-                        help="Odd kernel size; for OpenFocus A/B, controls focus-response scale")
-    parser.add_argument("--depth-smoothing", type=float, default=None, metavar="VALUE",
-                        help="openfocus_b only: depth-map transition smoothing "
-                             "(default 1.44; larger values smooth transitions more)")
-    parser.add_argument("--blend-smoothing", type=float, default=None, metavar="VALUE",
-                        help="openfocus_a / openfocus_c only: transition smoothing "
-                             "(defaults 2.0 for A and 3.6 for C)")
+                        help="Odd kernel size for methods with a kernel_size parameter; "
+                             "use --param radius=8 for OpenFocus A/B")
     parser.add_argument("--threads", "-t", type=int, default=0,
                         help="Worker thread upper limit (0 = automatic; default: 0)")
     parser.add_argument("--resource-preference", default="balanced",
@@ -215,6 +211,20 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Write registration diagnostics as JSON (requires alignment; single stack only; no grouped fusion or dry run)")
     parser.add_argument("--json-progress", action="store_true",
                         help="Print one JSON progress object per step to stdout (NDJSON)")
+    parser.add_argument("--temp-dir", default=None, metavar="DIR",
+                        help="Directory for temporary data (must exist and be writable). "
+                             "Default: the system temporary directory or the local volume "
+                             "with the most space; the GUI's Temporary directory setting "
+                             "is not used by the CLI")
+    parser.add_argument("--profile-performance", nargs="?", const=True, default=None, metavar="FILE",
+                        help="Time supported render stages; print a summary to stderr, embed the "
+                             "report in --json, and optionally write it as JSON to FILE "
+                             "(single, non-grouped run only)")
+    parser.add_argument("--log-level", default=None, type=str.upper, metavar="LEVEL",
+                        choices=("DEBUG", "INFO", "WARNING", "ERROR"),
+                        help="Detail of this run's log file: debug, info (default), warning "
+                             "or error. Overrides OPENFOCUS_LOG_LEVEL; the log path is "
+                             "printed to stderr")
     parser.add_argument("--config", default=None, metavar="FILE",
                         help="Batch mode: JSON file with per-folder overrides, "
                              "e.g. {\"stackA\": {\"method\": \"dct\", \"kernel\": 9}}")
@@ -240,16 +250,15 @@ def _resolve_algorithm_arguments(args):
     get_registration(args.align)
     declared = {parameter.key for parameter in spec.parameters}
     values = {}
-    if getattr(args, "kernel", None) is not None and "kernel_size" in declared:
+    if getattr(args, "kernel", None) is not None:
+        if "kernel_size" not in declared:
+            raise ValueError("--kernel is not available for this method; use --param radius=... for OpenFocus A/B")
         default = next(parameter.default for parameter in spec.parameters if parameter.key == "kernel_size")
         values["kernel_size"] = _normalize_kernel(args.kernel, default)
-    for old, key in (("depth_smoothing", "depth_smoothing"),
-                     ("blend_smoothing", "blend_smoothing"), ("ai_mode", "mode")):
-        value = getattr(args, old, None)
-        if value is not None and key in declared:
-            if key.endswith("smoothing") and not math.isfinite(value):
-                raise ValueError(f"{old} must be finite")
-            values[key] = max(0.0, value) if key.endswith("smoothing") else value
+    if getattr(args, "ai_mode", None) is not None:
+        if "mode" not in declared:
+            raise ValueError("--ai-mode is not available for this method")
+        values["mode"] = args.ai_mode
     provided = getattr(args, "fusion_parameters", {})
     registration = getattr(args, "registration_parameters", {})
     if not isinstance(provided, dict) or not isinstance(registration, dict):
@@ -589,6 +598,30 @@ def _fuse_stack(images, args):
 
 
 def _fuse_stack_admitted(images, args):
+    from core.algorithms import alignment_steps, get_fusion
+    from core.frame_resolution_cache import (mandatory_staging_bytes,
+                                             render_scope)
+    frames = list(images) if isinstance(images, (list, tuple)) else []
+    mandatory = 0
+    if frames:
+        steps = (len(alignment_steps(args.align))
+                 if getattr(args, "align", "none") != "none" else 0)
+        mandatory = mandatory_staging_bytes(
+            frames, alignment_steps=steps,
+            exposure_match=bool(getattr(args, "exposure_match", True)),
+            deferred=bool(get_fusion(args.method).streaming_sources))
+    from core.resource_policy import log_render_resources
+    log_render_resources('start', getattr(args, "resource_preference", "balanced"))
+    try:
+        with render_scope(frames, mandatory_bytes=mandatory,
+                          should_cancel=getattr(args, '_should_cancel', None)), \
+                performance_profile.current().stage('render', resources=True):
+            return _fuse_stack_admitted_body(images, args)
+    finally:
+        log_render_resources('end')
+
+
+def _fuse_stack_admitted_body(images, args):
     """Register and fuse one stack; returns the fused image."""
     import cv2
     from core.registration import ImageRegistration
@@ -626,6 +659,13 @@ def _fuse_stack_admitted(images, args):
                                  should_cancel=should_cancel) for image in images]
                   if streaming_sources else [store_frame(apply_flat_field(image, gain)) for image in images])
         _say(f"Flat-field (dust map) correction applied from {dust_white}")
+    preordered = (args.align == 'openfocus' and get_fusion(args.method).sort_frames
+                  and getattr(args, 'sort', 'asc') == 'desc')
+    if preordered:
+        images = list(reversed(images))
+    args._alignment_reversed = preordered
+    fusion_order = 'asc' if preordered else getattr(args, 'sort', 'asc')
+
 
     if args.align != "none":
         defer_warps = streaming_sources
@@ -638,9 +678,10 @@ def _fuse_stack_admitted(images, args):
             brightness_reference=("last" if getattr(args, "exposure_match", True)
                                   else "first"),
             use_gpu=False, defer_warps=defer_warps)
-        images = reg.process(images, output_path=None, thread_count=args.threads,
-                             resource_preference=getattr(args, "resource_preference", "balanced"),
-                             should_cancel=should_cancel)
+        with performance_profile.current().stage('registration', resources=True):
+            images = reg.process(images, output_path=None, thread_count=args.threads,
+                                 resource_preference=getattr(args, "resource_preference", "balanced"),
+                                 should_cancel=should_cancel)
         _say(f"Registration ({args.align}) done in {time.time() - t0:.1f}s")
 
     spec = get_fusion(args.method)
@@ -648,7 +689,7 @@ def _fuse_stack_admitted(images, args):
                          fusion_parameters=args._fusion_parameters,
                          resource_preference=getattr(args, "resource_preference", "balanced"),
                          base_frame=getattr(args, "base_frame", "none"),
-                         sort_mode=getattr(args, "sort", "asc"),
+                         sort_mode=fusion_order,
                          exposure_match=getattr(args, "exposure_match", True),
                          ai_batch_size=args.batch_size)
     log_action("cli.fusion", method=args.method, alignment=args.align,
@@ -666,14 +707,26 @@ def _fuse_stack_admitted(images, args):
     if getattr(args, "tile_threshold", None) is not None:
         fusion_kwargs["tile_threshold"] = args.tile_threshold
     fusion = MultiFocusFusion(**fusion_kwargs)
-    images, is_16bit = prepare_fusion_input(images, getattr(args, "_should_cancel", None))
+    profile = performance_profile.current()
+    with profile.stage('prepare_input'):
+        images, is_16bit = prepare_fusion_input(images, getattr(args, "_should_cancel", None))
     t0 = time.time()
     fuse_kwargs = dict(input_source=images, img_resize=None, thread_count=args.threads,
                        should_cancel=should_cancel)
     model_weights = _method_weights(spec)
     if model_weights:
         fuse_kwargs["model_path"] = model_weights
-    fused = fusion.fuse(**fuse_kwargs)
+    with profile.stage('fusion', resources=True):
+        fused = fusion.fuse(**fuse_kwargs)
+    if profile.enabled and fused is not None:
+        profile.set('render', algorithm=args.method,
+                    mode=args._fusion_parameters.get('mode'), frames=len(images),
+                    source_dtype=str(images[0].dtype) if len(images) else None,
+                    output_shape=list(fused.shape), device=fusion.get_info()['device'],
+                    resource_preference=getattr(args, "resource_preference", "balanced"),
+                    use_gpu_requested=not args.cpu, tile_block_size=fusion.tile_block_size,
+                    tile_overlap=fusion.tile_overlap, tile_enabled=fusion.tile_enabled)
+        profile.set('threads', requested=args.threads)
     info = fusion.get_info()
     if fused is None:
         raise RuntimeError("Fusion returned no result")
@@ -691,7 +744,7 @@ def _fuse_stack_admitted(images, args):
         if spec.sort_frames:
             from fusion_methods.openfocus_ab import sort_frames_for_openfocus
             depth_frames, _flipped = sort_frames_for_openfocus(
-                depth_frames, getattr(args, "sort", "asc"))
+                depth_frames, fusion_order)
         args._depth_frames = depth_frames
     _say(f"Fusion ({args.method}, device={info['device']}) done in {time.time() - t0:.1f}s")
     return fused
@@ -796,7 +849,8 @@ def _validate_alignment_report_path(args, paths=()):
         raise ValueError("--alignment-report must differ from input and output paths")
 
 
-def _write_alignment_report(path, payload):
+def _replace_text_file(path, text, prefix):
+    """Create the folder, then replace ``path`` only once ``text`` is fully written."""
     import tempfile
 
     directory = os.path.dirname(os.path.abspath(path))
@@ -804,16 +858,20 @@ def _write_alignment_report(path, payload):
     temporary = None
     try:
         with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=directory,
-                                         prefix=".openfocus_alignment_", suffix=".tmp",
+                                         prefix=prefix, suffix=".tmp",
                                          delete=False) as stream:
             temporary = stream.name
-            json.dump(payload, stream, ensure_ascii=False, indent=2, allow_nan=False)
-            stream.write("\n")
+            stream.write(text)
         os.replace(temporary, path)
         temporary = None
     finally:
         if temporary is not None:
             os.unlink(temporary)
+
+
+def _write_alignment_report(path, payload):
+    _replace_text_file(path, json.dumps(payload, ensure_ascii=False, indent=2,
+                                        allow_nan=False) + "\n", ".openfocus_alignment_")
 
 
 def _save_depth(args, fused_out: str) -> None:
@@ -888,11 +946,18 @@ def _result_outputs(args, fused_out: str):
     return outputs
 
 
+def _profile_destination(args):
+    """The --profile-performance FILE, or None when no file was requested."""
+    path = getattr(args, "profile_performance", None)
+    return path if isinstance(path, str) else None
+
+
 def _run_outputs(args, fused_out: str):
-    """`_result_outputs` plus the run-wide JSON summary and alignment report."""
+    """`_result_outputs` plus the run-wide JSON summary, alignment report and profile."""
     outputs = _result_outputs(args, fused_out)
     for flag, path in (("--json", getattr(args, "json", None)),
-                       ("--alignment-report", getattr(args, "alignment_report", None))):
+                       ("--alignment-report", getattr(args, "alignment_report", None)),
+                       ("--profile-performance", _profile_destination(args))):
         if path:
             outputs.append((flag, path))
     return outputs
@@ -1233,6 +1298,8 @@ def _run_batch(args, _emit_json=None) -> int:
             paths = _filter_stack_paths(_folder_stack_paths(folder, loader, folder_args), folder_args.dust_map)
             paths = _filter_stack_paths(paths, getattr(folder_args, "defect_mask_path", None))
             _validate_sensor_sources(paths, folder_args)
+            if not folder_args.group_size:
+                _warn_low_storage(folder_args, paths, folder=folder)
             # Count frames, not files: a folder holding one multi-page TIFF
             # Z-stack is a complete stack (same rule as single-stack mode).
             from core.image_loader import count_frames
@@ -1490,8 +1557,17 @@ def _run_recipe_command(argv: List[str]) -> int:
 def _run_with_logging(argv: List[str]) -> int:
     with log_operation("cli", args=argv) as operation:
         try:
-            with heavy_job(), scratch_directory():
-                result = _run_cli_admitted(argv)
+            args = build_parser().parse_args(argv)
+            directory = None
+            if args.temp_dir is not None:
+                from core.frame_storage import validate_storage_directory
+                try:
+                    directory = validate_storage_directory(args.temp_dir)
+                except OSError as exc:
+                    print(f"error: --temp-dir is not a writable directory: {exc}", file=sys.stderr)
+                    return EXIT_USAGE
+            with heavy_job(), scratch_directory(separate=True, explicit_directory=directory):
+                result = _run_cli_admitted(args)
             if result == EXIT_ERROR:
                 operation.fail()
             log_action("cli.exit", exit_code=result)
@@ -1502,8 +1578,93 @@ def _run_with_logging(argv: List[str]) -> int:
             return EXIT_ERROR
 
 
-def _run_cli_admitted(argv: List[str]) -> int:
-    args = build_parser().parse_args(argv)
+def _warn_low_storage(args, paths, *, folder=None):
+    """Print a stderr warning when temporary storage looks low; never blocks."""
+    try:
+        from core.frame_storage import assess_scratch, readable_bytes
+        from core.source_frames import scan_source
+        from core.storage_preflight import render_storage_estimate
+        frames = []
+        for path in paths:
+            # Every page: a multipage TIFF is rendered as a whole stack.
+            frames.extend(scan_source(path, header_only=True))
+        minimum, expected, optional, sources = render_storage_estimate(
+            frames, algorithm=args.method, alignment=args.align,
+            exposure_match=bool(getattr(args, "exposure_match", False)),
+            cleanup=bool(args.defect_mask_path or args.sensor_denoise))
+        assessment = assess_scratch(minimum, expected, optional, sources)
+    except Exception:
+        _log.info("storage preflight unavailable", exc_info=True)
+        return None
+    if assessment["status"] in ("advisory", "critical"):
+        location = f" for {folder}" if folder is not None else ""
+        directory = assessment['directory']
+        where = f" in {directory}" if directory is not None else " across available volumes"
+        bound = '' if directory is not None else 'at most '
+        print(f"warning: low temporary storage{where}{location}: "
+              f"{bound}{readable_bytes(assessment['available_bytes'])} available after the safety "
+              f"reserve, an estimated {readable_bytes(assessment['required_bytes'])} needed "
+              f"(an estimate; caches may be disabled or the render may fail). "
+              f"Use --temp-dir DIR to choose another directory.", file=sys.stderr)
+    return assessment
+
+
+def _run_cli_admitted(args) -> int:
+    if args.log_level is not None:
+        from utils.logging_setup import session_log_path, set_log_level
+        set_log_level(args.log_level)
+        print(f"Log file: {session_log_path()}", file=sys.stderr)
+    if args.profile_performance is None:
+        return _run_cli_parsed(args)
+    return _run_cli_profiled(args)
+
+
+def _cli_performance_report(args, profile, outcome):
+    """Finalize the CLI report once; --json and FILE share the same object."""
+    report = getattr(args, '_performance_report', None)
+    if report is None:
+        report = profile.report(outcome)
+        report['finished_at'] = performance_profile.finished_now()
+        report['runtime'] = performance_profile.runtime_metadata()
+        from core.resource_policy import cpu_facts
+        report['runtime'].update(cpu_facts(getattr(args, 'resource_preference', 'balanced')))
+        args._performance_report = report
+    return report
+
+
+def _run_cli_profiled(args) -> int:
+    """Run with an active profile; a profiling failure never changes the exit code."""
+    profile = performance_profile.PerformanceProfile()
+    args._performance_profile = profile
+    profile.unmeasured('source decoding runs lazily inside registration/fusion for streaming '
+                       'methods; see concurrent.source_decode (summed across threads)')
+    profile.unmeasured('peak live scratch bytes')
+    outcome = 'failed'
+    try:
+        with performance_profile.active(profile):
+            result = _run_cli_parsed(args)
+        outcome = 'completed' if result == EXIT_OK else 'failed'
+    except KeyboardInterrupt:
+        outcome = 'cancelled'
+        raise
+    finally:
+        if getattr(args, '_performance_started', False):
+            try:
+                report = _cli_performance_report(args, profile, outcome)
+                if outcome == 'cancelled':
+                    report['outcome'] = outcome
+                log_action('render.performance', **performance_profile.compact(report))
+                print(performance_profile.summary(report), file=sys.stderr)
+                if isinstance(args.profile_performance, str):
+                    # After a long render: a failed write must not cost an earlier report.
+                    _replace_text_file(args.profile_performance,
+                                       performance_profile.dumps(report) + '\n', ".openfocus_profile_")
+            except Exception as exc:
+                print(f"warning: --profile-performance: {exc}", file=sys.stderr)
+    return result
+
+
+def _run_cli_parsed(args) -> int:
     if args.native_batch_format and (not args.native_raw or not args.output_dir):
         print("error: --native-batch-format requires --native-raw and --output-dir", file=sys.stderr)
         return EXIT_USAGE
@@ -1516,6 +1677,10 @@ def _run_cli_admitted(argv: List[str]) -> int:
                 (args.output_dir and (args.native_batch_format or "dng") == "dng") or
                 (args.output and os.path.splitext(args.output)[1].lower() == ".dng")):
             print("error: scale bars are not supported in native DNG output", file=sys.stderr)
+            return EXIT_USAGE
+    if args.profile_performance is not None:
+        if args.suggest_duplicates or args.output_dir or args.group_size or args.dry_run:
+            print("error: --profile-performance requires a single, non-grouped fusion run", file=sys.stderr)
             return EXIT_USAGE
     if args.alignment_report:
         if args.suggest_duplicates or args.output_dir or args.group_size or args.dry_run:
@@ -1643,7 +1808,7 @@ def _run_cli_admitted(argv: List[str]) -> int:
             if not isinstance(override, dict):
                 raise ValueError(f"Overrides for {folder} must be an object")
             unknown = set(override) - {
-                "method", "align", "kernel", "depth_smoothing", "blend_smoothing",
+                "method", "align", "kernel",
                 "ai_mode", "base_frame", "sort", "exposure_match", "sharpen_output", "cpu", "threads",
                 "batch_size", "downscale", "tile_size", "align_shift_limit",
                 "resource_preference", "fusion_parameters", "registration_parameters",
@@ -1659,6 +1824,13 @@ def _run_cli_admitted(argv: List[str]) -> int:
         if not args.json:
             return
         import json
+        profile = getattr(args, '_performance_profile', None)
+        if profile is not None and getattr(args, '_performance_started', False):
+            try:
+                payload = {**payload, "performance": _cli_performance_report(
+                    args, profile, 'failed' if 'error' in payload else 'completed')}
+            except Exception as exc:
+                print(f"warning: --profile-performance: {exc}", file=sys.stderr)
         try:
             os.makedirs(os.path.dirname(os.path.abspath(args.json)), exist_ok=True)
             with open(args.json, "w", encoding="utf-8") as f:
@@ -1729,7 +1901,7 @@ def _run_cli_admitted(argv: List[str]) -> int:
                 if batch_mode:
                     _validate_native_paths(paths)
             _validate_native_paths(all_paths)
-            destinations = [args.json, args.alignment_report]
+            destinations = [args.json, args.alignment_report, _profile_destination(args)]
             if batch_mode:
                 destinations.extend(os.path.join(args.output_dir,
                     (os.path.basename(os.path.abspath(folder)) or "stack") + args._batch_ext)
@@ -1790,16 +1962,20 @@ def _run_cli_admitted(argv: List[str]) -> int:
                             "output": args.output})
                 return EXIT_OK
 
+            if not args.native_raw and not args.group_size:
+                _warn_low_storage(args, paths)
             _progress(event="load", done=1, total=1, frames=len(paths))
+            args._performance_started = True
             if args.native_raw:
                 images, native_metadata = _load_native_stack(paths, args)
             elif not args.group_size:
-                images = _load_images(
-                    paths, thread_count=getattr(args, "threads", 0) or 0,
-                    resource_preference=getattr(args, "resource_preference", "balanced"),
-                    registration_steps=int(args.align != 'none'),
-                    exposure_match=getattr(args, 'exposure_match', False),
-                    lazy=get_fusion(args.method).streaming_sources)
+                with performance_profile.current().stage('load', resources=True):
+                    images = _load_images(
+                        paths, thread_count=getattr(args, "threads", 0) or 0,
+                        resource_preference=getattr(args, "resource_preference", "balanced"),
+                        registration_steps=int(args.align != 'none'),
+                        exposure_match=getattr(args, 'exposure_match', False),
+                        lazy=get_fusion(args.method).streaming_sources)
             if paths:
                 from utils.image_utils import set_source_exif
                 from core.image_loader import _read_exif_bytes
@@ -1834,10 +2010,11 @@ def _run_cli_admitted(argv: List[str]) -> int:
                 background = _auto_background(args, fused)
                 fused = background.image
 
-        if args.native_raw:
-            _save_native(args.output, fused, native_metadata, scale_cfg)
-        else:
-            _save(args.output, fused, scale_cfg, source_icc_profile)
+        with performance_profile.current().stage('save'):
+            if args.native_raw:
+                _save_native(args.output, fused, native_metadata, scale_cfg)
+            else:
+                _save(args.output, fused, scale_cfg, source_icc_profile)
         _say(f"Saved: {args.output}")
         _progress(event="save", output=args.output)
         outputs = [args.output]
@@ -1849,6 +2026,11 @@ def _run_cli_admitted(argv: List[str]) -> int:
             _save_depth(args, args.output)
             outputs.append(_depth_out_path(args, args.output))
         if args.alignment_report:
+            if getattr(args, '_alignment_reversed', False):
+                for entry in entries:
+                    for key in ('frame_index', 'reference_index'):
+                        if entry.get(key) is not None:
+                            entry[key] = frame_count - 1 - entry[key]
             _write_alignment_report(args.alignment_report, {
                 "method": args.align,
                 "input": args.input,

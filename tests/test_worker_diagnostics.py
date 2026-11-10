@@ -59,7 +59,7 @@ def _frames():
 
 def _render():
     return RenderWorker(_frames(), algorithm="openfocus_a", alignment="none",
-                        fusion_parameters={"kernel_size": 5}, use_gpu=False,
+                        fusion_parameters={"radius": 2}, use_gpu=False,
                         tile_enabled=False, thread_count=1)
 
 
@@ -88,7 +88,7 @@ def test_render_failure_retains_traceback_and_error_signal(monkeypatch, diagnost
     assert failed.exc_info[2] is not None
     details = _details(started)
     assert details["method"] == "openfocus_a"
-    assert details["parameters"]["kernel_size"] == 5
+    assert details["parameters"]["radius"] == 2
     assert details["registration"] == []
     assert details["frame_count"] == 2
     assert details["first_shape"] == [8, 12, 3]

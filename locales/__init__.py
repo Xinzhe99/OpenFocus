@@ -38,6 +38,36 @@ class TranslationManager(QObject):
         self.translations = {"en": dict(EN), "zh": dict(ZH)}
 
         self._load_language_packs()
+        labels = {
+            'en': ('Radius:', 'Smoothing:', 'Feather:', 'OpenFocus A does not currently use smoothing.'),
+            'zh': ('半径：', '平滑度：', '羽化：', 'OpenFocus A 目前不使用平滑度。'),
+            'ja': ('半径：', '平滑度：', 'ぼかし：', 'OpenFocus A では現在、平滑度は使用されません。'),
+            'es': ('Radio:', 'Suavizado:', 'Desvanecimiento:', 'OpenFocus A aún no utiliza el suavizado.'),
+            'de': ('Radius:', 'Glättung:', 'Weiche Kante:', 'OpenFocus A verwendet die Glättung derzeit nicht.'),
+            'fr': ('Rayon :', 'Lissage :', 'Contour progressif :', 'OpenFocus A n’utilise pas encore le lissage.'),
+            'ru': ('Радиус:', 'Сглаживание:', 'Растушёвка:', 'OpenFocus A пока не использует сглаживание.'),
+            'ko': ('반경:', '평활화:', '페더:', 'OpenFocus A는 현재 평활화를 사용하지 않습니다.'),
+            'pt': ('Raio:', 'Suavização:', 'Difusão:', 'O OpenFocus A ainda não usa a suavização.'),
+            'it': ('Raggio:', 'Smussamento:', 'Sfumatura:', 'OpenFocus A non usa ancora lo smussamento.'),
+            'nl': ('Straal:', 'Vloeiend maken:', 'Doezelaar:', 'OpenFocus A gebruikt vloeiend maken nog niet.'),
+            'pl': ('Promień:', 'Wygładzanie:', 'Wtapianie:', 'OpenFocus A nie używa jeszcze wygładzania.'),
+        }
+        for code, values in labels.items():
+            if code in self.translations:
+                self.translations[code].update(dict(zip(
+                    ('label_of_radius', 'label_of_smoothing', 'label_of_feather',
+                     'label_of_smoothing_a_hint'), values)))
+
+        upper_bounds = {
+            'en': 'at most {size}', 'zh': '最多 {size}', 'ja': '最大 {size}',
+            'es': 'como máximo {size}', 'de': 'höchstens {size}',
+            'fr': 'au maximum {size}', 'ru': 'не более {size}',
+            'ko': '최대 {size}', 'pt': 'no máximo {size}', 'it': 'al massimo {size}',
+            'nl': 'maximaal {size}', 'pl': 'co najwyżej {size}',
+        }
+        for code, text in upper_bounds.items():
+            if code in self.translations:
+                self.translations[code]['storage_available_upper_bound'] = text
 
         # Apply the detected language only now: the packs had to exist first,
         # otherwise a locale whose pack failed to load would leave

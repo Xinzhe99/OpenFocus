@@ -1,4 +1,4 @@
-"""Bounded OpenFocus source preparation, ownership, and producer lifecycle contracts."""
+"""Bounded source preparation, ownership, and producer lifecycle contracts."""
 import gc
 import threading
 from types import SimpleNamespace

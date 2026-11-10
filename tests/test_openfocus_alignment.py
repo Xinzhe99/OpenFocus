@@ -1,4 +1,4 @@
-"""Behavior regressions for the standalone proven OpenFocus translation subset."""
+"""Behavior regressions for the standalone translation subset."""
 from dataclasses import FrozenInstanceError
 import hashlib
 

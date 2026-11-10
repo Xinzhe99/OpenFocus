@@ -38,6 +38,7 @@ from utils.sorting import natural_sort_key as _image_sort_key
 from core.image_loader import apply_exif_orientation
 from core.frame_storage import capture_scratch, create_frame, run_with_scratch, store_frame
 from utils.logging_setup import log_action, log_operation
+from utils.performance_profile import current as _profile
 
 
 
@@ -270,7 +271,7 @@ def _align_homography_impl(input_source, output_path=None, img_filenames=None, d
     # Matching retains its last accepted reference, including failed frames.
     bf = cv2.BFMatcher(cv2.NORM_L2)
     with _bounded_registration_map(get_features_task, images, max_workers,
-                                   should_cancel) as features:
+                                   should_cancel, stage='registration.features') as features:
         last_kps, last_des, last_scale, identity = next(features)
         source_identities = [identity]
         last_index = 0
@@ -470,13 +471,14 @@ class PerspectiveStage:
                   zip(images, self.sources, self.matrices, self.matrix_dtypes)]
         if defer_warps:
             return frames
-        with _bounded_registration_map(resolve_frame, frames, workers, should_cancel) as results:
+        with _bounded_registration_map(resolve_frame, frames, workers, should_cancel,
+                                       stage='registration.warp') as results:
             return [store_frame(image) for image in results]
 
 
 @dataclass(frozen=True)
 class PerspectiveAlignmentPlan:
-    """Ordered OpenCV resamplings; independent of the OpenFocus f8 plan schema."""
+    """Ordered OpenCV resamplings; independent of the wide alignment plan schema."""
     stages: tuple
     parameters: str
     downscale_width: int
@@ -532,12 +534,14 @@ def _apply_perspective_warps(images, matrices, crop, dsize, workers,
     return stage.apply(images, defer_warps=defer_warps, should_cancel=should_cancel, workers=workers)
 
 @contextmanager
-def _bounded_registration_map(function, values, workers, should_cancel=None):
+def _bounded_registration_map(function, values, workers, should_cancel=None, *, stage=None):
     """Ordered results with at most one task per worker retained or running.
 
     Leaving the scope cancels queued work and waits for native calls before
-    the enclosing heavy-job lease can be released.
+    the enclosing heavy-job lease can be released. ``stage`` names the calls in
+    a performance profile (pool threads: summed under ``concurrent``).
     """
+    profile = _profile()
     _check_cancel(should_cancel)
     pool = concurrent.futures.ThreadPoolExecutor(max_workers=workers)
     pending = deque()
@@ -554,7 +558,11 @@ def _bounded_registration_map(function, values, workers, should_cancel=None):
 
     def run(value):
         _check_cancel(should_cancel)
-        result = function(value)
+        if stage is not None and profile.enabled:
+            with profile.stage(stage):
+                result = function(value)
+        else:
+            result = function(value)
         _check_cancel(should_cancel)
         return result
 
@@ -659,15 +667,14 @@ def apply_alignment_plan(sources, plan, *, defer_warps=False, should_cancel=None
         _report_openfocus_transform(transform, plan.reference_index)
     h, w = sources[0].shape[:2]
     left, top, right, bottom = 0, 0, w, h
-    if grouped_crop_offsets.get() is not None:
-        bounds = [transform.valid_bounds for transform in plan.transforms]
-        left = max(bound[0] for bound in bounds)
-        top = max(bound[1] for bound in bounds)
-        right = min(bound[2] for bound in bounds)
-        bottom = min(bound[3] for bound in bounds)
-        if top >= bottom or left >= right:
-            raise ValueError('Registration transforms have no common valid crop')
-        _record_grouped_crop(top, bottom, left, right)
+    bounds = [transform.valid_bounds for transform in plan.transforms]
+    left = max(bound[0] for bound in bounds)
+    top = max(bound[1] for bound in bounds)
+    right = min(bound[2] for bound in bounds)
+    bottom = min(bound[3] for bound in bounds)
+    if top >= bottom or left >= right:
+        raise ValueError('Registration transforms have no common valid crop')
+    _record_grouped_crop(top, bottom, left, right)
     result = []
     for source, transform in zip(sources, plan.transforms):
         _check_cancel(should_cancel)
@@ -692,7 +699,7 @@ def _align_openfocus_impl(input_source, output_path=None, img_filenames=None, *,
                         should_cancel=None, max_shift_ratio=.05, failure_policy='continue',
                         reference_frame=1, rotation=0., magnification=3.,
                         defer_warps=False, plan_callback=None):
-    """Verified OpenFocus wide detector; no alternate estimator or native fit."""
+    """Wide detector using the verified search and sampling behavior."""
     from core.openfocus_alignment import estimate_alignment_plan, AlignmentEstimationError
     images = input_source
     if isinstance(input_source, str):
@@ -814,7 +821,7 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
         # Resolving here also applies upstream deferred stages, one source at
         # a time, without keeping their full-resolution intermediate images.
         with _bounded_registration_map(preprocess, images, max_workers,
-                                       should_cancel) as results:
+                                       should_cancel, stage='registration.prepare') as results:
             previous, scale_factor, identity = next(results)
             source_identities.append(identity)
             for idx, (current, _, identity) in enumerate(results, 1):
@@ -860,8 +867,8 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
                 warp_matrix = np.eye(2, 3, dtype=np.float32)
         return warp_matrix, cc
 
-    with _bounded_registration_map(_compute_pair_transform,
-                                   pairs(), max_workers, should_cancel) as results:
+    with _bounded_registration_map(_compute_pair_transform, pairs(), max_workers,
+                                   should_cancel, stage='registration.estimate') as results:
         pair_transforms = list(results)
 
     trajectory_failed = False
@@ -980,7 +987,7 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
 
     # The explicit legacy GPU backend is serialized; never mix CPU/GPU frames.
     with _bounded_registration_map(warp_task, zip(images, H_matrices), 1,
-                                   should_cancel) as results:
+                                   should_cancel, stage='registration.warp') as results:
         aligned_images = [store_frame(image) for image in results]
     _save_registration(aligned_images, output_path, img_filenames, should_cancel)
 
@@ -1299,7 +1306,8 @@ class ImageRegistration:
                 with log_operation('registration_stage', method=step,
                                    parameters=parameters, provider='OpenCV',
                                    estimation_device='CPU', frames=len(result),
-                                   shape=result[0].shape) as operation:
+                                   shape=result[0].shape) as operation, \
+                        _profile().stage(f'step.{step}'):
                     try:
                         result = resolve_runner(spec.runner)(self, result,
                             thread_count=workers, should_cancel=should_cancel, **parameters)

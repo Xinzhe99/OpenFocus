@@ -45,6 +45,7 @@ class LoadOptions:
     base_images: list[Any]
     working_images: list[Any]
     reset_scale_factor: float | None = None
+    source_exifs: list[bytes] | None = None
 
 
 class SourceManager(QObject):
@@ -119,6 +120,7 @@ class SourceManager(QObject):
         window.base_images = list(baseline["images"])
         window.image_filenames = list(baseline["filenames"])
         window.image_source_paths = list(baseline["paths"])
+        window.image_source_exifs = list(baseline.get("exifs", ()))
         window.image_icc_profiles = list(baseline["profiles"])
         window.current_folder_path = baseline["folder"]
         window.current_scale_factor = baseline["scale"]
@@ -390,6 +392,7 @@ class SourceManager(QObject):
         def load_is_current():
             from PyQt6 import sip
             return (not (isinstance(window, QObject) and sip.isdeleted(window))
+                    and not getattr(worker, "is_cancelled", False)
                     and not getattr(window, "_shutting_down", False)
                     and generation == getattr(self, "_load_generation", -1))
 
@@ -439,7 +442,7 @@ class SourceManager(QObject):
                 from utils import watermark
                 state_fields = ("current_folder_path", "source_px_um", "linear_dng_metadata",
                                 "base_images", "raw_images", "image_filenames", "image_source_paths",
-                                "image_icc_profiles", "current_scale_factor", "base_scale_factor",
+                                "image_source_exifs", "image_icc_profiles", "current_scale_factor", "base_scale_factor",
                                 "excluded_frames", "source_transforms", "unrecoverable_source_changes",
                                 "watermark_text", "watermark_font_family",
                                 "watermark_size_percent", "watermark_opacity",
@@ -978,11 +981,15 @@ class SourceManager(QObject):
         # Sources retain paths and bounded previews rather than original pixel
         # arrays. Share those immutable frames across base/working stacks, while
         # keeping separate lists so delete/reorder cannot mutate both at once.
+        source_exifs = list(getattr(self.window.image_loader, "source_exifs", ()) or ())
+        if len(source_exifs) != len(full_res_images):
+            source_exifs = [b""] * len(full_res_images)
         return LoadOptions(
             scale_factor=scale_factor,
             filenames=list(filenames),
             base_images=list(full_res_images),
             working_images=list(full_res_images),
+            source_exifs=source_exifs,
         )
 
     def _source_paths_for(self, filenames: list[str]) -> list[str]:
@@ -1016,9 +1023,15 @@ class SourceManager(QObject):
         profiles = [profile_map.get(path, b"") for path in paths]
         if len(profiles) != len(options.working_images):
             profiles = [b""] * len(options.working_images)
+        exifs = list(getattr(options, "source_exifs", ()) or ())
+        if len(exifs) != len(options.working_images):
+            exifs = [b""] * len(options.working_images)
         previous_profiles = list(getattr(window, "image_icc_profiles", ()) or ())
         if len(previous_profiles) != len(window.raw_images or []):
             previous_profiles = [b""] * len(window.raw_images or [])
+        previous_exifs = list(getattr(window, "image_source_exifs", ()) or ())
+        if len(previous_exifs) != len(window.raw_images or []):
+            previous_exifs = [b""] * len(window.raw_images or [])
         if (not append or not window.raw_images) and hasattr(options, "source_px_um"):
             window.source_px_um = options.source_px_um
         reset_scale = getattr(options, "reset_scale_factor", None) or options.scale_factor
@@ -1035,6 +1048,9 @@ class SourceManager(QObject):
             window.base_scale_factor = window.current_scale_factor
             window.raw_images = (window.raw_images or []) + options.working_images
             window.image_icc_profiles = previous_profiles + profiles
+            window.image_source_exifs = (previous_exifs + exifs
+                                         if len(exifs) == len(options.working_images)
+                                         else [])
             window.image_filenames = (window.image_filenames or []) + options.filenames
             # Keep the paths aligned with the names; anything else is better
             # dropped than left pointing at the wrong frame.
@@ -1051,6 +1067,7 @@ class SourceManager(QObject):
                     "images": baseline["images"] + list(getattr(options, "reset_images", options.base_images)),
                     "filenames": baseline["filenames"] + list(options.filenames),
                     "profiles": baseline["profiles"] + profiles,
+                    "exifs": baseline.get("exifs", []) + exifs,
                     "paths": (baseline["paths"] + paths
                               if len(baseline["paths"]) == len(baseline["images"])
                               and len(paths) == len(options.filenames) else []),
@@ -1064,6 +1081,7 @@ class SourceManager(QObject):
             window.raw_images = options.working_images
             window.image_filenames = options.filenames
             window.image_source_paths = paths
+            window.image_source_exifs = exifs
             window.image_icc_profiles = profiles
             window.excluded_frames = set()
             window.source_transforms = []
@@ -1074,6 +1092,7 @@ class SourceManager(QObject):
                 "filenames": list(options.filenames),
                 "paths": list(getattr(options, "reset_paths", paths)),
                 "profiles": list(profiles),
+                "exifs": list(exifs),
                 "folder": window.current_folder_path,
                 "scale": reset_scale,
                 "source_px_um": reset_px_um,
@@ -1147,6 +1166,7 @@ class SourceManager(QObject):
         window.stack_images = []
         window.image_filenames = []
         window.image_source_paths = []
+        window.image_source_exifs = []
         window.linear_dng_metadata = None
         window.image_icc_profiles = []
         window.excluded_frames = set()
@@ -1251,6 +1271,7 @@ class SourceManager(QObject):
         self._pop_sequence(window.raw_images, row)
         self._pop_sequence(getattr(window, "base_images", None), row)
         self._pop_sequence(getattr(window, "image_source_paths", None), row)
+        self._pop_sequence(getattr(window, "image_source_exifs", None), row)
         self._pop_sequence(getattr(window, "image_icc_profiles", None), row)
         self._remap_exclusions_after_delete([row])
 
@@ -1431,6 +1452,8 @@ class SourceManager(QObject):
             window.base_images = _reorder(window.base_images)
         if getattr(window, "image_source_paths", None):
             window.image_source_paths = _reorder(window.image_source_paths)
+        if len(getattr(window, "image_source_exifs", ()) or ()) == n:
+            window.image_source_exifs = _reorder(window.image_source_exifs)
         if len(getattr(window, "image_icc_profiles", ()) or ()) == n:
             window.image_icc_profiles = _reorder(window.image_icc_profiles)
         excluded = getattr(window, "excluded_frames", None)

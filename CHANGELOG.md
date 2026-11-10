@@ -20,12 +20,55 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   existing paths without prompting to create files for unsaved outputs.
 - Add an optional Windows Explorer context-menu command to import selected
   images or folders as a stack, including large multi-selections.
-- Default the five desktop render options to unchecked and restore those
-  defaults on reset, while preserving explicitly saved choices.
+- Default exposure matching on for every fusion method and the other desktop
+  render options off, while preserving explicitly saved choices.
 - Add **File → Open Image Frames…** to import selected images as one stack,
   with an editable folder address in the file picker.
+- Add opt-in render profiling: **Advanced Settings → Diagnostics → Profile
+  rendering performance** and CLI `--profile-performance [FILE]`. A report
+  ranks where the time went, then lists every stage in execution order with
+  inclusive and self time; major stages add process CPU time and how far they
+  raised peak memory. It also records tile geometry with the reason a tile was
+  resized, every thread count from the request to ONNX Runtime, neural session
+  creation with miss reasons, resolution-cache activity by entry kind and the
+  ten slowest tiles. All fusion methods and registration are covered. Reports
+  are shown and saved as JSON from **Performance report**, embedded in CLI
+  `--json`, returned by the control channel's `render.result`, and logged once
+  as a compact `render.performance` event. Off by default; output is identical
+  with profiling on or off.
+- Add **Advanced Settings → Diagnostics → Detailed logging** and CLI
+  `--log-level`. Detailed logging takes effect immediately, including in the
+  isolated render process, and records resource plans, neural tile planning,
+  tile geometry, the temporary directory chosen, memory around a render and
+  the time of each tile. `OPENFOCUS_LOG_LEVEL` keeps working. The control
+  channel gains `option.set` names `profile_performance` and `debug_logging`.
+- Add `OPENFOCUS_ORT_OPERATOR_PROFILE` / `OPENFOCUS_ORT_PROFILE_DIR` for ONNX
+  Runtime operator traces of CPU sessions.
+- Add `tools/stackmff_cpu_benchmark.py`: reproducible StackMFF V3 CPU thread
+  sweeps, session replay, overlap and tile-size comparisons with image
+  differences, cache activity and profiling overhead, in subprocesses with
+  isolated settings and scratch, with smoke and opt-in full modes. Each run
+  preserves earlier checkpoints and retains recoverable measurements after
+  interruption or worker failure; failures produce a nonzero exit status.
+- Expose OpenFocus radius, smoothing and B feather in method-specific units, with
+  R8/S4/F3 defaults and 3% shift/5% magnification alignment defaults.
+  Saved projects, templates, recipes and preferences migrate earlier units;
+  OpenFocus A smoothing remains inactive.
 - Add keyboard-accessible zoom controls to the result view, synchronized with
   wheel zoom and available in all twelve interface languages.
+- Warn before a full render when temporary storage looks low. The dialog shows
+  the directory, the available space after OpenFocus's safety reserve and the
+  estimated need, and offers **Choose another directory** (validated and
+  re-checked, kept for future renders or used for this render only). It offers
+  **Continue anyway** only when the render can still run. Previews, ROI and
+  Compare-all renders do not ask. The control channel returns the assessment as
+  `confirm_required` or the new `insufficient_storage` error with
+  `details.storage`, and includes it in successful `render.start` replies. A new
+  `storage_directory` option sets the directory. The CLI warns per batch folder
+  on stderr (except for grouped fusion), and `--temp-dir DIR` applies only to
+  the current invocation. Automatic volume selection and backend-dependent
+  storage needs are advisory when the actual required space cannot be
+  established in advance; macOS volume discovery runs in the background.
 - Add a panorama workspace with native-coordinate control-point editing,
   connected-pair quality reports, per-source paint/import masks and preview
   overlays for seams, image numbers and excluded pixels.
@@ -41,15 +84,14 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   measured process memory. Alpha-sidecar reconstruction is reported explicitly
   and does not claim transparent TIFF import support.
 - Add an output-list **Share** submenu. Copy the current result at full
-  resolution as a real JPEG plus a decoded bitmap, copy persistent file URLs
-  for one or many selected results, and reveal a result in Explorer, Finder or
-  the desktop file manager. Unsaved or outdated results are written as PNG
-  only after choosing a folder, with unique names and current annotations;
-  existing exports are reused only while they still match. The private-link
-  entry stays disabled until hosted sharing exists. Clipboard ownership is
-  verified after writing, so a locked clipboard reports an error instead of a
-  false success. Menu and feedback strings are translated in all twelve
-  language packs.
+  resolution as a real JPEG plus a decoded bitmap, copy the last saved file
+  paths for one or many selected results, and reveal a result in Explorer,
+  Finder or the desktop file manager. Copying paths requires existing saved
+  files; revealing an unsaved or outdated result creates a temporary PNG with
+  current annotations. The private-link entry stays disabled until hosted
+  sharing exists. Clipboard ownership is verified after writing, so a locked
+  clipboard reports an error instead of a false success. Menu and feedback
+  strings are translated in all twelve language packs.
 - Add a visible tiled text watermark under Tools → Watermark for source
   frames, registered frames and fusion results. Source, registered and output
   scopes keep independent text/style; editing one never rewrites the others.
@@ -78,8 +120,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   source coverage before compositing the display background.
 
 ### Changed
-- Recommend OpenFocus B and ECC as the default desktop methods while retaining
-  explicitly saved selections.
+- Recommend OpenFocus B as the default desktop fusion method. OpenFocus A/B/C
+  use OpenFocus registration by default; other methods use ECC. Explicitly
+  saved or selected registration choices remain in effect.
+- Enable exposure matching by default for all fusion methods. OpenFocus A/B/C
+  match the first processed frame; other methods match the last. Saved
+  per-method choices remain in effect.
 - Default Batch Image Converter to lossless PNG, restore the last explicitly
   selected output format, and show the actual result extension below the
   selector. Its individual-file conversion, including RAW-to-DNG, remains
@@ -90,23 +136,34 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   into control tooltips, keeping relevant risks and status visible. Result
   adjustments include highlights, shadows, saturation and color temperature,
   with a larger side-by-side preview and draggable before/after comparison.
+- Align ROI selection with the next render: it uses the current registration
+  method and parameters plus the current fusion method's exposure-matching
+  reference; **No alignment** uses the original frames directly. Stack or
+  setting changes discard the old ROI stack instead of reusing it.
+- Open the Retouch workspace before decoding the source stack: thumbnails use
+  existing source previews and the selected frame updates to its processed
+  pixels, while only the selected frame resolves in the background and at most
+  two resolved frames stay cached. Whole-stack reads remain on demand, for
+  example Auto background, checkpoint save/load and the sharpness reference.
 - Import camera RAW and ordinary image folders through the same entry; a RAW-only
   stack can still use camera-linear import and Linear DNG export.
 - Prepare source frames with bounded parallel decoding and publish thumbnails
   incrementally, while respecting the configured thread and memory budgets.
 - Move frame-review messages to the bottom status bar, leaving more room for
   the source list while preserving temporary render and update messages.
-- Set new OpenFocus A/B kernel defaults to 17, B depth smoothing to 1.44 and C
-  blend smoothing to 3.6. Existing saved per-method values are preserved.
-- Use an integer Burt-pyramid response and quantized eight-bit output for
-  OpenFocus A. A smoothing is inert; sixteen-bit selected codes remain unchanged.
+- Apply explicit descending frame order before OpenFocus registration, and
+  include that order in alignment reuse and cache identities.
+- Seed each OpenFocus registration search from the previous absolute transform
+  so long stacks can accumulate magnification beyond a single search window.
+- Compute OpenFocus A's Burt-pyramid response in the integer code domain and
+  use quantized eight-bit output. A smoothing is inert; sixteen-bit selected
+  codes remain unchanged.
 - Show the localized OpenFocus smoothing hints in the registered parameter panels
   and update all twelve language packs and manuals for A and C's actual behavior.
 - Reuse A's exact Q4 hard-selection response for normalized float and resized
   sources, removing full-size double-precision response and expansion buffers.
-- Match OpenFocus C's native reverse, full-resolution source merge using the
-  completed depth map. Remove the unrelated RGB pyramid reconstruction and
-  its layer-count option; smoothing affects fusion and exported depth together.
+- Compute OpenFocus C using a streaming multilevel focus-weighted pyramid.
+  Its exported depth map remains an independent estimate.
 - Store independent frame snapshots in a shared, bounded RAM pool before
   spilling to admitted temporary mappings. OpenFocus producers retain at most
   two in-flight frames and use the same resource planner and memory ceiling.
@@ -162,6 +219,56 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   sessions and retry GPU memory admission before falling back to CPU.
 - Draw bounded source previews in their original image coordinates in the wipe
   comparison, keeping them aligned with full-resolution fusion results.
+- Preserve focus selection in OpenFocus C for small or narrow images.
+- Finalize partial CLI performance reports when a render is interrupted, and
+  release evicted neural sessions before constructing their replacements.
+- Keep rotation and magnification alignment active when maximum shift is zero,
+  while fixing the image center and invalidating older alignment caches.
+- Use the fusion registration order for descending OpenFocus comparisons;
+  mixed methods share that coordinate system and refresh when it changes.
+- Allow adopting complete comparison results after registration crops the stack.
+- Match reversed OpenFocus B/C depth maps to the same registration direction
+  and source-frame geometry used by fusion.
+- Reduce block-shaped focus boundaries in OpenFocus A by bilinearly expanding
+  each pyramid response before selecting source pixels.
+- Choose an available local temporary volume for source previews when the system
+  temp volume lacks space, while respecting explicitly configured directories.
+  Release automatically created preview directories when their last frame closes.
+- Keep the selected source preview responsive while a background thumbnail
+  batch waits for a render; selected previews still observe the memory budget.
+- Lock render settings until a render or comparison completes. A quick-preview
+  draft clears the output selection and cannot be saved as a finished result;
+  manually selected history entries can still be exported.
+- Mark project processing settings as unsaved when changed, including resets,
+  while project restoration keeps the saved state clean.
+- Attach each result and aligned frame to its own source EXIF snapshot, so
+  saving a historical result after loading another stack keeps the original
+  metadata. Oversized JPEG metadata and excessive source EXIF now report
+  specific errors.
+- Reuse compiled fusion kernels between isolated render processes when a
+  writable cache is available. Concurrent cache access is serialized without
+  blocking renders; unavailable or damaged caches fall back to compilation.
+- Reuse decoded and processed source frames within a render when its selected
+  temporary volume has sufficient space; otherwise retain the normal bounded
+  decoding path.
+- Use consistent half-resolution depth for OpenFocus B fusion, depth export
+  and tiled rendering, preserving high-frequency details. Correct B/C color
+  conversion before focus evaluation for 8-bit and 16-bit sources.
+- Crop fast OpenFocus alignment to the common geometrically valid area in
+  normal and grouped renders, including cached and deferred plans, so warp
+  borders do not contaminate fusion while real dark pixels remain valid.
+- Serve cached deferred OpenFocus plans without decoding aligned full frames;
+  a miss estimates once on the render worker and publishes the plan after
+  fusion. A cache-write failure is logged and never fails a completed render.
+- Keep the render status in its actual stage and use a generic finalization
+  label after fusion, including while the alignment cache is written.
+- Read camera-linear RAW dimensions before parallel calibration so admission
+  covers the real per-worker cost: 64 MiB plus four times the largest sensor
+  frame, with at most four workers. Reading `rgb_xyz_matrix` and
+  `camera_whitebalance` still unpacks every sensor, while display previews no
+  longer repeat that calibration read (first-frame preview 7.7 s → 0.27 s on the
+  test machine). Ordered workers preserve calibration checks, progress and
+  cancellation.
 - Allow the cross-platform test suite more time on slower hosted runners while
   retaining the per-test timeout.
 - Preview watermarks on transparent outputs using the original alpha before
@@ -195,10 +302,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   stack for cold LLVM compilation, preventing a crash at the stack guard page.
 - Explicitly disable OpenCV parallel regions inside native fusion jobs and
   preserve an existing serial setting when restoring macOS GCD thread state.
-- Match OpenFocus C's native depth chain: fixed half-scale gray FMA resampling,
+- Compute OpenFocus C's depth chain with fixed half-scale gray FMA resampling,
   vote-based confidence, square-root guide, horizontal-first Q12 smoothing,
   and truncating feather correction before expanding depth to the canvas. Preserve
-  native float32 coordinate order when expanding to odd canvas dimensions.
+  float32 coordinate order when expanding to odd canvas dimensions.
 - Preserve normalized float32 exposure and nearest-code rounding for native
   sixteen-bit OpenFocus sources, with admitted row-band quantization scratch.
 - Include a bounded RGB display preview when converting camera RAW to DNG and
@@ -244,8 +351,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Explicit temporary-directory choices remain binding.
 - Evict old source-cache owners before the next full decode, avoiding a full
   old cache overlapping the incoming image while preserving live consumer views.
-- Keep OpenFocus A's native hard-selected codes in uint16 and release its
-  response/cache before the common float output conversion.
+- Reduce OpenFocus A background noise by blending similarly focused frames
+  where response is weak; retain clear low-contrast detail, first-frame ties and
+  16-bit precision. Large blend accumulators use bounded mapped row windows.
 - Resolve macOS temporary subdirectories to their actual disk device before
   checking whether the volume is internal and fixed.
 - Quantize fusion results in bounded sample chunks instead of allocating

@@ -1,6 +1,7 @@
 import concurrent.futures
 import importlib
 import os
+import time
 import numpy as np
 from typing import Union, List, Tuple, Optional
 from fusion_methods.dct import dct_focus_stack_fusion
@@ -9,6 +10,8 @@ from fusion_methods.stackmffv3 import _stackmffv3_impl, normalize_mode
 from fusion_methods.dtcwt import _dtcwt_impl
 from utils import memory, resource_path
 from utils.image_utils import apply_exposure_gain, normalize_fuse_input
+from utils.logging_setup import log_debug
+from utils.performance_profile import current as _profile
 from utils.sorting import natural_sort_key
 from core.algorithms import get_fusion, resolve_fusion_parameters, resolve_runner
 from core.frame_storage import (capture_scratch, create_frame, is_mapped_frame,
@@ -98,7 +101,7 @@ def neural_device_kind():
     return ('N/A' if kind == 'CPU' else kind) if kind is not None else _NEURAL_DEVICE_KIND
 
 def estimate_peak_bytes(algorithm: str, frames, block_size: int = None,
-                        workers: int = 1) -> int:
+                        workers: int = 1, height: int = None, width: int = None) -> int:
     """Estimate new stage allocations; resident source buffers are not charged twice."""
     from core.resource_policy import Workload, estimate_working_set
 
@@ -108,6 +111,8 @@ def estimate_peak_bytes(algorithm: str, frames, block_size: int = None,
     if getattr(first, "ndim", 0) < 2:
         return 0
     h, w = first.shape[:2]
+    h = int(height) if height is not None else h
+    w = int(width) if width is not None else w
     spec = get_fusion(algorithm)
     estimates = {}
     if spec.resource_estimator:
@@ -136,7 +141,7 @@ def memory_budget_bytes() -> int:
 memory.configure_opencv_memory()
 
 
-def _stack_footprint_exceeds(frames, tile_threshold: int) -> bool:
+def _stack_footprint_exceeds(frames, tile_threshold: int, height=None, width=None) -> bool:
     """True when total stack bytes exceed a single threshold-sized frame.
 
     A deep stack of sub-threshold frames carries more pixels than one big
@@ -147,11 +152,29 @@ def _stack_footprint_exceeds(frames, tile_threshold: int) -> bool:
         return False
     first = frames[0]
     itemsize = np.dtype(first.dtype).itemsize
-    bytes_per_frame = itemsize * int(np.prod(first.shape)) if first.ndim else itemsize
+    if first.ndim >= 2:
+        h = int(height) if height is not None else first.shape[0]
+        w = int(width) if width is not None else first.shape[1]
+        bytes_per_frame = itemsize * h * w * int(np.prod(first.shape[2:]))
+    else:
+        bytes_per_frame = itemsize * int(np.prod(first.shape)) if first.ndim else itemsize
     total_bytes = len(frames) * bytes_per_frame
     return total_bytes > (tile_threshold ** 2) * 3
 
 
+
+
+def _tile_axis_starts(length, block, overlap, grid=1):
+    """Align tile origins while covering the last pixel within the admitted block."""
+    grid = max(1, int(grid))
+    if block < grid or (overlap and block - grid < 2 and length > block):
+        # A grid as wide as the tile cannot feather adjacent tiles safely.
+        grid = 1
+    step = max(1, block - overlap)
+    if grid > 1:
+        step = max(grid, (step // grid) * grid)
+    last = ((length - block + grid - 1) // grid) * grid
+    return [min(start, last) for start in range(0, length, step)]
 
 
 def _ai_effective_tiling(n_frames, block_size, h, w, overlap, batch_pref):
@@ -160,12 +183,12 @@ def _ai_effective_tiling(n_frames, block_size, h, w, overlap, batch_pref):
     Batch one is the validated execution path on all devices. Larger GPU
     batches require their own numerical and device-memory qualification.
     """
+    from fusion_methods.neural_common import ATTENTION_PAD_ALIGN
     block = max(1, min(int(block_size), int(h), int(w)))
     overlap = max(0, min(int(overlap), block // 2))
-    step = max(1, block - overlap)
-    ys = sorted({min(y, h - block) for y in range(0, h, step)})
-    xs = sorted({min(x, w - block) for x in range(0, w, step)})
-    coords = [(x, y, x + block, y + block) for y in ys for x in xs]
+    ys = sorted(set(_tile_axis_starts(h, block, overlap, ATTENTION_PAD_ALIGN)))
+    xs = sorted(set(_tile_axis_starts(w, block, overlap, ATTENTION_PAD_ALIGN)))
+    coords = [(x, y, min(x + block, w), min(y + block, h)) for y in ys for x in xs]
     return block, 1, coords
 
 
@@ -199,8 +222,8 @@ class MultiFocusFusion:
             algorithm (str): 融合算法名称,可选 'guided_filter', 'dct', 'dtcwt', 'stackmffv3'
             use_gpu (bool): 是否使用GPU加速(CUDA/ROCm/XPU/MPS),默认为False
             ai_batch_size (int): StackMFF V3 批量处理大小，默认为2
-            exposure_match (bool): 融合前把每帧均值标定到末帧。整栈计算、
-                分块前应用；对所有算法生效。默认 True。
+            exposure_match (bool): 融合前匹配整栈曝光；OpenFocus A/B/C 使用
+                处理序首帧，其余算法使用末帧。分块前统一计算，默认 True。
         """
         self._ensure_supported_algorithm(algorithm)
         self.algorithm = algorithm
@@ -275,43 +298,43 @@ class MultiFocusFusion:
     def _fuse_openfocus_a(self,
                           input_source: Union[str, List[np.ndarray]],
                           img_resize: Optional[Tuple[int, int]] = None,
-                          kernel_size: int = 17,
+                          radius: int = 8,
                           **kwargs) -> np.ndarray:
         """OpenFocus A: high-frequency energy source selection."""
         from fusion_methods.openfocus_a import openfocus_a_impl
         return openfocus_a_impl(input_source, img_resize,
-                                kernel_size=kernel_size,
+                                kernel_size=2 * radius + 1,
                                 thread_count=kwargs.get('thread_count', None),
-                                blend_smoothing=kwargs.get('blend_smoothing', None),
+                                blend_smoothing=kwargs.get('smoothing', 4.),
                                 should_cancel=kwargs.get('should_cancel'),
                                 progress_callback=kwargs.get('progress_callback'))
 
     def _fuse_openfocus_b(self,
                           input_source: Union[str, List[np.ndarray]],
                           img_resize: Optional[Tuple[int, int]] = None,
-                          kernel_size: int = 17,
+                          radius: int = 8,
                           **kwargs) -> np.ndarray:
         """OpenFocus B: depth-guided source blending."""
         from fusion_methods.openfocus_bc import openfocus_b_impl
         return openfocus_b_impl(input_source, img_resize,
-                                kernel_size=kernel_size,
+                                kernel_size=2 * radius + 1,
                                 thread_count=kwargs.get('thread_count', None),
-                                depth_smoothing=kwargs.get('depth_smoothing', None),
+                                depth_smoothing=kwargs.get('smoothing', 4.) * .24,
                                 should_cancel=kwargs.get('should_cancel'),
                                 depth_override=kwargs.get('depth_override'),
+                                feather=kwargs.get('feather', 3),
                                 progress_callback=kwargs.get('progress_callback'))
 
     def _fuse_openfocus_c(self,
                           input_source: Union[str, List[np.ndarray]],
                           img_resize: Optional[Tuple[int, int]] = None,
                           **kwargs) -> np.ndarray:
-        """OpenFocus C: native reverse source merge using completed depth."""
+        """OpenFocus C: multilevel focus-weighted source fusion."""
         from fusion_methods.openfocus_bc import openfocus_c_impl
         return openfocus_c_impl(input_source, img_resize,
                                 thread_count=kwargs.get('thread_count', None),
-                                blend_smoothing=kwargs.get('blend_smoothing', None),
+                                blend_smoothing=kwargs.get('smoothing', 4.) * .6,
                                 should_cancel=kwargs.get('should_cancel'),
-                                depth_override=kwargs.get('depth_override'),
                                 progress_callback=kwargs.get('progress_callback'))
 
     # ------------------------------------------------------------------
@@ -665,11 +688,12 @@ class MultiFocusFusion:
             else:
                 from core.frame_storage import estimate_fusion_space
                 from core.source_frames import materialize_frames
-                input_source = materialize_frames(
-                    input_source, should_cancel,
-                    preferred_staging_bytes=estimate_fusion_space(input_source, self.exposure_match),
-                    thread_count=kwargs.get('thread_count', 0),
-                    resource_preference=self.resource_preference)
+                with _profile().stage('materialize'):
+                    input_source = materialize_frames(
+                        input_source, should_cancel,
+                        preferred_staging_bytes=estimate_fusion_space(input_source, self.exposure_match),
+                        thread_count=kwargs.get('thread_count', 0),
+                        resource_preference=self.resource_preference)
             first = input_source[0]
             count = len(input_source)
             frame_specs = [(frame.size, frame.dtype) for frame in input_source]
@@ -694,21 +718,26 @@ class MultiFocusFusion:
 
         if self.algorithm in ('openfocus_b', 'openfocus_c'):
             from fusion_methods._depth_kernel import prepare_depth_kernel
-            smoothing_key = ('depth_smoothing' if self.algorithm == 'openfocus_b'
-                             else 'blend_smoothing')
-            smoothing = kwargs[smoothing_key]
+            smoothing = kwargs['smoothing']
             prepare_depth_kernel(guided=smoothing is None or smoothing > 0,
                                  should_cancel=should_cancel)
 
         h, w = first.shape[:2]
         spec = self.descriptor
-        height = max(h, img_resize[1]) if img_resize else h
-        width = max(w, img_resize[0]) if img_resize else w
+        width, height = ((int(img_resize[0]), int(img_resize[1])) if img_resize
+                         else (w, h))
         allow_spatial_tiles = (spec.external_tiling_supported and (
             spec.external_tiling_default or self.tile_threshold != _DEFAULT_TILE_THRESHOLD))
-        needs_tiles = allow_spatial_tiles and (
-            resolve_runner(spec.tile_decider)([first] * count, self.tile_threshold)
-            if spec.tile_decider else max(height, width) > self.tile_threshold)
+        if allow_spatial_tiles and spec.tile_decider:
+            if spec.neural:
+                from fusion_methods.neural_runtime import resolve_device
+                device = resolve_device(self.use_gpu)
+            else:
+                device = 'CPU'
+            needs_tiles = resolve_runner(spec.tile_decider)(
+                [first] * count, self.tile_threshold, height=height, width=width, device=device)
+        else:
+            needs_tiles = allow_spatial_tiles and max(height, width) > self.tile_threshold
         if self.algorithm == 'dtcwt':
             # Activity selection is incremental; stack depth no longer makes
             # an N-plane activity set. Respect the requested transform levels.
@@ -739,7 +768,8 @@ class MultiFocusFusion:
         policy.require_memory(preparation, user_limit=memory_budget_bytes())
         check_cancel()
         # Sorting fixes the reference end before exposure and tile dispatch.
-        input_source = self._maybe_sort_input(input_source, should_cancel)
+        with _profile().stage('sort'):
+            input_source = self._maybe_sort_input(input_source, should_cancel)
         cached_preparation = getattr(self, 'prepared_cache', None)
         reuse_preparation = (cached_preparation is not None and spec.neural
                              and self.tile_enabled and needs_tiles and streaming_sources)
@@ -782,11 +812,13 @@ class MultiFocusFusion:
             pass
         elif self.exposure_match and native_codes:
             from core.source_frames import match_exposure_frames
-            input_source = match_exposure_frames(input_source, should_cancel)
+            with _profile().stage('exposure_gains'):
+                input_source = match_exposure_frames(input_source, should_cancel, reference_index=0)
         elif self.exposure_match:
-            exposure_gains_ = self._exposure_gains_for_source(
-                input_source, should_cancel,
-                normalize_uint16=deferred_exposure or native_codes)
+            with _profile().stage('exposure_gains'):
+                exposure_gains_ = self._exposure_gains_for_source(
+                    input_source, should_cancel,
+                    normalize_uint16=deferred_exposure or native_codes)
             check_cancel()
             if streaming_sources:
                 from core.source_frames import exposure_frames
@@ -854,7 +886,8 @@ class MultiFocusFusion:
             # Match the whole backend: normalize/sort/exposure above, then
             # resize each complete source once before constructing its grid.
             # Keep the original prepared stack as the base-correction source.
-            tile_source = self._resize_tile_sources(input_source, img_resize, should_cancel)
+            with _profile().stage('resize_sources'):
+                tile_source = self._resize_tile_sources(input_source, img_resize, should_cancel)
             tile_resize = None
 
 
@@ -874,13 +907,14 @@ class MultiFocusFusion:
             kws = dict(kwargs)
             kws.pop('block_size', None)
             kws.pop('overlap', None)
-            result = self._fuse_tiled(
-                tile_source, algorithm=self.algorithm, img_resize=tile_resize,
-                block_size=self.tile_block_size, overlap=self.tile_overlap,
-                should_cancel=should_cancel, progress_callback=progress_callback,
-                exposure_gains=exposure_gains_ if deferred_exposure else None,
-                deferred_exposure=deferred_exposure,
-                source_all_uint8=all(dtype == np.uint8 for _, dtype in frame_specs), **kws)
+            with _profile().stage('tiled'):
+                result = self._fuse_tiled(
+                    tile_source, algorithm=self.algorithm, img_resize=tile_resize,
+                    block_size=self.tile_block_size, overlap=self.tile_overlap,
+                    should_cancel=should_cancel, progress_callback=progress_callback,
+                    exposure_gains=exposure_gains_ if deferred_exposure else None,
+                    deferred_exposure=deferred_exposure,
+                    source_all_uint8=all(dtype == np.uint8 for _, dtype in frame_specs), **kws)
         else:
             check_cancel()
             if not spec.neural:
@@ -911,10 +945,13 @@ class MultiFocusFusion:
                     kwargs['execution_plan'] = plan
             kwargs['should_cancel'] = should_cancel
             kwargs['progress_callback'] = progress_callback
-            result = resolve_runner(spec.runner)(self, input_source, img_resize, **kwargs)
+            with _profile().stage('full_frame'):
+                result = resolve_runner(spec.runner)(self, input_source, img_resize, **kwargs)
 
         check_cancel()
-        result = self._apply_base_correction(result, input_source, exposure_gains_, deferred_exposure)
+        with _profile().stage('base_correction'):
+            result = self._apply_base_correction(result, input_source, exposure_gains_,
+                                                 deferred_exposure)
         check_cancel()
         if streaming_sources:
             from core.source_frames import SourceFrame, ProcessedFrame
@@ -1367,21 +1404,19 @@ class MultiFocusFusion:
         # overlap 超过半瓦会让 step 逼近 1（每像素一个瓦片，等于无限循环），
         # 用户把瓦片设小而重叠保持默认 256 时就会触发
         overlap = max(0, min(int(overlap), block_size // 2))
-        step = max(1, block_size - overlap)
         num_images = len(imgs) if imgs is not None else len(files)
 
-
-        # 计算 tile 坐标
-        tile_coords = []
-        max_start_y = h - block_size
-        max_start_x = w - block_size
-        for y in range(0, h, step):
-            y0 = min(y, max_start_y)
-            y1 = y0 + block_size
-            for x in range(0, w, step):
-                x0 = min(x, max_start_x)
-                x1 = x0 + block_size
-                tile_coords.append((x0, y0, x1, y1))
+        descriptor = get_fusion(algorithm)
+        grid = 1
+        if descriptor.roi and not descriptor.tile_runner:
+            parameters = {parameter.key: kwargs[parameter.key]
+                          for parameter in descriptor.parameters if parameter.key in kwargs}
+            parameters = resolve_fusion_parameters(algorithm, parameters)
+            _halo, grid = resolve_runner(descriptor.roi)(parameters, w, h)
+        ys = _tile_axis_starts(h, block_size, overlap, grid)
+        xs = _tile_axis_starts(w, block_size, overlap, grid)
+        tile_coords = [(x, y, min(x + block_size, w), min(y + block_size, h))
+                       for y in ys for x in xs]
 
         # StackMFF V3 使用批量处理
         if get_fusion(algorithm).tile_runner:
@@ -1442,14 +1477,14 @@ class MultiFocusFusion:
                 depth_images = [prepare_tile_frame(frame,
                                     exposure_gains[index] if match_depth else None)
                                 for index, frame in enumerate(imgs)]
-            kernel = kwargs.get('kernel_size', 17)
-            smoothing = kwargs.get('depth_smoothing')
-            smoothing = (1.44 if smoothing is None else smoothing) * (5.0 / 1.2)
+            kernel = 2 * kwargs.get('radius', 8) + 1
+            smoothing = kwargs.get('smoothing', 4.)
             depth_threads = policy.cpu_capacity(policy.probe_resources(), self.resource_preference)
             if thread_count is not None and thread_count > 0:
                 depth_threads = min(depth_threads, thread_count)
             global_depth = depth_map(depth_images, None, kernel, smoothing, should_cancel,
-                                     thread_count=depth_threads)
+                                     thread_count=depth_threads, half_resolution=True,
+                                     preserve_detail=True, feather=kwargs.get('feather', 3))
             del depth_images
 
         if get_fusion(algorithm).resource_estimator:
@@ -1496,6 +1531,16 @@ class MultiFocusFusion:
         weight[...] = 0
 
         print(f"Tiled fusion: {optimal_threads} parallel workers (memory-optimized)")
+        log_debug('fusion_tiling', method=algorithm, frames=num_images, shape=(h, w, channels),
+                  block_requested=self.tile_block_size, block=block_size,
+                  overlap_requested=self.tile_overlap, overlap=overlap,
+                  tiles=len(tile_coords), workers=optimal_threads)
+        profile = _profile()
+        if profile.enabled:
+            profile.tiling(height=h, width=w, coords=tile_coords,
+                           overlap_requested=self.tile_overlap, overlap_effective=overlap,
+                           block_requested=self.tile_block_size, block_effective=block_size)
+            profile.set('threads', tile_workers=optimal_threads)
 
         def call_algo(crops, coords):
             # Share cancellation with the backend's frame/channel boundaries.
@@ -1572,9 +1617,15 @@ class MultiFocusFusion:
             import cv2
             _check_cancel()
             x0, y0, x1, y1 = coords
-            crops = _crop_frames(coords)
+            started = time.perf_counter()
+            # Pool threads: reported under ``concurrent``, summed across workers.
+            with profile.stage('tile.crop'):
+                crops = _crop_frames(coords)
 
-            fused_tile = call_algo(crops, coords)
+            with profile.stage('tile.fuse'):
+                fused_tile = call_algo(crops, coords)
+            log_debug('fusion_tile', coords=coords,
+                      elapsed_ms=round((time.perf_counter() - started) * 1000, 3))
             _check_cancel()
             if fused_tile is None:
                 raise RuntimeError("Fusion returned None for a tile")
@@ -1640,9 +1691,11 @@ class MultiFocusFusion:
                     window.append(executor.submit(
                         run_with_scratch, scratch, process_single_tile, tile_coords[next_to_submit]))
                     next_to_submit += 1
-                result = window.popleft().result()
+                with profile.stage('wait_for_tile'):
+                    result = window.popleft().result()
                 _check_cancel()
-                _reduce(result)
+                with profile.stage('accumulate'):
+                    _reduce(result)
                 del result
                 completed_tiles += 1
                 if progress_callback is not None:
@@ -1653,15 +1706,18 @@ class MultiFocusFusion:
                 _check_cancel()
 
         _check_cancel()
-        fused = create_frame(acc.shape, out_dtype)
-        for start in range(0, h, 128):
-            _check_cancel()
-            rows = slice(start, min(h, start + 128))
-            row_weight = weight[rows]
-            row_weight[row_weight == 0] = 1.0
-            np.divide(acc[rows], row_weight, out=acc[rows])
-            np.clip(acc[rows], 0, 255, out=acc[rows])
-            fused[rows] = acc[rows]
+        with profile.stage('normalize'):
+            fused = create_frame(acc.shape, out_dtype)
+            for start in range(0, h, 128):
+                _check_cancel()
+                rows = slice(start, min(h, start + 128))
+                row_weight = weight[rows]
+                row_weight[row_weight == 0] = 1.0
+                np.divide(acc[rows], row_weight, out=acc[rows])
+                np.clip(acc[rows], 0, 255, out=acc[rows])
+                if out_dtype is np.uint8:
+                    np.rint(acc[rows], out=acc[rows])
+                fused[rows] = acc[rows]
         _check_cancel()
 
         if channels == 1:
@@ -1697,20 +1753,39 @@ class MultiFocusFusion:
         count = len(imgs) if imgs is not None else len(files)
         from core.resource_policy import plan_neural_tiles
         from fusion_methods.neural_runtime import resolve_device, estimate_inference_bytes
+        from fusion_methods.neural_common import ATTENTION_PAD_ALIGN
+        profile = _profile()
         requested_device = resolve_device(self.use_gpu)
         from core.source_frames import frame_resolution_bytes, source_cache_growth_bytes
         source_resolution = max((frame_resolution_bytes(frame) for frame in imgs), default=0) if imgs is not None else 0
         source_cache = source_cache_growth_bytes(imgs) if imgs is not None else 0
-        block_size, tile_plan = plan_neural_tiles(
-            count, h, w, channels, block_size, requested_device,
-            estimate_inference_bytes, directory=imgs is None,
-            itemsize=(max(frame.dtype.itemsize for frame in imgs)
-                      if imgs is not None else np.dtype(out_dtype).itemsize),
-            source_resolution_bytes=source_resolution, source_cache_bytes=source_cache,
-            preference=self.resource_preference, user_threads=thread_count)
+        clamped_block = block_size
+        with profile.stage('plan_neural_tiles'):
+            block_size, tile_plan = plan_neural_tiles(
+                count, h, w, channels, block_size, requested_device,
+                estimate_inference_bytes, directory=imgs is None,
+                itemsize=(max(frame.dtype.itemsize for frame in imgs)
+                          if imgs is not None else np.dtype(out_dtype).itemsize),
+                source_resolution_bytes=source_resolution, source_cache_bytes=source_cache,
+                preference=self.resource_preference, user_threads=thread_count)
+        planned_block = block_size
         block_size, _, tile_coords = _ai_effective_tiling(
             count, block_size, h, w, overlap, self.ai_batch_size)
         overlap = max(0, min(int(overlap), block_size // 2))
+        log_debug('fusion_tiling', method=self.algorithm, frames=count, shape=(h, w, channels),
+                  block_requested=self.tile_block_size, block_after_image_clamp=clamped_block,
+                  block_after_memory_plan=planned_block, block=block_size,
+                  overlap_requested=self.tile_overlap, overlap=overlap,
+                  tiles=len(tile_coords), native_threads=tile_plan.native_threads,
+                  device=tile_plan.device_kind)
+        if profile.enabled:
+            profile.add('threads', 'plan_neural_tiles', tile_plan.native_threads)
+            profile.tiling(height=h, width=w, coords=tile_coords,
+                           overlap_requested=self.tile_overlap, overlap_effective=overlap,
+                           block_requested=self.tile_block_size,
+                           block_after_image_clamp=clamped_block,
+                           block_after_memory_plan=planned_block, block_effective=block_size,
+                           pad_alignment=ATTENTION_PAD_ALIGN)
         model_path = kwargs.get('model_path') or default_weights
         if not os.path.isabs(model_path):
             model_path = weights_path(os.path.basename(model_path))
@@ -1747,11 +1822,13 @@ class MultiFocusFusion:
             return normalize_fuse_input(crops)[0]
 
         check_cancel()
-        crops = crop_frames(tile_coords[0])
-        _, device, plan = prepare(
-            crops, model_path, tile_plan.device_kind != 'CPU', thread_count=thread_count,
-            resource_preference=self.resource_preference, execution_plan=tile_plan,
-            fixed_bytes=min(h, 128) * w * ((channels + 1) * 4))
+        with profile.stage('resolve_region'):
+            crops = crop_frames(tile_coords[0])
+        with profile.stage('prepare_inference'):
+            _, device, plan = prepare(
+                crops, model_path, tile_plan.device_kind != 'CPU', thread_count=thread_count,
+                resource_preference=self.resource_preference, execution_plan=tile_plan,
+                fixed_bytes=min(h, 128) * w * ((channels + 1) * 4))
         check_cancel()
         acc = create_frame((h, w, channels), np.float32)
         weight = create_frame((h, w, 1), np.float32)
@@ -1763,48 +1840,59 @@ class MultiFocusFusion:
             progress_callback(0, total)
         for index, coords in enumerate(tile_coords):
             check_cancel()
-            if index:
-                crops = crop_frames(coords)
-            runner_parameters = dict(kwargs)
-            runner_parameters.update(model_path=model_path,
-                should_cancel=should_cancel, thread_count=thread_count, execution_plan=plan)
-            fused_tile = resolve_runner(self.descriptor.runner)(self, crops, None, **runner_parameters)
-            check_cancel()
-            if fused_tile is None:
-                raise RuntimeError("Fusion returned None for a tile")
-            if fused_tile.ndim == 2:
-                fused_tile = fused_tile[:, :, np.newaxis]
-            x0, y0, x1, y1 = coords
-            fh, fw = fused_tile.shape[:2]
-            weight2d = self._compute_tile_weights(
-                x0, y0, x1, y1, fw, fh, w, h, overlap)
-            if hard_pick:
-                # A hard result selects one source frame per pixel. In the
-                # overlap, take the tile whose interior weight is greatest
-                # instead of blending two independently selected pixels.
-                existing = weight[y0:y1, x0:x1, 0]
-                np.copyto(acc[y0:y1, x0:x1], fused_tile,
-                          where=(weight2d > existing)[:, :, None])
-                np.maximum(existing, weight2d, out=existing)
-            else:
-                acc[y0:y1, x0:x1] += fused_tile.astype(np.float32) * weight2d[:, :, None]
-                weight[y0:y1, x0:x1, 0] += weight2d
-            del fused_tile, crops, weight2d
+            tile_started = time.perf_counter()
+            with profile.tile(index, coords, count):
+                if index:
+                    with profile.stage('resolve_region'):
+                        crops = crop_frames(coords)
+                runner_parameters = dict(kwargs)
+                runner_parameters.update(model_path=model_path,
+                    should_cancel=should_cancel, thread_count=thread_count, execution_plan=plan)
+                with profile.stage('runner'):
+                    fused_tile = resolve_runner(self.descriptor.runner)(
+                        self, crops, None, **runner_parameters)
+                check_cancel()
+                if fused_tile is None:
+                    raise RuntimeError("Fusion returned None for a tile")
+                if fused_tile.ndim == 2:
+                    fused_tile = fused_tile[:, :, np.newaxis]
+                x0, y0, x1, y1 = coords
+                fh, fw = fused_tile.shape[:2]
+                with profile.stage('accumulate'):
+                    weight2d = self._compute_tile_weights(
+                        x0, y0, x1, y1, fw, fh, w, h, overlap)
+                    if hard_pick:
+                        # A hard result selects one source frame per pixel. In the
+                        # overlap, take the tile whose interior weight is greatest
+                        # instead of blending two independently selected pixels.
+                        existing = weight[y0:y1, x0:x1, 0]
+                        np.copyto(acc[y0:y1, x0:x1], fused_tile,
+                                  where=(weight2d > existing)[:, :, None])
+                        np.maximum(existing, weight2d, out=existing)
+                    else:
+                        acc[y0:y1, x0:x1] += fused_tile.astype(np.float32) * weight2d[:, :, None]
+                        weight[y0:y1, x0:x1, 0] += weight2d
+                del fused_tile, crops, weight2d
+            log_debug('fusion_tile', index=index, tiles=total, coords=coords,
+                      elapsed_ms=round((time.perf_counter() - tile_started) * 1000, 3))
             check_cancel()
             if progress_callback is not None:
                 progress_callback(index + 1, total)
             check_cancel()
 
-        fused = create_frame(acc.shape, out_dtype)
-        for start in range(0, h, 128):
-            check_cancel()
-            rows = slice(start, min(h, start + 128))
-            if not hard_pick:
-                row_weight = weight[rows]
-                row_weight[row_weight == 0] = 1.0
-                np.divide(acc[rows], row_weight, out=acc[rows])
-            np.clip(acc[rows], 0, 255, out=acc[rows])
-            fused[rows] = acc[rows]
+        with profile.stage('normalize'):
+            fused = create_frame(acc.shape, out_dtype)
+            for start in range(0, h, 128):
+                check_cancel()
+                rows = slice(start, min(h, start + 128))
+                if not hard_pick:
+                    row_weight = weight[rows]
+                    row_weight[row_weight == 0] = 1.0
+                    np.divide(acc[rows], row_weight, out=acc[rows])
+                np.clip(acc[rows], 0, 255, out=acc[rows])
+                if out_dtype is np.uint8:
+                    np.rint(acc[rows], out=acc[rows])
+                fused[rows] = acc[rows]
         check_cancel()
         return fused[:, :, 0] if channels == 1 else fused
 

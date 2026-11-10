@@ -76,7 +76,8 @@ def clipboard_mime_matches(expected: QMimeData, actual: QMimeData | None) -> boo
             return False
         return (sorted(url.toString() for url in actual.urls())
                 == sorted(url.toString() for url in expected.urls())
-                and (not expected.hasText() or actual.text() == expected.text()))
+                and (not expected.hasText() or
+                     actual.text().replace("\r\n", "\n") == expected.text()))
     if expected.hasFormat("image/jpeg"):
         if not actual.hasImage() or not actual.hasFormat("image/jpeg"):
             return False

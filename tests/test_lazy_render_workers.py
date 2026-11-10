@@ -62,6 +62,87 @@ def test_render_reports_completed_preparation_frames(tmp_path):
     assert progress == [(1, 2), (2, 2)]
 
 
+@pytest.mark.parametrize('mode,deferred,need_fusion', [
+    ('fresh', True, True),
+    ('fresh', False, True),
+    ('disk', True, True),
+    ('disk', False, True),
+    ('memory', True, True),
+    ('memory', False, True),
+    ('none', False, True),
+    ('fresh', True, False),
+])
+def test_render_stages_follow_actual_work(mode, deferred, need_fusion, monkeypatch):
+    images = [np.zeros((4, 4, 3), np.uint8) for _ in range(2)]
+    worker = workers.RenderWorker(
+        images, algorithm='openfocus_a' if need_fusion else None,
+        alignment='none' if mode == 'none' else 'openfocus',
+        need_fusion=need_fusion, thread_count=1)
+    worker._defer_warps = deferred
+    if mode == 'memory':
+        worker.aligned_images = images
+        worker.is_images_aligned = True
+        worker.last_alignment_options = (worker.alignment, worker.registration_parameters)
+    events = []
+    worker.stage_signal.connect(lambda stage: events.append(('stage', stage)),
+                                Qt.ConnectionType.DirectConnection)
+    worker.progress_signal.connect(lambda done, total: events.append(('progress', done, total)),
+                                   Qt.ConnectionType.DirectConnection)
+    worker.finished_signal.connect(lambda *args: events.append(('result',)),
+                                   Qt.ConnectionType.DirectConnection)
+    monkeypatch.setattr(workers, 'materialize_frames', lambda frames, *args, **kwargs: list(frames))
+    monkeypatch.setattr(worker, '_load_cached_alignment', lambda: images if mode == 'disk' else None)
+
+    def register(frames, should_cancel):
+        events.append(('register',))
+        return frames, 1.0
+
+    def fuse(frames, should_cancel, progress_callback):
+        events.append(('fusion',))
+        progress_callback(1, 2)
+        progress_callback(2, 2)
+        return images[0], 'CPU'
+
+    monkeypatch.setattr(worker, '_run_registration', register)
+    monkeypatch.setattr(worker, '_run_fusion', fuse)
+    monkeypatch.setattr(worker, '_save_cached_alignment', lambda frames: events.append(('cache',)))
+    worker._run_admitted()
+
+    expected = []
+    fresh = mode == 'fresh' or (mode == 'memory' and need_fusion)
+    if fresh:
+        expected += [('stage', 'align'), ('register',)]
+    if need_fusion:
+        expected += [('stage', 'fuse'), ('fusion',), ('progress', 1, 2), ('progress', 2, 2)]
+    expected += [('stage', 'finish')]
+    if fresh:
+        expected += [('cache',)]
+    expected += [('result',)]
+    assert events == expected
+    assert worker.alignment_reused == (mode == 'disk' or (mode == 'memory' and not need_fusion))
+
+
+def test_render_cancelled_during_fusion_does_not_finalize(monkeypatch):
+    images = [np.zeros((4, 4, 3), np.uint8) for _ in range(2)]
+    worker = workers.RenderWorker(images, algorithm='openfocus_a', alignment='openfocus',
+                                  thread_count=1)
+    events = []
+    worker.stage_signal.connect(events.append, Qt.ConnectionType.DirectConnection)
+    monkeypatch.setattr(worker, '_load_cached_alignment', lambda: None)
+    monkeypatch.setattr(worker, '_run_registration', lambda frames, should_cancel: (frames, 0.0))
+
+    def fuse(frames, should_cancel, progress_callback):
+        worker.cancel()
+        return images[0], 'CPU'
+
+    monkeypatch.setattr(worker, '_run_fusion', fuse)
+    monkeypatch.setattr(worker, '_save_cached_alignment',
+                        lambda frames: pytest.fail('cancelled render wrote cache'))
+    with pytest.raises(workers.RegistrationCancelled):
+        worker._run_admitted()
+    assert events == ['align', 'fuse']
+
+
 def test_preview_uses_display_pixels_and_skips_original_alignment_cache(tmp_path, monkeypatch):
     frame, _ = _source(tmp_path)
     monkeypatch.setattr(SourceFrame, 'full_resolution',
@@ -465,14 +546,21 @@ def test_tiled_exposure_and_base_correction_match_materialized_pipeline(algorith
     if dtype == np.uint16:
         images = [image.astype(np.uint16) * 257 + index for index, image in enumerate(images)]
     normalized = normalize_fuse_input(images)[0]
-    matched = [apply_exposure_gain(frame, gain)
-               for frame, gain in zip(normalized, exposure_gains(normalized))]
+    gains = (list(reversed(exposure_gains(list(reversed(normalized)))))
+             if algorithm.startswith('openfocus_') else exposure_gains(normalized))
+    matched = [apply_exposure_gain(frame, gain) for frame, gain in zip(normalized, gains)]
     settings = dict(algorithm=algorithm, use_gpu=False, tile_enabled=True,
                     tile_block_size=16, tile_overlap=4, tile_threshold=16, base_frame='last')
     actual = MultiFocusFusion(**settings, exposure_match=True).fuse(images, thread_count=1)
     reference = MultiFocusFusion(**settings, exposure_match=False).fuse(matched, thread_count=1)
     assert actual.shape == images[0].shape
-    np.testing.assert_allclose(actual, reference, rtol=0, atol=1e-5)
+    if dtype == np.uint16:
+        from utils.image_utils import quantize_fuse_output
+        codes = quantize_fuse_output(actual, True).astype(np.int32)
+        expected_codes = quantize_fuse_output(reference, True).astype(np.int32)
+        assert np.max(np.abs(codes - expected_codes)) <= 1
+    else:
+        np.testing.assert_allclose(actual, reference, rtol=0, atol=1e-5)
 
 
 def test_comparison_none_alignment_preserves_original_pixels(tmp_path):

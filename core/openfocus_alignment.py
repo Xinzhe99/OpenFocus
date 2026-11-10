@@ -1,6 +1,7 @@
 """Translation and wide similarity search with reusable Q8.8 warps.
 
-Plans retain immutable source identities, never decoded frame stacks.
+The wide detector uses float32 evaluation order. Plans retain immutable source
+identities, never decoded frame stacks.
 """
 from dataclasses import dataclass
 import hashlib
@@ -460,7 +461,7 @@ _FLIP = np.uint32(0x80000000)
 _BIG = F32(1.0e6)
 
 def fast_downsize(img, should_cancel=None):
-    """Downsize by a 2x2 mean (sum+2)>>2, using ceil dimensions."""
+    """2x2 mean (sum+2)>>2, ceil dimensions and edge tail."""
     h, w = img.shape
     out = np.empty(((h + 1) // 2, (w + 1) // 2), np.uint16)
     xs = np.arange(0, w, 2)
@@ -517,7 +518,7 @@ def gpu_params(f8):
 
 
 def map_coords(uv_fields, xs, ys):
-    """Detector inverse map (piece 01 section 3, exact op order).
+    """Detector inverse map using float32 operations.
 
     xs/ys: f32 sample coordinate grids broadcastable against the candidate
     leading dims. Returns (u, v) f32 arrays of the broadcast shape.
@@ -535,7 +536,7 @@ def map_coords(uv_fields, xs, ys):
 def enumerate_candidates(cfg8, cnts, steps, M, start=0, stop=None):
     """cfg8: 8 f32 {rng0,rng1,rng2,rng3,rot,magx,magy,bright}.
 
-    Returns (N, f8 (N,8) f32) in ae10 order (dx fastest, rot slowest).
+    Returns (N, f8 (N,8) f32), with dx fastest and rotation slowest.
     """
     n0, n1, n2, n3 = (int(c) for c in cnts)
     N = n0 * n1 * n2 * n3
@@ -543,7 +544,7 @@ def enumerate_candidates(cfg8, cnts, steps, M, start=0, stop=None):
         return N, None
     i = np.arange(start, N if stop is None else min(stop, N), dtype=np.int64)
     N = len(i)
-    # Use C-style truncated remainder; counts may be negative.
+    # Truncated remainder: cnts may go negative.
     def _crem(ii, n):
         q = np.trunc(ii / n).astype(np.int64)
         return ii - q * n
@@ -646,9 +647,9 @@ def _score_chunk(img_a, img_b, xs, ys, cand):
 
 
 def _decide(ssum, ssq, cnt):
-    """Choose the first minimum float-domain variance with at least two samples.
+    """Select the lowest float-domain variance with at least two samples.
 
-    A single sample has zero variance and would spuriously win the search.
+    A single sample has zero variance and would otherwise win spuriously.
     """
     cnt_f = cnt.astype(np.float32)
     denom = np.maximum(cnt_f, _ONE_F32).astype(np.float64)
@@ -676,10 +677,10 @@ def _div_rot(coef_eff, half_dim):
 def _cnt_step(rng, div, grid_half):
     """cnt = min((2*trunc(rng/div))|1, (2*gridHalf)|1)|1; step = 2*rng/(cnt-1).
 
-    The counter math is 32-bit (asm ECX/EAX), so 2*n wraps like C int."""
-    n = int(np.trunc(F32(rng) / F32(div)))       # CVTTSS2SI toward zero
+    The counter math is 32-bit, so 2*n wraps like C int."""
+    n = int(np.trunc(F32(rng) / F32(div)))
     n32 = np.int32(n)
-    two_n = np.int32(n32 * np.int32(2))          # wraps like the asm LEA
+    two_n = np.int32(n32 * np.int32(2))
     a = np.int32(two_n | np.int32(1))
     cap = np.int32((2 * grid_half) | 1)
     cnt = a if a < cap else cap
@@ -693,11 +694,9 @@ def _cnt_step(rng, div, grid_half):
 
 def grid_level_4d(img_a, img_b, base8, ranges4, coef=1.0, grid_half=8,
                   divisor=4, max_rounds=16, verbose=False, tag="", should_cancel=None):
-    """One b490 invocation.
+    """Search a single pyramid level.
 
-    base8: the 8-float candidate BASE f8 (driver: identity {0,0,0,0,0,1,1,1};
-    b16a: radius4*++carried). ranges4: the 4-float range buffer the cnt/step
-    machinery consumes ([RBX], MINSS-written back).
+    base8 is the initial eight-value candidate; ranges4 contains search ranges.
 
     Returns (f8 (8,) f32, ranges (4,) f32, rounds). f8 = {tx,ty,cx,cy,rot,
     magx,magy,bright}.
@@ -707,14 +706,14 @@ def grid_level_4d(img_a, img_b, base8, ranges4, coef=1.0, grid_half=8,
     H, W = A.shape
     coef = F32(coef)
     coef_eff = F32(0.2) if coef == F32(1.0) else F32(0.5)
-    half_dim = F32(max(W, H) // 2)          # sar 1 of maxDim
+    half_dim = F32(max(W, H) // 2)
     M = half_dim
     div_shift = F32(coef_eff * _HALF_F32 / M)
     div_mag = F32(coef_eff / M)
     div_rot = _div_rot(coef_eff, half_dim)
     divs = (div_shift, div_shift, div_mag, div_rot)
 
-    # Clamp the full image rectangle to each source.
+    # Clamp the full image rectangle to both images.
     x0, y0, x1, y1 = 0, 0, W, H
     x0 = min(max(x0, 0), W); x1 = min(max(x1, 0), W)
     y0 = min(max(y0, 0), H); y1 = min(max(y1, 0), H)
@@ -774,7 +773,7 @@ def grid_level_4d(img_a, img_b, base8, ranges4, coef=1.0, grid_half=8,
 
 def align_pair_wide(ref_u16, test_u16, h_pct=12.0, v_pct=12.0, rot_deg=6.0,
                     mag_pct=6.0, min_dim=64, divisor=100, grid_half=8,
-                    max_rounds=24, verbose=False, should_cancel=None):
+                    max_rounds=24, verbose=False, should_cancel=None, initial_f8=None):
     """Coarse-to-fine 4D search over the shared pyramid.
 
     Coarsest level: grid_level_4d with the user percentage ranges (same
@@ -782,7 +781,7 @@ def align_pair_wide(ref_u16, test_u16, h_pct=12.0, v_pct=12.0, rot_deg=6.0,
     +-1.5 full-res-px-equivalent shift radius (s/maxDim fraction), +-0.5 deg
     rot, +-1.5% mag. Found {tx,ty,cx,cy} slots are carried to the next finer
     level scaled by 2 (level px -> coarser level px); rot/mag carry as-is
-    (S12 compose semantics: acc.mag *=, acc.rot +=).
+    with scale composed multiplicatively and rotation additively.
 
     Returns (f8 full-res {tx,ty,cx,cy,rot,magx,magy,bright}, rounds_total).
     """
@@ -796,7 +795,14 @@ def align_pair_wide(ref_u16, test_u16, h_pct=12.0, v_pct=12.0, rot_deg=6.0,
         n -= 1
         A_pyr, B_pyr = A_pyr[:n], B_pyr[:n]
 
-    base = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0], dtype=np.float32)
+    base = np.array(_IDENTITY_F8 if initial_f8 is None else initial_f8, dtype=np.float32)
+    fixed_center = h_pct == 0 and v_pct == 0
+    if fixed_center:
+        # Keep the existing map but rotate and scale around the frame center.
+        cx = F32((ref_u16.shape[1] - 1) / 2)
+        cy = F32((ref_u16.shape[0] - 1) / 2)
+        tx, ty = map_coords(gpu_params(base), cx, cy)
+        base[:4] = (tx.item(), ty.item(), cx, cy)
     rounds_total = 0
     for lvl in range(n - 1, -1, -1):
         _check_cancel(should_cancel)
@@ -816,15 +822,15 @@ def align_pair_wide(ref_u16, test_u16, h_pct=12.0, v_pct=12.0, rot_deg=6.0,
             # only shift_frac[0] is consumed below.
             shift_frac = [F32(1.5 / max(float(A_pyr[0].shape[1]),
                                         float(A_pyr[0].shape[0])))] * 2
-        # rot/mag ranges scale with the level (S11 radius*s semantics in
-        # degree/mag space): tiny at coarse levels (no shift aliasing on
+        # Rotation and magnification ranges scale with the level, remaining
+        # tiny at coarse levels (no shift aliasing on
         # small textures), full user range at lvl0 where rotation is
         # resolvable. The shift range at fine levels must cover the
         # displacement induced by the level's rot range (joint valley).
         mag_rng = F32(mag_pct) / F32(100.0) * s
         rot_rng = F32(rot_deg) * s
         rot_cov = float(np.sin(np.radians(float(rot_rng)))) * 0.5
-        sf = max(float(shift_frac[0]), rot_cov)
+        sf = 0.0 if fixed_center else max(float(shift_frac[0]), rot_cov)
         rng = [F32(sf), F32(sf), mag_rng, rot_rng]
         level_grid = grid_half
         if rot_rng == 0 and mag_rng == 0:
@@ -935,9 +941,31 @@ class AlignmentTransform:
         h, w = self.source.shape[:2]
         if self.is_identity:
             return 0, 0, w, h
+        fields = gpu_params(self.f8)
+        if self.f8[4] == 0:
+            # The inverse map is separable and increasing in each axis. Find
+            # its exact half-open pixel bounds using the warp's float32 math.
+            def first_at_least(length, axis, threshold):
+                low, high = 0, length
+                while low < high:
+                    middle = (low + high) // 2
+                    x = np.float32(middle if axis == 0 else 0)
+                    y = np.float32(middle if axis == 1 else 0)
+                    coord = map_coords(fields, x, y)[axis].item()
+                    if coord < threshold:
+                        low = middle + 1
+                    else:
+                        high = middle
+                return low
+
+            left = first_at_least(w, 0, 0)
+            right = first_at_least(w, 0, w)
+            top = first_at_least(h, 1, 0)
+            bottom = first_at_least(h, 1, h)
+            return ((left, top, right, bottom) if left < right and top < bottom
+                    else (0, 0, 0, 0))
         # An affine image of a rectangle is convex. A centered output
         # rectangle whose four corners are valid is therefore wholly valid.
-        fields = gpu_params(self.f8)
         def valid(left, top, right, bottom):
             x = np.array([left, right - 1], np.float32)
             y = np.array([top, bottom - 1], np.float32)
@@ -1090,11 +1118,10 @@ def estimate_alignment_plan(sources, *, max_shift_ratio=.05, reference_frame=1,
                             progress_callback=None, failure_policy='fail'):
     """Sequential wide search; rotation in degrees, magnification in percent.
 
-    Source one follows the previous aligned reference. Each pair estimate
-    already maps to the anchor, so no previous transform is added again.
-    An explicitly selected later reference is a fixed geometric anchor,
-    visited first, then frames to its left descending and right ascending.
-    No content autosort or unproven seed ownership is inferred.
+    Source one follows the previous aligned reference. Each estimate maps to
+    the anchor and starts from the previous absolute transform, so the local
+    search can follow cumulative focus breathing across a long stack. A later
+    reference anchors two independent chains, one on either side.
     """
     _check_cancel(should_cancel)
     ratio = float(max_shift_ratio)
@@ -1136,15 +1163,15 @@ def estimate_alignment_plan(sources, *, max_shift_ratio=.05, reference_frame=1,
         identity.validate_file()
         gray = _alignment_gray16(image, should_cancel)
         del image
-        if index != ref and ref > 0:
+        if ref > 0 and index == ref + 1:
             previous, previous_index = anchor, ref
         pair = np.array(_IDENTITY_F8, np.float32)
         rounds, failure = 0, ''
-        if index != ref and ratio and not np.array_equal(previous, gray):
+        if index != ref and (ratio or rotation or magnification) and not np.array_equal(previous, gray):
             try:
                 pair, rounds = align_pair_wide(previous, gray, h_pct=ratio * 100,
                     v_pct=ratio * 100, rot_deg=rotation, mag_pct=magnification,
-                    should_cancel=should_cancel)
+                    should_cancel=should_cancel, initial_f8=transforms[previous_index].f8)
             except AlignmentEstimationError as error:
                 if failure_policy == 'fail':
                     failure = AlignmentEstimationError(f'OpenFocus alignment failed at frame {index + 1}: {error}')
@@ -1154,7 +1181,7 @@ def estimate_alignment_plan(sources, *, max_shift_ratio=.05, reference_frame=1,
                 failure = str(error)
                 pair = np.array(_IDENTITY_F8, np.float32)
         total = pair.copy()
-        if (not failure and ref == 0 and previous_index != ref
+        if (not failure and previous_index != ref
                 and transforms[previous_index].failure):
             failure = 'reference alignment fell back'
         transform = AlignmentTransform(index, tuple(float(v) for v in total),

@@ -1,4 +1,4 @@
-"""Observable OpenFocus spatial execution, resource boundaries and worker lifetimes."""
+"""Spatial execution, resource boundaries and worker lifetimes."""
 import os
 from pathlib import Path
 import subprocess
@@ -40,7 +40,7 @@ def _stack(dtype, height=513, width=515):
 
 
 @pytest.mark.parametrize('dtype', [np.uint8, np.uint16])
-@pytest.mark.parametrize('method', ['a', 'b', 'c', 'depth'])
+@pytest.mark.parametrize('method', ['a', 'b', 'depth'])
 def test_native_parallel_result_matches_serial_with_odd_edges(resources, monkeypatch, dtype, method):
     frames = _stack(dtype)
     before = [frame.copy() for frame in frames]
@@ -49,8 +49,7 @@ def test_native_parallel_result_matches_serial_with_odd_edges(resources, monkeyp
             return openfocus_depth.depth_map(frames, None, 17, 6, None,
                                              thread_count=threads, return_codes=True)
         runner = {'a': openfocus_a.openfocus_a_impl,
-                  'b': openfocus_bc.openfocus_b_impl,
-                  'c': openfocus_bc.openfocus_c_impl}[method]
+                  'b': openfocus_bc.openfocus_b_impl}[method]
         return runner(frames, thread_count=threads)
     serial = fuse(1)
     from fusion_methods import _openfocus_kernels, _openfocus_depth_rows
@@ -75,6 +74,17 @@ def test_native_parallel_result_matches_serial_with_odd_edges(resources, monkeyp
     np.testing.assert_array_equal(parallel, serial)
     assert len(identities) == 4
     for actual, expected in zip(frames, before):
+        np.testing.assert_array_equal(actual, expected)
+
+
+@pytest.mark.parametrize('dtype', [np.uint8, np.uint16])
+def test_c_parallel_matches_serial_on_odd_dimensions(resources, dtype):
+    frames = _stack(dtype)
+    originals = [frame.copy() for frame in frames]
+    serial = openfocus_bc.openfocus_c_impl(frames, thread_count=1)
+    parallel = openfocus_bc.openfocus_c_impl(frames, thread_count=4)
+    np.testing.assert_array_equal(parallel, serial)
+    for actual, expected in zip(frames, originals):
         np.testing.assert_array_equal(actual, expected)
 
 
