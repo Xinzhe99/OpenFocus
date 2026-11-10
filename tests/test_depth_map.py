@@ -235,6 +235,7 @@ def test_raw_depth_export_requires_tiff(qapp, monkeypatch, tmp_path):
     monkeypatch.setattr(depth_map, "compute_focus_index", _ramp)
 
     class _Stub(QWidget):
+        experimental_features = True
         raw_images = [np.zeros((32, 32, 3), np.uint8) for _ in range(2)]
         ui_theme = "dark"
         use_gpu = False
@@ -381,6 +382,7 @@ def test_physical_roi_export_keeps_outside_as_nan(qapp, monkeypatch, tmp_path):
     monkeypatch.setattr(depth_map, "compute_focus_index",
                         lambda images, method, **kwargs: np.full(images[0].shape[:2], 0.5, np.float32))
     window = QWidget()
+    window.experimental_features = True
     frames = [np.full((12, 16, 3), value, np.uint8) for value in (20, 40)]
     image = frames[0].copy()
     context = build_render_context(frames, image, algorithm="dct", roi_rect=(3, 2, 6, 5),
