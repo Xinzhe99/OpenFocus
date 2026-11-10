@@ -7,7 +7,7 @@ import math
 from PyQt6.QtCore import QPointF, QRectF, Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QPainter, QPen, QTransform
 from PyQt6.QtWidgets import (
-    QAbstractItemView, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox,
+    QAbstractItemView, QComboBox, QDialog, QDialogButtonBox,
     QGraphicsScene, QGraphicsView, QHBoxLayout, QLabel, QMessageBox, QPushButton,
     QSpinBox, QSplitter, QStyledItemDelegate, QTableWidget, QTableWidgetItem,
     QVBoxLayout, QWidget,
@@ -17,6 +17,7 @@ from core.mosaic_control import MosaicControlPoint
 from core.mosaic import measure_camera_control_points
 from locales import trans
 from utils.image_utils import cv2_to_pixmap
+from widgets.stepper import StepperSpinBox
 
 
 class _SourcePreview(QGraphicsView):
@@ -130,7 +131,7 @@ class _PointDelegate(QStyledItemDelegate):
             frame_index = int(index.siblingAtColumn(frame_column).data(Qt.ItemDataRole.EditRole))
             height, width = self.frames[frame_index].image.shape[:2]
             for maximum in (width - 1, height - 1):
-                spin = QDoubleSpinBox(editor)
+                spin = StepperSpinBox(editor)
                 spin.setDecimals(6)
                 spin.setRange(0, maximum)
                 spin.setKeyboardTracking(False)
@@ -157,7 +158,7 @@ class _PointDelegate(QStyledItemDelegate):
             for spin in editor.coordinates:
                 spin.interpretText()
             # One model mutation lets the dialog replace a CP atomically.
-            model.setData(index, ', '.join(format(spin.value(), '.6f') for spin in editor.coordinates), Qt.ItemDataRole.EditRole)
+            model.setData(index, ', '.join(format(spin.value(), '.6f').rstrip('0').rstrip('.') for spin in editor.coordinates), Qt.ItemDataRole.EditRole)
         else:
             super().setModelData(editor, model, index)
 
@@ -380,7 +381,7 @@ class MosaicControlPointsDialog(QDialog):
                     item.setData(Qt.ItemDataRole.EditRole, value)
                     self.table.setItem(row, column, item)
                 for column, point in ((3, cp.point_a), (4, cp.point_b)):
-                    item = QTableWidgetItem(', '.join(format(value, '.6f') for value in point))
+                    item = QTableWidgetItem(', '.join(format(value, '.6f').rstrip('0').rstrip('.') for value in point))
                     item.setData(Qt.ItemDataRole.UserRole, point)
                     self.table.setItem(row, column, item)
                 source_key = 'mosaic_cp_auto' if cp.source == 'auto' else 'mosaic_cp_manual'

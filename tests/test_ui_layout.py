@@ -608,6 +608,22 @@ def test_stepper_uses_native_spinbox_and_theme(qapp):
     spin.deleteLater()
 
 
+def test_stepper_trims_zeros_without_rounding(qapp):
+    from PyQt6.QtCore import QLocale
+    from widgets.stepper import StepperSpinBox
+
+    spin = StepperSpinBox(minimum=0, maximum=100, decimals=9, value=4)
+    assert spin.text() == '4.0'
+    spin.setValue(0.000000125)
+    assert spin.text() == '0.000000125'
+    spin.setLocale(QLocale(QLocale.Language.German, QLocale.Country.Germany))
+    spin.setValue(1.25)
+    assert spin.text() == '1,25'
+    spin.interpretText()
+    assert spin.value() == 1.25
+    spin.deleteLater()
+
+
 def test_stepper_commits_decimal_suffix_and_clamps(qapp):
     from PyQt6.QtCore import QLocale
     from PyQt6.QtTest import QSignalSpy

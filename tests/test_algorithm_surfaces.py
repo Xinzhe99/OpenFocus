@@ -365,6 +365,11 @@ def test_openfocus_b_default_precision_and_saved_value(qapp, algorithm_host):
     assert editors['radius'].value() == 8
     assert editors['smoothing'].value() == pytest.approx(4)
     assert editors['feather'].value() == 3
+    assert editors['smoothing'].text().endswith('4.0')
+
+    editors['smoothing'].setValue(6.666667)
+    assert editors['smoothing'].value() == pytest.approx(6.666667)
+    assert editors['smoothing'].text().endswith('6.666667')
 
     editors['smoothing'].setValue(1.2)
     host.set_fusion_method('openfocus_c')

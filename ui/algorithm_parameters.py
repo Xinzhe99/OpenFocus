@@ -8,6 +8,7 @@ from locales import trans
 from widgets.stepper import StepperSpinBox
 
 
+
 class AlgorithmParameterPanel(QWidget):
     """Build accessible editors without coupling consumers to parameter names."""
 

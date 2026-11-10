@@ -18,6 +18,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Add an optional copyright symbol before or after watermark text.
 - Copy the saved image path to the clipboard after a successful Save As; copy
   existing paths without prompting to create files for unsaved outputs.
+- Hide unnecessary trailing zeros in numeric controls while retaining their
+  full precision for saved values and calculations.
 - Add an optional Windows Explorer context-menu command to import selected
   images or folders as a stack, including large multi-selections.
 - Default exposure matching on for every fusion method and the other desktop
