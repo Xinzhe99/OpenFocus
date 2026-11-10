@@ -12,6 +12,296 @@ model workspaces and full-size outputs still require available RAM and temporary
 data requires free disk space. A stack can be rejected if its working set cannot
 fit. See [GPU support](GPU_SUPPORT.md) for provider and validation limitations.
 
+## Diagnosing a slow render
+
+Two opt-in diagnostics answer "where did the time go?" and "why did it choose
+that?". Both are off by default, are preferences of the installation (never
+saved in projects or templates), and do not change output pixels.
+
+| | Render profile | Detailed logging |
+|---|---|---|
+| Answers | How long each stage took, and what it cost in memory | Which plan, tile size, directory and thread count were chosen, and why |
+| GUI | **Settings → Advanced Settings → Diagnostics → Profile rendering performance**, then **Performance report** | **… → Diagnostics → Detailed logging**, then **Open Logs Folder** |
+| CLI | `--profile-performance [FILE]` | `--log-level debug` |
+| Agent control | `option.set name=profile_performance`; the report is in `render.result` | `option.set name=debug_logging` |
+| Result | A report: text summary and JSON | `DEBUG` lines in the session log |
+
+### Render profile
+
+The next render collects a report in the process that renders (the isolated
+render process for the desktop application). The report returns with the result,
+including a partial report when the render is cancelled or fails. **Performance
+report** shows the summary and **Save as JSON…** exports it; reports are kept for
+the session only. Each profiled render also logs one compact `render.performance`
+event (without tile coordinates), so a feedback export contains it.
+
+On the command line, `--profile-performance [FILE]` applies to a single,
+non-grouped run. The summary goes to stderr; with `--json` the report is added
+under a `performance` key; with FILE it is also written there. stdout stays
+machine-readable with `--json-progress`, and exit codes are unchanged.
+
+When profiling is off, every stage call returns one shared no-op context manager:
+no clock is read and nothing is allocated. Output is identical with profiling
+on or off (tested for whole-image and tiled renders). On one machine a stage
+cost about 0.3 µs when off, 1.2 µs when on and 4 µs for a major stage; the
+25-second example below made 128 stage calls and 198 cache updates, well under
+a millisecond in total.
+
+#### Reading the summary
+
+This is an abridged summary of an 8-frame 1200×900 synthetic stack: ECC
+alignment, StackMFF V3 on the CPU with 4 threads, tile size 512, overlap 128.
+It illustrates the format; it is not a benchmark.
+
+```text
+Outcome: completed   wall time: 25.09 s   peak memory: 1.46 GiB
+Threads (0 = automatic): plan_attention_inference=[4], plan_neural_tiles=[4], requested=4, session_intra_op=[4]
+Tiling: block_requested=512, block_after_memory_plan=512, block_effective=512, count=6, overlap_effective=128, redundancy=0.4525, ...
+Sessions: created=2, hits=10, evictions=0, construct_ms=558.232, ...
+
+Where the time went (self time, share of wall time):
+   46.1%       11.57 s  render/registration/step.ecc  x1
+   26.3%        6.59 s  render/fusion/tiled/tile/runner/probabilities/logits.full/session.run  x6
+   14.5%        3.64 s  render/fusion/tiled/tile/runner/probabilities/logits.reduced/session.run  x6
+    3.3%      829.7 ms  render/fusion/tiled/tile/resolve_region  x5
+    3.1%      778.6 ms  render/fusion/exposure_gains  x1
+
+Stages in execution order (total / self):
+render: x1 24.62 s / 2.9 ms  cpu 1 min 24 s  peak memory +1.35 GiB
+  registration: x1 11.57 s / 3.2 ms  47.0% of parent  cpu 40.45 s  peak memory +423.89 MiB
+    step.ecc: x1 11.57 s / 11.57 s  100.0% of parent
+  fusion: x1 13.05 s / 10.2 ms  53.0% of parent  cpu 43.80 s  peak memory +953.81 MiB
+    exposure_gains: x1 778.6 ms / 778.6 ms  6.0% of parent
+    tiled: x1 12.26 s / 11.6 ms  94.0% of parent
+      tile: x6 12.02 s / 0.3 ms  98.1% of parent
+        ...
+
+On other threads (summed across threads, may exceed wall time):
+  registration.estimate: x7 40.48 s, longest 6.36 s
+  registration.prepare: x8 778.4 ms, longest 133.5 ms
+  source_decode: x8 427.9 ms, longest 87.8 ms
+```
+
+- **Where the time went** ranks stages by *self* time: time spent in the stage
+  itself, excluding its child stages. Self times of the whole tree add up to
+  the wall time of the measured stages. Start here.
+- **Stages in execution order** is the full tree. `total` is inclusive wall
+  time. Sibling stages never overlap, so they add up within their parent.
+- Major stages also show process CPU time (all threads; more than wall time
+  means parallel work) and how far the stage raised the process's **peak
+  memory**. A stage that shows no growth stayed under the earlier peak.
+- **On other threads** lists work done in pools, such as registration's pair
+  estimation or classical tiles. Those totals are summed across threads, can
+  exceed wall time and are never added to the tree.
+
+What usually bounds a render:
+
+- **Inference:** `session.run` dominates. Compare thread counts; more threads
+  are not always faster.
+- **Sessions:** `sessions.created` is much larger than the number of distinct
+  shapes, `miss_reasons` show `evicted`, and `construct_ms` is a noticeable
+  share.
+- **Tiling:** `redundancy` is the share of pixels computed more than once
+  because tiles overlap; `block_requested` → `block_after_memory_plan` shows a
+  tile size reduced to fit memory.
+- **Frame access:** `resolve_region`, `materialize`, `exposure_gains` or the
+  resolution cache's `put_ms` are significant, or `degraded_events` > 0 (the
+  cache stopped and frames are decoded again).
+- **Registration:** `registration.estimate` or `registration.features` under
+  *On other threads*, against the `registration` stage's wall time.
+
+#### Report schema (version 1)
+
+`dumps()` writes sorted keys and a fixed schema, so two reports compare with any
+JSON diff.
+
+- `outcome` (`completed`, `cancelled` or `failed`), `wall_ms`, `finished_at`
+  (local time), `operation_id` (the `render` log scope; GUI renders).
+- `stages`: one entry per stage path. `count`, `total_ms` (inclusive), `self_ms`,
+  `mean_ms`, `min_ms`, `max_ms`, `order` (first-entered position), `parent`,
+  `pct_of_parent`; major stages add `process_cpu_ms`, `peak_rss_bytes` and
+  `peak_rss_growth_bytes`.
+- `concurrent`: stages timed on other threads, with `count`, `total_ms`,
+  `mean_ms` and `max_ms`.
+- `threads`: `requested` (0 means automatic) and every value later derived from
+  it: `plan_neural_tiles`, `plan_attention_inference`, `session_intra_op` (the
+  values given to ONNX Runtime) and `tile_workers` (classical tiles).
+  `runtime.automatic_threads` shows what 0 resolves to per resource mode.
+- `tiling`: `block_requested` → `block_after_image_clamp` →
+  `block_after_memory_plan` → `block_effective`; `overlap_requested` and
+  `overlap_effective`; `count`; `coords` (the first 256; omitted from the log
+  event); `clipped_area_ratio`, `redundancy`, and for methods that pad tiles
+  `pad_alignment` and `padded_inference_area_ratio`.
+- `sessions`: `created`, `hits`, `evictions`, `clears`, `construct_ms`,
+  `hash_ms`, and `keys` listing each model file name, shape, device and thread
+  count with `runs`, `hits` and `miss_reasons` (`first_use`, `new_shape`,
+  `new_key_same_shape`, `evicted`, `cleared`).
+- `cache.by_kind`: resolution-cache counters (`lookups`, `hits`, `misses`,
+  `puts`, `bytes_written`, `put_ms`) for `source`, `processed` and `crop`
+  entries, plus `degraded_events` and `peak_retained_bytes`.
+- `slowest_tiles`: the ten slowest tiles of a neural render with coordinates,
+  frame count, sessions created during the tile and self time per stage.
+- `render` (method, frames, output shape, device, peak RSS), `runtime` (version,
+  commit and dirty flag when run from a checkout, dependency versions, OS, CPU
+  topology), `unmeasured` (known gaps) and `profiler_errors`.
+
+Reports contain no pixels, EXIF data or source paths; the model is identified
+by its file name.
+
+#### Limits
+
+- Stages are timed at meaningful boundaries, not inside per-frame or per-row
+  loops. Neural tiles are timed individually; classical tiles run in a pool and
+  appear under `concurrent`.
+- A stack decoded by the loader before the render is not timed; lazily decoded
+  sources appear as `source_decode`. Saving is timed by the CLI only.
+- Peak memory is the process high-water mark (`getrusage` /
+  `PeakWorkingSetSize`). Growth is attributed to the stage during which the
+  mark rose; a stage below the earlier peak shows none.
+- Preview, ROI and compare renders are profiled like any render; batch jobs,
+  depth maps and mosaics are not.
+
+### Detailed logging
+
+Detailed logging raises the session log to `DEBUG`. The GUI switch takes effect
+at once, without a restart, and the isolated render process follows it;
+`--log-level` does the same for one CLI run and prints the log path to stderr;
+`OPENFOCUS_LOG_LEVEL=DEBUG` selects it before launch. A `log_level.changed`
+event marks where the detail starts and stops.
+
+| Event | Records |
+|---|---|
+| `render_resources` | Process and available memory at the start and end of a render; CPU topology and what automatic threads resolve to |
+| `execution_plan` | Each plan: workload shape, fixed and per-worker bytes, available RAM, budget, workers, native threads, reasons |
+| `neural_tile_plan` | Requested tile, the tile that fits, its working set and the RAM ceiling |
+| `fusion_tiling` | Requested and effective tile size and overlap, tile count, workers |
+| `fusion_tile` | One line per tile: coordinates and elapsed time |
+| `scratch_selected` | The temporary directory bound to the job, bytes required and available |
+| `heavy_job.waited` | Time spent waiting for another heavy job to release the lease |
+
+Other `DEBUG` lines come from the source cache, the frame resolution cache and
+neural inference. Logs can contain file paths and stay on the machine until a
+person shares them. A log rotates at 1 MB with three backups per process, so a
+very long detailed render keeps only its most recent part.
+
+### ONNX Runtime operator traces
+
+Set `OPENFOCUS_ORT_OPERATOR_PROFILE=1` to enable ONNX Runtime's own profiling
+for CPU sessions, and optionally `OPENFOCUS_ORT_PROFILE_DIR` (default:
+`ort-traces` in the logs folder). Each session writes a Chrome-trace JSON file,
+named after its shape and thread count, when it is evicted or cleared and at
+process exit. Without the variable, `SessionOptions` are unchanged; no setting
+in the application enables it. Accelerated sessions keep their existing one-run
+placement profile. A trace records every node of every run: expect a large
+slowdown and large files, so trace short renders only. Open a trace in
+`chrome://tracing` or [Perfetto](https://ui.perfetto.dev).
+
+### Native profiling on Linux
+
+Desktop renders run in a spawned process named `OpenFocus render`
+(`pgrep -f 'OpenFocus render'`); CLI renders run in the CLI process.
+
+```bash
+perf stat -e task-clock,context-switches,cpu-migrations,page-faults -p PID -- sleep 30
+perf record -g -p PID -- sleep 30 && perf report --no-children
+```
+
+With the common `kernel.perf_event_paranoid` = 2, only user-space samples of
+your own processes are available. Many virtual machines expose no hardware
+counters; `task-clock` and `perf record -e cpu-clock` still work.
+
+### StackMFF V3 CPU benchmarks
+
+`tools/stackmff_cpu_benchmark.py` measures the StackMFF V3 CPU path with the
+render profile above. Each configuration runs in its own subprocess with an
+isolated data, log and scratch directory, so user settings and photographs are
+never touched. Input is a deterministic synthetic stack, recorded with its seed
+and SHA-256 hashes. A result records the commit and dirty flag, the tool's own
+SHA-256, dependency versions, CPU topology, and both requested and effective
+settings. All runs are CPU-only.
+
+```bash
+python tools/stackmff_cpu_benchmark.py sweep    --smoke   # thread sweep, one tile
+python tools/stackmff_cpu_benchmark.py sessions --smoke   # recorded + synthetic eviction replay
+python tools/stackmff_cpu_benchmark.py tiling   --smoke   # overlap / tile size + image differences
+python tools/stackmff_cpu_benchmark.py cache    --smoke   # resolution cache by entry kind
+python tools/stackmff_cpu_benchmark.py overhead --smoke   # profiling off vs on, alternating
+```
+
+`--smoke` finishes in seconds and checks that the counters work; its timings
+are not performance figures. `--full` uses the geometry of a recorded 82-frame
+render, which the tool calls historical: a 1040×778 output, tile 389, overlap
+256. On its own it only prints the plan with a time and RAM estimate; add
+`--confirm` to run it. `--json-output FILE` writes a result that compares with another run
+using any JSON diff. `--threads`, `--frames`, `--height`, `--width`, `--block`
+and `--overlap` change the workload; `overhead --baseline-root DIR` also times
+another checkout; `tiling --diff-images DIR` writes per-configuration
+difference images. Sweeps use the Maximum resource mode, and thread counts
+above its capacity are listed as skipped.
+
+Each run writes completed configurations to a JSON Lines checkpoint and prints
+its path to stderr. With `--json-output FILE`, the checkpoint starts at
+`FILE.partial.jsonl`; otherwise it starts at `BENCHMARK.partial.jsonl` in the
+current directory. If that path already exists, a numbered suffix selects a new
+file, preserving earlier runs. Planning alone creates no checkpoint. A successful
+JSON-output run removes its own checkpoint after writing the result; stdout runs
+keep theirs. Interrupted runs and runs with worker failures retain their
+checkpoints. Worker failures produce a nonzero exit status while other
+configurations continue and their results remain available.
+Overhead results list failures by arm and repetition; checkpoints identify the
+arm for each measurement, including baseline runs. Output identity is reported
+as indeterminate when any requested arm has no successful measurement.
+
+#### Measurements (2026-11-09)
+
+One machine: i7-10875H (8 cores, 16 threads, no CPU quota), Linux, Python
+3.13.18, ONNX Runtime 1.23.2, NumPy 2.5.4, OpenCV 5.0.0. Synthetic 82-frame
+1040×778 stack, seed 20261108, soft mode, 2 threads unless stated, clean
+checkouts of the revisions that introduced the tool. They are single-machine
+observations, not a specification.
+
+- **Threads** (`sweep`, one 82×448² tile, warm median of 3): 1 thread 20.43 s,
+  2 16.88 s, **4 12.74 s**, 6 13.25 s, 8 14.79 s; output identical at every
+  count. More threads than four were slower on this CPU.
+- **Sessions** (`sessions`): replaying 40 logged lookups that build 20 sessions
+  takes 4.2 s (0.21 s per session, model hash 0.05 s). Session churn is cheap
+  next to roughly 10 s of inference per tile.
+- **One render** (`cache`, tile 389, 20 tiles, 314 s): `session.run` 283 s
+  (90 %); region resolution 20.4 s (6.5 %), of which 1,640 one-use crop puts
+  (697 MB, never read again) cost 14.3 s (4.6 %); session acquisition 4.6 s;
+  per-tile `plan_attention_inference` 1.6 ms.
+- **Tile size and overlap** (`tiling`, reference 448 / 224):
+
+| Tile / overlap (requested→effective) | Tiles | Sessions | Padded area | Fusion | Mean / max difference |
+|---|---:|---:|---:|---:|---|
+| 389 / 256→194 | 20 | 20 | 4.65× | 339 s | 0.060 / 13 |
+| 448 / 224 | 15 | 2 | 3.72× | 289 s | reference |
+| 448 / 128 | 9 | 2 | 2.23× | 148 s | 0.051 / 6 |
+| 448 / 64 | 6 | 2 | 1.49× | 99 s | 0.055 / 9 |
+| 256 / 224→128 | 48 | 2 | 3.89× | 287 s | 0.076 / 13 |
+
+  Fusion time follows the padded inference area. The same 389 render took 314 s
+  in `cache` and 339 s here, so differences under about 8 % are within
+  run-to-run spread. The differences are on synthetic data and say nothing
+  about visible seams on real photographs; do not choose a default from speed
+  alone.
+- **Memory:** measured peak RSS was 1.6–1.7× the planner's working-set
+  estimate (8.0 GB for one 448 tile, 9.41 GB for the 389 render), and a
+  640-pixel tile exceeded a 14 GiB limit.
+- **Profiling overhead** (`overhead`, 5 off / 5 on alternating, the 389 render):
+  off median 303.56 s (302.29–329.36), on 303.49 s (302.22–355.52), −0.02 %;
+  all ten outputs identical. A 12-frame workload measured +0.59 % for
+  profiling off against the code before profiling and −0.98 % for on against
+  off, both inside the spread. These used the profiler's first revision, on
+  an idle machine; a later 12-frame run on a busy machine spread from 25 to
+  38 s within each arm and was discarded. Run `overhead` on an idle machine.
+
+A 1040×778 output is narrower than the default 1024 tile, so the tile is
+clamped to 778 and then halved for memory to 389. Edge tiles then pad to 384
+instead of 448, which gives seven session shapes for a two-entry CPU session
+cache: the reason for 20 sessions in the first row of the table. A 448 tile
+needs two.
+
 ## Current bounded execution (unreleased)
 
 OpenFocus A/B/C choose either a RAM-admitted frame window or one reusable row

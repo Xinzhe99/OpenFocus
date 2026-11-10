@@ -220,6 +220,30 @@ class AdvancedSettingsDialog(QDialog):
             value=int(getattr(w, "ai_batch_size", 2)))
         ai.addRow(trans.t("advanced_ai_batch"), self.spin_ai_batch)
 
+        # ---- Diagnostics -------------------------------------------------
+        # Preferences of this installation: never part of a project or template.
+        diagnostics = _section(page_lay, trans.t("advanced_tab_diagnostics"))
+        self.chk_profile_performance = QCheckBox()
+        self.chk_profile_performance.setProperty("controlId", "chk_profile_performance")
+        self.chk_profile_performance.setChecked(bool(getattr(w, "profile_performance", False)))
+        self.chk_profile_performance.setToolTip(trans.t("perf_profile_collect_hint"))
+        diagnostics.addRow(trans.t("perf_profile_collect"), self.chk_profile_performance)
+        self.btn_performance_report = QPushButton(trans.t("perf_report_title"))
+        self.btn_performance_report.setProperty("controlId", "btn_performance_report")
+        self.btn_performance_report.clicked.connect(
+            lambda: w.render_manager.show_performance_report(parent=self))
+        diagnostics.addRow(self.btn_performance_report)
+        self.chk_debug_logging = QCheckBox()
+        self.chk_debug_logging.setProperty("controlId", "chk_debug_logging")
+        self.chk_debug_logging.setChecked(bool(getattr(w, "debug_logging", False)))
+        self.chk_debug_logging.setToolTip(trans.t("debug_logging_hint"))
+        diagnostics.addRow(trans.t("debug_logging_enable"), self.chk_debug_logging)
+        # The same action as Help -> Open Logs Folder, next to the switch that fills it.
+        self.btn_open_logs = QPushButton(trans.t("menu_open_logs"))
+        self.btn_open_logs.setProperty("controlId", "btn_open_logs")
+        self.btn_open_logs.clicked.connect(lambda: w.open_logs_folder())
+        diagnostics.addRow(self.btn_open_logs)
+
         # ---- Startup & updates -------------------------------------------
         other = _section(page_lay, trans.t("advanced_tab_other"))
         self.chk_restore = QCheckBox()
@@ -325,6 +349,8 @@ class AdvancedSettingsDialog(QDialog):
             "reg_downscale_width": int(self.spin_reg_width.value()),
             "align_cache_enabled": self.chk_align_cache.isChecked(),
             "collect_alignment_report": self.chk_collect_alignment_report.isChecked(),
+            "profile_performance": self.chk_profile_performance.isChecked(),
+            "debug_logging": self.chk_debug_logging.isChecked(),
             "output_name_prefix": self.output_prefix.text(),
             "ai_batch_size": max(1, int(self.spin_ai_batch.value())),
             "restore_last_stack": self.chk_restore.isChecked(),
@@ -388,11 +414,13 @@ class AdvancedSettingsDialog(QDialog):
         analytics = getattr(w, "usage_analytics", None)
         if analytics is not None and analytics.enabled() != self.chk_usage.isChecked():
             analytics.set_enabled(self.chk_usage.isChecked())
-        from utils.logging_setup import log_action
+        from utils.logging_setup import log_action, set_debug_logging
+        if bool(previous["debug_logging"]) != draft["debug_logging"]:
+            set_debug_logging(draft["debug_logging"])  # Effective at once, no restart.
         log_action("settings.applied", changed=sorted(
             key for key in draft if previous[key] != draft[key]),
             usage_enabled=self.chk_usage.isChecked())
-        processing = set(draft) - {"restore_last_stack", "ask_load_scale", "output_name_prefix", "collect_alignment_report", "storage_directory"}
+        processing = set(draft) - {"restore_last_stack", "ask_load_scale", "output_name_prefix", "collect_alignment_report", "profile_performance", "debug_logging", "storage_directory"}
         if any(previous[key] != draft[key] for key in processing):
             mark_dirty = getattr(w, "_mark_project_dirty", None)
             if mark_dirty is not None:

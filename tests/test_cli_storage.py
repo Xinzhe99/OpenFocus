@@ -263,3 +263,28 @@ def test_cli_warns_without_claiming_a_directory_for_multiple_volumes(monkeypatch
     assert 'low temporary storage across available volumes' in warning
     assert 'at most ' in warning
     assert 'in None' not in warning
+
+
+def test_cli_profiles_with_scoped_scratch(monkeypatch, tmp_path):
+    from core import cli
+
+    stack = _cli_stack(tmp_path)
+    scratch = tmp_path / 'scratch'
+    scratch.mkdir()
+    profile = tmp_path / 'profile.json'
+    original = cli._fuse_stack
+    placements = []
+
+    def fuse(images, args):
+        frame_storage.select_scratch(64)
+        mapped = frame_storage.store_frame(np.zeros((8, 8), np.uint8), prefer_ram=False)
+        placements.append(mapped.filename)
+        return original(images, args)
+
+    monkeypatch.setattr(cli, '_fuse_stack', fuse)
+    code = _cli(monkeypatch, tmp_path, '-i', str(stack), '-o', str(tmp_path / 'out.png'),
+                '-m', 'dct', '--temp-dir', str(scratch), '--profile-performance', str(profile))
+    assert code == 0
+    assert len(placements) == 1 and os.path.dirname(placements[0]) == str(scratch)
+    assert json.loads(profile.read_text(encoding='utf-8'))['outcome'] == 'completed'
+    assert frame_storage.capture_scratch() is None
