@@ -6,6 +6,26 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- Add opt-in render profiling: **Advanced Settings → Diagnostics → Profile
+  rendering performance** and CLI `--profile-performance [FILE]`. A report
+  ranks where the time went, then lists every stage in execution order with
+  inclusive and self time; major stages add process CPU time and how far they
+  raised peak memory. It also records tile geometry with the reason a tile was
+  resized, every thread count from the request to ONNX Runtime, neural session
+  creation with miss reasons, resolution-cache activity by entry kind and the
+  ten slowest tiles. All fusion methods and registration are covered. Reports
+  are shown and saved as JSON from **Performance report**, embedded in CLI
+  `--json`, returned by the control channel's `render.result`, and logged once
+  as a compact `render.performance` event. Off by default; output is identical
+  with profiling on or off.
+- Add **Advanced Settings → Diagnostics → Detailed logging** and CLI
+  `--log-level`. Detailed logging takes effect immediately, including in the
+  isolated render process, and records resource plans, neural tile planning,
+  tile geometry, the temporary directory chosen, memory around a render and
+  the time of each tile. `OPENFOCUS_LOG_LEVEL` keeps working. The control
+  channel gains `option.set` names `profile_performance` and `debug_logging`.
+- Add `OPENFOCUS_ORT_OPERATOR_PROFILE` / `OPENFOCUS_ORT_PROFILE_DIR` for ONNX
+  Runtime operator traces of CPU sessions.
 - Expose OpenFocus radius, smoothing and B feather in method-specific units, with
   R8/S4/F3 defaults and 3% shift/5% magnification alignment defaults.
   Saved projects, templates, recipes and preferences migrate earlier units;
