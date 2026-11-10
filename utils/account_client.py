@@ -23,6 +23,7 @@ import urllib.parse
 import urllib.request
 import webbrowser
 
+from constants import APP_VERSION
 from utils.app_paths import user_data_dir
 
 BASE_URL = "https://account.openfocus.top"
@@ -165,7 +166,7 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 def _http(method, url, body=None, token=None, timeout=15):
-    headers = {"Accept": "application/json"}
+    headers = {"Accept": "application/json", "User-Agent": f"OpenFocus/{APP_VERSION}"}
     if body is not None:
         body = json.dumps(body, separators=(",", ":")).encode("utf-8")
         headers["Content-Type"] = "application/json"

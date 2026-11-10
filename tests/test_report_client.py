@@ -33,6 +33,8 @@ class Server:
 
     def open(self, request, timeout):
         self.requests.append((request, timeout))
+        if not request.get_header("User-agent", "").startswith("OpenFocus/"):
+            raise OSError("gateway rejected unknown client")
         if request.method == "POST":
             self.creations += 1
             return Response(201, {"id": "report-%d" % self.creations,
