@@ -4265,6 +4265,9 @@ class OpenFocus(QMainWindow):
             start_shutdown_reports(self)
         except Exception:
             get_logger(__name__).exception('Could not start error reporting')
+        from dialogs.account import AccountDialog
+        for dialog in self.findChildren(AccountDialog):
+            dialog.reject()
         super().closeEvent(event)
 
     # --- Language ---
@@ -4841,6 +4844,11 @@ if __name__ == "__main__":
             window.show_account_dialog()
         finally:
             app.setQuitOnLastWindowClosed(_quit_on_last_window)
+        if getattr(window, '_shutting_down', False):
+            # The prompt runs before app.exec(); release control and instance
+            # resources without reopening the window after an authorized close.
+            app.aboutToQuit.emit()
+            sys.exit(0)
         _account_settings.setValue('account/intro_version', APP_VERSION)
 
     # Crash auto-recovery: a leftover lock means the last session died

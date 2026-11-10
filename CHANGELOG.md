@@ -206,6 +206,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 - Identify account and diagnostic report requests as OpenFocus so supported
   services can distinguish them from generic automated traffic.
+- Close cleanly when quitting while the first-run account prompt is open.
 - Hide redundant button and option tooltips when their full labels are visible;
   keep explanatory hints and the full text of elided labels.
 - Shorten isolated Unix instance socket names when the temporary path is long.
