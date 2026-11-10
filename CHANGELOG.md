@@ -26,6 +26,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   channel gains `option.set` names `profile_performance` and `debug_logging`.
 - Add `OPENFOCUS_ORT_OPERATOR_PROFILE` / `OPENFOCUS_ORT_PROFILE_DIR` for ONNX
   Runtime operator traces of CPU sessions.
+- Add `tools/stackmff_cpu_benchmark.py`: reproducible StackMFF V3 CPU thread
+  sweeps, session replay, overlap and tile-size comparisons with image
+  differences, cache activity and profiling overhead, in subprocesses with
+  isolated settings and scratch, with smoke and opt-in full modes. Each run
+  preserves earlier checkpoints and retains recoverable measurements after
+  interruption or worker failure; failures produce a nonzero exit status.
 - Expose OpenFocus radius, smoothing and B feather in method-specific units, with
   R8/S4/F3 defaults and 3% shift/5% magnification alignment defaults.
   Saved projects, templates, recipes and preferences migrate earlier units;
