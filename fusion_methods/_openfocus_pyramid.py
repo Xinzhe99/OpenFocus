@@ -107,7 +107,8 @@ def _detail_and_weight(fine, coarse, detail, weight, start, stop):
                 strength = np.float32(strength * np.float32(3))
             elif channels == 2:
                 strength = np.float32(strength * np.float32(1.5))
-            if y == 0 or x == 0 or y == height - 1 or x == width - 1:
+            if ((height > 2 and (y == 0 or y == height - 1))
+                    or (width > 2 and (x == 0 or x == width - 1))):
                 weight[y, x] = 0
             else:
                 weight[y, x] = min(65535, int(np.float32(strength * np.float32(21845))))
@@ -194,8 +195,12 @@ def fuse_pyramid(frames, shape, img_resize, smoothing, should_cancel, progress_c
     is_gray = len(shape) == 2
     channels = 1 if is_gray else shape[2]
     levels = [shape[:2]]
-    while min((levels[-1][0] + 1) // 2, (levels[-1][1] + 1) // 2) >= 16:
-        levels.append(((levels[-1][0] + 1) // 2, (levels[-1][1] + 1) // 2))
+    while True:
+        next_level = ((levels[-1][0] + 1) // 2, (levels[-1][1] + 1) // 2)
+        # Even small or narrow images need a detail level for focus selection.
+        if min(next_level) < 16 and (len(levels) > 1 or next_level == levels[-1]):
+            break
+        levels.append(next_level)
     accumulators = [create_frame((h, w, channels), np.float32) for h, w in levels]
     maxima = [create_frame((h, w), np.uint16) for h, w in levels]
     total = len(frames) + 1

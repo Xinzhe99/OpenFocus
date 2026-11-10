@@ -120,7 +120,8 @@ def test_burt_odd_edges_do_not_amplify_repeated_samples():
 
 
 @pytest.mark.parametrize('dtype', [np.uint8, np.uint16])
-@pytest.mark.parametrize('shape', [(64, 67), (128, 131), (256, 259), (512, 515)])
+@pytest.mark.parametrize('shape', [(1, 1), (1, 128), (2, 3), (2, 128), (20, 128),
+                                   (128, 20), (64, 67), (128, 131), (256, 259), (512, 515)])
 def test_c_identity_preserves_every_source_bit(dtype, shape):
     from fusion_methods.openfocus_bc import openfocus_c_impl
 
@@ -128,3 +129,28 @@ def test_c_identity_preserves_every_source_bit(dtype, shape):
     frame = rng.integers(0, np.iinfo(dtype).max + 1, shape + (3,), dtype=dtype)
     result = openfocus_c_impl([frame, frame.copy(), frame.copy()], thread_count=1)
     np.testing.assert_array_equal(quantize_fuse_output(result, dtype == np.uint16), frame)
+
+
+@pytest.mark.parametrize('dtype', [np.uint8, np.uint16])
+@pytest.mark.parametrize('smoothing', [0, None])
+@pytest.mark.parametrize('shape', [(1, 128), (2, 128), (20, 128), (128, 20)])
+def test_c_small_images_select_focused_detail_from_each_source(shape, dtype, smoothing):
+    from fusion_methods.openfocus_bc import openfocus_c_impl
+
+    rows, cols = np.indices(shape)
+    horizontal = shape[1] >= shape[0]
+    axis = cols if horizontal else rows
+    midpoint = max(shape) // 2
+    scale = 1 if dtype == np.uint8 else 257
+    detail = np.where(axis % 2, 220 * scale, 40 * scale).astype(dtype)
+    first = np.where(axis < midpoint, detail, 128 * scale).astype(dtype)
+    second = np.where(axis >= midpoint, detail, 128 * scale).astype(dtype)
+    first = np.repeat(first[:, :, None], 3, axis=2)
+    second = np.repeat(second[:, :, None], 3, axis=2)
+
+    fused = openfocus_c_impl([first, second], blend_smoothing=smoothing, thread_count=1)
+    pixels = quantize_fuse_output(fused, dtype == np.uint16).astype(np.float32) / scale
+    left = pixels[:, 8:midpoint - 8] if horizontal else pixels[8:midpoint - 8, :]
+    right = pixels[:, midpoint + 8:-8] if horizontal else pixels[midpoint + 8:-8, :]
+    assert np.std(left) > 25
+    assert np.std(right) > 25

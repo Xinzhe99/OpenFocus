@@ -156,6 +156,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   scroll phase, including X11, where only angle deltas are reliable.
 
 ### Fixed
+- Preserve focus selection in OpenFocus C for small or narrow images.
 - Finalize partial CLI performance reports when a render is interrupted, and
   release evicted neural sessions before constructing their replacements.
 - Keep rotation and magnification alignment active when maximum shift is zero,
