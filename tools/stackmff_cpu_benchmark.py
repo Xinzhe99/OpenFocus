@@ -41,6 +41,27 @@ HISTORICAL_PEAK_RSS_BYTES = int(9.7e9)
 # Completed configurations are appended here as they finish, so a run that is
 # killed part-way (for example by a memory limit) keeps what it measured.
 _CHECKPOINT = None
+_CHECKPOINT_BASE = None
+_WORKER_FAILED = False
+
+
+def _start_checkpoint():
+    """Reserve a new checkpoint without replacing an earlier run's data."""
+    global _CHECKPOINT
+    if _CHECKPOINT is not None or _CHECKPOINT_BASE is None:
+        return
+    candidate = _CHECKPOINT_BASE
+    index = 0
+    while True:
+        try:
+            with candidate.open('x', encoding='utf-8'):
+                pass
+            break
+        except FileExistsError:
+            index += 1
+            candidate = _CHECKPOINT_BASE.with_name(f'{_CHECKPOINT_BASE.name}.{index}')
+    _CHECKPOINT = candidate
+    print(f'Checkpoint: {candidate}', file=sys.stderr, flush=True)
 
 
 # ---- shared helpers ---------------------------------------------------------
@@ -120,14 +141,24 @@ def _run_worker(root, scratch, config, timeout):
     (scratch / 'data' / 'settings.ini').write_text('[usage]\nenabled=false\n', encoding='utf-8')
     command = [sys.executable, str(Path(__file__).resolve()), '_worker', json.dumps(config),
                '--repo-root', str(root), '--scratch', str(scratch)]
-    completed = subprocess.run(command, capture_output=True, text=True, cwd=str(root),
-                               env=env, timeout=timeout)
-    lines = [line for line in completed.stdout.splitlines() if line.startswith('{')]
-    if completed.returncode != 0 or not lines:
-        result = {'config': config, 'error': (completed.stderr or completed.stdout)[-2000:],
-                  'returncode': completed.returncode}
-    else:
-        result = json.loads(lines[-1])
+    global _WORKER_FAILED
+    _start_checkpoint()
+    try:
+        completed = subprocess.run(command, capture_output=True, text=True, cwd=str(root),
+                                   env=env, timeout=timeout)
+        lines = [line for line in completed.stdout.splitlines() if line.startswith('{')]
+        if completed.returncode != 0 or not lines:
+            result = {'config': config, 'error': (completed.stderr or completed.stdout)[-2000:] or
+                      'Worker returned no JSON result', 'returncode': completed.returncode}
+        else:
+            try:
+                result = json.loads(lines[-1])
+            except json.JSONDecodeError as exc:
+                result = {'config': config, 'error': f'Invalid worker JSON: {exc}'}
+    except subprocess.TimeoutExpired:
+        result = {'config': config, 'error': f'Worker timed out after {timeout} seconds'}
+    if 'error' in result:
+        _WORKER_FAILED = True
     if _CHECKPOINT is not None:
         with open(_CHECKPOINT, 'a', encoding='utf-8') as stream:
             stream.write(json.dumps({'config': config, 'result': result}, default=str) + '\n')
@@ -518,6 +549,7 @@ def bench_overhead(args, root, scratch):
                  whole_render=True):
         return None
     times = {arm: [] for arm in arms}
+    failures = {arm: [] for arm in arms}
     hashes = {}
     for index in range(repetitions):
         order = arms[index % len(arms):] + arms[:index % len(arms)]   # rotate the order
@@ -526,22 +558,27 @@ def bench_overhead(args, root, scratch):
             result = _run_worker(arm_root, scratch, {**geometry, 'kind': 'render',
                                                      'profile': arm == 'on', 'warmup': True,
                                                      'threads': threads, 'mode': args.mode,
-                                                     'seed': args.seed, 'label': 'overhead'},
+                                                     'seed': args.seed, 'label': 'overhead',
+                                                     'arm': arm},
                                  args.timeout)
             if 'error' in result:
-                return result
+                failures[arm].append({'repetition': index + 1, 'result': result})
+                continue
             times[arm].append(result['wall_s'])
             hashes.setdefault(arm, set()).add(result['output_sha256'])
-    medians = {arm: statistics.median(values) for arm, values in times.items()}
-    output = {'geometry': geometry, 'threads': threads,
+    medians = {arm: statistics.median(values) for arm, values in times.items() if values}
+    output = {'geometry': geometry, 'threads': threads, 'failures': failures,
               **{f'{arm}_s': _summary(values) for arm, values in times.items()},
-              'on_vs_off_percent': round(100 * (medians['on'] - medians['off']) / medians['off'], 2),
-              'outputs_identical': len(set().union(*hashes.values())) == 1}
+              'on_vs_off_percent': (round(100 * (medians['on'] - medians['off']) / medians['off'], 2)
+                                    if 'on' in medians and medians.get('off') else None),
+              'outputs_identical': (len(set().union(*hashes.values())) == 1
+                                    if all(arm in hashes for arm in arms) else None)}
     if args.baseline_root:
         baseline_commit, baseline_dirty = _git(args.baseline_root)
         output.update(baseline_root=str(args.baseline_root), baseline_commit=baseline_commit,
-                      off_vs_baseline_percent=round(
-                          100 * (medians['off'] - medians['baseline']) / medians['baseline'], 2))
+                      off_vs_baseline_percent=(round(
+                          100 * (medians['off'] - medians['baseline']) / medians['baseline'], 2)
+                          if 'off' in medians and medians.get('baseline') else None))
     return output
 
 
@@ -587,10 +624,11 @@ def main(argv=None):
         print(json.dumps(WORKERS[config['kind']](config, args.scratch), default=str))
         return 0
     commit, dirty = _git(root)
-    global _CHECKPOINT
-    if args.json_output:
-        _CHECKPOINT = args.json_output.with_name(args.json_output.name + '.partial.jsonl')
-        _CHECKPOINT.unlink(missing_ok=True)
+    global _CHECKPOINT, _CHECKPOINT_BASE, _WORKER_FAILED
+    _CHECKPOINT = None
+    _WORKER_FAILED = False
+    _CHECKPOINT_BASE = (args.json_output.with_name(args.json_output.name + '.partial.jsonl')
+                        if args.json_output else Path.cwd() / f'{args.benchmark}.partial.jsonl')
     with tempfile.TemporaryDirectory(prefix='openfocus-stackmff-bench-') as directory:
         scratch = Path(directory)
         output = BENCHMARKS[args.benchmark](args, root, scratch)
@@ -614,11 +652,11 @@ def main(argv=None):
     text = json.dumps(payload, indent=2, sort_keys=True, default=str)
     if args.json_output:
         args.json_output.write_text(text + '\n', encoding='utf-8')
-        if _CHECKPOINT is not None:
+        if _CHECKPOINT is not None and not _WORKER_FAILED:
             _CHECKPOINT.unlink(missing_ok=True)
     else:
         print(text)
-    return 0
+    return 1 if _WORKER_FAILED else 0
 
 
 if __name__ == '__main__':
