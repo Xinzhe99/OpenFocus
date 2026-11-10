@@ -703,7 +703,7 @@ def test_registered_parameters_cross_dialogs_and_adoption(qapp, extra_algorithms
         assert batch.get_processing_settings()['registration_parameters'] == openfocus
         assert compare._shared['registration_parameters'] == openfocus
         captured = []
-        def capture_alignment(images, method, settings, should_cancel):
+        def capture_alignment(images, method, settings, should_cancel, *, reverse_registration=False):
             captured.append((method, dict(settings['registration_parameters'])))
             return images
         with monkeypatch.context() as patch:
