@@ -131,6 +131,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   undo and redo.
 - Include the frozen watermark in shared JPEG previews and preserve transparent
   source coverage before compositing the display background.
+- Remove temporary files left behind by a session that crashed. Each process
+  records the scratch it creates; the next start (and each command-line run)
+  removes what an exited process left, and never touches the files of a
+  process that is still running.
 
 ### Changed
 - Recommend OpenFocus B as the default desktop fusion method. ECC remains the
