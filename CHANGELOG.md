@@ -197,6 +197,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   scroll phase, including X11, where only angle deltas are reliable.
 
 ### Fixed
+- Safely ignore unhandled application events when their target has already closed.
 - Give automatic-background processing sufficient native thread stack on macOS.
 - Keep new projects clean at startup and restore a saved alignment choice.
 - Keep loading-scale resolution details readable when source metadata arrives.
