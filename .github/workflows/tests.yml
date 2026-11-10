@@ -48,6 +48,13 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt -r requirements-dev.txt
 
+      - name: Check macOS GUI shutdown
+        if: runner.os == 'macOS'
+        env:
+          QT_QPA_PLATFORM: offscreen
+          PYTHONFAULTHANDLER: '1'
+        run: python -m pytest -o addopts='' tests/test_gui_lifecycle.py -x -q --timeout=60 --timeout-method=thread
+
       - name: Run test suite
         id: pytest
         shell: bash
