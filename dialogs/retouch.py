@@ -78,6 +78,7 @@ class _SourceWorker(QThread):
 
     def __init__(self, frame, index, request, metadata):
         super().__init__()
+        configure_native_worker_stack(self)
         self.input_frame = frame
         self.index = index
         self.request = request

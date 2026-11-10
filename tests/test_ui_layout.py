@@ -122,6 +122,7 @@ def test_button_caption_recovers_after_temporary_width_constraint(qapp):
         button.setMaximumWidth(18)
         qapp.processEvents()
         assert button.text() != caption
+        assert button.toolTip() == caption
 
         button.setMaximumWidth(host.width())
         button.setText(caption)
@@ -129,6 +130,9 @@ def test_button_caption_recovers_after_temporary_width_constraint(qapp):
         layout.activate()
         qapp.processEvents()
         assert button.text() == caption
+        assert not button.toolTip()
+        button.setToolTip('Opens stack review')
+        assert button.toolTip() == 'Opens stack review'
     finally:
         host.close()
         host.deleteLater()

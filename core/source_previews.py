@@ -11,6 +11,7 @@ from PyQt6.QtCore import QThread, pyqtSignal
 from core.source_frames import ensure_preview
 from utils.image_utils import to_display_uint8
 from utils.logging_setup import log_operation
+from utils.platform_utils import configure_native_worker_stack
 
 _PREVIEW_CONDITION = threading.Condition()
 _PREVIEW_ACTIVE = False
@@ -73,6 +74,7 @@ class SourcePreviewWorker(QThread):
 
     def __init__(self, frames, request, indices=None, *, selected_display=False):
         super().__init__()
+        configure_native_worker_stack(self)
         self.frames = tuple(frames)
         self.request = request
         self.indices = tuple(range(len(self.frames))) if indices is None else tuple(indices)
@@ -261,6 +263,7 @@ class SourceRegionWorker(QThread):
     def __init__(self, frame, key, *, labels=None, index=0, scale_cfg=None,
                  watermark_cfg=None, metadata=None, target='input'):
         super().__init__()
+        configure_native_worker_stack(self)
         self.frame = frame
         self.key = key
         self.target = target
