@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 from PyQt6.QtCore import QMimeData, QPoint
 from PyQt6.QtGui import QImage
-from PyQt6.QtWidgets import QApplication, QAbstractItemView, QLabel, QSlider, QWidget
+from PyQt6.QtWidgets import QAbstractItemView, QLabel, QSlider, QWidget
 
 from controllers.export_manager import ExportManager, _read_image_any
 from controllers.output_manager import OutputManager, OutputRecord
@@ -25,30 +25,7 @@ from widgets.output_list import OutputListWidget
 
 
 @pytest.fixture(autouse=True)
-def isolated_clipboard(qapp, monkeypatch):
-    """Exercise Qt MIME payloads without changing the desktop clipboard."""
-    class Clipboard:
-        def __init__(self):
-            self.data = QMimeData()
-
-        def setMimeData(self, mime):
-            self.data = mime
-
-        def mimeData(self):
-            return self.data
-
-        def setText(self, text):
-            self.data = QMimeData()
-            self.data.setText(text)
-
-        def text(self):
-            return self.data.text()
-
-        def clear(self):
-            self.data = QMimeData()
-
-    clipboard = Clipboard()
-    monkeypatch.setattr(QApplication, 'clipboard', staticmethod(lambda: clipboard))
+def nonblocking_share_errors(isolated_clipboard, monkeypatch):
 
     def unexpected_error(*args, **kwargs):
         pytest.fail(f'Unexpected output-sharing error: {args[1:]}')

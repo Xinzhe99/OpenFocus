@@ -11,6 +11,8 @@ from controllers.export_manager import ExportManager, LayeredTiffWorker
 from controllers.output_manager import OutputRecord
 from core.render_context import RenderContext, SourceFrame
 
+pytestmark = pytest.mark.usefixtures('isolated_clipboard')
+
 
 @pytest.fixture(scope="module")
 def qapp():
