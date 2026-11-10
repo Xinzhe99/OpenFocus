@@ -398,6 +398,51 @@ def test_delayed_storage_preflight_rejects_stale_or_cancelled_request(
     assert manager.last_state == ('cancelled' if change == 'cancel' else 'discarded')
 
 
+def test_cpu_confirmation_is_not_repeated_after_storage_preflight(window, fake_worker, monkeypatch, qapp):
+    from controllers import render_manager
+
+    probes, cpu_prompts, storage_prompts = [], [], []
+    monkeypatch.setattr(frame_storage, 'automatic_preflight_may_block', lambda: True)
+    monkeypatch.setattr(frame_storage, '_storage_directory', None)
+    monkeypatch.setattr(render_manager._StorageProbe, 'start', lambda probe, estimate: probes.append(probe))
+    manager = window.render_manager
+    monkeypatch.setattr(manager, '_ai_confirmation_needed', lambda method: True)
+    monkeypatch.setattr(manager, '_confirm_cpu_ai_render', lambda method: cpu_prompts.append(method) or True)
+    monkeypatch.setattr(manager, '_confirm_storage',
+                        lambda assessment, frames: storage_prompts.append(assessment) or None)
+    assert manager.start_render() == 'preflight'
+    assert len(cpu_prompts) == 1 and not storage_prompts
+    probes[0].completed.emit(_assessment('advisory'))
+    qapp.processEvents()
+    assert len(cpu_prompts) == 1 and len(storage_prompts) == 1
+    assert not fake_worker.created
+
+
+@pytest.mark.parametrize('outcome', ['advisory', 'cancel', 'stale'])
+def test_pending_storage_preserves_previous_result(window, fake_worker, monkeypatch, qapp, outcome):
+    from controllers import render_manager
+    from core.control.server import _render_state
+
+    probes = []
+    monkeypatch.setattr(frame_storage, 'automatic_preflight_may_block', lambda: True)
+    monkeypatch.setattr(frame_storage, '_storage_directory', None)
+    monkeypatch.setattr(render_manager._StorageProbe, 'start', lambda probe, estimate: probes.append(probe))
+    manager = window.render_manager
+    previous = {'output': 'earlier result'}
+    manager.last_result = previous
+    assert manager.start_render(interactive=False) == 'preflight'
+    assert _render_state(window)['result'] == previous
+    if outcome == 'cancel':
+        assert manager.cancel_storage_preflight()
+    elif outcome == 'stale':
+        window.source_revision = getattr(window, 'source_revision', 0) + 1
+    probes[0].completed.emit(_assessment('advisory'))
+    qapp.processEvents()
+    assert manager.last_result is previous
+    assert _render_state(window)['result'] == previous
+    assert not fake_worker.created
+
+
 def test_gui_still_assesses_explicit_directory_on_slow_platform(window, monkeypatch, tmp_path):
     from types import SimpleNamespace
 
