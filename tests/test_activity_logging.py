@@ -16,7 +16,8 @@ def test_activity_logging_user_input():
 
 def _exercise():
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from PyQt6.QtCore import QPoint, Qt
+    from PyQt6 import sip
+    from PyQt6.QtCore import QEvent, QPoint, Qt
     from PyQt6.QtGui import QAction
     from PyQt6.QtTest import QTest
     from PyQt6.QtWidgets import (QCheckBox, QComboBox, QLineEdit, QListWidget, QMainWindow,
@@ -104,7 +105,11 @@ def _exercise():
     assert 'private' not in repr(records)
     assert controls.index(next(c for c in controls if c.endswith('.check'))) < controls.index(
         next(c for c in controls if c.endswith('.ui_objs.action_export')))
+    window._activity_logger.stop()
     window.close()
+    sip.delete(window)
+    # Qt may deliver application events after the main C++ window is gone.
+    app.notify(app, QEvent(QEvent.Type.User))
 
 
 if __name__ == '__main__' and sys.argv[1:] == ['exercise']:
