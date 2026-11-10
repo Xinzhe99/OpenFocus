@@ -6,7 +6,7 @@ from PyQt6.QtGui import QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QFrame, QGridLayout,
     QHBoxLayout, QLabel, QProgressBar, QPushButton, QScrollArea, QSizePolicy,
-    QSlider, QSplitter, QVBoxLayout, QWidget,
+    QSlider, QSplitter, QToolTip, QVBoxLayout, QWidget,
 )
 
 from core.compare_worker import AlignmentWorker, PreviewWorker
@@ -18,6 +18,10 @@ from core.algorithms import (alignment_steps, fusion_algorithms, get_fusion,
     registration_parameter_specs, registration_algorithms, resolve_fusion_parameters,
     resolve_registration_parameters)
 from ui.algorithm_parameters import AlgorithmParameterPanel
+from ui.algorithm_combo import (apply_method_availability, experimental_method_label,
+                                selected_item_enabled)
+from core.experimental import (alignment_is_experimental, experimental_enabled,
+                               fusion_is_experimental)
 from widgets.compare_canvas import (
     DEFAULT_DETAIL_SIZE, DetailCanvas, SourceCanvas,
 )
@@ -37,6 +41,16 @@ class _ActionFlowPanel(FlowPanel):
         hints = [item.sizeHint() for item in items if not item.isEmpty()]
         width = sum(hint.width() for hint in hints) + 8 * max(0, len(hints) - 1)
         return QSize(width, self.heightForWidth(width))
+
+
+class _MethodFlowPanel(FlowPanel):
+    def mousePressEvent(self, event):  # noqa: N802
+        child = self.childAt(event.position().toPoint())
+        if child is not None and child.property('experimentalLocked'):
+            QToolTip.showText(event.globalPosition().toPoint(),
+                              trans.t('experimental_locked_hint'), self)
+            return
+        super().mousePressEvent(event)
 
 
 class CompareDialog(QDialog):
@@ -150,10 +164,10 @@ class CompareDialog(QDialog):
             method = self._first_available_method()
         get_fusion(method)
         box = self._checks.get(method)
-        # An unavailable inherited method stays unchecked (it stays visible and
-        # disabled with its dependency tooltip): silently swapping the request
-        # would compare something the user did not choose.
-        if box is not None and box.isEnabled():
+        # Preserve a locked inherited choice; the execution guard reports why.
+        if box is not None and (box.isEnabled() or
+                                (fusion_is_experimental(method) and
+                                 not experimental_enabled(self.window_main))):
             box.setChecked(True)
         if not self._selected_methods():
             # Only when the inherited method is unavailable: keep the empty
@@ -184,8 +198,15 @@ class CompareDialog(QDialog):
             box = self._checks.get(spec.id)
             if box is None:
                 continue
-            reason = fusion_unavailable_reason(spec, available)
+            locked = (fusion_is_experimental(spec.id)
+                      and not experimental_enabled(self.window_main))
+            dependency = fusion_unavailable_reason(spec, available)
+            reason = '\n\n'.join(text for text in
+                                (trans.t('experimental_locked_hint') if locked else '',
+                                 dependency) if text)
+            box.setText(experimental_method_label(spec))
             box.setEnabled(not reason)
+            box.setProperty('experimentalLocked', locked)
             box.setProperty("unavailableReason", reason)
             hint = trans.t(spec.hint_key) if spec.hint_key else ""
             box.setToolTip("\n\n".join(text for text in (hint, reason) if text))
@@ -264,7 +285,7 @@ class CompareDialog(QDialog):
                 header = QLabel(trans.t(CATEGORY_KEYS[spec.category]))
                 header.setObjectName("sectionLabel")
                 methods_layout.addWidget(header)
-                flow = FlowPanel(h_spacing=12, v_spacing=6)
+                flow = _MethodFlowPanel(h_spacing=12, v_spacing=6)
                 methods_layout.addWidget(flow)
                 last_category = spec.category
             box = QCheckBox(trans.t(spec.label_key), flow)
@@ -293,6 +314,8 @@ class CompareDialog(QDialog):
         self.align_combo = QComboBox()
         for spec in registration_algorithms():
             self.align_combo.addItem(trans.t(spec.label_key), spec.id)
+        apply_method_availability(self.align_combo, registration_algorithms(),
+                                  self.window_main, alignment=True)
         current_align = (self.window_main.current_alignment_method()
                          if hasattr(self.window_main, "current_alignment_method") else "none")
         self.align_combo.setCurrentIndex(max(0, self.align_combo.findData(current_align)))
@@ -788,6 +811,21 @@ class CompareDialog(QDialog):
     def _start_request(self):
         if self._closing or not self._auto_enabled or self._worker is not None:
             return
+        if not selected_item_enabled(self.align_combo):
+            self._set_idle()
+            self.status_label.setText(self.align_combo.currentData(Qt.ItemDataRole.ToolTipRole))
+            return
+        if not experimental_enabled(self.window_main) and (
+                alignment_is_experimental(self.align_combo.currentData()) or any(
+                    fusion_is_experimental(method) for method in self._selected_methods())):
+            self._set_idle()
+            self.status_label.setText(trans.t('experimental_locked_hint'))
+            return
+        for method in self._selected_methods():
+            if not self._checks[method].isEnabled():
+                self._set_idle()
+                self.status_label.setText(self._checks[method].property('unavailableReason'))
+                return
         methods = self._selected_methods()
         if not methods or len(self._raw_frames) < 2:
             self._set_idle()

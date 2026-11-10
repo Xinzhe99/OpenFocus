@@ -34,6 +34,9 @@ from core.algorithms import (alignment_steps, fusion_algorithms, get_fusion,
     registration_parameter_specs, registration_algorithms, resolve_fusion_parameters,
     resolve_registration_parameters)
 from ui.algorithm_parameters import AlgorithmParameterPanel
+from ui.algorithm_combo import apply_method_availability, selected_item_enabled
+from core.experimental import (alignment_is_experimental, experimental_enabled,
+                               fusion_is_experimental)
 from locales import trans
 from utils.ui_utils import size_dialog_to_content
 from widgets.stepper import StepperSpinBox
@@ -1188,23 +1191,12 @@ class BatchProcessingDialog(QDialog):
             self.chk_base_correct.setChecked(bool(getter('base_correct', method)))
 
     def _apply_fusion_availability(self) -> None:
-        """Keep unavailable methods visible with a dependency explanation."""
         from core.multi_focus_fusion import is_ai_fusion_available
-        from ui.algorithm_combo import fusion_unavailable_reason
 
-        ai_available = bool(is_ai_fusion_available())
-        for spec in fusion_algorithms():
-            reason = fusion_unavailable_reason(spec, ai_available)
-            if not reason:
-                continue
-            index = self.fusion_combo.findData(spec.id)
-            if index < 0:
-                continue
-            item = self.fusion_combo.model().item(index)
-            if item is not None:
-                item.setEnabled(False)
-            self.fusion_combo.setItemData(
-                index, reason, Qt.ItemDataRole.ToolTipRole)
+        apply_method_availability(self.fusion_combo, fusion_algorithms(), self.parent_window,
+                                  ai_available=bool(is_ai_fusion_available()))
+        apply_method_availability(self.align_combo, registration_algorithms(), self.parent_window,
+                                  alignment=True)
 
     def _remember_fusion_parameters(self, values):
         self._fusion_drafts[self._editing_method] = dict(values)
@@ -1355,6 +1347,13 @@ class BatchProcessingDialog(QDialog):
 
     def get_processing_settings(self):
         """获取处理设置"""
+        for combo in (self.fusion_combo, self.align_combo):
+            if not selected_item_enabled(combo):
+                raise ValueError(combo.currentData(Qt.ItemDataRole.ToolTipRole) or '')
+        if (not experimental_enabled(self.parent_window)
+                and (fusion_is_experimental(self.fusion_combo.currentData())
+                     or alignment_is_experimental(self.align_combo.currentData()))):
+            raise ValueError(trans.t('experimental_locked_hint'))
         format_str = self.format_combo.currentText().lower()
         
         fusion_method = self.fusion_combo.currentData() or "none"
@@ -1467,6 +1466,18 @@ class BatchProcessingDialog(QDialog):
     def start_batch_processing(self):
         """开始批处理"""
         from PyQt6.QtWidgets import QMessageBox
+        if (not selected_item_enabled(self.fusion_combo)
+                or not selected_item_enabled(self.align_combo)
+                or (not experimental_enabled(self.parent_window)
+                    and (fusion_is_experimental(self.fusion_combo.currentData())
+                         or alignment_is_experimental(self.align_combo.currentData())))):
+            for combo in (self.fusion_combo, self.align_combo):
+                if not selected_item_enabled(combo):
+                    QMessageBox.warning(self, trans.t('msg_error'),
+                                        combo.currentData(Qt.ItemDataRole.ToolTipRole))
+                    return
+            QMessageBox.warning(self, trans.t('msg_error'), trans.t('experimental_locked_hint'))
+            return
         sensor_error = self.sensor_cleanup.validate()
         if sensor_error:
             QMessageBox.warning(self, trans.t('msg_error'), sensor_error)

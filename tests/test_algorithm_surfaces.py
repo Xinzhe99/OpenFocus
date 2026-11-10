@@ -25,6 +25,7 @@ def algorithm_host(qapp, extension):
     from ui.right_panel import create_right_panel
 
     host = QWidget()
+    host.experimental_features = True
     parts = create_right_panel()
     for name in ("combo_fusion", "combo_align", "fusion_parameter_panel",
                  "registration_parameter_panel", "chk_base_correct",
@@ -78,7 +79,7 @@ def test_openfocus_default_alignment_respects_explicit_selection(algorithm_host)
     window = algorithm_host
     window._alignment_choice_explicit = False
     window.set_fusion_method('openfocus_a')
-    assert window.current_alignment_method() == 'openfocus'
+    assert window.current_alignment_method() == 'ecc'
     window.set_fusion_method('guided_filter')
     assert window.current_alignment_method() == 'ecc'
     window.set_alignment_method('ecc')
@@ -264,7 +265,7 @@ def test_exposure_defaults_on_preserves_choice_and_reset(algorithm_host):
     host.lbl_result_img = SimpleNamespace(reset_view=lambda: None)
     OpenFocus.reset_to_default(host)
     assert host.current_fusion_method() == "openfocus_b"
-    assert host.current_alignment_method() == "openfocus"
+    assert host.current_alignment_method() == "ecc"
     assert host.chk_exposure_match.isChecked()
     assert not any(option.isChecked() for option in (
         host.chk_quick_preview, host.chk_reverse_order,

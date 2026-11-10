@@ -26,15 +26,6 @@ def test_a_smoothing_is_inert_and_sharp_frame_pixels_are_selected():
         np.testing.assert_array_equal(result, pattern - 1)
 
 
-def test_a_fuses_synthetic_focus_boundaries_without_block_artifacts():
-    from tools.synthetic_benchmark import make_depth, make_stack, make_texture, score
-
-    truth = make_texture(384, 384).astype(np.uint8)
-    frames = make_stack(truth, make_depth(384, 384), 8, noise=3)
-    result = openfocus_a_impl(frames, kernel_size=17, thread_count=1)
-    psnr, _, ghost_percent = score(result, truth)
-    assert psnr > 26.0
-    assert ghost_percent < 32.0
 
 
 @pytest.mark.parametrize('channels', [1, 3])

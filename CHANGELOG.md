@@ -6,6 +6,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- Add an off-by-default Advanced Settings opt-in for experimental desktop fusion
+  and registration methods and image stitching. These features are under
+  development and may have performance, quality or availability limitations;
+  availability can also depend on installed dependencies.
 - Use system-native dialogs for opening and saving files and selecting folders.
 - Show source and resulting pixel dimensions as the loading scale changes.
 - Show output pixel dimensions and aligned stack frame counts in result details.
@@ -122,9 +126,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   source coverage before compositing the display background.
 
 ### Changed
-- Recommend OpenFocus B as the default desktop fusion method. OpenFocus A/B/C
-  use OpenFocus registration by default; other methods use ECC. Explicitly
-  saved or selected registration choices remain in effect.
+- Recommend OpenFocus B as the default desktop fusion method. ECC remains the
+  default registration method even with experimental features enabled; OpenFocus
+  registration requires an explicit choice and the experimental opt-in. Saved
+  explicit choices are preserved subject to that setting.
 - Enable exposure matching by default for all fusion methods. OpenFocus A/B/C
   match the first processed frame; other methods match the last. Saved
   per-method choices remain in effect.

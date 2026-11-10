@@ -38,6 +38,7 @@ def control_window(qapp, monkeypatch, tmp_path):
     settings.setValue("ui/first_run_done", "1")
     settings.setValue("updates/last_check_epoch", 9999999999)
     settings.setValue("rendering/ai_cpu_warning_dismissed", True)
+    settings.setValue('ui/experimental_features', True)
     settings_store._settings_singleton = settings
     monkeypatch.setattr(recovery, "_base_dir", lambda: str(tmp_path / "recovery"))
     monkeypatch.setenv("OPENFOCUS_CONTROL_FILE", str(tmp_path / "control.json"))
@@ -1506,6 +1507,17 @@ def test_output_export_routes_aligned_records(server, control_window, monkeypatc
     assert result["kind"] == "aligned"
     assert Path(result["path"]).is_file()
     assert captured["destination"] == str(tmp_path)
+
+
+def test_control_channel_respects_experimental_opt_in(server, control_window):
+    from locales import trans
+
+    control_window.experimental_features = False
+    control_window.apply_experimental_features()
+    response = call(server, 'method.set', id='guided_filter')
+    assert response['error']['code'] == 'invalid_argument'
+    assert response['error']['message'] == trans.t('experimental_locked_hint')
+    assert control_window.current_fusion_method() != 'guided_filter'
 
 
 def test_alignment_only_selection_is_accepted(server, control_window):

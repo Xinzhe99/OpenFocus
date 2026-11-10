@@ -968,8 +968,9 @@ Each neural tile uses every frame. Source frames and alignment scratch can be di
   control currently has no effect, unlike the reference method. B smooths its
   depth map; C smooths its multilevel fusion weights. C has no Radius control.
 
-If no registration method has been explicitly selected, choosing A/B/C selects
-OpenFocus alignment. Explicit selections and restored project choices take priority.
+ECC remains the default registration method for A/B/C even when experimental
+features are enabled. OpenFocus alignment is used when explicitly selected;
+saved explicit choices are preserved when allowed by the experimental setting.
 
 Each method remembers its own settings. For example, use `--method openfocus_b
 --param radius=8 --param smoothing=4 --param feather=3` in the CLI. Existing
@@ -1291,6 +1292,16 @@ export an image to write the annotations to a file.
 ---
 
 ## 11. Settings and Configuration
+
+**Enable experimental features** in **Settings → Advanced Settings** is off by
+default and is remembered for this installation. With it off, desktop fusion
+offers OpenFocus A/B/C and No fusion; registration offers ECC and No alignment.
+Other fusion and registration methods and image stitching remain visible as
+experimental but cannot be used. Enable the option and click **OK** to unlock
+them; required dependencies may still limit availability. The experimental
+features are under development and may have performance, quality or availability
+limitations. Projects and templates do not override this preference. Restoring
+default settings turns it off again.
 
 Open **Settings → Advanced Settings** for performance, registration, sensor
 cleanup, output naming, StackMFF AI, diagnostics and startup preferences. Changes remain

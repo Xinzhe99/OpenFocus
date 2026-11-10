@@ -216,6 +216,8 @@ def native_scene():
 
 def _in_qthread(call):
     from PyQt6.QtCore import QThread
+    from utils.platform_utils import configure_native_worker_stack
+
     class Worker(QThread):
         def run(self):
             try:
@@ -223,6 +225,7 @@ def _in_qthread(call):
             except BaseException as exc:
                 self.error = exc
     worker = Worker()
+    configure_native_worker_stack(worker)
     worker.start()
     assert worker.wait(120000), 'background operation did not finish'
     if hasattr(worker, 'error'):

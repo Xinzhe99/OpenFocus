@@ -164,9 +164,9 @@ def test_tiled_preparation_survives_transport_and_rejects_changed_source(
 
     calls = []
     original_decode = source_frames.SourceFrame._decode
-    def decode(frame, key):
+    def decode(frame, key, cache):
         calls.append(frame.path)
-        return original_decode(frame, key)
+        return original_decode(frame, key, cache)
     monkeypatch.setattr(source_frames.SourceFrame, '_decode', decode)
 
     def consume(_self, images, **kwargs):

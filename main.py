@@ -195,6 +195,8 @@ from utils.settings_store import (
 )
 from core.frame_storage import (configure_storage_directory, restore_storage_directory,
                                 set_storage_fallback_notifier)
+from core.experimental import (alignment_is_experimental, experimental_enabled,
+                               fusion_is_experimental)
 from ui.image_panels import create_source_panel, create_result_panel
 from ui.menus import setup_menus
 from ui.right_panel import bind_right_panel, create_right_panel, set_panel_label
@@ -456,7 +458,9 @@ class OpenFocus(QMainWindow):
         self._applying_alignment_default = False
         # 恢复持久化设置与最近文件（语言需在菜单构建前应用）
         load_window_settings(self)
-        self._alignment_choice_explicit = getattr(self, '_preferred_alignment_method', None) is not None
+        saved_alignment = getattr(self, '_preferred_alignment_method', None)
+        self._alignment_choice_explicit = bool(saved_alignment is not None and (
+            experimental_enabled(self) or not alignment_is_experimental(saved_alignment)))
         load_drag_export_format(self)
         saved_lang = get_saved_language()
         if saved_lang:
@@ -500,6 +504,7 @@ class OpenFocus(QMainWindow):
         # 应用级亮色 QSS（白底白字，整个右侧面板不可读）
         with self._restore_scope():
             self.init_ui()
+            self.apply_experimental_features()
             self.apply_dark_theme()
         self.storage_fallback_notice.connect(self._show_storage_fallback)
         window_ref = weakref.ref(self)
@@ -664,7 +669,10 @@ class OpenFocus(QMainWindow):
         for combo, attr in ((self.combo_fusion, "_preferred_fusion_method"),
                             (self.combo_align, "_preferred_alignment_method")):
             saved = getattr(self, attr, None)
-            if saved is not None:
+            locked = (not experimental_enabled(self) and
+                      (fusion_is_experimental(saved) if combo is self.combo_fusion
+                       else alignment_is_experimental(saved)))
+            if saved is not None and not locked:
                 index = combo.findData(saved)
                 if index >= 0:
                     combo.setCurrentIndex(index)
@@ -833,7 +841,7 @@ class OpenFocus(QMainWindow):
                 if hasattr(self, 'lbl_result_img') and self.lbl_result_img:
                     self.lbl_result_img.set_space_pressed(False)
         
-        return super().eventFilter(obj, event)
+        return False
 
     # --- Status Display ---
     def update_loaded_status(self):
@@ -1458,6 +1466,18 @@ class OpenFocus(QMainWindow):
                 tooltip = reason
             self.combo_fusion.setItemData(
                 index, tooltip, Qt.ItemDataRole.ToolTipRole)
+        from ui.right_panel import refresh_experimental_selectors
+        refresh_experimental_selectors(self)
+
+    def apply_experimental_features(self) -> None:
+        """Refresh desktop gates while preserving the selected project settings."""
+        from ui.menus import update_mosaic_experimental_action
+        update_mosaic_experimental_action(self)
+        if getattr(self, 'combo_fusion', None) is not None and getattr(self, 'combo_align', None) is not None:
+            self.refresh_method_availability()
+        manager = getattr(self, 'render_manager', None)
+        if manager is not None and getattr(self, 'btn_render', None) is not None:
+            manager.refresh_action_labels()
 
     # --- Update check ---
 
@@ -2414,6 +2434,10 @@ class OpenFocus(QMainWindow):
 
     def show_mosaic_dialog(self) -> None:
         """Open the independent planar microscope mosaic workspace."""
+        if not experimental_enabled(self):
+            show_warning_box(self, trans.t('experimental_label'),
+                             trans.t('experimental_locked_hint'))
+            return
         from dialogs.mosaic import MosaicDialog
         MosaicDialog(self).exec()
 
@@ -2954,6 +2978,9 @@ class OpenFocus(QMainWindow):
         return "none" if code == "none" else get_registration(code).id
 
     def set_fusion_method(self, code: str) -> None:
+        if (hasattr(self, 'experimental_features') and not experimental_enabled(self)
+                and fusion_is_experimental(code) and not getattr(self, '_restore_depth', 0)):
+            raise ValueError(trans.t('experimental_locked_hint'))
         if code != "none":
             get_fusion(code)
         index = self.combo_fusion.findData(code)
@@ -2965,6 +2992,9 @@ class OpenFocus(QMainWindow):
         self._mark_project_setting_changed()
 
     def set_alignment_method(self, code: str) -> None:
+        if (hasattr(self, 'experimental_features') and not experimental_enabled(self)
+                and alignment_is_experimental(code) and not getattr(self, '_restore_depth', 0)):
+            raise ValueError(trans.t('experimental_locked_hint'))
         if code != "none":
             get_registration(code)
         index = self.combo_align.findData(code)
@@ -3044,7 +3074,7 @@ class OpenFocus(QMainWindow):
     def refresh_algorithm_parameters(self, *_args) -> None:
         method = self.current_fusion_method()
         if getattr(self, 'combo_align', None) is not None and not getattr(self, '_alignment_choice_explicit', False):
-            target = 'openfocus' if method in ('openfocus_a', 'openfocus_b', 'openfocus_c') else 'ecc'
+            target = 'ecc'
             self._applying_alignment_default = True
             try:
                 self.set_alignment_method(target)
@@ -3079,6 +3109,9 @@ class OpenFocus(QMainWindow):
         self._set_fusion_option_available(
             reverse, spec is not None and not locked, reverse_hint,
             include_label=False)
+        manager = getattr(self, 'render_manager', None)
+        if manager is not None and getattr(self, 'btn_render', None) is not None:
+            manager.refresh_action_labels()
 
     def refresh_registration_parameters(self, *_args) -> None:
         method = self.current_alignment_method()
@@ -3086,6 +3119,9 @@ class OpenFocus(QMainWindow):
         self.registration_parameter_panel.set_parameters(
             specs, self.registration_parameters_for(method))
         self.registration_parameter_panel.setVisible(method != "openfocus")
+        manager = getattr(self, 'render_manager', None)
+        if manager is not None and getattr(self, 'btn_render', None) is not None:
+            manager.refresh_action_labels()
     
     def update_result_view(self, index):
         """更新Output区域显示的图像（用于配准结果或ROI模式下的对齐图像）"""
@@ -4583,6 +4619,7 @@ class OpenFocus(QMainWindow):
             banner.retranslate()
         self.rebuild_recent_menu()
         self.rebuild_recent_projects_menu()
+        self.apply_experimental_features()
 
 
 if __name__ == "__main__":

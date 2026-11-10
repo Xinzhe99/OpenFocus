@@ -14,6 +14,8 @@ from core.render_process import RenderProcessWorker
 from dialogs import ROIRenderOptionsDialog  # Import the new dialog
 from locales import trans
 from core.algorithms import fusion_algorithms, get_fusion, get_registration, alignment_steps
+from core.experimental import (experimental_enabled, fusion_is_experimental,
+                               processing_is_locked)
 
 
 
@@ -680,9 +682,11 @@ class RenderManager:
             self._set_compare_button("disabled")
         else:
             if render is not None:
-                render.setEnabled(True)
+                locked = processing_is_locked(window)
+                render.setEnabled(not locked)
+                render.setToolTip(trans.t('experimental_locked_hint') if locked else '')
                 render.setText(trans.t('btn_render'))
-            self._set_compare_button("idle")
+            self._set_compare_button('disabled' if processing_is_locked(window) else 'idle')
 
     def _stop_compare_timer(self) -> None:
         timer = getattr(self, "_compare_chain_timer", None)
@@ -770,9 +774,7 @@ class RenderManager:
             window.btn_reset.setEnabled(True)
         except Exception:
             pass
-        window.btn_render.setEnabled(True)
-        window.btn_render.setText(trans.t('btn_render'))
-        self._set_compare_button("idle")
+        self.refresh_action_labels()
 
     def start_compare_all(self) -> None:
         """Render the stack once per available fusion method so the results
@@ -826,8 +828,12 @@ class RenderManager:
             show_warning_box(window, trans.t("msg_no_images_title"), trans.t("msg_render_need_images_text"))
             return
 
+        if processing_is_locked(window, method='none'):
+            show_warning_box(window, trans.t('experimental_label'), trans.t('experimental_locked_hint'))
+            return
         methods = [spec.id for spec in fusion_algorithms()
-                   if not spec.neural or is_ai_fusion_available()]
+                   if (experimental_enabled(window) or not fusion_is_experimental(spec.id))
+                   and (not spec.neural or is_ai_fusion_available())]
 
         self._compare_queue = list(methods)
         self._compare_total = len(methods)
@@ -934,6 +940,13 @@ class RenderManager:
                 getattr(window, "source_manager", None), "_load_worker", None) is not None else "cancelled"
             window.statusBar().showMessage(trans.t("msg_render_queue_cancelled"), 5000)
             return
+        if processing_is_locked(window, method=force_algorithm):
+            self._start_status = 'unavailable'
+            if interactive:
+                show_warning_box(window, trans.t('experimental_label'),
+                                 trans.t('experimental_locked_hint'))
+                return
+            raise ValueError(trans.t('experimental_locked_hint'))
         # Frames are still loading (a render clicked right after opening a
         # stack used to say "load at least 2 images"): queue the render and
         # start it when the load finishes.  A second click cancels the queue.
