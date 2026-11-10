@@ -204,8 +204,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Hide redundant button and option tooltips when their full labels are visible;
   keep explanatory hints and the full text of elided labels.
 - Safely ignore unhandled application events when their target has already closed.
-- Give automatic-background, image-loading, preview and export workers sufficient native
-  thread stack on macOS.
+- Give automatic-background, image-loading, preview, pixel-processing and export
+  workers sufficient native thread stack on macOS.
 - Keep new projects clean at startup and restore a saved alignment choice.
 - Keep loading-scale resolution details readable when source metadata arrives.
 - Show the installed version when a manual update check finds no update.
