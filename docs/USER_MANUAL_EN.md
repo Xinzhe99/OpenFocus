@@ -910,6 +910,26 @@ Performance → Temporary directory** if a storage error occurs. Free-space
 checks are estimates, not reservations; space may run out later. Existing
 frames remain in their original directory until released.
 
+Before a full render starts, OpenFocus estimates the temporary space it will
+need and compares it with the space left after its safety reserve. When space
+looks low, **Low temporary storage space** shows the directory, the space
+available and the estimate. **Choose another directory** opens a folder picker;
+the folder must exist and be writable, and its space is checked again before
+the render starts. You can keep the new folder for future renders or use it for
+this render only. **Continue anyway** is available when the estimate does not
+establish that the required storage is insufficient. When automatic selection
+could use more than one volume, OpenFocus warns if all available volumes look
+short of space. If their capacity differs, the result may remain unknown until
+the run starts. On macOS, automatic volume discovery runs in the background
+before rendering, keeping the interface responsive. A chosen directory is
+also checked before rendering. Caches may be disabled and processing can still fail if storage
+fills. Quick previews,
+ROI renders and **Compare all** do not ask. On the command line, warnings go to
+standard error and do not stop the run; batch warnings identify each folder.
+Grouped fusion skips this estimate. Use `--temp-dir DIR` to choose a directory
+for that invocation. The command line
+does not use the GUI's Temporary directory setting.
+
 Each neural tile uses every frame. Source frames and alignment scratch can be disk-backed, but free disk space and available memory still limit stack size. V2 spatial tiling approximates whole-image inference.
 
 ### OpenFocus A / B / C

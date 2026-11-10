@@ -194,14 +194,18 @@ class ScratchSpaceError(OSError):
                         'Estimated additional space needed: {required}; available after reserve: {available}. '
                         'Later processing may need more. Free space or choose a writable Temporary directory '
                         'in Advanced settings.')
-        def readable(value):
-            if value < 1024:
-                return f'{value} B'
-            for unit, factor in (('GiB', 1024 ** 3), ('MiB', 1024 ** 2), ('KiB', 1024)):
-                if value >= factor:
-                    return f'{value / factor:.2f} {unit}'
-        available = '—' if self.available is None else readable(self.available)
-        return template.format(path=self.directory, required=readable(self.required), available=available)
+        available = '—' if self.available is None else readable_bytes(self.available)
+        return template.format(path=self.directory, required=readable_bytes(self.required),
+                               available=available)
+
+
+def readable_bytes(value):
+    """Binary-unit size as shown in scratch-space messages."""
+    if value < 1024:
+        return f'{value} B'
+    for unit, factor in (('GiB', 1024 ** 3), ('MiB', 1024 ** 2), ('KiB', 1024)):
+        if value >= factor:
+            return f'{value / factor:.2f} {unit}'
 
 
 def estimate_registration_space(images, steps):
@@ -266,9 +270,13 @@ def _usable_storage_directory():
     return directory
 
 
+_INHERIT_STORAGE = object()
+
+
 class _Scratch:
-    def __init__(self):
-        self.explicit_directory = _usable_storage_directory()
+    def __init__(self, explicit_directory=_INHERIT_STORAGE):
+        self.explicit_directory = (_usable_storage_directory() if explicit_directory is _INHERIT_STORAGE
+                                   else explicit_directory)
         self.directory = None
         self.owned = False
         self.closed = False
@@ -298,13 +306,15 @@ class _Scratch:
 
 
 @contextlib.contextmanager
-def scratch_directory(*, separate=False):
+def scratch_directory(*, separate=False, explicit_directory=_INHERIT_STORAGE):
     """Keep one scratch decision local to this job and its copied contexts."""
     existing = _scratch.get()
     if existing is not None and not separate:
         yield existing
         return
-    state = _Scratch()
+    if explicit_directory is _INHERIT_STORAGE and existing is not None:
+        explicit_directory = existing.explicit_directory
+    state = _Scratch(explicit_directory)
     token = _scratch.set(state)
     try:
         yield state
@@ -325,6 +335,176 @@ def run_with_scratch(state, function, *args, **kwargs):
         _scratch.reset(token)
 
 
+def _scratch_candidates(explicit, source_paths):
+    """Directories select_scratch considers, in preference order."""
+    default = explicit or tempfile.gettempdir()
+    if explicit is not None or _default_is_local(default):
+        yield default
+    if explicit is not None:
+        return
+    mounts = _local_mounts()
+    # Prefer a source's fixed local volume, not an arbitrary source folder.
+    for source in source_paths:
+        source = os.path.normcase(os.path.abspath(source))
+        for mount in sorted(mounts, key=len, reverse=True):
+            root = os.path.normcase(os.path.abspath(mount))
+            try:
+                if (os.path.commonpath((source, root)) == root
+                        and os.stat(source).st_dev == os.stat(mount).st_dev):
+                    yield os.path.dirname(source)
+                    yield mount
+                    break
+            except (OSError, ValueError):
+                pass
+    yield from mounts
+
+
+def _scratch_volume(directory):
+    """Return a filesystem identity only when the platform can identify it."""
+    try:
+        if sys.platform == 'win32':
+            import ctypes
+            kernel = ctypes.windll.kernel32
+            mount = ctypes.create_unicode_buffer(32768)
+            volume = ctypes.create_unicode_buffer(32768)
+            if (kernel.GetVolumePathNameW(os.path.abspath(directory), mount, len(mount))
+                    and kernel.GetVolumeNameForVolumeMountPointW(mount.value, volume, len(volume))):
+                return volume.value.lower()
+            return None
+        return os.stat(directory).st_dev
+    except (OSError, ValueError):
+        return None
+
+
+def automatic_preflight_may_block():
+    """Whether automatic volume discovery may invoke slow platform tools."""
+    return sys.platform == 'darwin' and _storage_directory is None
+
+
+def assess_scratch(minimum, expected, optional=0, source_paths=(), *, directory=None,
+                   placement_goal=None):
+    """Classify the prospective scratch directory before a job starts.
+
+    A point-in-time estimate: it probes candidates but binds and reserves
+    nothing; every runtime check still applies. ``minimum`` is required space,
+    ``expected`` adds staging, and ``optional`` is degradable cache space.
+    When the actual placement goal is known, automatic selection follows its
+    runtime candidate order. Otherwise capacity is assessed only when every
+    usable candidate has the same outcome. Automatic selection is never critical.
+
+    Status: ``critical`` when a fixed directory cannot meet ``minimum``,
+    ``advisory`` when estimated needs may not fit, ``ok`` otherwise, and
+    ``unknown`` when the volume cannot be queried.
+    """
+    minimum, expected, optional = (max(0, int(value)) for value in (minimum, expected, optional))
+    expected = max(expected, minimum)
+    state = _scratch.get()
+    explicit = (directory if directory is not None else
+                (state.directory or state.explicit_directory) if state is not None
+                else _usable_storage_directory())
+    chosen = None
+    unavailable = False
+    if explicit is None:
+        if placement_goal is None:
+            candidates = []
+            seen = set()
+            default = tempfile.gettempdir()
+            for candidate in _scratch_candidates(None, source_paths):
+                identity = os.path.normcase(os.path.abspath(candidate))
+                if identity in seen:
+                    continue
+                seen.add(identity)
+                try:
+                    usage, reserve, available = _space(candidate)
+                    if candidate == default:
+                        validate_storage_directory(candidate)
+                    else:
+                        probe = tempfile.mkdtemp(prefix='openfocus-', dir=candidate)
+                        os.rmdir(probe)
+                except OSError:
+                    continue
+                candidates.append((candidate, usage, reserve, available, _scratch_volume(candidate)))
+            if candidates:
+                required = expected + optional
+                short = [item[3] < required for item in candidates]
+                volumes = [item[4] for item in candidates]
+                volume_count = len(set(volumes)) if all(volume is not None for volume in volumes) else None
+                result = {'directory': os.path.abspath(candidates[0][0]) if len(candidates) == 1 else None,
+                          'explicit': False, 'volume_count': volume_count,
+                          'minimum_bytes': minimum, 'expected_bytes': expected,
+                          'optional_bytes': optional, 'required_bytes': required}
+                if all(short) or not any(short):
+                    best = max(candidates, key=lambda item: item[3])
+                    result.update(status='advisory' if all(short) else 'ok',
+                                  free_bytes=int(best[1].free), reserve_bytes=int(best[2]),
+                                  available_bytes=int(best[3]))
+                else:
+                    result.update(status='unknown', reason='Automatic scratch placement depends on runtime needs')
+                return result
+            placement_goal = minimum
+        goal = max(minimum, int(placement_goal))
+        default = tempfile.gettempdir()
+        best = (default, None)
+        for target in sorted({goal, minimum}, reverse=True):
+            seen = set()
+            for candidate in _scratch_candidates(None, source_paths):
+                identity = os.path.normcase(os.path.abspath(candidate))
+                if identity in seen:
+                    continue
+                seen.add(identity)
+                try:
+                    available = _space(candidate)[2]
+                    if best[1] is None or available > best[1]:
+                        best = (candidate, available)
+                    if available < target:
+                        continue
+                    if candidate == default:
+                        validate_storage_directory(candidate)
+                    else:
+                        probe = tempfile.mkdtemp(prefix='openfocus-', dir=candidate)
+                        os.rmdir(probe)
+                    chosen = candidate
+                    break
+                except OSError:
+                    continue
+            if chosen is not None:
+                break
+        if chosen is None:
+            chosen = best[0]
+            unavailable = True
+    else:
+        chosen = explicit
+    result = {'directory': os.path.abspath(chosen), 'explicit': explicit is not None,
+              'minimum_bytes': minimum, 'expected_bytes': expected, 'optional_bytes': optional,
+              'required_bytes': expected + optional}
+    if unavailable:
+        return {**result, 'status': 'unknown', 'reason': 'No writable scratch candidate meets the minimum'}
+    try:
+        usage, reserve, available = _space(chosen)
+    except OSError as exc:
+        return {**result, 'status': 'unknown', 'reason': str(exc)}
+    result.update(free_bytes=int(usage.free), reserve_bytes=int(reserve),
+                  available_bytes=int(available))
+    if minimum > available:
+        result['status'] = 'critical' if explicit is not None else 'advisory'
+    elif expected + optional > available:
+        result['status'] = 'advisory'
+    else:
+        result['status'] = 'ok'
+    return result
+
+
+def validate_storage_directory(path):
+    """Raise OSError unless ``path`` is an existing writable directory."""
+    directory = os.path.abspath(os.fsdecode(path))
+    fd, probe = tempfile.mkstemp(prefix='openfocus-probe-', dir=directory)
+    try:
+        os.close(fd)
+    finally:
+        os.unlink(probe)
+    return directory
+
+
 def select_scratch(size, source_paths=(), *, preferred_size=None, working_size=None):
     """Admit an estimate and bind a writable directory to the current job.
 
@@ -338,26 +518,9 @@ def select_scratch(size, source_paths=(), *, preferred_size=None, working_size=N
         require_disk_space(size, state.directory)
         return state.directory
     default = state.explicit_directory or tempfile.gettempdir()
+
     def candidates():
-        if state.explicit_directory is not None or _default_is_local(default):
-            yield default
-        if state.explicit_directory is not None:
-            return
-        mounts = _local_mounts()
-        # Prefer a source's fixed local volume, not an arbitrary source folder.
-        for source in source_paths:
-            source = os.path.normcase(os.path.abspath(source))
-            for mount in sorted(mounts, key=len, reverse=True):
-                root = os.path.normcase(os.path.abspath(mount))
-                try:
-                    if (os.path.commonpath((source, root)) == root
-                            and os.stat(source).st_dev == os.stat(mount).st_dev):
-                        yield os.path.dirname(source)
-                        yield mount
-                        break
-                except (OSError, ValueError):
-                    pass
-        yield from mounts
+        return _scratch_candidates(state.explicit_directory, source_paths)
     best = (default, None)
     # Optional staging and bounded-workspace estimates guide placement without
     # rejecting RAM-only work or jobs that fit the known required allocation.
@@ -410,13 +573,7 @@ def configure_storage_directory(path):
     if path is None or os.fspath(path) in ('', b''):
         _storage_directory = None
         return
-    directory = os.path.abspath(os.fsdecode(path))
-    fd, probe = tempfile.mkstemp(prefix='openfocus-probe-', dir=directory)
-    try:
-        os.close(fd)
-    finally:
-        os.unlink(probe)
-    _storage_directory = directory
+    _storage_directory = validate_storage_directory(path)
 
 
 def restore_storage_directory(path):
