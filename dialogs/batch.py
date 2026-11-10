@@ -481,6 +481,7 @@ class BatchProcessingDialog(QDialog):
         options_layout.addWidget(self.chk_reverse_order)
 
         self.chk_exposure_match = QCheckBox(trans.t('chk_exposure_match'))
+        self.chk_exposure_match.setChecked(True)
         self.chk_exposure_match.setToolTip(trans.t('chk_exposure_match_hint'))
         options_layout.addWidget(self.chk_exposure_match)
 
@@ -1182,7 +1183,8 @@ class BatchProcessingDialog(QDialog):
         getter = getattr(window, 'brightness_option_for', None)
         if callable(getter):
             method = self.fusion_combo.currentData()
-            self.chk_exposure_match.setChecked(bool(getter('exposure_match', method)))
+            if method != 'none':
+                self.chk_exposure_match.setChecked(bool(getter('exposure_match', method)))
             self.chk_base_correct.setChecked(bool(getter('base_correct', method)))
 
     def _apply_fusion_availability(self) -> None:
