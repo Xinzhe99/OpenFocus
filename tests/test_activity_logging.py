@@ -56,12 +56,18 @@ def _exercise():
     app.set_main_window(window)
     window.show()
     app.processEvents()
+    panel.late = QCheckBox('private dynamic checkbox')
+    layout.addWidget(panel.late)
+    panel.late.show()
+    app.processEvents()
 
     panel.spin.setValue(7)
     panel.check.setChecked(True)
     panel.combo.setCurrentIndex(1)
     assert not events
     QTest.mouseClick(panel.check, Qt.MouseButton.LeftButton, pos=QPoint(5, panel.check.height() // 2))
+    QTest.mouseClick(panel.late, Qt.MouseButton.LeftButton,
+                     pos=QPoint(5, panel.late.height() // 2))
     panel.spin.setFocus()
     QTest.keyClick(panel.spin, Qt.Key.Key_Up)
     QTest.keyClick(panel.spin, Qt.Key.Key_Return)
@@ -86,6 +92,7 @@ def _exercise():
 
     records = [details for event, details in events if event == 'ui.action']
     controls = [record['control'] for record in records]
+    assert any(name.endswith('.late') for name in controls)
     assert any(name.endswith('.check') for name in controls)
     assert any(name.endswith('.spin') for name in controls)
     assert any(name.endswith('.slider') for name in controls)
