@@ -1151,7 +1151,7 @@ class DepthMapDialog(QDialog):
                 else resolve_registration_parameters(method))
         specs = registration_parameter_specs(method)
         self.registration_parameter_panel.set_parameters(specs, self._registration_drafts[method])
-        self.registration_parameter_panel.setVisible(bool(self.registration_parameter_panel.editors))
+        self.registration_parameter_panel.setVisible(method != 'openfocus' and bool(self.registration_parameter_panel.editors))
 
     def _on_alignment_changed(self):
         self._sync_registration_controls()

@@ -87,7 +87,7 @@ def test_linear_preview_fuses_camera_pixels_and_retains_uint16(tmp_path, monkeyp
     frame = replace(frame, linear_metadata=metadata, preview=embedded_jpeg,
                     preview_is_display=True)
     decoded = []
-    def resolve(self):
+    def resolve(self, *, should_cancel=None):
         decoded.append(self)
         return original
     monkeypatch.setattr(SourceFrame, 'full_resolution', resolve)
@@ -125,7 +125,7 @@ def test_unavailable_preview_decode_failure_does_not_publish_canvas(tmp_path, mo
     assert cv2.imwrite(str(path), np.full((40, 56, 3), 73, np.uint8))
     monkeypatch.setattr(source_frames, 'PREVIEW_DECODE_BUDGET', 1)
     frame = scan_source(str(path))[0]
-    def fail(self):
+    def fail(self, *, should_cancel=None):
         raise OSError('original pixels unavailable')
     monkeypatch.setattr(SourceFrame, 'full_resolution', fail)
     worker = workers.RenderWorker([frame, frame], algorithm='guided_filter', preview=True,
@@ -495,3 +495,14 @@ def test_comparison_resolves_original_size_uint16_without_ram_stack(tmp_path):
 
 
 
+
+@pytest.mark.parametrize('method', ['openfocus_a', 'openfocus_b', 'openfocus_c'])
+def test_render_worker_keeps_openfocus_whole_with_shared_tile_settings(qapp, monkeypatch, method):
+    from core.multi_focus_fusion import MultiFocusFusion
+    frames = [np.full((24, 32, 3), value, np.uint8) for value in (31, 123)]
+    worker = workers.RenderWorker(frames, algorithm=method, tile_enabled=True,
+                                  tile_threshold=8, tile_block_size=16, use_gpu=False)
+    monkeypatch.setattr(MultiFocusFusion, '_fuse_tiled',
+                        lambda *args, **kwargs: pytest.fail('OpenFocus GUI render tiled'))
+    actual, device = worker._run_fusion(frames)
+    assert actual.shape == frames[0].shape and device == 'CPU'

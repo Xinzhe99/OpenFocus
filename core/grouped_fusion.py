@@ -16,7 +16,7 @@ from PIL import Image
 
 from core import resource_policy
 from core.frame_storage import storage_directory
-from core.image_loader import RAW_FORMATS, _downscale_page, decode_image
+from core.image_loader import RAW_FORMATS, _downscale_page, decode_image, is_raw_source, tiff_source_pages
 from core.registration import RegistrationCancelled
 from utils.image_utils import get_imwrite_params, imwrite_auto, read_image_exif
 
@@ -28,9 +28,26 @@ def _check_cancel(should_cancel):
 
 def _header(path):
     """Read dimensions and reject containers that contribute multiple frames."""
-    if os.path.splitext(os.fspath(path))[1].lower() in RAW_FORMATS:
+    extension = os.path.splitext(os.fspath(path))[1].lower()
+    if extension in RAW_FORMATS or is_raw_source(path):
         raise ValueError(f"Grouped fusion cannot safely size RAW input: {path}")
     try:
+        if extension in ('.tif', '.tiff'):
+            import tifffile
+            with tifffile.TiffFile(path) as tif:
+                pages = list(tiff_source_pages(tif))
+                if len(pages) != 1:
+                    raise ValueError(f"Grouped fusion does not support multipage files: {path}")
+                _, page = pages[0]
+                if page.extrasamples:
+                    raise ValueError(f"Grouped fusion does not support alpha-channel inputs: {path}. Remove alpha or disable grouping")
+                width, height = page.imagewidth, page.imagelength
+                tag = page.tags.get('Orientation')
+                if tag is not None and int(tag.value) in (5, 6, 7, 8):
+                    width, height = height, width
+            if width <= 0 or height <= 0:
+                raise ValueError(f"Invalid image dimensions: {path}")
+            return width, height, os.path.getsize(path)
         with Image.open(path) as image:
             if getattr(image, "n_frames", 1) != 1:
                 raise ValueError(f"Grouped fusion does not support multipage files: {path}")

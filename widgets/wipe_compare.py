@@ -22,6 +22,8 @@ class WipeCompareWidget(QWidget):
         self._left_pixmap: Optional[QPixmap] = None
         self._right_pixmap: Optional[QPixmap] = None
         self._left_offset = (0, 0)
+        self._left_size = None
+        self._right_size = None
         self._independent = False
         self._comparison_enabled = True
         self._notice = ""
@@ -38,12 +40,15 @@ class WipeCompareWidget(QWidget):
 
     def set_images(self, left: Optional[QPixmap], right: Optional[QPixmap],
                    left_title: str = "", right_title: str = "", *,
-                   left_offset=(0, 0), independent=False, notice="") -> None:
+                   left_offset=(0, 0), left_size=None, right_size=None,
+                   independent=False, notice="") -> None:
         self._left_pixmap = left
         self._right_pixmap = right
         self._left_title = left_title
         self._right_title = right_title
         self._left_offset = left_offset
+        self._left_size = left_size
+        self._right_size = right_size
         self._independent = independent
         self._notice = notice
         self.update()
@@ -85,12 +90,14 @@ class WipeCompareWidget(QWidget):
         if pixmap is None or pixmap.isNull():
             return QRectF()
 
+        size = (self._right_size if self._right_pixmap is not None else self._left_size)
+        width, height = size if size is not None else (pixmap.width(), pixmap.height())
         w, h = float(self.width()), float(self.height())
-        # Fit the pixmap inside the widget with a small margin
-        scale = min((w - 20) / pixmap.width(), (h - 20) / pixmap.height())
+        # Fit the result pixel domain inside the widget with a small margin.
+        scale = min((w - 20) / width, (h - 20) / height)
         scale = max(0.0001, scale * self._zoom)
-        draw_w = pixmap.width() * scale
-        draw_h = pixmap.height() * scale
+        draw_w = width * scale
+        draw_h = height * scale
         base_x = (w - draw_w) / 2.0 + self._pan.x()
         base_y = (h - draw_h) / 2.0 + self._pan.y()
         return QRectF(base_x, base_y, draw_w, draw_h)
@@ -117,12 +124,14 @@ class WipeCompareWidget(QWidget):
 
         if self._comparison_enabled:
             regions = (
-                (self._left_pixmap, self._left_offset, QRect(0, 0, int(divider_x), self.height())),
-                (self._right_pixmap, (0, 0), QRect(int(divider_x), 0, self.width() - int(divider_x), self.height())),
+                (self._left_pixmap, self._left_offset, self._left_size,
+                 QRect(0, 0, int(divider_x), self.height())),
+                (self._right_pixmap, (0, 0), self._right_size,
+                 QRect(int(divider_x), 0, self.width() - int(divider_x), self.height())),
             )
         else:
-            regions = ((self._right_pixmap, (0, 0), self.rect()),)
-        for pixmap, offset, clip_rect in regions:
+            regions = ((self._right_pixmap, (0, 0), self._right_size, self.rect()),)
+        for pixmap, offset, size, clip_rect in regions:
             if pixmap is None or pixmap.isNull() or clip_rect.width() <= 0:
                 continue
             if self._independent:
@@ -133,10 +142,13 @@ class WipeCompareWidget(QWidget):
                                     (clip_rect.height() - height) / 2 + self._pan.y(), width, height)
             else:
                 base = self._right_pixmap if self._right_pixmap is not None else self._left_pixmap
-                scale = target.width() / base.width()
+                base_size = (self._right_size if self._right_pixmap is not None else self._left_size)
+                base_width = base_size[0] if base_size is not None else base.width()
+                scale = target.width() / base_width
+                width, height = size if size is not None else (pixmap.width(), pixmap.height())
                 image_rect = QRectF(target.x() + offset[0] * scale,
                                     target.y() + offset[1] * scale,
-                                    pixmap.width() * scale, pixmap.height() * scale)
+                                    width * scale, height * scale)
             painter.save()
             painter.setClipRect(clip_rect)
             painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)

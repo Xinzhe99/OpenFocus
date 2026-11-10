@@ -203,6 +203,10 @@ menus (`popup[N]`). Entries carry `root` (`dialog[N]`/`popup[N]`), `active`
 `dialog.open`). Startup prompts such as Session Recovery appear here too;
 handle them before starting a workflow.
 
+System file and folder pickers use native windows. Their controls are not
+reliably exposed through `dialog.list` or `dialog.file`; select or cancel them
+through the desktop interface.
+
 Managed dialogs and `dialog.open` are modeless so commands continue to flow.
 Dialogs opened by a menu action with `exec()` are reachable in the same way:
 `ui.trigger` returns, then `dialog.list`, `ui.find`, `ui.click` and

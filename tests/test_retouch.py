@@ -448,6 +448,15 @@ def test_history_cap_keeps_protected_retouch_outputs(qapp):
     assert w.output_list.item(0).text() == "retouched"
     assert protected.protected
 
+def _wait_for_source(qapp, dialog):
+    from PyQt6.QtTest import QTest
+    for _ in range(500):
+        if dialog._source_ready and not dialog._source_loading:
+            return
+        QTest.qWait(10)
+    raise AssertionError("Retouch source did not become ready")
+
+
 
 def _dialog(qapp, monkeypatch=None, apply_result=True):
     from PyQt6.QtWidgets import QApplication
@@ -466,8 +475,7 @@ def _dialog(qapp, monkeypatch=None, apply_result=True):
 
     dlg = RetouchDialog(None, record=record, apply_callback=callback)
     dlg.show()
-    QApplication.processEvents()
-    QApplication.processEvents()
+    _wait_for_source(qapp, dlg)
     return dlg, published
 
 
@@ -706,11 +714,9 @@ def test_dialog_keeps_16bit_through_display_and_apply(qapp):
         None, record=record,
         apply_callback=lambda r, i: (published.append(i) or (True, "")))
     dlg.show()
-    QApplication.processEvents()
-    QApplication.processEvents()
+    _wait_for_source(qapp, dlg)
     dlg._select_frame(1)
-    QApplication.processEvents()
-    QApplication.processEvents()
+    _wait_for_source(qapp, dlg)
     assert dlg.begin_stroke(60, 48)
     dlg.end_stroke()
     assert dlg._apply() is True
@@ -1229,58 +1235,135 @@ def test_keyboard_diameter_changes_real_stroke_pixels(qapp):
         dlg.close()
 
 
+def test_lazy_roi_source_resolves_and_honors_cancellation(tmp_path):
+    import cv2
+    import pytest
+    from core.registration import RegistrationCancelled
+    from core.render_context import _source_region
+    from core.source_frames import resolve_frame, scan_source
+
+    pixels = np.arange(24 * 32 * 3, dtype=np.uint8).reshape(24, 32, 3)
+    path = tmp_path / "roi.png"
+    assert cv2.imwrite(str(path), pixels)
+    source = scan_source(str(path))[0]
+    region = _source_region(source, 4, 5, 9, 7)
+    np.testing.assert_array_equal(resolve_frame(region), pixels[5:12, 4:13])
+    with pytest.raises(RegistrationCancelled):
+        resolve_frame(region, should_cancel=lambda: True)
+
+
+def test_dialog_opens_before_lazy_stack_and_loads_only_selected_frame(qapp):
+    import dataclasses
+    import threading
+    import weakref
+    from PyQt6 import sip
+    from PyQt6.QtCore import QCoreApplication, QEvent
+    from PyQt6.QtTest import QTest
+    from controllers.output_manager import OutputRecord
+    from core.source_frames import process_frame
+    from dialogs.retouch import RetouchDialog
+
+    result = np.full((64, 64, 3), 10001, np.uint16)
+    source = np.full_like(result, 40003)
+    context = _context([source] * 14, result)
+    entered = [threading.Event(), threading.Event()]
+    release = [threading.Event(), threading.Event()]
+    calls = []
+
+    def process(index):
+        def load(image):
+            calls.append(index)
+            if index < 2:
+                entered[index].set()
+                assert release[index].wait(5)
+            return image
+        return load
+
+    context = dataclasses.replace(context, frames=tuple(
+        dataclasses.replace(frame, image=process_frame(source, process(index)))
+        for index, frame in enumerate(context.frames)))
+    record = OutputRecord.create(result, "result", context=context)
+    dialog = RetouchDialog(None, record=record, apply_callback=lambda *_: (True, ""))
+    assert calls == []
+    document = weakref.ref(dialog.doc)
+    worker = None
+    dialog.show()
+    try:
+        for _ in range(500):
+            if entered[0].is_set():
+                break
+            QTest.qWait(10)
+        assert entered[0].is_set() and dialog.isVisible()
+        assert calls == [0] and not dialog.begin_stroke(32, 32)
+        release[0].set()
+        _wait_for_source(qapp, dialog)
+        assert calls == [0]
+        assert dialog.begin_stroke(32, 32)
+        dialog.end_stroke()
+        assert np.all(dialog.doc.working[32, 32] == 40003)
+        dialog._select_frame(1)
+        for _ in range(500):
+            if entered[1].is_set():
+                break
+            QTest.qWait(10)
+        assert entered[1].is_set()
+        worker = dialog._source_worker
+        dialog._allow_close = True
+        dialog.close()
+        assert not dialog.isVisible() and worker.isInterruptionRequested()
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        assert sip.isdeleted(dialog) and worker.isRunning()
+        assert document() is None
+        assert calls == [0, 1]
+    finally:
+        for event in release:
+            event.set()
+        if not sip.isdeleted(dialog) and dialog.isVisible():
+            dialog._allow_close = True
+            dialog.close()
+        if worker is not None:
+            assert worker.wait(5000)
+
+
 def test_frame_navigation_has_no_window_and_coalesces_stale_pixel_work(qapp, monkeypatch):
     import threading
-    from PyQt6.QtCore import QTimer
+    from PyQt6.QtTest import QTest
     from PyQt6.QtWidgets import QApplication, QDialog
+    from dialogs.retouch import _SourceWorker
     dlg, _ = _dialog(qapp)
     entered, release = threading.Event(), threading.Event()
     owner = threading.get_ident()
-    original = dlg._display_image
-    calls, observations = [], {}
+    original = _SourceWorker.run
+    calls = []
 
-    def convert(image, metadata=...):
-        value = int(image[0, 0, 0])
-        calls.append((value, threading.get_ident()))
-        if value == 80:
+    def delayed(worker):
+        calls.append((worker.index, threading.get_ident()))
+        if worker.index == 1:
             entered.set()
             assert release.wait(5)
-        return original(image, metadata)
+        original(worker)
 
-    monkeypatch.setattr(dlg, '_display_image', convert)
-
-    def navigate():
-        if dlg._closing:
-            return
-        if not entered.is_set():
-            QTimer.singleShot(1, navigate)
-            return
-        try:
-            observations['windows'] = [widget for widget in QApplication.topLevelWidgets()
-                                       if isinstance(widget, QDialog) and widget.isVisible()
-                                       and widget is not dlg]
-            observations['modal'] = QApplication.activeModalWidget()
-            observations['editing_enabled'] = dlg.btn_auto_bg.isEnabled()
-            observations['navigation_enabled'] = dlg.frame_slider.isEnabled()
-            dlg.frame_slider.setValue(2)
-            dlg.frame_spin.setValue(1)
-            dlg.frame_list.setCurrentRow(2)
-            observations['stroke_during_load'] = dlg.begin_stroke(60, 48)
-        finally:
-            release.set()
-
+    monkeypatch.setattr(_SourceWorker, 'run', delayed)
     try:
-        QTimer.singleShot(1, navigate)
         dlg._select_frame(1)
-        qapp.processEvents()
-        qapp.processEvents()
-        assert observations['windows'] == []
-        assert observations['modal'] in (None, dlg)
-        assert not observations['editing_enabled'] and observations['navigation_enabled']
-        assert not observations['stroke_during_load']
-        assert [value for value, _thread in calls] == [80, 180]
-        assert all(thread != owner for _value, thread in calls)
-        assert dlg.doc.frame_index == 2 and dlg._source_ready
+        for _ in range(500):
+            if entered.is_set():
+                break
+            QTest.qWait(10)
+        assert entered.is_set()
+        assert not [widget for widget in QApplication.topLevelWidgets()
+                    if isinstance(widget, QDialog) and widget.isVisible() and widget is not dlg]
+        assert QApplication.activeModalWidget() in (None, dlg)
+        assert not dlg.btn_auto_bg.isEnabled() and dlg.frame_slider.isEnabled()
+        dlg.frame_slider.setValue(2)
+        dlg.frame_spin.setValue(1)
+        dlg.frame_list.setCurrentRow(2)
+        assert not dlg.begin_stroke(60, 48)
+        release.set()
+        _wait_for_source(qapp, dlg)
+        assert [index for index, _thread in calls] == [1, 2]
+        assert all(thread != owner for _index, thread in calls)
+        assert dlg.doc.frame_index == 2
         assert np.all(dlg._source_display == 180)
         assert dlg.begin_stroke(60, 48)
         dlg.end_stroke()

@@ -832,12 +832,14 @@ def test_batch_import_mode_group_stays_compact(qapp):
         dlg.deleteLater()
 
 
-def test_folder_picker_has_no_empty_extra_column(qapp, tmp_path):
+def test_folder_picker_has_no_empty_extra_column(qapp, tmp_path, monkeypatch):
     """The picker must not get a second, empty list widget.
 
     Inserting a QListWidget into Qt's splitter put an empty column beside the
     real place list - the blank box reported in the screenshot.
     """
+    from utils import file_dialogs
+    monkeypatch.setattr(file_dialogs, "_use_native_folder_dialog", lambda: False)
     from PyQt6.QtWidgets import QApplication, QSplitter, QListView
 
     from dialogs.batch import BatchProcessingDialog
@@ -877,13 +879,15 @@ def test_folder_picker_has_no_empty_extra_column(qapp, tmp_path):
 
 
 
-def test_folder_picker_keeps_only_qt_places(qapp, tmp_path):
+def test_folder_picker_keeps_only_qt_places(qapp, tmp_path, monkeypatch):
     """No custom entries in the place sidebar.
 
     "Last used" and "Queued: <name>" were appended to Qt's place model; they
     duplicated what the picker already offers and pushed the useful entries
     down. The sidebar must keep exactly the standard locations.
     """
+    from utils import file_dialogs
+    monkeypatch.setattr(file_dialogs, "_use_native_folder_dialog", lambda: False)
     from PyQt6.QtWidgets import QApplication, QFileDialog, QSplitter
 
     from dialogs.batch import BatchProcessingDialog

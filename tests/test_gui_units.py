@@ -840,7 +840,7 @@ class _StubResizeDialog:
         self.chosen = chosen
         self.offered = []
 
-    def __call__(self, parent=None, initial_scale=1.0, max_scale=1.0):
+    def __call__(self, parent=None, initial_scale=1.0, max_scale=1.0, **kwargs):
         self.offered.append((initial_scale, max_scale))
         dialog = self
 
@@ -910,6 +910,20 @@ def test_resizing_starts_from_the_loaded_base_and_cannot_exceed_it(qapp, monkeyp
     w2.transform_manager.resize_all_images()
     assert [img.shape[:2] for img in w2.raw_images] == [(100, 200)] * 3
     assert [int(img[0, 0, 0]) for img in w2.raw_images] == [0, 1, 2]
+
+
+def test_resize_applies_preset_near_base_scale(qapp, monkeypatch):
+    from controllers import transform_manager as tm
+
+    window = _resize_window((16, 2049, 3), 1.0, 1.0)
+    window.raw_images = list(window.base_images)
+    monkeypatch.setattr(tm, 'DownsampleDialog', _StubResizeDialog(2048 / 2049))
+    messages = []
+    monkeypatch.setattr(tm, 'show_success_box', lambda *args, **kwargs: messages.append(args))
+    window.transform_manager.resize_all_images()
+    assert all(image.shape[1] == 2048 for image in window.raw_images)
+    assert window.current_scale_factor == 2048 / 2049
+    assert '99.951196' in messages[0][2]
 
 
 def test_downsample_dialog_respects_max_scale(qapp):

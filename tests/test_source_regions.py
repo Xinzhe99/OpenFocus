@@ -9,6 +9,79 @@ from core.source_previews import DISPLAY_REGION_MAX_SIDE, SourceRegionWorker, re
 from utils.image_utils import to_display_uint8
 
 
+def test_source_region_requests_wait_for_retiring_decode_and_keep_latest(qapp, monkeypatch):
+    from types import SimpleNamespace
+    from PyQt6.QtCore import QObject, pyqtSignal
+    import core.source_previews
+    from main import OpenFocus
+    from utils import scalebar, watermark
+
+    created = []
+
+    class Worker(QObject):
+        ready = pyqtSignal(object, object, object, object)
+        failed = pyqtSignal(object, str)
+        finished = pyqtSignal()
+
+        def __init__(self, frame, key, **kwargs):
+            super().__init__()
+            self.key, self.cancelled, self.requests = key, False, []
+            created.append(self)
+
+        def start(self):
+            pass
+
+        def submit(self, request):
+            self.requests.append(request)
+
+        def request_cancel(self):
+            self.cancelled = True
+
+    monkeypatch.setattr(core.source_previews, 'SourceRegionWorker', Worker)
+    monkeypatch.setattr(scalebar, 'export_cfg', lambda *args, **kwargs: None)
+    monkeypatch.setattr(watermark, 'export_cfg', lambda *args, **kwargs: None)
+    frames = [np.zeros((10, 10, 3), np.uint8) for _ in range(3)]
+    window = SimpleNamespace(raw_images=frames, linear_dng_metadata=None,
+                             label_manager=SimpleNamespace(snapshot=lambda: None))
+    window._request_source_region = lambda key, request: OpenFocus._request_source_region(window, key, request)
+    request = ('view', 1, (0, 0, 10, 10), (10, 10))
+    keys = [(0, id(frame), index, index) for index, frame in enumerate(frames)]
+    window._source_display_key = keys[0]
+    window._request_source_region(keys[0], request)
+    for key in keys[1:]:
+        window._source_display_key = key
+        window._request_source_region(key, request)
+    assert len(created) == 1 and created[0].cancelled
+    created[0].finished.emit()
+    assert len(created) == 2 and created[1].key == keys[2]
+    assert created[1].requests == [request]
+    window._shutting_down = True
+    created[1].finished.emit()
+
+
+def test_native_region_replaces_thumbnail_on_actual_widget_surface(qapp):
+    from widgets.magnifier_label import MagnifierLabel
+    from utils.image_utils import cv2_to_pixmap
+
+    image = np.full((600, 800, 3), (20, 100, 220), np.uint8)
+    thumbnail = np.zeros((60, 80, 3), np.uint8)
+    label = MagnifierLabel()
+    label.resize(400, 300)
+    requests = []
+    label.sourceRegionRequested.connect(lambda key, request: requests.append((key, request)))
+    label.show()
+    try:
+        label.set_display_pixmap(cv2_to_pixmap(thumbnail), source_size=(800, 600), source_key='frame')
+        assert label.grab().toImage().pixelColor(200, 150).red() == 0
+        key, request = requests[-1]
+        tile, rect = render_source_region(image, request[2], request[3])
+        assert label.set_source_region(cv2_to_pixmap(tile), rect, source_key=key, request=request)
+        color = label.grab().toImage().pixelColor(200, 150)
+        assert (color.red(), color.green(), color.blue()) == (220, 100, 20)
+    finally:
+        label.close()
+
+
 @pytest.mark.parametrize('dtype', [np.uint8, np.uint16])
 @pytest.mark.parametrize('channels', [None, 3])
 def test_native_region_owns_only_visible_pixels(dtype, channels):
@@ -55,7 +128,8 @@ def test_selected_source_decode_coalesces_requests_and_never_runs_on_gui(qapp, m
     decoded_threads = []
     image = np.full((128, 192, 3), 83, np.uint16)
 
-    def resolve(frame):
+    def resolve(frame, *, should_cancel=None):
+        assert callable(should_cancel) and not should_cancel()
         decoded_threads.append(threading.get_ident())
         entered.set()
         assert release.wait(2)
@@ -92,8 +166,10 @@ def test_selected_source_decode_coalesces_requests_and_never_runs_on_gui(qapp, m
 def test_cancelled_original_cannot_publish_a_late_tile(qapp, monkeypatch):
     from core import source_frames
     entered, release = threading.Event(), threading.Event()
+    cancellation_checks = []
 
-    def resolve(frame):
+    def resolve(frame, *, should_cancel=None):
+        cancellation_checks.append(should_cancel)
         entered.set()
         assert release.wait(2)
         return np.full((80, 100, 3), 128, np.uint8)
@@ -106,6 +182,7 @@ def test_cancelled_original_cannot_publish_a_late_tile(qapp, monkeypatch):
     try:
         assert entered.wait(2)
         worker.request_cancel()
+        assert callable(cancellation_checks[0]) and cancellation_checks[0]()
         release.set()
         assert worker.wait(2000)
         qapp.processEvents()
@@ -154,9 +231,9 @@ def test_uncacheable_selected_original_is_resolved_once_across_requests(qapp, tm
     monkeypatch.setattr(source_frames, 'SOURCE_CACHE', source_frames.FrameCache(max_bytes=0))
     original_resolve = source_frames.resolve_frame
     calls = []
-    def resolve(item):
+    def resolve(item, *, should_cancel=None):
         calls.append(item)
-        return original_resolve(item)
+        return original_resolve(item, should_cancel=should_cancel)
     monkeypatch.setattr(source_frames, 'resolve_frame', resolve)
     ready = threading.Event()
     results = []

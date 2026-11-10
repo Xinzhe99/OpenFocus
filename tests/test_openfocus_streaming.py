@@ -413,7 +413,7 @@ def test_processed_decode_cancellation_does_not_enter_warp(tmp_path, monkeypatch
     first, original = _source(tmp_path, 'cancel-decode.png', 17001)
     cancelled = threading.Event()
     warped = []
-    def decode(self):
+    def decode(self, *, should_cancel=None):
         cancelled.set()
         return original
     monkeypatch.setattr(source_frames.SourceFrame, 'full_resolution', decode)
@@ -435,7 +435,7 @@ def test_batch_openfocus_registration_exports_without_staging(qapp, tmp_path, mo
     output.mkdir()
     worker = workers.BatchWorker([], 'custom', str(output),
         {'format': 'png', 'fusion_method': method, 'alignment': 'openfocus',
-         'save_aligned': True}, thread_count=1, tile_enabled=False, use_gpu=False)
+         'save_aligned': True}, thread_count=1, tile_enabled=True, tile_threshold=8, use_gpu=False)
 
     def forbidden(*args, **kwargs):
         raise AssertionError('Batch staged all aligned frames before fusion')
@@ -445,6 +445,7 @@ def test_batch_openfocus_registration_exports_without_staging(qapp, tmp_path, mo
     seen = []
     fuse = worker._fuse_one_stack
     def capture(fusion, algorithm, frames, params):
+        assert not fusion.tile_enabled
         seen.extend(frames)
         return fuse(fusion, algorithm, frames, params)
     monkeypatch.setattr(worker, '_fuse_one_stack', capture)
@@ -642,3 +643,77 @@ def test_producer_window_stays_bounded_as_stack_length_grows(monkeypatch):
     short = openfocus_ab._frame_pass_workers([frame] * 4, None, 'openfocus_a', 8)
     long = openfocus_ab._frame_pass_workers([frame] * 64, None, 'openfocus_a', 8)
     assert short == long == 2
+
+
+@pytest.mark.parametrize('exposure', [False, True])
+def test_large_tiff_b_snapshots_real_ecc_warps_before_whole_depth(tmp_path, monkeypatch, exposure):
+    from collections import Counter
+    from core import multi_focus_fusion, registration
+
+    rng = np.random.default_rng(301)
+    descriptors, eager, deferred = [], [], []
+    for index in range(3):
+        image = rng.integers(0, 65536, (32, 40, 3), dtype=np.uint16)
+        ok, encoded = cv2.imencode('.tif', image)
+        assert ok
+        path = tmp_path / f'ecc-{index}.tif'
+        encoded.tofile(str(path))
+        source = source_frames.scan_source(str(path), header_only=True)[0]
+        pixels = source_frames.resolve_frame(source)
+        identity = registration._perspective_source(source, pixels, None)
+        matrix = np.float32([[1, 0, index * .5], [0, 1, -.25 * index], [0, 0, 1]])
+        warp = registration.PerspectiveWarp(identity, tuple(matrix.ravel()), matrix.dtype.str,
+                                             (40, 32))
+        eager.append(warp(pixels))
+        deferred.append(source_frames.process_frame(source, warp, scratch_bytes=source.nbytes * 2))
+        descriptors.append(source)
+
+    options = dict(algorithm='openfocus_b', tile_enabled=False, sort_mode='off',
+                   exposure_match=exposure, use_gpu=False)
+    expected = multi_focus_fusion.MultiFocusFusion(**options).fuse(eager, thread_count=1)
+    monkeypatch.setattr(source_frames, 'SOURCE_CACHE', source_frames.FrameCache(0))
+    monkeypatch.setattr(multi_focus_fusion, 'memory_budget_bytes', lambda: 512 * 1024 ** 2)
+    original_cost = source_frames.frame_resolution_bytes
+    def expensive(frame):
+        if isinstance(frame, source_frames.ProcessedFrame) and not isinstance(frame.source, np.ndarray):
+            return 129 * 1024 ** 2
+        return original_cost(frame)
+    monkeypatch.setattr(source_frames, 'frame_resolution_bytes', expensive)
+    original_warp = registration.PerspectiveWarp.__call__
+    calls = Counter()
+    def counted(warp, image):
+        calls[warp.source.path] += 1
+        return original_warp(warp, image)
+    monkeypatch.setattr(registration.PerspectiveWarp, '__call__', counted)
+    preparation = []
+    def progress(done, total):
+        pass
+    progress.preparation = lambda done, total: preparation.append((done, total))
+    actual = multi_focus_fusion.MultiFocusFusion(**options).fuse(
+        deferred, thread_count=1, progress_callback=progress)
+    np.testing.assert_array_equal(actual, expected)
+    assert preparation == [(0, 3), (1, 3), (2, 3), (3, 3)]
+    assert [calls[source.path] for source in descriptors] == [1, 1, 2 if exposure else 1]
+
+
+def test_required_source_snapshots_fail_before_writing_when_scratch_is_full(tmp_path, monkeypatch):
+    source, _ = _source(tmp_path, 'no-scratch.png', 17001)
+    error = frame_storage.ScratchSpaceError(str(tmp_path), source.nbytes + 4096, 0)
+    def no_space(size, *args, **kwargs):
+        assert size == source.nbytes + 4096
+        raise error
+    monkeypatch.setattr(frame_storage, 'select_scratch', no_space)
+    monkeypatch.setattr(source_frames, 'materialize_frames',
+                        lambda *args, **kwargs: pytest.fail('snapshot writing started'))
+    with pytest.raises(frame_storage.ScratchSpaceError) as caught:
+        source_frames.materialize_for_repeated_access([source], required=True, staging_bytes=4096)
+    assert caught.value is error
+
+
+def test_required_source_snapshots_check_source_identity_after_staging(tmp_path):
+    source, _ = _source(tmp_path, 'changed-after-snapshot.png', 17001)
+    staged = source_frames.materialize_for_repeated_access([source], required=True)
+    with open(source.path, 'ab') as stream:
+        stream.write(b'changed')
+    with pytest.raises(OSError, match='Source changed'):
+        source_frames.resolve_frame(staged[0])

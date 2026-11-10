@@ -301,6 +301,7 @@ def test_retouch_refuses_roi_frames(scene):
 
 def test_retouch_workspace_auto_background(qapp, scene, soft_result, monkeypatch, tmp_path):
     from PyQt6.QtWidgets import QApplication, QMessageBox
+    from PyQt6.QtTest import QTest
     from utils.file_dialogs import FileDialog
     from controllers.output_manager import OutputRecord
     from core.render_context import build_render_context
@@ -328,6 +329,13 @@ def test_retouch_workspace_auto_background(qapp, scene, soft_result, monkeypatch
     saved = tmp_path / "map.png"
     monkeypatch.setattr(FileDialog, "getSaveFileName", lambda *a: (str(saved), ""))
     try:
+        # Automatic background becomes available once the initially selected
+        # source has loaded; its worker then resolves any remaining sources.
+        for _ in range(500):
+            if dlg._source_ready:
+                break
+            QTest.qWait(10)
+        assert dlg._source_ready, "Selected retouch source did not finish loading"
         assert dlg.btn_auto_bg.isEnabled()
         assert dlg.chk_missing.isHidden()
         dlg.btn_auto_bg.click()

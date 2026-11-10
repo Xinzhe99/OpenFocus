@@ -1,7 +1,7 @@
 """Interactive comparison using one aligned stack and one inspection region."""
 import os
 
-from PyQt6.QtCore import QEvent, QPointF, QSignalBlocker, Qt, QTimer
+from PyQt6.QtCore import QEvent, QPointF, QSize, QSignalBlocker, Qt, QTimer
 from PyQt6.QtGui import QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QFrame, QGridLayout,
@@ -27,6 +27,16 @@ from widgets.stepper import StepperSpinBox
 
 def _method_label(method):
     return trans.t(get_fusion(method).label_key)
+
+
+class _ActionFlowPanel(FlowPanel):
+    """Prefer one row while retaining the flow layout's wrapping minimum."""
+
+    def sizeHint(self):  # noqa: N802
+        items = [self._flow.itemAt(index) for index in range(self._flow.count())]
+        hints = [item.sizeHint() for item in items if not item.isEmpty()]
+        width = sum(hint.width() for hint in hints) + 8 * max(0, len(hints) - 1)
+        return QSize(width, self.heightForWidth(width))
 
 
 class CompareDialog(QDialog):
@@ -445,6 +455,7 @@ class CompareDialog(QDialog):
         self.progress.hide()
         footer.addWidget(self.progress)
         root.addLayout(footer)
+        actions_row = QHBoxLayout()
         actions = FlowPanel(h_spacing=8, v_spacing=4)
         self.btn_verify = QPushButton(trans.t("compare_verify_full"))
         self.btn_verify.clicked.connect(self._verify_full)
@@ -452,19 +463,22 @@ class CompareDialog(QDialog):
         self.btn_retry = QPushButton(trans.t("compare_retry_method"))
         self.btn_retry.clicked.connect(self._retry_method)
         actions.add(self.btn_retry)
+        actions_row.addWidget(actions, 1)
+        primary_actions = _ActionFlowPanel(h_spacing=8, v_spacing=4)
         self.btn_adopt_params = QPushButton(trans.t("compare_adopt_params"))
         self.btn_adopt_params.clicked.connect(self._adopt_params)
         self.btn_adopt_params.setEnabled(False)
-        actions.add(self.btn_adopt_params)
+        primary_actions.add(self.btn_adopt_params)
         self.btn_adopt_output = QPushButton(trans.t("compare_adopt_output"))
         self.btn_adopt_output.setObjectName("primaryButton")
         self.btn_adopt_output.clicked.connect(self._adopt_output)
         self.btn_adopt_output.setEnabled(False)
-        actions.add(self.btn_adopt_output)
+        primary_actions.add(self.btn_adopt_output)
         close_button = QPushButton(trans.t("btn_close"))
         close_button.clicked.connect(self.reject)
-        actions.add(close_button)
-        outer.addWidget(actions)
+        primary_actions.add(close_button)
+        actions_row.addWidget(primary_actions)
+        outer.addLayout(actions_row)
         self._layout_timer.start(0)
 
     def _initial_params(self, method):
@@ -483,26 +497,22 @@ class CompareDialog(QDialog):
             group = QFrame(self.param_host)
             group.setFrameShape(QFrame.Shape.StyledPanel)
             group.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-            row = QHBoxLayout(group)
+            row = QVBoxLayout(group)
             row.setContentsMargins(8, 4, 8, 4)
             row.setSpacing(6)
             title = QLabel(_method_label(method), group)
             font = title.font()
             font.setBold(True)
             title.setFont(font)
-            row.addWidget(title, 0, Qt.AlignmentFlag.AlignTop)
+            row.addWidget(title)
             panel = AlgorithmParameterPanel(group)
             panel.set_parameters(specs, params)
             panel.valuesChanged.connect(lambda values, m=method: self._params_changed(m, values))
-            row.addWidget(panel, 0, Qt.AlignmentFlag.AlignTop)
+            row.addWidget(panel)
             self.param_widgets[method] = panel.editors
             self.param_host.add(group)
             self._param_rows[method] = group
             group.hide()
-        height = max((group.sizeHint().height() for group in self._param_rows.values()),
-                     default=0)
-        for group in self._param_rows.values():
-            group.setFixedHeight(height)
 
     def _selected_methods(self):
         return [m for m, check in self._checks.items() if check.isChecked()]
@@ -536,7 +546,7 @@ class CompareDialog(QDialog):
         self._editing_alignment = method
         specs = registration_parameter_specs(method)
         self.registration_parameter_panel.set_parameters(specs, self._registration_drafts[method])
-        self.registration_parameter_panel.setVisible(bool(self.registration_parameter_panel.editors))
+        self.registration_parameter_panel.setVisible(method != 'openfocus' and bool(self.registration_parameter_panel.editors))
         self._shared['registration_parameters'] = dict(self._registration_drafts[method])
 
     def _registration_parameters_changed(self, values):

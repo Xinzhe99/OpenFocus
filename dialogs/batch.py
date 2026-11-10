@@ -719,7 +719,7 @@ class BatchProcessingDialog(QDialog):
             self.path_input.setToolTip(trans.t('batch_path_invalid'))
 
     def add_folders(self):
-        """Pick one or more stack folders with the shared address bar."""
+        """Pick one or more stack folders."""
         dialog = FileDialog.for_directories(
             self, trans.t('batch_pick_title'), self._last_pick_dir(), multiple=True)
         self._fit_picker_sidebar(dialog)
@@ -747,7 +747,7 @@ class BatchProcessingDialog(QDialog):
         """Give the place list just enough width for its longest label."""
         from PyQt6.QtWidgets import QSplitter, QListView
 
-        splitter = dialog.findChild(QSplitter)
+        splitter = dialog.findChild(QSplitter) if hasattr(dialog, "findChild") else None
         if splitter is None or splitter.count() < 2:
             return
         sidebar = splitter.widget(0)
@@ -1221,8 +1221,8 @@ class BatchProcessingDialog(QDialog):
         self._editing_alignment = method
         specs = registration_parameter_specs(method)
         self.registration_parameter_panel.set_parameters(specs, self._registration_drafts[method])
-        self.registration_parameter_panel.setVisible(bool(self.registration_parameter_panel.editors))
-        self._registration_has_specs = bool(self.registration_parameter_panel.editors)
+        self._registration_has_specs = method != 'openfocus' and bool(self.registration_parameter_panel.editors)
+        self.registration_parameter_panel.setVisible(self._registration_has_specs)
         self._sync_parameters_heading()
 
     def _sync_parameters_heading(self) -> None:

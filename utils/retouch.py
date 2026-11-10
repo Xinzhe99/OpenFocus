@@ -22,23 +22,9 @@ from core.render_context import RenderContext, SourceFrame
 
 
 def prepare_retouch_document(base_image, context):
-    """Resolve captured sources sequentially on a worker into disk storage."""
-    from dataclasses import replace
-    from core.source_frames import materialize_frames, resolve_frame
-    from core.frame_storage import store_frame
-    originals = materialize_frames(frame.image for frame in context.frames)
-    context = replace(context, frames=tuple(
-        replace(frame, image=image) for frame, image in zip(context.frames, originals)))
-    document = RetouchDocument(resolve_frame(base_image), context)
-    document.source_previews = []
-    for frame in document.frames:
-        image = frame.image
-        h, w = image.shape[:2]
-        scale = min(1.0, 1024 / max(h, w))
-        document.source_previews.append(store_frame(cv2.resize(
-            image, (max(1, round(w * scale)), max(1, round(h * scale))),
-            interpolation=cv2.INTER_AREA)))
-    return document
+    """Create the document without decoding the captured source stack."""
+    from core.source_frames import resolve_frame
+    return RetouchDocument(resolve_frame(base_image), context)
 
 TILE = 128  # undo granularity (pixels)
 DEFAULT_MAX_STROKES = 100
@@ -533,9 +519,11 @@ class RetouchDocument:
         if base_image.shape[0] != context.height or base_image.shape[1] != context.width:
             raise ValueError("base image does not match the render context")
         from core.image_loader import _has_transparency, UnsupportedTransparency
+        from core.source_frames import SourceFrame as LazySourceFrame, ProcessedFrame
         if (_has_transparency(base_image) or any(
-                frame.image is not None and _has_transparency(frame.image)
-                for frame in context.frames)):
+                frame.image is not None
+                and not isinstance(frame.image, (LazySourceFrame, ProcessedFrame))
+                and _has_transparency(frame.image) for frame in context.frames)):
             raise UnsupportedTransparency("Retouching transparent images is unsupported")
         self.base = np.ascontiguousarray(base_image.copy())
         self.working = self.base.copy()
@@ -583,6 +571,7 @@ class RetouchDocument:
         with self._checkpoint_lock:
             if self._provenance is not None:
                 return
+        self.resolve_all_sources(cancelled)
         initial = provenance(self, cancelled)
         with self._checkpoint_lock:
             if cancelled is not None and cancelled():
@@ -623,10 +612,41 @@ class RetouchDocument:
         return self.history.can_redo
 
     def _first_usable_frame(self) -> int:
+        from core.source_frames import SourceFrame as LazySourceFrame, ProcessedFrame
         for index, frame in enumerate(self.frames):
-            if frame.image is not None and frame.image.size and np.any(frame.image):
-                return index
+            image = frame.image
+            if image is not None and image.size:
+                if isinstance(image, (LazySourceFrame, ProcessedFrame)) or np.any(image):
+                    return index
         return 0
+
+    def resolve_source(self, index: int, cancelled=None):
+        return self.resolve_source_frame(self.frames[index], cancelled)
+
+    @staticmethod
+    def resolve_source_frame(frame, cancelled=None):
+        """Resolve one captured frame, retaining its full-quality pixels."""
+        from core.source_frames import SourceFrame as LazySourceFrame, ProcessedFrame, resolve_frame
+        from core.frame_storage import store_frame
+        from core.image_loader import _has_transparency, UnsupportedTransparency
+        from core.registration import RegistrationCancelled
+        image = frame.image
+        if isinstance(image, (LazySourceFrame, ProcessedFrame)):
+            image = resolve_frame(image, should_cancel=cancelled)
+            if cancelled is not None and cancelled():
+                raise RegistrationCancelled()
+            if _has_transparency(image):
+                raise UnsupportedTransparency("Retouching transparent images is unsupported")
+            image = store_frame(image)
+            if cancelled is not None and cancelled():
+                raise RegistrationCancelled()
+            frame = dataclasses.replace(frame, image=image)
+        return frame
+
+    def resolve_all_sources(self, cancelled=None):
+        for index in range(len(self.frames)):
+            self.frames[index] = self.resolve_source(index, cancelled)
+        self.context = dataclasses.replace(self.context, frames=tuple(self.frames))
 
     def result(self) -> np.ndarray:
         return self.working
@@ -712,6 +732,7 @@ class RetouchDocument:
         if stacked is None or stacked.shape != self.working.shape:
             stacked = self.base
         try:
+            self.resolve_all_sources(cancelled)
             result = compute_auto_background(self.working, self.frames, preset, clean,
                                              cancelled=cancelled, progress=progress,
                                              keep_soft_parts=keep_soft_parts,

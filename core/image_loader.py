@@ -61,7 +61,13 @@ def is_raw_source(path):
     return (os.path.splitext(os.fspath(path))[1].lower() in RAW_FORMATS
             or _is_dng_tiff(path))
 
-def source_dimensions(path, page=0):
+def tiff_source_pages(tif):
+    """Yield physical IFD indices and full-resolution image pages."""
+    return ((index, page) for index, page in enumerate(tif.pages)
+            if not getattr(page, 'is_reduced', False))
+
+
+def source_dimensions(path, page=None):
     """Read a still image or TIFF page's dimensions before allocating pixels."""
     extension = os.path.splitext(os.fspath(path))[1].lower()
     if is_raw_source(path):
@@ -73,7 +79,7 @@ def source_dimensions(path, page=0):
     if extension in ('.tif', '.tiff'):
         import tifffile
         with tifffile.TiffFile(path) as tif:
-            entry = tif.pages[page]
+            entry = (next(tiff_source_pages(tif))[1] if page is None else tif.pages[page])
             validate_tiff_page(path, entry)
             return entry.imagewidth, entry.imagelength
     if not PIL_AVAILABLE:
@@ -232,12 +238,15 @@ def validate_tiff_page(path, page):
     return True
 
 
-def decode_tiff_page(path, page_index=0, *, preserve_grayscale=False):
+def decode_tiff_page(path, page_index=None, *, preserve_grayscale=False):
     """Decode a validated display TIFF page, applying its orientation exactly once."""
     import tifffile
 
     with tifffile.TiffFile(path) as tif:
-        page = tif.pages[page_index]
+        if page_index is None:
+            page_index, page = next(tiff_source_pages(tif))
+        else:
+            page = tif.pages[page_index]
         cmyk = validate_tiff_page(path, page)
         if cmyk:
             samples = page.asarray()
@@ -444,7 +453,12 @@ def _read_icc_profile(path: str, page: Optional[int] = None) -> bytes:
     try:
         with PILImage.open(path) as image:
             profiles = []
-            pages = range(getattr(image, "n_frames", 1)) if image.format == "TIFF" else (0,)
+            if image.format == 'TIFF':
+                import tifffile
+                with tifffile.TiffFile(path) as tif:
+                    pages = tuple(index for index, _ in tiff_source_pages(tif))
+            else:
+                pages = (0,)
             if page is not None:
                 pages = (page,)
             for page_index in pages:
@@ -587,11 +601,13 @@ def _read_tiff_pages(path: str, scale_factor=1.0, should_cancel=None) -> Optiona
     """Decode multi-page TIFF one page at a time into disk-backed frames."""
     if os.path.splitext(path)[1].lower() not in ('.tif', '.tiff') or _is_dng_tiff(path):
         return None
-    count = count_frames(path)
-    if count < 2:
+    import tifffile
+    with tifffile.TiffFile(path) as tif:
+        indices = [index for index, _ in tiff_source_pages(tif)]
+    if len(indices) < 2:
         return None
     pages = []
-    for index in range(count):
+    for index in indices:
         if should_cancel is not None and should_cancel():
             raise _DecodeCancelled()
         page = decode_tiff_page(path, index)
@@ -602,8 +618,7 @@ def _read_tiff_pages(path: str, scale_factor=1.0, should_cancel=None) -> Optiona
 def count_frames(path: str) -> int:
     """Frames a path contributes to a stack, without decoding pixels.
 
-    A multi-page TIFF counts all image directories with tifffile, including
-    sample types Pillow cannot open; anything else counts as one.
+    TIFF reduced-image directories do not contribute source frames.
     """
     if os.path.splitext(path)[1].lower() in (".tif", ".tiff"):
         if _is_dng_tiff(path):
@@ -611,7 +626,7 @@ def count_frames(path: str) -> int:
         try:
             import tifffile
             with tifffile.TiffFile(path) as tif:
-                return len(tif.pages)
+                return sum(1 for _ in tiff_source_pages(tif))
         except Exception:
             pass
     return 1
@@ -1078,8 +1093,8 @@ class ImageStackLoader:
                             stem = os.path.splitext(os.path.basename(path))[0]
                             images.extend(frames)
                             paths.extend([path] * len(frames))
-                            names.extend(f'{stem}_page_{frame.page + 1:03d}.tif' if len(frames) > 1
-                                         else os.path.basename(path) for frame in frames)
+                            names.extend(f'{stem}_page_{index + 1:03d}.tif' if len(frames) > 1
+                                         else os.path.basename(path) for index, frame in enumerate(frames))
                         if self.progress_callback is not None:
                             self.progress_callback(done, len(sources))
                 except _DecodeCancelled:

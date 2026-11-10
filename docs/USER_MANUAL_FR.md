@@ -852,7 +852,7 @@ Faire glisser des résultats depuis la liste des sorties écrit des fichiers ima
 
 ## 14. Interface en ligne de commande
 
-`pip install openfocus` inclut le modèle IA, ses poids et le décodage HEIC et RAW d'appareil photo. `dtcwt` est ignoré à partir de Python 3.13, où l'entrée DTCWT reste désactivée avec une infobulle.
+`pip install openfocus` inclut le modèle IA, ses poids et le décodage HEIC et RAW. Pour DTCWT sous Python 3.13+, exécutez ensuite `python -m pip install --no-deps dtcwt==0.14.0`. OpenFocus fournit un adaptateur NumPy 2 ; `pip check` signalera toujours la contrainte NumPy du paquet d'origine.
 
 OpenFocus peut s'exécuter sans interface graphique — utile pour les pipelines scriptés et l'intégration continue. Le script de console `openfocus` (installé par `pip install openfocus`) et `python main.py` depuis une copie du code exposent les mêmes commandes. Les options de fusion fonctionnent avec les deux formes ; les sous-commandes sont :
 

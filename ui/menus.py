@@ -23,6 +23,11 @@ def setup_menus(window: QMainWindow) -> None:
     file_menu.addAction(open_action)
     window.ui_objs['action_open_folder'] = open_action
 
+    open_frames_action = QAction(trans.t('action_open_frames'), window)
+    open_frames_action.triggered.connect(window.source_manager.prompt_and_load_frames)
+    file_menu.addAction(open_frames_action)
+    window.ui_objs['action_open_frames'] = open_frames_action
+
     open_video_action = QAction(trans.t('action_open_video'), window)
     open_video_action.setShortcut("Ctrl+Shift+O")
     open_video_action.triggered.connect(window.open_video_dialog)
