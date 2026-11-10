@@ -20,6 +20,37 @@ def _application(qapp):
     return qapp
 
 
+@pytest.mark.parametrize('reverse', [False, True])
+def test_compare_uses_each_methods_base_setting_in_processing_order(reverse):
+    from types import SimpleNamespace
+    from dialogs.compare import CompareDialog
+
+    choices = {'openfocus_a': True, 'openfocus_b': True, 'openfocus_c': False,
+               'guided_filter': True}
+    window = SimpleNamespace(stack_reverse_order=reverse,
+        brightness_option_for=lambda option, method: choices.get(method, False)
+            if option == 'base_correct' else False)
+    shared = CompareDialog._collect_shared_settings(SimpleNamespace(window_main=window))
+    shared['thread_count'] = 1
+    shared['tile_enabled'] = False
+    methods = list(choices)
+    worker = PreviewWorker([np.full((40, 40, 3), value, np.uint8)
+                            for value in (40, 180)], methods, {}, shared, None, roi_only=False)
+    expected = {'openfocus_a': 'first', 'openfocus_b': 'first',
+                'openfocus_c': 'none', 'guided_filter': 'last'}
+    for method in methods:
+        constructor, _ = worker._settings(method)
+        assert constructor['base_frame'] == expected[method]
+        assert constructor['sort_mode'] == ('desc' if reverse else 'asc')
+    results, errors, _ = _run(worker)
+    assert errors == []
+    images = {method: image for method, image, _ in results}
+    first = 180 if reverse else 40
+    for method, target in [('openfocus_a', first), ('openfocus_b', first),
+                           ('guided_filter', 180)]:
+        assert abs(float(images[method].mean()) - target) < 3
+
+
 def _stack(height=80, width=112, dtype=np.uint8):
     rng = np.random.default_rng(319)
     sharp = rng.integers(15, 240, (height, width, 3), dtype=np.uint8)
@@ -71,7 +102,7 @@ def _expected(frames, method, **params):
 @pytest.mark.parametrize("dtype", [np.uint8, np.uint16])
 def test_full_render_matches_real_fusion_and_keeps_dtype(method, dtype):
     frames = _stack(dtype=dtype)
-    params = {} if method == "openfocus_c" else {"kernel_size": 5}
+    params = ({} if method == "openfocus_c" else {"radius": 2} if method.startswith("openfocus_") else {"kernel_size": 5})
     worker = PreviewWorker(frames, [method], {method: params},
                            {"tile_enabled": False, "thread_count": 0},
                            (10, 11, 9, 9), roi_only=False)
@@ -167,23 +198,23 @@ def test_own_method_settings_and_configuration_snapshot():
     frames = _stack()
     methods = ["openfocus_a", "openfocus_b", "openfocus_c"]
     own = {
-        "openfocus_a": {"kernel_size": 3, "blend_smoothing": 0.0},
-        "openfocus_b": {"kernel_size": 5, "depth_smoothing": 0.0},
-        'openfocus_c': {'blend_smoothing': 0.0},
+        "openfocus_a": {"radius": 1, "smoothing": 0.0},
+        "openfocus_b": {"radius": 2, "smoothing": 0.0},
+        'openfocus_c': {'smoothing': 0.0},
     }
     shared = {"kernel_size": 31, "blend_smoothing": 8.0,
               "depth_smoothing": 8.0, "tile_enabled": False}
     worker = PreviewWorker(frames, methods, own, shared, None, roi_only=False)
-    own["openfocus_a"]["blend_smoothing"] = 8.0
+    own["openfocus_a"]["smoothing"] = 8.0
     shared["kernel_size"] = 41
     methods.clear()
     results, errors, _ = _run(worker)
     assert errors == []
     assert [row[0] for row in results] == ["openfocus_a", "openfocus_b", "openfocus_c"]
     for (method, result, _), settings in zip(results, [
-        {"kernel_size": 3, "blend_smoothing": 0.0},
-        {"kernel_size": 5, "depth_smoothing": 0.0},
-        {"blend_smoothing": 0.0},
+        {"radius": 1, "smoothing": 0.0},
+        {"radius": 2, "smoothing": 0.0},
+        {"smoothing": 0.0},
     ]):
         np.testing.assert_array_equal(result, _expected(frames, method, **settings))
 
@@ -191,14 +222,14 @@ def test_own_method_settings_and_configuration_snapshot():
 def test_shared_brightness_settings_are_separate_from_algorithm_parameters():
     frames = _stack()
     frames[0] //= 2
-    own = {'openfocus_a': {'kernel_size': 5}}
+    own = {'openfocus_a': {'radius': 2}}
     results, errors, _ = _run(PreviewWorker(
         frames, ['openfocus_a'], own,
         {'exposure_match': False, 'base_frame': 'none', 'tile_enabled': False},
         None, roi_only=False))
     assert errors == []
     np.testing.assert_array_equal(results[0][1],
-        _expected(frames, 'openfocus_a', kernel_size=5))
+        _expected(frames, 'openfocus_a', radius=2))
 
 
 def test_dtcwt_uses_own_decomposition_depth():
@@ -241,7 +272,7 @@ def test_cancel_before_start_still_finishes_without_publishing(kind):
 
 def test_cancellation_during_real_tiled_fusion_stops_emission(monkeypatch):
     worker = PreviewWorker(
-        _stack(192, 256), ["openfocus_a", "openfocus_b"], {},
+        _stack(192, 256), ["guided_filter", "openfocus_b"], {},
         {"tile_enabled": True, "tile_threshold": 64, "tile_block_size": 96,
          "tile_overlap": 16, "thread_count": 1}, None, roi_only=False)
     original = MultiFocusFusion.fuse
@@ -258,7 +289,7 @@ def test_cancellation_during_real_tiled_fusion_stops_emission(monkeypatch):
     results, errors, progress = _run(worker)
     assert completed_tiles and completed_tiles[0][1] > 1
     assert results == errors == []
-    assert progress == [(0, 2, "openfocus_a")]
+    assert progress == [(0, 2, "guided_filter")]
 
 
 def test_cancellation_after_native_fusion_discards_result(monkeypatch):
@@ -319,6 +350,28 @@ def test_alignment_runs_real_registration_on_background_thread(monkeypatch):
     before = np.mean(np.abs(frames[0].astype(float) - frames[1]))
     after = np.mean(np.abs(resolve_frame(aligned[0]).astype(float) - resolve_frame(aligned[1])))
     assert after < before * 0.5
+
+@pytest.mark.parametrize('reverse', [False, True])
+def test_alignment_anchors_the_selected_order_and_preserves_source_indices(reverse):
+    from core.source_frames import resolve_frame
+    rng = np.random.default_rng(442)
+    base = cv2.GaussianBlur(rng.integers(0, 256, (160, 192, 3), dtype=np.uint8),
+                            (0, 0), 1.2)
+    frames = [np.roll(base, shift, axis=1) for shift in (0, 5, 10)]
+    shared = {'registration_parameters': {'max_shift_ratio': .2, 'magnification': 0}}
+    results, errors, _ = _run(AlignmentWorker(frames, 'openfocus', shared,
+                                              reverse_registration=reverse))
+    assert errors == []
+    aligned = [resolve_frame(frame) for frame in results[0]]
+    anchor_index = 2 if reverse else 0
+    anchor = aligned[anchor_index]
+    _, _, (x, y), _ = cv2.minMaxLoc(cv2.matchTemplate(frames[anchor_index], anchor, cv2.TM_SQDIFF))
+    height, width = anchor.shape[:2]
+    np.testing.assert_array_equal(anchor, frames[anchor_index][y:y + height, x:x + width])
+    assert (x <= 1) if not reverse else (x >= 9)
+    target = anchor[16:-16, 16:-16].astype(np.float32)
+    for image in aligned:
+        assert np.abs(target - image[16:-16, 16:-16]).mean() < 5
 
 
 @pytest.mark.parametrize('dtype', [np.uint8, np.uint16])
@@ -442,7 +495,7 @@ def test_cold_background_depth_render_preserves_uint16():
         results, errors = [], []
         worker = PreviewWorker(
             [flat, sharp], ['openfocus_b'],
-            {'openfocus_b': {'kernel_size': 5}},
+            {'openfocus_b': {'radius': 2}},
             {'tile_enabled': False, 'thread_count': 2}, None,
             roi_only=False)
         direct = Qt.ConnectionType.DirectConnection
@@ -462,3 +515,11 @@ def test_cold_background_depth_render_preserves_uint16():
         env=dict(os.environ, QT_QPA_PLATFORM='offscreen'),
         capture_output=True, text=True, timeout=60)
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.parametrize('method', ['openfocus_a', 'openfocus_b', 'openfocus_c', 'guided_filter'])
+def test_compare_keeps_native_whole_under_shared_tile_settings(method):
+    worker = PreviewWorker(_stack(), [method], {},
+                           {'tile_enabled': True, 'tile_threshold': 8}, None, False)
+    constructor, _ = worker._settings(method)
+    assert constructor['tile_enabled'] is (method == 'guided_filter')

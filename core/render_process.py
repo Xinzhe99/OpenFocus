@@ -18,12 +18,12 @@ from core.resource_policy import heavy_job, make_process_budget, process_budget
 from core.registration import RegistrationCancelled
 from core.workers import RenderWorker
 from locales import trans
-from utils.logging_setup import get_logger
+from utils.logging_setup import debug_enabled, get_logger
 
 logger = get_logger(__name__)
 _CANCEL_GRACE_SECONDS = 3.0
 _STATE_FIELDS = ('alignment_reused', 'alignment_computed', 'alignment_report',
-                 'alignment_report_provenance')
+                 'alignment_report_provenance', 'prepared_cache', 'performance_report')
 
 
 def _exit_reason(code):
@@ -59,7 +59,7 @@ class _Relay:
         self.connection = connection
         self.cancel_event = cancel_event
         self.lock = threading.RLock()
-        self.last_progress = 0.0
+        self.last_progress = None
         self.directories = set()
 
     def send(self, message):
@@ -74,12 +74,17 @@ class _Relay:
     def progress(self, done, total):
         with self.lock:
             now = time.monotonic()
-            if now - self.last_progress >= .1 or done >= total:
+            if self.last_progress is None or now - self.last_progress >= .1 or done >= total:
                 self.last_progress = now
                 self.send(('progress', int(done), int(total)))
 
     def stage(self, stage):
-        self.send(('stage', stage))
+        # The parent already owns the shared lease. The child's independent
+        # process-local lease does not represent a wait for another GUI job.
+        if stage != 'waiting':
+            with self.lock:
+                self.last_progress = None
+                self.send(('stage', stage))
 
     def temporary_file(self, path):
         state = storage.capture_scratch()
@@ -103,7 +108,7 @@ def _restore_algorithms(fusions, registrations):
 
 def _render_child(connection, cancel_event, request, budget, directory, language):
     """Top-level spawn target; image computation never runs in the GUI process."""
-    from utils.logging_setup import setup_logging
+    from utils.logging_setup import set_debug_logging, setup_logging
     from utils.diagnostics import install_exception_hooks
     setup_logging()
     install_exception_hooks()
@@ -113,6 +118,9 @@ def _render_child(connection, cancel_event, request, budget, directory, language
     try:
         with process_budget(budget), storage.observe_temp_files(relay.temporary_file):
             inputs = FrameDecoder(should_cancel=cancel_event.is_set).decode(request)
+            if inputs.get('detailed_logging'):
+                # Record the same detail as the window that started this render.
+                set_debug_logging(True)
             _restore_algorithms(inputs['fusions'], inputs['registrations'])
             worker = _ChildRenderWorker(cancel_event, *inputs['args'], **inputs['kwargs'])
             results, errors = [], []
@@ -208,6 +216,10 @@ class RenderProcessWorker(RenderWorker):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        # A directory chosen for this render only (set before start). It binds
+        # the parent's job scope and therefore the child (see _run_process).
+        # Not a constructor argument: the arguments are RenderWorker's own.
+        self.storage_directory = None
         self._render_args = args
         self._render_kwargs = kwargs
         self._process = None
@@ -230,7 +242,10 @@ class RenderProcessWorker(RenderWorker):
         error = None
         try:
             self.stage_signal.emit('waiting')
-            with heavy_job(self._check_current), storage.scratch_directory():
+            with heavy_job(self._check_current), storage.scratch_directory() as scratch:
+                if self.storage_directory is not None:
+                    scratch.explicit_directory = self.storage_directory
+                self.stage_signal.emit('prepare')
                 result = self._run_process()
         except RegistrationCancelled:
             error = 'CANCELLED: render cancelled'
@@ -255,7 +270,8 @@ class RenderProcessWorker(RenderWorker):
         try:
             encoder = FrameEncoder(self._check_current)
             request = encoder.encode({'args': self._render_args, 'kwargs': self._render_kwargs,
-                'fusions': fusion_algorithms(), 'registrations': registration_algorithms()})
+                'fusions': fusion_algorithms(), 'registrations': registration_algorithms(),
+                'detailed_logging': debug_enabled()})
             budget = make_process_budget(storage.ram_snapshot_bytes())
             scratch = storage.capture_scratch()
             directory = scratch.explicit_directory if scratch is not None else None

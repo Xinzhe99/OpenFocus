@@ -1,26 +1,29 @@
 import os
 import re
 import uuid
+import tempfile
+import weakref
 import threading
+from collections import OrderedDict
 from dataclasses import dataclass, replace
 from copy import deepcopy
 from typing import Any, Optional
 
 import cv2
 import numpy as np
-from PyQt6.QtCore import QItemSelectionModel, QPoint, Qt, QThread, pyqtSignal
+from PyQt6.QtCore import QItemSelectionModel, QPoint, Qt, QThread, QSignalBlocker, pyqtSignal
 from PyQt6.QtGui import QAction, QActionGroup, QIcon, QPixmap, QImage
 from utils.file_dialogs import FileDialog
 from PyQt6.QtWidgets import (QListWidgetItem, QMenu, QMessageBox,
                              QProgressDialog)
 
-from controllers.export_manager import get_imwrite_params
+from controllers.export_manager import get_imwrite_params, image_write_error_text
 from utils import (show_error_box, show_message_box, show_success_box,
                    show_warning_box)
 from utils.settings_store import get_drag_export_format, set_drag_export_format
 from utils import scalebar, watermark
 from utils.settings_store import get_last_dialog_dir, set_last_dialog_dir
-from utils.image_utils import to_display_uint8, cv2_to_pixmap
+from utils.image_utils import ImageWriteError, to_display_uint8, cv2_to_pixmap
 from utils.image_utils import imwrite_auto
 from locales import trans
 from utils.export_paths import unique_path
@@ -30,6 +33,7 @@ from utils.output_share import (encode_jpeg_preview, file_urls_mime_data,
 from core.source_frames import resolve_frame
 from utils.frame_pixels import preview_pixels as source_display_image, run_pixel_worker
 
+from utils.platform_utils import configure_native_worker_stack
 # Item-data roles: the folder of an align-only result, and the stable
 # provenance record of every output (identity, source context, export state).
 ALIGNED_DIR_ROLE = int(Qt.ItemDataRole.UserRole) + 1
@@ -37,6 +41,48 @@ OUTPUT_RECORD_ROLE = int(Qt.ItemDataRole.UserRole) + 2
 
 _ACTIVE_LINEAR_DNG_WORKERS = set()
 _ACTIVE_STACK_THUMBNAIL_WORKERS = set()
+_ACTIVE_REGISTRATION_PREVIEW_WORKERS = set()
+_ACTIVE_REGISTRATION_REGION_WORKERS = set()
+_REGISTRATION_PREVIEW_BYTES = 128 * 1024 * 1024
+
+
+class _RegistrationPreviewWorker(QThread):
+    """Resolve a single lazy aligned frame without blocking the GUI."""
+
+    def __init__(self, frame, *, prefetch=False):
+        super().__init__()
+        configure_native_worker_stack(self)
+        self.frame = frame
+        self.prefetch = prefetch
+        self.image = None
+        self.is_display = False
+        self.error = None
+
+    def run(self):
+        from core.aligned_previews import can_preview, registered_preview
+        from core.source_frames import SourceFrame, ensure_preview, resolve_frame, _small
+        from core.resource_policy import heavy_job
+        try:
+            result = (registered_preview(self.frame, self.isInterruptionRequested)
+                      if can_preview(self.frame) else None)
+            if result is not None:
+                self.image, self.is_display = result
+            else:
+                def full_preview():
+                    pixels = (resolve_frame(self.frame, should_cancel=self.isInterruptionRequested)
+                              if isinstance(self.frame, SourceFrame) and not self.frame.preview_is_available
+                              else ensure_preview(self.frame, should_cancel=self.isInterruptionRequested))
+                    return _small(pixels)
+                if self.prefetch:
+                    with heavy_job(self.isInterruptionRequested):
+                        self.image = full_preview()
+                else:
+                    self.image = full_preview()
+                self.is_display = (bool(getattr(self.frame, 'preview_is_display', False))
+                                   and getattr(self.frame, 'preview_is_available', True))
+        except Exception as exc:
+            self.error = exc
+
 
 
 class _StackThumbnailWorker(QThread):
@@ -44,9 +90,11 @@ class _StackThumbnailWorker(QThread):
 
     def __init__(self, source, metadata):
         super().__init__()
+        configure_native_worker_stack(self)
         self.source = source
         self.metadata = metadata
         self.thumbnail = None
+        self.shape = ()
         self._cancelled = False
 
     def cancel(self):
@@ -55,7 +103,8 @@ class _StackThumbnailWorker(QThread):
 
     def run(self):
         from core.resource_policy import heavy_job
-        from core.source_frames import SourceFrame, ensure_preview, scan_source
+        from core.aligned_previews import can_preview, registered_preview
+        from core.source_frames import ensure_preview, scan_source
         should_cancel = lambda: self._cancelled or self.isInterruptionRequested()
         try:
             with heavy_job(should_cancel):
@@ -63,10 +112,17 @@ class _StackThumbnailWorker(QThread):
                     return
                 source = self.source
                 if isinstance(source, (str, os.PathLike)):
-                    source = scan_source(source, page_index=0, should_cancel=should_cancel)[0]
-                pixels = (ensure_preview(source, should_cancel=should_cancel)
-                          if isinstance(source, SourceFrame) else source_display_image(source))
-                if should_cancel() or not getattr(source, 'preview_is_available', True):
+                    source = scan_source(source, page_index=-1, should_cancel=should_cancel)[0]
+                self.shape = tuple(source.shape)
+                preview = registered_preview(source, should_cancel) if can_preview(source) else None
+                if preview is None:
+                    if not getattr(source, 'preview_is_available', True):
+                        return
+                    pixels = ensure_preview(source, should_cancel=should_cancel)
+                    is_display = bool(getattr(source, 'preview_is_display', False))
+                else:
+                    pixels, is_display = preview
+                if should_cancel():
                     return
                 h, w = pixels.shape[:2]
                 factor = min(1.0, 40 / max(h, w))
@@ -74,7 +130,7 @@ class _StackThumbnailWorker(QThread):
                     pixels = cv2.resize(pixels, (max(1, round(w * factor)),
                                                  max(1, round(h * factor))),
                                         interpolation=cv2.INTER_AREA)
-                if self.metadata is not None and not getattr(source, 'preview_is_display', False):
+                if self.metadata is not None and not is_display:
                     from utils.linear_dng import develop_linear
                     pixels = develop_linear(pixels, self.metadata)
                 if should_cancel():
@@ -213,12 +269,20 @@ class OutputRecord:
     watermark_baked: bool = False
     aligned_frames: tuple = ()
     aligned_names: tuple = ()
+    aligned_frame_ids: tuple = ()
+    aligned_shape: tuple = ()
+    aligned_methods: tuple = ()
+    tooltip_details: tuple = ()
     aligned_source_frames: tuple = ()
     aligned_source_indices: tuple = ()
     aligned_source_revision: int = 0
     exported_annotations: Optional[dict] = None
     annotations_changed: bool = False
     icc_profile: bytes = b""
+    #: EXIF snapshot of the first participating source (single-image export).
+    source_exif: bytes = b""
+    #: Per-source EXIF snapshot for aligned/source-frame export.
+    frame_exif: tuple = ()
     linear_dng_metadata: Any = None
     source_paths: tuple = ()
 
@@ -228,6 +292,8 @@ class OutputRecord:
         return cls(output_id=uuid.uuid4().hex, image=image, label=label,
                    context=context, kind=kind, parent_id=parent_id,
                    exported=exported,
+                   source_exif=bytes(getattr(context, 'source_exif', b'') or b''),
+                   frame_exif=tuple(getattr(context, 'frame_exif', ()) or ()),
                    linear_dng_metadata=deepcopy(getattr(context, 'linear_dng_metadata', None)),
                    source_paths=tuple(getattr(context, 'source_paths', ()) or ()))
 
@@ -295,7 +361,19 @@ class OutputManager:
         self.linear_dng_progress = None
         self._stack_thumbnail_worker = None
         self._stack_thumbnail_queue = []
+        self._registration_preview_worker = None
+        self._registration_preview_pending = None
+        self._registration_preview_generation = 0
+        self._registration_previews = OrderedDict()
+        self._registration_preview_bytes = 0
+        self._registration_prefetched = set()
+        self._registration_region_worker = None
+        self._registration_region_pending = {}
+        self._registration_region_key = None
+        self._registration_region_connected = False
         self._share_preview_active = False
+        self._share_temp_dir = None
+        self._share_temp_cache = {}
 
     # ------------------------------------------------------------------
     # UI helpers
@@ -328,6 +406,9 @@ class OutputManager:
                         item = self.window.output_list.item(row)
                         record = self.record_for_item(item)
                         if record is not None and record.output_id == output_id:
+                            if not record.aligned_shape and worker.shape:
+                                record.aligned_shape = worker.shape
+                                self._refresh_output_tooltip(row)
                             self.window.output_list.set_aligned_stack_icon(item, worker.thumbnail)
                             break
                 _ACTIVE_STACK_THUMBNAIL_WORKERS.discard(worker)
@@ -396,7 +477,28 @@ class OutputManager:
         record = self.record_for_row(row) if row >= 0 else None
         if item is None or record is None:
             return
-        lines = []
+        lines = [item.text()]
+        if record.kind == 'aligned':
+            count = len(record.aligned_frames) or len(record.aligned_names)
+            stack_info = trans.t('output_aligned_stack').format(n=count)
+            if stack_info not in lines:
+                lines.append(stack_info)
+            if record.aligned_shape:
+                h, w = record.aligned_shape[:2]
+                lines.append(trans.t('status_res_fmt').format(w, h))
+            if record.aligned_methods:
+                from core.algorithms import get_registration
+                names = []
+                for method in record.aligned_methods:
+                    try:
+                        names.append(trans.t(get_registration(method).label_key))
+                    except ValueError:
+                        names.append(str(method))
+                lines.append(trans.t('info_align_method').format(' → '.join(names)))
+        elif record.image is not None:
+            h, w = record.image.shape[:2]
+            lines.append(trans.t('status_res_fmt').format(w, h))
+        lines.extend(line for line in record.tooltip_details if line not in lines)
         if record.export_path:
             lines.append(record.export_path)
         if not record.exported:
@@ -522,6 +624,9 @@ class OutputManager:
         window = self.window
         if row < 0 or row >= window.output_list.count():
             return
+        record = self.record_for_row(row)
+        if record is not None:
+            self._forget_registration_previews(record)
         window.output_list.takeItem(row)
         if 0 <= row < len(window.fusion_results):
             window.fusion_results.pop(row)
@@ -544,9 +649,7 @@ class OutputManager:
                 row -= 1
             if row < 0:
                 break
-            window.output_list.takeItem(row)
-            if 0 <= row < len(window.fusion_results):
-                window.fusion_results.pop(row)
+            self._remove_row(row)
 
     def update_output_list_for_fusion(self, context=None, linear_dng_metadata=None,
                                       source_paths=()) -> None:
@@ -848,7 +951,7 @@ class OutputManager:
                 self._mark_record_exported(original, record.image, path, self._annotation_state(record, labels))
                 written.append(path)
             except Exception as exc:
-                failed.append((path or record.label, str(exc)))
+                failed.append((path or record.label, image_write_error_text(exc)))
         self._report_export_result(written, failed, folder)
         return not failed
 
@@ -898,9 +1001,15 @@ class OutputManager:
             image = watermark.burn(image, wm_cfg)
         from core.image_loader import _read_exif_bytes, _read_icc_profile
         baked_path = record.export_path if record.annotations_baked else ""
-        exif = _read_exif_bytes(baked_path) if baked_path else b''
-        profile = (_read_icc_profile(baked_path) if baked_path else
-                   getattr(record.context, 'icc_profile', record.icc_profile))
+        if baked_path:
+            exif = _read_exif_bytes(baked_path)
+            profile = _read_icc_profile(baked_path)
+        else:
+            record_context = getattr(record, 'context', None)
+            exif = (getattr(record_context, 'source_exif', b'')
+                    or getattr(record, 'source_exif', b'') or b'')
+            profile = (getattr(record_context, 'icc_profile', b'')
+                       or getattr(record, 'icc_profile', b''))
         if metadata is not None:
             from utils.image_utils import srgb_icc_profile
             profile = srgb_icc_profile()
@@ -939,7 +1048,7 @@ class OutputManager:
                     n=len(written), path=folder).replace("\n", " "), 8000)
             return
         detail = "\n".join(
-            f"{path}: {error or trans.t('msg_save_failed_info_write')}"
+            f"{path}: {image_write_error_text(error) if isinstance(error, ImageWriteError) else (error or trans.t('msg_save_failed_info_write'))}"
             for path, error in failed)
         show_error_box(
             window, trans.t("msg_save_failed_title"),
@@ -1088,53 +1197,66 @@ class OutputManager:
         return display
 
     def _share_files_for_records(self, records):
-        """Resolve or write persistent files for ``records`` in order.
+        """Resolve saved files or write reusable temporary PNGs in order.
 
-        Returns ``(paths, failures, folder)``. ``paths`` is None when the user
-        cancelled the destination picker; ``failures`` holds ``(path, error)``
-        for every record whose write failed. Successful writes stay on disk and
-        are marked exported even when another record fails.
+        Temporary shares do not change the record's export state. Keep them
+        after the window closes so clipboard file paths remain usable until
+        the operating system cleans its temporary directory.
         """
         labels = self.window.label_manager.snapshot()
         resolved = {}
-        pending = []
-        for record in records:
-            path = self._share_persistent_path(record)
-            if path:
-                resolved[id(record)] = path
-            else:
-                pending.append(record)
-        if not pending:
-            return [resolved[id(record)] for record in records], [], ""
-
-        window = self.window
-        folder = FileDialog.getExistingDirectory(
-            window, trans.t("menu_share"), get_last_dialog_dir(),
-            FileDialog.Option.ShowDirsOnly)
-        if not folder:
-            return None, [], ""
-        set_last_dialog_dir(folder)
         failures = []
-        for original in pending:
-            record = replace(
-                original, scale_bar_config=deepcopy(original.scale_bar_config))
-            name = window.export_manager.filename_from_label(record.label)
-            path = unique_path(
-                os.path.join(folder, os.path.splitext(name)[0] + ".png"))
-            state = self._annotation_state(record, labels)
-            try:
-                self._write_record(record, path, labels)
-                self._mark_record_exported(original, record.image, path, state)
+        if len(self._share_temp_cache) > self.MAX_HISTORY:
+            self._share_temp_cache = {
+                key: value for key, value in self._share_temp_cache.items()
+                if value[0]() is not None}
+        for original in records:
+            path = self._share_persistent_path(original)
+            if path:
                 resolved[id(original)] = path
+                continue
+            state = self._annotation_state(original, labels)
+            cached = self._share_temp_cache.get(original.output_id)
+            if cached:
+                image_ref, old_state, baked, path = cached
+                try:
+                    current = (image_ref() is original.image and old_state == state
+                               and baked == (original.annotations_baked, original.watermark_baked)
+                               and os.path.isfile(path) and os.path.getsize(path) > 0)
+                except OSError:
+                    current = False
+                if current:
+                    resolved[id(original)] = path
+                    continue
+            path = original.label
+            try:
+                if not self._share_temp_dir or not os.path.isdir(self._share_temp_dir):
+                    self._share_temp_dir = tempfile.mkdtemp(prefix='openfocus-share-')
+                record = replace(
+                    original, scale_bar_config=deepcopy(original.scale_bar_config),
+                    watermark_config=deepcopy(original.watermark_config))
+                name = self.window.export_manager.filename_from_label(record.label)
+                path = unique_path(os.path.join(
+                    self._share_temp_dir, os.path.splitext(name)[0] + '.png'))
+                self._write_record(record, path, labels)
+                resolved[id(original)] = path
+                try:
+                    image_ref = weakref.ref(original.image)
+                except TypeError:
+                    self._share_temp_cache.pop(original.output_id, None)
+                else:
+                    self._share_temp_cache[original.output_id] = (
+                        image_ref, state,
+                        (original.annotations_baked, original.watermark_baked), path)
             except Exception as exc:
-                failures.append((path, str(exc)))
+                failures.append((path, image_write_error_text(exc)))
         paths = [resolved.get(id(record)) for record in records]
-        return paths, failures, folder
+        return paths, failures
 
     def _report_share_failure(self, paths, failures) -> None:
         ok = sum(1 for path in paths or () if path)
         detail = "\n".join(
-            f"{path}: {error or trans.t('msg_save_failed_info_write')}"
+            f"{path}: {image_write_error_text(error) if isinstance(error, ImageWriteError) else (error or trans.t('msg_save_failed_info_write'))}"
             for path, error in failures)
         show_error_box(
             self.window, trans.t("msg_share_failed_title"),
@@ -1189,12 +1311,13 @@ class OutputManager:
         if not records:
             return
 
-        paths, failures, _folder = self._share_files_for_records(records)
-        if failures:
-            self._report_share_failure(paths, failures)
-            return
-        if not paths:
-            return
+        paths = []
+        for record in records:
+            path = record.export_path
+            if not record.exported or not path or not os.path.isfile(path):
+                self.window.statusBar().showMessage(trans.t('msg_share_save_first'), 8000)
+                return
+            paths.append(path)
         if not set_clipboard_payload(file_urls_mime_data(paths)):
             show_error_box(self.window, trans.t("msg_share_failed_title"),
                            trans.t("msg_share_clipboard_failed"))
@@ -1207,15 +1330,11 @@ class OutputManager:
         record = self._share_record_for_item(target_item, attach=True)
         if not self._share_record_supported(record):
             return
-        path = self._share_persistent_path(record)
-        if not path:
-            paths, failures, _folder = self._share_files_for_records([record])
-            if failures:
-                self._report_share_failure(paths, failures)
-                return
-            if not paths:
-                return
-            path = paths[0]
+        paths, failures = self._share_files_for_records([record])
+        if failures:
+            self._report_share_failure(paths, failures)
+            return
+        path = paths[0]
         try:
             opened = select_in_file_manager(path)
         except Exception as exc:
@@ -1386,8 +1505,8 @@ class OutputManager:
                 if original is not None:
                     self._mark_record_exported(original, record.image, path, state)
                 if show_progress:
-                    self.window.statusBar().showMessage(
-                        trans.t('msg_image_saved_info').format(path=path).replace('\n', ' '), 8000)
+                    from utils.output_share import notify_saved_path
+                    notify_saved_path(self.window, path)
             elif message and show_progress:
                 show_error_box(self.window, trans.t('msg_save_failed_title'),
                                trans.t('linear_dng_export_failed'), message)
@@ -1456,11 +1575,11 @@ class OutputManager:
                 return
             self._write_record(record, file_path, labels)
             self._mark_record_exported(original, record.image, file_path, self._annotation_state(record, labels))
-            window.statusBar().showMessage(
-                trans.t('msg_image_saved_info').format(path=file_path).replace('\n', ' '), 8000)
+            from utils.output_share import notify_saved_path
+            notify_saved_path(window, file_path)
         except Exception as exc:
             show_error_box(window, trans.t('msg_save_failed_title'),
-                           trans.t('msg_save_failed_text'), str(exc))
+                           trans.t('msg_save_failed_text'), image_write_error_text(exc))
 
     def delete_selected_output_images(self) -> None:
         window = self.window
@@ -1557,6 +1676,8 @@ class OutputManager:
         if row < 0:
             return
 
+        self.cancel_registration_preview()
+        self._release_registration_regions(self._registration_region_key)
         record = self.record_for_item(item)
         if record is not None and record.kind == 'aligned':
             window.fusion_result = None
@@ -1570,9 +1691,15 @@ class OutputManager:
                         return [scan_source(os.path.join(record.export_path, name))[0]
                                 for name in record.aligned_names]
                     images = run_pixel_worker(window, trans.t('retouch_title'), read_stack)
+                if window.output_list.currentItem() is not item:
+                    return
                 window.registration_results = list(images)
                 window.registration_filenames = list(record.aligned_names)
-                window.result_slider.setRange(0, max(0, len(images) - 1))
+                window.registration_frame_ids = list(record.aligned_frame_ids)
+                window.registered_source_indices = list(record.aligned_source_indices)
+                with QSignalBlocker(window.result_slider):
+                    window.result_slider.setRange(0, max(0, len(images) - 1))
+                    window.result_slider.setValue(0)
                 window.result_slider.setEnabled(bool(images))
                 window.result_control_bar.setVisible(bool(images))
                 self.show_registration_result(0)
@@ -1593,26 +1720,149 @@ class OutputManager:
 
         self.display_specific_fusion_result(window.fusion_result)
 
+    def _registration_cache_key(self, index, frame, record):
+        return (record.output_id if record is not None else None, index, id(frame))
+
+    def _forget_registration_previews(self, record):
+        for key in list(self._registration_previews):
+            if key[0] == record.output_id:
+                _, pixels, _ = self._registration_previews.pop(key)
+                self._registration_preview_bytes -= pixels.nbytes
+        self._registration_prefetched = {key for key in self._registration_prefetched
+                                        if key[0] != record.output_id}
+        worker = self._registration_preview_worker
+        if worker is not None and worker.record is record:
+            self.cancel_registration_preview()
+
+    def _remember_registration_preview(self, key, frame, pixels, is_display):
+        old = self._registration_previews.pop(key, None)
+        if old is not None:
+            self._registration_preview_bytes -= old[1].nbytes
+        if pixels.nbytes > _REGISTRATION_PREVIEW_BYTES:
+            return
+        while self._registration_previews and self._registration_preview_bytes + pixels.nbytes > _REGISTRATION_PREVIEW_BYTES:
+            _, (_, removed, _) = self._registration_previews.popitem(last=False)
+            self._registration_preview_bytes -= removed.nbytes
+        self._registration_previews[key] = (frame, pixels, is_display)
+        self._registration_preview_bytes += pixels.nbytes
+
+    def cancel_registration_preview(self) -> bool:
+        self._registration_preview_generation += 1
+        self._registration_preview_pending = None
+        region = self._registration_region_worker
+        self._release_registration_regions(self._registration_region_key)
+        worker = self._registration_preview_worker
+        if worker is not None:
+            worker.requestInterruption()
+        return bool((worker is not None and worker.isRunning())
+                    or (region is not None and region.isRunning()))
+
+    def clear_registration_previews(self):
+        self.cancel_registration_preview()
+        self._registration_previews.clear()
+        self._registration_preview_bytes = 0
+        self._registration_prefetched.clear()
+
+    def _prefetch_registration_preview(self):
+        window = self.window
+        if (self._registration_preview_pending is not None or window.fusion_result is not None
+                or getattr(window, 'roi_mode_active', False)):
+            return
+        record = self.record_for_item(window.output_list.currentItem())
+        if record is None or record.kind != 'aligned':
+            return
+        for index, frame in enumerate(window.registration_results):
+            key = self._registration_cache_key(index, frame, record)
+            if key not in self._registration_prefetched and key not in self._registration_previews:
+                self._registration_prefetched.add(key)
+                self._registration_preview_pending = (self._registration_preview_generation, index, frame, record, True)
+                break
+
+    def _start_registration_preview(self):
+        if self._registration_preview_worker is not None:
+            return
+        if self._registration_preview_pending is None:
+            self._prefetch_registration_preview()
+        request = self._registration_preview_pending
+        if request is None:
+            return
+        self._registration_preview_pending = None
+        generation, index, frame, record, prefetch = request
+        worker = _RegistrationPreviewWorker(frame, prefetch=prefetch)
+        worker.record = record
+        self._registration_preview_worker = worker
+        _ACTIVE_REGISTRATION_PREVIEW_WORKERS.add(worker)
+
+        def complete():
+            from PyQt6 import sip
+            self._registration_preview_worker = None
+            _ACTIVE_REGISTRATION_PREVIEW_WORKERS.discard(worker)
+            if prefetch and worker.isInterruptionRequested():
+                self._registration_prefetched.discard(self._registration_cache_key(index, frame, record))
+            window = self.window
+            if not sip.isdeleted(window) and not getattr(window, '_shutting_down', False):
+                frames = window.registration_results
+                current_record = self.record_for_item(window.output_list.currentItem())
+                valid = (generation == self._registration_preview_generation
+                         and not worker.isInterruptionRequested()
+                         and window.fusion_result is None
+                         and not getattr(window, 'roi_mode_active', False)
+                         and 0 <= index < len(frames) and frames[index] is frame
+                         and current_record is record)
+                if valid and worker.image is not None:
+                    key = self._registration_cache_key(index, frame, record)
+                    self._remember_registration_preview(key, frame, worker.image, worker.is_display)
+                if valid and not prefetch and window.current_result_index == index:
+                    if worker.error is not None:
+                        self._registration_display_error(worker.error)
+                    elif worker.image is not None:
+                        self._show_registration_pixels(index, frame, record, worker.image, worker.is_display)
+                self._start_registration_preview()
+            worker.deleteLater()
+
+        worker.finished.connect(complete)
+        worker.start()
+
     def show_registration_result(self, index: int) -> None:
         window = self.window
-
-        if window.fusion_result is not None:
-            return
-        if not window.registration_results:
-            return
-        if not 0 <= index < len(window.registration_results):
+        self.cancel_registration_preview()
+        self._release_registration_regions(self._registration_region_key)
+        if (window.fusion_result is not None or not window.registration_results
+                or not 0 <= index < len(window.registration_results)):
             return
 
         window.current_result_index = index
+        window.lbl_result_info.setText(f"{index + 1} / {len(window.registration_results)}")
+        frame = window.registration_results[index]
+        record = self.record_for_item(window.output_list.currentItem())
+        key = self._registration_cache_key(index, frame, record)
+        cached = self._registration_previews.get(key)
+        if cached is not None and cached[0] is frame:
+            try:
+                from core.source_frames import validate_frame_source
+                validate_frame_source(frame)
+            except Exception as exc:
+                _, pixels, _ = self._registration_previews.pop(key)
+                self._registration_preview_bytes -= pixels.nbytes
+                window.lbl_result_img.set_display_pixmap(None)
+                self._registration_display_error(exc)
+                return
+            self._registration_previews.move_to_end(key)
+            self._show_registration_pixels(index, frame, record, cached[1], cached[2])
+            self._start_registration_preview()
+            return
+        window.lbl_result_img.set_display_pixmap(None)
+        window.lbl_result_img.setText(trans.t('msg_loading_stack'))
+        self._registration_preview_pending = (self._registration_preview_generation, index, frame, record, False)
+        self._start_registration_preview()
 
+    def _show_registration_pixels(self, index, frame, record, image, is_display=False):
+        window = self.window
         try:
-            frame = window.registration_results[index]
             source_shape = frame.shape
-            image = source_display_image(frame)
-            record = self.record_for_item(window.output_list.currentItem())
             metadata = (record.linear_dng_metadata if record is not None and record.kind == 'aligned'
                         else getattr(window, 'linear_dng_metadata', None))
-            if metadata is not None and not getattr(frame, "preview_is_display", False):
+            if metadata is not None and not is_display:
                 from utils.linear_dng import develop_linear
                 image = develop_linear(image, metadata)
             from utils import watermark
@@ -1625,22 +1875,108 @@ class OutputManager:
                 annotations_baked=bool(record is not None and record.annotations_baked))
             image = to_display_uint8(image)
 
-            window.lbl_result_img.set_display_pixmap(cv2_to_pixmap(image))
+            view = window.lbl_result_img
+            if not self._registration_region_connected:
+                view.sourceRegionRequested.connect(self._request_registration_region)
+                view.sourceRegionsReleased.connect(self._release_registration_regions)
+                self._registration_region_connected = True
+            key = ('registered', getattr(record, 'output_id', None), id(frame),
+                   self._registration_preview_generation)
+            self._registration_region_key = key
+            pixmap = cv2_to_pixmap(image)
+            native = pixmap if isinstance(frame, np.ndarray) and image.shape[:2] == source_shape[:2] else None
+            view.set_display_pixmap(pixmap, source_size=(source_shape[1], source_shape[0]),
+                                    source_key=key, source_pixmap=native)
             window.lbl_result_info.setText(f"{index + 1} / {len(window.registration_results)}")
             if getattr(window, "wipe_active", False):
                 window._update_wipe_images()
         except Exception as exc:  # pylint: disable=broad-except
-            show_message_box(
-                window,
-                trans.t("msg_display_error_title"),
-                trans.t("msg_display_registration_failed_text"),
-                f"Error: {str(exc)}",
-                QMessageBox.Icon.Critical,
-            )
+            window.lbl_result_img.set_display_pixmap(None)
+            self._registration_display_error(exc)
+
+    def _release_registration_regions(self, key):
+        if key is None or key != self._registration_region_key:
+            return
+        self._registration_region_key = None
+        self._registration_region_pending.clear()
+        worker = self._registration_region_worker
+        if worker is not None and worker.key == key:
+            worker.request_cancel()
+
+    def _request_registration_region(self, key, request):
+        window = self.window
+        if key != self._registration_region_key or getattr(window, '_shutting_down', False):
+            return
+        worker = self._registration_region_worker
+        if worker is not None:
+            if worker.key == key and not worker.cancelled:
+                worker.submit(request)
+            else:
+                self._registration_region_pending[request[0]] = (key, request)
+            return
+        index = window.current_result_index
+        if not 0 <= index < len(window.registration_results):
+            return
+        frame = window.registration_results[index]
+        record = self.record_for_item(window.output_list.currentItem())
+        if id(frame) != key[2] or getattr(record, 'output_id', None) != key[1]:
+            return
+        from core.source_previews import SourceRegionWorker
+        baked = bool(record is not None and record.annotations_baked)
+        metadata = (record.linear_dng_metadata if record is not None and record.kind == 'aligned'
+                    else getattr(window, 'linear_dng_metadata', None))
+        worker = SourceRegionWorker(frame, key, target='registered', index=index,
+            labels=None if baked else window.label_manager.snapshot(),
+            scale_cfg=None if baked else scalebar.export_cfg(window, target='registered', record=record),
+            watermark_cfg=watermark.export_cfg(window, target='registered', record=record),
+            metadata=metadata)
+        self._registration_region_worker = worker
+        _ACTIVE_REGISTRATION_REGION_WORKERS.add(worker)
+
+        def ready(decoded_key, completed_request, pixels, rect):
+            from PyQt6 import sip
+            if (not sip.isdeleted(window) and not getattr(window, '_shutting_down', False)
+                    and decoded_key == self._registration_region_key):
+                window.lbl_result_img.set_source_region(cv2_to_pixmap(pixels), rect,
+                    source_key=decoded_key, request=completed_request)
+
+        def failed(decoded_key, message):
+            from PyQt6 import sip
+            if (not sip.isdeleted(window) and not getattr(window, '_shutting_down', False)
+                    and decoded_key == self._registration_region_key):
+                window.statusBar().showMessage(message)
+
+        def finished():
+            from PyQt6 import sip
+            _ACTIVE_REGISTRATION_REGION_WORKERS.discard(worker)
+            if self._registration_region_worker is worker:
+                self._registration_region_worker = None
+            worker.deleteLater()
+            if not sip.isdeleted(window) and not getattr(window, '_shutting_down', False):
+                pending = list(self._registration_region_pending.values())
+                self._registration_region_pending.clear()
+                for pending_key, pending_request in pending:
+                    self._request_registration_region(pending_key, pending_request)
+
+        worker.ready.connect(ready)
+        worker.failed.connect(failed)
+        worker.finished.connect(finished)
+        worker.submit(request)
+        worker.start()
+
+    def _registration_display_error(self, exc):
+        show_message_box(
+            self.window,
+            trans.t("msg_display_error_title"),
+            trans.t("msg_display_registration_failed_text"),
+            f"Error: {str(exc)}",
+            QMessageBox.Icon.Critical,
+        )
 
 def publish_aligned_stack(window, frames, *, filenames=None, icc_profile=None,
                           source_frames=None, source_indices=None, source_revision=0,
-                          linear_dng_metadata=None) -> None:
+                          linear_dng_metadata=None, alignment_options=None,
+                          source_exif=b"", frame_exif=()) -> None:
     """List an aligned stack once; write its folder only on explicit export."""
     if not frames:
         return
@@ -1656,11 +1992,18 @@ def publish_aligned_stack(window, frames, *, filenames=None, icc_profile=None,
     record.stack_lineage = watermark.stack_lineage(window)
     record.aligned_frames = tuple(frames)
     record.aligned_names = names
+    record.aligned_frame_ids = tuple(getattr(window, 'registration_frame_ids', ()) or ())
+    record.aligned_shape = tuple(frames[0].shape)
+    record.aligned_methods = tuple(alignment_options or ())
     record.linear_dng_metadata = deepcopy(linear_dng_metadata)
     if source_frames is not None and len(source_frames) == len(frames):
         record.aligned_source_frames = tuple(source_frames)
         record.aligned_source_indices = tuple(source_indices or range(len(frames)))
         record.aligned_source_revision = source_revision
+        # Align-only records have no RenderContext; carry the snapshots the
+        # render worker/load cache produced, never read the current stack here.
+        record.source_exif = bytes(source_exif or b'')
+        record.frame_exif = tuple(frame_exif or ())
     from core.image_loader import stack_icc_profile
     record.icc_profile = stack_icc_profile(window, indices) if icc_profile is None else icc_profile
     item = window.output_manager._insert_output(None, label, record)

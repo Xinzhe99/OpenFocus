@@ -114,6 +114,32 @@ replace a processing error or prevent image processing.
 For support/development, set `OPENFOCUS_LOG_LEVEL=DEBUG`; `OPENFOCUS_LOG_DIR` can
 isolate logs from another checkout or an automated job. The feedback page shows
 the actual active path. Reports remain local until a person submits them.
+Users switch the same detail with **Advanced Settings → Diagnostics → Detailed
+logging** or `--log-level debug`; `set_log_level()` applies it to a running
+process, and a process that starts a worker process passes the choice on.
+
+Record what explains a result with `log_debug("event_name", **facts)`: the plan
+chosen and the numbers it was chosen from, a directory, a fallback, one tile's
+time. It is free when detail is off; guard only costly facts with
+`debug_enabled()`. Keep `INFO` for outcomes a support reader always needs.
+
+A new processing stage that can take noticeable time should be visible in the
+render profile (`utils/performance_profile.py`, read in
+[PERFORMANCE.md](docs/PERFORMANCE.md#diagnosing-a-slow-render)):
+
+```python
+from utils.performance_profile import current as _profile
+
+with _profile().stage("my_stage"):          # nests under the caller's stage
+    result = compute()
+```
+
+`current()` is a shared no-op unless a render is being profiled, so the call
+needs no guard; test `profile.enabled` before building values only the report
+uses. Name stages for what they do, time boundaries rather than per-pixel or
+per-row loops, and leave control flow unchanged: a stage never catches,
+reorders or retries. Work on pool threads is recorded under `concurrent`
+automatically. Pass `resources=True` only for a few top-level stages.
 
 Changes to task boundaries need failure/cancellation and partial-success checks,
 plus a real GUI/CLI smoke run. Compare output pixels with the previous behavior
@@ -324,8 +350,9 @@ imports in the backend or lazy hook, not the metadata module.
 `roi(parameters, width, height)` returns `(halo_pixels, grid_pixels)` for local
 comparison. Declare a proven dependency radius and transform grid. If the radius
 is unknown or global, omit `roi`: comparison computes the full frame and then
-crops. Do not guess a halo. `tile_decider(frames, threshold)` is available when
-an existing backend needs a different criterion from image dimensions.
+crops. Do not guess a halo. `tile_decider(frames, threshold, *, height, width, device)`
+receives the effective dimensions after any requested resize and the selected device;
+it is available when an existing backend needs a different criterion.
 `sort_frames=True` declares the existing OpenFocus sweep ordering semantics.
 `default_exposure_match` and `default_base_correct` describe common brightness
 defaults; exposure matching and base correction remain outside algorithm parameters.

@@ -15,12 +15,13 @@ from constants import (
     TILE_BLOCK_MAX, TILE_BLOCK_MIN, TILE_OVERLAP_MAX, TILE_THRESHOLD_MAX,
     TILE_THRESHOLD_MIN,
 )
-from core.algorithms import (get_fusion, registration_algorithms, registration_parameter_specs,
-                             resolve_registration_parameters)
+from core.algorithms import (get_fusion, get_registration, registration_algorithms,
+                             registration_parameter_specs, resolve_registration_parameters)
 from core.multi_focus_fusion import _DEFAULT_TILE_THRESHOLD
 from core.frame_storage import configure_storage_directory, restore_storage_directory
 from locales import trans
 from utils.export_paths import prefix_output_name, valid_output_prefix
+from ui.algorithm_parameters import AlgorithmParameterPanel
 from widgets.stepper import StepperSpinBox
 
 # Registration downscale bounds mirror dialogs/settings.py, the other surface
@@ -76,6 +77,13 @@ class AdvancedSettingsDialog(QDialog):
         root.addWidget(scroll, 1)
 
         w = window
+        self.chk_experimental_features = QCheckBox(trans.t("experimental_features"))
+        self.chk_experimental_features.setProperty("controlId", "chk_experimental_features")
+        self.chk_experimental_features.setChecked(bool(getattr(w, "experimental_features", False)))
+        self.chk_experimental_features.setToolTip(trans.t("experimental_features_hint"))
+        page_lay.addWidget(self.chk_experimental_features)
+        _note(page_lay, trans.t("experimental_features_hint"))
+
 
         # ---- Performance -------------------------------------------------
         perf = _section(page_lay, trans.t("advanced_tab_performance"))
@@ -135,7 +143,8 @@ class AdvancedSettingsDialog(QDialog):
         def show_tile_controls(*_args):
             enabled = self.chk_tile.isChecked() and spec is not None
             explicit = int(self.spin_threshold.value()) != _DEFAULT_TILE_THRESHOLD
-            spatial = enabled and (spec.external_tiling_default or explicit)
+            spatial = (enabled and spec.id not in ('openfocus_a', 'openfocus_b', 'openfocus_c')
+                       and spec.external_tiling_supported and (spec.external_tiling_default or explicit))
             self.tile_note.setVisible(bool(spec is not None and spatial and explicit
                                            and not spec.external_tiling_default))
             perf.setRowVisible(self.spin_threshold, enabled)
@@ -195,6 +204,15 @@ class AdvancedSettingsDialog(QDialog):
             lambda: w.render_manager.show_alignment_report(parent=self))
         reg.addRow(self.btn_alignment_report)
 
+        openfocus = _section(page_lay, trans.t(get_registration("openfocus").label_key))
+        self.openfocus_registration_panel = AlgorithmParameterPanel(
+            hidden_parameters=("failure_policy",))
+        self.openfocus_registration_panel.setProperty("controlId", "openfocus_registration_panel")
+        self.openfocus_registration_panel.set_parameters(
+            registration_parameter_specs("openfocus"),
+            getter("openfocus") if callable(getter) else {})
+        openfocus.addRow(self.openfocus_registration_panel)
+
         from ui.sensor_cleanup import SensorCleanupControls
         sensor = _section(page_lay, trans.t("sensor_section"))
         self.sensor_cleanup = SensorCleanupControls(
@@ -219,6 +237,30 @@ class AdvancedSettingsDialog(QDialog):
             minimum=1, maximum=16, step=1, decimals=0,
             value=int(getattr(w, "ai_batch_size", 2)))
         ai.addRow(trans.t("advanced_ai_batch"), self.spin_ai_batch)
+
+        # ---- Diagnostics -------------------------------------------------
+        # Preferences of this installation: never part of a project or template.
+        diagnostics = _section(page_lay, trans.t("advanced_tab_diagnostics"))
+        self.chk_profile_performance = QCheckBox()
+        self.chk_profile_performance.setProperty("controlId", "chk_profile_performance")
+        self.chk_profile_performance.setChecked(bool(getattr(w, "profile_performance", False)))
+        self.chk_profile_performance.setToolTip(trans.t("perf_profile_collect_hint"))
+        diagnostics.addRow(trans.t("perf_profile_collect"), self.chk_profile_performance)
+        self.btn_performance_report = QPushButton(trans.t("perf_report_title"))
+        self.btn_performance_report.setProperty("controlId", "btn_performance_report")
+        self.btn_performance_report.clicked.connect(
+            lambda: w.render_manager.show_performance_report(parent=self))
+        diagnostics.addRow(self.btn_performance_report)
+        self.chk_debug_logging = QCheckBox()
+        self.chk_debug_logging.setProperty("controlId", "chk_debug_logging")
+        self.chk_debug_logging.setChecked(bool(getattr(w, "debug_logging", False)))
+        self.chk_debug_logging.setToolTip(trans.t("debug_logging_hint"))
+        diagnostics.addRow(trans.t("debug_logging_enable"), self.chk_debug_logging)
+        # The same action as Help -> Open Logs Folder, next to the switch that fills it.
+        self.btn_open_logs = QPushButton(trans.t("menu_open_logs"))
+        self.btn_open_logs.setProperty("controlId", "btn_open_logs")
+        self.btn_open_logs.clicked.connect(lambda: w.open_logs_folder())
+        diagnostics.addRow(self.btn_open_logs)
 
         # ---- Startup & updates -------------------------------------------
         other = _section(page_lay, trans.t("advanced_tab_other"))
@@ -297,6 +339,8 @@ class AdvancedSettingsDialog(QDialog):
         spins = [self.spin_threads, self.spin_reg_width, self.spin_ai_batch]
         if self.chk_tile.isChecked():
             spins[:0] = [self.spin_block, self.spin_overlap, self.spin_threshold]
+        spins.extend(editor for editor in self.openfocus_registration_panel.editors.values()
+                     if isinstance(editor, StepperSpinBox))
         for spin in spins:
             if not spin.lineEdit().hasAcceptableInput():
                 self.status.setText(trans.t("msg_error"))
@@ -313,6 +357,7 @@ class AdvancedSettingsDialog(QDialog):
             self.status.setText(sensor_error)
             return
         draft = {
+            "experimental_features": self.chk_experimental_features.isChecked(),
             "tile_enabled": self.chk_tile.isChecked(),
             "tile_block_size": (int(self.spin_block.value()) if self.chk_tile.isChecked()
                                 else getattr(w, "tile_block_size", 1024)),
@@ -325,6 +370,8 @@ class AdvancedSettingsDialog(QDialog):
             "reg_downscale_width": int(self.spin_reg_width.value()),
             "align_cache_enabled": self.chk_align_cache.isChecked(),
             "collect_alignment_report": self.chk_collect_alignment_report.isChecked(),
+            "profile_performance": self.chk_profile_performance.isChecked(),
+            "debug_logging": self.chk_debug_logging.isChecked(),
             "output_name_prefix": self.output_prefix.text(),
             "ai_batch_size": max(1, int(self.spin_ai_batch.value())),
             "restore_last_stack": self.chk_restore.isChecked(),
@@ -333,10 +380,23 @@ class AdvancedSettingsDialog(QDialog):
             "sensor_denoise": self.sensor_cleanup.denoise.isChecked(),
             "storage_directory": self.storage_directory.text().strip(),
         }
+        try:
+            openfocus_values = self.openfocus_registration_panel.values()
+            if self.combo_align_failure.currentData() != self._initial_align_failure:
+                openfocus_values["failure_policy"] = self.combo_align_failure.currentData()
+            openfocus_values = resolve_registration_parameters("openfocus", openfocus_values)
+        except (TypeError, ValueError) as exc:
+            self.status.setText(str(exc))
+            return
         failure_policy = self.combo_align_failure.currentData()
+        memory = {method: dict(values) for method, values in
+                  getattr(w, "_registration_parameters_by_method", {}).items()}
+        initial_openfocus = (w.registration_parameters_for("openfocus")
+                             if callable(getattr(w, "registration_parameters_for", None))
+                             else resolve_registration_parameters("openfocus", memory.get("openfocus")))
+        if openfocus_values != initial_openfocus:
+            memory["openfocus"] = openfocus_values
         if failure_policy != self._initial_align_failure:
-            memory = {method: dict(values) for method, values in
-                      getattr(w, "_registration_parameters_by_method", {}).items()}
             for spec in registration_algorithms():
                 policy_spec = next((p for p in registration_parameter_specs(spec.id)
                                     if p.key == "failure_policy"), None)
@@ -344,17 +404,19 @@ class AdvancedSettingsDialog(QDialog):
                     values = dict(memory.get(spec.id, {}))
                     values["failure_policy"] = failure_policy
                     memory[spec.id] = resolve_registration_parameters(spec.id, values)
+        if memory != getattr(w, "_registration_parameters_by_method", {}):
             draft["_registration_parameters_by_method"] = memory
         previous = {key: getattr(w, key, None) for key in draft}
         manager = getattr(w, "update_manager", None)
         previous_auto = manager.auto_download if manager is not None else None
         previous_storage = getattr(w, "storage_directory", "") or ""
-        try:
-            configure_storage_directory(draft["storage_directory"])
-        except OSError as exc:
-            self.status.setText(trans.t("advanced_storage_invalid").format(error=str(exc)))
-            self.storage_directory.setFocus()
-            return
+        if draft["storage_directory"] != previous_storage:
+            try:
+                configure_storage_directory(draft["storage_directory"])
+            except OSError as exc:
+                self.status.setText(trans.t("advanced_storage_invalid").format(error=str(exc)))
+                self.storage_directory.setFocus()
+                return
         try:
             if manager is not None:
                 manager.set_auto_download(self.chk_auto_update.isChecked())
@@ -385,14 +447,19 @@ class AdvancedSettingsDialog(QDialog):
                 pass
             self.status.setText(str(exc))
             return
+        apply_experimental = getattr(w, "apply_experimental_features", None)
+        if callable(apply_experimental):
+            apply_experimental()
         analytics = getattr(w, "usage_analytics", None)
         if analytics is not None and analytics.enabled() != self.chk_usage.isChecked():
             analytics.set_enabled(self.chk_usage.isChecked())
-        from utils.logging_setup import log_action
+        from utils.logging_setup import log_action, set_debug_logging
+        if bool(previous["debug_logging"]) != draft["debug_logging"]:
+            set_debug_logging(draft["debug_logging"])  # Effective at once, no restart.
         log_action("settings.applied", changed=sorted(
             key for key in draft if previous[key] != draft[key]),
             usage_enabled=self.chk_usage.isChecked())
-        processing = set(draft) - {"restore_last_stack", "ask_load_scale", "output_name_prefix", "collect_alignment_report", "storage_directory"}
+        processing = set(draft) - {"experimental_features", "restore_last_stack", "ask_load_scale", "output_name_prefix", "collect_alignment_report", "profile_performance", "debug_logging", "storage_directory"}
         if any(previous[key] != draft[key] for key in processing):
             mark_dirty = getattr(w, "_mark_project_dirty", None)
             if mark_dirty is not None:

@@ -115,6 +115,23 @@ def test_wipe_cropped_source_uses_result_coordinates(qapp, monkeypatch, theme):
     assert _canvas_color(grab, 160, 100).green() > 180
 
 
+def test_wipe_scales_lazy_source_preview_to_result_coordinates(qapp):
+    from core.source_frames import SourceFrame
+
+    preview = np.full((20, 20, 3), (0, 0, 220), np.uint8)
+    source = SourceFrame('source.png', 0, (100, 100, 3), np.dtype('uint8'),
+                         preview, (0, 0))
+    result = np.full((100, 100, 3), (0, 200, 0), np.uint8)
+    host = _host([_record([source], result)])
+    host.wipe_widget.resize(220, 220)
+    host._update_wipe_images()
+
+    assert host.wipe_widget._left_pixmap.width() == 20
+    grab = host.wipe_widget.grab()
+    assert _canvas_color(grab, 40, 100).red() > 200
+    assert _canvas_color(grab, 160, 100).green() > 180
+
+
 def test_wipe_missing_provenance_and_changed_result_size_do_not_guess(qapp):
     source = np.full((80, 40, 3), 150, np.uint8)
     record = _record([source], source.copy())

@@ -1,5 +1,7 @@
 import sys
 import os
+import tempfile
+import weakref
 
 # Two OpenMP runtimes reach this process: Intel MKL (through numpy/scipy from
 # the Anaconda distribution) and torch's own libiomp5md.dll. Whichever loads
@@ -15,6 +17,15 @@ os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 if __name__ == "__main__":
     import multiprocessing
     multiprocessing.freeze_support()
+    if sys.platform == "win32" and "--shell-server" in sys.argv[1:]:
+        from core.windows_shell import run_drop_target
+        try:
+            run_drop_target()
+        except Exception as exc:
+            import ctypes
+            ctypes.windll.user32.MessageBoxW(None, str(exc), "OpenFocus", 0x10)
+            sys.exit(1)
+        sys.exit(0)
 
 # Windowed PyInstaller builds may set Python's streams to None even when a CLI
 # caller supplied inherited handles. Never attach or create a console.
@@ -86,6 +97,25 @@ if __name__ == "__main__":
     install_exception_hooks(claim_inherited_faulthandler=True)
     log_action("startup", args=sys.argv[1:])
     _log = get_logger(__name__)
+    _shell_request = None
+    _shell_paths = None
+    if sys.platform == "win32" and len(sys.argv) == 3 and sys.argv[1] == "--shell-import":
+        import json as _shell_json
+        from core.windows_shell import is_request_file
+        _shell_request = sys.argv[2]
+        try:
+            if not is_request_file(_shell_request):
+                raise ValueError("Invalid Explorer import request file")
+            with open(_shell_request, encoding="utf-8") as _stream:
+                _shell_paths = _shell_json.load(_stream)
+            if (not isinstance(_shell_paths, list) or not _shell_paths
+                    or not all(isinstance(p, str) for p in _shell_paths)):
+                raise ValueError("Invalid Explorer import request")
+        except (OSError, ValueError) as _exc:
+            import ctypes
+            ctypes.windll.user32.MessageBoxW(None, str(_exc), "OpenFocus", 0x10)
+            sys.exit(1)
+        sys.argv = [sys.argv[0]]
     # The updater's restore flag belongs to the GUI, never to argparse.
     _argv = [arg for arg in sys.argv[1:] if arg != "--restore-session"]
     _restore_flag = len(_argv) != len(sys.argv[1:])
@@ -163,7 +193,10 @@ from utils.settings_store import (
     restore_window_layout,
     get_settings,
 )
-from core.frame_storage import configure_storage_directory, restore_storage_directory
+from core.frame_storage import (configure_storage_directory, restore_storage_directory,
+                                set_storage_fallback_notifier)
+from core.experimental import (alignment_is_experimental, experimental_enabled,
+                               fusion_is_experimental)
 from ui.image_panels import create_source_panel, create_result_panel
 from ui.menus import setup_menus
 from ui.right_panel import bind_right_panel, create_right_panel, set_panel_label
@@ -339,11 +372,16 @@ def _restore_storage_directory(window):
     except OSError as exc:
         path = window.storage_directory
         restore_storage_directory(path)
-        return trans.t("advanced_storage_fallback").format(path=path, error=str(exc))
+        import errno
+        if exc.errno in (errno.ENOSPC, getattr(errno, 'EDQUOT', -1)):
+            return trans.t("advanced_storage_invalid").format(error=str(exc))
+        return trans.t("advanced_storage_fallback").format(
+            path=path, error=str(exc), fallback=tempfile.gettempdir())
     return None
 
 
 class OpenFocus(QMainWindow):
+    storage_fallback_notice = pyqtSignal(str, str, str)
 
     def __init__(self):
         super().__init__()
@@ -377,6 +415,8 @@ class OpenFocus(QMainWindow):
         self.current_scale_factor = 1.0
         # Full path of each frame in image_filenames, when the origin is known
         self.image_source_paths = []
+        # Per-frame source EXIF, aligned with image_source_paths/image_filenames.
+        self.image_source_exifs = []
         self.image_icc_profiles = []
         self.fusion_result = None  # 存储最新的融合结果
         self.fusion_results = []  # 存储所有融合结果的历史记录
@@ -391,6 +431,7 @@ class OpenFocus(QMainWindow):
         self.roi_alignment_worker = None  # ROI配准工作线程
         self.roi_mode_active = False  # ROI模式是否激活
         self.roi_aligned_raw_count = 0  # 记录对齐时原始图像的数量，用于判断是否可以复用
+        self.roi_alignment_key = None
 
         # Tile settings defaults
         self.tile_enabled = True
@@ -410,15 +451,24 @@ class OpenFocus(QMainWindow):
         self._gpu_pending_enable = False
         # 基底校正（消除亮度漂移）：默认关闭，右面板开关控制
         self.base_frame_correct = False
-        # 融合前曝光匹配：默认开启；整栈标定到末帧，所有算法共用
+        # The current method's brightness option is synchronized after UI setup.
         self.exposure_match = True
+        # Explicit choices and restored projects take priority over method defaults.
+        self._alignment_choice_explicit = False
+        self._applying_alignment_default = False
         # 恢复持久化设置与最近文件（语言需在菜单构建前应用）
         load_window_settings(self)
+        saved_alignment = getattr(self, '_preferred_alignment_method', None)
+        self._alignment_choice_explicit = bool(saved_alignment is not None and (
+            experimental_enabled(self) or not alignment_is_experimental(saved_alignment)))
         load_drag_export_format(self)
         saved_lang = get_saved_language()
         if saved_lang:
             trans.set_language(saved_lang)
         storage_warning = _restore_storage_directory(self)
+        if self.debug_logging:
+            from utils.logging_setup import set_debug_logging
+            set_debug_logging(True)
         self.recent_files = getattr(self, 'recent_files', [])
         self.recent_projects = getattr(self, 'recent_projects', [])
         self._undo_stack = []
@@ -452,8 +502,17 @@ class OpenFocus(QMainWindow):
         # 主题应用必须在 init_ui 之后：light 模式要剥离控件的内联暗样式，
         # UI 未建时剥离是空操作，之后创建的控件会带着暗色内联样式覆盖
         # 应用级亮色 QSS（白底白字，整个右侧面板不可读）
-        self.init_ui()
-        self.apply_dark_theme()
+        with self._restore_scope():
+            self.init_ui()
+            self.apply_experimental_features()
+            self.apply_dark_theme()
+        self.storage_fallback_notice.connect(self._show_storage_fallback)
+        window_ref = weakref.ref(self)
+        def notify_storage_fallback(path, error, fallback):
+            window = window_ref()
+            if window is not None:
+                window.storage_fallback_notice.emit(path, error, fallback)
+        set_storage_fallback_notifier(notify_storage_fallback)
         if storage_warning is not None:
             def show_storage_warning():
                 if not getattr(self, "_shutting_down", False):
@@ -493,6 +552,12 @@ class OpenFocus(QMainWindow):
              self.lbl_source_img.setText(trans.t('drag_hint'))
         if hasattr(self, 'lbl_result_img'):
             self.lbl_result_img.setText(trans.t('result_hint'))
+
+    def _show_storage_fallback(self, path, error, fallback):
+        if not getattr(self, '_shutting_down', False):
+            message = trans.t('advanced_storage_fallback').format(
+                path=path, error=error, fallback=fallback).replace('\n', ' ')
+            self.statusBar().showMessage(message, 15000)
 
     def init_ui(self):
         setup_menus(self)
@@ -601,6 +666,16 @@ class OpenFocus(QMainWindow):
         # current_alignment_method() 是统一的读取入口
         self.combo_fusion = right_panel_components.combo_fusion
         self.combo_align = right_panel_components.combo_align
+        for combo, attr in ((self.combo_fusion, "_preferred_fusion_method"),
+                            (self.combo_align, "_preferred_alignment_method")):
+            saved = getattr(self, attr, None)
+            locked = (not experimental_enabled(self) and
+                      (fusion_is_experimental(saved) if combo is self.combo_fusion
+                       else alignment_is_experimental(saved)))
+            if saved is not None and not locked:
+                index = combo.findData(saved)
+                if index >= 0:
+                    combo.setCurrentIndex(index)
         self.chk_base_correct = right_panel_components.chk_base_correct
         self.chk_exposure_match = right_panel_components.chk_exposure_match
         self.chk_sharpen_output = right_panel_components.chk_sharpen_output
@@ -639,16 +714,23 @@ class OpenFocus(QMainWindow):
 
         self.main_splitter.addWidget(right_panel_components.widget)
         bind_right_panel(self, right_panel_components)
+        # Selecting a method through the combo box is a project edit even
+        # though it does not go through set_fusion_method()/set_alignment_method().
+        for combo in (self.combo_fusion, self.combo_align):
+            combo.currentIndexChanged.connect(
+                lambda *_: self._mark_project_setting_changed())
+        self.combo_align.currentIndexChanged.connect(self._remember_alignment_choice)
+        self.combo_align.activated.connect(self._remember_alignment_choice)
 
-        # 两个亮度开关按当前算法取值（OpenFocus A/B/C 默认两者都开，
-        # 其余算法沿用历史默认）。不能直接用全局属性：那会把上一次
-        # 会话里别的算法的选择带进来。
+        # Brightness options are remembered independently for each method.
         self._sync_brightness_checkboxes()
         self.chk_reverse_order.blockSignals(True)
         self.chk_reverse_order.setChecked(bool(
             getattr(self, "stack_reverse_order", False)))
         self.chk_reverse_order.blockSignals(False)
+        self.chk_sharpen_output.blockSignals(True)
         self.chk_sharpen_output.setChecked(bool(getattr(self, "sharpen_output", False)))
+        self.chk_sharpen_output.blockSignals(False)
 
         # Warm the torch-availability cache in a worker that holds no window
         # reference; a window-owned QTimer applies the result on the UI thread.
@@ -759,7 +841,7 @@ class OpenFocus(QMainWindow):
                 if hasattr(self, 'lbl_result_img') and self.lbl_result_img:
                     self.lbl_result_img.set_space_pressed(False)
         
-        return super().eventFilter(obj, event)
+        return False
 
     # --- Status Display ---
     def update_loaded_status(self):
@@ -860,6 +942,7 @@ class OpenFocus(QMainWindow):
             "stack_baseline": getattr(getattr(self, "source_manager", None), "_stack_baseline", None),
             "filenames": list(self.image_filenames),
             "source_paths": list(getattr(self, "image_source_paths", [])),
+            "source_exifs": list(getattr(self, "image_source_exifs", [])),
             "icc_profiles": list(getattr(self, "image_icc_profiles", [])),
             "base": list(getattr(self, "base_images", [])),
             "excluded": set(getattr(self, "excluded_frames", set())),
@@ -1035,15 +1118,22 @@ class OpenFocus(QMainWindow):
 
     def _restore_stack_state(self, state: dict) -> None:
         if state.get("parameters_only"):
+            before = self._capture_parameter_state()
             self._restore_parameter_state(state["parameters"])
-            self._mark_project_dirty()
+            if self._capture_parameter_state() != before:
+                self._mark_project_dirty()
             return
         if state.get("annotations_only"):
+            before = (self._capture_label_state(), self._capture_scalebar_state(),
+                      self._capture_watermark_state())
             _restore_label_state(self, state.get("labels"))
             _restore_scalebar_state(self, state.get("scalebar"))
             _restore_watermark_state(self, state.get("watermark"))
             self.refresh_annotation_views()
-            self._mark_project_dirty()
+            after = (self._capture_label_state(), self._capture_scalebar_state(),
+                     self._capture_watermark_state())
+            if after != before:
+                self._mark_project_dirty()
             return
         manager = getattr(self, "source_manager", None)
         if manager is not None:
@@ -1052,6 +1142,8 @@ class OpenFocus(QMainWindow):
         self.linear_dng_metadata = state.get("linear_dng_metadata")
         self.image_filenames = list(state["filenames"])
         self.image_source_paths = list(state["source_paths"])
+        if "source_exifs" in state:
+            self.image_source_exifs = list(state["source_exifs"])
         self.image_icc_profiles = list(state.get("icc_profiles", []))
         self.base_images = list(state["base"])
         self.excluded_frames = set(state["excluded"])
@@ -1142,14 +1234,17 @@ class OpenFocus(QMainWindow):
 
     def reset_to_default(self):
         """重置到默认状态"""
-        # 重置渲染方法 - 默认 AI（StackMFF V3）
+        from ui.right_panel import FUSION_DEFAULT, ALIGN_DEFAULT
         with self._restore_scope():
-            self.set_fusion_method("stackmffv3")
+            self.set_fusion_method(FUSION_DEFAULT)
+            self.set_alignment_method(ALIGN_DEFAULT)
+            self._preferred_fusion_method = FUSION_DEFAULT
+            self._preferred_alignment_method = ALIGN_DEFAULT
 
-            # 重置配准选项 - 默认 ECC
-            self.set_alignment_method("ecc")
+            self._alignment_choice_explicit = False
 
-            # 基底校正默认关闭；帧序默认文件序（不反转）
+            # Restore rendering options to their defaults.
+            self.chk_quick_preview.setChecked(False)
             self.chk_base_correct.setChecked(False)
             self.chk_reverse_order.setChecked(False)
             self.chk_sharpen_output.setChecked(False)
@@ -1161,6 +1256,10 @@ class OpenFocus(QMainWindow):
             self.exposure_match = True
             self.refresh_algorithm_parameters()
             self.refresh_registration_parameters()
+        # Reset is an explicit user edit. Mark directly: restore_default_settings
+        # calls us inside its own outer _restore_scope(), so the guarded helper
+        # would stay suppressed at depth 1.
+        self._mark_project_dirty()
         self.persist_settings()
 
         # 重置图像显示缩放与放大镜状态
@@ -1367,6 +1466,18 @@ class OpenFocus(QMainWindow):
                 tooltip = reason
             self.combo_fusion.setItemData(
                 index, tooltip, Qt.ItemDataRole.ToolTipRole)
+        from ui.right_panel import refresh_experimental_selectors
+        refresh_experimental_selectors(self)
+
+    def apply_experimental_features(self) -> None:
+        """Refresh desktop gates while preserving the selected project settings."""
+        from ui.menus import update_mosaic_experimental_action
+        update_mosaic_experimental_action(self)
+        if getattr(self, 'combo_fusion', None) is not None and getattr(self, 'combo_align', None) is not None:
+            self.refresh_method_availability()
+        manager = getattr(self, 'render_manager', None)
+        if manager is not None and getattr(self, 'btn_render', None) is not None:
+            manager.refresh_action_labels()
 
     # --- Update check ---
 
@@ -1766,21 +1877,38 @@ class OpenFocus(QMainWindow):
 
     def set_reverse_order(self, enabled: bool) -> None:
         """右面板开关：反转帧序（倒序栈，仅影响 OpenFocus A/B/C）。"""
-        self.stack_reverse_order = bool(enabled)
+        enabled = bool(enabled)
+        changed = self.stack_reverse_order != enabled
+        self.stack_reverse_order = enabled
+        if changed:
+            self._mark_project_setting_changed()
         self.persist_settings()
 
     def set_sharpen_output(self, enabled: bool) -> None:
-        self.sharpen_output = bool(enabled)
+        enabled = bool(enabled)
+        changed = self.sharpen_output != enabled
+        self.sharpen_output = enabled
+        if changed:
+            self._mark_project_setting_changed()
         self.persist_settings()
 
 
     def set_brightness_option(self, option: str, method: str,
                               enabled: bool) -> None:
         """Set exposure/base correction for a specific method."""
-        self.__dict__.setdefault("_brightness_by_method", {})[
-            (option, str(method))] = bool(enabled)
-        if str(method) == self.current_fusion_method():
+        method = str(method)
+        enabled = bool(enabled)
+        if method == self.current_fusion_method():
             self._set_brightness_option(option, enabled)
+            return
+        memory = self.__dict__.setdefault("_brightness_by_method", {})
+        existed = (option, method) in memory
+        previous = self.brightness_option_for(option, method)
+        memory[(option, method)] = enabled
+        # The first explicit choice is an edit even when it matches the
+        # method default; repeating the stored value is not.
+        if not existed or enabled != previous:
+            self._mark_project_setting_changed()
         self.persist_settings()
 
 
@@ -1792,19 +1920,24 @@ class OpenFocus(QMainWindow):
         if key in memory:
             return bool(memory[key])
         if method == "none":
-            return option == "exposure_match"
+            return False
         spec = get_fusion(method)
         return (spec.default_exposure_match if option == "exposure_match"
                 else spec.default_base_correct)
 
     def _set_brightness_option(self, option: str, enabled: bool) -> None:
         method = self.current_fusion_method()
-        self.__dict__.setdefault("_brightness_by_method", {})[
-            (option, method)] = bool(enabled)
+        enabled = bool(enabled)
+        memory = self.__dict__.setdefault("_brightness_by_method", {})
+        existed = (option, method) in memory
+        previous = self.brightness_option_for(option, method)
+        memory[(option, method)] = enabled
         if option == "exposure_match":
-            self.exposure_match = bool(enabled)
+            self.exposure_match = enabled
         else:
-            self.base_frame_correct = bool(enabled)
+            self.base_frame_correct = enabled
+        if not existed or enabled != previous:
+            self._mark_project_setting_changed()
         self.persist_settings()
 
     def _sync_brightness_checkboxes(self, method: str = None) -> None:
@@ -1826,7 +1959,7 @@ class OpenFocus(QMainWindow):
         self._set_brightness_option("base_correct", enabled)
 
     def set_exposure_match(self, enabled: bool) -> None:
-        """右面板开关：融合前把整栈曝光标定到末帧（按算法记忆）。"""
+        """Match exposure to the OpenFocus first frame or other methods' last frame."""
         self._set_brightness_option("exposure_match", enabled)
 
     def _show_update_result(self, state: str, tag: str, page_url: str,
@@ -1893,10 +2026,12 @@ class OpenFocus(QMainWindow):
         elif not self._update_manager().manual_check:
             return
         elif state == "latest":
+            from constants import APP_VERSION
             show_message_box(
                 self,
                 trans.t('update_up_to_date_title'),
-                trans.t('update_up_to_date_text'),
+                trans.t('update_up_to_date_text') + "\n" +
+                trans.t('update_banner_hint').format(current=APP_VERSION),
                 icon=QMessageBox.Icon.Information,
             )
         else:
@@ -2029,6 +2164,17 @@ class OpenFocus(QMainWindow):
         if not getattr(self, "_project_dirty", False):
             self._project_dirty = True
             self._update_project_title()
+
+    def _mark_project_setting_changed(self) -> None:
+        """Mark project-saved settings dirty outside a restore.
+
+        Project load, recovery, template application and multi-field undo
+        restores run inside ``_restore_scope``; their setters must update the
+        UI without turning a clean document dirty.
+        """
+        if getattr(self, "_restore_depth", 0):
+            return
+        self._mark_project_dirty()
 
     def _clear_project_dirty(self) -> None:
         self._project_dirty = False
@@ -2288,6 +2434,10 @@ class OpenFocus(QMainWindow):
 
     def show_mosaic_dialog(self) -> None:
         """Open the independent planar microscope mosaic workspace."""
+        if not experimental_enabled(self):
+            show_warning_box(self, trans.t('experimental_label'),
+                             trans.t('experimental_locked_hint'))
+            return
         from dialogs.mosaic import MosaicDialog
         MosaicDialog(self).exec()
 
@@ -2476,6 +2626,8 @@ class OpenFocus(QMainWindow):
             with self._restore_scope():
                 restore_default_settings(self)
                 configure_storage_directory(self.storage_directory)
+                from utils.logging_setup import set_debug_logging
+                set_debug_logging(self.debug_logging)
                 self.drag_export_format = '.jpg'
                 self.chk_quick_preview.setChecked(False)
                 self.reset_to_default()
@@ -2562,6 +2714,8 @@ class OpenFocus(QMainWindow):
                                     if i != remove_index]
             self.image_source_paths = [path for i, path in enumerate(self.image_source_paths)
                                        if i != remove_index]
+            self.image_source_exifs = [exif for i, exif in enumerate(self.image_source_exifs)
+                                       if i != remove_index]
             self.image_icc_profiles = [profile for i, profile in enumerate(self.image_icc_profiles)
                                        if i != remove_index]
             self.excluded_frames = {i - (i > remove_index)
@@ -2629,14 +2783,17 @@ class OpenFocus(QMainWindow):
         revision = getattr(self, 'source_revision', 0)
         workers = self.__dict__.setdefault('_source_preview_workers', {})
         request = (revision, id(self.raw_images), selected_index)
-        if request in workers:
+        if workers:
+            active_request, active_worker = next(iter(workers.items()))
+            if request == active_request and not active_worker.cancelled:
+                self._source_preview_pending = None
+                return
+            if selected_index is None and active_request[2] is not None and not active_worker.cancelled:
+                return
+            self._source_preview_pending = request
+            active_worker.request_cancel()
             return
-        if selected_index is None and any(key[2] is not None and not value.cancelled
-                                          for key, value in workers.items()):
-            return
-        for old_request, old_worker in tuple(workers.items()):
-            if old_request != request:
-                old_worker.request_cancel()
+        self._source_preview_pending = None
         indices = ([selected_index] if selected_index is not None else
                    [index for index, frame in enumerate(self.raw_images)
                     if not preview_ready(frame) or
@@ -2655,8 +2812,8 @@ class OpenFocus(QMainWindow):
             item = self.file_list.item(index)
             if item is not None:
                 item.setIcon(QIcon(cv2_to_pixmap(thumb)))
-            if index == getattr(self, 'current_display_index', -1):
-                self.stack_images[index] = None
+            if (index == getattr(self, 'current_display_index', -1)
+                    and self.stack_images[index] is None):
                 self.update_source_view(index)
         def failed(key, message):
             if key[0] == getattr(self, 'source_revision', 0):
@@ -2664,9 +2821,17 @@ class OpenFocus(QMainWindow):
         def finished():
             workers.pop(request, None)
             worker.deleteLater()
-            if (selected_index is not None and not worker.cancelled
-                    and not getattr(self, '_shutting_down', False)
-                    and request[:2] == (getattr(self, 'source_revision', 0), id(self.raw_images))):
+            pending = getattr(self, '_source_preview_pending', None)
+            self._source_preview_pending = None
+            if getattr(self, '_shutting_down', False):
+                return
+            current = (getattr(self, 'source_revision', 0), id(self.raw_images))
+            if pending is not None and pending[:2] == current:
+                selected = pending[2]
+                if selected is not None and selected != getattr(self, 'current_display_index', -1):
+                    selected = None
+                self._start_source_previews(selected_index=selected)
+            elif selected_index is not None and not worker.cancelled and request[:2] == current:
                 self._start_source_previews()
         worker.ready.connect(accept)
         worker.failed.connect(failed)
@@ -2677,6 +2842,9 @@ class OpenFocus(QMainWindow):
         worker = getattr(self, '_source_decode_workers', {}).get(key)
         if worker is not None:
             worker.request_cancel()
+        pending = getattr(self, '_source_region_pending', None)
+        if pending is not None and pending[0] == key:
+            self._source_region_pending = None
         if key == getattr(self, '_source_display_key', None):
             self._source_display_key = None
 
@@ -2689,6 +2857,14 @@ class OpenFocus(QMainWindow):
         existing = workers.get(key)
         if existing is not None:
             existing.submit(request)
+            return
+        if workers:
+            pending = getattr(self, '_source_region_pending', None)
+            if pending is None or pending[0] != key:
+                pending = self._source_region_pending = (key, {})
+            pending[1][request[0]] = request
+            for worker in workers.values():
+                worker.request_cancel()
             return
         index = key[2]
         if not 0 <= index < len(self.raw_images) or id(self.raw_images[index]) != key[1]:
@@ -2713,6 +2889,12 @@ class OpenFocus(QMainWindow):
         def finished():
             workers.pop(key, None)
             worker.deleteLater()
+            pending = getattr(self, '_source_region_pending', None)
+            self._source_region_pending = None
+            if (pending is not None and pending[0] == getattr(self, '_source_display_key', None)
+                    and not getattr(self, '_shutting_down', False)):
+                for next_request in pending[1].values():
+                    self._request_source_region(pending[0], next_request)
         worker.ready.connect(accept)
         worker.failed.connect(failed)
         worker.finished.connect(finished)
@@ -2730,6 +2912,7 @@ class OpenFocus(QMainWindow):
             self._source_display_generation = generation
             key = (getattr(self, 'source_revision', 0), id(frame), index, generation)
             self._source_display_key = key
+            self._source_region_pending = None
             for pending_key, worker in getattr(self, '_source_decode_workers', {}).items():
                 if pending_key != key:
                     worker.request_cancel()
@@ -2782,6 +2965,10 @@ class OpenFocus(QMainWindow):
                 )
     
     
+    def _remember_alignment_choice(self, *_args) -> None:
+        if not self._applying_alignment_default:
+            self._alignment_choice_explicit = True
+
     def current_fusion_method(self) -> str:
         code = self.combo_fusion.currentData()
         return "none" if code == "none" else get_fusion(code).id
@@ -2791,20 +2978,34 @@ class OpenFocus(QMainWindow):
         return "none" if code == "none" else get_registration(code).id
 
     def set_fusion_method(self, code: str) -> None:
+        if (hasattr(self, 'experimental_features') and not experimental_enabled(self)
+                and fusion_is_experimental(code) and not getattr(self, '_restore_depth', 0)):
+            raise ValueError(trans.t('experimental_locked_hint'))
         if code != "none":
             get_fusion(code)
         index = self.combo_fusion.findData(code)
         if index < 0:
             raise ValueError(f"Fusion method is not in the selector: {code}")
+        if index == self.combo_fusion.currentIndex():
+            return
         self.combo_fusion.setCurrentIndex(index)
+        self._mark_project_setting_changed()
 
     def set_alignment_method(self, code: str) -> None:
+        if (hasattr(self, 'experimental_features') and not experimental_enabled(self)
+                and alignment_is_experimental(code) and not getattr(self, '_restore_depth', 0)):
+            raise ValueError(trans.t('experimental_locked_hint'))
         if code != "none":
             get_registration(code)
         index = self.combo_align.findData(code)
         if index < 0:
             raise ValueError(f"Registration method is not in the selector: {code}")
+        if not getattr(self, '_applying_alignment_default', False):
+            self._alignment_choice_explicit = True
+        if index == self.combo_align.currentIndex():
+            return
         self.combo_align.setCurrentIndex(index)
+        self._mark_project_setting_changed()
 
     def fusion_parameters_for(self, method: str, depth: bool = False) -> dict:
         if method == "none":
@@ -2820,11 +3021,14 @@ class OpenFocus(QMainWindow):
             if values:
                 raise ValueError("Alignment-only output has no fusion parameters")
             return
+        previous = self.fusion_parameters_for(method)
         memory = self.__dict__.setdefault("_fusion_parameters_by_method", {})
         memory[method] = resolve_fusion_parameters(method, {**memory.get(method, {}), **values})
         if (method == self.current_fusion_method()
                 and self.fusion_parameter_panel.values() != memory[method]):
             self.refresh_algorithm_parameters()
+        if memory[method] != previous:
+            self._mark_project_setting_changed()
         self.persist_settings()
 
     def registration_parameters_for(self, method: str) -> dict:
@@ -2838,12 +3042,15 @@ class OpenFocus(QMainWindow):
             if values:
                 raise ValueError("Disabled registration has no parameters")
             return
+        previous = self.registration_parameters_for(method)
         memory = self.__dict__.setdefault("_registration_parameters_by_method", {})
         memory[method] = resolve_registration_parameters(
             method, {**memory.get(method, {}), **values})
         if (method == self.current_alignment_method()
                 and self.registration_parameter_panel.values() != memory[method]):
             self.refresh_registration_parameters()
+        if memory[method] != previous:
+            self._mark_project_setting_changed()
         self.persist_settings()
 
     def _set_fusion_option_available(self, widget, available: bool,
@@ -2866,15 +3073,22 @@ class OpenFocus(QMainWindow):
 
     def refresh_algorithm_parameters(self, *_args) -> None:
         method = self.current_fusion_method()
+        if getattr(self, 'combo_align', None) is not None and not getattr(self, '_alignment_choice_explicit', False):
+            target = 'ecc'
+            self._applying_alignment_default = True
+            try:
+                self.set_alignment_method(target)
+            finally:
+                self._applying_alignment_default = False
         spec = None if method == "none" else get_fusion(method)
         specs = () if spec is None else spec.parameters
         self.fusion_parameter_panel.set_parameters(specs, self.fusion_parameters_for(method))
         self._sync_brightness_checkboxes(method)
-        # Base correction, sharpening and frame reversal are consumed only by
-        # the fusion step, so with "Alignment only" they must not look active.
-        # Exposure matching stays enabled: it also feeds the registration
-        # brightness reference when no fusion runs.
+        # These options are consumed only by the fusion step.
         no_fusion = spec is None
+        self._set_fusion_option_available(
+            getattr(self, "chk_exposure_match", None), not no_fusion,
+            "radio_no_fusion_hint" if no_fusion else "chk_exposure_match_hint")
         self._set_fusion_option_available(
             getattr(self, "chk_base_correct", None), not no_fusion,
             "radio_no_fusion_hint" if no_fusion else "chk_base_correct_hint")
@@ -2895,17 +3109,25 @@ class OpenFocus(QMainWindow):
         self._set_fusion_option_available(
             reverse, spec is not None and not locked, reverse_hint,
             include_label=False)
+        manager = getattr(self, 'render_manager', None)
+        if manager is not None and getattr(self, 'btn_render', None) is not None:
+            manager.refresh_action_labels()
 
     def refresh_registration_parameters(self, *_args) -> None:
         method = self.current_alignment_method()
         specs = () if method == "none" else registration_parameter_specs(method)
         self.registration_parameter_panel.set_parameters(
             specs, self.registration_parameters_for(method))
+        self.registration_parameter_panel.setVisible(method != "openfocus")
+        manager = getattr(self, 'render_manager', None)
+        if manager is not None and getattr(self, 'btn_render', None) is not None:
+            manager.refresh_action_labels()
     
     def update_result_view(self, index):
         """更新Output区域显示的图像（用于配准结果或ROI模式下的对齐图像）"""
         # 如果ROI模式激活，显示对齐后的图像栈
         if getattr(self, 'roi_mode_active', False) and self.roi_aligned_images:
+            self.output_manager.cancel_registration_preview()
             self._display_roi_aligned_image(index)
         else:
             self.output_manager.show_registration_result(index)
@@ -3231,6 +3453,8 @@ class OpenFocus(QMainWindow):
         self.wipe_widget.set_images(
             left_pix, right_pix, f"A: {left_title}", f"B: {right_title}",
             left_offset=(frame.offset_x, frame.offset_y) if frame is not None else (0, 0),
+            left_size=(frame.width, frame.height) if frame is not None else None,
+            right_size=(right_image.shape[1], right_image.shape[0]) if right_image is not None else None,
             independent=independent, notice=notice)
 
         # Keep the index labels in sync with whatever is being shown
@@ -3305,9 +3529,7 @@ class OpenFocus(QMainWindow):
             wipe.update()
 
     def toggle_roi_mode(self, enabled: bool):
-        """Toggle ROI selection mode. 
-        When enabled, first align images using ECC, then display aligned stack on result panel for ROI selection.
-        """
+        """Select an ROI on frames prepared with the current alignment settings."""
         if enabled:
             worker = getattr(self, "roi_alignment_worker", None)
             if worker is not None and worker.isRunning():
@@ -3319,6 +3541,8 @@ class OpenFocus(QMainWindow):
                 self.btn_preview_roi.setChecked(False)
                 self.btn_preview_roi.blockSignals(False)
                 return
+            alignment_method = self.current_alignment_method()
+            alignment_key = self.render_manager._alignment_key(indices)
 
             # ROI 模式占用结果面板，进入前退出 wipe 对比
             if getattr(self, 'wipe_active', False):
@@ -3329,7 +3553,7 @@ class OpenFocus(QMainWindow):
                 bool(self.roi_aligned_images) and
                 getattr(self, "roi_included_indices", ()) == tuple(indices) and
                 getattr(self, "roi_source_revision", -1) == getattr(self, "source_revision", 0) and
-                getattr(self, "roi_reg_downscale_width", None) == self.reg_downscale_width
+                getattr(self, "roi_alignment_key", None) == alignment_key
             )
             
             if can_reuse:
@@ -3352,21 +3576,29 @@ class OpenFocus(QMainWindow):
             self.btn_preview_roi.setEnabled(False)
             self.btn_preview_roi.setText(trans.t("roi_aligning"))
             
-            # 启动ECC配准线程
+            # Prepare the selected alignment on a background thread.
             # Snapshot the list (mid-run frame deletes mutate the live list)
             # and capture the stack identity so a stale result — finished
             # after the user loaded/rotated/deleted — is discarded instead
             # of being published for the wrong stack.
             self._roi_align_snapshot = list(images)
             self._roi_align_context = (getattr(self, "source_revision", 0),
-                                       tuple(indices), tuple(names), self.reg_downscale_width)
+                                       tuple(indices), tuple(names), alignment_key)
             self._roi_frame_ids = tuple(self.label_manager.frame_ids("input")[i]
                                         for i in indices)
+            if alignment_method == 'none':
+                self.roi_alignment_worker = None
+                self._on_roi_alignment_finished(list(images), 0.0)
+                return
             self.roi_alignment_worker = ROIAlignmentWorker(
                 self._roi_align_snapshot,
                 reg_downscale_width=self.reg_downscale_width,
                 thread_count=self.thread_count,
                 resource_preference=self.resource_preference,
+                alignment=alignment_method,
+                registration_parameters=self.registration_parameters_for(alignment_method),
+                exposure_match=self.brightness_option_for('exposure_match'),
+                reverse_registration=alignment_key[-1] == 'reverse-registration-v1',
             )
             self.roi_alignment_worker.finished_signal.connect(self._on_roi_alignment_finished)
             self.roi_alignment_worker.error_signal.connect(self._on_roi_alignment_error)
@@ -3401,21 +3633,25 @@ class OpenFocus(QMainWindow):
         # replaced stack's raw frames alive.
         snapshot_count = len(getattr(self, "_roi_align_snapshot", None) or ())
         self._roi_align_snapshot = []
-        # Discard the result if the stack changed while ECC ran.
+        # Discard a result when the source or alignment settings changed.
         _images, names, indices = self.effective_stack()
         context_now = (getattr(self, "source_revision", 0), tuple(indices), tuple(names),
-                       self.reg_downscale_width)
+                       self.render_manager._alignment_key(indices))
         if (context_now != getattr(self, "_roi_align_context", None)
                 or getattr(self.roi_alignment_worker, "_cancelled", False)):
             self.btn_preview_roi.setEnabled(True)
             self.btn_preview_roi.setText(trans.t("btn_roi"))
+            self.btn_preview_roi.blockSignals(True)
+            self.btn_preview_roi.setChecked(False)
+            self.btn_preview_roi.blockSignals(False)
             self._show_status_message(trans.t("msg_render_cancelled"), 4000)
             return
 
         self.roi_aligned_images = aligned_images
         self.roi_aligned_raw_count = snapshot_count  # 对齐时快照的帧数
         self.roi_source_revision = context_now[0]
-        self.roi_reg_downscale_width = context_now[3]
+        self.roi_reg_downscale_width = self.reg_downscale_width
+        self.roi_alignment_key = context_now[3]
         self.roi_included_indices = tuple(indices)
         self.roi_frame_ids = self._roi_frame_ids
         self.roi_filenames = list(names)
@@ -3439,14 +3675,14 @@ class OpenFocus(QMainWindow):
             if hasattr(self, 'lbl_result_img'):
                 self.lbl_result_img.roi_mode = True
                 
-            # 显示提示信息
-            show_message_box(
-                self, 
-                trans.t("roi_ready_title"),
-                trans.t("roi_ready_msg"),
-                trans.t("roi_ready_detail").format(alignment_time),
-                QMessageBox.Icon.Information
-            )
+            if self.current_alignment_method() != 'none':
+                show_message_box(
+                    self,
+                    trans.t("roi_ready_title"),
+                    trans.t("roi_ready_msg"),
+                    trans.t("roi_ready_detail").format(alignment_time),
+                    QMessageBox.Icon.Information
+                )
         
 
     def _on_roi_alignment_error(self, error_message):
@@ -3782,6 +4018,8 @@ class OpenFocus(QMainWindow):
         stack load runs."""
         running = []
         render_manager = getattr(self, 'render_manager', None)
+        if render_manager is not None and getattr(render_manager, '_pending_storage', None) is not None:
+            running.append(True)
         if render_manager is not None and getattr(render_manager, 'worker', None):
             running.append(render_manager.worker.isRunning())
         batch_manager = getattr(self, 'batch_manager', None)
@@ -3868,6 +4106,7 @@ class OpenFocus(QMainWindow):
                 self._shutting_down = False
                 event.ignore()
                 return
+        self.render_manager.cancel_storage_preflight()
 
         # Keep modal owners and their documents alive while native work stops.
         # A Python reference to a QThread cannot protect it from destruction
@@ -3916,6 +4155,9 @@ class OpenFocus(QMainWindow):
         cancel_thumbnails = getattr(output_manager, 'cancel_stack_thumbnails', None)
         if callable(cancel_thumbnails):
             shutdown_running = cancel_thumbnails() or shutdown_running
+        cancel_registration_preview = getattr(output_manager, 'cancel_registration_preview', None)
+        if callable(cancel_registration_preview):
+            shutdown_running = cancel_registration_preview() or shutdown_running
         timer = getattr(self, "_retouch_shutdown_timer", None)
         if shutdown_running:
             self._retouch_quit_authorized = True
@@ -4242,10 +4484,11 @@ class OpenFocus(QMainWindow):
         # Rebuild the grouped method list in the new language; headers and
         # per-method hints are regenerated together, and the selection follows
         # the method id rather than the row index.
-        from ui.right_panel import alignment_items
+        from ui.right_panel import alignment_items, label_recommended, FUSION_DEFAULT, ALIGN_DEFAULT
         from ui.algorithm_combo import retranslate_fusion_combo
         retranslate_fusion_combo(c.combo_fusion, none_label="radio_no_fusion",
                                  none_hint="radio_no_fusion_hint")
+        label_recommended(c.combo_fusion, FUSION_DEFAULT)
         # set_panel_label elides to the panel width and keeps the full string
         # in the tooltip; plain setText here re-broke the row on language
         # switch after the panel had already fitted it.
@@ -4265,12 +4508,14 @@ class OpenFocus(QMainWindow):
                             trans.t('chk_reverse_order_hint'))
 
         c.registration_group.setTitle(trans.t('group_registration'))
-        for i, (_code, key, hint_key) in enumerate(alignment_items()):
-            if i < c.combo_align.count():
-                c.combo_align.setItemText(i, trans.t(key))
+        for code, key, hint_key in alignment_items():
+            index = c.combo_align.findData(code)
+            if index >= 0:
+                c.combo_align.setItemText(index, trans.t(key))
                 if hint_key:
                     c.combo_align.setItemData(
-                        i, trans.t(hint_key), Qt.ItemDataRole.ToolTipRole)
+                        index, trans.t(hint_key), Qt.ItemDataRole.ToolTipRole)
+        label_recommended(c.combo_align, ALIGN_DEFAULT)
         
         self.refresh_algorithm_parameters()
         self.refresh_registration_parameters()
@@ -4374,34 +4619,78 @@ class OpenFocus(QMainWindow):
             banner.retranslate()
         self.rebuild_recent_menu()
         self.rebuild_recent_projects_menu()
+        self.apply_experimental_features()
 
 
 if __name__ == "__main__":
 
     app = OpenFocusApplication(sys.argv)
 
-    # ---- Single-instance guard ----
-    # A second launch forwards its file arguments to the running instance
-    # (through a local socket) and exits, instead of opening a competing
-    # instance whose settings writes would clobber the first one's.
+    # Serialize startup as well as forwarding, so concurrent Explorer
+    # activations cannot both create a GUI or remove each other's server.
     from PyQt6.QtNetwork import QLocalServer, QLocalSocket
+    from PyQt6.QtCore import QLockFile, QThread
+    import hashlib as _hashlib
     import json as _json
+    import tempfile as _tempfile
+    import time as _time
     _server_name = os.environ.get("OPENFOCUS_INSTANCE_NAME") or "OpenFocus-single-instance"
-
-    probe = QLocalSocket()
-    probe.connectToServer(_server_name)
-    if probe.waitForConnected(500):
-        paths = [os.path.abspath(a) for a in sys.argv[1:] if not a.startswith("-")]
-        probe.write((_json.dumps(paths) + "\n").encode("utf-8"))
-        probe.flush()
-        probe.waitForBytesWritten(1000)
-        probe.disconnectFromServer()
-        _log.info("forwarded %d path(s) to the running instance", len(paths))
-        sys.exit(0)
+    _lock_name = _hashlib.sha256(_server_name.encode("utf-8")).hexdigest()[:24]
+    # Unix local sockets have a short pathname limit; isolated session names
+    # can exceed it under the long temporary directories used by macOS.
+    if os.name != 'nt' and len(os.fsencode(os.path.join(_tempfile.gettempdir(), _server_name))) >= 100:
+        _server_name = 'of-' + _lock_name
+    _instance_lock = QLockFile(os.path.join(_tempfile.gettempdir(), "openfocus-" + _lock_name + ".lock"))
+    _instance_lock.setStaleLockTime(0)
+    _deadline = _time.monotonic() + 60
+    _owns_instance = False
+    while True:
+        probe = QLocalSocket()
+        probe.connectToServer(_server_name)
+        if probe.waitForConnected(200):
+            paths = (_shell_paths if _shell_paths is not None else
+                     [os.path.abspath(a) for a in sys.argv[1:] if not a.startswith("-")])
+            payload = {"paths": paths, "explorer": _shell_paths is not None,
+                       "request_path": _shell_request}
+            probe.write((_json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8"))
+            while probe.bytesToWrite() and probe.waitForBytesWritten(60000):
+                pass
+            reply = bytearray()
+            reply_deadline = _time.monotonic() + 60
+            while not probe.bytesToWrite() and b"\n" not in reply:
+                remaining = max(0, int((reply_deadline - _time.monotonic()) * 1000))
+                if not remaining or not probe.waitForReadyRead(remaining):
+                    break
+                reply.extend(bytes(probe.readAll()))
+            accepted = reply == b"OK\n"
+            if not accepted:
+                detail = ("The running OpenFocus instance did not accept the import. "
+                          "Please try again.")
+                if _shell_request:
+                    detail += " The selection is saved in: " + _shell_request
+                QMessageBox.warning(None, "OpenFocus", detail)
+                sys.exit(1)
+            sys.exit(0)
+        if _owns_instance:
+            break
+        if _instance_lock.tryLock(0):
+            _owns_instance = True
+            continue  # Probe once more while holding the startup lock.
+        if _time.monotonic() >= _deadline:
+            detail = "OpenFocus is still starting. Please try the import again."
+            if _shell_request:
+                detail += " The selection is saved in: " + _shell_request
+            QMessageBox.warning(None, "OpenFocus", detail)
+            sys.exit(1)
+        QThread.msleep(100)
     QLocalServer.removeServer(_server_name)
     _single_server = QLocalServer()
-    _single_server.listen(_server_name)
+    _single_server.setSocketOptions(QLocalServer.SocketOption.UserAccessOption)
+    if not _single_server.listen(_server_name):
+        QMessageBox.warning(None, "OpenFocus", _single_server.errorString())
+        sys.exit(1)
     app.aboutToQuit.connect(_single_server.close)
+    app.aboutToQuit.connect(_instance_lock.unlock)
 
     window = OpenFocus()
     app.set_main_window(window)
@@ -4417,18 +4706,29 @@ if __name__ == "__main__":
     except Exception:
         _log.exception("Could not start the control channel")
 
-    def _on_second_instance(paths_json: str) -> None:
+    def _on_second_instance(paths_json: str) -> bool:
         if getattr(window, "_shutting_down", False):
-            return
+            return False
         try:
-            paths = _json.loads(paths_json)
-        except ValueError:
-            paths = []
+            request = _json.loads(paths_json)
+            # Accept lists sent by earlier OpenFocus versions as well.
+            paths = request if isinstance(request, list) else request["paths"]
+            explorer = False if isinstance(request, list) else request.get("explorer", False)
+            request_path = None if isinstance(request, list) else request.get("request_path")
+            if request_path:
+                from core.windows_shell import is_request_file
+                if not explorer or not is_request_file(request_path):
+                    return False
+            if not isinstance(paths, list) or not all(isinstance(p, str) for p in paths):
+                return False
+        except (ValueError, TypeError, KeyError):
+            return False
         if paths:
-            process_command_line_args(window, paths)
+            app.queue_import(paths, explorer=explorer, request_path=request_path)
         window.show()
         window.raise_()
         window.activateWindow()
+        return True
 
     def _on_new_connection() -> None:
         while _single_server.hasPendingConnections():
@@ -4439,7 +4739,13 @@ if __name__ == "__main__":
                 data.extend(bytes(c.readAll()))
                 if b"\n" in data:
                     line, _, _ = data.partition(b"\n")
-                    _on_second_instance(line.decode("utf-8", "ignore"))
+                    try:
+                        accepted = _on_second_instance(line.decode("utf-8", "strict"))
+                    except UnicodeDecodeError:
+                        accepted = False
+                    if accepted:
+                        c.write(b"OK\n")
+                        c.flush()
                     c.disconnectFromServer()
 
             conn.readyRead.connect(receive)
@@ -4534,6 +4840,8 @@ if __name__ == "__main__":
     # 追加成两倍帧数；恢复的工作区就是用户要的现场
     if len(_argv) > 0 and not recovered:
         process_command_line_args(window, _argv)
+    if _shell_paths is not None:
+        app.queue_import(_shell_paths, explorer=True, request_path=_shell_request)
 
     window.show()
     _log.info("entering event loop")

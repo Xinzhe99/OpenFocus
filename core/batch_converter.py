@@ -53,7 +53,7 @@ def estimate_job(path, page=0, ext=None):
                 return 64 * 1024**2, compressed + 1024**2
     elif Path(path).suffix.lower() in ('.tif', '.tiff'):
         with tifffile.TiffFile(path) as tif:
-            entry = tif.pages[page]
+            _, entry = list(image_loader.tiff_source_pages(tif))[page]
             width, height = entry.imagewidth, entry.imagelength
             compressed = sum(entry.databytecounts)
     else:
@@ -92,6 +92,8 @@ def _estimate_source(path, cancelled, ext=None):
                     except StopIteration:
                         break
                     check_cancel()
+                    if getattr(entry, 'is_reduced', False):
+                        continue
                     ram, disk = _image_requirements(entry.imagewidth, entry.imagelength,
                                                      sum(entry.databytecounts))
                     need_ram, need_disk = max(need_ram, ram), max(need_disk, disk)
@@ -121,7 +123,7 @@ def _decode(path, page):
     ext = Path(path).suffix.lower()
     if ext in ('.tif', '.tiff') and not image_loader._is_dng_tiff(path):
         with tifffile.TiffFile(path) as tif:
-            p = tif.pages[page]
+            physical_page, p = list(image_loader.tiff_source_pages(tif))[page]
             # OpenCV's bundled libtiff decodes LZW without the optional
             # imagecodecs package. Mapping avoids copying the whole TIFF stack.
             opencv_page = p.compression.name == 'LZW'
@@ -133,7 +135,7 @@ def _decode(path, page):
                 encoded = np.memmap(path, dtype=np.uint8, mode='r')
                 try:
                     ok, decoded = cv2.imdecodemulti(encoded, cv2.IMREAD_UNCHANGED,
-                                                     range=(page, page + 1))
+                                                     range=(physical_page, physical_page + 1))
                 finally:
                     del encoded
                 if not ok or len(decoded) != 1:
@@ -230,7 +232,10 @@ def _write(path, pixels, source, page, ext, cancelled=None):
         # LibRaw develops into sRGB regardless of the camera's JPEG setting.
         safe.get_ifd(0x8769).pop(40961, None)
     exif = safe.tobytes() if safe else b''
-    tiff_page = page if Path(source).suffix.lower() in ('.tif', '.tiff') and not is_raw else None
+    tiff_page = None
+    if Path(source).suffix.lower() in ('.tif', '.tiff') and not is_raw:
+        with tifffile.TiffFile(source) as tif:
+            tiff_page = list(image_loader.tiff_source_pages(tif))[page][0]
     profile = image_loader._read_icc_profile(source, page=tiff_page)
     params = []
     if ext == '.jpg':
@@ -292,7 +297,7 @@ def convert_one(source, output_dir, ext, page=0, pages=1, cancelled=lambda: Fals
 def page_count(path):
     if Path(path).suffix.lower() in ('.tif', '.tiff') and not image_loader._is_dng_tiff(path):
         with tifffile.TiffFile(path) as tif:
-            count = len(tif.pages)
+            count = sum(1 for _ in image_loader.tiff_source_pages(tif))
             if not count:
                 raise ValueError('TIFF contains no pages.')
             return count

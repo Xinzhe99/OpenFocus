@@ -66,10 +66,10 @@ def _upstream_v2(frames):
     return (fused[..., :h, :w], depth[..., :h, :w], index[..., :h, :w])
 
 
-def test_default_method_stays_stackmffv3():
+def test_recommended_default_is_openfocus_b():
     assert fusion_algorithms()[0].id == "stackmffv3"
     from ui.right_panel import FUSION_DEFAULT
-    assert FUSION_DEFAULT == "stackmffv3"
+    assert FUSION_DEFAULT == "openfocus_b"
 
 
 def test_declared_capabilities():

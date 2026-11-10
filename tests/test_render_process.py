@@ -72,6 +72,50 @@ def _sources(tmp_path):
     return frames
 
 
+def test_isolated_render_reports_preparation_after_admission(qapp, monkeypatch):
+    from core.render_process import RenderProcessWorker, _Relay
+
+    worker = RenderProcessWorker([], algorithm='openfocus_a')
+    stages = []
+    worker.stage_signal.connect(stages.append)
+
+    def run_process():
+        assert stages == ['waiting', 'prepare']
+        return None
+
+    monkeypatch.setattr(worker, '_run_process', run_process)
+    worker.run()
+    assert stages == ['waiting', 'prepare']
+
+    messages = []
+    relay = _Relay(None, None)
+    monkeypatch.setattr(relay, 'send', messages.append)
+    relay.stage('waiting')
+    relay.stage('prepare')
+    assert messages == [('stage', 'prepare')]
+
+
+def test_relay_keeps_stage_order_and_first_progress_per_stage(monkeypatch):
+    from core import render_process
+
+    messages = []
+    relay = render_process._Relay(None, None)
+    monkeypatch.setattr(relay, 'send', messages.append)
+    monkeypatch.setattr(render_process.time, 'monotonic', lambda: 10.0)
+    relay.stage('prepare')
+    relay.progress(1, 4)
+    relay.progress(2, 4)
+    relay.stage('align')
+    relay.stage('fuse')
+    relay.progress(1, 3)
+    relay.progress(3, 3)
+    relay.stage('finish')
+    assert messages == [('stage', 'prepare'), ('progress', 1, 4),
+                        ('stage', 'align'), ('stage', 'fuse'),
+                        ('progress', 1, 3), ('progress', 3, 3),
+                        ('stage', 'finish')]
+
+
 @pytest.mark.parametrize('alignment', ['none', 'openfocus'])
 def test_spawned_render_preserves_uint16_and_lazy_alignment(qapp, tmp_path, scratch, alignment):
     from core.render_process import RenderProcessWorker
@@ -224,3 +268,70 @@ def test_registered_extension_and_composite_alignment_execute_in_child(qapp, scr
     _wait(worker, qapp)
     assert not errors
     np.testing.assert_array_equal(results[0][1], np.full((16, 20, 3), 174, np.uint8))
+
+
+def test_fusion_preparation_progress_transitions_to_tile_progress():
+    from types import SimpleNamespace
+    from core.workers import RenderWorker
+
+    events = []
+    worker = SimpleNamespace(
+        stage_signal=SimpleNamespace(emit=lambda stage: events.append(('stage', stage))),
+        progress_signal=SimpleNamespace(emit=lambda done, total: events.append(('progress', done, total))))
+    progress = RenderWorker._fusion_progress(worker)
+    progress.preparation(1, 92)
+    progress.preparation(92, 92)
+    progress(0, 228)
+    progress(1, 228)
+    assert events == [
+        ('stage', 'prepare'), ('progress', 1, 92), ('progress', 92, 92),
+        ('stage', 'fuse'), ('progress', 0, 228), ('progress', 1, 228),
+    ]
+
+
+@pytest.mark.parametrize('change', ['selection', 'transform', 'close'])
+def test_prepared_cache_invalidation_preserves_inflight_reader(qapp, scratch, change):
+    from types import SimpleNamespace
+    from controllers.render_manager import RenderManager
+    from controllers.source_manager import SourceManager
+    from controllers.transform_manager import TransformManager
+    from core import frame_storage
+
+    class Signal:
+        def connect(self, slot):
+            self.slot = slot
+
+    class Control:
+        def __getattr__(self, name):
+            return lambda *args: None
+
+    window = SimpleNamespace(destroyed=Signal(), add_label_action=Control(),
+        resize_action=Control(), result_slider=Control(), result_control_bar=Control(),
+        lbl_result_info=Control(), raw_images=[])
+    manager = RenderManager(window)
+    window.render_manager = manager
+    window.transform_manager = TransformManager(window)
+    frame = frame_storage.store_frame(np.ones((8, 9), np.uint8), prefer_ram=False)
+    path = Path(frame_storage.describe_frame(frame)['path'])
+    manager._prepared_cache = [frame]
+    manager._prepared_cache_key = ('old',)
+    manager._prepared_cache_source = window.raw_images
+    reader = [frame]
+    del frame
+
+    if change == 'selection':
+        source = SourceManager(window)
+        source._refresh_source_count = lambda: None
+        source.decorate_source_items = lambda: None
+        source.processing_selection_changed()
+    elif change == 'transform':
+        window.transform_manager.invalidate_processing_results()
+    else:
+        window.destroyed.slot()
+    assert manager._prepared_cache is None
+    assert manager._prepared_cache_key is None
+    assert path.exists()
+    np.testing.assert_array_equal(reader[0], np.ones((8, 9), np.uint8))
+    reader.clear()
+    gc.collect()
+    assert not path.exists()

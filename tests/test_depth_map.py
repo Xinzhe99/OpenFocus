@@ -3,6 +3,9 @@
 import cv2
 import numpy as np
 import pytest
+import importlib.util
+import subprocess
+import sys
 
 from core.depth_map import (
     DepthMapCancelled,
@@ -33,11 +36,30 @@ def _synthetic_thirds(h=240, w=320):
     return [f0, f1, f2]
 
 
+@pytest.mark.skipif(importlib.util.find_spec("dtcwt") is None,
+                    reason="dtcwt backend not installed")
+def test_dtcwt_depth_first_in_fresh_process():
+    # Depth must initialize the compatibility adapter without a prior fusion.
+    script = """
+import numpy as np
+from core.depth_map import compute_focus_index
+checker = (np.indices((32, 32)).sum(axis=0) % 2 * 255).astype(np.uint8)
+sharp = np.repeat(checker[:, :, None], 3, axis=2)
+flat = np.full_like(sharp, 127)
+index = compute_focus_index([flat, sharp], 'dtcwt', {'N': 2})
+assert index.shape == (32, 32)
+assert index.mean() > 0.9
+"""
+    subprocess.run([sys.executable, "-c", script], check=True)
+
+
 class TestComputeFocusIndex:
     @pytest.mark.parametrize("method", ["dct", "gfgfgf",
                                         "dtcwt", "openfocus_b",
                                         "openfocus_c"])
     def test_thirds_identified(self, method):
+        if method == 'dtcwt':
+            pytest.importorskip('dtcwt')
         idx = compute_focus_index(_synthetic_thirds(), method)
         assert idx.shape == (240, 320)
         assert idx.dtype == np.float32
@@ -47,8 +69,8 @@ class TestComputeFocusIndex:
         assert idx[:, 220:].mean() == pytest.approx(1.0, abs=0.1)
 
     @pytest.mark.parametrize("method,parameter", [
-        ("openfocus_b", "depth_smoothing"),
-        ("openfocus_c", "blend_smoothing"),
+        ("openfocus_b", "smoothing"),
+        ("openfocus_c", "smoothing"),
     ])
     def test_openfocus_smoothing_changes_depth_transition(self, method, parameter):
         frames = _synthetic_thirds(80, 120)
@@ -56,6 +78,13 @@ class TestComputeFocusIndex:
         smooth = compute_focus_index(frames, method, {parameter: 8})
         assert np.any(np.abs(sharp - smooth) > 0.01)
         assert smooth[:, :30].mean() < smooth[:, 90:].mean()
+
+    @pytest.mark.parametrize("shape", [(1, 131), (131, 1), (2, 2), (3, 3), (129, 131)])
+    def test_openfocus_b_depth_keeps_fine_uint16_texture(self, shape):
+        sharp = ((np.indices(shape).sum(axis=0) % 2) * 32768 + 32767).astype(np.uint16)
+        flat = np.full(shape, 65535, np.uint16)
+        depth = compute_focus_index([flat, sharp], "openfocus_b")
+        np.testing.assert_array_equal(depth, np.ones(shape, np.float32))
 
     def test_weighted_average_methods_rejected(self):
         """加权平均类融合没有逐像素决策——不提供深度图（v1.44 设计收敛）。"""
@@ -206,11 +235,12 @@ def test_raw_depth_export_requires_tiff(qapp, monkeypatch, tmp_path):
     monkeypatch.setattr(depth_map, "compute_focus_index", _ramp)
 
     class _Stub(QWidget):
+        experimental_features = True
         raw_images = [np.zeros((32, 32, 3), np.uint8) for _ in range(2)]
         ui_theme = "dark"
         use_gpu = False
         fusion_result = None
-        current_fusion_method = lambda self: "dtcwt"
+        current_fusion_method = lambda self: "dct"
 
     dlg = dm.DepthMapDialog(_Stub())
     try:
@@ -307,25 +337,37 @@ def test_depth_source_and_texture_bind_selected_output(qapp):
 
 
 
-def test_depth_registration_precedes_reverse_and_never_writes_files(monkeypatch):
+@pytest.mark.parametrize('method', ['openfocus_b', 'openfocus_c'])
+def test_reversed_depth_map_uses_same_registration_as_fusion(method, qapp):
+    from core.registration import ImageRegistration
+    from core.source_frames import resolve_frame
     from dialogs.depthmap import DepthWorker
-    import core.compare_worker as compare_worker
-    import core.depth_map as depth_map
-    frames = [np.full((8, 8, 3), i + 1, np.uint8) for i in range(3)]
-    seen = []
-    def align(images, method, settings, should_cancel):
-        seen.append((method, [int(image[0, 0, 0]) for image in images]))
-        return images
-    def compute(images, method, **kwargs):
-        seen.append((method, [int(image[0, 0, 0]) for image in images]))
-        return np.zeros((8, 8), np.float32)
-    monkeypatch.setattr(compare_worker, "align_frames", align)
-    monkeypatch.setattr(depth_map, "compute_focus_index", compute)
-    worker = DepthWorker(frames, "openfocus_b", False)
-    worker.alignment = "ecc"
+
+    source = _synthetic_thirds(160, 192)
+    frames = [np.roll(image, shift, axis=1)
+              for image, shift in zip(source, (0, 6, 12))]
+    registration = {'max_shift_ratio': .2, 'magnification': 0.,
+                    'reference_frame': 1, 'failure_policy': 'fail'}
+    expected_frames = ImageRegistration('openfocus', parameters=registration).process(
+        list(reversed(frames)), thread_count=1)
+    expected = compute_focus_index(expected_frames, method, thread_count=1)
+
+    worker = DepthWorker(frames, method, False)
+    worker.alignment = 'openfocus'
     worker.reverse_order = True
+    worker.registration_settings = {'thread_count': 1,
+                                    'registration_parameters': registration}
+    results, errors = [], []
+    worker.ok.connect(results.append)
+    worker.failed.connect(errors.append)
     worker.run()
-    assert seen == [("ecc", [1, 2, 3]), ("openfocus_b", [3, 2, 1])]
+
+    assert not errors
+    assert len(results) == 1
+    np.testing.assert_array_equal(results[0], expected)
+    assert [frame.frame_id for frame in worker.source_frames] == ['2', '1', '0']
+    for actual, expected_frame in zip(worker.source_frames, expected_frames):
+        np.testing.assert_array_equal(resolve_frame(actual.image), expected_frame)
 
 
 def test_physical_roi_export_keeps_outside_as_nan(qapp, monkeypatch, tmp_path):
@@ -340,9 +382,10 @@ def test_physical_roi_export_keeps_outside_as_nan(qapp, monkeypatch, tmp_path):
     monkeypatch.setattr(depth_map, "compute_focus_index",
                         lambda images, method, **kwargs: np.full(images[0].shape[:2], 0.5, np.float32))
     window = QWidget()
+    window.experimental_features = True
     frames = [np.full((12, 16, 3), value, np.uint8) for value in (20, 40)]
     image = frames[0].copy()
-    context = build_render_context(frames, image, algorithm="dtcwt", roi_rect=(3, 2, 6, 5),
+    context = build_render_context(frames, image, algorithm="dct", roi_rect=(3, 2, 6, 5),
                                    roi_mode="paste", source_indices=[0, 5])
     window.raw_images = frames
     window.output_list = QListWidget(window)

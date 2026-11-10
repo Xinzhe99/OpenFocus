@@ -34,6 +34,9 @@ from core.algorithms import (alignment_steps, fusion_algorithms, get_fusion,
     registration_parameter_specs, registration_algorithms, resolve_fusion_parameters,
     resolve_registration_parameters)
 from ui.algorithm_parameters import AlgorithmParameterPanel
+from ui.algorithm_combo import apply_method_availability, selected_item_enabled
+from core.experimental import (alignment_is_experimental, experimental_enabled,
+                               fusion_is_experimental)
 from locales import trans
 from utils.ui_utils import size_dialog_to_content
 from widgets.stepper import StepperSpinBox
@@ -481,6 +484,7 @@ class BatchProcessingDialog(QDialog):
         options_layout.addWidget(self.chk_reverse_order)
 
         self.chk_exposure_match = QCheckBox(trans.t('chk_exposure_match'))
+        self.chk_exposure_match.setChecked(True)
         self.chk_exposure_match.setToolTip(trans.t('chk_exposure_match_hint'))
         options_layout.addWidget(self.chk_exposure_match)
 
@@ -719,7 +723,7 @@ class BatchProcessingDialog(QDialog):
             self.path_input.setToolTip(trans.t('batch_path_invalid'))
 
     def add_folders(self):
-        """Pick one or more stack folders with the shared address bar."""
+        """Pick one or more stack folders."""
         dialog = FileDialog.for_directories(
             self, trans.t('batch_pick_title'), self._last_pick_dir(), multiple=True)
         self._fit_picker_sidebar(dialog)
@@ -747,7 +751,7 @@ class BatchProcessingDialog(QDialog):
         """Give the place list just enough width for its longest label."""
         from PyQt6.QtWidgets import QSplitter, QListView
 
-        splitter = dialog.findChild(QSplitter)
+        splitter = dialog.findChild(QSplitter) if hasattr(dialog, "findChild") else None
         if splitter is None or splitter.count() < 2:
             return
         sidebar = splitter.widget(0)
@@ -1182,27 +1186,17 @@ class BatchProcessingDialog(QDialog):
         getter = getattr(window, 'brightness_option_for', None)
         if callable(getter):
             method = self.fusion_combo.currentData()
-            self.chk_exposure_match.setChecked(bool(getter('exposure_match', method)))
+            if method != 'none':
+                self.chk_exposure_match.setChecked(bool(getter('exposure_match', method)))
             self.chk_base_correct.setChecked(bool(getter('base_correct', method)))
 
     def _apply_fusion_availability(self) -> None:
-        """Keep unavailable methods visible with a dependency explanation."""
         from core.multi_focus_fusion import is_ai_fusion_available
-        from ui.algorithm_combo import fusion_unavailable_reason
 
-        ai_available = bool(is_ai_fusion_available())
-        for spec in fusion_algorithms():
-            reason = fusion_unavailable_reason(spec, ai_available)
-            if not reason:
-                continue
-            index = self.fusion_combo.findData(spec.id)
-            if index < 0:
-                continue
-            item = self.fusion_combo.model().item(index)
-            if item is not None:
-                item.setEnabled(False)
-            self.fusion_combo.setItemData(
-                index, reason, Qt.ItemDataRole.ToolTipRole)
+        apply_method_availability(self.fusion_combo, fusion_algorithms(), self.parent_window,
+                                  ai_available=bool(is_ai_fusion_available()))
+        apply_method_availability(self.align_combo, registration_algorithms(), self.parent_window,
+                                  alignment=True)
 
     def _remember_fusion_parameters(self, values):
         self._fusion_drafts[self._editing_method] = dict(values)
@@ -1221,8 +1215,8 @@ class BatchProcessingDialog(QDialog):
         self._editing_alignment = method
         specs = registration_parameter_specs(method)
         self.registration_parameter_panel.set_parameters(specs, self._registration_drafts[method])
-        self.registration_parameter_panel.setVisible(bool(self.registration_parameter_panel.editors))
-        self._registration_has_specs = bool(self.registration_parameter_panel.editors)
+        self._registration_has_specs = method != 'openfocus' and bool(self.registration_parameter_panel.editors)
+        self.registration_parameter_panel.setVisible(self._registration_has_specs)
         self._sync_parameters_heading()
 
     def _sync_parameters_heading(self) -> None:
@@ -1268,9 +1262,7 @@ class BatchProcessingDialog(QDialog):
 
         Grouping needs multi-folder input plus a fusion step and cannot share
         the run with the aligned-stack copy; alignment-only output has no
-        fusion step, so base correction, sharpening and frame reversal have no
-        consumer. Exposure matching stays live because registration uses it as
-        its brightness reference even without fusion.
+        fusion step, so fusion options have no consumer.
         """
         method = self.fusion_combo.currentData()
         fusion_off = method in (None, 'none')
@@ -1322,6 +1314,7 @@ class BatchProcessingDialog(QDialog):
 
         fusion_only_hint = trans.t('radio_no_fusion_hint')
         for box, hint_key in (
+                (self.chk_exposure_match, 'chk_exposure_match_hint'),
                 (self.chk_base_correct, 'chk_base_correct_hint'),
                 (self.chk_sharpen_output, 'chk_sharpen_output_hint')):
             box.setEnabled(not fusion_off)
@@ -1354,12 +1347,20 @@ class BatchProcessingDialog(QDialog):
 
     def get_processing_settings(self):
         """获取处理设置"""
+        for combo in (self.fusion_combo, self.align_combo):
+            if not selected_item_enabled(combo):
+                raise ValueError(combo.currentData(Qt.ItemDataRole.ToolTipRole) or '')
+        if (not experimental_enabled(self.parent_window)
+                and (fusion_is_experimental(self.fusion_combo.currentData())
+                     or alignment_is_experimental(self.align_combo.currentData()))):
+            raise ValueError(trans.t('experimental_locked_hint'))
         format_str = self.format_combo.currentText().lower()
         
         fusion_method = self.fusion_combo.currentData() or "none"
         fusion_params = self.fusion_parameter_panel.values()
         runtime = dict(self._runtime_settings)
-        runtime['base_frame'] = 'last' if self.chk_base_correct.isChecked() else 'none'
+        runtime['base_frame'] = ('first' if fusion_method in ('openfocus_a', 'openfocus_b', 'openfocus_c')
+                                 else 'last') if self.chk_base_correct.isChecked() else 'none'
         runtime['exposure_match'] = self.chk_exposure_match.isChecked()
         runtime['sharpen_output'] = self.chk_sharpen_output.isChecked()
         runtime['sort_mode'] = 'desc' if self.chk_reverse_order.isChecked() else 'asc'
@@ -1465,6 +1466,18 @@ class BatchProcessingDialog(QDialog):
     def start_batch_processing(self):
         """开始批处理"""
         from PyQt6.QtWidgets import QMessageBox
+        if (not selected_item_enabled(self.fusion_combo)
+                or not selected_item_enabled(self.align_combo)
+                or (not experimental_enabled(self.parent_window)
+                    and (fusion_is_experimental(self.fusion_combo.currentData())
+                         or alignment_is_experimental(self.align_combo.currentData())))):
+            for combo in (self.fusion_combo, self.align_combo):
+                if not selected_item_enabled(combo):
+                    QMessageBox.warning(self, trans.t('msg_error'),
+                                        combo.currentData(Qt.ItemDataRole.ToolTipRole))
+                    return
+            QMessageBox.warning(self, trans.t('msg_error'), trans.t('experimental_locked_hint'))
+            return
         sensor_error = self.sensor_cleanup.validate()
         if sensor_error:
             QMessageBox.warning(self, trans.t('msg_error'), sensor_error)

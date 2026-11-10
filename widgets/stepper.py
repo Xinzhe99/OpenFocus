@@ -31,6 +31,15 @@ class StepperSpinBox(QDoubleSpinBox):
         self.setKeyboardTracking(False)
         self.setValue(value)
 
+    def textFromValue(self, value):
+        text = super().textFromValue(value)
+        decimal = self.locale().decimalPoint()
+        if decimal not in text:
+            return text
+        zero = self.locale().zeroDigit()
+        whole, fraction = text.rsplit(decimal, 1)
+        return whole + decimal + (fraction.rstrip(zero) or zero)
+
     def reapply_theme(self) -> None:
         """Refresh the inherited stylesheet after the application theme changes."""
         style = self.style()

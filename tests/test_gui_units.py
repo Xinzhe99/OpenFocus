@@ -232,6 +232,8 @@ class _StubLabelManager:
 
 
 def _source_window(filenames):
+    from core.image_loader import ImageStackLoader
+
     class FakeWindow:
         def push_undo(self):
             pass
@@ -246,6 +248,7 @@ def _source_window(filenames):
         pass
 
     w = FakeWindow()
+    w.image_loader = ImageStackLoader()
     w.file_list = QListWidget()
     for name in filenames:
         w.file_list.addItem(name)
@@ -276,6 +279,7 @@ def _render_window(frames):
         pass
 
     w = FakeWindow()
+    w.experimental_features = True
     w.raw_images = list(frames)
     w.base_images = list(frames)
     w.image_filenames = [f"f{i}.png" for i in range(len(frames))]
@@ -402,6 +406,11 @@ def _patched_render_manager(monkeypatch, window, ai_available=False):
     the recorded save_aligned calls, the recorded worker stack)."""
     from controllers import render_manager as render_module
     from utils import align_cache
+    from core import frame_storage
+
+    # These unit tests exercise the render pipeline with a non-QObject window.
+    # The asynchronous storage probe is covered by the preflight tests.
+    monkeypatch.setattr(frame_storage, "automatic_preflight_may_block", lambda: False)
 
     monkeypatch.setattr(render_module, "RenderProcessWorker", _fake_worker_class())
     monkeypatch.setattr(render_module, "is_ai_fusion_available", lambda: ai_available)
@@ -490,6 +499,7 @@ def test_deleting_a_middle_frame_keeps_names_aligned_with_images(qapp):
     frames = [np.full((8, 8, 3), i, dtype=np.uint8) for i in range(4)]
 
     w = _source_window(names)
+    w.image_loader.source_exifs = (b"exif0", b"exif1", b"exif2", b"exif3")
     sm = SourceManager(w)
     sm._load_source = (folder, None, None)
     sm._apply_load_options(sm._build_load_options(frames, names, 0.5))
@@ -498,6 +508,7 @@ def test_deleting_a_middle_frame_keeps_names_aligned_with_images(qapp):
     assert w.raw_images is not w.base_images
     assert [id(x) for x in w.raw_images] == [id(x) for x in w.base_images]
     assert w.image_source_paths == [os.path.join(folder, n) for n in names]
+    assert w.image_source_exifs == [b"exif0", b"exif1", b"exif2", b"exif3"]
 
     sm.delete_source_image(w.file_list.item(1))  # delete a middle frame
 
@@ -506,6 +517,7 @@ def test_deleting_a_middle_frame_keeps_names_aligned_with_images(qapp):
     assert [int(img[0, 0, 0]) for img in w.base_images] == [0, 2, 3]
     assert w.image_source_paths == [os.path.join(folder, n)
                                     for n in ("f0.png", "f2.png", "f3.png")]
+    assert w.image_source_exifs == [b"exif0", b"exif2", b"exif3"]
     assert len(w.image_filenames) == len(w.raw_images) == len(w.base_images)
 
 
@@ -840,7 +852,7 @@ class _StubResizeDialog:
         self.chosen = chosen
         self.offered = []
 
-    def __call__(self, parent=None, initial_scale=1.0, max_scale=1.0):
+    def __call__(self, parent=None, initial_scale=1.0, max_scale=1.0, **kwargs):
         self.offered.append((initial_scale, max_scale))
         dialog = self
 
@@ -912,6 +924,20 @@ def test_resizing_starts_from_the_loaded_base_and_cannot_exceed_it(qapp, monkeyp
     assert [int(img[0, 0, 0]) for img in w2.raw_images] == [0, 1, 2]
 
 
+def test_resize_applies_preset_near_base_scale(qapp, monkeypatch):
+    from controllers import transform_manager as tm
+
+    window = _resize_window((16, 2049, 3), 1.0, 1.0)
+    window.raw_images = list(window.base_images)
+    monkeypatch.setattr(tm, 'DownsampleDialog', _StubResizeDialog(2048 / 2049))
+    messages = []
+    monkeypatch.setattr(tm, 'show_success_box', lambda *args, **kwargs: messages.append(args))
+    window.transform_manager.resize_all_images()
+    assert all(image.shape[1] == 2048 for image in window.raw_images)
+    assert window.current_scale_factor == 2048 / 2049
+    assert '99.951196' in messages[0][2]
+
+
 def test_downsample_dialog_respects_max_scale(qapp):
     from dialogs.settings import DownsampleDialog
 
@@ -933,6 +959,7 @@ def test_algorithm_parameters_survive_method_switches(qapp):
     host = SimpleNamespace(method="guided_filter", _fusion_parameters_by_method={})
     host.current_fusion_method = lambda: host.method
     host.persist_settings = lambda: None
+    host._mark_project_setting_changed = lambda: None
     host._sync_brightness_checkboxes = lambda *_: None
     host.fusion_parameter_panel = AlgorithmParameterPanel()
     for name in ("fusion_parameters_for", "set_fusion_parameters",
@@ -1270,6 +1297,7 @@ def _retouch_shutdown_window(monkeypatch, force):
             self._project_dirty = True
             self.output_manager = SimpleNamespace(
                 confirm_unexported_on_exit=lambda: record("output"))
+            self.render_manager = SimpleNamespace(cancel_storage_preflight=lambda: None, worker=None)
             self.usage_analytics = SimpleNamespace(shutdown=lambda: record("shutdown"))
 
         def _confirm_discard_project_changes(self, *_args):

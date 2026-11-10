@@ -127,10 +127,11 @@ def _measure_dtcwt(images, progress, should_cancel, nlevels=4):
     (MultiFocusFusion._fuse_dtcwt defaults to N=4): a map computed at a
     different depth is not "the method's own activity measure".
     """
-    try:
-        import dtcwt as dtcwt_lib
-    except ImportError as exc:  # pragma: no cover - env dependent
-        raise RuntimeError("DTCWT depth maps need the dtcwt package") from exc
+    # Reuse the fusion adapter's NumPy compatibility setup, including when
+    # depth is the first wavelet operation in a fresh process.
+    from fusion_methods.dtcwt import dtcwt as dtcwt_lib
+    if dtcwt_lib is None:  # pragma: no cover - env dependent
+        raise RuntimeError("DTCWT depth maps need dtcwt, scipy and six")
 
     transform = dtcwt_lib.Transform2d()
     n = len(images)

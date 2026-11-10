@@ -43,7 +43,7 @@ class TestOpenFocusAB:
         frames = make_two_focus_stack()
         fusion = MultiFocusFusion(algorithm=method, use_gpu=False)
         out = fusion.fuse(input_source=frames, img_resize=None,
-                          parameters={} if method == 'openfocus_c' else {'kernel_size': 7})
+                          parameters={} if method == 'openfocus_c' else {'radius': 3})
         assert out.shape[:2] == frames[0].shape[:2]
         assert float(out.mean()) > 1.0
         # fused must beat both inputs overall (sharp half from each)
@@ -144,7 +144,7 @@ class TestOpenFocusAB:
         fusion = MultiFocusFusion(algorithm=method, use_gpu=False,
                                   tile_enabled=True, tile_threshold=64)
         out = fusion.fuse(input_source=frames, img_resize=None,
-                          parameters={} if method == 'openfocus_c' else {'kernel_size': 7})
+                          parameters={} if method == 'openfocus_c' else {'radius': 3})
         assert out.shape[:2] == (120, 160)
 
     def test_supported_and_cli_names(self):
@@ -163,7 +163,7 @@ class TestOpenFocusC:
     def test_two_identical_frames_roundtrip(self):
         from fusion_methods.openfocus_bc import openfocus_c_impl
         frame = make_two_focus_stack((90, 120))[0]
-        out = openfocus_c_impl([frame, frame.copy()], None, 7)
+        out = openfocus_c_impl([frame, frame.copy()])
         assert np.abs(out.astype(int) - frame.astype(int)).mean() < 1.0
 
 
@@ -187,7 +187,7 @@ class TestBaseCorrection:
         out = MultiFocusFusion(algorithm="openfocus_b", use_gpu=False,
                                base_frame="last",
                                exposure_match=False).fuse(
-            input_source=list(stack), img_resize=None, kernel_size=7)
+            input_source=list(stack), img_resize=None, radius=3)
         assert abs(lp(out) - lp(stack[1])) < 3.0
 
     def test_first_matches_first_frame_lowfreq(self):
@@ -198,22 +198,32 @@ class TestBaseCorrection:
         out = MultiFocusFusion(algorithm="openfocus_b", use_gpu=False,
                                base_frame="first",
                                exposure_match=False).fuse(
-            input_source=list(stack), img_resize=None, kernel_size=7)
+            input_source=list(stack), img_resize=None, radius=3)
         assert abs(lp(out) - lp(stack[0])) < 4.0
 
     def test_exposure_match_calibrates_before_fusion(self):
-        """The pipeline scales every frame to the last frame's mean before
-        the focus measure, for every fusion method."""
+        """OpenFocus matches the processing-order first frame; other methods use the last."""
         from core.multi_focus_fusion import MultiFocusFusion
         stack = self._drifted_stack()
         lp = lambda x: cv2.GaussianBlur(
             np.asarray(x, np.float32), (0, 0), 32).mean()
-        for algo in ("openfocus_a", "openfocus_b", "guided_filter"):
+        for algo in ("openfocus_a", "openfocus_b", "openfocus_c", "guided_filter"):
+            params = ({'radius': 3} if algo in ('openfocus_a', 'openfocus_b')
+                      else {'kernel_size': 7} if algo == 'guided_filter' else {})
             out = MultiFocusFusion(algorithm=algo, use_gpu=False,
-                                   base_frame="none",
-                                   exposure_match=True).fuse(
-                input_source=list(stack), img_resize=None, kernel_size=7)
-            assert abs(lp(out) - lp(stack[1])) < 3.0, algo
+                                   base_frame="none", exposure_match=True).fuse(
+                input_source=list(stack), img_resize=None, **params)
+            reference = stack[0] if algo.startswith('openfocus_') else stack[-1]
+            assert abs(lp(out) - lp(reference)) < 3.0, algo
+
+    @pytest.mark.parametrize('algo', ['openfocus_a', 'openfocus_b', 'openfocus_c'])
+    @pytest.mark.parametrize('sort_mode,target', [('asc', 50), ('desc', 100)])
+    def test_exposure_match_follows_processing_order(self, algo, sort_mode, target):
+        from core.multi_focus_fusion import MultiFocusFusion
+        frames = [np.full((32, 32, 3), value, np.uint8) for value in (50, 100)]
+        result = MultiFocusFusion(algorithm=algo, use_gpu=False, tile_enabled=False,
+                                  sort_mode=sort_mode, exposure_match=True).fuse(frames, thread_count=1)
+        assert np.max(np.abs(result.astype(np.int16) - target)) <= 1
 
     def test_exposure_match_off_leaves_stack_untouched(self):
         """`exposure_match=False` must preserve the historical behaviour."""
@@ -224,7 +234,7 @@ class TestBaseCorrection:
         out = MultiFocusFusion(algorithm="openfocus_b", use_gpu=False,
                                base_frame="none",
                                exposure_match=False).fuse(
-            input_source=list(stack), img_resize=None, kernel_size=7)
+            input_source=list(stack), img_resize=None, radius=3)
         assert lp(out) < lp(stack[1]) - 10
 
     def test_works_for_every_algorithm(self):
@@ -366,7 +376,8 @@ class TestOpenFocusAlignment:
                             np.float32([[1, 0, 10], [0, 1, 7]]), (320, 240))
         f2 = cv2.warpAffine(cv2.GaussianBlur(base, (0, 0), 4.5),
                             np.float32([[1, 0, 16], [0, 1, 11]]), (320, 240))
-        reg = ImageRegistration(method="openfocus", parameters={"magnification": 0.0})
+        reg = ImageRegistration(method="openfocus", parameters={"magnification": 0.0,
+                                                               "max_shift_ratio": 0.08})
         out = reg.process([base.copy(), f1, f2], output_path=None,
                           thread_count=2)
         for transform, expected in zip(reg.alignment_plan.transforms[1:], ((10, 7), (16, 11))):
@@ -461,9 +472,9 @@ class TestSmoothingControls:
         from core.multi_focus_fusion import MultiFocusFusion
         frames = self._stack()
         sharp = MultiFocusFusion(algorithm=algo, use_gpu=False).fuse(
-            input_source=[f.copy() for f in frames], blend_smoothing=0.0)
+            input_source=[f.copy() for f in frames], smoothing=0.0)
         soft = MultiFocusFusion(algorithm=algo, use_gpu=False).fuse(
-            input_source=[f.copy() for f in frames], blend_smoothing=6.0)
+            input_source=[f.copy() for f in frames], smoothing=10.0)
         assert not np.array_equal(sharp, soft), (
             f"{algo}: blend_smoothing had no effect on the output")
 
@@ -477,20 +488,21 @@ class TestSmoothingControls:
         window = SimpleNamespace(method="openfocus_a", _fusion_parameters_by_method={})
         window.current_fusion_method = lambda: window.method
         window.persist_settings = lambda: None
+        window._mark_project_setting_changed = lambda: None
         window._sync_brightness_checkboxes = lambda *_: None
         window.fusion_parameter_panel = AlgorithmParameterPanel()
         for name in ("fusion_parameters_for", "set_fusion_parameters",
                      "_set_fusion_option_available", "refresh_algorithm_parameters"):
             setattr(window, name, MethodType(getattr(OpenFocus, name), window))
         window.refresh_algorithm_parameters()
-        window.set_fusion_parameters("openfocus_a", {"blend_smoothing": 7.5})
+        window.set_fusion_parameters("openfocus_a", {"smoothing": 7.5})
         window.method = "openfocus_c"
         window.refresh_algorithm_parameters()
-        window.set_fusion_parameters("openfocus_c", {"blend_smoothing": 3.6})
+        window.set_fusion_parameters("openfocus_c", {"smoothing": 6.0})
         window.method = "openfocus_a"
         window.refresh_algorithm_parameters()
-        assert window.fusion_parameter_panel.values()["blend_smoothing"] == 7.5
-        assert window.fusion_parameters_for("openfocus_c")["blend_smoothing"] == 3.6
+        assert window.fusion_parameter_panel.values()["smoothing"] == 7.5
+        assert window.fusion_parameters_for("openfocus_c")["smoothing"] == 6.0
         window.fusion_parameter_panel.deleteLater()
 
 
@@ -537,6 +549,24 @@ def test_tiled_depth_guided_transitions_match_whole_frame(method, dtype, graysca
                              tile_overlap=24, **options).fuse(frames, thread_count=1)
     error = np.abs(whole.astype(np.float32) - tiled.astype(np.float32))
     assert error.mean() < (1.5 if method == 'openfocus_b' else 8.0)
+
+
+def test_tiled_b_preserves_fine_texture_in_each_focus_region():
+    from core.multi_focus_fusion import MultiFocusFusion
+    from utils.image_utils import quantize_fuse_output
+
+    shape = (129, 131)
+    texture = ((np.indices(shape).sum(axis=0) % 2) * 32768 + 32767).astype(np.uint16)
+    flat = np.full(shape, 65535, np.uint16)
+    left = np.indices(shape)[1] < 65
+    frames = [np.where(left, texture, flat), np.where(left, flat, texture)]
+    fusion = MultiFocusFusion(algorithm='openfocus_b', tile_threshold=32,
+                              tile_block_size=48, tile_overlap=24,
+                              exposure_match=False, sort_mode='off')
+    result = quantize_fuse_output(fusion.fuse(frames, thread_count=1), True)
+    np.testing.assert_array_equal(result[:, 8:48], texture[:, 8:48])
+    np.testing.assert_array_equal(result[:, 84:120], texture[:, 84:120])
+
 
 
 def test_openfocus_a_extreme_aspect_ratio():
@@ -720,14 +750,6 @@ def test_b_interpolates_only_the_two_neighboring_depth_layers(dtype, grayscale):
 
 
 
-def test_c_constant_depth_selects_the_middle_source():
-    from fusion_methods.openfocus_bc import openfocus_c_impl
-
-    rng = np.random.default_rng(8177)
-    frames = [rng.integers(20, 230, (131, 97, 3), dtype=np.uint8) for _ in range(3)]
-    depth = np.ones(frames[0].shape[:2], np.float32)
-    result = openfocus_c_impl(frames, depth_override=depth, thread_count=1)
-    np.testing.assert_array_equal(result, frames[1])
 
 
 @pytest.mark.parametrize('method', ['openfocus_a', 'openfocus_b', 'openfocus_c'])

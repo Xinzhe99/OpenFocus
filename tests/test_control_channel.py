@@ -28,12 +28,17 @@ from utils.image_utils import imwrite_auto
 def control_window(qapp, monkeypatch, tmp_path):
     from main import OpenFocus
     from utils import recovery, settings_store
+    from core import frame_storage
+
+    # Deferred storage replies are exercised separately in test_storage_preflight.
+    monkeypatch.setattr(frame_storage, "automatic_preflight_may_block", lambda: False)
 
     settings = QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat)
     settings.clear()
     settings.setValue("ui/first_run_done", "1")
     settings.setValue("updates/last_check_epoch", 9999999999)
     settings.setValue("rendering/ai_cpu_warning_dismissed", True)
+    settings.setValue('ui/experimental_features', True)
     settings_store._settings_singleton = settings
     monkeypatch.setattr(recovery, "_base_dir", lambda: str(tmp_path / "recovery"))
     monkeypatch.setenv("OPENFOCUS_CONTROL_FILE", str(tmp_path / "control.json"))
@@ -561,8 +566,12 @@ def test_mouse_keyboard_and_context(server, control_window):
     QTest.qWait(20)
 
 
-def test_generic_action_answers_file_dialog_and_loads_stack(server, stack_frames):
+def test_generic_action_answers_file_dialog_and_loads_stack(server, stack_frames, monkeypatch):
     from PyQt6.QtCore import QTimer
+    from utils import file_dialogs
+
+    # The control channel can address Qt dialogs, not the native OS picker.
+    monkeypatch.setattr(file_dialogs, '_use_native_folder_dialog', lambda: False)
 
     token = server.token
     answered = {}
@@ -951,6 +960,8 @@ def test_project_open_sets_lifecycle_state(server, control_window, monkeypatch):
     from utils import project_file
 
     assert getattr(control_window, "project_path", None) in (None, "")
+    # Fixture settings can mark the untitled project dirty before this test.
+    control_window._clear_project_dirty()
     captured = {}
 
     def fake_apply(window, state, on_loaded=None, on_error=None):
@@ -959,7 +970,10 @@ def test_project_open_sets_lifecycle_state(server, control_window, monkeypatch):
     monkeypatch.setattr(project_file, "validate_project",
                         lambda path: (True, "", {"sources": []}))
     monkeypatch.setattr(project_file, "apply_project", fake_apply)
-    call(server, "project.open", path="life.ofproj")["result"]
+    result = call(server, "project.open", path="life.ofproj")
+    assert result["ok"], result
+    assert getattr(control_window, "project_path", None) in (None, "")
+    control_window._mark_project_dirty()
     captured["on_loaded"]()
     assert control_window.project_path == "life.ofproj"
     assert control_window._project_dirty is False
@@ -1292,6 +1306,27 @@ def test_option_set_keeps_checkboxes_in_sync(server, control_window, monkeypatch
     call(server, "option.set", name="reverse_order", value=False)
 
 
+def test_diagnostic_options_are_reachable_and_take_effect_at_once(server, control_window):
+    from utils import logging_setup as logs
+    assert call(server, "app.state")["result"]["options"]["profile_performance"] is False
+    try:
+        call(server, "option.set", name="profile_performance", value=True)
+        call(server, "option.set", name="debug_logging", value=True)
+        options = call(server, "app.state")["result"]["options"]
+        assert options["profile_performance"] is True and options["debug_logging"] is True
+        assert control_window.profile_performance is True
+        assert logs.debug_enabled()
+        refused = call(server, "option.set", name="debug_logging", value="false")
+        assert refused["ok"] is False and refused["error"]["code"] == "invalid_argument"
+        assert logs.debug_enabled()                 # a string does not change the switch
+        control_window.render_manager.performance_report = {"outcome": "completed"}
+        assert call(server, "render.result")["result"]["performance"] == {"outcome": "completed"}
+    finally:
+        call(server, "option.set", name="debug_logging", value=False)
+        call(server, "option.set", name="profile_performance", value=False)
+    assert not logs.debug_enabled()
+
+
 def test_output_delete_clears_the_result_and_protects_retouch(server, stack_frames):
     token = server.token
     call(server, "stack.load", token=token, folder=str(stack_frames))
@@ -1472,6 +1507,17 @@ def test_output_export_routes_aligned_records(server, control_window, monkeypatc
     assert result["kind"] == "aligned"
     assert Path(result["path"]).is_file()
     assert captured["destination"] == str(tmp_path)
+
+
+def test_control_channel_respects_experimental_opt_in(server, control_window):
+    from locales import trans
+
+    control_window.experimental_features = False
+    control_window.apply_experimental_features()
+    response = call(server, 'method.set', id='guided_filter')
+    assert response['error']['code'] == 'invalid_argument'
+    assert response['error']['message'] == trans.t('experimental_locked_hint')
+    assert control_window.current_fusion_method() != 'guided_filter'
 
 
 def test_alignment_only_selection_is_accepted(server, control_window):

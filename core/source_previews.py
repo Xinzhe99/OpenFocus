@@ -11,6 +11,7 @@ from PyQt6.QtCore import QThread, pyqtSignal
 from core.source_frames import ensure_preview
 from utils.image_utils import to_display_uint8
 from utils.logging_setup import log_operation
+from utils.platform_utils import configure_native_worker_stack
 
 _PREVIEW_CONDITION = threading.Condition()
 _PREVIEW_ACTIVE = False
@@ -28,24 +29,18 @@ def _preview_parallelism():
                       ram_budget(snapshot) // _PREVIEW_WORKING_BYTES))
 
 
-def _acquire_preview_turn(cancelled, priority):
+def _acquire_preview_turn(cancelled, priority, *, yield_to_priority=False):
     """Admit one worker at a time, giving selected-frame requests first turn."""
-    global _PREVIEW_ACTIVE, _PREVIEW_PRIORITY_WAITERS
+    global _PREVIEW_ACTIVE
     with _PREVIEW_CONDITION:
-        if priority:
-            _PREVIEW_PRIORITY_WAITERS += 1
-            _PREVIEW_CONDITION.notify_all()
-        try:
-            while not cancelled():
-                if not _PREVIEW_ACTIVE and (priority or not _PREVIEW_PRIORITY_WAITERS):
-                    _PREVIEW_ACTIVE = True
-                    return True
-                _PREVIEW_CONDITION.wait(.05)
-            return False
-        finally:
-            if priority:
-                _PREVIEW_PRIORITY_WAITERS -= 1
-                _PREVIEW_CONDITION.notify_all()
+        while not cancelled():
+            if yield_to_priority and not priority and _PREVIEW_PRIORITY_WAITERS:
+                return False
+            if not _PREVIEW_ACTIVE and (priority or not _PREVIEW_PRIORITY_WAITERS):
+                _PREVIEW_ACTIVE = True
+                return True
+            _PREVIEW_CONDITION.wait(.05)
+        return False
 
 
 def _release_preview_turn():
@@ -79,6 +74,7 @@ class SourcePreviewWorker(QThread):
 
     def __init__(self, frames, request, indices=None, *, selected_display=False):
         super().__init__()
+        configure_native_worker_stack(self)
         self.frames = tuple(frames)
         self.request = request
         self.indices = tuple(range(len(self.frames))) if indices is None else tuple(indices)
@@ -94,6 +90,7 @@ class SourcePreviewWorker(QThread):
     cancel = request_cancel
 
     def run(self):
+        global _PREVIEW_PRIORITY_WAITERS
         from core.resource_policy import heavy_job
 
         def cancelled():
@@ -102,23 +99,54 @@ class SourcePreviewWorker(QThread):
                 self._cancel_event.set()
             return self._cancel_event.is_set()
 
+        priority = len(self.indices) == 1
+        if priority:
+            with _PREVIEW_CONDITION:
+                _PREVIEW_PRIORITY_WAITERS += 1
+                _PREVIEW_CONDITION.notify_all()
         with log_operation('source_previews', frames=len(self.indices)) as operation:
             executor = None
             position = 0
             try:
                 while position < len(self.indices):
-                    if not _acquire_preview_turn(cancelled, len(self.indices) == 1):
-                        operation.cancel()
-                        return
-                    try:
-                        # Yield to rendering between small batches. The lease also
-                        # prevents previews from competing with an active render.
-                        with heavy_job(cancelled):
-                            # A selected request may have arrived while this
-                            # batch waited for an active heavy job to finish.
-                            with _PREVIEW_CONDITION:
-                                if len(self.indices) != 1 and _PREVIEW_PRIORITY_WAITERS:
-                                    continue
+                    if self.selected_display:
+                        if not _acquire_preview_turn(cancelled, priority):
+                            operation.cancel()
+                            return
+                        try:
+                            from core.source_frames import SourceFrame
+                            from core.resource_policy import ResourceLimitError, require_memory
+                            index = self.indices[position]
+                            frame = self.frames[index]
+                            if isinstance(frame, SourceFrame):
+                                try:
+                                    require_memory(_PREVIEW_WORKING_BYTES)
+                                except ResourceLimitError:
+                                    pass  # Wait for the heavy job when memory is tight.
+                                else:
+                                    thumb = _make_thumbnail(frame, cancelled)
+                                    if cancelled():
+                                        operation.cancel()
+                                        return
+                                    if frame.preview_is_available:
+                                        position += 1
+                                        self.ready.emit(self.request, index, id(frame), thumb)
+                                        continue
+                        finally:
+                            _release_preview_turn()
+                    # Never hold the preview turn while waiting for a render.
+                    # A selected frame can use its bounded preview meanwhile.
+                    if not priority:
+                        with _PREVIEW_CONDITION:
+                            while _PREVIEW_PRIORITY_WAITERS and not cancelled():
+                                _PREVIEW_CONDITION.wait(.05)
+                    with heavy_job(cancelled):
+                        if not _acquire_preview_turn(cancelled, priority, yield_to_priority=True):
+                            if cancelled():
+                                operation.cancel()
+                                return
+                            continue
+                        try:
                             if cancelled():
                                 operation.cancel()
                                 return
@@ -160,8 +188,8 @@ class SourcePreviewWorker(QThread):
                             if cancelled():
                                 operation.cancel()
                                 return
-                    finally:
-                        _release_preview_turn()
+                        finally:
+                            _release_preview_turn()
             except Exception as exc:
                 if cancelled():
                     operation.cancel()
@@ -171,6 +199,10 @@ class SourcePreviewWorker(QThread):
             finally:
                 if executor is not None:
                     executor.shutdown(wait=True, cancel_futures=True)
+                if priority:
+                    with _PREVIEW_CONDITION:
+                        _PREVIEW_PRIORITY_WAITERS -= 1
+                        _PREVIEW_CONDITION.notify_all()
 
 
 DISPLAY_REGION_MAX_SIDE = 4096
@@ -229,10 +261,12 @@ class SourceRegionWorker(QThread):
     failed = pyqtSignal(object, str)
 
     def __init__(self, frame, key, *, labels=None, index=0, scale_cfg=None,
-                 watermark_cfg=None, metadata=None):
+                 watermark_cfg=None, metadata=None, target='input'):
         super().__init__()
+        configure_native_worker_stack(self)
         self.frame = frame
         self.key = key
+        self.target = target
         self.labels = labels
         self.index = index
         self.scale_cfg = scale_cfg
@@ -265,7 +299,7 @@ class SourceRegionWorker(QThread):
         if tile.ndim == 2:
             tile = cv2.cvtColor(tile, cv2.COLOR_GRAY2BGR)
         if self.labels is not None:
-            tile, _ = self.labels._draw_for(tile, 'input', self.index, source_rect=rect)
+            tile, _ = self.labels._draw_for(tile, self.target, self.index, source_rect=rect)
         if self.scale_cfg:
             from utils import scalebar
             from utils.frame_pixels import preview_scale_config
@@ -291,7 +325,7 @@ class SourceRegionWorker(QThread):
                         if self.labels is not None:
                             if pixels.ndim == 2:
                                 pixels = cv2.cvtColor(pixels, cv2.COLOR_GRAY2BGR)
-                            pixels, _ = self.labels._draw_for(pixels, 'input', self.index, source_rect=sampled)
+                            pixels, _ = self.labels._draw_for(pixels, self.target, self.index, source_rect=sampled)
                         total += float(pixels.sum(dtype=np.float64))
                         count += pixels.size
                 mean = total / count if count else 128.0
@@ -321,7 +355,7 @@ class SourceRegionWorker(QThread):
             if not acquired or self.cancelled:
                 return
             with heavy_job(lambda: self.cancelled):
-                image = resolve_frame(self.frame)
+                image = resolve_frame(self.frame, should_cancel=lambda: self.cancelled)
                 if self.cancelled:
                     return
                 # OpenCV silently materializes negative/column-strided inputs.

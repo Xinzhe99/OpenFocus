@@ -8,7 +8,7 @@ import math
 import ntpath
 import os
 
-VERSION = 1
+VERSION = 2
 
 # The recipe deliberately excludes transient CLI controls (progress, resume,
 # summaries and per-folder override files).
@@ -54,6 +54,31 @@ def _object(value, name, allowed):
         raise ValueError(f"unknown {name} fields: {sorted(unknown)}")
 
 
+def _upgrade_recipe(recipe):
+    if not isinstance(recipe, dict) or type(recipe.get('version')) is not int or recipe['version'] != 1:
+        return recipe
+    from core.algorithms import migrate_openfocus_parameters
+    from utils.project_file import validate_template_settings
+    recipe = json.loads(json.dumps(recipe, allow_nan=False))
+    options = recipe.get('options', {})
+    if isinstance(options, dict):
+        method = options.get('method', 'stackmffv3')
+        defaults = {
+            'openfocus_a': {'kernel_size': 17, 'blend_smoothing': 2.0},
+            'openfocus_b': {'kernel_size': 17, 'depth_smoothing': 1.44},
+            'openfocus_c': {'blend_smoothing': 3.6},
+        }
+        supplied = options.get('fusion_parameters', {})
+        if method in defaults and isinstance(supplied, dict):
+            options['fusion_parameters'] = migrate_openfocus_parameters(
+                method, {**defaults[method], **supplied})
+            recipe['options'] = options
+    if 'project_settings' in recipe:
+        recipe['project_settings'] = validate_template_settings(recipe['project_settings'], old_parameters=True)
+    recipe['version'] = VERSION
+    return recipe
+
+
 def validate_recipe(recipe, recipe_path):
     """Validate a recipe and return CLI arguments with absolute paths.
 
@@ -61,6 +86,7 @@ def validate_recipe(recipe, recipe_path):
     not read input pixels; use run_recipe(..., dry_run=True) to check inputs.
     """
     from core.cli import build_parser, _resolve_algorithm_arguments, VALID_FORMATS
+    recipe = _upgrade_recipe(recipe)
 
     _object(recipe, "recipe", {"version", "input", "output", "output_dir", "options", "project_settings"})
     if type(recipe.get("version")) is not int or recipe["version"] != VERSION:
@@ -232,13 +258,14 @@ def load_recipe(path):
             result[key] = value
         return result
     with open(path, encoding="utf-8") as stream:
-        recipe = json.load(stream, object_pairs_hook=pairs, parse_constant=lambda x: (_ for _ in ()).throw(ValueError(f"invalid number: {x}")))
+        recipe = _upgrade_recipe(json.load(stream, object_pairs_hook=pairs, parse_constant=lambda x: (_ for _ in ()).throw(ValueError(f"invalid number: {x}"))))
     validate_recipe(recipe, path)
     return recipe
 
 
 def save_recipe(path, recipe):
     """Validate and save a recipe. Relative paths are relative to *path*."""
+    recipe = _upgrade_recipe(recipe)
     validate_recipe(recipe, path)
     mask = recipe.get("options", {}).get("defect_mask_path")
     if mask:
@@ -342,7 +369,8 @@ def capture_project_recipe(path, project_path, argv):
     processing = ["--input", *args.input,
                   "--output" if args.output else "--output-dir", args.output or args.output_dir,
                   "--method", method, "--align", alignment,
-                  "--base-frame", "last" if base else "none",
+                  "--base-frame", ("first" if method in ("openfocus_a", "openfocus_b", "openfocus_c")
+                                   else "last") if base else "none",
                   "--sort", "desc" if settings.get("stack_reverse_order", False) else "asc",
                   "--exposure-match" if exposure else "--no-exposure-match",
                   # The desktop app loads folders in filename order; a recipe

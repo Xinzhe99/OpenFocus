@@ -28,11 +28,11 @@ def roi_neural(parameters, width, height):
 
 
 def roi_openfocus_a(parameters, width, height):
-    return max(96, parameters['kernel_size'] // 2 + ceil(4 * parameters['blend_smoothing']) + 2), 1
+    return max(96, parameters['radius'] + 2), 1
 
 
 def roi_openfocus_b(parameters, width, height):
-    return max(96, parameters['kernel_size'] // 2 + ceil(4 * parameters['depth_smoothing']) + 2), 1
+    return max(96, parameters['radius'] + ceil(4 * parameters['smoothing'] * .24) + 2), 1
 
 
 def roi_openfocus_c(parameters, width, height):
@@ -42,10 +42,12 @@ def roi_openfocus_c(parameters, width, height):
 
 
 # Serial OpenFocus passes retain global planes in mappings and use bounded
-# row scratch. Reserve one float BGRA frame for a requested native resize;
-# concurrent producers are admitted separately by _frame_pass_workers.
+# row scratch. A's background accumulators spill to mapped row windows when
+# they exceed 32 MiB. Concurrent producers are admitted separately.
 def openfocus_a_resources(height, width, parameters, frames):
-    return 4 * 1024 * 1024 + min(height, 128) * width * 96, height * width * 16
+    background_ram = min(height * width * 24, 32 * 1024 * 1024)
+    fixed = 4 * 1024 * 1024 + background_ram + min(height, 128) * width * 120
+    return fixed, height * width * 16
 
 
 def openfocus_b_resources(height, width, parameters, frames):
@@ -71,20 +73,24 @@ def dct_resources(height, width, parameters, frames):
     return 4 * 1024 * 1024, (height + 8) * (width + 8) * 64
 
 
-def _openfocus_needs_tiles(frames, threshold):
+def _openfocus_needs_tiles(frames, threshold, *, height=None, width=None, **_kwargs):
     from core.multi_focus_fusion import _DEFAULT_TILE_THRESHOLD
     # Global maps are streamed through bounded rows/mappings. Memory pressure
     # must not silently replace that context with independently fused crops.
-    return bool(frames and threshold != _DEFAULT_TILE_THRESHOLD
-                and max(frames[0].shape[:2]) > threshold)
+    if not frames:
+        return False
+    h, w = frames[0].shape[:2]
+    h = int(height) if height is not None else h
+    w = int(width) if width is not None else w
+    return threshold != _DEFAULT_TILE_THRESHOLD and max(h, w) > threshold
 
 
-def openfocus_a_needs_tiles(frames, threshold):
-    return _openfocus_needs_tiles(frames, threshold)
+def openfocus_a_needs_tiles(frames, threshold, **kwargs):
+    return _openfocus_needs_tiles(frames, threshold, **kwargs)
 
 
-def openfocus_b_needs_tiles(frames, threshold):
-    return _openfocus_needs_tiles(frames, threshold)
+def openfocus_b_needs_tiles(frames, threshold, **kwargs):
+    return _openfocus_needs_tiles(frames, threshold, **kwargs)
 
 
 
@@ -94,15 +100,19 @@ def dtcwt_resources(height, width, parameters, frames):
     return estimate_working_set(height, width, parameters['N'], frames)
 
 
-def dtcwt_needs_tiles(frames, threshold):
+def dtcwt_needs_tiles(frames, threshold, *, height=None, width=None, **_kwargs):
     from core.multi_focus_fusion import estimate_peak_bytes, memory_budget_bytes
     # Prefer whole transforms to avoid introducing tile-boundary wavelets.
-    return estimate_peak_bytes('dtcwt', frames) > memory_budget_bytes()
+    return estimate_peak_bytes('dtcwt', frames, height=height, width=width) > memory_budget_bytes()
 
 
-def neural_needs_tiles(frames, threshold):
+def neural_needs_tiles(frames, threshold, *, height=None, width=None, **_kwargs):
     from core.multi_focus_fusion import _stack_footprint_exceeds
-    return max(frames[0].shape[:2]) > threshold or _stack_footprint_exceeds(frames, threshold)
+    h, w = frames[0].shape[:2]
+    h = int(height) if height is not None else h
+    w = int(width) if width is not None else w
+    return max(h, w) > threshold or _stack_footprint_exceeds(
+        frames, threshold, height=h, width=w)
 
 
 def registration_homography(registration, images, thread_count=4, should_cancel=None, **parameters):
@@ -156,16 +166,19 @@ def depth_stackmffv2(images, progress_callback=None, should_cancel=None, **param
         resource_preference=parameters.get('resource_preference', 'balanced'))
 
 
-def stackmffv2_needs_tiles(frames, threshold):
+def stackmffv2_needs_tiles(frames, threshold, *, height=None, width=None,
+                           device=None, **_kwargs):
     """Tile when geometry or the attention working set exceeds its budget."""
     from core.multi_focus_fusion import _stack_footprint_exceeds
     from core.resource_policy import ResourceLimitError
     from fusion_methods.stackmff_v2 import _prepare_inference
     h, w = frames[0].shape[:2]
-    if max(h, w) > threshold or _stack_footprint_exceeds(frames, threshold):
+    h = int(height) if height is not None else h
+    w = int(width) if width is not None else w
+    if max(h, w) > threshold or _stack_footprint_exceeds(frames, threshold, height=h, width=w):
         return True
     try:
-        _prepare_inference(frames, None, False)
+        _prepare_inference(frames, None, False, height=h, width=w, device=device or 'CPU')
     except ResourceLimitError:
         return True
     return False
@@ -173,14 +186,13 @@ def stackmffv2_needs_tiles(frames, threshold):
 
 def depth_openfocus_b(images, progress_callback=None, should_cancel=None, **parameters):
     from fusion_methods.openfocus_depth import depth_map
-    smoothing = parameters['depth_smoothing'] * (5.0 / 1.2)
-    return depth_map(images, None, parameters['kernel_size'], smoothing,
+    return depth_map(images, None, 2 * parameters['radius'] + 1, parameters['smoothing'],
                      should_cancel, progress_callback,
-                     thread_count=parameters.get('thread_count'))
+                     thread_count=parameters.get('thread_count'), half_resolution=True,
+                     preserve_detail=True, feather=parameters['feather'])
 
 
 def depth_openfocus_c(images, progress_callback=None, should_cancel=None, **parameters):
     from fusion_methods.openfocus_depth import depth_map
-    smoothing = parameters['blend_smoothing'] * (5.0 / 3.0)
-    return depth_map(images, None, 17, smoothing, should_cancel, progress_callback,
+    return depth_map(images, None, 17, parameters['smoothing'], should_cancel, progress_callback,
                      thread_count=parameters.get('thread_count'), half_resolution=True)

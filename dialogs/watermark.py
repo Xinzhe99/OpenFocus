@@ -101,6 +101,18 @@ class WatermarkDialog(QDialog):
         self.text_edit.setToolTip(trans.t("watermark_text_hint"))
         text_form.addRow(trans.t("watermark_text"), self.text_edit)
 
+        self.copyright_check = QCheckBox(trans.t("watermark_copyright"))
+        self.copyright_check.setAccessibleName(trans.t("watermark_copyright"))
+        self.copyright_check.setToolTip(trans.t("watermark_copyright_hint"))
+        text_form.addRow(self.copyright_check)
+
+        self.copyright_position_combo = QComboBox()
+        self.copyright_position_combo.addItem(trans.t("watermark_copyright_prefix"), "prefix")
+        self.copyright_position_combo.addItem(trans.t("watermark_copyright_suffix"), "suffix")
+        self.copyright_position_combo.setAccessibleName(trans.t("watermark_copyright_position"))
+        self.copyright_position_combo.setToolTip(trans.t("watermark_copyright_position_hint"))
+        text_form.addRow(trans.t("watermark_copyright_position"), self.copyright_position_combo)
+
         form_col.addWidget(self._section(trans.t("watermark_section_appearance")))
         appearance = QFormLayout()
         appearance.setFormAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
@@ -274,6 +286,9 @@ class WatermarkDialog(QDialog):
                        self.angle_slider.valueChanged):
             signal.connect(self._schedule_preview)
         self.text_edit.textEdited.connect(self._schedule_preview)
+        self.copyright_check.toggled.connect(self.copyright_position_combo.setEnabled)
+        self.copyright_check.toggled.connect(self._schedule_preview)
+        self.copyright_position_combo.currentIndexChanged.connect(self._schedule_preview)
         self.font_combo.currentFontChanged.connect(self._schedule_preview)
         self.color_combo.currentIndexChanged.connect(self._schedule_preview)
         self.density_combo.currentIndexChanged.connect(self._schedule_preview)
@@ -360,11 +375,16 @@ class WatermarkDialog(QDialog):
     def _load_style(self, cfg: watermark.WatermarkConfig) -> None:
         """Populate the style controls from a committed configuration."""
         blockers = [QSignalBlocker(widget) for widget in (
-            self.text_edit, self.font_combo, self.size_slider, self.size_spin,
+            self.text_edit, self.copyright_check, self.copyright_position_combo,
+            self.font_combo, self.size_slider, self.size_spin,
             self.opacity_slider, self.opacity_spin, self.color_combo,
             self.angle_slider, self.angle_spin, self.density_combo)]
         default_family = self.font().family()
         self.text_edit.setText(cfg.text)
+        self.copyright_check.setChecked(cfg.copyright_enabled)
+        self.copyright_position_combo.setCurrentIndex(
+            max(0, self.copyright_position_combo.findData(cfg.copyright_position)))
+        self.copyright_position_combo.setEnabled(cfg.copyright_enabled)
         self.font_combo.setCurrentFont(QFont(cfg.font_family or default_family))
         self.size_slider.setValue(int(round(cfg.size_percent * 10)))
         self.size_spin.setValue(cfg.size_percent)
@@ -397,7 +417,7 @@ class WatermarkDialog(QDialog):
                 and "registered" not in targets):
             targets = tuple(targets) + ("registered",)
         if cfg is None:
-            cfg = watermark.WatermarkConfig(text="")
+            cfg = watermark.WatermarkConfig(text="", copyright_enabled=True)
         self._load_style(cfg)
         for target, check in self.target_checks.items():
             check.setChecked(target in targets)
@@ -579,6 +599,8 @@ class WatermarkDialog(QDialog):
             family = ""
         return watermark.normalize_config({
             "text": self.text_edit.text(),
+            "copyright_enabled": self.copyright_check.isChecked(),
+            "copyright_position": self.copyright_position_combo.currentData(),
             "font_family": family,
             "size_percent": float(self.size_spin.value()),
             "opacity": float(self.opacity_spin.value()) / 100.0,

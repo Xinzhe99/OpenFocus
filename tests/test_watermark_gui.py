@@ -195,6 +195,94 @@ def test_dialog_cancel_never_commits(qapp):
     assert wm.config_from_window(window) is None
 
 
+def test_copyright_controls_update_preview_and_commit(qapp):
+    from dialogs.watermark import WatermarkDialog
+    from utils.image_utils import pixmap_to_cv2
+
+    image = _image()
+    window = _DialogHost(source=image)
+    dialog = WatermarkDialog(window)
+    assert dialog.copyright_check.isChecked()
+    assert dialog.copyright_position_combo.currentData() == "prefix"
+    assert "©" not in dialog.text_edit.placeholderText()
+    assert dialog.copyright_check.accessibleName()
+    assert dialog.copyright_position_combo.accessibleName()
+    dialog.text_edit.setText("Creator")
+    dialog._refresh_preview()
+    prefix = pixmap_to_cv2(dialog.preview_lbl._base_pixmap)
+    expected = wm.burn(image, wm.normalize_config({"text": "© Creator"}))
+    assert np.array_equal(prefix, expected)
+
+    dialog.copyright_position_combo.setCurrentIndex(
+        dialog.copyright_position_combo.findData("suffix"))
+    assert dialog._preview_timer.isActive()
+    dialog._refresh_preview()
+    suffix = pixmap_to_cv2(dialog.preview_lbl._base_pixmap)
+    expected = wm.burn(image, wm.normalize_config({"text": "Creator ©"}))
+    assert np.array_equal(suffix, expected)
+    assert dialog.text_edit.text() == "Creator"
+    dialog._save_and_accept()
+    cfg = wm.config_for_target(window, "source")
+    assert cfg.text == "Creator"
+    assert cfg.copyright_enabled and cfg.copyright_position == "suffix"
+
+
+def test_legacy_copyright_text_and_cancel_remain_unchanged(qapp):
+    from dialogs.watermark import WatermarkDialog
+    from utils.image_utils import pixmap_to_cv2
+
+    image = _image()
+    window = _DialogHost(source=image)
+    legacy = {"text": "© Legacy", "opacity": 0.25}
+    window.watermark_source_config = dict(legacy)
+    dialog = WatermarkDialog(window)
+    assert dialog.text_edit.text() == legacy["text"]
+    assert not dialog.copyright_check.isChecked()
+    assert not dialog.copyright_position_combo.isEnabled()
+    dialog._refresh_preview()
+    assert np.array_equal(pixmap_to_cv2(dialog.preview_lbl._base_pixmap),
+                          wm.burn(image, wm.normalize_config(legacy)))
+    dialog.copyright_check.setChecked(True)
+    assert dialog.copyright_position_combo.isEnabled()
+    assert dialog._preview_timer.isActive()
+    dialog.copyright_position_combo.setCurrentIndex(
+        dialog.copyright_position_combo.findData("suffix"))
+    dialog.reject()
+    assert window.watermark_source_config == legacy
+    assert not window.undone
+    reopened = WatermarkDialog(window)
+    assert reopened.text_edit.text() == "© Legacy"
+    assert not reopened.copyright_check.isChecked()
+    assert reopened.copyright_position_combo.currentData() == "prefix"
+
+
+def test_copyright_state_follows_output_style_and_survives_reset(qapp):
+    from dialogs.watermark import WatermarkDialog
+
+    image = _image()
+    record = _Record(image, context=_Context(image))
+    record.watermark_config = wm.WatermarkConfig(
+        text="Output", copyright_enabled=True, copyright_position="suffix").to_dict()
+    record.watermark_initialized = True
+    window = _DialogHost([record], source=image)
+    window.watermark_source_config = {"text": "© Source"}
+    dialog = WatermarkDialog(window)
+    assert not dialog.copyright_check.isChecked()
+    dialog.preview_target_combo.setCurrentIndex(
+        dialog.preview_target_combo.findData("output"))
+    assert dialog.text_edit.text() == "Output"
+    assert dialog.copyright_check.isChecked()
+    assert dialog.copyright_position_combo.currentData() == "suffix"
+    dialog._reset_defaults()
+    assert dialog.text_edit.text() == "Output"
+    assert dialog.copyright_check.isChecked()
+    assert dialog.copyright_position_combo.currentData() == "suffix"
+    dialog.copyright_check.setChecked(False)
+    assert not dialog.copyright_position_combo.isEnabled()
+    assert dialog._draft_config().copyright_position == "suffix"
+    assert not dialog._draft_config().copyright_enabled
+
+
 def test_dialog_apply_commits_scope_and_one_undo_step(qapp):
     from dialogs.watermark import WatermarkDialog
 
@@ -641,6 +729,7 @@ def test_linear_dng_watermark_keeps_unpainted_raw_pixels(tmp_path, qapp):
 
 
 def test_gif_worker_burns_the_frozen_watermark(tmp_path, qapp):
+    from PIL import Image
     from core.workers import GifSaverWorker
 
     frames = [np.full((120, 160, 3), 90, np.uint8) for _ in range(2)]
@@ -654,9 +743,13 @@ def test_gif_worker_burns_the_frozen_watermark(tmp_path, qapp):
         worker.finished_signal.connect(lambda ok, message: result.append((ok, message)))
         worker.run()
         assert result and result[0][0], result
-    assert os.path.getsize(marked) != os.path.getsize(plain)
-    first = cv2.imread(marked, cv2.IMREAD_UNCHANGED)
-    assert first is not None and np.any(first != frames[0])
+    with Image.open(plain) as image:
+        plain_first = np.asarray(image.convert("RGB"))
+    with Image.open(marked) as image:
+        marked_first = np.asarray(image.convert("RGB"))
+    assert np.array_equal(plain_first, frames[0])
+    assert marked_first.shape == plain_first.shape
+    assert np.any(marked_first != plain_first)
 
 
 def _write_stack(path, size=(120, 160), count=2):

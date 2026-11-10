@@ -114,14 +114,17 @@ class ElidingCheckBox(QCheckBox):
         label = getattr(self, "_dialog_label", None)
         self.setAccessibleName(self._full_text)
         if label is None:
-            super().setText(self.fontMetrics().elidedText(
-                self._full_text, Qt.TextElideMode.ElideRight, max(1, width)))
+            displayed = self.fontMetrics().elidedText(
+                self._full_text, Qt.TextElideMode.ElideRight, max(1, width))
+            super().setText(displayed)
         else:
+            displayed = self._full_text
             super().setText("")
             label.setText(self._full_text)
-        tip = self._full_text if self._include_label else ""
-        if self._hint:
-            tip = f"{tip}\n{self._hint}" if tip else self._hint
+        tip = self._full_text if self._include_label and displayed != self._full_text else ""
+        hint = self._hint if self._hint != self._full_text else ""
+        if hint:
+            tip = f"{tip}\n{hint}" if tip else hint
         super().setToolTip(tip)
         if label is not None:
             label.setToolTip(tip)
@@ -130,20 +133,15 @@ class ElidingCheckBox(QCheckBox):
 class ElidingButton(QPushButton):
     """A QPushButton that paints an ellipsis instead of clipping its label.
 
-    The right panel is ~375 px wide and splits it between up to three
-    buttons, so a long translation ("▶ Rozpocznij renderowanie" needs 343 px)
-    cannot fit. Qt clips mid-glyph, which reads as a rendering bug. Every
-    setText() paints the elided form for the current width and leaves the
-    full string (or an explicitly assigned hint) in the tooltip, so callers
-    do not have to remember to elide.
+    When the caption is elided, its full text remains available on hover.
+    Explicit hints remain visible when they add information.
     """
 
     def __init__(self, text: str = "", parent=None):
         super().__init__(text, parent)
         self._full_text = text
-        # An explicitly assigned tooltip survives setText(); None means the
-        # caption itself is the tooltip and must follow language changes.
-        self._explicit_tip = None
+        # An explicitly assigned tooltip survives caption and size changes.
+        self._explicit_tip = ""
         self.setSizePolicy(QSizePolicy.Policy.Preferred,
                            QSizePolicy.Policy.Fixed)
         # Qt clips a label at the padded contents edge, and the theme's 12 px
@@ -156,15 +154,18 @@ class ElidingButton(QPushButton):
 
     def setText(self, text: str) -> None:  # noqa: N802 (Qt casing)
         self._full_text = text or ""
-        super().setText(_elide_to_width(self, self._full_text))
-        super().setToolTip(
-            self._explicit_tip if self._explicit_tip is not None
-            else self._full_text)
+        self._refresh_display()
         self.updateGeometry()
 
     def setToolTip(self, text: str) -> None:  # noqa: N802 (Qt casing)
         self._explicit_tip = text or ""
-        super().setToolTip(self._explicit_tip or self._full_text)
+        self._refresh_display()
+
+    def _refresh_display(self) -> None:
+        displayed = _elide_to_width(self, self._full_text)
+        super().setText(displayed)
+        tip = self._explicit_tip if self._explicit_tip != self._full_text else ""
+        super().setToolTip(tip or (self._full_text if displayed != self._full_text else ""))
 
     def full_text(self) -> str:
         return self._full_text
@@ -185,13 +186,13 @@ class ElidingButton(QPushButton):
 
     def resizeEvent(self, event):  # noqa: N802 (Qt casing)
         super().resizeEvent(event)
-        super().setText(_elide_to_width(self, self._full_text))
+        self._refresh_display()
 
     def showEvent(self, event):  # noqa: N802 (Qt casing)
         # Qt assigns the real geometry on first show, after the constructor's
         # setText ran against a 100 px default width. Re-elide once laid out.
         super().showEvent(event)
-        super().setText(_elide_to_width(self, self._full_text))
+        self._refresh_display()
 
 
 def _elide_to_width(widget, text: str) -> str:
@@ -251,8 +252,25 @@ def alignment_items():
     return tuple((spec.id, spec.label_key, spec.hint_key)
                  for spec in registration_algorithms())
 
-FUSION_DEFAULT = "stackmffv3"
+FUSION_DEFAULT = "openfocus_b"
 ALIGN_DEFAULT = "ecc"
+
+def refresh_experimental_selectors(window):
+    """Refresh labels and availability without changing selected methods."""
+    from ui.algorithm_combo import apply_method_availability
+
+    apply_method_availability(window.combo_fusion, fusion_algorithms(), window,
+                              ai_available=getattr(window, '_stackmff_available', None),
+                              recommended=FUSION_DEFAULT)
+    apply_method_availability(window.combo_align, registration_algorithms(), window,
+                              alignment=True, recommended=ALIGN_DEFAULT)
+
+
+def label_recommended(combo: QComboBox, method: str) -> None:
+    """Decorate a selector entry without changing its stable identifier."""
+    index = combo.findData(method)
+    if index >= 0:
+        combo.setItemText(index, f"{combo.itemText(index)} ({trans.t('recommended')})")
 
 
 @dataclass
@@ -328,6 +346,7 @@ def create_right_panel() -> RightPanelComponents:
     combo_fusion = QComboBox()
     fill_fusion_combo(combo_fusion, none_label="radio_no_fusion",
                       none_hint="radio_no_fusion_hint")
+    label_recommended(combo_fusion, FUSION_DEFAULT)
     idx = combo_fusion.findData(FUSION_DEFAULT)
     combo_fusion.setCurrentIndex(max(0, idx))
     # "?" sits on the dropdown's row: a row of its own wasted half the
@@ -351,6 +370,7 @@ def create_right_panel() -> RightPanelComponents:
     # 对齐算法：下拉单选（none / 单应性 / ECC / OpenFocus 快速）
     combo_align = QComboBox()
     _fill_combo(combo_align, alignment_items())
+    label_recommended(combo_align, ALIGN_DEFAULT)
     idx = combo_align.findData(ALIGN_DEFAULT)
     combo_align.setCurrentIndex(max(0, idx))
     # "?" sits on the dropdown's row: a row of its own wasted half the
@@ -393,17 +413,9 @@ def create_right_panel() -> RightPanelComponents:
     btn_compare.setObjectName("secondaryButton")
     btn_compare.setToolTip(
         f"{trans.t('btn_compare_all')}\n{trans.t('btn_compare_all_hint')}")
-    # A fixed panel width cannot fit every language's label (Polish needs
-    # 343 px for the render button, the panel offers ~113 px per button).
-    # Let each button shrink to an elided label and keep the full string in
-    # the tooltip, so a long translation degrades instead of clipping.
     for _btn in (btn_reset, btn_render, btn_render_settings, btn_compare):
         _btn.setSizePolicy(QSizePolicy.Policy.Ignored,
                            QSizePolicy.Policy.Fixed)
-        # Only give a fallback tooltip to buttons that have none: the compare
-        # button's hint was overwritten here with its own caption.
-        if not _btn.toolTip():
-            _btn.setToolTip(_btn.text())
 
     config_layout.addWidget(btn_render)
     secondary_bar = QHBoxLayout()
@@ -423,7 +435,7 @@ def create_right_panel() -> RightPanelComponents:
 
     chk_quick_preview = _option('chk_quick_preview', False)
     chk_reverse_order = _option('chk_reverse_order', False)
-    chk_exposure_match = _option('chk_exposure_match', True)
+    chk_exposure_match = _option('chk_exposure_match', False)
     chk_base_correct = _option('chk_base_correct', False)
     chk_sharpen_output = _option('chk_sharpen_output', False)
 
@@ -619,6 +631,14 @@ def bind_right_panel(window, components: RightPanelComponents) -> None:
         window.refresh_algorithm_parameters)
     components.combo_align.currentIndexChanged.connect(
         window.refresh_registration_parameters)
+    def remember_selection(combo, attribute):
+        setattr(window, attribute, combo.currentData())
+        window.persist_settings()
+
+    components.combo_fusion.activated.connect(
+        lambda _index: remember_selection(components.combo_fusion, "_preferred_fusion_method"))
+    components.combo_align.activated.connect(
+        lambda _index: remember_selection(components.combo_align, "_preferred_alignment_method"))
     components.fusion_parameter_panel.valuesChanged.connect(
         lambda values: window.set_fusion_parameters(window.current_fusion_method(), values))
     components.registration_parameter_panel.valuesChanged.connect(
@@ -632,7 +652,7 @@ def bind_right_panel(window, components: RightPanelComponents) -> None:
 
     # 基底校正开关（消除亮度漂移）：立即持久化，渲染时读取
     components.chk_base_correct.toggled.connect(window.set_base_correct)
-    # 融合前曝光匹配（整栈标定到末帧）：立即持久化
+    # Exposure matching is remembered per method and applied before fusion.
     components.chk_exposure_match.toggled.connect(window.set_exposure_match)
     components.chk_sharpen_output.toggled.connect(window.set_sharpen_output)
     # 反转帧序（倒序栈）：仅影响 openfocus 族的帧序方向语义

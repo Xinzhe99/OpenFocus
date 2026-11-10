@@ -216,6 +216,8 @@ def native_scene():
 
 def _in_qthread(call):
     from PyQt6.QtCore import QThread
+    from utils.platform_utils import configure_native_worker_stack
+
     class Worker(QThread):
         def run(self):
             try:
@@ -223,6 +225,7 @@ def _in_qthread(call):
             except BaseException as exc:
                 self.error = exc
     worker = Worker()
+    configure_native_worker_stack(worker)
     worker.start()
     assert worker.wait(120000), 'background operation did not finish'
     if hasattr(worker, 'error'):
@@ -346,31 +349,41 @@ def _legacy_record(doc, operations, cursor, undo_count, redo_count):
             'max_strokes': 100, 'max_bytes': 64 * 64 * 3}
 
 
-@pytest.mark.parametrize('source', ['missing', 'wrong_shape'])
-@pytest.mark.parametrize('kind', ['operation', 'analysis'])
-def test_legacy_stacked_background_requires_source_transactionally(
-        tmp_path, controlled_background, source, kind):
+@pytest.mark.parametrize('stacked', ['missing', 'wrong_shape'])
+@pytest.mark.parametrize('analysis', [False, True])
+def test_legacy_stacked_replay_rejects_missing_source_transactionally(
+        tmp_path, controlled_background, stacked, analysis):
     target = _document()
+    assert target.auto_background('soft') == 'committed'
     assert target.auto_background('sharp') == 'committed'
     assert target.undo()
-    pixels, fill = target.working.copy(), target.background_fill
-    history, operations = target.history, list(target._operations)
-    stacked = None if source == 'missing' else np.zeros((63, 64, 3), np.uint8)
-    target.stacked_image = stacked
-    operation = {'type': 'auto_background', 'preset': 'soft' if kind == 'operation' else 'auto',
-                 'clean': True, 'from_stacked': True}
-    record = _legacy_record(target, [operation] if kind == 'operation' else [],
-                            int(kind == 'operation'), int(kind == 'operation'), 0)
-    if kind == 'analysis':
-        record['background_analyses'] = [{'cursor': 0, 'operation': operation}]
-    path = tmp_path / 'legacy-stacked.ofretouch'
+    pixels = target.working.copy()
+    history, fill = target.history, target.background_fill
+    operations, cursor = list(target._operations), target._cursor
+    analyses, fills = target._background_analyses, target._background_fills
+
+    background = {'type': 'auto_background', 'preset': 'auto' if analysis else 'soft',
+                  'clean': True, 'from_stacked': True}
+    # Replay a prior operation before reaching the invalid background source.
+    tones = {'type': 'tones', 'exposure': 0.2, 'contrast': 0}
+    record = _legacy_record(target, [tones] if analysis else [tones, background],
+                            1 if analysis else 2, 1 if analysis else 2, 0)
+    if analysis:
+        record['background_analyses'] = [{'cursor': 1, 'operation': background}]
+    path = tmp_path / 'stacked-replay.ofretouch'
     path.write_text(json.dumps(record), encoding='utf-8')
-    with pytest.raises(ValueError, match='original stacked image'):
+    target.stacked_image = (None if stacked == 'missing'
+                            else np.zeros((63, 64, 3), np.uint8))
+    original_stacked = target.stacked_image
+
+    with pytest.raises(ValueError, match='Stacked image required'):
         target.load_checkpoint(path)
     np.testing.assert_array_equal(target.working, pixels)
-    assert target.history is history and target._operations == operations
-    assert target.background_fill is fill and target.can_redo
-    assert target.stacked_image is stacked
+    assert target.history is history and target.background_fill is fill
+    assert target._operations == operations and target._cursor == cursor
+    assert target._background_analyses is analyses and target._background_fills is fills
+    assert target.stacked_image is original_stacked
+    assert target.can_undo and target.can_redo
 
 
 @pytest.mark.parametrize('source', ['missing', 'wrong_shape'])

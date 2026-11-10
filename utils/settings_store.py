@@ -12,7 +12,8 @@ from typing import Any, Optional
 from PyQt6.QtCore import QSettings
 
 from core.algorithms import (fusion_algorithms, get_fusion, get_registration,
-                             resolve_fusion_parameters, resolve_registration_parameters)
+                             migrate_openfocus_parameters, resolve_fusion_parameters,
+                             resolve_registration_parameters)
 from locales import trans
 from utils import app_paths
 from utils.validators import normalize_kernel_size
@@ -21,6 +22,7 @@ ORGANIZATION = "OpenFocus"
 APPLICATION = "OpenFocus"
 MAX_RECENT_FILES = 8
 MAX_RECENT_PROJECTS = 8
+MAX_RECENT_DIALOG_DIRS = 8
 
 # First-run theme. Light reads better on a fresh install for most users; a
 # saved preference always wins, so an existing dark-theme user stays dark.
@@ -43,6 +45,7 @@ UPDATE_BANNER_DISMISSED_KEY = "updates/banner_dismissed_tag"
 LAST_STACK_FOLDER_KEY = "ui/last_stack_folder"
 LAST_STACK_MODE_KEY = "ui/last_stack_mode"
 LAST_DIALOG_DIR_KEY = "ui/last_dialog_dir"
+RECENT_DIALOG_DIRS_KEY = "ui/recent_dialog_dirs"
 LAST_IMAGE_SAVE_DIR_KEY = "ui/last_image_save_dir"
 # The "AI runs on the CPU" warning is informational and repeat-per-launch
 # annoying; once the user says "don't show again" it must stay gone.
@@ -53,7 +56,10 @@ AI_CPU_WARNING_DISMISSED_KEY = "rendering/ai_cpu_warning_dismissed"
 # a restart no longer reverts the user's per-algorithm choices.
 BRIGHTNESS_BY_METHOD_KEY = "fusion/brightness_by_method"
 METHOD_PARAMETERS_KEY = "fusion/method_parameters"
+METHOD_PARAMETERS_VERSION_KEY = "fusion/method_parameters_version"
 REGISTRATION_PARAMETERS_KEY = "registration/parameters"
+FUSION_METHOD_KEY = "fusion/method"
+ALIGNMENT_METHOD_KEY = "registration/method"
 # Historical keys are read only at this boundary.
 SMOOTHING_BY_METHOD_KEY = "fusion/smoothing_by_method"
 KERNEL_BY_MODE_KEY = "fusion/kernel_by_mode"
@@ -74,8 +80,11 @@ _PERSISTED_FIELDS = {
     "use_gpu": ("rendering/use_gpu", True, "bool"),
     "align_cache_enabled": ("rendering/align_cache_enabled", True, "bool"),
     "collect_alignment_report": ("rendering/collect_alignment_report", False, "bool"),
+    "profile_performance": ("diagnostics/profile_performance", False, "bool"),
+    "debug_logging": ("diagnostics/debug_logging", False, "bool"),
     "output_name_prefix": ("export/name_prefix", "", "str"),
     "restore_last_stack": ("ui/restore_last_stack", False, "bool"),
+    "experimental_features": ("ui/experimental_features", False, "bool"),
     "ui_theme": ("ui/theme", DEFAULT_THEME, "str"),
     "scale_bar_enabled": ("export/scale_bar_enabled", False, "bool"),
     "scale_um_per_px_manual": ("export/scale_um_per_px_manual", 0.0, "float"),
@@ -97,6 +106,8 @@ _PERSISTED_FIELDS = {
     "watermark_color": ("export/watermark_color", "white", "str"),
     "watermark_angle": ("export/watermark_angle", -25.0, "float"),
     "watermark_density": ("export/watermark_density", "standard", "str"),
+    "watermark_copyright_enabled": ("export/watermark_copyright_enabled", False, "bool"),
+    "watermark_copyright_position": ("export/watermark_copyright_position", "prefix", "str"),
     "watermark_source_enabled": ("export/watermark_source", True, "bool"),
     "watermark_registered_enabled": ("export/watermark_registered", False, "bool"),
     "watermark_output_enabled": ("export/watermark_output", True, "bool"),
@@ -285,9 +296,10 @@ def _legacy_kernel_memory(raw):
     for mode, value in _loads_object(raw).items():
         if mode in _LEGACY_KERNEL_METHODS and isinstance(value, int) \
                 and not isinstance(value, bool) and value > 0:
-            method = _LEGACY_KERNEL_METHODS[mode][0]
-            spec = next(p for p in get_fusion(method).parameters if p.key == "kernel_size")
-            memory[mode] = normalize_kernel_size(min(value, spec.maximum))
+            maximum = 21 if mode == 'ofab' else next(
+                p.maximum for p in get_fusion(_LEGACY_KERNEL_METHODS[mode][0]).parameters
+                if p.key == 'kernel_size')
+            memory[mode] = normalize_kernel_size(min(value, maximum))
     return memory
 
 
@@ -312,14 +324,14 @@ def _legacy_parameters(settings):
                         ("openfocus_c", "blend_smoothing")):
         value = _finite_number(smoothing.get(method))
         if value is not None:
-            spec = next(p for p in get_fusion(method).parameters if p.key == key)
-            memory.setdefault(method, {})[key] = min(max(value, spec.minimum), spec.maximum)
+            memory.setdefault(method, {})[key] = min(max(value, 0), 8)
     if settings.contains("fusion/ai_mode"):
         memory.setdefault("stackmffv3", {})["mode"] = settings.value("fusion/ai_mode")
     raw_levels = settings.value("fusion/dtcwt_levels")
     if settings.contains("fusion/dtcwt_levels") and not isinstance(raw_levels, bool):
         memory.setdefault("dtcwt", {})["N"] = _cast(raw_levels, int, None)
-    return parameter_memory_from_json(memory)
+    return parameter_memory_from_json({method: migrate_openfocus_parameters(method, values)
+                                       for method, values in memory.items()})
 
 
 def load_parameter_memories(window) -> None:
@@ -328,9 +340,25 @@ def load_parameter_memories(window) -> None:
     if settings.contains(BRIGHTNESS_BY_METHOD_KEY):
         window._brightness_by_method = brightness_memory_from_json(
             settings.value(BRIGHTNESS_BY_METHOD_KEY))
-    window._fusion_parameters_by_method = (
-        parameter_memory_from_json(settings.value(METHOD_PARAMETERS_KEY))
-        if settings.contains(METHOD_PARAMETERS_KEY) else _legacy_parameters(settings))
+    if settings.contains(METHOD_PARAMETERS_KEY):
+        memory = _loads_object(settings.value(METHOD_PARAMETERS_KEY))
+        if _cast(settings.value(METHOD_PARAMETERS_VERSION_KEY), int, 0) < 1:
+            migrated = {}
+            for method, values in memory.items():
+                if isinstance(values, dict):
+                    converted = {}
+                    for key, value in values.items():
+                        try:
+                            converted.update(migrate_openfocus_parameters(method, {key: value}))
+                        except (TypeError, ValueError):
+                            continue
+                    if method == 'openfocus_b':
+                        converted.setdefault('feather', 0)
+                    migrated[method] = converted
+            memory = migrated
+        window._fusion_parameters_by_method = parameter_memory_from_json(memory)
+    else:
+        window._fusion_parameters_by_method = _legacy_parameters(settings)
     window._registration_parameters_by_method = parameter_memory_from_json(
         settings.value(REGISTRATION_PARAMETERS_KEY), registration=True)
 
@@ -342,6 +370,7 @@ def save_parameter_memories(window) -> None:
         getattr(window, "_brightness_by_method", {})))
     settings.setValue(METHOD_PARAMETERS_KEY, parameter_memory_to_json(
         getattr(window, "_fusion_parameters_by_method", {})))
+    settings.setValue(METHOD_PARAMETERS_VERSION_KEY, 1)
     settings.setValue(REGISTRATION_PARAMETERS_KEY, parameter_memory_to_json(
         getattr(window, "_registration_parameters_by_method", {}), registration=True))
     for key in (SMOOTHING_BY_METHOD_KEY, KERNEL_BY_MODE_KEY, "fusion/ai_mode",
@@ -366,6 +395,18 @@ def load_window_settings(window) -> None:
         else:
             setattr(window, attr, getattr(window, attr, default))
 
+    # The selectors are built later; apply only valid explicitly saved IDs.
+    for key, attr, lookup in ((FUSION_METHOD_KEY, "_preferred_fusion_method", get_fusion),
+                              (ALIGNMENT_METHOD_KEY, "_preferred_alignment_method", get_registration)):
+        if settings.contains(key):
+            value = settings.value(key)
+            try:
+                if value != "none":
+                    lookup(value)
+            except (TypeError, ValueError):
+                continue
+            setattr(window, attr, value)
+
     # Must run after the scalar fields: the smoothing migration reads the
     # legacy ofb_depth_smoothing value restored just above.
     load_parameter_memories(window)
@@ -376,14 +417,12 @@ def load_window_settings(window) -> None:
     from utils import watermark
     mapping = {key: getattr(window, attr, default)
                for key, (attr, default) in watermark.ATTRS.items()}
-    # Never source the text from a previous in-memory window; only a project
-    # or recovery snapshot may restore it.
-    mapping["text"] = ""
+    # Validate style with a temporary nonempty value; never persist user text.
+    mapping["text"] = "x"
     cfg = watermark.safe_config(mapping)
-    if cfg is None:
-        window.watermark_text = ""
-    else:
-        for key, value in cfg.to_dict().items():
+    window.watermark_text = ""
+    for key, value in cfg.to_dict().items():
+        if key != "text":
             setattr(window, watermark.ATTRS[key][0], value)
 
     raw_recent = settings.value(RECENT_FILES_KEY, []) or []
@@ -409,6 +448,11 @@ def save_window_settings(window) -> None:
     settings.setValue(LANGUAGE_KEY, trans.current_lang)
     settings.setValue(RECENT_FILES_KEY, list(getattr(window, "recent_files", [])))
     settings.setValue(RECENT_PROJECTS_KEY, list(getattr(window, "recent_projects", [])))
+    for key, attr in ((FUSION_METHOD_KEY, "_preferred_fusion_method"),
+                      (ALIGNMENT_METHOD_KEY, "_preferred_alignment_method")):
+        value = getattr(window, attr, None)
+        if value is not None:
+            settings.setValue(key, value)
     save_parameter_memories(window)
     settings.sync()
     if settings.status() != QSettings.Status.NoError:
@@ -425,7 +469,8 @@ def restore_default_settings(window) -> None:
     keys = {key for key, _default, _kind in _PERSISTED_FIELDS.values()}
     keys.update((BRIGHTNESS_BY_METHOD_KEY, METHOD_PARAMETERS_KEY,
                  REGISTRATION_PARAMETERS_KEY, SMOOTHING_BY_METHOD_KEY,
-                 KERNEL_BY_MODE_KEY, DRAG_FORMAT_KEY, CONVERTER_FORMAT_KEY,
+                 KERNEL_BY_MODE_KEY, FUSION_METHOD_KEY, ALIGNMENT_METHOD_KEY,
+                 DRAG_FORMAT_KEY, CONVERTER_FORMAT_KEY,
                  AI_CPU_WARNING_DISMISSED_KEY,
                  'fusion/ai_mode', 'fusion/dtcwt_levels',
                  'fusion/ofb_depth_smoothing', 'fusion/of_blend_smoothing',
@@ -447,6 +492,12 @@ def restore_default_settings(window) -> None:
         for name in memories:
             setattr(window, name, {})
         save_window_settings(window)
+        # The caller resets the visible selectors after this transaction.
+        settings.remove(FUSION_METHOD_KEY)
+        settings.remove(ALIGNMENT_METHOD_KEY)
+        settings.sync()
+        if settings.status() != QSettings.Status.NoError:
+            raise OSError("Could not write OpenFocus settings")
     except Exception:
         for attr, value in attributes.items():
             setattr(window, attr, value)
@@ -577,6 +628,37 @@ def set_converter_output_format(fmt: str) -> None:
     from core.batch_converter import OUTPUT_EXTENSIONS
     if fmt in OUTPUT_EXTENSIONS:
         get_settings().setValue(CONVERTER_FORMAT_KEY, fmt)
+
+
+def get_recent_dialog_dirs() -> list[str]:
+    """Return existing folders visited in the shared file picker, newest first."""
+    raw = get_settings().value(RECENT_DIALOG_DIRS_KEY, []) or []
+    if not isinstance(raw, list):
+        raw = [raw]
+    result = []
+    seen = set()
+    for value in raw:
+        if not isinstance(value, str) or not value or not os.path.isdir(value):
+            continue
+        path = os.path.abspath(value)
+        key = os.path.normcase(os.path.normpath(path))
+        if key not in seen:
+            seen.add(key)
+            result.append(path)
+            if len(result) == MAX_RECENT_DIALOG_DIRS:
+                break
+    return result
+
+
+def add_recent_dialog_dir(path: str) -> None:
+    """Remember a real folder visited in the shared file picker."""
+    if not path or not os.path.isdir(path):
+        return
+    path = os.path.abspath(path)
+    key = os.path.normcase(os.path.normpath(path))
+    recent = [p for p in get_recent_dialog_dirs()
+              if os.path.normcase(os.path.normpath(p)) != key]
+    get_settings().setValue(RECENT_DIALOG_DIRS_KEY, [path, *recent][:MAX_RECENT_DIALOG_DIRS])
 
 
 def get_last_dialog_dir() -> str:
