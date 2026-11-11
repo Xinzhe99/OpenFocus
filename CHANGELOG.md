@@ -202,8 +202,13 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - A two-finger touchpad scroll pans the image instead of zooming it (Ctrl still
   zooms); mouse wheels keep zooming. Touchpads are recognised by device type or
   scroll phase, including X11, where only angle deltas are reliable.
+- Image save dialogs preselect the format chosen last time, including the
+  choice between Layered TIFF and TIFF. A name typed without an extension gets
+  the selected format's extension before the replace-file confirmation.
 
 ### Fixed
+- Remember JPEG as the last image format when a JPEG alias is typed, and save
+  to the selected filename without changing its extension or letter case.
 - Keep the GPU acceleration preference available when a verified provider's
   memory is unreadable, allowing later AI jobs to retry while reporting CPU.
 - Identify account and diagnostic report requests as OpenFocus so supported

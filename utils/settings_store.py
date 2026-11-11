@@ -7,6 +7,7 @@ recently opened stacks) survives restarts through this module.
 import json
 import math
 import os
+import re
 from typing import Any, Optional
 
 from PyQt6.QtCore import QSettings
@@ -47,6 +48,11 @@ LAST_STACK_MODE_KEY = "ui/last_stack_mode"
 LAST_DIALOG_DIR_KEY = "ui/last_dialog_dir"
 RECENT_DIALOG_DIRS_KEY = "ui/recent_dialog_dirs"
 LAST_IMAGE_SAVE_DIR_KEY = "ui/last_image_save_dir"
+LAST_IMAGE_SAVE_TYPE_KEY = "ui/last_image_save_type"
+LAST_IMAGE_SAVE_FILTER_KEY = "ui/last_image_save_filter"
+IMAGE_SAVE_TYPES = frozenset({
+    ".png", ".tif", ".tiff", ".jpg", ".jpeg", ".jpe", ".jfif", ".bmp", ".webp", ".dng",
+})
 # The "AI runs on the CPU" warning is informational and repeat-per-launch
 # annoying; once the user says "don't show again" it must stay gone.
 AI_CPU_WARNING_DISMISSED_KEY = "rendering/ai_cpu_warning_dismissed"
@@ -684,19 +690,82 @@ def image_save_dir() -> str:
     return get_last_dialog_dir() or os.path.expanduser("~")
 
 
-def image_save_default(filename: str) -> str:
-    """`filename` placed in `image_save_dir()`, for a save dialog's default."""
-    return os.path.join(image_save_dir(), os.path.basename(filename or ""))
+def _image_extensions(filters: str) -> tuple:
+    """Extensions advertised by a Qt file-dialog filter string, in order."""
+    extensions = []
+    for token in re.findall(r"\*(\.[A-Za-z0-9]+)", filters or ""):
+        extension = token.lower()
+        if extension not in extensions:
+            extensions.append(extension)
+    return tuple(extensions)
 
 
-def remember_image_save(path: str) -> None:
-    """Remember the folder an image was just saved to."""
+def image_save_type(filters: str) -> str:
+    """The last format chosen in a multi-format image dialog, if *filters* offers it."""
+    extension = str(get_settings().value(LAST_IMAGE_SAVE_TYPE_KEY, "") or "").lower()
+    if extension in (".jpeg", ".jpe", ".jfif"):
+        extension = ".jpg"
+    offered = _image_extensions(filters)
+    if extension == ".jpg" and extension not in offered:
+        extension = next((ext for ext in offered if ext in (".jpeg", ".jpe", ".jfif")), extension)
+    if extension not in IMAGE_SAVE_TYPES or extension not in offered:
+        return ""
+    return extension
+
+
+def image_save_filter(filters: str) -> str:
+    """The filter entry to preselect: the one chosen last time, else its type's."""
+    extension = image_save_type(filters)
+    if not extension:
+        return ""
+    entries = (filters or "").split(";;")
+    label = str(get_settings().value(LAST_IMAGE_SAVE_FILTER_KEY, "") or "")
+    # Exact label first: e.g. Layered TIFF and plain TIFF share ".tif".
+    if label in entries and extension in _image_extensions(label):
+        return label
+    return next((entry for entry in entries if extension in _image_extensions(entry)), "")
+
+
+def image_save_default(filename: str, filters: str = "") -> str:
+    """`filename` in `image_save_dir()`, with the last chosen type when *filters* offers it.
+
+    Single-format dialogs omit *filters* and keep their own suffix.
+    """
+    basename = os.path.basename(filename or "")
+    extension = image_save_type(filters) if filters else ""
+    if extension:
+        basename = os.path.splitext(basename)[0] + extension
+    return os.path.join(image_save_dir(), basename)
+
+
+def remember_image_save(path: str, selected_filter: str = "") -> None:
+    """Remember the folder an image was saved to, and the format if one was chosen.
+
+    Only multi-format dialogs pass *selected_filter*, so a fixed-format export
+    (multi-page TIFF, GIF, depth map) never changes the default format.
+    """
     if not path:
         return
     folder = os.path.dirname(os.path.abspath(path))
     if os.path.isdir(folder):
-        get_settings().setValue(LAST_IMAGE_SAVE_DIR_KEY, folder)
+        settings = get_settings()
+        settings.setValue(LAST_IMAGE_SAVE_DIR_KEY, folder)
         set_last_dialog_dir(folder)
+        if selected_filter:
+            # The format is the file actually written: a typed suffix wins
+            # over the filter, which only decides for a bare name.
+            offered = _image_extensions(selected_filter)
+            extension = os.path.splitext(path)[1].lower() or (offered[0] if offered else "")
+            if extension in (".jpeg", ".jpe", ".jfif"):
+                extension = ".jpg"
+            if extension in IMAGE_SAVE_TYPES:
+                settings.setValue(LAST_IMAGE_SAVE_TYPE_KEY, extension)
+                # Keep the label only when it offers that format; otherwise
+                # the next dialog picks the first filter that does.
+                settings.setValue(LAST_IMAGE_SAVE_FILTER_KEY,
+                                  selected_filter if extension in offered or (
+                                      extension == ".jpg" and any(
+                                          ext in offered for ext in (".jpeg", ".jpe", ".jfif"))) else "")
 
 
 def load_drag_export_format(window) -> None:
