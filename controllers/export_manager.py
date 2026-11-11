@@ -176,15 +176,8 @@ class ExportManager:
             from_filter = extension_from_filter(selected_filter)
             return self._safe_export_path(root + (from_filter or fallback))
 
-        mapped = ALLOWED_EXPORT_EXTENSION_MAP.get(ext_lower)
-        if mapped:
-            return self._safe_export_path(root + mapped)
-
-        alias_target = EXPORT_EXTENSION_ALIASES.get(ext_lower)
-        if alias_target:
-            mapped_alias = ALLOWED_EXPORT_EXTENSION_MAP.get(alias_target)
-            if mapped_alias:
-                return self._safe_export_path(root + mapped_alias)
+        if ext_lower in ALLOWED_EXPORT_EXTENSION_MAP or ext_lower in EXPORT_EXTENSION_ALIASES:
+            return self._safe_export_path(file_path)
 
         raise ValueError(f'{trans.t("msg_save_failed_info_write")} {ext} · PNG / TIFF / JPG / BMP / WebP')
 
@@ -430,13 +423,15 @@ class ExportManager:
         filters = ('PNG 8/16-bit (*.png);;TIFF 8/16-bit (*.tif *.tiff);;'
                    'JPG 8-bit (*.jpg);;BMP 8-bit (*.bmp);;WebP 8-bit (*.webp);;'
                    + trans.t('linear_dng_filter'))
-        from utils.settings_store import image_save_default, remember_image_save
+        from utils.settings_store import (image_save_default, image_save_filter,
+                                          remember_image_save)
         file_path, selected_filter = FileDialog.getSaveFileName(
-            window, title, image_save_default(default_filename), filters)
+            window, title, image_save_default(default_filename, filters), filters,
+            image_save_filter(filters))
 
         if not file_path:
             return
-        remember_image_save(file_path)
+        remember_image_save(file_path, selected_filter)
 
         try:
             file_path = self.normalize_export_path(file_path, selected_filter=selected_filter)

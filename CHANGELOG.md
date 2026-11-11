@@ -211,9 +211,16 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - A two-finger touchpad scroll pans the image instead of zooming it (Ctrl still
   zooms); mouse wheels keep zooming. Touchpads are recognised by device type or
   scroll phase, including X11, where only angle deltas are reliable.
+- Image save dialogs preselect the format chosen last time, including the
+  choice between Layered TIFF and TIFF. A name typed without an extension gets
+  the selected format's extension before the replace-file confirmation.
 
 ### Fixed
 - Dispose closed windows before Qt application teardown during normal exit.
+- Remember JPEG as the last image format when a JPEG alias is typed, and save
+  to the selected filename without changing its extension or letter case.
+- Keep the GPU acceleration preference available when a verified provider's
+  memory is unreadable, allowing later AI jobs to retry while reporting CPU.
 - Identify account and diagnostic report requests as OpenFocus so supported
   services can distinguish them from generic automated traffic.
 - Cancel and finish account background work before quitting, including when the
@@ -410,6 +417,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   checking whether the volume is internal and fixed.
 - Quantize fusion results in bounded sample chunks instead of allocating
   whole-image float copies, preserving 8/16-bit rounding and strided inputs.
+- Show CPU in the status bar and the About dialog when a verified GPU provider
+  cannot report its free memory, because AI jobs then run on the CPU. The
+  GPU Acceleration action follows the same rule, and a failing memory probe no
+  longer fails the job.
 
 ## [1.77.0] - 2026-11-06
 
