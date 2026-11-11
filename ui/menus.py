@@ -448,11 +448,14 @@ def setup_menus(window: QMainWindow) -> None:
     gpu_action = QAction(trans.t('action_gpu_accel'), window)
     gpu_action.setCheckable(True)
     from fusion_methods import neural_runtime
-    from core.multi_focus_fusion import is_ai_fusion_available, neural_device_kind
+    from core.multi_focus_fusion import (is_ai_fusion_available, neural_device_kind,
+                                         openfocus_gpu_available)
     _gpu_kind = neural_device_kind()
+    _opencl = openfocus_gpu_available()
     _runtime_installed = is_ai_fusion_available() if _gpu_kind is None else False
-    _gpu_enabled, _gpu_checked = neural_runtime.gpu_toggle_state(
-        _gpu_kind, getattr(window, 'use_gpu', True), _runtime_installed)
+    _gpu_enabled = (neural_runtime.is_accelerator(_gpu_kind) or _opencl is True
+                    or _opencl is None or (_gpu_kind is None and _runtime_installed))
+    _gpu_checked = bool(_gpu_enabled and getattr(window, 'use_gpu', True))
     gpu_action.setChecked(_gpu_checked)
     gpu_action.setEnabled(_gpu_enabled)
     gpu_action.setToolTip(trans.t('msg_gpu_accel_hint') if _gpu_enabled
@@ -462,7 +465,7 @@ def setup_menus(window: QMainWindow) -> None:
     window.ui_objs['action_gpu_accel'] = gpu_action
     # Resolve the backend in the background when the user opens Settings.
     # Device probing must never delay menu construction.
-    if _gpu_kind is None and _runtime_installed and hasattr(
+    if (_opencl is None or (_gpu_kind is None and _runtime_installed)) and hasattr(
             window, '_probe_device_kind_async'):
         settings_menu.aboutToShow.connect(window._probe_device_kind_async)
 

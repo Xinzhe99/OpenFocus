@@ -67,7 +67,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt
+          python -m pip install --only-binary=pyopencl -r requirements.txt
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -m pip install pyinstaller
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -101,6 +101,7 @@ jobs:
             --additional-hooks-dir hooks `
             --icon "assets/OpenFocus.ico" `
             --collect-submodules fusion_methods `
+            --hidden-import pyopencl `
             --collect-submodules locales `
             --hidden-import core.algorithm_adapters `
             --hidden-import core.depth_map `
@@ -134,6 +135,8 @@ jobs:
           $icu = "dist/OpenFocus/_internal/icuuc.dll"
           if (Test-Path $icu) { Remove-Item -Path $icu -Force }
           python tools/verify_frozen_resources.py dist/OpenFocus/_internal
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -c "from pathlib import Path; assert any(p.parent.name == 'pyopencl' for p in Path('dist/OpenFocus/_internal').rglob('_cl*.pyd')), 'PyOpenCL extension missing from bundle'"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Detect SignPath signing configuration
@@ -354,7 +357,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install --only-binary=pyopencl -r requirements.txt
           pip install pyinstaller
 
       - name: Generate .icns icon
@@ -391,6 +394,7 @@ jobs:
             --additional-hooks-dir hooks \
             --icon OpenFocus.icns \
             --collect-submodules fusion_methods \
+            --hidden-import pyopencl \
             --collect-submodules locales \
             --hidden-import core.algorithm_adapters \
             --hidden-import core.depth_map \
@@ -418,6 +422,9 @@ jobs:
 
       - name: Verify bundled runtime resources
         run: python tools/verify_frozen_resources.py dist/OpenFocus.app/Contents/Resources
+
+      - name: Verify bundled PyOpenCL extension
+        run: python -c "from pathlib import Path; assert any(p.parent.name == 'pyopencl' for p in Path('dist/OpenFocus.app/Contents').rglob('_cl*.so')), 'PyOpenCL extension missing from bundle'"
 
       - name: Verify packaged CLI and desktop control
         env:

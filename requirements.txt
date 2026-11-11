@@ -11,6 +11,8 @@ imagecodecs>=2024.9.22
 rawpy>=0.25.1
 threadpoolctl>=3.5
 numba>=0.61.2
+# OpenFocus B GPU acceleration; an OpenCL GPU driver is still required.
+pyopencl>=2025.2.7; sys_platform == 'win32' or sys_platform == 'darwin' or sys_platform == 'linux'
 # Upstream dtcwt 0.14.0 requires NumPy < 2; on Python 3.13+ install it
 # separately with: python -m pip install --no-deps dtcwt==0.14.0
 dtcwt==0.14.0; python_version < '3.13'

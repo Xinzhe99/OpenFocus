@@ -4,6 +4,15 @@ The authoritative release build commands are in [release.yml](../.github/workflo
 
 For a local build, use a supported Python environment, install the requirements and PyInstaller, and adapt the corresponding release job to the target platform. The package must collect `onnxruntime`, place the three `.onnx` inference checkpoints in `weights`, and exclude `torch` from the frozen application. The Windows x64 requirements select ONNX Runtime DirectML; the other declared platforms use ONNX Runtime. A provider being installed or available does not establish that a real inference ran on a GPU; see [GPU support](GPU_SUPPORT.md).
 
+OpenFocus B uses PyOpenCL. Desktop release jobs install its binary wheel and
+collect the native extension, package resources, loader libraries and license
+metadata using `hooks/hook-pyopencl.py`; retain `--hidden-import pyopencl` and
+`--additional-hooks-dir hooks` in local frozen builds. The workflow checks for
+the bundled extension. The published Linux CLI wheel declares PyOpenCL as a
+dependency; Linux desktop bundles are not published. A suitable vendor OpenCL
+GPU driver is required on the target machine; see [GPU support](GPU_SUPPORT.md)
+for platform limitations. Package presence alone does not verify GPU execution.
+
 Stable desktop builds and GPU variants share [runtime_resources.json](../packaging/runtime_resources.json), collected by the PyInstaller hook. It lists runtime icons and SVGs, the support dialog's Alipay and PayPal images, the six demo frames, the twelve user manuals and linked documentation, licenses, and three ONNX models. Update the manifest when runtime resources change; keep paths relative to the bundle root. The release jobs verify bundled resource hashes against the source and upload packaging reports for the Windows and macOS builds. No package-size savings are claimed without old and new builds measured in the same environment.
 
 The macOS job uses `macos-latest`, matching the test matrix. A manual branch

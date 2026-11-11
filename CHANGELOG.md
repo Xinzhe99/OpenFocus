@@ -5,6 +5,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- Accelerate OpenFocus B depth activity and ordered merging on supported OpenCL
+  GPUs, with CPU fallback. Package PyOpenCL for supported desktop and CLI builds;
+  an OpenCL GPU driver and compiler remain required.
+
 
 ## [1.77.0] - 2026-11-11
 

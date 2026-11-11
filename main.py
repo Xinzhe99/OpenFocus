@@ -891,11 +891,13 @@ class OpenFocus(QMainWindow):
             self.lbl_status_memory.setText(trans.t('status_ram').format('N/A'))
 
         from core.multi_focus_fusion import (neural_device_kind,
-                                             is_ai_fusion_available)
+                                             is_ai_fusion_available,
+                                             openfocus_gpu_available)
         from fusion_methods import neural_runtime
         try:
             capability = neural_device_kind()
-            if capability is None and is_ai_fusion_available():
+            opencl = openfocus_gpu_available()
+            if opencl is None or (capability is None and is_ai_fusion_available()):
                 self._probe_device_kind_async()
             neural = self._ai_method_selected()
             checkpoint = (get_fusion(self.combo_fusion.currentData()).weights or ''
@@ -909,17 +911,22 @@ class OpenFocus(QMainWindow):
             kind = ('…' if state == 'pending'
                     else trans.t('neural_provider_ready').format(neural_runtime.display_name(device))
                     if state == 'ready' else neural_runtime.display_name(device))
+            if self.combo_fusion.currentData() == 'openfocus_b':
+                kind = ('CPU' if not getattr(self, 'use_gpu', True) or opencl is False
+                        else '…' if opencl is None
+                        else trans.t('neural_provider_ready').format('OpenCL'))
             self.lbl_status_gpu.setText(trans.t('status_gpu').format(kind))
             diagnostics = neural_runtime.device_diagnostics()
             hardware = '\n'.join(f'{name} (DXGI {index})' for index, name, *_ in diagnostics['hardware'])
             self.lbl_status_gpu.setToolTip('\n'.join(filter(None, (
                 hardware,
                 'ONNX Runtime: ' + ', '.join(diagnostics['providers']),
+                'OpenFocus B: ' + ('OpenCL' if opencl else 'CPU' if opencl is False else '…'),
                 trans.t('env_gpu_accel') + ': ' + neural_runtime.display_name(capability)
                 if neural_runtime.is_accelerator(capability)
                 else trans.t('env_gpu_memory_unknown').format(
                     device=neural_runtime.display_name(unadmitted)) if unadmitted
-                else trans.t('env_no_gpu'),
+                else 'ONNX Runtime: CPU',
                 trans.t('status_gpu').format(kind),
                 trans.t('msg_gpu_accel_hint'),
                 '\n'.join(diagnostics['probe_errors'])))))
@@ -1307,9 +1314,9 @@ class OpenFocus(QMainWindow):
                 or getattr(self, "_device_probe_started", False)):
             return
         import threading
-        from core.multi_focus_fusion import neural_device_kind
+        from core.multi_focus_fusion import neural_device_kind, openfocus_gpu_available
         cached = neural_device_kind()
-        if cached is not None:
+        if cached is not None and openfocus_gpu_available() is not None:
             # A previous window/probe already resolved the backend.
             self._device_probe_started = True
             self._apply_device_probe_kind(cached)
@@ -1317,8 +1324,10 @@ class OpenFocus(QMainWindow):
         self._device_probe_started = True
 
         def worker():
-            from core.multi_focus_fusion import ensure_neural_device_kind
+            from core.multi_focus_fusion import (ensure_neural_device_kind,
+                                                 ensure_openfocus_gpu_available)
             try:
+                ensure_openfocus_gpu_available()
                 ensure_neural_device_kind()
             except Exception:
                 pass
@@ -1342,9 +1351,9 @@ class OpenFocus(QMainWindow):
         """UI-thread poll for the worker's cached backend decision."""
         if getattr(self, "_shutting_down", False):
             return
-        from core.multi_focus_fusion import neural_device_kind
+        from core.multi_focus_fusion import neural_device_kind, openfocus_gpu_available
         kind = neural_device_kind()
-        if kind is None:
+        if kind is None or openfocus_gpu_available() is None:
             return
         timer = getattr(self, "_device_probe_timer", None)
         if timer is not None:
@@ -1417,7 +1426,7 @@ class OpenFocus(QMainWindow):
         """Resolve the accelerator only when the selected method uses it."""
         try:
             code = self.combo_fusion.currentData()
-            if code != "none" and get_fusion(code).neural:
+            if code == 'openfocus_b' or (code != 'none' and get_fusion(code).neural):
                 self._probe_device_kind_async()
         except Exception:
             pass
@@ -1433,8 +1442,10 @@ class OpenFocus(QMainWindow):
     def _apply_device_probe_kind(self, _kind: str = "N/A") -> None:
         """Apply the background backend result to status and the GPU action."""
         from fusion_methods import neural_runtime
+        from core.multi_focus_fusion import openfocus_gpu_available
         if (getattr(self, '_gpu_pending_enable', False)
-                and not neural_runtime.is_accelerator(_kind)):
+                and not neural_runtime.is_accelerator(_kind)
+                and not openfocus_gpu_available()):
             # The user enabled the switch while the answer was unknown and
             # the probe found nothing. Revert only that speculative request;
             # an explicit off is never touched here.
@@ -1454,11 +1465,12 @@ class OpenFocus(QMainWindow):
             return
         from fusion_methods import neural_runtime
         from core.multi_focus_fusion import (is_ai_fusion_available,
-                                             neural_device_kind)
+                                             neural_device_kind, openfocus_gpu_available)
         kind = neural_device_kind()
-        enabled, checked = neural_runtime.gpu_toggle_state(
-            kind, getattr(self, 'use_gpu', True),
-            is_ai_fusion_available() if kind is None else False)
+        opencl = openfocus_gpu_available()
+        enabled = (neural_runtime.is_accelerator(kind) or opencl is True
+                   or opencl is None or (kind is None and is_ai_fusion_available()))
+        checked = bool(enabled and getattr(self, 'use_gpu', True))
         action.setEnabled(enabled)
         action.setChecked(checked)
         tooltip = (trans.t('msg_gpu_accel_hint') if enabled
@@ -4449,15 +4461,13 @@ class OpenFocus(QMainWindow):
         if enabled:
             from fusion_methods import neural_runtime
             from core.multi_focus_fusion import (is_ai_fusion_available,
-                                                 neural_device_kind)
+                                                 neural_device_kind, openfocus_gpu_available)
             kind = neural_device_kind()
-            if kind is None and is_ai_fusion_available():
-                # The authoritative answer is not in yet. Keep the request,
-                # resolve it in the background, and let the fusion path fall
-                # back to CPU if the probe finds no accelerator.
+            opencl = openfocus_gpu_available()
+            if opencl is None or (kind is None and is_ai_fusion_available()):
                 pending = True
                 self._probe_device_kind_async()
-            elif not neural_runtime.is_accelerator(kind):
+            elif not opencl and not neural_runtime.is_accelerator(kind):
                 enabled = False
         self._gpu_pending_enable = pending
         self.use_gpu = enabled

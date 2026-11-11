@@ -1099,7 +1099,7 @@ class RenderWorker(QThread):
             from utils.output_sharpen import sharpen_output
             with profile.stage('sharpen'):
                 result = sharpen_output(result, should_cancel)
-        device = fusion.get_info()['device'] if get_fusion(self.algorithm).neural else 'CPU'
+        device = fusion.get_info()['device'] if (get_fusion(self.algorithm).neural or self.algorithm == 'openfocus_b') else 'CPU'
         with profile.stage('finalize_output'):
             result = quantize_fuse_output(result, is_16bit)
             return store_frame(restore_transparent_canvas(result, transparent)), device
