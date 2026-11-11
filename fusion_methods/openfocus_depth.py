@@ -147,7 +147,7 @@ def _activity_frames(frames, img_resize, kernel_size, thread_count, should_cance
     prepare_depth_kernel(guided=False, should_cancel=should_cancel)
     workers = _frame_pass_workers(frames, img_resize, 'openfocus_b', thread_count,
                                   activity_only=True)
-    if gpu is not None:
+    if gpu is not None and not gpu.failed:
         workers = 1
     shape = (frames[0].shape[:2] if img_resize is None
              else (int(img_resize[1]), int(img_resize[0])))
