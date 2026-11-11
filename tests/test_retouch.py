@@ -787,25 +787,21 @@ def test_dialog_frame_slider_switches_and_stays_synced(qapp):
 def test_retouch_number_fields_show_complete_values(qapp):
     from ui.styles import get_theme_style
 
-    previous_style = qapp.styleSheet()
-    try:
-        for theme in ('light', 'dark'):
-            qapp.setStyleSheet(get_theme_style(theme))
-            dlg, _ = _dialog(qapp)
-            try:
-                for spin, value in ((dlg.num_diameter.spin, 2048),
-                                    (dlg.num_opacity.spin, 100),
-                                    (dlg.frame_spin, 3)):
-                    spin.setValue(value)
-                qapp.processEvents()
-                for spin in (dlg.num_diameter.spin, dlg.num_opacity.spin, dlg.frame_spin):
-                    field = spin.lineEdit()
-                    assert field.contentsRect().width() >= field.fontMetrics().horizontalAdvance(field.text()) + 8
-            finally:
-                dlg._allow_close = True
-                dlg.close()
-    finally:
-        qapp.setStyleSheet(previous_style)
+    for theme in ('light', 'dark'):
+        dlg, _ = _dialog(qapp)
+        try:
+            dlg.setStyleSheet(get_theme_style(theme))
+            for spin, value in ((dlg.num_diameter.spin, 2048),
+                                (dlg.num_opacity.spin, 100),
+                                (dlg.frame_spin, 3)):
+                spin.setValue(value)
+            qapp.processEvents()
+            for spin in (dlg.num_diameter.spin, dlg.num_opacity.spin, dlg.frame_spin):
+                field = spin.lineEdit()
+                assert field.contentsRect().width() >= field.fontMetrics().horizontalAdvance(field.text()) + 8
+        finally:
+            dlg._allow_close = True
+            dlg.close()
 
 
 
