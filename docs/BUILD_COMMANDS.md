@@ -4,7 +4,7 @@ The authoritative release build commands are in [release.yml](../.github/workflo
 
 For a local build, use a supported Python environment, install the requirements and PyInstaller, and adapt the corresponding release job to the target platform. The package must collect `onnxruntime`, place the three `.onnx` inference checkpoints in `weights`, and exclude `torch` from the frozen application. The Windows x64 requirements select ONNX Runtime DirectML; the other declared platforms use ONNX Runtime. A provider being installed or available does not establish that a real inference ran on a GPU; see [GPU support](GPU_SUPPORT.md).
 
-OpenFocus B uses PyOpenCL. Desktop release jobs install its binary wheel and
+OpenFocus B uses PyOpenCL for depth processing and source merging. Desktop release jobs install its binary wheel and
 collect the native extension, package resources, loader libraries and license
 metadata using `hooks/hook-pyopencl.py`; retain `--hidden-import pyopencl` and
 `--additional-hooks-dir hooks` in local frozen builds. The workflow checks for

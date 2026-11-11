@@ -729,8 +729,10 @@ Planista uwzględnia fizyczne rdzenie, powinowactwo CPU i limity oraz uruchamia 
 
 StackMFF V1/V2/V3 używają ONNX Runtime. DirectML w Windows i CoreML w macOS mogą przyspieszać wnioskowanie; w przeciwnym razie używany jest CPU. Dostępność dostawcy nie dowodzi wykonania na GPU. Obsługa innych GPU wymaga weryfikacji.
 
+OpenFocus B może przyspieszać przetwarzanie głębi i łączenie źródeł na zgodnym GPU OpenCL; zależnie od budżetu pamięci może używać ograniczonych etapów GPU lub wrócić do CPU. OpenFocus A/C i wyrównanie używają CPU. Zobacz [obsługę GPU](GPU_SUPPORT.md).
+
 - Przełącznik znajduje się w **Ustawienia → Akceleracja GPU**
-- Odznaczenie wymusza metody neuronowe na CPU — przydatne, gdy sterowniki GPU działają niepoprawnie
+- Odznaczenie wymusza obsługiwane metody fuzji na CPU — przydatne przy problemach ze sterownikami GPU
 - Panel stanu pokazuje `N/A`, gdy akcelerator nie jest używany lub niedostępny, oraz `CPU*`, gdy akcelerator istnieje, ale wybrana metoda działa tylko na CPU
 - Wybór działa przy następnym renderowaniu i jest pamiętany
 

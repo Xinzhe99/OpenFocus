@@ -754,8 +754,10 @@ Der Planer berücksichtigt physische Kerne, CPU-Affinität und Kontingente und f
 
 StackMFF V1/V2/V3 nutzen ONNX Runtime. DirectML unter Windows und CoreML unter macOS können die Inferenz beschleunigen; andernfalls wird die CPU verwendet. Die Verfügbarkeit eines Providers belegt keine GPU-Ausführung. Weitere GPU-Unterstützung muss validiert werden.
 
+OpenFocus B kann Tiefenverarbeitung und Quellenzusammenführung mit einer kompatiblen OpenCL-GPU beschleunigen; je nach Speicherbudget sind begrenzte GPU-Schritte oder CPU-Rückfall möglich. OpenFocus A/C und Ausrichtung laufen auf der CPU. Siehe [GPU-Unterstützung](GPU_SUPPORT.md).
+
 - Umschalten über **Einstellungen → GPU-Beschleunigung**
-- Deaktivieren zwingt die neuronalen Methoden auf die CPU – nützlich, wenn GPU-Treiber Probleme bereiten
+- Deaktivieren zwingt unterstützte Fusionsmethoden auf die CPU – nützlich bei Problemen mit GPU-Treibern
 - Das Statusfeld zeigt `N/A`, wenn kein Beschleuniger verwendet wird oder verfügbar ist, und `CPU*`, wenn ein Beschleuniger vorhanden ist, die gewählte Methode aber nur auf der CPU läuft
 - Die Wahl greift beim nächsten Rendern und wird gespeichert
 

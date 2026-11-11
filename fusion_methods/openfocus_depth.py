@@ -253,6 +253,41 @@ def depth_map(frames, img_resize, kernel_size, smoothing, should_cancel,
             gpu = Merge(width, 1)
         except GpuError as exc:
             log_fallback(exc)
+    if progress_callback is not None:
+        callback = progress_callback
+        reported = -1
+        def progress_callback(index, total):
+            nonlocal reported
+            if index > reported:
+                callback(index, total)
+                reported = index
+
+    if gpu is not None and half_resolution and preserve_detail:
+        from fusion_methods._openfocus_gpu import GpuError, log_fallback, device_status
+        shape = (frames[0].shape[:2] if img_resize is None
+                 else (int(img_resize[1]), int(img_resize[0])))
+        try:
+            accelerated = gpu.full_depth(frames, shape, img_resize, kernel_size,
+                                         smoothing, feather, should_cancel,
+                                         progress_callback)
+        except GpuError as exc:
+            gpu.failed = True
+            log_fallback(exc)
+            accelerated = None
+        if accelerated is not None:
+            cancel()
+            if device_callback is not None:
+                device_callback(device_status(gpu))
+            if return_codes:
+                return accelerated
+            step = 65535 // (len(frames) - 1)
+            result = create_frame(accelerated.shape, np.float32)
+            def convert_gpu(start, stop):
+                cancel()
+                result[start:stop] = accelerated[start:stop].astype(np.float32) / np.float32(step)
+            run_bands(accelerated.shape[0], 128, convert_gpu,
+                      scratch_bytes=min(128, accelerated.shape[0]) * accelerated.shape[1] * 8)
+            return result
 
 
     step = 65535 // (len(frames) - 1)

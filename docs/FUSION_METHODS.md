@@ -71,10 +71,13 @@ before bilinear expansion to the exact source canvas; C depth export uses F0. B 
 retains strong full-resolution detail that downsampling would erase. Expansion
 keeps the float32 scale and half-pixel offset operations separate, including
 when the requested width or height is odd.
-With GPU acceleration enabled, B can run depth activity and ordered merging on
-an OpenCL GPU; remaining stages use the CPU. A compatible GPU driver and
-compiler are required. Unavailable devices, insufficient workspace and device
-failures fall back to CPU. See [GPU support](GPU_SUPPORT.md).
+With GPU acceleration enabled, B can run depth resampling, filtering, activity
+and selection, guided smoothing and ordered merging on an OpenCL GPU. Full GPU
+depth processing requires sufficient host and verified device memory; otherwise
+bounded GPU activity and merging can still run. A compatible GPU driver and
+compiler are required. Unavailable devices and device failures fall back to CPU.
+See [GPU support](GPU_SUPPORT.md).
+OpenFocus A, OpenFocus C and application alignment use the CPU.
 
 
 StackMFF V1 and V2 use retrained single-scale attention networks, each with
