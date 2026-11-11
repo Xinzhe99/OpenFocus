@@ -33,12 +33,18 @@ are independent of account sign-in and diagnostic reporting.
   diagnostic reports. Signing out also requests server session revocation. If
   local credential removal fails, the account dialog reports incomplete cleanup
   and offers a retry; signing out in memory does not erase credentials on disk.
+  The service also receives a random ID saved for this profile and a device
+  label based on the computer name when exchanging a sign-in code, to manage
+  the three-device limit. Account requests include the app version, operating
+  system, and a random ID and start time for the current app run.
 - **Error reports** — you can review and send a sanitized report, signed in or
   anonymously. After desktop sign-in, automatic error reporting is enabled by
   default unless you previously disabled it; a saved preference is preserved.
   You can change it in Advanced Settings. Automatic reports are prepared only
   after a session records an error; a previous native crash is offered for review
-  and requires a separate confirmation. Reports can include a separate random
+  and requires a separate confirmation. Automatic reports are skipped for
+  development runs; report metadata includes the build channel.
+  Reports can include a separate random
   report installation ID,
   software and system versions, selected hardware details, image counts and
   dimensions, the order of supported interface actions, control IDs and canvas

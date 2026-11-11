@@ -26,7 +26,7 @@ MAX_PENDING = 3
 MAX_ATTEMPTS = 3
 HTTP_TIMEOUT = 5
 _FIELDS = frozenset(("fingerprint", "app_version", "platform", "severity", "source",
-                     "locale", "subject", "summary", "log_excerpt", "occurred_at"))
+                     "locale", "subject", "summary", "log_excerpt", "occurred_at", "build_channel"))
 _LOCK = threading.RLock()
 _LOCAL_LOCKS = {}
 _PERMISSIONS = {}
@@ -286,6 +286,8 @@ class ReportClient:
         if not isinstance(bundle, bytes) or len(bundle) > MAX_BUNDLE_BYTES:
             raise ReportError("Report bundle must be at most 2 MiB")
         if not isinstance(metadata, dict) or set(metadata) - _FIELDS:
+            raise ReportError("Invalid report metadata")
+        if "build_channel" in metadata and metadata["build_channel"] not in ("release", "development"):
             raise ReportError("Invalid report metadata")
         try:
             encoded_metadata = json.dumps(metadata, ensure_ascii=True, allow_nan=False).encode("utf-8")

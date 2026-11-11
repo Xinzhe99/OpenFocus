@@ -366,7 +366,7 @@ def test_source_run_automatic_reports_are_skipped(monkeypatch):
     assert calls == []
 
 
-def test_report_metadata_marks_development(monkeypatch):
+def test_report_metadata_marks_development(monkeypatch, tmp_path):
     from types import SimpleNamespace
     from utils import reporting
 
@@ -375,3 +375,10 @@ def test_report_metadata_marks_development(monkeypatch):
     monkeypatch.setattr(reporting, 'build_channel', lambda: 'development')
     metadata = reporting.report_metadata(bundle, source='manual', locale='en')
     assert metadata['build_channel'] == 'development'
+    client = ReportClient(tmp_path)
+    server = Server()
+    client._opener = server
+    assert client.submit(metadata, b'zip') == 'sent'
+    assert json.loads(server.requests[0][0].data)['build_channel'] == 'development'
+    with pytest.raises(ReportError, match='metadata'):
+        client.enqueue({'build_channel': 'secret'}, b'zip')

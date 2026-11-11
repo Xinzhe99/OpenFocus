@@ -54,6 +54,7 @@ ZH = {
     "account_generic_error": "登录未完成，请重试。",
     "account_rate_limited": "请求过于频繁，请稍后重试。",
     "account_expired": "登录链接已过期或已使用，请重新获取。",
+    "account_disabled": "此账号不可用，请联系 support@openfocus.top。",
     "account_device_limit": "此账号已注册 3 台电脑。请先在账号中心移除一台设备，然后重试。",
     "account_signed_out": "已在此设备退出登录。",
     "account_email_unverified": "需要已验证的邮箱，请尝试邮箱登录。",
