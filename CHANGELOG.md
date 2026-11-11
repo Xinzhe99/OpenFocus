@@ -36,8 +36,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   full precision for saved values and calculations.
 - Add an optional Windows Explorer context-menu command to import selected
   images or folders as a stack, including large multi-selections.
-- Default exposure matching on for every fusion method and the other desktop
-  render options off, while preserving explicitly saved choices.
+- Default desktop render options off while preserving explicitly saved choices.
 - Add **File → Open Image Frames…** to import selected images as one stack,
   with an editable folder address in the file picker.
 - Add opt-in render profiling: **Advanced Settings → Diagnostics → Profile
@@ -148,9 +147,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   default registration method even with experimental features enabled; OpenFocus
   registration requires an explicit choice and the experimental opt-in. Saved
   explicit choices are preserved subject to that setting.
-- Enable exposure matching by default for all fusion methods. OpenFocus A/B/C
-  match the first processed frame; other methods match the last. Saved
-  per-method choices remain in effect.
+- Keep exposure matching off by default in the desktop interface. When enabled,
+  OpenFocus A/B/C match the first processed frame and other methods match the
+  last. Saved per-method choices remain in effect; CLI defaults are unchanged.
 - Keep optional base correction off by default; when enabled, OpenFocus A/B/C
   use the first processed frame and other methods use the last. Reversing the
   stack changes processing order and the reference frame.

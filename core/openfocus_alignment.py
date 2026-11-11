@@ -41,6 +41,7 @@ def _hash_pixels(image, should_cancel):
     _check_cancel(should_cancel)
     digest = hashlib.sha256()
     digest.update(memoryview(np.ascontiguousarray(image)).cast('B'))
+    _check_cancel(should_cancel)
     return digest.hexdigest()
 
 
@@ -248,11 +249,20 @@ def estimate_translation_bytes(sources):
 
 def _gray16(image, should_cancel):
     _check_cancel(should_cancel)
-    if _native_kernels.available() and image.dtype == np.uint8 and image.ndim in (2, 3):
-        return _native_kernels.gray16_u8(image)
-    if _native_kernels.available() and image.dtype == np.uint16 and image.ndim in (2, 3):
-        return _native_kernels.gray16_u16(image)
     gray = np.empty(image.shape[:2], dtype=np.uint16)
+    if _native_kernels.available() and image.ndim in (2, 3):
+        kernel = (_native_kernels.gray16_u8 if image.dtype == np.uint8 else
+                  _native_kernels.gray16_u16 if image.dtype == np.uint16 else None)
+        if kernel is not None:
+            if should_cancel is None:
+                kernel(image, gray)
+            else:
+                # Bound native work between cancellation checks without copying rows.
+                for start in range(0, len(image), 128):
+                    _check_cancel(should_cancel)
+                    kernel(image[start:start + 128], gray[start:start + 128])
+                _check_cancel(should_cancel)
+            return gray
     for y, row in enumerate(image):
         _check_cancel(should_cancel)
         if image.ndim == 2:
