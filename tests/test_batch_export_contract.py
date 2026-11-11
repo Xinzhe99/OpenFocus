@@ -337,6 +337,20 @@ def test_unknown_export_extension_is_not_silently_reencoded():
         ExportManager(None).normalize_export_path('image.jp2')
 
 
+@pytest.mark.parametrize('suffix', ['.jpeg', '.jpe', '.jfif', '.JPEG', '.PNG'])
+def test_export_preserves_confirmed_filename_and_writes_that_file(tmp_path, suffix):
+    destination = tmp_path / ('image' + suffix)
+    destination.write_bytes(b'old contents')
+    other = tmp_path / ('image.jpg' if suffix.lower() != '.png' else 'other.png')
+    other.write_bytes(b'untouched')
+
+    path = ExportManager(None).normalize_export_path(str(destination))
+    assert path == str(destination)
+    assert imwrite_auto(path, np.zeros((8, 8, 3), np.uint8))
+    assert cv2.imdecode(np.frombuffer(destination.read_bytes(), np.uint8), cv2.IMREAD_COLOR) is not None
+    assert other.read_bytes() == b'untouched'
+
+
 def test_source_paths_cannot_be_export_targets(qapp, tmp_path):
     window = host(qapp)
     source = make_stack(tmp_path / 'source')
