@@ -17,9 +17,8 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # One identity for both platforms. A tag must match constants.APP_VERSION
-  # exactly; a branch dispatch produces a clearly labelled preview that is
-  # never uploaded to a GitHub release (the release job below is tag-only).
+  # Tagged releases match APP_VERSION, optionally with a beta suffix. Branch
+  # dispatches only produce preview artifacts and are never published.
   prepare:
     name: Resolve build identity
     runs-on: ubuntu-latest
@@ -43,7 +42,7 @@ jobs:
 
   release-tests:
     needs: prepare
-    if: needs.prepare.outputs.channel == 'release'
+    if: needs.prepare.outputs.channel == 'release' || needs.prepare.outputs.channel == 'beta'
     uses: ./.github/workflows/tests.yml
     with:
       ref: ${{ needs.prepare.outputs.sha }}
@@ -137,7 +136,7 @@ jobs:
       - name: Detect SignPath signing configuration
         id: signpath
         # Never sign a branch acceptance build with the official version.
-        if: needs.prepare.outputs.channel == 'release'
+        if: needs.prepare.outputs.channel == 'release' || needs.prepare.outputs.channel == 'beta'
         shell: pwsh
         env:
           API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
@@ -479,7 +478,7 @@ jobs:
     # Tags only: a workflow_dispatch run on a branch uploads downloadable
     # artifacts for acceptance testing and must never create or overwrite a
     # release (or its four stable assets).
-    if: ${{ needs.prepare.outputs.channel == 'release' }}
+    if: ${{ needs.prepare.outputs.channel == 'release' || needs.prepare.outputs.channel == 'beta' }}
     permissions:
       contents: write
     steps:
@@ -495,6 +494,8 @@ jobs:
       - name: Create release notes
         env:
           WINDOWS_SIGNED: ${{ needs.build-windows.outputs.signed }}
+          RELEASE_CHANNEL: ${{ needs.prepare.outputs.channel }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           cat > release_notes.md <<'EOF'
           ## Downloads
@@ -554,16 +555,24 @@ jobs:
           EOF
           # Keep a translated summary before the common download instructions.
           # Language blocks survive mirroring for in-app selection after fetch.
-          python3 - "${{ github.ref_name }}" <<'PY'
+          python3 - "${{ needs.prepare.outputs.tag }}" <<'PY'
           import os, re, sys
           from utils.release_notes import release_notes_markdown
           tag = sys.argv[1]
-          version = tag[1:] if tag.startswith('v') else tag
+          version = os.environ["RELEASE_VERSION"]
           text = open("CHANGELOG.md", encoding="utf-8").read()
           m = re.search(r"^## \[v?" + re.escape(version) + r"\][^\n]*\n(.*?)(?=^## \[|\Z)", text, re.S | re.M)
           if not m:
               raise SystemExit(f"No changelog section found for {tag}")
           notes = open("release_notes.md", encoding="utf-8").read()
+          if os.environ["RELEASE_CHANNEL"] == "beta":
+              notes = notes.replace(
+                  "Windows downloads are available from **https://openfocus.top**.",
+                  "This is a beta prerelease. Download its assets from this page.",
+              ).replace("site download, or `OpenFocus-", "`OpenFocus-").replace(
+                  "rebuild the complete file, or download from the site.",
+                  "rebuild the complete file.",
+              )
           if os.environ.get("WINDOWS_SIGNED") == "true":
               notes = notes.replace(
                   "The app is unsigned, so SmartScreen/Gatekeeper may warn on first launch:",
@@ -572,7 +581,7 @@ jobs:
                   "notarized:",
               )
           # Publishing requires actual notes in every selectable UI language.
-          notes = release_notes_markdown(tag) + "\n\n" + notes
+          notes = release_notes_markdown(version) + "\n\n" + notes
           open("release_notes.md", "w", encoding="utf-8").write(notes)
           PY
 

@@ -1,8 +1,8 @@
 """Resolve the release identity used by the release workflow.
 
-A tag build must match ``constants.APP_VERSION`` exactly. A branch
-``workflow_dispatch`` run is an acceptance build: it gets a safe preview label
-(``v<version>-preview.<run>``) for file names and never reaches the release job.
+A stable tag matches ``constants.APP_VERSION``; a beta tag appends
+``-beta.<positive integer>``. A branch ``workflow_dispatch`` run is an
+acceptance build and never reaches the release job.
 
 Run from the repository root:
     python tools/release_metadata.py --github-output "$GITHUB_OUTPUT"
@@ -47,11 +47,8 @@ def resolve_identity(ref: str, ref_name: str, run_number: str, version: str,
                      sha: str = "") -> dict:
     """Return version/label/channel/tag for one workflow run.
 
-    Tags are release builds and keep the exact ``v<version>`` name. Anything
-    else is a preview: a run number (or short commit when GitHub does not
-    provide one) keeps concurrent branch builds distinguishable, and the label
-    contains no slashes or spaces so every packaging command can use it
-    verbatim.
+    Stable and beta tags retain their exact names. Branch builds receive a
+    distinct safe preview label and cannot be published as a release.
     """
     version = str(version).strip()
     if not VERSION_RE.fullmatch(version):
@@ -62,11 +59,16 @@ def resolve_identity(ref: str, ref_name: str, run_number: str, version: str,
     ref_name = str(ref_name or "")
     if ref.startswith(TAG_REF_PREFIX):
         expected = "v" + version
-        if ref_name != expected:
+        if ref != TAG_REF_PREFIX + ref_name:
+            raise ReleaseIdentityError("tag ref and tag name differ")
+        if ref_name == expected:
+            channel = "release"
+        elif re.fullmatch(re.escape(expected) + r"-beta\.[1-9][0-9]*", ref_name):
+            channel = "beta"
+        else:
             raise ReleaseIdentityError(
                 f"constants.py APP_VERSION ({expected}) != tag ({ref_name or ref}).")
         label = ref_name
-        channel = "release"
         tag = ref_name
     else:
         suffix = str(run_number or "").strip()

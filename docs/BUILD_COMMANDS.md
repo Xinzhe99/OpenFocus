@@ -8,10 +8,13 @@ Stable desktop builds and GPU variants share [runtime_resources.json](../packagi
 
 The macOS job uses `macos-latest`, matching the test matrix. A manual branch
 dispatch produces preview artifacts; it does not publish a GitHub release or
-PyPI package. For a stable release, the tag must match `constants.APP_VERSION`.
-The release workflow locks the checked-out commit and runs the three-OS test
-suite and installed headless wheel smoke for that same commit, alongside the
-desktop builds. All must succeed before publication.
+PyPI package. For a stable release, the tag is `v<APP_VERSION>`; for a GitHub
+beta, use `v<APP_VERSION>-beta.<N>` with a positive integer `N`, for example
+`v1.77.0-beta.1`. Keep `constants.APP_VERSION` numeric. Both tagged channels
+lock the checked-out commit and run the three-OS test suite and installed
+headless wheel smoke for that commit, alongside the desktop builds. All must
+succeed before publication. Beta builds follow the same configured SignPath
+signing or unsigned path as stable builds.
 
 The workflow stages a draft, checks the complete remote asset set, sizes and
 SHA-256 hashes against `OpenFocus-<tag>-build.json`, and verifies that the tag
@@ -22,7 +25,12 @@ and every asset match. Changed bytes, including rebuilt signed binaries, require
 a new version and tag. Historical releases without a verifiable build identity
 cannot be silently replaced or amended by rerunning the workflow.
 
-PyPI publication runs only for a release tag, including a manual dispatch on
+Beta releases are published as GitHub prereleases and explicitly excluded from
+latest. They use the numeric version's changelog and all twelve localized note
+summaries; download them from the beta release page. PyPI and the R2 stable
+mirror/updater do not publish beta tags, including manual mirror requests.
+
+PyPI publication runs only for a stable release tag, including a manual dispatch on
 that tag. It checks the tag and commit against the published desktop build
 identity and its bound successful release workflow run and attempt, including
 the release tests. It verifies the built distributions and compares existing

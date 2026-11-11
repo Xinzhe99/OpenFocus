@@ -13,6 +13,7 @@ class FakeGitHub:
         self.release = None
         self.content = {}
         self.calls = []
+        self.commands = []
         self.sha = 'a' * 40
         self.fail_upload = None
         self.move_after_verify = False
@@ -20,9 +21,10 @@ class FakeGitHub:
     def command(self, *args, **kwargs):
         op = args[2]
         self.calls.append(op)
+        self.commands.append(args)
         if op == 'create':
-            self.release = {'draft': True, 'prerelease': False,
-                            'tag_name': 'v1.0.0', 'assets': []}
+            self.release = {'draft': True, 'prerelease': '--prerelease' in args,
+                            'tag_name': args[3], 'assets': []}
         elif op == 'upload':
             path = publisher.Path(args[4])
             if path.name == self.fail_upload:
@@ -37,8 +39,10 @@ class FakeGitHub:
             dest = args[args.index('--dir') + 1]
             (publisher.Path(dest) / name).write_bytes(self.content[name])
         elif op == 'edit' and '--draft=false' in args:
+            self.release['prerelease'] = '--prerelease=true' in args
             self.release['draft'] = False
         elif op == 'edit':
+            self.release['prerelease'] = '--prerelease=true' in args
             self.release['name'] = args[args.index('--title') + 1]
             self.release['body'] = publisher.Path(args[args.index('--notes-file') + 1]).read_text(encoding='utf-8')
         return SimpleNamespace(stdout='', stderr='', returncode=0)
@@ -79,6 +83,27 @@ def test_draft_verified_before_publish_and_public_retry_is_read_only(monkeypatch
     gh.calls.clear()
     run(directory)
     assert set(gh.calls) == {'download'}
+
+
+def test_beta_remains_prerelease_and_retry_is_read_only(monkeypatch, tmp_path):
+    directory, gh = setup(monkeypatch, tmp_path)
+    tag = 'v1.0.0-beta.1'
+    publisher.publish(directory, directory / 'notes', 'owner/repo', tag,
+                      '1.0.0', 'a' * 40, 7, 1)
+    assert gh.release['draft'] is False
+    assert gh.release['prerelease'] is True
+    publication_commands = [args for args in gh.commands if args[2] in ('create', 'edit')]
+    assert all('--latest=false' in args for args in publication_commands)
+    assert '--prerelease' in publication_commands[0]
+    assert all('--prerelease=true' in args for args in publication_commands[1:])
+    gh.calls.clear()
+    publisher.publish(directory, directory / 'notes', 'owner/repo', tag,
+                      '1.0.0', 'a' * 40, 7, 1)
+    assert set(gh.calls) == {'download'}
+    gh.release['prerelease'] = False
+    with pytest.raises(ValueError, match='prerelease status'):
+        publisher.publish(directory, directory / 'notes', 'owner/repo', tag,
+                          '1.0.0', 'a' * 40, 7, 1)
 
 
 def test_failed_upload_keeps_draft(monkeypatch, tmp_path):

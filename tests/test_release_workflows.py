@@ -136,19 +136,44 @@ def test_release_calls_suite_and_locks_every_checkout():
     assert set(jobs['release']['needs']) == {
         'prepare', 'release-tests', 'build-windows', 'build-macos'}
     sha = 'a' * 40
-    for channel in ('preview', 'release'):
+    for channel in ('preview', 'release', 'beta'):
         context = {'needs': {'prepare': {'outputs': {'sha': sha, 'channel': channel}}}}
-        assert bool(expression(caller['if'], context)) == (channel == 'release')
-        assert bool(expression(jobs['release']['if'], context)) == (channel == 'release')
+        assert bool(expression(caller['if'], context)) == (channel in ('release', 'beta'))
+        assert bool(expression(jobs['release']['if'], context)) == (channel in ('release', 'beta'))
         assert expression(caller['with']['ref'], context) == sha
         for name in ('build-windows', 'build-macos', 'release'):
             assert expression(checkout(jobs[name])['with']['ref'], context) == sha
 
 
+def test_beta_uses_signing_gate_and_cannot_publish_to_pypi():
+    release = workflow('release.yml')['jobs']
+    sign = next(step for step in release['build-windows']['steps']
+                if step.get('id') == 'signpath')
+    pypi = workflow('pypi.yml')
+    for channel in ('release', 'beta', 'preview'):
+        context = {'needs': {'prepare': {'outputs': {'channel': channel}},
+                             'build': {'outputs': {'channel': channel}}}}
+        assert bool(expression(sign['if'], context)) == (channel != 'preview')
+        assert bool(expression(pypi['jobs']['publish']['if'], context)) == (channel == 'release')
+    assert '!v*-beta.*' in pypi['on']['push']['tags']
+
+
+def test_r2_rejects_beta_tags_even_if_manually_dispatched():
+    job = workflow('r2-mirror.yml')['jobs']['mirror']
+    script = next(step['run'] for step in job['steps'] if step.get('id') == 'release')
+    assert '^v[0-9]+(\\.[0-9]+)*$' in script
+    assert "!contains(github.event.workflow_run.head_branch || '', '-beta.')" in job['if']
+    download = next(step['run'] for step in job['steps']
+                    if step.get('name') == 'Download the intended release assets')
+    assert '.prerelease == false' in download
+
+
 @pytest.mark.parametrize('channel,failed,expected', [
-    ('release', None, True), ('preview', None, False),
+    ('release', None, True), ('beta', None, True), ('preview', None, False),
     ('release', 'release-tests', False), ('release', 'build-windows', False),
     ('release', 'build-macos', False), ('release', 'prepare', False),
+    ('beta', 'release-tests', False), ('beta', 'build-windows', False),
+    ('beta', 'build-macos', False),
 ])
 def test_release_job_graph_requires_successful_dependencies(channel, failed, expected):
     job = workflow('release.yml')['jobs']['release']
