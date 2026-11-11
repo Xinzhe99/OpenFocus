@@ -372,6 +372,79 @@ def test_registration_failure_policy_is_shared_and_persisted(settings_window, tm
     assert restored._registration_parameters_by_method["openfocus"]["reference_frame"] == 4
 
 
+def test_openfocus_advanced_draft_accept_and_persistence(settings_window, tmp_path, monkeypatch):
+    from PyQt6.QtCore import QSettings
+    from core.algorithms import resolve_registration_parameters
+    from dialogs.advanced_settings import AdvancedSettingsDialog
+    from utils import settings_store
+
+    store = QSettings(str(tmp_path / 'settings.ini'), QSettings.Format.IniFormat)
+    monkeypatch.setattr(settings_store, 'get_settings', lambda: store)
+    window = settings_window
+    window._registration_parameters_by_method = {
+        'openfocus': {'max_shift_ratio': .12, 'reference_frame': 4},
+        'ecc': {'failure_policy': 'continue'},
+    }
+    window.current_alignment_method = lambda: 'ecc'
+    window.registration_parameters_for = lambda method: resolve_registration_parameters(
+        method, window._registration_parameters_by_method.get(method))
+    window.persist_settings = lambda: settings_store.save_parameter_memories(window)
+
+    dialog = AdvancedSettingsDialog(window)
+    editors = dialog.openfocus_registration_panel.editors
+    assert set(editors) == {'max_shift_ratio', 'rotation', 'magnification', 'reference_frame'}
+    assert editors['max_shift_ratio'].value() == .12
+    assert editors['reference_frame'].value() == 4
+    editors['rotation'].setValue(8)
+    dialog.reject()
+    assert window.registration_parameters_for('openfocus')['rotation'] == 0
+    assert not store.allKeys()
+
+    dialog = AdvancedSettingsDialog(window)
+    editors = dialog.openfocus_registration_panel.editors
+    for key, value in {'max_shift_ratio': .2, 'rotation': 8,
+                       'magnification': 5, 'reference_frame': 2}.items():
+        editors[key].setValue(value)
+    dialog.combo_align_failure.setCurrentIndex(dialog.combo_align_failure.findData('fail'))
+    dialog._apply()
+    assert dialog.result() == QDialog.DialogCode.Accepted
+    restored = SimpleNamespace()
+    settings_store.load_parameter_memories(restored)
+    assert restored._registration_parameters_by_method['openfocus'] == {
+        'max_shift_ratio': .2, 'rotation': 8., 'magnification': 5.,
+        'reference_frame': 2, 'failure_policy': 'fail'}
+    assert restored._registration_parameters_by_method['ecc']['failure_policy'] == 'fail'
+
+
+def test_openfocus_advanced_invalid_and_save_failure_roll_back(settings_window):
+    from core.algorithms import resolve_registration_parameters
+    from dialogs.advanced_settings import AdvancedSettingsDialog
+
+    window = settings_window
+    original = {'openfocus': {'reference_frame': 3}, 'ecc': {'failure_policy': 'continue'}}
+    window._registration_parameters_by_method = original
+    window.current_alignment_method = lambda: 'ecc'
+    window.registration_parameters_for = lambda method: resolve_registration_parameters(
+        method, window._registration_parameters_by_method.get(method))
+    dialog = AdvancedSettingsDialog(window)
+    editor = dialog.openfocus_registration_panel.editors['rotation']
+    editor.lineEdit().setText('')
+    dialog._apply()
+    assert dialog.result() != QDialog.DialogCode.Accepted
+    assert window._registration_parameters_by_method == original
+    assert not window.saved
+
+    editor.setValue(4)
+    dialog.combo_align_failure.setCurrentIndex(dialog.combo_align_failure.findData('fail'))
+    def fail():
+        raise OSError('disk full')
+    window.persist_settings = fail
+    dialog._apply()
+    assert dialog.result() != QDialog.DialogCode.Accepted
+    assert window._registration_parameters_by_method == original
+    assert 'disk full' in dialog.status.text()
+
+
 def test_advanced_settings_preserve_high_saved_thread_limit(settings_window):
     from dialogs.advanced_settings import AdvancedSettingsDialog
 
@@ -810,6 +883,8 @@ def test_restore_preferences_keeps_workspace_and_user_data(qapp, tmp_path, monke
     previous_language = settings.value(store.LANGUAGE_KEY)
     store.restore_default_settings(window)
     assert window.thread_count == 0 and window.tile_enabled
+    assert not window.exposure_match and not window.base_frame_correct
+    assert not window.stack_reverse_order and not window.sharpen_output
     assert window.storage_directory == ''
     assert window._fusion_parameters_by_method == {}
     assert window._registration_parameters_by_method == {}
@@ -878,7 +953,7 @@ def test_restore_confirmation_rejection_never_writes(qapp, tmp_path, monkeypatch
 
 
 @pytest.mark.parametrize('method', ['openfocus_a', 'openfocus_b', 'openfocus_c'])
-def test_default_full_frame_policy_and_explicit_threshold_are_visible(settings_window, method):
+def test_openfocus_desktop_tiling_status_stays_whole_frame(settings_window, method):
     from core.algorithms import get_fusion
     from core.multi_focus_fusion import _DEFAULT_TILE_THRESHOLD
     from dialogs.advanced_settings import AdvancedSettingsDialog
@@ -895,9 +970,9 @@ def test_default_full_frame_policy_and_explicit_threshold_are_visible(settings_w
             method=get_fusion(method).display_name)
         full_frame_status = dialog.tile_status.text()
         dialog.spin_threshold.setValue(_DEFAULT_TILE_THRESHOLD + 256)
-        assert not dialog.spin_block.isHidden() and not dialog.spin_overlap.isHidden()
-        assert not dialog.tile_note.isHidden()
-        assert dialog.tile_status.text() != full_frame_status
+        assert dialog.spin_block.isHidden() and dialog.spin_overlap.isHidden()
+        assert dialog.tile_note.isHidden()
+        assert dialog.tile_status.text() == full_frame_status
         dialog.chk_tile.setChecked(False)
         assert dialog.spin_threshold.isHidden() and dialog.spin_block.isHidden()
         assert dialog.tile_note.isHidden()

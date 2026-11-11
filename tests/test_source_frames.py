@@ -91,6 +91,73 @@ def test_oversized_frame_is_not_retained(tmp_path, monkeypatch):
     assert cache.bytes == 0
 
 
+def test_source_decode_reclaims_cache_when_headroom_is_low(tmp_path, monkeypatch):
+    from core import resource_policy
+
+    frame = sources.scan_source(_jpeg(tmp_path, shape=(30, 40)), header_only=True)[0]
+    cache = sources.FrameCache(1024 * 1024)
+    cache.put('old', np.zeros((30, 40, 3), np.uint8))
+    monkeypatch.setattr(sources, 'SOURCE_CACHE', cache)
+    def admit(_required):
+        if cache.bytes:
+            raise resource_policy.ResourceLimitError('low memory')
+    monkeypatch.setattr(resource_policy, 'require_memory', admit)
+
+    assert sources.resolve_frame(frame).shape == frame.shape
+    assert cache.get('old') is None
+
+
+@pytest.mark.parametrize('outcome', ['resume', 'cancel', 'exhausted'])
+def test_source_decode_drains_concurrent_work_before_rejecting(tmp_path, monkeypatch, outcome):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+    from core import resource_policy
+    from core.registration import RegistrationCancelled
+
+    paths = [_jpeg(tmp_path, f'pressure-{index}.jpg', (30, 40)) for index in range(2)]
+    frames = [sources.scan_source(path, header_only=True)[0] for path in paths]
+    monkeypatch.setattr(sources, 'SOURCE_CACHE', sources.FrameCache(0))
+    started, release, finished, rejected, cancelled = (Event() for _ in range(5))
+    decoded = []
+
+    def admit(_required):
+        if started.is_set() and (not finished.is_set() or outcome == 'exhausted'):
+            rejected.set()
+            raise resource_policy.ResourceLimitError('low memory')
+
+    def decode(path, **_kwargs):
+        decoded.append(path)
+        if path == paths[0]:
+            started.set()
+            assert release.wait(5)
+            finished.set()
+        return np.zeros((30, 40, 3), np.uint8)
+
+    monkeypatch.setattr(resource_policy, 'require_memory', admit)
+    monkeypatch.setattr(image_loader, 'decode_image', decode)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(sources.resolve_frame, frames[0])
+        try:
+            assert started.wait(5)
+            second = pool.submit(sources.resolve_frame, frames[1], should_cancel=cancelled.is_set)
+            assert rejected.wait(5)
+            if outcome == 'cancel':
+                cancelled.set()
+                with pytest.raises(RegistrationCancelled):
+                    second.result(timeout=5)
+            else:
+                release.set()
+                if outcome == 'exhausted':
+                    with pytest.raises(resource_policy.ResourceLimitError, match='low memory'):
+                        second.result(timeout=5)
+                else:
+                    assert second.result(timeout=5).shape == frames[1].shape
+        finally:
+            release.set()
+        assert first.result(timeout=5).shape == frames[0].shape
+    assert decoded == (paths if outcome == 'resume' else paths[:1])
+
+
 def test_transforms_remain_lazy_then_materialize_exact_pixels(tmp_path, monkeypatch):
     path = _jpeg(tmp_path)
     frame = sources.scan_source(path)[0]
@@ -125,6 +192,71 @@ def test_tiff_pages_keep_original_depth_and_page_identity(tmp_path, monkeypatch)
     for frame, expected in zip(frames, original):
         np.testing.assert_array_equal(sources.resolve_frame(frame), expected)
     assert (tmp_path / '多页.tif').is_file()
+
+
+@pytest.mark.parametrize('subifd', [False, True])
+def test_reduced_tiff_preview_keeps_full_resolution_pages(tmp_path, subifd):
+    import tifffile
+    from core import batch_converter
+
+    path = tmp_path / 'stack.tif'
+    full = [np.full((60, 90, 3), (1000, 2000, value), np.uint16)
+            for value in (3000, 5000)]
+    thumbnail = np.full((20, 30, 3), (11, 22, 33), np.uint8)
+    with tifffile.TiffWriter(path) as writer:
+        for pixels in full:
+            writer.write(pixels, photometric='rgb', compression='deflate', rowsperstrip=16,
+                         subifds=1 if subifd else None,
+                         extratags=[(274, 'H', 1, 6, False)])
+            writer.write(thumbnail, photometric='rgb', subfiletype=1)
+    frames = sources.scan_source(path)
+    assert len(frames) == image_loader.count_frames(path) == batch_converter.page_count(path) == 2
+    assert [frame.page for frame in frames] == ([0, 1] if subifd else [0, 2])
+    for index, frame in enumerate(frames):
+        assert frame.shape == (90, 60, 3)
+        np.testing.assert_array_equal(sources.display_image(frame),
+                                      cv2.rotate(thumbnail[:, :, ::-1], cv2.ROTATE_90_CLOCKWISE))
+        np.testing.assert_array_equal(sources.resolve_frame(frame),
+                                      cv2.rotate(full[index][:, :, ::-1], cv2.ROTATE_90_CLOCKWISE))
+        np.testing.assert_array_equal(batch_converter._decode(str(path), index),
+                                      cv2.rotate(full[index][:, :, ::-1], cv2.ROTATE_90_CLOCKWISE))
+
+
+def test_incompatible_reduced_tiff_preview_falls_back_to_full_page(tmp_path):
+    import tifffile
+    path = tmp_path / 'incompatible.tif'
+    pixels = np.full((40, 60, 3), (1000, 2000, 3000), np.uint16)
+    with tifffile.TiffWriter(path) as writer:
+        writer.write(pixels, photometric='rgb')
+        writer.write(np.zeros((10, 10, 3), np.uint8), photometric='rgb', subfiletype=1)
+    frame, = sources.scan_source(path)
+    np.testing.assert_array_equal(sources.display_image(frame), pixels[:, :, ::-1])
+
+
+def test_transparent_reduced_preview_does_not_hide_opaque_original(tmp_path):
+    import tifffile
+    path = tmp_path / 'alpha.tif'
+    pixels = np.full((40, 60, 4), (1000, 2000, 3000, 65535), np.uint16)
+    preview = np.full((20, 30, 4), (11, 22, 33, 0), np.uint8)
+    with tifffile.TiffWriter(path) as writer:
+        writer.write(pixels, photometric='rgb', extrasamples='unassalpha')
+        writer.write(preview, photometric='rgb', extrasamples='unassalpha', subfiletype=1)
+    frame, = sources.scan_source(path)
+    np.testing.assert_array_equal(sources.display_image(frame), pixels[:, :, 2::-1])
+
+
+def test_reduced_opaque_preview_does_not_hide_transparent_original(tmp_path):
+    import tifffile
+    path = tmp_path / 'transparent.tif'
+    pixels = np.full((40, 60, 4), (1000, 2000, 3000, 65535), np.uint16)
+    pixels[0, 0, 3] = 0
+    preview = np.full((20, 30, 4), (11, 22, 33, 255), np.uint8)
+    with tifffile.TiffWriter(path) as writer:
+        writer.write(pixels, photometric='rgb', extrasamples='unassalpha')
+        writer.write(preview, photometric='rgb', extrasamples='unassalpha', subfiletype=1)
+    with pytest.raises(image_loader.UnsupportedTransparency):
+        sources.scan_source(path)
+
 
 
 def test_png_header_retains_rgb16_samples(tmp_path):

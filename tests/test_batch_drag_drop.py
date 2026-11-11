@@ -305,7 +305,89 @@ def test_batch_picker_text_uses_current_language(qapp, monkeypatch):
         qapp.processEvents()
 
 
+@pytest.mark.parametrize("cancel_at", [None, "picker", "raw", "scale"])
+def test_open_frames_uses_stack_import_and_honors_cancel(qapp, tmp_path, monkeypatch, cancel_at):
+    from PyQt6.QtWidgets import QWidget
+    from controllers.source_manager import SourceManager
+    from utils import settings_store
+    from utils.file_dialogs import FileDialog
+
+    window = QWidget()
+    manager = SourceManager(window)
+    paths = [str(tmp_path / "frame10.dng"), str(tmp_path / "frame2.dng")]
+    saved, modes, scales, loads, picker = [], [], [], [], []
+    monkeypatch.setattr(settings_store, "get_last_dialog_dir", lambda: str(tmp_path))
+    monkeypatch.setattr(settings_store, "set_last_dialog_dir", saved.append)
+
+    def choose(*args):
+        picker.append(args)
+        return ([] if cancel_at == "picker" else paths, "")
+
+    monkeypatch.setattr(FileDialog, "getOpenFileNames", choose)
+    monkeypatch.setattr(manager, "_choose_raw_import_mode",
+                        lambda selected, append: modes.append((selected, append)) or
+                        (None if cancel_at == "raw" else True))
+    monkeypatch.setattr(manager, "_ask_load_scale",
+                        lambda **kwargs: scales.append(True) or (None if cancel_at == "scale" else 0.5))
+    monkeypatch.setattr(manager, "_start_load_worker", lambda **kwargs: loads.append(kwargs))
+    try:
+        manager.prompt_and_load_frames()
+        assert picker[0][2] == str(tmp_path)
+        assert "*.png" in picker[0][3]
+        assert saved == ([] if cancel_at == "picker" else [paths[0]])
+        if cancel_at != "picker":
+            assert modes == [(paths[::-1], False)]
+        assert bool(scales) == (cancel_at in (None, "scale"))
+        assert loads == ([dict(filepaths=paths[::-1], scale=0.5, append=False,
+                               linear_raw=True)] if cancel_at is None else [])
+    finally:
+        window.close()
+        window.deleteLater()
+        qapp.processEvents()
+
+
+def test_open_frames_picker_navigates_typed_directory(qapp, tmp_path, monkeypatch):
+    from utils import file_dialogs
+    monkeypatch.setattr(file_dialogs, "_use_native_file_dialog", lambda: False)
+    from PyQt6.QtTest import QTest
+    from PyQt6.QtWidgets import QLineEdit, QWidget
+    from controllers.source_manager import SourceManager
+    from utils import settings_store
+
+    target = tmp_path / "image frames"
+    target.mkdir()
+    monkeypatch.setattr(settings_store, "get_last_dialog_dir", lambda: str(tmp_path))
+    window = QWidget()
+    manager = SourceManager(window)
+    seen, errors = [], []
+
+    def navigate():
+        dialog = qapp.activeModalWidget()
+        try:
+            line = dialog.findChild(QLineEdit, "folderPathEdit")
+            line.setText(str(target))
+            QTest.keyClick(line, Qt.Key.Key_Return)
+            seen.append((dialog.isVisible(), dialog.directory().absolutePath()))
+        except Exception as exc:
+            errors.append(exc)
+        finally:
+            dialog.reject()
+
+    try:
+        QTimer.singleShot(0, navigate)
+        manager.prompt_and_load_frames()
+        assert not errors
+        assert seen[0][0]
+        assert os.path.normcase(os.path.normpath(seen[0][1])) == os.path.normcase(str(target))
+    finally:
+        window.close()
+        window.deleteLater()
+        qapp.processEvents()
+
+
 def test_open_stack_folder_accepts_a_typed_directory(qapp, tmp_path, monkeypatch):
+    from utils import file_dialogs
+    monkeypatch.setattr(file_dialogs, "_use_native_folder_dialog", lambda: False)
     from PyQt6.QtTest import QTest
     from PyQt6.QtWidgets import QLineEdit, QWidget
     from controllers.source_manager import SourceManager
@@ -352,7 +434,9 @@ def test_open_stack_folder_accepts_a_typed_directory(qapp, tmp_path, monkeypatch
         qapp.processEvents()
 
 
-def test_batch_folder_picker_navigates_typed_path_on_enter(qapp, tmp_path):
+def test_batch_folder_picker_navigates_typed_path_on_enter(qapp, tmp_path, monkeypatch):
+    from utils import file_dialogs
+    monkeypatch.setattr(file_dialogs, "_use_native_folder_dialog", lambda: False)
     from PyQt6.QtTest import QTest
     from PyQt6.QtWidgets import QLineEdit
     from utils.file_dialogs import FileDialog

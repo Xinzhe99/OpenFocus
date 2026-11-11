@@ -224,3 +224,70 @@ def test_registered_extension_and_composite_alignment_execute_in_child(qapp, scr
     _wait(worker, qapp)
     assert not errors
     np.testing.assert_array_equal(results[0][1], np.full((16, 20, 3), 174, np.uint8))
+
+
+def test_fusion_preparation_progress_transitions_to_tile_progress():
+    from types import SimpleNamespace
+    from core.workers import RenderWorker
+
+    events = []
+    worker = SimpleNamespace(
+        stage_signal=SimpleNamespace(emit=lambda stage: events.append(('stage', stage))),
+        progress_signal=SimpleNamespace(emit=lambda done, total: events.append(('progress', done, total))))
+    progress = RenderWorker._fusion_progress(worker)
+    progress.preparation(1, 92)
+    progress.preparation(92, 92)
+    progress(0, 228)
+    progress(1, 228)
+    assert events == [
+        ('stage', 'prepare'), ('progress', 1, 92), ('progress', 92, 92),
+        ('stage', 'fuse'), ('progress', 0, 228), ('progress', 1, 228),
+    ]
+
+
+@pytest.mark.parametrize('change', ['selection', 'transform', 'close'])
+def test_prepared_cache_invalidation_preserves_inflight_reader(qapp, scratch, change):
+    from types import SimpleNamespace
+    from controllers.render_manager import RenderManager
+    from controllers.source_manager import SourceManager
+    from controllers.transform_manager import TransformManager
+    from core import frame_storage
+
+    class Signal:
+        def connect(self, slot):
+            self.slot = slot
+
+    class Control:
+        def __getattr__(self, name):
+            return lambda *args: None
+
+    window = SimpleNamespace(destroyed=Signal(), add_label_action=Control(),
+        resize_action=Control(), result_slider=Control(), result_control_bar=Control(),
+        lbl_result_info=Control(), raw_images=[])
+    manager = RenderManager(window)
+    window.render_manager = manager
+    window.transform_manager = TransformManager(window)
+    frame = frame_storage.store_frame(np.ones((8, 9), np.uint8), prefer_ram=False)
+    path = Path(frame_storage.describe_frame(frame)['path'])
+    manager._prepared_cache = [frame]
+    manager._prepared_cache_key = ('old',)
+    manager._prepared_cache_source = window.raw_images
+    reader = [frame]
+    del frame
+
+    if change == 'selection':
+        source = SourceManager(window)
+        source._refresh_source_count = lambda: None
+        source.decorate_source_items = lambda: None
+        source.processing_selection_changed()
+    elif change == 'transform':
+        window.transform_manager.invalidate_processing_results()
+    else:
+        window.destroyed.slot()
+    assert manager._prepared_cache is None
+    assert manager._prepared_cache_key is None
+    assert path.exists()
+    np.testing.assert_array_equal(reader[0], np.ones((8, 9), np.uint8))
+    reader.clear()
+    gc.collect()
+    assert not path.exists()

@@ -22,9 +22,10 @@ depth estimator. B and C use the completed smoothed depth map for fusion;
 C merges full-resolution source codes in reverse source order during its second pass.
 B's external tiles share a full-image depth map; resizing uses whole frames.
 
-OpenFocus A/B/C use whole-image processing at the default tile threshold, even
-when the general tile option is enabled. A non-default threshold opts A/B into
-external tiling. C keeps a single depth and source-merge domain at every threshold.
+The desktop application processes OpenFocus A/B/C as whole images, regardless
+of the general tile settings used by other methods. Explicit non-default tile
+thresholds in the command-line and Python interfaces can opt A/B into external
+tiling. C keeps a single depth and source-merge domain at every threshold.
 Bounded rows and frame windows control memory within that domain.
 
 A computes an equal-channel integer mean, excluding alpha. Eight-bit source

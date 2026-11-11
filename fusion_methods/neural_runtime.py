@@ -214,20 +214,25 @@ def estimate_inference_bytes(n, h, w, kind):
             + n * pixels * 4 * 6 + 4 * 1024 * 1024)
 
 
+def _session_key(path, shape, device, threads):
+    path = os.path.abspath(os.path.splitext(path)[0] + '.onnx')
+    stat = os.stat(path)
+    adapter = _DIRECTML_ADAPTER_INDEX if device == 'DIRECTML' else 0
+    return (path, stat.st_mtime_ns, stat.st_size, shape, device, adapter, int(threads or 1))
+
+
 def _session(path, shape, device, threads):
     import onnxruntime as ort
     global _SESSIONS
     path = os.path.abspath(os.path.splitext(path)[0] + '.onnx')
     if not os.path.isfile(path):
         raise FileNotFoundError(f'ONNX model not found: {path}')
-    stat = os.stat(path)
-    adapter = _DIRECTML_ADAPTER_INDEX if device == 'DIRECTML' else 0
-    key = (path, stat.st_mtime_ns, stat.st_size, shape, device, adapter, int(threads or 1))
+    key = _session_key(path, shape, device, threads)
+    adapter = key[5]
     if key not in _SESSIONS:
-        # Accelerators retain one session so another graph cannot keep VRAM
-        # alive across scales. CPU retains both scales without ORT's arena.
-        limit = 2 if device == 'CPU' else 1
-        while len(_SESSIONS) >= limit:
+        # Two shapes keep the full and reduced inference scales compiled.
+        # Admission in logits accounts for the retained accelerator session.
+        while len(_SESSIONS) >= 2:
             _SESSIONS.popitem(last=False)
         options = ort.SessionOptions()
         options.intra_op_num_threads = max(1, int(threads or 1))
@@ -282,10 +287,21 @@ def logits(planes, path, device, threads, should_cancel=None):
         device = 'CPU'
     if device in ('DIRECTML', 'CUDA', 'ROCM', 'OPENVINO'):
         from core.resource_policy import probe_resources, vram_budget
-        snapshot = probe_resources(device)
+        try:
+            cached = _SESSIONS.get(_session_key(path, shape, device, threads))
+        except OSError:
+            cached = None
+        # A completed session already owns its workspace; charging its full
+        # estimate against the remaining free VRAM would force a false fallback.
+        reusable = cached is not None and cached.actual_device == device
+        snapshot = probe_resources(device) if not reusable else None
         n, hp, wp = shape
         required = estimate_inference_bytes(n, hp, wp, device) + n * hp * wp * 4 * 6
-        if not snapshot.vram_known or required > vram_budget(snapshot):
+        if snapshot is not None and (not snapshot.vram_known or required > vram_budget(snapshot)) and _SESSIONS:
+            cached = None
+            _SESSIONS.clear()
+            snapshot = probe_resources(device)
+        if snapshot is not None and (not snapshot.vram_known or required > vram_budget(snapshot)):
             _LOG.warning('%s checkpoint=%s shape=%s memory required=%s budget=%s known=%s; using CPU for this job',
                          device, os.path.basename(path), shape, required,
                          vram_budget(snapshot), snapshot.vram_known)

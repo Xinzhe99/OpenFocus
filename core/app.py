@@ -12,9 +12,9 @@ import os
 from typing import List, Optional
 from urllib.parse import unquote
 
-from PyQt6.QtWidgets import QApplication
-from PyQt6.QtGui import QFileOpenEvent
-from PyQt6.QtCore import QTimer, QUrl
+from PyQt6.QtWidgets import QApplication, QAbstractSpinBox, QComboBox, QWidget
+from PyQt6.QtGui import QFileOpenEvent, QWheelEvent
+from PyQt6.QtCore import QEvent, QPointF, QTimer, QUrl
 
 
 class PlatformFileHandler:
@@ -81,6 +81,36 @@ class OpenFocusApplication(QApplication):
         self.main_window = None
         self._pending: List[str] = []
         self._ready = False
+        self._import_queue = []
+        self._import_processing = False
+        self._import_timer = QTimer(self)
+        self._import_timer.setSingleShot(True)
+        self._import_timer.timeout.connect(self._drain_import_queue)
+
+    def notify(self, receiver, event):
+        if event.type() == QEvent.Type.Wheel and isinstance(receiver, QWidget):
+            widget = receiver
+            window = receiver.window()
+            while widget is not None and widget.window() == window:
+                if isinstance(widget, (QAbstractSpinBox, QComboBox)):
+                    # sendEvent does not propagate ignored wheel events, so
+                    # deliver a copy to each ancestor until one handles it.
+                    parent = widget.parentWidget()
+                    while parent is not None:
+                        forwarded = QWheelEvent(
+                            QPointF(parent.mapFromGlobal(event.globalPosition().toPoint())),
+                            event.globalPosition(), event.pixelDelta(), event.angleDelta(),
+                            event.buttons(), event.modifiers(), event.phase(),
+                            event.inverted(), device=event.pointingDevice(),
+                        )
+                        QApplication.sendEvent(parent, forwarded)
+                        if forwarded.isAccepted() or parent.isWindow():
+                            break
+                        parent = parent.parentWidget()
+                    event.accept()
+                    return True
+                widget = widget.parentWidget()
+        return super().notify(receiver, event)
 
     def set_main_window(self, window):
         self.main_window = window
@@ -88,7 +118,7 @@ class OpenFocusApplication(QApplication):
         if self._pending:
             pending = self._pending.copy()
             self._pending.clear()
-            QTimer.singleShot(100, lambda: self._process(pending))
+            QTimer.singleShot(100, lambda: self.queue_import(pending))
 
     def event(self, event) -> bool:
         if event.type() == QFileOpenEvent.Type:
@@ -104,7 +134,76 @@ class OpenFocusApplication(QApplication):
     def _handle(self, path: str):
         normalized = PlatformFileHandler.normalize(path)
         if normalized:
-            self._process([normalized])
+            self.queue_import([normalized])
+
+    def queue_import(self, paths, *, explorer=False, request_path=None):
+        """Serialize external imports, including their modal prompts and workers."""
+        if paths:
+            self._import_queue.append((list(paths), explorer, request_path))
+            if not self._import_timer.isActive():
+                self._import_timer.start(100)
+
+    def _drain_import_queue(self):
+        window = self.main_window
+        if not self._import_queue or not window or getattr(window, '_shutting_down', False):
+            return
+        src = getattr(window, 'source_manager', None)
+        if (not src or self._import_processing or QApplication.activeModalWidget()
+                or (hasattr(src, '_reset_busy') and src._reset_busy())):
+            self._import_timer.start(250)
+            return
+        paths, explorer, request_path = self._import_queue.pop(0)
+        self._import_processing = True
+        try:
+            if explorer:
+                self._process_explorer(paths)
+            else:
+                self._process(paths)
+            if request_path:
+                try:
+                    os.unlink(request_path)
+                except OSError:
+                    from utils.logging_setup import get_logger
+                    get_logger(__name__).exception("Could not remove Explorer request file")
+        finally:
+            self._import_processing = False
+            if self._import_queue:
+                self._import_timer.start(250)
+
+    def _process_explorer(self, paths):
+        """Import all selected folders and image files as one stack."""
+        src = self.main_window.source_manager
+        if len(paths) == 1 and os.path.isdir(paths[0]):
+            src.load_image_stack_from_icon(paths[0])
+            return
+        from utils.sorting import natural_sort_key
+        files = []
+        for path in paths:
+            path = PlatformFileHandler.normalize(path)
+            if os.path.isdir(path):
+                try:
+                    with os.scandir(path):
+                        pass
+                except OSError as exc:
+                    from utils import show_warning_box
+                    from locales import trans
+                    show_warning_box(self.main_window, trans.t('msg_load_failed'), str(exc))
+                    return
+                files.extend(sorted(src._folder_import_paths(path), key=natural_sort_key))
+            elif os.path.isfile(path) and PlatformFileHandler.is_image(path):
+                files.append(path)
+            else:
+                from utils import show_warning_box
+                from locales import trans
+                show_warning_box(self.main_window, trans.t('msg_load_failed'), path)
+                return
+        if files:
+            src.load_image_files_from_icon(files)
+        else:
+            from utils import show_warning_box
+            from locales import trans
+            show_warning_box(self.main_window, trans.t('msg_no_valid_files_title'),
+                             trans.t('msg_no_valid_files_text'))
 
     def _process(self, paths: List[str]):
         if (not self._ready or not self.main_window
@@ -142,6 +241,10 @@ def process_command_line_args(main_window, args: List[str]):
 
     file_paths = [a for a in args if not a.startswith('-')]
     if not file_paths:
+        return
+    app = QApplication.instance()
+    if isinstance(app, OpenFocusApplication) and app.main_window is main_window:
+        app.queue_import(file_paths)
         return
 
     def _delayed():

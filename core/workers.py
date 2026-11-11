@@ -355,7 +355,8 @@ class RenderWorker(QThread):
                  disk_cache=None, resource_preference='balanced', preview=False,
                  sharpen_output=False, defect_mask_path='', sensor_denoise=False,
                  load_scale_factor=1.0, source_paths=None,
-                 collect_alignment_report=False):
+                 collect_alignment_report=False, prepared_cache=None,
+                 retain_preparation=False):
         super().__init__()
         configure_native_worker_stack(self)
         if algorithm is None:
@@ -407,6 +408,8 @@ class RenderWorker(QThread):
         self.alignment_reused = False
         self.alignment_computed = False
         self.alignment_report = [] if collect_alignment_report else None
+        self.prepared_cache = prepared_cache
+        self.retain_preparation = bool(retain_preparation)
         self.alignment_report_provenance = None
 
     def cancel(self):
@@ -621,7 +624,7 @@ class RenderWorker(QThread):
                              else cropped_images)
             fusion_result, device_name = self._run_fusion(
                 fusion_images, should_cancel=lambda: self.is_cancelled,
-                progress_callback=lambda done, total: self.progress_signal.emit(done, total))
+                progress_callback=self._fusion_progress())
             if full_frame_roi:
                 x, y, width, height = roi_rect_int
                 fusion_result = store_frame(fusion_result[y:y + height, x:x + width])
@@ -839,6 +842,27 @@ class RenderWorker(QThread):
 
         return rx, ry, rw, rh
 
+    def _fusion_progress(self):
+        """Forward source preparation and tile counts with their correct stages."""
+        preparing = False
+
+        def tiles(done, total):
+            nonlocal preparing
+            if preparing:
+                preparing = False
+                self.stage_signal.emit('fuse')
+            self.progress_signal.emit(done, total)
+
+        def preparation(done, total):
+            nonlocal preparing
+            if not preparing:
+                preparing = True
+                self.stage_signal.emit('prepare')
+            self.progress_signal.emit(done, total)
+
+        tiles.preparation = preparation
+        return tiles
+
     def _run_fusion(self, images, should_cancel=None, progress_callback=None):
         """Run the selected descriptor with its complete parameter mapping."""
         from core.transparency import restore_transparent_canvas
@@ -846,16 +870,20 @@ class RenderWorker(QThread):
         from utils.image_utils import quantize_fuse_output
         fusion = MultiFocusFusion(algorithm=self.algorithm,
             fusion_parameters=self.fusion_parameters, use_gpu=self.use_gpu,
-            tile_enabled=self.tile_enabled if self.tile_enabled is not None else True,
+            tile_enabled=(False if self.algorithm in ('openfocus_a', 'openfocus_b', 'openfocus_c')
+                          else self.tile_enabled if self.tile_enabled is not None else True),
             tile_block_size=self.tile_block_size if self.tile_block_size is not None else TILE_BLOCK_SIZE,
             tile_overlap=self.tile_overlap if self.tile_overlap is not None else TILE_OVERLAP,
             tile_threshold=self.tile_threshold if self.tile_threshold is not None else TILE_THRESHOLD,
             ai_batch_size=self.ai_batch_size, base_frame=self.base_frame,
             sort_mode=self.sort_mode, exposure_match=self.exposure_match,
             resource_preference=self.resource_preference)
+        fusion.prepared_cache = self.prepared_cache
+        fusion.retain_preparation = self.retain_preparation
         images, is_16bit = prepare_fusion_input(images, should_cancel)
         result = fusion.fuse(images, thread_count=self.thread_count,
             should_cancel=should_cancel, progress_callback=progress_callback)
+        self.prepared_cache = fusion.prepared_cache
         if self.sharpen_output and result is not None:
             from utils.output_sharpen import sharpen_output
             result = sharpen_output(result, should_cancel)
@@ -1411,6 +1439,8 @@ class BatchWorker(QThread):
                     for key in tile_kwargs:
                         if runtime.get(key) is not None:
                             tile_kwargs[key] = runtime[key]
+                    if fusion_method in ('openfocus_a', 'openfocus_b', 'openfocus_c'):
+                        tile_kwargs['tile_enabled'] = False
         
                     from utils.image_utils import quantize_fuse_output
                     save_aligned = bool(self.processing_settings.get('save_aligned', False))
@@ -1571,6 +1601,8 @@ class BatchWorker(QThread):
         for key in tile_kwargs:
             if runtime.get(key) is not None:
                 tile_kwargs[key] = runtime[key]
+        if method in ('openfocus_a', 'openfocus_b', 'openfocus_c'):
+            tile_kwargs['tile_enabled'] = False
         fusion = MultiFocusFusion(algorithm=method, fusion_parameters=params, use_gpu=self.use_gpu,
             resource_preference=self.resource_preference, base_frame=runtime.get('base_frame', 'none'),
             sort_mode=sort_mode, exposure_match=self.exposure_match, **tile_kwargs)

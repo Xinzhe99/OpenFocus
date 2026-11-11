@@ -17,10 +17,10 @@ from core.frame_storage import create_frame, store_frame, capture_scratch, run_w
 # NumPy 2.0 compatibility shims
 if not hasattr(np, "asfarray"):
     def _asfarray_compat(arr, dtype=None):
-        target_dtype = dtype or np.float_
+        target_dtype = dtype or np.float64
         kind = np.dtype(target_dtype).kind
         if kind not in ("f", "c"):
-            target_dtype = np.float_
+            target_dtype = np.float64
         return np.asarray(arr, dtype=target_dtype)
     np.asfarray = _asfarray_compat
 
@@ -239,9 +239,9 @@ def _dtcwt_impl_planned(input_source, img_resize, N, thread_count,
                         should_cancel, execution_plan):
     if dtcwt is None or maximum_filter is None or convolve is None:
         raise RuntimeError(
-            "DTCWT fusion requires 'dtcwt' and 'scipy'. "
-            "Please install them via: pip install dtcwt scipy "
-            "(dtcwt has no wheels for Python 3.13+; it installs on 3.10-3.12)"
+            "DTCWT fusion requires dtcwt, scipy and six. On Python 3.13+ "
+            "install six, then install dtcwt==0.14.0 with --no-deps; "
+            "see the user manual for the upstream NumPy constraint."
         )
 
     def _check_cancel():

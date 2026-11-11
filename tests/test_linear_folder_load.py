@@ -38,7 +38,7 @@ def test_native_raw_folder_reload_ignores_rendered_companions(qapp, monkeypatch,
     settings = QSettings(str(tmp_path / 'settings.ini'), QSettings.Format.IniFormat)
     monkeypatch.setattr(settings_store, 'get_settings', lambda: settings)
     monkeypatch.setattr(recovery, 'write_snapshot', lambda window: None)
-    monkeypatch.setattr(manager, '_ask_load_scale', lambda: 1.0)
+    monkeypatch.setattr(manager, '_ask_load_scale', lambda **kwargs: 1.0)
     monkeypatch.setattr(manager, '_show_load_status', lambda: None)
     monkeypatch.setattr(manager, '_on_load_progress', lambda *args: None)
     monkeypatch.setattr(manager, '_finish_load_worker', lambda worker: setattr(manager, '_load_worker', None))

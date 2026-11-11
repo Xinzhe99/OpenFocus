@@ -80,6 +80,87 @@ def test_cached_preview_without_icon_is_scheduled_again(qapp, monkeypatch):
 
 
 
+def test_source_preview_requests_keep_only_latest_selection(qapp, monkeypatch):
+    from PyQt6.QtCore import QObject, pyqtSignal
+    import core.source_previews
+    from main import OpenFocus
+
+    created = []
+
+    class Worker(QObject):
+        ready = pyqtSignal(object, int, object, object)
+        failed = pyqtSignal(object, str)
+        finished = pyqtSignal()
+
+        def __init__(self, frames, request, indices, **kwargs):
+            super().__init__()
+            self.request, self.indices = request, tuple(indices)
+            self.cancelled = False
+            created.append(self)
+
+        def start(self):
+            pass
+
+        def request_cancel(self):
+            self.cancelled = True
+
+    monkeypatch.setattr(core.source_previews, 'SourcePreviewWorker', Worker)
+    window, _, panel = _window()
+    window.source_revision = 1
+    window._start_source_previews = lambda selected_index=None: OpenFocus._start_source_previews(window, selected_index)
+    window.current_display_index = 0
+    window._start_source_previews(0)
+    for index in (1, 2):
+        window.current_display_index = index
+        window._start_source_previews(index)
+    assert len(created) == 1 and created[0].cancelled
+    created[0].finished.emit()
+    assert len(created) == 2 and created[1].indices == (2,)
+    window._shutting_down = True
+    created[1].finished.emit()
+    panel.widget.close()
+
+
+def test_thumbnail_completion_does_not_restart_displayed_source(qapp, monkeypatch):
+    from PyQt6.QtCore import QObject, pyqtSignal
+    from PyQt6.QtGui import QIcon
+    import core.source_previews
+    from main import OpenFocus
+
+    created = []
+
+    class Worker(QObject):
+        ready = pyqtSignal(object, int, object, object)
+        failed = pyqtSignal(object, str)
+        finished = pyqtSignal()
+
+        def __init__(self, frames, request, indices):
+            super().__init__()
+            self.request, self.cancelled = request, False
+            created.append(self)
+
+        def start(self):
+            pass
+
+        def request_cancel(self):
+            self.cancelled = True
+
+    monkeypatch.setattr(core.source_previews, 'SourcePreviewWorker', Worker)
+    window, _, panel = _window()
+    window.source_revision = 1
+    window.current_display_index = 1
+    window.stack_images = [None, QPixmap(8, 8), None]
+    calls = []
+    window.update_source_view = calls.append
+    window.file_list.item(1).setIcon(QIcon())
+    OpenFocus._start_source_previews(window)
+    worker = created[0]
+    worker.ready.emit(worker.request, 1, id(window.raw_images[1]), window.raw_images[1])
+    assert calls == []
+    worker.finished.emit()
+    panel.widget.close()
+
+
 def _finish(qapp, manager):
     worker = manager._review_worker
     assert worker is not None

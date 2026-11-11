@@ -69,18 +69,20 @@ class TransformManager:
         base_scale = float(getattr(window, "base_scale_factor", 1.0) or 1.0)
         base_scale = min(1.0, max(0.01, base_scale))
         current_scale = min(base_scale, float(getattr(window, "current_scale_factor", 1.0) or 1.0))
-        dialog = DownsampleDialog(window, initial_scale=current_scale, max_scale=base_scale)
+        base_height, base_width = window.base_images[0].shape[:2]
+        dialog = DownsampleDialog(window, initial_scale=current_scale, max_scale=base_scale,
+                                  base_dimensions=(base_width, base_height))
         if not dialog.exec():
             return
 
         new_scale = dialog.get_scale_factor()
-        if abs(new_scale - current_scale) < 0.001:
+        if new_scale == current_scale:
             return
 
         window.push_undo()
         old_height, old_width = window.raw_images[0].shape[:2]
         try:
-            if abs(new_scale - base_scale) < 0.001:
+            if new_scale >= base_scale:
                 window.raw_images = list(window.base_images)
             else:
                 factor = new_scale / base_scale
@@ -106,7 +108,8 @@ class TransformManager:
             show_success_box(
                 window,
                 trans.t("msg_success"),
-                trans.t("msg_resize_success_text").format(percent=int(new_scale * 100)),
+                trans.t("msg_resize_success_text").format(
+                    percent=f'{new_scale * 100:.6f}'.rstrip('0').rstrip('.')),
             )
         except Exception as exc:  # pylint: disable=broad-except
             show_error_box(
@@ -298,6 +301,9 @@ class TransformManager:
         window._wipe_preview_record = None
         window.last_render_context = None
         render = getattr(window, "render_manager", None)
+        clear_prepared = getattr(render, 'clear_prepared_cache', None)
+        if callable(clear_prepared):
+            clear_prepared()
         if (render is not None and getattr(render, "worker", None) is None
                 and not getattr(render, "_render_pending", False)):
             render._render_context = None
@@ -309,6 +315,10 @@ class TransformManager:
         # 清空ROI对齐缓存（含结果视图上的选区与按钮状态）
         self.reset_roi_selection()
 
+        output = getattr(window, 'output_manager', None)
+        cancel = getattr(output, 'cancel_registration_preview', None)
+        if callable(cancel):
+            cancel()
         window.registration_results = []
         window.registration_frame_ids = []
         window.registered_source_indices = []
@@ -333,6 +343,10 @@ class TransformManager:
         else:
             window.fusion_result = None
             window.fusion_results = []
+
+            clear_previews = getattr(output, 'clear_registration_previews', None)
+            if callable(clear_previews):
+                clear_previews()
 
             if hasattr(window, "output_list"):
                 window.output_list.clear()

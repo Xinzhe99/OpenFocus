@@ -62,6 +62,46 @@ def clean_store(qapp):
     reset_settings_singleton()
 
 
+def test_algorithm_selection_persists_by_id_and_invalid_values_are_ignored(clean_store):
+    from utils.settings_store import FUSION_METHOD_KEY, ALIGNMENT_METHOD_KEY
+
+    saved = _window()
+    saved._preferred_fusion_method = "dct"
+    saved._preferred_alignment_method = "homography"
+    save_window_settings(saved)
+    reset_settings_singleton()
+    restored = _window()
+    load_window_settings(restored)
+    assert restored._preferred_fusion_method == "dct"
+    assert restored._preferred_alignment_method == "homography"
+
+    # Project/template/recovery selection changes must not replace the user's
+    # machine preference when another setting is saved.
+    restored.set_fusion_method("openfocus_a")
+    restored.set_alignment_method("ecc")
+    save_window_settings(restored)
+    again = _window()
+    load_window_settings(again)
+    assert again._preferred_fusion_method == "dct"
+    assert again._preferred_alignment_method == "homography"
+
+    restored._preferred_fusion_method = "none"
+    restored._preferred_alignment_method = "none"
+    save_window_settings(restored)
+    again = _window()
+    load_window_settings(again)
+    assert again._preferred_fusion_method == "none"
+    assert again._preferred_alignment_method == "none"
+
+    settings = get_settings()
+    settings.setValue(FUSION_METHOD_KEY, "unknown")
+    settings.setValue(ALIGNMENT_METHOD_KEY, "unknown")
+    restored = _window()
+    load_window_settings(restored)
+    assert not hasattr(restored, "_preferred_fusion_method")
+    assert not hasattr(restored, "_preferred_alignment_method")
+
+
 def test_brightness_rejects_coercions_and_keeps_adjacent_valid_values():
     raw = {"exposure_match": {"dct": False, "dtcwt": "false"},
            "base_correct": {"gfgfgf": True, "unknown": False}}
@@ -96,6 +136,57 @@ def test_new_numeric_enum_and_registration_survive_restart(clean_store, extra_me
     assert restored._brightness_by_method == saved._brightness_by_method
     assert not get_settings().contains(KERNEL_BY_MODE_KEY)
     assert not get_settings().contains("fusion/ai_mode")
+
+
+
+def test_saved_brightness_choices_survive_new_defaults(clean_store):
+    from main import OpenFocus
+
+    saved = _window()
+    saved._brightness_by_method = {
+        ("exposure_match", "openfocus_a"): True,
+        ("base_correct", "openfocus_b"): True,
+    }
+    save_window_settings(saved)
+    reset_settings_singleton()
+    restored = _window()
+    load_window_settings(restored)
+    assert OpenFocus.brightness_option_for(restored, "exposure_match", "openfocus_a")
+    assert OpenFocus.brightness_option_for(restored, "base_correct", "openfocus_b")
+    assert not OpenFocus.brightness_option_for(restored, "exposure_match", "openfocus_b")
+    assert not OpenFocus.brightness_option_for(restored, "base_correct", "openfocus_a")
+
+
+def test_project_explicit_brightness_remains_enabled():
+    from main import OpenFocus
+    from utils import project_file
+
+    restored = _window()
+    project_file._apply_after_load(restored, {"settings": {
+        "fusion_method": "openfocus_a",
+        "brightness_by_method": {
+            "exposure_match": {"openfocus_a": True},
+            "base_correct": {"openfocus_a": True},
+        },
+    }})
+    assert OpenFocus.brightness_option_for(restored, "exposure_match", "openfocus_a")
+    assert OpenFocus.brightness_option_for(restored, "base_correct", "openfocus_a")
+
+
+def test_project_missing_brightness_uses_defaults_or_saved_method_choices():
+    from utils import project_file
+
+    restored = _window()
+    project_file._apply_after_load(restored, {"settings": {"fusion_method": "openfocus_a"}})
+    assert not restored.exposure_match and not restored.base_frame_correct
+    assert restored._brightness_by_method[("exposure_match", "openfocus_a")] is False
+    assert restored._brightness_by_method[("base_correct", "openfocus_a")] is False
+
+    restored = _window()
+    restored._brightness_by_method[("exposure_match", "openfocus_a")] = True
+    restored._brightness_by_method[("base_correct", "openfocus_a")] = True
+    project_file._apply_after_load(restored, {"settings": {"fusion_method": "openfocus_a"}})
+    assert restored.exposure_match and restored.base_frame_correct
 
 
 def test_generic_empty_memory_prevents_legacy_resurrection(clean_store):

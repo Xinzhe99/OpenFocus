@@ -14,6 +14,7 @@ from core.workers import BatchWorker, GifSaverWorker
 from utils.image_utils import imwrite_auto, imwrite_multi_tiff
 from widgets.output_list import OutputListWidget
 
+from widgets.magnifier_label import MagnifierLabel
 
 @pytest.fixture(autouse=True)
 def fail_on_export_error(monkeypatch):
@@ -473,10 +474,14 @@ def test_grouped_batch_registers_each_round_without_loading_stack(qapp, tmp_path
     monkeypatch.setattr(workers, 'ImageRegistration', Registration)
     monkeypatch.setattr(grouped, 'grouped_fuse', grouped_fuse)
     monkeypatch.setattr(ImageStackLoader, 'load_from_folder', lambda *a, **kw: pytest.fail('preloaded stack'))
-    monkeypatch.setattr(BatchWorker, '_fuse_one_stack', lambda self, fusion, method, images, params: images[0])
+    def fuse_whole(self, fusion, method, images, params):
+        assert not fusion.tile_enabled
+        return images[0]
+    monkeypatch.setattr(BatchWorker, '_fuse_one_stack', fuse_whole)
     settings = {'format': 'png', 'fusion_method': 'openfocus_a', 'alignment': 'openfocus',
                 'save_aligned': False, 'group_size': 3, 'group_overlap': 1,
-                'runtime_settings': {'sort_mode': 'desc' if reverse else 'asc'}}
+                'runtime_settings': {'sort_mode': 'desc' if reverse else 'asc',
+                                     'tile_enabled': True, 'tile_threshold': 8}}
     worker = BatchWorker([str(source)], 'custom', str(tmp_path / 'out'), settings, use_gpu=False)
     result = {}
     worker.progress_updated.connect(lambda done, total, text: stages.append(text))
@@ -614,8 +619,8 @@ def test_aligned_history_remains_navigable_after_stack_change(qapp):
     from utils.image_utils import to_display_uint8
 
     window = host(qapp)
-    window.lbl_result_img = QLabel(window)
-    window.lbl_result_img.set_display_pixmap = window.lbl_result_img.setPixmap
+    window.lbl_result_img = MagnifierLabel(parent=window)
+    window.lbl_result_img.resize(16, 12)
     window.lbl_result_img.set_roi_rect = lambda _rect: None
     window.add_label_action = QAction(window)
     window.resize_action = QAction(window)
@@ -633,11 +638,111 @@ def test_aligned_history_remains_navigable_after_stack_change(qapp):
 
     assert window.result_slider.isEnabled()
     window.result_slider.setValue(1)
+    from PyQt6.QtTest import QTest
+    import time
+    deadline = time.monotonic() + 10
+    while window.output_manager._registration_preview_worker is not None and time.monotonic() < deadline:
+        QTest.qWait(10)
     assert window.current_result_index == 1
     assert window.lbl_result_info.text() == '2 / 2'
     color = window.lbl_result_img.pixmap().toImage().pixelColor(0, 0)
     expected = int(to_display_uint8(frames[1])[0, 0, 0])
     assert color.red() == color.green() == color.blue() == expected
+
+
+def test_aligned_slider_resolves_lazy_frames_without_popup_and_discards_old_frame(qapp):
+    import threading
+    import time
+    from PyQt6.QtTest import QTest
+    from PyQt6.QtWidgets import QApplication
+    from controllers.label_manager import LabelManager
+    from core.source_frames import ProcessedFrame
+
+    window = host(qapp)
+    window.lbl_result_img = MagnifierLabel(parent=window)
+    window.lbl_result_img.resize(16, 12)
+    window.label_manager = LabelManager(window)
+    entered, release = threading.Event(), threading.Event()
+    pixels = np.full((12, 16, 3), 30, np.uint8)
+
+    def slow(image):
+        entered.set()
+        release.wait(5)
+        return image
+
+    first = ProcessedFrame(pixels, slow, pixels.shape, pixels.dtype)
+    second_pixels = np.full_like(pixels, 210)
+    second = ProcessedFrame(second_pixels, lambda image: image, pixels.shape, pixels.dtype)
+    window.registration_results = [first, second]
+    window.result_slider.setRange(0, 1)
+    window.result_slider.valueChanged.connect(window.output_manager.show_registration_result)
+    before = set(QApplication.topLevelWidgets())
+    try:
+        window.output_manager.show_registration_result(0)
+        assert entered.wait(5)
+        window.result_slider.setValue(1)
+        qapp.processEvents()
+        assert window.lbl_result_info.text() == '2 / 2'
+        assert not any(widget.isVisible() for widget in set(QApplication.topLevelWidgets()) - before)
+        release.set()
+        deadline = time.monotonic() + 10
+        while window.output_manager._registration_preview_worker is not None and time.monotonic() < deadline:
+            QTest.qWait(10)
+        assert window.output_manager._registration_preview_worker is None
+        assert window.lbl_result_img.pixmap().toImage().pixelColor(0, 0).red() == 210
+    finally:
+        release.set()
+        worker = window.output_manager._registration_preview_worker
+        if worker is not None:
+            worker.wait(10000)
+        window.output_manager.cancel_registration_preview()
+        window.deleteLater()
+        qapp.processEvents()
+
+
+@pytest.mark.parametrize('invalidate', ['source', 'shutdown'])
+def test_aligned_preview_cannot_publish_after_invalidation(qapp, invalidate):
+    import threading
+    import time
+    from PyQt6.QtTest import QTest
+    from controllers.label_manager import LabelManager
+    from core.source_frames import ProcessedFrame
+
+    window = host(qapp)
+    window.lbl_result_img = MagnifierLabel(parent=window)
+    window.lbl_result_img.resize(16, 12)
+    window.label_manager = LabelManager(window)
+    entered, release = threading.Event(), threading.Event()
+    pixels = np.full((12, 16, 3), 30, np.uint8)
+
+    def slow(image):
+        entered.set()
+        release.wait(5)
+        return image
+
+    window.registration_results = [ProcessedFrame(pixels, slow, pixels.shape, pixels.dtype)]
+    try:
+        window.output_manager.show_registration_result(0)
+        assert entered.wait(5)
+        if invalidate == 'source':
+            window.registration_results = [np.full_like(pixels, 200)]
+        else:
+            window._shutting_down = True
+            assert window.output_manager.cancel_registration_preview()
+        release.set()
+        deadline = time.monotonic() + 10
+        while window.output_manager._registration_preview_worker is not None and time.monotonic() < deadline:
+            QTest.qWait(10)
+        assert window.output_manager._registration_preview_worker is None
+        assert window.lbl_result_img.pixmap() is None or window.lbl_result_img.pixmap().isNull()
+    finally:
+        release.set()
+        worker = window.output_manager._registration_preview_worker
+        if worker is not None:
+            worker.wait(10000)
+        window.output_manager.cancel_registration_preview()
+        window.deleteLater()
+        qapp.processEvents()
 
 
 @pytest.mark.parametrize('running', [False, True])
@@ -704,3 +809,245 @@ def test_retouch_child_keeps_original_sources_after_replacement_and_parent_remov
     assert document.end_stroke() == 'committed'
     np.testing.assert_array_equal(document.working[6, 8], source[6, 8])
     assert int(child.image[6, 8, 0]) == 2000
+
+
+def test_registered_preview_applies_warp_and_crop_without_resolving_original(monkeypatch):
+    from core.aligned_previews import registered_preview
+    from core.registration import PerspectiveWarp
+    from core.source_frames import ProcessedFrame, crop_frame, process_frame
+
+    source = np.zeros((64, 64, 3), np.uint8)
+    source[18:28, 22:32] = (40, 120, 220)
+    matrix = np.array([[1., 0., 7.], [0., 1., -3.], [0., 0., 1.]])
+    warped = process_frame(source, PerspectiveWarp(None, tuple(matrix.flat), 'float64', (64, 64)))
+    cropped = crop_frame(warped, 8, 4, 48, 52)
+    monkeypatch.setattr(ProcessedFrame, 'full_resolution',
+                        lambda *args, **kwargs: pytest.fail('resolved original pixels'))
+    actual, is_display = registered_preview(cropped)
+    expected = cv2.warpPerspective(source, matrix, (64, 64), flags=cv2.INTER_LINEAR)[4:56, 8:56]
+    assert not is_display
+    np.testing.assert_array_equal(actual, expected)
+    assert not np.array_equal(actual, source[4:56, 8:56])
+
+
+def test_aligned_previews_remain_responsive_during_heavy_render_and_bounded(qapp, monkeypatch):
+    import threading
+    import time
+    from PyQt6.QtTest import QTest
+    from controllers.label_manager import LabelManager
+    from core.registration import PerspectiveWarp
+    from core.resource_policy import heavy_job
+    from core.source_frames import process_frame
+    monkeypatch.setattr('controllers.output_manager._REGISTRATION_PREVIEW_BYTES', 1200)
+
+    window = host(qapp)
+    window.lbl_result_img = MagnifierLabel(parent=window)
+    window.lbl_result_img.resize(16, 12)
+    window.label_manager = LabelManager(window)
+    matrix = tuple(np.eye(3).flat)
+    frames = tuple(process_frame(np.full((12, 16, 3), value, np.uint8),
+                                 PerspectiveWarp(None, matrix, 'float64', (16, 12)))
+                   for value in (30, 100, 210))
+    record = OutputRecord.create(None, 'aligned', kind='aligned')
+    record.aligned_frames, record.aligned_names = frames, ('a', 'b', 'c')
+    item = window.output_manager._insert_output(None, record.label, record)
+    entered, release = threading.Event(), threading.Event()
+
+    def hold_render():
+        with heavy_job():
+            entered.set()
+            release.wait(10)
+
+    thread = threading.Thread(target=hold_render)
+    thread.start()
+    try:
+        assert entered.wait(5)
+        window.output_manager.display_output_image_in_result_view(item)
+        deadline = time.monotonic() + 5
+        while window.output_manager._registration_preview_worker is not None and time.monotonic() < deadline:
+            QTest.qWait(10)
+        assert window.output_manager._registration_preview_worker is None
+        assert len(window.output_manager._registration_previews) == 2
+        assert window.output_manager._registration_preview_bytes <= 1200
+        window.output_manager.show_registration_result(2)
+        assert window.lbl_result_info.text() == '3 / 3'
+        assert window.lbl_result_img._base_pixmap.toImage().pixelColor(0, 0).red() == 210
+        assert window.output_manager._registration_preview_worker is None
+        window.output_manager._remove_row(window.output_list.row(item))
+        assert not window.output_manager._registration_previews
+        assert window.output_manager._registration_preview_bytes == 0
+    finally:
+        release.set()
+        thread.join(10)
+        window.output_manager.clear_registration_previews()
+        window.deleteLater()
+        qapp.processEvents()
+
+
+def test_aligned_cached_preview_rejects_changed_source(qapp, tmp_path, monkeypatch):
+    import time
+    from PyQt6.QtTest import QTest
+    from controllers.label_manager import LabelManager
+    from core.source_frames import scan_source
+
+    path = tmp_path / 'frame.png'
+    assert cv2.imwrite(str(path), np.full((12, 16, 3), 80, np.uint8))
+    frame = scan_source(str(path))[0]
+    window = host(qapp)
+    window.lbl_result_img = MagnifierLabel(parent=window)
+    window.lbl_result_img.resize(16, 12)
+    window.label_manager = LabelManager(window)
+    record = OutputRecord.create(None, 'aligned', kind='aligned')
+    record.aligned_frames, record.aligned_names = (frame,), ('frame.png',)
+    item = window.output_manager._insert_output(None, record.label, record)
+    errors = []
+    monkeypatch.setattr(window.output_manager, '_registration_display_error', errors.append)
+    window.output_manager.display_output_image_in_result_view(item)
+    deadline = time.monotonic() + 5
+    while window.output_manager._registration_preview_worker is not None and time.monotonic() < deadline:
+        QTest.qWait(10)
+    assert window.lbl_result_img._base_pixmap is not None
+    with path.open('ab') as stream:
+        stream.write(b'changed')
+    window.output_manager.show_registration_result(0)
+    assert errors and isinstance(errors[0], OSError)
+    assert window.lbl_result_img._base_pixmap is None
+    assert not window.output_manager._registration_previews
+    window.output_manager.clear_registration_previews()
+    window.deleteLater()
+    qapp.processEvents()
+
+
+
+def test_aligned_output_switch_rejects_late_other_record(qapp):
+    import threading
+    import time
+    from PyQt6.QtTest import QTest
+    from controllers.label_manager import LabelManager
+    from core.source_frames import ProcessedFrame
+
+    window = host(qapp)
+    window.lbl_result_img = MagnifierLabel(parent=window)
+    window.lbl_result_img.resize(16, 12)
+    window.label_manager = LabelManager(window)
+    entered, release = threading.Event(), threading.Event()
+    old_pixels = np.full((12, 16, 3), 30, np.uint8)
+
+    def slow(image):
+        entered.set()
+        release.wait(5)
+        return image
+
+    first = OutputRecord.create(None, 'first', kind='aligned')
+    first.aligned_frames = (ProcessedFrame(old_pixels, slow, old_pixels.shape, old_pixels.dtype),)
+    first.aligned_names, first.aligned_frame_ids = ('old',), ('old-id',)
+    old_item = window.output_manager._insert_output(None, first.label, first)
+    window.output_manager.display_output_image_in_result_view(old_item)
+    try:
+        assert entered.wait(5)
+        second = OutputRecord.create(None, 'second', kind='aligned')
+        second.aligned_frames = (np.full_like(old_pixels, 220),)
+        second.aligned_names, second.aligned_frame_ids = ('new',), ('new-id',)
+        new_item = window.output_manager._insert_output(None, second.label, second)
+        window.output_manager.display_output_image_in_result_view(new_item)
+        release.set()
+        deadline = time.monotonic() + 10
+        while window.output_manager._registration_preview_worker is not None and time.monotonic() < deadline:
+            QTest.qWait(10)
+        assert window.registration_frame_ids == ['new-id']
+        assert window.lbl_result_img._base_pixmap.toImage().pixelColor(0, 0).red() == 220
+        window.output_list.setCurrentItem(old_item)
+        window.output_manager.display_output_image_in_result_view(old_item)
+        deadline = time.monotonic() + 10
+        while window.output_manager._registration_preview_worker is not None and time.monotonic() < deadline:
+            QTest.qWait(10)
+        assert window.registration_frame_ids == ['old-id']
+        assert window.lbl_result_img._base_pixmap.toImage().pixelColor(0, 0).red() == 30
+    finally:
+        release.set()
+        window.output_manager.clear_registration_previews()
+        worker = window.output_manager._registration_preview_worker
+        if worker is not None:
+            worker.wait(10000)
+        window.deleteLater()
+        qapp.processEvents()
+
+
+def test_aligned_tooltip_preserves_result_provenance_after_source_changes(qapp, monkeypatch):
+    from locales import trans
+    from core.algorithms import get_registration
+
+    window = host(qapp)
+    window.registration_frame_ids = ['old-a', 'old-b']
+    window.registered_source_indices = [1, 3]
+    frames = [np.zeros((24, 36, 3), np.uint16), np.zeros((24, 36, 3), np.uint16)]
+    monkeypatch.setattr(window.output_manager, '_queue_stack_thumbnail', lambda *args: None)
+    publish_aligned_stack(window, frames, filenames=('a.tif', 'b.tif'), icc_profile=b'',
+                          source_frames=frames, source_indices=(1, 3), source_revision=4,
+                          alignment_options=('ecc',))
+    item = window.output_list.item(0)
+    record = window.output_manager.record_for_item(item)
+    window.registration_frame_ids = ['new']
+    window.registered_source_indices = [0]
+    window.image_filenames = ['new.tif']
+    window.output_manager._refresh_output_tooltip(0)
+    tooltip = item.toolTip()
+    assert trans.t('output_aligned_stack').format(n=2) in tooltip
+    assert trans.t('status_res_fmt').format(36, 24) in tooltip
+    assert trans.t(get_registration('ecc').label_key) in tooltip
+    assert record.aligned_frame_ids == ('old-a', 'old-b')
+    assert record.aligned_source_indices == (1, 3)
+
+
+def test_fused_tooltip_keeps_render_details_after_export(qapp):
+    from locales import trans
+
+    window = host(qapp)
+    pixels = np.zeros((21, 34, 3), np.uint8)
+    record = OutputRecord.create(pixels, 'result')
+    record.tooltip_details = ('method: example', 'time: 1.2s')
+    item = window.output_manager._insert_output(pixels, record.label, record)
+    window.output_manager.mark_exported(window.output_list.row(item), 'saved.tif')
+    assert trans.t('status_res_fmt').format(34, 21) in item.toolTip()
+    assert 'method: example' in item.toolTip()
+    assert 'time: 1.2s' in item.toolTip()
+    assert 'saved.tif' in item.toolTip()
+
+
+def test_aligned_zoom_preserves_original_geometry_and_refines_selected_frame(qapp):
+    import time
+    from PyQt6.QtTest import QTest
+    from controllers.label_manager import LabelManager
+
+    window = host(qapp)
+    view = MagnifierLabel(parent=window)
+    view.resize(160, 120)
+    window.lbl_result_img = view
+    window.label_manager = LabelManager(window)
+    frames = tuple(np.full((1200, 1600, 3), value, np.uint8) for value in (50, 220))
+    record = OutputRecord.create(None, 'aligned', kind='aligned')
+    record.aligned_frames, record.aligned_names = frames, ('a', 'b')
+    item = window.output_manager._insert_output(None, record.label, record)
+    try:
+        window.output_manager.display_output_image_in_result_view(item)
+        deadline = time.monotonic() + 10
+        while window.output_manager._registration_preview_worker is not None and time.monotonic() < deadline:
+            QTest.qWait(10)
+        assert (view._source_size.width(), view._source_size.height()) == (1600, 1200)
+        view._zoom_factor = 8.0
+        view.refresh_display()
+        window.output_manager.show_registration_result(1)
+        assert view._zoom_factor == 8.0
+        deadline = time.monotonic() + 10
+        while ('view' not in view._source_regions or window.current_result_index != 1) and time.monotonic() < deadline:
+            QTest.qWait(10)
+        tile, _ = view._source_regions['view']
+        assert tile.toImage().pixelColor(tile.width() // 2, tile.height() // 2).red() == 220
+        assert (view._source_size.width(), view._source_size.height()) == (1600, 1200)
+    finally:
+        window.output_manager.clear_registration_previews()
+        worker = window.output_manager._registration_region_worker
+        if worker is not None:
+            worker.wait(10000)
+        window.deleteLater()
+        qapp.processEvents()

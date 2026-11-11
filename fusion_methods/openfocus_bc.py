@@ -26,11 +26,12 @@ def _inputs(input_source, img_resize, should_cancel):
 
 def _depth(frames, shape, img_resize, kernel_size, smoothing, should_cancel,
            depth_override, thread_count, progress_callback=None, *, return_codes=False,
-           half_resolution=False):
+           half_resolution=False, preserve_detail=False, feather=0):
     if depth_override is None:
         return depth_map(frames, img_resize, kernel_size, smoothing, should_cancel,
                          progress_callback=progress_callback, thread_count=thread_count,
-                         return_codes=return_codes, half_resolution=half_resolution)
+                         return_codes=return_codes, half_resolution=half_resolution,
+                         preserve_detail=preserve_detail, feather=feather)
     depth = np.asarray(depth_override, dtype=np.float32)
     if depth.shape != shape[:2]:
         raise ValueError("depth_override must match the source height and width")
@@ -126,7 +127,8 @@ def openfocus_b_impl(input_source, img_resize=None, kernel_size: int = 17,
             progress_callback(index + 1, total)
     depth = _depth(frames, shape, img_resize, kernel_size,
                    smoothing * (5.0 / 1.2), should_cancel, depth_override,
-                   thread_count, depth_progress, return_codes=True)
+                   thread_count, depth_progress, return_codes=True,
+                   half_resolution=True, preserve_detail=True)
     active = _active_sources(depth, count, should_cancel)
     result = create_frame(shape, np.uint16)
     for index, source in enumerate(frames):
@@ -163,60 +165,17 @@ def openfocus_b_impl(input_source, img_resize=None, kernel_size: int = 17,
 
 @execution_job
 def openfocus_c_impl(input_source, img_resize=None, kernel_size: int = 17,
-                     thread_count: int = None, blend_smoothing: float = 3.6,
+                     thread_count: int = None, blend_smoothing: float = 2.4,
                      should_cancel=None, depth_override=None, progress_callback=None):
-    """Complete native depth, then merge full-resolution sources in reverse."""
+    """Fuse source frames using a streaming weighted detail pyramid."""
     from core import source_frames
-    from fusion_methods.openfocus_ab import (
-        _check_cancel, _frame_pass_workers, _ordered_frame_results,
-    )
+    from fusion_methods._openfocus_pyramid import fuse_pyramid
 
     frames, shape = _inputs(input_source, img_resize, should_cancel)
-    count = len(frames)
     configure_rows(frames, img_resize, 'openfocus_c', thread_count, should_cancel)
-    activity_steps = count if depth_override is None else 0
-    total = activity_steps + count + 1
-    if progress_callback is not None:
-        progress_callback(0, total)
-
-    def cancel():
-        _check_cancel(should_cancel)
-
-    def depth_progress(index, _total):
-        if progress_callback is not None:
-            progress_callback(index + 1, total)
-
-    produced = None
+    smoothing = 2.4 if blend_smoothing is None else float(blend_smoothing)
     try:
-        smoothing = 3.6 if blend_smoothing is None else float(blend_smoothing)
-        depth = _depth(frames, shape, img_resize, kernel_size,
-                       smoothing * (5.0 / 3.0), should_cancel, depth_override,
-                       thread_count, depth_progress, return_codes=True,
-                       half_resolution=True)
-        result = create_frame(shape, np.uint16)
-
-        def prepare(position, cancelled):
-            return _source_codes(frames[count - 1 - position], img_resize, cancelled)
-
-        workers = _frame_pass_workers(frames, img_resize, 'openfocus_c', thread_count)
-        produced = _ordered_frame_results(count, prepare, workers, should_cancel)
-        for position, (current, source_scale) in produced:
-            cancel()
-            if current.shape != shape:
-                raise ValueError('OpenFocus C requires frames with matching shapes')
-            _merge_codes(result, current, depth, count - 1 - position, count,
-                         should_cancel, source_scale=source_scale, reverse=True)
-            del current
-            if progress_callback is not None:
-                progress_callback(activity_steps + position + 1, total)
+        return fuse_pyramid(frames, shape, img_resize, smoothing * (5.0 / 3.0),
+                            should_cancel, progress_callback)
     finally:
-        if produced is not None:
-            produced.close()
         source_frames.SOURCE_CACHE.clear()
-    del depth
-    cancel()
-    output = _output_codes(result, frames, should_cancel)
-    if progress_callback is not None:
-        progress_callback(total, total)
-    cancel()
-    return output

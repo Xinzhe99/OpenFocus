@@ -28,7 +28,8 @@ def algorithm_host(qapp, extension):
     parts = create_right_panel()
     for name in ("combo_fusion", "combo_align", "fusion_parameter_panel",
                  "registration_parameter_panel", "chk_base_correct",
-                 "chk_exposure_match", "chk_reverse_order"):
+                 "chk_exposure_match", "chk_reverse_order", "chk_quick_preview",
+                 "chk_sharpen_output"):
         setattr(host, name, getattr(parts, name))
     host.raw_images = [np.full((48, 64, 3), value, np.uint8) for value in (20, 100)]
     host.image_filenames = ["near.png", "far.png"]
@@ -53,7 +54,7 @@ def algorithm_host(qapp, extension):
                  "set_registration_parameters", "refresh_algorithm_parameters",
                  "refresh_registration_parameters", "brightness_option_for",
                  "_set_fusion_option_available", "_sync_brightness_checkboxes", "_capture_parameter_state",
-                 "_restore_parameter_state", "_restore_scope"):
+                 "_restore_parameter_state", "_restore_scope", "reset_parameter_memories"):
         setattr(host, name, MethodType(getattr(OpenFocus, name), host))
     host.combo_fusion.currentIndexChanged.connect(host.refresh_algorithm_parameters)
     host.combo_align.currentIndexChanged.connect(host.refresh_registration_parameters)
@@ -72,10 +73,65 @@ def algorithm_host(qapp, extension):
     qapp.processEvents()
 
 
+def test_fresh_panel_defaults_and_recommended_labels(qapp):
+    from locales import trans
+    from ui.algorithm_combo import retranslate_fusion_combo
+    from ui.right_panel import (ALIGN_DEFAULT, FUSION_DEFAULT, alignment_items,
+                                create_right_panel, label_recommended)
+
+    previous = trans.current_lang
+    parts = create_right_panel()
+    try:
+        assert parts.combo_fusion.currentData() == "openfocus_b"
+        assert parts.combo_align.currentData() == "ecc"
+        assert trans.t("recommended") in parts.combo_fusion.currentText()
+        assert trans.t("recommended") in parts.combo_align.currentText()
+        for control in (parts.chk_quick_preview, parts.chk_reverse_order,
+                        parts.chk_exposure_match, parts.chk_base_correct,
+                        parts.chk_sharpen_output):
+            assert not control.isChecked()
+        parts.combo_fusion.setCurrentIndex(parts.combo_fusion.findData("dct"))
+        parts.combo_align.setCurrentIndex(parts.combo_align.findData("homography"))
+        for language in trans.PACK_ORDER:
+            trans.current_lang = language
+            retranslate_fusion_combo(parts.combo_fusion, none_label="radio_no_fusion",
+                                     none_hint="radio_no_fusion_hint")
+            label_recommended(parts.combo_fusion, FUSION_DEFAULT)
+            for code, key, _hint in alignment_items():
+                parts.combo_align.setItemText(parts.combo_align.findData(code), trans.t(key))
+            label_recommended(parts.combo_align, ALIGN_DEFAULT)
+            assert parts.combo_fusion.currentData() == "dct"
+            assert parts.combo_align.currentData() == "homography"
+            for combo, code in ((parts.combo_fusion, FUSION_DEFAULT),
+                                (parts.combo_align, ALIGN_DEFAULT)):
+                assert trans.t("recommended") in combo.itemText(combo.findData(code))
+    finally:
+        trans.current_lang = previous
+        parts.widget.deleteLater()
+
+
 def _edit_fraction(editors, fraction, direction):
     editors["fraction"].setValue(fraction)
     editor = editors["direction"]
     editor.setCurrentIndex(editor.findData(direction))
+
+
+def test_openfocus_registration_panel_is_hidden_but_retains_values(algorithm_host):
+    from core.algorithms import registration_defaults
+
+    host = algorithm_host
+    host.set_registration_parameters('openfocus', {'rotation': 6, 'reference_frame': 3})
+    host.set_alignment_method('openfocus')
+    assert host.registration_parameter_panel.isHidden()
+    assert host.registration_parameter_panel.values()['rotation'] == 6
+    assert host.registration_parameter_panel.values()['reference_frame'] == 3
+    host.set_alignment_method('shift')
+    assert not host.registration_parameter_panel.isHidden()
+    assert host.registration_parameter_panel.values()['delta'] == 7
+    host.reset_parameter_memories()
+    host.set_alignment_method('openfocus')
+    assert host.registration_parameter_panel.isHidden()
+    assert host.registration_parameter_panel.values() == registration_defaults('openfocus')
 
 
 def test_new_parameters_edited_in_main_and_batch_change_actual_pixels(
@@ -203,6 +259,42 @@ def test_brightness_snapshot_restores_registration_reference(qapp, algorithm_hos
     assert not host.exposure_match
     assert not host.chk_exposure_match.isChecked()
     assert not host.brightness_option_for("exposure_match", "extension")
+
+
+def test_render_options_default_off_for_every_method_and_reset(algorithm_host):
+    from types import SimpleNamespace
+    from core.algorithms import fusion_algorithms
+    from main import OpenFocus
+
+    host = algorithm_host
+    options = (host.chk_quick_preview, host.chk_reverse_order,
+               host.chk_exposure_match, host.chk_base_correct,
+               host.chk_sharpen_output)
+    assert not any(option.isChecked() for option in options)
+    host._brightness_by_method.clear()
+    for method in ["none", *(spec.id for spec in fusion_algorithms())]:
+        host.set_fusion_method(method)
+        assert not host.chk_exposure_match.isChecked()
+        assert not host.chk_base_correct.isChecked()
+
+    host._brightness_by_method[("exposure_match", "openfocus_a")] = True
+    host._brightness_by_method[("base_correct", "openfocus_a")] = True
+    host.set_fusion_method("openfocus_a")
+    assert host.chk_exposure_match.isChecked() and host.chk_base_correct.isChecked()
+    host.chk_quick_preview.setChecked(True)
+    host.chk_reverse_order.setChecked(True)
+    host.chk_sharpen_output.setChecked(True)
+    host.lbl_source_img = SimpleNamespace(reset_view=lambda: None)
+    host.lbl_result_img = SimpleNamespace(reset_view=lambda: None)
+    OpenFocus.reset_to_default(host)
+    assert host.current_fusion_method() == "openfocus_b"
+    assert host.current_alignment_method() == "ecc"
+    assert not any(option.isChecked() for option in options)
+    assert host._brightness_by_method == {}
+    for method in ["none", *(spec.id for spec in fusion_algorithms())]:
+        host.set_fusion_method(method)
+        assert not host.chk_exposure_match.isChecked()
+        assert not host.chk_base_correct.isChecked()
 
 
 def test_fusion_gpu_preference_does_not_change_ecc_backend(qapp):

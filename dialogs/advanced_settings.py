@@ -15,12 +15,13 @@ from constants import (
     TILE_BLOCK_MAX, TILE_BLOCK_MIN, TILE_OVERLAP_MAX, TILE_THRESHOLD_MAX,
     TILE_THRESHOLD_MIN,
 )
-from core.algorithms import (get_fusion, registration_algorithms, registration_parameter_specs,
-                             resolve_registration_parameters)
+from core.algorithms import (get_fusion, get_registration, registration_algorithms,
+                             registration_parameter_specs, resolve_registration_parameters)
 from core.multi_focus_fusion import _DEFAULT_TILE_THRESHOLD
 from core.frame_storage import configure_storage_directory, restore_storage_directory
 from locales import trans
 from utils.export_paths import prefix_output_name, valid_output_prefix
+from ui.algorithm_parameters import AlgorithmParameterPanel
 from widgets.stepper import StepperSpinBox
 
 # Registration downscale bounds mirror dialogs/settings.py, the other surface
@@ -135,7 +136,8 @@ class AdvancedSettingsDialog(QDialog):
         def show_tile_controls(*_args):
             enabled = self.chk_tile.isChecked() and spec is not None
             explicit = int(self.spin_threshold.value()) != _DEFAULT_TILE_THRESHOLD
-            spatial = enabled and (spec.external_tiling_default or explicit)
+            spatial = (enabled and spec.id not in ('openfocus_a', 'openfocus_b', 'openfocus_c')
+                       and spec.external_tiling_supported and (spec.external_tiling_default or explicit))
             self.tile_note.setVisible(bool(spec is not None and spatial and explicit
                                            and not spec.external_tiling_default))
             perf.setRowVisible(self.spin_threshold, enabled)
@@ -194,6 +196,15 @@ class AdvancedSettingsDialog(QDialog):
         self.btn_alignment_report.clicked.connect(
             lambda: w.render_manager.show_alignment_report(parent=self))
         reg.addRow(self.btn_alignment_report)
+
+        openfocus = _section(page_lay, trans.t(get_registration("openfocus").label_key))
+        self.openfocus_registration_panel = AlgorithmParameterPanel(
+            hidden_parameters=("failure_policy",))
+        self.openfocus_registration_panel.setProperty("controlId", "openfocus_registration_panel")
+        self.openfocus_registration_panel.set_parameters(
+            registration_parameter_specs("openfocus"),
+            getter("openfocus") if callable(getter) else {})
+        openfocus.addRow(self.openfocus_registration_panel)
 
         from ui.sensor_cleanup import SensorCleanupControls
         sensor = _section(page_lay, trans.t("sensor_section"))
@@ -297,6 +308,8 @@ class AdvancedSettingsDialog(QDialog):
         spins = [self.spin_threads, self.spin_reg_width, self.spin_ai_batch]
         if self.chk_tile.isChecked():
             spins[:0] = [self.spin_block, self.spin_overlap, self.spin_threshold]
+        spins.extend(editor for editor in self.openfocus_registration_panel.editors.values()
+                     if isinstance(editor, StepperSpinBox))
         for spin in spins:
             if not spin.lineEdit().hasAcceptableInput():
                 self.status.setText(trans.t("msg_error"))
@@ -333,10 +346,23 @@ class AdvancedSettingsDialog(QDialog):
             "sensor_denoise": self.sensor_cleanup.denoise.isChecked(),
             "storage_directory": self.storage_directory.text().strip(),
         }
+        try:
+            openfocus_values = self.openfocus_registration_panel.values()
+            if self.combo_align_failure.currentData() != self._initial_align_failure:
+                openfocus_values["failure_policy"] = self.combo_align_failure.currentData()
+            openfocus_values = resolve_registration_parameters("openfocus", openfocus_values)
+        except (TypeError, ValueError) as exc:
+            self.status.setText(str(exc))
+            return
         failure_policy = self.combo_align_failure.currentData()
+        memory = {method: dict(values) for method, values in
+                  getattr(w, "_registration_parameters_by_method", {}).items()}
+        initial_openfocus = (w.registration_parameters_for("openfocus")
+                             if callable(getattr(w, "registration_parameters_for", None))
+                             else resolve_registration_parameters("openfocus", memory.get("openfocus")))
+        if openfocus_values != initial_openfocus:
+            memory["openfocus"] = openfocus_values
         if failure_policy != self._initial_align_failure:
-            memory = {method: dict(values) for method, values in
-                      getattr(w, "_registration_parameters_by_method", {}).items()}
             for spec in registration_algorithms():
                 policy_spec = next((p for p in registration_parameter_specs(spec.id)
                                     if p.key == "failure_policy"), None)
@@ -344,6 +370,7 @@ class AdvancedSettingsDialog(QDialog):
                     values = dict(memory.get(spec.id, {}))
                     values["failure_policy"] = failure_policy
                     memory[spec.id] = resolve_registration_parameters(spec.id, values)
+        if memory != getattr(w, "_registration_parameters_by_method", {}):
             draft["_registration_parameters_by_method"] = memory
         previous = {key: getattr(w, key, None) for key in draft}
         manager = getattr(w, "update_manager", None)

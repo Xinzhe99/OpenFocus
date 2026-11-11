@@ -891,7 +891,7 @@ Werden Ergebnisse aus der Ausgabeliste herausgezogen, entstehen Bilddateien im F
 
 ## 14. Kommandozeilenschnittstelle
 
-`pip install openfocus` installiert KI-Modell, Gewichte sowie HEIC- und Kamera-RAW-Dekodierung. Unter Python 3.13+ entfällt `dtcwt`; dort bleibt der DTCWT-Eintrag mit Erklärung deaktiviert.
+`pip install openfocus` installiert KI-Modell, Gewichte sowie HEIC- und Kamera-RAW-Dekodierung. Für DTCWT unter Python 3.13+ anschließend `python -m pip install --no-deps dtcwt==0.14.0` ausführen. Die NumPy-Versionsvorgabe des Pakets bleibt dabei laut `pip check` unerfüllt; OpenFocus stellt einen Kompatibilitätsadapter bereit.
 
 OpenFocus kann ohne GUI laufen – nützlich für skriptgesteuerte Pipelines und CI. Das Konsolenskript `openfocus` (installiert durch `pip install openfocus`) und `python main.py` aus einem Checkout stellen dieselben Befehle bereit. Fusionsoptionen funktionieren in beiden Formen; die Unterbefehle sind:
 
