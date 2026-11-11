@@ -1109,3 +1109,47 @@ def test_browser_login_cancellation_discards_exchange_result(monkeypatch):
     with pytest.raises(account.AccountError, match="cancelled"):
         client.login_with_browser(cancel=cancel)
     assert store.value == session()
+
+
+def test_device_identity_is_stable_and_private(tmp_path):
+    store = account.TokenStore(tmp_path / "private" / "session")
+    first = account.AccountClient(store=store)
+    assert account._valid_device_id(first.device_id)
+    assert first.device_name
+    second = account.AccountClient(store=store)
+    assert second.device_id == first.device_id
+    assert second.device_name == first.device_name
+    device_path = tmp_path / "private" / "account-device"
+    assert device_path.is_file()
+    if os.name != "nt":
+        assert device_path.stat().st_mode & 0o077 == 0
+
+
+def test_device_identity_can_be_injected_for_tests():
+    client = account.AccountClient(store=MemoryStore(), device_id="test-device-123", device_name="Test PC")
+    assert client._device_fields() == {"device_id": "test-device-123", "device_name": "Test PC"}
+    with pytest.raises(ValueError):
+        account.AccountClient(store=MemoryStore(), device_id="bad id")
+
+
+def test_exchange_sends_device_identity(monkeypatch):
+    monkeypatch.setattr(account, "_CallbackServer", DummyListener)
+    bodies = []
+    def request(method, url, body=None, **kwargs):
+        if url.endswith("/capabilities"):
+            return {"cross_device": "poll-v1"}
+        if url.endswith("/start"):
+            return {"ok": True, "flow_id": "flow", "poll_token": "token"}
+        if url.endswith("/poll"):
+            return {"status": "approved", "code": "code"}
+        if url.endswith("/exchange"):
+            bodies.append(body)
+            return session()
+        pytest.fail("unexpected request")
+    client = account.AccountClient(
+        store=MemoryStore(), request=request,
+        device_id="test-device-123", device_name="Test PC",
+    )
+    client.login("email", "user@example.test")
+    assert bodies[0]["device_id"] == "test-device-123"
+    assert bodies[0]["device_name"] == "Test PC"
