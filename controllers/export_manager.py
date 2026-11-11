@@ -176,15 +176,8 @@ class ExportManager:
             from_filter = extension_from_filter(selected_filter)
             return self._safe_export_path(root + (from_filter or fallback))
 
-        mapped = ALLOWED_EXPORT_EXTENSION_MAP.get(ext_lower)
-        if mapped:
-            return self._safe_export_path(root + mapped)
-
-        alias_target = EXPORT_EXTENSION_ALIASES.get(ext_lower)
-        if alias_target:
-            mapped_alias = ALLOWED_EXPORT_EXTENSION_MAP.get(alias_target)
-            if mapped_alias:
-                return self._safe_export_path(root + mapped_alias)
+        if ext_lower in ALLOWED_EXPORT_EXTENSION_MAP or ext_lower in EXPORT_EXTENSION_ALIASES:
+            return self._safe_export_path(file_path)
 
         raise ValueError(f'{trans.t("msg_save_failed_info_write")} {ext} · PNG / TIFF / JPG / BMP / WebP')
 
