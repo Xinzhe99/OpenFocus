@@ -7,6 +7,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 - Offer optional account sign-in with a skippable first-launch and update prompt.
+- Show the signed-in account in Help and provide browser account management and sign-out.
+- Restore an existing browser account at startup and open the account center using a short-lived handoff.
+- Explain where to enable experimental methods in the first-run welcome dialog.
 - Allow users to review and send sanitized error reports, and choose whether to
   send reports automatically after an error. Previous native crashes require
   separate confirmation; queued reports respect account and consent choices.
@@ -133,6 +136,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   source coverage before compositing the display background.
 
 ### Changed
+- Redesign the account dialog with inline agreement links and a
+  low-key skip action. After sign-in under the updated terms, sanitized
+  automatic error reports default on unless a previous choice is preserved;
+  Advanced Settings can turn them off.
+- Allow email sign-in to be confirmed on a phone while the desktop completes
+  sign-in automatically, when the account service supports cross-device login.
 - Recommend OpenFocus B as the default desktop fusion method. ECC remains the
   default registration method even with experimental features enabled; OpenFocus
   registration requires an explicit choice and the experimental opt-in. Saved
@@ -207,6 +216,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the selected format's extension before the replace-file confirmation.
 
 ### Fixed
+- Dispose closed windows before Qt application teardown during normal exit.
+- Avoid reverse DNS while binding account sign-in callbacks to loopback.
+- Let each window close independently of account tasks owned by other windows.
 - Remember JPEG as the last image format when a JPEG alias is typed, and save
   to the selected filename without changing its extension or letter case.
 - Keep the GPU acceleration preference available when a verified provider's

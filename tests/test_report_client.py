@@ -264,3 +264,86 @@ def test_enqueue_and_submit_sends_with_owner_token_or_anonymously(tmp_path):
     posts = [request for request, _ in client._opener.requests if request.method == "POST"]
     assert posts[0].get_header("Authorization") == "Bearer token-a"
     assert posts[1].get_header("Authorization") is None
+
+
+@pytest.mark.parametrize('signed_in,token', [(False, None), (True, None), (True, 'invalid'), (True, 'token-a')])
+def test_account_default_retry_never_sends_anonymous_automatic(
+        tmp_path, monkeypatch, signed_in, token):
+    from utils import reporting
+
+    client = ReportClient(tmp_path)
+    client._opener = Server()
+    client.enqueue({'source': 'auto', 'subject': 'anonymous'}, b'auto')
+    client.enqueue({'source': 'manual', 'subject': 'manual'}, b'manual')
+    client.enqueue({'source': 'auto', 'subject': 'account'}, b'account', owner_id='user-a')
+    monkeypatch.setattr(reporting, 'ReportClient', lambda _path: client)
+
+    class Account:
+        def current_user(self):
+            return {'id': 'user-a'} if signed_in else None
+
+        def token(self, *, expected_owner):
+            if token == 'invalid':
+                from utils.account_client import AccountError
+                raise AccountError('invalid_session')
+            assert expected_owner == 'user-a'
+            return token
+
+    reporting.retry_reports(Account(), include_auto=True, account_only_auto=True)
+    posts = [request for request, _ in client._opener.requests if request.method == 'POST']
+    subjects = [json.loads(request.data)['subject'] for request in posts]
+    assert 'manual' in subjects
+    assert 'anonymous' not in subjects
+    assert ('account' in subjects) == (signed_in and token == 'token-a')
+    assert client.pending_count == (1 if signed_in and token == 'token-a' else 2)
+
+
+def test_explicit_opt_in_retries_anonymous_automatic(tmp_path, monkeypatch):
+    from utils import reporting
+
+    client = ReportClient(tmp_path)
+    client._opener = Server()
+    client.enqueue({'source': 'auto'}, b'auto')
+    monkeypatch.setattr(reporting, 'ReportClient', lambda _path: client)
+    account = type('Account', (), {'current_user': lambda self: None})()
+    reporting.retry_reports(account, include_auto=True)
+    assert client.pending_count == 0
+
+
+def test_account_default_send_rejects_signed_out_session(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from utils import reporting
+
+    client = ReportClient(tmp_path)
+    client._opener = Server()
+    monkeypatch.setattr(reporting, 'ReportClient', lambda _path: client)
+    account = SimpleNamespace(current_user=lambda: None, is_signed_in=lambda: False)
+    with pytest.raises(ReportError):
+        reporting.send_bundle(None, source='auto', locale='en', account=account,
+                              require_account=True)
+    assert not client._opener.requests
+    assert client.pending_count == 0
+
+
+@pytest.mark.parametrize('signed_in,account_only,expected', [
+    (False, True, False), (True, True, True), (False, False, True),
+])
+def test_shutdown_uses_persisted_session_for_default_scope(
+        qapp, tmp_path, monkeypatch, signed_in, account_only, expected):
+    from types import SimpleNamespace
+    from ui import shutdown_reports
+
+    account = SimpleNamespace(is_signed_in=lambda: signed_in)
+    monkeypatch.setattr(shutdown_reports, 'AccountClient', lambda: account)
+    monkeypatch.setattr(shutdown_reports, 'user_data_dir', lambda: tmp_path)
+    monkeypatch.setattr(shutdown_reports, 'session_has_error', lambda: True)
+    monkeypatch.setattr(shutdown_reports, 'build_report_bundle',
+                        lambda: SimpleNamespace(has_error=True))
+    sent = []
+    monkeypatch.setattr(shutdown_reports, 'send_bundle',
+                        lambda *args, **kwargs: sent.append(kwargs))
+    shutdown_reports._ShutdownReport(None, 'en', True, account_only)._run()
+    assert bool(sent) is expected
+    if sent:
+        assert sent[0]['account'] is account
+        assert sent[0]['require_account'] is account_only

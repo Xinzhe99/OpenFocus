@@ -32,11 +32,12 @@ are independent of account sign-in and diagnostic reporting.
   account. Authentication credentials are stored locally and are not included in
   diagnostic reports.
 - **Error reports** — you can review and send a sanitized report, signed in or
-  anonymously. Automatic error reporting is off until you enable it; a saved
-  preference is preserved. You can change it in Advanced Settings. Automatic
-  reports are prepared only after a session records
-  an error; a previous native crash is offered for review and requires a separate
-  confirmation. Reports can include a separate random report installation ID,
+  anonymously. After desktop sign-in, automatic error reporting is enabled by
+  default unless you previously disabled it; a saved preference is preserved.
+  You can change it in Advanced Settings. Automatic reports are prepared only
+  after a session records an error; a previous native crash is offered for review
+  and requires a separate confirmation. Reports can include a separate random
+  report installation ID,
   software and system versions, selected hardware details, image counts and
   dimensions, the order of supported interface actions, control IDs and canvas
   gesture coordinates, effective processing options and numeric settings, error
