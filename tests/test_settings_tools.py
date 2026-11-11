@@ -1004,7 +1004,7 @@ def test_restore_preferences_keeps_workspace_and_user_data(qapp, tmp_path, monke
     previous_language = settings.value(store.LANGUAGE_KEY)
     store.restore_default_settings(window)
     assert window.thread_count == 0 and window.tile_enabled
-    assert window.exposure_match and not window.base_frame_correct
+    assert not window.exposure_match and not window.base_frame_correct
     assert not window.stack_reverse_order and not window.sharpen_output
     assert window.storage_directory == ''
     assert window._fusion_parameters_by_method == {}

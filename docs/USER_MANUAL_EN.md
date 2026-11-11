@@ -1824,6 +1824,14 @@ export names; existing results keep their names. You can still edit a name in
 the save dialog. This preference does not rename source files or change batch
 output names.
 
+### Exporting All Results
+
+Choose **File → Export All Results to Folder** and select a destination to
+export every entry in the output list. Image results are saved as PNG with
+their current annotations; aligned stack entries are saved as folders. Existing
+files and folders are preserved by giving new exports unique names. OpenFocus
+reports any export failures and warns if the output list is empty.
+
 
 ### Sharing a Result
 

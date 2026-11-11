@@ -112,6 +112,8 @@ def _exercise_languages(executable: Path, environment: dict) -> None:
     for code in ("de", "ko", "pl"):
         _call(executable, environment, "ui.trigger", "--key", f"action_lang_{code}")
         _check_language(executable, environment, code)
+    _call(executable, environment, "ui.trigger", "--key", "action_lang_en")
+    _check_language(executable, environment, "en")
 
 
 def _exercise_codecs(executable: Path, environment: dict, root: Path) -> None:
@@ -144,6 +146,68 @@ def _exercise_codecs(executable: Path, environment: dict, root: Path) -> None:
             raise RuntimeError(f"Packaged desktop could not decode {path.name}")
 
 
+def _exercise_planar_lzw(executable: Path, environment: dict, root: Path) -> None:
+    import tifffile
+    from locales import trans
+
+    rows, cols = np.indices((32, 40), dtype=np.uint16)
+    pixels = np.stack((rows * 1000 + cols, cols * 1200 + rows,
+                       rows * 313 + cols * 719), axis=-1)
+    source = root / "planar-lzw.tif"
+    tifffile.imwrite(source, np.moveaxis(pixels, -1, 0), photometric="rgb",
+                     planarconfig="separate", compression="lzw", metadata=None)
+    destination = root / "converted"
+    destination.mkdir()
+    _call(executable, environment, "ui.trigger", "--key", "converter_title")
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        dialogs = _call(executable, environment, "dialog.list").get("dialogs", [])
+        converter = next((d for d in dialogs if d.get("class") == "BatchConverterDialog"), None)
+        if converter:
+            break
+        time.sleep(0.1)
+    else:
+        raise RuntimeError("Packaged batch converter did not open")
+
+    def button(key):
+        label = trans.translations["en"][key]
+        matches = _call(executable, environment, "ui.find", "--window", converter["root"],
+                        "--class", "QPushButton", "--text", label).get("matches", [])
+        exact = [item for item in matches if item.get("text") == label]
+        if len(exact) != 1:
+            raise RuntimeError(f"Packaged converter button {key} was not found: {matches}")
+        return exact[0]
+
+    _call(executable, environment, "ui.click", "--path", button("converter_add_files")["path"], "--async")
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        dialogs = _call(executable, environment, "dialog.list").get("dialogs", [])
+        if any(d.get("class") == "QFileDialog" for d in dialogs):
+            break
+        time.sleep(0.1)
+    else:
+        raise RuntimeError("Packaged converter file picker did not open")
+    _call(executable, environment, "dialog.file", "--path", str(source))
+    fields = _call(executable, environment, "ui.find", "--window", converter["root"],
+                   "--class", "QLineEdit").get("matches", [])
+    if len(fields) != 1:
+        raise RuntimeError(f"Packaged converter output field was not found: {fields}")
+    _call(executable, environment, "ui.set", "--path", fields[0]["path"], "--value", str(destination))
+    _call(executable, environment, "ui.click", "--path", button("converter_start")["path"])
+    result = destination / "planar-lzw.png"
+    deadline = time.monotonic() + 90
+    while time.monotonic() < deadline:
+        if result.is_file() and button("converter_start").get("enabled"):
+            break
+        time.sleep(0.1)
+    else:
+        raise RuntimeError("Packaged planar LZW conversion did not finish")
+    actual = cv2.imdecode(np.fromfile(str(result), np.uint8), cv2.IMREAD_UNCHANGED)
+    if actual is None or not np.array_equal(actual, pixels[..., ::-1]):
+        raise RuntimeError("Packaged planar LZW conversion changed 16-bit pixels")
+    _call(executable, environment, "dialog.reject", "--index", str(converter["index"]))
+
+
 def _exercise(executable: Path, environment: dict, root: Path,
               shape: tuple) -> None:
     if not _call(executable, environment, "ping").get("pong"):
@@ -162,6 +226,7 @@ def _exercise(executable: Path, environment: dict, root: Path,
     if loaded_demo.get("count") != 6:
         raise RuntimeError("Packaged desktop did not load the six demo frames")
     _exercise_codecs(executable, environment, root)
+    _exercise_planar_lzw(executable, environment, root)
     loaded = _call(
         executable, environment, "stack.load", "--folder", str(root / "stack"),
         "--wait",

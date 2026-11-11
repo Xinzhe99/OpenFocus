@@ -90,6 +90,29 @@ def test_file_menu_uses_one_folder_entry(qapp):
         qapp.processEvents()
 
 
+def test_file_menu_exports_all_results(qapp):
+    from ui.menus import setup_menus
+
+    window = _menu_window(qapp)
+    calls = []
+    window.output_manager.export_all_results = lambda: calls.append(True)
+    setup_menus(window)
+    try:
+        action = window.ui_objs['menu_export_all']
+        assert action in window.ui_objs['menu_file'].actions()
+        action.trigger()
+        assert calls == [True]
+    finally:
+        window.close()
+        window.deleteLater()
+        qapp.processEvents()
+
+
+def test_export_all_menu_translation_exists_in_every_language():
+    for code in trans.PACK_ORDER:
+        assert trans.translations[code].get('menu_export_all'), code
+
+
 
 def test_usage_switch_is_only_in_advanced_settings(qapp):
     from ui.menus import setup_menus

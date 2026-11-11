@@ -38,7 +38,6 @@ Optional base correction is off by default. When enabled, it adjusts the fused
 result toward the first processed frame for OpenFocus A/B/C and the last for
 other methods. Reversing the stack changes processing order and the reference.
 The C pyramid uses four-tap binomial downsampling and first-frame initialization.
-
 The desktop application processes OpenFocus A/B/C as whole images, regardless
 of the general tile settings used by other methods. Explicit non-default tile
 thresholds in the command-line and Python interfaces can opt A/B into external

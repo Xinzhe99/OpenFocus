@@ -148,7 +148,9 @@ def _admit(path, page, output_dir, ext=None):
 
 def _decode_tiff(path, page, physical_page, p):
     _tiff_requirements(path, p)
-    opencv_page = p.compression.name == 'LZW'
+    planar_lzw_16 = (p.compression.name == 'LZW' and p.samplesperpixel == 3
+                     and int(p.planarconfig or 1) == 2 and p.dtype == np.uint16)
+    opencv_page = p.compression.name == 'LZW' and not planar_lzw_16
     if opencv_page:
         encoded = np.memmap(path, dtype=np.uint8, mode='r')
         try:
@@ -161,6 +163,8 @@ def _decode_tiff(path, page, physical_page, p):
         a = decoded[0]
     else:
         a = p.asarray(out='memmap' if p.is_memmappable else None, maxworkers=1)
+        if planar_lzw_16:
+            a = np.moveaxis(a, 0, -1)
     orientation = int(p.tags['Orientation'].value) if 'Orientation' in p.tags else 1
     if a.dtype not in (np.uint8, np.uint16):
         raise ValueError('Only 8-bit and 16-bit integer TIFF pages are supported.')
@@ -250,8 +254,14 @@ def _write(path, pixels, source, page, ext, cancelled=None, metadata_image=None)
         # LibRaw develops into sRGB regardless of the camera's JPEG setting.
         safe.get_ifd(0x8769).pop(40961, None)
     exif = safe.tobytes() if safe else b''
-    profile = (image_loader._icc_profile_from_image(source, metadata_image)
-               if metadata_image is not None else image_loader._read_icc_profile(source))
+    if metadata_image is not None:
+        profile = image_loader._icc_profile_from_image(source, metadata_image)
+    elif Path(source).suffix.lower() in ('.tif', '.tiff') and not is_raw:
+        with tifffile.TiffFile(source) as tif:
+            physical_page, _ = next(islice(image_loader.tiff_source_pages(tif), page, None))
+        profile = image_loader._read_icc_profile(source, page=physical_page)
+    else:
+        profile = image_loader._read_icc_profile(source)
     params = []
     if ext == '.jpg':
         params = [cv2.IMWRITE_JPEG_QUALITY, 95]

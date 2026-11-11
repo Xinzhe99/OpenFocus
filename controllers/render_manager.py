@@ -2091,7 +2091,6 @@ class RenderManager:
 
     def on_render_stage(self, stage: str) -> None:
         self._render_progress_stage = stage
-        self._control_progress = None
         if self.worker is not None and getattr(self.worker, 'is_cancelled', False):
             text = trans.t('depth_cancelling')
         else:

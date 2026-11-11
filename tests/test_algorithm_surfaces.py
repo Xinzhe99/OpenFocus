@@ -90,6 +90,43 @@ def test_openfocus_default_alignment_respects_explicit_selection(algorithm_host)
     assert window.current_alignment_method() == 'openfocus'
 
 
+def test_fresh_panel_defaults_and_recommended_labels(qapp):
+    from locales import trans
+    from ui.algorithm_combo import retranslate_fusion_combo
+    from ui.right_panel import (ALIGN_DEFAULT, FUSION_DEFAULT, alignment_items,
+                                create_right_panel, label_recommended)
+
+    previous = trans.current_lang
+    parts = create_right_panel()
+    try:
+        assert parts.combo_fusion.currentData() == "openfocus_b"
+        assert parts.combo_align.currentData() == "ecc"
+        assert trans.t("recommended") in parts.combo_fusion.currentText()
+        assert trans.t("recommended") in parts.combo_align.currentText()
+        for control in (parts.chk_quick_preview, parts.chk_reverse_order,
+                        parts.chk_exposure_match, parts.chk_base_correct,
+                        parts.chk_sharpen_output):
+            assert not control.isChecked()
+        parts.combo_fusion.setCurrentIndex(parts.combo_fusion.findData("dct"))
+        parts.combo_align.setCurrentIndex(parts.combo_align.findData("homography"))
+        for language in trans.PACK_ORDER:
+            trans.current_lang = language
+            retranslate_fusion_combo(parts.combo_fusion, none_label="radio_no_fusion",
+                                     none_hint="radio_no_fusion_hint")
+            label_recommended(parts.combo_fusion, FUSION_DEFAULT)
+            for code, key, _hint in alignment_items():
+                parts.combo_align.setItemText(parts.combo_align.findData(code), trans.t(key))
+            label_recommended(parts.combo_align, ALIGN_DEFAULT)
+            assert parts.combo_fusion.currentData() == "dct"
+            assert parts.combo_align.currentData() == "homography"
+            for combo, code in ((parts.combo_fusion, FUSION_DEFAULT),
+                                (parts.combo_align, ALIGN_DEFAULT)):
+                assert trans.t("recommended") in combo.itemText(combo.findData(code))
+    finally:
+        trans.current_lang = previous
+        parts.widget.deleteLater()
+
+
 def _edit_fraction(editors, fraction, direction):
     editors["fraction"].setValue(fraction)
     editor = editors["direction"]
@@ -271,6 +308,10 @@ def test_exposure_defaults_on_preserves_choice_and_reset(algorithm_host):
         host.chk_quick_preview, host.chk_reverse_order,
         host.chk_base_correct, host.chk_sharpen_output))
     assert host._brightness_by_method == {}
+    for method in (spec.id for spec in fusion_algorithms()):
+        host.set_fusion_method(method)
+        assert host.chk_exposure_match.isChecked()
+        assert not host.chk_base_correct.isChecked()
 
 
 def test_fusion_gpu_preference_does_not_change_ecc_backend(qapp):

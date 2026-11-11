@@ -38,6 +38,12 @@ The CPU depth kernel also requires Numba and llvmlite. Keep
 including the original compiler and LLVM redistribution notices. The packaged
 smoke command executes OpenFocus B as well as the three neural checkpoints.
 
+TIFF LZW decoding requires `imagecodecs>=2024.9.22` alongside `tifffile`.
+The imagecodecs hook collects the LZW and shared codec extensions, their native
+library dependencies, and distribution metadata including its license. Keep
+`--additional-hooks-dir hooks` in local and release builds, and exercise a
+16-bit planar LZW TIFF in frozen builds on each target platform.
+
 On Windows 10/11, run the release job's pruning step after PyInstaller: remove
 `dist/OpenFocus/_internal/icuuc.dll` if it was collected. Qt uses the Windows
 ICU API; a Conda DLL with the same name but version-suffixed exports shadows it

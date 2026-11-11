@@ -35,6 +35,7 @@ dependencies = [
     "Pillow",
     "psdtags==2024.5.24",
     "tifffile==2024.8.30",
+    "imagecodecs>=2024.9.22",
     "onnxruntime-directml==1.23.0; sys_platform == 'win32' and platform_machine == 'AMD64'",
     "onnxruntime>=1.23,<1.24; sys_platform != 'win32' or platform_machine != 'AMD64'",
     # Optional in practice, harmless to require: a few KB each, and they turn

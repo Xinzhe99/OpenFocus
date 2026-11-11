@@ -1053,7 +1053,6 @@ def test_resize_preserves_displayed_index(monkeypatch):
     window.transform_manager.resize_all_images()
     assert window.reloaded_index == 2
 
-
 def test_downsample_dialog_respects_max_scale(qapp):
     from dialogs.settings import DownsampleDialog
 
