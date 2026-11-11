@@ -269,7 +269,9 @@ observations, not a specification.
 - **One render** (`cache`, tile 389, 20 tiles, 314 s): `session.run` 283 s
   (90 %); region resolution 20.4 s (6.5 %), of which 1,640 one-use crop puts
   (697 MB, never read again) cost 14.3 s (4.6 %); session acquisition 4.6 s;
-  per-tile `plan_attention_inference` 1.6 ms.
+  per-tile `plan_attention_inference` 1.6 ms. Tile regions are no longer
+  written to the resolution cache; `crop` counters now cover retained crops
+  such as a region of interest.
 - **Tile size and overlap** (`tiling`, reference 448 / 224):
 
 | Tile / overlap (requested→effective) | Tiles | Sessions | Padded area | Fusion | Mean / max difference |

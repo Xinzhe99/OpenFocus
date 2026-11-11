@@ -98,14 +98,15 @@ def test_session_cache_churn_is_attributed(monkeypatch):
     assert sessions['construct_ms'] > 0 and sessions['hash_ms'] > 0
 
 
-def test_resolution_cache_counts_one_use_crops(tmp_path, monkeypatch):
+def test_one_use_tile_regions_reuse_decodes_without_cache_writes(tmp_path, monkeypatch):
     from core import frame_storage
     from core.frame_resolution_cache import render_scope
-    from core.source_frames import resolve_region, scan_source
+    from core.source_frames import crop_frame, resolve_frame, resolve_region, scan_source
     from utils.image_utils import imwrite_auto
     monkeypatch.setattr(frame_storage, '_storage_directory', str(tmp_path))
     frames = []
-    for index, image in enumerate(_stack()):
+    stack = _stack()
+    for index, image in enumerate(stack):
         path = tmp_path / f'f{index}.png'
         assert imwrite_auto(str(path), image)
         frames.append(scan_source(str(path))[0])
@@ -114,11 +115,18 @@ def test_resolution_cache_counts_one_use_crops(tmp_path, monkeypatch):
         frame_storage.select_scratch(1, [])
         with render_scope(frames):
             for x in (0, 40):
-                for frame in frames:
-                    resolve_region(frame, x, 0, 40, 30)
+                for frame, image in zip(frames, stack):
+                    region = resolve_region(frame, x, 0, 40, 30)
+                    assert region.flags.owndata and region.flags.writeable
+                    np.testing.assert_array_equal(region, image[:30, x:x + 40])
+            # A retained crop descriptor is resolved repeatedly and stays cached.
+            retained = crop_frame(frames[0], 0, 0, 40, 30)
+            for _ in range(2):
+                np.testing.assert_array_equal(resolve_frame(retained), stack[0][:30, :40])
     cache = profile.report('completed')['cache']['by_kind']
     assert cache['source']['puts'] == len(frames)
-    assert cache['source']['hits'] == len(frames)       # second tile reuses decodes
-    assert cache['crop']['puts'] == 2 * len(frames)
-    assert cache['crop']['hits'] == 0                    # every crop is written once, never read
-    assert cache['crop']['bytes_written'] == 2 * len(frames) * 40 * 30 * 3
+    assert cache['source']['hits'] == len(frames) + 1   # second tile and the retained crop
+    # Tile regions are copied once and their descriptor discarded: nothing to cache.
+    assert cache['crop'] == {'lookups': 2, 'hits': 1, 'misses': 1, 'puts': 1,
+                             'bytes_written': 40 * 30 * 3,
+                             'put_ms': cache['crop']['put_ms']}
