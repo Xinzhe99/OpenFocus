@@ -1,7 +1,6 @@
 # dialogs/about.py
 """About and contact information dialogs."""
 
-import sys
 import threading
 from PyQt6.QtCore import QTimer
 from PyQt6.QtGui import QFont
@@ -49,15 +48,6 @@ class EnvironmentInfoDialog(QDialog):
         self.text_edit.setReadOnly(True)
         self.text_edit.setFont(QFont("Consolas", 10))
         layout.addWidget(self.text_edit)
-        self.copy_button = QPushButton(trans.t("env_copy"))
-        self.copy_button.setEnabled(False)
-        self.copy_button.clicked.connect(self._copy)
-        layout.addWidget(self.copy_button)
-
-        # 关闭按钮
-        close_btn = QPushButton(trans.t('btn_close'))
-        close_btn.clicked.connect(self.accept)
-        layout.addWidget(close_btn)
 
         self._probe = _EnvironmentProbe()
         self.text_edit.setPlainText(trans.t("msg_gif_processing_title"))
@@ -74,12 +64,6 @@ class EnvironmentInfoDialog(QDialog):
 
     def _probe_finished(self):
         self.text_edit.setPlainText(self._probe.text)
-        self.copy_button.setEnabled(True)
-
-    def _copy(self):
-        from PyQt6.QtWidgets import QApplication
-        QApplication.clipboard().setText(self.text_edit.toPlainText())
-        self.copy_button.setText(trans.t("msg_success"))
 
     def done(self, result):
         self._probe_timer.stop()
@@ -98,8 +82,9 @@ class EnvironmentInfoDialog(QDialog):
         info_lines.append("=" * 60)
         info_lines.append("")
 
-        # Python 版本
-        info_lines.append(f"{trans.t('env_python')}: {sys.version}")
+        from utils.diagnostics import system_facts
+        for key, value in system_facts().items():
+            info_lines.append(f"{key}: {value}")
         info_lines.append("")
 
         # 检测 OpenCV

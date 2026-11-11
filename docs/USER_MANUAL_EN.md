@@ -1444,6 +1444,9 @@ correction scale before saving or export the corrected stack.
 
 **Help → Send feedback** opens local logs. Copy copies the visible session log;
 the local feedback ZIP can contain file paths, so review it before sharing.
+Signed-in users can open their account center in the browser to submit feedback.
+The Environment Info control shows the same system and dependency report as
+**Help → Environment Info**.
 **Review error report** shows the sanitized diagnostics that will be sent;
 nothing is uploaded until you choose **Send to OpenFocus**. Automatic reports
 are sent only after a session with an error when enabled. A previous native
