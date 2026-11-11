@@ -74,7 +74,7 @@ Em **Salvar como**, TIFF comum salva o resultado como uma única imagem; TIFF em
 ### Iniciar o aplicativo
 
 A forma preferida de instalar uma compilação empacotada é o site do projeto, **https://openfocus.top**: ele aponta para o instalador do Windows, a compilação do macOS e o pacote do Linux, com scripts de instalação para terminal. Prefira-o a recompilar: esses artefatos são a saída exata do pipeline de lançamento. `pip install openfocus` instala apenas a interface de linha de comando headless (a wheel não depende de PyQt6 de propósito); use uma compilação desktop ou uma cópia do código-fonte para a GUI.
-O site e os scripts de instalação também oferecem betas mais novas, atualmente [versão preliminar v1.77.0-beta.5](https://github.com/Xinzhe99/OpenFocus/releases/tag/v1.77.0-beta.5). As atualizações automáticas do desktop também oferecem betas mais novas; a CLI Linux do PyPI permanece estável. A beta também está disponível no GitHub.
+O site e os scripts de instalação também oferecem betas mais novas, atualmente [versão preliminar v1.77.0-beta.6](https://github.com/Xinzhe99/OpenFocus/releases/tag/v1.77.0-beta.6). As atualizações automáticas do desktop também oferecem betas mais novas; a CLI Linux do PyPI permanece estável. A beta também está disponível no GitHub.
 
 Para instalar pelo terminal, visualize primeiro o comando e depois execute-o sem `--dry-run`: no macOS ou Linux, `curl -fsSL https://openfocus.top/install.sh | sh -s -- --dry-run` e depois `curl -fsSL https://openfocus.top/install.sh | sh` (no Linux instala a CLI); no Windows, `irm https://openfocus.top/install.ps1 | iex` no PowerShell.
 

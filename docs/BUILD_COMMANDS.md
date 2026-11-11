@@ -58,7 +58,9 @@ an existing file. A branch dispatch only builds inspectable distributions.
 
 Linux regression runs need `fonts-noto-cjk` alongside the Qt system libraries
 to exercise Chinese watermark text with real glyphs. Install that package
-before running `pytest`; the test workflow supplies it on Ubuntu runners.
+before running `pytest`; the test workflow supplies it on Ubuntu runners. If
+the default Ubuntu mirror hostnames cannot be resolved, CI uses the kernel.org
+Ubuntu mirror with the Ubuntu archive signing key for the required packages.
 
 The CPU depth kernel also requires Numba and llvmlite. Keep
 `--additional-hooks-dir hooks`: the kernel hook copies their package metadata,

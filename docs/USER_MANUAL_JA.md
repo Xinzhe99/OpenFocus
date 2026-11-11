@@ -101,7 +101,7 @@ OpenFocus は、研究者、エンジニア、画像処理の専門家のため�
 最新の Windows・macOS 版は [OpenFocus 公式サイト](https://openfocus.top/#download) から入手してください。
 同じファイルと旧バージョンは [GitHub Releases](https://github.com/Xinzhe99/OpenFocus/releases)
 にもあります。ターミナルからもインストールできます。
-公式サイトとインストールスクリプトは安定版より新しいベータ版も提供します（現在は [v1.77.0-beta.5 のプレリリース](https://github.com/Xinzhe99/OpenFocus/releases/tag/v1.77.0-beta.5)）。デスクトップの自動更新でも新しいベータ版を提供し、PyPI の Linux CLI は安定版のままです。
+公式サイトとインストールスクリプトは安定版より新しいベータ版も提供します（現在は [v1.77.0-beta.6 のプレリリース](https://github.com/Xinzhe99/OpenFocus/releases/tag/v1.77.0-beta.6)）。デスクトップの自動更新でも新しいベータ版を提供し、PyPI の Linux CLI は安定版のままです。
 
 ```bash
 # macOS（Apple Silicon、~/Applications へ）または Linux（ヘッドレス CLI）
