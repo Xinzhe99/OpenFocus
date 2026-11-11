@@ -117,23 +117,23 @@ def _posix_memory():
         return 0, 0
 
 
-def available_memory_bytes() -> int:
-    """Physical memory the OS says it can hand out right now."""
+def system_memory_bytes():
+    """(available_bytes, total_bytes) from a single OS reading."""
     try:
         if sys.platform == "win32":
-            return _windows_memory()[0]
-        return _posix_memory()[0]
+            return _windows_memory()
+        return _posix_memory()
     except Exception:
-        return 0
+        return 0, 0
+
+
+def available_memory_bytes() -> int:
+    """Physical memory the OS says it can hand out right now."""
+    return system_memory_bytes()[0]
 
 
 def total_memory_bytes() -> int:
-    try:
-        if sys.platform == "win32":
-            return _windows_memory()[1]
-        return _posix_memory()[1]
-    except Exception:
-        return 0
+    return system_memory_bytes()[1]
 
 
 def _process_counters():
