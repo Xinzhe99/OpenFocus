@@ -945,6 +945,23 @@ def test_image_save_dialogs_remember_the_chosen_format(tmp_path, monkeypatch):
     assert store.image_save_filter(output) == "PNG 8/16-bit (*.png)"
     assert store.image_save_filter(mosaic) == "PNG image (*.png)"
 
+@pytest.mark.parametrize("suffix", [".jpeg", ".jpe", ".jfif", ".JPEG"])
+@pytest.mark.parametrize("selected", ["JPG 8-bit (*.jpg)", "PNG 8/16-bit (*.png)"])
+def test_image_save_remembers_jpeg_alias_as_offered_format(tmp_path, monkeypatch, suffix, selected):
+    from PyQt6.QtCore import QSettings
+    import utils.settings_store as store
+
+    settings = QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat)
+    monkeypatch.setattr(store, "get_settings", lambda: settings)
+    filters = "PNG 8/16-bit (*.png);;JPG 8-bit (*.jpg)"
+    store.remember_image_save(str(tmp_path / "previous.png"), "PNG 8/16-bit (*.png)")
+    store.remember_image_save(str(tmp_path / ("image" + suffix)), selected)
+    assert store.image_save_type(filters) == ".jpg"
+    assert store.image_save_filter(filters) == "JPG 8-bit (*.jpg)"
+    assert store.image_save_default("next.png", filters) == str(tmp_path / "next.jpg")
+    assert store.image_save_filter("JPEG (*.jpeg);;PNG (*.png)") == "JPEG (*.jpeg)"
+
+
 
 def test_restore_preferences_keeps_workspace_and_user_data(qapp, tmp_path, monkeypatch):
     from PyQt6.QtCore import QSettings

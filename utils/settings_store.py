@@ -51,7 +51,7 @@ LAST_IMAGE_SAVE_DIR_KEY = "ui/last_image_save_dir"
 LAST_IMAGE_SAVE_TYPE_KEY = "ui/last_image_save_type"
 LAST_IMAGE_SAVE_FILTER_KEY = "ui/last_image_save_filter"
 IMAGE_SAVE_TYPES = frozenset({
-    ".png", ".tif", ".tiff", ".jpg", ".jpeg", ".bmp", ".webp", ".dng",
+    ".png", ".tif", ".tiff", ".jpg", ".jpeg", ".jpe", ".jfif", ".bmp", ".webp", ".dng",
 })
 # The "AI runs on the CPU" warning is informational and repeat-per-launch
 # annoying; once the user says "don't show again" it must stay gone.
@@ -703,7 +703,12 @@ def _image_extensions(filters: str) -> tuple:
 def image_save_type(filters: str) -> str:
     """The last format chosen in a multi-format image dialog, if *filters* offers it."""
     extension = str(get_settings().value(LAST_IMAGE_SAVE_TYPE_KEY, "") or "").lower()
-    if extension not in IMAGE_SAVE_TYPES or extension not in _image_extensions(filters):
+    if extension in (".jpeg", ".jpe", ".jfif"):
+        extension = ".jpg"
+    offered = _image_extensions(filters)
+    if extension == ".jpg" and extension not in offered:
+        extension = next((ext for ext in offered if ext in (".jpeg", ".jpe", ".jfif")), extension)
+    if extension not in IMAGE_SAVE_TYPES or extension not in offered:
         return ""
     return extension
 
@@ -751,12 +756,16 @@ def remember_image_save(path: str, selected_filter: str = "") -> None:
             # over the filter, which only decides for a bare name.
             offered = _image_extensions(selected_filter)
             extension = os.path.splitext(path)[1].lower() or (offered[0] if offered else "")
+            if extension in (".jpeg", ".jpe", ".jfif"):
+                extension = ".jpg"
             if extension in IMAGE_SAVE_TYPES:
                 settings.setValue(LAST_IMAGE_SAVE_TYPE_KEY, extension)
                 # Keep the label only when it offers that format; otherwise
                 # the next dialog picks the first filter that does.
                 settings.setValue(LAST_IMAGE_SAVE_FILTER_KEY,
-                                  selected_filter if extension in offered else "")
+                                  selected_filter if extension in offered or (
+                                      extension == ".jpg" and any(
+                                          ext in offered for ext in (".jpeg", ".jpe", ".jfif"))) else "")
 
 
 def load_drag_export_format(window) -> None:
