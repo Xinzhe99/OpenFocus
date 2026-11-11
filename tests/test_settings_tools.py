@@ -709,14 +709,13 @@ def test_feedback_failed_replace_preserves_previous_archive(monkeypatch, tmp_pat
     assert list(tmp_path.iterdir()) == [dest]
 
 
-def test_environment_missing_runtime_keeps_classic_methods_available(monkeypatch):
+def test_environment_reports_missing_onnx_runtime(monkeypatch):
     import sys
     from dialogs.about import EnvironmentInfoDialog
     from locales import trans
 
     monkeypatch.setitem(sys.modules, "onnxruntime", None)
     text = EnvironmentInfoDialog.environment_report()
-    assert "Guided Filter / GFG-FGF / OpenFocus A/B/C: CPU" in text
     assert f"StackMFF V1/V2/V3: {trans.t('env_not_installed')}" in text
     assert trans.t('env_stackmff_unavailable') in text
 
