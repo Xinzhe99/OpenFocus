@@ -3544,8 +3544,20 @@ class OpenFocus(QMainWindow):
             cancel.set()
 
     def _browser_sso_finished(self, user, error) -> None:
-        self._account_browser_job = None
+        cancelled = (getattr(self, '_account_browser_cancel', None) is not None
+                     and self._account_browser_cancel.is_set())
         self._account_browser_cancel = None
+        if cancelled and error is None and user:
+            # Skip can arrive after the worker persisted the session but before
+            # its queued completion reaches the GUI. Revoke that session first.
+            from dialogs.account import _AccountJob
+            job = _AccountJob(lambda _started: self._account_client.logout())
+            self._account_browser_job = job
+            job.finished.connect(self._cancelled_browser_session_cleared)
+            job.finished.connect(job._release)
+            job.start()
+            return
+        self._account_browser_job = None
         if getattr(self, '_shutting_down', False):
             return
         if error is None and user:
@@ -3553,6 +3565,13 @@ class OpenFocus(QMainWindow):
             enable_disclosed_reports(self, self._account_client.accepted_terms_version())
         self.account_browser_finished.emit(user, error)
         self._refresh_account_action()
+
+    def _cancelled_browser_session_cleared(self, _result, _error) -> None:
+        self._account_browser_job = None
+        if not getattr(self, '_shutting_down', False):
+            from utils.account_client import AccountError
+            self.account_browser_finished.emit(None, AccountError('cancelled'))
+            self._refresh_account_action()
 
     def _refresh_account_action(self) -> None:
         action = getattr(self, 'ui_objs', {}).get('action_account')

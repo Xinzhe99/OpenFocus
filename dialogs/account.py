@@ -420,7 +420,8 @@ class AccountDialog(QDialog):
 
 
     def reject(self):
-        self._cancel.set()
+        if self._operation != 'web_center':
+            self._cancel.set()
         cancel_browser = getattr(self.window_main, '_cancel_browser_sso', None)
         if cancel_browser is not None:
             cancel_browser()

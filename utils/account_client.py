@@ -13,6 +13,7 @@ import math
 import os
 from pathlib import Path
 import secrets
+import socketserver
 import subprocess
 import sys
 import tempfile
@@ -207,6 +208,13 @@ def _http(method, url, body=None, token=None, timeout=15):
 
 class _CallbackServer(http.server.HTTPServer):
     allow_reuse_address = False
+
+    def server_bind(self):
+        # HTTPServer resolves the bound IP through getfqdn(), which can block
+        # on reverse DNS even though this listener only accepts loopback.
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
+
     def get_request(self):
         connection, address = super().get_request()
         connection.settimeout(1)
