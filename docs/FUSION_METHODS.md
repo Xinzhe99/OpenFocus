@@ -16,8 +16,9 @@ command line with, for example, `--method openfocus_b --param radius=8
 multiplying it by 0.24 and 0.6 respectively. Saved explicit settings migrate
 to the new units; older B settings retain F0.
 
-Exposure matching adjusts frame brightness before fusion and defaults on for
-all methods. OpenFocus A/B/C use the first frame in processing order; other
+Exposure matching adjusts frame brightness before fusion. It defaults off in
+the desktop interface and on in the CLI. OpenFocus A/B/C use the first frame in
+processing order; other
 methods use the last frame. An existing enabled OpenFocus exposure option now
 uses the first processed frame instead of the last; its saved on/off
 choice is retained. OpenFocus A/B/C input can be sorted with `--sort asc|desc|off`;

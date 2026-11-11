@@ -54,12 +54,15 @@ def algorithm_host(qapp, extension):
                  "set_fusion_parameters", "registration_parameters_for",
                  "set_registration_parameters", "refresh_algorithm_parameters",
                  "refresh_registration_parameters", "brightness_option_for",
+                 "_set_brightness_option", "set_exposure_match", "set_base_correct",
                  "_set_fusion_option_available", "_sync_brightness_checkboxes", "_capture_parameter_state",
                  "_restore_parameter_state", "_restore_scope", "reset_parameter_memories",
                  "_mark_project_setting_changed", "_mark_project_dirty", "_update_project_title"):
         setattr(host, name, MethodType(getattr(OpenFocus, name), host))
     host.combo_fusion.currentIndexChanged.connect(host.refresh_algorithm_parameters)
     host.combo_align.currentIndexChanged.connect(host.refresh_registration_parameters)
+    host.chk_exposure_match.toggled.connect(host.set_exposure_match)
+    host.chk_base_correct.toggled.connect(host.set_base_correct)
     host.fusion_parameter_panel.valuesChanged.connect(
         lambda values: host.set_fusion_parameters(host.current_fusion_method(), values))
     host.registration_parameter_panel.valuesChanged.connect(
@@ -278,22 +281,25 @@ def test_brightness_snapshot_restores_registration_reference(qapp, algorithm_hos
     assert not host.brightness_option_for("exposure_match", "extension")
 
 
-def test_exposure_defaults_on_preserves_choice_and_reset(algorithm_host):
+def test_exposure_defaults_off_preserves_choice_and_reset(algorithm_host):
     from types import SimpleNamespace
     from core.algorithms import fusion_algorithms
     from main import OpenFocus
 
     host = algorithm_host
     host._brightness_by_method.clear()
-    for method in (spec.id for spec in fusion_algorithms()):
+    for method in ["none", *(spec.id for spec in fusion_algorithms())]:
         host.set_fusion_method(method)
-        assert host.chk_exposure_match.isChecked()
+        assert not host.chk_exposure_match.isChecked()
         assert not host.chk_base_correct.isChecked()
 
-    host._brightness_by_method[("exposure_match", "openfocus_a")] = False
-    host._brightness_by_method[("base_correct", "openfocus_a")] = True
     host.set_fusion_method("openfocus_a")
+    host.chk_exposure_match.setChecked(True)
+    host.chk_base_correct.setChecked(True)
+    host.set_fusion_method("openfocus_b")
     assert not host.chk_exposure_match.isChecked()
+    host.set_fusion_method("openfocus_a")
+    assert host.chk_exposure_match.isChecked()
     assert host.chk_base_correct.isChecked()
     host.chk_quick_preview.setChecked(True)
     host.chk_reverse_order.setChecked(True)
@@ -303,14 +309,14 @@ def test_exposure_defaults_on_preserves_choice_and_reset(algorithm_host):
     OpenFocus.reset_to_default(host)
     assert host.current_fusion_method() == "openfocus_b"
     assert host.current_alignment_method() == "ecc"
-    assert host.chk_exposure_match.isChecked()
+    assert not host.chk_exposure_match.isChecked()
     assert not any(option.isChecked() for option in (
         host.chk_quick_preview, host.chk_reverse_order,
         host.chk_base_correct, host.chk_sharpen_output))
     assert host._brightness_by_method == {}
-    for method in (spec.id for spec in fusion_algorithms()):
+    for method in ["none", *(spec.id for spec in fusion_algorithms())]:
         host.set_fusion_method(method)
-        assert host.chk_exposure_match.isChecked()
+        assert not host.chk_exposure_match.isChecked()
         assert not host.chk_base_correct.isChecked()
 
 

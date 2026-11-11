@@ -171,7 +171,7 @@ The right panel contains all configuration options organized vertically:
 1. **Fusion Settings**: Select fusion algorithm and kernel size
 2. **Registration Settings**: Enable/disable alignment methods
 3. **Action Buttons**: Start Render, plus reset, **Render settings**, and render all methods. The render settings dialog contains quick preview, frame order, exposure matching, brightness drift removal, and output sharpening
-   Exposure matching is enabled by default; the other options are unchecked for new settings and after reset. Saved choices are preserved.
+   These options are unchecked for new desktop settings and after reset. Saved choices are preserved.
 4. **Source Images List**: Shows all loaded images with filenames
 5. **Output List**: Shows generated results
 
@@ -1004,7 +1004,7 @@ Each method remembers its own settings. For example, use `--method openfocus_b
 saved values are converted to the new units when read.
 
 **Brightness options are per method.** *Match exposure before fusion* defaults
-on for every fusion method. OpenFocus A/B/C match the first frame in processing
+off for every desktop fusion method. OpenFocus A/B/C match the first frame in processing
 order; other methods use the last frame. *Remove brightness drift* is optional
 and defaults off. It adjusts the fused result's low frequencies toward the first
 processed frame for OpenFocus A/B/C, or the last for other methods. Reversing

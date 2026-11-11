@@ -23,9 +23,8 @@ def available():
 
 if _HAVE_NUMBA:
     @njit(cache=True, nogil=True)
-    def gray16_u8(image):
+    def gray16_u8(image, out):
         h, w = image.shape[:2]
-        out = np.empty((h, w), np.uint16)
         take = min(image.shape[2], 3) if image.ndim == 3 else 1
         for y in range(h):
             for x in range(w):
@@ -71,9 +70,8 @@ if _HAVE_NUMBA:
 
 if _HAVE_NUMBA:
     @njit(cache=True, nogil=True)
-    def gray16_u16(image):
+    def gray16_u16(image, out):
         h, w = image.shape[:2]
-        out = np.empty((h, w), np.uint16)
         take = min(image.shape[2], 3) if image.ndim == 3 else 1
         for y in range(h):
             for x in range(w):

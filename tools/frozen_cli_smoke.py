@@ -206,6 +206,8 @@ def _exercise_planar_lzw(executable: Path, environment: dict, root: Path) -> Non
     if actual is None or not np.array_equal(actual, pixels[..., ::-1]):
         raise RuntimeError("Packaged planar LZW conversion changed 16-bit pixels")
     _call(executable, environment, "dialog.reject", "--index", str(converter["index"]))
+    _call(executable, environment, "ui.trigger", "--key", "action_lang_pl")
+    _check_language(executable, environment, "pl")
 
 
 def _exercise(executable: Path, environment: dict, root: Path,

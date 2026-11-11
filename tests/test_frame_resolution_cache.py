@@ -405,8 +405,9 @@ def test_cancelled_hash_is_not_remembered(tmp_path, monkeypatch):
     with cache_module.render_scope([frame]):
         with _bound([frame]):
             cached = frame.full_resolution()
+            checks = iter((False, False, True))
             with pytest.raises(RegistrationCancelled):
-                _pixel_digest(cached, lambda: True)
+                _pixel_digest(cached, lambda: next(checks))
             digest = _pixel_digest(cached, None)
             assert _pixel_digest(cached, None) == digest
     assert len(hashed) == 2                        # the cancelled attempt and one full hash
