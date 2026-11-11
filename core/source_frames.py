@@ -675,7 +675,13 @@ class ProcessedFrame:
     def preview_is_available(self):
         return True
 
-    def full_resolution(self, *, should_cancel=None):
+    def full_resolution(self, *, should_cancel=None, cache_result=True):
+        """Resolve the processed pixels.
+
+        ``cache_result=False`` neither looks up nor stores this frame in the
+        render's resolution cache; its source still resolves through it. For
+        a descriptor that is discarded after one use.
+        """
         from core.registration import RegistrationCancelled
         def cancelled():
             return ((should_cancel is not None and should_cancel()) or
@@ -684,7 +690,7 @@ class ProcessedFrame:
         if cancelled():
             raise RegistrationCancelled()
         from core import frame_resolution_cache as _resolution_cache
-        cache = _resolution_cache.current()
+        cache = _resolution_cache.current() if cache_result else None
         from core.frame_storage import scratch_directory
         with scratch_directory():
             select_frame_scratch((self,), should_cancel=cancelled)
@@ -749,7 +755,9 @@ def resolve_region(frame, x, y, width, height, *, channels=None, should_cancel=N
                          should_cancel=should_cancel)
     from core.resource_policy import require_memory
     require_memory(frame_resolution_bytes(cropped) + cropped.nbytes)
-    image = np.array(resolve_frame(cropped), copy=True, order='C')
+    # This crop descriptor is never resolved again, so a cached copy could not
+    # be read: only the full frame behind it is worth keeping.
+    image = np.array(cropped.full_resolution(cache_result=False), copy=True, order='C')
     from core.registration import RegistrationCancelled
     if should_cancel is not None and should_cancel():
         raise RegistrationCancelled()

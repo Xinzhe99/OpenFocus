@@ -142,6 +142,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Advanced Settings can turn them off.
 - Allow email sign-in to be confirmed on a phone while the desktop completes
   sign-in automatically, when the account service supports cross-device login.
+- Stop writing one-use tile regions of neural tiled fusion to the temporary
+  frame cache. Renders use less temporary disk space; output pixels are unchanged.
 - Recommend OpenFocus B as the default desktop fusion method. ECC remains the
   default registration method even with experimental features enabled; OpenFocus
   registration requires an explicit choice and the experimental opt-in. Saved
