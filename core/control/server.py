@@ -7,11 +7,13 @@ import faulthandler
 import json
 import os
 import secrets
+import socket
+import tempfile
 import threading
 import time
 
 from PyQt6 import sip
-from PyQt6.QtCore import QObject, Qt, QTimer
+from PyQt6.QtCore import QDir, QObject, Qt, QTimer
 from PyQt6.QtNetwork import QLocalServer
 from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (QApplication, QColorDialog, QFileDialog,
@@ -249,20 +251,15 @@ class ControlServer(QObject):
         self._dialogs_patched = False
         self._closed = False
         self._watchdog_stop = None
+        self._unix_stage = None
+        self._unix_endpoint = None
         self._server = QLocalServer(self)
         self._server.setSocketOptions(QLocalServer.SocketOption.UserAccessOption)
-        if not self._server.listen(self.socket_name):
-            # A Unix path may belong to a live server or another owner. Never
-            # unlink it on a failed bind; Windows named pipes use a namespace.
-            if os.name == "nt":
-                QLocalServer.removeServer(self.socket_name)
-                if self._server.listen(self.socket_name):
-                    pass
-                else:
-                    error = self._server.errorString()
-                    self._server.close()
-                    raise RuntimeError(f"Could not listen on {self.socket_name}: {error}")
-            else:
+        if os.name == "posix":
+            self._listen_unix()
+        elif not self._server.listen(self.socket_name):
+            QLocalServer.removeServer(self.socket_name)
+            if not self._server.listen(self.socket_name):
                 error = self._server.errorString()
                 self._server.close()
                 raise RuntimeError(f"Could not listen on {self.socket_name}: {error}")
@@ -278,6 +275,48 @@ class ControlServer(QObject):
             self.close()
             raise
         _log.info("control channel listening on %s", self.socket_name)
+
+    def _listen_unix(self):
+        # Qt's UserAccessOption can publish with rename(), overwriting an
+        # existing path. A hard link publishes the private socket exclusively.
+        path = self.socket_name
+        if not path.startswith('/'):
+            path = os.path.join(QDir.tempPath(), path)
+        listener = None
+        try:
+            self._unix_stage = tempfile.TemporaryDirectory(
+                prefix='.of-', dir=os.path.dirname(path))
+            staged = os.path.join(self._unix_stage.name, 's')
+            listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            listener.bind(staged)
+            os.chmod(staged, 0o700)
+            listener.listen(50)
+            info = os.lstat(staged)
+            os.link(staged, path)
+            self._unix_endpoint = (path, info.st_dev, info.st_ino)
+            if not self._server.listen(listener.fileno()):
+                raise RuntimeError(self._server.errorString())
+            listener.detach()  # QLocalServer owns the descriptor after adoption.
+        except (OSError, ValueError, RuntimeError) as error:
+            if listener is not None:
+                listener.close()
+            self._cleanup_unix_endpoint()
+            if self._unix_stage is not None:
+                self._unix_stage.cleanup()
+                self._unix_stage = None
+            raise RuntimeError(f"Could not listen on {self.socket_name}: {error}") from error
+
+    def _cleanup_unix_endpoint(self):
+        if self._unix_endpoint is None:
+            return
+        path, device, inode = self._unix_endpoint
+        self._unix_endpoint = None
+        try:
+            info = os.lstat(path)
+            if (info.st_dev, info.st_ino) == (device, inode):
+                os.unlink(path)
+        except FileNotFoundError:
+            pass
 
     def _start_watchdog(self):
         """Opt-in: dump the GUI thread if it stops answering for 10 s."""
@@ -605,6 +644,10 @@ class ControlServer(QObject):
             if connection in self._buffers:
                 self._drop(connection)
         self._server.close()
+        self._cleanup_unix_endpoint()
+        if self._unix_stage is not None:
+            self._unix_stage.cleanup()
+            self._unix_stage = None
         clear_discovery(os.getpid())
         if self._dialogs_patched:
             uninstall_non_native_color_dialogs()

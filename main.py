@@ -4856,10 +4856,14 @@ if __name__ == "__main__":
     import time as _time
     _server_name = os.environ.get("OPENFOCUS_INSTANCE_NAME") or "OpenFocus-single-instance"
     _lock_name = _hashlib.sha256(_server_name.encode("utf-8")).hexdigest()[:24]
-    # Unix local sockets have a short pathname limit; isolated session names
-    # can exceed it under the long temporary directories used by macOS.
+    # Unix local sockets have a short pathname limit. A shortened name is
+    # insufficient when TMPDIR itself is long, as on isolated macOS sessions.
     if os.name != 'nt' and len(os.fsencode(os.path.join(_tempfile.gettempdir(), _server_name))) >= 100:
         _server_name = 'of-' + _lock_name
+        if len(os.fsencode(os.path.join(_tempfile.gettempdir(), _server_name))) >= 100:
+            _socket_key = _hashlib.sha256(os.fsencode(os.path.join(
+                _tempfile.gettempdir(), _server_name))).hexdigest()[:24]
+            _server_name = os.path.join('/tmp', 'of-' + _socket_key)
     _instance_lock = QLockFile(os.path.join(_tempfile.gettempdir(), "openfocus-" + _lock_name + ".lock"))
     _instance_lock.setStaleLockTime(0)
     _deadline = _time.monotonic() + 60

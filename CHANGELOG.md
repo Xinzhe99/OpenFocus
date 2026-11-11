@@ -226,6 +226,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 - Decode 16-bit planar LZW TIFF pages without corrupting their pixel values.
 - Include all supported interface languages in frozen desktop builds.
+- Preserve a label's saved font when its editor opens on a system that lacks it.
+- Allow single-instance startup when the temporary directory has a long path.
+- Preserve existing Unix control endpoints when a second server uses the same name.
 - Report oversized TIFF EXIF snapshots as load errors instead of silently
   treating the metadata as absent.
 - Identify the rejected sidecar option in batch CLI validation errors.

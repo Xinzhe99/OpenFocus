@@ -651,6 +651,29 @@ def test_large_label_values_survive_unchanged_dialog(manager, monkeypatch, store
     assert manager.window.undo == []
     assert manager.window.dirty == 0
 
+def test_unavailable_font_survives_other_edits_until_changed(manager, monkeypatch):
+    label = caption(text='original')
+    label.config.font_family = 'OpenFocus Missing Font 12345'
+    manager.labels.add(label)
+    monkeypatch.setattr(manager, '_refresh_preview', manager._save_editor_to_draft)
+    monkeypatch.setattr(manager, '_configuration_error', lambda *args: '')
+
+    def inspect(dialog):
+        manager.format_edit.setText('edited')
+        assert manager._draft.get(label.label_id).config.font_family == label.config.font_family
+        combo = manager.font_family_combo
+        original = combo.currentFont().family()
+        index = next(i for i in range(combo.count())
+                     if i != combo.currentIndex() and combo.itemText(i) != original)
+        combo.setCurrentIndex(index)
+        selected = combo.currentFont().family()
+        assert selected != original
+        manager._ok_button.click()
+        assert dialog.result() == QDialog.DialogCode.Accepted
+        assert manager.labels.get(label.label_id).config.font_family == selected
+
+    edit_dialog(monkeypatch, manager, inspect)
+
 
 def test_nested_preview_refresh_coalesces_and_applies_latest_edit(manager, monkeypatch):
     label = caption(text='original')

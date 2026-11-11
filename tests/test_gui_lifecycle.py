@@ -21,17 +21,24 @@ def test_close_does_not_open_overdue_first_run_dialog(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENFOCUS_DATA_DIR", str(sentinel))
     env = sandbox_env(tmp_path, {"QT_QPA_PLATFORM": "offscreen"},
                       instance_name=f"OpenFocus-lifecycle-{os.getpid()}-{tmp_path.name}")
+    if os.name != 'nt':
+        # Exercise the real instance listener when even its short name would
+        # exceed the Unix socket pathname limit under an isolated TMPDIR.
+        long_tmp = tmp_path / ('tmp-' + 'x' * 100)
+        long_tmp.mkdir()
+        env.update({name: str(long_tmp) for name in ('TMPDIR', 'TMP', 'TEMP')})
     env["PYTHONPATH"] = os.pathsep.join(filter(None, (
         site.getusersitepackages(), env.get("PYTHONPATH"),
     )))
     bootstrap = '''
 import faulthandler, runpy, sys, time
 from PyQt6.QtCore import QSettings, QTimer
-from PyQt6.QtWidgets import QApplication, QMainWindow
+from PyQt6.QtWidgets import QApplication, QMainWindow, QMessageBox
 from tests.process_isolation import install_usage_sender
 sender, reporters, calls = install_usage_sender()
 from utils.usage_analytics import UsageAnalytics
 from dialogs.account import AccountDialog
+from dialogs.welcome import WelcomeDialog
 import webbrowser
 webbrowser.open = lambda *args, **kwargs: False
 
@@ -40,6 +47,27 @@ def skip_account(dialog):
     QTimer.singleShot(0, dialog.reject)
     return original_account_exec(dialog)
 AccountDialog.exec = skip_account
+
+def fail_warning(parent, title, text, *args, **kwargs):
+    raise RuntimeError(f"Unexpected startup warning: {title}: {text}")
+QMessageBox.warning = staticmethod(fail_warning)
+
+welcome_events = []
+original_single_shot = QTimer.singleShot
+def track_first_run_timer(interval, callback):
+    if getattr(callback, '__name__', '') == '_show_welcome':
+        welcome_events.append('scheduled')
+        def dispatch():
+            welcome_events.append('dispatched')
+            callback()
+        return original_single_shot(interval, dispatch)
+    return original_single_shot(interval, callback)
+QTimer.singleShot = staticmethod(track_first_run_timer)
+
+def record_welcome(dialog):
+    welcome_events.append('opened')
+    return 0
+WelcomeDialog.exec = record_welcome
 
 faulthandler.dump_traceback_later(15, repeat=False)
 
@@ -52,6 +80,8 @@ def slow_shutdown(self):
     original_shutdown(self)
     # Keep the GUI thread busy until the real first-run timer is overdue.
     time.sleep(2)
+    # Dispatch the overdue callback while closeEvent is still in progress.
+    QApplication.processEvents()
 
 def close_main_window():
     windows = [window for window in QApplication.topLevelWidgets()
@@ -73,6 +103,7 @@ except SystemExit as stopped:
 else:
     raise AssertionError("GUI entry point did not exit")
 assert reporters and all(captured is sender for captured in reporters)
+assert welcome_events == ['scheduled', 'dispatched'], welcome_events
 '''
     try:
         result = subprocess.run(

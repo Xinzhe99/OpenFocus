@@ -844,7 +844,7 @@ def test_depth_obj_uses_the_resolved_preview_texture(depth_dialog, monkeypatch, 
     assert metadata["source_indices"] == dialog._map_indices
     assert metadata["request"] == dialog._map_request
     _idle_actions(dialog)
-    assert dialog.btn_save_3d.isEnabled()
+    _wait(qapp, lambda: dialog.btn_save_3d.isEnabled())
 
 
 def test_depth_export_cancel_restores_actions(depth_dialog, monkeypatch, qapp, tmp_path):
