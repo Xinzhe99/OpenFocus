@@ -12,6 +12,18 @@ os.chdir(PROJECT_ROOT)
 
 
 @pytest.fixture(autouse=True)
+def restore_unadmitted_accelerator():
+    """Tests that call the real resolve_device() record an unadmitted
+    accelerator in neural_runtime's module state; never leak it onward."""
+    runtime = sys.modules.get("fusion_methods.neural_runtime")
+    saved = getattr(runtime, "_UNADMITTED", None)
+    yield
+    runtime = sys.modules.get("fusion_methods.neural_runtime")
+    if runtime is not None:
+        runtime._UNADMITTED = saved
+
+
+@pytest.fixture(autouse=True)
 def isolate_gui_usage_reports(request, monkeypatch):
     """GUI tests cannot write synthetic installation IDs to production."""
     if "qapp" not in request.fixturenames or request.module.__name__.rsplit(".", 1)[-1] == "test_usage_analytics":

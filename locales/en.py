@@ -1209,6 +1209,7 @@ EN = {
     "env_mps_avail": "MPS available (Apple Silicon)",
     "env_gpu_accel": "AI: accelerator provider verified",
     "env_no_gpu": "AI: no verified accelerator provider",
+    "env_gpu_memory_unknown": "{device} passed the provider check, but its free memory cannot be read, so AI jobs run on the CPU",
     "env_cpu_mode": "AI: Available (CPU mode - slower)",
     "env_stackmff_unavailable": "AI fusion not available",
     "env_dtcwt_unavailable": "Not installed (DTCWT fusion unavailable)",
