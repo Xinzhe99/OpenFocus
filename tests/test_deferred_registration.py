@@ -651,3 +651,44 @@ def test_alpha_directory_still_rejects_nonopaque_sources(tmp_path, dtype, deferr
     assert cv2.imwrite(str(tmp_path / 'transparent.png'), np.dstack((image, alpha)))
     with pytest.raises(UnsupportedTransparency):
         registration.ImageRegistration('ecc', defer_warps=deferred).process(str(tmp_path), thread_count=1)
+
+
+@pytest.mark.parametrize('method,stages', [('homography', 1), ('ecc', 1), ('both', 2)])
+def test_render_scope_hashes_each_registration_input_once(tmp_path, monkeypatch, method, stages):
+    from core import frame_resolution_cache, openfocus_alignment
+    from core.frame_storage import scratch_directory
+    pixels = _pixels(np.uint16, 3)
+    sources = _sources(tmp_path, pixels)
+    expected = [np.array(frame, copy=True) for frame in
+                registration.ImageRegistration(method, downscale_width=80).process(
+                    sources, thread_count=1)]
+    hashed = []
+    real = openfocus_alignment._hash_pixels
+
+    def counted(image, should_cancel):
+        hashed.append(1)
+        return real(image, should_cancel)
+
+    monkeypatch.setattr(openfocus_alignment, '_hash_pixels', counted)
+
+    def render():
+        del hashed[:]
+        source_frames.SOURCE_CACHE.clear()
+        cv2.setRNGSeed(771)
+        deferred = registration.ImageRegistration(method, downscale_width=80,
+            defer_warps=True).process(sources, thread_count=1)
+        for frame, wanted in zip(deferred, expected):
+            np.testing.assert_array_equal(source_frames.resolve_frame(frame), wanted)
+            np.testing.assert_array_equal(source_frames.resolve_frame(frame), wanted)
+        return len(hashed)
+
+    cv2.setRNGSeed(771)
+    with scratch_directory():
+        source_frames.select_frame_scratch(sources)
+        with frame_resolution_cache.render_scope(sources) as scope:
+            # Estimation hashes each stage's input; the warp of those cached
+            # pixels and any repeated resolution reuse that digest.
+            assert render() == stages * len(sources)
+            assert scope.enabled and not scope.degraded
+    # Without the render's cache every warp validates its freshly resolved input.
+    assert render() > stages * len(sources)
