@@ -1025,6 +1025,7 @@ EN = {
     "feedback_intro": "Describe what happened — the more detail, the easier it is to fix. The session log below is attached automatically.",
     "feedback_copy_log": "Copy log to clipboard",
     "feedback_open_issues": "Open GitHub Issues",
+    "feedback_account_center": "Give feedback in account center",
     "feedback_export_failed": "The feedback package could not be written: {error}",
     "feedback_copied": "Session log copied to the clipboard. Paste it into the issue.",
     "feedback_type": "Type:",

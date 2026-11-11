@@ -86,7 +86,7 @@ class FeedbackDialog(QDialog):
         buttons.addWidget(export_btn)
         client = getattr(window_main, '_account_client', None)
         if client is not None and client.is_signed_in():
-            self.account_button = QPushButton(trans.t('account_web_center'))
+            self.account_button = QPushButton(trans.t('feedback_account_center'))
             self.account_button.clicked.connect(self._open_account_center)
             root.addWidget(self.account_button)
         report_btn = QPushButton(trans.t('report_review'))

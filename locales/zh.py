@@ -1022,6 +1022,7 @@ ZH = {
     "feedback_intro": "描述遇到的问题——细节越多越容易定位。下方会自动附上本次运行的日志。",
     "feedback_copy_log": "复制日志到剪贴板",
     "feedback_open_issues": "打开 GitHub Issues",
+    "feedback_account_center": "在账号中心反馈问题",
     "feedback_export_failed": "无法写入反馈包：{error}",
     "feedback_copied": "本次运行日志已复制到剪贴板，可直接粘贴到 Issue 中。",
     "feedback_type": "类型：",
