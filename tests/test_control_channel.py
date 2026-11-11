@@ -311,6 +311,8 @@ def test_default_gui_launch_and_cross_process_client(tmp_path):
     )))
     bootstrap = '''
 import runpy, sys
+import webbrowser
+webbrowser.open = lambda *args, **kwargs: False
 from PyQt6.QtCore import QSettings
 QSettings.setDefaultFormat(QSettings.Format.IniFormat)
 QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, sys.argv[2])

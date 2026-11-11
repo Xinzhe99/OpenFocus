@@ -218,6 +218,63 @@ class _CallbackServer(http.server.HTTPServer):
         pass
 
 
+class _HandoffHandler(http.server.BaseHTTPRequestHandler):
+    """Release the one-use proof only to the account origin with the matching state."""
+    def log_message(self, format, *args):
+        pass
+
+    def _allowed(self):
+        parsed = urllib.parse.urlsplit(self.path)
+        if (parsed.scheme or parsed.netloc or parsed.fragment or parsed.path != "/account-handoff"
+                or self.headers.get_all("Host") != ["127.0.0.1:%d" % self.server.server_port]
+                or self.headers.get_all("Origin") != [self.server.allowed_origin]):
+            return False
+        try:
+            values = urllib.parse.parse_qs(parsed.query, keep_blank_values=True, max_num_fields=2)
+        except ValueError:
+            return False
+        states = values.get("state", [])
+        if not (len(values) == 1 and len(states) == 1
+                and secrets.compare_digest(states[0].encode("utf-8"), self.server.handoff_state.encode("ascii"))):
+            return False
+        try:
+            self.server.check_handoff()
+        except AccountError:
+            return False
+        return True
+
+    def _cors(self):
+        self.send_header("Access-Control-Allow-Origin", self.server.allowed_origin)
+        self.send_header("Vary", "Origin")
+        self.send_header("Cache-Control", "no-store")
+
+    def do_OPTIONS(self):
+        if (not self._allowed() or self.server.proof_served
+                or self.headers.get_all("Access-Control-Request-Method") != ["GET"]):
+            self.send_error(403)
+            return
+        self.send_response(204)
+        self._cors()
+        self.send_header("Access-Control-Allow-Methods", "GET")
+        self.send_header("Access-Control-Allow-Private-Network", "true")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def do_GET(self):
+        if not self._allowed() or self.server.proof_served:
+            self.send_error(403)
+            return
+        self.server.proof_served = True
+        body = json.dumps({"proof": self.server.handoff_proof}, separators=(",", ":")).encode("ascii")
+        self.server.handoff_proof = None
+        self.send_response(200)
+        self._cors()
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
 class _CallbackHandler(http.server.BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         pass
@@ -233,13 +290,27 @@ class _CallbackHandler(http.server.BaseHTTPRequestHandler):
         except ValueError:
             self.send_error(400)
             return
+        expected_state = getattr(self.server, "expected_state", None)
+        if expected_state is not None:
+            states = values.get("state", [])
+            if len(states) != 1 or not secrets.compare_digest(states[0].encode("utf-8"), expected_state.encode("ascii")):
+                self.send_error(400)
+                return
         codes = values.get("code", [])
         errors = values.get("error", [])
         if errors:
             allowed = ("terms_required", "invalid_terms_version", "verified_email_required",
                        "account_disabled", "sign_in_cancelled", "sign_in_expired")
+            if expected_state is not None:
+                allowed += ("not_signed_in",)
             self.server.error = errors[0] if not codes and len(errors) == 1 and errors[0] in allowed else "provider_error"
-            body = b"Sign-in could not be completed. Return to OpenFocus."
+            if self.server.error == "not_signed_in":
+                message = ("浏览器当前没有可用的账号会话。您可以关闭此标签页并返回 OpenFocus 继续。"
+                           if getattr(self.server, "language", None) == "zh" else
+                           "The browser has no current account session. You can close this tab and continue in OpenFocus.")
+                body = message.encode("utf-8")
+            else:
+                body = b"Sign-in could not be completed. Return to OpenFocus."
         elif len(codes) == 1 and codes[0] and len(codes[0]) <= 4096:
             self.server.code = codes[0]
             body = b"Sign-in received. You can close this window."
@@ -453,6 +524,166 @@ class AccountClient:
                     self._cancel_email(flow_id, poll_token)
                 raise
             return self.current_user()
+
+    def login_with_browser(self, *, cancel=None, on_started=None, timeout=300, language=None):
+        """Sign in using an existing browser session; call from a worker.
+
+        Returns the local user snapshot. An anonymous browser raises
+        AccountError("not_signed_in"); cancel is a threading.Event.
+        """
+        if language is not None and language not in ("en", "zh"):
+            raise ValueError("Invalid language")
+        if timeout <= 0:
+            raise AccountError("timeout")
+        with self._condition:
+            generation = (self._generation, self._login_epoch)
+        self._check_login(generation, cancel)
+        verifier, challenge = pkce_pair()
+        state = secrets.token_urlsafe(32)
+        try:
+            server = _CallbackServer(("127.0.0.1", 0), _CallbackHandler)
+        except OSError:
+            raise AccountError("loopback") from None
+        with server:
+            server.code = None
+            server.error = None
+            server.expected_state = state
+            server.language = language
+            server.timeout = 0.2
+            parameters = {"code_challenge": challenge,
+                          "redirect_uri": "http://127.0.0.1:%d/callback" % server.server_port,
+                          "state": state}
+            if language is not None:
+                parameters["lang"] = language
+            self._check_login(generation, cancel)
+            if not webbrowser.open(self.base_url + "/v1/auth/browser/start?" + urllib.parse.urlencode(parameters)):
+                self._check_login(generation, cancel)
+                raise AccountError("browser")
+            self._check_login(generation, cancel)
+            if on_started:
+                on_started()
+            deadline = time.monotonic() + timeout
+            while not server.code and not server.error:
+                self._check_login(generation, cancel)
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise AccountError("timeout")
+                server.timeout = min(0.2, remaining)
+                server.handle_request()
+            self._check_login(generation, cancel)
+            if server.error:
+                if server.error == "account_disabled":
+                    with self._condition:
+                        if generation == (self._generation, self._login_epoch):
+                            self._clear()
+                raise AccountError(server.error)
+            session = self._login_call(generation, "POST", "/v1/auth/exchange",
+                                       {"code": server.code, "code_verifier": verifier}, cancel=cancel)
+            with self._condition:
+                if generation != (self._generation, self._login_epoch) or (cancel is not None and cancel.is_set()):
+                    raise AccountError("cancelled")
+                self._replace(session)
+                return self.current_user()
+
+    def open_web_handoff(self, cancel=None, *, timeout=120):
+        """Open the account center and serve its one-time desktop proof in this worker.
+
+        Returns True once the proof is requested, or None if signed out. Browser,
+        cancellation and timeout failures raise AccountError with a safe category.
+        """
+        if timeout <= 0:
+            raise AccountError("timeout")
+        if cancel is not None and cancel.is_set():
+            raise AccountError("cancelled")
+        with self._condition:
+            owner = self._session["user"]["id"] if self._session else None
+        if owner is None:
+            return None
+        token = self.token(expected_owner=owner)
+        if not token:
+            return None
+        with self._condition:
+            if not self._session or self._session["token"] != token or self._session["user"]["id"] != owner:
+                return None
+            generation = (self._generation, self._login_epoch)
+        self._check_login(generation, cancel)
+        proof = secrets.token_urlsafe(32)
+        state = secrets.token_urlsafe(32)
+        try:
+            server = _CallbackServer(("127.0.0.1", 0), _HandoffHandler)
+        except OSError:
+            raise AccountError("loopback") from None
+        with server:
+            if not 1024 <= server.server_port <= 65535:
+                raise AccountError("loopback")
+            server.allowed_origin = self.base_url
+            server.handoff_state = state
+            server.handoff_proof = proof
+            server.check_handoff = lambda: self._check_login(generation, cancel)
+            server.proof_served = False
+            server.timeout = 0.2
+            self._check_login(generation, cancel)
+            try:
+                result = self._call("POST", "/v1/auth/web-handoff",
+                                    {"proof_hash": hashlib.sha256(proof.encode("ascii")).hexdigest(),
+                                     "port": server.server_port, "state": state}, token=token)
+            except AccountError as exc:
+                self._check_login(generation, cancel)
+                if exc.status in (401, 403):
+                    with self._condition:
+                        if generation == (self._generation, self._login_epoch):
+                            self._clear()
+                raise
+            self._check_login(generation, cancel)
+            url = result.get("url")
+            prefix = self.base_url + "/account/desktop-bridge#"
+            if not isinstance(url, str) or not url.startswith(prefix) or token in url or proof in url:
+                raise AccountError("invalid_response")
+            pairs = url[len(prefix):].split("&")
+            if len(pairs) != 3 or any(pair.count("=") != 1 for pair in pairs):
+                raise AccountError("invalid_response")
+            fragment = dict(pair.split("=", 1) for pair in pairs)
+            ticket = fragment.get("ticket", "")
+            if (len(fragment) != 3 or set(fragment) != {"ticket", "port", "state"}
+                    or fragment["port"] != str(server.server_port) or fragment["state"] != state
+                    or not 1 <= len(ticket) <= 4096
+                    or any(not (c.isascii() and (c.isalnum() or c in "_-")) for c in ticket)):
+                raise AccountError("invalid_response")
+            self._check_login(generation, cancel)
+            try:
+                opened = webbrowser.open(url)
+            except (OSError, webbrowser.Error):
+                self._check_login(generation, cancel)
+                raise AccountError("browser") from None
+            self._check_login(generation, cancel)
+            if not opened:
+                raise AccountError("browser")
+            deadline = time.monotonic() + timeout
+            while not server.proof_served:
+                self._check_login(generation, cancel)
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise AccountError("timeout")
+                server.timeout = min(0.2, remaining)
+                server.handle_request()
+            self._check_login(generation, cancel)
+            return True
+
+    def accepted_terms_version(self):
+        """Return explicitly recorded acceptance metadata, if supplied by the service."""
+        with self._condition:
+            terms = self._session.get("terms") if self._session else None
+            if not isinstance(terms, dict):
+                return None
+            accepted_at = terms.get("accepted_at")
+            if (not isinstance(accepted_at, (int, float)) or isinstance(accepted_at, bool)
+                    or not 0 < accepted_at < 10**20 or not math.isfinite(accepted_at)):
+                return None
+            version = terms.get("version")
+            if (not isinstance(version, str) or not 1 <= len(version) <= 128
+                    or any(c not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._~-" for c in version)):
+                return None
+            return version
 
     def current_user(self):
         """Return a detached local user snapshot, without a network request."""
