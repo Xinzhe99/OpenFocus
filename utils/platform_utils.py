@@ -278,8 +278,10 @@ def _parse_linux_cgroup_paths(controller, membership_text, mount_text):
     key also observes cgroup migration and mount changes on the next probe.
     """
     from pathlib import PurePosixPath
-    memberships = [line.strip().split(":", 2) for line in membership_text.splitlines()]
-    mounts = mount_text.splitlines()
+    # Only "\n" ends a record: cgroup names may hold the other characters
+    # str.splitlines() treats as line boundaries.
+    memberships = [line.strip().split(":", 2) for line in membership_text.split("\n")]
+    mounts = mount_text.split("\n")
     paths = []
     seen = set()
     for line in mounts:
