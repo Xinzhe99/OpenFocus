@@ -297,6 +297,24 @@ def rgb_to_bgr(rgb: np.ndarray) -> np.ndarray:
     return np.ascontiguousarray(rgb[:, :, ::-1])
 
 
+def _raw_half_size(raw, scale_factor: float) -> bool:
+    """Whether LibRaw can combine each Bayer block itself for this load.
+
+    At half scale or less every 2x2 sensor block ends up inside one output
+    pixel, so interpolating the missing colours at full resolution first only
+    costs time. Other mosaics and non-mosaic RAW keep the full decode, as does
+    the camera-linear loader.
+    """
+    if not 0 < scale_factor <= 0.5:
+        return False
+    if (raw.raw_type != rawpy.RawType.Flat or raw.num_colors != 3
+            or np.shape(raw.raw_pattern) != (2, 2)):
+        return False
+    # The block on an odd edge is incomplete and decodes with a colour
+    # missing, which would tint the last row or column.
+    return raw.sizes.width % 2 == 0 and raw.sizes.height % 2 == 0
+
+
 def _read_raw(path: str, scale_factor: float = 1.0) -> Optional[np.ndarray]:
     """Camera RAW -> 16-bit BGR (sRGB color space, camera white balance).
 
@@ -327,12 +345,21 @@ def _read_raw(path: str, scale_factor: float = 1.0) -> Optional[np.ndarray]:
             output = max(1, int(width * output_scale)) * max(1, int(height * output_scale)) * 6
             require_memory(raw_decode_bytes(sensor_width, sensor_height, output, os.path.getsize(path)))
             raw.unpack()
+            half_size = _raw_half_size(raw, scale_factor)
             rgb = raw.postprocess(use_camera_wb=True, output_bps=16,
-                                  no_auto_bright=True, gamma=(2.4, 12.92))
+                                  no_auto_bright=True, gamma=(2.4, 12.92),
+                                  half_size=half_size)
         # Resize while still RGB to avoid a second full-size channel-swapped
         # copy. INTER_AREA treats each channel independently, so the result
         # is identical to resizing BGR after conversion.
-        rgb = _downscale_page(rgb, scale_factor)
+        if not half_size:
+            rgb = _downscale_page(rgb, scale_factor)
+        else:
+            # The size a scaled full decode has, so that a frame keeps its
+            # dimensions whichever route decoded it.
+            target = max(1, int(width * scale_factor)), max(1, int(height * scale_factor))
+            if (rgb.shape[1], rgb.shape[0]) != target:
+                rgb = cv2.resize(rgb, target, interpolation=cv2.INTER_AREA)
         return rgb_to_bgr(rgb)
     except ResourceLimitError:
         raise

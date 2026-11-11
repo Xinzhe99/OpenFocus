@@ -58,7 +58,10 @@ OpenFocus is a professional multi-focus image fusion desktop application designe
   Camera models and compression support depend on the installed LibRaw version.
   RAW is decoded to a 16-bit image at its original dimensions before the
   selected loading scale is applied: a smaller scale reduces later memory use
-  but does not eliminate the full-size decode peak. Grouped fusion does not support RAW.
+  but does not eliminate the full-size decode peak. At a loading scale of 50%
+  or less, Bayer RAW is decoded at half size before the final resize, which is
+  several times faster; its pixels can differ slightly from a full-size decode
+  followed by downsampling. Grouped fusion does not support RAW.
 
 Transparent PNG stacks can be fused in the desktop application, desktop batch
 processing, or the command-line interface, without grouped fusion. Every frame
