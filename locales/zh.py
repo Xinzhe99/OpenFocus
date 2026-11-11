@@ -6,6 +6,10 @@ fall back to this table.
 
 ZH = {
     "account_title": "OpenFocus 账号",
+    "account_heading": "登录 OpenFocus",
+    "account_subtitle": "管理你的账号，或暂不登录继续使用。",
+    "account_or": "或",
+    "account_agreement": "我同意<a href='terms'>服务协议</a>和<a href='privacy'>隐私政策</a>",
     "account_explanation": "登录后可通过错误报告帮助改进 OpenFocus。报告可能包含设备信息、处理步骤、图像数量和尺寸，不包含图像文件、像素、项目文件、用户文件名、路径或账号凭据。你可以随时更改自动上报设置。",
     "account_usage_note": "使用统计是单独的设置，默认开启，可在高级设置中关闭；统计不包含诊断日志。",
     "feedback_local_export_scope": "导出的 ZIP 包含近期本地日志和系统信息，可能含有路径；分享前请检查。错误上报使用单独的脱敏报告。",
@@ -34,6 +38,7 @@ ZH = {
     "account_skip": "暂不登录，继续使用",
     "account_continue": "继续使用",
     "account_wait_email": "请在此电脑上打开邮箱中的登录链接。",
+    "account_wait_email_phone": "请在手机或电脑打开邮箱中的登录链接并确认，完成后此处会自动登录。",
     "account_wait_browser": "请在浏览器中完成登录，或选择暂不登录。",
     "account_checking": "正在读取账号设置…",
     "account_signed_in": "已登录：{email}",

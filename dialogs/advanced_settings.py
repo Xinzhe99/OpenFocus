@@ -264,6 +264,9 @@ class AdvancedSettingsDialog(QDialog):
         self.chk_auto_error_reports = QCheckBox()
         self.chk_auto_error_reports.setProperty('controlId', 'chk_auto_error_reports')
         self.chk_auto_error_reports.setChecked(bool(getattr(w, 'auto_error_reports', False)))
+        self._reports_choice_touched = False
+        self.chk_auto_error_reports.clicked.connect(
+            lambda _checked: setattr(self, '_reports_choice_touched', True))
         self.chk_auto_error_reports.setToolTip(trans.t('report_auto_hint'))
         diagnostics.addRow(trans.t('report_auto_setting'), self.chk_auto_error_reports)
 
@@ -423,11 +426,18 @@ class AdvancedSettingsDialog(QDialog):
                 self.status.setText(trans.t("advanced_storage_invalid").format(error=str(exc)))
                 self.storage_directory.setFocus()
                 return
+        from utils.settings_store import get_settings, REPORTS_CHOICE_KEY
+        settings = get_settings() if self._reports_choice_touched else None
+        previous_choice = (settings.value(REPORTS_CHOICE_KEY)
+                           if settings is not None and settings.contains(REPORTS_CHOICE_KEY)
+                           else None)
         try:
             if manager is not None:
                 manager.set_auto_download(self.chk_auto_update.isChecked())
                 if manager.auto_download != self.chk_auto_update.isChecked():
                     raise RuntimeError(trans.t("action_auto_download"))
+            if settings is not None:
+                settings.setValue(REPORTS_CHOICE_KEY, 'chosen')
             for key, value in draft.items():
                 setattr(w, key, value)
             if "_registration_parameters_by_method" in draft:
@@ -436,7 +446,17 @@ class AdvancedSettingsDialog(QDialog):
                     refresh()
             if hasattr(w, "persist_settings"):
                 w.persist_settings()
+            if settings is not None:
+                settings.sync()
+                from PyQt6.QtCore import QSettings
+                if settings.status() != QSettings.Status.NoError:
+                    raise OSError('Could not write OpenFocus settings')
         except Exception as exc:
+            if settings is not None:
+                if previous_choice is None:
+                    settings.remove(REPORTS_CHOICE_KEY)
+                else:
+                    settings.setValue(REPORTS_CHOICE_KEY, previous_choice)
             restore_storage_directory(previous_storage)
             for key, value in previous.items():
                 setattr(w, key, value)

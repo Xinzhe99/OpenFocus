@@ -110,7 +110,8 @@ def test_close_waits_for_account_worker(qapp, tmp_path, monkeypatch):
     dialog = AccountDialog(window)
     dialog.show()
     try:
-        dialog.terms_link.click()
+        dialog.terms.setChecked(True)
+        dialog.github_button.click()
         assert started.wait(5)
         window._force_quit = True
         assert not window.close()

@@ -2,6 +2,10 @@
 
 PACK = {
     "account_title": "Konto OpenFocus",
+    "account_heading": "Zaloguj się do OpenFocus",
+    "account_subtitle": "Zarządzaj kontem lub kontynuuj bez logowania.",
+    "account_or": "lub",
+    "account_agreement": "Akceptuję <a href='terms'>warunki korzystania</a> i <a href='privacy'>politykę prywatności</a>",
     "account_explanation": "Zaloguj się, aby pomóc ulepszać OpenFocus za pomocą raportów o błędach. Raporty mogą zawierać informacje o urządzeniu, etapach przetwarzania oraz liczbie i wymiarach obrazów. Nigdy nie zawierają plików obrazów, pikseli, plików projektów, nazw plików użytkownika, ścieżek ani danych logowania do konta. Ustawienie automatycznego wysyłania raportów można zmienić w dowolnym momencie.",
     "account_usage_note": "Statystyki użytkowania to osobne ustawienie, domyślnie włączone. Można je wyłączyć w ustawieniach zaawansowanych; nie zawierają dzienników diagnostycznych.",
     "feedback_local_export_scope": "Eksportowane pliki ZIP zawierają najnowsze lokalne dzienniki i informacje o systemie; mogą zawierać ścieżki. Sprawdź je przed udostępnieniem. Raporty o błędach korzystają z osobnego pakietu z oczyszczonymi danymi.",
@@ -30,6 +34,7 @@ PACK = {
     "account_skip": "Kontynuuj bez konta",
     "account_continue": "Kontynuuj",
     "account_wait_email": "Sprawdź pocztę i otwórz link do logowania na tym komputerze.",
+    "account_wait_email_phone": "Otwórz i potwierdź link z e-maila na telefonie lub komputerze. Logowanie tutaj nastąpi automatycznie.",
     "account_wait_browser": "Dokończ logowanie w przeglądarce lub kontynuuj bez konta.",
     "account_checking": "Sprawdzanie ustawień konta…",
     "account_signed_in": "Zalogowano jako {email}",

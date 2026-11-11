@@ -2,6 +2,10 @@
 
 PACK = {
     "account_title": "Account OpenFocus",
+    "account_heading": "Accedi a OpenFocus",
+    "account_subtitle": "Gestisci il tuo account o continua senza accedere.",
+    "account_or": "oppure",
+    "account_agreement": "Accetto i <a href='terms'>termini di servizio</a> e l’<a href='privacy'>informativa sulla privacy</a>",
     "account_explanation": "Accedi per contribuire a migliorare OpenFocus tramite le segnalazioni di errore. Le segnalazioni possono includere informazioni sul dispositivo, sulle fasi di elaborazione e sul numero e le dimensioni delle immagini. Non includono mai file immagine, pixel, file di progetto, nomi di file dell’utente, percorsi o credenziali dell’account. Puoi modificare l’invio automatico delle segnalazioni in qualsiasi momento.",
     "account_usage_note": "Le statistiche di utilizzo sono un’impostazione separata, attiva per impostazione predefinita. Puoi disattivarle nelle impostazioni avanzate; non includono registri diagnostici.",
     "feedback_local_export_scope": "Gli ZIP esportati includono registri locali recenti e dettagli di sistema; possono contenere percorsi. Controllali prima di condividerli. Le segnalazioni di errore usano un pacchetto separato con dati depurati.",
@@ -30,6 +34,7 @@ PACK = {
     "account_skip": "Continua senza account",
     "account_continue": "Continua",
     "account_wait_email": "Controlla la posta e apri il link di accesso su questo computer.",
+    "account_wait_email_phone": "Apri il link ricevuto via email sul telefono o sul computer e conferma. L’accesso qui sarà automatico.",
     "account_wait_browser": "Completa l’accesso nel browser oppure continua senza account.",
     "account_checking": "Verifica delle impostazioni dell’account…",
     "account_signed_in": "Accesso effettuato come {email}",

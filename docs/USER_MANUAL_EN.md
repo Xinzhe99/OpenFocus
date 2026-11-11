@@ -118,10 +118,16 @@ choice is remembered.
 
 On first launch and after an update, the optional account screen offers email,
 GitHub and Google sign-in. You can continue without an account or network. To
-sign in, review the current service terms and privacy policy and accept them.
-Use **Help → OpenFocus account** to open the screen again, sign out or delete
-the account. Signing in can enable automatic error reports; you can turn them
-off under **Settings → Advanced Settings → Diagnostics**.
+sign in, accept the service terms and privacy policy; the links are available
+to review. Use **Help → OpenFocus account** to open the screen again, sign out
+or delete the account. After sign-in, automatic error reports are enabled by
+default unless you previously disabled them. Change this under **Settings →
+Advanced Settings → Diagnostics**.
+
+For email sign-in, open the link on your phone or computer and confirm it;
+the waiting desktop app signs in automatically. If the account service has
+not yet been updated for cross-device sign-in, the app instead asks you to
+open the link on the same computer.
 
 ### Quick Start Workflow
 

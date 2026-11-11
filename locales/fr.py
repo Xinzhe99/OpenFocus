@@ -2,6 +2,10 @@
 
 PACK = {
     "account_title": "Compte OpenFocus",
+    "account_heading": "Connexion à OpenFocus",
+    "account_subtitle": "Gérez votre compte ou continuez sans vous connecter.",
+    "account_or": "ou",
+    "account_agreement": "J’accepte les <a href='terms'>conditions d’utilisation</a> et la <a href='privacy'>politique de confidentialité</a>",
     "account_explanation": "Connectez-vous pour contribuer à améliorer OpenFocus grâce aux rapports d’erreur. Les rapports peuvent contenir des informations sur votre appareil, les étapes de traitement, ainsi que le nombre et les dimensions des images. Ils ne contiennent jamais de fichiers image, de pixels, de fichiers de projet, de noms de fichiers utilisateur, de chemins ou d’identifiants de compte. Vous pouvez modifier l’envoi automatique des rapports à tout moment.",
     "account_usage_note": "Les statistiques d’utilisation constituent un réglage distinct, activé par défaut. Vous pouvez les désactiver dans les paramètres avancés ; elles ne contiennent pas de journaux de diagnostic.",
     "feedback_local_export_scope": "Les fichiers ZIP exportés contiennent les journaux locaux récents et des informations système ; ils peuvent contenir des chemins. Vérifiez-les avant de les partager. Les rapports d’erreur utilisent un ensemble distinct de données assainies.",
@@ -30,6 +34,7 @@ PACK = {
     "account_skip": "Continuer sans compte",
     "account_continue": "Continuer",
     "account_wait_email": "Consultez vos e-mails et ouvrez le lien de connexion sur cet ordinateur.",
+    "account_wait_email_phone": "Ouvrez le lien reçu par e-mail sur votre téléphone ou ordinateur et confirmez. La connexion ici sera automatique.",
     "account_wait_browser": "Terminez la connexion dans votre navigateur ou continuez sans compte.",
     "account_checking": "Vérification des paramètres du compte…",
     "account_signed_in": "Connecté en tant que {email}",

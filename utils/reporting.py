@@ -20,12 +20,14 @@ def report_metadata(bundle, *, source, locale, severity='error'):
     }
 
 
-def send_bundle(bundle, *, source, locale, account=None, severity='error'):
+def send_bundle(bundle, *, source, locale, account=None, severity='error', require_account=False):
     """Send from a background worker, retaining account scope if offline."""
     reports = ReportClient(user_data_dir() / 'reports')
     client = account if account is not None else AccountClient()
     user = client.current_user()
     owner_id = user.get('id') if isinstance(user, dict) else None
+    if require_account and (not client.is_signed_in() or not owner_id):
+        raise ReportError('Account identity unavailable')
     if client.is_signed_in() and (not isinstance(owner_id, str) or not owner_id):
         raise ReportError('Account identity unavailable')
     metadata = report_metadata(bundle, source=source, locale=locale, severity=severity)
@@ -36,7 +38,7 @@ def send_bundle(bundle, *, source, locale, account=None, severity='error'):
     return reports.enqueue_and_submit(metadata, bundle.data)
 
 
-def retry_reports(account=None, *, include_auto=False):
+def retry_reports(account=None, *, include_auto=False, account_only_auto=False):
     """Retry queued reports only under their original account or anonymously."""
     reports = ReportClient(user_data_dir() / 'reports')
     client = account if account is not None else AccountClient()
@@ -46,7 +48,8 @@ def retry_reports(account=None, *, include_auto=False):
         try:
             token = client.token(expected_owner=owner_id)
         except AccountError:
-            return reports.retry_pending(include_auto=include_auto)
+            return reports.retry_pending(include_auto=include_auto and not account_only_auto)
         if token:
-            return reports.retry_pending(token, owner_id=owner_id, include_auto=include_auto)
-    return reports.retry_pending(include_auto=include_auto)
+            return reports.retry_pending(token, owner_id=owner_id, include_auto=include_auto,
+                                         include_anonymous_auto=not account_only_auto)
+    return reports.retry_pending(include_auto=include_auto and not account_only_auto)

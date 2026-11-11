@@ -13,6 +13,10 @@ This file is generated wholesale; edit values in place, not by patching.
 EXTRA_TRANSLATIONS = {
     "ja": {
         "account_title": "OpenFocus アカウント",
+        "account_heading": "OpenFocus にサインイン",
+        "account_subtitle": "アカウントを管理するか、サインインせずに続行できます。",
+        "account_or": "または",
+        "account_agreement": "<a href='terms'>利用規約</a>と<a href='privacy'>プライバシーポリシー</a>に同意します",
         "account_explanation": "サインインして、エラーレポートを通じた OpenFocus の改善にご協力ください。レポートには、デバイス、処理手順、画像の数とサイズが含まれる場合があります。画像ファイル、ピクセル、プロジェクトファイル、ユーザーのファイル名、パス、アカウントの認証情報は含まれません。自動送信はいつでも変更できます。",
         "account_usage_note": "使用統計は別の設定で、初期状態では有効です。詳細設定で無効にできます。診断ログは含まれません。",
         "feedback_local_export_scope": "エクスポートした ZIP には最近のローカルログとシステム情報が含まれ、パスが含まれる場合があります。共有前に内容を確認してください。エラーレポートには別の、機密情報を除去したデータが使われます。",
@@ -41,6 +45,7 @@ EXTRA_TRANSLATIONS = {
         "account_skip": "アカウントなしで続ける",
         "account_continue": "続ける",
         "account_wait_email": "メールを確認し、このコンピューターでサインインリンクを開いてください。",
+        "account_wait_email_phone": "スマートフォンまたはパソコンでメールのリンクを開いて確認すると、自動的にサインインします。",
         "account_wait_browser": "ブラウザーでサインインを完了するか、アカウントなしで続けてください。",
         "account_checking": "アカウント設定を確認しています…",
         "account_signed_in": "{email} でサインイン中",
@@ -1510,6 +1515,10 @@ EXTRA_TRANSLATIONS = {
     },
     "es": {
         "account_title": "Cuenta de OpenFocus",
+        "account_heading": "Inicia sesión en OpenFocus",
+        "account_subtitle": "Gestiona tu cuenta o continúa sin iniciar sesión.",
+        "account_or": "o",
+        "account_agreement": "Acepto los <a href='terms'>Términos de servicio</a> y la <a href='privacy'>Política de privacidad</a>",
         "account_explanation": "Inicia sesión para ayudar a mejorar OpenFocus mediante informes de errores. Los informes pueden incluir tu dispositivo, los pasos de procesamiento y la cantidad y las dimensiones de las imágenes. Nunca incluyen archivos de imagen, píxeles, archivos de proyecto, nombres de archivos de usuario, rutas ni credenciales de la cuenta. Puedes cambiar el envío automático de informes en cualquier momento.",
         "account_usage_note": "Las estadísticas de uso son una opción independiente, activada de forma predeterminada. Puedes desactivarlas en la configuración avanzada; no incluyen registros de diagnóstico.",
         "feedback_local_export_scope": "Los archivos ZIP exportados incluyen registros locales recientes y detalles del sistema; pueden contener rutas. Revísalos antes de compartirlos. Los informes de errores usan un paquete depurado independiente.",
@@ -1538,6 +1547,7 @@ EXTRA_TRANSLATIONS = {
         "account_skip": "Continuar sin una cuenta",
         "account_continue": "Continuar",
         "account_wait_email": "Revisa tu correo y abre el enlace de inicio de sesión en este equipo.",
+        "account_wait_email_phone": "Abre el enlace del correo en tu teléfono u ordenador y confirma. La sesión se iniciará automáticamente aquí.",
         "account_wait_browser": "Completa el inicio de sesión en tu navegador o continúa sin una cuenta.",
         "account_checking": "Comprobando la configuración de la cuenta…",
         "account_signed_in": "Sesión iniciada como {email}",

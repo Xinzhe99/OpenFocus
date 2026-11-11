@@ -2,6 +2,7 @@
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QDialog,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -28,6 +29,16 @@ class WelcomeDialog(QDialog):
         body.setWordWrap(True)
         body.setTextFormat(Qt.TextFormat.RichText)
         layout.addWidget(body)
+
+        experimental = QGroupBox(trans.t('experimental_features'))
+        experimental.setObjectName('experimentalIntro')
+        experimental_layout = QVBoxLayout(experimental)
+        hint = QLabel(trans.t('experimental_locked_hint') + '\n' +
+                      trans.t('experimental_features_hint'))
+        hint.setWordWrap(True)
+        hint.setTextFormat(Qt.TextFormat.PlainText)
+        experimental_layout.addWidget(hint)
+        layout.addWidget(experimental)
 
         # Theme choice (applies immediately through the main window and persists)
         theme_row = QHBoxLayout()

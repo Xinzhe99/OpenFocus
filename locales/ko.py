@@ -2,6 +2,10 @@
 
 PACK = {
     "account_title": "OpenFocus 계정",
+    "account_heading": "OpenFocus 로그인",
+    "account_subtitle": "계정을 관리하거나 로그인 없이 계속할 수 있습니다.",
+    "account_or": "또는",
+    "account_agreement": "<a href='terms'>서비스 약관</a> 및 <a href='privacy'>개인정보 처리방침</a>에 동의합니다",
     "account_explanation": "로그인하여 오류 보고서를 통해 OpenFocus 개선에 도움을 주세요. 보고서에는 기기, 처리 단계, 이미지 수와 크기가 포함될 수 있습니다. 이미지 파일, 픽셀, 프로젝트 파일, 사용자 파일 이름, 경로 또는 계정 인증 정보는 절대 포함되지 않습니다. 자동 보고 설정은 언제든지 변경할 수 있습니다.",
     "account_usage_note": "사용 통계는 별도의 설정이며 기본적으로 활성화되어 있습니다. 고급 설정에서 끌 수 있으며, 진단 로그는 포함되지 않습니다.",
     "feedback_local_export_scope": "내보낸 ZIP에는 최근 로컬 로그와 시스템 정보가 포함되며 경로가 포함될 수 있습니다. 공유하기 전에 확인하세요. 오류 보고서에는 민감한 정보를 제거한 별도의 묶음이 사용됩니다.",
@@ -30,6 +34,7 @@ PACK = {
     "account_skip": "계정 없이 계속",
     "account_continue": "계속",
     "account_wait_email": "이메일을 확인하고 이 컴퓨터에서 로그인 링크를 여세요.",
+    "account_wait_email_phone": "휴대전화나 컴퓨터에서 이메일 링크를 열고 확인하면 이 창에서 자동으로 로그인됩니다.",
     "account_wait_browser": "브라우저에서 로그인을 완료하거나 계정 없이 계속하세요.",
     "account_checking": "계정 설정 확인 중…",
     "account_signed_in": "{email} 계정으로 로그인됨",
