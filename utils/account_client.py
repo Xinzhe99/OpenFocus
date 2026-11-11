@@ -30,6 +30,8 @@ from constants import APP_VERSION
 from utils.app_paths import user_data_dir
 
 BASE_URL = "https://account.openfocus.top"
+_RUN_ID = secrets.token_urlsafe(16)
+_RUN_STARTED = int(time.time())
 _MAX_RESPONSE = 1024 * 1024
 _MAX_ERROR_RESPONSE = 16 * 1024
 _ERROR_CODES = frozenset({
@@ -90,34 +92,49 @@ def _load_device_identity(store):
         return None
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
     except (OSError, ValueError, UnicodeError):
-        return None
-    if not isinstance(value, dict):
-        return None
-    device_id, device_name = value.get("device_id"), value.get("device_name")
-    if not _valid_device_id(device_id):
-        return None
+        raise AccountError("storage") from None
+    if not isinstance(value, dict) or not _valid_device_id(value.get("device_id")):
+        raise AccountError("storage")
+    device_name = value.get("device_name")
     if not isinstance(device_name, str) or not device_name.strip():
         device_name = _default_device_name()
-    return device_id, device_name.strip()[:80]
+    return value["device_id"], device_name.strip()[:80]
 
 
-def _save_device_identity(store, device_id, device_name):
+def _create_device_identity(store, device_name):
     path = _device_path(store)
+    identity = (secrets.token_urlsafe(32), device_name)
     if path is None:
-        return
+        return identity
+    temporary = None
     try:
         path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        temporary = path.with_name(".account-device.tmp")
-        temporary.write_text(json.dumps({
-            "device_id": device_id, "device_name": device_name,
-        }, separators=(",", ":"), ensure_ascii=False), encoding="utf-8")
-        os.chmod(temporary, 0o600)
-        os.replace(temporary, path)
+        fd, temporary = tempfile.mkstemp(prefix=".account-device-", dir=path.parent)
+        with os.fdopen(fd, "w", encoding="utf-8") as output:
+            json.dump({"device_id": identity[0], "device_name": identity[1]}, output,
+                      separators=(",", ":"), ensure_ascii=False)
+            output.flush()
+            os.fsync(output.fileno())
+        try:
+            os.link(temporary, path)
+        except FileExistsError:
+            pass
+        loaded = _load_device_identity(store)
+        if loaded is None:
+            raise AccountError("storage")
+        return loaded
     except OSError:
-        # A read-only profile still allows sign-in; the seat becomes per-process.
-        return False
-    return True
+        raise AccountError("storage") from None
+    finally:
+        if temporary is not None:
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
+
 
 
 def _dpapi(data, decrypt=False):
@@ -221,7 +238,13 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 def _http(method, url, body=None, token=None, timeout=15):
-    headers = {"Accept": "application/json", "User-Agent": f"OpenFocus/{APP_VERSION}"}
+    headers = {
+        "Accept": "application/json",
+        "User-Agent": f"OpenFocus/{APP_VERSION}",
+        "X-OpenFocus-Platform": {"win32": "windows", "darwin": "macos"}.get(sys.platform, "linux"),
+        "X-OpenFocus-Run": _RUN_ID,
+        "X-OpenFocus-Run-Started": str(_RUN_STARTED),
+    }
     if body is not None:
         body = json.dumps(body, separators=(",", ":")).encode("utf-8")
         headers["Content-Type"] = "application/json"
@@ -410,13 +433,14 @@ class AccountClient:
             self.device_id = device_id
             self.device_name = (device_name or _default_device_name()).strip()[:80] or _default_device_name()
         else:
-            loaded = _load_device_identity(self.store)
-            if loaded is None:
-                self.device_id = secrets.token_urlsafe(32)
-                self.device_name = (device_name or _default_device_name()).strip()[:80] or _default_device_name()
-                _save_device_identity(self.store, self.device_id, self.device_name)
-            else:
-                self.device_id, self.device_name = loaded
+            self.device_name = (device_name or _default_device_name()).strip()[:80] or _default_device_name()
+            self.device_id = None
+            try:
+                identity = _load_device_identity(self.store) or _create_device_identity(self.store, self.device_name)
+                self.device_id, self.device_name = identity
+            except AccountError:
+                # Loading the app remains possible; exchange must retry persistence.
+                pass
         self._condition = threading.Condition(threading.RLock())
         self._session = copy.deepcopy(self.store.load())
         if not _valid_session(self._session):
@@ -431,6 +455,9 @@ class AccountClient:
         self.email_handoff_mode = None
 
     def _device_fields(self):
+        if self.device_id is None:
+            self.device_id, self.device_name = (_load_device_identity(self.store)
+                                                or _create_device_identity(self.store, self.device_name))
         return {"device_id": self.device_id, "device_name": self.device_name}
 
     def _call(self, method, path, body=None, token=None, timeout=15):
