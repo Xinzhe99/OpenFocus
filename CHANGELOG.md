@@ -5,6 +5,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+- Provide enough native thread stack for flat-field previews on macOS.
+
 ## [1.77.0] - 2026-11-11
 
 ### Added

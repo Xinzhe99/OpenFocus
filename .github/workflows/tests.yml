@@ -88,6 +88,9 @@ jobs:
           QT_QPA_PLATFORM: offscreen
           PYTHONFAULTHANDLER: '1'
         run: |
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            export QT_QPA_FONTDIR="${SYSTEMROOT:-C:/Windows}/Fonts"
+          fi
           set +e
           pytest -v --timeout=90 --timeout-method=thread
           pytest_exit=$?
