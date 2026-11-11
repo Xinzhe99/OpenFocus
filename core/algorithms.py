@@ -49,7 +49,7 @@ class FusionAlgorithm:
     roi: str | None = None
     promotes_color: bool = False
     tile_decider: str | None = None
-    default_exposure_match: bool = False
+    default_exposure_match: bool = True
     default_base_correct: bool = False
     tile_runner: str | None = None
     depth_planner: str | None = None

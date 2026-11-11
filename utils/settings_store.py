@@ -122,7 +122,7 @@ _PERSISTED_FIELDS = {
     "watermark_registered_enabled": ("export/watermark_registered", False, "bool"),
     "watermark_output_enabled": ("export/watermark_output", True, "bool"),
     "base_frame_correct": ("fusion/base_frame_correct", False, "bool"),
-    "exposure_match": ("fusion/exposure_match", False, "bool"),
+    "exposure_match": ("fusion/exposure_match", True, "bool"),
     "stack_reverse_order": ("fusion/stack_reverse_order", False, "bool"),
     "sharpen_output": ("fusion/sharpen_output", False, "bool"),
     "ask_load_scale": ("ui/ask_load_scale", True, "bool"),

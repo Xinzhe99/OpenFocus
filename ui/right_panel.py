@@ -434,7 +434,7 @@ def create_right_panel() -> RightPanelComponents:
 
     chk_quick_preview = _option('chk_quick_preview', False)
     chk_reverse_order = _option('chk_reverse_order', False)
-    chk_exposure_match = _option('chk_exposure_match', False)
+    chk_exposure_match = _option('chk_exposure_match', True)
     chk_base_correct = _option('chk_base_correct', False)
     chk_sharpen_output = _option('chk_sharpen_output', False)
 
