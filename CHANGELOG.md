@@ -218,6 +218,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 - Dispose closed windows before Qt application teardown during normal exit.
 - Avoid reverse DNS while binding account sign-in callbacks to loopback.
+- Let each window close independently of account tasks owned by other windows.
 - Remember JPEG as the last image format when a JPEG alias is typed, and save
   to the selected filename without changing its extension or letter case.
 - Keep the GPU acceleration preference available when a verified provider's
