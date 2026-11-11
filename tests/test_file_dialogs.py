@@ -5,7 +5,7 @@ import sys
 import pytest
 from PyQt6.QtCore import QItemSelectionModel, QTimer, Qt
 from PyQt6.QtTest import QTest
-from PyQt6.QtWidgets import QLineEdit, QTreeView
+from PyQt6.QtWidgets import QApplication, QLineEdit, QTreeView
 
 from utils import file_dialogs
 from utils.file_dialogs import FileDialog, expand_dialog_path
@@ -62,24 +62,24 @@ def answer_picker(qapp, callback, invoke):
 
 
 @pytest.mark.parametrize("picker", ["getOpenFileName", "getOpenFileNames", "getSaveFileName", "getExistingDirectory"])
-def test_every_picker_navigates_pasted_unicode_address_and_cancel_is_empty(qapp, tmp_path, monkeypatch, picker):
+def test_every_picker_navigates_quoted_unicode_address_and_cancel_is_empty(qapp, tmp_path, monkeypatch, picker):
     monkeypatch.setattr(file_dialogs, "_use_native_folder_dialog", lambda: False)
     monkeypatch.setattr(file_dialogs, "_use_native_file_dialog", lambda: False)
+    def forbidden_clipboard():
+        raise AssertionError("Picker navigation must not access the clipboard")
+    monkeypatch.setattr(QApplication, "clipboard", forbidden_clipboard)
     target = tmp_path / "目录 with spaces"
     target.mkdir()
     monkeypatch.setenv("OPENFOCUS_PICK_TEST", str(target))
 
     def answer(dialog):
         assert dialog.testOption(FileDialog.Option.DontUseNativeDialog)
-        edit = navigate(dialog, '"%OPENFOCUS_PICK_TEST%"')
+        navigate(dialog, '"%OPENFOCUS_PICK_TEST%"')
         assert same_path(dialog.directory().absolutePath(), target)
         invalid = str(target / "missing")
         assert navigate(dialog, invalid).text() == invalid
         assert same_path(dialog.directory().absolutePath(), target)
-        edit.clear()
-        qapp.clipboard().setText('"' + str(target) + '"')
-        edit.paste()
-        QTest.keyClick(edit, Qt.Key.Key_Return)
+        navigate(dialog, '"' + str(target) + '"')
         assert same_path(dialog.directory().absolutePath(), target)
         dialog.reject()
 

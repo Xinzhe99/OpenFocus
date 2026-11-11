@@ -368,12 +368,20 @@ def test_resize_scales_metadata_and_labels_using_actual_pixels(qapp, monkeypatch
     from tests.test_gui_units import _resize_window, _StubResizeDialog
     window = _resize_window((10, 14, 3), 1.0, 0.5)
     window.source_px_um = 2.0
-    ratios = []
-    window.label_manager = SimpleNamespace(scale_stack_labels=lambda x, y: ratios.append((x, y)))
+    input_config = SimpleNamespace(x_location=3, y_location=2, font_size=9)
+    output_config = SimpleNamespace(x_location=4, y_location=3, font_size=10)
+    revisions = []
+    window.label_manager = SimpleNamespace(
+        _labels=[SimpleNamespace(target='input', config=input_config),
+                 SimpleNamespace(target='output', config=output_config)],
+        _bump_revision=lambda: revisions.append(True))
     monkeypatch.setattr(module, "DownsampleDialog", _StubResizeDialog(1.0))
     monkeypatch.setattr(module, "show_success_box", lambda *args, **kwargs: None)
     window.transform_manager.resize_all_images()
-    assert ratios == [(2.0, 2.0)]
+    assert (input_config.x_location, input_config.y_location, input_config.font_size) == (6, 4, 18)
+    assert (output_config.x_location, output_config.y_location, output_config.font_size) == (4, 3, 10)
+    assert revisions == [True]
+    assert window.raw_images[0].shape[:2] == (10, 14)
     assert window.source_px_um == 1.0
 
 
@@ -451,6 +459,85 @@ def test_sensor_controls_inspect_mask_and_reject_source_frame(qapp, tmp_path):
     window.current_scale_factor = 0.5
     assert controls.validate(window) == trans.t('sensor_mask_size_error')
     controls.close()
+
+
+def test_sensor_controls_retains_finished_result_and_coalesces_requests(qapp, monkeypatch):
+    import weakref
+    import ui.sensor_cleanup as sensor
+    monkeypatch.setattr(sensor._Inspection, 'start', lambda self: None)
+    controls = sensor.SensorCleanupControls('A')
+    first = controls._worker
+    mask = SimpleNamespace(width=8, height=8, coverage=1 / 64)
+    controls.path.setText('B')
+    controls._inspection_finished(first.serial, mask, '')
+    assert controls.mask is None
+    sensor._retire(weakref.ref(controls), first)
+    controls.path.setText('A')
+    assert controls.validate() == ''
+    assert controls.mask is mask and '8' in controls.extent.text()
+    controls.path.setText('B')
+    controls._inspect()
+    active = controls._worker
+    for path in ('C', 'D'):
+        controls.path.setText(path)
+        controls._inspect()
+    assert controls._worker is active and controls._queued[1] == 'D'
+    sensor._retire(weakref.ref(controls), active)
+    last = controls._worker
+    assert last.path == 'D'
+    controls._inspection_finished(last.serial, None, 'bad mask')
+    assert 'bad mask' in controls.validate()
+    controls.path.clear()
+    assert controls.validate() == '' and controls.mask is None
+    controls._inspection_finished(last.serial, mask, '')
+    assert controls.mask is None
+    controls.stop_inspection()
+    sensor._retire(weakref.ref(controls), last)
+    assert not sensor._INSPECTIONS
+    controls.close()
+
+
+@pytest.mark.parametrize('queued', [False, True])
+def test_sensor_controls_destroyed_during_real_worker(qapp, monkeypatch, queued):
+    import gc
+    import threading
+    from PyQt6 import sip
+    from PyQt6.QtWidgets import QWidget
+    import ui.sensor_cleanup as sensor
+    import utils.sensor_cleanup as cleanup
+
+    entered, release = threading.Event(), threading.Event()
+    calls = []
+    def decode(path, cancel_callback=None):
+        calls.append(path)
+        entered.set()
+        if not release.wait(5):
+            raise RuntimeError('test worker was not released')
+        return SimpleNamespace(width=8, height=8, coverage=1 / 64)
+
+    monkeypatch.setattr(cleanup, 'load_sensor_defect_mask', decode)
+    parent = QWidget()
+    controls = sensor.SensorCleanupControls('A', parent=parent)
+    worker = controls._worker
+    try:
+        assert entered.wait(5)
+        if queued:
+            controls.path.setText('B')
+            controls._inspect()
+        sip.delete(parent)
+        assert sip.isdeleted(controls)
+        assert worker.isInterruptionRequested()
+        del controls, parent
+        gc.collect()
+    finally:
+        release.set()
+        assert worker.wait(5000)
+        qapp.processEvents()
+    assert calls == ['A']
+    assert worker not in sensor._INSPECTIONS
+    assert worker not in sensor._RETIREMENTS
+    gc.collect()
+    qapp.processEvents()
 
 
 @pytest.mark.parametrize('changed', ['source', 'method', 'parameters', 'brightness'])

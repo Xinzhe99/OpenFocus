@@ -14,6 +14,7 @@ from core.mosaic_hdr import HDRSpec
 from core.mosaic_photo import PhotometricSpec
 from core.mosaic_projection import CameraSpec, ProjectionSpec, camera_rays, rotation_matrix
 from core.mosaic_seam import SeamSpec
+from core.registration import RegistrationCancelled
 from utils.image_utils import imwrite_auto, srgb_icc_profile
 
 
@@ -283,3 +284,50 @@ def test_preview_preserves_soft_source_alpha_at_the_canvas_edges():
     preview = preview_mosaic(plan, max_edge=128)
     expected = round(40000 / 65535 * 255)
     np.testing.assert_array_equal(preview[:, :, 3], expected)
+
+
+def test_sparse_canvas_disk_admission_precedes_allocations(monkeypatch):
+    from core import mosaic
+    from core.frame_storage import ScratchSpaceError
+
+    frames = [make_frame(str(i), np.zeros((8, 8, 3), np.uint8)) for i in range(2)]
+    transforms = [np.eye(3), np.array([[1, 0, 99992], [0, 1, 99992], [0, 0, 1.]])]
+    requested = []
+
+    def reject(size, directory):
+        requested.append(size)
+        raise ScratchSpaceError(directory, size, 0)
+
+    monkeypatch.setattr(mosaic, 'require_disk_space', reject)
+    monkeypatch.setattr(mosaic, 'create_frame', lambda *a, **k: pytest.fail('allocated before admission'))
+    with pytest.raises(ScratchSpaceError):
+        mosaic.plan_mosaic(frames, transforms,
+                           spec=mosaic.RenderSpec(seam=mosaic.SeamSpec(precision=1)))
+    assert requested[0] >= 100000 * 100000 * 2 + 2 * 8 * 8 * 16
+
+
+def test_label_hole_scan_is_bounded_and_cancellable(monkeypatch):
+    from core import mosaic, mosaic_seam
+    monkeypatch.setattr(mosaic_seam, '_LABEL_BLOCK_PIXELS', 7)
+    labels = np.ones((3, 12), np.uint16)
+    assert not mosaic._labels_have_holes(labels, None)
+    labels[-1, -1] = 0
+    assert mosaic._labels_have_holes(labels, None)
+    labels[0, 0] = 0
+    calls = []
+    assert mosaic._labels_have_holes(labels, lambda: calls.append(1) or False)
+    assert len(calls) == 1
+    checks = iter((False, True))
+    labels[0, 0] = 1
+    with pytest.raises(RegistrationCancelled):
+        mosaic._labels_have_holes(labels, lambda: next(checks))
+
+
+def test_alpha_off_skips_label_hole_scan(monkeypatch):
+    from core import mosaic
+    frame = make_frame('source', np.zeros((8, 8, 3), np.uint8))
+    monkeypatch.setattr(mosaic, '_labels_have_holes',
+                        lambda *_: pytest.fail('alpha-off must not scan labels'))
+    plan = mosaic.plan_mosaic([frame], [np.eye(3)],
+        spec=mosaic.RenderSpec(output=mosaic.OutputSpec(alpha='off')))
+    assert not plan.has_alpha

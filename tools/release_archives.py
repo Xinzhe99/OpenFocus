@@ -413,8 +413,6 @@ def reassemble(manifest_path: Path, source_dir: Path, output_dir: Path,
                 if written != info["size"] or digest.hexdigest() != info["sha256"]:
                     raise ReleaseArchiveError(
                         f"{key}: joined file does not match the manifest")
-                if target.exists():
-                    target.unlink()
                 temp.replace(target)
             except BaseException:
                 if temp.exists():
@@ -431,7 +429,8 @@ def reassemble(manifest_path: Path, source_dir: Path, output_dir: Path,
     return outputs
 
 
-def _github_asset(release: dict, name: str, r2_dir: Path) -> dict:
+def _github_asset(release: dict, name: str, r2_dir: Path,
+                  trusted: dict = None) -> dict:
     assets = release.get("assets")
     if not isinstance(assets, list):
         raise ReleaseArchiveError("GitHub release has no asset list")
@@ -451,25 +450,119 @@ def _github_asset(release: dict, name: str, r2_dir: Path) -> dict:
         raise ReleaseArchiveError(f"mirrored file is missing or wrong size: {name}")
     local_digest = "sha256:" + sha256_file(local)
     github_digest = str(asset.get("digest") or "").lower()
+    expected = (trusted or {}).get(name)
+    if not github_digest and not expected:
+        raise ReleaseArchiveError(f"no trusted SHA-256 for GitHub asset: {name}")
     if github_digest and github_digest != local_digest:
         raise ReleaseArchiveError(f"mirrored SHA-256 differs from GitHub: {name}")
+    if expected and (expected["size"] != size or
+                     "sha256:" + expected["sha256"] != local_digest):
+        raise ReleaseArchiveError(f"mirrored SHA-256 differs from build identity: {name}")
     return {"name": name, "size": size, "url": url, "digest": local_digest}
+
+
+def _mirror_identity(path: Path, tag: str, release: dict, head_sha: str) -> dict:
+    identity = _load_json(path)
+    identity_name = f"OpenFocus-{tag}-build.json"
+    matches = [a for a in release.get("assets", [])
+               if isinstance(a, dict) and a.get("name") == identity_name]
+    if (len(matches) != 1 or type(matches[0].get("size")) is not int or
+            matches[0]["size"] <= 0 or path.stat().st_size != matches[0]["size"]):
+        raise ReleaseArchiveError("build identity release asset is missing or wrong size")
+    digest = matches[0].get("digest")
+    if digest and digest.lower() != "sha256:" + sha256_file(path):
+        raise ReleaseArchiveError("build identity GitHub digest differs")
+    if (identity.get("schema_version") != 1 or identity.get("tag") != tag or
+            identity.get("version") != tag.removeprefix("v") or
+            not re.fullmatch(r"[0-9a-f]{40}", str(identity.get("sha", ""))) or
+            not str(identity.get("run_id", "")).isdigit() or
+            not str(identity.get("run_attempt", "")).isdigit() or
+            int(identity["run_id"]) < 1 or int(identity["run_attempt"]) < 1):
+        raise ReleaseArchiveError("invalid build identity")
+    if head_sha and identity["sha"] != head_sha.lower():
+        raise ReleaseArchiveError("workflow run SHA differs from build identity")
+    records = identity.get("assets")
+    if not isinstance(records, list) or not records:
+        raise ReleaseArchiveError("build identity has no assets")
+    result = {}
+    for record in records:
+        if not isinstance(record, dict):
+            raise ReleaseArchiveError("invalid build identity asset")
+        name = _safe_basename(record.get("name", ""))
+        if (name in result or type(record.get("size")) is not int or
+                record["size"] <= 0 or not _digest_ok(record.get("sha256"))):
+            raise ReleaseArchiveError(f"invalid build identity asset: {name}")
+        matches = [a for a in release.get("assets", [])
+                   if isinstance(a, dict) and a.get("name") == name]
+        if len(matches) != 1 or matches[0].get("size") != record["size"]:
+            raise ReleaseArchiveError(f"build identity release asset differs: {name}")
+        digest = matches[0].get("digest")
+        if digest and digest.lower() != "sha256:" + record["sha256"]:
+            raise ReleaseArchiveError(f"build identity GitHub digest differs: {name}")
+        result[name] = record
+    release_assets = release.get("assets")
+    if (not isinstance(release_assets, list) or
+            any(not isinstance(asset, dict) or not isinstance(asset.get("name"), str)
+                for asset in release_assets)):
+        raise ReleaseArchiveError("invalid GitHub release asset inventory")
+    release_names = [asset["name"] for asset in release_assets]
+    if (len(release_names) != len(set(release_names)) or
+            set(release_names) != set(result) | {identity_name}):
+        raise ReleaseArchiveError("GitHub release assets differ from build identity")
+    return result
 
 
 def write_mirror_manifest(tag: str, release_json: Path, r2_dir: Path,
                           releases_json: Path, output: Path,
                           windows_manifest: Path = None,
-                          limit: int = GITHUB_ASSET_LIMIT) -> None:
+                          limit: int = GITHUB_ASSET_LIMIT,
+                          build_identity: Path = None, head_sha: str = "",
+                          trusted_metadata: Path = None) -> None:
     tag = _safe_basename(tag)
     release = _load_json(Path(release_json))
     if release.get("tag_name") != tag:
         raise ReleaseArchiveError("GitHub release tag does not match")
+    if release.get("draft") or release.get("prerelease"):
+        raise ReleaseArchiveError("cannot mirror a draft or prerelease")
+    if head_sha and not build_identity:
+        raise ReleaseArchiveError("workflow run requires a build identity")
+    trusted = _mirror_identity(Path(build_identity), tag, release, head_sha) if build_identity else {}
+    if trusted_metadata:
+        previous = _load_json(Path(trusted_metadata))
+        if previous.get("tag") != tag or not isinstance(previous.get("assets"), dict):
+            raise ReleaseArchiveError("trusted mirror metadata tag or assets differ")
+        for key in (*WINDOWS_KEYS, *MACOS_NAMES):
+            entry = previous["assets"].get(key)
+            name = expected_name(tag, key)
+            if (not isinstance(entry, dict) or entry.get("name") != name or
+                    type(entry.get("size")) is not int or entry["size"] <= 0 or
+                    not str(entry.get("digest", "")).startswith("sha256:") or
+                    not _digest_ok(entry["digest"][7:])):
+                raise ReleaseArchiveError(f"invalid trusted mirror metadata: {name}")
+            record = {"name": name, "size": entry["size"], "sha256": entry["digest"][7:]}
+            if build_identity and name not in trusted and not (
+                    windows_manifest and key in WINDOWS_KEYS):
+                raise ReleaseArchiveError(f"build identity missing asset: {name}")
+            if name in trusted and trusted[name] != record:
+                raise ReleaseArchiveError(f"trusted mirror metadata differs from build identity: {name}")
+            trusted[name] = record
     r2_dir = Path(r2_dir)
     assets = {}
     if windows_manifest:
         manifest = load_manifest(windows_manifest, limit)
         if manifest["tag"] != tag:
             raise ReleaseArchiveError("Windows manifest tag does not match")
+        if build_identity:
+            manifest_name = f"OpenFocus-{tag}-windows-assets.json"
+            record = trusted.get(manifest_name)
+            if (not record or Path(windows_manifest).stat().st_size != record["size"] or
+                    sha256_file(Path(windows_manifest)) != record["sha256"]):
+                raise ReleaseArchiveError("Windows manifest differs from build identity")
+            for info in manifest["assets"].values():
+                for item in info["parts"] or [info]:
+                    record = trusted.get(item["name"])
+                    if not record or record["size"] != item["size"] or record["sha256"] != item["sha256"]:
+                        raise ReleaseArchiveError(f"Windows asset differs from build identity: {item['name']}")
         for key in WINDOWS_KEYS:
             info = manifest["assets"][key]
             if info["parts"]:
@@ -482,12 +575,18 @@ def write_mirror_manifest(tag: str, release_json: Path, r2_dir: Path,
                                "digest": "sha256:" + info["sha256"],
                                "source": "r2", "url": None}
             else:
-                assets[key] = _github_asset(release, info["name"], r2_dir)
+                assets[key] = _github_asset(release, info["name"], r2_dir, trusted)
     else:
         for key in WINDOWS_KEYS:
-            assets[key] = _github_asset(release, expected_name(tag, key), r2_dir)
+            name = expected_name(tag, key)
+            if build_identity and name not in trusted:
+                raise ReleaseArchiveError(f"build identity missing asset: {name}")
+            assets[key] = _github_asset(release, name, r2_dir, trusted)
     for key in MACOS_NAMES:
-        assets[key] = _github_asset(release, expected_name(tag, key), r2_dir)
+        name = expected_name(tag, key)
+        if build_identity and name not in trusted:
+            raise ReleaseArchiveError(f"build identity missing asset: {name}")
+        assets[key] = _github_asset(release, name, r2_dir, trusted)
     with open(releases_json, encoding="utf-8") as stream:
         releases = json.load(stream)
     if isinstance(releases, dict):
@@ -553,7 +652,8 @@ def _cmd_write_mirror(args) -> None:
         args.tag, Path(args.release_json), Path(args.r2_dir),
         Path(args.releases_json), Path(args.output),
         Path(args.windows_manifest) if args.windows_manifest else None,
-        args.limit)
+        args.limit, Path(args.build_identity) if args.build_identity else None,
+        args.head_sha, Path(args.trusted_metadata) if args.trusted_metadata else None)
 
 
 def _cmd_zip_tree(args) -> None:
@@ -622,6 +722,9 @@ def main(argv=None) -> int:
     p.add_argument("--r2-dir", required=True)
     p.add_argument("--releases-json", required=True)
     p.add_argument("--output", required=True)
+    p.add_argument("--build-identity", default="")
+    p.add_argument("--head-sha", default="")
+    p.add_argument("--trusted-metadata", default="")
     p.add_argument("--limit", type=int, default=GITHUB_ASSET_LIMIT)
     p.set_defaults(func=_cmd_write_mirror)
 

@@ -2,8 +2,6 @@
 # Lewis J J, O’Callaghan R J, Nikolov S G, et al. Pixel-and region-based image fusion with complex wavelets[J]. Information fusion, 2007, 8(2): 119-130.
 
 import os
-import re
-import glob
 import math
 import concurrent.futures
 import numpy as np
@@ -445,37 +443,15 @@ def _dtcwt_impl_planned(input_source, img_resize, N, thread_count,
 def _load_images(input_source: Union[str, List[np.ndarray]], img_resize: Optional[Tuple[int, int]],
                  should_cancel=None) -> List[np.ndarray]:
     """Helper to load images from a path or list."""
-    from core.source_frames import scan_source, process_frame
+    from core.source_frames import process_frame
     images = []
     if isinstance(input_source, str):
 
         if not os.path.exists(input_source):
              raise ValueError(f"Input path does not exist: {input_source}")
              
-        filenames = os.listdir(input_source)
-        if not filenames:
-            return []
-            
-        # Infer extension from first file
-        suffixes = [os.path.splitext(f)[1] for f in filenames if os.path.splitext(f)[1]]
-        img_ext = suffixes[0] if suffixes else ''
-        
-        glob_pattern = os.path.join(input_source, '*' + img_ext)
-        img_paths = glob.glob(glob_pattern)
-        
-        # Sort numerically if possible
-        def sort_key(x):
-            nums = re.findall(r"\d+", os.path.basename(x))
-            return int(nums[-1]) if nums else x
-            
-        img_paths.sort(key=sort_key)
-
-        for p in img_paths:
-            if should_cancel is not None and should_cancel():
-                from core.registration import RegistrationCancelled
-                raise RegistrationCancelled()
-            images.extend(scan_source(p, header_only=True,
-                                      should_cancel=lambda: _check_cancelled(should_cancel)))
+        from fusion_methods.openfocus_ab import _collect_directory_sources
+        images, _ = _collect_directory_sources(input_source, should_cancel)
     else:
         for img in input_source:
             if should_cancel is not None and should_cancel():

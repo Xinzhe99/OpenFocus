@@ -322,7 +322,7 @@ def test_rejects_invalid_saved_source_calibration(tmp_path, calibration):
     path.write_text(json.dumps(state), encoding="utf-8")
     ok, error, _ = project_file.validate_project(str(path))
     assert not ok
-    assert error == "invalid source pixel calibration"
+    assert error == "invalid source_px_um"
 
 
 def test_rejects_invalid_snapshot_physical_scale(tmp_path):
@@ -333,4 +333,92 @@ def test_rejects_invalid_snapshot_physical_scale(tmp_path):
     path.write_text(json.dumps(state), encoding="utf-8")
     ok, error, _ = project_file.validate_project(str(path))
     assert not ok
-    assert error == "invalid frame scale"
+    assert error == "invalid frame snapshot_scale"
+
+
+@pytest.mark.parametrize("version", [1, 2, 3, 4])
+def test_project_registration_defaults_do_not_inherit_target(tmp_path, version):
+    paths = _make_stack(str(tmp_path / "sources"), n=1)
+    source = _window(paths, str(tmp_path))
+    source._alignment = "openfocus"
+    state = project_file._collect_state(source)
+    state["openfocus_project"] = version
+    if version < 4:
+        # Older projects stored kernel size and pre-scaled smoothing, rather
+        # than the current radius/smoothing/feather parameter representation.
+        smoothing_key = 'smoothing' if version < 3 else 'depth_smoothing'
+        state['settings']['method_parameters'] = {
+            'openfocus_b': {'kernel_size': 13, smoothing_key: 1.2}}
+    state["settings"]["registration_parameters"] = {"openfocus": {}}
+    path = tmp_path / "old.ofproj"
+    path.write_text(json.dumps(state), encoding="utf-8")
+    ok, error, loaded = project_file.validate_project(str(path))
+    assert ok, error
+    if version < 4:
+        migrated = loaded['settings']['method_parameters']['openfocus_b']
+        assert migrated['radius'] == 6
+        assert migrated['smoothing'] == pytest.approx(5.0)
+    target = _window(paths, str(tmp_path))
+    target.set_registration_parameters("openfocus", {"rotation": 1.0, "reference_frame": 2})
+    project_file._apply_after_load(target, loaded)
+    assert target.registration_parameters_for("openfocus")["rotation"] == 0.0
+    assert target.registration_parameters_for("openfocus")["reference_frame"] == 1
+
+
+@pytest.mark.parametrize("field", ["scale_factor", "source_px_um", "scale", "snapshot_scale", "sigma", "transform_scale"])
+@pytest.mark.parametrize("require_sources", [False, True])
+def test_project_rejects_unrepresentable_numeric_values(tmp_path, field, require_sources):
+    paths = _make_stack(str(tmp_path / "sources"), n=1)
+    state = project_file._collect_state(_window(paths, str(tmp_path)))
+    huge = 10 ** 400
+    if field in ("scale_factor", "source_px_um"):
+        state[field] = huge
+    elif field in ("scale", "snapshot_scale"):
+        state["frame_order"][0][field] = huge
+    else:
+        state["source_transforms"] = [{"operation": "flat_field", "path": paths[0],
+                                      "sha256": "0" * 64, "sigma": huge if field == "sigma" else 1,
+                                      "scale": huge if field == "transform_scale" else 1}]
+    path = tmp_path / "invalid.ofproj"
+    path.write_text(json.dumps(state), encoding="utf-8")
+    ok, error, loaded = project_file.validate_project(str(path), require_sources=require_sources)
+    assert not ok and ("scale" in error or "sigma" in error or "source_px_um" in error)
+    assert loaded == {}
+
+
+def test_partial_template_preserves_other_registration_memory(tmp_path):
+    paths = _make_stack(str(tmp_path / "sources"), n=1)
+    target = _window(paths, str(tmp_path))
+    target.set_registration_parameters("openfocus", {"rotation": 2.5})
+    project_file.apply_template(target, {"alignment_method": "ecc", "registration_parameters": {"ecc": {}}})
+    assert target.registration_parameters_for("openfocus")["rotation"] == 2.5
+
+
+@pytest.mark.parametrize("document", [
+    None, {}, {"version": True, "project_path": "", "dirty": False},
+    {"version": 2, "project_path": "", "dirty": False},
+    {"version": 1, "project_path": None, "dirty": False},
+    {"version": 1, "project_path": "", "dirty": 1},
+])
+def test_project_rejects_invalid_recovery_document(tmp_path, document):
+    paths = _make_stack(str(tmp_path / "sources"), n=1)
+    state = project_file._collect_state(_window(paths, str(tmp_path)))
+    state["recovery_document"] = document
+    path = tmp_path / "invalid.ofproj"
+    path.write_text(json.dumps(state), encoding="utf-8")
+    ok, error, loaded = project_file.validate_project(str(path))
+    assert not ok and "recovery_document" in error and loaded == {}
+
+
+def test_saved_registration_parameters_are_complete(tmp_path):
+    paths = _make_stack(str(tmp_path / "sources"), n=1)
+    source = _window(paths, str(tmp_path))
+    source.set_registration_parameters("openfocus", {"rotation": 2.5, "reference_frame": 3})
+    path = str(tmp_path / "project.ofproj")
+    assert project_file.save_project(source, path)[0]
+    ok, error, state = project_file.validate_project(path)
+    assert ok, error
+    target = _window(paths, str(tmp_path))
+    target.set_registration_parameters("openfocus", {"rotation": 1.0, "reference_frame": 2})
+    project_file._apply_after_load(target, state)
+    assert target.registration_parameters_for("openfocus") == source.registration_parameters_for("openfocus")

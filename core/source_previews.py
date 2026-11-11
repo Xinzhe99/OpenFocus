@@ -231,17 +231,17 @@ def render_source_region(image, rect, size, metadata=None):
     pixels = max(1, round((right - left) * factor)) * max(1, round((bottom - top) * factor))
     # Include conversion, owned delivery pixels, annotations and Qt upload.
     require_memory(pixels * 96 + 1024 * 1024)
-    crop = image[top:bottom, left:right]
-    if factor < 1:
-        crop = cv2.resize(crop, (max(1, round((right - left) * factor)),
-                                 max(1, round((bottom - top) * factor))),
-                          interpolation=cv2.INTER_AREA)
-    if metadata is not None:
-        from utils.linear_dng import develop_linear
-        crop = develop_linear(crop, metadata)
-    # uint8 may be a strided view of the original. Own only this bounded tile
-    # before crossing threads (never expose a view holding the whole source).
-    tile = np.array(to_display_uint8(crop), copy=True, order='C')
+    from core.frame_storage import frame_region
+    with frame_region(image, np.s_[top:bottom, left:right]) as crop:
+        if factor < 1:
+            crop = cv2.resize(crop, (max(1, round((right - left) * factor)),
+                                     max(1, round((bottom - top) * factor))),
+                              interpolation=cv2.INTER_AREA)
+        if metadata is not None:
+            from utils.linear_dng import develop_linear
+            crop = develop_linear(crop, metadata)
+        # The tile must outlive the borrowed mapping independently.
+        tile = np.array(to_display_uint8(crop), copy=True, order='C')
     if tile.ndim == 3 and tile.shape[2] == 4:
         from utils.image_utils import composite_transparent_for_display
         tile = composite_transparent_for_display(
@@ -261,7 +261,7 @@ class SourceRegionWorker(QThread):
     failed = pyqtSignal(object, str)
 
     def __init__(self, frame, key, *, labels=None, index=0, scale_cfg=None,
-                 watermark_cfg=None, metadata=None, target='input'):
+                 watermark_cfg=None, metadata=None, target='input', develop=True):
         super().__init__()
         configure_native_worker_stack(self)
         self.frame = frame
@@ -271,7 +271,7 @@ class SourceRegionWorker(QThread):
         self.index = index
         self.scale_cfg = scale_cfg
         self.watermark_cfg = watermark_cfg
-        self.metadata = getattr(frame, 'linear_metadata', None) if metadata is None else metadata
+        self.metadata = (getattr(frame, 'linear_metadata', None) if metadata is None else metadata) if develop else None
         self._scale_mean = None
         self.cancelled = False
         self._condition = threading.Condition()
@@ -302,18 +302,15 @@ class SourceRegionWorker(QThread):
             tile, _ = self.labels._draw_for(tile, self.target, self.index, source_rect=rect)
         if self.scale_cfg:
             from utils import scalebar
-            from utils.frame_pixels import preview_scale_config
-            sx, sy = tile.shape[1] / rect[2], tile.shape[0] / rect[3]
-            canvas = (max(1, round(image.shape[1] * sx)), max(1, round(image.shape[0] * sy)))
-            cfg = preview_scale_config(self.scale_cfg, image.shape, (canvas[1], canvas[0]))
+            sx = tile.shape[1] / rect[2]
             def region_mean(sample):
-                key = (sample, sx, sy)
+                key = tuple(sample)
                 if self._scale_mean is not None and self._scale_mean[0] == key:
                     return self._scale_mean[1]
                 x, y, width, height = sample
-                left, top = max(0, math.floor(x / sx)), max(0, math.floor(y / sy))
-                right = min(image.shape[1], math.ceil((x + width) / sx))
-                bottom = min(image.shape[0], math.ceil((y + height) / sy))
+                left, top = max(0, math.floor(x)), max(0, math.floor(y))
+                right = min(image.shape[1], math.ceil(x + width))
+                bottom = min(image.shape[0], math.ceil(y + height))
                 total = count = 0
                 for row in range(top, bottom, 128):
                     for col in range(left, right, 1024):
@@ -331,8 +328,14 @@ class SourceRegionWorker(QThread):
                 mean = total / count if count else 128.0
                 self._scale_mean = (key, mean)
                 return mean
-            tile = scalebar.burn(tile, cfg, canvas_size=canvas,
-                                origin=(rect[0] * sx, rect[1] * sy), region_mean=region_mean)
+            cfg = self.scale_cfg
+            tile = scalebar.draw_scale_bar(
+                tile, cfg['px_um'], cfg['position'], cfg['color'],
+                font_family=cfg.get('font_family'), font_size=cfg.get('font_size', 0.0),
+                font_bold=cfg.get('font_bold', False), text_align=cfg.get('text_align', 'auto'),
+                custom_x=cfg.get('custom_x'), custom_y=cfg.get('custom_y'),
+                canvas_size=(image.shape[1], image.shape[0]), origin=(rect[0], rect[1]),
+                render_scale=sx, region_mean=region_mean)
         if self.watermark_cfg:
             from utils import watermark
             tile = watermark.burn(
@@ -343,30 +346,13 @@ class SourceRegionWorker(QThread):
         return tile
 
     def run(self):
-        from core.source_frames import resolve_frame
+        from core.source_frames import resolve_frame, validate_frame_source
         from core.resource_policy import heavy_job
+        from core.frame_storage import (describe_frame, owns_temp_file, scratch_directory,
+                                        select_scratch, store_frame)
         image = None
-        acquired = False
         try:
-            while not self.cancelled:
-                if _SOURCE_DISPLAY.acquire(timeout=.05):
-                    acquired = True
-                    break
-            if not acquired or self.cancelled:
-                return
-            with heavy_job(lambda: self.cancelled):
-                image = resolve_frame(self.frame, should_cancel=lambda: self.cancelled)
-                if self.cancelled:
-                    return
-                # OpenCV silently materializes negative/column-strided inputs.
-                # Canonicalize such a source once into the existing owned disk
-                # mapping rather than copying a huge crop on every mouse event.
-                pixel_stride = image.dtype.itemsize * (image.shape[2] if image.ndim == 3 else 1)
-                if (image.strides[-1] != image.dtype.itemsize or image.strides[0] <= 0
-                        or (image.ndim == 3 and image.strides[1] != pixel_stride)):
-                    from core.frame_storage import store_frame
-                    image = store_frame(image)
-            while not self.cancelled:
+            while True:
                 with self._condition:
                     while not self._pending and not self.cancelled:
                         self._condition.wait()
@@ -374,23 +360,66 @@ class SourceRegionWorker(QThread):
                         return
                     kind = 'loupe' if 'loupe' in self._pending else next(iter(self._pending))
                     request = self._pending.pop(kind)
-                _, _, rect, size = request
-                with heavy_job(lambda: self.cancelled):
+
+                acquired = False
+                try:
+                    while not self.cancelled:
+                        if _SOURCE_DISPLAY.acquire(timeout=.05):
+                            acquired = True
+                            break
+                    if not acquired:
+                        return
                     with self._condition:
-                        if self.cancelled or kind in self._pending:
+                        if self.cancelled:
+                            return
+                        if kind in self._pending:
                             continue
-                    tile, sampled = render_source_region(
-                        image, rect, size, self.metadata)
-                    tile = self._decorate(tile, sampled, image)
-                with self._condition:
-                    stale = self.cancelled or kind in self._pending
-                if not stale:
-                    self.ready.emit(self.key, request, tile, sampled)
-                tile = None
+                    with heavy_job(lambda: self.cancelled):
+                        with self._condition:
+                            if self.cancelled:
+                                return
+                            if kind in self._pending:
+                                continue
+                        validate_frame_source(self.frame)
+                        if image is None:
+                            with scratch_directory():
+                                resolved = resolve_frame(self.frame, should_cancel=lambda: self.cancelled)
+                                if self.cancelled:
+                                    return
+                                pixel_stride = resolved.dtype.itemsize * (resolved.shape[2] if resolved.ndim == 3 else 1)
+                                canonical = (resolved.strides[-1] == resolved.dtype.itemsize
+                                             and resolved.strides[0] > 0
+                                             and (resolved.ndim != 3 or resolved.strides[1] == pixel_stride))
+                                description = describe_frame(resolved) if canonical and resolved.flags.c_contiguous else None
+                                owned_mapping = description is not None and owns_temp_file(description['path'])
+                                if (not isinstance(self.frame, np.ndarray) and not owned_mapping) or not canonical:
+                                    path = getattr(self.frame, 'path', None)
+                                    select_scratch(resolved.nbytes, (path,) if path else ())
+                                    image = store_frame(resolved, prefer_ram=False)
+                                else:
+                                    image = resolved
+                                del resolved
+                        with self._condition:
+                            if self.cancelled:
+                                return
+                            if kind in self._pending:
+                                continue
+                        _, _, rect, size = request
+                        tile, sampled = render_source_region(image, rect, size, self.metadata)
+                        tile = self._decorate(tile, sampled, image)
+                    with self._condition:
+                        if not self.cancelled and kind not in self._pending:
+                            self.ready.emit(self.key, request, tile, sampled)
+                    tile = None
+                finally:
+                    if acquired:
+                        _SOURCE_DISPLAY.release()
         except Exception as exc:
-            if not self.cancelled:
-                self.failed.emit(self.key, str(exc))
+            with self._condition:
+                if not self.cancelled:
+                    self.failed.emit(self.key, str(exc))
         finally:
             image = None
-            if acquired:
-                _SOURCE_DISPLAY.release()
+            self.frame = None
+            with self._condition:
+                self._pending.clear()

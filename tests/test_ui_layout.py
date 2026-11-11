@@ -410,37 +410,32 @@ def test_downsample_controls_stay_in_sync(qapp, max_scale, theme, show_dont_ask)
 
 
 
-def test_status_block_is_two_rows(qapp):
-    """The status block is a 2x2 grid, not four stacked rows.
-
-    v1.66.0 stacked the four statistics because tools/lang_ui_audit.py reported
-    the RAM string as needing 260 px against a 212 px column. That figure is an
-    artefact of the offscreen platform failing to resolve the UI font (it
-    measures 260 px where the real 96 dpi desktop measures 126 px), so the
-    block was made taller for nothing: 107 px instead of 61, taken from the
-    source list above it. The widest real statistic is French at 132 px and a
-    half of the 400 px panel is 177 px.
-    """
+def test_status_block_is_readable_and_compact(qapp):
     from PyQt6.QtWidgets import QFrame, QLabel
-
     from ui.right_panel import create_right_panel
 
     parts = create_right_panel()
+    parts.widget.resize(500, 1100)
+    parts.widget.show()
+    qapp.processEvents()
     try:
         panel = parts.widget.findChild(QFrame, "statusPanel")
-        assert panel is not None
-        layout = panel.layout()
-        cells = [(layout.getItemPosition(layout.indexOf(w))[:2], w)
-                 for w in panel.findChildren(QLabel)]
-        rows = {row for (row, _col), _w in cells}
-        assert len(rows) == 2, f"status block must be two rows, got {len(rows)}"
-        cols = {col for (_row, col), _w in cells}
-        assert cols == {0, 1}, f"expected two columns, got {sorted(cols)}"
-        # No cell may be empty: four labels fill all four positions.
-        assert len(cells) == 4
-        assert {(r, c) for (r, c), _w in cells} == {(0, 0), (0, 1),
-                                                    (1, 0), (1, 1)}
+        labels = panel.findChildren(QLabel)
+        assert len(labels) == 4
+        for label in labels:
+            assert label.isVisible() and label.text()
+            assert label.width() >= label.fontMetrics().horizontalAdvance(label.text())
+            assert label.height() >= label.fontMetrics().height()
+        for index, label in enumerate(labels):
+            for other in labels[index + 1:]:
+                assert not label.geometry().intersects(other.geometry())
+        assert panel.height() < sum(label.height() for label in labels)
+        assert parts.file_list.isVisible()
+        parts.file_list.addItem("frame.tif")
+        parts.file_list.setCurrentRow(0)
+        assert parts.file_list.currentItem().text() == "frame.tif"
     finally:
+        parts.widget.close()
         parts.widget.deleteLater()
 
 
@@ -466,19 +461,22 @@ def test_quick_preview_is_a_fraction_not_an_absolute_cap():
 
 
 
-def test_add_label_dialog_style_exists():
-    """The style constant the action imports must exist.
+def test_label_menu_opens_dialog(qapp, tmp_path, monkeypatch):
+    from PyQt6.QtWidgets import QDialog
+    from tests.test_control_channel import _new_main_window, _destroy_main_window
 
-    v1.62's visual-layer rewrite deleted ADD_LABEL_DIALOG_STYLE while
-    controllers/label_manager.py kept importing it. The ImportError fired
-    inside the menu handler, so "Add Label" silently did nothing for three
-    releases.
-    """
-    from ui.styles import (ADD_LABEL_DIALOG_STYLE,
-                           get_add_label_dialog_style)
-
-    assert "QDialog" in ADD_LABEL_DIALOG_STYLE
-    assert get_add_label_dialog_style("light") != ADD_LABEL_DIALOG_STYLE
+    window = _new_main_window(qapp, tmp_path, monkeypatch)
+    opened = []
+    def capture(dialog):
+        opened.append(dialog.windowTitle())
+        return QDialog.DialogCode.Rejected
+    monkeypatch.setattr(QDialog, "exec", capture)
+    try:
+        window.add_label_action.setEnabled(True)
+        window.add_label_action.trigger()
+        assert len(opened) == 1 and opened[0]
+    finally:
+        _destroy_main_window(qapp, window)
 
 
 def test_first_run_theme_is_light():
@@ -597,23 +595,26 @@ def test_theme_bound_styles_are_strings_and_follow_the_theme():
         st.set_current_theme("dark")
 
 
-def test_stepper_uses_native_spinbox_and_theme(qapp):
-    from PyQt6.QtWidgets import QDoubleSpinBox
-    import ui.styles as st
+@pytest.mark.parametrize("theme", ["dark", "light"])
+def test_stepper_is_readable_in_each_theme(qapp, theme):
+    from PyQt6.QtGui import QPalette
+    from ui.styles import get_theme_style
     from widgets.stepper import StepperSpinBox
 
-    spin = StepperSpinBox(minimum=0, maximum=8, decimals=1, step=0.2)
-    assert isinstance(spin, QDoubleSpinBox)
-    dark = st.get_theme_style("dark")
-    light = st.get_theme_style("light")
-    assert dark != light
-    for sheet in (dark, light):
-        spin.setStyleSheet(sheet)
-        spin.reapply_theme()
-        assert spin.styleSheet() == sheet
-        assert "QDoubleSpinBox::up-button" in sheet
-        assert "QDoubleSpinBox::down-button" in sheet
-    spin.deleteLater()
+    spin = StepperSpinBox(minimum=0, maximum=8, decimals=1, step=0.2, value=1.2)
+    spin.setSuffix(" %")
+    spin.setStyleSheet(get_theme_style(theme))
+    spin.show()
+    qapp.processEvents()
+    try:
+        editor = spin.lineEdit()
+        palette = editor.palette()
+        assert palette.color(QPalette.ColorRole.Text) != palette.color(QPalette.ColorRole.Base)
+        assert editor.width() >= editor.fontMetrics().horizontalAdvance(editor.text())
+        assert editor.text().endswith(" %")
+    finally:
+        spin.close()
+        spin.deleteLater()
 
 
 def test_stepper_trims_zeros_without_rounding(qapp):

@@ -53,6 +53,9 @@ def test_scaled_raw_preserves_full_decode_colors_and_size(monkeypatch, tmp_path)
     rgb = np.random.default_rng(7).integers(0, 65536, (73, 95, 3), dtype=np.uint16)
 
     class Raw:
+        sizes = SimpleNamespace(width=rgb.shape[1], height=rgb.shape[0],
+                                raw_width=rgb.shape[1], raw_height=rgb.shape[0],
+                                pixel_aspect=1.0, flip=0)
         def __enter__(self):
             return self
 
@@ -84,7 +87,7 @@ def test_scaled_raw_preserves_full_decode_colors_and_size(monkeypatch, tmp_path)
         frame = source_frames.SourceFrame(
             str(path), 0, expected.shape, expected.dtype, None,
             source_frames._fingerprint(str(path)), scale=scale,
-            native_shape=rgb.shape)
+            native_shape=rgb.shape, raw_sensor_shape=rgb.shape[:2])
         source_frames.SOURCE_CACHE.clear()
         np.testing.assert_array_equal(frame.full_resolution(), expected)
 
@@ -131,3 +134,29 @@ def test_rgb_to_bgr_uses_the_native_swap_only_for_three_integer_channels(monkeyp
         assert result.flags.c_contiguous and result.dtype == other.dtype
         np.testing.assert_array_equal(result, _reversed_copy(other))
     assert len(calls) == 2
+
+
+def test_raw_budget_rejection_precedes_native_unpack(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    import pytest
+    from core import resource_policy
+    path = tmp_path / 'sensor.raf'
+    path.write_bytes(b'raw')
+    calls = []
+    class Raw:
+        sizes = SimpleNamespace(width=6000, height=4000, raw_width=6200,
+                                raw_height=4100, pixel_aspect=1, flip=0)
+        def __enter__(self): return self
+        def __exit__(self, *_args): pass
+        def open_file(self, _path): pass
+        def unpack(self): calls.append('unpack')
+        def postprocess(self, **kwargs): calls.append('postprocess')
+    monkeypatch.setattr(il, 'RAWPY_AVAILABLE', True)
+    monkeypatch.setattr(il, 'rawpy', SimpleNamespace(RawPy=Raw), raising=False)
+    def reject(required, **kwargs):
+        assert required == 6200 * 4100 * 64 + 6000 * 4000 * 6 + 6
+        raise resource_policy.ResourceLimitError('budget')
+    monkeypatch.setattr(resource_policy, 'require_memory', reject)
+    with pytest.raises(resource_policy.ResourceLimitError):
+        il._read_raw(str(path))
+    assert calls == []

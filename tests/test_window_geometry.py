@@ -16,28 +16,100 @@ def test_minimums_are_usable():
     assert _MIN_RESTORABLE_WIDTH >= 640, "a narrower window hides the panels"
     assert _MIN_RESTORABLE_HEIGHT >= 480
 
-
-def test_restore_rejects_a_sliver():
-    """The restore path must not accept a geometry below the thresholds.
-
-    The check runs on the widget Qt produced, so assert on the code path
-    itself rather than by constructing a window (a QMainWindow created and
-    destroyed without an event loop aborts the pytest process here).
-    """
-    from pathlib import Path
-    src = Path("utils/settings_store.py").read_text(encoding="utf-8")
-    body = src[src.index("def restore_window_layout"):]
-    body = body[:body.index("\ndef ")]
-    assert "restoreGeometry" in body
-    assert "_MIN_RESTORABLE_WIDTH" in body
-    assert "_MIN_RESTORABLE_HEIGHT" in body
-    assert "intersects" in body, "an off-screen position must be recovered"
+def _assert_restored_size(window, saved_size):
+    available = window.screen().availableGeometry()
+    frame = window.frameGeometry()
+    # Qt may shrink the client area to keep the decorated window on screen.
+    for actual, saved, screen, decoration in (
+        (window.width(), saved_size.width(), available.width(), frame.width() - window.width()),
+        (window.height(), saved_size.height(), available.height(), frame.height() - window.height()),
+    ):
+        assert min(saved, screen - decoration) <= actual <= saved
 
 
-def test_geometry_is_persisted_on_close():
-    """The window must save its geometry when it closes."""
-    from pathlib import Path
-    src = Path("main.py").read_text(encoding="utf-8")
-    close = src[src.index("def closeEvent"):]
-    close = close[:close.index("\n    def ", 4)]
-    assert "save_window_layout" in close
+@pytest.mark.parametrize('case', ['small', 'offscreen', 'valid'])
+def test_geometry_and_splitters_restore_to_usable_window(qapp, tmp_path, monkeypatch, case):
+    from PyQt6.QtCore import QSettings
+    from PyQt6.QtWidgets import QMainWindow, QSplitter, QWidget
+    from utils import settings_store
+
+    settings = QSettings(str(tmp_path / 'layout.ini'), QSettings.Format.IniFormat)
+    monkeypatch.setattr(settings_store, '_settings_singleton', settings)
+    windows = []
+
+    def make_window():
+        window = QMainWindow()
+        windows.append(window)
+        window.main_splitter = QSplitter()
+        window.main_splitter.addWidget(QWidget())
+        window.main_splitter.addWidget(QWidget())
+        window.setCentralWidget(window.main_splitter)
+        return window
+
+    try:
+        original = make_window()
+        original.resize(800, 600)
+        original.show()
+        qapp.processEvents()
+        original.main_splitter.setSizes([200, 600])
+        qapp.processEvents()
+        saved_sizes = original.main_splitter.sizes()
+        settings.setValue(settings_store.MAIN_SPLITTER_KEY, original.main_splitter.saveState())
+        if case == 'small':
+            original.resize(79, 105)
+        elif case == 'offscreen':
+            original.move(100000, 100000)
+        qapp.processEvents()
+        settings.setValue(settings_store.WINDOW_GEOMETRY_KEY, original.saveGeometry())
+        settings.sync()
+
+        restored = make_window()
+        restored.resize(800, 600)
+        restored.show()
+        qapp.processEvents()
+        restored.main_splitter.setSizes([600, 200])
+        settings_store.restore_window_layout(restored)
+        qapp.processEvents()
+        assert restored.width() >= 640 and restored.height() >= 480
+        assert restored.screen().availableGeometry().intersects(restored.frameGeometry())
+        if case == 'valid':
+            _assert_restored_size(restored, original.size())
+        restored.resize(800, 600)
+        qapp.processEvents()
+        assert all(abs(a - b) <= 1 for a, b in zip(restored.main_splitter.sizes(), saved_sizes))
+    finally:
+        for window in windows:
+            window.close()
+            window.deleteLater()
+        qapp.processEvents()
+
+
+def test_main_window_close_persists_layout(qapp, tmp_path, monkeypatch):
+    from PyQt6.QtCore import QSettings
+    from PyQt6.QtWidgets import QMainWindow, QSplitter, QWidget
+    from tests.test_control_channel import _destroy_main_window, _new_main_window
+    from utils import settings_store
+
+    window = _new_main_window(qapp, tmp_path, monkeypatch)
+    window.resize(800, 600)
+    qapp.processEvents()
+    saved_size = window.size()
+    _destroy_main_window(qapp, window)
+
+    settings = QSettings(str(tmp_path / 'settings.ini'), QSettings.Format.IniFormat)
+    monkeypatch.setattr(settings_store, '_settings_singleton', settings)
+    restored = QMainWindow()
+    restored.main_splitter = QSplitter()
+    restored.main_splitter.addWidget(QWidget())
+    restored.main_splitter.addWidget(QWidget())
+    restored.setCentralWidget(restored.main_splitter)
+    try:
+        settings_store.restore_window_layout(restored)
+        restored.show()
+        qapp.processEvents()
+        _assert_restored_size(restored, saved_size)
+        assert restored.screen().availableGeometry().intersects(restored.frameGeometry())
+    finally:
+        restored.close()
+        restored.deleteLater()
+        qapp.processEvents()

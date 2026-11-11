@@ -324,6 +324,16 @@ def test_image_sort_key_is_type_safe():
         "img1.png", "img2.png", "img10.png", "img100.png", "cover.png"]
 
 
+def test_image_sort_key_compares_all_numeric_parts_before_case():
+    names = ['Part2_frame10.tif', 'part2_frame2.tif', 'part10_frame1.tif',
+             'img2.png', 'IMG10.png', 'img1.png', 'cover.png']
+    assert sorted(names, key=_image_sort_key) == [
+        'img1.png', 'img2.png', 'IMG10.png', 'part2_frame2.tif',
+        'Part2_frame10.tif', 'part10_frame1.tif', 'cover.png']
+    equal_keys = ['img01.png', 'IMG1.png']
+    assert sorted(equal_keys, key=_image_sort_key) == sorted(reversed(equal_keys), key=_image_sort_key)
+
+
 def test_stabilisation_folder_with_mixed_filenames(tmp_path):
     """The stabilisation path sorted with int(findall(...)[-1]) outright, so a
     digit-free name raised IndexError before any frame was read.
@@ -487,3 +497,24 @@ def test_ecc_grayscale_matches_repeated_color_geometry(dtype, singleton_axis):
         assert result.ndim == 2
         assert result.dtype == dtype
         np.testing.assert_array_equal(result, reference[:, :, 0])
+
+
+@pytest.mark.parametrize('method', ['homography', 'ecc', 'both', 'none'])
+@pytest.mark.parametrize('deferred', [False, True])
+@pytest.mark.parametrize('dtype', [np.uint8, np.uint16])
+def test_single_frame_registration_exports_passthrough(tmp_path, method, deferred, dtype):
+    frame = np.arange(144, dtype=dtype).reshape(12, 12)
+    if dtype == np.uint16:
+        frame *= 251
+    destination = tmp_path / 'output'
+    result = ImageRegistration(method, defer_warps=deferred).process(
+        [frame], output_path=str(destination))
+    np.testing.assert_array_equal(result[0], frame)
+    np.testing.assert_array_equal(cv2.imread(str(destination / 'frame_0000.png'),
+                                             cv2.IMREAD_UNCHANGED), frame)
+
+
+def test_empty_registration_does_not_create_output(tmp_path):
+    destination = tmp_path / 'output'
+    assert ImageRegistration('ecc').process([], output_path=str(destination)) == []
+    assert not destination.exists()

@@ -82,6 +82,87 @@ def test_cancellation_stops_before_decoding_sources(tmp_path):
     assert result is None
 
 
+def test_cancel_before_base_does_not_open_files(tmp_path, monkeypatch):
+    from utils import standalone_retouch
+
+    def forbidden(*args, **kwargs):
+        pytest.fail('cancelled import opened a file')
+
+    monkeypatch.setattr(standalone_retouch.Image, 'open', forbidden)
+    assert load_standalone_retouch(tmp_path / 'missing.png', [tmp_path / 'source.png'],
+                                   cancelled=lambda: True) is None
+
+
+@pytest.mark.parametrize('cancel_after_decode', [1, 2])
+def test_cancel_during_decode_discards_result_and_stops(tmp_path, monkeypatch,
+                                                        cancel_after_decode):
+    from utils import standalone_retouch
+
+    paths = [tmp_path / f'{name}.png' for name in ('result', 'first', 'second')]
+    for path in paths:
+        _write(path, np.zeros((4, 4, 3), np.uint8))
+    original_decode = standalone_retouch.cv2.imdecode
+    calls = []
+    stopped = False
+
+    def decode(*args):
+        nonlocal stopped
+        calls.append(True)
+        image = original_decode(*args)
+        if len(calls) == cancel_after_decode:
+            stopped = True
+        return image
+
+    monkeypatch.setattr(standalone_retouch.cv2, 'imdecode', decode)
+    assert load_standalone_retouch(paths[0], paths[1:], cancelled=lambda: stopped) is None
+    assert len(calls) == cancel_after_decode
+
+
+@pytest.mark.parametrize('stage', ['admission', 'file_read', 'icc', 'context'])
+def test_cancel_at_import_boundaries(tmp_path, monkeypatch, stage):
+    from core import image_loader
+    from utils import standalone_retouch
+
+    base, source = tmp_path / 'base.png', tmp_path / 'source.png'
+    for path in (base, source):
+        _write(path, np.zeros((4, 4, 3), np.uint8))
+    stopped = False
+    calls = []
+
+    def wrap(original):
+        def invoke(*args, **kwargs):
+            nonlocal stopped
+            result = original(*args, **kwargs)
+            calls.append(True)
+            stopped = True
+            return result
+        return invoke
+
+    if stage == 'admission':
+        monkeypatch.setattr(image_loader, 'admit_image_decode', wrap(image_loader.admit_image_decode))
+    elif stage == 'file_read':
+        monkeypatch.setattr(standalone_retouch.np, 'fromfile', wrap(standalone_retouch.np.fromfile))
+    elif stage == 'icc':
+        monkeypatch.setattr(image_loader, 'common_icc_profile', wrap(image_loader.common_icc_profile))
+    else:
+        monkeypatch.setattr(standalone_retouch, 'RenderContext', wrap(standalone_retouch.RenderContext))
+    assert load_standalone_retouch(base, [source], cancelled=lambda: stopped) is None
+    assert len(calls) == 1
+
+
+def test_predicate_preserves_progress_and_errors(tmp_path):
+    base, source = tmp_path / 'base.png', tmp_path / 'source.png'
+    for path in (base, source):
+        _write(path, np.zeros((4, 4, 3), np.uint8))
+    calls = []
+    loaded = load_standalone_retouch(base, [source], cancelled=lambda: False,
+                                     progress=lambda done, total: calls.append((done, total)) or True)
+    assert loaded is not None
+    assert calls == [(0, 1), (1, 1)]
+    with pytest.raises(FileNotFoundError):
+        load_standalone_retouch(base, [tmp_path / 'missing.png'], cancelled=lambda: False)
+
+
 def test_standalone_uses_upright_pixels_and_common_profile(tmp_path):
     from PIL import ImageCms
     profile = ImageCms.ImageCmsProfile(ImageCms.createProfile('sRGB')).tobytes()

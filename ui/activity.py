@@ -4,7 +4,7 @@ import weakref
 
 from PyQt6 import sip
 
-from PyQt6.QtCore import QEvent, QObject, QTimer
+from PyQt6.QtCore import QEvent, QObject, QTimer, Qt
 from PyQt6.QtGui import QAction
 from PyQt6.QtWidgets import (QAbstractButton, QAbstractItemView, QAbstractSlider,
                              QAbstractSpinBox, QApplication, QComboBox, QLineEdit,
@@ -256,9 +256,9 @@ class _ActivityLogger(QObject):
                 value = checked if checked and group is not None and group.isExclusive() else not checked
                 self._record(action, **({'value': value} if action.isCheckable() else {}))
         if isinstance(obj, QAbstractButton):
-            if kind == QEvent.Type.MouseButtonPress:
+            if kind == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
                 self._pressed.add(obj)
-            elif kind == QEvent.Type.MouseButtonRelease:
+            elif kind == QEvent.Type.MouseButtonRelease and event.button() == Qt.MouseButton.LeftButton:
                 pressed = obj in self._pressed
                 self._pressed.discard(obj)
                 if pressed and obj.isEnabled() and obj.hitButton(event.position().toPoint()):

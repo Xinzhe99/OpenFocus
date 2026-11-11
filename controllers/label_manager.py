@@ -63,6 +63,8 @@ class LabelManager:
         # editing a caption cannot keep serving an old drawing.
         self._revision = 0
         self._draw_errors = {}
+        self._preview_refresh_active = False
+        self._preview_refresh_pending = False
         self._clear_dialog_state()
 
     # ------------------------------------------------------------------
@@ -254,35 +256,53 @@ class LabelManager:
             paths[i] if i < len(paths) and paths[i] else os.path.join(folder, name)))
             + "::" + name for i, name in enumerate(names)]
 
-    def snapshot(self):
+    def snapshot(self, *, frame_ids_override=None):
         frozen = LabelManager(self.window)
         frozen._labels = self._labels.copy()
         frozen._snapshot_frame_ids = {
-            target: self.frame_ids(target) for target in ("input", "registered")}
-        frozen._snapshot_output_id = getattr(self._selected_output(), "output_id", None)
+            target: tuple(self.frame_ids(target)) for target in ("input", "registered")}
+        for target, identities in (frame_ids_override or {}).items():
+            frozen._snapshot_frame_ids[normalize_target(target)] = tuple(identities or ())
+        frozen._snapshot_output_id = (self._snapshot_output_id
+            if hasattr(self, "_snapshot_output_id") else
+            getattr(self._selected_output(), "output_id", None))
         return frozen
+
+    def applicable_labels(self, target: str, index: int, output_id=None):
+        """Return enabled labels applicable to this exact output or frame."""
+        wanted = normalize_target(target)
+        index = 0 if wanted == "output" else index
+        if wanted == "output" and output_id is None:
+            output_id = (self._snapshot_output_id if hasattr(self, "_snapshot_output_id")
+                         else getattr(self._selected_output(), "output_id", None))
+        identities = self.frame_ids(wanted) if wanted != "output" else ()
+        result = []
+        for label in self._labels.for_target(wanted):
+            config = label.config
+            if wanted == "output" and config.output_id and config.output_id != output_id:
+                continue
+            if wanted != "output" and config.frame_ids is not None:
+                if not 0 <= index < len(identities) or identities[index] not in config.frame_ids:
+                    continue
+            else:
+                parsed = parse_label_range(config.range)
+                if not parsed.valid:
+                    raise ValueError(f"Invalid label range: {config.range}")
+                if not parsed.matches(index):
+                    continue
+            result.append(label)
+        return result
 
     def _draw_for(self, image, target: str, index: int, output_id=None, source_shape=None,
                   source_rect=None):
         """Resolve identity and numbering once for every display/export path."""
         wanted = normalize_target(target)
         index = 0 if wanted == "output" else index
-        if wanted == "output" and output_id is None:
-            if hasattr(self, "_snapshot_output_id"):
-                output_id = self._snapshot_output_id
-            else:
-                record = self._selected_output()
-                output_id = getattr(record, "output_id", None)
-        identities = self.frame_ids(wanted) if wanted != "output" else []
         drawn, error = image, ""
-        for label in self._labels.for_target(wanted):
+        for label in self.applicable_labels(wanted, index, output_id):
             config = label.config
-            if wanted == "output" and config.output_id and config.output_id != output_id:
-                continue
             adder = LabelAdder()
             if config.frame_ids is not None and wanted != "output":
-                if not 0 <= index < len(identities) or identities[index] not in config.frame_ids:
-                    continue
                 import copy
                 adder.config = copy.copy(config)
                 adder.config.range = ""
@@ -334,7 +354,7 @@ class LabelManager:
         return self.display_bgr_image("registered", image, index)
 
     def prepare_bgr_image(self, target: str, image, index: int, output_id=None):
-        """Copy of `image` with the captions for `target` burned in.
+        """Return annotated pixels without modifying the borrowed input.
 
         `index` is the frame number within the target. For a single output
         result the frame number is always 1, regardless of the row it happens
@@ -343,13 +363,13 @@ class LabelManager:
         """
         from core.source_frames import resolve_frame
         image = resolve_frame(image)
-        output = image.copy()
         wanted = normalize_target(target)
-        if not self._labels.any_enabled(wanted):
-            return output
+        if not self.applicable_labels(wanted, index, output_id):
+            self._draw_errors[wanted] = ""
+            return image
         if image.ndim == 3 and image.shape[2] == 4:
             raise ValueError(trans.t('transparent_desktop_unsupported').format(path=''))
-        drawn, error = self._draw_for(output, wanted, index, output_id)
+        drawn, error = self._draw_for(image, wanted, index, output_id)
         if error:
             raise ValueError(trans.t('msg_label_draw_failed_title') + ": " + error)
         return drawn
@@ -560,7 +580,7 @@ class LabelManager:
 
         look_form = _group('label_group_look')
         self.font_size_spin = StepperSpinBox(
-            minimum=1, maximum=400, decimals=0, step=1)
+            minimum=-9007199254740991, maximum=9007199254740991, decimals=0, step=1)
         self.font_size_spin.setValue(80)
         look_form.addRow(trans.t('label_font_size'), self.font_size_spin)
 
@@ -573,10 +593,10 @@ class LabelManager:
         position = QHBoxLayout()
         position.setContentsMargins(0, 0, 0, 0)
         self.x_location_spin = StepperSpinBox(
-            minimum=0, maximum=20000, decimals=0, step=1)
+            minimum=-9007199254740991, maximum=9007199254740991, decimals=0, step=1)
         self.x_location_spin.setValue(20)
         self.y_location_spin = StepperSpinBox(
-            minimum=0, maximum=20000, decimals=0, step=1)
+            minimum=-9007199254740991, maximum=9007199254740991, decimals=0, step=1)
         self.y_location_spin.setValue(80)
         for spin in (self.x_location_spin, self.y_location_spin):
             spin.setToolTip(trans.t('label_position_hint'))
@@ -667,6 +687,7 @@ class LabelManager:
         fit = QPushButton(trans.t('label_fit'))
         fit.clicked.connect(lambda: self.preview.set_zoom_mode("fit"))
         actual = QPushButton("100%")
+        actual.setToolTip("100%: one source pixel per device pixel")
         actual.clicked.connect(lambda: self.preview.set_zoom_mode("actual"))
         preview_tools.addWidget(fit)
         preview_tools.addWidget(actual)
@@ -677,6 +698,8 @@ class LabelManager:
         self.preview_status = QLabel("")
         self.preview_status.setWordWrap(True)
         self.preview_status.setObjectName("mutedLabel")
+        self.preview.status_changed.connect(
+            lambda: self.preview_status.setText(self.preview.native_status()))
         right.addWidget(self.preview_status)
         body.addLayout(right, 1)
 
@@ -741,6 +764,7 @@ class LabelManager:
         size_dialog_to_content(dialog, scroll)
 
         dialog.exec()
+        self.preview.close_preview()
         self._clear_dialog_state()
 
     # ---- dialog helpers ---------------------------------------------------
@@ -834,6 +858,20 @@ class LabelManager:
         self._loading_editor = True
         self._form_host.setEnabled(True)
         config = label.config
+        import math
+        try:
+            numeric_values = (config.x_location, config.y_location, config.font_size)
+            representable = all(math.isfinite(value) and abs(value) <= 9007199254740991
+                                and int(value) == value for value in numeric_values)
+        except (TypeError, ValueError, OverflowError):
+            representable = False
+        if not representable:
+            self._editing_id = ''
+            self._loading_editor = False
+            self._form_host.setEnabled(False)
+            self._dialog_error.setText('Label coordinates or font size cannot be represented.')
+            self._ok_button.setEnabled(False)
+            return
         widgets = (self.target_stack_combo, self.format_edit,
                    self.range_edit, self.starting_value_spin,
                    self.interval_spin, self.font_size_spin,
@@ -859,7 +897,8 @@ class LabelManager:
                 self._output_scope.addItem(trans.t('label_target_missing'), config.output_id)
                 scope_index = self._output_scope.count() - 1
             self._output_scope.setCurrentIndex(scope_index)
-            self._range_binding = (config.target, self.range_edit.text(), config.frame_ids)
+            self._range_binding = (config.target, self.range_edit.text(),
+                                   config.frame_ids, config.range)
             self.starting_value_spin.setValue(config.starting_value)
             self.interval_spin.setValue(config.interval)
             self.font_size_spin.setValue(config.font_size)
@@ -1001,6 +1040,10 @@ class LabelManager:
         binding = self._range_binding
         if binding and binding[:2] == (target, range_text):
             bound_ids = binding[2]
+            # The editor displays all-frame ranges as an empty field and may
+            # display frame IDs using current indices. Neither is an edit to
+            # the saved range spelling while the binding remains unchanged.
+            range_text = binding[3]
         return {
             "target": self._current_target(),
             "format": self.format_edit.text(),
@@ -1115,6 +1158,39 @@ class LabelManager:
     def _refresh_preview(self, *_args) -> None:
         if self.preview is None or self._loading_editor or not self._editing_id:
             return
+        if self._preview_refresh_active:
+            self._preview_refresh_pending = True
+            return
+        self._preview_refresh_active = True
+        try:
+            while self.preview is not None and self._editing_id and not self._loading_editor:
+                self._preview_refresh_pending = False
+                draft = self._draft
+                preview = self.preview
+                editing_id = self._editing_id
+                state = self._preview_refresh_state()
+                self._refresh_preview_once()
+                if (not self._preview_refresh_pending or self.preview is not preview
+                        or self._draft is not draft or self._editing_id != editing_id
+                        or self._loading_editor or self._preview_refresh_state() == state):
+                    break
+        finally:
+            self._preview_refresh_active = False
+            self._preview_refresh_pending = False
+
+    def _preview_refresh_state(self):
+        """Inputs whose change requires another pass after a nested event loop."""
+        images = self._dialog_frames.get('images', [])
+        index = self._preview_frame_index()
+        frame = images[index] if 0 <= index < len(images) else None
+        label = self._draft.get(self._editing_id)
+        return (self._editing_id, index, id(frame), self._dialog_config(),
+                label.enabled if label is not None else False)
+
+    def _refresh_preview_once(self) -> None:
+        preview = self.preview
+        draft = self._draft
+        editing_id = self._editing_id
         self._save_editor_to_draft()
         config = self._dialog_config()
         images = self._dialog_frames.get("images", [])
@@ -1127,8 +1203,16 @@ class LabelManager:
         preview_config["range"] = "" if index in indices else str(index + 2)
         label = self._draft.get(self._editing_id)
         preview_config["enabled"] = label.enabled
+        preview_labels = self.snapshot()
+        preview_labels._labels = LabelSet([label.copy()])
+        if config['target'] == 'output' and config.get('output_id'):
+            preview_labels._snapshot_output_id = config['output_id']
         self.preview.set_preview(frame, preview_config, index,
-                                 linear_dng_metadata=frame_metadata)
+                                 linear_dng_metadata=frame_metadata,
+                                 labels=preview_labels, target=config['target'])
+        if (self.preview is not preview or self._draft is not draft
+                or self._editing_id != editing_id):
+            return
         error = self._range_error(config) if label.enabled else ""
         if not error and label.enabled:
             if frame is None:

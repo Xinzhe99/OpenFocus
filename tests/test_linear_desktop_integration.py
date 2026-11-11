@@ -253,6 +253,7 @@ def test_dng_export_keeps_the_records_result_calibration(tmp_path):
     manager = OutputManager(SimpleNamespace(
         export_manager=SimpleNamespace(_safe_export_path=lambda *args: None)))
     labels = SimpleNamespace(
+        applicable_labels=lambda *args, **kwargs: [],
         prepare_bgr_image=lambda target, pixels, index, **kwargs: pixels)
     path = tmp_path / 'calibrated.dng'
     manager._write_record(record, str(path), labels)

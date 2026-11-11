@@ -61,8 +61,11 @@ class RecordingLabels:
         self.labels = []
         self.calls = []
 
-    def snapshot(self):
+    def snapshot(self, *, frame_ids_override=None):
         return self
+
+    def applicable_labels(self, target, index, output_id=None):
+        return []
 
     def prepare_bgr_image(self, target, image, index, output_id=None):
         self.calls.append((target, index, output_id))
@@ -609,7 +612,7 @@ def test_disappearing_exported_file_is_not_reused(qapp, tmp_path, monkeypatch):
                         lambda *args: errors.append(args))
     window.output_manager._share_temp_dir = str(tmp_path)
     opened = []
-    monkeypatch.setattr(output_module, 'select_in_file_manager', lambda path: opened.append(path) or True)
+    monkeypatch.setattr(output_module, 'select_in_file_manager', lambda path, **kw: (opened.append(path), kw['on_finished'](True)))
     window.output_manager.share_reveal(item)
     assert not errors
     assert record.export_path == str(saved)
@@ -628,34 +631,27 @@ def test_reveal_surfaces_a_file_manager_exception(qapp, tmp_path, monkeypatch):
                         lambda *args: errors.append(args))
     monkeypatch.setattr(
         output_module, "select_in_file_manager",
-        lambda path: (_ for _ in ()).throw(RuntimeError("no file manager")))
+        lambda path, **kw: (_ for _ in ()).throw(RuntimeError("no file manager")))
     window.output_manager.share_reveal(item)
     assert errors and errors[0][1] == trans.t("msg_share_failed_title")
     assert errors[0][2] == trans.t("msg_share_reveal_failed")
     assert "no file manager" in errors[0][3]
 
 
-def test_linux_selection_falls_back_only_when_selection_fails(
-        tmp_path, monkeypatch):
-    path = tmp_path / "结果 一.png"
-    path.write_bytes(b"x")
-    monkeypatch.setattr(
-        "utils.file_manager.shutil.which",
-        lambda name: "/usr/bin/dbus-send" if name == "dbus-send" else None)
-
-    fallback = []
+def test_linux_selection_falls_back_only_when_selection_fails(qapp, tmp_path, monkeypatch):
+    from utils.file_manager import _LinuxReveal
+    from PyQt6.QtWidgets import QWidget
+    path = str(tmp_path / "结果 一.png")
+    parent = QWidget()
+    fallback, results = [], []
     opener = lambda directory: fallback.append(directory) or True
-    assert select_in_file_manager(
-        str(path), platform="linux",
-        runner=lambda arguments, **kwargs: SimpleNamespace(returncode=0),
-        opener=opener)
-    assert fallback == []
-
-    assert select_in_file_manager(
-        str(path), platform="linux",
-        runner=lambda arguments, **kwargs: SimpleNamespace(returncode=1),
-        opener=opener)
-    assert fallback == [str(tmp_path)]
+    request = _LinuxReveal(path, parent, results.append, opener)
+    request._finished(0, request.process.ExitStatus.NormalExit)
+    assert results == [True] and fallback == []
+    request = _LinuxReveal(path, parent, results.append, opener)
+    request._finished(1, request.process.ExitStatus.NormalExit)
+    request._error(None)
+    assert results == [True, True] and fallback == [str(tmp_path)]
 
 
 def test_reveal_opens_the_persistent_file_for_the_target(qapp, tmp_path, monkeypatch):
@@ -667,7 +663,7 @@ def test_reveal_opens_the_persistent_file_for_the_target(qapp, tmp_path, monkeyp
                          annotations_baked=True)
     called = []
     monkeypatch.setattr(output_module, "select_in_file_manager",
-                        lambda path: called.append(path) or True)
+                        lambda path, **kw: (called.append(path), kw['on_finished'](True)))
     window.output_manager.share_reveal(item)
     assert called == [str(saved)]
 
@@ -681,7 +677,7 @@ def test_reveal_opens_temp_for_unsaved_result_without_marking_it_saved(
                         lambda *args, **kwargs: pytest.fail("no folder picker"))
     called = []
     monkeypatch.setattr(output_module, "select_in_file_manager",
-                        lambda path: called.append(path) or True)
+                        lambda path, **kw: (called.append(path), kw['on_finished'](True)))
     window.output_manager.share_reveal(item)
     expected = str(tmp_path / "reveal.png")
     assert called == [expected] and Path(expected).is_file()
@@ -696,7 +692,7 @@ def test_reveal_failure_is_visible(qapp, tmp_path, monkeypatch):
                          exported=True, export_path=str(saved), annotations_baked=True)
     errors = []
     monkeypatch.setattr(output_module, "show_error_box", lambda *args: errors.append(args))
-    monkeypatch.setattr(output_module, "select_in_file_manager", lambda path: False)
+    monkeypatch.setattr(output_module, "select_in_file_manager", lambda path, **kw: kw['on_finished'](False))
     window.output_manager.share_reveal(item)
     assert errors and errors[0][1] == trans.t("msg_share_failed_title")
     assert errors[0][2] == trans.t("msg_share_reveal_failed")

@@ -1,6 +1,5 @@
 # Reference:
 # Haghighat M B A, Aghagolzadeh A, Seyedarabi H. Multi-focus image fusion for visual sensor networks in DCT domain[J]. Computers & Electrical Engineering, 2011, 37(5): 789-797.
-import glob
 import os
 import time
 from typing import List, Sequence, Tuple, Union
@@ -29,20 +28,13 @@ def _ensure_color_image(image: np.ndarray) -> np.ndarray:
     raise ValueError(f"Unsupported image shape: {image.shape}")
 
 def _collect_images_from_folder(source_folder: str, check_cancel=None) -> Tuple[List[np.ndarray], List[str]]:
-    from core.source_frames import scan_source
+    from fusion_methods.openfocus_ab import _collect_directory_sources
 
-    extensions = ['*.jpg', '*.jpeg', '*.png', '*.tif', '*.tiff', '*.bmp']
-    img_paths = []
-    for ext in extensions:
-        img_paths.extend(glob.glob(os.path.join(source_folder, ext)))
-    img_paths.sort()
-    
-    images = []
-    for path in img_paths:
+    if not os.path.isdir(source_folder):
         if check_cancel is not None:
             check_cancel()
-        images.extend(scan_source(path, header_only=True, should_cancel=check_cancel))
-    return images, img_paths
+        return [], []
+    return _collect_directory_sources(source_folder, check_cancel)
 
 def _normalize_image_stack(images: Sequence[np.ndarray], check_cancel=None) -> Tuple[List[np.ndarray], Tuple[int, int]]:
     """统一图像尺寸并返回BGR列表。"""

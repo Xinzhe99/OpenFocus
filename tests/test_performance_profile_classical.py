@@ -10,6 +10,8 @@ from conftest import make_two_focus_stack
 from core.multi_focus_fusion import MultiFocusFusion
 from utils import performance_profile as pp
 
+pytestmark = pytest.mark.usefixtures("isolated_process_env")
+
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
@@ -72,10 +74,11 @@ def test_cli_profiles_a_classical_method(tmp_path):
     assert stages['render/fusion/tiled/normalize']['count'] == 1
     assert stages['render']['order'] < stages['render/registration']['order'] \
         < stages['render/fusion']['order']
-    # Registration is broken down: the step on the render thread, its pool work beside it.
+    # One-thread registration prepares and estimates on the render thread,
+    # so the profiler records these stages in the tree, not as pool work.
     assert stages['render/registration/step.ecc']['count'] == 1
-    assert written['concurrent']['registration.estimate']['count'] == 2    # adjacent pairs
-    assert written['concurrent']['registration.prepare']['count'] == 3     # frames
+    assert stages['render/registration/step.ecc/registration.estimate']['count'] == 2
+    assert stages['render/registration/step.ecc/registration.prepare']['count'] == 3
     assert 'Where the time went' in result.stderr
 
 

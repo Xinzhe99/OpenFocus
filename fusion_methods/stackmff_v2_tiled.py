@@ -5,6 +5,8 @@ positions to a single feathered image, which is normalized once before any
 source pixels are selected.
 """
 
+from contextlib import nullcontext
+
 import cv2
 import numpy as np
 
@@ -162,6 +164,21 @@ def tiled_depth(source, model_path, use_gpu, should_cancel=None,
                 resource_preference='balanced', tile_size=None, tile_overlap=0,
                 progress_callback=None, result_count=0):
     """Return globally normalized depth and sampled indices for a source."""
+    from core.resource_policy import heavy_job
+    from fusion_methods.neural_runtime import start_inference_job
+    with heavy_job(should_cancel) if execution_plan is None else nullcontext():
+        if execution_plan is None:
+            start_inference_job()
+        return _tiled_depth_under_lease(
+            source, model_path, use_gpu, should_cancel, execution_plan,
+            thread_count, resource_preference, tile_size, tile_overlap,
+            progress_callback, result_count)
+
+
+def _tiled_depth_under_lease(source, model_path, use_gpu, should_cancel=None,
+                             execution_plan=None, thread_count=None,
+                             resource_preference='balanced', tile_size=None, tile_overlap=0,
+                             progress_callback=None, result_count=0):
     from fusion_methods import neural_runtime
     source_h, source_w = source.shape[:2]
     h = source_h + (-source_h) % common.ATTENTION_PAD_ALIGN
@@ -231,8 +248,23 @@ def tiled_fusion(input_source, img_resize, model_path, use_gpu,
                  resource_preference='balanced', tile_size=None, tile_overlap=0,
                  progress_callback=None, exposure_gains=None, source_all_uint8=None):
     """Fuse a list or directory without materializing a full-frame stack."""
+    from core.resource_policy import heavy_job
+    from fusion_methods.neural_runtime import start_inference_job
+    with heavy_job(should_cancel) if execution_plan is None else nullcontext():
+        if execution_plan is None:
+            start_inference_job()
+        return _tiled_fusion_under_lease(
+            input_source, img_resize, model_path, use_gpu, should_cancel,
+            execution_plan, thread_count, resource_preference, tile_size,
+            tile_overlap, progress_callback, exposure_gains, source_all_uint8)
+
+
+def _tiled_fusion_under_lease(input_source, img_resize, model_path, use_gpu,
+                              should_cancel=None, execution_plan=None, thread_count=None,
+                              resource_preference='balanced', tile_size=None, tile_overlap=0,
+                              progress_callback=None, exposure_gains=None, source_all_uint8=None):
     source = _Source(input_source, img_resize, exposure_gains, should_cancel)
-    depth, index = tiled_depth(source, model_path, use_gpu, should_cancel,
+    depth, index = _tiled_depth_under_lease(source, model_path, use_gpu, should_cancel,
                                execution_plan, thread_count, resource_preference,
                                tile_size, tile_overlap, progress_callback, 1)
     del depth

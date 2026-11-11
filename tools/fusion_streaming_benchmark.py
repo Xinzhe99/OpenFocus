@@ -36,8 +36,8 @@ def main():
     parser.add_argument('--threads', type=int, default=1)
     parser.add_argument('--alignment', choices=('none', 'openfocus', 'ecc', 'homography'), default='none')
     parser.add_argument('--load-mode', choices=('decode', 'manifest', 'loader'), default='loader')
-    parser.add_argument('--kernel-size', type=int, default=11)
-    parser.add_argument('--smoothing', type=float)
+    parser.add_argument('--radius', type=int, help='registered A/B radius; defaults to registry value')
+    parser.add_argument('--smoothing', type=float, help='registered smoothing value')
     parser.add_argument('--exposure-match', action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument('--base-frame', choices=('none', 'first', 'last'), default='none')
     parser.add_argument('--sort-mode', choices=('asc', 'desc', 'off'), default='asc')
@@ -77,6 +77,19 @@ def main():
         from utils import memory
         from utils.image_utils import quantize_fuse_output, imwrite_auto
         from utils.sorting import natural_sort_key
+        from core.algorithms import get_fusion, resolve_fusion_parameters
+        get_fusion(args.method)
+        if args.radius is not None and args.method == 'openfocus_c':
+            parser.error('--radius is not supported by openfocus_c')
+        overrides = {}
+        if args.radius is not None:
+            overrides['radius'] = args.radius
+        if args.smoothing is not None:
+            overrides['smoothing'] = args.smoothing
+        try:
+            parameters = resolve_fusion_parameters(args.method, overrides)
+        except (ValueError, TypeError) as exc:
+            parser.error(str(exc))
         configure_storage_directory(scratch)
         memory.configure_opencv_memory()
 
@@ -90,6 +103,7 @@ def main():
             return imwrite_auto(str(path), pixels, stream_tiff=True)
 
         report = {'options': vars(args).copy(), 'stages_s': {}, 'firstpasses': []}
+        report['effective_fusion_parameters'] = parameters
         report['options'] = {key: str(value) if isinstance(value, Path) else value for key, value in report['options'].items()}
         report['commit'] = subprocess.check_output(['git', '-C', str(root), 'rev-parse', 'HEAD'], text=True).strip()
         report['python'] = sys.version
@@ -237,9 +251,6 @@ def main():
                 frames = ImageRegistration(method=args.alignment, defer_warps=args.load_mode == 'loader').process(
                     frames, thread_count=args.threads, resource_preference=args.resource_preference)
             report['stages_s']['alignment'] = time.perf_counter() - start
-            parameters = {} if args.method == 'openfocus_c' else {'kernel_size': args.kernel_size}
-            if args.smoothing is not None:
-                parameters['depth_smoothing' if args.method == 'openfocus_b' else 'blend_smoothing'] = args.smoothing
             fusion = MultiFocusFusion(args.method, use_gpu=False, exposure_match=args.exposure_match,
                 base_frame=args.base_frame, sort_mode=args.sort_mode, fusion_parameters=parameters,
                 tile_enabled=args.tile_enabled, tile_threshold=args.tile_threshold,

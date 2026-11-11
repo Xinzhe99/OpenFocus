@@ -73,6 +73,29 @@ def test_invalid_recipes_rejected(tmp_path, change):
         validate_recipe(recipe, tmp_path / "recipe.json")
 
 
+@pytest.mark.parametrize('options', [
+    {'method': 'dct', 'group_size': 2, 'auto_background': 'auto'},
+    {'method': 'dct', 'native_raw': True, 'auto_background': 'auto'},
+    {'method': 'dct', 'keep_soft_parts': True},
+])
+def test_recipe_rejects_incompatible_execution_options(tmp_path, options):
+    recipe = {'version': 2, 'input': ['stack'], 'output': 'out.png', 'options': options}
+    with pytest.raises(ValueError):
+        validate_recipe(recipe, tmp_path / 'recipe.json')
+    with pytest.raises(ValueError):
+        save_recipe(tmp_path / 'recipe.json', recipe)
+    assert not (tmp_path / 'recipe.json').exists()
+
+
+
+def test_recipe_create_rejects_grouped_background_before_saving(tmp_path):
+    _stack(tmp_path / 'stack')
+    recipe = tmp_path / 'recipe.json'
+    assert run_cli(['recipe', 'create', str(recipe), '-i', str(tmp_path / 'stack'),
+                    '-o', str(tmp_path / 'out.png'), '-m', 'dct', '--group-size', '2',
+                    '--auto-background']) == 2
+    assert not recipe.exists()
+
 def test_reject_duplicate_keys(tmp_path):
     path = tmp_path / "recipe.json"
     path.write_text('{"version":1,"version":1,"input":["a"],"output":"out.png"}', encoding="utf-8")

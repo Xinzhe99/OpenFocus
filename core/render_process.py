@@ -22,8 +22,9 @@ from utils.logging_setup import debug_enabled, get_logger
 
 logger = get_logger(__name__)
 _CANCEL_GRACE_SECONDS = 3.0
-_STATE_FIELDS = ('alignment_reused', 'alignment_computed', 'alignment_report',
-                 'alignment_report_provenance', 'prepared_cache', 'performance_report')
+_ERROR_STATE_FIELDS = ('alignment_reused', 'alignment_computed', 'alignment_report',
+                       'alignment_report_provenance', 'performance_report')
+_SUCCESS_STATE_FIELDS = (*_ERROR_STATE_FIELDS, 'prepared_cache')
 
 
 def _exit_reason(code):
@@ -130,13 +131,14 @@ def _render_child(connection, cancel_event, request, budget, directory, language
             worker.finished_signal.connect(lambda *result: results.append(result), direct)
             worker.error_signal.connect(errors.append, direct)
             worker.run()
-            state = {name: getattr(worker, name) for name in _STATE_FIELDS}
             if errors:
+                state = {name: getattr(worker, name) for name in _ERROR_STATE_FIELDS}
                 encoder = FrameEncoder()
                 relay.send(('error', errors[-1], encoder.encode(state)))
                 return
             if not results:
                 raise RuntimeError('Render worker produced neither a result nor an error')
+            state = {name: getattr(worker, name) for name in _SUCCESS_STATE_FIELDS}
             encoder = FrameEncoder(cancel_event.is_set)
             payload = encoder.encode({'result': results[-1], 'state': state})
             paths = encoder.owned_paths
@@ -148,6 +150,8 @@ def _render_child(connection, cancel_event, request, budget, directory, language
                     return
             if connection.recv() == 'accepted':
                 storage.disown_temp_files(paths)
+                from core import scratch_registry
+                scratch_registry.forget([*paths, *relay.directories])
     except RegistrationCancelled:
         relay.send(('error', 'CANCELLED: render cancelled', None))
     except Exception as exc:
@@ -183,13 +187,17 @@ class _RenderExchange:
         self.decoder = None
         self.error = None
 
-    def restore_state(self, state):
-        for name in _STATE_FIELDS:
+    def restore_state(self, state, fields=_SUCCESS_STATE_FIELDS):
+        for name in fields:
             setattr(self.worker, name, state[name])
 
     def receive(self, message, connection):
         kind = message[0]
         if kind == 'scratch':
+            from core import scratch_registry
+            scratch_registry.register(message[1])
+            if message[2] is not None and message[2] not in self.directories:
+                scratch_registry.register(message[2])
             self.files.add(message[1])
             if message[2] is not None:
                 self.directories.add(message[2])
@@ -200,7 +208,7 @@ class _RenderExchange:
         elif kind == 'error':
             self.error = message[1]
             if message[2] is not None:
-                self.restore_state(FrameDecoder().decode(message[2]))
+                self.restore_state(FrameDecoder().decode(message[2]), _ERROR_STATE_FIELDS)
         elif kind == 'completed':
             if self.worker.is_cancelled:
                 connection.send('cancelled')
@@ -267,6 +275,7 @@ class RenderProcessWorker(RenderWorker):
         process = None
         exchange = _RenderExchange(self)
         adopted = set()
+        encoder = None
         try:
             encoder = FrameEncoder(self._check_current)
             request = encoder.encode({'args': self._render_args, 'kwargs': self._render_kwargs,
@@ -334,6 +343,10 @@ class RenderProcessWorker(RenderWorker):
             child.close()
             if not adopted:
                 exchange.packet = exchange.decoder = None
+            # Tracebacks retained by logging may outlive this worker.  The input
+            # encoder owns borrowed arrays until the child exits, but must not
+            # keep them alive through a retained _run_process frame afterwards.
+            encoder = None
             _cleanup_files(exchange.files - adopted, exchange.directories)
             if process is not None:
                 process.close()

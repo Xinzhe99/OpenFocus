@@ -103,6 +103,57 @@ def test_safe_config_clamps_corrupt_style_but_keeps_text():
     assert cfg.angle == wm.DEFAULT_ANGLE
     assert wm.safe_config({"text": ""}) is None
 
+@pytest.mark.parametrize("field,value", [("density", []), ("density", {}),
+    ("opacity", 10**400), ("angle", 10**400), ("size_percent", 10**400)])
+def test_corrupt_style_restores_independently_but_strict_burn_rejects(field, value):
+    data = {"text": "Creator", field: value}
+    restored = wm.safe_config(data)
+    assert restored.text == "Creator"
+    assert getattr(restored, field) == getattr(wm, "DEFAULT_" + field.upper())
+    image = np.zeros((240, 400, 3), dtype=np.uint8)
+    original = image.copy()
+    with pytest.raises(wm.WatermarkError):
+        wm.normalize_config(data)
+    with pytest.raises(wm.WatermarkError):
+        wm.burn(image, data)
+    np.testing.assert_array_equal(image, original)
+
+def test_restore_validates_flat_targets_and_output_identities():
+    window = _Window()
+    first, second = _Record('first'), _Record('second', config={'text': 'untouched'})
+    window.output_list.records = [first, second]
+    wm.apply_settings(window, {
+        'text': 'flat', 'density': [],
+        'source': {'text': 'source', 'opacity': 10**400},
+        'registered': {'text': 'registered', 'angle': 10**400},
+        'output': {'text': 'output', 'size_percent': 10**400},
+        'outputs': {'first': {'config': {'text': 'record', 'density': {}}}},
+    })
+    assert window.watermark_text == 'flat'
+    assert window.watermark_density == wm.DEFAULT_DENSITY
+    assert wm.target_config(window, 'source').opacity == wm.DEFAULT_OPACITY
+    assert wm.target_config(window, 'registered').angle == wm.DEFAULT_ANGLE
+    assert wm.target_config(window, 'output').size_percent == wm.DEFAULT_SIZE_PERCENT
+    assert first.watermark_config['text'] == 'record'
+    assert first.watermark_config['density'] == wm.DEFAULT_DENSITY
+    assert second.watermark_config == {'text': 'untouched'}
+
+
+def test_restore_does_not_partially_write_when_validation_fails(monkeypatch):
+    window = _Window()
+    window.watermark_text = 'previous'
+    original = wm.safe_config
+
+    def fail_output(value):
+        if isinstance(value, dict) and value.get('text') == 'fail':
+            raise RuntimeError('injected failure')
+        return original(value)
+
+    monkeypatch.setattr(wm, 'safe_config', fail_output)
+    with pytest.raises(RuntimeError):
+        wm.apply_settings(window, {'text': 'new', 'source': {'text': 'fail'}})
+    assert window.watermark_text == 'previous'
+
 
 @pytest.mark.parametrize("position,rendered", [("prefix", "© Creator"),
                                                 ("suffix", "Creator ©")])

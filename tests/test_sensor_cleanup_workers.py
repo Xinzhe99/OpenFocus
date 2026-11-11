@@ -284,3 +284,32 @@ def test_batch_denoise_does_not_validate_orientation(qapp, tmp_path, monkeypatch
     worker.finished.connect(outcome.update)
     worker.run()
     assert outcome['success'] == 1
+
+
+@pytest.mark.parametrize('plan', [[], [[]]])
+def test_batch_rejects_empty_frozen_plan_before_output(qapp, tmp_path, plan):
+    from core.workers import BatchWorker
+
+    output = tmp_path / 'output'
+    worker = BatchWorker([], 'custom', str(output),
+                         {'frozen_stacks': plan}, import_mode='single_folder')
+    with pytest.raises(ValueError, match='Frozen batch plan'):
+        worker._split_images_for_processing()
+    assert not output.exists()
+
+
+@pytest.mark.parametrize('reference_key', ['flat_field_path', 'defect_mask_path'])
+def test_batch_rejects_reference_in_frozen_plan_before_output(qapp, tmp_path, reference_key):
+    from core.workers import BatchWorker
+
+    reference = tmp_path / 'reference.png'
+    reference.touch()
+    image = np.ones((2, 2), np.uint8)
+    entry = (str(reference), image, None)
+    output = tmp_path / 'output'
+    worker = BatchWorker([], 'custom', str(output),
+                         {'frozen_stacks': [[entry]], reference_key: str(reference)},
+                         import_mode='single_folder')
+    with pytest.raises(ValueError, match='correction reference'):
+        worker._split_images_for_processing()
+    assert not output.exists()

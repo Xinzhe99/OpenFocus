@@ -242,7 +242,7 @@ def test_video_load_commits_pixels_and_provenance_together(tmp_path, monkeypatch
     assert loader.load_from_filepaths([previous_path])[0]
     loader.source_exif = b'previous EXIF'
     loader.source_icc_profile = b'previous ICC'
-    loader.source_icc_profiles = {previous_path: b'previous ICC'}
+    loader.source_icc_profiles = (b'previous ICC',)
     loader.px_size_um = 2.5
     loader.linear_dng_metadata = object()
     loader.failed_count = 3
@@ -290,7 +290,7 @@ def test_video_load_commits_pixels_and_provenance_together(tmp_path, monkeypatch
             np.testing.assert_array_equal(images[0], pixels)
             assert loader.images is images and loader.image_paths == [str(path)]
             assert loader.source_exif == loader.source_icc_profile == b''
-            assert loader.source_icc_profiles == {} and loader.px_size_um is None
+            assert loader.source_icc_profiles == (b'',) and loader.px_size_um is None
             assert loader.linear_dng_metadata is None and loader.failed_count == 0
         else:
             assert images == names == []

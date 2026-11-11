@@ -19,6 +19,7 @@ class _MissingDataExportWorker(QThread):
         self.missing = missing
         self.targets = tuple(targets)
         self.error = None
+        self.warning = None
         self.status = "cancelled"
 
     def run(self):
@@ -27,10 +28,11 @@ class _MissingDataExportWorker(QThread):
         from core.resource_policy import heavy_job, require_memory
         from utils.image_utils import imwrite_auto
 
-        staged = []
+        records = []
+        preserve_recovery = False
+        committed = False
         try:
             with heavy_job(self.isInterruptionRequested):
-                # Float colour/alpha temporaries, the preview and codec scratch.
                 require_memory(self.image.shape[0] * self.image.shape[1] * 96 + 1024 * 1024)
                 preview = missing_data_overlay(self.image, self.missing)
                 layers = (preview, *(layer for _name, layer, _colour in self.missing.layers()))
@@ -41,28 +43,83 @@ class _MissingDataExportWorker(QThread):
                     descriptor, temporary = tempfile.mkstemp(
                         prefix=".openfocus-map-", suffix=".png", dir=directory)
                     os.close(descriptor)
-                    staged.append((temporary, target))
+                    records.append(dict(temporary=temporary, target=target, backup=None,
+                                        existed=False, moved=False, published=False))
                     if not imwrite_auto(temporary, pixels):
                         raise OSError(target)
                     self.progressed.emit(index + 1)
+
+                # Reserve all recovery names and record target state before the
+                # first rename, so every completed move has a recovery record.
+                for record in records:
+                    target = record["target"]
+                    record["existed"] = os.path.lexists(target)
+                    if record["existed"] and not os.path.isfile(target):
+                        raise OSError(f"Unsupported export target: {target}")
+                    directory = os.path.dirname(os.path.abspath(target))
+                    descriptor, backup = tempfile.mkstemp(
+                        prefix=".openfocus-map-backup-", dir=directory)
+                    record["backup"] = backup
+                    os.close(descriptor)
                 if self.isInterruptionRequested():
                     return
-                # Finish staging every file before publishing any destination.
-                for temporary, target in staged:
-                    os.replace(temporary, target)
+                try:
+                    for record in records:
+                        if record["existed"]:
+                            os.replace(record["target"], record["backup"])
+                            record["moved"] = True
+                    for record in records:
+                        os.replace(record["temporary"], record["target"])
+                        record["published"] = True
+                except Exception as exc:
+                    recovery_errors = []
+                    for record in reversed(records):
+                        try:
+                            if record["published"]:
+                                os.unlink(record["target"])
+                            if record["moved"]:
+                                os.replace(record["backup"], record["target"])
+                                record["moved"] = False
+                        except Exception as recovery_exc:
+                            recovery_errors.append(
+                                f"{record['target']} (backup {record['backup']}): {recovery_exc}")
+                    if recovery_errors:
+                        preserve_recovery = True
+                        self.error = RuntimeError(
+                            f"{exc}; recovery failed: {'; '.join(recovery_errors)}")
+                        self.error.__cause__ = exc
+                    else:
+                        self.error = exc
+                    self.status = "failed"
+                    return
+                committed = True
                 self.status = "saved"
         except RegistrationCancelled:
             pass
         except Exception as exc:
             self.error = exc
+            self.status = "failed"
         finally:
-            for temporary, _target in staged:
-                try:
-                    if os.path.exists(temporary):
-                        os.unlink(temporary)
-                except OSError as exc:
-                    if self.error is None:
-                        self.error = exc
+            cleanup_errors = []
+            if not preserve_recovery:
+                for record in records:
+                    for path in (record["temporary"], record["backup"]):
+                        if path is None:
+                            continue
+                        try:
+                            if os.path.lexists(path):
+                                os.unlink(path)
+                        except OSError as exc:
+                            cleanup_errors.append(f"{path}: {exc}")
+            if cleanup_errors:
+                message = "; ".join(cleanup_errors)
+                if committed:
+                    self.warning = message
+                elif self.error is None:
+                    self.error = OSError(message)
+                    self.status = "failed"
+                else:
+                    self.error = RuntimeError(f"{self.error}; cleanup failed: {message}")
             self.image = None
             self.missing = None
 

@@ -20,7 +20,8 @@ def report_metadata(bundle, *, source, locale, severity='error'):
     }
 
 
-def send_bundle(bundle, *, source, locale, account=None, severity='error', require_account=False):
+def send_bundle(bundle, *, source, locale, account=None, severity='error', require_account=False,
+                permission=None, cancel=None, deadline=None):
     """Send from a background worker, retaining account scope if offline."""
     reports = ReportClient(user_data_dir() / 'reports')
     client = account if account is not None else AccountClient()
@@ -34,11 +35,14 @@ def send_bundle(bundle, *, source, locale, account=None, severity='error', requi
     if owner_id:
         return reports.enqueue_and_submit(
             metadata, bundle.data, owner_id=owner_id,
-            token_resolver=lambda: client.token(expected_owner=owner_id))
-    return reports.enqueue_and_submit(metadata, bundle.data)
+            token_resolver=lambda: client.token(expected_owner=owner_id),
+            permission=permission, cancel=cancel, deadline=deadline)
+    return reports.enqueue_and_submit(metadata, bundle.data, permission=permission,
+                                      cancel=cancel, deadline=deadline)
 
 
-def retry_reports(account=None, *, include_auto=False, account_only_auto=False):
+def retry_reports(account=None, *, include_auto=False, account_only_auto=False,
+                  permission=None, cancel=None, deadline=None):
     """Retry queued reports only under their original account or anonymously."""
     reports = ReportClient(user_data_dir() / 'reports')
     client = account if account is not None else AccountClient()
@@ -48,8 +52,11 @@ def retry_reports(account=None, *, include_auto=False, account_only_auto=False):
         try:
             token = client.token(expected_owner=owner_id)
         except AccountError:
-            return reports.retry_pending(include_auto=include_auto and not account_only_auto)
+            return reports.retry_pending(include_auto=include_auto and not account_only_auto,
+                                         permission=permission, cancel=cancel, deadline=deadline)
         if token:
             return reports.retry_pending(token, owner_id=owner_id, include_auto=include_auto,
-                                         include_anonymous_auto=not account_only_auto)
-    return reports.retry_pending(include_auto=include_auto and not account_only_auto)
+                                         include_anonymous_auto=not account_only_auto,
+                                         permission=permission, cancel=cancel, deadline=deadline)
+    return reports.retry_pending(include_auto=include_auto and not account_only_auto,
+                                 permission=permission, cancel=cancel, deadline=deadline)

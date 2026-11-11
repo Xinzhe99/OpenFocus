@@ -205,3 +205,33 @@ def test_current_registered_export_uses_reordered_source_indices(tmp_path, monke
     files = sorted((tmp_path / 'RegTest_aligned').glob('*.png'))
     assert [Image.open(path).getexif().get(271) for path in files] == [
         'InputB', 'InputA']
+
+
+def test_registered_export_maps_per_frame_icc_after_reordering(tmp_path, monkeypatch):
+    import controllers.export_manager as export_manager
+    window, frames, exporter = _current_source_export_fixture(tmp_path, monkeypatch)
+    window.image_icc_profiles = (b'profile-A', b'profile-B')
+    window.registered_source_indices = (1, 0)
+    seen = []
+    monkeypatch.setattr(export_manager, 'imwrite_auto',
+                        lambda path, image, params, **kwargs: seen.append(kwargs['icc_profile']) or True)
+    exporter._save_frames_as([frames[1], frames[0]], window.image_filenames,
+                             'registered', label='ICC', destination=str(tmp_path), extension='png')
+    assert seen == [b'profile-B', b'profile-A']
+
+
+def test_historical_frame_export_uses_record_icc_not_current_stack(tmp_path, monkeypatch):
+    import controllers.export_manager as export_manager
+    from controllers.output_manager import OutputRecord
+    window, frames, exporter = _current_source_export_fixture(tmp_path, monkeypatch)
+    window.image_icc_profiles = (b'new-A', b'new-B')
+    record = OutputRecord.create(None, 'historical', kind='aligned')
+    record.frame_icc_profiles = (b'old-A', b'old-B')
+    record.annotations_baked = True
+    record.watermark_baked = True
+    seen = []
+    monkeypatch.setattr(export_manager, 'imwrite_auto',
+                        lambda path, image, params, **kwargs: seen.append(kwargs['icc_profile']) or True)
+    exporter._save_frames_as(frames, window.image_filenames, 'registered', label='HistoryICC',
+                             destination=str(tmp_path), extension='png', record=record)
+    assert seen == [b'old-A', b'old-B']

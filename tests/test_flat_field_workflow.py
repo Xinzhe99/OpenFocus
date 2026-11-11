@@ -234,12 +234,120 @@ def test_grouped_reference_admits_before_decode_and_cancels_after(tmp_path, monk
     path, white = _reference(tmp_path)
     events = []
     monkeypatch.setattr(policy, 'require_memory', lambda amount: events.append(('admit', amount)))
+    original = dust_map.load_flat_field_reference
     def decode(*args, **kwargs):
+        result = original(*args, **kwargs)
         events.append(('decode', None))
-        return white, 'digest'
+        return result
     monkeypatch.setattr(dust_map, 'load_flat_field_reference', decode)
     monkeypatch.setattr(dust_map, 'compute_flat_field', lambda image: pytest.fail('gain computed after cancellation'))
     with pytest.raises(RegistrationCancelled):
         dust_map.grouped_flat_field_gain(path, should_cancel=lambda: len(events) >= 2)
     assert events[0][0] == 'admit' and events[0][1] >= path.stat().st_size + white.nbytes
     assert events[1][0] == 'decode'
+
+
+def test_flat_admission_precedes_decode_and_float_allocation(monkeypatch):
+    import core.resource_policy as policy
+    import utils.dust_map as dust_map
+    amounts = []
+    def reject(amount):
+        amounts.append(amount)
+        raise policy.ResourceLimitError('resource limit')
+    monkeypatch.setattr(policy, 'require_memory', reject)
+    monkeypatch.setattr(dust_map, '_reference_header', lambda path: (12000, 8000, 4, 100))
+    monkeypatch.setattr(dust_map.np, 'fromfile', lambda *a, **k: pytest.fail('decoded before admission'))
+    with pytest.raises(policy.ResourceLimitError):
+        dust_map.load_flat_field_reference('large.png')
+    assert amounts.pop() == 100 + 2 * 12000 * 8000 * 3 * 4
+    for shape, expected in [((8, 8, 3), 4608), ((8, 8), 1536)]:
+        with pytest.raises(policy.ResourceLimitError):
+            dust_map.compute_flat_field(np.ones(shape, np.uint8))
+        assert amounts.pop() == expected
+
+
+@pytest.mark.parametrize('shape,dtype,gain_shape,gain_dtype,expected', [
+    ((8, 8, 3), np.uint8, (8, 8, 3), np.float32, 2304),
+    ((8, 8), np.uint16, (8, 8, 3), np.float32, 1024),
+    ((8, 8, 4), np.uint8, (8, 8, 3), np.float32, 2624),
+    ((8, 8, 3), np.float32, (8, 8, 3), np.float64, 4608),
+])
+def test_flat_apply_admission_formula(monkeypatch, shape, dtype, gain_shape, gain_dtype, expected):
+    import core.resource_policy as policy
+    amounts = []
+    monkeypatch.setattr(policy, 'require_memory', amounts.append)
+    apply_flat_field(np.full(shape, 20, dtype), np.ones(gain_shape, gain_dtype))
+    assert amounts == [expected]
+
+
+def test_preview_arrays_match_previous_pipeline():
+    from dialogs.dustmap import _prepare_preview
+    from utils.image_utils import to_display_uint8
+    for shape in [(11, 21), (11, 21, 3), (220, 350, 3)]:
+        for dtype in (np.uint8, np.uint16):
+            img = np.arange(np.prod(shape), dtype=np.uint16).reshape(shape).astype(dtype)
+            scale = min(340 / shape[1], 180 / shape[0])
+            expected = cv2.resize(to_display_uint8(img),
+                                  (max(1, round(shape[1] * scale)), max(1, round(shape[0] * scale))),
+                                  interpolation=cv2.INTER_AREA)
+            if expected.ndim == 2:
+                expected = cv2.cvtColor(expected, cv2.COLOR_GRAY2BGR)
+            actual = _prepare_preview(img)
+            np.testing.assert_array_equal(actual, expected)
+            assert actual.flags.c_contiguous and actual.flags.owndata and actual.dtype == np.uint8
+
+
+def test_flat_preview_preparation_runs_in_worker_thread(qapp, monkeypatch):
+    from PyQt6.QtCore import QEventLoop, QTimer, QThread
+    import core.resource_policy as policy
+    import dialogs.dustmap as dialog
+    import utils.image_utils as image_utils
+    monkeypatch.setattr(policy, 'require_memory', lambda amount: None)
+    calls = []
+    for module, name in ((dialog.cv2, 'applyColorMap'), (dialog.cv2, 'resize'),
+                         (image_utils, 'to_display_uint8')):
+        original = getattr(module, name)
+        def wrapped(*args, _original=original, _name=name, **kwargs):
+            calls.append((_name, QThread.currentThread()))
+            return _original(*args, **kwargs)
+        monkeypatch.setattr(module, name, wrapped)
+    frame = np.full((16, 24, 3), 40000, np.uint16)
+    worker = dialog._FlatFieldWorker('preview', 1, [frame], [], white=frame)
+    loop = QEventLoop()
+    worker.finished.connect(loop.quit)
+    QTimer.singleShot(5000, loop.quit)
+    worker.start()
+    loop.exec()
+    assert not worker.isRunning() and not worker.error
+    assert {name for name, _ in calls} == {'applyColorMap', 'resize', 'to_display_uint8'}
+    assert all(thread != qapp.thread() for _, thread in calls)
+    for array in worker.result[2:]:
+        assert array.dtype == np.uint8 and array.flags.owndata and array.flags.c_contiguous
+        assert array.shape[0] <= 180 and array.shape[1] <= 340 and array.shape[2] == 3
+
+
+@pytest.mark.parametrize('dtype', [np.uint8, np.uint16])
+@pytest.mark.parametrize('channels', [1, 3, 4])
+@pytest.mark.parametrize('sigma', [4.0, 12.0])
+def test_flat_math_preserves_previous_results(dtype, channels, sigma):
+    rng = np.random.RandomState(42)
+    high = 256 if dtype == np.uint8 else 65536
+    shape = (24, 31) if channels == 1 else (24, 31, channels)
+    white = rng.randint(high // 4, high, size=shape).astype(dtype)
+    image = rng.randint(0, high, size=shape).astype(dtype)
+    f = white[:, :, None] if white.ndim == 2 else white
+    low = cv2.GaussianBlur(f.astype(np.float32), (0, 0), sigma)
+    if low.ndim == 2:
+        low = low[:, :, None]
+    expected_gain = np.clip(low / float(low.mean()), 0.5, 2.0).astype(np.float32)
+    gain = compute_flat_field(white, sigma=sigma)
+    np.testing.assert_array_equal(gain, expected_gain)
+    frame = image[:, :, None] if image.ndim == 2 else image
+    color = frame[:, :, :3] if channels == 4 else frame
+    effective_gain = gain[:, :, :3] if channels == 4 else gain
+    result = np.clip(np.rint(color.astype(np.float32) / effective_gain), 0, high - 1).astype(dtype)
+    if channels == 4:
+        result = np.dstack((result, frame[:, :, 3].copy()))
+    if image.ndim == 2:
+        result = result[:, :, 0]
+    np.testing.assert_array_equal(apply_flat_field(image, gain), result)

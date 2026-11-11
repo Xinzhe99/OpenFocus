@@ -197,8 +197,9 @@ def _cast(raw: Any, kind: Any, default: Any) -> Any:
         # 标定等所有字符串/浮点设置曾因此从未恢复过
         if isinstance(kind, str):
             kind = _STR_KINDS[kind]
-        return kind(raw)
-    except (TypeError, ValueError, KeyError):
+        value = kind(raw)
+        return default if kind is float and not math.isfinite(value) else value
+    except (TypeError, ValueError, OverflowError, KeyError):
         return default
 
 
@@ -226,7 +227,10 @@ def _finite_number(value: Any) -> Optional[float]:
     """A finite, non-boolean number, else None (bools are ints in Python)."""
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
-    number = float(value)
+    try:
+        number = float(value)
+    except (OverflowError, ValueError, TypeError):
+        return None
     return number if math.isfinite(number) else None
 
 
@@ -455,11 +459,26 @@ def enable_account_default_reports(window) -> None:
     settings = get_settings()
     choice = settings.value(REPORTS_CHOICE_KEY)
     if choice == "unselected" or (choice is None and not settings.contains(REPORTS_AUTO_SEND_KEY)):
-        settings.setValue(REPORTS_AUTO_SEND_KEY, True)
-        settings.setValue(REPORTS_CHOICE_KEY, "account_default")
-        settings.sync()
-        if settings.status() != QSettings.Status.NoError:
-            raise OSError("Could not write OpenFocus settings")
+        from utils.app_paths import user_data_dir
+        from utils.report_client import ReportClient, revoke_automatic
+        directory = user_data_dir() / "reports"
+        old_values = {key: settings.value(key) if settings.contains(key) else None
+                      for key in (REPORTS_AUTO_SEND_KEY, REPORTS_CHOICE_KEY)}
+        ReportClient(directory).enable_automatic()
+        try:
+            settings.setValue(REPORTS_AUTO_SEND_KEY, True)
+            settings.setValue(REPORTS_CHOICE_KEY, "account_default")
+            settings.sync()
+            if settings.status() != QSettings.Status.NoError:
+                raise OSError("Could not write OpenFocus settings")
+        except BaseException:
+            revoke_automatic(directory)
+            for key, value in old_values.items():
+                if value is None:
+                    settings.remove(key)
+                else:
+                    settings.setValue(key, value)
+            raise
         window.auto_error_reports = True
 
 

@@ -240,6 +240,171 @@ def test_extract_cancel_never_marks_complete(tmp_path):
     assert not (tmp_path / "stage" / "OpenFocus" / "library").exists()
 
 
+def test_extract_cancels_inside_member_before_writing_returned_block(tmp_path, monkeypatch):
+    package = tmp_path / "payload.zip"
+    block = 256 * 1024
+    with zipfile.ZipFile(package, "w") as archive:
+        archive.writestr("large", b"a" * (block * 4))
+    original_open = zipfile.ZipFile.open
+    state = {"reads": 0, "cancel": False, "source": None}
+
+    class Source:
+        def __init__(self, wrapped):
+            self.wrapped = wrapped
+            self.closed = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            self.closed = True
+            self.wrapped.close()
+
+        def read(self, size):
+            state["reads"] += 1
+            data = self.wrapped.read(size)
+            if state["reads"] == 2:
+                state["cancel"] = True
+            return data
+
+    def open_source(archive, *args, **kwargs):
+        state["source"] = Source(original_open(archive, *args, **kwargs))
+        return state["source"]
+
+    monkeypatch.setattr(zipfile.ZipFile, "open", open_source)
+    progress = []
+    with pytest.raises(updater.DownloadCancelled):
+        self_update.extract_zip(str(package), str(tmp_path / "stage"),
+                                on_progress=lambda *p: progress.append(p),
+                                should_cancel=lambda: state["cancel"])
+    assert (tmp_path / "stage" / "large").read_bytes() == b"a" * block
+    assert state["reads"] == 2 and state["source"].closed
+    assert not progress
+
+
+@pytest.mark.parametrize("size", [0, 256 * 1024, 256 * 1024 + 19])
+def test_extract_preserves_member_bytes_at_block_boundaries(tmp_path, size):
+    payload = b"x" * size
+    package = tmp_path / "payload.zip"
+    with zipfile.ZipFile(package, "w") as archive:
+        archive.writestr("member", payload)
+    self_update.extract_zip(str(package), str(tmp_path / "stage"))
+    assert (tmp_path / "stage" / "member").read_bytes() == payload
+
+
+def test_extract_rejects_oversized_symlink(tmp_path):
+    import stat
+    package = tmp_path / "payload.zip"
+    entry = zipfile.ZipInfo("link")
+    entry.create_system = 3
+    entry.external_attr = (stat.S_IFLNK | 0o777) << 16
+    with zipfile.ZipFile(package, "w") as archive:
+        archive.writestr(entry, b"a" * 4097)
+    with pytest.raises(ValueError, match="too long"):
+        self_update.extract_zip(str(package), str(tmp_path / "stage"))
+    assert not (tmp_path / "stage" / "link").exists()
+
+
+def test_extract_rejects_actual_oversized_link_with_short_reads(tmp_path, monkeypatch):
+    import stat
+    entry = SimpleNamespace(filename="link", external_attr=(stat.S_IFLNK | 0o777) << 16,
+                            file_size=1, is_dir=lambda: False)
+    reads = []
+    source = io.BytesIO(b"a" * 4097)
+
+    class Archive:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def infolist(self):
+            return [entry]
+
+        def open(self, member):
+            return source
+
+    original_read = source.read
+
+    def short_read(size):
+        reads.append(size)
+        return original_read(min(size, 1000))
+
+    source.read = short_read
+    monkeypatch.setattr(self_update.zipfile, "ZipFile", lambda path: Archive())
+    with pytest.raises(ValueError, match="too long"):
+        self_update.extract_zip("ignored", str(tmp_path / "stage"))
+    assert source.closed and reads == [4097, 3097, 2097, 1097, 97]
+    assert not (tmp_path / "stage" / "link").exists()
+
+
+@pytest.mark.parametrize("target,allowed", [("Versions/Current/Library", True),
+                                             ("../../../../../outside", False)])
+def test_extract_framework_symlink_stays_inside_bundle(tmp_path, monkeypatch, target, allowed):
+    import stat
+    package = tmp_path / "payload.zip"
+    entry = zipfile.ZipInfo("OpenFocus.app/Contents/Frameworks/Library.framework/Library")
+    entry.create_system = 3
+    entry.external_attr = (stat.S_IFLNK | 0o777) << 16
+    with zipfile.ZipFile(package, "w") as archive:
+        archive.writestr(entry, target)
+    links = []
+    monkeypatch.setattr(self_update.os, "symlink", lambda source, dest: links.append((source, dest)))
+    if allowed:
+        self_update.extract_zip(str(package), str(tmp_path / "stage"))
+        assert len(links) == 1 and links[0][0] == target
+    else:
+        with pytest.raises(ValueError, match="escapes"):
+            self_update.extract_zip(str(package), str(tmp_path / "stage"))
+        assert not links
+
+
+@pytest.mark.parametrize("cancel", [True, False])
+def test_stage_member_interruption_cleans_incomplete_build(manager, tmp_path, monkeypatch, cancel):
+    package = tmp_path / "payload.zip"
+    root = tmp_path / "stage"
+    install = tmp_path / "install"
+    install.mkdir()
+    (install / "OpenFocus.exe").write_bytes(b"old")
+    with zipfile.ZipFile(package, "w") as archive:
+        archive.writestr("OpenFocus/OpenFocus.exe", b"x" * (4 * 256 * 1024))
+    monkeypatch.setattr(self_update, "staging_root_for", lambda tag: str(root))
+    worker = um._StageThread(str(package), str(root))
+    original_open = zipfile.ZipFile.open
+
+    class InterruptedSource:
+        def __init__(self, source):
+            self.source, self.reads = source, 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            self.source.close()
+
+        def read(self, size):
+            self.reads += 1
+            if self.reads == 2:
+                if cancel:
+                    worker.cancel()
+                else:
+                    raise OSError("disk read failed")
+            return self.source.read(size)
+
+    monkeypatch.setattr(zipfile.ZipFile, "open", lambda archive, *a, **kw:
+                        InterruptedSource(original_open(archive, *a, **kw)))
+    manager.tag = "v999"
+    manager._manual = False
+    manager._set_state(um.STATE_STAGING, manager.tag, 0)
+    worker.done.connect(lambda ok, detail: manager._on_staged(ok, detail, str(package), str(root)))
+    worker.run()
+    assert manager.state == (um.STATE_CANCELLED if cancel else um.STATE_FAILED)
+    assert not root.exists()
+    assert (install / "OpenFocus.exe").read_bytes() == b"old"
+    worker.deleteLater()
+
+
 def test_extract_rejects_paths_outside_stage(tmp_path):
     package = tmp_path / "payload.zip"
     with zipfile.ZipFile(package, "w") as archive:
@@ -304,11 +469,11 @@ def test_windows_script_preserves_install_mode_and_user_data(tmp_path, monkeypat
     stage = tmp_path / "stage"
     stage.mkdir()
     script = self_update.write_apply_script_windows(str(tmp_path / "install"), str(stage), "v999", staging_root=str(stage))
-    with open(script, encoding="ascii") as stream:
+    with open(script, encoding="utf-8-sig") as stream:
         text = stream.read()
-    copy_lines = [line for line in text.splitlines() if line.startswith("robocopy ")]
-    assert len(copy_lines) == 2
-    assert all("/XF OpenFocus.portable /XD OpenFocusData" in line for line in copy_lines)
+    assert "/XF OpenFocus.portable /XD OpenFocusData" in text
+    assert "Join-Path $backup $name" in text
+    assert "rollback failed; backup:" in text
 
 
 def test_intel_mac_does_not_offer_unqualified_arm_installer(monkeypatch):

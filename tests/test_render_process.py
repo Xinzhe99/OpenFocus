@@ -29,6 +29,53 @@ def _abort_child(connection, cancel_event, request, budget, directory, language)
     os.abort()
 
 
+def _render_with_prepared_cache(connection, cancel_event, request, budget, directory, language, failure):
+    """Run the real child pipeline with a mapped cache produced after fusion."""
+    from core import frame_storage, render_process, workers
+    from core.multi_focus_fusion import MultiFocusFusion
+    from core.resource_policy import ResourceLimitError
+    from utils import output_sharpen
+
+    fuse = MultiFocusFusion.fuse
+    run = render_process._ChildRenderWorker.run
+
+    def fuse_with_cache(self, *args, **kwargs):
+        result = fuse(self, *args, **kwargs)
+        self.prepared_cache = [frame_storage.store_frame(
+            np.full((8, 9), 231, np.uint16), prefer_ram=False)]
+        if failure == 'store':
+            def fail_store(*args, **kwargs):
+                raise OSError('injected output store failure')
+            workers.store_frame = fail_store
+        return result
+
+    def run_with_diagnostics(self):
+        run(self)
+        self.alignment_report = [{'probe': 'alignment diagnostic'}]
+        self.alignment_report_provenance = {'probe': 'child'}
+
+    def fail_sharpen(*args, **kwargs):
+        raise ResourceLimitError('injected sharpen memory failure')
+
+    MultiFocusFusion.fuse = fuse_with_cache
+    render_process._ChildRenderWorker.run = run_with_diagnostics
+    if failure == 'sharpen':
+        output_sharpen.sharpen_output = fail_sharpen
+    render_process._render_child(connection, cancel_event, request, budget, directory, language)
+
+
+def _sharpen_failure_child(*args):
+    _render_with_prepared_cache(*args, 'sharpen')
+
+
+def _store_failure_child(*args):
+    _render_with_prepared_cache(*args, 'store')
+
+
+def _successful_cache_child(*args):
+    _render_with_prepared_cache(*args, None)
+
+
 def _wait(worker, qapp):
     deadline = time.monotonic() + 35
     while worker.isRunning() and time.monotonic() < deadline:
@@ -50,7 +97,7 @@ def _start(worker):
 
 
 @pytest.fixture
-def scratch(tmp_path, monkeypatch):
+def scratch(tmp_path, monkeypatch, isolated_render_workers):
     from core import frame_storage as storage
     directory = tmp_path / 'scratch'
     directory.mkdir()
@@ -116,6 +163,93 @@ def test_relay_keeps_stage_order_and_first_progress_per_stage(monkeypatch):
                         ('stage', 'finish')]
 
 
+@pytest.mark.parametrize('target, message', [
+    (_sharpen_failure_child, 'injected sharpen memory failure'),
+    (_store_failure_child, 'injected output store failure'),
+])
+def test_failed_render_preserves_parent_cache_and_cleans_child_scratch(
+        qapp, tmp_path, scratch, monkeypatch, target, message):
+    from core import frame_storage, render_process
+
+    parent_cache = [frame_storage.store_frame(
+        np.full((8, 9), 137, np.uint16), prefer_ram=False)]
+    parent_path = Path(frame_storage.describe_frame(parent_cache[0])['path'])
+    opened, cleaned, directories, warnings = [], set(), set(), []
+    open_frame = frame_storage.open_frame
+    cleanup = render_process._cleanup_files
+    warning = render_process.logger.warning
+
+    def record_open(description, **kwargs):
+        opened.append(Path(description['path']))
+        return open_frame(description, **kwargs)
+
+    def record_cleanup(paths, folders):
+        cleaned.update(map(Path, paths))
+        directories.update(map(Path, folders))
+        return cleanup(paths, folders)
+
+    def record_warning(message, *args, **kwargs):
+        warnings.append(message)
+        return warning(message, *args, **kwargs)
+
+    monkeypatch.setattr(frame_storage, 'open_frame', record_open)
+    monkeypatch.setattr(render_process, '_cleanup_files', record_cleanup)
+    monkeypatch.setattr(render_process.logger, 'warning', record_warning)
+    frames = _sources(tmp_path)
+    with monkeypatch.context() as patch:
+        patch.setattr(render_process, '_render_child', target)
+        worker = render_process.RenderProcessWorker(
+            frames, algorithm='guided_filter', thread_count=1, use_gpu=False,
+            tile_enabled=False, exposure_match=False, prepared_cache=parent_cache,
+            retain_preparation=True, sharpen_output=(target is _sharpen_failure_child),
+            collect_alignment_report=True, profile_performance=True)
+        results, errors = _start(worker)
+        _wait(worker, qapp)
+
+    assert not results and len(errors) == 1 and message in errors[0]
+    assert worker.prepared_cache is parent_cache
+    assert worker.alignment_report == [{'probe': 'alignment diagnostic'}]
+    assert worker.alignment_report_provenance == {'probe': 'child'}
+    assert worker.performance_report['outcome'] == 'failed'
+    assert cleaned and not (cleaned & set(opened))
+    assert all(not path.exists() for path in cleaned)
+    assert all(not path.exists() for path in directories)
+    assert not any('could not remove render scratch file' in text for text in warnings)
+    assert parent_path.exists()
+    np.testing.assert_array_equal(parent_cache[0], np.full((8, 9), 137, np.uint16))
+    parent_cache.clear()
+    gc.collect()
+    assert not parent_path.exists()
+
+    retry = render_process.RenderProcessWorker(
+        frames, algorithm='guided_filter', thread_count=1, use_gpu=False,
+        tile_enabled=False, exposure_match=False)
+    retried, retry_errors = _start(retry)
+    _wait(retry, qapp)
+    assert not retry_errors and len(retried) == 1
+
+
+def test_successful_render_adopts_prepared_cache(qapp, tmp_path, scratch, monkeypatch):
+    from core import frame_storage, render_process
+
+    monkeypatch.setattr(render_process, '_render_child', _successful_cache_child)
+    worker = render_process.RenderProcessWorker(
+        _sources(tmp_path), algorithm='guided_filter', thread_count=1, use_gpu=False,
+        tile_enabled=False, exposure_match=False, retain_preparation=True)
+    results, errors = _start(worker)
+    _wait(worker, qapp)
+    assert not errors and len(results) == 1
+    cache = worker.prepared_cache
+    assert len(cache) == 1
+    path = Path(frame_storage.describe_frame(cache[0])['path'])
+    assert path.exists()
+    np.testing.assert_array_equal(cache[0], np.full((8, 9), 231, np.uint16))
+    worker.prepared_cache = None
+    cache.clear()
+    gc.collect()
+    assert not path.exists()
+
+
 @pytest.mark.parametrize('alignment', ['none', 'openfocus'])
 def test_spawned_render_preserves_uint16_and_lazy_alignment(qapp, tmp_path, scratch, alignment):
     from core.render_process import RenderProcessWorker
@@ -136,6 +270,7 @@ def test_spawned_render_preserves_uint16_and_lazy_alignment(qapp, tmp_path, scra
     _wait(worker, qapp)
     assert not errors
     assert worker.child_pid is not None and worker.child_pid != os.getpid()
+    assert list((tmp_path / 'logs').glob('openfocus-*.log'))
     processed, fused, registered, *_ = results[0]
     assert fused.dtype == np.uint16
     np.testing.assert_array_equal(fused, baseline[0][1])

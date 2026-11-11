@@ -404,6 +404,7 @@ def test_physical_roi_export_keeps_outside_as_nan(qapp, monkeypatch, tmp_path):
         dialog.z_step.setValue(2)
         dialog.z_mapping.setChecked(True)
         dialog._save_physical()
+        _wait(qapp, lambda: dialog._export_worker is None)
         with Image.open(target) as stored:
             depth = np.asarray(stored)
         assert depth.dtype == np.float32

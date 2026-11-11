@@ -15,89 +15,102 @@ from utils import self_update, updater
 
 
 class TestApplyScriptWindows:
-    def _script(self, tmp_path, monkeypatch, tag="v9.9", pid=4242):
+    def test_paths_are_encoded_and_transaction_uses_sibling_directories(self, tmp_path, monkeypatch):
+        import base64
+        import json
+        import re
+
         monkeypatch.setattr(sys, "platform", "win32")
-        root = str(tmp_path / ("staging-" + self_update.sanitize_tag(tag)))
-        app = os.path.join(root, "OpenFocus")
-        os.makedirs(app)
-        path = self_update.write_apply_script_windows(
-            str(tmp_path / "install"), app, tag,
-            staging_root=root, zip_path=os.path.join(root, "x.zip"),
-            wait_pid=pid)
-        with open(path, encoding="ascii") as fh:
-            return fh.read()
-
-    def test_no_console_flashing_poll(self, tmp_path, monkeypatch):
-        """`timeout`/`timeout.exe` under a hidden console errors out instantly.
-
-        The old loop paired DETACHED_PROCESS with `timeout /t 1` and a bare
-        `tasklist`, so every iteration allocated a fresh console window —
-        the burst of black windows users saw during an update.
-        """
-        text = self._script(tmp_path, monkeypatch)
-        assert "timeout" not in text.lower()
-        assert "ping -n 2 127.0.0.1" in text
-        assert ":waitforexit" in text
-        assert "tasklist" in text
-
-    def test_waits_for_this_process_not_the_image_name(self, tmp_path, monkeypatch):
-        text = self._script(tmp_path, monkeypatch, pid=4242)
-        assert "set APP_PID=4242" in text
-        assert 'tasklist /FI "PID eq %APP_PID%"' in text
-        # IMAGENAME matching waits for a *new* instance the user opened
-        assert "IMAGENAME" not in text
-
-    def test_no_pid_skips_the_wait(self, tmp_path, monkeypatch):
-        """PID 0 would match the System Idle Process row and stall 60s."""
-        text = self._script(tmp_path, monkeypatch, pid=0)
-        assert "if %APP_PID% LEQ 0 exit /b 0" in text
-
-    def test_process_exit_is_debounced(self, tmp_path, monkeypatch):
-        """One vanished tasklist observation is not proof: a transient tasklist
-        failure would otherwise start the copy against the still-locked exe."""
-        text = self._script(tmp_path, monkeypatch)
-        assert "set /a GONE=0" in text
-        assert "if %GONE% GEQ 2 exit /b 0" in text
-
-    def test_robocopy_retries_are_bounded(self, tmp_path, monkeypatch):
-        """Defaults (/R:1000000 /W:30) stalled the swap forever on a locked exe."""
-        text = self._script(tmp_path, monkeypatch)
-        assert "/R:10 /W:5" in text
-        assert text.count("/R:10 /W:5") == 2  # normal + elevated branch
-
-    def test_relaunch_restores_the_session(self, tmp_path, monkeypatch):
-        text = self._script(tmp_path, monkeypatch)
+        app = str(tmp_path / "安装 '100%!" / "OpenFocus")
+        stage = tmp_path / "staging"
+        stage.mkdir()
+        script = self_update.write_apply_script_windows(app, str(stage), "v9.9", wait_pid=4242)
+        text = open(script, encoding="utf-8-sig").read()
+        config = json.loads(base64.b64decode(re.search(r"FromBase64String\('([^']+)'\)", text)[1]))
+        assert config["app"] == os.path.abspath(app)
+        assert config["pid"] == 4242
+        assert app not in text
+        assert ".update-new-" in text and ".update-old-" in text
+        assert "rollback failed; backup:" in text
         assert "--restore-session" in text
+        assert text.count("-Verb RunAs") == 1
+        assert "/R:10 /W:5" in text
 
-    def test_failure_is_recorded_for_the_next_launch(self, tmp_path, monkeypatch):
-        text = self._script(tmp_path, monkeypatch)
-        assert "echo failed>" in text.replace("echo failed >", "echo failed>")
-        assert self_update.result_path("v9.9") in text
 
-    def test_failure_relaunch_restores_the_session(self, tmp_path, monkeypatch):
-        """Even the FAILED swap path must bring the app back into the saved
-        session: without it the user reopens the old build to an empty window
-        and has to reload the stack by hand."""
-        text = self._script(tmp_path, monkeypatch)
-        # both relaunches (failure branch and success branch) carry the flag
-        assert text.count("--restore-session") == 2
+@pytest.mark.skipif(sys.platform != "win32", reason="runs the Windows PowerShell helper")
+@pytest.mark.parametrize("failure", ["", "copy", "switch", "data_move", "rollback", "pid"])
+def test_windows_transaction_keeps_complete_install_and_portable_data(tmp_path, monkeypatch, failure):
+    import subprocess
 
-    def test_elevation_does_not_flash_a_console(self, tmp_path, monkeypatch):
-        text = self._script(tmp_path, monkeypatch)
-        assert "-WindowStyle Hidden" in text
-        assert "RunAs" in text
-        # the elevated pass skips the unelevated copy (no UAC loop)
-        assert 'if "%~1"=="/elevated" goto elevatedcopy' in text
-        assert text.count("elevatedcopy") == 2
-
-    def test_elevation_line_keeps_cmd_quoting_balanced(self, tmp_path, monkeypatch):
-        """`%~f0` must stay in PowerShell single quotes: a quote around it
-        closes cmd's -Command region and mangles the whole invocation."""
-        text = self._script(tmp_path, monkeypatch)
-        line = next(l for l in text.splitlines() if "powershell" in l)
-        assert line.count('"') == 2, line
-        assert "'%~f0'" in line
-        assert '"%~f0"' not in line
+    root = tmp_path / "安装 '100%!"
+    app = root / "OpenFocus"
+    stage = root / "stage"
+    staged_app = stage / "OpenFocus"
+    for directory in (app / "_internal", staged_app / "_internal", app / "OpenFocusData"):
+        directory.mkdir(parents=True)
+    (app / "OpenFocus.exe").write_bytes(b"old-exe")
+    (app / "_internal" / "library").write_bytes(b"old-library")
+    (app / "obsolete").write_bytes(b"obsolete")
+    (app / "OpenFocus.portable").write_bytes(b"portable")
+    (app / "OpenFocusData" / "workspace").write_bytes(b"user-data")
+    (staged_app / "OpenFocus.exe").write_bytes(b"new-exe")
+    (staged_app / "_internal" / "library").write_bytes(b"new-library")
+    monkeypatch.setattr(self_update.tempfile, "gettempdir", lambda: str(root))
+    script_path = self_update.write_apply_script_windows(str(app), str(staged_app), "v999", staging_root=str(stage), wait_pid=999999 if failure == "pid" else 0)
+    text = open(script_path, encoding="utf-8-sig").read()
+    stub = r'''
+$global:moves = 0
+function Get-Process {
+    [CmdletBinding()] param([int]$Id)
+    $process = [pscustomobject]@{}
+    $process | Add-Member -MemberType ScriptMethod -Name WaitForExit -Value { param($milliseconds) return $false }
+    return $process
+}
+function robocopy {
+    Copy-Item -LiteralPath (Join-Path $args[0] 'OpenFocus.exe') -Destination $args[1]
+    if ($env:UPDATE_TEST_FAILURE -eq 'copy') { $global:LASTEXITCODE = 8; return }
+    Copy-Item -LiteralPath (Join-Path $args[0] '_internal') -Destination $args[1] -Recurse
+    $global:LASTEXITCODE = 1
+}
+function Move-Item {
+    param($LiteralPath, $Destination)
+    $global:moves++
+    if (($env:UPDATE_TEST_FAILURE -eq 'switch' -or $env:UPDATE_TEST_FAILURE -eq 'rollback') -and $global:moves -eq 2) { throw 'switch failure' }
+    if ($env:UPDATE_TEST_FAILURE -eq 'rollback' -and $global:moves -eq 3) { throw 'rollback failure' }
+    if ($env:UPDATE_TEST_FAILURE -eq 'data_move' -and $global:moves -eq 4) { throw 'data move failure' }
+    Microsoft.PowerShell.Management\Move-Item -LiteralPath $LiteralPath -Destination $Destination
+}
+function Start-Process {
+    param($FilePath, $ArgumentList, $Verb, $WindowStyle, [switch]$Wait, [switch]$PassThru)
+    if ($Verb -eq 'RunAs') { throw 'UAC cancelled' }
+    [IO.File]::AppendAllText($env:UPDATE_TEST_LAUNCHES, $FilePath + "`n")
+}
+'''
+    with open(script_path, "w", encoding="utf-8-sig") as stream:
+        stream.write(stub + text)
+    launches = root / "launches.txt"
+    env = dict(os.environ, UPDATE_TEST_FAILURE=failure, UPDATE_TEST_LAUNCHES=str(launches))
+    subprocess.run(["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script_path],
+                   env=env, check=False, timeout=30, capture_output=True)
+    result = (root / "OpenFocus_update_result_v999.txt").read_text(encoding="utf-8")
+    if failure == "pid":
+        assert "process exit timed out" in result and not launches.exists()
+        assert (app / "OpenFocus.exe").read_bytes() == b"old-exe"
+        assert (app / "OpenFocusData" / "workspace").read_bytes() == b"user-data"
+        return
+    if failure == "rollback":
+        backups = list(root.glob("OpenFocus.update-old-*"))
+        assert len(backups) == 1 and (backups[0] / "OpenFocus.exe").read_bytes() == b"old-exe"
+        assert (backups[0] / "OpenFocusData" / "workspace").read_bytes() == b"user-data"
+        assert "rollback failed" in result and not launches.exists()
+        return
+    assert (app / "OpenFocus.exe").read_bytes() == (b"old-exe" if failure else b"new-exe")
+    assert (app / "_internal" / "library").read_bytes() == (b"old-library" if failure else b"new-library")
+    assert (app / "obsolete").exists() is bool(failure)
+    assert (app / "OpenFocus.portable").read_bytes() == b"portable"
+    assert (app / "OpenFocusData" / "workspace").read_bytes() == b"user-data"
+    assert result.startswith("failed" if failure else "ok")
+    assert launches.read_text(encoding="utf-8").strip() == str(app / "OpenFocus.exe")
 
 
 class TestDetachedLauncher:
@@ -574,14 +587,64 @@ class TestStartupUpdateBanner:
         assert host.update_banner.btn_update.text() == trans.t("btn_restart_now")
         assert host.update_banner.isVisible() is True
 
-    def test_banner_survives_a_theme_switch(self, qapp):
-        """The banner paints its own strip, so it must re-colour per theme."""
-        from utils.design_tokens import palette
+    def test_banner_buttons_emit_actions(self, qapp):
         host = self._host(qapp)
-        host.update_banner.apply_theme("light")
-        assert palette("light")["accentSoft"] in host.update_banner.styleSheet()
-        host.update_banner.apply_theme("dark")
-        assert palette("dark")["accentSoft"] in host.update_banner.styleSheet()
+        banner = host.update_banner
+        received = []
+        banner.update_requested.connect(lambda: received.append("update"))
+        banner.whats_new_requested.connect(lambda: received.append("details"))
+        banner.dismissed.connect(lambda tag: received.append(("dismissed", tag)))
+        try:
+            host._show_update_banner("v9.9", ready=True)
+            banner.btn_update.click()
+            banner.btn_details.click()
+            banner.btn_dismiss.click()
+            assert received == ["update", "details", ("dismissed", "v9.9")]
+            assert not banner.isVisible()
+        finally:
+            banner.close()
+            banner.deleteLater()
+            qapp.processEvents()
+
+    def test_banner_survives_a_theme_switch(self, qapp, tmp_path, monkeypatch):
+        from PyQt6.QtGui import QColor, QPalette
+        from locales import trans
+        from tests.test_control_channel import _new_main_window, _destroy_main_window
+        from ui import styles
+        from utils.design_tokens import palette
+
+        stylesheet = qapp.styleSheet()
+        app_palette = QPalette(qapp.palette())
+        previous_theme = styles.CURRENT_THEME
+        language = trans.current_lang
+        window = None
+        try:
+            window = _new_main_window(qapp, tmp_path, monkeypatch)
+            window._show_update_banner("v9.9", ready=True)
+            banner = window.update_banner
+            colours = []
+            for theme in ("light", "dark", "light"):
+                window.apply_theme(theme)
+                qapp.processEvents()
+                assert banner.isVisible()
+                assert banner.tag == "v9.9"
+                assert banner.btn_update.text() == trans.t("btn_restart_now")
+                actual = banner.grab().toImage().pixelColor(5, 3)
+                expected = QColor(palette(theme)["accentSoft"])
+                assert all(abs(a - b) <= 1 for a, b in
+                           zip(actual.getRgb()[:3], expected.getRgb()[:3]))
+                colours.append(actual)
+            assert colours[0] != colours[1]
+            assert colours[0] == colours[2]
+        finally:
+            if window is not None:
+                _destroy_main_window(qapp, window)
+            styles.set_current_theme(previous_theme)
+            qapp.setStyleSheet(stylesheet)
+            qapp.setPalette(app_palette)
+            if trans.current_lang != language:
+                trans.set_language(language)
+            qapp.processEvents()
 
 
 def test_hidden_version_stays_hidden_when_ready(qapp):

@@ -64,6 +64,31 @@ class _Account:
         self.user = None
 
 
+@pytest.mark.parametrize('operation', ['email', 'github', 'google', 'browser'])
+def test_sign_in_reports_cleanup_failure_without_losing_session(qapp, settings, monkeypatch, operation):
+    from dialogs import account as account_dialog
+    from locales import trans
+    from utils.report_client import ReportError
+
+    def fail_cleanup(window, version):
+        raise ReportError('private storage detail')
+    monkeypatch.setattr(account_dialog, 'enable_disclosed_reports', fail_cleanup)
+    window = QWidget()
+    window._account_client = _Account()
+    window._account_client.user = {'id': 'owner'}
+    dialog = account_dialog.AccountDialog(window)
+    try:
+        dialog._operation = operation
+        dialog._finished((window._account_client.user, '2026-11-11'), None)
+        assert window._account_client.is_signed_in()
+        assert dialog.status.text() == trans.t('report_cleanup_failed')
+        assert 'private storage detail' not in dialog.status.text()
+        assert settings.value('account/browser_sso_enabled', False, type=bool)
+    finally:
+        dialog.reject()
+        window.deleteLater()
+
+
 def test_account_menu_and_dialog_follow_sign_in_and_sign_out(qapp, tmp_path, monkeypatch):
     from dialogs.account import AccountDialog
     from locales import trans
@@ -101,6 +126,51 @@ def test_account_menu_and_dialog_follow_sign_in_and_sign_out(qapp, tmp_path, mon
     finally:
         dialog.reject()
         _destroy_main_window(qapp, window)
+
+
+def test_logout_storage_failure_shows_retry_and_disables_browser_restore(qapp, settings):
+    from dialogs.account import AccountDialog
+    from locales import trans
+    from utils.account_client import AccountClient, AccountError
+
+    class Store:
+        value = {'token': 'secret', 'token_type': 'Bearer', 'expires_at': 9999999999,
+                 'user': {'id': 'owner'}}
+        fail = True
+        def load(self):
+            return self.value
+        def clear(self):
+            if self.fail:
+                raise AccountError('storage')
+            self.value = None
+
+    calls = []
+    def request(method, url, body=None, token=None, timeout=None):
+        calls.append((url, token))
+        return {'ok': True}
+    store = Store()
+    window = QWidget()
+    window._account_client = AccountClient(store=store, request=request)
+    dialog = AccountDialog(window)
+    try:
+        settings.setValue('account/browser_sso_enabled', True)
+        dialog.show()
+        dialog.logout_button.click()
+        assert not settings.value('account/browser_sso_enabled', True, type=bool)
+        _wait(qapp, lambda: dialog._job is None)
+        assert window._account_client.logout_cleanup_pending
+        assert dialog.status.text() == trans.t('account_cleanup_pending')
+        assert dialog.logout_button.isVisible() and not dialog.form.isVisible()
+        assert len(calls) == 1 and calls[0][1] == 'secret'
+        store.fail = False
+        dialog.logout_button.click()
+        _wait(qapp, lambda: dialog._job is None)
+        assert not window._account_client.logout_cleanup_pending
+        assert dialog.status.text() == trans.t('account_signed_out')
+        assert store.value is None and len(calls) == 1
+    finally:
+        dialog.reject()
+        window.deleteLater()
 
 
 def test_browser_session_restores_account_and_logout_disables_autorestore(qapp, tmp_path, monkeypatch):
@@ -391,6 +461,35 @@ def test_manual_report_requires_review_and_send(qapp, settings, monkeypatch):
         window.deleteLater()
 
 
+def test_native_report_preview_matches_sent_bundle(qapp, settings, monkeypatch):
+    import io
+    import json
+    import zipfile
+    import dialogs.report_review as review
+    calls = []
+    monkeypatch.setattr(review, 'send_bundle', lambda value, **kwargs: calls.append(value) or 'sent')
+    window = QWidget()
+    crash = ('Fatal Python error: Segmentation fault\n'
+             'Current thread 0x123 (most recent call first):\n'
+             '  File "/private/workers.py", line 42 in run\n')
+    dialog = review.ReportReviewDialog(window, crash_text=crash, log_text='')
+    try:
+        _wait(qapp, lambda: dialog._job is None)
+        with zipfile.ZipFile(io.BytesIO(dialog.bundle.data)) as archive:
+            error = json.loads(archive.read('error.json'))
+        preview = dialog.preview.toPlainText()
+        assert error['native_kind'] == 'segmentation_fault'
+        assert error['stack'][0]['line'] == 42
+        assert json.dumps(error, indent=2, ensure_ascii=False) in preview
+        assert '/private/' not in preview and not calls
+        dialog.send_button.click()
+        _wait(qapp, lambda: dialog._job is None)
+        assert calls == [dialog.bundle]
+    finally:
+        dialog.reject()
+        window.deleteLater()
+
+
 def test_previous_native_crash_requires_separate_review(tmp_path, monkeypatch):
     from ui import crash_report
     from utils import diagnostics, logging_setup
@@ -405,10 +504,47 @@ def test_previous_native_crash_requires_separate_review(tmp_path, monkeypatch):
     current.write_text('Fatal Python error: current process', encoding='utf-8')
     monkeypatch.setattr(logging_setup, 'logs_dir', lambda: logs)
     monkeypatch.setattr(diagnostics, 'crash_log_path', lambda: current)
+    monkeypatch.setattr(diagnostics, 'fallback_crash_dir', lambda: None)
     key, crash, log = crash_report.previous_native_crash()
     assert crash.startswith('Fatal Python error: Segmentation')
     assert 'render.failed' in log
     assert crash_report.previous_native_crash([key]) is None
+
+
+def test_previous_crash_requires_confirmation_and_cancel_does_not_acknowledge(qapp, settings, monkeypatch):
+    import dialogs.report_review as review
+    from ui import crash_report
+    opened = []
+    choice = [False]
+
+    class Box:
+        def __init__(self, window):
+            self.review = object()
+        def setIcon(self, value): pass
+        def setWindowTitle(self, value): pass
+        def setText(self, value): pass
+        def addButton(self, text, role): return self.review
+        def exec(self): pass
+        def clickedButton(self): return self.review if choice[0] else None
+
+    class Dialog:
+        def __init__(self, *args, **kwargs):
+            opened.append(kwargs)
+            self.sent_or_queued = False
+        def exec(self): pass
+
+    Box.Icon = crash_report.QMessageBox.Icon
+    Box.ButtonRole = crash_report.QMessageBox.ButtonRole
+    monkeypatch.setattr(crash_report, 'QMessageBox', Box)
+    monkeypatch.setattr(crash_report, 'previous_native_crash', lambda acknowledged: ('key', 'crash', 'log'))
+    monkeypatch.setattr(review, 'ReportReviewDialog', Dialog)
+    monkeypatch.setattr(crash_report, 'get_settings', lambda: settings)
+    crash_report.offer_previous_crash(None)
+    assert not opened
+    choice[0] = True
+    crash_report.offer_previous_crash(None)
+    assert opened == [{'crash_text': 'crash', 'log_text': 'log'}]
+    assert 'key' not in (settings.value('reports/acknowledged_crashes', []) or [])
 
 
 def test_shutdown_reports_only_send_current_errors(qapp, settings, monkeypatch):
@@ -425,3 +561,54 @@ def test_shutdown_reports_only_send_current_errors(qapp, settings, monkeypatch):
     job = shutdown_reports._ShutdownReport(None, 'en', True)
     job._run()
     assert not sent
+
+
+def test_previous_crash_discovers_profile_fallback_and_preserves_acknowledgements(tmp_path, monkeypatch):
+    import hashlib
+    import os
+    from ui import crash_report
+    from utils import diagnostics, logging_setup
+
+    logs = tmp_path / 'logs'
+    fallback = tmp_path / 'fallback'
+    logs.mkdir()
+    fallback.mkdir()
+    name = 'openfocus-20261110T010101_000001-123.crash.txt'
+    normal = logs / name
+    rescued = fallback / name
+    normal.write_text('Fatal Python error: Aborted\n', encoding='utf-8')
+    rescued.write_text('Windows fatal exception: access violation\n', encoding='utf-8')
+    os.utime(normal, (100, 100))
+    os.utime(rescued, (200, 200))
+    monkeypatch.setattr(logging_setup, 'logs_dir', lambda: logs)
+    monkeypatch.setattr(diagnostics, 'fallback_crash_dir', lambda: fallback)
+    monkeypatch.setattr(diagnostics, 'crash_log_path', lambda: None)
+    fallback_key, text, _ = crash_report.previous_native_crash()
+    assert text.startswith('Windows fatal')
+    normal_key, text, _ = crash_report.previous_native_crash([fallback_key])
+    assert text.startswith('Fatal Python') and normal_key != fallback_key
+    legacy_key = hashlib.sha256(name.encode('utf-8')).hexdigest()
+    assert crash_report.previous_native_crash([legacy_key])[0] == fallback_key
+    assert crash_report.previous_native_crash([legacy_key, fallback_key]) is None
+    monkeypatch.setattr(diagnostics, 'crash_log_path', lambda: rescued)
+    assert crash_report.previous_native_crash()[0] == normal_key
+
+
+def test_previous_crash_skips_unreadable_candidate(tmp_path, monkeypatch):
+    import os
+    from ui import crash_report
+    from utils import diagnostics, logging_setup
+    logs = tmp_path / 'logs'
+    logs.mkdir()
+    valid = logs / 'openfocus-valid.crash.txt'
+    bad = logs / 'openfocus-bad.crash.txt'
+    valid.write_text('Fatal Python error: Aborted\n')
+    bad.write_text('Fatal Python error: Aborted\n')
+    os.utime(valid, (100, 100))
+    os.utime(bad, (200, 200))
+    monkeypatch.setattr(logging_setup, 'logs_dir', lambda: logs)
+    monkeypatch.setattr(diagnostics, 'fallback_crash_dir', lambda: None)
+    monkeypatch.setattr(diagnostics, 'crash_log_path', lambda: None)
+    original_tail = crash_report._tail
+    monkeypatch.setattr(crash_report, '_tail', lambda path: '' if path == bad else original_tail(path))
+    assert crash_report.previous_native_crash()[1].startswith('Fatal Python')

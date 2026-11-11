@@ -432,7 +432,7 @@ class MultiFocusFusion:
                 if frame is not None:
                     from core.source_frames import resolve_frame
                     means.append(_exposure_mean(
-                        resolve_frame(frame), should_cancel, normalize_uint16=normalize_uint16))
+                        resolve_frame(frame, should_cancel=should_cancel), should_cancel, normalize_uint16=normalize_uint16))
             if not means:
                 return []
             target = means[-1]
@@ -617,6 +617,8 @@ class MultiFocusFusion:
         if unknown:
             raise ValueError(f'Unknown fusion parameters: {sorted(unknown)}')
         kwargs.update(resolve_fusion_parameters(self.algorithm, values))
+        if img_resize is not None and self.descriptor.runner == get_fusion('dct').runner:
+            raise ValueError("DCT fusion does not support dynamic resizing. Resize images before processing.")
         native_codes = self.algorithm in ('openfocus_a', 'openfocus_b', 'openfocus_c')
         streaming_sources = self.descriptor.streaming_sources
         if streaming_sources and isinstance(input_source, str) and os.path.isdir(input_source):
@@ -745,8 +747,7 @@ class MultiFocusFusion:
             needs_tiles = fixed + per_worker > memory_budget_bytes()
         identity_sources = input_source
         resize_for_tiles = (self.tile_enabled and needs_tiles and img_resize is not None
-                            and self.algorithm in ('guided_filter', 'gfgfgf', 'openfocus_a',
-                                                   'dtcwt', 'stackmff', 'stackmffv2', 'stackmffv3'))
+                            and self.algorithm not in ('openfocus_b', 'openfocus_c'))
         deferred_exposure = (not streaming_sources and self.tile_enabled and needs_tiles
                              and isinstance(input_source, list) and not resize_for_tiles
                              and (img_resize is None or self.algorithm not in ('openfocus_b', 'openfocus_c')))
@@ -812,10 +813,14 @@ class MultiFocusFusion:
             pass
         elif self.exposure_match and native_codes:
             from core.source_frames import match_exposure_frames
-            with _profile().stage('exposure_gains'):
+            from core.registration import deferred_warp_threads
+            with _profile().stage('exposure_gains'), deferred_warp_threads(
+                    policy.native_thread_ceiling(self.resource_preference, kwargs.get('thread_count'))):
                 input_source = match_exposure_frames(input_source, should_cancel, reference_index=0)
         elif self.exposure_match:
-            with _profile().stage('exposure_gains'):
+            from core.registration import deferred_warp_threads
+            with _profile().stage('exposure_gains'), deferred_warp_threads(
+                    policy.native_thread_ceiling(self.resource_preference, kwargs.get('thread_count'))):
                 exposure_gains_ = self._exposure_gains_for_source(
                     input_source, should_cancel,
                     normalize_uint16=deferred_exposure or native_codes)
@@ -1297,7 +1302,7 @@ class MultiFocusFusion:
             target_size = tuple(map(int, target_size))
         width, height = map(int, target_size)
         interpolation = getattr(cv2, f'INTER_{self.descriptor.resize_interpolation.upper()}')
-        promote = self.algorithm in ('guided_filter', 'gfgfgf')
+        promote = self.descriptor.promotes_color
         staging_bytes = 0
         workspace = 0
         paths = []
@@ -1320,7 +1325,7 @@ class MultiFocusFusion:
             select_scratch(staging_bytes, paths)
             for frame in frames:
                 check_cancel()
-                image = resolve_frame(frame)
+                image = resolve_frame(frame, should_cancel=should_cancel)
                 if self.algorithm == 'guided_filter':
                     image = np.ascontiguousarray(image)
                 if promote:

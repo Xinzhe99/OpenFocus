@@ -392,6 +392,8 @@ Its output shares RAM admission or falls back to a retained temporary mapping;
 clipping, scaling and rounding do not allocate whole-image float copies. The
 same helper serves CLI, GUI, comparison and batch consumers, preserving native
 uint16 low bits and round-to-even behavior for strided, read-only inputs.
+Output preparation avoids an unconditional full-image copy when no label
+applies. Drawing an applicable label can still allocate a new image.
 
 OpenFocus alignment reuses reference preparation and writes full-resolution
 Gaussian, gain and warp scratch to mappings. Gaussian strips preserve the
@@ -405,12 +407,33 @@ Retained processing frames open the same scoped admission when resolved later,
 so temporary mappings survive until their final views are released. Explicit
 temporary-directory choices stay saved; an unavailable directory falls back
 with a warning, while a full selected disk remains binding.
+ECC's stage CPU budget includes synchronous frame preprocessing and transform
+estimation together. Registration materialization follows the request's thread
+limit and resource mode. A serial deferred warp can borrow idle threads only
+when the active OpenCV backend can be shown to enforce the limit; unknown or
+unbounded backends keep native parallelism disabled.
+
+Alignment plan manifests and encoded aligned images share the alignment cache
+budget. Accounting covers manifest file bytes and encoded image bytes, not all
+filesystem allocation. Evicted plans are estimated again; source files are not
+cache entries. Eviction is best effort if deletion fails.
+
+Grouped fusion checks temporary disk capacity with the shared safety reserve
+before writing intermediate results. This check does not reserve disk space;
+other activity can consume space afterwards and cause a write to fail. Direct
+classic-backend directory input uses the shared image scan and natural order;
+it can include images omitted by older directory handling. Existing ordered
+list input retains its supplied order.
 
 HDR mosaic planning stages bracket colors and coverage in the captured scratch
 directory. It reuses the first bracket's mappings for the merged low sample and
 closes all region leases before retaining the plan. Merge workspaces remain
 admitted per bracket group; retaining multiple groups does not retain their
 decoded low canvases in RAM.
+Mosaic scratch disk planning accounts for peak coexistence of low-resolution
+images, labels and output. Label scanning uses bounded blocks; the seam solver
+still admits workspace for the largest overlap. These bounds do not imply a
+measured speed or memory improvement.
 
 ### GUI render isolation
 
@@ -609,6 +632,11 @@ python tools/fusion_streaming_benchmark.py --source-dir STACK --method openfocus
 python tools/fusion_streaming_benchmark.py --source-dir STACK --method openfocus_b --entry pipeline --load-mode loader --threads 8 --output parallel.tif --json-output parallel.json
 ```
 
+Fusion parameters follow the current registry: A and B accept `--radius`,
+and A, B, and C accept `--smoothing`. Unspecified values use registry defaults;
+the report records the effective parameters. Comparisons require matching
+effective parameters and pipeline settings.
+
 ## Historical throughput (PyTorch CPU)
 
 | Case | Frames | Resolution | Path | Time | Notes |
@@ -801,24 +829,24 @@ a release acceptance requirement, not a result implied by the unit suite.
   not treated as available RAM; if even one work unit does not fit, the job
   reports a resource error without silently reducing image quality.
 - CUDA budgets include model and padded inference workspace against free VRAM.
-  MPS shares physical RAM and its working-set constraint with the CPU. These
-  paths require target-hardware validation; CPU measurements do not prove them.
+  Current ONNX Runtime providers and their hardware validation boundaries are
+  described in [GPU support](GPU_SUPPORT.md); CPU results do not establish GPU behavior.
 
 ## Practical guidance
 
-- **Deep stacks (≥ 24 frames)**: classical algorithms remain in the
-  seconds-to-minutes range; the AI model is ~30–90× slower on CPU — use
-  *Quick preview* to tune parameters first, then run the AI pass once.
-- **Very deep stacks (100+ frames)**: AI works but is a coffee-break run
-  (~1 h/120 frames at 3 MP on this machine). guided_filter or gfgfgf give
-  a full-quality result in minutes; dtcwt is the quality/time middle ground.
+- Use *Quick preview* to tune settings, then compare methods on the same input
+  region or full image. See [fusion methods](FUSION_METHODS.md) for method details.
+- Earlier PyTorch CPU timings are historical and do not establish current ONNX
+  Runtime performance. The [2026-11-09 CPU measurements](#measurements-2026-11-09)
+  describe their own inputs and environment; they do not establish a general GPU ranking.
+- Leave thread selection automatic or choose a resource mode for the workload;
+  allow enough RAM and temporary disk space for the input and output.
 - **High-resolution input** uses the configured tiling policy (default block
   1024 px, overlap 256 px). Insufficient resources reduce concurrency or reject
   the job; manually choosing a different tile grid can change output pixels.
-- **OpenFocus B/C cost more than A.** Both estimate a full-image depth map
-  before fusing; the five-frame small synthetic scene measured 5.1 s and
-  19.9 s against A's 0.4 s on the reference machine (`FUSION_METHODS.md`).
-  Use A or a classical method while tuning interactively.
+- For new comparisons, use the same version, input, parameters and backend,
+  and compare completed outputs. Treat unavailable hardware, failures and
+  cancelled runs as unmeasured rather than as throughput results.
 
 ## Rerun the soak any time
 
@@ -829,8 +857,19 @@ python tools/soak_test.py --only synth120,io-roundtrip   # just the deep-stack a
 ```
 
 Sections A–C need real photo stacks. Point `OPENFOCUS_SOAK_DIR` at a folder
-containing `hetao_aligned_stabled/` and `Samples1/` to run them; without it
-those sections are skipped with a notice (the synthetic sections still run).
+containing `hetao_aligned_stabled/` and `Samples1/`. The synthetic and IO
+sections also require the hetao stack. Missing fixtures are reported as skips;
+zero executed cases fail. JSON reports `passed`, `executed_count`, and `skipped`
+alongside the measured results and failures.
+
+The algorithm benchmark compares complete successful reports using full SHA-256
+digests, shapes and dtypes. Failed, incomplete and older short-hash reports
+cannot prove identical output; reports are published atomically.
+
+The UI audit tools use private settings and publish synthetic results with
+source context. The wipe probe verifies that the selected source changes while
+the result stays fixed. Its measurements are not directly comparable with the
+historical missing-source wipe measurement below.
 
 ## Historical interactive latency
 

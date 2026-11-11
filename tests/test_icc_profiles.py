@@ -103,6 +103,7 @@ def test_conversion_uses_valid_profile_of_each_tiff_page(tmp_path, rgb_profile, 
 def test_historical_output_uses_its_own_profile(tmp_path, rgb_profile):
     pytest.importorskip("PyQt6")
     from controllers.output_manager import OutputManager, OutputRecord
+    from controllers.label_manager import LabelManager
     from core.render_context import build_render_context
 
     image = np.full((12, 15, 3), 120, np.uint8)
@@ -111,7 +112,7 @@ def test_historical_output_uses_its_own_profile(tmp_path, rgb_profile):
     window = SimpleNamespace(scale_bar_enabled=False,
         image_loader=SimpleNamespace(source_icc_profile=b"different"),
         export_manager=SimpleNamespace(_safe_export_path=lambda path: path))
-    labels = SimpleNamespace(prepare_bgr_image=lambda _target, pixels, _index, **_kw: pixels)
+    labels = LabelManager(window)
     path = tmp_path / "old.png"
     OutputManager(window)._write_record(record, str(path), labels)
     with Image.open(path) as saved:
@@ -120,6 +121,7 @@ def test_historical_output_uses_its_own_profile(tmp_path, rgb_profile):
 
 def test_linear_raw_tiff_embeds_srgb_profile(qapp, tmp_path):
     from controllers.output_manager import OutputManager, OutputRecord
+    from controllers.label_manager import LabelManager
     from core.render_context import build_render_context
     from utils.image_utils import srgb_icc_profile
     from utils.linear_dng import LinearDNGMetadata, develop_linear
@@ -131,7 +133,7 @@ def test_linear_raw_tiff_embeds_srgb_profile(qapp, tmp_path):
     record = OutputRecord.create(image, 'linear', context=context)
     window = SimpleNamespace(scale_bar_enabled=False,
         export_manager=SimpleNamespace(_safe_export_path=lambda path: path))
-    labels = SimpleNamespace(prepare_bgr_image=lambda _target, pixels, _index, **_kw: pixels)
+    labels = LabelManager(window)
     path = tmp_path / 'developed.tif'
     OutputManager(window)._write_record(record, str(path), labels)
     with Image.open(path) as saved:
@@ -158,18 +160,16 @@ def test_multipage_16bit_tiff_embeds_profile_on_every_page(tmp_path, rgb_profile
 
 @pytest.mark.parametrize("second", ["same", "different", "missing"])
 def test_multipage_tiff_requires_matching_profile_on_every_page(tmp_path, rgb_profile, second):
-    from PIL import TiffImagePlugin
+    import tifffile
 
     other = bytearray(rgb_profile)
     other[-1] ^= 1
     path = tmp_path / "pages.tif"
-    with TiffImagePlugin.AppendingTiffWriter(str(path), True) as writer:
+    with tifffile.TiffWriter(path) as writer:
         for profile in (rgb_profile, {"same": rgb_profile, "different": bytes(other), "missing": b""}[second]):
-            tags = TiffImagePlugin.ImageFileDirectory_v2()
-            if profile:
-                tags[34675] = profile
-            Image.new("RGB", (12, 12)).save(writer, format="TIFF", tiffinfo=tags)
-            writer.newFrame()
+            tags = [(34675, 'B', len(profile), profile, False)] if profile else []
+            writer.write(np.zeros((12, 12, 3), np.uint8), photometric='rgb',
+                         extratags=tags)
     assert common_icc_profile([str(path)]) == (rgb_profile if second == "same" else b"")
 
 
@@ -194,11 +194,11 @@ def test_video_clears_previous_profile_and_metadata(tmp_path, rgb_profile, monke
     monkeypatch.setattr(cv2, "VideoCapture", Capture)
     loader = ImageStackLoader()
     loader.source_icc_profile = rgb_profile
-    loader.source_icc_profiles = {"old": rgb_profile}
+    loader.source_icc_profiles = (rgb_profile,)
     loader.source_exif = b"old"
     assert loader.load_from_video(str(path))[0]
     assert loader.source_icc_profile == b""
-    assert loader.source_icc_profiles == {}
+    assert loader.source_icc_profiles == (b"",)
     assert loader.source_exif == b""
 
 
@@ -268,3 +268,35 @@ def test_apng_first_frame_profile_never_decodes_animation(tmp_path, rgb_profile,
 
     monkeypatch.setattr(PngImagePlugin.PngImageFile, 'load', forbidden)
     assert common_icc_profile([str(path)]) == rgb_profile
+
+
+def test_loader_snapshots_physical_tiff_page_metadata(tmp_path, rgb_profile):
+    import tifffile
+    from core.image_loader import stack_icc_profile
+    other = bytearray(rgb_profile)
+    other[-1] ^= 1
+    other = bytes(other)
+    path = tmp_path / 'metadata-pages.tif'
+    with tifffile.TiffWriter(path) as writer:
+        for index, profile in enumerate((rgb_profile, b'', other)):
+            tags = [(271, 's', 0, f'Camera{index}', False)]
+            if profile:
+                tags.append((34675, 'B', len(profile), profile, False))
+            writer.write(np.full((4, 6, 3), 20 + index, np.uint8), photometric='rgb',
+                         subfiletype=1 if index == 1 else 0, extratags=tags)
+    loader = ImageStackLoader()
+    ok, _, frames, _ = loader.load_from_filepaths([str(path)], thread_count=1)
+    assert ok
+    assert [frame.page for frame in frames] == [0, 2]
+    assert loader.source_icc_profiles == (rgb_profile, other)
+    assert loader.source_icc_profile == b''
+    names = []
+    for data in loader.source_exifs:
+        exif = Image.Exif()
+        exif.load(data)
+        names.append(exif.get(271))
+    assert names == ['Camera0', 'Camera2']
+    window = SimpleNamespace(raw_images=frames, image_icc_profiles=list(loader.source_icc_profiles))
+    assert stack_icc_profile(window, [0]) == rgb_profile
+    assert stack_icc_profile(window, [1]) == other
+    assert stack_icc_profile(window, [0, 1]) == b''

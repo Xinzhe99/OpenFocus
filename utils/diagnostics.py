@@ -6,17 +6,21 @@ GUI/CLI launchers explicitly install diagnostics and can restore previous hooks.
 import atexit
 import datetime
 import faulthandler
+import hashlib
 from importlib import metadata
 import os
 from pathlib import Path
 import platform
 import sys
+import stat
 import tempfile
 import threading
+import time
 import traceback
 
 from constants import APP_VERSION
 from utils.logging_setup import get_logger, session_id, session_log_path
+from utils import logging_setup
 
 _logger = get_logger(__name__)
 _lock = threading.RLock()
@@ -33,6 +37,51 @@ _atexit_registered = False
 def crash_log_path():
     """The actual crash report, including a temporary-directory fallback."""
     return _crash_path
+
+
+def fallback_crash_dir():
+    """Return this profile's private temporary crash directory, or None."""
+    try:
+        profile = os.path.normcase(os.path.realpath(os.fspath(logging_setup.logs_dir())))
+        key = hashlib.sha256(os.fsencode(profile)).hexdigest()
+        root = Path(tempfile.gettempdir()) / 'openfocus-crashes'
+        directory = root / key
+        for path in (root, directory):
+            try:
+                path.mkdir(mode=0o700)
+            except FileExistsError:
+                pass
+            info = path.lstat()
+            if not stat.S_ISDIR(info.st_mode):
+                return None
+            if os.name != 'nt' and (info.st_uid != os.getuid() or info.st_mode & 0o077):
+                return None
+        _prune_fallback_crashes(directory)
+        return directory
+    except OSError:
+        return None
+
+
+def _prune_fallback_crashes(directory):
+    cutoff = time.time() - logging_setup.RETENTION_DAYS * 86400
+    active = {os.getpid(): True}
+    try:
+        for path in directory.iterdir():
+            match = logging_setup._SESSION_FILE.fullmatch(path.name)
+            if not match or not path.name.endswith('.crash.txt') or path.is_symlink():
+                continue
+            try:
+                if path.stat().st_mtime >= cutoff:
+                    continue
+                pid = int(match.group(1))
+                if pid not in active:
+                    active[pid] = logging_setup._process_alive(pid)
+                if not active[pid]:
+                    path.unlink()
+            except OSError:
+                continue
+    except OSError:
+        pass
 
 
 def system_facts() -> dict:
@@ -142,8 +191,7 @@ def install_exception_hooks(claim_inherited_faulthandler: bool = False):
     PYTHONFAULTHANDLER / ``-X faulthandler`` (often inherited from a parent
     launcher) only points at stderr, which may be discarded, so it is
     redirected to the crash file and handed back to stderr on shutdown.
-    If the log folder is unwritable, the crash report uses a unique temp
-    filename.
+    If the log folder is unwritable, use a profile-specific temporary directory.
     """
     global _hooks, _crash_stream, _crash_path
     global _owns_faulthandler, _restore_stderr_faulthandler, _atexit_registered
@@ -152,14 +200,18 @@ def install_exception_hooks(claim_inherited_faulthandler: bool = False):
             return _crash_path
         _crash_path = None
         target = session_log_path().with_suffix(".crash.txt")
-        for path in (target, Path(tempfile.gettempdir()) / target.name):
-            try:
-                path.parent.mkdir(parents=True, exist_ok=True)
-                _crash_stream = path.open("a", encoding="utf-8")
-                _crash_path = path
-                break
-            except OSError:
-                continue
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            _crash_stream = target.open("a", encoding="utf-8")
+            _crash_path = target
+        except OSError:
+            directory = fallback_crash_dir()
+            if directory is not None:
+                try:
+                    _crash_path = directory / target.name
+                    _crash_stream = _crash_path.open("a", encoding="utf-8")
+                except OSError:
+                    _crash_path = None
         was_enabled = faulthandler.is_enabled()
         inherited = was_enabled and claim_inherited_faulthandler and bool(
             os.environ.get("PYTHONFAULTHANDLER")

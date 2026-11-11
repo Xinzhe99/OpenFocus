@@ -28,7 +28,7 @@ def natural_sort_key(path: str):
             has_digit = True
             chunks.append((1, int(part)))
         else:
-            chunks.append((0, part.lower(), part))
+            chunks.append((0, part.lower()))
     if has_digit:
-        return (0, tuple(chunks))
+        return (0, tuple(chunks), name)
     return (1, 0, name.lower(), name)

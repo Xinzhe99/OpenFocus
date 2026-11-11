@@ -101,6 +101,130 @@ def test_pathless_project_preserves_pixels_at_working_scale(tmp_path, monkeypatc
     assert restored.filenames == ["memory"]
 
 
+@pytest.mark.parametrize("dtype", [np.uint8, np.uint16])
+def test_pathless_sidecar_generations_are_bounded(tmp_path, monkeypatch, dtype):
+    from utils import frame_pixels
+    monkeypatch.setattr(frame_pixels, "run_pixel_worker", lambda parent, title, operation: operation())
+    image = np.arange(12 * 18 * 3, dtype=dtype).reshape(12, 18, 3)
+    window = _window([], str(tmp_path))
+    window.raw_images = [image]
+    window.image_filenames = ["memory"]
+    path = str(tmp_path / "project.ofproj")
+    for _ in range(20):
+        ok, error = project_file.save_project(window, path)
+        assert ok, error
+    ok, error, state = project_file.validate_project(path)
+    assert ok, error
+    np.testing.assert_array_equal(resolve_frame(scan_source(state["resolved_sources"][0])[0]), image)
+    assert len(list((tmp_path / "project.ofproj.sources").iterdir())) == 1
+
+
+def test_failed_sidecar_save_preserves_previous_generation(tmp_path, monkeypatch):
+    from utils import frame_pixels, image_utils
+    monkeypatch.setattr(frame_pixels, "run_pixel_worker", lambda parent, title, operation: operation())
+    window = _window([], str(tmp_path))
+    window.raw_images = [np.ones((4, 4, 3), np.uint8), np.ones((4, 4, 3), np.uint8)]
+    window.image_filenames = ["first", "second"]
+    path = str(tmp_path / "project.ofproj")
+    assert project_file.save_project(window, path)[0]
+    before = (tmp_path / "project.ofproj").read_bytes()
+    original = image_utils.imwrite_auto
+    calls = []
+    def fail_second(*args, **kwargs):
+        calls.append(args[0])
+        return original(*args, **kwargs) if len(calls) == 1 else False
+    monkeypatch.setattr(image_utils, "imwrite_auto", fail_second)
+    assert not project_file.save_project(window, path)[0]
+    assert (tmp_path / "project.ofproj").read_bytes() == before
+    assert len(list((tmp_path / "project.ofproj.sources").iterdir())) == 1
+    assert project_file.validate_project(path)[0]
+
+
+@pytest.mark.parametrize("failure", ["json", "replace"])
+def test_sidecar_commit_failure_rolls_back_generation(tmp_path, monkeypatch, failure):
+    from utils import frame_pixels
+    monkeypatch.setattr(frame_pixels, "run_pixel_worker", lambda parent, title, operation: operation())
+    window = _window([], str(tmp_path))
+    window.raw_images = [np.ones((4, 4, 3), np.uint8)]
+    window.image_filenames = ["memory"]
+    path = str(tmp_path / "project.ofproj")
+    assert project_file.save_project(window, path)[0]
+    before = (tmp_path / "project.ofproj").read_bytes()
+    def fail(*args, **kwargs):
+        raise OSError("injected failure")
+    if failure == "json":
+        monkeypatch.setattr(project_file.json, "dump", fail)
+    else:
+        monkeypatch.setattr(project_file.os, "replace", fail)
+    assert not project_file.save_project(window, path)[0]
+    assert (tmp_path / "project.ofproj").read_bytes() == before
+    assert len(list((tmp_path / "project.ofproj.sources").iterdir())) == 1
+
+
+def test_recovery_sidecar_copy_survives_slot_cleanup(tmp_path, monkeypatch):
+    from utils import frame_pixels
+    monkeypatch.setattr(frame_pixels, "run_pixel_worker", lambda parent, title, operation: operation())
+    monkeypatch.setattr(recovery, "_base_dir", lambda: str(tmp_path))
+    image = np.full((5, 6, 3), 42, np.uint16)
+    window = _window([], str(tmp_path))
+    window.raw_images, window.image_filenames = [image], ["memory"]
+    assert recovery.write_snapshot(window)
+    state = recovery.load_snapshot_state()
+    frame = scan_source(state["resolved_sources"][0])[0]
+    window.raw_images = [frame]
+    window.image_source_paths = [frame.path]
+    destination = str(tmp_path / "saved.ofproj")
+    assert project_file.save_project(window, destination)[0]
+    window.raw_images = []
+    assert recovery.write_snapshot(window)
+    ok, error, saved = project_file.validate_project(destination)
+    assert ok, error
+    np.testing.assert_array_equal(resolve_frame(scan_source(saved["resolved_sources"][0])[0]), image)
+
+
+def test_recovery_cleanup_keeps_unowned_files(tmp_path, monkeypatch):
+    from utils import frame_pixels
+    monkeypatch.setattr(frame_pixels, "run_pixel_worker", lambda parent, title, operation: operation())
+    monkeypatch.setattr(recovery, "_base_dir", lambda: str(tmp_path))
+    window = _window([], str(tmp_path))
+    window.raw_images = [np.ones((4, 4, 3), np.uint8)]
+    window.image_filenames = ["memory"]
+    assert recovery.write_snapshot(window)
+    state = recovery.load_snapshot_state()
+    owned = state["resolved_sources"][0]
+    root = tmp_path / "recovery" / "session.ofproj.sources"
+    unrelated = root / "user.tif"
+    unrelated.write_bytes(b"user data")
+    window.raw_images = []
+    assert recovery.write_snapshot(window)
+    assert not __import__("os").path.exists(owned)
+    assert unrelated.read_bytes() == b"user data"
+
+
+def test_owned_sidecar_remains_until_last_descriptor_is_released(tmp_path, monkeypatch):
+    import gc
+    from dataclasses import replace
+    from utils import frame_pixels
+    monkeypatch.setattr(frame_pixels, "run_pixel_worker", lambda parent, title, operation: operation())
+    monkeypatch.setattr(recovery, "_base_dir", lambda: str(tmp_path))
+    window = _window([], str(tmp_path))
+    window.raw_images = [np.full((5, 6, 3), 42, np.uint8)]
+    window.image_filenames = ["memory"]
+    assert recovery.write_snapshot(window)
+    state = recovery.load_snapshot_state()
+    source = state["resolved_sources"][0]
+    frame = scan_source(source)[0]
+    copy = replace(frame)
+    window.raw_images = []
+    assert recovery.write_snapshot(window)
+    assert __import__("os").path.isfile(source)
+    del frame
+    gc.collect()
+    assert __import__("os").path.isfile(source)
+    del copy
+    gc.collect()
+    assert not __import__("os").path.exists(source)
+
 def test_render_roi_context_preserves_lazy_pixel_domain(tmp_path, monkeypatch):
     frame, pixels = _source(tmp_path)
     original_resolver = SourceFrame.full_resolution

@@ -307,11 +307,25 @@ def _read_raw(path: str, scale_factor: float = 1.0) -> Optional[np.ndarray]:
     """
     if not RAWPY_AVAILABLE:
         return None
+    from core.resource_policy import ResourceLimitError, raw_sensor_shape, raw_decode_bytes, require_memory
     try:
         # Opening a pathname lets LibRaw read directly; rawpy.imread(file)
         # first copies the entire encoded RAW into a Python bytes object.
         with rawpy.RawPy() as raw:
             raw.open_file(os.fspath(path))
+            sizes = raw.sizes
+            sensor_height, sensor_width = raw_sensor_shape(sizes)
+            width, height = sizes.width, sizes.height
+            aspect = float(sizes.pixel_aspect)
+            if aspect < 1:
+                height = round(height / aspect)
+            elif aspect > 1:
+                width = round(width * aspect)
+            if sizes.flip in (4, 5, 6, 7):
+                width, height = height, width
+            output_scale = scale_factor if 0 < scale_factor < 1 else 1
+            output = max(1, int(width * output_scale)) * max(1, int(height * output_scale)) * 6
+            require_memory(raw_decode_bytes(sensor_width, sensor_height, output, os.path.getsize(path)))
             raw.unpack()
             rgb = raw.postprocess(use_camera_wb=True, output_bps=16,
                                   no_auto_bright=True, gamma=(2.4, 12.92))
@@ -320,6 +334,8 @@ def _read_raw(path: str, scale_factor: float = 1.0) -> Optional[np.ndarray]:
         # is identical to resizing BGR after conversion.
         rgb = _downscale_page(rgb, scale_factor)
         return rgb_to_bgr(rgb)
+    except ResourceLimitError:
+        raise
     except Exception:
         return None
 
@@ -427,46 +443,50 @@ def _read_raw_exif_bytes(path: str) -> bytes:
             return b""
 
 
-def _read_exif_bytes(path: str) -> bytes:
-    """Raw EXIF block of an image (b"") when absent or unreadable."""
+def _exif_bytes_from_image(image) -> bytes:
+    """Read EXIF from the active image page without loading pixels."""
+    try:
+        raw = image.info.get('exif', b'') or b''
+        if raw and image.format != 'TIFF':
+            return raw
+        exif = read_image_exif(image)
+        if not len(exif):
+            return b''
+        safe = export_exif(exif.tobytes())
+        return safe.tobytes() if safe is not None else b''
+    except Exception:
+        return b''
+
+
+def _read_exif_bytes(path: str, page: Optional[int] = None) -> bytes:
+    """Read export-safe metadata from one physical page."""
     if not PIL_AVAILABLE:
-        return b""
+        return b''
     try:
         ext = os.path.splitext(path)[1].lower()
         if is_raw_source(path):
             return _read_raw_exif_bytes(path)
         if ext not in ('.jpg', '.jpeg', '.jpe', '.jfif', '.tif', '.tiff', '.png', '.webp'):
-            return b""
-        with PILImage.open(path) as pil_img:
-            raw = pil_img.info.get('exif', b"") or b""
-            if raw:
-                return raw
-            # Pillow reports TIFF EXIF only through getexif(); info is empty
-            # there, so a stacked TIFF's camera data was previously dropped and
-            # a 16-bit export of those frames came out without metadata. Keep
-            # the same export-safe subset the RAW path returns: IFD0 carries
-            # source strip/size pointers that must not reach an export.
-            exif = read_image_exif(pil_img)
-            if not len(exif):
-                return b""
-            safe = export_exif(exif.tobytes())
-            return safe.tobytes() if safe is not None else b""
+            return b''
+        with PILImage.open(path) as image:
+            if page is not None and image.format == 'TIFF':
+                image.seek(page)
+            return _exif_bytes_from_image(image)
     except Exception:
-        return b""
+        return b''
 
 
 _EXIF_SNAPSHOT_LIMIT = 16 * 1024 * 1024
 
 
-def _read_safe_exif(path: str) -> bytes:
-    """Read and sanitize EXIF for a result snapshot.
+def _read_safe_exif(path: str, page: Optional[int] = None) -> bytes:
+    """Read and sanitize a bounded EXIF snapshot for one source page."""
+    raw = _read_exif_bytes(path) if page is None else _read_exif_bytes(path, page)
+    return _safe_exif_bytes(path, raw)
 
-    Non-exported payloads (notably MakerNote) are stripped with the same
-    ``export_exif`` path used by writers.  If the sanitized blob still exceeds
-    the snapshot budget, fail explicitly instead of silently dropping user
-    metadata; the error names the file whose metadata must be reduced.
-    """
-    raw = _read_exif_bytes(path) or b""
+
+def _safe_exif_bytes(path, raw):
+    raw = raw or b''
     if not raw:
         return b""
     try:
@@ -481,54 +501,84 @@ def _read_safe_exif(path: str) -> bytes:
     return data
 
 
-def _read_icc_profile(path: str, page: Optional[int] = None) -> bytes:
-    """Read one frame's RGB profile, requiring common profiles for TIFF stacks."""
-    if not PIL_AVAILABLE:
-        return b""
-    if is_raw_source(path):
-        from utils.image_utils import srgb_icc_profile
-        return srgb_icc_profile()
+def _icc_profile_from_image(path, image):
+    """Validate the RGB profile on the currently selected image page."""
     from io import BytesIO
     try:
         from PIL import ImageCms
     except ImportError:
-        return b""
+        return b''
+    try:
+        profile = (image.tag_v2.get(34675, b'') if image.format == 'TIFF'
+                   else image.info.get('icc_profile', b''))
+        if image.mode == 'CMYK':
+            from utils.image_utils import srgb_icc_profile
+            _cmyk_profiles(path, profile)
+            return srgb_icc_profile()
+        if not (isinstance(profile, bytes) and len(profile) >= 128
+                and profile[16:20] == b'RGB ' and profile[36:40] == b'acsp'
+                and int.from_bytes(profile[:4], 'big') == len(profile)):
+            return b''
+        ImageCms.ImageCmsProfile(BytesIO(profile))
+        return profile
+    except UnsupportedColorSpace:
+        raise
+    except (OSError, ValueError, TypeError, EOFError, ImageCms.PyCMSError):
+        return b''
+
+
+def _read_icc_profile(path: str, page: Optional[int] = None) -> bytes:
+    """Read one physical page, or the common profile of a TIFF container."""
+    if not PIL_AVAILABLE:
+        return b''
+    if is_raw_source(path):
+        from utils.image_utils import srgb_icc_profile
+        return srgb_icc_profile()
     try:
         with PILImage.open(path) as image:
-            profiles = []
-            if image.format == 'TIFF':
+            if image.format == 'TIFF' and page is None:
                 import tifffile
                 with tifffile.TiffFile(path) as tif:
                     pages = tuple(index for index, _ in tiff_source_pages(tif))
             else:
-                pages = (0,)
-            if page is not None:
-                pages = (page,)
-            for page_index in pages:
-                image.seek(page_index)
-                # TIFF tags are page-specific; Pillow's info dictionary may
-                # otherwise retain metadata from a previous page.
-                if image.format == "TIFF":
-                    profile = image.tag_v2.get(34675, b"")
-                else:
-                    profile = image.info.get("icc_profile", b"")
-                if image.mode == 'CMYK':
-                    from utils.image_utils import srgb_icc_profile
-                    _cmyk_profiles(path, profile)
-                    profiles.append(srgb_icc_profile())
-                    continue
-                if not (isinstance(profile, bytes) and len(profile) >= 128
-                        and profile[16:20] == b"RGB " and profile[36:40] == b"acsp"):
-                    return b""
-                if int.from_bytes(profile[:4], "big") != len(profile):
-                    return b""
-                ImageCms.ImageCmsProfile(BytesIO(profile))
-                profiles.append(profile)
+                pages = (page if page is not None else 0,)
+            profiles = []
+            for index in pages:
+                image.seek(index)
+                profiles.append(_icc_profile_from_image(path, image))
             return common_profile_values(profiles)
     except UnsupportedColorSpace:
         raise
-    except (OSError, ValueError, TypeError, EOFError, ImageCms.PyCMSError):
-        return b""
+    except (OSError, ValueError, TypeError, EOFError):
+        return b''
+
+
+def _frame_metadata(path, frames, should_cancel):
+    """Snapshot active TIFF pages in one forward traversal."""
+    if not PIL_AVAILABLE or is_raw_source(path) or os.path.splitext(path)[1].lower() not in ('.tif', '.tiff'):
+        exif = _read_safe_exif(path)
+        profile = _read_icc_profile(path)
+        return [(exif, profile) for _ in frames]
+    result = []
+    try:
+        with PILImage.open(path) as image:
+            for frame in frames:
+                if should_cancel():
+                    raise _DecodeCancelled()
+                try:
+                    image.seek(frame.page)
+                    raw = _exif_bytes_from_image(image)
+                    profile = _icc_profile_from_image(path, image)
+                except UnsupportedColorSpace:
+                    raise
+                except (OSError, ValueError, TypeError, EOFError):
+                    raw, profile = b'', b''
+                result.append((_safe_exif_bytes(path, raw), profile))
+    except SourceExifTooLarge:
+        raise
+    except (OSError, EOFError):
+        return [(b'', b'') for _ in frames]
+    return result
 
 
 def common_profile_values(profiles) -> bytes:
@@ -895,7 +945,7 @@ class ImageStackLoader:
         # source_manager divides it by the load scale for working pixels.
         self.px_size_um = None
         self.source_icc_profile = b""
-        self.source_icc_profiles = {}
+        self.source_icc_profiles = ()
         self.source_exif = b""
         self.source_exifs = ()
         self.should_cancel = lambda: False
@@ -1044,7 +1094,7 @@ class ImageStackLoader:
         self.source_exif = exifs[0] if exifs else _read_safe_exif(paths[0])
         self.source_exifs = tuple(exifs)
         self.source_icc_profile = b""
-        self.source_icc_profiles = {}
+        self.source_icc_profiles = tuple(b'' for _ in images)
         self.px_size_um = _consistent_px_size_um(px_sizes)
         self.failed_count = 0
         self.linear_dng_metadata = metadata
@@ -1128,7 +1178,7 @@ class ImageStackLoader:
         self.source_exif = b""
         self.source_exifs = tuple(b"" for _ in loaded_images)
         self.source_icc_profile = b""
-        self.source_icc_profiles = {}
+        self.source_icc_profiles = tuple(b'' for _ in loaded_images)
         self.px_size_um = None
         self.linear_dng_metadata = None
         self.failed_count = 0
@@ -1155,10 +1205,9 @@ class ImageStackLoader:
         sources = _collapse_repeats(list(filepaths))
         if not sources:
             return False, "No file paths provided", [], []
-        images, names, paths, px_sizes, exifs = [], [], [], [], []
+        images, names, paths, px_sizes, exifs, profiles = [], [], [], [], [], []
         failed = 0
         exif = b""
-        exif_cache = {}
         workers = min(4, max(1, int(thread_count or 4)))
         def inspect(path):
             if self.should_cancel():
@@ -1191,23 +1240,22 @@ class ImageStackLoader:
                             import logging
                             logging.getLogger(__name__).warning('Source preview failed path=%s: %s', path, error)
                         else:
-                            if path not in exif_cache:
-                                exif_cache[path] = _read_safe_exif(path)
-                            path_exif = exif_cache[path]
-                            if not exif:
-                                exif = path_exif
+                            metadata = _frame_metadata(path, frames, self.should_cancel)
+                            for frame_exif, frame_icc in metadata:
+                                if not exif:
+                                    exif = frame_exif
+                                exifs.append(frame_exif)
+                                profiles.append(frame_icc)
                             px_sizes.append(detect_px_size_um(path))
                             stem = os.path.splitext(os.path.basename(path))[0]
                             images.extend(frames)
                             paths.extend([path] * len(frames))
-                            exifs.extend([path_exif] * len(frames))
                             names.extend(f'{stem}_page_{frame.page + 1:03d}.tif' if len(frames) > 1
                                          else os.path.basename(path) for frame in frames)
                         if self.progress_callback is not None:
                             self.progress_callback(done, len(sources))
                 except _DecodeCancelled:
                     return False, 'CANCELLED', [], []
-        self.failed_count = failed
         if not images:
             return False, 'Could not load any image files', [], []
         if self.should_cancel():
@@ -1227,8 +1275,9 @@ class ImageStackLoader:
         self.source_exif = exif
         self.source_exifs = tuple(exifs)
         self.px_size_um = _consistent_px_size_um(px_sizes)
-        self.source_icc_profiles = {path: _read_icc_profile(path) for path in dict.fromkeys(paths)}
-        self.source_icc_profile = common_profile_values(self.source_icc_profiles.values())
+        self.source_icc_profiles = tuple(profiles)
+        self.source_icc_profile = common_profile_values(profiles)
+        self.failed_count = failed
         message = f'Loaded {len(images)} image(s)'
         if failed:
             message += f' (failed: {failed})'
@@ -1315,21 +1364,11 @@ class ImageStackLoader:
 
         try:
             with PILImage.open(filepath) as img:
-                exif_data = img._getexif()
-                if exif_data is None:
-                    return None
-
-                date_time_original = None
-                for tag_id, value in exif_data.items():
-                    tag_name = PILImage.ExifTags.TAGS.get(tag_id, str(tag_id))
-                    if tag_name == 'DateTimeOriginal':
-                        date_time_original = value
-                        break
-
-                if date_time_original:
-                    dt = datetime.strptime(date_time_original, '%Y:%m:%d %H:%M:%S')
-                    return dt.timestamp()
-        except Exception as e:
+                exif_data = read_image_exif(img)
+                date_time_original = exif_data.get_ifd(0x8769).get(36867) or exif_data.get(36867)
+                if isinstance(date_time_original, str) and date_time_original:
+                    return datetime.strptime(date_time_original, '%Y:%m:%d %H:%M:%S').timestamp()
+        except (OSError, ValueError, TypeError, AttributeError, KeyError, EOFError):
             pass
 
         return None

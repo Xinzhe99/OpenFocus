@@ -55,12 +55,15 @@ def test_user_data_dir_preserves_logging_os_paths(sandbox, tmp_path, platform,
     assert not (sandbox.source / "OpenFocusData").exists()
 
 
-@pytest.mark.parametrize("platform,key", [("win32", "APPDATA"), ("linux", "XDG_DATA_HOME")])
-def test_empty_environment_keeps_existing_relative_path(sandbox, platform, key):
+@pytest.mark.parametrize("platform,key,relative", [
+    ("win32", "APPDATA", Path("AppData/Roaming/OpenFocus")),
+    ("linux", "XDG_DATA_HOME", Path(".local/share/OpenFocus")),
+])
+def test_empty_environment_uses_home_fallback(sandbox, platform, key, relative):
     app_paths.sys.platform = platform
     app_paths.os.environ[key] = ""
 
-    assert app_paths.user_data_dir() == Path("OpenFocus")
+    assert app_paths.user_data_dir() == sandbox.home / relative
 
 
 @pytest.mark.parametrize("platform", ["win32", "darwin", "linux"])

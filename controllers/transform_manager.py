@@ -22,16 +22,7 @@ class TransformManager:
             show_warning_box(window, trans.t("msg_no_images_title"), trans.t("msg_no_images_rotate"))
             return
 
-        window.push_undo()
-        window.raw_images = [transform_frame(img, 'rotate', code=rotation_code) for img in window.raw_images]
-
-        if getattr(window, "base_images", None):
-            window.base_images = [transform_frame(img, 'rotate', code=rotation_code) for img in window.base_images]
-        window.source_transforms = list(getattr(window, "source_transforms", [])) + [
-            {"operation": "rotate", "code": int(rotation_code)}]
-
-        self._invalidate_processing_results(clear_output_view=True, preserve_outputs=True)
-        self.reload_image_stack(initial_index=getattr(window, "current_display_index", 0))
+        self._transform_stack('rotate', rotation_code)
 
     def flip_stack(self, flip_code: int) -> None:
         """Flip every image in the current stack."""
@@ -40,16 +31,28 @@ class TransformManager:
             show_warning_box(window, trans.t("msg_no_images_title"), trans.t("msg_no_images_flip"))
             return
 
+        self._transform_stack('flip', flip_code)
+
+    def _transform_stack(self, operation: str, code: int) -> None:
+        window = self.window
+        index = getattr(window, "current_display_index", 0)
+        try:
+            raw = [transform_frame(img, operation, code=code) for img in window.raw_images]
+            base = getattr(window, "base_images", None)
+            transformed_base = ([transform_frame(img, operation, code=code) for img in base]
+                                if base else base)
+            transforms = list(getattr(window, "source_transforms", [])) + [
+                {"operation": operation, "code": int(code)}]
+        except Exception as exc:
+            show_error_box(window, trans.t("msg_resize_error_title"),
+                           trans.t("msg_resize_error_text"), str(exc))
+            return
         window.push_undo()
-        window.raw_images = [transform_frame(img, 'flip', code=flip_code) for img in window.raw_images]
-
-        if getattr(window, "base_images", None):
-            window.base_images = [transform_frame(img, 'flip', code=flip_code) for img in window.base_images]
-        window.source_transforms = list(getattr(window, "source_transforms", [])) + [
-            {"operation": "flip", "code": int(flip_code)}]
-
+        window.raw_images = raw
+        window.base_images = transformed_base
+        window.source_transforms = transforms
         self._invalidate_processing_results(clear_output_view=True, preserve_outputs=True)
-        self.reload_image_stack(initial_index=getattr(self.window, "current_img_index", 0))
+        self.reload_image_stack(initial_index=index, transform_committed=True)
 
     def resize_all_images(self) -> None:
         """Resize working images according to the down-sample dialog."""
@@ -79,47 +82,53 @@ class TransformManager:
         if new_scale == current_scale:
             return
 
-        window.push_undo()
+        index = getattr(window, "current_display_index", 0)
         old_height, old_width = window.raw_images[0].shape[:2]
         try:
             if new_scale >= base_scale:
-                window.raw_images = list(window.base_images)
+                raw = list(window.base_images)
             else:
                 factor = new_scale / base_scale
                 new_width = max(1, int(window.base_images[0].shape[1] * factor))
                 new_height = max(1, int(window.base_images[0].shape[0] * factor))
-                window.raw_images = [
-                    transform_frame(img, 'resize', width=new_width, height=new_height)
-                    for img in window.base_images
-                ]
-
-            window.current_scale_factor = new_scale
-            actual_height, actual_width = window.raw_images[0].shape[:2]
-            scale_labels = getattr(getattr(window, "label_manager", None), "scale_stack_labels", None)
-            if callable(scale_labels):
-                scale_labels(actual_width / old_width, actual_height / old_height)
+                raw = [transform_frame(img, 'resize', width=new_width, height=new_height)
+                       for img in window.base_images]
+            actual_height, actual_width = raw[0].shape[:2]
+            x_ratio, y_ratio = actual_width / old_width, actual_height / old_height
+            manager = getattr(window, "label_manager", None)
+            labels = []
+            if manager is not None:
+                for label in manager._labels:
+                    if label.target != "output":
+                        config = label.config
+                        labels.append((config, int(round(config.x_location * x_ratio)),
+                                       int(round(config.y_location * y_ratio)),
+                                       max(1, int(round(config.font_size * min(x_ratio, y_ratio))))))
             metadata_scale = getattr(window, "source_px_um", None)
-            if metadata_scale:
-                window.source_px_um = metadata_scale * old_width / actual_width
-
-            self._invalidate_processing_results(clear_output_view=True, preserve_outputs=True)
-            self.reload_image_stack(initial_index=getattr(self.window, "current_img_index", 0))
-
+            new_metadata_scale = (metadata_scale * old_width / actual_width
+                                  if metadata_scale else metadata_scale)
+        except Exception as exc:
+            show_error_box(window, trans.t("msg_resize_error_title"),
+                           trans.t("msg_resize_error_text"), f"Error: {exc}")
+            return
+        window.push_undo()
+        window.raw_images = raw
+        window.current_scale_factor = new_scale
+        for config, x, y, font_size in labels:
+            config.x_location, config.y_location, config.font_size = x, y, font_size
+        if labels:
+            manager._bump_revision()
+        if metadata_scale:
+            window.source_px_um = new_metadata_scale
+        self._invalidate_processing_results(clear_output_view=True, preserve_outputs=True)
+        if self.reload_image_stack(initial_index=index, transform_committed=True):
             show_success_box(
-                window,
-                trans.t("msg_success"),
+                window, trans.t("msg_success"),
                 trans.t("msg_resize_success_text").format(
                     percent=f'{new_scale * 100:.6f}'.rstrip('0').rstrip('.')),
             )
-        except Exception as exc:  # pylint: disable=broad-except
-            show_error_box(
-                window,
-                trans.t("msg_resize_error_title"),
-                trans.t("msg_resize_error_text"),
-                f"Error: {str(exc)}",
-            )
 
-    def reload_image_stack(self, initial_index: int | None = 0) -> None:
+    def reload_image_stack(self, initial_index: int | None = 0, *, transform_committed: bool = False) -> bool:
         """Refresh pixmaps and list widgets after a stack mutation."""
         window = self.window
         try:
@@ -152,7 +161,7 @@ class TransformManager:
                 
                 if hasattr(window, "update_loaded_status"):
                     window.update_loaded_status()
-                return
+                return True
 
             # Display pixmaps are generated lazily per frame (see
             # main.get_or_create_source_pixmap): pre-rendering full-resolution
@@ -208,14 +217,17 @@ class TransformManager:
                 
             if hasattr(window, "update_loaded_status"):
                 window.update_loaded_status()
+            return True
 
         except Exception as exc:  # pylint: disable=broad-except
             show_error_box(
                 window,
                 trans.t("msg_reload_error_title"),
-                trans.t("msg_reload_error_text"),
+                (trans.t("msg_transform_committed_refresh_failed") if transform_committed
+                 else trans.t("msg_reload_error_text")),
                 f"Error: {str(exc)}",
             )
+            return False
         finally:
             # Any stack mutation (load, rotate, flip, resize, delete) can
             # invalidate the wipe view's frame ranges — resync it here so no
@@ -304,6 +316,9 @@ class TransformManager:
         window._wipe_preview_record = None
         window.last_render_context = None
         render = getattr(window, "render_manager", None)
+        context_worker = getattr(render, "context_worker", None)
+        if context_worker is not None:
+            context_worker.cancel()
         clear_prepared = getattr(render, 'clear_prepared_cache', None)
         if callable(clear_prepared):
             clear_prepared()
@@ -357,5 +372,6 @@ class TransformManager:
                 window.output_manager.update_output_count()
 
         if clear_output_view:
+            window.preview_result = None
             window.lbl_result_img.clear()
             window.lbl_result_img.setText(trans.t("result_hint"))

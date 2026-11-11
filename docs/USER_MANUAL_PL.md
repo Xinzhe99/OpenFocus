@@ -213,6 +213,8 @@ Programy mikroskopowe (ZEN, NIS-Elements, ImageJ/Fiji) często eksportują cały
 
 ### Pasek skali (ryciny publikacyjne)
 
+Etykiety paska skali używają rzeczywistych pogrubionych glifów, jeśli wybrana rodzina je zawiera; w przeciwnym razie używana jest czytelna czcionka z tej samej rodziny.
+
 Jeśli wybrany cel nie ma użytecznych metadanych, domyślnie wybierana jest kalibracja ręczna i wymagany jest prawidłowy rozmiar piksela.
 
 **Narzędzia → Pasek skali…** konfiguruje pasek skali wpalany w eksportowane obrazy. Rozmiar piksela (µm/px) jest wykrywany automatycznie z metadanych TIFF — konwencja ImageJ `unit=micron`, `PhysicalSizeX` w OME-TIFF lub jawnie podana jednostka rozdzielczości w centymetrach — więc stosy mikroskopowe (w tym wielostronicowe TIFF) kalibrują się same. Rozdzielczość drukarki (72/300 dpi i podobne) celowo *nie* jest traktowana jako kalibracja, a wartość wpisana ręcznie zawsze wygrywa z wykrytymi metadanymi: prawdopodobnie wyglądający, ale błędny pasek na rycinie jest gorszy niż jego brak. Wybierz narożnik i kolor (tryb „Auto” odwraca kolor względem tła); okno pokazuje podgląd na żywo. Przy włączonym pasku każdy eksport (pojedynczy obraz, stosy do folderu, wielostronicowy TIFF, GIF, eksport wszystkich wyników, przetwarzanie wsadowe) otrzymuje pasek w stylu publikacyjnym: zaokrągloną długość z szeregu 1-2-5 (około 12 % szerokości obrazu) i obrysowany, czytelny tekst. W CLI jest dostępny przez `--scale-bar` (automatyczna kalibracja) i `--scale-um <um/px>`.
@@ -467,7 +469,7 @@ Jeśli nie wskazano katalogu tymczasowego, OpenFocus szacuje potrzebne miejsce n
 
 - **Algorytm**: implementacja metody Fu i in. (*Laser & Optoelectronics Progress*, 2024): mapa ostrości z różnicy rozmyć |I − mean(I)| jest wzbogacana operatorem gradientu quasi-gaussowskiego w czterech sąsiedztwach (GFG), udokładniana szybkim filtrem sterowanym, decyzja podejmowana jest dla każdego piksela (remisy rozstrzyga miara małego obszaru Sobela 3×3), a binarne mapy decyzji są ponownie wygładzane szybkim filtrem sterowanym przed ważonym mieszaniem
 - **Najlepsza do**: mikroskopii i zdjęć z wyraźnymi obszarami ostrości
-- **Zalety**: szybka, ostre granice obszarów ostrości; pamięć nie rośnie z liczbą klatek
+- **Zalety**: szybka, ostre granice; mapy ostrości i wag są przetwarzane w ograniczonych oknach. Źródła i ich opisy, wynik, dekodowanie oraz bufory nadal wymagają RAM i tymczasowego miejsca na dysku.
 - **Parametr**: jądro = rozmiar filtra średniego zgrubnej mapy ostrości (1–51, domyślnie 7)
 
 ### OpenFocus A / B / C
@@ -631,6 +633,8 @@ tła dokładnie przywracają obraz, dostępną historię i diagnostykę bez pono
 
 ### Zarządzanie etykietami
 
+Eksport historycznego wyrównanego stosu używa jego własnych identyfikatorów klatek; brak identyfikatorów wymaganych przez etykietę powoduje błąd. Tylko faktycznie stosowane etykiety blokują eksport przezroczystego PNG. **Dopasuj** używa ograniczonej miniatury; **100%** pokazuje oryginalny obszar w skali jeden piksel źródła na piksel urządzenia i może pokazać ładowanie lub błąd. Zapisane duże współrzędne i rozmiary są zachowywane podczas edycji.
+
 Otwórz **Narzędzia → Etykiety** po wczytaniu obrazów lub utworzeniu wyniku. Każda etykieta ma własny cel: stos źródłowy, stos zarejestrowany lub wyniki wyjściowe. Etykiety wyników mogą dotyczyć wszystkich wyników albo wybranego wyniku według nazwy; zmiana nazwy lub kolejności tego wyniku nie zmienia powiązania.
 
 Użyj **Dodaj**, aby utworzyć kolejną etykietę, wybierz pozycję do edycji i włączaj lub wyłączaj ją polem wyboru. Wpisz stały tekst albo wstaw `{value}` dla numeru klatki. Numer to wartość początkowa plus indeks klatki od zera pomnożony przez interwał; pojedynczy wynik zawsze używa wartości początkowej.
@@ -648,6 +652,8 @@ Podgląd używa rzeczywistego celu. Przechodź przyciskami Poprzednia/Następna 
 Otwórz **Ustawienia → Ustawienia zaawansowane**, aby zmienić wydajność, rejestrację, czyszczenie matrycy, nazwy wyników, AI StackMFF i ustawienia uruchamiania. Zmiany pozostają szkicem do naciśnięcia **OK**; Anuluj, Esc i zamknięcie okna je odrzucają. Zmniejszenie rozmiaru kafelka natychmiast aktualizuje widoczny limit nakładki do połowy kafelka. Zapisany limit partii AI pozostaje, ale wnioskowanie obecnie wysyła jeden kafelek na wywołanie; szerokość skalowania rejestracji może zmienić dokładność wyrównania. Zbieranie diagnostyki wyrównania to pole wyboru w sekcji Rejestracja.
 
 Automatyczne pobieranie aktualizacji działa w bezczynności i nigdy nie instaluje aktualizacji samodzielnie. Ukończone pobieranie pozostaje gotowe, dopóki nie wybierzesz jawnie **Uruchom ponownie i zaktualizuj**. Ponowne uruchomienie chroni aktywne edycje i niezapisaną pracę, a następnie zapisuje dane odzyskiwania przed uruchomieniem zamiennika. Anulowanie pobierania lub przygotowania czeka na bieżącą bezpieczną granicę. Istniejąca kompletna, nowsza przygotowana kompilacja może zostać zainstalowana bez sieci.
+
+W Windows aktualizator przygotowuje osobną wersję kandydującą i podczas przełączenia przenosi znacznik wersji przenośnej oraz `OpenFocusData`. W razie błędu przywraca poprzednią instalację; jeśli przywrócenie się nie powiedzie, zachowuje kopię i nie uruchamia aplikacji automatycznie. Może pojawić się jedno żądanie uprawnień. Anulowanie rozpakowywania usuwa nieukończone dane przygotowawcze i jest sprawdzane między odczytami i zapisami po 256 KiB; zablokowana operacja dyskowa lub sieciowa może je opóźnić.
 
 Korekcja pola płaskiego zmienia piksele robocze sesji bez nadpisywania plików źródłowych. Wybierz białe odniesienie i klatkę podglądu, a następnie ponownie zbuduj podgląd po zmianie źródła lub skali. Odniesienie i obrazy robocze/bazowe muszą mieć tę samą dziedzinę współrzędnych i rozmiar. Zastosowanie przygotowuje oba stosy przed zatwierdzeniem; opcjonalne usunięcie klatki odniesienia należy do tego samego kroku cofania. Wyeksportuj poprawione obrazy źródłowe, jeśli chcesz zachować te piksele poza sesją.
 
@@ -907,7 +913,7 @@ Na przykład dodaj `--align openfocus --alignment-report alignment.json` do poje
 | `--input, -i` | Folder (foldery) obrazów, plik wideo, jeden lub kilka plików obrazów albo wielostronicowy TIFF |
 | `--output, -o` | Ścieżka obrazu wyjściowego (rozszerzenie określa format) |
 | `--output-dir, -d` | Tryb wsadowy: łączy każdy folder wejściowy, zapisując `<folder>.png` dla każdego stosu |
-| `--resume` | Tryb wsadowy: pomija foldery, których plik wyjściowy już istnieje |
+| `--resume` | Pomija folder tylko wtedy, gdy wszystkie żądane wyniki są niepustymi zwykłymi plikami; nie sprawdza treści ani parametrów |
 | `--config FILE` | Tryb wsadowy: JSON z nadpisaniami dla każdego folderu, np. `{"stackA": {"method": "dct"}}` |
 | `--method, -m` | `stackmffv3` (domyślnie), `stackmffv2`, `stackmff`, `openfocus_a`, `openfocus_b`, `openfocus_c`, `guided_filter`, `dct`, `dtcwt`, `gfgfgf` |
 | `--param KEY=JSON_VALUE` | Ustawia dowolny parametr fuzji; można powtarzać, nadpisuje starsze flagi |
@@ -1086,6 +1092,7 @@ Kody wyjścia: `0` — sukces, `1` — błąd przetwarzania, `2` — błąd uży
 
 #### AI niedostępne
 
+- Włącz i zatwierdź funkcje eksperymentalne w ustawieniach zaawansowanych; bez tego metody AI w aplikacji są wyłączone. Środowisko i model to osobne wymagania.
 - Sprawdź ONNX Runtime i dołączony model.
 - Sprawdź przez **Pomoc → Informacje o środowisku**
 - StackMFF V3 nie wymaga torchvision

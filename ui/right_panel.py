@@ -696,10 +696,10 @@ def bind_right_panel(window, components: RightPanelComponents) -> None:
         window.source_manager.apply_list_order)
     components.output_list.customContextMenuRequested.connect(window.output_manager.show_output_context_menu)
     components.output_list.currentRowChanged.connect(window.output_manager.sync_output_slider_from_list)
-    # Keyboard navigation must show the row too, not only a mouse click.
+    # Selection changes cover mouse, keyboard and programmatic navigation;
+    # clicking the current row does not reload it.
     components.output_list.currentRowChanged.connect(
         window.output_manager.display_current_output_row)
-    components.output_list.itemClicked.connect(window.output_manager.display_output_image_in_result_view)
 
     delete_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Delete), components.file_list)
     delete_shortcut.setContext(Qt.ShortcutContext.WidgetShortcut)

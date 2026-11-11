@@ -1,6 +1,78 @@
 """Collision-safe names for image and stack exports."""
 import os
 import re
+import errno
+import logging
+import tempfile
+
+
+def _rename_noreplace(source, destination):
+    """Use the platform's atomic no-replace rename when links are unavailable."""
+    import ctypes
+    import sys
+    libc = ctypes.CDLL(None, use_errno=True)
+    if sys.platform.startswith('linux') and hasattr(libc, 'renameat2'):
+        fn = libc.renameat2
+        args = (-100, os.fsencode(source), -100, os.fsencode(destination), 1)
+    elif sys.platform == 'darwin' and hasattr(libc, 'renamex_np'):
+        fn = libc.renamex_np
+        args = (os.fsencode(source), os.fsencode(destination), 4)
+    else:
+        raise OSError(errno.ENOTSUP, 'Atomic no-replace rename is unavailable')
+    if fn(*args) != 0:
+        code = ctypes.get_errno()
+        raise OSError(code, os.strerror(code), destination)
+
+
+def publish_unique(path, writer, *, start=2, should_cancel=None):
+    """Encode once, then atomically publish to the first unoccupied name."""
+    path = os.fspath(path)
+    directory = os.path.dirname(os.path.abspath(path))
+    stem, extension = os.path.splitext(path)
+    fd, staging = tempfile.mkstemp(prefix='.openfocus-staging-', suffix=extension,
+                                   dir=directory)
+    os.close(fd)
+    published = False
+    try:
+        if writer(staging) is False:
+            raise OSError('Image encoding or writing failed')
+        if should_cancel and should_cancel():
+            raise InterruptedError('Export cancelled')
+        number = start
+        candidate = path
+        while True:
+            if should_cancel and should_cancel():
+                raise InterruptedError('Export cancelled')
+            try:
+                if os.name == 'nt':
+                    os.rename(staging, candidate)
+                    staging = None
+                else:
+                    try:
+                        os.link(staging, candidate)
+                    except OSError as exc:
+                        if exc.errno not in (errno.EPERM, errno.ENOTSUP, errno.EOPNOTSUPP,
+                                             errno.ENOSYS, errno.EXDEV):
+                            raise
+                        _rename_noreplace(staging, candidate)
+                        staging = None
+                published = True
+                return candidate
+            except FileExistsError:
+                candidate = f'{stem}_{number}{extension}'
+                number += 1
+    finally:
+        if staging is not None:
+            try:
+                os.unlink(staging)
+            except FileNotFoundError:
+                pass
+            except OSError:
+                if not published:
+                    raise
+                logging.getLogger(__name__).warning(
+                    'Published export but could not remove staging file %s', staging,
+                    exc_info=True)
 
 
 # Suffixes this app appends when it writes an aligned copy of a frame. A

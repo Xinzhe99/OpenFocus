@@ -421,13 +421,9 @@ def load_linear_raw(path, scale_factor=1.0, *, before_decode=None):
     with rawpy.RawPy() as raw:
         raw.open_file(os.fspath(path))
         sizes = raw.sizes
+        from core.resource_policy import raw_sensor_shape, raw_decode_bytes
+        height, width = raw_sensor_shape(sizes)
         aspect = float(sizes.pixel_aspect)
-        if not math.isfinite(aspect) or aspect <= 0:
-            raise ValueError("Invalid RAW pixel aspect ratio")
-        width = math.ceil(max(sizes.raw_width, sizes.width) * max(1, aspect, 1 / aspect))
-        height = max(sizes.raw_height, sizes.height)
-        if width <= 0 or height <= 0:
-            raise ValueError("Invalid RAW dimensions")
         if before_decode is not None:
             before_decode(width, height)
         # RawPy's sensor properties implicitly unpack, so admit that allocation
@@ -449,7 +445,7 @@ def load_linear_raw(path, scale_factor=1.0, *, before_decode=None):
                 output_width, output_height = output_height, output_width
             target_size = (max(1, int(output_width * scale_factor)),
                            max(1, int(output_height * scale_factor)))
-        require_memory(width * height * (24 if half_size else 64))
+        require_memory(width * height * 24 if half_size else raw_decode_bytes(width, height))
         if raw.num_colors != 3:
             raise ValueError("Only three-color RAW files are supported")
         if dng_metadata is not None:

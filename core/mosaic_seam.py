@@ -3,11 +3,33 @@
 LowSample colors are normalized BGR, alpha includes source masks. Labels contain
 source index + 1, zero is uncovered. No per-source canvas weights are retained.
 """
-from dataclasses import dataclass
+from contextlib import ExitStack
+from dataclasses import dataclass, replace
 import math
 
 import cv2
 import numpy as np
+
+from core.frame_storage import frame_region
+
+_LABEL_BLOCK_PIXELS = 131072
+
+
+def _label_blocks(shape):
+    width = min(shape[1], _LABEL_BLOCK_PIXELS)
+    if not width:
+        return
+    height = max(1, _LABEL_BLOCK_PIXELS // width)
+    for y in range(0, shape[0], height):
+        for x in range(0, shape[1], width):
+            yield np.s_[y:min(y + height, shape[0]), x:min(x + width, shape[1])]
+
+
+def _clear_labels(labels, cancel):
+    for key in _label_blocks(labels.shape):
+        _cancel(cancel)
+        with frame_region(labels, key, write=True) as block:
+            block.fill(0)
 
 
 def _cancel(callback):
@@ -126,7 +148,7 @@ def build_labels(samples, shape, spec=SeamSpec(), *, allocate=None,
         raise ValueError('Seam samples need unique indices below 65535')
     labels = (np.empty(shape, np.uint16) if allocate is None
               else allocate(shape, np.uint16))
-    labels.fill(0)
+    _clear_labels(labels, should_cancel)
     for sample in samples:
         _cancel(should_cancel)
         x0, y0, x1, y1 = sample.box
@@ -134,9 +156,15 @@ def build_labels(samples, shape, spec=SeamSpec(), *, allocate=None,
                 or x1 > shape[1] or y1 > shape[0]
                 or sample.colors.shape != (*sample.alpha.shape, 3)):
             raise ValueError('Invalid low-resolution seam sample')
-        region = labels[y0:y1, x0:x1]
-        region[(sample.alpha > 0) & (region == 0)] = sample.index + 1
-    active = [s for s in samples if s.alpha.size and np.any(s.alpha > 0)]
+        with frame_region(labels, np.s_[y0:y1, x0:x1], write=True) as region:
+            with frame_region(sample.alpha) as alpha:
+                region[(alpha > 0) & (region == 0)] = sample.index + 1
+    active = []
+    for sample in samples:
+        if sample.alpha.size:
+            with frame_region(sample.alpha) as alpha:
+                if np.any(alpha > 0):
+                    active.append(sample)
     if spec.mode == 'feather' or len(active) <= 1:
         return labels
     if spec.mode == 'graphcut':
@@ -145,14 +173,20 @@ def build_labels(samples, shape, spec=SeamSpec(), *, allocate=None,
         if factory is None:
             raise ValueError('This OpenCV build has no graph-cut seam finder')
         finder = factory('COST_COLOR' if spec.cost == 'color' else 'COST_COLOR_GRAD')
-        masks = finder.find([s.colors for s in active], [s.origin for s in active],
-                            [(s.alpha > 0).astype(np.uint8) * 255 for s in active])
+        with ExitStack() as regions:
+            colors = [regions.enter_context(frame_region(s.colors)) for s in active]
+            alphas = [regions.enter_context(frame_region(s.alpha)) for s in active]
+            masks = finder.find(colors, [s.origin for s in active],
+                                [(alpha > 0).astype(np.uint8) * 255 for alpha in alphas])
         _cancel(should_cancel)
-        labels.fill(0)
+        _clear_labels(labels, should_cancel)
         for sample, mask in zip(active, masks):
             mask = mask.get() if hasattr(mask, 'get') else np.asarray(mask)
             x0, y0, x1, y1 = sample.box
-            labels[y0:y1, x0:x1][(mask > 0) & (sample.alpha > 0)] = sample.index + 1
+            _cancel(should_cancel)
+            with frame_region(labels, np.s_[y0:y1, x0:x1], write=True) as region:
+                with frame_region(sample.alpha) as alpha:
+                    region[(mask > 0) & (alpha > 0)] = sample.index + 1
         return labels
     edges = []
     for i, first in enumerate(active):
@@ -162,7 +196,8 @@ def build_labels(samples, shape, spec=SeamSpec(), *, allocate=None,
             if found is None:
                 continue
             _, sa, sb = found
-            area = int(np.count_nonzero((first.alpha[sa] > 0) & (active[j].alpha[sb] > 0)))
+            with frame_region(first.alpha, sa) as aa, frame_region(active[j].alpha, sb) as ab:
+                area = int(np.count_nonzero((aa > 0) & (ab > 0)))
             if area:
                 edges.append((area, i, j))
     edges.sort(key=lambda item: (-item[0], item[1], item[2]))
@@ -202,15 +237,18 @@ def build_labels(samples, shape, spec=SeamSpec(), *, allocate=None,
         _cancel(should_cancel)
         first, second = active[i], active[j]
         box, sa, sb = _intersection(first, second)
-        common = (first.alpha[sa] > 0) & (second.alpha[sb] > 0)
+        with frame_region(first.alpha, sa) as aa, frame_region(second.alpha, sb) as ab:
+            common = (aa > 0) & (ab > 0)
         if not common.any():
             continue
-        child = _child_side(first, second, sa, sb, common, spec, should_cancel)
+        with frame_region(first.colors) as a, frame_region(second.colors) as b:
+            child = _child_side(replace(first, colors=a), replace(second, colors=b),
+                                sa, sb, common, spec, should_cancel)
         x0, y0, x1, y1 = box
-        region = labels[y0:y1, x0:x1]
-        update = common & ((region == first.index + 1) | (region == second.index + 1)
-                           | (region == 0))
-        region[update] = np.where(child[update], second.index + 1, first.index + 1)
+        with frame_region(labels, np.s_[y0:y1, x0:x1], write=True) as region:
+            update = common & ((region == first.index + 1) | (region == second.index + 1)
+                               | (region == 0))
+            region[update] = np.where(child[update], second.index + 1, first.index + 1)
     _cancel(should_cancel)
     return labels
 

@@ -212,23 +212,83 @@ def test_finished_round_removes_only_consumed_scratch(tmp_path, admitted, scratc
     observed = {}
 
     def progress(stage, completed, total):
-        if stage in (3, 4) and completed == 1:
+        if (stage, completed) in ((1, 5), (2, 1), (3, 1), (4, 1)):
             directory = next(scratch_root.iterdir())
-            observed[stage] = {path.name for path in directory.iterdir()}
+            observed[stage] = set(directory.iterdir())
 
     grouped.grouped_fuse(_files(tmp_path, range(10)), 2, 0,
                          np.maximum.reduce, progress=progress)
-    assert observed[3] == {'1-5.tif', '2-1.tif', '2-2.tif', '3-1.tif'}
-    assert observed[4] == {'1-5.tif', '3-1.tif'}
+    first_round = observed[1]
+    first_second_round_result = observed[2] - first_round
+    assert len(first_round) == 5
+    assert len(first_second_round_result) == 1
+    carried = first_round & observed[3]
+    assert len(carried) == 1
+    assert first_second_round_result <= observed[3]
+    second_round_results = observed[3] - first_round - observed[4]
+    assert len(second_round_results) == 2
+    assert first_second_round_result <= second_round_results
+    assert observed[4] == observed[3] - second_round_results
+    assert len(observed[4] - carried) == 1
     assert not list(scratch_root.iterdir())
 
 
-def test_scratch_disk_ceiling(tmp_path, admitted, monkeypatch, scratch_root):
+@pytest.mark.parametrize('available', [0, 65536 + 8 * 9 * 3 - 1, 65536 + 8 * 9 * 3])
+def test_scratch_disk_ceiling(tmp_path, admitted, monkeypatch, scratch_root, available):
     usage = namedtuple('usage', 'total used free')
-    monkeypatch.setattr(grouped.shutil, 'disk_usage', lambda path: usage(1, 1, 0))
-    with pytest.raises(resource_policy.ResourceLimitError, match='disk'):
-        grouped.grouped_fuse(_files(tmp_path, range(4)), 2, 0, np.maximum.reduce)
+    reserve = 1024 ** 3
+    monkeypatch.setattr(frame_storage.shutil, 'disk_usage',
+                        lambda path: usage(20 * reserve, 0, reserve + available))
+    paths = _files(tmp_path, range(4))
+    originals = [path.read_bytes() for path in paths]
+    writes = []
+    writer = grouped.imwrite_auto
+    monkeypatch.setattr(grouped, 'imwrite_auto', lambda *a, **k: (writes.append(a[0]), writer(*a, **k))[1])
+    required = 65536 + 8 * 9 * 3
+    if available < required:
+        with pytest.raises(frame_storage.ScratchSpaceError) as error:
+            grouped.grouped_fuse(paths, 2, 0, np.maximum.reduce)
+        assert error.value.available == available
+        assert not writes
+    else:
+        grouped.grouped_fuse(paths, 2, 0, np.maximum.reduce)
+        assert writes
+    assert [path.read_bytes() for path in paths] == originals
     assert not list(scratch_root.iterdir())
+
+
+def test_scratch_disk_query_failure(tmp_path, admitted, monkeypatch, scratch_root):
+    def fail(path):
+        raise OSError('disk unavailable')
+    monkeypatch.setattr(frame_storage.shutil, 'disk_usage', fail)
+    with pytest.raises(frame_storage.ScratchSpaceError) as error:
+        grouped.grouped_fuse(_files(tmp_path, range(4)), 2, 0, np.maximum.reduce)
+    assert error.value.available is None
+    assert not list(scratch_root.iterdir())
+
+
+@pytest.mark.parametrize('failure', ['false', 'exception'])
+def test_scratch_write_failure_cleans_registered_paths(tmp_path, admitted, monkeypatch, scratch_root, failure):
+    from core import scratch_registry
+    registered, forgotten = [], []
+    monkeypatch.setattr(scratch_registry, 'register', lambda path: registered.append(path))
+    monkeypatch.setattr(scratch_registry, 'forget', lambda paths: forgotten.extend(paths))
+    def fail(path, *args, **kwargs):
+        assert path in registered
+        with open(path, 'wb') as stream:
+            stream.write(b'partial')
+        if failure == 'exception':
+            raise OSError('disk full')
+        return False
+    monkeypatch.setattr(grouped, 'imwrite_auto', fail)
+    paths = _files(tmp_path, range(4))
+    originals = [path.read_bytes() for path in paths]
+    with pytest.raises(OSError):
+        grouped.grouped_fuse(paths, 2, 0, np.maximum.reduce)
+    assert len(registered) == 2
+    assert set(forgotten) == set(registered)
+    assert not list(scratch_root.iterdir())
+    assert [path.read_bytes() for path in paths] == originals
 
 
 def test_rejects_multipage_before_decode(tmp_path, admitted, monkeypatch):

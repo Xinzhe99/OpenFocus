@@ -53,44 +53,69 @@ def test_marking_twice_only_retitles_once():
     assert len(host.titles) == count, "an already-dirty project must not retitle"
 
 
-def test_stack_mutation_marks_the_project_dirty():
-    """push_undo is the single funnel every stack mutation goes through."""
-    from pathlib import Path
-    src = Path("main.py").read_text(encoding="utf-8")
-    block = src[src.index("def push_undo"):src.index("def _restore_stack_state")]
-    assert "_mark_project_dirty()" in block, (
-        "stack mutations must mark the project dirty, otherwise closing "
-        "discards the work silently")
+@pytest.mark.parametrize("action", ["open", "close"])
+@pytest.mark.parametrize("choice", ["cancel", "discard", "save_ok", "save_cancel", "save_failed", "escape", "default"])
+def test_dirty_project_confirmation(qapp, tmp_path, monkeypatch, action, choice):
+    import numpy as np
+    from PyQt6.QtCore import Qt, QTimer
+    from PyQt6.QtTest import QTest
+    from PyQt6.QtWidgets import QMessageBox, QListWidgetItem
+    from tests.test_control_channel import _destroy_main_window, _new_main_window
+    from utils.file_dialogs import FileDialog
+    from utils import project_file
+    import main
 
+    window = _new_main_window(qapp, tmp_path, monkeypatch)
+    try:
+        window.raw_images = [np.zeros((2, 2, 3), dtype=np.uint8)]
+        window.image_filenames = ["original.png"]
+        item = QListWidgetItem("original.png")
+        item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+        item.setCheckState(Qt.CheckState.Checked)
+        window.file_list.addItem(item)
+        window._clear_project_dirty()
+        item.setCheckState(Qt.CheckState.Unchecked)
+        assert window._project_dirty and window.windowTitle().endswith("*")
+        assert 0 in window.excluded_frames
 
-def _method_body(src, name):
-    """Source of one method, up to the next method at the same indent."""
-    start = src.index(f"    def {name}(")
-    rest = src[start + 4:]
-    nxt = rest.find("\n    def ")
-    return src[start:] if nxt < 0 else src[start:start + 4 + nxt]
+        opened = []
+        new_path = str(tmp_path / "new.ofproj")
+        monkeypatch.setattr(FileDialog, "getOpenFileName", lambda *a, **k: (opened.append(True) or new_path, ""))
+        monkeypatch.setattr(project_file, "validate_project_for_open", lambda *a: (True, None, {}))
+        def apply_project(host, state, on_loaded):
+            host.image_filenames = ["new.png"]
+            on_loaded()
+        monkeypatch.setattr(project_file, "apply_project", apply_project)
+        monkeypatch.setattr(FileDialog, "getSaveFileName", lambda *a, **k: ("" if choice == "save_cancel" else str(tmp_path / "saved.ofproj"), ""))
+        monkeypatch.setattr(project_file, "save_project", lambda *a: (choice == "save_ok", "failed"))
+        monkeypatch.setattr(main, "show_warning_box", lambda *a, **k: None)
 
+        def respond():
+            box = qapp.activeModalWidget()
+            assert isinstance(box, QMessageBox)
+            assert box.buttonRole(box.defaultButton()) == QMessageBox.ButtonRole.RejectRole
+            if choice in ("escape", "default"):
+                QTest.keyClick(box, Qt.Key.Key_Escape if choice == "escape" else Qt.Key.Key_Return)
+            else:
+                role = (QMessageBox.ButtonRole.RejectRole if choice == "cancel" else
+                        QMessageBox.ButtonRole.DestructiveRole if choice == "discard" else
+                        QMessageBox.ButtonRole.AcceptRole)
+                next(button for button in box.buttons() if box.buttonRole(button) == role).click()
 
-def test_close_and_open_ask_before_discarding():
-    from pathlib import Path
-    src = Path("main.py").read_text(encoding="utf-8")
-    close = _method_body(src, "closeEvent")
-    assert "_confirm_discard_project_changes" in close
-    open_fn = src[src.index("def open_project_dialog"):
-                   src.index("def save_project_dialog")]
-    assert "_confirm_discard_project_changes" in open_fn
-    assert "_clear_project_dirty()" in open_fn
-
-
-def test_discard_prompt_defaults_to_cancel_and_offers_save():
-    """The prompt used to default to discarding the unsaved project."""
-    from pathlib import Path
-
-    src = Path("main.py").read_text(encoding="utf-8")
-    block = src[src.index("def _confirm_discard_project_changes"):
-                src.index("def load_demo_stack")]
-    assert "setDefaultButton(cancel)" in block, (
-        "the safe choice must be the default")
-    assert "save_project_dialog" in block, (
-        "the user must be able to save before continuing")
-    assert "btn_cancel" in block
+        QTimer.singleShot(0, respond)
+        if action == "open":
+            window.open_project_dialog()
+            continued = bool(opened)
+        else:
+            continued = window.close()
+        assert continued == (choice in ("discard", "save_ok"))
+        if action == "open" and continued:
+            assert window.image_filenames == ["new.png"]
+            assert window.project_path == new_path
+            assert not window._project_dirty
+        else:
+            assert 0 in window.excluded_frames
+            assert window.image_filenames == ["original.png"]
+            assert window._project_dirty == (choice != "save_ok")
+    finally:
+        _destroy_main_window(qapp, window)

@@ -176,7 +176,7 @@ def imwrite_multi_tiff(path: str, images, *, icc_profile: bytes = b"", page_spec
                         page_specs=page_specs)
 
 
-def imwrite_float_tiff(path: str, image: np.ndarray, metadata: dict) -> bool:
+def imwrite_float_tiff(path: str, image: np.ndarray, metadata: dict, *, should_cancel=None) -> bool:
     """Write physical depth as float32 TIFF, preserving NaN and unit metadata."""
     import json
     from PIL import Image
@@ -188,7 +188,8 @@ def imwrite_float_tiff(path: str, image: np.ndarray, metadata: dict) -> bool:
         description = Image.Exif()
         description[270] = json.dumps(metadata, ensure_ascii=True, allow_nan=False)
         return imwrite_auto(path, values, get_imwrite_params('.tif'),
-                            exif=description.tobytes(), stream_tiff=True)
+                            exif=description.tobytes(), stream_tiff=True,
+                            should_cancel=should_cancel)
     except (OSError, ValueError, TypeError):
         return False
 

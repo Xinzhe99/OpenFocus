@@ -357,6 +357,9 @@ class AccountClient:
         self._login_epoch = 0
         self._refreshing = False
         self._last_refresh_error = None
+        self._logout_cleanup_pending = False
+        self._logout_in_progress = False
+        self._pending_logout_token = None
         self.email_handoff_mode = None
 
     def _call(self, method, path, body=None, token=None, timeout=15):
@@ -372,15 +375,28 @@ class AccountClient:
         self._session = copy.deepcopy(session)
         self._generation += 1
 
-    def _clear(self):
+    def _invalidate_session(self):
         self._session = None
         self._generation += 1
+        self._logout_cleanup_pending = True
+        self._condition.notify_all()
+
+    def _clear_storage(self):
         self.store.clear()
+        self._logout_cleanup_pending = False
+        self._pending_logout_token = None
+
+    @property
+    def logout_cleanup_pending(self):
+        with self._condition:
+            return self._logout_cleanup_pending
 
     def _check_login(self, generation, cancel):
         with self._condition:
             if generation != (self._generation, self._login_epoch) or (cancel is not None and cancel.is_set()):
                 raise AccountError("cancelled")
+            if self._logout_cleanup_pending or self._logout_in_progress:
+                raise AccountError("storage")
 
     def _login_call(self, generation, method, path, body=None, *, cancel=None, timeout=15, check_after=True):
         self._check_login(generation, cancel)
@@ -391,7 +407,8 @@ class AccountClient:
                 if generation != (self._generation, self._login_epoch) or (cancel is not None and cancel.is_set()):
                     raise AccountError("cancelled") from None
                 if exc.category == "account_disabled":
-                    self._clear()
+                    self._invalidate_session()
+                    self._clear_storage()
             raise
         if check_after:
             self._check_login(generation, cancel)
@@ -519,7 +536,8 @@ class AccountClient:
                         if server.error == "account_disabled":
                             with self._condition:
                                 if generation == (self._generation, self._login_epoch):
-                                    self._clear()
+                                    self._invalidate_session()
+                                    self._clear_storage()
                         raise AccountError(server.error)
                     code = server.code
                 session = self._login_call(generation, "POST", "/v1/auth/exchange", {"code": code, "code_verifier": verifier}, cancel=cancel)
@@ -583,7 +601,8 @@ class AccountClient:
                 if server.error == "account_disabled":
                     with self._condition:
                         if generation == (self._generation, self._login_epoch):
-                            self._clear()
+                            self._invalidate_session()
+                            self._clear_storage()
                 raise AccountError(server.error)
             session = self._login_call(generation, "POST", "/v1/auth/exchange",
                                        {"code": server.code, "code_verifier": verifier}, cancel=cancel)
@@ -640,7 +659,8 @@ class AccountClient:
                 if exc.status in (401, 403):
                     with self._condition:
                         if generation == (self._generation, self._login_epoch):
-                            self._clear()
+                            self._invalidate_session()
+                            self._clear_storage()
                 raise
             self._check_login(generation, cancel)
             url = result.get("url")
@@ -707,7 +727,7 @@ class AccountClient:
     def token(self, *, expected_owner=None):
         """Return a bearer for the expected account, refreshing before expiry."""
         with self._condition:
-            session = self._session
+            session = None if self._logout_in_progress else self._session
             if not session or (expected_owner is not None and
                                session['user'].get('id') != expected_owner):
                 return None
@@ -715,7 +735,7 @@ class AccountClient:
         if needs_refresh:
             self.refresh(_expected_token=session['token'])
         with self._condition:
-            session = self._session
+            session = None if self._logout_in_progress else self._session
             if not session or (expected_owner is not None and
                                session['user'].get('id') != expected_owner):
                 return None
@@ -724,12 +744,14 @@ class AccountClient:
     def refresh(self, *, _expected_token=None):
         """Rotate once; concurrent callers share the same result or error."""
         with self._condition:
+            if self._logout_in_progress:
+                return False
             if self._refreshing:
                 while self._refreshing:
                     self._condition.wait()
                 if self._last_refresh_error:
                     raise self._last_refresh_error
-                return bool(self._session)
+                return not self._logout_in_progress and bool(self._session)
             if not self._session:
                 return False
             if _expected_token is not None and self._session["token"] != _expected_token:
@@ -747,8 +769,13 @@ class AccountClient:
                 return True
         except AccountError as exc:
             with self._condition:
-                if exc.status in (401, 403) and generation == self._generation:
-                    self._clear()
+                try:
+                    if exc.status in (401, 403) and generation == self._generation:
+                        self._invalidate_session()
+                        self._clear_storage()
+                except AccountError as storage_error:
+                    self._last_refresh_error = storage_error
+                    raise
                 self._last_refresh_error = exc
             raise
         finally:
@@ -770,7 +797,8 @@ class AccountClient:
             if exc.status in (401, 403):
                 with self._condition:
                     if generation == self._generation:
-                        self._clear()
+                        self._invalidate_session()
+                        self._clear_storage()
             raise
 
     def terms(self):
@@ -809,18 +837,50 @@ class AccountClient:
     def logout(self):
         with self._condition:
             self._login_epoch += 1
-            self._condition.notify_all()
-            owner = self._session['user'].get('id') if self._session else None
-            while self._refreshing:
+            while self._logout_in_progress:
                 self._condition.wait()
-            if not self._session or self._session['user'].get('id') != owner:
-                return
-            token = self._session['token']
-            self._clear()
-        if token:
-            result = self._call("POST", "/v1/auth/logout", token=token)
-            if result.get("ok") is not True:
-                raise AccountError("invalid_response")
+            self._logout_in_progress = True
+            self._condition.notify_all()
+            try:
+                owner = self._session['user'].get('id') if self._session else None
+                while self._refreshing:
+                    self._condition.wait()
+                token = self._pending_logout_token
+                if self._session and self._session['user'].get('id') == owner:
+                    token = self._session['token']
+                    self._invalidate_session()
+                if not self._logout_cleanup_pending:
+                    self._logout_in_progress = False
+                    self._condition.notify_all()
+                    return
+                storage_error = None
+                try:
+                    self._clear_storage()
+                except AccountError as exc:
+                    storage_error = exc
+                    self._pending_logout_token = token
+            except BaseException:
+                self._logout_in_progress = False
+                self._condition.notify_all()
+                raise
+        remote_error = None
+        try:
+            if token:
+                result = self._call("POST", "/v1/auth/logout", token=token)
+                if result.get("ok") is not True:
+                    raise AccountError("invalid_response")
+        except AccountError as exc:
+            remote_error = exc
+        finally:
+            with self._condition:
+                if remote_error is None:
+                    self._pending_logout_token = None
+                self._logout_in_progress = False
+                self._condition.notify_all()
+        if storage_error:
+            raise storage_error
+        if remote_error:
+            raise remote_error
 
     def delete_account(self):
         token = self.token()
@@ -836,11 +896,13 @@ class AccountClient:
             if exc.status in (401, 403):
                 with self._condition:
                     if generation == self._generation:
-                        self._clear()
+                        self._invalidate_session()
+                        self._clear_storage()
             raise
         if result.get("ok") is not True:
             raise AccountError("invalid_response")
         with self._condition:
             if generation == self._generation:
-                self._clear()
+                self._invalidate_session()
+                self._clear_storage()
         return True

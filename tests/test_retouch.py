@@ -113,20 +113,17 @@ def test_tone_cancellation_during_history_commit_preserves_redo(monkeypatch):
     painted = doc.working.copy()
     assert doc.undo() and doc.can_redo
     cancelled = [False]
-    original_end = doc.history.end
-    original_slice = doc.history._tile_slice
+    original_end = TileHistory.end
 
-    def commit_with_interruption(*args, **kwargs):
+    def commit_with_interruption(history, *args, **kwargs):
+        original_slice = history._tile_slice
         def interrupt_after_first_comparison(key):
             cancelled[0] = True
             return original_slice(key)
-        monkeypatch.setattr(doc.history, "_tile_slice", interrupt_after_first_comparison)
-        try:
-            return original_end(*args, **kwargs)
-        finally:
-            monkeypatch.setattr(doc.history, "_tile_slice", original_slice)
+        monkeypatch.setattr(history, "_tile_slice", interrupt_after_first_comparison)
+        return original_end(history, *args, **kwargs)
 
-    monkeypatch.setattr(doc.history, "end", commit_with_interruption)
+    monkeypatch.setattr(TileHistory, "end", commit_with_interruption)
     assert doc.adjust_tones(-1.0, 0.0, lambda: cancelled[0]) == "cancelled"
     np.testing.assert_array_equal(doc.working, image)
     assert doc.can_redo and not doc.can_undo and not doc.is_dirty
@@ -996,6 +993,7 @@ def test_render_completion_attaches_provenance(qapp, monkeypatch):
     from controllers.output_manager import (
         OUTPUT_RECORD_ROLE, OutputManager,
     )
+    from controllers.label_manager import LabelManager
     from controllers.render_manager import RenderManager
     import utils.recovery as recovery
 
@@ -1003,6 +1001,9 @@ def test_render_completion_attaches_provenance(qapp, monkeypatch):
     messages = []
     monkeypatch.setattr(
         "controllers.render_manager.show_message_box",
+        lambda *args, **kwargs: messages.append(args))
+    monkeypatch.setattr(
+        "controllers.output_manager.show_message_box",
         lambda *args, **kwargs: messages.append(args))
     monkeypatch.setattr(
         "controllers.render_manager.show_warning_box",
@@ -1033,6 +1034,10 @@ def test_render_completion_attaches_provenance(qapp, monkeypatch):
             self.wipe_active = False
             self.output_list = QListWidget()
             self.output_label = QLabel()
+            self.lbl_result_img = QLabel()
+            self.lbl_result_img.set_display_pixmap = self.lbl_result_img.setPixmap
+            self.lbl_result_info = QLabel()
+            self.label_manager = LabelManager(self)
             self.result_control_bar = QWidget()
             self.result_slider = QSlider()
             self.add_label_action = QAction()
@@ -1052,7 +1057,6 @@ def test_render_completion_attaches_provenance(qapp, monkeypatch):
             return "guided_filter"
 
     w = W()
-    monkeypatch.setattr(w.output_manager, "show_fusion_result", lambda: None)
     manager = RenderManager(w)
     manager._hide_progress_bar = lambda: None
     manager._restore_ui_controls = lambda: None
@@ -1075,6 +1079,12 @@ def test_render_completion_attaches_provenance(qapp, monkeypatch):
     result = np.full((24, 32, 3), 100, np.uint8)
     manager.on_render_finished(w.raw_images, result, False, 0.0, 0.1, "CPU")
     assert not messages, messages
+    assert w.lbl_result_img.pixmap() is not None
+    assert not w.lbl_result_img.pixmap().isNull()
+    assert w.lbl_result_img.pixmap().size().width() == 32
+    assert w.lbl_result_img.pixmap().size().height() == 24
+    color = w.lbl_result_img.pixmap().toImage().pixelColor(0, 0)
+    assert (color.red(), color.green(), color.blue()) == (100, 100, 100)
 
     item = w.output_list.item(0)
     record = item.data(OUTPUT_RECORD_ROLE)
@@ -1393,36 +1403,77 @@ def test_retouch_control_hints_include_shortcut_scope(qapp):
         dlg.close()
 
 
-def test_shortcut_help_has_separate_readable_groups_and_rows(qapp, monkeypatch):
-    from PyQt6.QtWidgets import QDialog, QGridLayout, QLabel, QScrollArea
+def test_shortcut_help_is_readable_and_scrollable(qapp):
+    from PyQt6.QtCore import QTimer
+    from PyQt6.QtWidgets import QApplication, QLabel, QPushButton, QScrollArea
+    from locales import trans
+
     dlg, _ = _dialog(qapp)
-    seen = []
+    errors = []
+    inspected = []
+    pairs = (
+        ('F', 'retouch_fit'), ('1', 'retouch_zoom_100'),
+        ('+ / −', 'retouch_shortcut_zoom'), (', / .', 'retouch_shortcut_frames'),
+        ('F11', 'compare_fullscreen'), ('B', 'retouch_tool_source'),
+        ('E', 'retouch_tool_restore'), ('[ / ]', 'retouch_diameter'),
+        (trans.t('retouch_shortcut_ctrl_wheel'), 'retouch_diameter'),
+        (trans.t('retouch_shortcut_left_drag'), 'retouch_shortcut_paint'),
+        ('Tab', 'retouch_shortcut_before'), ('Alt', 'retouch_shortcut_source'),
+        (trans.t('retouch_shortcut_wheel'), 'retouch_shortcut_zoom'),
+        (trans.t('retouch_shortcut_pan_keys'), 'retouch_shortcut_pan'),
+        ('Ctrl+Z', 'retouch_undo'), ('Ctrl+Y / Ctrl+Shift+Z', 'retouch_redo'),
+        ('Ctrl+Enter', 'retouch_apply'), ('Esc', 'retouch_shortcut_escape'),
+    )
 
-    def inspect(dialog):
-        dialog.show()
-        qapp.processEvents()
-        seen.append(dialog.property('controlId'))
-        scroll = dialog.findChild(QScrollArea)
-        assert scroll is not None and scroll.widgetResizable()
-        grids = scroll.widget().findChildren(QGridLayout)
-        assert len(grids) == 4
-        for grid in grids:
-            for row in range(grid.rowCount()):
-                keys = grid.itemAtPosition(row, 0).widget()
-                description = grid.itemAtPosition(row, 1).widget()
-                assert isinstance(keys, QLabel) and isinstance(description, QLabel)
-                assert keys.text() and description.text() and description.wordWrap()
-                assert keys.geometry().right() < description.geometry().left()
-                if row:
-                    previous = grid.itemAtPosition(row - 1, 1).widget()
-                    assert previous.geometry().bottom() < description.geometry().top()
-        dialog.accept()
-        return dialog.result()
+    def inspect():
+        help_dialog = QApplication.activeModalWidget()
+        try:
+            assert help_dialog is not None and help_dialog.isVisible()
+            help_dialog.resize(680, 350)
+            qapp.processEvents()
+            scroll = help_dialog.findChild(QScrollArea)
+            assert scroll is not None
+            labels = scroll.findChildren(QLabel)
+            for shortcut, description_key in pairs:
+                keys = [label for label in labels if label.text() == shortcut]
+                descriptions = [label for label in labels
+                                if label.text() == trans.t(description_key)]
+                assert keys and descriptions
+                key = keys[0]
+                key_rect = key.rect().translated(key.mapTo(scroll.widget(), key.rect().topLeft()))
+                matching = [label for label in descriptions
+                            if label.rect().translated(label.mapTo(scroll.widget(), label.rect().topLeft())).intersects(
+                                key_rect.adjusted(0, 0, scroll.widget().width(), 0))]
+                assert matching, shortcut
+                description = matching[0]
+                description_rect = description.rect().translated(
+                    description.mapTo(scroll.widget(), description.rect().topLeft()))
+                assert not key_rect.intersects(description_rect)
+                for label in (key, description):
+                    scroll.ensureWidgetVisible(label)
+                    qapp.processEvents()
+                    assert label.isVisible()
+                    visible = label.rect().translated(label.mapTo(scroll.viewport(), label.rect().topLeft()))
+                    assert scroll.viewport().rect().intersects(visible)
+            scroll.verticalScrollBar().setValue(scroll.verticalScrollBar().maximum())
+            qapp.processEvents()
+            assert scroll.verticalScrollBar().value() == scroll.verticalScrollBar().maximum()
+            inspected.append(True)
+            close = next(button for button in help_dialog.findChildren(QPushButton)
+                         if button.text() == trans.t('dialog_close'))
+            close.click()
+            assert not help_dialog.isVisible()
+        except BaseException as error:
+            errors.append(error)
+            if help_dialog is not None:
+                help_dialog.close()
 
-    monkeypatch.setattr(QDialog, 'exec', inspect)
     try:
+        QTimer.singleShot(0, inspect)
         dlg.btn_shortcuts.click()
-        assert seen == ['retouch_shortcuts_dialog']
+        if errors:
+            raise errors[0]
+        assert inspected
     finally:
         dlg._allow_close = True
         dlg.close()
@@ -1505,3 +1556,160 @@ def test_retouch_native_events_during_preparation_wait_have_initialized_state(qa
     finally:
         dialog._allow_close = True
         dialog.close()
+
+
+def test_active_stroke_capacity_rejects_before_copy_and_preserves_redo(monkeypatch):
+    image = np.full((128, 256, 3), 20, np.uint8)
+    doc = _document(frames=[np.full_like(image, 200)], result=image,
+                    max_bytes=128 * 128 * 3)
+    doc.set_brush(diameter=8, hardness=1)
+    assert doc.begin_stroke(30, 30)
+    assert doc.end_stroke() == 'committed'
+    painted = doc.working.copy()
+    assert doc.undo()
+    copied = []
+    original = doc.history._tile_copy
+
+    def track(image, key):
+        copied.append(key)
+        return original(image, key)
+
+    monkeypatch.setattr(doc.history, '_tile_copy', track)
+    assert doc.begin_stroke(30, 30)
+    assert doc.stroke_start_rect is not None
+    doc.stroke_to(200, 30)
+    assert copied == [(0, 0)]
+    np.testing.assert_array_equal(doc.working, image)
+    assert doc.stroke_start_rect is None
+    assert doc.end_stroke() == 'oversize'
+    assert doc.can_redo and doc.redo()
+    np.testing.assert_array_equal(doc.working, painted)
+
+
+def test_history_swap_rolls_back_partial_write_and_can_retry(monkeypatch):
+    import pytest
+    base = np.full((128, 256, 3), 10, np.uint16)
+    target = base.copy()
+    history = TileHistory(target, base)
+    history.begin()
+    history.remember(target, 0, 0, 256, 128)
+    target[:] = 200
+    assert history.end() == 'committed'
+    original = history._write_tile
+    calls = []
+
+    def fail_once(image, key, data):
+        calls.append(key)
+        if len(calls) == 2:
+            image[history._tile_slice(key)][0] = data[0]
+            raise OSError('injected partial write')
+        original(image, key, data)
+
+    monkeypatch.setattr(history, '_write_tile', fail_once)
+    with pytest.raises(OSError):
+        history.undo()
+    assert np.all(target == 200)
+    assert history.can_undo and not history.can_redo
+    monkeypatch.setattr(history, '_write_tile', original)
+    assert history.undo()
+    np.testing.assert_array_equal(target, base)
+    assert history.redo() and np.all(target == 200)
+
+
+def test_grayscale_dab_converts_only_clipped_source(monkeypatch):
+    import cv2
+    source = np.arange(256 * 256, dtype=np.uint16).reshape(256, 256)[:, ::2]
+    target = np.zeros((256, 128), np.uint16)
+    calls = []
+    convert = cv2.cvtColor
+
+    def record(image, code, *args, **kwargs):
+        if code == cv2.COLOR_GRAY2BGR:
+            calls.append(image.shape)
+        return convert(image, code, *args, **kwargs)
+
+    monkeypatch.setattr(cv2, 'cvtColor', record)
+    apply_dab(target, source, 64, 128, 8, hardness=1)
+    assert calls == [(8, 8)]
+    assert target[128, 64] == source[128, 64]
+
+
+def test_retouched_publication_owns_noncontiguous_input(qapp, monkeypatch):
+    from core import frame_storage
+    w = _entry_host(qapp)
+    mgr = w.output_manager
+    monkeypatch.setattr(mgr, 'display_specific_fusion_result', lambda image: None)
+    monkeypatch.setattr(frame_storage, '_try_ram_frame', lambda *args: None)
+    source = np.full((16, 32, 3), 42, np.uint8)
+    borrowed = source[:, ::2]
+    record = mgr.add_retouched_output(mgr.record_for_row(0), borrowed)
+    assert isinstance(record.image, np.memmap)
+    source[:] = 9
+    assert np.all(record.image == 42)
+
+
+def test_retouched_publication_storage_failure_keeps_view(qapp, monkeypatch):
+    import pytest
+    from core import frame_storage
+    w = _entry_host(qapp)
+    mgr = w.output_manager
+    base = mgr.record_for_row(0)
+    rows = [w.output_list.item(i) for i in range(w.output_list.count())]
+    results = list(w.fusion_results)
+    current = w.fusion_result
+
+    def fail(*args, **kwargs):
+        raise OSError('storage unavailable')
+
+    monkeypatch.setattr(frame_storage, 'store_frame', fail)
+    with pytest.raises(OSError):
+        mgr.add_retouched_output(base, base.image)
+    assert [w.output_list.item(i) for i in range(w.output_list.count())] == rows
+    assert all(a is b for a, b in zip(w.fusion_results, results))
+    assert w.fusion_result is current
+
+
+def test_undo_metadata_failure_preserves_pixels_and_history(monkeypatch):
+    import pytest
+    doc = _document()
+    assert doc.begin_stroke(20, 20)
+    assert doc.end_stroke() == 'committed'
+    pixels = doc.working.copy()
+    undo = doc.history._undo
+    cursor = doc._cursor
+    operations = doc._operations
+
+    def fail(_self):
+        raise MemoryError('injected metadata allocation failure')
+
+    monkeypatch.setattr(RetouchDocument, '_trim_redo', fail)
+    with pytest.raises(MemoryError):
+        doc.undo()
+    np.testing.assert_array_equal(doc.working, pixels)
+    assert doc.history._undo is undo and not doc.can_redo
+    assert doc._cursor == cursor and doc._operations is operations
+
+
+def test_stroke_copy_failure_aborts_and_allows_retry(monkeypatch):
+    import pytest
+    image = np.full((128, 256, 3), 20, np.uint8)
+    doc = _document(frames=[np.full_like(image, 200)], result=image)
+    doc.set_brush(diameter=8, hardness=1)
+    original = doc.history._tile_copy
+    calls = []
+
+    def fail_second(image, key):
+        calls.append(key)
+        if len(calls) == 2:
+            raise MemoryError('injected tile allocation failure')
+        return original(image, key)
+
+    monkeypatch.setattr(doc.history, '_tile_copy', fail_second)
+    assert doc.begin_stroke(30, 30)
+    with pytest.raises(MemoryError):
+        doc.stroke_to(200, 30)
+    np.testing.assert_array_equal(doc.working, image)
+    assert not doc.stroke_active and not doc.can_undo
+    monkeypatch.setattr(doc.history, '_tile_copy', original)
+    assert doc.begin_stroke(30, 30)
+    assert doc.end_stroke() == 'committed'

@@ -1,6 +1,4 @@
 import os
-import glob
-import re
 import cv2
 import numpy as np
 import concurrent.futures
@@ -50,31 +48,11 @@ def gff_impl(input_source, img_resize, kernel_size=31, thread_count: int = None,
 
     # ========== 数据加载 ==========
     if isinstance(input_source, str):
-        from core.source_frames import scan_source
+        from fusion_methods.openfocus_ab import _collect_directory_sources
 
-        def get_image_suffix(input_stack_path):
-            filenames = os.listdir(input_stack_path)
-            if len(filenames) == 0:
-                return None
-            suffixes = [os.path.splitext(filename)[1] for filename in filenames]
-            return suffixes[0]
-
-        img_ext = get_image_suffix(input_source)
-        if img_ext is None:
+        stack_ori, paths = _collect_directory_sources(input_source, should_cancel)
+        if not paths and not os.listdir(input_source):
             raise ValueError("Input folder is empty or no images were found")
-            
-        glob_format = '*' + img_ext
-        img_stack_path_list = glob.glob(os.path.join(input_source, glob_format))
-        # 尝试按数字排序
-        try:
-            img_stack_path_list.sort(key=lambda x: int(str(re.findall(r"\d+", x.split(os.sep)[-1])[-1])))
-        except IndexError:
-            img_stack_path_list.sort() # 回退到字典序
-            
-        stack_ori = []
-        for img_path in img_stack_path_list:
-            check_cancel()
-            stack_ori.extend(scan_source(img_path, header_only=True, should_cancel=check_cancel))
     else:
         stack_ori = input_source
     

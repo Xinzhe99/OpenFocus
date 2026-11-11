@@ -10,6 +10,7 @@ import secrets
 import threading
 import time
 
+from PyQt6 import sip
 from PyQt6.QtCore import QObject, Qt, QTimer
 from PyQt6.QtNetwork import QLocalServer
 from PyQt6.QtGui import QColor
@@ -26,11 +27,13 @@ from core.control.protocol import (
 )
 from core.algorithms import (
     fusion_algorithms, get_fusion, get_registration, registration_algorithms,
+    resolve_fusion_parameters, resolve_registration_parameters,
 )
 from locales import trans
 from utils.logging_setup import get_logger
 
 _log = get_logger(__name__)
+MAX_MOUSE_STEPS = 1024
 
 class _DeferredResponse:
     def __init__(self, start):
@@ -249,19 +252,20 @@ class ControlServer(QObject):
         self._server = QLocalServer(self)
         self._server.setSocketOptions(QLocalServer.SocketOption.UserAccessOption)
         if not self._server.listen(self.socket_name):
-            # Only clear the name when it is really blocked, and never
-            # delete a non-socket file a custom --control-socket may point
-            # at: removeServer unlinks the path unconditionally on Unix.
-            stale = self._stale_socket_path(self.socket_name)
-            if stale is None:
-                raise RuntimeError(
-                    f"Could not listen on {self.socket_name}: "
-                    f"{self._server.errorString()}")
-            QLocalServer.removeServer(self.socket_name)
-            if not self._server.listen(self.socket_name):
-                raise RuntimeError(
-                    f"Could not listen on {self.socket_name}: "
-                    f"{self._server.errorString()}")
+            # A Unix path may belong to a live server or another owner. Never
+            # unlink it on a failed bind; Windows named pipes use a namespace.
+            if os.name == "nt":
+                QLocalServer.removeServer(self.socket_name)
+                if self._server.listen(self.socket_name):
+                    pass
+                else:
+                    error = self._server.errorString()
+                    self._server.close()
+                    raise RuntimeError(f"Could not listen on {self.socket_name}: {error}")
+            else:
+                error = self._server.errorString()
+                self._server.close()
+                raise RuntimeError(f"Could not listen on {self.socket_name}: {error}")
         self._server.newConnection.connect(self._accept)
         try:
             self.discovery = write_discovery(
@@ -274,25 +278,6 @@ class ControlServer(QObject):
             self.close()
             raise
         _log.info("control channel listening on %s", self.socket_name)
-
-    @staticmethod
-    def _stale_socket_path(socket_name):
-        """Path of a stale Unix socket occupying *socket_name*, else None.
-
-        removeServer unlinks unconditionally on Unix, so a custom socket
-        name that collides with a regular file must not be "cleaned".
-        """
-        import stat
-        if os.name != "posix":
-            # Windows named pipes live in a namespace, not the filesystem.
-            return socket_name
-        candidate = (socket_name if os.path.isabs(socket_name)
-                     else os.path.join("/tmp", socket_name))
-        try:
-            mode = os.stat(candidate).st_mode
-        except OSError:
-            return None
-        return candidate if stat.S_ISSOCK(mode) else None
 
     def _start_watchdog(self):
         """Opt-in: dump the GUI thread if it stops answering for 10 s."""
@@ -772,6 +757,9 @@ class ControlServer(QObject):
         if scale <= 0:
             raise ControlError("invalid_argument", "scale must be positive")
         append = _boolean(args, "append", default=False)
+        linear_raw = _boolean(args, "linear_raw", default=False)
+        if linear_raw and video:
+            raise ControlError("invalid_argument", "linear_raw requires a folder or files")
         manager = self.window.source_manager
         if getattr(manager, "_load_worker", None) is not None:
             raise ControlError("busy", "A stack is already loading",
@@ -779,7 +767,7 @@ class ControlServer(QObject):
         load_id = None
         if folder:
             load_id = manager._start_load_worker(
-                folder=folder, scale=scale, append=append)
+                folder=folder, scale=scale, append=append, linear_raw=linear_raw)
             source = folder
         elif video:
             load_id = manager._start_load_worker(
@@ -787,7 +775,7 @@ class ControlServer(QObject):
             source = video
         else:
             load_id = manager._start_load_worker(
-                filepaths=list(files), scale=scale, append=append)
+                filepaths=list(files), scale=scale, append=append, linear_raw=linear_raw)
             source = list(files)
         return {"loading": True, "source": source, "load_id": load_id,
                 "baseline_count": self._load_baseline}
@@ -810,12 +798,15 @@ class ControlServer(QObject):
         include = _boolean(args, "include", default=True)
         window = self.window
         manager = window.source_manager
+        items = []
         for index in indices:
             if not 0 <= index < len(window.raw_images):
                 raise ControlError("invalid_argument", f"Frame index out of range: {index}")
             item = window.file_list.item(index)
             if item is None:
                 raise ControlError("not_found", f"No frame row at index {index}")
+            items.append(item)
+        for item in items:
             # Drive the same handler the checkbox uses: it pushes undo, marks
             # the project dirty, bumps source_revision and drops the cached
             # alignment/ROI. Block the list signal so the state change is
@@ -832,14 +823,10 @@ class ControlServer(QObject):
     # -------------------------------------------------- method/align/options
     def _cmd_method_set(self, args):
         method = _string(args, "id")
-        if method != "none":
-            get_fusion(method)
+        self._validate_method_selection(method, args, fusion=True)
         self.window.set_fusion_method(method)
-        parameters = args.get("parameters")
-        if parameters is not None:
-            if not isinstance(parameters, dict):
-                raise ControlError("invalid_argument", "parameters must be an object")
-            self.window.set_fusion_parameters(method, parameters)
+        if "parameters" in args:
+            self.window.set_fusion_parameters(method, args["parameters"])
         self.window.persist_settings()
         return {"id": method,
                 "parameters": self.window.fusion_parameters_for(method)}
@@ -856,73 +843,105 @@ class ControlServer(QObject):
 
     def _cmd_align_set(self, args):
         method = _string(args, "id")
-        get_registration(method)
+        self._validate_method_selection(method, args, fusion=False)
         self.window.set_alignment_method(method)
-        parameters = args.get("parameters")
-        if parameters is not None:
-            if not isinstance(parameters, dict):
-                raise ControlError("invalid_argument", "parameters must be an object")
-            self.window.set_registration_parameters(method, parameters)
+        if "parameters" in args:
+            self.window.set_registration_parameters(method, args["parameters"])
         self.window.persist_settings()
         return {"id": method,
                 "parameters": self.window.registration_parameters_for(method)}
 
+    def _validate_method_selection(self, method, args, *, fusion):
+        from core.experimental import (alignment_is_experimental, experimental_enabled,
+                                       fusion_is_experimental)
+        window = self.window
+        experimental = fusion_is_experimental if fusion else alignment_is_experimental
+        if (hasattr(window, 'experimental_features') and not experimental_enabled(window)
+                and experimental(method) and not getattr(window, '_restore_depth', 0)):
+            raise ValueError(trans.t('experimental_locked_hint'))
+        if method != "none":
+            (get_fusion if fusion else get_registration)(method)
+        combo = window.combo_fusion if fusion else window.combo_align
+        if combo.findData(method) < 0:
+            kind = "Fusion" if fusion else "Registration"
+            raise ValueError(f"{kind} method is not in the selector: {method}")
+        if "parameters" not in args:
+            return
+        values = args["parameters"]
+        if not isinstance(values, dict):
+            raise ControlError("invalid_argument", "parameters must be an object")
+        if method == "none":
+            if values:
+                raise ValueError("Alignment-only output has no fusion parameters" if fusion
+                                 else "Disabled registration has no parameters")
+            return
+        current = (window.fusion_parameters_for(method) if fusion
+                   else window.registration_parameters_for(method))
+        resolver = resolve_fusion_parameters if fusion else resolve_registration_parameters
+        resolver(method, {**current, **values})
+
     def _cmd_option_set(self, args):
         name = _string(args, "name")
-        value = args.get("value")
         window = self.window
+        boolean_options = {"base_correct", "exposure_match", "reverse_order", "use_gpu",
+                           "tile_enabled", "preview", "profile_performance", "debug_logging"}
+        integer_options = {"thread_count": 0, "tile_block_size": 64, "tile_overlap": 0,
+                           "tile_threshold": 1, "ai_batch_size": 1, "reg_downscale_width": 64}
+        if "value" not in args:
+            raise ControlError("invalid_argument", "value is required")
+        if name in boolean_options:
+            value = _boolean(args, "value", required=True)
+        elif name in integer_options:
+            value = _integer(args, "value", required=True, minimum=integer_options[name])
+        elif name == "resource_preference":
+            value = _string(args, "value", choices=("balanced", "responsive", "maximum"))
+        elif name == "storage_directory":
+            value = "" if args["value"] is None else _string(args, "value", required=False)
+            value = os.path.abspath(value) if value else ""
+        else:
+            raise ControlError("invalid_argument", f"Unknown option: {name}")
+
+        if name in ("tile_block_size", "tile_overlap"):
+            block = value if name == "tile_block_size" else window.tile_block_size
+            overlap = value if name == "tile_overlap" else window.tile_overlap
+            if overlap >= block:
+                raise ControlError("invalid_argument", "tile_overlap must be less than tile_block_size")
+
         if name in ("base_correct", "exposure_match"):
-            # Per-method brightness option; this is the path the checkbox
-            # uses, so app.state reads the same value the control shows.
-            window.set_brightness_option(name, window.current_fusion_method(),
-                                         bool(value))
+            window.set_brightness_option(name, window.current_fusion_method(), value)
             window._sync_brightness_checkboxes()
+            value = getattr(window, "chk_" + name).isChecked()
         elif name == "reverse_order":
-            window.set_reverse_order(bool(value))
+            window.set_reverse_order(value)
             checkbox = getattr(window, "chk_reverse_order", None)
             if checkbox is not None:
-                checkbox.blockSignals(True)
-                checkbox.setChecked(bool(value))
-                checkbox.blockSignals(False)
-        elif name == "thread_count":
-            window.thread_count = max(0, int(value))
+                blocked = checkbox.blockSignals(True)
+                checkbox.setChecked(value)
+                checkbox.blockSignals(blocked)
+            value = window.stack_reverse_order
         elif name == "use_gpu":
-            window.set_use_gpu(bool(value))
-        elif name == "tile_enabled":
-            window.tile_enabled = bool(value)
-        elif name == "tile_block_size":
-            window.tile_block_size = max(64, int(value))
-        elif name == "tile_overlap":
-            window.tile_overlap = max(0, int(value))
-        elif name == "tile_threshold":
-            window.tile_threshold = max(1, int(value))
+            window.set_use_gpu(value)
+            value = window.use_gpu
         elif name == "preview":
-            window.chk_quick_preview.setChecked(bool(value))
-        elif name == "ai_batch_size":
-            window.ai_batch_size = max(1, int(value))
-        elif name == "resource_preference":
-            choice = _string(args, "value", choices=("balanced", "responsive", "maximum"))
-            window.resource_preference = choice
-        elif name == "reg_downscale_width":
-            window.reg_downscale_width = max(64, int(value))
+            window.chk_quick_preview.setChecked(value)
+            value = window.chk_quick_preview.isChecked()
         elif name == "storage_directory":
             from core.frame_storage import configure_storage_directory
-            path = "" if value is None else _string(args, "value", required=False) or ""
             try:
-                configure_storage_directory(path)
+                configure_storage_directory(value)
             except OSError as error:
                 raise ControlError("invalid_argument",
                                    f"Temporary directory is not writable: {error}") from error
-            window.storage_directory = path
-        elif name == "profile_performance":
-            window.profile_performance = _boolean(args, "value", required=True)
+            window.storage_directory = value
+            value = window.storage_directory
         elif name == "debug_logging":
-            # A string such as "false" must not switch detail on.
             from utils.logging_setup import set_debug_logging
-            window.debug_logging = _boolean(args, "value", required=True)
-            set_debug_logging(window.debug_logging)
+            window.debug_logging = value
+            set_debug_logging(value)
+            value = window.debug_logging
         else:
-            raise ControlError("invalid_argument", f"Unknown option: {name}")
+            setattr(window, name, value)
+            value = getattr(window, name)
         window.persist_settings()
         return {"name": name, "value": value}
 
@@ -1189,14 +1208,12 @@ class ControlServer(QObject):
     # ------------------------------------------------------------- project
     def _cmd_project_save(self, args):
         from utils.project_file import save_project
-        path = _string(args, "path")
         window = self.window
+        path = _string(args, "path") if "path" in args else getattr(window, "project_path", None)
         if not path:
-            path = getattr(window, "project_path", None)
-            if not path:
-                raise ControlError(
-                    "invalid_argument", "No path given and no project open",
-                    "Pass path=... or open a project first.")
+            raise ControlError(
+                "invalid_argument", "No path given and no project open",
+                "Pass path=... or open a project first.")
         ok, error = save_project(window, path)
         if not ok:
             raise ControlError("invalid_argument", error or "Project was not saved")
@@ -1278,7 +1295,7 @@ class ControlServer(QObject):
 
     def _open_dialog(self, name, dialog):
         existing = self._dialogs.get(name)
-        if existing is not None:
+        if existing is not None and not sip.isdeleted(existing):
             if existing.isVisible():
                 existing.raise_()
                 existing.activateWindow()
@@ -1287,7 +1304,11 @@ class ControlServer(QObject):
             self._dialogs.pop(name, None)
             existing.close()
         dialog.setModal(False)
-        dialog.finished.connect(lambda _result, key=name: self._dialogs.pop(key, None))
+        def forget(*_args):
+            if self._dialogs.get(name) is dialog:
+                self._dialogs.pop(name, None)
+        dialog.finished.connect(forget)
+        dialog.destroyed.connect(forget)
         if name == "batch":
             dialog.accepted.connect(lambda d=dialog: self._start_batch(d))
         self._dialogs[name] = dialog
@@ -1308,7 +1329,7 @@ class ControlServer(QObject):
         # Reuse a managed instance before building a new dialog: constructing
         # first leaked images and signal handlers on every repeated open.
         existing = self._dialogs.get(name)
-        if existing is not None:
+        if existing is not None and not sip.isdeleted(existing):
             if existing.isVisible():
                 existing.raise_()
                 existing.activateWindow()
@@ -1509,6 +1530,9 @@ class ControlServer(QObject):
 
     def _cmd_dialog_file(self, args):
         """Answer a file/directory picker opened by a menu action or dialog."""
+        from utils.file_dialogs import native_picker_active
+        if native_picker_active():
+            raise ControlError("busy", "A native file picker is open")
         path = _string(args, "path", required=False)
         cancel = _boolean(args, "cancel", default=False)
         index = _integer(args, "index", required=False, default=None, minimum=0)
@@ -1603,6 +1627,9 @@ class ControlServer(QObject):
     def _cmd_ui_trigger(self, args):
         from ui.control_surface import find_action
         key = _string(args, "key")
+        from utils.file_dialogs import native_picker_active
+        if native_picker_active() or isinstance(QApplication.activeModalWidget(), QFileDialog):
+            raise ControlError("busy", "A file picker is open")
         action = find_action(self.window, key)
         if action is None or not hasattr(action, "trigger"):
             raise ControlError("not_found", f"Unknown action: {key}")
@@ -1611,6 +1638,9 @@ class ControlServer(QObject):
         # Let the response reach the socket before a modal exec() starts; a
         # 0 ms timer runs before the buffered write is flushed.
         def fire():
+            if native_picker_active() or isinstance(QApplication.activeModalWidget(), QFileDialog):
+                QTimer.singleShot(100, fire)
+                return
             from utils.file_dialogs import control_picker_context
             with control_picker_context():
                 action.trigger()
@@ -1735,6 +1765,9 @@ class ControlServer(QObject):
 
     def _cmd_ui_mouse(self, args):
         from ui.control_surface import resolve_path, send_mouse
+        steps = _integer(args, "steps", required=True, default=12, minimum=1)
+        if steps > MAX_MOUSE_STEPS:
+            raise ControlError("invalid_argument", f"steps must be between 1 and {MAX_MOUSE_STEPS}")
         path = _string(args, "path")
         action = _string(args, "action", choices=(
             "click", "double_click", "right_click", "middle_click",
@@ -1746,7 +1779,7 @@ class ControlServer(QObject):
             y=_number(args, "y", default=0),
             to_x=_number(args, "to_x"),
             to_y=_number(args, "to_y"),
-            steps=_integer(args, "steps", default=12, minimum=1),
+            steps=steps,
             button=args.get("button", "left"),
             modifiers=args.get("modifiers"),
             delta=_number(args, "delta", default=-120),

@@ -111,6 +111,55 @@ class AlignmentWorker(_CancellableWorker):
                     self.failed.emit(str(exc) or type(exc).__name__)
 
 
+class DisplayWorker(_CancellableWorker):
+    """Develop and resize one candidate without allocating a full Qt pixmap."""
+    ready = pyqtSignal(object, object, bool)
+    failed = pyqtSignal(str)
+
+    def __init__(self, image, bounds, region, full, max_side, metadata, retained_bytes):
+        super().__init__()
+        self.image, self.bounds, self.region = image, bounds, region
+        self.full, self.max_side = full, max_side
+        self.metadata, self.retained_bytes = metadata, retained_bytes
+
+    def run(self):
+        import cv2
+        from core.resource_policy import require_memory
+        try:
+            with heavy_job(self._should_cancel):
+                x, y, w, h = self.bounds
+                if self.full:
+                    region = self.bounds
+                else:
+                    region = self.region
+                    if region is None:
+                        raise ValueError('No comparison region')
+                    rx, ry, rw, rh = region
+                    if rx < x or ry < y or rx + rw > x + w or ry + rh > y + h:
+                        raise ValueError('Comparison region is outside the result')
+                rx, ry, rw, rh = region
+                pixels = self.image[ry-y:ry-y+rh, rx-x:rx-x+rw]
+                scale = min(1.0, self.max_side / max(rw, rh))
+                size = (max(1, int(round(rw * scale))), max(1, int(round(rh * scale))))
+                require_memory(self.retained_bytes + pixels.nbytes * (12 if self.metadata is not None else 2)
+                               + size[0] * size[1] * 20)
+                if self._should_cancel():
+                    return
+                if self.metadata is not None:
+                    from utils.linear_dng import develop_linear
+                    pixels = develop_linear(pixels, self.metadata)
+                if self._should_cancel():
+                    return
+                if size != (rw, rh):
+                    pixels = cv2.resize(pixels, size, interpolation=cv2.INTER_AREA)
+                if not self._should_cancel():
+                    self.ready.emit(pixels, region, self.full)
+        except Exception as exc:
+            if not self._should_cancel():
+                self.failed.emit(str(exc) or type(exc).__name__)
+
+
+
 class PreviewWorker(_CancellableWorker):
     """Fuse selected methods sequentially against the same aligned stack.
 

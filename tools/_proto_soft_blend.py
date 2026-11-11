@@ -5,6 +5,7 @@ show as halos at crossings. Power-softmax weights w_i = r_i^g / sum_j r_j^g
 blend all frames with per-pixel confidence; gamma controls hardness
 (gamma -> inf recovers hard selection; gamma small -> uniform average).
 Deterministic single-thread comparison against the hard baseline.
+Texture-edge error and PSNR alone do not establish focus-depth boundary improvement.
 """
 import sys
 sys.path.insert(0, '.')
@@ -56,8 +57,12 @@ def bench(scene, noise, n, gamma):
     return res
 
 
-def transition_band_error(out, gt, band=6):
-    """Mean |out-gt| inside a dilated band around GT depth discontinuities."""
+def texture_edge_band_error(out, gt, band=6):
+    """Mean maximum-channel error near strong GT texture Laplacian edges.
+
+    The mask uses the 99th percentile of absolute grayscale texture Laplacian,
+    dilated by band; it is not a depth-discontinuity mask.
+    """
     gray = cv2.cvtColor(gt, cv2.COLOR_BGR2GRAY) if gt.ndim == 3 else gt
     edges = cv2.Laplacian(gray.astype(np.float32), cv2.CV_32F)
     mask = (np.abs(edges) > np.percentile(np.abs(edges), 99)).astype(np.uint8)
@@ -67,7 +72,7 @@ def transition_band_error(out, gt, band=6):
 
 
 if __name__ == '__main__':
-    print(f"{'scene':>7} {'noise':>5} {'frames':>6} " + ' '.join(f"{k:>10}" for k in ['hard', 'soft1', 'soft2', 'soft4', 'soft8']) + '   (transition-band MAE, lower=better)')
+    print(f"{'scene':>7} {'noise':>5} {'frames':>6} " + ' '.join(f"{k:>10}" for k in ['hard', 'soft1', 'soft2', 'soft4', 'soft8']) + '   (texture-edge-band mean max-channel absolute error, lower=better)')
     for scene in ("default", "small"):
         for noise in (0.0, 3.0):
             for n in (16, 32):
@@ -80,7 +85,7 @@ if __name__ == '__main__':
                 res = {'hard': fuse_hard(frames, resp)}
                 for g in [1.0, 2.0, 4.0, 8.0]:
                     res[f'soft{g:g}'] = fuse_soft(frames, resp, g)
-                cells = ' '.join(f"{transition_band_error(res[k], gt8):>10.3f}" for k in ['hard', 'soft1', 'soft2', 'soft4', 'soft8'])
+                cells = ' '.join(f"{texture_edge_band_error(res[k], gt8):>10.3f}" for k in ['hard', 'soft1', 'soft2', 'soft4', 'soft8'])
                 print(f"{scene:>7} {noise:>5.1f} {n:>6} {cells}")
 
     print(f"\n{'scene':>7} {'noise':>5} {'frames':>6} " + ' '.join(f"{k:>8}" for k in ['hard', 'soft1', 'soft2', 'soft4', 'soft8']) + '   (PSNR)')

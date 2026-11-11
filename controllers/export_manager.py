@@ -21,7 +21,7 @@ from core.workers import GifSaverWorker
 from locales import trans
 from utils.image_utils import ImageWriteError, imwrite_auto
 from utils import scalebar
-from utils.export_paths import create_stack_directory, frame_export_name, unique_path
+from utils.export_paths import create_stack_directory, frame_export_name
 from core.source_frames import resolve_frame, materialize_frames
 from utils.frame_pixels import run_pixel_worker
 from utils.platform_utils import configure_native_worker_stack
@@ -91,6 +91,7 @@ class LayeredTiffWorker(QThread):
         self.image = image
         self.context = context
         self.icc_profile = icc_profile
+        self.source_paths = ()
         self._cancelled = threading.Event()
 
     def cancel(self):
@@ -98,50 +99,78 @@ class LayeredTiffWorker(QThread):
 
     def run(self):
         try:
-            from utils.layered_tiff import export_layered_tiff, _preflight
-            image = resolve_frame(self.image)
-            originals = materialize_frames((frame.image for frame in self.context.frames),
-                                           should_cancel=self._cancelled.is_set)
-            context = replace(self.context, frames=tuple(
-                replace(frame, image=pixels) for frame, pixels in zip(self.context.frames, originals)))
-            metadata = getattr(context, 'linear_dng_metadata', None)
-            profile = self.icc_profile
+            from core.source_frames import ProcessedFrame, SourceFrame
+            from utils.layered_tiff import (MAX_WORKING_BYTES, _cancelled, _preflight,
+                                            _preflight_structure, export_layered_tiff,
+                                            protect_sources, source_paths)
+            cancelled = self._cancelled.is_set
+            _cancelled(cancelled)
+            sources_to_protect = source_paths(
+                self.source_paths, getattr(self.context, 'source_paths', ()),
+                (name for frame in (getattr(self.context, 'frames', ()) or ())
+                 if (name := getattr(frame, 'name', None)) and os.path.isabs(name)))
+            protect_sources((self.path,), sources_to_protect)
+            _preflight_structure(self.image, self.context, self.icc_profile, cancelled)
+            metadata = getattr(self.context, 'linear_dng_metadata', None)
+            sources = [self.image, *(frame.image for frame in self.context.frames)]
+            developed_bytes = 0
             if metadata is not None:
-                _preflight(image, context, self.icc_profile, self._cancelled.is_set)
                 from core.resource_policy import require_memory
-                from utils.layered_tiff import MAX_WORKING_BYTES
-                sources = [image, *(frame.image for frame in context.frames)]
                 developed_bytes = sum(source.nbytes for source in sources)
-                pixels = image.shape[0] * image.shape[1]
+                pixels = self.image.shape[0] * self.image.shape[1]
                 largest = max(source.shape[0] * source.shape[1] for source in sources)
-                layers = pixels * 6 * image.dtype.itemsize + sum(
-                    frame.image.shape[0] * frame.image.shape[1] * 4 * image.dtype.itemsize
-                    for frame in context.frames)
+                layers = pixels * 6 * self.image.dtype.itemsize + sum(
+                    frame.image.shape[0] * frame.image.shape[1] * 4 * self.image.dtype.itemsize
+                    for frame in self.context.frames)
                 strips = max(min(128, source.shape[0]) * source.shape[1] * 80
                              for source in sources)
                 require_memory(developed_bytes + layers * 8 + largest * 24 + strips
                                + len(self.icc_profile) * 2 + 16 * 1024 * 1024,
                                user_limit=MAX_WORKING_BYTES)
+            image = resolve_frame(self.image, should_cancel=cancelled)
+            _cancelled(cancelled)
+            if image.shape != self.image.shape or image.dtype != self.image.dtype:
+                raise ValueError('Resolved result does not match its descriptor')
+            lazy = [frame.image for frame in self.context.frames
+                    if isinstance(frame.image, (SourceFrame, ProcessedFrame))]
+            originals = iter(materialize_frames(lazy, should_cancel=cancelled,
+                                                staging_bytes=developed_bytes) if lazy else ())
+            frames = []
+            for frame in self.context.frames:
+                _cancelled(cancelled)
+                pixels = next(originals) if isinstance(frame.image, (SourceFrame, ProcessedFrame)) else frame.image
+                if pixels.shape != frame.image.shape or pixels.dtype != frame.image.dtype:
+                    raise ValueError('Resolved source does not match its descriptor')
+                frames.append(replace(frame, image=pixels))
+            context = replace(self.context, frames=tuple(frames))
+            profile = self.icc_profile
+            if metadata is not None:
+                _preflight(image, context, profile, cancelled)
                 from utils.linear_dng import develop_linear
                 from utils.image_utils import srgb_icc_profile
                 profile = srgb_icc_profile()
+                _cancelled(cancelled)
                 image = develop_linear(image, metadata)
-                developed = materialize_frames((develop_linear(frame.image, metadata)
-                                                for frame in context.frames),
-                                               should_cancel=self._cancelled.is_set)
+                def developed_frames():
+                    for frame in context.frames:
+                        _cancelled(cancelled)
+                        yield develop_linear(frame.image, metadata)
+                developed = materialize_frames(developed_frames(), should_cancel=cancelled)
+                _cancelled(cancelled)
                 context = replace(context, frames=tuple(
                     replace(frame, image=pixels) for frame, pixels in zip(context.frames, developed)),
                     linear_dng_metadata=None)
             export_layered_tiff(self.path, image, context,
                                 icc_profile=profile,
-                                cancelled=self._cancelled.is_set)
+                                cancelled=self._cancelled.is_set,
+                                protected_sources=sources_to_protect)
         except Exception as exc:  # Errors must reach the GUI thread.
             if self._cancelled.is_set():
                 self.completed.emit(False, '')
             else:
                 self.completed.emit(False, str(exc) or type(exc).__name__)
         else:
-            self.completed.emit(True, self.path)
+            self.completed.emit(True, os.fsdecode(self.path))
 
 
 class ExportManager:
@@ -292,9 +321,15 @@ class ExportManager:
                            trans.t('layered_tiff_extension'))
             return
         try:
-            frame_paths = (frame.name for frame in record.context.frames
-                           if os.path.isabs(frame.name))
-            self._safe_export_path(path, frame_paths)
+            from utils.layered_tiff import source_paths
+            frozen_sources = source_paths(getattr(record, 'source_paths', ()),
+                getattr(record.context, 'source_paths', ()),
+                (name for frame in (getattr(record.context, 'frames', ()) or ())
+                 if (name := getattr(frame, 'name', None)) and os.path.isabs(name)))
+            self._safe_export_path(path, frozen_sources)
+            context = (replace(record.context, source_paths=frozen_sources)
+                       if 'source_paths' in getattr(record.context, '__dataclass_fields__', {})
+                       else record.context)
         except (ValueError, OSError) as exc:
             show_error_box(window, trans.t('msg_save_failed_title'), str(exc))
             return
@@ -306,8 +341,9 @@ class ExportManager:
         progress.setWindowModality(Qt.WindowModality.WindowModal)
         progress.setMinimumDuration(0)
         self.layered_progress_dialog = progress
-        worker = LayeredTiffWorker(path, record.image, record.context,
-                                   record.icc_profile or record.context.icc_profile)
+        worker = LayeredTiffWorker(path, record.image, context,
+                                   record.icc_profile or context.icc_profile)
+        worker.source_paths = frozen_sources
         self.layered_worker = worker
         self._layered_record = original
         progress.canceled.connect(self._cancel_layered_tiff)
@@ -356,12 +392,8 @@ class ExportManager:
             output_manager.save_output_image_as(output_list.currentItem())
             return
 
-        # Quick preview is a throwaway canvas draft and never enters the
-        # output history. With no historical row selected, Ctrl+S used to
-        # fall through to window.fusion_result and write the draft.
-        preview_result = getattr(window, "preview_result", None)
-        if (preview_result is not None
-                and window.fusion_result is preview_result):
+        # A canvas draft has no saveable output until a historical row is selected.
+        if getattr(window, "preview_result", None) is not None:
             show_warning_box(
                 window,
                 trans.t("info_preview_quality"),
@@ -559,6 +591,18 @@ class ExportManager:
         frames, filenames = tuple(frames), tuple(filenames)
         annotate = not baked and not getattr(record, 'annotations_baked', False)
         labels = (labels_snapshot or window.label_manager.snapshot()) if annotate else None
+        if labels is not None and getattr(record, 'kind', None) == 'aligned':
+            identities = tuple(getattr(record, 'aligned_frame_ids', ()) or ())
+            if (len(identities) != len(frames) and
+                    any(item.enabled and item.target == 'registered' and item.config.frame_ids is not None
+                        for item in labels.labels)):
+                message = f"Missing frame identities for aligned record: {label or getattr(record, 'label', '')}"
+                if destination is None:
+                    show_message_box(window, trans.t('msg_save_failed_title'), message,
+                                     message, QMessageBox.Icon.Warning)
+                    return None
+                raise ValueError(message)
+            labels = labels.snapshot(frame_ids_override={'registered': identities})
         cfg = scalebar.export_cfg(window, target=target, record=record) if annotate else None
         from utils import watermark
         wm_cfg = (None if getattr(record, 'watermark_baked', False)
@@ -592,11 +636,13 @@ class ExportManager:
             folder_name += '_processed'
         directory = create_stack_directory(base, self.filename_from_label(folder_name))
         failures = []
-        from core.image_loader import stack_icc_profile
         record_context = getattr(record, 'context', None) if record is not None else None
         stored_frame_exif = tuple(getattr(record_context, 'frame_exif', ()) or ()) if record_context is not None else ()
         if not stored_frame_exif and record is not None:
             stored_frame_exif = tuple(getattr(record, 'frame_exif', ()) or ())
+        stored_frame_icc = tuple(getattr(record, 'frame_icc_profiles', ()) or ())
+        if not stored_frame_icc:
+            stored_frame_icc = tuple(getattr(record_context, 'frame_icc_profiles', ()) or ())
         stored_source_exif = (bytes(getattr(record_context, 'source_exif', b'') or b'')
                               if record_context is not None else
                               bytes(getattr(record, 'source_exif', b'') or b''))
@@ -605,9 +651,13 @@ class ExportManager:
             # worker's per-frame snapshot; for registered frames map through
             # the source indices that produced them.
             current_exifs = tuple(getattr(window, "image_source_exifs", ()) or ())
+            current_iccs = tuple(getattr(window, "image_icc_profiles", ()) or ())
             raw_count = len(getattr(window, "raw_images", ()) or ())
-            if target == 'input' and len(current_exifs) == len(frames):
-                stored_frame_exif = current_exifs
+            if target == 'input':
+                if len(current_exifs) == len(frames):
+                    stored_frame_exif = current_exifs
+                if len(current_iccs) == len(frames):
+                    stored_frame_icc = current_iccs
             elif target == 'registered':
                 indices = tuple(getattr(window, "registered_source_indices", ()) or ())
                 if (len(indices) == len(frames) and len(current_exifs) == raw_count):
@@ -616,28 +666,26 @@ class ExportManager:
                         for index in indices)
                 elif len(current_exifs) == len(frames):
                     stored_frame_exif = current_exifs
+                if len(indices) == len(frames) and len(current_iccs) == raw_count:
+                    stored_frame_icc = tuple(
+                        current_iccs[index] if 0 <= index < len(current_iccs) else b""
+                        for index in indices)
+                elif len(current_iccs) == len(frames):
+                    stored_frame_icc = current_iccs
             if not stored_source_exif and stored_frame_exif:
                 stored_source_exif = stored_frame_exif[0]
-        profile = (getattr(record_context, 'icc_profile', b'')
-                   if record_context is not None else
-                   getattr(record, 'icc_profile', b'') if record is not None else
-                   stack_icc_profile(window))
-        if not profile and record is not None:
-            profile = getattr(record, 'icc_profile', b'')
         metadata = (getattr(record, 'linear_dng_metadata', None) if record is not None
                     else getattr(window, 'linear_dng_metadata', None))
-        if metadata is not None and not baked:
-            from utils.image_utils import srgb_icc_profile
-            profile = srgb_icc_profile()
         def write_frames():
             saved = 0
             for index, frame in enumerate(frames):
                 name = frame_export_name(filenames[index] if index < len(filenames) else '', index, extension)
-                path = unique_path(os.path.join(directory, name))
+                from utils.export_paths import publish_unique
+                path = os.path.join(directory, name)
                 try:
                     if baked and not extension:
                         import shutil
-                        shutil.copy2(frame, path)
+                        path = publish_unique(path, lambda staging: shutil.copy2(frame, staging))
                         saved += 1
                         continue
                     image = _read_image_any(frame) if baked else resolve_frame(frame)
@@ -653,7 +701,11 @@ class ExportManager:
                         image = scalebar.burn(image, cfg)
                     if wm_cfg:
                         image = watermark.burn(image, wm_cfg)
-                    frame_exif, frame_profile = b'', profile
+                    frame_exif = b''
+                    frame_profile = stored_frame_icc[index] if index < len(stored_frame_icc) else b''
+                    if metadata is not None and not baked:
+                        from utils.image_utils import srgb_icc_profile
+                        frame_profile = srgb_icc_profile()
                     if baked:
                         from core.image_loader import _read_exif_bytes, _read_icc_profile
                         frame_exif = _read_exif_bytes(frame)
@@ -662,9 +714,9 @@ class ExportManager:
                         frame_exif = stored_frame_exif[index]
                     elif index == 0:
                         frame_exif = stored_source_exif
-                    if not imwrite_auto(path, image, get_imwrite_params('.' + extension.lower()),
-                                        exif=frame_exif, icc_profile=frame_profile):
-                        raise OSError(trans.t('msg_save_failed_info_write'))
+                    path = publish_unique(path, lambda staging: imwrite_auto(
+                        staging, image, get_imwrite_params('.' + extension.lower()),
+                        exif=frame_exif, icc_profile=frame_profile))
                     saved += 1
                 except Exception as exc:
                     failures.append(f'{path}: {image_write_error_text(exc)}')

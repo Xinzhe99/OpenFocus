@@ -580,3 +580,20 @@ def test_explicit_source_resolution_replaces_legacy_directory_estimate():
             *args, snapshot=snapshot, directory=True,
             source_resolution_bytes=mib + 64 * 1024,
             source_cache_bytes=224 * 1024)
+
+
+@pytest.mark.parametrize('aspect,expected', [(1, (4100, 6200)), (2, (4100, 12400)),
+                                              (0.5, (4100, 12400))])
+def test_raw_sensor_geometry_and_workspace(aspect, expected):
+    sizes = SimpleNamespace(width=6000, height=4000, raw_width=6200,
+                            raw_height=4100, pixel_aspect=aspect)
+    height, width = policy.raw_sensor_shape(sizes)
+    assert (height, width) == expected
+    assert policy.raw_decode_bytes(width, height, 144_000_000, 100) == width * height * 64 + 144_000_200
+
+
+@pytest.mark.parametrize('aspect', [0, -1, float('nan'), float('inf')])
+def test_raw_sensor_rejects_invalid_aspect(aspect):
+    sizes = SimpleNamespace(width=2, height=2, raw_width=2, raw_height=2, pixel_aspect=aspect)
+    with pytest.raises(ValueError):
+        policy.raw_sensor_shape(sizes)

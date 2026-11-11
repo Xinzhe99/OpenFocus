@@ -24,7 +24,9 @@ def execution_job(function):
 
         job = _Execution()
         job.should_cancel = call_signature.bind_partial(*args, **kwargs).arguments.get('should_cancel')
-        with heavy_job(job.should_cancel), scratch_directory(), native_execution_scope():
+        from core.registration import deferred_warp_threads
+        with heavy_job(job.should_cancel), scratch_directory(), native_execution_scope(), \
+                deferred_warp_threads(lambda: job.workers if job.row_mode else 1):
             token = _current.set(job)
             try:
                 return function(*args, **kwargs)
@@ -38,20 +40,20 @@ def execution_job(function):
 @contextmanager
 def native_execution_scope():
     """Limit native pools on their owner thread, restoring after workers join."""
-    import cv2
-    previous = cv2.getNumThreads()
-    # Planning imports MFF -> DCT -> SciPy. Load those native libraries before
-    # threadpoolctl snapshots them, including direct backend calls on cold start.
-    from core import multi_focus_fusion  # noqa: F401
-    from threadpoolctl import threadpool_limits
-
+    from core.registration import exchange_opencv_threads
+    # Zero disables parallel regions on every backend, including macOS GCD.
+    # Capture before the planning import configures OpenCV at module load time.
+    previous = exchange_opencv_threads(0)
     try:
-        # Zero disables parallel regions on every backend, including macOS GCD.
-        cv2.setNumThreads(0)
+        # Planning imports MFF -> DCT -> SciPy. Load those native libraries
+        # before threadpoolctl snapshots them, also on cold backend calls.
+        from core import multi_focus_fusion  # noqa: F401
+        from threadpoolctl import threadpool_limits
+
         with threadpool_limits(limits=1):
             yield
     finally:
-        cv2.setNumThreads(0 if previous == 1 else previous)
+        exchange_opencv_threads(0 if previous == 1 else previous)
 
 
 @contextmanager

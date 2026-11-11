@@ -49,6 +49,10 @@ class Extension:
         if runtime.get('should_cancel') and runtime['should_cancel']():
             from core.registration import RegistrationCancelled
             raise RegistrationCancelled()
+        if img_resize is not None:
+            import cv2
+            interpolation = getattr(cv2, 'INTER_' + fusion.descriptor.resize_interpolation.upper())
+            images = [cv2.resize(image, img_resize, interpolation=interpolation) for image in images]
         weight = fraction if direction == 'forward' else 1 - fraction
         return images[0].astype(np.float32) * (1 - weight) + images[-1].astype(np.float32) * weight
 
@@ -212,3 +216,169 @@ def test_invalid_registration_parameters_and_duplicate_descriptors_fail(extensio
         algorithms.alignment_steps((True, False))
     with pytest.raises(ValueError):
         algorithms.resolve_fusion_parameters('guided_filter', {'kernel_size': 4})
+
+
+@pytest.mark.parametrize('role,key', [
+    ('fusion', key) for key in ('self', 'fusion', 'images', 'input_source', 'img_resize',
+        'parameters', 'thread_count', 'model_path', 'execution_plan', 'block_size',
+        'algorithm', 'overlap', 'should_cancel', 'progress_callback', 'exposure_gains',
+        'deferred_exposure', 'source_all_uint8', 'depth_override', 'tile_size', 'tile_overlap')
+] + [('depth', key) for key in ('images', 'model_path', 'use_gpu', 'progress_callback',
+        'should_cancel', 'thread_count', 'resource_preference', 'execution_plan', 'block_size')]
+  + [('registration', key) for key in ('self', 'registration', 'images', 'input_source',
+        'thread_count', 'should_cancel', 'output_path')])
+def test_reserved_parameter_rejected_atomically(extension, monkeypatch, role, key):
+    parameter = algorithms.ParameterSpec(key, 'test', 1, 0, 10)
+    before_fusion = dict(algorithms._FUSION)
+    before_registration = dict(algorithms._REGISTRATION)
+    monkeypatch.setattr(algorithms, 'resolve_runner', lambda path: pytest.fail('runner resolved during registration'))
+    if role == 'registration':
+        spec = algorithms.RegistrationAlgorithm('bad_namespace', 'test', 'Bad',
+            'unused:runner', (parameter,))
+        register = algorithms.register_registration
+    else:
+        spec = replace(extension, id='bad_namespace',
+            parameters=(parameter,) if role == 'fusion' else (),
+            depth=algorithms.DepthSpec('unused:runner', (parameter,)) if role == 'depth' else None)
+        register = algorithms.register_fusion
+    with pytest.raises(ValueError) as error:
+        register(spec)
+    assert all(word in str(error.value) for word in ('bad_namespace', role, key))
+    assert algorithms._FUSION == before_fusion
+    assert algorithms._REGISTRATION == before_registration
+
+
+@pytest.mark.parametrize('key', ['imgs', 'img_dir', 'tile_coords', 'h', 'w', 'height',
+                                  'width', 'channels', 'out_dtype'])
+def test_tile_hook_reserved_parameters(extension, key):
+    parameter = algorithms.ParameterSpec(key, 'test', 1, 0, 10)
+    spec = replace(extension, id='bad_tile', parameters=(parameter,), depth=None,
+                   tile_runner='unused:tile')
+    with pytest.raises(ValueError, match=key):
+        algorithms.register_fusion(spec)
+    with pytest.raises(ValueError, match='Unknown fusion'):
+        algorithms.get_fusion('bad_tile')
+
+
+@pytest.mark.parametrize('key', ['prepare', 'label', 'default_weights', 'mode_normalizer'])
+def test_neural_tile_wrapper_reserved_parameters(extension, key):
+    parameter = algorithms.ParameterSpec(key, 'test', 1, 0, 10)
+    spec = replace(extension, id='bad_neural', parameters=(parameter,), depth=None,
+        tile_runner='core.multi_focus_fusion:MultiFocusFusion._fuse_tiled_ai_batched')
+    with pytest.raises(ValueError, match=key):
+        algorithms.register_fusion(spec)
+
+
+def test_non_hook_parameter_names_remain_available(extension):
+    parameters = tuple(algorithms.ParameterSpec(key, 'test', 1, 0, 10)
+                       for key in ('out_dtype', 'model_strength', 'prepare'))
+    spec = replace(extension, id='ordinary_names', parameters=parameters, depth=None)
+    algorithms.register_fusion(spec)
+    assert algorithms.resolve_fusion_parameters(spec.id) == {p.key: 1 for p in parameters}
+
+
+def test_ordinary_runner_consumes_hook_specific_name(extension, monkeypatch):
+    from core.multi_focus_fusion import MultiFocusFusion
+    received = []
+    def blend(fusion, images, img_resize=None, out_dtype=1, **kwargs):
+        received.append(out_dtype)
+        return np.full_like(images[0], out_dtype)
+    monkeypatch.setattr(Extension, 'blend', staticmethod(blend))
+    parameter = algorithms.ParameterSpec('out_dtype', 'test', 1, 0, 10)
+    algorithms.register_fusion(replace(extension, id='ordinary_hook_name',
+                                       parameters=(parameter,), depth=None))
+    image = np.zeros((16, 16, 3), np.uint8)
+    result = MultiFocusFusion('ordinary_hook_name', exposure_match=False, tile_enabled=False).fuse(
+        [image, image], parameters={'out_dtype': 7}, thread_count=1)
+    assert received == [7]
+    assert np.all(result == 7)
+
+
+@pytest.mark.parametrize('interpolation', ['linear', 'area'])
+@pytest.mark.parametrize('gray', [False, True])
+@pytest.mark.parametrize('mixed', [False, True])
+def test_extension_tiled_resize_matches_full_source_preparation(extension, interpolation, gray, mixed):
+    import cv2
+    from core.multi_focus_fusion import MultiFocusFusion
+    method = 'resize_extension'
+    algorithms.register_fusion(replace(extension, id=method, resize_interpolation=interpolation))
+    shape = (23, 31) if gray else (23, 31, 3)
+    rng = np.random.default_rng(321)
+    frames = [rng.integers(0, 256, shape, dtype=np.uint8),
+              rng.integers(0, 65536 if mixed else 256, shape,
+                           dtype=np.uint16 if mixed else np.uint8)]
+    originals = [frame.copy() for frame in frames]
+    prepared = [frame.astype(np.float32) * (255.0 / 65535.0 if frame.dtype == np.uint16 else 1)
+                for frame in frames] if mixed else frames
+    size = (19, 13)
+    resized = [cv2.resize(frame, size, interpolation=getattr(cv2, 'INTER_' + interpolation.upper()))
+               for frame in prepared]
+    options = dict(tile_enabled=True, tile_threshold=8, tile_block_size=8, tile_overlap=2,
+                   exposure_match=False, use_gpu=False)
+    expected = MultiFocusFusion(method, **options).fuse(resized, thread_count=1)
+    actual = MultiFocusFusion(method, **options).fuse(frames, img_resize=size, thread_count=1)
+    np.testing.assert_array_equal(actual, expected)
+    for frame, original in zip(frames, originals):
+        np.testing.assert_array_equal(frame, original)
+
+
+
+def test_resize_preparation_memory_rejection_precedes_resize(extension, monkeypatch):
+    import cv2
+    from core import resource_policy
+    from core.multi_focus_fusion import MultiFocusFusion
+    def reject(*args, **kwargs):
+        raise resource_policy.ResourceLimitError('insufficient memory')
+    monkeypatch.setattr(resource_policy, 'require_memory', reject)
+    monkeypatch.setattr(cv2, 'resize', lambda *a, **k: pytest.fail('resized before admission'))
+    with pytest.raises(resource_policy.ResourceLimitError):
+        MultiFocusFusion('extension')._resize_tile_sources(
+            [np.zeros((24, 32, 3), np.uint8)], (16, 12), None)
+
+
+def test_resize_preparation_cancellation_after_first_frame(extension, monkeypatch):
+    import cv2
+    from core.multi_focus_fusion import MultiFocusFusion
+    from core.registration import RegistrationCancelled
+    resize = cv2.resize
+    cancelled = [False]
+    def resize_and_cancel(*args, **kwargs):
+        result = resize(*args, **kwargs)
+        cancelled[0] = True
+        return result
+    monkeypatch.setattr(cv2, 'resize', resize_and_cancel)
+    frames = [np.zeros((24, 32, 3), np.uint8) for _ in range(2)]
+    with pytest.raises(RegistrationCancelled):
+        MultiFocusFusion('extension')._resize_tile_sources(frames, (16, 12), lambda: cancelled[0])
+
+def test_guided_alias_resized_tiles_match_original(extension, monkeypatch):
+    from core.multi_focus_fusion import MultiFocusFusion
+    original = algorithms.get_fusion('guided_filter')
+    algorithms.register_fusion(replace(original, id='guided_alias'))
+    frames = [np.random.default_rng(seed).integers(0, 256, (24, 32, 3), dtype=np.uint8)
+              for seed in (1, 2)]
+    options = dict(tile_enabled=True, tile_threshold=8, tile_block_size=8,
+                   tile_overlap=2, exposure_match=False, use_gpu=False)
+    observed = []
+    tiled = MultiFocusFusion._fuse_tiled
+    def capture(self, *args, **kwargs):
+        observed.append(kwargs['img_resize'])
+        return tiled(self, *args, **kwargs)
+    monkeypatch.setattr(MultiFocusFusion, '_fuse_tiled', capture)
+    actual = MultiFocusFusion('guided_alias', **options).fuse(frames, img_resize=(16, 12), thread_count=1)
+    expected = MultiFocusFusion('guided_filter', **options).fuse(frames, img_resize=(16, 12), thread_count=1)
+    assert actual.shape == (12, 16, 3)
+    assert observed == [None, None]
+    np.testing.assert_array_equal(actual, expected)
+
+
+@pytest.mark.parametrize('alias', [False, True])
+def test_dct_resize_rejected_before_preparation(extension, monkeypatch, alias):
+    from core.multi_focus_fusion import MultiFocusFusion
+    method = 'dct_alias' if alias else 'dct'
+    if alias:
+        algorithms.register_fusion(replace(algorithms.get_fusion('dct'), id=method))
+    monkeypatch.setattr(MultiFocusFusion, '_resize_tile_sources',
+                        lambda *a, **k: pytest.fail('prepared before DCT rejection'))
+    with pytest.raises(ValueError, match='DCT fusion does not support dynamic resizing'):
+        MultiFocusFusion(method).fuse([np.zeros((24, 32, 3), np.uint8)], img_resize=(16, 12))

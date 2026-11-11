@@ -12,8 +12,9 @@ from core.multi_focus_fusion import is_ai_fusion_available
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-pytestmark = pytest.mark.skipif(not is_ai_fusion_available(),
-                                reason="ONNX Runtime not installed")
+pytestmark = [pytest.mark.usefixtures("isolated_process_env"),
+              pytest.mark.skipif(not is_ai_fusion_available(),
+                                 reason="ONNX Runtime not installed")]
 
 
 def _stack(count=3, size=(150, 110)):
@@ -27,7 +28,9 @@ def _stack(count=3, size=(150, 110)):
 def _run_cli(*argv, env=None):
     return subprocess.run([sys.executable, os.path.join(PROJECT_ROOT, 'main.py'), *argv],
                           capture_output=True, text=True, cwd=PROJECT_ROOT, timeout=300,
-                          env={**os.environ, **(env or {})})
+                          env={**os.environ, **(env or {}),
+                               'OPENFOCUS_DATA_DIR': os.environ['OPENFOCUS_DATA_DIR'],
+                               'OPENFOCUS_LOG_DIR': os.environ['OPENFOCUS_LOG_DIR']})
 
 
 def _cli_stack(tmp_path):

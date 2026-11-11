@@ -248,6 +248,7 @@ def test_source_decode_cancellation_discards_native_completion(tmp_path, monkeyp
     decoded, errors = [], []
     worker.ready.connect(lambda *args: decoded.append(args))
     worker.failed.connect(lambda *args: errors.append(args))
+    worker.submit(('loupe', 1, (0, 0, 56, 40), (56, 40)))
     worker.run()
     assert decoded == [] and errors == []
 
@@ -295,6 +296,8 @@ def test_queued_cancelled_decode_never_enters_native_decoder(monkeypatch):
     monkeypatch.setattr(source_frames, 'resolve_frame', resolve)
     first = SourceRegionWorker('first', 1)
     queued = SourceRegionWorker('queued', 2)
+    first.submit(('loupe', 1, (0, 0, 5, 4), (5, 4)))
+    queued.submit(('loupe', 1, (0, 0, 5, 4), (5, 4)))
     started = Event()
     queued.started.connect(started.set, Qt.ConnectionType.DirectConnection)
     first.start()
@@ -347,6 +350,7 @@ def test_source_decode_failure_keeps_request_key(monkeypatch):
     worker = SourceRegionWorker(object(), ('registered', 7))
     errors = []
     worker.failed.connect(lambda *args: errors.append(args))
+    worker.submit(('loupe', 1, (0, 0, 5, 4), (5, 4)))
     worker.run()
     assert errors == [(('registered', 7), 'missing source')]
 

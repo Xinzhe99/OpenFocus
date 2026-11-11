@@ -88,7 +88,7 @@ popup[0]/...
 ```bash
 # semantic actions
 openfocus ctl ui.click --path 'main/.../btn_render'
-openfocus ctl ui.set --path 'main/.../combo_fusion' --value dct
+openfocus ctl ui.set --path 'main/.../combo_fusion' --value openfocus_b
 openfocus ctl ui.set --path 'main/.../chk_quick_preview' --value true
 openfocus ctl ui.focus --path 'main/.../view_source'
 
@@ -114,17 +114,23 @@ opens: poll `ui.context` for `popup[N]`, then use `ui.menu`. `ui.key` actions: `
 `press`, `release`. `ui.type` appends `--submit` to press Enter afterwards.
 These are the tools for zooming/panning canvases, ROI drawing, wipe handles,
 retouch strokes, list selection and 3D/depth surfaces.
+Text supplied to `ui.type` or `ui.key` turns LF, CRLF and lone CR into one
+Return each; Tab retains native behavior. Other C0 controls and DEL reject the
+entire request with `invalid_argument` before focus or visibility changes.
+Only `ui.type --submit` sends an additional Return after the text.
 
 `ui.set` supports combo boxes (by data or text), checkboxes/radios,
 spin boxes, sliders, line edits, text areas, tabs, stacked pages and lists.
 
 ## 5. Core workflows
 
+This workflow works with a fresh default configuration (OpenFocus B and ECC):
+
 ```bash
 # load -> configure -> render -> inspect -> export
 openfocus ctl stack.load --folder 'F:/stacks/session'
 # poll stack.frames until load.finished for the returned load_id
-openfocus ctl method.set --id dct
+openfocus ctl method.set --id openfocus_b
 openfocus ctl align.set --id ecc
 openfocus ctl option.set --name thread_count --value 4
 openfocus ctl render.start --wait --timeout 300
@@ -132,6 +138,13 @@ openfocus ctl render.state
 openfocus ctl output.list
 openfocus ctl output.export --path 'F:/out/result.tif' --index 0
 ```
+
+DCT, AI and other experimental desktop methods require a persistent opt-in.
+Open `dialog.open --name settings`, discover `chk_experimental_features` with
+`ui.find` or `ui.tree`, set it checked, and accept the dialog. Confirm that
+settings were saved before selecting the method; cancellation, closing the
+dialog or a save failure does not enable the draft. AI also needs its runtime
+and bundled model. This preference persists for the current installation.
 
 To learn why a render was slow, profile the next one and read the report; add
 `debug_logging` for the plans, tile sizes and directories behind it:
@@ -170,9 +183,16 @@ before accepting. Alignment diagnostic collection is in Advanced Settings
 (`dialog.open --name settings`, `chk_collect_alignment_report`); use the
 `btn_alignment_report` button in that dialog to view it. Collection requires alignment.
 
-For a layered TIFF, right-click the desired result in the output list, select
-the layered TIFF export from `ui.menu`, answer the file picker, and wait for
-the export to finish. It requires a result with source-frame provenance;
+For a layered TIFF, first check that the result has source-frame provenance and
+no active watermark. Right-click the desired output, list the context menu via
+`ui.menu`, and select its returned Save As action. Wait for the file picker;
+discover `fileTypeCombo` using `ui.find` or `ui.tree`, select the returned
+localized layered TIFF filter with `ui.set`, and submit the path with
+`dialog.file`. Ordinary TIFF shares the extension, so choosing the filter is
+essential. Picker acceptance does not prove export success: wait for export
+progress to finish or an explicit error. Cancellation before commit preserves
+the existing target and unsaved protection; encoding may finish before the
+cancel check, and cancellation cannot undo an already committed file.
 `output.export` writes the ordinary flattened output. In the retouch dialog,
 `retouch_save_checkpoint` and `retouch_load_checkpoint` use file pickers and
 may run asynchronously. To replay headlessly, use `openfocus retouch replay
@@ -198,9 +218,14 @@ Dialog names: `settings`, `batch`, `compare`, `depth`, `feedback`, `scalebar`,
 `dust`, `retouch`, `welcome`, `method_help`, `registration_help`,
 `environment`, `contact`.
 
-**File pickers are Qt widgets, not native OS windows**, while control is on.
-After triggering an Open/Save action, poll `dialog.list` for `QFileDialog` and
-answer it by path:
+File helper actions triggered through `ui.trigger` or supported control clicks
+use addressable Qt pickers. Wait for `QFileDialog` in `dialog.list`, discover
+its actual controls and answer it by path. The running control server alone
+does not change ordinary desktop interactions, which use native helper pickers.
+An enumerated outer `QFileDialog` does not guarantee its native internal UI is
+addressable. Finish an already-open native interaction normally before reopening
+it from a control action, or use an applicable typed command such as
+`stack.load` or `output.export`; rediscover the current dialog and controls.
 
 ```bash
 openfocus ctl ui.trigger --key action_open_folder

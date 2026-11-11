@@ -176,3 +176,214 @@ def test_source_mutation_during_encoding_does_not_commit_stale_pixels(stack, mon
     assert loaded is not None
     for expected, actual in zip(stack[2], loaded):
         np.testing.assert_array_equal(actual, expected)
+
+
+@pytest.fixture
+def plan_stack(stack):
+    from core.openfocus_alignment import estimate_alignment_plan
+    folder, names, images = stack
+    plan = estimate_alignment_plan(images, max_shift_ratio=0)
+    return folder, names, images, plan
+
+
+def _save_plan(stack, revision, **kwargs):
+    folder, names, images, plan = stack
+    align_cache.save_alignment_plan(folder, names, plan, images,
+                                    identity={'revision': revision}, **kwargs)
+
+
+def _load_plan(stack, revision):
+    folder, names, images, _ = stack
+    return align_cache.load_alignment_plan(folder, names, images,
+                                           identity={'revision': revision})
+
+
+def _plan_path(stack, revision):
+    folder, names, images, _ = stack
+    signature = align_cache._plan_signature(folder, names, images, {'revision': revision})
+    return Path(align_cache.cache_dir(folder)) / 'plans' / signature / 'meta.json'
+
+
+def test_plan_lru_budget_and_reestimated_pixels(plan_stack):
+    from core.openfocus_alignment import estimate_alignment_plan
+    from core.registration import apply_alignment_plan
+    _save_plan(plan_stack, 1)
+    first = _plan_path(plan_stack, 1)
+    size = first.stat().st_size
+    _save_plan(plan_stack, 2)
+    second = _plan_path(plan_stack, 2)
+    os.utime(first, (1, 1))
+    os.utime(second, (2, 2))
+    assert _load_plan(plan_stack, 1) is not None  # refresh LRU
+    _save_plan(plan_stack, 3, max_cache_bytes=2 * size + 64)
+    third = _plan_path(plan_stack, 3)
+    assert first.exists() and not second.exists() and third.exists()
+    assert sum(path.stat().st_size for path in (first, third)) <= 2 * size + 64
+    assert _load_plan(plan_stack, 2) is None
+    images = plan_stack[2]
+    rebuilt = estimate_alignment_plan(images, max_shift_ratio=0)
+    for cached, fresh in zip(apply_alignment_plan(images, _load_plan(plan_stack, 1)),
+                             apply_alignment_plan(images, rebuilt)):
+        np.testing.assert_array_equal(cached, fresh)
+
+
+@pytest.mark.parametrize('last_kind', ['plan', 'aligned'])
+def test_shared_budget_evicts_other_kind_even_with_same_signature(plan_stack, monkeypatch, last_kind):
+    stack = plan_stack[:3]
+    folder, names, _ = stack
+    signature = align_cache._signature(folder, names, ('openfocus',), 1024,
+                                       identity={'revision': 1})
+    monkeypatch.setattr(align_cache, '_plan_signature', lambda *args: signature)
+    if last_kind == 'plan':
+        _save(stack, identity={'revision': 1})
+        old = Path(align_cache.cache_dir(folder)) / signature / 'meta.json'
+        os.utime(old, (1, 1))
+        _save_plan(plan_stack, 1)
+        new = _plan_path(plan_stack, 1)
+        budget = new.stat().st_size
+        _save_plan(plan_stack, 1, max_cache_bytes=budget)
+        assert not old.exists() and _load_plan(plan_stack, 1) is not None
+    else:
+        _save_plan(plan_stack, 1)
+        old = _plan_path(plan_stack, 1)
+        os.utime(old, (1, 1))
+        _save(stack, identity={'revision': 1})
+        new = Path(align_cache.cache_dir(folder)) / signature / 'meta.json'
+        budget = json.loads(new.read_text(encoding='utf-8'))['encoded_bytes']
+        _save(stack, identity={'revision': 1}, max_cache_bytes=budget)
+        assert not old.exists() and _load(stack, identity={'revision': 1}) is not None
+
+
+@pytest.mark.parametrize('failure', ['oversize', 'zero', 'cancel', 'json', 'replace'])
+def test_failed_plan_publication_preserves_previous(plan_stack, monkeypatch, failure):
+    _save_plan(plan_stack, 1)
+    previous = _plan_path(plan_stack, 1).read_bytes()
+    kwargs = {}
+    if failure in ('oversize', 'zero'):
+        kwargs['max_cache_bytes'] = 1 if failure == 'oversize' else 0
+    elif failure == 'cancel':
+        original = align_cache.json.dump
+        cancelled = Event()
+        def encode(*args, **kwargs):
+            original(*args, **kwargs)
+            cancelled.set()
+        monkeypatch.setattr(align_cache.json, 'dump', encode)
+        kwargs['should_cancel'] = cancelled.is_set
+    elif failure == 'json':
+        def fail(*args, **kwargs):
+            raise OSError('write failed')
+        monkeypatch.setattr(align_cache.json, 'dump', fail)
+    else:
+        def fail(*args, **kwargs):
+            raise OSError('replace failed')
+        monkeypatch.setattr(align_cache.os, 'replace', fail)
+    if failure == 'cancel':
+        with pytest.raises(RegistrationCancelled):
+            _save_plan(plan_stack, 1, **kwargs)
+    else:
+        _save_plan(plan_stack, 1, **kwargs)
+    assert _plan_path(plan_stack, 1).read_bytes() == previous
+    assert _load_plan(plan_stack, 1) == plan_stack[3]
+    assert not list(Path(plan_stack[0]).rglob('.plan-*'))
+
+
+def test_prune_preserves_unowned_plan_entries_and_symlinks(plan_stack, tmp_path):
+    _save_plan(plan_stack, 1)
+    plans = _plan_path(plan_stack, 1).parent.parent
+    unknown = plans / ('a' * 32)
+    unknown.mkdir()
+    (unknown / 'meta.json').write_text('{}', encoding='utf-8')
+    (unknown / 'user.txt').write_text('keep', encoding='utf-8')
+    outside = tmp_path / 'outside'
+    outside.mkdir()
+    (outside / 'keep.txt').write_text('keep', encoding='utf-8')
+    link = plans / ('b' * 32)
+    try:
+        link.symlink_to(outside, target_is_directory=True)
+    except OSError:
+        link = None
+    stray = plans / 'notes.txt'
+    stray.write_text('keep', encoding='utf-8')
+    os.utime(_plan_path(plan_stack, 1), (1, 1))
+    _save_plan(plan_stack, 2, max_cache_bytes=_plan_path(plan_stack, 1).stat().st_size + 64)
+    assert not _plan_path(plan_stack, 1).exists()
+    assert (unknown / 'user.txt').read_text(encoding='utf-8') == 'keep'
+    assert stray.read_text(encoding='utf-8') == 'keep'
+    assert (outside / 'keep.txt').read_text(encoding='utf-8') == 'keep'
+    if link is not None:
+        assert link.is_symlink()
+
+
+def test_failed_eviction_does_not_credit_unremoved_bytes(plan_stack, monkeypatch):
+    _save_plan(plan_stack, 1)
+    _save_plan(plan_stack, 2)
+    first, second = (_plan_path(plan_stack, revision) for revision in (1, 2))
+    os.utime(first, (1, 1))
+    os.utime(second, (2, 2))
+    original = align_cache.shutil.rmtree
+    def remove(path, *args, **kwargs):
+        if Path(path) == first.parent:
+            raise OSError('busy')
+        return original(path, *args, **kwargs)
+    monkeypatch.setattr(align_cache.shutil, 'rmtree', remove)
+    _save_plan(plan_stack, 3, max_cache_bytes=first.stat().st_size + 64)
+    assert first.exists() and not second.exists() and _plan_path(plan_stack, 3).exists()
+
+
+@pytest.mark.parametrize('invalid', ['version', 'signature', 'backend', 'count', 'extra'])
+def test_prune_skips_unowned_plan_manifests(plan_stack, invalid):
+    _save_plan(plan_stack, 1)
+    path = _plan_path(plan_stack, 1)
+    manifest = json.loads(path.read_text(encoding='utf-8'))
+    if invalid == 'extra':
+        (path.parent / 'user.txt').write_text('keep', encoding='utf-8')
+    else:
+        manifest[invalid] = {'version': -1, 'signature': 'wrong',
+                             'backend': 'unknown', 'count': -1}[invalid]
+        path.write_text(json.dumps(manifest), encoding='utf-8')
+    os.utime(path, (1, 1))
+    _save_plan(plan_stack, 2)
+    budget = _plan_path(plan_stack, 2).stat().st_size
+    _save_plan(plan_stack, 2, max_cache_bytes=budget)
+    assert path.exists()
+
+
+def test_prune_skips_plan_manifest_symlink(plan_stack, tmp_path):
+    _save_plan(plan_stack, 1)
+    plans = _plan_path(plan_stack, 1).parent.parent
+    directory = plans / ('c' * 32)
+    directory.mkdir()
+    outside = tmp_path / 'outside.json'
+    outside.write_text(json.dumps({'version': align_cache.PLAN_CACHE_VERSION,
+        'signature': directory.name, 'backend': 'openfocus-wide4d-v3', 'count': 1}),
+        encoding='utf-8')
+    try:
+        (directory / 'meta.json').symlink_to(outside)
+    except OSError:
+        pytest.skip('Symlink creation unavailable')
+    os.utime(outside, (1, 1))
+    _save_plan(plan_stack, 2, max_cache_bytes=_plan_path(plan_stack, 1).stat().st_size + 64)
+    assert (directory / 'meta.json').is_symlink()
+    assert outside.exists()
+
+
+def test_prune_skips_symlinked_plans_root(stack, tmp_path):
+    root = Path(align_cache.cache_dir(stack[0]))
+    root.mkdir()
+    outside = tmp_path / 'external-plans'
+    directory = outside / ('d' * 32)
+    directory.mkdir(parents=True)
+    manifest = directory / 'meta.json'
+    manifest.write_text(json.dumps({'version': align_cache.PLAN_CACHE_VERSION,
+        'signature': directory.name, 'backend': 'openfocus-wide4d-v3', 'count': 1}),
+        encoding='utf-8')
+    try:
+        (root / 'plans').symlink_to(outside, target_is_directory=True)
+    except OSError:
+        pytest.skip('Symlink creation unavailable')
+    _save(stack, identity={'revision': 1})
+    aligned = next(root.glob('*/meta.json'))
+    budget = json.loads(aligned.read_text(encoding='utf-8'))['encoded_bytes']
+    os.utime(manifest, (1, 1))
+    _save(stack, identity={'revision': 1}, max_cache_bytes=budget)
+    assert manifest.exists() and (root / 'plans').is_symlink()

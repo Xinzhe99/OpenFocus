@@ -24,8 +24,15 @@ def fail_on_export_error(monkeypatch):
 
 
 class Labels:
-    def snapshot(self):
+    @property
+    def labels(self):
+        return ()
+
+    def snapshot(self, *, frame_ids_override=None):
         return self
+
+    def applicable_labels(self, target, index, output_id=None):
+        return []
 
     def prepare_bgr_image(self, target, image, index, **kwargs):
         return image
@@ -189,8 +196,11 @@ def test_partial_writes_and_cancel_preserve_only_committed_files(qapp, tmp_path,
     import utils.image_utils as image_utils
     source = make_stack(tmp_path / 'stack')
     original_write = image_utils.imwrite_auto
-    monkeypatch.setattr(image_utils, 'imwrite_auto', lambda path, *args, **kwargs:
-                        False if Path(path).name == 'img2.png' else original_write(path, *args, **kwargs))
+    calls = []
+    def fail_second(path, *args, **kwargs):
+        calls.append(path)
+        return False if len(calls) == 2 else original_write(path, *args, **kwargs)
+    monkeypatch.setattr(image_utils, 'imwrite_auto', fail_second)
     _, result = run_batch([source], tmp_path / 'partial')
     assert result['counts']['partial'] == 1 and result['success'] == 0
     assert len(result['tasks'][0]['artifacts']) == 1
@@ -1065,3 +1075,62 @@ def test_aligned_zoom_preserves_original_geometry_and_refines_selected_frame(qap
             worker.wait(10000)
         window.deleteLater()
         qapp.processEvents()
+
+
+def test_tiff_capture_times_form_expected_batch_groups(tmp_path):
+    from PIL import Image
+
+    for index, second in enumerate((0, 1, 20)):
+        timestamp = f'2026:11:10 12:00:{second:02d}'
+        exif = Image.Exif()
+        exif[0x8769] = {36867: timestamp}
+        # Reload the serialized IFD so Pillow has its backing stream when
+        # resolving the nested Exif IFD during TIFF serialization.
+        serialized = exif.tobytes()
+        exif = Image.Exif()
+        exif.load(serialized)
+        path = tmp_path / f'{index}.tif'
+        Image.new('RGB', (6, 4), (index * 20, 0, 0)).save(path, exif=exif)
+        with Image.open(path) as image:
+            assert image.getexif().get_ifd(0x8769)[36867] == timestamp
+    loader = ImageStackLoader()
+    ok, message, entries, _ = loader.load_images_with_timestamps(str(tmp_path), sort_by='timestamp')
+    assert ok, message
+    assert all(entry[2] is not None for entry in entries)
+    groups = loader.split_by_time_threshold(entries, 5)
+    assert [[Path(entry[0]).name for entry in group] for group in groups] == [['0.tif', '1.tif'], ['2.tif']]
+
+
+def test_historical_aligned_exports_use_each_record_identity(qapp, tmp_path, monkeypatch):
+    from controllers.label_manager import LabelManager
+    from utils.label_model import Label
+    from utils.validators import LabelAdder, LabelConfig
+
+    window = host(qapp)
+    window.registration_frame_ids = ['B', 'A']
+    window.label_manager = LabelManager(window)
+    config = LabelConfig()
+    config.target = 'registered'
+    config.frame_ids = ['A']
+    window.label_manager.labels.add(Label(config))
+    frames = [np.zeros((4, 5, 3), np.uint8) for _ in range(2)]
+
+    def mark(self, image, index, **kwargs):
+        result = image.copy()
+        result[0, 0] = 255
+        return result
+
+    monkeypatch.setattr(LabelAdder, 'add_label_to_image', mark)
+    monkeypatch.setattr('controllers.export_manager.run_pixel_worker', lambda window, title, fn: fn())
+    for name, identities, expected in [('first', ('A', 'B'), 0), ('second', ('B', 'A'), 1)]:
+        record = OutputRecord.create(None, name, kind='aligned')
+        record.aligned_frames = tuple(frames)
+        record.aligned_names = ('one.png', 'two.png')
+        record.aligned_frame_ids = identities
+        path = window.export_manager.save_aligned_frames_as(
+            frames, record.aligned_names, name, destination=str(tmp_path),
+            extension='png', record=record)
+        result = [_read_image_any(str(Path(path) / filename)) for filename in record.aligned_names]
+        assert [bool(image[0, 0, 0]) for image in result] == [i == expected for i in range(2)]
+        assert len(window.output_manager._annotation_state(record)['labels']) == 1
+    assert window.registration_frame_ids == ['B', 'A']

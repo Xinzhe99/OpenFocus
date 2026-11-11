@@ -470,7 +470,7 @@ class UpdateManager(QObject):
             return False
         if not zip_url:
             return False
-        if not self.install_is_writable(fail_loud=manual):
+        if sys.platform != "win32" and not self.install_is_writable(fail_loud=manual):
             self._set_state(STATE_FAILED, tag, 0)
             return False
         safe_tag = self_update.sanitize_tag(tag)
@@ -633,7 +633,7 @@ class UpdateManager(QObject):
         if not self.can_self_update():
             self._fail("msg_update_needs_elevation")
             return False
-        if not self.install_is_writable():
+        if sys.platform != "win32" and not self.install_is_writable():
             return False
         if (not self._is_newer_than_current(tag)
                 or os.path.abspath(staging_root) != os.path.abspath(self_update.staging_root_for(safe_tag))

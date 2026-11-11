@@ -31,7 +31,8 @@ def test_open_folder_loads_raf_and_photos_in_natural_order(qapp, monkeypatch, tm
     from utils import settings_store
 
     class RawPy:
-        sizes = SimpleNamespace(width=8, height=8, pixel_aspect=1, flip=0)
+        sizes = SimpleNamespace(width=8, height=8, raw_width=8, raw_height=8,
+                                pixel_aspect=1, flip=0)
 
         def __enter__(self):
             return self

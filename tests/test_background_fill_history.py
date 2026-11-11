@@ -464,8 +464,11 @@ def test_legacy_diagnostic_memory_rejection_is_transactional(
     path.write_text(json.dumps(record), encoding='utf-8')
     assert target.auto_background('sharp') == 'committed'
     pixels, fill = target.working.copy(), target.background_fill
-    def admission(required):
-        if required >= 80000:
+    from utils.retouch_checkpoint import _aligned_mask_bytes
+    pixels_count = target.height * target.width
+    admission_limit = pixels_count * 4 + _aligned_mask_bytes(target)
+    def admission(required, snapshot=None):
+        if required > admission_limit:
             raise ResourceLimitError('legacy diagnostic budget cannot be admitted')
     def forbidden(*args, **kwargs):
         pytest.fail('background replay started before migration memory admission')

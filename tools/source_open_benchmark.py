@@ -4,6 +4,8 @@ Generation is explicit, deterministic and outside the measured loader process.
 Like fusion_streaming_benchmark.py, --generate-dir must name a new directory;
 completed JPEG fixtures are retained there. Profiles and preview scratch files
 are temporary. RSS fields are bytes and load_s is seconds.
+Pipe EOF ends reception; a successful result also requires a zero child exit.
+Time and memory limits request cancellation before forced termination.
 """
 import argparse
 import gc
@@ -248,12 +250,17 @@ def _run_child(context, target, arguments, cancelled, options, report):
     process.start()
     writer.close()
     try:
-        while process.is_alive() or reader.poll():
-            if reader.poll(0.02):
-                try:
-                    message = reader.recv()
-                except EOFError:
+        while True:
+            try:
+                ready = reader.poll(0.02)
+                message = reader.recv() if ready else None
+            except (EOFError, BrokenPipeError):
+                break
+            except OSError as exc:
+                if getattr(exc, 'winerror', None) == 109:
                     break
+                raise
+            if message is not None:
                 event = message['event']
                 if event == 'sample':
                     for field in ('sampled_peak_rss', 'process_high_water_rss'):
@@ -277,6 +284,8 @@ def _run_child(context, target, arguments, cancelled, options, report):
                 report['errors'].append('Requested --max-load-seconds exceeded')
                 abort_at = time.perf_counter()
                 cancelled.set()
+            if not process.is_alive() and not ready:
+                break
             if abort_at is not None and time.perf_counter() - abort_at >= 0.5:
                 if not report.get('load_complete') and started is not None:
                     report['load_s'] = time.perf_counter() - started

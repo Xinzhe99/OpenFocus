@@ -290,6 +290,9 @@ def test_render_completion_records_preview_pixels(qapp, monkeypatch):
     record = window._wipe_preview_record
     assert record.image is result
     assert record.context.frames[0].image is preview_frames[0]
+    assert window.output_manager.displayed_image is result
+    assert window.preview_result["kind"] == "fusion"
+    assert window.preview_result["image"] is result
     assert window.output_list.count() == 0
 
 

@@ -107,6 +107,8 @@ nav .links a:hover { color: var(--ink); }
 .icon.gh svg, .icon.lang svg { display: block; }
 .icon.menu svg { display: none; }
 .icon.menu .i-open { display: block; }
+.theme { display: none; }
+.theme[data-enhanced] { display: inline-grid; }
 .theme svg { display: none; }
 html[data-mode="system"] .theme .i-system,
 html[data-mode="light"] .theme .i-light,
@@ -116,7 +118,10 @@ nav.open .icon.menu .i-open { display: none; }
 nav.open .icon.menu .i-close { display: block; }
 
 .langs { position: relative; flex: none; }
-.lang-menu {
+.langs .lang { display: none; }
+.langs[data-enhanced] .lang { display: inline-grid; }
+.lang-menu { display: flex; flex-wrap: wrap; }
+.langs[data-enhanced] .lang-menu {
   position: absolute; right: 0; top: calc(100% + 8px); z-index: 21;
   display: grid; min-width: 152px; padding: 4px;
   background: var(--card); border: 1px solid var(--line);
@@ -288,16 +293,21 @@ footer .brand img { width: 20px; height: 20px; }
 }
 
 @media (max-width: 900px) {
-  nav .links {
+  nav:not([data-enhanced]) { position: relative; }
+  nav:not([data-enhanced]) .wrap { height: auto; min-height: 62px; flex-wrap: wrap; }
+  nav:not([data-enhanced]) .links {
+    order: 2; flex: 1 0 100%; margin: 0; padding-bottom: 12px; flex-wrap: wrap;
+  }
+  nav[data-enhanced] .links {
     position: absolute; left: 0; right: 0; top: 62px; z-index: 19;
     display: none; flex-direction: column; gap: 0; margin: 0;
     padding: 6px 24px 12px;
     background: var(--card); border-bottom: 1px solid var(--line);
   }
-  nav.open .links { display: flex; }
-  nav .links a { padding: 11px 0; border-bottom: 1px solid var(--line); }
-  nav .links a:last-child { border-bottom: 0; }
-  .menu { display: inline-grid; }
+  nav[data-enhanced].open .links { display: flex; }
+  nav[data-enhanced] .links a { padding: 11px 0; border-bottom: 1px solid var(--line); }
+  nav[data-enhanced] .links a:last-child { border-bottom: 0; }
+  nav[data-enhanced] .menu { display: inline-grid; }
   .hero { grid-template-columns: 1fr; gap: 34px; padding-top: 48px; }
   .split, .cli { grid-template-columns: minmax(0, 1fr); gap: 28px; }
   .split.rev figure { order: 0; }

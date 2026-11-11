@@ -129,3 +129,40 @@ def test_export_preserves_rgb_profile_and_rejects_excess_frames(tmp_path, monkey
     context.frames = context.frames * 129
     with pytest.raises(ValueError, match='Too many'):
         layered_tiff.export_layered_tiff(tmp_path / 'too-many.tif', image, context)
+
+
+@pytest.mark.parametrize('kind', ['path', 'string', 'hardlink'])
+def test_historical_source_snapshot_is_protected_before_preflight(tmp_path, kind):
+    from dataclasses import replace
+    image, context = _context(np.uint8)
+    source = tmp_path / 'source.tif'
+    source.write_bytes(b'original')
+    target = source
+    if kind == 'hardlink':
+        target = tmp_path / 'alias.tif'
+        try:
+            target.hardlink_to(source)
+        except OSError:
+            pytest.skip('hard links unavailable')
+    sources = str(source) if kind == 'string' else source
+    context = replace(context, source_paths=sources)
+    with pytest.raises(ValueError, match='source image'):
+        layered_tiff.export_layered_tiff(target, image, context)
+    assert source.read_bytes() == b'original'
+
+
+def test_legacy_context_without_source_paths_protects_absolute_frame(tmp_path):
+    from types import SimpleNamespace
+    source = tmp_path / 'old.tif'
+    source.write_bytes(b'original')
+    context = SimpleNamespace(frames=(SimpleNamespace(name=str(source)),))
+    with pytest.raises(ValueError, match='source image'):
+        layered_tiff.export_layered_tiff(source, None, context)
+    assert source.read_bytes() == b'original'
+
+
+def test_legacy_context_without_frames_reports_missing_sources(tmp_path):
+    from types import SimpleNamespace
+    image, _ = _context(np.uint8)
+    with pytest.raises(ValueError, match='no retained'):
+        layered_tiff.export_layered_tiff(tmp_path / 'out.tif', image, SimpleNamespace())

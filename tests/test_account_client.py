@@ -344,6 +344,103 @@ def test_delete_failure_keeps_session_and_logout_failure_clears_it():
     assert store.value is None
 
 
+class FailingClearStore(MemoryStore):
+    def __init__(self, value):
+        super().__init__(value)
+        self.fail = True
+
+    def clear(self):
+        if self.fail:
+            raise account.AccountError('storage')
+        super().clear()
+
+
+@pytest.mark.parametrize('remote_failure', [None, 'network'])
+def test_logout_storage_failure_revokes_and_allows_cleanup_retry(remote_failure):
+    store = FailingClearStore(session())
+    calls = []
+    def request(method, url, body=None, token=None, timeout=None):
+        calls.append((url.rsplit('/', 1)[-1], token))
+        if remote_failure:
+            raise account.AccountError(remote_failure)
+        return {'ok': True}
+    client = account.AccountClient(store=store, request=request)
+    with pytest.raises(account.AccountError) as exc:
+        client.logout()
+    assert exc.value.category == 'storage' and 'private-token' not in str(exc.value)
+    assert calls == [('logout', 'private-token')]
+    assert client.logout_cleanup_pending and store.value == session()
+    assert not client.is_signed_in() and client.current_user() is None
+    assert client.token() is None and client.refresh() is False and client.me() is None
+    with pytest.raises(account.AccountError, match='storage'):
+        client.login_with_browser()
+    assert account.AccountClient(store=store).is_signed_in()
+    store.fail = False
+    if remote_failure:
+        with pytest.raises(account.AccountError, match='network'):
+            client.logout()
+        assert len(calls) == 2
+    else:
+        client.logout()
+        assert len(calls) == 1
+    assert not client.logout_cleanup_pending and store.value is None
+    assert not account.AccountClient(store=store).is_signed_in()
+
+
+@pytest.mark.parametrize('failure,status', [('network', None), ('http', 401)])
+def test_logout_remote_failure_still_removes_local_credentials(failure, status):
+    store = MemoryStore(session())
+    def request(*args, **kwargs):
+        raise account.AccountError(failure, status)
+    client = account.AccountClient(store=store, request=request)
+    with pytest.raises(account.AccountError):
+        client.logout()
+    assert client.token() is None and not client.logout_cleanup_pending
+    assert store.value is None and not account.AccountClient(store=store).is_signed_in()
+
+
+@pytest.mark.parametrize('operation,status', [('me', 401), ('me', 403), ('refresh', 401), ('delete_account', None)])
+def test_invalidated_session_stays_inaccessible_when_storage_fails(operation, status):
+    store = FailingClearStore(session())
+    def request(*args, **kwargs):
+        if status:
+            raise account.AccountError('http', status)
+        return {'ok': True}
+    client = account.AccountClient(store=store, request=request)
+    with pytest.raises(account.AccountError, match='storage'):
+        getattr(client, operation)()
+    assert client.logout_cleanup_pending and client.token() is None
+    assert client.refresh() is False and client.me() is None
+    store.fail = False
+    client.logout()
+    assert not client.logout_cleanup_pending and store.value is None
+
+
+def test_refresh_storage_failure_notifies_waiters():
+    entered, release, waiting = threading.Event(), threading.Event(), threading.Event()
+    store = FailingClearStore(session())
+    def request(*args, **kwargs):
+        entered.set()
+        assert release.wait(5)
+        raise account.AccountError('http', 401)
+    client = account.AccountClient(store=store, request=request)
+    class ObservedCondition(threading.Condition):
+        def wait(self, timeout=None):
+            waiting.set()
+            return super().wait(timeout)
+    client._condition = ObservedCondition(threading.RLock())
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(client.refresh)
+        assert entered.wait(5)
+        second = pool.submit(client.refresh)
+        assert waiting.wait(5)
+        release.set()
+        for future in (first, second):
+            with pytest.raises(account.AccountError, match='storage'):
+                future.result(timeout=5)
+    assert client.token() is None and client.logout_cleanup_pending
+
+
 def test_malformed_refresh_does_not_replace_token():
     store = MemoryStore(session())
     client = account.AccountClient(store=store, request=lambda *a, **kw: {"token": "replacement", "expires_at": True})

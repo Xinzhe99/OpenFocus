@@ -1,5 +1,5 @@
 """Source placement, bounded planning, control points and mosaic export."""
-from dataclasses import replace
+from dataclasses import dataclass, replace
 import math
 import os
 import threading
@@ -43,7 +43,24 @@ def _copy_rows(target, source, cancel):
         target.flush()
 
 
-def _decode_pages(path, cancel):
+def _preview_budget(shapes):
+    """Return retained BGR, Qt pixels, generation and conversion bytes."""
+    areas = []
+    temporary = 0
+    for height, width in shapes:
+        scale = min(1.0, 1024 / max(height, width))
+        w, h = max(1, round(width * scale)), max(1, round(height * scale))
+        area = w * h
+        areas.append(area)
+        temporary = max(temporary, 64 * area + 16 * (w + h))
+    return sum(areas) * 3, sum(areas) * 4, temporary, max(areas, default=0) * 4
+
+
+def _admit_previews(shapes, decoder_bytes=0):
+    require_memory(sum(_preview_budget(shapes)) + decoder_bytes)
+
+
+def _decode_pages(path, cancel, headers=None):
     """Use the shared iterator, with the existing descriptor's decode budget.
 
     Pages in a TIFF are decoded serially; admission is the largest *decoder*
@@ -54,7 +71,8 @@ def _decode_pages(path, cancel):
     from core.image_loader import iter_decoded_sources, _DecodeCancelled
     from core.source_frames import scan_source, frame_resolution_bytes
     _check_cancel(cancel)
-    headers = scan_source(path, header_only=True, should_cancel=cancel)
+    if headers is None:
+        headers = scan_source(path, header_only=True, should_cancel=cancel)
     require_memory(max((frame_resolution_bytes(frame) for frame in headers), default=0))
     decoder = iter_decoded_sources([path], 1.0, thread_count=1,
         should_cancel=cancel, allow_transparent_png=True, disk_backed=True)
@@ -155,6 +173,12 @@ def _paint_mask(base, shape, strokes, cancel, progress):
     return mask
 
 
+@dataclass(frozen=True)
+class _ExportResult:
+    plan: object
+    path: str
+
+
 class _Worker(QThread):
     result = pyqtSignal(object)
     error = pyqtSignal(str)
@@ -173,7 +197,7 @@ class _Worker(QThread):
         try:
             with heavy_job(self._stop.is_set):
                 value = self.operation(self._stop.is_set, self.progress.emit)
-            if self._stop.is_set():
+            if self._stop.is_set() and not isinstance(value, _ExportResult):
                 raise RegistrationCancelled()
         except (RegistrationCancelled, InterruptedError):
             self.cancelled.emit()
@@ -519,7 +543,8 @@ class MosaicDialog(QDialog):
         worker.progress.connect(self._progress)
 
         def deliver(value):
-            if self.worker is worker and not worker._stop.is_set() and not self._close_pending:
+            if (self.worker is worker and not self._close_pending
+                    and (not worker._stop.is_set() or isinstance(value, _ExportResult))):
                 try:
                     success(value)
                 except Exception as error:
@@ -654,11 +679,19 @@ class MosaicDialog(QDialog):
                 else:
                     skipped += 1
             paths.sort(key=natural_sort_key)
+            from core.source_frames import scan_source, frame_resolution_bytes
+            headers = [scan_source(path, header_only=True, should_cancel=cancel) for path in paths]
+            remaining = [tuple(header.shape[:2]) for group in headers for header in group]
+            decoder = max((frame_resolution_bytes(header) for group in headers
+                           for header in group), default=0)
+            _admit_previews(remaining, decoder)
             result = []
             for index, path in enumerate(paths):
                 if cancel():
                     raise RegistrationCancelled()
-                pages = _decode_pages(path, cancel)
+                pages = _decode_pages(path, cancel, headers[index])
+                remaining = [tuple(image.shape[:2]) for image in pages] + remaining[len(headers[index]):]
+                _admit_previews(remaining, decoder)
                 from core.image_loader import _read_icc_profile
                 for page, image in enumerate(pages):
                     exif = _source_exif(path, page)
@@ -669,6 +702,7 @@ class MosaicDialog(QDialog):
                     result.append(make_frame(name, image, path, preview_size=1024,
                         icc_profile=_read_icc_profile(path, page=page),
                         exif=exif, exposure_time=exposure))
+                    remaining.pop(0)
                 progress(index + 1, len(paths))
             return result, skipped
 
@@ -716,14 +750,16 @@ class MosaicDialog(QDialog):
 
         snapshots = tuple((str(record.label), record.image,
             bytes(getattr(record.context, 'icc_profile', record.icc_profile) or b''),
-            str(record.export_path or '') if record.annotations_baked else '',
+            bytes(getattr(record, 'source_exif', b'') or b''),
             tuple(record.source_paths), str(record.export_path or '')) for record in chosen)
 
         def prepare(cancel, progress):
             from core.frame_storage import create_frame
             result, protected = [], []
-            for index, (label, image, icc, metadata_path, source_paths, exported) in enumerate(snapshots):
-                exif = _source_exif(metadata_path) if metadata_path else b''
+            _admit_previews([image.shape[:2] for _, image, *_ in snapshots],
+                            max((image.nbytes for _, image, *_ in snapshots), default=0))
+            for index, (label, image, icc, exif, source_paths, exported) in enumerate(snapshots):
+                _check_cancel(cancel)
                 copied = create_frame(image.shape, image.dtype)
                 _copy_rows(copied, image, cancel)
                 result.append(make_frame(label, copied, preview_size=1024,
@@ -734,8 +770,8 @@ class MosaicDialog(QDialog):
 
         def complete(value):
             frames, protected = value
-            self._output_source_paths.extend(protected)
             self._append_frames(frames)
+            self._output_source_paths.extend(protected)
 
         self._run(prepare, trans.t('msg_loading_stack'), complete)
 
@@ -743,14 +779,42 @@ class MosaicDialog(QDialog):
         if not frames:
             return
         old = self._current_transforms()
+        previous_frames = self.frames
+        previous_connected = self.connected
+        previous_opacities = self.preview_opacities
+        selected = self.list.currentRow()
+        old_pixmaps = self._prepare_pixmaps(previous_frames)
+        pixmaps = self._prepare_pixmaps([*previous_frames, *frames])
+        preview = self._preview_item
+        preview_state = ((preview.pixmap(), preview.transform(), preview.pos(), preview.zValue())
+                         if preview is not None else None)
+        try:
+            self.frames = [*previous_frames, *frames]
+            initial = initial_transforms(self.frames)
+            self.transforms = old + initial[len(old):]
+            self.preview_opacities = [*previous_opacities, *([1.0] * len(frames))]
+            self.connected = [False] * len(self.frames)
+            self.settings.set_frames(self.frames)
+            self._rebuild(pixmaps)
+        except Exception:
+            self.frames = previous_frames
+            self.transforms = old
+            self.connected = previous_connected
+            self.preview_opacities = previous_opacities
+            self.settings.set_frames(self.frames)
+            self._rebuild(old_pixmaps)
+            self.list.setCurrentRow(selected)
+            if preview_state is not None:
+                pixmap, transform, pos, z = preview_state
+                self._preview_item = self.scene.addPixmap(pixmap)
+                self._preview_item.setTransform(transform)
+                self._preview_item.setPos(pos)
+                self._preview_item.setZValue(z)
+                self._preview_item.setTransformationMode(Qt.TransformationMode.SmoothTransformation)
+                for item in self.items:
+                    item.setVisible(False)
+            raise
         self._invalidate_plan()
-        self.frames.extend(frames)
-        initial = initial_transforms(self.frames)
-        self.transforms = old + initial[len(old):]
-        self.preview_opacities.extend([1.0] * len(frames))
-        self.connected = [False] * len(self.frames)
-        self.settings.set_frames(self.frames)
-        self._rebuild()
         self.list.setCurrentRow(len(self.frames) - 1)
         self.status.clear()
         QTimer.singleShot(0, self._fit)
@@ -791,7 +855,25 @@ class MosaicDialog(QDialog):
         self.status.setText(trans.t('mosaic_grid_applied'))
         self._fit()
 
-    def _rebuild(self):
+    def _prepare_pixmaps(self, frames):
+        existing = {id(item._preview): (item._preview, item.pixmap()) for item in self.items}
+        missing = [frame for frame in frames
+                   if id(frame.preview) not in existing or existing[id(frame.preview)][0] is not frame.preview]
+        areas = [frame.preview.shape[0] * frame.preview.shape[1] for frame in missing]
+        if areas:
+            require_memory(4 * (sum(areas) + max(areas)))
+        result = []
+        for frame in frames:
+            cached = existing.get(id(frame.preview))
+            pixmap = cached[1] if cached is not None and cached[0] is frame.preview else cv2_to_pixmap(frame.preview)
+            if pixmap.isNull():
+                raise MemoryError('Could not create mosaic preview pixmap')
+            result.append(pixmap)
+        return result
+
+    def _rebuild(self, pixmaps=None):
+        if pixmaps is None:
+            pixmaps = self._prepare_pixmaps(self.frames)
         selected = self.list.currentRow()
         self._updating = True
         try:
@@ -803,18 +885,20 @@ class MosaicDialog(QDialog):
                 label = frame.name + ('  ' + trans.t('mosaic_mask_present') if frame.mask is not None else '')
                 if index > 0 and not self.connected[index]:
                     label += '  ' + trans.t('mosaic_unmatched_mark')
-                pixmap = cv2_to_pixmap(frame.preview)
+                pixmap = pixmaps[index]
                 entry = QListWidgetItem(QIcon(pixmap), label)
                 entry.setToolTip(frame.source_path or frame.name)
                 self.list.addItem(entry)
                 item = _TileItem(index, pixmap, self._item_changed)
+                item._preview = frame.preview
                 item.setToolTip(frame.name)
                 item.setOpacity(self.preview_opacities[index])
                 sx = frame.image.shape[1] / frame.preview.shape[1]
                 sy = frame.image.shape[0] / frame.preview.shape[0]
                 item.setTransform(QTransform(matrix[0, 0] * sx, matrix[1, 0] * sx, 0,
                                              matrix[0, 1] * sy, matrix[1, 1] * sy, 0,
-                                             matrix[0, 2], matrix[1, 2], 1))
+                                             matrix[0, 2] - .5 * (matrix[0, 0] + matrix[0, 1]),
+                                             matrix[1, 2] - .5 * (matrix[1, 0] + matrix[1, 1]), 1))
                 item.setZValue(index)
                 self.scene.addItem(item)
                 self.items.append(item)
@@ -1034,11 +1118,12 @@ class MosaicDialog(QDialog):
         alignment = self._alignment
         points = tuple(self.control_points[index] for index in self._selected_points
                        if 0 <= index < len(self.control_points))
+        max_edge = 1024
 
         def preview(cancel, progress):
             captured = plan if plan is not None else plan_mosaic(frames, transforms,
                 spec=spec, alignment=alignment, should_cancel=cancel, progress=progress)
-            image = preview_mosaic(captured, max_edge=1024, selected_points=points,
+            image = preview_mosaic(captured, max_edge=max_edge, selected_points=points,
                 should_cancel=cancel, **options)
             return captured, image
 
@@ -1046,6 +1131,9 @@ class MosaicDialog(QDialog):
             captured, image = value
             if revision != self._revision:
                 return
+            pixmap = cv2_to_pixmap(image)
+            if pixmap.isNull():
+                raise MemoryError('Could not create mosaic preview pixmap')
             self._plan, self._plan_revision = captured, revision
             self._show_placement()
             self._updating = True
@@ -1053,11 +1141,11 @@ class MosaicDialog(QDialog):
                 self.scene.clearSelection()
                 for item in self.items:
                     item.setVisible(False)
-                self._preview_item = self.scene.addPixmap(cv2_to_pixmap(image))
+                self._preview_item = self.scene.addPixmap(pixmap)
                 self._preview_item.setTransformationMode(Qt.TransformationMode.SmoothTransformation)
-                self._preview_item.setTransform(QTransform.fromScale(
-                    captured.size[0] / image.shape[1], captured.size[1] / image.shape[0]))
-                self._preview_item.setPos(*captured.origin)
+                step = max(1, math.ceil(max(captured.size) / max_edge))
+                self._preview_item.setTransform(QTransform.fromScale(step, step))
+                self._preview_item.setPos(captured.origin[0] - .5, captured.origin[1] - .5)
                 self._preview_item.setZValue(len(self.items) + 1)
             finally:
                 self._updating = False
@@ -1230,12 +1318,12 @@ class MosaicDialog(QDialog):
                 icc_profile=captured.icc_profile, should_cancel=cancel,
                 stream_tiff=ext in ('.tif', '.tiff')):
                 raise OSError(write_error)
-            return captured
+            return _ExportResult(captured, path)
 
-        def complete(captured):
+        def complete(result):
             if revision == self._revision:
-                self._plan, self._plan_revision = captured, revision
-            self.status.setText(trans.t('depth_saved').format(path=path))
+                self._plan, self._plan_revision = result.plan, revision
+            self.status.setText(trans.t('depth_saved').format(path=result.path))
 
         self._run(export, trans.t('mosaic_exporting'), complete)
 

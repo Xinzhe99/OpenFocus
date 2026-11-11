@@ -134,6 +134,31 @@ class TestRecovery:
         assert rec.pending_recovery() is None     # lock cleared, snapshot kept
         assert os.path.isfile(rec.session_path())
 
+    @pytest.mark.parametrize("project_path,dirty", [("A.ofproj", True), ("A.ofproj", False), (None, True)])
+    def test_snapshot_records_document_state(self, tmp_path, recovery_mod, project_path, dirty):
+        stack = str(tmp_path / "stack")
+        os.makedirs(stack)
+        window = self._fake_window(stack)
+        window.project_path = project_path
+        window._project_dirty = dirty
+        assert recovery_mod.write_snapshot(window)
+        assert recovery_mod.load_snapshot_state()["recovery_document"] == {
+            "version": 1, "project_path": project_path or "", "dirty": dirty}
+
+    def test_override_avoids_portable_probe(self, tmp_path, monkeypatch):
+        import utils.recovery as rec
+        monkeypatch.undo()
+        monkeypatch.setenv("OPENFOCUS_DATA_DIR", str(tmp_path / "isolated"))
+        monkeypatch.setattr(rec.app_paths, "is_portable_mode", lambda: pytest.fail("portable probe"))
+        from utils import settings_store
+        monkeypatch.setattr(settings_store, "_settings_singleton", None)
+        assert os.path.normpath(settings_store.get_settings().fileName()) == os.path.normpath(
+            str(tmp_path / "isolated" / "settings.ini"))
+        assert rec._base_dir() == str(tmp_path / "isolated")
+        assert rec.session_path().startswith(str(tmp_path / "isolated"))
+        assert rec.lock_path().startswith(str(tmp_path / "isolated"))
+        assert rec.pending_restore_path().startswith(str(tmp_path / "isolated"))
+
     def test_pending_ignores_missing_sources(self, tmp_path, recovery_mod):
         rec = recovery_mod
         stack = str(tmp_path / "gone"); os.makedirs(stack)

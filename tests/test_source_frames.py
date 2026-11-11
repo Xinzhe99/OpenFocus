@@ -301,7 +301,7 @@ def test_materialize_parallel_window_preserves_order_and_progress(tmp_path, monk
     lock = threading.Lock()
     active = peak = 0
 
-    def decode(frame):
+    def decode(frame, *, should_cancel=None):
         nonlocal active, peak
         index = paths.index(frame.path)
         assert frame_storage._scratch.get() is not None
@@ -342,7 +342,7 @@ def test_materialize_waits_for_running_decode_after_failure(tmp_path, monkeypatc
     completed = threading.Event()
     release = threading.Event()
 
-    def decode(frame):
+    def decode(frame, *, should_cancel=None):
         if frame is frames[0]:
             started.set()
             assert release.wait(5)
@@ -373,7 +373,7 @@ def test_materialize_cancellation_waits_for_running_decode(tmp_path, monkeypatch
     completed = threading.Event()
     started = threading.Barrier(2)
 
-    def decode(frame):
+    def decode(frame, *, should_cancel=None):
         started.wait(timeout=5)
         if frame is frames[0]:
             cancelled.set()
@@ -429,7 +429,7 @@ def test_raw_manifest_does_not_unpack_sensor_or_postprocess(tmp_path, monkeypatc
     path.write_bytes(b'header fixture')
     opened = []
     class HeaderRaw:
-        sizes = SimpleNamespace(width=80, height=60, pixel_aspect=1.0, flip=6)
+        sizes = SimpleNamespace(width=80, height=60, raw_width=80, raw_height=60, pixel_aspect=1.0, flip=6)
         def __enter__(self): return self
         def __exit__(self, *_args): pass
         def open_file(self, filename): opened.append(filename)
@@ -698,7 +698,7 @@ def _dng_preview_fixture(tmp_path, monkeypatch, *, bitmap=True, orientation=1,
         tif.pages[0].tags['ImageWidth'].overwrite(8000)
         tif.pages[0].tags['ImageLength'].overwrite(6000)
     class HeaderRaw:
-        sizes = SimpleNamespace(width=8000, height=6000, pixel_aspect=1.0, flip=6)
+        sizes = SimpleNamespace(width=8000, height=6000, raw_width=8000, raw_height=6000, pixel_aspect=1.0, flip=6)
         def __enter__(self): return self
         def __exit__(self, *_args): pass
         def open_file(self, filename): assert filename == str(path)
@@ -831,7 +831,7 @@ def test_raf_manifest_uses_embedded_display_preview(tmp_path, monkeypatch, linea
         path.write_bytes(header + payload)
 
     class HeaderRaw:
-        sizes = SimpleNamespace(width=10000, height=8000, pixel_aspect=1.0, flip=0)
+        sizes = SimpleNamespace(width=10000, height=8000, raw_width=10000, raw_height=8000, pixel_aspect=1.0, flip=0)
         rgb_xyz_matrix = np.eye(4, 3)
         camera_whitebalance = [2.0, 1.0, 1.5, 1.0]
         def __enter__(self): return self
@@ -1075,7 +1075,7 @@ def _multiple_raw_jpegs(tmp_path, monkeypatch):
                                 ('RowsPerStrip', size[1])):
                 page.tags[name].overwrite(value)
     class HeaderRaw:
-        sizes = SimpleNamespace(width=8000, height=6000, pixel_aspect=1.0, flip=6)
+        sizes = SimpleNamespace(width=8000, height=6000, raw_width=8000, raw_height=6000, pixel_aspect=1.0, flip=6)
         def __enter__(self): return self
         def __exit__(self, *_args): pass
         def open_file(self, filename): assert filename == str(path)
@@ -1256,3 +1256,66 @@ def test_scratch_headers_skip_unreadable_and_propagate_cancel(monkeypatch, tmp_p
     monkeypatch.setattr(sources, 'scan_source', lambda *args, **kwargs: (_ for _ in ()).throw(InterruptedError()))
     with pytest.raises(RegistrationCancelled):
         sources.scratch_source_headers([path])
+
+
+def test_cancelled_source_cache_never_returns_or_retains_pixels(tmp_path, monkeypatch):
+    from core.registration import RegistrationCancelled
+    frame = sources.scan_source(_jpeg(tmp_path, shape=(8, 10)), header_only=True)[0]
+    cache = sources.FrameCache()
+    monkeypatch.setattr(sources, 'SOURCE_CACHE', cache)
+    frame.full_resolution()
+    with pytest.raises(RegistrationCancelled):
+        frame.full_resolution(should_cancel=lambda: True)
+    cache.clear()
+    cancelled = []
+    decode = image_loader.decode_image
+    def cancelling_decode(*args, **kwargs):
+        result = decode(*args, **kwargs)
+        cancelled.append(True)
+        return result
+    monkeypatch.setattr(image_loader, 'decode_image', cancelling_decode)
+    with pytest.raises(RegistrationCancelled):
+        frame.full_resolution(should_cancel=lambda: bool(cancelled))
+    assert cache.bytes == 0
+
+
+def test_retired_owned_source_waits_for_replaced_descriptors(tmp_path):
+    import gc
+    from dataclasses import replace
+    frame = sources.scan_source(_jpeg(tmp_path, shape=(8, 10)), header_only=True)[0]
+    replacement = replace(frame)
+    cleaned = []
+    sources.retire_owned_files([frame.path], lambda: cleaned.append(True))
+    del frame
+    gc.collect()
+    assert not cleaned
+    another = replace(replacement)
+    del replacement
+    gc.collect()
+    assert not cleaned
+    del another
+    gc.collect()
+    assert cleaned == [True]
+
+
+def test_tiff_alpha_validation_stops_before_next_band():
+    from types import SimpleNamespace
+    cancelled = []
+    class Bands:
+        def __getitem__(self, key):
+            cancelled.append(True)
+            return np.full((1, 1), 255, np.uint8)
+    page = SimpleNamespace(samplesperpixel=4, dtype=np.uint8, is_memmappable=True,
+                           imagelength=256, asarray=lambda **kwargs: Bands())
+    with pytest.raises(InterruptedError):
+        sources._validate_tiff_alpha(page, lambda: bool(cancelled))
+    assert len(cancelled) == 1
+
+
+def test_raw_frame_budget_includes_masked_sensor_margins(tmp_path):
+    path = tmp_path / 'raw.bin'
+    path.write_bytes(b'12345')
+    frame = sources.SourceFrame(str(path), 0, (1000, 1500, 3), np.dtype(np.uint16),
+                                None, sources._fingerprint(str(path)),
+                                native_shape=(4000, 6000, 3), raw_sensor_shape=(4100, 6200))
+    assert sources.frame_resolution_bytes(frame) == 4100 * 6200 * 64 + frame.nbytes + 10

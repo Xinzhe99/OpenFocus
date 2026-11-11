@@ -131,3 +131,59 @@ def test_masked_seam_owner_preserves_the_remaining_source_pixels():
         shape=shape, levels=4)
     np.testing.assert_array_equal(output[16:48, 20:60], second[16:48, 20:60])
     np.testing.assert_array_equal(coverage, alpha)
+
+
+def test_label_clear_uses_bounded_blocks_and_stops_on_cancel(monkeypatch):
+    from contextlib import contextmanager
+    from core import mosaic_seam as seam
+
+    monkeypatch.setattr(seam, '_LABEL_BLOCK_PIXELS', 11)
+    original = seam.frame_region
+    writes = []
+
+    @contextmanager
+    def tracking(array, key=Ellipsis, *, write=False):
+        with original(array, key, write=write) as region:
+            if write:
+                writes.append(region.size)
+            yield region
+
+    monkeypatch.setattr(seam, 'frame_region', tracking)
+    labels = np.full((5, 17), 9, np.uint16)
+    seam._clear_labels(labels, None)
+    assert np.all(labels == 0)
+    assert sum(writes) == labels.size
+    assert max(writes) <= 11
+    labels.fill(9)
+    writes.clear()
+    checks = iter((False, True))
+    with pytest.raises(InterruptedError):
+        seam._clear_labels(labels, lambda: next(checks))
+    assert len(writes) == 1
+    assert np.count_nonzero(labels == 0) == writes[0]
+
+
+def test_graphcut_clears_labels_again_before_writing(monkeypatch):
+    from core import mosaic_seam as seam
+    calls = []
+    original = seam._clear_labels
+
+    def clear(labels, cancel):
+        calls.append(labels.copy())
+        original(labels, cancel)
+
+    class Finder:
+        def find(self, colors, origins, masks):
+            return masks
+
+    monkeypatch.setattr(seam, '_clear_labels', clear)
+    monkeypatch.setattr(seam.cv2.detail, 'GraphCutSeamFinder', lambda *_: Finder(), raising=False)
+    colors = np.zeros((3, 4, 3), np.float32)
+    alpha = np.ones((3, 4), np.float32)
+    result = build_labels([LowSample(0, colors, alpha, (0, 0)),
+                           LowSample(1, colors, alpha, (2, 0))], (3, 6),
+                          SeamSpec(mode='graphcut'))
+    assert len(calls) == 2
+    assert np.all(calls[1] != 0)
+    assert np.all(result[:, :2] == 1)
+    assert np.all(result[:, 2:] == 2)

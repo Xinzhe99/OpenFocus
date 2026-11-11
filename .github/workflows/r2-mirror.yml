@@ -74,8 +74,16 @@ jobs:
           rm -rf assets windows
           mkdir -p assets
           gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" > release.json
-          gh release view "$tag" -R "$GITHUB_REPOSITORY" \
-            --json assets --jq '.assets[].name' | sort > assets.txt
+          if ! jq -e --arg tag "$tag" '.tag_name == $tag and .draft == false and .prerelease == false' release.json >/dev/null; then
+            echo "::error::Release must be published, stable, and match the requested tag."
+            exit 1
+          fi
+          release_id="$(jq -er '.id' release.json)"
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases/$release_id/assets?per_page=100" |
+            jq 'add // []' > "$RUNNER_TEMP/release-assets.json"
+          jq --slurpfile assets "$RUNNER_TEMP/release-assets.json" '.assets = $assets[0]' release.json > "$RUNNER_TEMP/release-complete.json"
+          mv "$RUNNER_TEMP/release-complete.json" release.json
+          jq -r '.assets[].name' release.json | sort > assets.txt
           windows_manifest="OpenFocus-${tag}-windows-assets.json"
           if grep -Fxq "$windows_manifest" assets.txt; then
             # New release: strict split manifest + parts/whole Windows assets.
@@ -140,22 +148,48 @@ jobs:
           fi
           ls -lh assets
 
-      - name: Upload to R2
+      - name: Verify all assets before writing to R2
+        env:
+          HEAD_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || '' }}
         run: |
           set -euo pipefail
           tag="${{ steps.release.outputs.tag }}"
+          manifest="$RUNNER_TEMP/openfocus-latest.json"
+          releases="$RUNNER_TEMP/openfocus-releases.json"
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100" |
+            jq '[.[][] | select(.draft == false and .prerelease == false) | {tag_name, body}] | .[:30]' > "$releases"
+          args=(--tag "$tag" --release-json release.json --r2-dir assets
+                --releases-json "$releases" --output "$manifest")
+          if [ -n "${WINDOWS_MANIFEST:-}" ]; then
+            args+=(--windows-manifest "$WINDOWS_MANIFEST")
+          fi
+          identity="OpenFocus-${tag}-build.json"
+          if grep -Fxq "$identity" assets.txt; then
+            gh release download "$tag" -R "$GITHUB_REPOSITORY" --pattern "$identity" --dir "$RUNNER_TEMP"
+            args+=(--build-identity "$RUNNER_TEMP/$identity")
+          fi
+          if [ -n "$HEAD_SHA" ]; then
+            args+=(--head-sha "$HEAD_SHA")
+          fi
+          previous="$RUNNER_TEMP/previous-latest.json"
+          if aws s3 cp "s3://openfocus-downloads/openfocus-meta/latest-release.json" "$previous" \
+              --endpoint-url "https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com" \
+              --only-show-errors --no-progress && jq -e --arg tag "$tag" '.tag == $tag' "$previous" >/dev/null; then
+            args+=(--trusted-metadata "$previous")
+          fi
+          python tools/release_archives.py write-mirror-manifest "${args[@]}"
+
+      - name: Upload to R2
+        run: |
+          set -euo pipefail
           endpoint="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
-          aws s3 cp assets/ "s3://openfocus-downloads/" --recursive \
-            --endpoint-url "$endpoint" \
-            --content-type "application/octet-stream" \
-            --cache-control "public, max-age=86400" \
-            --only-show-errors \
-            --no-progress
-          for name in \
-            "OpenFocus-${tag}-setup.exe" \
-            "OpenFocus-${tag}-windows-x64.zip" \
-            "OpenFocus-${tag}-macos.dmg" \
-            "OpenFocus-${tag}-macos-arm64.zip"; do
+          manifest="$RUNNER_TEMP/openfocus-latest.json"
+          while IFS= read -r name; do
+            aws s3 cp "assets/$name" "s3://openfocus-downloads/$name" \
+              --endpoint-url "$endpoint" --content-type "application/octet-stream" \
+              --cache-control "public, max-age=86400" --only-show-errors --no-progress
+          done < <(jq -r '.assets[].name' "$manifest")
+          while IFS= read -r name; do
             remote="$(aws s3api head-object --bucket openfocus-downloads \
               --key "$name" --endpoint-url "$endpoint" \
               --query ContentLength --output text)"
@@ -164,7 +198,14 @@ jobs:
               echo "::error::R2 upload size mismatch for $name: $remote != $local"
               exit 1
             fi
-          done
+            expected="$(jq -r --arg name "$name" '.assets[] | select(.name == $name) | .digest' "$manifest")"
+            actual="sha256:$(aws s3 cp "s3://openfocus-downloads/$name" - \
+              --endpoint-url "$endpoint" --only-show-errors --no-progress | sha256sum | cut -d' ' -f1)"
+            if [ "$actual" != "$expected" ]; then
+              echo "::error::R2 upload SHA-256 mismatch for $name"
+              exit 1
+            fi
+          done < <(jq -r '.assets[].name' "$manifest")
 
       - name: Publish latest mirrored release metadata
         run: |
@@ -176,20 +217,6 @@ jobs:
             exit 0
           fi
           manifest="$RUNNER_TEMP/openfocus-latest.json"
-          releases="$RUNNER_TEMP/openfocus-releases.json"
-          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100" |
-            jq '[.[][] | select(.draft == false and .prerelease == false) | {tag_name, body}] | .[:30]' > "$releases"
-          args=(
-            --tag "$tag"
-            --release-json release.json
-            --r2-dir assets
-            --releases-json "$releases"
-            --output "$manifest"
-          )
-          if [ -n "${WINDOWS_MANIFEST:-}" ]; then
-            args+=(--windows-manifest "$WINDOWS_MANIFEST")
-          fi
-          python tools/release_archives.py write-mirror-manifest "${args[@]}"
           aws s3 cp "$manifest" "s3://openfocus-downloads/openfocus-meta/latest-release.json" \
             --endpoint-url "https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com" \
             --content-type "application/json" --cache-control "no-store" \

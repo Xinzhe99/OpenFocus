@@ -98,6 +98,12 @@ footer; publish it before enabling the analytics binding.
 Adding a language: add one dict to `LOCALES` with the same keys, rebuild. The
 language menu, `hreflang` tags and sitemap pick it up automatically.
 
+The theme button cycles through light, dark and system modes. Each selection is
+saved when browser storage is available; if storage is blocked, the selection
+and system changes still work for the current page. With JavaScript disabled,
+the English and Chinese links and all navigation links remain available,
+including on mobile screens.
+
 Releasing: the Worker resolves `/api/latest` from GitHub and serves
 `/download/latest/*` from R2. For a split Windows release it fills missing
 complete assets from the validated same-tag mirror manifest. A complete GitHub

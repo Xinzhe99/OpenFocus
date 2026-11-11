@@ -26,6 +26,14 @@ supports 8-bit and 16-bit output. The depth-map dialog uses the shared B/C
 depth estimator. B's external tiles share a full-image depth map; resizing uses
 whole frames.
 
+Direct Python directory inputs to the DCT, DTCWT, guided filter and GFG-FGF
+backends collect regular image files with supported extensions, ignoring case
+and excluding other files and directories. Files are naturally sorted by each
+numeric segment, and multipage TIFF frames retain their page order. A damaged
+image raises an error instead of being skipped. This directory input ordering
+and selection may differ from older releases; an explicitly ordered frame list
+keeps its existing behavior.
+
 Optional base correction is off by default. When enabled, it adjusts the fused
 result toward the first processed frame for OpenFocus A/B/C and the last for
 other methods. Reversing the stack changes processing order and the reference.
@@ -96,6 +104,7 @@ processes may still require additional space. Changing the setting does not
 move existing mappings.
 
 
+<a id="gfg-fgf-memory"></a>
 GFG-FGF converts source frames to its float32 working range as each pass
 needs them, instead of retaining a second float32 color copy of every frame.
 This trades repeated conversion work for lower working memory. The source

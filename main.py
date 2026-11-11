@@ -398,6 +398,7 @@ class OpenFocus(QMainWindow):
         log_session_start()
 
         self.setWindowTitle("OpenFocus")
+        self._close_confirmation_active = False
         self.resize(WINDOW_WIDTH, WINDOW_HEIGHT)
         
         # 设置窗口图标
@@ -469,6 +470,8 @@ class OpenFocus(QMainWindow):
         if saved_lang:
             trans.set_language(saved_lang)
         storage_warning = _restore_storage_directory(self)
+        from core import scratch_registry
+        scratch_registry.sweep_in_background([self.storage_directory] if self.storage_directory else [])
         if self.debug_logging:
             from utils.logging_setup import set_debug_logging
             set_debug_logging(True)
@@ -1025,13 +1028,18 @@ class OpenFocus(QMainWindow):
         except Exception:
             return None
 
-    def push_scalebar_undo(self, previous: dict) -> None:
-        """Record a scale-bar configuration change as one undoable step."""
-        if getattr(self, "_undo_guard", False):
-            return
+    def prepare_scalebar_undo(self, previous: dict) -> dict:
+        """Capture annotation history before publishing a scale-bar change."""
         state = self._capture_stack_state()
         state["scalebar"] = dict(previous or {})
         state["annotations_only"] = True
+        return state
+
+    def push_scalebar_undo(self, previous: dict, *, prepared=None) -> None:
+        """Record a scale-bar configuration change as one undoable step."""
+        if getattr(self, "_undo_guard", False):
+            return
+        state = prepared if prepared is not None else self.prepare_scalebar_undo(previous)
         self._mark_project_dirty()
         self._undo_stack.append(state)
         if len(self._undo_stack) > self.UNDO_LIMIT:
@@ -1169,6 +1177,7 @@ class OpenFocus(QMainWindow):
         self.source_transforms = list(state.get("source_transforms", []))
         self.unrecoverable_source_changes = list(state.get(
             "unrecoverable_source_changes", []) or [])
+        self._mark_project_dirty()
         _restore_label_state(self, state.get("labels"))
         _restore_scalebar_state(self, state.get("scalebar"))
         _restore_watermark_state(self, state.get("watermark"))
@@ -1851,25 +1860,61 @@ class OpenFocus(QMainWindow):
 
     def _cancel_running_work(self) -> None:
         """Cooperative stop of every long-running job (no terminate())."""
-        render_manager = getattr(self, "render_manager", None)
-        worker = getattr(render_manager, "worker", None) if render_manager else None
-        if worker is not None and worker.isRunning():
+        from utils.logging_setup import get_logger
+        logger = get_logger(__name__)
+
+        def cancel(action):
             try:
-                worker.is_cancelled = True
+                action()
             except Exception:
-                pass
-        batch_manager = getattr(self, "batch_manager", None)
-        if batch_manager is not None:
-            try:
-                batch_manager._cancel_running_batch()
-            except Exception:
-                pass
-        roi_worker = getattr(self, "roi_alignment_worker", None)
-        if roi_worker is not None:
-            try:
-                roi_worker.cancel()
-            except Exception:
-                pass
+                logger.exception('Unable to cancel running work')
+        loader = getattr(self, '_standalone_retouch_load_dialog', None)
+        if loader is not None:
+            cancel(loader.reject)
+
+        render = getattr(self, 'render_manager', None)
+        if render is not None:
+            cancel(render.cancel_pending_start)
+            context_worker = getattr(render, 'context_worker', None)
+            if context_worker is not None:
+                cancel(context_worker.cancel)
+            worker = getattr(render, 'worker', None)
+            if worker is not None and worker.isRunning():
+                cancel(lambda: setattr(worker, 'is_cancelled', True))
+        source = getattr(self, 'source_manager', None)
+        if source is not None:
+            if getattr(source, '_load_worker', None) is not None:
+                cancel(source.cancel_load)
+            for worker in (getattr(source, '_review_worker', None),
+                           *tuple(getattr(source, '_retiring_review_workers', ()))):
+                if worker is not None and worker.isRunning():
+                    cancel(worker.cancel)
+        exports = getattr(self, 'export_manager', None)
+        if exports is not None:
+            if getattr(exports, 'gif_worker', None) is not None:
+                cancel(exports._cancel_gif)
+            if getattr(exports, 'layered_worker', None) is not None:
+                cancel(exports._cancel_layered_tiff)
+        output = getattr(self, 'output_manager', None)
+        dng = getattr(output, 'linear_dng_worker', None)
+        if dng is not None and dng.isRunning():
+            cancel(dng.cancel)
+            progress = getattr(output, 'linear_dng_progress', None)
+            if progress is not None:
+                progress.setLabelText(trans.t('depth_cancelling'))
+        batch = getattr(self, 'batch_manager', None)
+        if batch is not None:
+            cancel(batch._cancel_running_batch)
+        roi = getattr(self, 'roi_alignment_worker', None)
+        if roi is not None and roi.isRunning():
+            cancel(roi.cancel)
+        try:
+            from dialogs.depthmap import _ORPHAN_WORKERS
+            for worker in tuple(_ORPHAN_WORKERS):
+                if worker.isRunning():
+                    cancel(worker.cancel)
+        except Exception:
+            logger.exception('Unable to cancel depth workers')
 
     def _open_releases_page(self) -> None:
         from utils.updater import RELEASES_PAGE_URL
@@ -2478,11 +2523,13 @@ class OpenFocus(QMainWindow):
 
     def show_standalone_retouch(self) -> None:
         """Retouch a file with frames explicitly selected by the user."""
+        if (getattr(self, '_shutting_down', False)
+                or getattr(self, '_standalone_retouch_load_dialog', None) is not None):
+            return
         from utils.file_dialogs import FileDialog
         from controllers.output_manager import OutputRecord
-        from dialogs.retouch import RetouchDialog
+        from dialogs.retouch import RetouchDialog, StandaloneRetouchLoadDialog
         from utils.settings_store import get_last_dialog_dir, set_last_dialog_dir
-        from utils.standalone_retouch import load_standalone_retouch
 
         show_message_box(self, trans.t('standalone_retouch_action'),
                          trans.t('standalone_retouch_intro'), '',
@@ -2498,20 +2545,18 @@ class OpenFocus(QMainWindow):
             return
         set_last_dialog_dir(os.path.dirname(result_path))
         try:
-            progress = QProgressDialog(trans.t('standalone_retouch_sources'),
-                                       trans.t('btn_cancel'), 0, len(source_paths) + 1, self)
-            progress.setWindowModality(Qt.WindowModality.WindowModal)
-            progress.setMinimumDuration(0)
-
-            def advance(done, total):
-                progress.setValue(done)
-                QApplication.processEvents()
-                return not progress.wasCanceled()
-
+            loader = StandaloneRetouchLoadDialog(result_path, source_paths, self)
+            self._standalone_retouch_load_dialog = loader
             try:
-                loaded = load_standalone_retouch(result_path, source_paths, progress=advance)
+                loader.start()
+                if loader.worker.error is not None:
+                    raise loader.worker.error
+                loaded = loader.worker.result
             finally:
-                progress.close()
+                self._standalone_retouch_load_dialog = None
+                loader.deleteLater()
+            if getattr(self, '_shutting_down', False) or loader.worker.cancelled:
+                return
             if loaded is None:
                 return
             image, context = loaded
@@ -2688,6 +2733,7 @@ class OpenFocus(QMainWindow):
             return False
         import time as _time
         from utils.dust_map import apply_flat_field_stack
+        from core.resource_policy import ResourceLimitError
         t0 = _time.time()
         # Apply to COPIES first: the previous order wrote raw_images and only
         # then tried base_images, so a failure on the second call left the
@@ -2713,6 +2759,9 @@ class OpenFocus(QMainWindow):
             if corrected_base is not None:
                 corrected_base = [image for i, image in enumerate(corrected_base)
                                   if i != remove_index]
+        except ResourceLimitError as exc:
+            show_warning_box(self, trans.t("msg_error"), str(exc))
+            return False
         except (ValueError, MemoryError) as exc:
             # A frame whose size disagrees with the white field must not die
             # silently in a Qt slot (the excepthook only writes a crash file).
@@ -3522,7 +3571,8 @@ class OpenFocus(QMainWindow):
     def _start_browser_sso(self) -> None:
         self._browser_sso_pending = False
         client = getattr(self, '_account_client', None)
-        if (client is None or client.is_signed_in() or getattr(self, '_shutting_down', False)
+        if (client is None or getattr(client, 'logout_cleanup_pending', False)
+                or client.is_signed_in() or getattr(self, '_shutting_down', False)
                 or getattr(self, '_account_browser_job', None) is not None):
             return
         import threading
@@ -3562,7 +3612,10 @@ class OpenFocus(QMainWindow):
             return
         if error is None and user:
             from dialogs.account import enable_disclosed_reports
-            enable_disclosed_reports(self, self._account_client.accepted_terms_version())
+            try:
+                enable_disclosed_reports(self, self._account_client.accepted_terms_version())
+            except Exception as exc:
+                show_warning_box(self, trans.t('msg_error'), str(exc))
         self.account_browser_finished.emit(user, error)
         self._refresh_account_action()
 
@@ -3578,7 +3631,9 @@ class OpenFocus(QMainWindow):
         if action is None:
             return
         client = getattr(self, '_account_client', None)
-        if client is not None and client.is_signed_in():
+        if client is not None and getattr(client, 'logout_cleanup_pending', False):
+            text = trans.t('account_cleanup_pending')
+        elif client is not None and client.is_signed_in():
             user = client.current_user() or {}
             email = user.get('email') or user.get('name') or trans.t('account_title')
             text = trans.t('account_signed_in').format(email=email)
@@ -4141,9 +4196,17 @@ class OpenFocus(QMainWindow):
         """True while a render, batch job, ROI alignment, GIF export or
         stack load runs."""
         running = []
+        running.append(getattr(self, '_standalone_retouch_load_dialog', None) is not None)
         render_manager = getattr(self, 'render_manager', None)
         if render_manager is not None and getattr(render_manager, '_pending_storage', None) is not None:
             running.append(True)
+        if render_manager is not None:
+            running.append(bool(getattr(render_manager, '_render_pending', False)
+                                or getattr(render_manager, '_render_after_load', None)
+                                or getattr(render_manager, '_compare_queue', None)
+                                or getattr(render_manager, '_compare_chain_timer', None)
+                                or getattr(render_manager, 'context_worker', None)
+                                or getattr(render_manager, '_retiring_context_workers', None)))
         if render_manager is not None and getattr(render_manager, 'worker', None):
             running.append(render_manager.worker.isRunning())
         batch_manager = getattr(self, 'batch_manager', None)
@@ -4184,52 +4247,54 @@ class OpenFocus(QMainWindow):
 
     def closeEvent(self, event):
         """Clean up background threads before closing the window."""
-        # Nothing new may start once we are on the way out (update downloads
-        # check this flag before they begin).
-        self._shutting_down = True
-        force_quit = bool(getattr(self, "_force_quit", False)
-                          or getattr(self, "_retouch_quit_authorized", False))
-        # A retouched output lives in memory until exported; exiting must not
-        # silently throw those pixels away.
-        if (not force_quit
-                and not getattr(self, '_restart_for_update', False)
-                and hasattr(self, "output_manager")
-                and not self.output_manager.confirm_unexported_on_exit()):
-            self._shutting_down = False
+        if getattr(self, '_close_confirmation_active', False):
             event.ignore()
             return
-        # Shutting down discards in-flight results without a word; ask first
-        # (the self-update restart has already stopped the workers itself).
-        # Unsaved project state: every editor asks before discarding it.
-        # Skip during the update restart (the session is restored anyway).
-        if (not force_quit
-                and not getattr(self, '_restart_for_update', False)
-                and getattr(self, "_project_dirty", False)):
-            if not self._confirm_discard_project_changes(
-                    "msg_discard_unsaved_project_quit"):
-                self._shutting_down = False
-                event.ignore()
-                return
+        force_quit = bool(getattr(self, '_force_quit', False)
+                          or getattr(self, '_retouch_quit_authorized', False)
+                          or getattr(self, '_restart_for_update', False))
+        if not force_quit:
+            self._close_confirmation_active = True
+            try:
+                def protection_state():
+                    manager = getattr(self, 'output_manager', None)
+                    records = getattr(manager, 'protected_records', None)
+                    return (getattr(self, 'source_revision', 0),
+                            getattr(self, '_project_dirty', False),
+                            frozenset(id(record) for record in records()) if callable(records) else frozenset())
 
-        if (not force_quit
-                and not getattr(self, '_restart_for_update', False)
-                and self._has_work_in_flight()):
-            box = QMessageBox(self)
-            style_message_box(box)
-            box.setIcon(QMessageBox.Icon.Question)
-            box.setWindowTitle(trans.t('msg_warning'))
-            box.setText(trans.t('msg_quit_during_render'))
-            quit_btn = box.addButton(trans.t('btn_quit_anyway'),
-                                     QMessageBox.ButtonRole.AcceptRole)
-            box.addButton(trans.t('btn_continue'), QMessageBox.ButtonRole.RejectRole)
-            box.setDefaultButton(quit_btn)
-            box.exec()
-            if box.clickedButton() is not quit_btn:
-                # The user chose to keep working: un-arm the shutdown so
-                # background update checks keep working afterwards.
-                self._shutting_down = False
-                event.ignore()
-                return
+                while True:
+                    initial = protection_state()
+                    manager = getattr(self, 'output_manager', None)
+                    if manager is not None and not manager.confirm_unexported_on_exit():
+                        event.ignore()
+                        return
+                    if protection_state() != initial:
+                        continue
+                    if getattr(self, '_project_dirty', False):
+                        if not self._confirm_discard_project_changes('msg_discard_unsaved_project_quit'):
+                            event.ignore()
+                            return
+                    if protection_state() != initial:
+                        continue
+                    if self._has_work_in_flight():
+                        box = QMessageBox(self)
+                        style_message_box(box)
+                        box.setIcon(QMessageBox.Icon.Question)
+                        box.setWindowTitle(trans.t('msg_warning'))
+                        box.setText(trans.t('msg_quit_during_render'))
+                        quit_btn = box.addButton(trans.t('btn_quit_anyway'), QMessageBox.ButtonRole.AcceptRole)
+                        box.addButton(trans.t('btn_continue'), QMessageBox.ButtonRole.RejectRole)
+                        box.setDefaultButton(quit_btn)
+                        box.exec()
+                        if box.clickedButton() is not quit_btn:
+                            event.ignore()
+                            return
+                    if protection_state() == initial:
+                        break
+            finally:
+                self._close_confirmation_active = False
+        self._shutting_down = True
         self.render_manager.cancel_storage_preflight()
 
         # Keep modal owners and their documents alive while native work stops.
@@ -4239,6 +4304,26 @@ class OpenFocus(QMainWindow):
         from dialogs.account import AccountDialog, cancel_account_jobs
         from dialogs.retouch import RetouchDialog, _SHARPNESS_WORKERS
         shutdown_running = cancel_account_jobs(self)
+        from ui.sensor_cleanup import cancel_sensor_inspections
+        shutdown_running = cancel_sensor_inspections(self) or shutdown_running
+        from dialogs.scalebar import ScaleBarDialog
+        for dialog in self.findChildren(ScaleBarDialog):
+            stop = getattr(dialog, 'shutdown_running', None)
+            if callable(stop):
+                shutdown_running = stop() or shutdown_running
+        loader = getattr(self, '_standalone_retouch_load_dialog', None)
+        if loader is not None:
+            loader.reject()
+            shutdown_running = True
+        self.render_manager._closing = True
+        context_worker = getattr(self.render_manager, 'context_worker', None)
+        if context_worker is not None:
+            context_worker.cancel()
+            shutdown_running = True
+        for worker in tuple(getattr(self.render_manager, '_retiring_context_workers', ())):
+            if worker.isRunning():
+                worker.cancel()
+            shutdown_running = True
         for dialog in self.findChildren(RetouchDialog):
             dialog.setEnabled(False)
             dialog_busy = False
@@ -4905,10 +4990,12 @@ if __name__ == "__main__":
         # unsaved changes and must never stand in for a failed snapshot.
         state = recovery.load_snapshot_state()
         if state is not None:
-            # Preserve the document association without changing snapshot data.
-            window.project_path = restore_hint or None
+            document = state.get('recovery_document')
 
             def _restored_ok():
+                window.project_path = (document.get('project_path') or None) if document else (restore_hint or None)
+                window._project_dirty = document['dirty'] if document else True
+                window._update_project_title()
                 recovery.clear_pending_restore()
                 window._show_status_message(
                     trans.t('update_restored_session'), 8000)
@@ -4930,8 +5017,8 @@ if __name__ == "__main__":
             # Nothing to restore: do not consume the user's launch arguments
             # and do not claim a restore that did not happen.
             _log.warning("update restore requested but no valid snapshot exists")
-            if not restore_hint:
-                recovery.clear_pending_restore()
+            # Preserve the marker so an unsuccessful restore remains retryable.
+            pass
 
     # Report how the previous in-place update ended (a failed swap used to
     # look exactly like the user simply closing the app).
@@ -4988,8 +5075,16 @@ if __name__ == "__main__":
         recovered = False
         if box.clickedButton() is restore_btn:
             from utils.project_file import apply_project
-            window.project_path = recovery.session_path()
-            apply_project(window, pending)
+            document = pending.get('recovery_document')
+            def _crash_restored():
+                window.project_path = (document.get('project_path') or None) if document else None
+                window._project_dirty = document['dirty'] if document else True
+                window._update_project_title()
+            def _crash_restore_failed(reason):
+                _log.warning("crash recovery failed: %s", reason)
+                show_warning_box(window, trans.t('recovery_title'), str(reason))
+            apply_project(window, pending, on_loaded=_crash_restored,
+                          on_error=_crash_restore_failed)
             recovered = True
             _log.info("recovered previous session from %s", recovery.session_path())
     recovery.init_lock()

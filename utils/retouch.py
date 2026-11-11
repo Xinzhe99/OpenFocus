@@ -184,7 +184,9 @@ class StrokeCoverage:
                 key = (tx, ty)
                 tile = self._tiles.get(key)
                 if tile is None:
-                    tile = np.zeros((tile_h, tile_w), np.float32)
+                    from core.frame_storage import create_transient_frame
+                    tile = create_transient_frame((tile_h, tile_w), np.float32)
+                    tile.fill(0)
                     self._tiles[key] = tile
                 ix0, iy0 = max(x0, tile_x0), max(y0, tile_y0)
                 ix1 = min(x1, tile_x0 + tile_w)
@@ -272,7 +274,7 @@ def apply_dab(
              if coverage is not None else alpha)
 
     if exposure is None:
-        src = _to_dtype(_as_bgr(source)[nsy0:nsy1, nsx0:nsx1], target.dtype)
+        src = _to_dtype(_as_bgr(source[nsy0:nsy1, nsx0:nsx1]), target.dtype)
     else:
         # Use the pixels at the beginning of the stroke, so overlapping
         # dabs cannot compound the adjustment within one stroke.
@@ -295,6 +297,10 @@ def apply_dab(
         blended = np.clip(np.round(blended), 0, _dtype_max(target.dtype))
     target[ty0:ty1, tx0:tx1] = blended.astype(target.dtype)
     return tx0, ty0, tx1, ty1
+
+
+class _HistoryCapacityError(Exception):
+    """An active history entry would exceed its commit budget."""
 
 
 class TileHistory:
@@ -334,19 +340,20 @@ class TileHistory:
         if self._current is None:
             return
         for key in self._tile_keys(x0, y0, x1, y1):
-            if key in self._current:
-                continue
-            data = self._tile_copy(target, key)
-            self._current[key] = data
-            self._current_bytes += data.nbytes
+            self._remember_tile(target, key)
 
     def remember_tile(self, key: tuple[int, int]) -> None:
-        if self._current is None:
+        self._remember_tile(self.target, key)
+
+    def _remember_tile(self, target, key):
+        if self._current is None or key in self._current:
             return
-        if key not in self._current:
-            data = self._tile_copy(self.target, key)
-            self._current[key] = data
-            self._current_bytes += data.nbytes
+        tile = target[self._tile_slice(key)]
+        if self._current_bytes + tile.nbytes + self._reserved_bytes > self.max_bytes:
+            raise _HistoryCapacityError()
+        data = self._tile_copy(target, key)
+        self._current[key] = data
+        self._current_bytes += data.nbytes
 
     def end(self, cancelled=None) -> str:
         """Commit the open stroke, rolling back if it is too large or cancelled."""
@@ -374,13 +381,18 @@ class TileHistory:
         if cancelled is not None and cancelled():
             self.abort()
             return "cancelled"
-        entry = self._current
+        undo = self._undo + [self._current]
+        evicted = self.evicted
+        while (len(undo) > self.max_strokes or
+               sum(self._entry_bytes(entry) for entry in undo) + self._reserved_bytes > self.max_bytes):
+            undo.pop(0)
+            evicted = True
+        self._undo = undo
+        self._redo = []
+        self._dirty = dirty
+        self.evicted = evicted
         self._current = None
         self._current_bytes = 0
-        self._undo.append(entry)
-        self._redo.clear()
-        self._dirty = dirty
-        self._enforce_budget()
         return "committed"
 
     def abort(self) -> bool:
@@ -394,32 +406,68 @@ class TileHistory:
         return True
 
     # ------------------------------------------------------------- undo
+    def _prepare_swap(self, target, undo):
+        source = self._undo if undo else self._redo
+        if not source:
+            return None
+        entry = source[-1]
+        back = {key: self._tile_copy(target, key) for key in entry}
+        dirty = set(self._dirty)
+        for key, data in entry.items():
+            if np.array_equal(data, self.base[self._tile_slice(key)]):
+                dirty.discard(key)
+            else:
+                dirty.add(key)
+        undo_entries = self._undo[:-1] if undo else self._undo + [back]
+        redo_entries = self._redo + [back] if undo else self._redo[:-1]
+        evicted = self.evicted
+        while (len(undo_entries) + len(redo_entries) > self.max_strokes
+               or sum(self._entry_bytes(e) for e in undo_entries + redo_entries)
+               + self._reserved_bytes > self.max_bytes):
+            if undo_entries:
+                undo_entries.pop(0)
+            elif redo_entries:
+                redo_entries.pop(0)
+            else:
+                break
+            evicted = True
+        return entry, back, undo_entries, redo_entries, dirty, evicted
+
+    def _commit_swap(self, target, plan):
+        entry, back, undo_entries, redo_entries, dirty, evicted = plan
+        keys = tuple(entry)
+        attempted = 0
+        try:
+            for key in keys:
+                attempted += 1
+                self._write_tile(target, key, entry[key])
+        except BaseException:
+            try:
+                while attempted:
+                    attempted -= 1
+                    key = keys[attempted]
+                    self._write_tile(target, key, back[key])
+            except BaseException:
+                self._failed_swap = plan
+                raise
+            raise
+        self._undo, self._redo, self._dirty = undo_entries, redo_entries, dirty
+        self.evicted = evicted
+
     def undo(self, target=None) -> bool:
         target = self.target if target is None else target
-        if not self._undo:
+        plan = self._prepare_swap(target, True)
+        if plan is None:
             return False
-        entry = self._undo.pop()
-        back = {}
-        for key, data in entry.items():
-            back[key] = self._tile_copy(target, key)
-            self._write_tile(target, key, data)
-            self._refresh_dirty(key)
-        self._redo.append(back)
-        self._enforce_budget()
+        self._commit_swap(target, plan)
         return True
 
     def redo(self, target=None) -> bool:
         target = self.target if target is None else target
-        if not self._redo:
+        plan = self._prepare_swap(target, False)
+        if plan is None:
             return False
-        entry = self._redo.pop()
-        back = {}
-        for key, data in entry.items():
-            back[key] = self._tile_copy(target, key)
-            self._write_tile(target, key, data)
-            self._refresh_dirty(key)
-        self._undo.append(back)
-        self._enforce_budget()
+        self._commit_swap(target, plan)
         return True
 
     def restore_all(self) -> bool:
@@ -428,10 +476,14 @@ class TileHistory:
         if not keys:
             return False
         self.begin()
-        for key in keys:
-            self.remember_tile(key)
-            self._write_tile(self.target, key, self._tile_copy(self.base, key))
-        return self.end() == "committed"
+        try:
+            for key in keys:
+                self.remember_tile(key)
+                self._write_tile(self.target, key, self.base[self._tile_slice(key)])
+            return self.end() == "committed"
+        except BaseException:
+            self.abort()
+            raise
 
     # ------------------------------------------------------------ state
     @property
@@ -462,7 +514,8 @@ class TileHistory:
                 slice(tx * TILE, tx * TILE + min(TILE, self.target.shape[1] - tx * TILE)))
 
     def _tile_copy(self, image, key):
-        return image[self._tile_slice(key)].copy()
+        from core.frame_storage import store_frame
+        return store_frame(image[self._tile_slice(key)])
 
     def _write_tile(self, image, key, data):
         image[self._tile_slice(key)] = data
@@ -554,8 +607,29 @@ class RetouchDocument:
                 frame.image is not None and transparent(frame.image)
                 for frame in context.frames)):
             raise UnsupportedTransparency("Retouching transparent images is unsupported")
-        self.base = np.ascontiguousarray(base_image.copy())
-        self.working = self.base.copy()
+        from core.frame_storage import scratch_directory, storage_directory, store_frame
+        with scratch_directory(explicit_directory=storage_directory()):
+            base = store_frame(base_image)
+            working = store_frame(base)
+        self._initialize(base, working, context, max_strokes, max_bytes)
+
+    @classmethod
+    def _for_replay(cls, document, *, max_strokes, max_bytes, snapshot=False):
+        from core.frame_storage import (create_transient_frame, scratch_directory,
+                                        storage_directory, store_frame)
+        if not isinstance(document, RetouchDocument):
+            raise TypeError("Replay requires a retouch document")
+        with scratch_directory(explicit_directory=storage_directory()):
+            working = (create_transient_frame(document.base.shape, document.base.dtype)
+                       if snapshot else store_frame(document.base))
+        replay = cls.__new__(cls)
+        replay._initialize(document.base, working, document.context, max_strokes, max_bytes)
+        replay.frames = list(document.frames)
+        return replay
+
+    def _initialize(self, base, working, context, max_strokes, max_bytes):
+        self.base = base
+        self.working = working
         self.context = context
         self.frames: list[SourceFrame] = list(context.frames)
         self._source_cache = OrderedDict()
@@ -571,6 +645,8 @@ class RetouchDocument:
                                    max_bytes=max_bytes)
         self._stroke: Optional[dict] = None
         self._coverage: Optional[StrokeCoverage] = None
+        self._stroke_failure = None
+        self._stroke_start_rect = None
         self._mask_cache: OrderedDict[int, Optional[np.ndarray]] = OrderedDict()
         self._checkpoint_lock = threading.Lock()
         self._provenance = None
@@ -740,15 +816,14 @@ class RetouchDocument:
             if cancelled is not None and cancelled():
                 self.history.abort()
                 return "cancelled"
-            status = self.history.end(cancelled=cancelled)
-            if status == "committed":
-                self._record_operation({"type": "tones", "exposure": float(exposure),
-                                        "contrast": float(contrast),
-                                        "highlights": float(highlights),
-                                        "shadows": float(shadows),
-                                        "saturation": float(saturation),
-                                        "temperature": float(temperature)})
-            return status
+            operation = {"type": "tones", "exposure": float(exposure),
+                         "contrast": float(contrast), "highlights": float(highlights),
+                         "shadows": float(shadows), "saturation": float(saturation),
+                         "temperature": float(temperature)}
+            return self._commit_stroke_operation(operation, cancelled=cancelled)
+        except _HistoryCapacityError:
+            self.history.abort()
+            return "oversize"
         except BaseException:
             self.history.abort()
             raise
@@ -805,6 +880,8 @@ class RetouchDocument:
                          if not changed and self.can_undo else 0)
         if required_maps + minimum_entry > self.history.max_bytes:
             return "oversize"
+        old_reserved = self.history._reserved_bytes
+        published = False
         self.history._reserved_bytes = required_maps
         self.history.begin()
         try:
@@ -825,26 +902,24 @@ class RetouchDocument:
             if cancelled is not None and cancelled():
                 self.history.abort()
                 return "cancelled"
-            status = self.history.end(cancelled=cancelled)
-            if status in ("committed", "empty"):
-                operation = {"type": "auto_background", "preset": str(preset),
-                             "clean": bool(clean)}
-                if keep_soft_parts:
-                    operation["keep_soft_parts"] = True
-                operation["from_stacked" if stacked is self.stacked_image else "from_base"] = True
-                if status == "committed":
-                    self._record_operation(operation)
-                else:
-                    self._background_analyses[self._cursor] = operation
-                self._background_fills[self._cursor] = dataclasses.replace(result, image=None)
-                self._enforce_background_budget()
+            operation = {"type": "auto_background", "preset": str(preset),
+                         "clean": bool(clean)}
+            if keep_soft_parts:
+                operation["keep_soft_parts"] = True
+            operation["from_stacked" if stacked is self.stacked_image else "from_base"] = True
+            fill = dataclasses.replace(result, image=None)
+            status = self._commit_stroke_operation(operation, cancelled=cancelled, fill=fill)
+            published = status in ("committed", "empty")
             return status
+        except _HistoryCapacityError:
+            self.history.abort()
+            return "oversize"
         except BaseException:
             self.history.abort()
             raise
         finally:
-            self.history._reserved_bytes = (0 if self._checkpoint_background_states is not None
-                                            else self._background_map_bytes(self.background_fill))
+            if not published:
+                self.history._reserved_bytes = old_reserved
 
     # ---------------------------------------------------------- choices
     def set_frame(self, index: int) -> bool:
@@ -901,6 +976,21 @@ class RetouchDocument:
         return bool(mask[int(ly), int(lx)])
 
     # ----------------------------------------------------------- strokes
+    @property
+    def stroke_start_rect(self):
+        return self._stroke_start_rect
+
+    def _fail_stroke(self, capacity=False):
+        self.history.abort()
+        self._coverage = None
+        self._record_overflow = False
+        self._stroke_start_rect = None
+        if capacity:
+            self._stroke_failure = "oversize"
+        else:
+            self._stroke = None
+            self._stroke_failure = None
+
     def begin_stroke(self, x: float, y: float) -> bool:
         if self._stroke is not None:
             return False
@@ -920,58 +1010,110 @@ class RetouchDocument:
             "last": (float(x), float(y)),
             "points": [(float(x), float(y))],
         }
-        self._coverage = StrokeCoverage(self.height, self.width)
-        self.history.begin()
-        self._dab(x, y)
+        try:
+            self._coverage = StrokeCoverage(self.height, self.width)
+            self.history.begin()
+            self._stroke_start_rect = self._dab(x, y)
+        except _HistoryCapacityError:
+            self._fail_stroke(capacity=True)
+        except BaseException:
+            self._fail_stroke()
+            raise
         return True
 
     def stroke_to(self, x: float, y: float) -> Optional[Tuple[int, int, int, int]]:
-        if self._stroke is None:
+        if self._stroke is None or self._stroke_failure:
             return None
-        last_x, last_y = self._stroke["last"]
-        dx, dy = x - last_x, y - last_y
-        dist = (dx * dx + dy * dy) ** 0.5
-        if self._point_count + len(self._stroke["points"]) >= 250000:
-            self._record_overflow = True
-        else:
-            self._stroke["points"].append((float(x), float(y)))
-        if dist < 0.01:
+        try:
+            last_x, last_y = self._stroke["last"]
+            dx, dy = x - last_x, y - last_y
+            dist = (dx * dx + dy * dy) ** 0.5
+            if self._point_count + len(self._stroke["points"]) >= 250000:
+                self._record_overflow = True
+            else:
+                self._stroke["points"].append((float(x), float(y)))
+            if dist < 0.01:
+                return None
+            step = max(1.0, self._stroke["diameter"] / 8.0)
+            count = max(1, int(np.ceil(dist / step)))
+            dirty = None
+            for i in range(1, count + 1):
+                t = i / count
+                rect = self._dab(last_x + dx * t, last_y + dy * t)
+                if rect is not None:
+                    dirty = _union_rect(dirty, rect)
+            self._stroke["last"] = (float(x), float(y))
+            return dirty
+        except _HistoryCapacityError:
+            self._fail_stroke(capacity=True)
             return None
-        step = max(1.0, self._stroke["diameter"] / 8.0)
-        count = max(1, int(np.ceil(dist / step)))
-        dirty = None
-        for i in range(1, count + 1):
-            t = i / count
-            rect = self._dab(last_x + dx * t, last_y + dy * t)
-            if rect is not None:
-                dirty = _union_rect(dirty, rect)
-        self._stroke["last"] = (float(x), float(y))
-        return dirty
+        except BaseException:
+            self._fail_stroke()
+            raise
 
     def end_stroke(self, *, _preserve_empty: bool = False) -> str:
         if self._stroke is None:
             return "idle"
-        if self._record_overflow:
+        try:
+            if self._stroke_failure:
+                status = self._stroke_failure
+            elif self._record_overflow:
+                self.history.abort()
+                status = "record_limit"
+            elif not _preserve_empty and all(
+                    np.array_equal(self.working[self.history._tile_slice(key)], before)
+                    for key, before in self.history._current.items()):
+                self.history.abort()
+                status = "empty"
+            else:
+                operation = {key: value for key, value in self._stroke.items() if key != "last"}
+                operation["type"] = "stroke"
+                status = self._commit_stroke_operation(operation)
+            self.last_status = status
+            return status
+        except BaseException:
             self.history.abort()
-            status = "record_limit"
+            raise
+        finally:
+            self._stroke = None
+            self._coverage = None
+            self._stroke_failure = None
+            self._stroke_start_rect = None
             self._record_overflow = False
-        elif not _preserve_empty and all(
-                np.array_equal(self.working[self.history._tile_slice(key)], before)
-                for key, before in self.history._current.items()):
-            # A dab can remember tiles without changing their pixels. Such a
-            # stroke must not discard the redo branch. V1 replay retains the
-            # historical empty entries that old checkpoints counted as edits.
-            self.history.abort()
-            status = "empty"
-        else:
-            status = self.history.end()
+
+    def _commit_stroke_operation(self, operation, cancelled=None, fill=None):
+        import copy
+        candidate = copy.copy(self)
+        candidate.history = copy.copy(self.history)
+        candidate.history._undo = self.history._undo.copy()
+        candidate.history._redo = self.history._redo.copy()
+        candidate._operations = self._operations.copy()
+        candidate._background_fills = self._background_fills.copy()
+        candidate._background_analyses = self._background_analyses.copy()
+        status = candidate.history.end(cancelled=cancelled)
+        if status not in ("committed", "empty") or (status == "empty" and fill is None):
+            self.history._current = candidate.history._current
+            self.history._current_bytes = candidate.history._current_bytes
+            return status
         if status == "committed":
-            operation = {key: value for key, value in self._stroke.items() if key != "last"}
-            operation["type"] = "stroke"
-            self._record_operation(operation)
-        self.last_status = status
-        self._stroke = None
-        self._coverage = None
+            candidate._record_operation(operation)
+        else:
+            candidate._background_analyses[candidate._cursor] = operation
+        if fill is not None:
+            candidate._background_fills[candidate._cursor] = fill
+            candidate._enforce_background_budget()
+        self.history._undo = candidate.history._undo
+        self.history._redo = candidate.history._redo
+        self.history._dirty = candidate.history._dirty
+        self.history.evicted = candidate.history.evicted
+        self.history._reserved_bytes = candidate.history._reserved_bytes
+        self.history._current = None
+        self.history._current_bytes = 0
+        self._operations = candidate._operations
+        self._cursor = candidate._cursor
+        self._point_count = candidate._point_count
+        self._background_fills = candidate._background_fills
+        self._background_analyses = candidate._background_analyses
         return status
 
     def cancel_stroke(self) -> bool:
@@ -981,6 +1123,8 @@ class RetouchDocument:
         self._stroke = None
         self._record_overflow = False
         self._coverage = None
+        self._stroke_failure = None
+        self._stroke_start_rect = None
         self.last_status = "cancelled"
         return restored
 
@@ -1009,23 +1153,38 @@ class RetouchDocument:
         )
 
     # -------------------------------------------------------- history ops
-    def undo(self) -> bool:
+    def _swap_history(self, undo):
+        import copy
         if self._stroke is not None:
             self.end_stroke()
-        changed = self.history.undo(self.working)
-        if changed:
-            self._cursor -= 1
-            self._trim_redo()
-        return changed
+        plan = self.history._prepare_swap(self.working, undo)
+        if plan is None:
+            return False
+        candidate = copy.copy(self)
+        candidate.history = copy.copy(self.history)
+        candidate.history._undo, candidate.history._redo = plan[2], plan[3]
+        candidate.history._dirty, candidate.history.evicted = plan[4], plan[5]
+        candidate._cursor = self._cursor + (-1 if undo else 1)
+        candidate._operations = self._operations.copy()
+        candidate._background_fills = self._background_fills.copy()
+        candidate._background_analyses = self._background_analyses.copy()
+        candidate._trim_redo()
+        plan = (plan[0], plan[1], candidate.history._undo, candidate.history._redo,
+                candidate.history._dirty, candidate.history.evicted)
+        self.history._commit_swap(self.working, plan)
+        self._cursor = candidate._cursor
+        self._operations = candidate._operations
+        self._point_count = candidate._point_count
+        self._background_fills = candidate._background_fills
+        self._background_analyses = candidate._background_analyses
+        self.history._reserved_bytes = candidate.history._reserved_bytes
+        return True
+
+    def undo(self) -> bool:
+        return self._swap_history(True)
 
     def redo(self) -> bool:
-        if self._stroke is not None:
-            self.end_stroke()
-        changed = self.history.redo(self.working)
-        if changed:
-            self._cursor += 1
-            self._trim_redo()
-        return changed
+        return self._swap_history(False)
 
     def restore_all(self) -> bool:
         if self._stroke is not None:
@@ -1033,10 +1192,23 @@ class RetouchDocument:
         if self._cursor >= 100000:
             self.last_status = "record_limit"
             return False
-        changed = self.history.restore_all()
-        if changed:
-            self._record_operation({"type": "restore_all"})
-        return changed
+        keys = list(self.history._dirty)
+        if not keys:
+            return False
+        self.history.begin()
+        try:
+            for key in keys:
+                self.history.remember_tile(key)
+                self.history._write_tile(self.working, key,
+                                         self.base[self.history._tile_slice(key)])
+            return self._commit_stroke_operation({"type": "restore_all"}) == "committed"
+        except _HistoryCapacityError:
+            self.history.abort()
+            self.last_status = "oversize"
+            return False
+        except BaseException:
+            self.history.abort()
+            raise
 
     @property
     def background_fill(self):

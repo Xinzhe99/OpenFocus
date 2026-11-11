@@ -23,23 +23,37 @@ def _tail(path):
 
 def previous_native_crash(acknowledged=()):
     current = diagnostics.crash_log_path()
-    directory = logging_setup.logs_dir()
-    try:
-        paths = sorted(directory.glob('openfocus-*.crash.txt'),
-                       key=lambda item: item.stat().st_mtime, reverse=True)
-    except OSError:
-        return None
-    for path in paths:
-        if current is not None and path == Path(current):
+    directories = [('logs', logging_setup.logs_dir()),
+                   ('fallback', diagnostics.fallback_crash_dir())]
+    candidates = []
+    seen = set()
+    for source, directory in directories:
+        if directory is None:
             continue
-        key = hashlib.sha256(path.name.encode('utf-8')).hexdigest()
-        if key in acknowledged:
+        try:
+            for path in directory.glob('openfocus-*.crash.txt'):
+                if path in seen or (current is not None and path == Path(current)):
+                    continue
+                try:
+                    if path.is_symlink() or not path.is_file():
+                        continue
+                    modified = path.stat().st_mtime
+                except OSError:
+                    continue
+                seen.add(path)
+                candidates.append((modified, source, path))
+        except OSError:
+            continue
+    for _, source, path in sorted(candidates, key=lambda item: item[0], reverse=True):
+        key = hashlib.sha256(f'{source}:{path.name}'.encode('utf-8')).hexdigest()
+        legacy_key = hashlib.sha256(path.name.encode('utf-8')).hexdigest()
+        if key in acknowledged or (source == 'logs' and legacy_key in acknowledged):
             continue
         text = _tail(path)
         if 'Fatal Python error:' not in text and 'Windows fatal exception:' not in text:
             continue
         stem = path.name[:-len('.crash.txt')]
-        return key, text, _tail(path.with_name(stem + '.log'))
+        return key, text, _tail(logging_setup.logs_dir() / (stem + '.log'))
     return None
 
 

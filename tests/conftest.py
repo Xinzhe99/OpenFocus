@@ -12,6 +12,21 @@ os.chdir(PROJECT_ROOT)
 
 
 @pytest.fixture(autouse=True)
+def isolate_scratch_registry(request, tmp_path, monkeypatch):
+    """Never let ordinary tests sweep the user's scratch or share a registry."""
+    from core import scratch_registry
+
+    scratch_registry._close_at_exit()
+    monkeypatch.setattr(scratch_registry, "_directory_override", tmp_path / "scratch-sessions")
+    monkeypatch.setattr(scratch_registry, "_disabled", False)
+    if request.node.path.name != "test_scratch_registry.py":
+        monkeypatch.setattr(scratch_registry, "sweep_abandoned", lambda *args, **kwargs: (0, 0))
+        monkeypatch.setattr(scratch_registry, "sweep_in_background", lambda *args, **kwargs: None)
+    yield
+    scratch_registry._close_at_exit()
+
+
+@pytest.fixture(autouse=True)
 def restore_unadmitted_accelerator():
     """Tests that call the real resolve_device() record an unadmitted
     accelerator in neural_runtime's module state; never leak it onward."""
@@ -61,7 +76,7 @@ def laplacian_sharpness(bgr_img):
 
 
 @pytest.fixture(scope="session")
-def qapp():
+def qapp(tmp_path_factory):
     """Session-lifetime QApplication.
 
     The C++ object must outlive every QSettings the suite creates: a
@@ -70,28 +85,78 @@ def qapp():
     object of type QSettings has been deleted).
     """
     pytest.importorskip("PyQt6")
-    import shutil
-    import tempfile
     from PyQt6.QtCore import QSettings
     from PyQt6.QtWidgets import QApplication
     # 必须在第一个 QSettings 单例诞生前配置沙箱路径：晚了单例会指向
     # 真实用户设置，后续断言读到用户机器上的实际值（机器相关、还会
     # 污染用户配置）
-    tmp = os.path.join(tempfile.gettempdir(), "openfocus_pytest_qsettings")
-    try:
-        from utils.settings_store import reset_settings_singleton
-        reset_settings_singleton()
-    except Exception:
-        pass
-    # Start from an empty store: a previous run's file would otherwise be
-    # read back as if it were the defaults (the singleton caches in memory,
-    # so simply deleting the directory mid-session is not enough).
-    shutil.rmtree(tmp, ignore_errors=True)
+    tmp = str(tmp_path_factory.mktemp("openfocus-qsettings"))
+    from utils.settings_store import reset_settings_singleton
+    reset_settings_singleton()
+    previous_data_dir = os.environ.get("OPENFOCUS_DATA_DIR")
+    os.environ["OPENFOCUS_DATA_DIR"] = tmp
     QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, tmp)
     app = QApplication.instance() or QApplication([])
     from utils.settings_store import get_settings
     get_settings().setValue("usage/enabled", False)
     yield app
+    reset_settings_singleton()
+    if previous_data_dir is None:
+        os.environ.pop("OPENFOCUS_DATA_DIR", None)
+    else:
+        os.environ["OPENFOCUS_DATA_DIR"] = previous_data_dir
+
+
+@pytest.fixture
+def isolated_process_env(tmp_path, monkeypatch):
+    """Keep subprocess data and diagnostics inside the current test's sandbox."""
+    from tests.process_isolation import sandbox_env
+    environment = sandbox_env(tmp_path)
+    for key, value in environment.items():
+        if os.environ.get(key) != value:
+            monkeypatch.setenv(key, value)
+    return environment
+
+
+@pytest.fixture
+def isolated_render_workers(tmp_path, monkeypatch):
+    """Keep child diagnostics private until every started worker has joined."""
+    from core.render_process import RenderProcessWorker
+
+    outside = tmp_path / "inherited-diagnostics"
+    outside.mkdir()
+    sentinel = outside / "existing.log"
+    sentinel.write_bytes(b"existing diagnostic data\n")
+    monkeypatch.setenv("OPENFOCUS_DATA_DIR", str(outside))
+    monkeypatch.setenv("OPENFOCUS_LOG_DIR", str(outside))
+    monkeypatch.setenv("OPENFOCUS_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("OPENFOCUS_LOG_DIR", str(tmp_path / "logs"))
+    child_temp = tmp_path / "child-temp"
+    child_temp.mkdir()
+    for key in ("TMP", "TEMP", "TMPDIR"):
+        monkeypatch.setenv(key, str(child_temp))
+    workers = []
+    start = RenderProcessWorker.start
+
+    def tracked_start(worker, *args, **kwargs):
+        workers.append(worker)
+        return start(worker, *args, **kwargs)
+
+    monkeypatch.setattr(RenderProcessWorker, "start", tracked_start)
+    yield
+    timed_out = False
+    for worker in workers:
+        if worker.isRunning():
+            worker.cancel()
+            if not worker.wait(15000):
+                timed_out = True
+                worker.wait()
+        else:
+            worker.wait()
+    assert sentinel.read_bytes() == b"existing diagnostic data\n"
+    assert {path.name for path in outside.iterdir()} == {"existing.log"}
+    if timed_out:
+        pytest.fail("Render worker did not stop within 15 seconds")
 
 
 @pytest.fixture

@@ -200,6 +200,8 @@ El software de microscopía (ZEN, NIS-Elements, ImageJ/Fiji) suele exportar toda
 
 ### Barra de escala (figuras para publicación)
 
+Las etiquetas de la barra usan glifos realmente en negrita cuando la familia elegida los ofrece; de lo contrario, se usa una fuente legible de la misma familia.
+
 Si el destino elegido no tiene metadatos utilizables, se selecciona la calibración manual y se requiere un tamaño de píxel válido.
 
 Herramientas → Barra de escala… configura una barra de escala incrustada en las imágenes exportadas. El tamaño de píxel (µm/px) se detecta automáticamente en los metadatos TIFF (la convención `unit=micron` de ImageJ, `PhysicalSizeX` de OME-TIFF o una unidad de resolución explícita en centímetros), de modo que las pilas de microscopía (incluidas las TIFF multipágina) se calibran solas. La resolución de impresora (72/300 dpi y similares) *no* se toma deliberadamente como calibración, y un valor manual que introduzcas siempre prevalece sobre los metadatos detectados: una barra equivocada pero creíble en una figura es peor que no poner ninguna. Elige la esquina y el color (Auto invierte el color según el fondo); el diálogo muestra una vista previa en vivo. Con la barra activada, todas las exportaciones (imagen individual, pilas en carpetas, TIFF multipágina, GIF, exportar todo, lotes) incluyen una barra con estilo de publicación: una longitud redondeada de la serie 1-2-5 (~12 % del ancho de la imagen) con texto perfilado y legible. La CLI lo admite mediante `--scale-bar` (calibración automática) y `--scale-um <um/px>`.
@@ -417,7 +419,7 @@ OpenFocus ofrece diez algoritmos de fusión (además de un modo de solo alineaci
 
 - **Algoritmo**: implementación de Fu et al. (*Laser & Optoelectronics Progress*, 2024): un mapa de enfoque por diferencia de desenfoque |I − mean(I)| se enriquece con el operador de gradiente de cuatro vecinos tipo gaussiano (GFG), se refina con un filtro guiado rápido, se decide por píxel (los empates se resuelven con una medida de región pequeña de Sobel 3×3) y los mapas de decisión binarios se suavizan de nuevo con el filtro guiado rápido antes de la mezcla ponderada.
 - **Ideal para**: microscopía e imágenes con regiones de enfoque claras
-- **Ventajas**: rápido, límites de región de enfoque nítidos; la memoria no crece con el número de fotogramas
+- **Ventajas**: rápido y con límites de enfoque nítidos; los mapas de enfoque y pesos se procesan en ventanas limitadas. Las fuentes y sus descriptores, el resultado, la decodificación y los buffers siguen requiriendo RAM y espacio temporal en disco.
 - **Parámetro**: núcleo = tamaño del filtro de media del mapa de enfoque grueso
 
 ### StackMFF (V1, aprendizaje profundo)
@@ -617,6 +619,8 @@ historial accesible y los diagnósticos sin volver a calcular el fondo.
 
 ### Gestión de etiquetas
 
+Al exportar pilas alineadas históricas se usan sus propias identidades de fotograma; si faltan para una etiqueta vinculada, se informa de un error. Solo las etiquetas que realmente se aplican bloquean la exportación de PNG transparente. **Ajustar** usa una miniatura limitada; **100 %** muestra la región original a un píxel de origen por píxel del dispositivo y puede mostrar carga o error. Las coordenadas y tamaños grandes guardados se conservan al editar.
+
 Abre **Herramientas → Etiquetas** después de cargar imágenes o producir un resultado. Cada etiqueta tiene su propio destino: la pila de origen, la pila alineada o los resultados de salida. Las etiquetas de salida pueden aplicarse a todos los resultados o al resultado seleccionado por su nombre; renombrar o reordenar ese resultado no cambia la asociación.
 
 Usa **Añadir** para crear otra etiqueta, selecciona una entrada para editarla y usa su casilla para activarla o desactivarla. Introduce texto fijo o inserta `{value}` para un número de fotograma. El número es el valor inicial más el índice de fotograma basado en cero multiplicado por el intervalo; una salida única siempre usa el valor inicial.
@@ -739,6 +743,8 @@ Las fotos de iPhone se cargan directamente. Requiere `pillow-heif`, que `pip ins
 ### Actualizaciones
 
 **Ayuda → Buscar actualizaciones** compara tu versión con la información de `openfocus.top`. Una versión más reciente se descarga desde el mismo sitio en segundo plano mientras la aplicación está inactiva; una vez preparada la compilación, el aviso y el área de estado ofrecen **Reiniciar y actualizar**, que la aplica sin conexión. Las compilaciones que no pueden actualizarse solas abren la página de descargas del sitio web. La comprobación automática se ejecuta en silencio como máximo una vez al día.
+
+En Windows, la actualización crea una versión candidata separada y mueve el marcador portátil y `OpenFocusData` durante el cambio. Si falla, restaura la instalación anterior; si no puede completar la reversión, conserva la copia y no reinicia automáticamente. Puede aparecer una solicitud de permisos una vez. Cancelar la extracción descarta la preparación incompleta y se comprueba entre lecturas y escrituras de 256 KiB; una operación de disco o red bloqueada puede retrasarlo.
 
 ### Caché de registro
 
@@ -885,7 +891,7 @@ Por ejemplo, añade `--align openfocus --alignment-report alignment.json` a un r
 | `--input, -i` | Carpeta(s) de imágenes, archivo de vídeo, uno o varios archivos de imagen, o TIFF multipágina |
 | `--output, -o` | Ruta de la imagen de salida (la extensión determina el formato) |
 | `--output-dir, -d` | Modo por lotes: fusiona cada carpeta de entrada y escribe `<carpeta>.png` por pila |
-| `--resume` | Modo por lotes: omite las carpetas cuya salida ya existe |
+| `--resume` | Omite la carpeta solo si todos los resultados solicitados son archivos normales no vacíos; no verifica contenido ni parámetros |
 | `--config FILE` | Modo por lotes: anulaciones JSON por carpeta, p. ej. `{"stackA": {"method": "dct"}}` |
 | `--method, -m` | `stackmffv3` (predeterminado), `stackmffv2`, `stackmff`, `openfocus_a`, `openfocus_b`, `openfocus_c`, `guided_filter`, `dct`, `dtcwt`, `gfgfgf` |
 | `--param KEY=JSON_VALUE` | Define cualquier parámetro de fusión; repetible y anula las opciones heredadas |
@@ -1041,6 +1047,7 @@ Códigos de salida: `0` éxito, `1` error de procesamiento, `2` error de uso. Ej
 
 #### IA no disponible
 
+- Activa y confirma las funciones experimentales en Ajustes avanzados; los métodos de IA del escritorio están bloqueados sin esta opción. El entorno y el modelo son requisitos independientes.
 - Comprueba ONNX Runtime y el modelo incluido.
 - Compruébalo en **Ayuda → Información del entorno**
 
