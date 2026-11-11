@@ -489,7 +489,9 @@ def load_linear_raw(path, scale_factor=1.0, *, before_decode=None):
                          (max(1, int(rgb.shape[1] * scale_factor)),
                           max(1, int(rgb.shape[0] * scale_factor))))
         rgb = cv2.resize(rgb, (width, height), interpolation=cv2.INTER_AREA)
-    return np.ascontiguousarray(rgb[:, :, ::-1]), metadata
+    # Three uint16 channels, checked above: OpenCV's swap returns the pixels of
+    # a reversed NumPy copy several times faster.
+    return cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR), metadata
 
 
 def develop_linear(linear_bgr, metadata):
