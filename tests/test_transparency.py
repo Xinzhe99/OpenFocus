@@ -9,6 +9,8 @@ import pytest
 
 from core.image_loader import ImageStackLoader
 
+pytestmark = pytest.mark.usefixtures("isolated_process_env")
+
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 

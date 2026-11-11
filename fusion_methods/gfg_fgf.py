@@ -3,8 +3,6 @@
 
 
 import os
-import glob
-import re
 import cv2
 import numpy as np
 from concurrent.futures import ThreadPoolExecutor
@@ -179,33 +177,15 @@ def gfgfgf_impl(input_source, img_resize=None, kernel_size=7, thread_count: int 
     # 1. 图像加载与预处理
     # -------------------------------------------------------------------------
     if isinstance(input_source, str):
-        from core.source_frames import scan_source
+        from fusion_methods.openfocus_ab import _collect_directory_sources
 
         # 文件夹读取逻辑
         if not os.path.exists(input_source):
              raise ValueError(f"Path not found: {input_source}")
              
-        files = os.listdir(input_source)
-        # 简单过滤图片扩展名
-        valid_exts = {'.jpg', '.jpeg', '.jpe', '.jfif', '.png', '.bmp', '.tif', '.tiff', '.webp'}
-        img_paths = [
-            os.path.join(input_source, f) for f in files 
-            if os.path.splitext(f)[1].lower() in valid_exts
-        ]
-        
+        stack_ori, img_paths = _collect_directory_sources(input_source, should_cancel)
         if not img_paths:
             raise ValueError("No images found in folder")
-
-        # 尝试按数字排序
-        try:
-            img_paths.sort(key=lambda x: int(re.findall(r"\d+", os.path.basename(x))[-1]))
-        except Exception:
-            img_paths.sort()
-
-        stack_ori = []
-        for path in img_paths:
-            check_cancel()
-            stack_ori.extend(scan_source(path, header_only=True, should_cancel=check_cancel))
     else:
         # 列表输入
         stack_ori = input_source

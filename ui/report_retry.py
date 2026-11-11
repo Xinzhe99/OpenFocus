@@ -1,23 +1,48 @@
 """Retry explicitly submitted reports without blocking the interface."""
+import logging
 import threading
 import weakref
 
 from PyQt6.QtCore import QObject, QTimer, pyqtSignal
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtWidgets import QApplication, QMessageBox
 
+from locales import trans
 from utils.app_paths import user_data_dir
-from utils.report_client import ReportClient
+from utils.report_client import ReportClient, automatic_snapshot, revoke_automatic
 from utils.reporting import retry_reports
 from utils.settings_store import get_settings, REPORTS_AUTO_SEND_KEY, REPORTS_CHOICE_KEY
 
+class _CleanupNotifier(QObject):
+    failed = pyqtSignal()
+
+    def __init__(self, app):
+        super().__init__(app)
+        self.failed.connect(self._show_failure)
+
+    def _show_failure(self):
+        QMessageBox.warning(QApplication.activeWindow(), trans.t('msg_error'),
+                            trans.t('report_cleanup_failed'))
+
+
+_NOTIFIER = None
+
 
 def discard_automatic_reports():
-    """Delete unsent automatic reports without holding the UI thread."""
+    """Revoke synchronously, then delete queued automatic reports."""
+    directory = user_data_dir() / 'reports'
+    global _NOTIFIER
+    app = QApplication.instance()
+    if app is not None and _NOTIFIER is None:
+        _NOTIFIER = _CleanupNotifier(app)
+    notifier = _NOTIFIER
+    revoke_automatic(directory)
     def discard():
         try:
-            ReportClient(user_data_dir() / 'reports').discard_automatic()
+            ReportClient(directory).discard_automatic(only_if_revoked=True)
         except Exception:
-            pass
+            logging.getLogger(__name__).error('Automatic report security cleanup failed')
+            if notifier is not None:
+                notifier.failed.emit()
     threading.Thread(target=discard, daemon=True).start()
 
 _ACTIVE = set()
@@ -46,11 +71,13 @@ class _Retry(QObject):
         settings = get_settings()
         auto_send = settings.value(REPORTS_AUTO_SEND_KEY, False, type=bool)
         account_only = settings.value(REPORTS_CHOICE_KEY) == 'account_default'
-        threading.Thread(target=self._run, args=(account, auto_send, account_only), daemon=True).start()
+        permission = automatic_snapshot(user_data_dir() / 'reports')
+        threading.Thread(target=self._run, args=(account, auto_send, account_only, permission), daemon=True).start()
 
-    def _run(self, account, auto_send, account_only):
+    def _run(self, account, auto_send, account_only, permission):
         try:
-            retry_reports(account, include_auto=auto_send, account_only_auto=account_only)
+            retry_reports(account, include_auto=auto_send, account_only_auto=account_only,
+                          permission=permission)
             pending = bool(ReportClient(user_data_dir() / 'reports').pending_count)
         except Exception:
             pending = False
@@ -68,6 +95,9 @@ def schedule_report_retries(window):
     app = QApplication.instance()
     if app is None:
         return
+    settings = get_settings()
+    if not settings.value(REPORTS_AUTO_SEND_KEY, False, type=bool):
+        discard_automatic_reports()
     # One timer services the entire queue; each entry has its own backoff.
     if not _ACTIVE:
         _Retry(window, app).begin()

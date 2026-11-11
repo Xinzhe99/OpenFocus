@@ -5,6 +5,14 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_call:
+    inputs:
+      ref:
+        required: true
+        type: string
+      run_suite:
+        default: true
+        type: boolean
   workflow_dispatch:
     inputs:
       run_suite:
@@ -31,6 +39,16 @@ jobs:
         os: [ubuntu-latest, windows-latest, macos-latest]
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+      - name: Verify release checkout
+        if: ${{ inputs.ref != '' }}
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ inputs.ref }}
+        run: |
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
 
       - uses: actions/setup-python@v6
         with:
@@ -114,12 +132,36 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
+      - name: Record release suite completion
+        if: ${{ inputs.ref != '' }}
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ inputs.ref }}
+        run: printf '%s\n' "$EXPECTED_SHA" > "$RUNNER_TEMP/release-test-$RUNNER_OS"
+      - uses: actions/upload-artifact@v5
+        if: ${{ inputs.ref != '' }}
+        with:
+          name: release-test-${{ runner.os }}
+          path: ${{ runner.temp }}/release-test-${{ runner.os }}
+          if-no-files-found: error
+          overwrite: true
+
   headless-wheel:
     name: Installed wheel without GUI
     if: ${{ github.event_name != 'workflow_dispatch' || inputs.run_suite }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+      - name: Verify release checkout
+        if: ${{ inputs.ref != '' }}
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ inputs.ref }}
+        run: |
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
       - uses: actions/setup-python@v6
         with:
           python-version: '3.10'
@@ -132,6 +174,31 @@ jobs:
           python -m venv "$RUNNER_TEMP/openfocus-headless"
           "$RUNNER_TEMP/openfocus-headless/bin/python" -m pip install "$RUNNER_TEMP"/openfocus-wheel/*.whl
           "$RUNNER_TEMP/openfocus-headless/bin/python" -I tools/headless_wheel_smoke.py
+
+  release-summary:
+    name: Release test summary
+    if: ${{ always() && inputs.ref != '' }}
+    needs: [test, headless-wheel]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          pattern: release-test-*
+          path: release-test-results
+          merge-multiple: true
+      - name: Require all release checks
+        env:
+          TEST_RESULT: ${{ needs.test.result }}
+          WHEEL_RESULT: ${{ needs.headless-wheel.result }}
+          RUN_SUITE: ${{ inputs.run_suite }}
+          EXPECTED_SHA: ${{ inputs.ref }}
+        run: |
+          test "$RUN_SUITE" = true
+          test "$TEST_RESULT" = success
+          test "$WHEEL_RESULT" = success
+          for platform in Linux Windows macOS; do
+            test "$(cat "release-test-results/release-test-$platform")" = "$EXPECTED_SHA"
+          done
 
   engineering:
     name: OpenFocus remote engineering acceptance
@@ -198,10 +265,12 @@ jobs:
                          '--generate-dir' if index == 0 else '--source-dir', str(sources),
                          '--fixture', 'reported-4000', '--width', '4000', '--height', '4000',
                          '--count', '16', '--channels', '1', '--dtype', 'uint16',
-                         '--seed', '7', '--file-order', 'lexical', '--kernel-size', '17', '--method', method,
+                         '--seed', '7', '--file-order', 'lexical', '--method', method,
                          '--entry', 'pipeline', '--load-mode', 'loader', '--alignment', 'none',
                          '--threads', str(len(cpus)), '--resource-preference', 'maximum',
                          '--output', str(output), '--json-output', str(report_path)]
+              if method in ('openfocus_a', 'openfocus_b'):
+                  command += ['--radius', '8']
               print(subprocess.list2cmdline(command), flush=True)
               try:
                   subprocess.run(command, check=True, timeout=180)

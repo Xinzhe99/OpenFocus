@@ -8,6 +8,7 @@ import tempfile
 import uuid
 import threading
 import time
+import traceback
 
 import cv2
 import numpy as np
@@ -184,7 +185,7 @@ class _ProfiledSession:
                 try:
                     self._finish_profile(False)
                 except Exception:
-                    _LOG.warning('Could not remove failed inference profile', exc_info=True)
+                    _LOG.warning('Could not remove failed inference profile\n%s', traceback.format_exc())
             raise
         if self._profiling:
             self.actual_device = self._finish_profile(True)
@@ -316,7 +317,7 @@ def _end_trace(key):
         log_action('ort_operator_trace', file=os.path.basename(path) if path else None,
                    shape=list(key[3]), threads=key[6])
     except Exception:
-        _LOG.warning('Could not finish an ONNX Runtime operator trace', exc_info=True)
+        _LOG.warning('Could not finish an ONNX Runtime operator trace\n%s', traceback.format_exc())
 
 
 def finish_operator_traces():
@@ -419,6 +420,7 @@ def _session(path, shape, device, threads):
 
 def logits(planes, path, device, threads, should_cancel=None):
     from fusion_methods.neural_common import cancel
+    from core.registration import RegistrationCancelled
     cancel(should_cancel)
     h, w = planes.shape[-2:]
     ph, pw = (-h) % 64, (-w) % 64
@@ -430,6 +432,7 @@ def logits(planes, path, device, threads, should_cancel=None):
     global _ACTUAL_DEVICE, _FALLBACK_CPU, _ACTUAL_CHECKPOINT
     if _FALLBACK_CPU:
         device = 'CPU'
+    cached = None
     if device in VRAM_GATED_KINDS:
         from core.resource_policy import vram_budget
         try:
@@ -466,9 +469,11 @@ def logits(planes, path, device, threads, should_cancel=None):
         require_memory(estimate_inference_bytes(*shape, 'CPU'))
     session = None
     profile = _profile()
+    device_failed = False
     try:
         with profile.stage('session.acquire'):
             session = _session(path, shape, device, threads)
+        cancel(should_cancel)
         with profile.stage('session.run'):
             result = session.run(['logits'], {'input': planes})[0]
         if device != 'CPU':
@@ -478,19 +483,26 @@ def logits(planes, path, device, threads, should_cancel=None):
                 # on CPU. Reuse its valid output and keep later scales on CPU.
                 _FALLBACK_CPU = True
                 _clear_sessions()
+    except RegistrationCancelled:
+        raise
     except Exception:
         if device == 'CPU':
             raise
+        _LOG.warning('%s checkpoint=%s shape=%s adapter=%s inference failed; falling back to CPU for this job\n%s',
+                     device, os.path.basename(path), shape, display_name(device), traceback.format_exc())
+        device_failed = True
+    if device_failed:
+        session = None
+        cached = None
+        _clear_sessions()
+        cancel(should_cancel)
         with _LOCK:
             _FALLBACK_CPU = True
-        _LOG.warning('%s checkpoint=%s shape=%s adapter=%s inference failed; falling back to CPU for this job',
-                     device, os.path.basename(path), shape, display_name(device), exc_info=True)
-        session = None
-        _clear_sessions()
         from core.resource_policy import require_memory
         require_memory(estimate_inference_bytes(*shape, 'CPU'))
         with profile.stage('session.acquire'):
             session = _session(path, shape, 'CPU', threads)
+        cancel(should_cancel)
         with profile.stage('session.run'):
             result = session.run(['logits'], {'input': planes})[0]
         device = 'CPU'
@@ -515,10 +527,12 @@ def softmax(x):
     return x
 
 
-def _resize_antialias(planes, scale):
+def _resize_antialias(planes, scale, should_cancel=None):
+    from fusion_methods.neural_common import cancel
     # PyTorch bilinear antialias uses a triangle filter widened for downsampling.
     result = planes
     for axis in (2, 3):
+        cancel(should_cancel)
         old = result.shape[axis]
         new = int(old * scale)
         if new < 1:
@@ -526,6 +540,7 @@ def _resize_antialias(planes, scale):
         src = np.moveaxis(result, axis, -1)
         dst = np.empty(src.shape[:-1] + (new,), dtype=np.float32)
         for i in range(new):
+            cancel(should_cancel)
             center = (i + 0.5) / scale - 0.5
             radius = max(1.0, 1.0 / scale)
             first = max(0, int(np.floor(center - radius)) + 1)
@@ -547,21 +562,26 @@ def probabilities(planes, path, device, threads, sigma, cancel=None):
         p = softmax(p)
     check(cancel)
     with profile.stage('resize.0.75'):
-        small = _resize_antialias(planes, 0.75)
+        small = _resize_antialias(planes, 0.75, cancel)
     with profile.stage('logits.reduced'):
         q = logits(small, path, device, threads, cancel)
+    del small
     with profile.stage('softmax.reduced'):
         q = softmax(q)
     with profile.stage('upsample_combine'):
         for n in range(p.shape[1]):
+            check(cancel)
             p[0, n] += cv2.resize(q[0, n], (w, h), interpolation=cv2.INTER_LINEAR)
+        del q
         p *= 0.5
     if sigma:
         with profile.stage('gaussian'):
             radius = int(3 * sigma + 0.5)
             for n in range(p.shape[1]):
+                check(cancel)
                 p[0, n] = cv2.GaussianBlur(p[0, n], (radius * 2 + 1,) * 2, sigma,
                                             borderType=cv2.BORDER_REPLICATE)
+            check(cancel)
             p /= p.sum(axis=1, keepdims=True)
     check(cancel)
     return p

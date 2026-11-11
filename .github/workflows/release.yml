@@ -28,6 +28,7 @@ jobs:
       label: ${{ steps.identity.outputs.label }}
       channel: ${{ steps.identity.outputs.channel }}
       tag: ${{ steps.identity.outputs.tag }}
+      sha: ${{ steps.identity.outputs.sha }}
     steps:
       - uses: actions/checkout@v5
 
@@ -38,7 +39,15 @@ jobs:
       - name: Resolve version and build label
         id: identity
         shell: bash
-        run: python tools/release_metadata.py --github-output "$GITHUB_OUTPUT"
+        run: python tools/release_metadata.py --checkout-sha "$(git rev-parse HEAD)" --github-output "$GITHUB_OUTPUT"
+
+  release-tests:
+    needs: prepare
+    if: needs.prepare.outputs.channel == 'release'
+    uses: ./.github/workflows/tests.yml
+    with:
+      ref: ${{ needs.prepare.outputs.sha }}
+      run_suite: true
 
   build-windows:
     name: Build Windows (x64)
@@ -48,6 +57,8 @@ jobs:
       signed: ${{ steps.signpath.outputs.enabled }}
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
 
       - uses: actions/setup-python@v6
         with:
@@ -87,13 +98,6 @@ jobs:
             --version-file build/version_info.txt `
             --additional-hooks-dir hooks `
             --icon "assets/OpenFocus.ico" `
-            --add-data "assets;assets" `
-            --add-data "weights/stackmff_final.onnx;weights" `
-            --add-data "weights/stackmff_v2_final.onnx;weights" `
-            --add-data "weights/stackmff_v3_final.onnx;weights" `
-            --add-data "ui;ui" `
-            --add-data "docs;docs" `
-            --collect-submodules PyQt6 `
             --collect-submodules fusion_methods `
             --collect-submodules locales `
             --hidden-import core.algorithm_adapters `
@@ -104,11 +108,9 @@ jobs:
             --hidden-import PyQt6.QtGui `
             --hidden-import PyQt6.QtWidgets `
             --hidden-import PyQt6.QtNetwork `
-            --collect-all scipy `
+            --hidden-import PyQt6.QtSvg `
             --copy-metadata imageio `
             --collect-data dtcwt `
-            --collect-all rawpy `
-            --collect-all onnxruntime `
             --exclude-module torch `
             --exclude-module matplotlib `
             --exclude-module tkinter `
@@ -123,30 +125,14 @@ jobs:
             main.py
 
 
-      - name: Prune build-only files from the bundle
+      - name: Remove incompatible ICU shadow library
         shell: pwsh
         run: |
-          # torch ships headers, .lib import libraries and CMake files that are
-          # only used when compiling against it. They are ~80 MB of the bundle
-          # and nothing reads them at runtime. Qt's WebEngine/3D/Multimedia
-          # plugins are likewise unused by this app.
-          $root = "dist/OpenFocus"
-          $patterns = @("*.lib", "*.pdb", "*.exp")
-          foreach ($pat in $patterns) {
-            Get-ChildItem -Path $root -Recurse -Filter $pat -ErrorAction SilentlyContinue |
-              Remove-Item -Force -ErrorAction SilentlyContinue
-          }
-          foreach ($dir in @("torch/include", "torch/share", "torch/test")) {
-            $p = Join-Path $root "_internal/$dir"
-            if (Test-Path $p) { Remove-Item -Path $p -Recurse -Force }
-          }
-          # Qt expects the unversioned Windows ICU API. A Conda icuuc.dll can
-          # shadow it while exporting only version-suffixed symbols, causing
-          # QtWidgets to fail at startup with STATUS_ENTRYPOINT_NOT_FOUND.
-          $icu = Join-Path $root "_internal/icuuc.dll"
+          # Qt requires the unversioned Windows ICU API.
+          $icu = "dist/OpenFocus/_internal/icuuc.dll"
           if (Test-Path $icu) { Remove-Item -Path $icu -Force }
-          $before = (Get-ChildItem $root -Recurse -File | Measure-Object Length -Sum).Sum
-          Write-Output ("bundle after prune: {0:N0} MB" -f ($before/1MB))
+          python tools/verify_frozen_resources.py dist/OpenFocus/_internal
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Detect SignPath signing configuration
         id: signpath
@@ -307,6 +293,22 @@ jobs:
           python tools/frozen_cli_smoke.py --executable "$target/OpenFocus.exe" --installed-startup
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      - name: Report Windows package contents
+        shell: pwsh
+        run: |
+          python tools/packaging_report.py `
+            --toc build/OpenFocus/Analysis-00.toc --toc build/OpenFocus/COLLECT-00.toc `
+            --package dist/OpenFocus `
+            --package "OpenFocus-${{ needs.prepare.outputs.label }}-windows-x64.zip" `
+            --package "OpenFocus-${{ needs.prepare.outputs.label }}-setup.exe" `
+            --output "$env:RUNNER_TEMP/windows-packaging-report.json"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@v5
+        with:
+          name: packaging-report-windows
+          path: ${{ runner.temp }}/windows-packaging-report.json
+          if-no-files-found: error
+
       - name: Stage Windows assets around GitHub's 2 GiB limit
         shell: pwsh
         run: |
@@ -339,6 +341,8 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
 
       - uses: actions/setup-python@v6
         with:
@@ -381,12 +385,6 @@ jobs:
             --name OpenFocus \
             --additional-hooks-dir hooks \
             --icon OpenFocus.icns \
-            --add-data "assets:assets" \
-            --add-data "weights/stackmff_final.onnx:weights" \
-            --add-data "weights/stackmff_v2_final.onnx:weights" \
-            --add-data "weights/stackmff_v3_final.onnx:weights" \
-            --add-data "ui:ui" \
-            --add-data "docs:docs" \
             --collect-submodules fusion_methods \
             --collect-submodules locales \
             --hidden-import core.algorithm_adapters \
@@ -397,11 +395,9 @@ jobs:
             --hidden-import PyQt6.QtGui \
             --hidden-import PyQt6.QtWidgets \
             --hidden-import PyQt6.QtNetwork \
-            --collect-all scipy \
+            --hidden-import PyQt6.QtSvg \
             --copy-metadata imageio \
             --collect-data dtcwt \
-            --collect-all rawpy \
-            --collect-all onnxruntime \
             --exclude-module torch \
             --exclude-module matplotlib \
             --exclude-module tkinter \
@@ -415,16 +411,8 @@ jobs:
             --exclude-module PyQt6.QtQuick \
             main.py
 
-      - name: Prune build-only files from the bundle
-        run: |
-          # Headers, import libraries and CMake files are compile-time only;
-          # they are a large share of the bundle and nothing reads them.
-          APP=dist/OpenFocus.app
-          find "$APP" -name '*.lib' -delete 2>/dev/null || true
-          find "$APP" -name '*.pdb' -delete 2>/dev/null || true
-          rm -rf "$APP"/Contents/Frameworks/torch/include 2>/dev/null || true
-          rm -rf "$APP"/Contents/Resources/torch/include 2>/dev/null || true
-          du -sh dist/OpenFocus.app || true
+      - name: Verify bundled runtime resources
+        run: python tools/verify_frozen_resources.py dist/OpenFocus.app/Contents/Resources
 
       - name: Verify packaged CLI and desktop control
         env:
@@ -462,6 +450,20 @@ jobs:
           done
           ls -lh "$DMG"
 
+      - name: Report macOS package contents
+        run: |
+          python tools/packaging_report.py \
+            --toc build/OpenFocus/Analysis-00.toc --toc build/OpenFocus/COLLECT-00.toc \
+            --package dist/OpenFocus.app \
+            --package "OpenFocus-${{ needs.prepare.outputs.label }}-macos-arm64.zip" \
+            --package "OpenFocus-${{ needs.prepare.outputs.label }}-macos.dmg" \
+            --output "$RUNNER_TEMP/macos-packaging-report.json"
+      - uses: actions/upload-artifact@v5
+        with:
+          name: packaging-report-macos
+          path: ${{ runner.temp }}/macos-packaging-report.json
+          if-no-files-found: error
+
       - uses: actions/upload-artifact@v5
         with:
           name: OpenFocus-macos
@@ -472,18 +474,21 @@ jobs:
 
   release:
     name: Publish GitHub Release
-    needs: [prepare, build-windows, build-macos]
+    needs: [prepare, release-tests, build-windows, build-macos]
     runs-on: ubuntu-latest
     # Tags only: a workflow_dispatch run on a branch uploads downloadable
     # artifacts for acceptance testing and must never create or overwrite a
     # release (or its four stable assets).
-    if: startsWith(github.ref, 'refs/tags/')
+    if: ${{ needs.prepare.outputs.channel == 'release' }}
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v5  # CHANGELOG.md for the release notes
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
       - uses: actions/download-artifact@v5
         with:
+          pattern: OpenFocus-*
           merge-multiple: true
           path: release
 
@@ -592,46 +597,10 @@ jobs:
           find release -maxdepth 1 -type f -printf '%f %s bytes\n' | sort
           ls -lh release/
 
-      - name: Remove stale release assets
+      - name: Verify and publish release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          tag="${{ github.ref_name }}"
-          if ! gh release view "$tag" --repo "${{ github.repository }}" >/dev/null 2>&1; then
-            exit 0
-          fi
-          mapfile -t wanted < <(find release -maxdepth 1 -type f -printf '%f\n')
-          while IFS= read -r name; do
-            [ -n "$name" ] || continue
-            case "$name" in
-              "OpenFocus-${tag}-"*)
-                if ! printf '%s\n' "${wanted[@]}" | grep -Fxq "$name"; then
-                  echo "Deleting stale asset: $name"
-                  gh release delete-asset "$tag" "$name" \
-                    --repo "${{ github.repository }}" -y
-                fi
-                ;;
-            esac
-          done < <(gh release view "$tag" --repo "${{ github.repository }}" \
-            --json assets --jq '.assets[].name')
-
-      - name: Create GitHub Release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          echo "Files downloaded:"
-          ls -la release/
-          if gh release view "${{ github.ref_name }}" --repo "${{ github.repository }}" >/dev/null 2>&1; then
-            gh release upload "${{ github.ref_name }}" release/* \
-              --repo "${{ github.repository }}" --clobber
-            gh release edit "${{ github.ref_name }}" --repo "${{ github.repository }}" \
-              --title "OpenFocus ${{ github.ref_name }}" --notes-file release_notes.md \
-              --draft=false --prerelease=false
-          else
-            gh release create "${{ github.ref_name }}" \
-              --repo "${{ github.repository }}" \
-              --title "OpenFocus ${{ github.ref_name }}" \
-              --notes-file release_notes.md release/*
-          fi
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+          RELEASE_SHA: ${{ needs.prepare.outputs.sha }}
+        run: python tools/publish_release.py --directory release --notes release_notes.md

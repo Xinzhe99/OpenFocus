@@ -12,30 +12,27 @@ on:
     tags: ["v*"]
   workflow_dispatch:
 
+permissions:
+  contents: read
+  actions: read
+
 jobs:
   build:
     runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.identity.outputs.sha }}
+      version: ${{ steps.identity.outputs.version }}
+      channel: ${{ steps.identity.outputs.channel }}
+      tag: ${{ steps.identity.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.10"
 
-      - name: Verify the version matches the tag
-        run: |
-          python - <<'PY'
-          import os, re, pathlib
-          version = re.search(r'APP_VERSION\s*=\s*"([^"]+)"',
-                              pathlib.Path('constants.py').read_text()).group(1)
-          ref = os.environ['GITHUB_REF_NAME']
-          # A manual run has a branch name here, not a tag: there is nothing
-          # to compare against, so only report the version.
-          if os.environ.get('GITHUB_REF_TYPE') == 'tag':
-              tag = ref.lstrip('v')
-              if version != tag:
-                  raise SystemExit(f'APP_VERSION {version} != tag {tag}')
-          print('version', version, 'ref', ref)
-          PY
+      - name: Resolve checked-out build identity
+        id: identity
+        run: python tools/release_metadata.py --checkout-sha "$(git rev-parse HEAD)" --github-output "$GITHUB_OUTPUT"
 
       - name: Verify neural model checkpoints
         run: |
@@ -79,6 +76,21 @@ jobs:
                   sys.exit(f'{name}: missing={missing}, truncated={small}, stale={stale}')
               print(f'{name}: required modules, locales and model weights present')
           PY
+      - name: Record distribution identity
+        env:
+          BUILD_SHA: ${{ steps.identity.outputs.sha }}
+          BUILD_VERSION: ${{ steps.identity.outputs.version }}
+          BUILD_CHANNEL: ${{ steps.identity.outputs.channel }}
+          BUILD_TAG: ${{ steps.identity.outputs.tag }}
+        run: |
+          python tools/release_metadata.py pypi create --identity identity/dist.json \
+            --sha "$BUILD_SHA" --version "$BUILD_VERSION" --channel "$BUILD_CHANNEL" --tag "$BUILD_TAG"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-identity
+          path: identity/dist.json
+          if-no-files-found: error
 
       - uses: actions/upload-artifact@v4
         with:
@@ -87,36 +99,52 @@ jobs:
 
   publish:
     needs: build
+    if: ${{ needs.build.outputs.channel == 'release' }}
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
       contents: read
+      actions: read
       id-token: write
-    # Job-level so the step conditions below can read it: a step's own `env`
-    # is not in scope for that step's `if`.
     env:
+      BUILD_SHA: ${{ needs.build.outputs.sha }}
+      BUILD_VERSION: ${{ needs.build.outputs.version }}
+      BUILD_CHANNEL: ${{ needs.build.outputs.channel }}
+      BUILD_TAG: ${{ needs.build.outputs.tag }}
       PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.build.outputs.sha }}
       - uses: actions/download-artifact@v4
         with:
           name: dist
           path: dist/
 
-      - name: Wait for the verified desktop release
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist-identity
+          path: identity/
+
+      - name: Verify bound desktop release and distribution
+        id: verify
         timeout-minutes: 90
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          RELEASE_TAG="v$(python -c 'from constants import APP_VERSION; print(APP_VERSION)')"
-          for attempt in {1..180}; do
-            if [ "$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft 2>/dev/null)" = "false" ]; then
-              exit 0
-            fi
-            sleep 30
-          done
-          echo "The desktop release was not published; refusing to publish to PyPI."
-          exit 1
+          python tools/release_metadata.py pypi verify --identity identity/dist.json \
+            --sha "$BUILD_SHA" --version "$BUILD_VERSION" --channel "$BUILD_CHANNEL" --tag "$BUILD_TAG" \
+            --upload-dir upload/
+
+      - name: Install token uploader
+        if: ${{ env.PYPI_API_TOKEN != '' && steps.verify.outputs.upload_count != '0' }}
+        run: python -m pip install --upgrade twine
+
+      - name: Recheck tag before upload
+        if: ${{ steps.verify.outputs.upload_count != '0' }}
+        run: |
+          python tools/release_metadata.py pypi tag --identity identity/dist.json \
+            --sha "$BUILD_SHA" --version "$BUILD_VERSION" --channel "$BUILD_CHANNEL" --tag "$BUILD_TAG"
 
       # Two publish paths, in order of preference:
       #   1. PYPI_API_TOKEN (a project-scoped token in repo secrets). Works
@@ -127,14 +155,15 @@ jobs:
       #      owner Xinzhe99 / repo OpenFocus / workflow pypi.yml / env pypi.
       # A tag push therefore publishes without any manual upload.
       - name: Publish with the API token
-        if: ${{ env.PYPI_API_TOKEN != '' }}
+        if: ${{ env.PYPI_API_TOKEN != '' && steps.verify.outputs.upload_count != '0' }}
         env:
           PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
         run: |
-          python -m pip install --upgrade twine
-          python -m twine upload --non-interactive --skip-existing \
-            --username __token__ --password "$PYPI_API_TOKEN" dist/*
+          python -m twine upload --non-interactive \
+            --username __token__ --password "$PYPI_API_TOKEN" upload/*
 
       - name: Publish with Trusted Publishing
-        if: ${{ env.PYPI_API_TOKEN == '' }}
+        if: ${{ env.PYPI_API_TOKEN == '' && steps.verify.outputs.upload_count != '0' }}
         uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: upload/

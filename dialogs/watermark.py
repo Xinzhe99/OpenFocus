@@ -719,6 +719,9 @@ class WatermarkDialog(QDialog):
             self.opacity_spin, self.angle_slider, self.angle_spin,
             self.color_combo, self.density_combo, self.font_combo)]
         self.font_combo.setCurrentFont(QFont(self.font().family()))
+        self.size_slider.setValue(int(round(watermark.DEFAULT_SIZE_PERCENT * 10)))
+        self.opacity_slider.setValue(int(round(watermark.DEFAULT_OPACITY * 100)))
+        self.angle_slider.setValue(int(round(watermark.DEFAULT_ANGLE)))
         self.size_spin.setValue(watermark.DEFAULT_SIZE_PERCENT)
         self.opacity_spin.setValue(int(round(watermark.DEFAULT_OPACITY * 100)))
         self.color_combo.setCurrentIndex(self.color_combo.findData(watermark.DEFAULT_COLOR))

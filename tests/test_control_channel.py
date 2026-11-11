@@ -22,6 +22,7 @@ from core.control.protocol import (
 )
 from core.control.server import ControlServer
 from utils.image_utils import imwrite_auto
+from tests.process_isolation import sandbox_env
 
 
 @pytest.fixture
@@ -29,6 +30,14 @@ def control_window(qapp, monkeypatch, tmp_path):
     from main import OpenFocus
     from utils import recovery, settings_store
     from core import frame_storage
+    from PyQt6.QtGui import QPalette
+    from locales import trans
+    from ui import styles
+
+    original_stylesheet = qapp.styleSheet()
+    original_palette = QPalette(qapp.palette())
+    original_theme = styles.CURRENT_THEME
+    original_language = trans.current_lang
 
     # Deferred storage replies are exercised separately in test_storage_preflight.
     monkeypatch.setattr(frame_storage, "automatic_preflight_may_block", lambda: False)
@@ -39,7 +48,7 @@ def control_window(qapp, monkeypatch, tmp_path):
     settings.setValue("updates/last_check_epoch", 9999999999)
     settings.setValue("rendering/ai_cpu_warning_dismissed", True)
     settings.setValue('ui/experimental_features', True)
-    settings_store._settings_singleton = settings
+    monkeypatch.setattr(settings_store, "_settings_singleton", settings)
     monkeypatch.setattr(recovery, "_base_dir", lambda: str(tmp_path / "recovery"))
     monkeypatch.setenv("OPENFOCUS_CONTROL_FILE", str(tmp_path / "control.json"))
     window = OpenFocus()
@@ -66,6 +75,11 @@ def control_window(qapp, monkeypatch, tmp_path):
     window.deleteLater()
     from PyQt6.QtCore import QCoreApplication, QEvent
     QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    styles.set_current_theme(original_theme)
+    qapp.setStyleSheet(original_stylesheet)
+    qapp.setPalette(original_palette)
+    if trans.current_lang != original_language:
+        trans.set_language(original_language)
     qapp.processEvents()
 
 
@@ -84,8 +98,31 @@ def call(server, cmd, token=None, **args):
 
 def _new_main_window(qapp, tmp_path, monkeypatch, use_gpu=None):
     """A real OpenFocus window with sandboxed settings, for lifecycle tests."""
+    monkeypatch.setenv("OPENFOCUS_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("OPENFOCUS_LOG_DIR", str(tmp_path / "logs"))
+    from utils import account_client, logging_setup, recovery, settings_store
+
+    logging_setup.shutdown_logging()
+    logging_setup.setup_logging(log_dir=tmp_path / "logs")
+    original_undo = monkeypatch.undo
+
+    def undo_with_logging():
+        logging_setup.shutdown_logging()
+        original_undo()
+
+    monkeypatch.setattr(monkeypatch, "undo", undo_with_logging)
+    account_class = account_client.AccountClient
+
+    def offline_request(*args, **kwargs):
+        raise account_client.AccountError("network")
+
+    def private_account_client():
+        return account_class(store=account_client.TokenStore(path=tmp_path / "account-session"),
+                             request=offline_request)
+
+    if isinstance(account_class, type):
+        monkeypatch.setattr(account_client, "AccountClient", private_account_client)
     from main import OpenFocus
-    from utils import recovery, settings_store
 
     settings = QSettings(str(tmp_path / "settings.ini"),
                          QSettings.Format.IniFormat)
@@ -128,6 +165,32 @@ def wait_until(predicate, timeout=5.0):
             return True
         QTest.qWait(10)
     return bool(predicate())
+
+def test_new_main_window_uses_private_account_store(qapp, tmp_path, monkeypatch):
+    from utils import account_client
+
+    sentinel = tmp_path / "inherited-data"
+    sentinel.mkdir()
+    session = sentinel / "account-session"
+    session.write_bytes(b"private sentinel session")
+    monkeypatch.setenv("OPENFOCUS_DATA_DIR", str(sentinel))
+    loads = []
+    original_load = account_client.TokenStore.load
+
+    def record_load(store):
+        loads.append((store.path, store._keychain))
+        return original_load(store)
+
+    monkeypatch.setattr(account_client.TokenStore, "load", record_load)
+    monkeypatch.setattr(account_client, "_http", lambda *a, **kw: pytest.fail("unexpected HTTP"))
+    window = _new_main_window(qapp, tmp_path, monkeypatch)
+    try:
+        assert wait_until(lambda: window._account_load_job is None)
+        assert loads == [(tmp_path / "account-session", False)]
+        assert session.read_bytes() == b"private sentinel session"
+        assert sorted(path.name for path in sentinel.iterdir()) == ["account-session"]
+    finally:
+        _destroy_main_window(qapp, window)
 
 
 @pytest.fixture
@@ -298,7 +361,7 @@ def test_private_tool_launches_isolate_settings_and_instances(tmp_path, monkeypa
                 session.close()
 
 
-def test_default_gui_launch_and_cross_process_client(tmp_path):
+def test_default_gui_launch_and_cross_process_client(tmp_path, monkeypatch):
     from utils.app_paths import is_portable_mode
     import site
 
@@ -306,14 +369,12 @@ def test_default_gui_launch_and_cross_process_client(tmp_path):
         pytest.skip("Portable mode stores settings beside the checkout")
     root = Path(__file__).resolve().parents[1]
     discovery = tmp_path / "control.json"
-    env = dict(os.environ, QT_QPA_PLATFORM="offscreen",
-               OPENFOCUS_CONTROL_FILE=str(discovery),
-               OPENFOCUS_INSTANCE_NAME=f"OpenFocus-test-{os.getpid()}-{time.monotonic_ns()}",
-               OPENFOCUS_LOG_DIR=str(tmp_path / "logs"),
-               APPDATA=str(tmp_path / "appdata"),
-               XDG_CONFIG_HOME=str(tmp_path / "config"),
-               XDG_DATA_HOME=str(tmp_path / "data"),
-               HOME=str(tmp_path), USERPROFILE=str(tmp_path))
+    sentinel = tmp_path / "inherited-data"
+    sentinel.mkdir()
+    (sentinel / "settings.ini").write_bytes(b"sentinel settings\n")
+    monkeypatch.setenv("OPENFOCUS_DATA_DIR", str(sentinel))
+    env = sandbox_env(tmp_path, {"QT_QPA_PLATFORM": "offscreen"},
+                      instance_name=f"OpenFocus-test-{os.getpid()}-{time.monotonic_ns()}")
     env.pop("OPENFOCUS_CONTROL", None)
     env["PYTHONPATH"] = os.pathsep.join(filter(None, (
         site.getusersitepackages(), env.get("PYTHONPATH"),
@@ -321,12 +382,22 @@ def test_default_gui_launch_and_cross_process_client(tmp_path):
     bootstrap = '''
 import runpy, sys
 import webbrowser
+from tests.process_isolation import install_usage_sender
+sender, reporters, calls = install_usage_sender()
 webbrowser.open = lambda *args, **kwargs: False
 from PyQt6.QtCore import QSettings
 QSettings.setDefaultFormat(QSettings.Format.IniFormat)
 QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, sys.argv[2])
 sys.argv = [sys.argv[1]]
-runpy.run_path(sys.argv[0], run_name="__main__")
+try:
+    runpy.run_path(sys.argv[0], run_name="__main__")
+except SystemExit as stopped:
+    assert stopped.code == 0
+else:
+    raise AssertionError("GUI entry point did not exit")
+assert all(captured is sender for captured in reporters)
+if reporters:
+    print("isolated analytics reporter confirmed", flush=True)
 '''
     command = [sys.executable, "-c", bootstrap, str(root / "main.py"), str(tmp_path / "settings")]
     log_path = tmp_path / "gui-output.log"
@@ -375,6 +446,10 @@ finally:
         assert client.returncode == 0, client.stderr
         assert gui.wait(timeout=30) == 0, log_path.read_text(encoding="utf-8", errors="replace")
         assert not discovery.exists()
+        assert "isolated analytics reporter confirmed" in log_path.read_text(encoding="utf-8", errors="replace")
+        assert {path.name: path.read_bytes() for path in sentinel.iterdir()} == {
+            "settings.ini": b"sentinel settings\n"
+        }
     finally:
         if gui.poll() is None:
             gui.kill()
@@ -416,6 +491,11 @@ def test_stack_method_render_export_and_project(server, stack_frames, tmp_path):
     project = tmp_path / "session.ofproj"
     saved = call(server, "project.save", token=token, path=str(project))["result"]
     assert saved["saved"] and project.is_file()
+    assert call(server, 'option.set', name='reverse_order', value=True)['ok']
+    assert server.window._project_dirty
+    assert call(server, 'project.save')['result']['path'] == str(project)
+    assert not server.window._project_dirty
+    assert json.loads(project.read_text(encoding='utf-8'))['settings']['stack_reverse_order'] is True
 
 
 def test_ui_actions_tree_find_set_click_and_screenshot(server, stack_frames, tmp_path):
@@ -742,7 +822,7 @@ def test_unmanaged_message_box_is_addressable(server, control_window):
     QTest.qWait(20)
     assert not box.isVisible()
 
-def test_every_widget_path_resolves_uniquely(server, control_window):
+def test_every_widget_path_resolves_uniquely(control_window):
     from ui.control_surface import find_widgets, resolve_path, window_roots
 
     roots = window_roots(control_window)
@@ -752,7 +832,26 @@ def test_every_widget_path_resolves_uniquely(server, control_window):
         widget = resolve_path(roots, node["path"])
         assert widget is not None, node["path"]
     source = find_widgets(roots, object_name="view_source")
-    assert source and "panelRoot[" in source[0]["path"]
+    result = find_widgets(roots, object_name="view_result")
+    assert len(source) == len(result) == 1
+    assert source[0]["path"] != result[0]["path"]
+    assert resolve_path(roots, source[0]["path"]) is control_window.lbl_source_img
+    assert resolve_path(roots, result[0]["path"]) is control_window.lbl_result_img
+
+    from PyQt6.QtWidgets import QWidget
+    root = QWidget()
+    try:
+        first, second = QWidget(root), QWidget(root)
+        first.setObjectName("duplicate")
+        second.setObjectName("duplicate")
+        synthetic_roots = {"main": root}
+        siblings = find_widgets(synthetic_roots, object_name="duplicate")
+        assert len(siblings) == 2
+        paths = [node["path"] for node in siblings]
+        assert paths[0] != paths[1]
+        assert {resolve_path(synthetic_roots, path) for path in paths} == {first, second}
+    finally:
+        root.deleteLater()
 
 
 def test_context_menu_catalog_and_trigger(server, control_window):
@@ -1171,6 +1270,11 @@ def test_project_open_sets_lifecycle_state(server, control_window, monkeypatch):
     captured["on_loaded"]()
     assert control_window.project_path == "life.ofproj"
     assert control_window._project_dirty is False
+    saved = []
+    monkeypatch.setattr(project_file, 'save_project', lambda window, path: (saved.append(path) or (True, None)))
+    control_window._mark_project_dirty()
+    assert call(server, 'project.save')['result']['path'] == 'life.ofproj'
+    assert saved == ['life.ofproj'] and not control_window._project_dirty
 
 
 def test_batch_accept_validates_before_starting(server, monkeypatch):
@@ -1867,3 +1971,284 @@ def test_reset_stack_menu_clears_real_wipe_and_restores_import(qapp, control_win
     assert window.scale_um_per_px_manual == 0.5
     assert not window.wipe_active and window.view_stack.currentIndex() == 0
     assert not window._undo_stack and not window._redo_stack
+
+
+@pytest.mark.parametrize('name,value', [
+    ('tile_enabled', 'false'), ('use_gpu', None), ('preview', 1),
+    ('thread_count', True), ('thread_count', 3.5), ('thread_count', -1),
+    ('tile_block_size', 63), ('tile_overlap', -1), ('tile_threshold', 0),
+    ('ai_batch_size', 0), ('reg_downscale_width', 63),
+    ('resource_preference', None), ('resource_preference', 'other'),
+])
+def test_option_validation_is_atomic(server, control_window, monkeypatch, name, value):
+    before = call(server, 'app.state')['result']['options']
+    dirty, undo = control_window._project_dirty, len(control_window._undo_stack)
+    persisted = []
+    monkeypatch.setattr(control_window, 'persist_settings', lambda: persisted.append(True))
+    response = call(server, 'option.set', name=name, value=value)
+    assert response['error']['code'] == 'invalid_argument'
+    assert call(server, 'app.state')['result']['options'] == before
+    assert (control_window._project_dirty, len(control_window._undo_stack)) == (dirty, undo)
+    assert not persisted
+
+
+def test_option_bounds_missing_and_actual_values(server, control_window, monkeypatch):
+    persisted = []
+    monkeypatch.setattr(control_window, 'persist_settings', lambda: persisted.append(True))
+    before = (control_window.tile_block_size, control_window.tile_overlap)
+    for name in ('tile_enabled', 'thread_count', 'resource_preference', 'storage_directory'):
+        assert call(server, 'option.set', name=name)['error']['code'] == 'invalid_argument'
+    assert call(server, 'option.set', name='tile_overlap', value=before[0])['error']['code'] == 'invalid_argument'
+    assert call(server, 'option.set', name='tile_block_size', value=before[1])['error']['code'] == 'invalid_argument'
+    assert (control_window.tile_block_size, control_window.tile_overlap) == before
+    assert not persisted
+    result = call(server, 'option.set', name='thread_count', value=3.0)['result']
+    assert result['value'] == 3 and type(result['value']) is int
+    assert call(server, 'option.set', name='tile_enabled', value=False)['result']['value'] is False
+
+
+@pytest.mark.parametrize('command,method', [('method.set', 'openfocus_a'), ('align.set', 'ecc')])
+@pytest.mark.parametrize('parameters', [None, [], {'no_such_parameter': 1}])
+def test_method_parameter_validation_precedes_selector(server, control_window, monkeypatch, command, method, parameters):
+    control_window.set_fusion_method('none')
+    control_window.set_alignment_method('none')
+    before = (control_window.current_fusion_method(), control_window.current_alignment_method(),
+              control_window._project_dirty, len(control_window._undo_stack))
+    persisted = []
+    monkeypatch.setattr(control_window, 'persist_settings', lambda: persisted.append(True))
+    assert call(server, command, id=method, parameters=parameters)['error']['code'] == 'invalid_argument'
+    assert (control_window.current_fusion_method(), control_window.current_alignment_method(),
+            control_window._project_dirty, len(control_window._undo_stack)) == before
+    assert not persisted
+    assert call(server, command, id='none', parameters={'unknown': 1})['error']['code'] == 'invalid_argument'
+    assert call(server, command, id='none', parameters={})['ok']
+
+
+def test_stack_include_rejects_all_indices_before_mutation(server, control_window):
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtWidgets import QListWidgetItem
+    control_window.raw_images = [np.zeros((4, 4, 3), np.uint8)]
+    control_window.image_filenames = ['a.tif']
+    control_window.excluded_frames = set()
+    control_window.file_list.clear()
+    item = QListWidgetItem('frame')
+    item.setCheckState(Qt.CheckState.Checked)
+    control_window.file_list.addItem(item)
+    before_stack = call(server, 'stack.frames')['result']
+    assert before_stack['count'] == 1 and before_stack['included'] == [0]
+    before = (getattr(control_window, 'source_revision', 0),
+              list(control_window._undo_stack), control_window._project_dirty)
+    for indices in ([0, 999], [999, 0]):
+        assert call(server, 'stack.include', indices=indices, include=False)['error']['code'] == 'invalid_argument'
+        assert item.checkState() == Qt.CheckState.Checked
+        assert call(server, 'stack.frames')['result'] == before_stack
+        assert control_window.excluded_frames == set()
+        assert (getattr(control_window, 'source_revision', 0),
+                list(control_window._undo_stack), control_window._project_dirty) == before
+
+
+def test_project_save_current_path_and_failures(server, control_window, monkeypatch, tmp_path):
+    from utils import project_file
+    writes = []
+    monkeypatch.setattr(project_file, 'save_project', lambda window, path: (writes.append(path) or (True, None)))
+    control_window.project_path = None
+    assert call(server, 'project.save')['error']['code'] == 'invalid_argument'
+    for path in (None, '', '   ', 42):
+        assert call(server, 'project.save', path=path)['error']['code'] == 'invalid_argument'
+    assert not writes
+    path = str(tmp_path / 'project.ofproj')
+    assert call(server, 'project.save', path=path)['result']['path'] == path
+    control_window._project_dirty = True
+    assert call(server, 'project.save')['result']['path'] == path
+    assert writes == [path, path] and not control_window._project_dirty
+    control_window._project_dirty = True
+    monkeypatch.setattr(project_file, 'save_project', lambda *_: (False, 'write failed'))
+    assert call(server, 'project.save', path=str(tmp_path / 'other'))['error']['code'] == 'invalid_argument'
+    assert control_window.project_path == path and control_window._project_dirty
+
+
+@pytest.mark.parametrize('steps', [None, 0, -1, 1025, 10**9, 3.5, float('nan'), float('inf'), True])
+def test_mouse_rejects_steps_before_widget_resolution(server, monkeypatch, steps):
+    from ui import control_surface
+    called = []
+    monkeypatch.setattr(control_surface, 'resolve_path', lambda *args: called.append('resolve'))
+    monkeypatch.setattr(control_surface, 'send_mouse', lambda *args, **kwargs: called.append('send'))
+    response = call(server, 'ui.mouse', path='root.test', action='drag', x=0, y=0, to_x=10, to_y=10, steps=steps)
+    assert response['error']['code'] == 'invalid_argument' and not called
+    assert call(server, 'ping')['result']['pong']
+
+
+@pytest.mark.parametrize('steps,expected', [(None, 12), (1, 1), (12, 12), (12.0, 12), (1024, 1024)])
+def test_mouse_accepts_bounded_steps(server, monkeypatch, steps, expected):
+    from ui import control_surface
+    monkeypatch.setattr(control_surface, 'resolve_path', lambda *args: object())
+    monkeypatch.setattr(control_surface, 'send_mouse', lambda *args, **kwargs: {'steps': kwargs['steps']})
+    args = dict(path='root.test', action='drag', x=0, y=0, to_x=10, to_y=10)
+    if steps is not None:
+        args['steps'] = steps
+    assert call(server, 'ui.mouse', **args)['result']['steps'] == expected
+
+
+@pytest.mark.skipif(os.name != 'posix', reason='Unix socket paths only')
+def test_control_socket_conflict_does_not_remove_live_endpoint(qapp, tmp_path, monkeypatch):
+    from PyQt6.QtNetwork import QLocalServer, QLocalSocket
+    from core.control import server as module
+    path = str(tmp_path / 'live.sock')
+    first = QLocalServer()
+    assert first.listen(path), first.errorString()
+    removed, written, cleared = [], [], []
+    monkeypatch.setattr(QLocalServer, 'removeServer', lambda name: removed.append(name))
+    monkeypatch.setattr(module, 'write_discovery', lambda *args: written.append(args))
+    monkeypatch.setattr(module, 'clear_discovery', lambda *args: cleared.append(args))
+    try:
+        with pytest.raises(RuntimeError, match='Could not listen'):
+            ControlServer(None, socket_name=path)
+        assert os.path.exists(path) and not removed and not written and not cleared
+        client = QLocalSocket()
+        client.connectToServer(path)
+        assert client.waitForConnected(5000)
+        client.abort()
+    finally:
+        first.close()
+
+
+@pytest.mark.skipif(os.name != 'posix', reason='Unix socket paths only')
+@pytest.mark.parametrize('kind', ['socket', 'file', 'symlink'])
+def test_control_socket_conflict_preserves_existing_path(qapp, tmp_path, kind):
+    import socket
+    path = tmp_path / 'occupied.sock'
+    if kind == 'socket':
+        sock = socket.socket(socket.AF_UNIX)
+        sock.bind(str(path))
+        sock.close()
+    elif kind == 'file':
+        path.write_bytes(b'preserve')
+    else:
+        target = tmp_path / 'target'
+        target.write_bytes(b'preserve')
+        path.symlink_to(target)
+    with pytest.raises(RuntimeError, match='Could not listen'):
+        ControlServer(None, socket_name=str(path))
+    assert path.is_symlink() if kind == 'symlink' else path.exists()
+    if kind == 'file':
+        assert path.read_bytes() == b'preserve'
+    if kind == 'symlink':
+        assert target.read_bytes() == b'preserve'
+
+
+def test_stack_load_rejects_invalid_linear_raw_mode(server, tmp_path):
+    assert call(server, 'stack.load', files=[str(tmp_path / 'frame.dng')],
+                linear_raw='true')['error']['code'] == 'invalid_argument'
+    assert call(server, 'stack.load', video='clip.mp4',
+                linear_raw=True)['error']['code'] == 'invalid_argument'
+
+
+def test_stack_load_linear_raw_populates_camera_metadata(server, control_window, tmp_path, monkeypatch):
+    pytest.importorskip('rawpy')
+    from controllers import source_manager
+    from utils.linear_dng import LinearDNGMetadata, write_linear_dng
+    metadata = LinearDNGMetadata(
+        ((0.8293, -0.1611, -0.1132), (-0.4759, 1.2711, 0.2275),
+         (-0.1013, 0.2415, 0.5509)),
+        (1024 / 1853, 1., 1024 / 1667), 'Camera', 'Test Camera')
+    path = tmp_path / 'frame.dng'
+    write_linear_dng(path, np.full((128, 128, 3), 10000, np.uint16), metadata)
+    monkeypatch.setattr(source_manager, 'show_message_box', lambda *args: None)
+    started = call(server, 'stack.load', files=[str(path)], linear_raw=True)['result']
+    assert started['load_id'] is not None
+    assert wait_until(lambda: call(server, 'stack.frames')['result']['load']['finished'], timeout=30)
+    state = call(server, 'stack.frames')['result']
+    assert state['load']['error'] is None, state
+    assert state['count'] == 1
+    assert control_window.linear_dng_metadata is not None
+    assert control_window.linear_dng_metadata.camera_model == 'Test Camera'
+
+
+@pytest.mark.parametrize('picker', ['folder', 'file'])
+def test_native_picker_blocks_control_reentry(server, control_window, monkeypatch, picker):
+    from utils import file_dialogs
+    responses = []
+    def native(*args):
+        responses.append(call(server, 'ui.trigger', key='action_open_frames'))
+        responses.append(call(server, 'dialog.file', cancel=True))
+        return [] if picker == 'folder' else ([], '')
+    monkeypatch.setattr(file_dialogs, '_native_folder_paths', native)
+    monkeypatch.setattr(file_dialogs, '_pick_native_file', native)
+    if picker == 'folder':
+        file_dialogs.FileDialog.getExistingDirectory(control_window, 'Folder')
+    else:
+        file_dialogs.FileDialog.getOpenFileName(control_window, 'File')
+    assert [response['error']['code'] for response in responses] == ['busy', 'busy']
+    assert not file_dialogs.native_picker_active()
+
+
+def test_retouch_managed_dialog_can_reopen_after_deletion(server, qapp, monkeypatch):
+    from PyQt6 import sip
+    from PyQt6.QtCore import QCoreApplication, QEvent
+    from tests.test_retouch import _dialog
+    def create():
+        dialog, _ = _dialog(qapp)
+        monkeypatch.setattr(dialog, '_confirm_close', lambda: True)
+        return dialog
+    monkeypatch.setattr(server, '_retouch_dialog', create)
+    assert call(server, 'dialog.open', name='retouch')['result']['opened']
+    first = server._dialogs['retouch']
+    first.reject()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    assert sip.isdeleted(first)
+    assert call(server, 'dialog.open', name='retouch')['result']['opened']
+    second = server._dialogs['retouch']
+    assert second is not first and second.isVisible()
+    second.reject()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+
+def test_storage_option_reset_and_failed_validation(server, control_window, monkeypatch, tmp_path):
+    from core import frame_storage
+    calls = []
+    def configure(path):
+        calls.append(path)
+        if path.endswith('missing'):
+            raise OSError('missing')
+    monkeypatch.setattr(frame_storage, 'configure_storage_directory', configure)
+    monkeypatch.setattr(control_window, 'persist_settings', lambda: None)
+    existing = str(tmp_path / 'existing')
+    control_window.storage_directory = existing
+    assert call(server, 'option.set', name='storage_directory', value=str(tmp_path / 'missing'))['error']['code'] == 'invalid_argument'
+    assert control_window.storage_directory == existing
+    for value in (None, ''):
+        assert call(server, 'option.set', name='storage_directory', value=value)['result']['value'] == ''
+    relative_directory = tmp_path / 'relative-existing'
+    relative_directory.mkdir()
+    monkeypatch.chdir(tmp_path)
+    relative = os.path.relpath(relative_directory, tmp_path)
+    assert not os.path.isabs(relative)
+    assert call(server, 'option.set', name='storage_directory', value=relative)['result']['value'] == str(relative_directory)
+    assert calls == [str(tmp_path / 'missing'), '', '', str(relative_directory)]
+
+
+@pytest.mark.parametrize('steps', [1, 12, 1024])
+def test_bounded_drag_delivers_press_and_release(server, control_window, monkeypatch, steps):
+    from PyQt6.QtWidgets import QWidget
+    from ui import control_surface
+    class Probe(QWidget):
+        def __init__(self):
+            super().__init__(control_window)
+            self.presses = 0
+            self.releases = 0
+            self.moves = 0
+        def mousePressEvent(self, event):
+            self.presses += 1
+        def mouseReleaseEvent(self, event):
+            self.releases += 1
+        def mouseMoveEvent(self, event):
+            self.moves += 1
+    probe = Probe()
+    probe.resize(80, 80)
+    probe.show()
+    monkeypatch.setattr(control_surface, 'resolve_path', lambda *args: probe)
+    response = call(server, 'ui.mouse', path='main/probe', action='drag',
+                    x=1, y=1, to_x=50, to_y=40, steps=steps)
+    assert response['result']['steps'] == steps
+    assert (probe.presses, probe.moves, probe.releases) == (1, steps, 1)
+    probe.deleteLater()

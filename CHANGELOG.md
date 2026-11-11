@@ -224,6 +224,23 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   content. Output pixels are unchanged.
 
 ### Fixed
+- Report oversized TIFF EXIF snapshots as load errors instead of silently
+  treating the metadata as absent.
+- Identify the rejected sidecar option in batch CLI validation errors.
+- Restore the caller's OpenCV thread count after direct OpenFocus execution,
+  including cancellation and a failed planning import.
+- Protect historical source files when exporting layered TIFFs, depth products
+  and meshes, even after loading a different stack.
+- Keep batch conversion progress and cancellation accurate, validate TIFF
+  layouts before decoding and preserve per-page metadata during conversion.
+- Keep scale-bar previews bounded while retaining native image geometry, and
+  preserve label settings when the editor is accepted without changes.
+- Release failed accelerator sessions before CPU fallback, and keep cancelled
+  preview, comparison and depth workers alive until their work has stopped.
+- Restore project registration defaults and preserve source identity through
+  stack edits, cached alignment and output history.
+- Validate per-folder CLI configuration before processing, and retain
+  responsive navigation and language links when website scripts are unavailable.
 - Dispose closed windows before Qt application teardown during normal exit.
 - Avoid reverse DNS while binding account sign-in callbacks to loopback.
 - Let each window close independently of account tasks owned by other windows.

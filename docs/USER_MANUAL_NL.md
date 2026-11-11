@@ -230,6 +230,8 @@ Microscopiesoftware (ZEN, NIS-Elements, ImageJ/Fiji) exporteert een volledige Z-
 
 ### Schaalbalk (publicatieafbeeldingen)
 
+Labels van de schaalbalk gebruiken echte vetgedrukte glyphs als de gekozen lettertypefamilie die biedt; anders wordt een leesbaar lettertype uit dezelfde familie gebruikt.
+
 Als het gekozen doel geen bruikbare metadata heeft, wordt handmatige kalibratie geselecteerd en is een geldige pixelgrootte vereist.
 
 **Extra → Schaalbalk…** configureert een schaalbalk die in geëxporteerde afbeeldingen wordt ingebrand. De pixelgrootte (µm/px) wordt automatisch uit TIFF-metadata gedetecteerd — via ImageJ's `unit=micron`-conventie, OME-TIFF's `PhysicalSizeX` of een expliciete resolutie-eenheid in centimeters — zodat microscopiestapels (inclusief meerbladige TIFF's) zichzelf kalibreren. Printerresolutie (72/300 dpi en dergelijke) wordt bewust *niet* als kalibratie behandeld, en een handmatig ingevoerde waarde wint altijd van gedetecteerde metadata: een plausibel ogende maar foute balk in een figuur is erger dan geen balk. Kies de hoek en kleur (Auto keert om tegen de achtergrond); het dialoog toont een live voorbeeld. Met de balk ingeschakeld draagt elke export (losse afbeelding, mapstapels, meerbladige TIFF, GIF, alles exporteren, batchverwerking) een publicatiestijl-balk: een afgeronde 1-2-5-lengte (ongeveer 12 % van de beeldbreedte) met omlijnde, leesbare tekst. De CLI ondersteunt dit via `--scale-bar` (automatische kalibratie) en `--scale-um <um/px>`.
@@ -455,7 +457,7 @@ OpenFocus biedt tien fusiealgorithmen plus een modus met alleen uitlijning. Een 
 
 - **Algoritme**: implementatie van Fu et al. (*Laser & Optoelectronics Progress*, 2024): een onscherpteverschil-focuskaart |I − mean(I)| wordt verrijkt met de Gaussian-like vierbuurgradiënt (GFG), verfijnd door een fast guided filter, per pixel beslist (gelijke standen opgelost met een 3×3 Sobel-kleinmaat), en de binaire beslissingskaarten worden vóór de gewogen menging opnieuw met de fast guided filter afgevlakt.
 - **Het beste voor**: microscopie en afbeeldingen met duidelijke focusgebieden
-- **Voordelen**: snel, scherpe grenzen van focusgebieden; het geheugengebruik groeit niet met het aantal frames
+- **Voordelen**: snel, scherpe focusgrenzen; focus- en gewichtskaarten worden in begrensde vensters verwerkt. Bronnen en beschrijvingen, resultaat, decodering en werkbuffers vereisen nog steeds RAM en tijdelijke schijfruimte.
 - **Parameter**: kernel = grootte van het gemiddelde filter van de grove focuskaart
 
 ### StackMFF (V1, deep learning)
@@ -656,6 +658,8 @@ beeld, de bereikbare geschiedenis en diagnostiek zonder de achtergrond opnieuw t
 
 ### Labels beheren
 
+Bij export gebruikt elke historische uitgelijnde stapel zijn eigen frame-identiteiten; ontbreken die voor een framegebonden label, dan volgt een fout. Alleen labels die werkelijk van toepassing zijn blokkeren transparante PNG-export. **Passend** gebruikt een begrensde miniatuur; **100%** toont het oorspronkelijke gebied met één bronpixel per apparaatpixel en kan laden of een fout tonen. Grote opgeslagen coördinaten en lettergroottes blijven bij bewerken behouden.
+
 Open **Extra → Labels** nadat je afbeeldingen hebt geladen of een resultaat hebt geproduceerd. Elk label heeft zijn eigen doel: de bronstapel, de uitgelijnde stapel of uitvoerresultaten. Uitvoerlabels kunnen voor alle resultaten gelden of voor het geselecteerde resultaat op naam; hernoemen of herordenen van dat resultaat verandert de koppeling niet.
 
 Gebruik **Toevoegen** om een label te maken, selecteer een item om het te bewerken en gebruik het selectievakje om het in of uit te schakelen. Voer vaste tekst in of voeg `{value}` in voor een framenummer. Het nummer is de startwaarde plus de nulgebaseerde frame-index maal het interval; een enkele uitvoer gebruikt altijd de startwaarde.
@@ -673,6 +677,8 @@ Het voorbeeld gebruikt het werkelijke doel. Navigeer met **Vorige/Volgende** of 
 **Instellingen → Geavanceerde instellingen…** opent prestatie-, registratie-, sensorreinigings-, uitvoerbenamings-, AI- en opstartinstellingen. Wijzigingen blijven concepten tot je op **OK** drukt; Annuleren, Esc en sluiten verwerpen ze. Een kleinere tegelgrootte werkt de zichtbare overlaplimiet onmiddellijk bij naar een halve tegel. De opgeslagen AI-batchlimiet blijft behouden; de inferentie gebruikt momenteel één tegel per aanroep. De registratiebreedte kan de nauwkeurigheid van de uitlijning veranderen. Het verzamelen van de uitlijningsdiagnose is een selectievakje in de sectie Registratie.
 
 Automatische update-downloads lopen tijdens inactiviteit en installeren nooit vanzelf. Een voltooide download blijft klaar tot je uitdrukkelijk **Bijwerken en herstarten** kiest. De herstart beschermt actieve bewerkingen en niet-opgeslagen werk en schrijft daarna herstelgegevens voordat de vervangende versie start. Annuleren van een download of voorbereiding wacht op de huidige veilige grens. Een bestaande volledige, nieuwere klaargezette build kan offline worden geïnstalleerd.
+
+In Windows bereidt de updater een afzonderlijke kandidaat voor en verplaatst bij de omschakeling de draagbare markering en `OpenFocusData`. Bij een mislukte omschakeling herstelt hij de oude installatie; lukt terugzetten niet, dan blijft de back-up behouden en start de app niet automatisch opnieuw. Er kan eenmaal om toestemming worden gevraagd. Annuleren van uitpakken verwijdert onvolledige voorbereidingen en wordt tussen lees- en schrijfbewerkingen van 256 KiB gecontroleerd; een geblokkeerde schijf- of netwerkbewerking kan dit vertragen.
 
 Flat-field-correctie wijzigt de werkpixels van de sessie zonder bronbestanden te overschrijven. Kies via **Extra → Stofkaart (flat-field)** het witbeeld en een voorbeeldframe en genereer het voorbeeld opnieuw na een wijziging van bron of schaal. Referentie- en werk-/basisafbeeldingen moeten hetzelfde coördinatendomein en dezelfde grootte hebben. Toepassen bereidt beide stapels voor voordat wordt vastgelegd; het optionele verwijderen van het referentieframe hoort bij dezelfde ongedaan-maakstap. Exporteer gecorrigeerde bronafbeeldingen wanneer je deze pixels buiten de sessie wilt bewaren.
 
@@ -962,7 +968,7 @@ Voeg voor één rendering bijvoorbeeld `--align openfocus --alignment-report ali
 | `--save-stacked [pad]` | Met `--auto-background` ook het resultaat vóór de vervanging opslaan (standaard `<output>_stacked<ext>`). In batchmodus alleen het standaardpad |
 | `--missing-data-map [pad]` | Met `--auto-background` ook de kaart met ontbrekende gegevens en per klasse een 8-bit masker opslaan (standaard `<output>_missing.png`). In batchmodus alleen het standaardpad |
 | `--dry-run` | Invoer controleren en het plan tonen zonder te fuseren |
-| `--resume` | Batchmodus: mappen overslaan waarvan het uitvoerbestand al bestaat |
+| `--resume` | Sla een map alleen over als alle nu gevraagde resultaten niet-lege gewone bestanden zijn; inhoud en parameters worden niet gecontroleerd |
 | `--json FILE` | Een machineleesbare resultaatsamenvatting naar FILE schrijven |
 | `--json-progress` | Eén JSON-voortgangsobject per stap naar stdout schrijven (NDJSON); proza gaat naar stderr |
 | `--config FILE` | Batchmodus: JSON-bestand met overschrijvingen per map, bijvoorbeeld `{"stackA": {"method": "dct", "kernel": 9}}` |
@@ -1087,6 +1093,7 @@ Exitcodes: `0` succes, `1` verwerkingsfout, `2` gebruiksfout. `python main.py --
 
 #### AI niet beschikbaar
 
+- Schakel experimentele functies in de geavanceerde instellingen in en bevestig; AI-methoden zijn op de desktop anders uitgeschakeld. Runtime en model zijn afzonderlijke vereisten.
 - Controleer ONNX Runtime en het meegeleverde model.
 - Controleer via **Help → Omgevingsinfo**
 

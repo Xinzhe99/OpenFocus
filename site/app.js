@@ -3,12 +3,13 @@
 
   // Theme: system -> light -> dark
   const themeBtn = $('#theme');
-  if (themeBtn && window.__theme) {
+  if (themeBtn && window.__theme && window.__themeMode) {
     themeBtn.addEventListener('click', () => {
       const order = ['light', 'dark', 'system'];
       const next = order[(order.indexOf(window.__themeMode()) + 1) % order.length];
       window.__theme(next);
     });
+    themeBtn.dataset.enhanced = '';
   }
 
   // The navigation download follows the visitor's OS; the hero shows both
@@ -72,6 +73,7 @@
         menuBtn.setAttribute('aria-expanded', 'false');
       });
     });
+    nav.dataset.enhanced = '';
   }
 
   // Language menu
@@ -106,6 +108,8 @@
         if (menuBtn) menuBtn.setAttribute('aria-expanded', 'false');
       }
     });
+    langMenu.hidden = true;
+    langBtn.closest('.langs').dataset.enhanced = '';
   }
 
   // Hairline under the nav once the page scrolls

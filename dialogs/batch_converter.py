@@ -24,9 +24,9 @@ from locales import trans
 
 
 class ConverterWorker(QThread):
-    item = pyqtSignal(int, str)
+    item = pyqtSignal(object)
     progress = pyqtSignal(int)
-    complete = pyqtSignal(int, int, bool)
+    complete = pyqtSignal(object)
 
     def __init__(self, sources, directory, ext):
         super().__init__()
@@ -35,7 +35,7 @@ class ConverterWorker(QThread):
     def run(self):
         result = convert_batch(self.sources, self.directory, self.ext,
                                self.isInterruptionRequested, self.item.emit, self.progress.emit)
-        self.complete.emit(*result)
+        self.complete.emit(result)
 
 
 class ThumbnailWorker(QThread):
@@ -101,6 +101,8 @@ class BatchConverterDialog(QDialog):
         self.worker = None
         self.sources = []
         self._close_pending = False
+        self._conversion_results = None
+        self._terminal_rows = set()
         self.thumbnail_worker = None
         self._thumbnail_items = {}
         self._thumbnail_cursor = 0
@@ -127,6 +129,7 @@ class BatchConverterDialog(QDialog):
         self.list.setAcceptDrops(True)
         self.list.viewport().setAcceptDrops(True)
         self.list.viewport().installEventFilter(self)
+        self.list.itemDoubleClicked.connect(self._show_result_details)
         self.empty_hint = QLabel(trans.t('converter_drop_hint'), self.list.viewport())
         self.empty_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.empty_hint.setWordWrap(True)
@@ -379,6 +382,8 @@ class BatchConverterDialog(QDialog):
         if not self.sources or not directory or (os.path.exists(directory) and not os.path.isdir(directory)):
             QMessageBox.warning(self, trans.t('converter_title'), trans.t('converter_required'))
             return
+        self._conversion_results = None
+        self._terminal_rows.clear()
         for index, path in enumerate(self.sources):
             self.list.item(index).setText(path)
             self.list.item(index).setToolTip('')
@@ -395,12 +400,38 @@ class BatchConverterDialog(QDialog):
         self.worker.finished.connect(self._finished)
         self.worker.start()
 
-    def _item(self, index, status):
-        item = self.list.item(index)
-        if item is not None:
-            lines = status.splitlines()
-            item.setText(Path(self.sources[index]).name + '\n' + (lines[-1] if lines else ''))
-            item.setToolTip(self.sources[index] + '\n' + status)
+    def _item(self, event):
+        index = event['index']
+        if index in self._terminal_rows:
+            return
+        row = self.list.item(index)
+        if row is None:
+            return
+        status = event['status']
+        if status == 'running':
+            text = trans.t('converter_item_state').format(
+                completed=event['completed'], pages=event['pages'], failed=event['failed'])
+            if event['error']:
+                text += ' — ' + event['error']
+        else:
+            self._terminal_rows.add(index)
+            text = trans.t('converter_status_' + status)
+            if event['error']:
+                text += ' — ' + event['error']
+        row.setText(Path(self.sources[index]).name + '\n' + text)
+        row.setToolTip(self.sources[index])
+
+    def _show_result_details(self, row):
+        if self._conversion_results is None:
+            return
+        index = self.list.row(row)
+        if not 0 <= index < len(self._conversion_results['items']):
+            return
+        record = self._conversion_results['items'][index]
+        details = [self.sources[index], trans.t('converter_status_' + record['status'])]
+        details.extend(record['outputs'])
+        details.extend(record['errors'])
+        QMessageBox.information(self, trans.t('converter_title'), '\n'.join(details))
 
     def _cancel(self):
         if self.worker:
@@ -408,9 +439,14 @@ class BatchConverterDialog(QDialog):
             self.cancel.setEnabled(False)
             self.summary.setText(trans.t('depth_cancelling'))
 
-    def _complete(self, success, failed, cancelled):
-        self.summary.setText(trans.t('converter_summary').format(success=success, failed=failed,
-                             cancelled=trans.t('compare_cancelled') if cancelled else ''))
+    def _complete(self, result):
+        self._conversion_results = result
+        counts = result['counts']
+        summary = ' · '.join(f"{trans.t('converter_status_' + status)}: {counts[status]}"
+                             for status in ('success', 'failed', 'partial', 'cancelled', 'not_started'))
+        if result['scheduler_error']:
+            summary += '\n' + trans.t('converter_scheduler_error').format(error=result['scheduler_error'])
+        self.summary.setText(summary)
 
     def _finished(self):
         self._busy = False

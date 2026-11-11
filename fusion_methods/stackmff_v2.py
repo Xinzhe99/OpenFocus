@@ -66,9 +66,18 @@ def infer(frames, model_path, use_gpu, should_cancel=None,
           execution_plan=None, thread_count=None,
           resource_preference='balanced'):
     """Return (fused pixels, depth 0-1, index 0..N-1) for one whole tile."""
-    if execution_plan is None:
-        from fusion_methods.neural_runtime import start_inference_job
-        start_inference_job()
+    from core.resource_policy import heavy_job
+    from fusion_methods.neural_runtime import start_inference_job
+    with heavy_job(should_cancel) if execution_plan is None else nullcontext():
+        if execution_plan is None:
+            start_inference_job()
+        return _infer_under_lease(frames, model_path, use_gpu, should_cancel,
+                                  execution_plan, thread_count, resource_preference)
+
+
+def _infer_under_lease(frames, model_path, use_gpu, should_cancel=None,
+                       execution_plan=None, thread_count=None,
+                       resource_preference='balanced'):
     common.cancel(should_cancel)
     out_dtype = np.float32 if any(f.dtype == np.uint16 for f in frames) else fuse_output_dtype(frames)
     model, device, plan = _prepare_inference(
@@ -102,10 +111,13 @@ def stackmffv2_impl(input_source, img_resize, model_path, use_gpu,
 
     lease = heavy_job(should_cancel) if execution_plan is None else nullcontext()
     with lease:
+        if execution_plan is None:
+            from fusion_methods.neural_runtime import start_inference_job
+            start_inference_job()
         common.cancel(should_cancel)
         if tile_size is not None:
-            from fusion_methods.stackmff_v2_tiled import tiled_fusion
-            return tiled_fusion(
+            from fusion_methods.stackmff_v2_tiled import _tiled_fusion_under_lease
+            return _tiled_fusion_under_lease(
                 input_source, img_resize, model_path, use_gpu, should_cancel,
                 execution_plan, thread_count, resource_preference, tile_size,
                 tile_overlap, progress_callback, exposure_gains, source_all_uint8)
@@ -115,7 +127,7 @@ def stackmffv2_impl(input_source, img_resize, model_path, use_gpu,
             raise ValueError("At least two images are required for fusion")
         if progress_callback is not None:
             progress_callback(0, 1)
-        fused, _depth, _index = infer(
+        fused, _depth, _index = _infer_under_lease(
             frames, model_path, use_gpu,
             should_cancel=should_cancel, execution_plan=execution_plan,
             thread_count=thread_count,
@@ -131,8 +143,22 @@ def depth_positions(images, model_path, use_gpu, should_cancel=None,
                     resource_preference='balanced', tile_size=None,
                     tile_overlap=0, progress_callback=None):
     """Sampled layer positions, with adaptive whole-stack spatial tiling."""
+    from core.resource_policy import heavy_job
+    from fusion_methods.neural_runtime import start_inference_job
+    with heavy_job(should_cancel) if execution_plan is None else nullcontext():
+        if execution_plan is None:
+            start_inference_job()
+        return _depth_positions_under_lease(
+            images, model_path, use_gpu, should_cancel, execution_plan,
+            thread_count, resource_preference, tile_size, tile_overlap, progress_callback)
+
+
+def _depth_positions_under_lease(images, model_path, use_gpu, should_cancel=None,
+                                 execution_plan=None, thread_count=None,
+                                 resource_preference='balanced', tile_size=None,
+                                 tile_overlap=0, progress_callback=None):
     from core.resource_policy import ResourceLimitError
-    from fusion_methods.stackmff_v2_tiled import _Source, tiled_depth
+    from fusion_methods.stackmff_v2_tiled import _Source, _tiled_depth_under_lease
     images = list(images)
     if tile_size is None:
         try:
@@ -145,7 +171,7 @@ def depth_positions(images, model_path, use_gpu, should_cancel=None,
         else:
             if progress_callback is not None:
                 progress_callback(0, 1)
-            fused, _depth, index = infer(
+            fused, _depth, index = _infer_under_lease(
                 images, model_path, use_gpu, should_cancel=should_cancel,
                 execution_plan=execution_plan, thread_count=thread_count,
                 resource_preference=resource_preference)
@@ -153,7 +179,7 @@ def depth_positions(images, model_path, use_gpu, should_cancel=None,
                 progress_callback(1, 1)
             return index.astype(np.float32)
     source = _Source(images, None, None, should_cancel)
-    _depth, index = tiled_depth(
+    _depth, index = _tiled_depth_under_lease(
         source, model_path, use_gpu, should_cancel, execution_plan,
         thread_count, resource_preference, tile_size, tile_overlap,
         progress_callback)

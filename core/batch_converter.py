@@ -3,10 +3,13 @@ import os
 import errno
 import operator
 import shutil
-import tempfile
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 import struct
+from itertools import islice
+from contextlib import ExitStack
+from threading import Event
+import math
 
 from threadpoolctl import threadpool_limits
 
@@ -53,9 +56,10 @@ def estimate_job(path, page=0, ext=None):
                 return 64 * 1024**2, compressed + 1024**2
     elif Path(path).suffix.lower() in ('.tif', '.tiff'):
         with tifffile.TiffFile(path) as tif:
-            _, entry = list(image_loader.tiff_source_pages(tif))[page]
+            _, entry = next(islice(image_loader.tiff_source_pages(tif), page, None))
             width, height = entry.imagewidth, entry.imagelength
             compressed = sum(entry.databytecounts)
+            return _tiff_requirements(path, entry)
     else:
         width, height = image_loader.source_dimensions(path, page)
         compressed = os.path.getsize(path)
@@ -71,6 +75,30 @@ def _image_requirements(width, height, compressed):
     if width <= 0 or height <= 0:
         raise ValueError('Invalid image dimensions.')
     return width * height * 64 + compressed * 2, width * height * 16 + 64 * 1024 * 1024
+
+
+def _tiff_requirements(path, page):
+    """Validate the exact converter layout before any pixel allocation."""
+    image_loader.validate_tiff_page(path, page)
+    width, height = int(page.imagewidth), int(page.imagelength)
+    samples = int(page.samplesperpixel)
+    shape = tuple(int(n) for n in page.shape)
+    lzw = page.compression.name == 'LZW'
+    if width <= 0 or height <= 0 or samples not in (1, 3, 4):
+        raise ValueError('Unsupported TIFF page layout or color space.')
+    expected = (height, width) if samples == 1 else (height, width, samples)
+    planar = int(page.planarconfig or 1) == 2
+    if shape != expected and not (lzw and planar and shape == (samples, height, width)):
+        raise ValueError('Unsupported TIFF page layout or color space.')
+    if samples == 1 and page.photometric.name != 'MINISBLACK':
+        raise ValueError('Unsupported TIFF page layout or color space.')
+    if samples in (3, 4) and page.photometric.name != 'RGB':
+        raise ValueError('Unsupported TIFF color space or layout.')
+    if samples == 4 and (lzw or not page.extrasamples or page.extrasamples[0].name != 'UNASSALPHA'):
+        raise ValueError('Unsupported TIFF alpha representation.')
+    pixel_bytes = math.prod(shape) * np.dtype(page.dtype).itemsize
+    ram, disk = _image_requirements(width, height, sum(page.databytecounts))
+    return max(ram, pixel_bytes * 4 + sum(page.databytecounts) * 2), disk
 
 
 def _estimate_source(path, cancelled, ext=None):
@@ -94,8 +122,7 @@ def _estimate_source(path, cancelled, ext=None):
                     check_cancel()
                     if getattr(entry, 'is_reduced', False):
                         continue
-                    ram, disk = _image_requirements(entry.imagewidth, entry.imagelength,
-                                                     sum(entry.databytecounts))
+                    ram, disk = _tiff_requirements(path, entry)
                     need_ram, need_disk = max(need_ram, ram), max(need_disk, disk)
                     count += 1
                 check_cancel()
@@ -119,48 +146,43 @@ def _admit(path, page, output_dir, ext=None):
         raise OSError(trans.t('converter_space_error'))
 
 
-def _decode(path, page):
+def _decode_tiff(path, page, physical_page, p):
+    _tiff_requirements(path, p)
+    opencv_page = p.compression.name == 'LZW'
+    if opencv_page:
+        encoded = np.memmap(path, dtype=np.uint8, mode='r')
+        try:
+            ok, decoded = cv2.imdecodemulti(encoded, cv2.IMREAD_UNCHANGED,
+                                             range=(physical_page, physical_page + 1))
+        finally:
+            del encoded
+        if not ok or len(decoded) != 1:
+            raise ValueError(f'Could not decode TIFF page {page + 1}.')
+        a = decoded[0]
+    else:
+        a = p.asarray(out='memmap' if p.is_memmappable else None, maxworkers=1)
+    orientation = int(p.tags['Orientation'].value) if 'Orientation' in p.tags else 1
+    if a.dtype not in (np.uint8, np.uint16):
+        raise ValueError('Only 8-bit and 16-bit integer TIFF pages are supported.')
+    if p.samplesperpixel in (3, 4):
+        if a.ndim != 3 or a.shape[-1] != p.samplesperpixel:
+            raise ValueError('Unsupported TIFF color space or layout.')
+        if not opencv_page:
+            a = cv2.cvtColor(a, cv2.COLOR_RGBA2BGRA if a.shape[-1] == 4 else cv2.COLOR_RGB2BGR)
+    elif a.ndim != 2:
+        raise ValueError('Unsupported TIFF page layout or color space.')
+    transform = None if opencv_page else image_loader._EXIF_TRANSFORMS.get(orientation)
+    return np.ascontiguousarray(transform(a) if transform else a)
+
+
+def _decode(path, page, tiff_page=None):
     ext = Path(path).suffix.lower()
+    if tiff_page is not None:
+        return _decode_tiff(path, page, *tiff_page)
     if ext in ('.tif', '.tiff') and not image_loader._is_dng_tiff(path):
         with tifffile.TiffFile(path) as tif:
-            physical_page, p = list(image_loader.tiff_source_pages(tif))[page]
-            # OpenCV's bundled libtiff decodes LZW without the optional
-            # imagecodecs package. Mapping avoids copying the whole TIFF stack.
-            opencv_page = p.compression.name == 'LZW'
-            if opencv_page:
-                # libtiff's RGBA reader can premultiply straight alpha.
-                # Reject it rather than silently changing transparent pixels.
-                if p.samplesperpixel == 4:
-                    raise ValueError('LZW TIFF alpha cannot be preserved safely.')
-                encoded = np.memmap(path, dtype=np.uint8, mode='r')
-                try:
-                    ok, decoded = cv2.imdecodemulti(encoded, cv2.IMREAD_UNCHANGED,
-                                                     range=(physical_page, physical_page + 1))
-                finally:
-                    del encoded
-                if not ok or len(decoded) != 1:
-                    raise ValueError(f'Could not decode TIFF page {page + 1}.')
-                a = decoded[0]
-            else:
-                # Uncompressed TIFFs can be read directly from their source
-                # mapping. Keep compressed codec work in this one pool layer.
-                a = p.asarray(out='memmap' if p.is_memmappable else None, maxworkers=1)
-            orientation = int(p.tags['Orientation'].value) if 'Orientation' in p.tags else 1
-            if a.dtype not in (np.uint8, np.uint16):
-                raise ValueError('Only 8-bit and 16-bit integer TIFF pages are supported.')
-            if p.samplesperpixel in (3, 4):
-                if p.photometric.name != 'RGB' or a.ndim != 3 or a.shape[-1] != p.samplesperpixel:
-                    raise ValueError('Unsupported TIFF color space or layout.')
-                if p.samplesperpixel == 4 and (not p.extrasamples or p.extrasamples[0].name != 'UNASSALPHA'):
-                    raise ValueError('Unsupported TIFF alpha representation.')
-                if not opencv_page:
-                    a = cv2.cvtColor(a, cv2.COLOR_RGBA2BGRA if a.shape[-1] == 4 else cv2.COLOR_RGB2BGR)
-            elif p.samplesperpixel != 1 or a.ndim != 2 or p.photometric.name != 'MINISBLACK':
-                raise ValueError('Unsupported TIFF page layout or color space.')
-            # OpenCV's TIFF decoder already applies the TIFF orientation,
-            # including when IMREAD_UNCHANGED is requested.
-            transform = None if opencv_page else image_loader._EXIF_TRANSFORMS.get(orientation)
-            return np.ascontiguousarray(transform(a) if transform else a)
+            physical, entry = next(islice(image_loader.tiff_source_pages(tif), page, None))
+            return _decode_tiff(path, page, physical, entry)
     if ext in image_loader.RAW_FORMATS or image_loader._is_dng_tiff(path):
         # Admission already opens this native path, including Unicode names.
         # open_buffer(file) otherwise reads the entire RAW into a Python bytes.
@@ -177,6 +199,13 @@ def _decode(path, page):
         image = np.ascontiguousarray(np.asarray(heif)[:height, :width])
         image = image_loader.apply_exif_orientation(path, image)
     else:
+        with Image.open(path) as header:
+            image_loader.validate_pil_header(path, header)
+            if header.mode == 'CMYK':
+                image = image_loader.cmyk_to_bgr(header, path, header.info.get('icc_profile', b''))
+                orientation = int(read_image_exif(header).get(274, 1))
+                transform = image_loader._EXIF_TRANSFORMS.get(orientation)
+                return np.ascontiguousarray(transform(image) if transform else image)
         # Decode unchanged to retain alpha, including transparent non-PNG files.
         data = np.fromfile(path, dtype=np.uint8)
         image = cv2.imdecode(data, cv2.IMREAD_UNCHANGED)
@@ -199,27 +228,16 @@ def _decode(path, page):
     return image
 
 
-def _reserve(directory, stem, ext):
-    index = 0
-    while True:
-        name = stem + (f'_{index}' if index else '') + ext
-        path = os.path.join(directory, name)
-        try:
-            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o666)
-            os.close(fd)
-            return path
-        except FileExistsError:
-            index += 1
 
-
-def _write(path, pixels, source, page, ext, cancelled=None):
+def _write(path, pixels, source, page, ext, cancelled=None, metadata_image=None):
     if pixels.ndim == 3 and pixels.shape[2] == 4 and ext != '.png':
         if image_loader._has_transparency(pixels):
             raise ValueError('This output format cannot safely preserve transparency; choose PNG.')
         pixels = cv2.cvtColor(pixels, cv2.COLOR_BGRA2BGR)
     if pixels.dtype == np.uint16 and ext not in ('.png', '.tif'):
         pixels = to_display_uint8(pixels)
-    exif = image_loader._read_exif_bytes(source) if page == 0 else b''
+    exif = (image_loader._exif_bytes_from_image(metadata_image) if metadata_image is not None
+            else image_loader._read_exif_bytes(source) if page == 0 else b'')
     if not exif and page == 0 and Path(source).suffix.lower() in ('.heic', '.heif'):
         try:
             with Image.open(source) as image:
@@ -227,16 +245,13 @@ def _write(path, pixels, source, page, ext, cancelled=None):
         except (OSError, ValueError):
             pass
     safe = export_exif(exif) if exif else None
-    is_raw = Path(source).suffix.lower() in image_loader.RAW_FORMATS or image_loader._is_dng_tiff(source)
+    is_raw = metadata_image is None and (Path(source).suffix.lower() in image_loader.RAW_FORMATS or image_loader._is_dng_tiff(source))
     if safe and is_raw:
         # LibRaw develops into sRGB regardless of the camera's JPEG setting.
         safe.get_ifd(0x8769).pop(40961, None)
     exif = safe.tobytes() if safe else b''
-    tiff_page = None
-    if Path(source).suffix.lower() in ('.tif', '.tiff') and not is_raw:
-        with tifffile.TiffFile(source) as tif:
-            tiff_page = list(image_loader.tiff_source_pages(tif))[page][0]
-    profile = image_loader._read_icc_profile(source, page=tiff_page)
+    profile = (image_loader._icc_profile_from_image(source, metadata_image)
+               if metadata_image is not None else image_loader._read_icc_profile(source))
     params = []
     if ext == '.jpg':
         params = [cv2.IMWRITE_JPEG_QUALITY, 95]
@@ -247,11 +262,23 @@ def _write(path, pixels, source, page, ext, cancelled=None):
         raise OSError('Image encoding or writing failed.')
 
 
-def convert_one(source, output_dir, ext, page=0, pages=1, cancelled=lambda: False, *, _admitted=False):
+def convert_one(source, output_dir, ext, page=0, pages=1, cancelled=lambda: False, *,
+                _admitted=False, _tiff_page=None, _metadata_image=None):
     """Write one frame, reserving a unique name without touching existing files."""
+    if (_tiff_page is None and Path(source).suffix.lower() in ('.tif', '.tiff')
+            and not image_loader._is_dng_tiff(source)):
+        if not _admitted:
+            _admit(source, page, output_dir, ext)
+        if cancelled():
+            raise InterruptedError()
+        with tifffile.TiffFile(source) as tif, Image.open(source) as metadata:
+            entry = next(islice(image_loader.tiff_source_pages(tif), page, None))
+            metadata.seek(entry[0])
+            return convert_one(source, output_dir, ext, page, pages, cancelled,
+                               _admitted=True, _tiff_page=entry, _metadata_image=metadata)
     with log_operation('converter.page', source=os.fspath(source), page=page + 1,
                        pages=pages, format=ext, output_dir=os.fspath(output_dir)) as operation:
-        destination = part = None
+        from utils.export_paths import publish_unique
         try:
             if ext not in OUTPUT_EXTENSIONS.values():
                 raise ValueError('Unsupported conversion output format')
@@ -261,22 +288,18 @@ def convert_one(source, output_dir, ext, page=0, pages=1, cancelled=lambda: Fals
                 _admit(source, page, output_dir, ext)
             if cancelled():
                 raise InterruptedError()
-            pixels = None if ext == '.dng' else _decode(source, page)
+            pixels = None if ext == '.dng' else _decode(source, page, _tiff_page)
             if cancelled():
                 raise InterruptedError()
             stem = Path(source).stem + (f'_page_{page + 1:04d}' if pages > 1 else '')
-            destination = _reserve(output_dir, stem, ext)
-            fd, part = tempfile.mkstemp(suffix=ext, dir=output_dir)
-            os.close(fd)
-            if ext == '.dng':
-                from utils.linear_dng import convert_raw_to_dng
-                convert_raw_to_dng(part, source, should_cancel=cancelled)
-            else:
-                _write(part, pixels, source, page, ext, cancelled)
-            if cancelled():
-                raise InterruptedError()
-            os.replace(part, destination)
-            part = None
+            def write_staged(part):
+                if ext == '.dng':
+                    from utils.linear_dng import convert_raw_to_dng
+                    convert_raw_to_dng(part, source, should_cancel=cancelled)
+                else:
+                    _write(part, pixels, source, page, ext, cancelled, _metadata_image)
+            destination = publish_unique(os.path.join(output_dir, stem + ext), write_staged,
+                                         start=1, should_cancel=cancelled)
             log_action('converter.output', source=os.fspath(source), page=page + 1,
                        output=destination, format=ext)
             return destination
@@ -284,14 +307,9 @@ def convert_one(source, output_dir, ext, page=0, pages=1, cancelled=lambda: Fals
             from core.registration import RegistrationCancelled
             if isinstance(exc, (InterruptedError, RegistrationCancelled)):
                 operation.cancel()
-            if destination is not None:
-                os.unlink(destination)
             if isinstance(exc, RegistrationCancelled):
                 raise InterruptedError() from exc
             raise
-        finally:
-            if part and os.path.exists(part):
-                os.unlink(part)
 
 
 def page_count(path):
@@ -319,27 +337,64 @@ def _error_text(exc):
 
 def _convert_source(index, source, directory, ext, count, cancelled, item):
     from core.registration import RegistrationCancelled
-    outputs, errors = [], []
+    record = dict(index=index, source=source, status='active', outputs=[], errors=[], stop_reason=None)
+    outputs, errors = record['outputs'], record['errors']
+    def emit(page, status, output=None, error=None):
+        item(dict(index=index, page=page, pages=count, completed=len(outputs),
+                  failed=len(errors), output=output, error=error, status=status))
     with log_operation('converter.item', source=source, format=ext, pages=count) as operation:
-        for page in range(count):
-            if cancelled():
-                operation.cancel()
-                break
-            item(index, '\n'.join(outputs + errors + [f'{page + 1}/{count} …']))
-            try:
-                outputs.append(convert_one(source, directory, ext, page, count, cancelled, _admitted=True))
-            except (InterruptedError, RegistrationCancelled):
-                operation.cancel()
-                break
-            except Exception as exc:
-                errors.append(f'{page + 1}/{count}: {_error_text(exc)}')
-                operation.fail(exc)
-            state = trans.t('converter_item_state').format(completed=len(outputs), pages=count, failed=len(errors))
-            item(index, '\n'.join(outputs + errors + [state]))
-        interrupted = len(outputs) + len(errors) < count
-        if interrupted:
-            item(index, '\n'.join(outputs + errors + ['Cancelled']))
-        return not errors and not interrupted, bool(errors)
+        try:
+            with ExitStack() as stack:
+                tiff = (Path(source).suffix.lower() in ('.tif', '.tiff')
+                        and not image_loader._is_dng_tiff(source))
+                if tiff:
+                    tif = stack.enter_context(tifffile.TiffFile(source))
+                    metadata = stack.enter_context(Image.open(source))
+                    entries = iter(image_loader.tiff_source_pages(tif))
+                for page in range(count):
+                    if cancelled():
+                        operation.cancel()
+                        break
+                    entry = None
+                    if tiff:
+                        entry = next(entries)
+                        if cancelled():
+                            break
+                        metadata.seek(entry[0])
+                    emit(page + 1, 'running')
+                    try:
+                        if tiff:
+                            output = convert_one(source, directory, ext, page, count, cancelled,
+                                                 _admitted=True, _tiff_page=entry, _metadata_image=metadata)
+                        else:
+                            output = convert_one(source, directory, ext, page, count, cancelled, _admitted=True)
+                        outputs.append(output)
+                        emit(page + 1, 'running', output=output)
+                    except (InterruptedError, RegistrationCancelled):
+                        operation.cancel()
+                        break
+                    except Exception as exc:
+                        error = f'{page + 1}/{count}: {_error_text(exc)}'
+                        errors.append(error)
+                        operation.fail(exc)
+                        emit(page + 1, 'running', error=error)
+        except (InterruptedError, RegistrationCancelled):
+            operation.cancel()
+        except Exception as exc:
+            errors.append(_error_text(exc))
+            operation.fail(exc)
+        finished = len(outputs) + len(errors) >= count
+        if len(outputs) == count and not errors:
+            record['status'] = 'success'
+        elif outputs:
+            record['status'] = 'partial'
+        elif errors:
+            record['status'] = 'failed'
+        else:
+            record['status'] = 'cancelled'
+        if not finished and cancelled():
+            record['stop_reason'] = 'user_cancel'
+        return record
 
 
 def _native_worker(threads):
@@ -349,9 +404,23 @@ def _native_worker(threads):
 
 
 def convert_batch(sources, directory, ext, cancelled, item, progress):
-    """One pool; lazy submissions reserve each source's largest page footprint."""
+    """Admit bounded jobs and preserve each input's independently committed result."""
     from core.registration import RegistrationCancelled
-    success = failed = completed = 0
+    records = [dict(index=i, source=source, status='pending', outputs=[], errors=[], stop_reason=None)
+               for i, source in enumerate(sources)]
+    stop = Event()
+    scheduler_error = None
+    completed = 0
+    def stopped():
+        return stop.is_set() or cancelled()
+    def finish(record):
+        nonlocal completed
+        records[record['index']] = record
+        completed += 1
+        item(dict(index=record['index'], page=0, pages=0, completed=len(record['outputs']),
+                  failed=len(record['errors']), output=None,
+                  error=record['errors'][-1] if record['errors'] else None, status=record['status']))
+        progress(completed)
     with log_operation('converter.batch', files=len(sources), format=ext, output_dir=directory) as operation:
         try:
             with resource_policy.heavy_job(cancelled):
@@ -369,7 +438,7 @@ def convert_batch(sources, directory, ext, cancelled, item, progress):
                     try:
                         from pillow_heif import options as heif_options
                     except ImportError:
-                        pass  # The affected input reports its missing codec per item.
+                        pass
                 previous_heif_threads = heif_options.DECODE_THREADS if heif_options is not None else None
                 try:
                     cv2.setNumThreads(native_threads)
@@ -378,95 +447,80 @@ def convert_batch(sources, directory, ext, cancelled, item, progress):
                     with threadpool_limits(limits=native_threads), ThreadPoolExecutor(
                             max_workers=plan.workers, initializer=_native_worker,
                             initargs=(native_threads,)) as pool:
-                        pending, active = None, {}
-                        sources_iter = iter(enumerate(sources))
-                        exhausted = False
+                        pending, active, next_index = None, {}, 0
                         used_ram = used_disk = 0
-                        while active or not exhausted:
-                            if cancelled():
-                                if pending is not None:
-                                    item(pending[0], 'Cancelled')
-                                for index, _ in sources_iter:
-                                    item(index, 'Cancelled')
-                                exhausted, pending = True, None
-                                operation.cancel()
-                            while not exhausted and len(active) < plan.max_in_flight:
-                                if pending is None:
-                                    try:
-                                        index, source = next(sources_iter)
-                                    except StopIteration:
-                                        exhausted = True
-                                        break
-                                    try:
-                                        count, need_ram, need_disk = _estimate_source(source, cancelled, ext)
-                                        pending = index, source, count, need_ram, need_disk
-                                    except (InterruptedError, RegistrationCancelled):
-                                        item(index, 'Cancelled')
-                                        for remaining_index, _ in sources_iter:
-                                            item(remaining_index, 'Cancelled')
-                                        exhausted = True
-                                        operation.cancel()
-                                        break
-                                    except Exception as exc:
-                                        item(index, _error_text(exc))
-                                        log_action('converter.admission_failed', source=source, reason=str(exc))
-                                        failed += 1
-                                        completed += 1
-                                        progress(completed)
+                        while active or next_index < len(records) or pending is not None:
+                            try:
+                                while not stopped() and len(active) < plan.max_in_flight:
+                                    if pending is None:
+                                        if next_index >= len(records):
+                                            break
+                                        index = next_index
+                                        next_index += 1
+                                        source = sources[index]
+                                        try:
+                                            count, ram, disk = _estimate_source(source, stopped, ext)
+                                            pending = (index, source, count, ram, disk)
+                                        except (InterruptedError, RegistrationCancelled):
+                                            break
+                                        except Exception as exc:
+                                            rec = records[index]
+                                            rec['status'] = 'failed'
+                                            rec['errors'].append(_error_text(exc))
+                                            finish(rec)
+                                            continue
+                                    index, source, count, ram, disk = pending
+                                    snapshot = resource_policy.probe_resources()
+                                    ceiling = resource_policy.ram_ceiling(snapshot)
+                                    free_ram = (min(plan.ram_budget - used_ram, ceiling - used_ram)
+                                                if active or ram <= plan.ram_budget else ceiling)
+                                    free_disk = shutil.disk_usage(directory).free - used_disk
+                                    if ram > free_ram or disk > free_disk:
+                                        if active:
+                                            break
+                                        reason = ((trans.t('converter_memory_error') if snapshot.ram_known
+                                                   else trans.t('converter_memory_unknown'))
+                                                  if ram > free_ram else trans.t('converter_space_error'))
+                                        rec = records[index]
+                                        rec['status'] = 'failed'
+                                        rec['errors'].append(reason)
+                                        finish(rec)
+                                        pending = None
                                         continue
-                                index, source, count, need_ram, need_disk = pending
-                                snapshot = resource_policy.probe_resources()
-                                # The fixed budget bounds all commitments. The live
-                                # ceiling also reserves room for active jobs that
-                                # may not have allocated their full footprint yet.
-                                ceiling = resource_policy.ram_ceiling(snapshot)
-                                free_ram = (min(plan.ram_budget - used_ram, ceiling - used_ram)
-                                            if active or need_ram <= plan.ram_budget else ceiling)
-                                free_disk = shutil.disk_usage(directory).free - used_disk
-                                if need_ram > free_ram or need_disk > free_disk:
-                                    if active:
+                                    if stopped():
                                         break
-                                    reason = ((trans.t('converter_memory_error') if snapshot.ram_known
-                                               else trans.t('converter_memory_unknown'))
-                                              if need_ram > free_ram else trans.t('converter_space_error'))
-                                    item(index, reason)
-                                    log_action('converter.admission_failed', source=source, reason=reason,
-                                               need_ram=need_ram, free_ram=free_ram,
-                                               need_disk=need_disk, free_disk=free_disk)
-                                    failed += 1
-                                    completed += 1
-                                    progress(completed)
+                                    future = pool.submit(_convert_source, index, source, directory, ext,
+                                                         count, stopped, item)
+                                    records[index]['status'] = 'active'
+                                    active[future] = (index, ram, disk)
+                                    used_ram += ram
+                                    used_disk += disk
                                     pending = None
-                                    continue
-                                if cancelled():
-                                    break
-                                log_action('converter.admitted', source=source, pages=count,
-                                           need_ram=need_ram, free_ram=free_ram,
-                                           need_disk=need_disk, free_disk=free_disk,
-                                           in_flight=len(active) + 1)
-                                future = pool.submit(_convert_source, index, source, directory, ext,
-                                                     count, cancelled, item)
-                                active[future] = index, need_ram, need_disk
-                                used_ram += need_ram
-                                used_disk += need_disk
-                                pending = None
+                            except Exception as exc:
+                                scheduler_error = _error_text(exc)
+                                operation.fail(exc)
+                                stop.set()
                             if not active:
+                                if stopped():
+                                    break
                                 continue
                             done, _ = wait(active, timeout=0.05, return_when=FIRST_COMPLETED)
                             for future in done:
-                                index, need_ram, need_disk = active.pop(future)
-                                used_ram -= need_ram
-                                used_disk -= need_disk
+                                index, ram, disk = active.pop(future)
+                                used_ram -= ram
+                                used_disk -= disk
                                 try:
-                                    ok, error = future.result()
-                                    success += int(ok)
-                                    failed += int(error)
+                                    rec = future.result()
                                 except Exception as exc:
-                                    item(index, _error_text(exc))
-                                    failed += 1
-                                    operation.fail(exc)
-                                completed += 1
-                                progress(completed)
+                                    rec = records[index]
+                                    rec['status'] = 'failed'
+                                    rec['errors'].append(_error_text(exc))
+                                if scheduler_error and rec['status'] in ('cancelled', 'partial') and rec['stop_reason']:
+                                    rec['stop_reason'] = 'scheduler_error'
+                                    rec['errors'].append(scheduler_error)
+                                    if rec['status'] == 'cancelled':
+                                        rec['status'] = 'failed'
+                                finish(rec)
                 finally:
                     cv2.setNumThreads(previous_threads)
                     if heif_options is not None:
@@ -474,15 +528,19 @@ def convert_batch(sources, directory, ext, cancelled, item, progress):
         except (InterruptedError, RegistrationCancelled):
             operation.cancel()
         except Exception as exc:
+            scheduler_error = _error_text(exc)
             operation.fail(exc)
-            # Planning failures are visible for every source, never a silent
-            # successful completion with no output.
-            for index in range(len(sources)):
-                item(index, _error_text(exc))
-            failed = len(sources)
-        if failed:
-            operation.fail()
-        return success, failed, cancelled()
+        for rec in records:
+            if rec['status'] == 'pending':
+                rec['status'] = 'not_started'
+                rec['stop_reason'] = 'scheduler_error' if scheduler_error else 'user_cancel'
+                if scheduler_error:
+                    rec['errors'].append(scheduler_error)
+                finish(rec)
+        counts = {status: sum(rec['status'] == status for rec in records)
+                  for status in ('success', 'failed', 'partial', 'cancelled', 'not_started')}
+        return dict(items=records, counts=counts, user_cancelled=bool(cancelled()),
+                    scheduler_error=scheduler_error)
 
 
 def _raw_preview_pages(tif, should_cancel=None):
@@ -624,6 +682,10 @@ def thumbnail_rgb(path, size=(96, 72)):
         if image.width * image.height > 4_000_000:
             raise ValueError('No bounded image preview is available')
         resource_policy.require_memory(scratch + image.width * image.height * 16)
+        image_loader.validate_pil_header(path, image)
+        if image.mode == 'CMYK':
+            pixels = image_loader.cmyk_to_bgr(image, path, image.info.get('icc_profile', b''))
+            image = Image.fromarray(cv2.cvtColor(pixels, cv2.COLOR_BGR2RGB))
         image.thumbnail(size, Image.Resampling.LANCZOS)
         pixels = np.asarray(image.convert('RGB'))
         transform = image_loader._EXIF_TRANSFORMS.get(orientation)
@@ -649,7 +711,9 @@ def thumbnail_rgb(path, size=(96, 72)):
             if not small:
                 raise ValueError('No bounded TIFF preview is available')
             page = min(small, key=lambda p: p.imagewidth * p.imagelength)
-            pixels = page.asarray()
+            ram, _ = _tiff_requirements(path, page)
+            resource_policy.require_memory(ram)
+            pixels = page.asarray(maxworkers=1)
             if pixels.dtype == np.uint16:
                 pixels = (pixels // 257).astype(np.uint8)
             if pixels.dtype != np.uint8:

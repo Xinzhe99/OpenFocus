@@ -94,3 +94,77 @@ def test_reopened_strided_roi_owns_an_admitted_crop_after_sources_release(tmp_pa
     del context
     gc.collect()
     assert not os.path.exists(crop_path)
+
+
+@pytest.mark.parametrize('dtype', [np.uint8, np.uint16])
+@pytest.mark.parametrize('pattern', ['nonzero', 'border', 'interior', 'black'])
+def test_aligned_grayscale_processed_mask_matches_array(dtype, pattern):
+    from core.source_frames import ProcessedFrame
+
+    image = np.ones((5, 6), dtype=dtype)
+    if pattern == 'border':
+        image[:, 0] = 0
+    elif pattern == 'interior':
+        image[2, 3] = 0
+    elif pattern == 'black':
+        image[:] = 0
+    deferred = ProcessedFrame(image, lambda pixels: pixels.copy(), image.shape, image.dtype)
+    expected = build_render_context([image], image, aligned=True).frames[0].valid_mask()
+    actual = build_render_context([deferred], image, aligned=True).frames[0].valid_mask()
+    if expected is None:
+        assert actual is None
+    else:
+        assert actual.dtype == bool
+        np.testing.assert_array_equal(actual, expected)
+
+
+def test_aligned_mask_cancellation_after_connected_components(monkeypatch):
+    import core.render_context as render_context
+    from core.registration import RegistrationCancelled
+
+    image = np.ones((5, 6), np.uint8)
+    image[:, 0] = 0
+    cancelled = [False]
+    original = render_context.cv2.connectedComponents
+
+    def components(*args, **kwargs):
+        result = original(*args, **kwargs)
+        cancelled[0] = True
+        return result
+
+    monkeypatch.setattr(render_context.cv2, 'connectedComponents', components)
+    context = build_render_context([image], image, aligned=True)
+    with pytest.raises(RegistrationCancelled):
+        context.frames[0].valid_mask(should_cancel=lambda: cancelled[0])
+
+
+@pytest.mark.parametrize('mapped', [False, True])
+def test_context_worker_owns_roi_crop(mapped, qapp):
+    from PyQt6.QtCore import Qt
+    from core.workers import RenderContextWorker
+
+    source = create_frame((12, 16), np.uint16) if mapped else np.empty((12, 16), np.uint16)
+    source[:] = np.arange(16, dtype=np.uint16)
+    expected = source[2:8, 3:11].copy()
+    worker = RenderContextWorker([source], expected, roi_rect=(3, 2, 8, 6), roi_mode='crop')
+    ready, failed = [], []
+    worker.ready.connect(ready.append, Qt.ConnectionType.DirectConnection)
+    worker.failed.connect(failed.append, Qt.ConnectionType.DirectConnection)
+    worker.run()
+    assert not failed and len(ready) == 1
+    np.testing.assert_array_equal(ready[0].frames[0].image, expected)
+    assert not np.shares_memory(ready[0].frames[0].image, source)
+
+
+def test_context_worker_cancelled_before_build(qapp):
+    from PyQt6.QtCore import Qt
+    from core.workers import RenderContextWorker
+
+    image = np.ones((4, 4), np.uint8)
+    worker = RenderContextWorker([image], image)
+    ready, failed = [], []
+    worker.ready.connect(ready.append, Qt.ConnectionType.DirectConnection)
+    worker.failed.connect(failed.append, Qt.ConnectionType.DirectConnection)
+    worker.cancel()
+    worker.run()
+    assert not ready and failed == ['CANCELLED: render context cancelled']

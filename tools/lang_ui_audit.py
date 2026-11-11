@@ -8,9 +8,16 @@ cannot mask the rest:
 Reports widgets whose label needs more pixels than the widget has. Elided
 labels (ending in an ellipsis) are intentional and skipped. GroupBox exposes
 ``title()``, not ``text()`` — calling ``text()`` on it aborts the process.
+
+The audit uses a temporary private profile for settings, recovery, scratch,
+and logs. Its clipping report is written to standard output.
 """
 import os
 import sys
+import gc
+import tempfile
+import time
+from pathlib import Path
 
 # NOTE ON ACCURACY. The offscreen platform cannot resolve the UI font
 # (QFontInfo.family() comes back empty and Qt substitutes another face), so
@@ -23,7 +30,7 @@ import sys
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from PyQt6.QtCore import QTimer                      # noqa: E402
+from PyQt6.QtCore import QCoreApplication, QEvent, QTimer  # noqa: E402
 from PyQt6.QtWidgets import (                        # noqa: E402
     QApplication, QCheckBox, QGroupBox, QLabel, QPushButton, QRadioButton)
 
@@ -97,9 +104,7 @@ def clipped(root):
     return bad
 
 
-def main():
-    lang = sys.argv[1] if len(sys.argv) > 1 else "en"
-    app = QApplication([])
+def _run_audit(lang, app):
     # The offscreen platform reports a ~192 dpi font DPI, so every string
     # measured exactly twice as wide as it renders on a 96 dpi desktop
     # ("RAM: 16.7 GB / 32 GB" = 260 px offscreen, 126 px live). That false
@@ -138,28 +143,106 @@ def main():
          lambda: batch.FolderImportDialog(os.getcwd(), win)),
     ]
 
+    failure = None
+
     def run():
-        win.set_language(lang)
-        app.processEvents()
-        issues = []
-        for name, factory in dialogs:
-            if factory is None:
-                issues += [f"{name}|{b}" for b in clipped(win)]
-                continue
-            dlg = factory()
-            dlg.show()
+        nonlocal failure
+        try:
+            win.set_language(lang)
             app.processEvents()
-            issues += [f"{name}|{b}" for b in clipped(dlg)]
-            dlg.close()
-            dlg.deleteLater()
-            app.processEvents()
-        print(f"### {lang}: {len(issues)} clipped")
-        for item in issues[:15]:
-            print("   ", item)
-        app.quit()
+            issues = []
+            for name, factory in dialogs:
+                if factory is None:
+                    issues += [f"{name}|{b}" for b in clipped(win)]
+                    continue
+                dlg = factory()
+                try:
+                    dlg.show()
+                    app.processEvents()
+                    issues += [f"{name}|{b}" for b in clipped(dlg)]
+                finally:
+                    dlg.close()
+                    dlg.deleteLater()
+                    app.processEvents()
+            print(f"### {lang}: {len(issues)} clipped")
+            for item in issues[:15]:
+                print("   ", item)
+        except BaseException as exc:
+            failure = exc
+        finally:
+            app.quit()
 
     QTimer.singleShot(400, run)
     app.exec()
+    if failure is not None:
+        raise failure
+
+
+def main():
+    # An existing singleton or application cannot be moved to a new profile.
+    from utils import settings_store
+    if settings_store._settings_singleton is not None or QApplication.instance() is not None:
+        raise RuntimeError("Language audit requires a fresh process; run it in a separate process")
+
+    lang = sys.argv[1] if len(sys.argv) > 1 else "en"
+    names = ("OPENFOCUS_DATA_DIR", "OPENFOCUS_LOG_DIR")
+    previous = {name: os.environ.get(name) for name in names}
+    try:
+        with tempfile.TemporaryDirectory(prefix="openfocus-lang-audit-") as scratch:
+            os.environ["OPENFOCUS_DATA_DIR"] = scratch
+            os.environ["OPENFOCUS_LOG_DIR"] = str(Path(scratch) / "logs")
+            Path(scratch, "settings.ini").write_text(
+                "[usage]\nenabled=false\n"
+                "[ui]\nfirst_run_done=1\nask_load_scale=false\n"
+                "[updates]\nlast_check_epoch=9999999999\n"
+                "[rendering]\nuse_gpu=false\nai_cpu_warning_dismissed=true\n",
+                encoding="utf-8",
+            )
+            from core.frame_storage import configure_storage_directory
+            app = None
+            try:
+                configure_storage_directory(scratch)
+                app = QApplication([])
+                app.setQuitOnLastWindowClosed(False)
+                _run_audit(lang, app)
+            finally:
+                try:
+                    if app is not None:
+                        # Close dialogs first, then allow deferred window shutdown
+                        # (including workers) to finish before removing the profile.
+                        widgets = app.topLevelWidgets()
+                        for widget in widgets:
+                            if widget.isWindow() and widget.parent() is not None:
+                                widget.close()
+                        for widget in widgets:
+                            if widget.isWindow() and widget.parent() is None:
+                                widget.close()
+                        while any(widget.isVisible() for widget in widgets):
+                            app.processEvents()
+                            time.sleep(0.01)
+                        for widget in widgets:
+                            widget.deleteLater()
+                        widgets.clear()
+                        widget = None
+                        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+                        app.processEvents()
+                finally:
+                    try:
+                        settings_store.reset_settings_singleton()
+                    finally:
+                        try:
+                            configure_storage_directory(None)
+                            gc.collect()
+                        finally:
+                            logging_setup = sys.modules.get("utils.logging_setup")
+                            if logging_setup is not None:
+                                logging_setup.shutdown_logging()
+    finally:
+        for name, value in previous.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
 
 
 if __name__ == "__main__":

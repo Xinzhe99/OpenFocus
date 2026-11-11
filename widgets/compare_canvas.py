@@ -266,6 +266,7 @@ class DetailCanvas(_Canvas):
         super().__init__(title, parent)
         self._pixmap = None
         self._bounds = None
+        self._full = False
         self._region = None
         self._status = ""
         # "detail" crops to the inspection rectangle; "full" shows the whole
@@ -293,24 +294,14 @@ class DetailCanvas(_Canvas):
         return self._view_mode
 
     def can_show_full(self) -> bool:
-        """True when the stored pixmap IS the whole computed frame.
+        """Only a display explicitly identified as a complete frame is full."""
+        return bool(self._full and self._pixmap is not None and not self._pixmap.isNull())
 
-        ROI results carry only a crop, so offering the overview for them would
-        present a zoomed crop as the complete image.
-        """
-        if self._pixmap is None or self._pixmap.isNull():
-            return False
-        if self._bounds is None:
-            return False
-        x, y, width, height = self._bounds
-        return (x == 0 and y == 0
-                and width == self._pixmap.width()
-                and height == self._pixmap.height())
-
-    def set_result(self, pixmap, bounds):
+    def set_result(self, pixmap, bounds, *, full=False):
         """Store pixels and their (x, y, width, height) image-space bounds."""
         self._pixmap = pixmap
         self._bounds = tuple(bounds) if bounds is not None else None
+        self._full = bool(full)
         self.update()
 
     def set_region(self, region):
@@ -329,8 +320,7 @@ class DetailCanvas(_Canvas):
         x, y, width, height = self._region
         bx, by, bw, bh = self._bounds
         return (width > 0 and height > 0 and x >= bx and y >= by
-                and x + width <= bx + min(bw, self._pixmap.width())
-                and y + height <= by + min(bh, self._pixmap.height()))
+                and x + width <= bx + bw and y + height <= by + bh)
 
     def paintEvent(self, event):  # noqa: N802
         painter = QPainter(self)
@@ -349,8 +339,11 @@ class DetailCanvas(_Canvas):
             painter.drawPixmap(target, self._pixmap, source)
         elif self.has_region():
             x, y, width, height = self._region
-            bx, by, _, _ = self._bounds
-            source = QRectF(x - bx, y - by, width, height)
+            bx, by, bw, bh = self._bounds
+            source = QRectF((x - bx) * self._pixmap.width() / bw,
+                            (y - by) * self._pixmap.height() / bh,
+                            width * self._pixmap.width() / bw,
+                            height * self._pixmap.height() / bh)
             painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
             painter.drawPixmap(QRectF(self.rect()), self._pixmap, source)
         else:

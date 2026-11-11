@@ -29,3 +29,41 @@ def test_cancel_stops_during_comparison():
     calls = iter([False, False, True])
     with pytest.raises(InterruptedError):
         analyze_frames([np.zeros((2, 2), np.uint8)] * 2, lambda: next(calls))
+
+
+def test_cancel_after_decode_does_not_compare_or_resolve_next(monkeypatch):
+    from core import source_frames, stack_review
+
+    cancelled = [False]
+    calls = []
+    def resolve(frame, should_cancel=None):
+        calls.append(frame)
+        assert should_cancel is not None
+        cancelled[0] = True
+        return np.zeros((2, 2), np.uint8)
+
+    monkeypatch.setattr(source_frames, 'resolve_frame', resolve)
+    monkeypatch.setattr(stack_review, '_difference', lambda *args: pytest.fail('compared after cancellation'))
+    with pytest.raises(InterruptedError, match='Stack review cancelled'):
+        analyze_frames([1, 2], lambda: cancelled[0])
+    assert calls == [1]
+
+
+def test_decode_cancellation_is_normalized_but_io_errors_propagate(monkeypatch):
+    from core import source_frames
+    from core.registration import RegistrationCancelled
+
+    def fail(frame, should_cancel=None):
+        raise RegistrationCancelled()
+
+    monkeypatch.setattr(source_frames, 'resolve_frame', fail)
+    with pytest.raises(InterruptedError) as error:
+        analyze_frames([1])
+    assert isinstance(error.value.__cause__, RegistrationCancelled)
+
+    def fail_io(frame, should_cancel=None):
+        raise OSError('source unavailable')
+
+    monkeypatch.setattr(source_frames, 'resolve_frame', fail_io)
+    with pytest.raises(OSError, match='source unavailable'):
+        analyze_frames([1])

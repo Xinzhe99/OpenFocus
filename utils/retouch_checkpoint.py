@@ -31,20 +31,17 @@ def _aligned_mask_bytes(doc):
 def _require_replay_memory(doc, operations, max_bytes, diagnostic_bytes=0):
     from core.resource_policy import require_memory
 
-    frame_bytes = doc.base.nbytes
     count = len(operations)
     pixels = doc.height * doc.width
-    history = min(max_bytes, count * frame_bytes)
     stroke_diameters = [op.get('diameter', 0) for op in operations
                         if isinstance(op, dict) and op.get('type') == 'stroke']
     diameter = max((value for value in stroke_diameters
                     if type(value) is int and 1 <= value <= 2048), default=0)
     dab_pixels = min(doc.width, diameter) * min(doc.height, diameter)
-    # One replay document holds two image copies. A pending stroke can hold
-    # another full image of history plus coverage and float blending buffers.
-    scratch = (frame_bytes + pixels * 4 + dab_pixels * 48) if count else 0
-    require_memory(2 * frame_bytes + history + scratch + _aligned_mask_bytes(doc)
-                   + diagnostic_bytes)
+    # Working and history tiles use shared frame storage. Admission here covers
+    # non-frame blending scratch and diagnostic arrays, not the held base.
+    scratch = (pixels * 4 + dab_pixels * 48) if count else 0
+    require_memory(scratch + _aligned_mask_bytes(doc) + diagnostic_bytes)
 
 
 def _fingerprint(array, cancelled=None):
@@ -163,6 +160,7 @@ def save_checkpoint(doc, path, cancelled=None):
                     not np.array_equal(left[1], right[1]) for left, right in zip(
                         expected_fill.missing.layers(), actual_fill.missing.layers())):
                 raise ValueError('Retouch replay diagnostics do not match; start a new session')
+        del verified
         _check_provenance(doc, doc._provenance, cancelled)
         if cancelled is not None and cancelled():
             raise ValueError('Retouch checkpoint saving cancelled')
@@ -260,7 +258,7 @@ def _replay_checkpoint(doc, path, cancelled=None):
             raise ValueError('Checkpoint diagnostics exceed the history budget')
         _require_replay_memory(doc, operations, max_bytes, diagnostic_bytes)
         from utils.retouch import RetouchDocument
-        replay = RetouchDocument(doc.base, doc.context, max_strokes=max_strokes, max_bytes=max_bytes)
+        replay = RetouchDocument._for_replay(doc, max_strokes=max_strokes, max_bytes=max_bytes)
         replay._provenance = doc._provenance
         replay.stacked_image = doc.stacked_image
         replay._checkpoint_background_states = legacy_states
@@ -787,8 +785,7 @@ def _load_snapshot(doc, path, cancelled):
             names = {name for name, _shape, _dtype in plan}
             if set(payloads) != names or set(archive.namelist()) != names | {'metadata.json'}:
                 raise ValueError('Unexpected or missing checkpoint archive payload')
-            require_memory(2 * doc.base.nbytes + retained_bytes + PAYLOAD_CHUNK_BYTES
-                           + len(plan) * 256)
+            require_memory(retained_bytes + PAYLOAD_CHUNK_BYTES + len(plan) * 256)
             for name, shape, dtype in plan:
                 _cancel_checkpoint(cancelled)
                 digest = payloads[name]
@@ -800,7 +797,8 @@ def _load_snapshot(doc, path, cancelled):
                     _payload_header(stream, shape, dtype)
                     if info.file_size != stream.tell() + math.prod(shape) * dtype.itemsize:
                         raise ValueError('Checkpoint payload size does not match')
-            replay = RetouchDocument(doc.base, doc.context, max_strokes=max_strokes, max_bytes=max_bytes)
+            replay = RetouchDocument._for_replay(doc, max_strokes=max_strokes,
+                                                max_bytes=max_bytes, snapshot=True)
             replay._provenance = doc._provenance
             replay._operations, replay._cursor, replay._point_count = operations, cursor, points_count
             replay._background_analyses = background_analyses

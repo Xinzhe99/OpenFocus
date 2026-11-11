@@ -1,32 +1,20 @@
 """Tests for single-instance forwarding, layout memory, drag format, WebP."""
 import os
-import shutil
-import tempfile
 
 import numpy as np
 import pytest
 
 pytest.importorskip("PyQt6")
 
-from PyQt6.QtCore import QSettings
 from PyQt6.QtNetwork import QLocalServer, QLocalSocket
 
-TEMP_SETTINGS = os.path.join(tempfile.gettempdir(), "openfocus_pytest_qsettings")
-
-
-@pytest.fixture(scope="session")
-def qapp():
-    from PyQt6.QtWidgets import QApplication
-    QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, TEMP_SETTINGS)
-    return QApplication.instance() or QApplication([])
-
-
 @pytest.fixture()
-def clean_settings():
-    shutil.rmtree(TEMP_SETTINGS, ignore_errors=True)
-    os.makedirs(TEMP_SETTINGS, exist_ok=True)
+def clean_settings(tmp_path, monkeypatch):
+    from utils.settings_store import reset_settings_singleton
+    reset_settings_singleton()
+    monkeypatch.setenv("OPENFOCUS_DATA_DIR", str(tmp_path))
     yield
-    shutil.rmtree(TEMP_SETTINGS, ignore_errors=True)
+    reset_settings_singleton()
 
 
 class TestWebP:
@@ -75,28 +63,63 @@ class TestDragFormat:
 
 class TestLayoutMemory:
     def test_splitter_state_round_trip(self, qapp, clean_settings):
-        from utils.settings_store import save_window_layout, restore_window_layout
-        from PyQt6.QtWidgets import QSplitter, QWidget
+        from PyQt6.QtCore import QCoreApplication, QEvent
+        from PyQt6.QtWidgets import QSplitter, QVBoxLayout, QWidget
+        from utils.settings_store import (
+            MAIN_SPLITTER_KEY, WINDOW_GEOMETRY_KEY, get_settings,
+            restore_window_layout, save_window_layout,
+        )
 
-        split = QSplitter()
-        a, b = QWidget(), QWidget()
-        split.addWidget(a)
-        split.addWidget(b)
-        split.setSizes([150, 350])
+        windows = []
 
-        class FakeWindow:
-            main_splitter = split
-            right_splitter = None
+        def make_window():
+            window = QWidget()
+            windows.append(window)
+            layout = QVBoxLayout(window)
+            window.main_splitter = QSplitter(window)
+            window.main_splitter.addWidget(QWidget())
+            window.main_splitter.addWidget(QWidget())
+            layout.addWidget(window.main_splitter)
+            window.resize(800, 600)
+            window.show()
+            qapp.processEvents()
+            return window
 
-        w = FakeWindow()
-        save_window_layout(w)
+        try:
+            settings = get_settings()
+            assert not settings.contains(MAIN_SPLITTER_KEY)
+            original = make_window()
+            original.main_splitter.setSizes([300, 700])
+            qapp.processEvents()
+            saved_sizes = original.main_splitter.sizes()
+            assert len(saved_sizes) == 2 and all(size > 0 for size in saved_sizes)
+            save_window_layout(original)
+            settings.sync()
+            assert settings.contains(WINDOW_GEOMETRY_KEY)
+            assert settings.contains(MAIN_SPLITTER_KEY)
 
-        split.setSizes([100, 400])  # user drags afterwards
-        after_drag = split.sizes()
+            restored = make_window()
+            restored.main_splitter.setSizes([700, 300])
+            qapp.processEvents()
+            before = restored.main_splitter.sizes()
+            assert all(size > 0 for size in before)
+            assert sum(before) == sum(saved_sizes)
+            assert before != saved_sizes
 
-        restore_window_layout(w)
-        qapp.processEvents()
-        assert split.sizes() == after_drag
+            restore_window_layout(restored)
+            # Compare the splitters at the same client size even if the window
+            # manager adjusts the saved top-level geometry during restoration.
+            restored.resize(800, 600)
+            qapp.processEvents()
+            actual = restored.main_splitter.sizes()
+            assert sum(actual) == sum(saved_sizes)
+            assert all(abs(a - b) <= 1 for a, b in zip(actual, saved_sizes))
+        finally:
+            for window in windows:
+                window.close()
+                window.deleteLater()
+            qapp.processEvents()
+            QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
 
 
 

@@ -168,3 +168,51 @@ def test_live_session_error_survives_missing_log_and_isolated_inputs(monkeypatch
     assert not report_bundle.session_has_error(log_text='', crash_text='')
     assert not report_bundle.build_report_bundle(log_text='', crash_text='', facts={}).has_error
     assert report_bundle.session_has_error(log_text='', crash_text='native crash')
+
+
+def _native_report(title, frames, directory='/home/alice', address='0x123'):
+    crash = (title + '\nThread 0x999:\n  File "/secret/registration.py", line 99 in align\n'
+             + f'Current thread {address} (most recent call first):\n'
+             + ''.join(f'  File "{directory}/{name}", line {line} in {function}\n'
+                       for name, line, function in frames)
+             + '  File "/private/token-xyz.py", line 2 in privateperson@example.com\n'
+             + 'Extension modules: token-xyz\n')
+    old = 'Traceback (most recent call last):\n  File "x", line 2, in x\nValueError: old secret\n'
+    return report_bundle.build_report_bundle(log_text=old, crash_text=crash, facts={})
+
+
+def test_native_crash_safe_frames_and_fingerprint():
+    frames = [('workers.py', 42, 'run'), ('registration.py', 99, 'align')]
+    first = _native_report('Fatal Python error: Segmentation fault', frames)
+    same = _native_report('Fatal Python error: Segmentation fault', frames, 'C:\\Users\\bob', '0x777')
+    other = _native_report('Windows fatal exception: access violation', frames)
+    assert first.fingerprint == same.fingerprint != other.fingerprint
+    error = _contents(first)['error.json']
+    assert error == {'kind': 'Crash', 'native_kind': 'segmentation_fault',
+                     'stack_lines': [99, 42],
+                     'stack': [{'file': 'registration.py', 'line': 99, 'function': 'align'},
+                               {'file': 'workers.py', 'line': 42, 'function': 'run'}]}
+    assert 'segmentation_fault' in first.summary
+    public = repr(_contents(first)) + first.subject + first.summary + first.log_excerpt
+    for secret in ('alice', 'privateperson', 'token-xyz', '0x123', '/secret', 'old secret'):
+        assert secret not in public
+
+
+def test_native_top_frames_and_selection_precedence():
+    frames = [('workers.py', n, 'run') for n in range(1, 16)]
+    first = _native_report('Fatal Python error: Aborted', frames)
+    changed_top = _native_report('Fatal Python error: Aborted', [('workers.py', 44, 'run')] + frames[1:])
+    changed_tail = _native_report('Fatal Python error: Aborted', frames[:12] + [('workers.py', 80, 'run')])
+    assert first.fingerprint != changed_top.fingerprint
+    assert first.fingerprint == changed_tail.fingerprint
+    assert _contents(first)['error.json']['stack_lines'] == list(range(12, 0, -1))
+    crash = 'Fatal Python error: Bus error\nThread 0x1:\n  File "workers.py", line 1 in run\n'
+    without_current = report_bundle.build_report_bundle(log_text='', crash_text=crash, facts={})
+    assert _contents(without_current)['error.json'] == {'kind': 'Crash', 'native_kind': 'bus_error', 'stack_lines': []}
+    unknown = report_bundle.build_report_bundle(log_text='', crash_text='Fatal Python error: secret\n', facts={})
+    assert _contents(unknown)['error.json']['native_kind'] == 'unknown'
+    explicit = report_bundle.build_report_bundle(log_text='', crash_text=crash, facts={}, exc=ValueError('private'))
+    assert _contents(explicit)['error.json']['kind'] == 'ValueError'
+    assert 'native_kind' not in _contents(explicit)['error.json']
+    truncated = report_bundle.build_report_bundle(log_text='', crash_text='Fatal Python error: Aborted\nCurrent thread 0x', facts={})
+    assert _contents(truncated)['error.json']['stack_lines'] == []

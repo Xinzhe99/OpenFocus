@@ -12,9 +12,10 @@ import os
 import math
 import re
 import tempfile
+import shutil
 from typing import Any, Dict, List, Optional, Tuple
 
-from core.algorithms import (fusion_algorithms, get_fusion, get_registration,
+from core.algorithms import (fusion_algorithms, registration_algorithms, get_fusion, get_registration,
                              migrate_openfocus_parameters, resolve_fusion_parameters,
                              resolve_registration_parameters)
 
@@ -138,6 +139,18 @@ def apply_template(window, settings):
         mark()
 
 
+def _finite_scalar(value, field):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"invalid {field}")
+    try:
+        number = float(value)
+    except (OverflowError, TypeError, ValueError):
+        raise ValueError(f"invalid {field}") from None
+    if not math.isfinite(number):
+        raise ValueError(f"invalid {field}")
+    return number
+
+
 def _validate_source_transforms(transforms, scale, *, require_sources=True):
     from utils.dust_map import load_flat_field_reference
     if not isinstance(transforms, list):
@@ -152,12 +165,11 @@ def _validate_source_transforms(transforms, scale, *, require_sources=True):
         elif operation == "flat_field":
             path, digest = item.get("path"), item.get("sha256")
             sigma, reference_scale = item.get("sigma"), item.get("scale")
+            sigma = _finite_scalar(sigma, "source_transforms sigma")
+            reference_scale = _finite_scalar(reference_scale, "source_transforms scale")
             if (not isinstance(path, str) or not os.path.isabs(path)
                     or not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest)
-                    or isinstance(sigma, bool) or not isinstance(sigma, (int, float))
-                    or not math.isfinite(sigma) or not 1 <= sigma <= 40
-                    or isinstance(reference_scale, bool) or not isinstance(reference_scale, (int, float))
-                    or not math.isfinite(reference_scale) or abs(reference_scale - scale) > 1e-9):
+                    or not 1 <= sigma <= 40 or abs(reference_scale - scale) > 1e-9):
                 raise ValueError("Invalid flat-field reference or working scale; export the source stack first")
             if require_sources:
                 load_flat_field_reference(path, expected_hash=digest)
@@ -228,9 +240,12 @@ def _collect_state(window) -> Dict[str, Any]:
     settings["method_parameters"] = {
         spec.id: resolve_fusion_parameters(spec.id, window.fusion_parameters_for(spec.id))
         for spec in fusion_algorithms()}
+    registration_for = getattr(window, "registration_parameters_for", None)
+    memory = getattr(window, "_registration_parameters_by_method", {})
     settings["registration_parameters"] = {
-        name: resolve_registration_parameters(name, values)
-        for name, values in getattr(window, "_registration_parameters_by_method", {}).items()}
+        spec.id: resolve_registration_parameters(
+            spec.id, registration_for(spec.id) if callable(registration_for) else memory.get(spec.id, {}))
+        for spec in registration_algorithms()}
     from utils.settings_store import brightness_memory_to_json
     settings["brightness_by_method"] = json.loads(brightness_memory_to_json(
         getattr(window, "_brightness_by_method", {})))
@@ -328,41 +343,113 @@ def _multipage_container_for(name: str, folder: str) -> str:
     return ""
 
 
-def _persist_pathless_sources(window, state, project_path):
-    """Persist legacy in-memory inputs without decoding path-backed sources."""
+def _owned_sidecars(project_path):
+    """Read only explicitly recorded, safe sidecars belonging to this project."""
+    root = os.path.abspath(str(project_path) + ".sources")
+    try:
+        with open(project_path, encoding="utf-8") as stream:
+            manifest = json.load(stream).get("owned_sidecars", [])
+    except (OSError, ValueError, AttributeError):
+        return set()
+    if not isinstance(manifest, list):
+        return set()
+    owned = set()
+    for relative in manifest:
+        if not isinstance(relative, str) or os.path.isabs(relative):
+            continue
+        parts = relative.replace("\\", "/").split("/")
+        if len(parts) != 2 or any(part in ("", ".", "..") for part in parts):
+            continue
+        directory = os.path.join(root, parts[0])
+        filename = os.path.join(directory, parts[1])
+        if os.path.islink(root) or os.path.islink(directory) or os.path.islink(filename):
+            continue
+        if os.path.commonpath((root, os.path.abspath(filename))) == root and os.path.isfile(filename):
+            owned.add(os.path.abspath(filename))
+    return owned
+
+
+def _foreign_sidecar(source, project_path):
+    root = os.path.dirname(os.path.dirname(os.path.abspath(source)))
+    if not root.endswith(".sources"):
+        return False
+    owner = root[:-len(".sources")]
+    return (os.path.normcase(os.path.abspath(owner)) != os.path.normcase(os.path.abspath(project_path))
+            and os.path.abspath(source) in _owned_sidecars(owner))
+
+
+def _remove_owned_files(files):
+    for path in files:
+        directory = os.path.dirname(path)
+        root = os.path.dirname(directory)
+        if os.path.islink(root) or os.path.islink(directory) or os.path.islink(path):
+            continue
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            pass
+        try:
+            os.rmdir(directory)
+        except OSError:
+            pass
+
+def _retire_owned_files(files):
+    from core.source_frames import retire_owned_files
+    for path in files:
+        retire_owned_files((path,), lambda path=path: _remove_owned_files((path,)))
+
+
+def remove_project_snapshot(path):
+    """Remove a recovery snapshot, then retire only its recorded sidecars."""
+    owned = _owned_sidecars(path)
+    try:
+        os.remove(path)
+    except FileNotFoundError:
+        return
+    _retire_owned_files(owned)
+
+
+def _persist_pathless_sources(window, state, project_path, created, directories):
+    """Create a private generation for in-memory and foreign-owned sources."""
     import numpy as np
+    from utils.frame_pixels import run_pixel_worker
+    from utils.image_utils import imwrite_auto
     pending = []
     recorded = list(getattr(window, "image_source_paths", ()) or ())
     for index, frame in enumerate(state["frame_order"]):
         source = state["sources"][frame["source"]]
         image = window.raw_images[index]
-        if (not os.path.isfile(source) and isinstance(image, np.ndarray)
-                and not (index < len(recorded) and recorded[index])):
-            pending.append((index, image))
+        pathless = (not os.path.isfile(source) and isinstance(image, np.ndarray)
+                    and not (index < len(recorded) and recorded[index]))
+        if pathless or _foreign_sidecar(source, project_path):
+            pending.append((index, image, source, pathless))
     if not pending:
         return
-    from utils.frame_pixels import run_pixel_worker
-    from utils.image_utils import imwrite_auto
-    directory = os.path.abspath(project_path) + ".sources"
+    root = os.path.abspath(str(project_path) + ".sources")
     def persist():
-        os.makedirs(directory, exist_ok=True)
-        result = {}
-        for index, image in pending:
+        os.makedirs(root, exist_ok=True)
+        if os.path.islink(root):
+            raise OSError("Project sidecar directory is a symbolic link")
+        directory = tempfile.mkdtemp(prefix="generation-", dir=root)
+        directories.add(directory)
+        paths = {}
+        for index, image, source, pathless in pending:
             fd, destination = tempfile.mkstemp(suffix=".tif", dir=directory)
+            created.add(destination)
             os.close(fd)
-            # Internal project sidecar: never inherit the current stack's
-            # global SOURCE_EXIF or the exported snapshot would gain metadata
-            # that does not belong to this in-memory source.
-            if not imwrite_auto(destination, image, exif=b""):
-                raise OSError("Cannot preserve project source: " + destination)
-            result[index] = destination
-        return result
+            if pathless:
+                if not imwrite_auto(destination, image, exif=b""):
+                    raise OSError("Cannot preserve project source: " + destination)
+            else:
+                shutil.copyfile(source, destination)
+            paths[index] = (destination, pathless)
+        return paths
     paths = run_pixel_worker(window, "OpenFocus project", persist)
     sources, folders, order = [], [], []
     for index, frame in enumerate(state["frame_order"]):
-        source = paths.get(index, state["sources"][frame["source"]])
+        source, pathless = paths.get(index, (state["sources"][frame["source"]], False))
         updated = dict(frame, source=len(sources))
-        if index in paths:
+        if pathless:
             updated.update(page=0, snapshot=True, snapshot_scale=state["scale_factor"])
         sources.append(source)
         folders.append(os.path.dirname(source))
@@ -370,16 +457,22 @@ def _persist_pathless_sources(window, state, project_path):
     state.update(sources=sources, source_folders=folders, frame_order=order)
 
 
-def save_project(window, path: str) -> Tuple[bool, str]:
+def save_project(window, path: str, *, recovery_document=None) -> Tuple[bool, str]:
     """Write the current session state to an .ofproj file."""
     if not getattr(window, "raw_images", []):
         return False, "no images loaded"
     limitations = getattr(window, "unrecoverable_source_changes", [])
     if limitations:
         return False, "Export the processed source stack before saving a project: " + "; ".join(limitations)
+    created, directories = set(), set()
+    committed = False
+    old_owned = _owned_sidecars(path)
     try:
         state = _collect_state(window)
-        _persist_pathless_sources(window, state, path)
+        if recovery_document is not None:
+            _validate_recovery_document(recovery_document)
+            state["recovery_document"] = dict(recovery_document)
+        _persist_pathless_sources(window, state, path, created, directories)
         _validate_source_transforms(state.get("source_transforms", []), state["scale_factor"])
         missing = [source for source in state["sources"] if not os.path.isfile(source)]
         if missing:
@@ -389,6 +482,10 @@ def save_project(window, path: str) -> Tuple[bool, str]:
                   if os.path.splitext(source)[1].lower() in ImageStackLoader.SUPPORTED_VIDEO_FORMATS]
         if videos and len(state["sources"]) != 1:
             return False, "Export the mixed video/image source stack before saving a project"
+        referenced = {os.path.abspath(source) for source in state["sources"]}
+        retained = (old_owned & referenced) | created
+        root = os.path.abspath(str(path) + ".sources")
+        state["owned_sidecars"] = sorted(os.path.relpath(source, root) for source in old_owned | created)
         # 原子写：快照写入中途断电/被杀留下的截断文件会让
         # validate_project 拒绝它——恰好废掉崩溃恢复存在的意义
         fd, tmp = tempfile.mkstemp(
@@ -403,9 +500,23 @@ def save_project(window, path: str) -> Tuple[bool, str]:
             except OSError:
                 pass
             raise
+        committed = True
+        try:
+            _retire_owned_files(old_owned - retained)
+        except OSError:
+            import logging
+            logging.getLogger(__name__).warning("Could not retire old project sidecars", exc_info=True)
         return True, path
     except (OSError, TypeError, ValueError) as exc:
         return False, str(exc)
+    finally:
+        if not committed:
+            _remove_owned_files(created)
+            for directory in directories:
+                try:
+                    os.rmdir(directory)
+                except OSError:
+                    pass
 
 
 def _resolve_sources(state: Dict[str, Any], project_dir: str) -> Optional[List[str]]:
@@ -430,6 +541,13 @@ def _resolve_sources(state: Dict[str, Any], project_dir: str) -> Optional[List[s
     return resolved
 
 
+def _validate_recovery_document(document):
+    if (not isinstance(document, dict) or set(document) != {"version", "project_path", "dirty"}
+            or type(document["version"]) is not int or document["version"] != 1
+            or not isinstance(document["project_path"], str) or type(document["dirty"]) is not bool):
+        raise ValueError("invalid recovery_document")
+
+
 def validate_project(path: str, source_root: Optional[str] = None, *, require_sources=True) -> Tuple[bool, str, Dict[str, Any]]:
     """Read and validate a project file. Returns (ok, error, state).
 
@@ -445,6 +563,11 @@ def validate_project(path: str, source_root: Optional[str] = None, *, require_so
     version = state.get("openfocus_project")
     if not isinstance(version, int) or not 1 <= version <= FORMAT_VERSION:
         return False, "unsupported project format version", {}
+    try:
+        if "recovery_document" in state:
+            _validate_recovery_document(state["recovery_document"])
+    except ValueError as exc:
+        return False, str(exc), {}
     sources = state.get("sources", [])
     if not isinstance(sources, list) or not sources or not all(
             isinstance(p, str) and p for p in sources):
@@ -456,10 +579,11 @@ def validate_project(path: str, source_root: Optional[str] = None, *, require_so
     if type(state.get("linear_raw", False)) is not bool:
         return False, "invalid linear RAW setting", {}
     source_px_um = state.get("source_px_um")
-    if source_px_um is not None and (isinstance(source_px_um, bool)
-            or not isinstance(source_px_um, (int, float))
-            or not math.isfinite(source_px_um) or source_px_um <= 0):
-        return False, "invalid source pixel calibration", {}
+    try:
+        if source_px_um is not None and _finite_scalar(source_px_um, "source_px_um") <= 0:
+            raise ValueError("invalid source_px_um")
+    except ValueError as exc:
+        return False, str(exc), {}
     if "sharpen_output" in state.get("settings", {}) and not isinstance(
             state["settings"]["sharpen_output"], bool):
         return False, "invalid output sharpening setting", {}
@@ -495,9 +619,8 @@ def validate_project(path: str, source_root: Optional[str] = None, *, require_so
                 raise ValueError("invalid source snapshot")
             for key in ("scale", "snapshot_scale"):
                 if key in frame:
-                    scale = frame[key]
-                    if isinstance(scale, bool) or not isinstance(scale, (float, int)) or not math.isfinite(scale) or scale <= 0:
-                        raise ValueError("invalid frame scale")
+                    if _finite_scalar(frame[key], f"frame {key}") <= 0:
+                        raise ValueError(f"invalid frame {key}")
             if "transforms" in frame:
                 if not isinstance(frame["transforms"], list):
                     raise ValueError("invalid frame transformations")
@@ -534,6 +657,10 @@ def validate_project(path: str, source_root: Optional[str] = None, *, require_so
     settings = state.setdefault("settings", {})
     try:
         _normalize_algorithm_settings(settings, legacy=version < 3, old_parameters=version < 4)
+        registrations = settings["registration_parameters"]
+        settings["registration_parameters"] = {
+            spec.id: resolve_registration_parameters(spec.id, registrations.get(spec.id, {}))
+            for spec in registration_algorithms()}
         state['openfocus_project'] = FORMAT_VERSION
     except (TypeError, ValueError) as exc:
         return False, str(exc), {}
@@ -553,10 +680,12 @@ def validate_project(path: str, source_root: Optional[str] = None, *, require_so
     _num("current_index", int, -1)
     try:
         state["scale_factor"] = float(state.get("scale_factor", 1.0))
+    except OverflowError:
+        return False, "invalid scale_factor", {}
     except (TypeError, ValueError):
         state["scale_factor"] = 1.0
     if not math.isfinite(state["scale_factor"]) or not 0 < state["scale_factor"] <= 1:
-        return False, "invalid working scale", {}
+        return False, "invalid scale_factor", {}
     try:
         _validate_source_transforms(state.get("source_transforms", []), state["scale_factor"], require_sources=require_sources)
     except (OSError, ValueError) as exc:
@@ -785,6 +914,12 @@ def _prepare_project_frames(window, state, options):
             if match is None:
                 raise ValueError("Project frame could not be decoded: " + frame["name"])
             order.append(match)
+        profiles = tuple(getattr(window.image_loader, "source_icc_profiles", ()) or ())
+        options.source_icc_profiles = tuple(
+            profiles[i] if i < len(profiles) else b"" for i in order)
+        exifs = tuple(getattr(options, "source_exifs", ()) or ())
+        if exifs:
+            options.source_exifs = tuple(exifs[i] if i < len(exifs) else b"" for i in order)
         options.filenames = [frame["name"] for frame in frames]
         options.base_images = [options.base_images[i] for i in order]
         paths = [paths[i] for i in order]

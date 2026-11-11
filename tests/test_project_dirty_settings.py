@@ -243,8 +243,11 @@ def test_project_sidecar_does_not_inherit_source_exif(tmp_path, monkeypatch):
         "sources": [str(tmp_path / "missing.png")],
         "scale_factor": 1.0,
     }
+    created, directories = set(), set()
     project_file._persist_pathless_sources(
-        _Window(), state, str(tmp_path / "session.ofproj"))
+        _Window(), state, str(tmp_path / "session.ofproj"), created, directories)
+    assert len(created) == 1 and len(directories) == 1
+    assert state["sources"][0] in created
     assert calls, "the pathless source was not persisted"
     assert calls[0].get("exif") == b"", (
         "an internal project sidecar must not inherit the stack's global EXIF")

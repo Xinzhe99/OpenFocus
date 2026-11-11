@@ -149,3 +149,77 @@ def test_set_language_switches_the_table():
 def test_unknown_autodetect_code_falls_back_to_english():
     manager = TranslationManager()
     assert manager.current_lang in manager.translations
+
+
+@pytest.mark.parametrize("scan_error", [False, True])
+def test_known_packs_load_without_source_directory(monkeypatch, scan_error):
+    import locales
+
+    def scan(_path):
+        if scan_error:
+            raise FileNotFoundError("archived modules")
+        return []
+
+    monkeypatch.setattr(locales.os, "listdir", scan)
+    manager = TranslationManager()
+    assert list(code for code, _ in manager.available_languages()) == list(manager.PACK_ORDER)
+    for code in manager.PACK_ORDER:
+        manager.set_language(code)
+        assert manager.current_lang == code
+        assert manager.t("menu_file") == manager.translations[code]["menu_file"]
+
+
+@pytest.mark.parametrize("locale_name,code", [("de_DE", "de"), ("ko_KR", "ko"), ("pl_PL", "pl")])
+def test_autodetect_with_archived_packs(monkeypatch, locale_name, code):
+    import locales
+
+    detected = TranslationManager._match_locale(locale_name)
+    monkeypatch.setattr(locales.os, "listdir", lambda _: [])
+    monkeypatch.setattr(TranslationManager, "_match_locale", staticmethod(lambda _: detected))
+    assert TranslationManager().current_lang == code
+
+
+def test_extra_source_pack_is_still_discovered(monkeypatch):
+    import importlib
+    from types import SimpleNamespace
+    import locales
+
+    original_import = importlib.import_module
+
+    def import_pack(name, package=None):
+        if name == ".xx" and package == "locales":
+            return SimpleNamespace(PACK={"menu_file": "Example"})
+        return original_import(name, package)
+
+    monkeypatch.setattr(locales.os, "listdir", lambda _: ["xx.py", "_x.py", "long.py"])
+    monkeypatch.setattr(importlib, "import_module", import_pack)
+    manager = TranslationManager()
+    assert manager.translations["xx"]["menu_file"] == "Example"
+    assert "xx" in dict(manager.available_languages())
+
+
+def test_failed_pack_does_not_hide_other_packs(monkeypatch, capsys):
+    import importlib
+    import locales
+
+    original_import = importlib.import_module
+
+    def import_pack(name, package=None):
+        if name == ".de" and package == "locales":
+            raise ImportError("simulated broken pack")
+        return original_import(name, package)
+
+    monkeypatch.setattr(locales.os, "listdir", lambda _: [])
+    monkeypatch.setattr(importlib, "import_module", import_pack)
+    manager = TranslationManager()
+    assert [code for code, _ in manager.available_languages()] == [
+        code for code in manager.PACK_ORDER if code != "de"
+    ]
+    manager.set_language("en")
+    assert manager.get("menu_file") == manager.translations["en"]["menu_file"]
+    manager.set_language("de")
+    assert manager.current_lang == "en"
+    manager.set_language("fr")
+    manager.translations["fr"].pop("menu_file", None)
+    assert manager.get("menu_file") == manager.translations["en"]["menu_file"]
+    assert "simulated broken pack" in capsys.readouterr().out

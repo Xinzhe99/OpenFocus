@@ -15,7 +15,7 @@ from core.resource_policy import heavy_job, require_memory
 from utils import resource_path
 from utils.image_utils import prepare_fusion_input, to_display_uint8
 from copy import deepcopy
-from utils.export_paths import create_stack_directory, frame_export_name, unique_path
+from utils.export_paths import create_stack_directory, frame_export_name
 from utils.logging_setup import frame_details, get_logger, log_action, log_operation
 from utils import performance_profile
 from core.storage_preflight import defers_warps
@@ -149,7 +149,7 @@ class StackLoadWorker(QThread):
         self.linear_raw = linear_raw
         self.expected_metadata = expected_metadata
         self.linear_dng_metadata = None
-        self.source_icc_profiles = {}
+        self.source_icc_profiles = ()
         self.is_cancelled = False
         self._previous_should_cancel = getattr(self.loader, 'should_cancel', None)
         self._previous_loader_state = {
@@ -227,7 +227,7 @@ class StackLoadWorker(QThread):
                         ok, msg, imgs, names = self.loader.load_from_filepaths(
                             paths, scale_factor=self.scale, **options)
                     if ok:
-                        self.source_icc_profiles = dict(getattr(self.loader, 'source_icc_profiles', {}))
+                        self.source_icc_profiles = tuple(getattr(self.loader, 'source_icc_profiles', ()))
                     log_action("stack_load.decoded", **frame_details(imgs))
                     # Video decoding does not populate the image failure counter.
                     image_load = bool(self.folder) or not self.video
@@ -266,6 +266,44 @@ class StackLoadWorker(QThread):
             self.finished_load.emit(ok, msg, imgs, names)
 
 
+
+
+class RenderContextWorker(QThread):
+    """Build independent provenance crops without blocking the GUI thread."""
+    ready = pyqtSignal(object)
+    failed = pyqtSignal(str)
+
+    def __init__(self, processed_images, result, **context_kwargs):
+        super().__init__()
+        configure_native_worker_stack(self)
+        self.processed_images = tuple(processed_images)
+        self.result = result
+        self.context_kwargs = deepcopy(context_kwargs)
+        self.is_cancelled = False
+
+    def cancel(self):
+        self.is_cancelled = True
+
+    def run(self):
+        from core.render_context import build_render_context
+        try:
+            with heavy_job(lambda: self.is_cancelled), scratch_directory():
+                if self.is_cancelled:
+                    raise RegistrationCancelled()
+                context = build_render_context(
+                    self.processed_images, self.result,
+                    should_cancel=lambda: self.is_cancelled, **self.context_kwargs)
+                if self.is_cancelled:
+                    raise RegistrationCancelled()
+                self.ready.emit(context)
+        except RegistrationCancelled:
+            self.failed.emit('CANCELLED: render context cancelled')
+        except Exception as exc:
+            self.failed.emit('CANCELLED: render context cancelled' if self.is_cancelled else str(exc))
+        finally:
+            self.processed_images = ()
+            self.result = None
+            self.context_kwargs = {}
 
 
 class ROIFramePreviewWorker(QThread):
@@ -1248,7 +1286,8 @@ class BatchWorker(QThread):
         settings = processing_settings or {}
         self.processing_settings = deepcopy({key: value for key, value in settings.items()
                                              if key != 'frozen_stacks'})
-        self._frozen_stacks = [list(stack) for stack in settings.get('frozen_stacks', [])]
+        self._frozen_stacks = ([list(stack) for stack in (settings['frozen_stacks'] or ())]
+                               if 'frozen_stacks' in settings else None)
         self.written_paths = []
         self.aligned_stacks = []
         self.task_results = []
@@ -1309,7 +1348,7 @@ class BatchWorker(QThread):
         if extension.lower().lstrip('.') in ('jpg', 'jpeg', 'jpe', 'jfif'):
             quality = int(self.processing_settings.get('jpg_quality', 100))
             params = [cv2.IMWRITE_JPEG_QUALITY, max(0, min(100, quality))]
-        path = unique_path(path)
+        from utils.export_paths import publish_unique
         with log_operation("batch_image_write", path=path, extension=extension,
                            parameters=params, shape=image.shape, dtype=str(image.dtype)) as operation:
             try:
@@ -1328,11 +1367,18 @@ class BatchWorker(QThread):
                             should_cancel=lambda: self.is_cancelled)
                     except watermark.WatermarkCancelled as exc:
                         raise RegistrationCancelled() from exc
-                ok = imwrite_auto(path, image, params, exif=self._source_exif,
-                                  icc_profile=self._source_icc_profile)
+                path = publish_unique(
+                    path,
+                    lambda staging: imwrite_auto(staging, image, params, exif=self._source_exif,
+                                                 icc_profile=self._source_icc_profile),
+                    should_cancel=lambda: self.is_cancelled)
+                ok = True
             except RegistrationCancelled:
                 operation.cancel()
                 raise
+            except InterruptedError as exc:
+                operation.cancel()
+                raise RegistrationCancelled() from exc
             except Exception as exc:
                 operation.fail()
                 self._task_failures.append({'path': path,
@@ -1436,8 +1482,12 @@ class BatchWorker(QThread):
         def keep(item):
             return not any(same_path(item[0], reference)
                            for reference in references if reference)
-        if self._frozen_stacks:
-            return [[item for item in stack if keep(item)] for stack in self._frozen_stacks]
+        if self._frozen_stacks is not None:
+            if not self._frozen_stacks or any(not stack for stack in self._frozen_stacks):
+                raise ValueError('Frozen batch plan contains no frames')
+            if any(not keep(item) for stack in self._frozen_stacks for item in stack):
+                raise ValueError('Frozen batch plan contains a correction reference')
+            return self._frozen_stacks
         entries = [item for item in self.single_folder_images_with_times if keep(item)]
         if not entries:
             return [[]] if self.single_folder_images_with_times else []
@@ -1562,8 +1612,6 @@ class BatchWorker(QThread):
                     white, _ = load_flat_field_reference(reference, scale=scale)
                     if self.is_cancelled:
                         raise RegistrationCancelled()
-                    require_memory(max(frame.nbytes + frame.size * 12 for frame in aligned_images)
-                                   + white.size * 12)
                     gain = compute_flat_field(white)
                     if not lazy_fusion:
                         _check_processing_space(aligned_images)
@@ -1669,7 +1717,7 @@ class BatchWorker(QThread):
                 stack_wm = self._stack_watermark('output')
                 saved = []
                 if result is not None:
-                    output_path = unique_path(os.path.join(output_dir, f'{stack_name}.{output_format}'))
+                    output_path = os.path.join(output_dir, f'{stack_name}.{output_format}')
                     ok = self._save_image(output_path, result, output_format,
                                           scale_cfg=stack_cfg, watermark_cfg=stack_wm)
                     saved.append(ok)

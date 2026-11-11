@@ -20,37 +20,63 @@ def _run(*argv):
                           cwd=PROJECT_ROOT, timeout=85)
 
 
-def test_full_mode_prints_the_plan_and_does_not_run():
-    result = _run('tiling', '--full')
-    assert result.returncode == 0
-    assert result.stdout == ''
-    plan = json.loads(result.stderr[:result.stderr.rindex('}') + 1])['plan']
+def _bench_args(**overrides):
+    from types import SimpleNamespace
+    values = dict(full=True, confirm=False, frames=None, height=None, width=None,
+                  block=None, overlap=None, threads=None, tile_sizes=None,
+                  baseline_root=None, repetitions=None, mode='soft', seed=1,
+                  timeout=60, diff_images=None)
+    values.update(overrides)
+    return SimpleNamespace(**values)
+
+
+@pytest.mark.parametrize('benchmark', ['tiling', 'overhead'])
+def test_full_mode_prints_plan_without_starting_worker(benchmark, tmp_path, monkeypatch, capsys):
+    tool = _load_tool()
+    calls = []
+    monkeypatch.setattr(tool, '_run_worker', lambda *args: calls.append(args))
+    monkeypatch.setattr(tool, '_git', lambda root: (None, None))
+    assert getattr(tool, f'bench_{benchmark}')(_bench_args(), tmp_path, tmp_path) is None
+    plan = json.JSONDecoder().raw_decode(capsys.readouterr().err)[0]['plan']
+    assert plan['mode'] == 'full'
     assert plan['estimated_seconds'] > 0 and plan['estimated_ram_bytes'] > 0
-    assert plan['historical_peak_rss_bytes'] == int(9.7e9)
-    assert '--confirm' in result.stderr
-    assert '1.6-1.7x' in plan['ram_measured_note']
-    assert plan['description'].startswith('6 tiled renders')
+    assert not calls
 
 
-def test_tile_sizes_replace_the_default_comparison_sizes():
-    result = _run('tiling', '--full', '--tile-sizes', '256')
-    plan = json.loads(result.stderr[:result.stderr.rindex('}') + 1])['plan']
-    # historical + three overlaps at the 448 base + 256; 640 is no longer added.
-    assert plan['description'].startswith('5 tiled renders')
+def test_tile_sizes_replace_the_default_comparison_sizes(tmp_path, monkeypatch):
+    tool = _load_tool()
+    calls = []
+    def record(root, scratch, config, timeout):
+        calls.append((root, config))
+        return {'error': 'recorded-only'}
+    monkeypatch.setattr(tool, '_run_worker', record)
+    monkeypatch.setattr(tool, '_git', lambda root: (None, None))
+    tool.bench_tiling(_bench_args(confirm=True, tile_sizes=[256]), tmp_path, tmp_path)
+    assert len(calls) == 5
+    assert all(root == tmp_path for root, _ in calls)
+    assert [config['block'] for _, config in calls].count(256) == 1
+    assert {config['block'] for _, config in calls} == {tool.HISTORICAL['block'], 448, 256}
+    assert all(not config.get('warmup', False) for _, config in calls)
 
 
-def test_overhead_plan_counts_warm_ups_and_every_arm(tmp_path):
-    def plan(*extra):
-        result = _run('overhead', '--full', *extra)
-        return json.loads(result.stderr[:result.stderr.rindex('}') + 1])['plan']
-    two_arms = plan()
-    assert two_arms['description'].startswith('10 timed renders (profiling off, on;')
-    assert '20 renders in all' in two_arms['description']
-    three_arms = plan('--baseline-root', str(tmp_path))
-    assert three_arms['description'].startswith('15 timed renders (profiling off, on, baseline;')
-    assert '30 renders in all' in three_arms['description']
-    assert three_arms['estimated_seconds'] == pytest.approx(
-        1.5 * two_arms['estimated_seconds'], abs=2)
+@pytest.mark.parametrize('baseline', [False, True])
+def test_overhead_counts_every_arm_and_warmup(tmp_path, monkeypatch, baseline):
+    from collections import Counter
+    tool = _load_tool()
+    calls = []
+    def record(root, scratch, config, timeout):
+        calls.append((root, config))
+        return {'error': 'recorded-only'}
+    monkeypatch.setattr(tool, '_run_worker', record)
+    monkeypatch.setattr(tool, '_git', lambda root: (None, None))
+    baseline_root = tmp_path / 'baseline' if baseline else None
+    tool.bench_overhead(_bench_args(confirm=True, baseline_root=baseline_root), tmp_path, tmp_path)
+    expected = {'off': 5, 'on': 5, **({'baseline': 5} if baseline else {})}
+    assert Counter(config['arm'] for _, config in calls) == expected
+    assert all(config['warmup'] is True for _, config in calls)
+    assert all(config['profile'] == (config['arm'] == 'on') for _, config in calls)
+    assert all(root == (baseline_root.resolve() if config['arm'] == 'baseline' else tmp_path)
+               for root, config in calls)
 
 
 def test_each_finished_configuration_is_checkpointed(tmp_path, monkeypatch):

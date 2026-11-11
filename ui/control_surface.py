@@ -616,15 +616,23 @@ def _type_text(widget, text):
             QTest.keyClicks(widget, "".join(pending))
             pending.clear()
 
-    for char in text:
-        if ord(char) < 0x80:
+    index = 0
+    while index < len(text):
+        char = text[index]
+        if 0x20 <= ord(char) <= 0x7e:
             pending.append(char)
-            continue
-        flush()
-        for kind in (QEvent.Type.KeyPress, QEvent.Type.KeyRelease):
-            QApplication.sendEvent(widget, QKeyEvent(
-                kind, Qt.Key.Key_unknown, Qt.KeyboardModifier.NoModifier,
-                char))
+        elif char in "\r\n\t":
+            flush()
+            if char == "\r" and index + 1 < len(text) and text[index + 1] == "\n":
+                index += 1
+            QTest.keyClick(widget, Qt.Key.Key_Tab if char == "\t" else Qt.Key.Key_Return)
+        else:
+            flush()
+            for kind in (QEvent.Type.KeyPress, QEvent.Type.KeyRelease):
+                QApplication.sendEvent(widget, QKeyEvent(
+                    kind, Qt.Key.Key_unknown, Qt.KeyboardModifier.NoModifier,
+                    char))
+        index += 1
     flush()
 
 
@@ -633,6 +641,10 @@ def send_key(widget, key=None, text=None, action="click", modifiers=None):
     if text is not None:
         if not isinstance(text, str):
             raise ValueError("text must be a string")
+        for char in text:
+            code = ord(char)
+            if (code < 0x20 and char not in "\r\n\t") or code == 0x7f:
+                raise ValueError(f"Unsupported text character U+{code:04X}")
         ensure_visible(widget)
         widget.setFocus(Qt.FocusReason.OtherFocusReason)
         _type_text(widget, text)

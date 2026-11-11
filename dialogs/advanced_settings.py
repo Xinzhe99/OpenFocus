@@ -218,6 +218,7 @@ class AdvancedSettingsDialog(QDialog):
         self.sensor_cleanup = SensorCleanupControls(
             getattr(w, "defect_mask_path", ""), getattr(w, "sensor_denoise", False))
         sensor.addRow(self.sensor_cleanup)
+        self.finished.connect(lambda _result: self.sensor_cleanup.stop_inspection())
 
         # Output names are a user preference, independent of project processing.
         output = _section(page_lay, trans.t("output_prefix_section"))
@@ -431,6 +432,15 @@ class AdvancedSettingsDialog(QDialog):
         previous_choice = (settings.value(REPORTS_CHOICE_KEY)
                            if settings is not None and settings.contains(REPORTS_CHOICE_KEY)
                            else None)
+        enabling_reports = not previous['auto_error_reports'] and draft['auto_error_reports']
+        if enabling_reports:
+            try:
+                from utils.app_paths import user_data_dir
+                from utils.report_client import ReportClient
+                ReportClient(user_data_dir() / 'reports').enable_automatic()
+            except Exception:
+                self.status.setText(trans.t('report_cleanup_failed'))
+                return
         try:
             if manager is not None:
                 manager.set_auto_download(self.chk_auto_update.isChecked())
@@ -452,6 +462,9 @@ class AdvancedSettingsDialog(QDialog):
                 if settings.status() != QSettings.Status.NoError:
                     raise OSError('Could not write OpenFocus settings')
         except Exception as exc:
+            if enabling_reports:
+                from utils.report_client import revoke_automatic
+                revoke_automatic(user_data_dir() / 'reports')
             if settings is not None:
                 if previous_choice is None:
                     settings.remove(REPORTS_CHOICE_KEY)

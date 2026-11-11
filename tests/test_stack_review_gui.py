@@ -450,8 +450,16 @@ def test_review_status_yields_to_temporary_messages_and_returns(qapp):
         window._status_host.close()
 
 
-def test_source_list_has_no_review_status_row(qapp):
+def test_source_list_remains_usable(qapp):
     panel = create_right_panel()
-    layout = panel.file_list.parentWidget().parentWidget().layout()
-    assert layout.count() == 2
-    assert layout.itemAt(1).widget().isAncestorOf(panel.file_list)
+    panel.widget.resize(500, 1100)
+    panel.widget.show()
+    qapp.processEvents()
+    try:
+        assert panel.file_list.isVisible()
+        panel.file_list.addItem("frame.tif")
+        panel.file_list.setCurrentRow(0)
+        assert panel.file_list.currentItem().text() == "frame.tif"
+    finally:
+        panel.widget.close()
+        panel.widget.deleteLater()

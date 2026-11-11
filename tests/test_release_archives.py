@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import sys
 import zipfile
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -81,6 +82,60 @@ def test_corrupt_or_missing_part_fails_without_output(tmp_path):
     next(out2.glob("*windows-x64.zip.part*")).unlink()
     with pytest.raises(ra.ReleaseArchiveError):
         ra.reassemble(manifest2, out2, joined, limit=20)
+
+
+@pytest.mark.parametrize("existing", [False, True])
+def test_reassemble_replace_failure_preserves_target(tmp_path, monkeypatch, existing):
+    source, _, staged, manifest = _stage(tmp_path)
+    target = tmp_path / "joined" / source.name
+    if existing:
+        _write(target, b"old release")
+    original = Path.replace
+
+    def fail_joining(path, destination):
+        if path == target.with_name(target.name + ".joining") and destination == target:
+            raise OSError("replace failed")
+        return original(path, destination)
+
+    monkeypatch.setattr(Path, "replace", fail_joining)
+    with pytest.raises(OSError, match="replace failed"):
+        ra.reassemble(manifest, staged, target.parent, limit=20)
+    assert target.read_bytes() == b"old release" if existing else not target.exists()
+    assert not target.with_name(target.name + ".joining").exists()
+
+
+def test_reassemble_replaces_existing_target(tmp_path):
+    source, _, staged, manifest = _stage(tmp_path)
+    target = _write(tmp_path / "joined" / source.name, b"old release")
+    outputs = ra.reassemble(manifest, staged, target.parent, limit=20)
+    assert target in outputs
+    assert target.read_bytes() == source.read_bytes()
+    assert not target.with_name(target.name + ".joining").exists()
+
+
+@pytest.mark.parametrize("failure", ["corrupt", "missing", "interrupt"])
+def test_reassemble_preserves_existing_on_read_failure(tmp_path, monkeypatch, failure):
+    source, _, staged, manifest = _stage(tmp_path)
+    target = _write(tmp_path / "joined" / source.name, b"old release")
+    part_name = json.loads(Path(manifest).read_text(encoding="utf-8"))["assets"]["windows-zip"]["parts"][0]["name"]
+    part = staged / part_name
+    if failure == "corrupt":
+        part.write_bytes(b"x" * part.stat().st_size)
+    elif failure == "missing":
+        part.unlink()
+    else:
+        original = ra.sha256_file
+
+        def interrupt(path):
+            if path == part:
+                raise KeyboardInterrupt()
+            return original(path)
+
+        monkeypatch.setattr(ra, "sha256_file", interrupt)
+    with pytest.raises(KeyboardInterrupt if failure == "interrupt" else ra.ReleaseArchiveError):
+        ra.reassemble(manifest, staged, target.parent, limit=20)
+    assert target.read_bytes() == b"old release"
+    assert not target.with_name(target.name + ".joining").exists()
 
 
 def test_windows_recovery_preserves_existing_file_on_corruption(tmp_path):
@@ -254,6 +309,196 @@ def test_mirror_manifest_accepts_legacy_four_complete_assets(tmp_path):
     for entry in data["assets"].values():
         assert entry["url"].startswith("https://github.com/")
         assert "source" not in entry
+
+
+def _mirror_fixture(tmp_path):
+    directory = tmp_path / "assets"
+    files = {ra.expected_name(LABEL, key): key.encode()
+             for key in (*ra.WINDOWS_KEYS, *ra.MACOS_NAMES)}
+    assets = []
+    for name, content in files.items():
+        _write(directory / name, content)
+        assets.append({"name": name, "size": len(content),
+                       "digest": "sha256:" + _digest(content),
+                       "browser_download_url": f"https://github.com/o/r/releases/download/{LABEL}/{name}"})
+    release = {"tag_name": LABEL, "draft": False, "prerelease": False,
+               "assets": assets}
+    release_path = _write(tmp_path / "release.json", json.dumps(release).encode())
+    releases_path = _write(tmp_path / "releases.json", b"[]")
+    return directory, files, release, release_path, releases_path
+
+
+@pytest.mark.parametrize("failure", ["corrupt", "missing", "no-digest", "draft", "prerelease"])
+def test_mirror_preflight_rejects_unverified_assets(tmp_path, failure):
+    directory, files, release, release_path, releases_path = _mirror_fixture(tmp_path)
+    name = next(iter(files))
+    if failure == "corrupt":
+        _write(directory / name, b"x" * len(files[name]))
+    elif failure == "missing":
+        (directory / name).unlink()
+    elif failure == "no-digest":
+        release["assets"][0]["digest"] = None
+    else:
+        release[failure] = True
+    release_path.write_text(json.dumps(release), encoding="utf-8")
+    output = tmp_path / "latest.json"
+    with pytest.raises(ra.ReleaseArchiveError):
+        ra.write_mirror_manifest(LABEL, release_path, directory, releases_path, output)
+    assert not output.exists()
+
+
+def test_mirror_identity_supplies_missing_digest_and_binds_sha(tmp_path):
+    directory, files, release, release_path, releases_path = _mirror_fixture(tmp_path)
+    for asset in release["assets"]:
+        asset["digest"] = None
+    identity = {"schema_version": 1, "tag": LABEL, "version": LABEL[1:],
+                "sha": "a" * 40, "run_id": 123, "run_attempt": 1,
+                "assets": [{"name": name, "size": len(content), "sha256": _digest(content)}
+                           for name, content in files.items()]}
+    identity_path = _write(tmp_path / "identity.json", json.dumps(identity).encode())
+    identity_bytes = identity_path.read_bytes()
+    release["assets"].append({"name": f"OpenFocus-{LABEL}-build.json",
+                              "size": len(identity_bytes),
+                              "digest": "sha256:" + _digest(identity_bytes)})
+    release_path.write_text(json.dumps(release), encoding="utf-8")
+    output = tmp_path / "latest.json"
+    ra.write_mirror_manifest(LABEL, release_path, directory, releases_path, output,
+                             build_identity=identity_path, head_sha="a" * 40)
+    assert len(json.loads(output.read_text(encoding="utf-8"))["assets"]) == 4
+    output.unlink()
+    with pytest.raises(ra.ReleaseArchiveError, match="workflow run SHA"):
+        ra.write_mirror_manifest(LABEL, release_path, directory, releases_path, output,
+                                 build_identity=identity_path, head_sha="b" * 40)
+    release["assets"].append({"name": "unexpected.bin"})
+    release_path.write_text(json.dumps(release), encoding="utf-8")
+    with pytest.raises(ra.ReleaseArchiveError, match="assets differ from build identity"):
+        ra.write_mirror_manifest(LABEL, release_path, directory, releases_path, output,
+                                 build_identity=identity_path)
+    release["assets"].pop()
+    release_path.write_text(json.dumps(release), encoding="utf-8")
+    name, content = next(iter(files.items()))
+    _write(directory / name, b"x" * len(content))
+    with pytest.raises(ra.ReleaseArchiveError, match="build identity"):
+        ra.write_mirror_manifest(LABEL, release_path, directory, releases_path, output,
+                                 build_identity=identity_path)
+    assert not output.exists()
+
+
+def test_mirror_rejects_corrupt_reassembled_split_asset(tmp_path):
+    zip_path, setup_path, staged, manifest = _stage(tmp_path)
+    directory = tmp_path / "mirror"
+    ra.reassemble(manifest, staged, directory, limit=20)
+    release_assets = []
+    for name, content in ((setup_path.name, setup_path.read_bytes()),
+                          (ra.expected_name(LABEL, "macos-dmg"), b"dmg"),
+                          (ra.expected_name(LABEL, "macos-zip"), b"zip")):
+        _write(directory / name, content)
+        release_assets.append({"name": name, "size": len(content),
+                               "digest": "sha256:" + _digest(content),
+                               "browser_download_url": f"https://github.com/o/r/releases/download/{LABEL}/{name}"})
+    release = _write(tmp_path / "release.json", json.dumps({"tag_name": LABEL, "assets": release_assets}).encode())
+    releases = _write(tmp_path / "releases.json", b"[]")
+    _write(directory / zip_path.name, b"x" * zip_path.stat().st_size)
+    with pytest.raises(ra.ReleaseArchiveError, match="SHA-256"):
+        ra.write_mirror_manifest(LABEL, release, directory, releases, tmp_path / "result.json",
+                                 windows_manifest=manifest, limit=20)
+    assert not (tmp_path / "result.json").exists()
+
+
+def test_mirror_accepts_published_metadata_as_independent_digest(tmp_path):
+    directory, files, release, release_path, releases_path = _mirror_fixture(tmp_path)
+    output = tmp_path / "previous.json"
+    ra.write_mirror_manifest(LABEL, release_path, directory, releases_path, output)
+    for asset in release["assets"]:
+        asset["digest"] = None
+    release_path.write_text(json.dumps(release), encoding="utf-8")
+    new_output = tmp_path / "new.json"
+    ra.write_mirror_manifest(LABEL, release_path, directory, releases_path, new_output,
+                             trusted_metadata=output)
+    assert len(json.loads(new_output.read_text(encoding="utf-8"))["assets"]) == 4
+    name, content = next(iter(files.items()))
+    _write(directory / name, b"x" * len(content))
+    with pytest.raises(ra.ReleaseArchiveError, match="build identity"):
+        ra.write_mirror_manifest(LABEL, release_path, directory, releases_path, new_output,
+                                 trusted_metadata=output)
+
+
+@pytest.mark.skipif(os.name == "nt" or not shutil.which("bash"), reason="requires POSIX shell")
+@pytest.mark.parametrize("corrupt", [False, True])
+def test_mirror_workflow_preflight_precedes_r2_writes(tmp_path, corrupt):
+    directory, files, _, _, _ = _mirror_fixture(tmp_path)
+    if corrupt:
+        name, content = next(iter(files.items()))
+        _write(directory / name, b"x" * len(content))
+    _write(tmp_path / "assets.txt", "\n".join(files).encode())
+    root = Path(__file__).resolve().parents[1]
+    (tmp_path / "tools").mkdir()
+    shutil.copy(root / "tools" / "release_archives.py", tmp_path / "tools")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+
+    def command(name, source):
+        path = _write(bin_dir / name, (f"#!{sys.executable}\n" + textwrap.dedent(source)).encode())
+        path.chmod(0o755)
+
+    command("gh", """
+        import json
+        print(json.dumps([[]]))
+    """)
+    command("jq", """
+        import json, sys
+        args = sys.argv[1:]
+        if '-r' in args and '.assets[].name' in args:
+            with open(args[-1]) as stream:
+                data = json.load(stream)
+            print('\\n'.join(item['name'] for item in data['assets'].values()))
+        elif '--arg' in args and 'name' in args:
+            name = args[args.index('name') + 1]
+            with open(args[-1]) as stream:
+                data = json.load(stream)
+            print(next(item['digest'] for item in data['assets'].values() if item['name'] == name))
+        else:
+            print('[]')
+    """)
+    command("aws", """
+        import os, pathlib, shutil, sys
+        args = sys.argv[1:]
+        root = pathlib.Path(os.environ['RUNNER_TEMP'])
+        if args[:2] == ['s3', 'cp'] and args[2].endswith('latest-release.json'):
+            sys.exit(1)
+        if args[:2] == ['s3', 'cp'] and args[2].startswith('assets/'):
+            with open(root / 'writes', 'a') as stream:
+                stream.write(args[3] + '\\n')
+            shutil.copyfile(args[2], root / pathlib.Path(args[3]).name)
+        elif args[:2] == ['s3api', 'head-object']:
+            print((root / args[args.index('--key') + 1]).stat().st_size)
+        elif args[:2] == ['s3', 'cp'] and args[2].startswith('s3://'):
+            sys.stdout.buffer.write((root / pathlib.Path(args[2]).name).read_bytes())
+        else:
+            sys.exit(1)
+    """)
+    workflow = (root / ".github" / "workflows" / "r2-mirror.yml").read_text(encoding="utf-8")
+
+    def step(name, next_name):
+        block = workflow.split(f"      - name: {name}\n", 1)[1].split(
+            f"      - name: {next_name}\n", 1)[0]
+        script = block.split("        run: |\n", 1)[1]
+        return textwrap.dedent(script).replace("${{ steps.release.outputs.tag }}", LABEL)
+
+    script = step("Verify all assets before writing to R2", "Upload to R2")
+    script += "\n" + step("Upload to R2", "Publish latest mirrored release metadata")
+    env = dict(os.environ, PATH=str(bin_dir) + os.pathsep + os.environ['PATH'],
+               RUNNER_TEMP=str(tmp_path), GITHUB_REPOSITORY="o/r", R2_ACCOUNT_ID="test",
+               HEAD_SHA="", WINDOWS_MANIFEST="")
+    result = subprocess.run(["bash", "-e", "-c", script], cwd=tmp_path, env=env,
+                            capture_output=True, text=True)
+    writes = tmp_path / "writes"
+    if corrupt:
+        assert result.returncode != 0
+        assert not writes.exists()
+    else:
+        assert result.returncode == 0, result.stderr
+        assert {line.rsplit('/', 1)[-1] for line in writes.read_text().splitlines()} == set(files)
 
 
 def test_gpu_preview_stage_reuses_split_contract(tmp_path):

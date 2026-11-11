@@ -227,7 +227,7 @@ def test_rejected_load_restores_loader_and_releases_frames(qapp, monkeypatch, ou
     monkeypatch.setattr(frame_storage, 'require_disk_space', lambda *args, **kwargs: None)
     previous = [np.zeros((2, 2, 3), np.uint8)]
     loader = SimpleNamespace(images=previous, image_paths=['old'], px_size_um=2,
-                             source_exif=b'old', source_icc_profiles={'old': b'icc'},
+                             source_exif=b'old', source_icc_profiles=(b'icc',),
                              should_cancel=None, progress_callback=None)
     released = []
 
@@ -238,7 +238,7 @@ def test_rejected_load_restores_loader_and_releases_frames(qapp, monkeypatch, ou
         loader.image_paths = ['new']
         loader.px_size_um = 7
         loader.source_exif = b'new'
-        loader.source_icc_profiles = {'new': b'icc'}
+        loader.source_icc_profiles = (b'new-icc',)
         return True, '', loader.images, ['new']
 
     loader.load_from_filepaths = load
@@ -282,7 +282,7 @@ def test_rejected_load_restores_loader_and_releases_frames(qapp, monkeypatch, ou
     assert loader.images is previous
     assert loader.image_paths == ['old']
     assert loader.px_size_um == 2 and loader.source_exif == b'old'
-    assert loader.source_icc_profiles == {'old': b'icc'}
+    assert loader.source_icc_profiles == (b'icc',)
     assert window.raw_images is previous and window.source_px_um == 2
     assert released[0]() is None
 
@@ -600,9 +600,13 @@ def test_failed_preallocation_removes_partial_file(monkeypatch, tmp_path):
     def full(*args):
         raise OSError(errno.ENOSPC, 'disk full')
     monkeypatch.setattr(frame_storage.os, 'posix_fallocate', full, raising=False)
-    with pytest.raises(frame_storage.ScratchSpaceError):
-        frame_storage.create_frame((4, 4), np.uint8)
-    assert not list(tmp_path.iterdir())
+    observed = []
+    with frame_storage.observe_temp_files(observed.append):
+        with pytest.raises(frame_storage.ScratchSpaceError):
+            frame_storage.create_frame((4, 4), np.uint8)
+    assert len(observed) == 1
+    assert not os.path.exists(observed[0])
+    assert not list(tmp_path.glob('openfocus-frame-*'))
 
 
 def test_cancelled_materialization_cleans_alternative(monkeypatch, tmp_path):

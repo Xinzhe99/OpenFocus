@@ -340,6 +340,7 @@ def test_direct_cold_import_restores_existing_and_new_native_pools(cancel):
         import sys
         import cv2
         import numpy as np
+        import threadpoolctl
         from threadpoolctl import threadpool_info
         from core import resource_policy as policy
         from fusion_methods.openfocus_a import openfocus_a_impl
@@ -351,10 +352,21 @@ def test_direct_cold_import_restores_existing_and_new_native_pools(cancel):
         policy.probe_resources = lambda *a, **k: snapshot
         cv2.setNumThreads(3)
         before = {pool['filepath']: pool['num_threads'] for pool in threadpool_info()}
+        snapshots = []
+        original_limits = threadpoolctl.threadpool_limits
+        def record_limits(*args, **kwargs):
+            if kwargs.get('user_api') is None:
+                snapshots.append({pool['filepath']: pool['num_threads']
+                                  for pool in threadpool_info()})
+            return original_limits(*args, **kwargs)
+        threadpoolctl.threadpool_limits = record_limits
         previous_cv = cv2.getNumThreads()
         frame = np.full((513, 515, 3), 17, np.uint8)
         stopped = [False]
         def progress(done, total):
+            active = {pool['filepath']: pool['num_threads'] for pool in threadpool_info()}
+            assert all(active[path] == 1 for path in snapshots[0])
+            assert cv2.getNumThreads() <= 1
             if done and sys.argv[1] == 'cancel':
                 stopped[0] = True
         caught = False
@@ -367,14 +379,41 @@ def test_direct_cold_import_restores_existing_and_new_native_pools(cancel):
             caught = True
         assert caught == (sys.argv[1] == 'cancel')
         assert 'scipy.linalg' in sys.modules
-        after = threadpool_info()
-        for pool in after:
-            if pool['filepath'] in before:
-                assert pool['num_threads'] == before[pool['filepath']], pool
-            elif pool['user_api'] == 'blas':
+        assert len(snapshots) == 1
+        after = {pool['filepath']: pool['num_threads'] for pool in threadpool_info()}
+        assert all(after[path] == count for path, count in before.items())
+        assert all(after[path] == count for path, count in snapshots[0].items())
+        # A library loaded after the snapshot must not inherit a leaked limit.
+        for pool in threadpool_info():
+            if pool['filepath'] not in snapshots[0] and pool['user_api'] == 'blas':
                 assert pool['num_threads'] == 3, pool
         assert cv2.getNumThreads() == previous_cv
     ''', cancel)
+
+
+def test_cold_planning_import_failure_restores_opencv_threads():
+    _run_isolated_native('''
+        import builtins
+        import cv2
+        from fusion_methods.openfocus_a import openfocus_a_impl
+
+        original_import = builtins.__import__
+        def fail_planning(name, globals=None, locals=None, fromlist=(), level=0):
+            module = original_import(name, globals, locals, fromlist, level)
+            if name == 'core' and fromlist and 'multi_focus_fusion' in fromlist:
+                raise RuntimeError('planning import failed')
+            return module
+        builtins.__import__ = fail_planning
+        cv2.setNumThreads(3)
+        previous = cv2.getNumThreads()
+        try:
+            openfocus_a_impl([])
+        except RuntimeError as error:
+            assert str(error) == 'planning import failed'
+        else:
+            raise AssertionError('planning import should fail')
+        assert cv2.getNumThreads() == previous
+    ''')
 
 
 def test_late_initializer_joins_before_native_limits_are_restored(resources, monkeypatch):

@@ -177,24 +177,29 @@ def test_comparison_partial_failure_continues_and_fails_overall(monkeypatch, dia
 @pytest.mark.parametrize("raise_on_write", [False, True])
 def test_partial_batch_retains_artifacts_continues_and_records_failure(
         monkeypatch, tmp_path, diagnostics, raise_on_write):
-    import utils.image_utils as image_utils
+    import utils.export_paths as export_paths
 
     folders = [tmp_path / name for name in ("partial", "complete")]
     for folder in folders:
         folder.mkdir()
         for index, image in enumerate(_frames(), 1):
             assert imwrite_auto(str(folder / f"frame{index}.png"), image, exif=b"")
-    write = image_utils.imwrite_auto
+    publish = export_paths.publish_unique
+    protected = []
 
-    def partial_write(path, *args, **kwargs):
+    def partial_publish(path, writer, **kwargs):
         destination = Path(path)
         if destination.parent.name == "partial_aligned" and destination.name == "frame2.png":
-            if raise_on_write:
-                raise OSError("output disk failed")
-            return False
-        return write(path, *args, **kwargs)
+            destination.write_bytes(b"existing output")
+            protected.append(destination)
+            def fail_write(staging):
+                if raise_on_write:
+                    raise OSError("output disk failed")
+                return False
+            return publish(path, fail_write, **kwargs)
+        return publish(path, writer, **kwargs)
 
-    monkeypatch.setattr(image_utils, "imwrite_auto", partial_write)
+    monkeypatch.setattr(export_paths, "publish_unique", partial_publish)
     worker = BatchWorker([str(folder) for folder in folders], "custom", str(tmp_path / "out"),
                          {"format": "png", "fusion_method": "none", "reg_methods": []},
                          use_gpu=False, thread_count=1)
@@ -211,6 +216,8 @@ def test_partial_batch_retains_artifacts_continues_and_records_failure(
     assert len(result["tasks"][0]["artifacts"]) == 1
     assert len(result["tasks"][1]["artifacts"]) == 2
     assert all(Path(path).is_file() for task in result["tasks"] for path in task["artifacts"])
+    assert len(protected) == 1 and protected[0].read_bytes() == b"existing output"
+    assert all(str(protected[0]) not in task["artifacts"] for task in result["tasks"])
     assert len(result["tasks"][0]["failures"]) == 1
     _assert_outcome(diagnostics, "batch", "failed")
     folders_logged = _events(diagnostics, "batch_folder")
@@ -231,7 +238,7 @@ def test_partial_batch_retains_artifacts_continues_and_records_failure(
         assert writes[0].exc_info[0] is OSError
         assert str(writes[0].exc_info[1]) == "output disk failed"
     else:
-        assert writes[0].exc_info is None
+        assert writes[0].exc_info[0] is OSError
 
 
 def test_invalid_frame_still_reaches_processing_error_signal(diagnostics):

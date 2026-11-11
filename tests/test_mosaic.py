@@ -529,3 +529,154 @@ def test_suffixless_mosaic_name_uses_the_selected_filter(qapp, tmp_path, monkeyp
     finally:
         dialog.deleteLater()
         parent.deleteLater()
+
+
+def test_preview_collection_budget():
+    from dialogs.mosaic import _preview_budget
+    bgr, qt, temporary, conversion = _preview_budget([(1024, 1024)] * 1000)
+    assert bgr == 3145728000
+    assert qt == 4194304000
+    assert temporary == 64 * 1024 * 1024 + 16 * 2048
+    assert conversion == 4 * 1024 * 1024
+    assert _preview_budget([(10, 20)])[0] == 600
+
+
+def test_append_pixmap_failure_preserves_existing_state(qapp, monkeypatch):
+    from PyQt6.QtGui import QPixmap
+    from PyQt6.QtWidgets import QWidget
+    from dialogs import mosaic
+
+    parent = QWidget()
+    dialog = mosaic.MosaicDialog(parent)
+    try:
+        first = make_frame('first', np.zeros((8, 8, 3), np.uint8))
+        dialog._append_frames([first])
+        old_item = dialog.items[0]
+        revision = dialog._revision
+        monkeypatch.setattr(mosaic, 'cv2_to_pixmap', lambda _: QPixmap())
+        with pytest.raises(MemoryError):
+            dialog._append_frames([make_frame('next', np.zeros((8, 8, 3), np.uint8))])
+        assert dialog.frames == [first]
+        assert dialog.items[0] is old_item
+        assert dialog._revision == revision
+        dialog._rebuild()
+        assert dialog.items[0].pixmap().isNull() is False
+    finally:
+        dialog.close()
+        parent.close()
+
+
+def test_committed_export_worker_survives_late_cancel(monkeypatch):
+    from contextlib import nullcontext
+    from dialogs import mosaic
+    monkeypatch.setattr(mosaic, 'heavy_job', lambda *_: nullcontext())
+    results, cancelled = [], []
+    worker = mosaic._Worker(lambda cancel, progress: None)
+    def committed(cancel, progress):
+        worker.cancel()
+        return mosaic._ExportResult('plan', 'saved.png')
+    worker.operation = committed
+    worker.result.connect(results.append)
+    worker.cancelled.connect(lambda: cancelled.append(True))
+    worker.run()
+    assert results == [mosaic._ExportResult('plan', 'saved.png')]
+    assert not cancelled
+    results.clear()
+    worker.operation = lambda *_: 'preview'
+    worker.run()
+    assert not results
+    assert cancelled == [True]
+
+
+def test_add_outputs_uses_each_record_exif_snapshot(qapp, monkeypatch):
+    from types import SimpleNamespace
+    from PIL import Image, TiffImagePlugin
+    from PyQt6.QtWidgets import QDialog, QListWidget, QWidget
+    from dialogs import mosaic
+
+    records = []
+    for denominator in (50, 100):
+        exif = Image.Exif()
+        exif[33434] = TiffImagePlugin.IFDRational(1, denominator)
+        records.append(SimpleNamespace(label=str(denominator), image=np.zeros((8, 8, 3), np.uint8),
+            context=SimpleNamespace(icc_profile=b''), icc_profile=b'', source_exif=exif.tobytes(),
+            source_paths=(), export_path='missing.png', annotations_baked=True))
+    parent = QWidget()
+    parent.output_list = SimpleNamespace(count=lambda: len(records))
+    parent.output_manager = SimpleNamespace(record_for_row=lambda row: records[row])
+    dialog = mosaic.MosaicDialog(parent)
+    captured = []
+    def accept(picker):
+        picker.findChild(QListWidget).selectAll()
+        return QDialog.DialogCode.Accepted
+    monkeypatch.setattr(QDialog, 'exec', accept)
+    monkeypatch.setattr(mosaic, '_source_exif', lambda *_: pytest.fail('read export file'))
+    monkeypatch.setattr(dialog, '_run', lambda operation, *args: captured.append(operation))
+    try:
+        dialog._add_outputs()
+        frames, _ = captured[0](lambda: False, lambda *_: None)
+        assert [frame.exif for frame in frames] == [record.source_exif for record in records]
+        assert [frame.exposure_time for frame in frames] == pytest.approx([.02, .01])
+    finally:
+        dialog.close()
+        parent.close()
+
+
+@pytest.mark.parametrize('committed', [False, True])
+def test_queued_result_respects_committed_export(qapp, monkeypatch, committed):
+    from contextlib import nullcontext
+    from PyQt6.QtWidgets import QWidget
+    from dialogs import mosaic
+    monkeypatch.setattr(mosaic, 'heavy_job', lambda *_: nullcontext())
+    parent = QWidget()
+    dialog = mosaic.MosaicDialog(parent)
+    delivered = []
+    value = mosaic._ExportResult('plan', 'saved.png') if committed else 'preview'
+    try:
+        dialog._run(lambda *_: value, 'working', delivered.append)
+        worker = dialog.worker
+        assert worker.wait(5000)
+        dialog._cancel()
+        qapp.processEvents()
+        assert delivered == ([value] if committed else [])
+    finally:
+        dialog.close()
+        parent.close()
+
+
+def test_real_export_committed_before_cancel_reports_success(qapp, tmp_path, monkeypatch):
+    from contextlib import nullcontext
+    from PyQt6.QtWidgets import QWidget
+    from dialogs import mosaic
+
+    path = tmp_path / 'saved.png'
+    parent = QWidget()
+    dialog = mosaic.MosaicDialog(parent)
+    operations, results, cancelled = [], [], []
+    monkeypatch.setattr(mosaic, 'heavy_job', lambda *_: nullcontext())
+    monkeypatch.setattr(mosaic, 'remember_image_save', lambda *_: None)
+    monkeypatch.setattr(mosaic.FileDialog, 'getSaveFileName',
+                        lambda *_: (str(path), 'PNG image (*.png)'))
+    monkeypatch.setattr(dialog, '_run', lambda operation, status, complete: operations.append((operation, complete)))
+    try:
+        dialog._append_frames([make_frame('source', np.full((8, 8, 3), 100, np.uint8))])
+        dialog._save()
+        operation, complete = operations[0]
+        worker = mosaic._Worker(operation)
+        writer = mosaic.imwrite_auto
+        def write_then_cancel(*args, **kwargs):
+            success = writer(*args, **kwargs)
+            worker.cancel()
+            return success
+        monkeypatch.setattr(mosaic, 'imwrite_auto', write_then_cancel)
+        worker.result.connect(results.append)
+        worker.cancelled.connect(lambda: cancelled.append(True))
+        worker.run()
+        assert path.exists()
+        assert cv2.imread(str(path)) is not None
+        assert not cancelled and len(results) == 1
+        complete(results[0])
+        assert str(path) in dialog.status.text()
+    finally:
+        dialog.close()
+        parent.close()

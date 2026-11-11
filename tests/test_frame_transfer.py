@@ -2,6 +2,7 @@
 import gc
 import os
 import threading
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -216,14 +217,18 @@ def test_observer_reports_creation_before_bytes_are_written_across_threads(tmp_p
 
 def test_failed_observer_removes_the_partial_file(tmp_path):
     frame_storage.configure_storage_directory(tmp_path)
+    observed = []
 
     def reject(path):
+        observed.append(path)
         raise RuntimeError(f'cannot observe {path}')
 
     with pytest.raises(RuntimeError):
         with frame_storage.observe_temp_files(reject):
             frame_storage.create_frame((4,), np.uint8)
-    assert not list(tmp_path.iterdir())
+    assert len(observed) == 1
+    assert not os.path.exists(observed[0])
+    assert not list(tmp_path.glob('openfocus-frame-*'))
 
 
 @pytest.mark.parametrize('change', ['negative-shape', 'text-shape', 'past-end'])
@@ -296,7 +301,11 @@ def test_materializing_reopened_strided_frames_reuses_owned_storage(tmp_path, so
     expected = pixels[::-1, ::2].copy()
     argument = [reopened] if source_kind == 'sequence' else iter((reopened,))
     result = materialize_frames(argument, prefer_ram=False)
-    assert set(tmp_path.iterdir()) == {tmp_path / os.path.basename(path)}
+    from core import scratch_registry
+    registry = Path(scratch_registry._handle_path)
+    assert set(tmp_path.iterdir()) == {Path(path), registry.parent}
+    assert set(registry.parent.iterdir()) == {registry}
+    assert path in registry.read_text(encoding='utf-8').splitlines()
     assert frame_storage.describe_frame(result[0])['path'] == path
     assert result[0].strides == reopened.strides
     del argument, reopened, mapped
@@ -306,3 +315,4 @@ def test_materializing_reopened_strided_frames_reuses_owned_storage(tmp_path, so
     del result
     gc.collect()
     assert not os.path.exists(path)
+    assert registry.exists()

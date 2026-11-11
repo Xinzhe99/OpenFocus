@@ -55,8 +55,9 @@ class FrameCache:
                 self.bytes -= removed.nbytes
                 logger.debug('source cache eviction bytes=%d released=%d', self.bytes, removed.nbytes)
 
-    def put(self, key, image):
+    def put(self, key, image, *, should_cancel=None):
         with self._lock:
+            _check_resolution_cancel(should_cancel)
             previous = self._items.pop(key, None)
             if previous is not None:
                 self.bytes -= previous.nbytes
@@ -175,6 +176,12 @@ def preview_ready(frame):
     return not isinstance(frame, SourceFrame) or frame.preview is not None
 
 
+def _check_resolution_cancel(should_cancel):
+    if should_cancel is not None and should_cancel():
+        from core.registration import RegistrationCancelled
+        raise RegistrationCancelled()
+
+
 def _check_preview_cancel(should_cancel):
     if should_cancel is not None and should_cancel():
         raise InterruptedError('Source preview cancelled')
@@ -224,19 +231,12 @@ def ensure_display_preview(frame, should_cancel=None):
     if _fingerprint(frame.path) != frame.fingerprint:
         raise OSError(f'Source changed since it was opened: {frame.path}')
     import rawpy
-    from core.resource_policy import require_memory
-    # Admit the native sensor, including masked margins, BEFORE imread unpacks.
+    from core.resource_policy import require_memory, raw_sensor_shape, raw_decode_bytes
+    # Admit the native sensor, including masked margins, before imread unpacks.
     with rawpy.RawPy() as raw:
         raw.open_file(frame.path)
-        sizes = raw.sizes
-        aspect = float(sizes.pixel_aspect)
-        if not math.isfinite(aspect) or aspect <= 0:
-            raise ValueError('Invalid RAW pixel aspect ratio')
-        width = math.ceil(max(sizes.raw_width, sizes.width) * max(1, aspect, 1 / aspect))
-        height = max(sizes.raw_height, sizes.height)
-        if width <= 0 or height <= 0:
-            raise ValueError('Invalid RAW dimensions')
-        require_memory(width * height * 64 + PREVIEW_DECODE_BUDGET)
+        height, width = raw_sensor_shape(raw.sizes)
+        require_memory(raw_decode_bytes(width, height, PREVIEW_DECODE_BUDGET))
     _check_preview_cancel(should_cancel)
     scale = min(frame.scale, PREVIEW_EDGE / max(frame.native_shape or frame.shape))
     if frame.linear_metadata is not None:
@@ -506,6 +506,42 @@ def _operation(image, operation):
     raise ValueError(f'Unknown source transform: {kind}')
 
 
+_source_lifetime_lock = threading.RLock()
+_source_lifetime_counts = {}
+_retired_source_groups = []
+
+
+def _source_lifetime_key(path):
+    return os.path.normcase(os.path.realpath(os.path.abspath(os.fspath(path))))
+
+
+def _release_source_lifetime(path):
+    callbacks = []
+    with _source_lifetime_lock:
+        remaining = _source_lifetime_counts[path] - 1
+        if remaining:
+            _source_lifetime_counts[path] = remaining
+        else:
+            del _source_lifetime_counts[path]
+        for group in tuple(_retired_source_groups):
+            paths, callback = group
+            if not any(_source_lifetime_counts.get(item, 0) for item in paths):
+                _retired_source_groups.remove(group)
+                callbacks.append(callback)
+    for callback in callbacks:
+        callback()
+
+
+def retire_owned_files(paths, cleanup):
+    """Run cleanup once all descriptors for these owned paths have expired."""
+    keys = frozenset(_source_lifetime_key(path) for path in paths)
+    with _source_lifetime_lock:
+        if any(_source_lifetime_counts.get(path, 0) for path in keys):
+            _retired_source_groups.append((keys, cleanup))
+            return
+    cleanup()
+
+
 @dataclass(frozen=True, eq=False)
 class SourceFrame:
     path: str
@@ -523,6 +559,21 @@ class SourceFrame:
     preview_is_available: bool = True
     # Native single-channel samples; the common decoder still exposes BGR pixels.
     grayscale: bool = False
+    raw_sensor_shape: tuple = ()
+    def __post_init__(self):
+        path = _source_lifetime_key(self.path)
+        with _source_lifetime_lock:
+            _source_lifetime_counts[path] = _source_lifetime_counts.get(path, 0) + 1
+        weakref.finalize(self, _release_source_lifetime, path)
+
+    def __copy__(self):
+        return replace(self)
+
+    def __deepcopy__(self, memo):
+        copied = replace(self)
+        memo[id(self)] = copied
+        return copied
+
 
     @property
     def ndim(self):
@@ -542,12 +593,14 @@ class SourceFrame:
             raise OSError(f'Source changed since it was opened; reopen the stack: {self.path}')
 
     def full_resolution(self, *, should_cancel=None):
+        _check_resolution_cancel(should_cancel)
         self.validate_source()
         from core import frame_resolution_cache as _resolution_cache
         cache = _resolution_cache.current()
         if cache is not None:
-            hit = cache.get(self)
+            hit = cache.get(self, should_cancel=should_cancel)
             if hit is not None:
+                _check_resolution_cancel(should_cancel)
                 return hit
         # Native gray and display BGR layouts retain independent cached buffers.
         key = (self.path, self.page, self.fingerprint, self.scale,
@@ -555,12 +608,13 @@ class SourceFrame:
                self.linear_metadata, tuple(self.shape))
         cached = SOURCE_CACHE.get(key)
         if cached is not None:
+            _check_resolution_cancel(should_cancel)
             return cached
         SOURCE_CACHE.make_room(self.nbytes)
         with _admit_source_decode(frame_resolution_bytes(self), should_cancel):
-            return self._decode(key, cache)
+            return self._decode(key, cache, should_cancel)
 
-    def _decode(self, key, cache):
+    def _decode(self, key, cache, should_cancel=None):
         from core.image_loader import decode_image
         from utils.logging_setup import log_operation
         from utils.performance_profile import current as current_profile
@@ -572,6 +626,7 @@ class SourceFrame:
                 # Calibration is checked again because the source can be replaced
                 # on filesystems with coarse timestamps.
                 image, metadata = load_linear_raw(self.path, scale_factor=self.scale)
+                _check_resolution_cancel(should_cancel)
                 from core.image_loader import linear_raw_metadata_matches
                 if not linear_raw_metadata_matches(metadata, self.linear_metadata):
                     raise ValueError(f'Camera calibration changed: {self.path}')
@@ -599,28 +654,36 @@ class SourceFrame:
                                              preserve_grayscale=True)
                     else:
                         image = decode_image(self.path, allow_transparent_png=True)
+            _check_resolution_cancel(should_cancel)
             if image is None:
                 raise ValueError(f'Could not decode source: {self.path}')
             if self.shape[-1] == 4 and image.ndim == 3 and image.shape[2] == 3:
                 image = cv2.cvtColor(image, cv2.COLOR_BGR2BGRA)
+                _check_resolution_cancel(should_cancel)
             if self.linear_metadata is None and self.scale != 1 and not scaled_raw:
                 image = cv2.resize(image, (max(1, int(image.shape[1] * self.scale)),
                                           max(1, int(image.shape[0] * self.scale))), interpolation=cv2.INTER_AREA)
+                _check_resolution_cancel(should_cancel)
             for operation in self.transforms:
+                _check_resolution_cancel(should_cancel)
                 image = _operation(image, operation)
+                _check_resolution_cancel(should_cancel)
             if image.shape != self.shape or image.dtype != self.dtype:
                 raise ValueError(f'Source header does not match decoded pixels: {self.path}: '
                                  f'{image.shape}/{image.dtype}, expected {self.shape}/{self.dtype}')
+            _check_resolution_cancel(should_cancel)
             if _fingerprint(self.path) != self.fingerprint:
                 raise OSError(f'Source changed while decoding; reopen the stack: {self.path}')
             if cache is not None:
-                stored = cache.put(self, image)
+                stored = cache.put(self, image, should_cancel=should_cancel)
                 if stored is not None:
+                    _check_resolution_cancel(should_cancel)
                     return stored
             # Scope exists but the disk cache is disabled, degraded, or a write
             # failed: keep the historical bounded RAM cache so a later consumer
             # does not decode the same source again.
-            SOURCE_CACHE.put(key, image)
+            SOURCE_CACHE.put(key, image, should_cancel=should_cancel)
+            _check_resolution_cancel(should_cancel)
             return image
 
     def __array__(self, dtype=None, copy=None):
@@ -695,8 +758,9 @@ class ProcessedFrame:
         with scratch_directory():
             select_frame_scratch((self,), should_cancel=cancelled)
             if cache is not None:
-                hit = cache.get(self)
+                hit = cache.get(self, should_cancel=cancelled)
                 if hit is not None:
+                    _check_resolution_cancel(cancelled)
                     return hit
             from core.resource_policy import require_memory
             require_memory(frame_resolution_bytes(self))
@@ -709,9 +773,11 @@ class ProcessedFrame:
             if image.shape != self.shape or image.dtype != self.dtype:
                 raise ValueError('Processed frame does not match its declared shape/dtype')
             if cache is not None:
-                stored = cache.put(self, image)
+                stored = cache.put(self, image, should_cancel=cancelled)
                 if stored is not None:
+                    _check_resolution_cancel(cancelled)
                     return stored
+        _check_resolution_cancel(cancelled)
         return image
 
     def __array__(self, dtype=None, copy=None):
@@ -916,8 +982,13 @@ def frame_resolution_bytes(frame):
     if isinstance(frame, ProcessedFrame):
         return frame_resolution_bytes(frame.source) + frame.scratch_bytes
     if isinstance(frame, SourceFrame):
+        encoded = os.path.getsize(frame.path)
+        if frame.raw_sensor_shape:
+            from core.resource_policy import raw_decode_bytes
+            height, width = frame.raw_sensor_shape
+            return raw_decode_bytes(width, height, frame.nbytes, encoded)
         return (math.prod(frame.native_shape or frame.shape) * frame.dtype.itemsize * 4
-                + frame.nbytes + os.path.getsize(frame.path) * 2)
+                + frame.nbytes + encoded * 2)
     return 0
 
 
@@ -977,7 +1048,7 @@ def scratch_source_headers(paths, should_cancel=None):
 
 
 def materialize_frames(frames, should_cancel=None, *, staging_bytes=0,
-                       preferred_staging_bytes=0, thread_count=0,
+                       preferred_staging_bytes=0, thread_count=None, max_in_flight=None,
                        resource_preference='balanced', progress_callback=None, prefer_ram=True):
     """Prepare ordered frames with bounded decoding and an explicit storage preference."""
     from contextvars import copy_context
@@ -986,7 +1057,7 @@ def materialize_frames(frames, should_cancel=None, *, staging_bytes=0,
     from concurrent.futures import ThreadPoolExecutor, wait
     from core import resource_policy as policy
     from core.frame_storage import scratch_directory, select_scratch
-    from core.registration import RegistrationCancelled
+    from core.registration import RegistrationCancelled, deferred_warp_threads, exchange_opencv_threads
 
     def check_cancel():
         if should_cancel is not None and should_cancel():
@@ -995,6 +1066,10 @@ def materialize_frames(frames, should_cancel=None, *, staging_bytes=0,
     def save(image):
         check_cancel()
         return image if is_mapped_frame(image) else store_frame(image, prefer_ram=prefer_ram)
+
+    def resolve_with_threads(frame, threads):
+        with deferred_warp_threads(threads):
+            return resolve_frame(frame, should_cancel=should_cancel)
 
     with scratch_directory():
         check_cancel()
@@ -1008,18 +1083,17 @@ def materialize_frames(frames, should_cancel=None, *, staging_bytes=0,
                            preferred_size=size + staging_bytes + preferred_staging_bytes)
             sources = [frame for frame in frames if isinstance(frame, SourceFrame)]
             if len(sources) > 1:
-                # RAW develops the full sensor even for a small output scale.
-                per_worker = max(math.prod(frame.native_shape or frame.shape) * frame.dtype.itemsize * 4
-                                 + frame.nbytes + os.path.getsize(frame.path) * 2
-                                 for frame in sources)
+                per_worker = max(frame_resolution_bytes(frame) for frame in sources)
                 plan = policy.plan_execution(
                     policy.Workload(algorithm='decode', frames=len(sources),
                                     fixed_bytes=min(max(0, SOURCE_CACHE.max_bytes - SOURCE_CACHE.bytes),
                                                     sum(frame.nbytes for frame in sources)),
                                     per_worker_bytes=per_worker,
                                     outer_tasks=min(8, len(sources))),
-                    preference=resource_preference, user_threads=thread_count)
+                    preference=resource_preference, user_threads=thread_count or 0)
                 workers = min(plan.workers, plan.max_in_flight, len(sources))
+        if max_in_flight is not None:
+            workers = min(workers, max(1, int(max_in_flight)))
         result = []
 
         def append(image):
@@ -1035,7 +1109,9 @@ def materialize_frames(frames, should_cancel=None, *, staging_bytes=0,
                     select_scratch((0 if mapped else frame.nbytes) + staging_bytes,
                                    [frame.path] if isinstance(frame, SourceFrame) else ())
                     staging_bytes = 0
-                append(resolve_frame(frame))
+                threads = (1 if thread_count is None else
+                           policy.native_thread_ceiling(resource_preference, thread_count))
+                append(resolve_with_threads(frame, threads))
         else:
             from threadpoolctl import threadpool_limits
 
@@ -1043,8 +1119,7 @@ def materialize_frames(frames, should_cancel=None, *, staging_bytes=0,
                 # OpenMP limits may be thread-local for the RAW decoder.
                 threadpool_limits(limits=1)
 
-            previous_cv_threads = cv2.getNumThreads()
-            cv2.setNumThreads(1)
+            previous_cv_threads = exchange_opencv_threads(0)
             pending = deque()
             iterator = iter(frames)
             try:
@@ -1061,7 +1136,7 @@ def materialize_frames(frames, should_cancel=None, *, staging_bytes=0,
                                     exhausted = True
                                     break
                                 context = copy_context()
-                                pending.append((frame, pool.submit(context.run, resolve_frame, frame)))
+                                pending.append((frame, pool.submit(context.run, resolve_with_threads, frame, 1)))
                             if not pending:
                                 break
                             # Surface a later failure without waiting for earlier work.
@@ -1082,7 +1157,7 @@ def materialize_frames(frames, should_cancel=None, *, staging_bytes=0,
                             future.cancel()
                         pool.shutdown(wait=True, cancel_futures=True)
             finally:
-                cv2.setNumThreads(previous_cv_threads)
+                exchange_opencv_threads(0 if previous_cv_threads == 1 else previous_cv_threads)
         check_cancel()
         return result
 
@@ -1203,7 +1278,7 @@ def _opencv_tiff_preview(page):
     return _small(image)
 
 
-def _validate_tiff_alpha(page):
+def _validate_tiff_alpha(page, should_cancel=None):
     """Prove every alpha-bearing page is opaque before accepting its container."""
     if page.samplesperpixel != 4:
         return
@@ -1215,13 +1290,16 @@ def _validate_tiff_alpha(page):
     if page.is_memmappable:
         mapped = page.asarray(out='memmap')
         for y in range(0, page.imagelength, 128):
+            _check_preview_cancel(should_cancel)
             if np.min(mapped[y:y + 128, :, 3]) != opaque:
                 raise UnsupportedTransparency('Transparent TIFF pages are unsupported')
         return
     # Missing optional codecs and oversized strips must use the same admitted
     # native decoder as previews. An unavailable preview cannot prove opacity.
     if int(page.compression) == 5:
+        _check_preview_cancel(should_cancel)
         preview = _opencv_tiff_preview(page)
+        _check_preview_cancel(should_cancel)
         if isinstance(preview, _UnavailablePreview):
             raise UnsupportedTransparency('TIFF alpha cannot be safely validated within the preview budget')
         return
@@ -1234,12 +1312,15 @@ def _validate_tiff_alpha(page):
     require_memory(working)
     try:
         for segment, _position, _shape in page.segments(maxworkers=1):
+            _check_preview_cancel(should_cancel)
             if segment is not None and np.min(segment[..., 3]) != opaque:
                 raise UnsupportedTransparency('Transparent TIFF pages are unsupported')
     except UnsupportedTransparency:
         raise
     except (ImportError, ValueError):
+        _check_preview_cancel(should_cancel)
         preview = _opencv_tiff_preview(page)
+        _check_preview_cancel(should_cancel)
         if isinstance(preview, _UnavailablePreview):
             raise UnsupportedTransparency('TIFF alpha cannot be safely validated within the preview budget')
 
@@ -1358,6 +1439,8 @@ def scan_source(path, scale=1.0, *, linear=False, header_only=False, page_index=
             raw.open_file(path)
             _check_preview_cancel(should_cancel)
             sizes = raw.sizes
+            from core.resource_policy import raw_sensor_shape
+            sensor_shape = raw_sensor_shape(sizes)
             width, height = sizes.width, sizes.height
             aspect = float(sizes.pixel_aspect)
             if aspect < 1:
@@ -1390,7 +1473,7 @@ def scan_source(path, scale=1.0, *, linear=False, header_only=False, page_index=
         frames.append(SourceFrame(path, 0, (max(1, int(height * scale)), max(1, int(width * scale)), 3),
                                   np.dtype(np.uint16), preview, stamp, scale, orientation,
                                   linear_metadata=metadata, preview_is_display=True,
-                                  native_shape=(height, width, 3)))
+                                  native_shape=(height, width, 3), raw_sensor_shape=sensor_shape))
     elif extension in ('.tif', '.tiff'):
         import tifffile
         with tifffile.TiffFile(path) as tif:
@@ -1404,7 +1487,7 @@ def scan_source(path, scale=1.0, *, linear=False, header_only=False, page_index=
                     continue
                 from core.image_loader import validate_tiff_page
                 if not validate_tiff_page(path, page):
-                    _validate_tiff_alpha(page)
+                    _validate_tiff_alpha(page, should_cancel)
                 orientation = int(page.tags['Orientation'].value) if 'Orientation' in page.tags else 1
                 h, w = page.imagelength, page.imagewidth
                 if orientation in (5, 6, 7, 8):

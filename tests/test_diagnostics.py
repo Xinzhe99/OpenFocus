@@ -250,3 +250,69 @@ print('ok')
                             timeout=30)
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "ok"
+
+
+def test_fallback_capture_is_profile_scoped_and_survives_restart(tmp_path, monkeypatch):
+    from utils import diagnostics, logging_setup
+
+    temp = tmp_path / 'temp'
+    temp.mkdir()
+    profile = tmp_path / 'profile' / 'logs'
+    target = profile / 'openfocus-20261110T010101_000001-123.crash.txt'
+    monkeypatch.setattr(diagnostics.tempfile, 'gettempdir', lambda: str(temp))
+    monkeypatch.setattr(logging_setup, 'logs_dir', lambda: profile)
+    monkeypatch.setattr(diagnostics, 'session_log_path', lambda: target.with_name(target.name.replace('.crash.txt', '.log')))
+    original_open = Path.open
+
+    def open_file(path, *args, **kwargs):
+        if path.parent == profile:
+            raise PermissionError('unwritable log directory')
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, 'open', open_file)
+    try:
+        actual = diagnostics.install_exception_hooks()
+        assert actual.parent == diagnostics.fallback_crash_dir()
+        diagnostics._crash_stream.write('Fatal Python error: Aborted\n')
+        diagnostics._crash_stream.flush()
+    finally:
+        diagnostics.shutdown_exception_hooks()
+    assert actual.read_text(encoding='utf-8').startswith('Fatal Python error:')
+    assert diagnostics.fallback_crash_dir() == actual.parent
+    monkeypatch.setattr(logging_setup, 'logs_dir', lambda: tmp_path / 'other' / 'logs')
+    assert diagnostics.fallback_crash_dir() != actual.parent
+
+
+@pytest.mark.skipif(os.name == 'nt', reason='POSIX ownership and mode checks')
+def test_fallback_rejects_unsafe_and_symlink_directories(tmp_path, monkeypatch):
+    from utils import diagnostics, logging_setup
+    monkeypatch.setattr(diagnostics.tempfile, 'gettempdir', lambda: str(tmp_path))
+    monkeypatch.setattr(logging_setup, 'logs_dir', lambda: tmp_path / 'logs')
+    root = tmp_path / 'openfocus-crashes'
+    other = tmp_path / 'other'
+    other.mkdir()
+    root.symlink_to(other, target_is_directory=True)
+    assert diagnostics.fallback_crash_dir() is None
+    root.unlink()
+    root.mkdir(mode=0o755)
+    root.chmod(0o755)
+    assert diagnostics.fallback_crash_dir() is None
+    root.chmod(0o700)
+    directory = diagnostics.fallback_crash_dir()
+    assert directory is not None and directory.stat().st_mode & 0o077 == 0
+
+
+def test_fallback_retention_keeps_active_and_unrelated_files(tmp_path, monkeypatch):
+    import time
+    from utils import diagnostics, logging_setup
+    stale = tmp_path / 'openfocus-20000101T000000_000000-99999999.crash.txt'
+    active = tmp_path / f'openfocus-20000101T000000_000000-{os.getpid()}.crash.txt'
+    unrelated = tmp_path / 'notes.txt'
+    for path in (stale, active, unrelated):
+        path.write_text('x')
+        old = time.time() - (logging_setup.RETENTION_DAYS + 1) * 86400
+        os.utime(path, (old, old))
+    monkeypatch.setattr(logging_setup, '_process_alive', lambda pid: False)
+    diagnostics._prune_fallback_crashes(tmp_path)
+    assert not stale.exists()
+    assert active.exists() and unrelated.exists()

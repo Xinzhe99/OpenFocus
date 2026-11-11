@@ -143,6 +143,14 @@ class TestCliReview:
         assert rc == 2
         assert "--depth-map" in capsys.readouterr().err
 
+    @pytest.mark.parametrize("option", ["--save-stacked", "--missing-data-map"])
+    def test_batch_rejects_explicit_background_sidecar_path(self, capsys, option):
+        from core.cli import run_cli
+        rc = run_cli(["-i", "folderA", "-d", "out", "--auto-background",
+                      option, "out/sidecar.png"])
+        assert rc == 2
+        assert option in capsys.readouterr().err
+
     def test_tile_size_validated(self, capsys):
         from core.cli import run_cli
         rc = run_cli(["-i", "folderA", "-o", "o.png", "--tile-size", "0"])
@@ -187,6 +195,39 @@ class TestSettingsCast:
         from utils.settings_store import _cast
         assert _cast("abc", "float", 0.0) == 0.0
         assert _cast(None, "str", "dark") == "dark"
+
+    @pytest.mark.parametrize("raw", ["nan", "inf", "1e309", float("-inf")])
+    def test_nonfinite_float_uses_field_default(self, raw):
+        from utils.settings_store import _cast
+        assert _cast(raw, "float", None) is None
+
+    def test_unrepresentable_numbers_do_not_escape(self):
+        from utils.settings_store import _cast, _finite_number
+        assert _cast(float("inf"), "int", 0) == 0
+        assert _finite_number(10 ** 400) is None
+
+    def test_account_default_report_failure_does_not_set_consent(self, monkeypatch, tmp_path):
+        from types import SimpleNamespace
+        from utils import app_paths, report_client, settings_store
+        class Store:
+            def value(self, key):
+                return None
+            def contains(self, key):
+                return False
+            def setValue(self, key, value):
+                pytest.fail("consent was written after report initialization failed")
+        class Client:
+            def __init__(self, directory):
+                pass
+            def enable_automatic(self):
+                raise report_client.ReportError("unavailable")
+        monkeypatch.setattr(settings_store, "get_settings", lambda: Store())
+        monkeypatch.setattr(app_paths, "user_data_dir", lambda: tmp_path)
+        monkeypatch.setattr(report_client, "ReportClient", Client)
+        window = SimpleNamespace(auto_error_reports=False)
+        with pytest.raises(report_client.ReportError):
+            settings_store.enable_account_default_reports(window)
+        assert window.auto_error_reports is False
 
     def test_theme_round_trip_through_load(self, qapp, monkeypatch, tmp_path):
         from PyQt6.QtCore import QSettings

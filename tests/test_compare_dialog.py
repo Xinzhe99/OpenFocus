@@ -3,7 +3,8 @@ from threading import Event
 from time import monotonic
 
 import pytest
-from PyQt6.QtCore import QPoint, QPointF, Qt
+from PyQt6 import sip
+from PyQt6.QtCore import QCoreApplication, QEvent, QPoint, QPointF, Qt
 from PyQt6.QtGui import QWheelEvent
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication, QWidget
@@ -49,15 +50,18 @@ def dialog(qapp):
     instance._preview_timer.stop()
     qapp.processEvents()
     yield instance
-    instance.reject()
-    _until(qapp, lambda: instance._worker is None)
+    if not sip.isdeleted(instance):
+        instance.reject()
+    _until(qapp, lambda: instance._worker is None and not instance._source_preview_workers
+           and not instance._display_workers)
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
     window.close()
     window.deleteLater()
     qapp.processEvents()
 
 
 def _finished(dialog):
-    return (dialog._worker is None
+    return (dialog._worker is None and not dialog._display_workers
             and not dialog._preview_timer.isActive())
 
 def test_parameter_cards_stack_headers_and_wrap(dialog, qapp):
@@ -106,7 +110,7 @@ def test_queued_old_roi_cannot_reappear_after_selection_changes(dialog, qapp):
     assert "openfocus_a" not in dialog._results
     _until(qapp, lambda: _finished(dialog))
     assert dialog._canvases["openfocus_a"].has_region()
-    assert dialog._results["openfocus_a"][2] == dialog.ref_canvas.region()
+    assert dialog._results["openfocus_a"]['bounds'] == dialog.ref_canvas.region()
 
 
 def test_full_fusion_continues_when_only_inspection_region_moves(
@@ -132,13 +136,13 @@ def test_full_fusion_continues_when_only_inspection_region_moves(
     finally:
         release.set()
     _until(qapp, lambda: _finished(dialog))
-    assert dialog._results["openfocus_a"][2] == (0, 0, 560, 160)
+    assert dialog._results["openfocus_a"]['bounds'] == (0, 0, 560, 160)
     assert dialog._canvases["openfocus_a"].has_region()
-    result = dialog._results["openfocus_a"][1]
+    result = dialog._results["openfocus_a"]['image']
     dialog.ref_canvas.set_region_centre(QPointF(470, 80))
     qapp.processEvents()
-    assert _finished(dialog)
-    assert dialog._results["openfocus_a"][1] is result
+    _until(qapp, lambda: _finished(dialog))
+    assert dialog._results["openfocus_a"]['image'] is result
     assert dialog._canvases["openfocus_a"].has_region()
 
 
@@ -166,9 +170,12 @@ def test_close_waits_for_native_work_without_publishing(
         assert dialog._results == {}
     finally:
         release.set()
-    _until(qapp, lambda: dialog._worker is None)
-    assert not dialog.isVisible()
+    _until(qapp, lambda: dialog._worker is None and not dialog._source_preview_workers
+           and not dialog._display_workers)
     assert dialog._results == {}
+    assert sip.isdeleted(worker) or worker.isFinished()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    assert sip.isdeleted(dialog)
 
 
 def test_cancel_leaves_no_stale_fusing_status_or_pending_render(
@@ -236,8 +243,10 @@ def test_fullscreen_toggle_restores_window_and_escape_exits_first(dialog, qapp):
     assert not dialog.isFullScreen()
     QTest.keyClick(dialog, Qt.Key.Key_Escape)
     qapp.processEvents()
-    assert dialog.result() == int(QDialog.DialogCode.Rejected)
-    assert not dialog.isVisible()
+    _until(qapp, lambda: dialog._worker is None and not dialog._source_preview_workers
+           and not dialog._display_workers)
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    assert sip.isdeleted(dialog)
 
 
 def test_resizing_all_previews_reuses_full_results(dialog, qapp):
@@ -247,28 +256,28 @@ def test_resizing_all_previews_reuses_full_results(dialog, qapp):
     dialog._preview_timer.stop()
     dialog._start_request()
     _until(qapp, lambda: _finished(dialog))
-    results = {m: dialog._results[m][1] for m in dialog._selected_methods()}
+    results = {m: dialog._results[m]['image'] for m in dialog._selected_methods()}
     dialog.preview_size_slider.setValue(640)
     qapp.processEvents()
     assert dialog.ref_canvas.region() == (200, 0, 160, 160)
     assert dialog.ref_canvas.magnification() == 4
     assert dialog.preview_size_spin.value() == 640
-    assert _finished(dialog)
-    for method, pixmap in results.items():
+    _until(qapp, lambda: _finished(dialog))
+    for method, image in results.items():
         canvas = dialog._canvases[method]
         assert canvas.width() == canvas.height() == 640
         assert canvas.has_region()
-        assert dialog._results[method][1] is pixmap
+        assert dialog._results[method]['image'] is image
 
     dialog.preview_size_spin.setValue(240)
     qapp.processEvents()
     assert dialog.ref_canvas.region() == (250, 50, 60, 60)
     assert dialog.preview_size_slider.value() == 240
-    assert _finished(dialog)
-    for method, pixmap in results.items():
+    _until(qapp, lambda: _finished(dialog))
+    for method, image in results.items():
         assert dialog._canvases[method].width() == 240
         assert dialog._canvases[method].has_region()
-        assert dialog._results[method][1] is pixmap
+        assert dialog._results[method]['image'] is image
 
 
 def test_excluded_frames_are_not_compared(qapp):
@@ -295,7 +304,10 @@ def test_excluded_frames_are_not_compared(qapp):
         summary = instance.source_summary.text()
         assert "2" in summary and "3" in summary, summary
     finally:
-        instance.reject()
+        if not sip.isdeleted(instance):
+            instance.reject()
+        _until(qapp, lambda: instance._worker is None and not instance._source_preview_workers
+               and not instance._display_workers)
         window.close()
         window.deleteLater()
         qapp.processEvents()
@@ -328,7 +340,10 @@ def test_comparison_requires_two_effective_frames(qapp, included):
         assert instance._worker is None
         assert not instance.btn_run.isEnabled()
     finally:
-        instance.reject()
+        if not sip.isdeleted(instance):
+            instance.reject()
+        _until(qapp, lambda: instance._worker is None and not instance._source_preview_workers
+               and not instance._display_workers)
 
 
 def test_full_comparison_keeps_inspection_selection_interactive(dialog, qapp):
@@ -421,7 +436,10 @@ def test_unavailable_methods_stay_visible_with_a_reason(
         assert not instance._checks['dtcwt'].isEnabled()
         assert trans.t('env_dtcwt_unavailable') in instance._checks['dtcwt'].toolTip()
     finally:
-        instance.reject()
+        if not sip.isdeleted(instance):
+            instance.reject()
+        _until(qapp, lambda: instance._worker is None and not instance._source_preview_workers
+               and not instance._display_workers)
         window.close()
         window.deleteLater()
         qapp.processEvents()
@@ -556,6 +574,12 @@ def test_mixed_methods_share_registration_and_invalidate_on_order_change(dialog,
     dialog._start_request()
     _until(qapp, lambda: _finished(dialog), timeout=30)
     assert {'dct', 'openfocus_a'} <= dialog._full_results.keys()
+    dialog._select_method('dct')
+    assert not dialog.btn_adopt_params.isEnabled()
+    assert dialog.btn_verify.isVisible() and dialog.btn_verify.isEnabled()
+    dialog._adopt_params()
+    assert not dialog._closing
+    dialog._select_method('dct')
     aligned = [resolve_frame(frame) for frame in dialog._aligned_frames]
     anchor = anchor_crop(dialog._aligned_frames[-1], frames[-1], True)
     target = anchor[16:-16, 16:-16].astype(np.float32)
@@ -783,9 +807,12 @@ def test_registered_parameters_cross_dialogs_and_adoption(qapp, extra_algorithms
         assert persisted[0]['registration']['openfocus'] == openfocus
     finally:
         batch.reject()
-        compare.reject()
-        depth.reject()
-        _until(qapp, lambda: compare._worker is None)
+        if not sip.isdeleted(compare):
+            compare.reject()
+        if not sip.isdeleted(depth):
+            depth.reject()
+        _until(qapp, lambda: compare._worker is None and not compare._source_preview_workers
+               and not compare._display_workers)
         _until(qapp, lambda: not depthmap._ORPHAN_WORKERS)
         window.close()
 
@@ -851,7 +878,8 @@ def test_source_preview_reframe_rejects_old_generation_and_identity(dialog, tmp_
     finally:
         for worker in tuple(dialog._source_preview_workers):
             worker.finished.emit()
-    assert not dialog.isVisible()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    assert sip.isdeleted(dialog)
 
 
 def test_missing_source_preview_decodes_off_gui_and_close_cancels(dialog, qapp, tmp_path, monkeypatch):
@@ -888,6 +916,25 @@ def test_missing_source_preview_decodes_off_gui_and_close_cancels(dialog, qapp, 
         assert dialog.isVisible() and not dialog.isEnabled()
     finally:
         release.set()
-    _until(qapp, lambda: not dialog._source_preview_workers)
-    assert not dialog.isVisible()
-    assert not dialog.ref_canvas.has_image()
+    _until(qapp, lambda: not dialog._source_preview_workers and not dialog._display_workers
+           and dialog._worker is None)
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    assert sip.isdeleted(dialog)
+
+
+def test_full_candidate_display_is_bounded_and_deselection_releases_it(dialog, qapp):
+    dialog.mode_combo.setCurrentIndex(dialog.mode_combo.findData(False))
+    dialog.view_combo.setCurrentIndex(dialog.view_combo.findData('full'))
+    dialog._preview_timer.stop()
+    dialog._start_request()
+    _until(qapp, lambda: _finished(dialog) and 'openfocus_a' in dialog._results)
+    entry = dialog._results['openfocus_a']
+    canvas = dialog._canvases['openfocus_a']
+    assert entry is dialog._full_results['openfocus_a']
+    assert canvas.can_show_full()
+    assert canvas._pixmap.width() <= round(canvas.width() * canvas.devicePixelRatioF())
+    assert canvas._pixmap.height() <= round(canvas.height() * canvas.devicePixelRatioF())
+    dialog._checks['openfocus_a'].setChecked(False)
+    assert 'openfocus_a' not in dialog._results
+    assert 'openfocus_a' not in dialog._full_results
+    assert canvas._pixmap is None

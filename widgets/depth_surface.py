@@ -85,10 +85,18 @@ class DepthSurface(QWidget):
             self.update()
 
     def wheelEvent(self, event):  # noqa: N802 (Qt casing)
-        f = 1.15 if event.angleDelta().y() > 0 else 1 / 1.15
-        self._zoom = max(0.2, min(6.0, self._zoom * f))
-        self._cache = None
-        self.update()
+        # Ignore phase-only, horizontal, and pixel-only wheel events.
+        delta = event.angleDelta().y()
+        if delta == 0:
+            event.ignore()
+            return
+        f = 1.15 if delta > 0 else 1 / 1.15
+        zoom = max(0.2, min(6.0, self._zoom * f))
+        if zoom != self._zoom:
+            self._zoom = zoom
+            self._cache = None
+            self.update()
+        event.accept()
 
     # ------------------------------------------------------------ painting
     def paintEvent(self, event):  # noqa: N802 (Qt casing)

@@ -87,6 +87,27 @@ class RegistrationAlgorithm:
 _FUSION = {}
 _REGISTRATION = {}
 
+_FUSION_RESERVED = frozenset(('self', 'fusion', 'images', 'input_source', 'img_resize',
+    'parameters', 'thread_count', 'model_path', 'execution_plan', 'block_size',
+    'algorithm', 'overlap', 'should_cancel', 'progress_callback', 'exposure_gains',
+    'deferred_exposure', 'source_all_uint8', 'depth_override', 'tile_size', 'tile_overlap'))
+_TILE_RESERVED = frozenset(('imgs', 'img_dir', 'tile_coords', 'h', 'w', 'height',
+                            'width', 'channels', 'out_dtype'))
+_NEURAL_TILE_RESERVED = frozenset(('prepare', 'label', 'default_weights', 'mode_normalizer'))
+_NEURAL_TILE_RUNNERS = frozenset(('core.multi_focus_fusion:MultiFocusFusion._fuse_tiled_ai_batched',
+                                  'core.multi_focus_fusion:MultiFocusFusion._fuse_tiled_stackmff'))
+_DEPTH_RESERVED = frozenset(('images', 'model_path', 'use_gpu', 'progress_callback',
+                             'should_cancel', 'thread_count', 'resource_preference',
+                             'execution_plan', 'block_size'))
+_REGISTRATION_RESERVED = frozenset(('self', 'registration', 'images', 'input_source',
+                                    'thread_count', 'should_cancel', 'output_path'))
+
+
+def _validate_namespace(id, role, parameters, reserved):
+    for parameter in parameters:
+        if parameter.key in reserved:
+            raise ValueError(f'{role} algorithm {id!r} parameter {parameter.key!r} is reserved')
+
 
 def _path(path):
     if not isinstance(path, str) or path.count(':') != 1:
@@ -190,6 +211,12 @@ def register_fusion(spec):
         raise ValueError("Fusion algorithm id 'none' is reserved for alignment-only output")
     if spec.id in _FUSION:
         raise ValueError(f'Duplicate fusion algorithm: {spec.id}')
+    reserved = _FUSION_RESERVED
+    if spec.tile_runner is not None:
+        reserved = reserved | _TILE_RESERVED
+    if spec.tile_runner in _NEURAL_TILE_RUNNERS:
+        reserved = reserved | _NEURAL_TILE_RESERVED
+    _validate_namespace(spec.id, 'fusion', spec.parameters, reserved)
     if not isinstance(spec.display_name, str) or not spec.display_name or not spec.file_tag:
         raise ValueError('Fusion display name and file tag are required')
     for field in ('parallel_frames', 'ordered_plan', 'neural', 'sort_frames', 'promotes_color',
@@ -219,6 +246,7 @@ def register_fusion(spec):
             raise ValueError('Invalid depth descriptor')
         _path(spec.depth.runner)
         _parameters(spec.depth.parameters)
+        _validate_namespace(spec.id, 'depth', spec.depth.parameters, _DEPTH_RESERVED)
     _FUSION[spec.id] = spec
 
 
@@ -228,6 +256,7 @@ def register_registration(spec):
     _identity(spec)
     if spec.id in _REGISTRATION:
         raise ValueError(f'Duplicate registration algorithm: {spec.id}')
+    _validate_namespace(spec.id, 'registration', spec.parameters, _REGISTRATION_RESERVED)
     if not isinstance(spec.steps, tuple):
         raise ValueError('Registration steps must be a tuple')
     if spec.runner is not None:

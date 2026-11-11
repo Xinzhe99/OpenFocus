@@ -107,3 +107,86 @@ def test_physical_mesh_uses_supplied_height_and_omits_holes(tmp_path):
     assert len(vertices) == 8
     assert vertices[1][2] == pytest.approx(1e-7)
     assert vertices[2][0] - vertices[0][0] == pytest.approx(2.0)
+
+
+@pytest.mark.parametrize('index', range(4))
+@pytest.mark.parametrize('overwrite', [False, True])
+def test_directory_target_is_never_moved(tmp_path, index, overwrite):
+    from pathlib import Path
+    from utils.mesh_export import obj_paths
+    path = tmp_path / 'model.obj'
+    files = [Path(p) for p in obj_paths(path)]
+    for i, target in enumerate(files):
+        if i == index:
+            (target / 'nested').mkdir(parents=True)
+            (target / 'nested' / 'sentinel').write_bytes(b'keep')
+        else:
+            target.write_bytes(b'old')
+    with pytest.raises(ValueError):
+        export_obj(path, np.zeros((2, 2), np.float32), np.zeros((2, 2), np.uint8), overwrite=overwrite)
+    assert (files[index] / 'nested' / 'sentinel').read_bytes() == b'keep'
+    assert all(p.read_bytes() == b'old' for i, p in enumerate(files) if i != index)
+
+
+@pytest.mark.parametrize('index', range(4))
+def test_symlink_target_is_never_replaced(tmp_path, index):
+    from pathlib import Path
+    from utils.mesh_export import obj_paths
+    files = [Path(p) for p in obj_paths(tmp_path / 'model.obj')]
+    source = tmp_path / 'original'
+    source.write_bytes(b'keep')
+    try:
+        files[index].symlink_to(source)
+    except OSError:
+        pytest.skip('symbolic links unavailable')
+    with pytest.raises(ValueError):
+        export_obj(files[0], np.zeros((2, 2), np.float32), np.zeros((2, 2), np.uint8), overwrite=True)
+    assert files[index].is_symlink() and source.read_bytes() == b'keep'
+
+
+def test_failed_restore_retains_backup_and_restores_other_files(tmp_path, monkeypatch):
+    import utils.mesh_export as mesh
+    files = mesh.obj_paths(tmp_path / 'model.obj')
+    for name in files:
+        with open(name, 'wb') as stream:
+            stream.write(os.path.basename(name).encode())
+    replace = os.replace
+    def fail_commit_and_one_restore(src, dst):
+        if os.path.basename(src) == 'model_texture.png' and '.openfocus-mesh-' in src:
+            raise OSError('commit failed')
+        if os.path.basename(src) == 'backup-model.mtl':
+            raise OSError('restore failed')
+        return replace(src, dst)
+    monkeypatch.setattr(mesh.os, 'replace', fail_commit_and_one_restore)
+    with pytest.raises(OSError, match='restore failed') as error:
+        mesh.export_obj(files[0], np.zeros((2, 2), np.float32), np.zeros((2, 2), np.uint8), overwrite=True)
+    backups = list(tmp_path.glob('.openfocus-mesh-*/backup-model.mtl'))
+    assert len(backups) == 1 and backups[0].read_bytes() == b'model.mtl'
+    assert str(backups[0]) in str(error.value)
+    for name in (files[0], files[2], files[3]):
+        with open(name, 'rb') as stream:
+            assert stream.read() == os.path.basename(name).encode()
+
+
+def test_directory_swapped_during_backup_is_restored(tmp_path, monkeypatch):
+    import utils.mesh_export as mesh
+    from pathlib import Path
+    files = [Path(p) for p in mesh.obj_paths(tmp_path / 'model.obj')]
+    for target in files:
+        target.write_bytes(b'old')
+    replace = os.replace
+    swapped = False
+    def swap_before_backup(src, dst):
+        nonlocal swapped
+        if src == str(files[1]) and not swapped:
+            swapped = True
+            files[1].unlink()
+            files[1].mkdir()
+            (files[1] / 'sentinel').write_bytes(b'keep')
+        return replace(src, dst)
+    monkeypatch.setattr(mesh.os, 'replace', swap_before_backup)
+    with pytest.raises(ValueError):
+        mesh.export_obj(files[0], np.zeros((2, 2), np.float32), np.zeros((2, 2), np.uint8), overwrite=True)
+    assert (files[1] / 'sentinel').read_bytes() == b'keep'
+    assert all(p.read_bytes() == b'old' for i, p in enumerate(files) if i != 1)
+    assert not list(tmp_path.glob('.openfocus-mesh-*'))

@@ -133,7 +133,7 @@ def load_aligned(folder: str, filenames: List[str], align_options: Tuple[str, ..
 
 
 def _prune(root, keep, max_bytes):
-    """Evict only cache-owned entries, oldest access first, by encoded bytes."""
+    """Evict owned aligned generations and plan manifests by oldest access."""
     entries = []
     total = 0
     for name in os.listdir(root):
@@ -142,16 +142,18 @@ def _prune(root, keep, max_bytes):
         directory = os.path.join(root, name)
         try:
             meta_path = os.path.join(directory, "meta.json")
+            if os.path.islink(directory) or os.path.islink(meta_path):
+                continue
             with open(meta_path, encoding="utf-8") as handle:
                 meta = json.load(handle)
             if meta.get("signature") != name:
                 continue
             if meta.get("version") in (3, 4, 5, CACHE_FORMAT_VERSION):
-                # These versions share the generation manifest; stale lookup
-                # entries still count toward the encoded disk limit.
+                # Older generation manifests still count toward the budget.
                 size = int(meta["encoded_bytes"])
+                if size < 0:
+                    continue
             elif len(name) == 16 and isinstance(meta.get("count"), int):
-                # Previous formats also contain reconstructible aligned PNGs.
                 expected = {f"aligned_{i:04d}.png" for i in range(meta["count"])}
                 if set(os.listdir(directory)) != expected | {"meta.json"}:
                     continue
@@ -160,14 +162,47 @@ def _prune(root, keep, max_bytes):
             else:
                 continue
             total += size
-            entries.append((os.stat(meta_path).st_mtime_ns, name, directory, size))
-        except (OSError, ValueError, TypeError, KeyError):
+            entries.append((os.stat(meta_path).st_mtime_ns, ('aligned', name), directory, size))
+        except (OSError, ValueError, TypeError, KeyError, AttributeError):
             continue
-    for _, name, directory, size in sorted(entries):
+
+    plans = os.path.join(root, 'plans')
+    if not os.path.islink(plans) and os.path.isdir(plans):
+        try:
+            names = os.listdir(plans)
+        except OSError:
+            names = ()
+        for name in names:
+            if len(name) != 32 or any(char not in '0123456789abcdef' for char in name):
+                continue
+            directory = os.path.join(plans, name)
+            meta_path = os.path.join(directory, 'meta.json')
+            try:
+                if (os.path.islink(directory) or not os.path.isdir(directory)
+                        or os.path.islink(meta_path) or not os.path.isfile(meta_path)
+                        or set(os.listdir(directory)) != {'meta.json'}):
+                    continue
+                with open(meta_path, encoding='utf-8') as handle:
+                    meta = json.load(handle)
+                count = meta.get('count')
+                if (meta.get('version') != PLAN_CACHE_VERSION or meta.get('signature') != name
+                        or meta.get('backend') not in ('opencv-perspective-v1', 'openfocus-wide4d-v3')
+                        or type(count) is not int or count < 0):
+                    continue
+                stat = os.stat(meta_path, follow_symlinks=False)
+                total += stat.st_size
+                entries.append((stat.st_mtime_ns, ('plan', name), directory, stat.st_size))
+            except (OSError, ValueError, TypeError, AttributeError):
+                continue
+
+    for _, key, directory, size in sorted(entries):
         if total <= max_bytes:
             break
-        if name != keep:
-            shutil.rmtree(directory, ignore_errors=True)
+        if key != keep:
+            try:
+                shutil.rmtree(directory)
+            except OSError:
+                continue
             total -= size
 
 
@@ -225,7 +260,7 @@ def save_aligned(folder: str, filenames: List[str], aligned_images: List[np.ndar
             for name in os.listdir(cdir):
                 if name.startswith("generation-") and name != generation:
                     shutil.rmtree(os.path.join(cdir, name), ignore_errors=True)
-            _prune(root, sig, max_cache_bytes)
+            _prune(root, ('aligned', sig), max_cache_bytes)
     except (OSError, ValueError, TypeError, MemoryError, cv2.error):
         pass
     finally:
@@ -337,10 +372,11 @@ def load_alignment_plan(folder, filenames, sources, *, identity=None, should_can
         return None
 
 
-def save_alignment_plan(folder, filenames, plan, sources, *, identity=None, should_cancel=None):
+def save_alignment_plan(folder, filenames, plan, sources, *, identity=None, should_cancel=None,
+                        max_cache_bytes=DEFAULT_CACHE_BYTES):
     """Publish an atomic, checksummed metadata generation after source validation."""
     _check_cancel(should_cancel)
-    if not folder or not os.path.isdir(folder):
+    if not folder or not os.path.isdir(folder) or max_cache_bytes <= 0:
         return
     temporary = None
     try:
@@ -357,12 +393,15 @@ def save_alignment_plan(folder, filenames, plan, sources, *, identity=None, shou
             fd, temporary = tempfile.mkstemp(prefix='.plan-', dir=directory)
             with os.fdopen(fd, 'w', encoding='utf-8') as handle:
                 json.dump(manifest, handle, allow_nan=False)
+            if os.stat(temporary).st_size > max_cache_bytes:
+                return
             plan.validate_sources(sources, should_cancel=should_cancel)
             if signature != _plan_signature(folder, filenames, sources, identity):
                 return
             _check_cancel(should_cancel)
             os.replace(temporary, os.path.join(directory, 'meta.json'))
             temporary = None
+            _prune(cache_dir(folder), ('plan', signature), max_cache_bytes)
     except (OSError, ValueError, TypeError, KeyError, OverflowError):
         # Cache persistence is optional; source validation is repeated by
         # apply_alignment before any plan can affect pixels.

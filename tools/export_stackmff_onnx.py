@@ -1,5 +1,8 @@
 """Export the shipped StackMFF checkpoints to dynamic ONNX inference graphs.
 
+All models are staged and checked before publication. --no-verify skips CPU
+parity only. Individual replacements are atomic; a crash can leave a mixed set.
+
 Development-only: it needs PyTorch (to rebuild and re-export the networks) and
 ``onnx`` (for the graph checker and metadata), while the application runs the
 resulting ``weights/*.onnx`` files through ONNX Runtime.
@@ -26,6 +29,9 @@ import argparse
 import hashlib
 import sys
 from pathlib import Path
+import os
+import shutil
+import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -173,18 +179,58 @@ def main(argv=None):
     sys.path.insert(0, str(ROOT))
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    for algorithm, (checkpoint, load) in _variants().items():
-        source = ROOT / 'weights' / checkpoint
-        if not source.is_file():
-            raise SystemExit(f'missing checkpoint {source}')
-        destination = out_dir / (source.stem + '.onnx')
-        print(f'{algorithm}: {source.name} -> {destination.name}')
-        model = load(source)
-        _export(model, destination, args.opset)
-        _annotate(destination, algorithm, source, args.opset)
-        if onnxruntime is not None:
-            _verify(destination, model, onnxruntime)
-        print(f'  {destination.stat().st_size:,} bytes')
+    staging = Path(tempfile.mkdtemp(dir=out_dir, prefix='.stackmff-export-'))
+    published = []
+    retain_backups = False
+    try:
+        staged = []
+        for algorithm, (checkpoint, load) in _variants().items():
+            source = ROOT / 'weights' / checkpoint
+            if not source.is_file():
+                raise SystemExit(f'missing checkpoint {source}')
+            destination = out_dir / (source.stem + '.onnx')
+            candidate = staging / destination.name
+            print(f'{algorithm}: {source.name} -> {destination.name}')
+            model = load(source)
+            _export(model, candidate, args.opset)
+            _annotate(candidate, algorithm, source, args.opset)
+            if onnxruntime is not None:
+                _verify(candidate, model, onnxruntime)
+            print(f'  {candidate.stat().st_size:,} bytes')
+            staged.append((candidate, destination))
+        if onnxruntime is None:
+            print('CPU parity verification was skipped (--no-verify).')
+        existing_bytes = sum(destination.stat().st_size for _, destination in staged if destination.exists())
+        print(f'Existing model backups require {existing_bytes:,} bytes.')
+        if shutil.disk_usage(out_dir).free < existing_bytes:
+            raise OSError('insufficient space for existing model backups')
+        backups = {}
+        for _, destination in staged:
+            if destination.exists():
+                backup = staging / (destination.name + '.backup')
+                shutil.copy2(destination, backup)
+                backups[destination] = backup
+        try:
+            for candidate, destination in staged:
+                os.replace(candidate, destination)
+                published.append(destination)
+        except BaseException:
+            failures = []
+            for destination in reversed(published):
+                try:
+                    if destination in backups:
+                        os.replace(backups[destination], destination)
+                    else:
+                        destination.unlink()
+                except BaseException as exc:
+                    failures.append(f'{destination}: backup {backups.get(destination)}: {exc}')
+            if failures:
+                retain_backups = True
+                print('Rollback failed; retained backups in ' + str(staging) + ': ' + '; '.join(failures), file=sys.stderr)
+            raise
+    finally:
+        if not retain_backups:
+            shutil.rmtree(staging)
 
 
 if __name__ == '__main__':

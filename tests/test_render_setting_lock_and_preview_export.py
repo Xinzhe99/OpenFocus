@@ -84,11 +84,13 @@ def test_compare_mode_keeps_render_settings_locked():
     assert all(not widget.enabled for widget in manager._render_setting_widgets())
 
 
-def test_preview_draft_without_selection_is_not_exported(monkeypatch):
+@pytest.mark.parametrize("kind", ["fusion", "registration"])
+def test_preview_draft_without_selection_is_not_exported(monkeypatch, kind):
     import controllers.export_manager as export_manager
     window = _Window()
     window.fusion_result = np.zeros((2, 2), np.uint8)
-    window.preview_result = window.fusion_result
+    window.aligned_stack_dir = "old-aligned-stack"
+    window.preview_result = {"kind": kind, "image": window.fusion_result}
     warnings = []
     dialogs = []
     monkeypatch.setattr(export_manager, "show_warning_box",
@@ -100,10 +102,11 @@ def test_preview_draft_without_selection_is_not_exported(monkeypatch):
     assert not dialogs
 
 
-def test_selected_historical_result_survives_preview_draft():
+@pytest.mark.parametrize("kind", ["fusion", "registration"])
+def test_selected_historical_result_survives_preview_draft(kind):
     item = object()
     window = _Window(item=item)
-    window.preview_result = window.fusion_result
+    window.preview_result = {"kind": kind, "image": window.fusion_result}
     from controllers.export_manager import ExportManager
     ExportManager(window).save_result()
     assert window.output_manager.saved == [item]

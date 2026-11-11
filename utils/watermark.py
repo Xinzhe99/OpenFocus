@@ -133,7 +133,7 @@ class Layout:
 def _number(value, name: str, low: float, high: float) -> float:
     try:
         number = float(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         raise WatermarkError("bad_config", name)
     if not math.isfinite(number) or number < low or number > high:
         raise WatermarkError("bad_config", name)
@@ -187,7 +187,7 @@ def normalize_config(config) -> WatermarkConfig:
     if color not in COLORS:
         raise WatermarkError("bad_config", "color")
     density = config.get("density", DEFAULT_DENSITY)
-    if density not in DENSITY_GAPS:
+    if not isinstance(density, str) or density not in DENSITY_GAPS:
         raise WatermarkError("bad_config", "density")
     enabled, position = _copyright_fields(config.get("copyright_enabled", False),
                                           config.get("copyright_position", "prefix"))
@@ -210,6 +210,8 @@ def normalize_config(config) -> WatermarkConfig:
 def replace_config(config: WatermarkConfig) -> WatermarkConfig:
     """Revalidate a dataclass instance (keeps frozen immutability)."""
     enabled, position = _copyright_fields(config.copyright_enabled, config.copyright_position)
+    if not isinstance(config.density, str) or config.density not in DENSITY_GAPS:
+        raise WatermarkError("bad_config", "density")
     return WatermarkConfig(
         text=_text(config.text),
         font_family=config.font_family,
@@ -218,7 +220,7 @@ def replace_config(config: WatermarkConfig) -> WatermarkConfig:
         opacity=_number(config.opacity, "opacity", MIN_OPACITY, MAX_OPACITY),
         color=config.color if config.color in COLORS else DEFAULT_COLOR,
         angle=_number(config.angle, "angle", MIN_ANGLE, MAX_ANGLE),
-        density=config.density if config.density in DENSITY_GAPS else DEFAULT_DENSITY,
+        density=config.density,
         copyright_enabled=enabled,
         copyright_position=position,
     )
@@ -248,7 +250,7 @@ def safe_config(value) -> Optional[WatermarkConfig]:
     if color not in COLORS:
         color = DEFAULT_COLOR
     density = mapping.get("density", DEFAULT_DENSITY)
-    if density not in DENSITY_GAPS:
+    if not isinstance(density, str) or density not in DENSITY_GAPS:
         density = DEFAULT_DENSITY
     enabled = mapping.get("copyright_enabled", False)
     if not isinstance(enabled, bool):
@@ -991,42 +993,49 @@ def apply_settings(window, settings) -> None:
                                     ("copyright_enabled", "copyright_position")
                                     else getattr(window, attr, default))
     cfg = safe_config(mapping)
-    if cfg is None:
-        window.watermark_text = ""
+    style = cfg
+    if style is None:
         mapping["text"] = "x"
         style = safe_config(mapping)
-        for key, value in style.to_dict().items():
-            if key != "text":
-                setattr(window, ATTRS[key][0], value)
-    else:
-        for key, value in cfg.to_dict().items():
-            setattr(window, ATTRS[key][0], value)
+    values = style.to_dict()
+    if cfg is None:
+        values["text"] = ""
+
+    target_values = None
     if any(target in settings for target in TARGETS):
+        target_values = {}
         for target in TARGETS:
             target_cfg = safe_config(settings.get(target))
-            setattr(window, _TARGET_CONFIG_ATTRS[target],
-                    target_cfg.to_dict() if target_cfg else None)
+            target_values[target] = target_cfg.to_dict() if target_cfg else None
     else:
-        # Older project/session: one shared style plus a scope list.
         targets = settings.get("targets")
         if isinstance(targets, (list, tuple, set)):
-            for target in TARGETS:
-                setattr(window, _TARGET_CONFIG_ATTRS[target],
-                        cfg.to_dict() if cfg and target in targets else None)
-    for target in TARGETS:
-        setattr(window, _SCOPE_ATTRS[target][0],
-                target_config(window, target) is not None)
+            target_values = {target: cfg.to_dict() if cfg and target in targets else None
+                             for target in TARGETS}
+
+    record_values = []
     outputs = settings.get("outputs")
     if isinstance(outputs, dict):
         valid = {}
         for output_id, entry in outputs.items():
             if isinstance(output_id, str) and isinstance(entry, dict):
-                cfg = safe_config(entry.get("config"))
-                valid[output_id] = {"config": cfg.to_dict() if cfg else None,
-                                    "initialized": bool(entry.get("initialized", True))}
+                output_cfg = safe_config(entry.get("config"))
+                valid[output_id] = (output_cfg.to_dict() if output_cfg else None,
+                                    bool(entry.get("initialized", True)))
         if valid:
             for record in _iter_records(window):
                 entry = valid.get(getattr(record, "output_id", None))
                 if entry is not None:
-                    record.watermark_config = copy.deepcopy(entry["config"])
-                    record.watermark_initialized = entry["initialized"]
+                    record_values.append((record, copy.deepcopy(entry[0]), entry[1]))
+
+    for key, value in values.items():
+        setattr(window, ATTRS[key][0], value)
+    if target_values is not None:
+        for target, value in target_values.items():
+            setattr(window, _TARGET_CONFIG_ATTRS[target], value)
+    for target in TARGETS:
+        setattr(window, _SCOPE_ATTRS[target][0],
+                target_config(window, target) is not None)
+    for record, value, initialized in record_values:
+        record.watermark_config = value
+        record.watermark_initialized = initialized

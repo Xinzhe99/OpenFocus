@@ -1,6 +1,7 @@
 """Shared relative/physical height fields and transactional OBJ file groups."""
 import json
 import os
+import stat
 import tempfile
 
 import cv2
@@ -55,20 +56,61 @@ def obj_paths(path):
     base, _ = os.path.splitext(os.fspath(path))
     return [base + ".obj", base + ".mtl", base + "_texture.png", base + ".json"]
 
+def _identity(path):
+    info = os.lstat(path)
+    return (info.st_dev, info.st_ino, info.st_mode)
+
+
+
+def _entry(path):
+    try:
+        info = os.lstat(path)
+    except FileNotFoundError:
+        return None
+    if (not stat.S_ISREG(info.st_mode) or
+            getattr(info, 'st_file_attributes', 0) & getattr(stat, 'FILE_ATTRIBUTE_REPARSE_POINT', 0x400)):
+        raise ValueError(f'Cannot replace non-regular object: {path} (mode {stat.filemode(info.st_mode)})')
+    return (info.st_dev, info.st_ino, info.st_mode)
+
+
+def inspect_obj_targets(path):
+    """Resolve the parent once and record the four authorized directory entries."""
+    original_parent = os.path.abspath(os.path.dirname(os.fspath(path)) or '.')
+    parent = os.path.realpath(original_parent)
+    parent_info = os.stat(original_parent)
+    files = obj_paths(os.path.join(parent, os.path.basename(os.fspath(path))))
+    return files, tuple(_entry(name) for name in files), (original_parent, parent_info.st_dev, parent_info.st_ino)
+
+
+def _check_authorization(files, entries, parent):
+    info = os.stat(parent[0])
+    if (info.st_dev, info.st_ino) != parent[1:]:
+        raise ValueError(f'Output directory changed: {parent[0]}')
+    resolved = os.stat(os.path.dirname(files[0]))
+    if (resolved.st_dev, resolved.st_ino) != parent[1:]:
+        raise ValueError(f'Output directory changed: {os.path.dirname(files[0])}')
+    for name, expected in zip(files, entries):
+        if _entry(name) != expected:
+            raise ValueError(f'Output changed; confirm again: {name}')
+
 
 def export_obj(path: str, index01: np.ndarray, texture: np.ndarray,
                relief: float = 0.15, invert: bool = False,
                max_side: int = 600, max_texture: int = 4096, *,
                height_field=None, pixel_size_um=None, metadata=None,
-               overwrite=False, should_cancel=None, progress=None) -> dict:
+               overwrite=False, should_cancel=None, progress=None, authorization=None) -> dict:
     """Stage a complete file group, then commit it with rollback on failure.
 
     A supplied height_field is already sampled and processed, shared with the
     final preview. With pixel_size_um, its Z values are physical micrometres;
     relative relief/inversion must already be reflected in that field.
     """
-    files = obj_paths(path)
-    conflicts = [name for name in files if os.path.exists(name)]
+    files, entries, parent = authorization or inspect_obj_targets(path)
+    expected_files = obj_paths(os.path.join(os.path.realpath(parent[0]), os.path.basename(os.fspath(path))))
+    if len(files) != 4 or len(entries) != 4 or files != expected_files:
+        raise ValueError('Mesh output authorization does not match the selected path')
+    _check_authorization(files, entries, parent)
+    conflicts = [name for name, entry in zip(files, entries) if entry is not None]
     if conflicts and not overwrite:
         raise FileExistsError("\n".join(conflicts))
 
@@ -123,16 +165,27 @@ def export_obj(path: str, index01: np.ndarray, texture: np.ndarray,
                 relative_relief=None if physical else relief,
                 origin="image centre; X right; Y up", missing="NaN; cells omitted")
     folder = os.path.dirname(os.path.abspath(files[0]))
-    with tempfile.TemporaryDirectory(prefix=".openfocus-mesh-", dir=folder) as staging:
-        staged = [os.path.join(staging, os.path.basename(name)) for name in files]
+    staging = tempfile.mkdtemp(prefix=".openfocus-mesh-", dir=folder)
+    staged = [os.path.join(staging, os.path.basename(name)) for name in files]
+    backups, committed, owned = {}, [], {}
+    errors = []
+    failure = None
+    try:
+        with open(staged[2], 'xb'):
+            pass
+        owned[staged[2]] = _entry(staged[2])
         checkpoint("texture")
         if not imwrite_auto(staged[2], tex):
             raise IOError(f"Could not write {files[2]}")
-        with open(staged[1], "w", encoding="utf-8") as stream:
+        owned[staged[2]] = _entry(staged[2])
+        with open(staged[1], "x", encoding="utf-8") as stream:
+            owned[staged[1]] = _entry(staged[1])
             stream.write("newmtl surface\nKa 1 1 1\nKd 1 1 1\nKs 0 0 0\nd 1\nillum 1\n"
                          f"map_Kd {os.path.basename(files[2])}\n")
+        owned[staged[1]] = _entry(staged[1])
         checkpoint("model")
-        with open(staged[0], "w", encoding="utf-8") as stream:
+        with open(staged[0], "x", encoding="utf-8") as stream:
+            owned[staged[0]] = _entry(staged[0])
             stream.write(f"# OpenFocus {gw}x{gh}; 1 unit = {meta['unit']}\n"
                          f"mtllib {os.path.basename(files[1])}\no surface\n")
             for start in range(0, len(verts), 16384):
@@ -144,25 +197,71 @@ def export_obj(path: str, index01: np.ndarray, texture: np.ndarray,
                 checkpoint("model")
                 np.savetxt(stream, np.repeat(tris[start:start + 16384], 2, axis=1),
                            fmt="f %d/%d %d/%d %d/%d")
-        with open(staged[3], "w", encoding="utf-8") as stream:
+        owned[staged[0]] = _entry(staged[0])
+        with open(staged[3], "x", encoding="utf-8") as stream:
+            owned[staged[3]] = _entry(staged[3])
             json.dump(meta, stream, ensure_ascii=False, indent=2, allow_nan=False)
+        owned[staged[3]] = _entry(staged[3])
         checkpoint("commit")
-        backups, committed = {}, []
-        try:
-            for target in files:
-                if os.path.exists(target):
-                    if not overwrite:
-                        raise FileExistsError(target)
-                    backup = os.path.join(staging, "backup-" + os.path.basename(target))
-                    os.replace(target, backup)
-                    backups[target] = backup
-            for source, target in zip(staged, files):
-                os.replace(source, target)
-                committed.append(target)
-        except Exception:
-            for target in committed:
-                os.remove(target)
-            for target, backup in backups.items():
+        _check_authorization(files, entries, parent)
+        for target, expected in zip(files, entries):
+            if expected is not None:
+                backup = os.path.join(staging, "backup-" + os.path.basename(target))
+                os.replace(target, backup)
+                backups[target] = (backup, expected, None)
+                moved_identity = _identity(backup)
+                backups[target] = (backup, expected, moved_identity)
+                if _entry(backup) != expected:
+                    raise ValueError(f'Output changed during backup: {target}')
+        for source, target in zip(staged, files):
+            if _entry(target) is not None:
+                raise ValueError(f'Output appeared during commit: {target}')
+            identity = owned[source]
+            if _entry(source) != identity:
+                raise ValueError(f'Staged file changed: {source}')
+            os.replace(source, target)
+            committed.append((target, identity))
+            del owned[source]
+    except Exception as exc:
+        failure = exc
+        for target, identity in reversed(committed):
+            try:
+                if _entry(target) != identity:
+                    raise ValueError('committed file changed')
+                os.unlink(target)
+            except Exception as rollback_error:
+                errors.append(f'{target}: {rollback_error}')
+        for target, (backup, identity, moved_identity) in backups.items():
+            try:
+                if moved_identity is None or _identity(backup) != moved_identity:
+                    raise ValueError('backup identity changed')
+                if os.path.lexists(target):
+                    raise ValueError('restore destination occupied')
                 os.replace(backup, target)
-            raise
+            except Exception as rollback_error:
+                errors.append(f'{target} -> {backup}: {rollback_error}')
+    else:
+        for target, (backup, identity, moved_identity) in backups.items():
+            try:
+                if _entry(backup) != identity:
+                    raise ValueError('backup changed')
+                os.unlink(backup)
+            except Exception as cleanup_error:
+                errors.append(f'{target} -> {backup}: {cleanup_error}')
+    finally:
+        for name, identity in owned.items():
+            try:
+                if _entry(name) != identity:
+                    raise ValueError('staged file changed')
+                os.unlink(name)
+            except Exception as cleanup_error:
+                errors.append(f'{name}: {cleanup_error}')
+        try:
+            os.rmdir(staging)
+        except OSError as cleanup_error:
+            errors.append(f'Staging retained at {staging}: {cleanup_error}')
+    if errors:
+        raise OSError('\n'.join(([str(failure)] if failure else []) + errors)) from failure
+    if failure is not None:
+        raise failure
     return {"vertices": len(verts), "faces": len(tris), "files": files}

@@ -5,6 +5,7 @@ import numpy as np
 import pytest
 import tifffile
 from PIL import Image
+from test_input_formats import cmyk_profile, _cmyk_pixels
 
 from core import batch_converter as converter
 
@@ -13,6 +14,19 @@ from core import batch_converter as converter
 def memory_budget(monkeypatch):
     monkeypatch.setattr(converter, 'available_memory_bytes', lambda: 8 * 1024**3)
 
+
+def _assert_batch(result, **expected):
+    counts = dict.fromkeys(('success', 'failed', 'partial', 'cancelled', 'not_started'), 0)
+    counts.update(expected)
+    assert result['counts'] == counts
+    assert sum(counts.values()) == len(result['items'])
+    assert [item['status'] for item in result['items']].count('active') == 0
+    assert [item['status'] for item in result['items']].count('pending') == 0
+
+
+def _successful_record(index, source):
+    return dict(index=index, source=source, status='success', outputs=['output'],
+                errors=[], stop_reason=None)
 
 def test_unicode_conflicts_and_16bit(tmp_path):
     source = tmp_path / '花.png'
@@ -356,7 +370,10 @@ def test_converter_busy_rejects_drop_mutation_and_repeat_start_until_finished(
     assert not dialog.cancel.isEnabled()
     assert not dialog.start.isEnabled() and not dialog.delete_shortcut.isEnabled()
     assert not dialog.backspace_shortcut.isEnabled()
-    worker.complete.emit(0, 0, True)
+    worker.complete.emit({'items': [dict(index=0, source=str(source), status='cancelled',
+                                         outputs=[], errors=[], stop_reason='user_cancel')],
+                          'counts': dict(success=0, failed=0, partial=0, cancelled=1, not_started=0),
+                          'user_cancelled': True, 'scheduler_error': None})
     assert not dialog.start.isEnabled()
     worker.finished.emit()
     assert dialog.start.isEnabled() and dialog.remove.isEnabled()
@@ -497,13 +514,16 @@ def test_cancelled_batch_keeps_completed_page_and_reports_unstarted(tmp_path, mo
                         SimpleNamespace(workers=1, native_threads=1, max_in_flight=1,
                                         ram_budget=1024**3, describe=lambda: 'test'))
     monkeypatch.setattr(converter.resource_policy, 'ram_budget', lambda *a: 1024**3)
-    statuses, progress = {}, []
+    events, progress = [], []
     result = converter.convert_batch([str(source), str(remaining)], str(tmp_path), '.png',
-                                     cancelled.is_set, lambda i, text: statuses.update({i: text}), progress.append)
-    assert result == (0, 0, True)
+                                     cancelled.is_set, events.append, progress.append)
+    _assert_batch(result, partial=1, not_started=1)
+    assert result['user_cancelled']
     assert (tmp_path / 'pages_page_0001.png').is_file()
     assert not (tmp_path / 'pages_page_0002.png').exists()
-    assert 'Cancelled' in statuses[0] and statuses[1] == 'Cancelled'
+    assert result['items'][0]['outputs'] == [str(tmp_path / 'pages_page_0001.png')]
+    assert result['items'][1]['stop_reason'] == 'user_cancel'
+    assert progress[-1] == 2
     assert not list(tmp_path.glob('tmp*'))
 
 
@@ -524,7 +544,7 @@ def test_job_memory_reservation_bounds_parallel_admission(tmp_path, monkeypatch)
             calls.append(index)
         entered.set()
         assert release.wait(5)
-        return True, False
+        return _successful_record(index, args[0])
 
     monkeypatch.setattr(converter, '_convert_source', convert)
     with ThreadPoolExecutor(max_workers=1) as owner:
@@ -536,7 +556,7 @@ def test_job_memory_reservation_bounds_parallel_admission(tmp_path, monkeypatch)
             assert calls == [0]
         finally:
             release.set()
-        assert future.result(timeout=5) == (3, 0, False)
+        _assert_batch(future.result(timeout=5), success=3)
 
 
 def test_thumbnail_refuses_large_raster_before_loading(tmp_path, monkeypatch):
@@ -647,23 +667,24 @@ def test_multipage_partial_failure_retains_successful_pages(tmp_path, monkeypatc
             tif.write(np.full((8, 8), value, np.uint16))
     decode = converter._decode
 
-    def fail_middle(path, page):
+    def fail_middle(path, page, *args, **kwargs):
         if page == 1:
             raise ValueError('damaged middle page')
-        return decode(path, page)
+        return decode(path, page, *args, **kwargs)
 
     monkeypatch.setattr(converter, '_decode', fail_middle)
     monkeypatch.setattr(converter.resource_policy, 'plan_execution', lambda *a, **k:
                         SimpleNamespace(workers=2, max_in_flight=2, ram_budget=1024**3, describe=lambda: 'test'))
     monkeypatch.setattr(converter.resource_policy, 'ram_budget', lambda *a: 1024**3)
-    statuses = {}
+    events = []
     result = converter.convert_batch([str(source)], str(tmp_path), '.png', lambda: False,
-                                     lambda i, text: statuses.update({i: text}), lambda *a: None)
-    assert result == (0, 1, False)
+                                     events.append, lambda *a: None)
+    _assert_batch(result, partial=1)
     assert (tmp_path / 'partial_page_0001.png').is_file()
     assert not (tmp_path / 'partial_page_0002.png').exists()
     assert (tmp_path / 'partial_page_0003.png').is_file()
-    assert 'damaged middle page' in statuses[0]
+    assert any('damaged middle page' in str(error) for error in result['items'][0]['errors'])
+    assert len(result['items'][0]['outputs']) == 2
 
 
 def test_batch_restores_global_native_codec_threads_after_failure(tmp_path, monkeypatch):
@@ -687,7 +708,7 @@ def test_batch_restores_global_native_codec_threads_after_failure(tmp_path, monk
     monkeypatch.setattr(converter, '_convert_source', failed_job)
     result = converter.convert_batch(['image.heic'], str(tmp_path), '.png', lambda: False,
                                      lambda *a: None, lambda *a: None)
-    assert result == (0, 1, False)
+    _assert_batch(result, failed=1)
     assert options.DECODE_THREADS == 7
     assert converter.cv2.getNumThreads() == original_cv
 
@@ -802,6 +823,9 @@ def test_tiff_preflight_visits_headers_once_and_stops_before_next_page(tmp_path,
 
     monkeypatch.setattr(converter.tifffile, 'TiffFile', open_tiff)
     monkeypatch.setattr(converter, '_image_requirements', estimate)
+    monkeypatch.setattr(converter, '_tiff_requirements',
+                        lambda path, page: estimate(page.imagewidth, page.imagelength,
+                                                    sum(page.databytecounts)))
     monkeypatch.setattr(converter, 'estimate_job', lambda *a: pytest.fail('Reopened a TIFF page'))
     with pytest.raises(InterruptedError, match='source admission'):
         converter._estimate_source(str(tmp_path / 'many-pages.tif'), cancelled.is_set)
@@ -829,6 +853,9 @@ def test_tiff_preflight_uses_one_open_for_all_page_budgets(tmp_path, monkeypatch
         return HeaderFile()
 
     monkeypatch.setattr(converter.tifffile, 'TiffFile', open_tiff)
+    monkeypatch.setattr(converter, '_tiff_requirements',
+                        lambda path, page: converter._image_requirements(
+                            page.imagewidth, page.imagelength, sum(page.databytecounts)))
     monkeypatch.setattr(converter, 'estimate_job', lambda *a: pytest.fail('Reopened a TIFF page'))
     assert converter._estimate_source(str(tmp_path / 'two-pages.tif'), lambda: False) == (
         2, *converter._image_requirements(80, 90, 200))
@@ -838,7 +865,7 @@ def test_tiff_preflight_uses_one_open_for_all_page_budgets(tmp_path, monkeypatch
 def test_cancelled_preflight_drains_active_job_without_reporting_failure(tmp_path, monkeypatch):
     from threading import Event
     from types import SimpleNamespace
-    cancelled, estimated, statuses = Event(), [], {}
+    cancelled, estimated, events = Event(), [], []
     monkeypatch.setattr(converter.resource_policy, 'plan_execution', lambda *a, **k:
                         SimpleNamespace(workers=2, max_in_flight=2, ram_budget=150, describe=lambda: 'test'))
     monkeypatch.setattr(converter.resource_policy, 'ram_budget', lambda *a: 150)
@@ -850,18 +877,18 @@ def test_cancelled_preflight_drains_active_job_without_reporting_failure(tmp_pat
             raise InterruptedError('Cancelled while inspecting TIFF pages')
         return 1, 10, 1
 
-    def complete_active(*args):
+    def complete_active(index, source, *args):
         assert cancelled.wait(5)
-        return True, False
+        return _successful_record(index, source)
 
     monkeypatch.setattr(converter, '_estimate_source', estimate)
     monkeypatch.setattr(converter, '_convert_source', complete_active)
     result = converter.convert_batch(['first', 'second', 'third'], str(tmp_path), '.png',
-                                     cancelled.is_set, lambda i, status: statuses.update({i: status}),
-                                     lambda *a: None)
-    assert result == (1, 0, True)
+                                     cancelled.is_set, events.append, lambda *a: None)
+    _assert_batch(result, success=1, not_started=2)
+    assert result['user_cancelled']
     assert estimated == ['first', 'second']
-    assert statuses == {1: 'Cancelled', 2: 'Cancelled'}
+    assert [item['status'] for item in result['items']] == ['success', 'not_started', 'not_started']
 
 
 def test_png_thumbnail_reads_exif_after_idat_before_pixel_admission(tmp_path, monkeypatch):
@@ -981,10 +1008,11 @@ def test_batch_creates_unicode_parents_and_does_not_repeat_page_admission(tmp_pa
     original = source.read_bytes()
     directory = tmp_path / '新建' / '输出'
     monkeypatch.setattr(converter, '_admit', lambda *a: pytest.fail('batch re-admitted its reserved page'))
-    statuses, progress = {}, []
+    events, progress = [], []
     result = converter.convert_batch([str(source)], str(directory), '.jpg', lambda: False,
-                                     lambda i, text: statuses.update({i: text}), progress.append)
-    assert result == (1, 0, False) and progress == [1]
+                                     events.append, progress.append)
+    _assert_batch(result, success=1)
+    assert progress[-1] == 1
     assert source.read_bytes() == original
     with Image.open(directory / '花.jpg') as output:
         assert output.size == (8, 8)
@@ -998,11 +1026,12 @@ def test_batch_reports_output_directory_creation_error(tmp_path, monkeypatch):
     def deny(*args, **kwargs):
         raise PermissionError('directory access denied')
     monkeypatch.setattr(converter.os, 'makedirs', deny)
-    statuses = {}
+    events = []
     result = converter.convert_batch([str(source)], str(directory), '.jpg', lambda: False,
-                                     lambda i, text: statuses.update({i: text}), lambda n: None)
-    assert result == (0, 1, False)
-    assert 'directory access denied' in statuses[0]
+                                     events.append, lambda n: None)
+    _assert_batch(result, not_started=1)
+    assert 'directory access denied' in result['scheduler_error']
+    assert result['items'][0]['stop_reason'] == 'scheduler_error'
     assert source.read_bytes() == before and not directory.exists()
 
 
@@ -1014,16 +1043,19 @@ def test_batch_admits_one_job_above_comfortable_budget_only_up_to_ceiling(tmp_pa
     monkeypatch.setattr(converter.resource_policy, 'ram_ceiling', lambda *a: 150)
     monkeypatch.setattr(converter, '_estimate_source', lambda *a: (1, 125, 1))
     calls = []
-    monkeypatch.setattr(converter, '_convert_source', lambda *a: (calls.append(a[1]) or True, False))
+    monkeypatch.setattr(converter, '_convert_source',
+                        lambda index, source, *a: (calls.append(source) or _successful_record(index, source)))
     result = converter.convert_batch(['one'], str(tmp_path), '.jpg', lambda: False,
                                      lambda *a: None, lambda *a: None)
-    assert result == (1, 0, False) and calls == ['one']
+    _assert_batch(result, success=1)
+    assert calls == ['one']
     monkeypatch.setattr(converter.resource_policy, 'ram_ceiling', lambda *a: 124)
-    statuses = {}
+    events = []
     result = converter.convert_batch(['two'], str(tmp_path), '.jpg', lambda: False,
-                                     lambda i, text: statuses.update({i: text}), lambda *a: None)
-    assert result == (0, 1, False) and calls == ['one']
-    assert statuses[0] == converter.trans.t('converter_memory_error')
+                                     events.append, lambda *a: None)
+    _assert_batch(result, failed=1)
+    assert calls == ['one']
+    assert converter.trans.t('converter_memory_error') in str(result['items'][0]['errors'])
 
 
 def test_raw_jpeg_estimate_uses_sensor_bounds_with_headroom(tmp_path, monkeypatch):
@@ -1049,7 +1081,8 @@ def test_cancelled_batch_does_not_create_output_directory(tmp_path):
     directory = tmp_path / 'not-created'
     result = converter.convert_batch(['source'], str(directory), '.jpg', lambda: True,
                                      lambda *a: None, lambda *a: None)
-    assert result == (0, 0, True)
+    _assert_batch(result, not_started=1)
+    assert result['user_cancelled']
     assert not directory.exists()
 
 
@@ -1061,7 +1094,7 @@ def test_batch_preserves_existing_output_and_same_directory_source(tmp_path):
     existing.write_bytes(b'existing output')
     result = converter.convert_batch([str(source)], str(tmp_path), '.jpg', lambda: False,
                                      lambda *a: None, lambda *a: None)
-    assert result == (1, 0, False)
+    _assert_batch(result, success=1)
     assert source.read_bytes() == original
     assert existing.read_bytes() == b'existing output'
     with Image.open(tmp_path / 'photo_1.jpg') as output:
@@ -1076,11 +1109,11 @@ def test_batch_reports_unknown_memory_instead_of_claiming_shortage(tmp_path, mon
     monkeypatch.setattr(converter.resource_policy, 'probe_resources', lambda: SimpleNamespace(ram_known=False))
     monkeypatch.setattr(converter.resource_policy, 'ram_ceiling', lambda *a: 0)
     monkeypatch.setattr(converter, '_estimate_source', lambda *a: (1, 10, 1))
-    statuses = {}
+    events = []
     result = converter.convert_batch(['source'], str(tmp_path), '.jpg', lambda: False,
-                                     lambda i, text: statuses.update({i: text}), lambda *a: None)
-    assert result == (0, 1, False)
-    assert statuses[0] == converter.trans.t('converter_memory_unknown')
+                                     events.append, lambda *a: None)
+    _assert_batch(result, failed=1)
+    assert converter.trans.t('converter_memory_unknown') in str(result['items'][0]['errors'])
 
 
 def test_single_page_admission_uses_localized_resource_errors(tmp_path, monkeypatch):
@@ -1099,3 +1132,341 @@ def test_single_page_admission_uses_localized_resource_errors(tmp_path, monkeypa
     with pytest.raises(OSError) as error:
         converter._admit('source', 0, str(tmp_path), '.jpg')
     assert str(error.value) == converter.trans.t('converter_space_error')
+
+
+def test_scheduler_failure_preserves_committed_output(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    sources = [tmp_path / 'first.png', tmp_path / 'second.png']
+    for source in sources:
+        Image.new('RGB', (8, 8), 'red').save(source)
+    output_dir = tmp_path / 'output'
+    monkeypatch.setattr(converter.resource_policy, 'plan_execution', lambda *a, **k:
+                        SimpleNamespace(workers=1, native_threads=1, max_in_flight=1,
+                                        ram_budget=1024**3, describe=lambda: 'test'))
+    disk_usage = converter.shutil.disk_usage
+    calls = []
+
+    def fail_second_probe(path):
+        calls.append(path)
+        if len(calls) == 2:
+            raise OSError('output volume disconnected')
+        return disk_usage(path)
+
+    monkeypatch.setattr(converter.shutil, 'disk_usage', fail_second_probe)
+    events, progress = [], []
+    result = converter.convert_batch([str(p) for p in sources], str(output_dir), '.jpg',
+                                     lambda: False, events.append, progress.append)
+    _assert_batch(result, success=1, not_started=1)
+    assert not result['user_cancelled']
+    assert 'output volume disconnected' in result['scheduler_error']
+    assert result['items'][1]['stop_reason'] == 'scheduler_error'
+    assert len(result['items'][0]['outputs']) == 1
+    with Image.open(result['items'][0]['outputs'][0]) as output:
+        assert output.size == (8, 8)
+    assert progress[-1] == 2
+
+
+def test_last_page_committed_before_cancel_is_success(tmp_path, monkeypatch):
+    from threading import Event
+
+    source = tmp_path / 'single.png'
+    Image.new('RGB', (8, 8), 'blue').save(source)
+    cancelled = Event()
+    real_convert = converter.convert_one
+
+    def convert(*args, **kwargs):
+        output = real_convert(*args, **kwargs)
+        cancelled.set()
+        return output
+
+    monkeypatch.setattr(converter, 'convert_one', convert)
+    result = converter.convert_batch([str(source)], str(tmp_path), '.jpg',
+                                     cancelled.is_set, lambda event: None, lambda n: None)
+    _assert_batch(result, success=1)
+    assert result['user_cancelled']
+    assert Path(result['items'][0]['outputs'][0]).is_file()
+
+
+@pytest.mark.parametrize('kind', ['many_samples', 'float', 'planar'])
+def test_tiff_unsupported_layout_is_rejected_before_decode(tmp_path, monkeypatch, kind):
+    source = tmp_path / 'unsupported.tif'
+    if kind == 'many_samples':
+        tifffile.imwrite(source, np.zeros((8, 8, 128), np.uint16), photometric='minisblack',
+                         planarconfig='contig', compression='deflate')
+    elif kind == 'float':
+        tifffile.imwrite(source, np.zeros((8, 8), np.float32))
+    else:
+        tifffile.imwrite(source, np.zeros((3, 8, 8), np.uint16), photometric='rgb',
+                         planarconfig='separate')
+    original = source.read_bytes()
+    monkeypatch.setattr(tifffile.TiffPage, 'asarray',
+                        lambda *a, **k: pytest.fail('TIFF decoded before layout validation'))
+    monkeypatch.setattr(converter.cv2, 'imdecodemulti',
+                        lambda *a, **k: pytest.fail('TIFF decoded before layout validation'))
+    with pytest.raises((ValueError, converter.image_loader.UnsupportedColorSpace)):
+        converter.convert_one(str(source), str(tmp_path), '.png')
+    assert source.read_bytes() == original
+    assert sorted(p.name for p in tmp_path.iterdir()) == ['unsupported.tif']
+
+
+def test_tiff_thumbnail_admission_precedes_pixel_decode(tmp_path, monkeypatch):
+    source = tmp_path / 'preview.tif'
+    tifffile.imwrite(source, np.zeros((8, 8, 3), np.uint8), photometric='rgb')
+    monkeypatch.setattr(converter.resource_policy, 'require_memory',
+                        lambda *a, **k: (_ for _ in ()).throw(MemoryError('budget')))
+    monkeypatch.setattr(tifffile.TiffPage, 'asarray',
+                        lambda *a, **k: pytest.fail('TIFF decoded before admission'))
+    with pytest.raises(MemoryError, match='budget'):
+        converter.thumbnail_rgb(str(source))
+
+
+def test_page_progress_events_are_incremental_and_keep_all_outputs(tmp_path, monkeypatch):
+    import json
+
+    monkeypatch.setattr(converter, 'convert_one',
+                        lambda source, directory, ext, page, *a, **k:
+                        str(tmp_path / ('长路径' * 10 + f'_{page:04}.png')))
+
+    def run(pages):
+        events = []
+        record = converter._convert_source(0, 'input.png', str(tmp_path), '.png', pages,
+                                           lambda: False, events.append)
+        payload_size = sum(len(json.dumps(event, ensure_ascii=False)) for event in events)
+        return record, events, payload_size
+
+    small, small_events, small_size = run(100)
+    large, large_events, large_size = run(200)
+    assert small['status'] == large['status'] == 'success'
+    assert len(small['outputs']) == len(set(small['outputs'])) == 100
+    assert len(large['outputs']) == len(set(large['outputs'])) == 200
+    assert len(small_events) <= 201 and len(large_events) <= 401
+    assert large_size < small_size * 2.5
+    assert all(set(event) == {'index', 'page', 'pages', 'completed', 'failed',
+                              'output', 'error', 'status'} for event in large_events)
+    assert sum(event['output'] is not None for event in large_events) == 200
+    assert large['outputs'][0] not in json.dumps(large_events[-1], ensure_ascii=False)
+
+
+def test_scheduler_failure_drains_active_items_and_preserves_partial_output(tmp_path, monkeypatch):
+    from threading import Event
+    from types import SimpleNamespace
+
+    started = [Event(), Event()]
+    monkeypatch.setattr(converter.resource_policy, 'plan_execution', lambda *a, **k:
+                        SimpleNamespace(workers=2, native_threads=1, max_in_flight=3,
+                                        ram_budget=1024**3, describe=lambda: 'test'))
+    monkeypatch.setattr(converter, '_estimate_source', lambda *a: (2, 1, 1))
+    disk_usage = converter.shutil.disk_usage
+    calls = []
+
+    def fail_third_probe(path):
+        calls.append(path)
+        if len(calls) == 3:
+            assert all(event.wait(5) for event in started)
+            raise OSError('volume disconnected')
+        return disk_usage(path)
+
+    def active(index, source, directory, ext, count, cancelled, item):
+        outputs = []
+        if index == 0:
+            output = str(tmp_path / 'committed.png')
+            Image.new('RGB', (8, 8), 'red').save(output)
+            outputs.append(output)
+        started[index].set()
+        while not cancelled():
+            Event().wait(.01)
+        return dict(index=index, source=source, status='partial' if outputs else 'cancelled',
+                    outputs=outputs, errors=[], stop_reason='user_cancel')
+
+    monkeypatch.setattr(converter.shutil, 'disk_usage', fail_third_probe)
+    monkeypatch.setattr(converter, '_convert_source', active)
+    progress = []
+    result = converter.convert_batch(['first', 'second', 'third'], str(tmp_path), '.png',
+                                     lambda: False, lambda event: None, progress.append)
+    _assert_batch(result, partial=1, failed=1, not_started=1)
+    assert not result['user_cancelled']
+    assert 'volume disconnected' in result['scheduler_error']
+    assert all(item['stop_reason'] == 'scheduler_error' for item in result['items'])
+    with Image.open(result['items'][0]['outputs'][0]) as output:
+        assert output.size == (8, 8)
+    assert progress[-1] == 3
+
+
+def test_cmyk_jpeg_without_profile_matches_existing_color_conversion(tmp_path):
+    source = tmp_path / '颜色.jpg'
+    Image.new('CMYK', (8, 6), (220, 40, 10, 20)).save(source)
+    with Image.open(source) as image:
+        expected = converter.image_loader.cmyk_to_bgr(image, str(source), b'')
+    destination = converter.convert_one(str(source), str(tmp_path), '.png')
+    actual = cv2.imdecode(np.fromfile(destination, dtype=np.uint8), cv2.IMREAD_UNCHANGED)
+    np.testing.assert_array_equal(actual, expected)
+
+
+@pytest.mark.parametrize('pages', [4, 8])
+def test_tiff_conversion_visits_source_pages_linearly(tmp_path, monkeypatch, pages):
+    source = tmp_path / 'pages.tif'
+    with tifffile.TiffWriter(source) as writer:
+        for value in range(pages):
+            writer.write(np.full((8, 8), value * 100, np.uint16))
+    visits = []
+    real_pages = converter.image_loader.tiff_source_pages
+
+    def counted(tiff):
+        for entry in real_pages(tiff):
+            visits.append(entry[0])
+            yield entry
+
+    monkeypatch.setattr(converter.image_loader, 'tiff_source_pages', counted)
+    result = converter.convert_batch([str(source)], str(tmp_path), '.png', lambda: False,
+                                     lambda event: None, lambda n: None)
+    _assert_batch(result, success=1)
+    assert len(visits) <= 3 * pages
+    assert len(result['items'][0]['outputs']) == pages
+    for index, output in enumerate(result['items'][0]['outputs']):
+        actual = cv2.imdecode(np.fromfile(output, dtype=np.uint8), cv2.IMREAD_UNCHANGED)
+        np.testing.assert_array_equal(actual, np.full((8, 8), index * 100, np.uint16))
+
+
+@pytest.mark.parametrize('extension', ['.png', '.tif'])
+def test_profiled_cmyk_jpeg_conversion_preserves_color_and_orientation(tmp_path, extension, cmyk_profile):
+    from io import BytesIO
+    from PIL import ImageCms
+    from utils.image_utils import srgb_icc_profile
+
+    profile = cmyk_profile
+    source = tmp_path / '颜色方向.jpg'
+    exif = Image.Exif()
+    exif[274] = 6
+    Image.fromarray(_cmyk_pixels(), 'CMYK').save(source, quality=100,
+                                                  icc_profile=profile, exif=exif)
+    with Image.open(source) as image:
+        transformed = ImageCms.profileToProfile(
+            image, ImageCms.ImageCmsProfile(BytesIO(profile)),
+            ImageCms.ImageCmsProfile(BytesIO(srgb_icc_profile())), outputMode='RGB')
+        expected = np.rot90(np.asarray(transformed), -1)
+        assert not np.array_equal(np.asarray(transformed), np.asarray(image.convert('RGB')))
+    destination = converter.convert_one(str(source), str(tmp_path), extension)
+    with Image.open(destination) as output:
+        np.testing.assert_array_equal(np.asarray(output), expected)
+        assert output.info['icc_profile'] == srgb_icc_profile()
+        assert output.getexif().get(274, 1) == 1
+    thumbnail = converter.thumbnail_rgb(str(source))
+    np.testing.assert_array_equal(thumbnail, expected)
+
+
+@pytest.mark.parametrize('profile_kind', ['invalid', 'rgb'])
+def test_cmyk_jpeg_bad_profile_does_not_publish_output(tmp_path, profile_kind):
+    from utils.image_utils import srgb_icc_profile
+
+    source = tmp_path / 'bad.jpg'
+    profile = b'invalid ICC' if profile_kind == 'invalid' else srgb_icc_profile()
+    Image.new('CMYK', (8, 8), (200, 30, 40, 0)).save(source, icc_profile=profile)
+    original = source.read_bytes()
+    existing = tmp_path / 'bad.png'
+    existing.write_bytes(b'keep')
+    with pytest.raises(converter.image_loader.UnsupportedColorSpace):
+        converter.convert_one(str(source), str(tmp_path), '.png')
+    assert source.read_bytes() == original and existing.read_bytes() == b'keep'
+    assert {path.name for path in tmp_path.iterdir()} == {'bad.jpg', 'bad.png'}
+
+
+def test_batch_tiff_reduced_page_preserves_physical_page_metadata(tmp_path):
+    from utils.image_utils import srgb_icc_profile
+
+    source = tmp_path / 'metadata.tif'
+    first_profile = srgb_icc_profile()
+    second_profile = bytearray(first_profile)
+    second_profile[-1] ^= 1
+    second_profile = bytes(second_profile)
+    first = np.arange(4 * 6 * 3, dtype=np.uint16).reshape(4, 6, 3) * 100
+    second = first + 1000
+    with tifffile.TiffWriter(source) as writer:
+        for pixels, reduced, orientation, camera, profile in (
+                (first, False, 1, 'Camera0', first_profile),
+                (np.zeros((2, 3, 3), np.uint16), True, 1, 'Preview', first_profile),
+                (second, False, 6, 'Camera2', second_profile)):
+            tags = [(274, 'H', 1, orientation, False), (271, 's', 0, camera, False),
+                    (34675, 'B', len(profile), profile, False)]
+            writer.write(pixels, photometric='rgb', subfiletype=int(reduced), extratags=tags)
+    result = converter.convert_batch([str(source)], str(tmp_path / 'out'), '.tif',
+                                     lambda: False, lambda event: None, lambda n: None)
+    _assert_batch(result, success=1)
+    outputs = result['items'][0]['outputs']
+    assert len(outputs) == 2
+    for path, expected, profile, camera in zip(outputs, (first, np.rot90(second, -1)),
+                                               (first_profile, second_profile), ('Camera0', 'Camera2')):
+        with tifffile.TiffFile(path) as output:
+            page = output.pages[0]
+            np.testing.assert_array_equal(page.asarray(), expected)
+            assert page.dtype == np.uint16
+            assert page.tags[34675].value == profile
+            assert page.tags[271].value == camera
+            assert page.tags.get(274) is None or page.tags[274].value == 1
+
+
+def test_queued_progress_survives_cancel_and_exposes_complete_details(qapp, tmp_path, monkeypatch):
+    from threading import Event
+    from types import SimpleNamespace
+    from dialogs.batch_converter import BatchConverterDialog, ThumbnailWorker, QMessageBox
+
+    monkeypatch.setattr(ThumbnailWorker, 'start', lambda self: None)
+    monkeypatch.setattr(converter.resource_policy, 'plan_execution', lambda *a, **k:
+                        SimpleNamespace(workers=1, native_threads=1, max_in_flight=1,
+                                        ram_budget=1024**3, describe=lambda: 'test'))
+    monkeypatch.setattr(converter, '_estimate_source', lambda *a: (100, 1, 1))
+    reached, release = Event(), Event()
+    paths = []
+
+    def convert(source, directory, ext, page, *args, **kwargs):
+        path = str(tmp_path / f'output_{page:04}.png')
+        Image.new('RGB', (2, 2), (page, 0, 0)).save(path)
+        paths.append(path)
+        if page == 9:
+            reached.set()
+            assert release.wait(5)
+        return path
+
+    monkeypatch.setattr(converter, 'convert_one', convert)
+    source = tmp_path / 'input.png'
+    Image.new('RGB', (2, 2)).save(source)
+    dialog = BatchConverterDialog()
+    worker = None
+    events, details = [], []
+    original_item = dialog._item
+
+    def consume(event):
+        events.append(event)
+        original_item(event)
+
+    dialog._item = consume
+    monkeypatch.setattr(QMessageBox, 'information', lambda *args: details.append(args[2]))
+    try:
+        dialog._append([str(source)])
+        dialog.directory.setText(str(tmp_path))
+        dialog._start()
+        worker = dialog.worker
+        # Do not pump the GUI queue while the worker produces its page events.
+        assert reached.wait(5)
+        assert not events
+        dialog._cancel()
+        release.set()
+        assert worker.wait(5000)
+        qapp.processEvents()
+        result = dialog._conversion_results
+        _assert_batch(result, partial=1)
+        assert result['user_cancelled']
+        assert result['items'][0]['outputs'] == paths and len(paths) == 10
+        assert [event['output'] for event in events if event['output']] == paths
+        assert all(Path(path).is_file() for path in paths)
+        row = dialog.list.item(0)
+        assert all(path not in row.text() and path not in row.toolTip() for path in paths)
+        dialog._show_result_details(row)
+        assert len(details) == 1
+        assert all(details[0].count(path) == 1 for path in paths)
+    finally:
+        release.set()
+        if worker is not None:
+            worker.requestInterruption()
+            worker.wait(5000)
+        dialog.close()

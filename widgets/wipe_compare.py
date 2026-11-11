@@ -74,6 +74,7 @@ class WipeCompareWidget(QWidget):
         self._right_title = ""
         self._notice = ""
         self._independent = False
+        self._drag_mode = ""
         self.reset_view()
 
     def reset_view(self) -> None:
@@ -102,6 +103,35 @@ class WipeCompareWidget(QWidget):
         base_y = (h - draw_h) / 2.0 + self._pan.y()
         return QRectF(base_x, base_y, draw_w, draw_h)
 
+    def _image_rect(self, pixmap, offset, size, clip_rect):
+        if pixmap is None or pixmap.isNull() or clip_rect.width() <= 0:
+            return QRectF()
+        if self._independent:
+            scale = max(0.0001, min(max(1, clip_rect.width() - 20) / pixmap.width(),
+                                    max(1, clip_rect.height() - 20) / pixmap.height()) * self._zoom)
+            width, height = pixmap.width() * scale, pixmap.height() * scale
+            return QRectF(clip_rect.x() + (clip_rect.width() - width) / 2 + self._pan.x(),
+                          (clip_rect.height() - height) / 2 + self._pan.y(), width, height)
+        target = self._target_rect()
+        base = self._right_pixmap if self._right_pixmap is not None else self._left_pixmap
+        if base is None or base.isNull():
+            return QRectF()
+        base_size = self._right_size if self._right_pixmap is not None else self._left_size
+        base_width = base_size[0] if base_size is not None else base.width()
+        scale = target.width() / base_width
+        width, height = size if size is not None else (pixmap.width(), pixmap.height())
+        return QRectF(target.x() + offset[0] * scale, target.y() + offset[1] * scale,
+                      width * scale, height * scale)
+
+    def _regions(self):
+        if not self._comparison_enabled:
+            return ((self._right_pixmap, (0, 0), self._right_size, self.rect()),)
+        divider = int(self._divider_x())
+        return ((self._left_pixmap, self._left_offset, self._left_size,
+                 QRect(0, 0, divider, self.height())),
+                (self._right_pixmap, (0, 0), self._right_size,
+                 QRect(divider, 0, self.width() - divider, self.height())))
+
     def _divider_x(self) -> float:
         return self._divider_ratio * self.width()
 
@@ -119,36 +149,11 @@ class WipeCompareWidget(QWidget):
             painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self._notice or self._left_title)
             return
 
-        target = self._target_rect()
         divider_x = self._divider_x()
-
-        if self._comparison_enabled:
-            regions = (
-                (self._left_pixmap, self._left_offset, self._left_size,
-                 QRect(0, 0, int(divider_x), self.height())),
-                (self._right_pixmap, (0, 0), self._right_size,
-                 QRect(int(divider_x), 0, self.width() - int(divider_x), self.height())),
-            )
-        else:
-            regions = ((self._right_pixmap, (0, 0), self._right_size, self.rect()),)
-        for pixmap, offset, size, clip_rect in regions:
-            if pixmap is None or pixmap.isNull() or clip_rect.width() <= 0:
+        for pixmap, offset, size, clip_rect in self._regions():
+            image_rect = self._image_rect(pixmap, offset, size, clip_rect)
+            if image_rect.isEmpty():
                 continue
-            if self._independent:
-                scale = max(0.0001, min(max(1, clip_rect.width() - 20) / pixmap.width(),
-                                        max(1, clip_rect.height() - 20) / pixmap.height()) * self._zoom)
-                width, height = pixmap.width() * scale, pixmap.height() * scale
-                image_rect = QRectF(clip_rect.x() + (clip_rect.width() - width) / 2 + self._pan.x(),
-                                    (clip_rect.height() - height) / 2 + self._pan.y(), width, height)
-            else:
-                base = self._right_pixmap if self._right_pixmap is not None else self._left_pixmap
-                base_size = (self._right_size if self._right_pixmap is not None else self._left_size)
-                base_width = base_size[0] if base_size is not None else base.width()
-                scale = target.width() / base_width
-                width, height = size if size is not None else (pixmap.width(), pixmap.height())
-                image_rect = QRectF(target.x() + offset[0] * scale,
-                                    target.y() + offset[1] * scale,
-                                    width * scale, height * scale)
             painter.save()
             painter.setClipRect(clip_rect)
             painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
@@ -201,7 +206,10 @@ class WipeCompareWidget(QWidget):
     # --- interaction ---
 
     def wheelEvent(self, event) -> None:  # noqa: N802
-        if not self.has_images():
+        regions = self._regions()
+        if self._independent:
+            region = regions[0] if len(regions) == 1 or event.position().x() < self._divider_x() else regions[1]
+        elif self._target_rect().isEmpty():
             return
         delta = event.angleDelta().y()
         if delta == 0:
@@ -218,7 +226,7 @@ class WipeCompareWidget(QWidget):
         # cursor (measured up to 13% of the image width of drift otherwise
         # when zooming out).
         mouse = QPointF(event.position())
-        before = self._target_rect()
+        before = self._image_rect(*region) if self._independent else self._target_rect()
         if before.width() > 0 and before.height() > 0:
             fx = (mouse.x() - before.x()) / before.width()
             fy = (mouse.y() - before.y()) / before.height()
@@ -227,7 +235,7 @@ class WipeCompareWidget(QWidget):
             anchored = False
         self._zoom = new_zoom
         if anchored:
-            after = self._target_rect()
+            after = self._image_rect(*region) if self._independent else self._target_rect()
             self._pan = QPointF(
                 self._pan.x() + (mouse.x() - (after.x() + fx * after.width())),
                 self._pan.y() + (mouse.y() - (after.y() + fy * after.height())),

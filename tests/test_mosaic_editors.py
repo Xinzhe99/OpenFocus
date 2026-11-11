@@ -322,3 +322,56 @@ def test_control_point_rejects_smaller_frame_and_reports_coordinate_bounds(qapp,
         dialog.close()
         dialog.deleteLater()
         qapp.processEvents()
+
+
+@pytest.mark.parametrize('matrix', [
+    np.eye(3),
+    np.array([[2., 0., 31.], [0., 2., -14.], [0., 0., 1.]]),
+    np.array([[0., -2., 31.], [2., 0., -14.], [0., 0., 1.]]),
+])
+def test_layout_pixmap_uses_native_pixel_centers(qapp, matrix):
+    from PyQt6.QtWidgets import QWidget
+    from dialogs.mosaic import MosaicDialog
+    parent = QWidget()
+    dialog = MosaicDialog(parent)
+    frame = MosaicFrame('source', np.zeros((80, 120, 3), np.uint8),
+                        np.zeros((8, 12, 3), np.uint8))
+    try:
+        dialog._append_frames([frame])
+        dialog.transforms = [matrix.copy()]
+        dialog._rebuild()
+        point = QPointF(2.5, 3.5)
+        actual = dialog.items[0].mapToScene(point)
+        expected = matrix @ np.array([point.x() * 10 - .5, point.y() * 10 - .5, 1.])
+        assert actual.x() == pytest.approx(expected[0])
+        assert actual.y() == pytest.approx(expected[1])
+        dialog.items[0].setPos(31, -14)
+        np.testing.assert_allclose(dialog._current_transforms()[0][:2, 2],
+                                   matrix[:2, 2] + [31, -14])
+    finally:
+        dialog.close()
+        parent.close()
+
+
+def test_rendered_preview_uses_integer_sampling_step(qapp, monkeypatch):
+    from types import SimpleNamespace
+    from PyQt6.QtWidgets import QWidget
+    from core.mosaic import make_frame
+    from dialogs import mosaic
+    parent = QWidget()
+    dialog = mosaic.MosaicDialog(parent)
+    try:
+        dialog._append_frames([make_frame('source', np.zeros((8, 8, 3), np.uint8))])
+        plan = SimpleNamespace(size=(1025, 513), origin=(-11, 7))
+        monkeypatch.setattr(mosaic, 'plan_mosaic', lambda *args, **kwargs: plan)
+        monkeypatch.setattr(mosaic, 'preview_mosaic',
+                            lambda *args, **kwargs: np.zeros((257, 513, 3), np.uint8))
+        monkeypatch.setattr(dialog, '_run',
+                            lambda operation, status, complete: complete(operation(lambda: False, lambda *_: None)))
+        dialog._preview()
+        point = dialog._preview_item.mapToScene(QPointF(2.5, 3.5))
+        assert point.x() == pytest.approx(-11 + 2.5 * 2 - .5)
+        assert point.y() == pytest.approx(7 + 3.5 * 2 - .5)
+    finally:
+        dialog.close()
+        parent.close()

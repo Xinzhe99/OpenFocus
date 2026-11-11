@@ -6,6 +6,10 @@ Run it before and after touching a display path — every number here maps to
 a real gesture, not a micro-benchmark.
 
     python tools/ui_perf_probe.py [--size 4000x3000] [--frames 40]
+The synthetic result is published with its source context; wipe measurements
+require two populated sides and a real source change. Settings, scratch and
+logs use a disposable private profile with usage reporting disabled.
+
 
 Landing at the pre-optimisation build on this machine, 40 x 12 MP frames
 with a result on screen (medians of 5 interleaved runs):
@@ -21,6 +25,8 @@ import argparse
 import os
 import sys
 import time
+import gc
+import tempfile
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -60,8 +66,65 @@ def main():
     args = ap.parse_args()
     width, height = (int(v) for v in args.size.lower().split("x"))
 
-    app = QApplication.instance() or QApplication([])
+    if args.frames < 2 or width < 2 or height < 2:
+        ap.error("the wipe probe requires at least two frames and dimensions of at least 2")
+    settings_module = sys.modules.get("utils.settings_store")
+    if QApplication.instance() is not None or (settings_module is not None and
+            settings_module._settings_singleton is not None):
+        raise RuntimeError("Run the UI probe in a fresh, independent process")
+
+    previous_env = {key: os.environ.get(key) for key in
+                    ("OPENFOCUS_DATA_DIR", "OPENFOCUS_LOG_DIR")}
+    try:
+        with tempfile.TemporaryDirectory(prefix="openfocus-ui-probe-") as profile:
+            os.environ["OPENFOCUS_DATA_DIR"] = profile
+            os.environ["OPENFOCUS_LOG_DIR"] = os.path.join(profile, "logs")
+            from PyQt6.QtCore import QSettings
+            settings = QSettings(os.path.join(profile, "settings.ini"), QSettings.Format.IniFormat)
+            settings.setValue("usage/enabled", False)
+            settings.setValue("ui/first_run_done", True)
+            settings.setValue("ui/ask_load_scale", False)
+            settings.setValue("updates/last_check_epoch", 9999999999)
+            settings.setValue("rendering/storage_directory", profile)
+            settings.setValue("rendering/use_gpu", False)
+            settings.setValue("rendering/ai_cpu_warning_dismissed", True)
+            settings.sync()
+            if settings.status() != QSettings.Status.NoError:
+                raise OSError("Could not initialize private UI probe settings")
+            app = None
+            try:
+                from core.frame_storage import configure_storage_directory
+                configure_storage_directory(profile)
+                app = QApplication([])
+                _run_probe(app, args, width, height)
+            finally:
+                if app is not None:
+                    for widget in app.topLevelWidgets():
+                        widget.close()
+                    while any(widget.isVisible() for widget in app.topLevelWidgets()):
+                        app.processEvents()
+                        time.sleep(0.01)
+                    app.processEvents()
+                if "core.frame_storage" in sys.modules:
+                    sys.modules["core.frame_storage"].configure_storage_directory(None)
+                logging_setup = sys.modules.get("utils.logging_setup")
+                if logging_setup is not None:
+                    logging_setup.shutdown_logging()
+                settings_module = sys.modules.get("utils.settings_store")
+                if settings_module is not None:
+                    settings_module.reset_settings_singleton()
+                gc.collect()
+    finally:
+        for key, value in previous_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
+def _run_probe(app, args, width, height):
     import main as app_main
+    from core.render_context import build_render_context
 
     win = app_main.OpenFocus()
     win.resize(1600, 950)
@@ -74,9 +137,16 @@ def main():
     win.image_filenames = [f"frame_{i:03d}.tif" for i in range(len(frames))]
     win.stack_images = [None] * len(frames)
     win.transform_manager.reload_image_stack(initial_index=0)
-    # A result in the panel is what makes the resize path expensive.
     win.fusion_result = frames[0]
-    win.output_manager.show_fusion_result()
+    context = build_render_context(
+        frames, win.fusion_result, filenames=win.image_filenames,
+        source_indices=tuple(range(len(frames))), source_revision=getattr(win, 'source_revision', 0),
+        algorithm="synthetic UI probe fixture", parameters={"synthetic": True})
+    if context is None:
+        raise RuntimeError("Could not build synthetic result context")
+    win.output_manager.update_output_list_for_fusion(context=context)
+    if not win.output_manager.display_specific_fusion_result(win.fusion_result):
+        raise RuntimeError("Could not display synthetic result")
     app.processEvents()
 
     print(f"stack {len(frames)} x {width}x{height} "
@@ -131,16 +201,37 @@ def main():
     win._update_wipe_images()
     app.processEvents()
 
-    def wipe_step():
-        left = win._wipe_left_index() if hasattr(win, "_wipe_left_index") \
-            else win.stack_slider.value()
-        win.update_source_view(int(left) + 1)
-        win._update_wipe_images()
+    record = win._wipe_record()
+    left = win._wipe_left_index()
+    left_frame = win._wipe_left_frame()
+    right = win._wipe_right_image()
+    if (record is None or record.context is None or
+            len(record.context.frames) != len(frames) or not 0 <= left < len(frames) or
+            left_frame is None or left_frame.image.size == 0 or right is None or right.size == 0 or
+            win.wipe_widget._left_pixmap is None or win.wipe_widget._left_pixmap.isNull() or
+            win.wipe_widget._right_pixmap is None or win.wipe_widget._right_pixmap.isNull()):
+        raise RuntimeError("Synthetic wipe requires a result and both source and result pixels")
 
-    _time("wipe step (both sides)", wipe_step)
+    if np.array_equal(frames[left], frames[(left + 1) % len(frames)]):
+        raise RuntimeError("Synthetic wipe sources have identical pixels")
+
+    def wipe_step():
+        old_index = win._wipe_left_index()
+        old_frame = win._wipe_left_frame()
+        win.update_source_view((old_index + 1) % len(frames))
+        win._update_wipe_images()
+        app.processEvents()
+        new_index = win._wipe_left_index()
+        new_frame = win._wipe_left_frame()
+        if (new_index == old_index or new_frame is None or
+                new_frame.image is old_frame.image or
+                win._wipe_record() is not record or win._wipe_right_image() is not right):
+            raise RuntimeError("Wipe source did not change while keeping the result fixed")
+
+    wipe_step()  # Validate an actual transition before recording a sample.
+    _time("wipe source step (result fixed)", wipe_step)
     win.wipe_active = False
 
-    win.close()
 
 
 if __name__ == "__main__":

@@ -1,5 +1,6 @@
 """Prepare flat-field previews and atomic stack corrections off the GUI thread."""
 import cv2
+import copy
 import os
 import numpy as np
 from PyQt6.QtCore import Qt, QThread
@@ -17,37 +18,49 @@ from utils.dust_map import (DEFAULT_SIGMA, compute_flat_field, apply_flat_field,
 from utils.ui_utils import size_dialog_to_content
 
 
-def _to_pixmap(img, width=340, *, linear_dng_metadata=None):
-    """Display an image at preview size, developing camera-linear data."""
+def _prepare_preview(img, width=340, *, linear_dng_metadata=None):
+    """Prepare independent, bounded BGR pixels in the worker thread."""
     from utils.image_utils import to_display_uint8
     from core.source_frames import display_image
     if getattr(img, 'preview_is_display', False):
         linear_dng_metadata = None
     img = display_image(img)
+    from core.resource_policy import require_memory
+    scale = min(width / img.shape[1], 180 / img.shape[0])
+    small_width = max(1, round(img.shape[1] * scale))
+    small_height = max(1, round(img.shape[0] * scale))
+    # Include full-size conversion temporaries and resized/developed output.
+    full = img.size * (3 * img.dtype.itemsize + 1) if linear_dng_metadata is None else 0
+    require_memory(full + small_width * small_height * 3 * max(16, img.dtype.itemsize * 8))
     if linear_dng_metadata is None:
         img = to_display_uint8(img)
-    scale = min(width / img.shape[1], 180 / img.shape[0])
-    small = cv2.resize(img, (max(1, round(img.shape[1] * scale)),
-                             max(1, round(img.shape[0] * scale))),
-                       interpolation=cv2.INTER_AREA)
+    small = cv2.resize(img, (small_width, small_height), interpolation=cv2.INTER_AREA)
     if linear_dng_metadata is not None:
         from utils.linear_dng import develop_linear
         small = to_display_uint8(develop_linear(small, linear_dng_metadata))
-    h, w = small.shape[:2]
     if small.ndim == 2:
         small = cv2.cvtColor(small, cv2.COLOR_GRAY2BGR)
+    return np.array(small, dtype=np.uint8, order='C', copy=True)
+
+
+def _to_pixmap(small):
+    h, w = small.shape[:2]
     qimg = QImage(small.data, w, h, 3 * w, QImage.Format.Format_BGR888)
-    return QPixmap.fromImage(qimg.copy())
+    pixmap = QPixmap.fromImage(qimg.copy())
+    if pixmap.isNull():
+        raise MemoryError('Unable to create preview pixmap')
+    return pixmap
 
 
 class _FlatFieldWorker(QThread):
     def __init__(self, operation, revision, raw, base, *, white=None, path="",
-                 sigma=DEFAULT_SIGMA, target=0, gain=None):
+                 sigma=DEFAULT_SIGMA, target=0, gain=None, linear_dng_metadata=None):
         super().__init__()
         self.operation, self.revision = operation, revision
         self.raw, self.base = tuple(raw), tuple(base)
         self.white, self.path, self.sigma = white, path, sigma
         self.target, self.gain = target, gain
+        self.linear_dng_metadata = linear_dng_metadata
         self.result = None
         self.error = ""
         self.error_key = "msg_proc_error"
@@ -78,7 +91,20 @@ class _FlatFieldWorker(QThread):
                 self.error_key = "msg_proc_error"
                 frame = resolve_frame(self.raw[self.target])
                 fixed = apply_flat_field(frame, gain)
-                self.result = (white, gain, frame, fixed)
+                from core.resource_policy import require_memory
+                g = gain[:, :, 0] if gain.ndim == 3 else gain
+                require_memory(g.size * (4 * g.dtype.itemsize + 4))
+                norm = np.clip((g - 0.5) / 1.5, 0, 1)
+                heat = cv2.applyColorMap((norm * 255).astype(np.uint8), cv2.COLORMAP_JET)
+                self._check_cancel()
+                heat_preview = _prepare_preview(heat)
+                del heat, norm
+                self._check_cancel()
+                before = _prepare_preview(frame, linear_dng_metadata=self.linear_dng_metadata)
+                self._check_cancel()
+                after = _prepare_preview(fixed, linear_dng_metadata=self.linear_dng_metadata)
+                self._check_cancel()
+                self.result = (None if self.path else white, gain, heat_preview, before, after)
             else:
                 corrected = []
                 for frames in (self.raw, self.base):
@@ -93,6 +119,10 @@ class _FlatFieldWorker(QThread):
             self._check_cancel()
         except InterruptedError:
             self.result = None
+        except MemoryError as exc:
+            self.result = None
+            self.error_key = 'msg_proc_error'
+            self.error = str(exc) or 'Insufficient memory for flat-field processing'
         except Exception as exc:
             self.result = None
             self.error = str(exc)
@@ -354,7 +384,9 @@ class DustMapDialog(QDialog):
         worker = _FlatFieldWorker("preview", self._revision, raw, base,
                                  white=white, path=path,
                                  sigma=float(self.spin_sigma.value()),
-                                 target=self.combo_target.currentIndex())
+                                 target=self.combo_target.currentIndex(),
+                                 linear_dng_metadata=copy.deepcopy(
+                                     getattr(self.window_main, 'linear_dng_metadata', None)))
         self._start_worker(worker)
 
     def _start_worker(self, worker):
@@ -374,28 +406,41 @@ class DustMapDialog(QDialog):
         self._update_preview_enabled()
         worker.deleteLater()
         if self._close_pending:
+            worker.result = None
             super().reject()
             return
         if worker.revision != self._revision or not self._sources_match((worker.raw, worker.base)):
+            worker.result = None
             self._invalidate_gain()
             return
         if worker.isInterruptionRequested():
+            worker.result = None
             self.lbl_status.setText(trans.t("compare_cancelled"))
             self.btn_apply.setEnabled(self._gain is not None)
             return
         if worker.error:
+            worker.result = None
             self._fail(trans.t(worker.error_key) + "\n" + worker.error)
             return
         if worker.operation == "apply":
+            prepared, worker.result = worker.result, None
             if self.window_main.apply_flat_field_to_stack(
                     worker.gain, remove_index=worker.remove_index,
-                    prepared=worker.result, reference=getattr(worker, 'reference', None)) is True:
+                    prepared=prepared, reference=getattr(worker, 'reference', None)) is True:
                 self.accept()
             else:
                 self.btn_apply.setEnabled(True)
                 self.lbl_status.setText(trans.t("msg_proc_error"))
             return
-        white, gain, frame, fixed = worker.result
+        white, gain, heat, before, after = worker.result
+        try:
+            gain_pixmap, before_pixmap, after_pixmap = (
+                _to_pixmap(heat), _to_pixmap(before), _to_pixmap(after))
+        except Exception as exc:
+            worker.result = None
+            self._fail(trans.t('msg_proc_error') + '\n' + str(exc))
+            return
+        worker.result = None
         if self.rb_file.isChecked():
             self._white = white
         self._gain = gain
@@ -405,16 +450,12 @@ class DustMapDialog(QDialog):
                                  'sha256': worker.reference_hash,
                                  'sigma': worker.sigma}
                                 if worker.path and worker.reference_hash else None)
-        g = gain[:, :, 0] if gain.ndim == 3 else gain
-        norm = np.clip((g - 0.5) / 1.5, 0, 1)
-        heat = cv2.applyColorMap((norm * 255).astype(np.uint8), cv2.COLORMAP_JET)
-        self.lbl_gain.setPixmap(_to_pixmap(heat))
-        self.lbl_gain.setToolTip("0.5–2.0")
-        metadata = getattr(self.window_main, 'linear_dng_metadata', None)
-        self.lbl_before.setPixmap(_to_pixmap(frame, linear_dng_metadata=metadata))
-        self.lbl_after.setPixmap(_to_pixmap(fixed, linear_dng_metadata=metadata))
+        self.lbl_gain.setPixmap(gain_pixmap)
+        self.lbl_gain.setToolTip('0.5–2.0')
+        self.lbl_before.setPixmap(before_pixmap)
+        self.lbl_after.setPixmap(after_pixmap)
         self.btn_apply.setEnabled(True)
-        self.lbl_status.setText(trans.t("dust_ready"))
+        self.lbl_status.setText(trans.t('dust_ready'))
 
     def _fail(self, message):
         self._invalidate_gain()

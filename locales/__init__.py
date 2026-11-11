@@ -14,9 +14,8 @@ class TranslationManager(QObject):
         super().__init__()
         self.current_lang = 'en'
         
-        # Auto-detect from the system locale. The lookup is table-driven off
-        # the packs that actually loaded, so adding a pack module is enough to
-        # make 'xx' selectable AND auto-detected; nothing here needs editing.
+        # Auto-detect from the packs that actually loaded. Register shipped
+        # languages in PACK_ORDER; source installations may discover extras.
         # The legacy UTC+8 fallback stays for hosts where QLocale reports an
         # unusable value (some stripped Linux images answer 'C').
         detected = None
@@ -114,11 +113,10 @@ class TranslationManager(QObject):
     def _load_language_packs(self) -> None:
         """Merge every community pack into self.translations.
 
-        Packs are discovered as modules rather than hardcoded: adding a
-        language means dropping a <code>.py file into this package with
-        a PACK dict. A broken pack must never be swallowed silently — the
-        completeness tests iterate the merged table, so a bare `pass` once let
-        the whole Japanese pack vanish while every test stayed green.
+        Shipped packs are registered in PACK_ORDER and can be imported from
+        archives without source files on disk. Source installations may also
+        discover extra two-character modules with a PACK dict. Report broken
+        packs without preventing the remaining languages from loading.
         """
         import importlib
 
@@ -133,21 +131,21 @@ class TranslationManager(QObject):
         except Exception as exc:  # noqa: BLE001 - report, never hide
             print(f"Warning: extra language pack failed to load: {exc}")
 
-        # One module per language: <code>.py inside this package with a PACK dict.
+        # Known packs work even when modules are stored in a frozen archive.
+        candidates = set(self.PACK_ORDER) - loaded
         here = os.path.dirname(os.path.abspath(__file__))
         try:
-            files = sorted(os.listdir(here))
+            files = os.listdir(here)
         except OSError as exc:
             print(f"Warning: cannot scan for language packs: {exc}")
-            return
+            files = ()
         for fname in files:
             if not fname.endswith(".py"):
                 continue
             code = fname[:-len(".py")]
-            # _extra.py holds ja/es; en/zh ship as full tables above;
-            # __init__.py is this manager. None is a standalone pack.
-            if code.startswith("_") or len(code) != 2 or code in loaded:
-                continue
+            if not code.startswith("_") and len(code) == 2 and code not in loaded:
+                candidates.add(code)
+        for code in sorted(candidates):
             try:
                 module = importlib.import_module(f".{code}", __name__)
                 pack = getattr(module, "PACK", None)

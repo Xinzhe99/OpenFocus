@@ -10,6 +10,26 @@ from utils.sorting import natural_sort_key
 from core.frame_storage import capture_scratch, create_frame, run_with_scratch, store_frame
 
 
+def _collect_directory_sources(directory, should_cancel=None):
+    """Collect naturally ordered image files and their header-only frames."""
+    from core.source_frames import scan_source
+
+    exts = ('.png', '.jpg', '.jpeg', '.jpe', '.jfif', '.webp', '.tif', '.tiff', '.bmp')
+    _check_cancel(should_cancel)
+    paths = []
+    for name in sorted(os.listdir(directory), key=natural_sort_key):
+        _check_cancel(should_cancel)
+        path = os.path.join(directory, name)
+        if name.lower().endswith(exts) and os.path.isfile(path):
+            paths.append(path)
+    frames = []
+    for path in paths:
+        _check_cancel(should_cancel)
+        frames.extend(scan_source(path, header_only=True,
+                                  should_cancel=lambda: _check_cancel(should_cancel)))
+    return frames, paths
+
+
 def _collect_images(input_source, *, normalize=True, should_cancel=None) -> List[np.ndarray]:
     """Load frames; public callers retain the historical 0–255 normalization."""
     _check_cancel(should_cancel)
@@ -29,14 +49,7 @@ def _collect_images(input_source, *, normalize=True, should_cancel=None) -> List
 
     if isinstance(input_source, str) and os.path.isdir(input_source):
         if not normalize:
-            from core.source_frames import scan_source
-            exts = ('.png', '.jpg', '.jpeg', '.jpe', '.jfif', '.webp', '.tif', '.tiff', '.bmp')
-            frames = []
-            for name in sorted(os.listdir(input_source), key=natural_sort_key):
-                _check_cancel(should_cancel)
-                if name.lower().endswith(exts):
-                    frames.extend(scan_source(os.path.join(input_source, name), header_only=True,
-                                              should_cancel=should_cancel))
+            frames, _ = _collect_directory_sources(input_source, should_cancel)
             if len(frames) < 2:
                 raise ValueError(f'OpenFocus A/B fusion needs at least 2 images in {input_source}')
             return frames

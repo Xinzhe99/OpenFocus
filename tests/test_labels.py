@@ -70,7 +70,11 @@ def test_display_orders_label_scale_and_watermark(manager, transparent):
 
 
 def edit_dialog(monkeypatch, manager, callback):
+    from utils.frame_pixels import _PixelProgress
+    original_exec = QDialog.exec
     def execute(dialog):
+        if isinstance(dialog, _PixelProgress):
+            return original_exec(dialog)
         callback(dialog)
         return dialog.result()
     monkeypatch.setattr(QDialog, "exec", execute)
@@ -618,3 +622,55 @@ def test_source_region_worker_preserves_caption_and_scale_calibration(manager, r
     actual = worker._decorate(tile, sampled, image)
     x, y, width, height = rect
     np.testing.assert_array_equal(actual, full[y:y + height, x:x + width])
+
+
+@pytest.mark.parametrize('stored_range', ['All', 'all', '', '  ALL  '])
+def test_large_label_values_survive_unchanged_dialog(manager, monkeypatch, stored_range):
+    class LargeFrame:
+        shape = (120, 24000, 3)
+        dtype = np.dtype('uint8')
+
+    manager.window.raw_images = [LargeFrame()]
+    label = caption(text='wide')
+    label.config.x_location = 22000
+    label.config.font_size = 600
+    label.config.range = stored_range
+    manager.labels.add(label)
+    before = manager.labels.to_dict()
+    monkeypatch.setattr(manager, '_refresh_preview', manager._save_editor_to_draft)
+    monkeypatch.setattr(manager, '_configuration_error', lambda *args: '')
+
+    def inspect(dialog):
+        assert manager.x_location_spin.value() == 22000
+        assert manager.font_size_spin.value() == 600
+        assert manager._draft.get(label.label_id).config.x_location == 22000
+        manager._ok_button.click()
+
+    edit_dialog(monkeypatch, manager, inspect)
+    assert manager.labels.to_dict() == before
+    assert manager.window.undo == []
+    assert manager.window.dirty == 0
+
+
+def test_nested_preview_refresh_coalesces_and_applies_latest_edit(manager, monkeypatch):
+    label = caption(text='original')
+    manager.labels.add(label)
+
+    def inspect(dialog):
+        rendered = []
+        def render(frame, config, index, **kwargs):
+            rendered.append(config['format'])
+            if len(rendered) == 1:
+                manager.format_edit.setText('latest')
+            # Repeated unchanged notifications must not start nested workers
+            # or trigger an endless sequence of equivalent refreshes.
+            manager._refresh_preview()
+        monkeypatch.setattr(manager.preview, 'set_preview', render)
+        manager.format_edit.setText('first')
+        assert rendered == ['first', 'latest']
+        assert manager._draft.get(label.label_id).config.format == 'latest'
+        dialog.reject()
+
+    edit_dialog(monkeypatch, manager, inspect)
+    assert manager.labels.get(label.label_id).config.format == 'original'
+    assert not manager._preview_refresh_active

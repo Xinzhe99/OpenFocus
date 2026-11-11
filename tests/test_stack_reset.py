@@ -64,7 +64,7 @@ def load(w, frames, names, paths, scale=1.0, append=False):
     w.image_loader.image_paths = paths
     options = source.LoadOptions(scale, names, list(frames), list(frames))
     w.source_manager._apply_load_options(options, append=append,
-                                         profile_map={p: p.encode() for p in paths})
+                                         profile_map=tuple(p.encode() for p in paths))
 
 
 def test_cancel_then_confirm_restores_frames_and_clears_session(qapp, monkeypatch):
@@ -190,7 +190,7 @@ def test_project_baseline_precedes_transform(monkeypatch):
     options = source.LoadOptions(1.0, ["a"], [a], [a])
     state = {"sources": ["a"], "source_transforms": [{"operation": "rotate", "code": 0}]}
     project_file._prepare_project_load(w, state, options)
-    w.source_manager._apply_load_options(options, profile_map={"a": b"icc"})
+    w.source_manager._apply_load_options(options, profile_map=(b"icc",))
     assert w.raw_images[0].shape == (4, 3)
     Box.result = Box.StandardButton.Yes
     w.source_manager.reset_current_stack()
@@ -296,7 +296,7 @@ class LoadWorker:
         self.progress = Signal()
         self.finished_load = Signal()
         self.finished = Signal()
-        self.source_icc_profiles = {}
+        self.source_icc_profiles = ()
 
     def start(self): pass
 
@@ -331,6 +331,28 @@ def test_cancel_after_load_result_before_delivery_discards_result(monkeypatch):
     assert not w.raw_images
     assert restored == [decoded]
     assert not worker._load_applied
+
+
+def test_append_rejects_changed_target_before_publication(monkeypatch):
+    w, _ = host(monkeypatch)
+    original = np.ones((8, 8), np.uint8)
+    load(w, [original], ['old'], ['old'])
+    monkeypatch.setattr(source, 'StackLoadWorker', LoadWorker)
+    manager = w.source_manager
+    monkeypatch.setattr(manager, '_show_load_status', lambda: None)
+    errors = []
+    manager._start_load_worker(filepaths=['new'], append=True, on_error=errors.append)
+    worker = manager._load_worker
+    restored = []
+    worker.restore_loader_state = restored.append
+    edited = np.ones((4, 4), np.uint8)
+    w.raw_images = [edited]
+    w.current_scale_factor = 0.5
+    decoded = [np.ones((8, 8), np.uint8)]
+    worker.finished_load.callback(True, '', decoded, ['new'])
+    assert w.raw_images == [edited]
+    assert restored == [decoded]
+    assert errors and not worker._load_applied
 
 
 def test_clear_releases_loader_sources_without_dropping_existing_undo(monkeypatch):

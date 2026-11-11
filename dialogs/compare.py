@@ -9,7 +9,7 @@ from PyQt6.QtWidgets import (
     QSlider, QSplitter, QToolTip, QVBoxLayout, QWidget,
 )
 
-from core.compare_worker import AlignmentWorker, PreviewWorker
+from core.compare_worker import AlignmentWorker, PreviewWorker, DisplayWorker
 from core.source_previews import SourcePreviewWorker
 from locales import trans
 from utils.image_utils import cv2_to_pixmap
@@ -96,6 +96,7 @@ class CompareDialog(QDialog):
         self._revision = 0
         self._worker = None
         self._source_preview_workers = {}
+        self._display_workers = {}
         self._source_preview_generation = 0
         self._reference_source_size = None
         self._reference_region = None
@@ -145,6 +146,9 @@ class CompareDialog(QDialog):
             "frame_exif": [getattr(window_main, "image_source_exifs", ())[i]
                            for i in self._source_indices]
                 if len(getattr(window_main, "image_source_exifs", ())) == self._total_frames else [],
+            "frame_icc_profiles": [getattr(window_main, "image_icc_profiles", ())[i]
+                                   for i in self._source_indices]
+                if len(getattr(window_main, "image_icc_profiles", ())) == self._total_frames else [],
         }
 
         self._preview_timer = QTimer(self)
@@ -549,6 +553,14 @@ class CompareDialog(QDialog):
 
     def _methods_changed(self, _checked):
         selected = self._selected_methods()
+        for method in set(self._results) - set(selected):
+            self._results.pop(method, None)
+            self._full_results.pop(method, None)
+            self._errors.pop(method, None)
+            self._canvases[method].set_result(None, None)
+            worker = self._display_workers.get(method)
+            if worker is not None:
+                worker.cancel()
         reverse = self._registration_is_reversed(selected)
         if reverse != self._reverse_registration:
             self._reverse_registration = reverse
@@ -578,6 +590,9 @@ class CompareDialog(QDialog):
         alignment = self.align_combo.currentData()
         return any(_ordered_openfocus_registration(alignment, method, self._shared['sort_mode'])
                    for method in methods)
+
+    def _direction_matches_single_method(self, method):
+        return self._reverse_registration == self._registration_is_reversed([method])
 
     def _sync_registration_parameters(self):
         method = self.align_combo.currentData()
@@ -699,8 +714,8 @@ class CompareDialog(QDialog):
         worker = self.sender()
         self._source_preview_workers.pop(worker, None)
         worker.deleteLater()
-        if self._closing and self._worker is None and not self._source_preview_workers:
-            super().done(self._close_code)
+        if self._closing and self._worker is None and not self._source_preview_workers and not self._display_workers:
+            self._finalize_close()
 
     def _preview_size_changed(self, value):
         size = int(value)
@@ -717,6 +732,7 @@ class CompareDialog(QDialog):
             label.setFixedWidth(size)
         self.ref_canvas.set_detail_size(size)
         self._layout_timer.start(0)
+        self._refresh_panes()
 
     def _view_changed(self, _index):
         """Switch detail/overview without recomputing anything."""
@@ -763,10 +779,15 @@ class CompareDialog(QDialog):
             canvas.set_region(region)
             result = self._results.get(method)
             key = self._result_key(method)
-            if result is not None and result[0] == key:
-                canvas.set_result(result[1], result[2])
+            if result is not None and result['key'] == key:
+                self._request_display(method, result, region)
+                cache = result.get('display')
+                if cache is not None:
+                    canvas.set_result(cache[1], cache[2], full=cache[3])
+                else:
+                    canvas.set_result(None, None)
                 canvas.set_view_mode(self.view_combo.currentData())
-                canvas.set_status("")
+                canvas.set_status(result.get('display_error', ''))
             else:
                 canvas.set_result(None, None)
                 error = self._errors.get(method)
@@ -775,6 +796,67 @@ class CompareDialog(QDialog):
                 else:
                     canvas.set_status(trans.t("render_stage_fuse") if self._auto_enabled
                                       else trans.t("compare_no_image"))
+
+    def _request_display(self, method, entry, region):
+        canvas = self._canvases[method]
+        full = self.view_combo.currentData() == 'full' and entry['full']
+        dpr = float(canvas.devicePixelRatioF())
+        size = max(1, int(round(max(canvas.width(), canvas.height()) * dpr)))
+        display_key = (entry['key'], full, None if full else region, size, dpr)
+        cached = entry.get('display')
+        if cached is not None and cached[0] == display_key:
+            return
+        if entry.get('display_error_key') == display_key:
+            return
+        entry['display'] = None
+        entry['display_error'] = ''
+        worker = self._display_workers.get(method)
+        if worker is not None:
+            if worker.display_key != display_key:
+                worker.cancel()
+            return
+        if not full and region is None:
+            return
+        retained = sum(cache['display'][1].width() * cache['display'][1].height() * 4
+                       for cache in self._results.values() if cache.get('display'))
+        retained += max(0, len(self._selected_methods()) - 1) * size * size * 4
+        worker = DisplayWorker(entry['image'], entry['bounds'], region, full, size,
+                               self._calibration.get('linear_dng_metadata'), retained)
+        worker.display_key = display_key
+        self._display_workers[method] = worker
+        worker.ready.connect(lambda pixels, bounds, whole, m=method, w=worker:
+                             self._display_ready(m, w, pixels, bounds, whole))
+        worker.failed.connect(lambda message, m=method, w=worker:
+                              self._display_failed(m, w, message))
+        worker.finished.connect(lambda m=method, w=worker: self._display_finished(m, w))
+        worker.start()
+
+    def _display_ready(self, method, worker, pixels, bounds, whole):
+        entry = self._results.get(method)
+        if (self._closing or self._display_workers.get(method) is not worker or
+                entry is None or entry['key'] != worker.display_key[0] or worker._should_cancel()):
+            return
+        pixmap = cv2_to_pixmap(pixels)
+        if pixmap.isNull():
+            self._display_failed(method, worker, trans.t('msg_proc_error'))
+            return
+        entry['display'] = (worker.display_key, pixmap, tuple(bounds), whole)
+
+    def _display_failed(self, method, worker, message):
+        entry = self._results.get(method)
+        if entry is not None and entry['key'] == worker.display_key[0]:
+            entry['display_error_key'] = worker.display_key
+            entry['display_error'] = message
+
+    def _display_finished(self, method, worker):
+        if self._display_workers.get(method) is not worker:
+            return
+        self._display_workers.pop(method, None)
+        worker.deleteLater()
+        if self._closing:
+            self._finalize_close()
+        else:
+            self._refresh_panes()
 
     def _request_changed(self):
         if self._closing:
@@ -853,7 +935,7 @@ class CompareDialog(QDialog):
             key = self._result_key(method)
             cached = self._results.get(method)
             failed = self._errors.get(method)
-            if (cached is None or cached[0] != key) and (failed is None or failed[0] != key):
+            if (cached is None or cached['key'] != key) and (failed is None or failed[0] != key):
                 pending.append(method)
         if not pending:
             self._refresh_panes()
@@ -916,7 +998,13 @@ class CompareDialog(QDialog):
     def _update_adopt_actions(self) -> None:
         method = self._selected_method
         available = bool(method) and self._worker is None and not self._closing
-        self.btn_verify.setVisible(bool(method) and bool(self.mode_combo.currentData()))
+        direction_mismatch = (bool(method) and self._result_is_current(method)
+                              and not self._direction_matches_single_method(method))
+        self.btn_verify.setVisible(bool(method) and
+                                   (bool(self.mode_combo.currentData()) or direction_mismatch))
+        reason = trans.t('compare_direction_needs_verify') if direction_mismatch else ''
+        self.btn_adopt_params.setToolTip(reason)
+        self.btn_verify.setToolTip(reason)
         self.btn_verify.setEnabled(available and self._result_is_current(method))
         self.btn_retry.setVisible(bool(method) and method in self._errors)
         self.btn_retry.setEnabled(available and method in self._errors)
@@ -929,7 +1017,7 @@ class CompareDialog(QDialog):
                     and self._result_is_current(method)
                     and self._worker is None and not self._closing
                     and not self._published and not self._publishing)
-        self.btn_adopt_params.setEnabled(eligible)
+        self.btn_adopt_params.setEnabled(eligible and not direction_mismatch)
         result = self._full_results.get(method) if method else None
         self.btn_adopt_output.setEnabled(eligible and bool(result)
                                         and result["key"] == self._result_key(method))
@@ -955,13 +1043,14 @@ class CompareDialog(QDialog):
 
     def _result_is_current(self, method: str) -> bool:
         cached = self._results.get(method)
-        return bool(cached) and cached[0] == self._result_key(method)
+        return bool(cached) and cached['key'] == self._result_key(method)
 
     def _adopt_params(self) -> None:
         """Copy the candidate's parameters to the main window; no render."""
         method = self._selected_method
         if (not method or not self.btn_adopt_params.isEnabled()
-                or not self._result_is_current(method)):
+                or not self._result_is_current(method)
+                or not self._direction_matches_single_method(method)):
             return
         window = self.window_main
         params = dict(self._method_params.get(method, {}))
@@ -1032,12 +1121,13 @@ class CompareDialog(QDialog):
                 exported=False)
             window.output_manager.publish_compare_output(record)
             self._published = True
-            self.accept()
         except Exception as exc:
             self.status_label.setText(f"{trans.t('msg_error')}: {exc}")
         finally:
             self._publishing = False
             self._update_adopt_actions()
+        if self._published:
+            self.accept()
 
     def _preview_ready(self, method, image, bounds):
         if not self._current_worker() or method not in self._selected_methods():
@@ -1045,24 +1135,15 @@ class CompareDialog(QDialog):
         key = self._active_keys.get(method)
         if key != self._result_key(method):
             return
-        display = image
-        metadata = self._calibration["linear_dng_metadata"]
-        if metadata is not None:
-            from utils.linear_dng import develop_linear
-            display = develop_linear(image, metadata)
-        pixmap = cv2_to_pixmap(display)
-        if pixmap.isNull():
-            self._preview_failed(method, trans.t("msg_proc_error"))
-            return
-        self._results[method] = (key, pixmap, tuple(bounds))
-        # Keep the original array for adoption: only a full-frame result may
-        # become an output, and it must not round-trip through the pixmap.
         x, y, width, height = tuple(bounds)
-        if (not key[1] and x == 0 and y == 0
-                and (height, width) == self._aligned_frames[0].shape[:2]
-                and (height, width) == image.shape[:2]):
-            self._full_results[method] = {
-                "key": key, "image": image, "bounds": tuple(bounds)}
+        is_full = (not key[1] and x == 0 and y == 0
+                   and (height, width) == self._aligned_frames[0].shape[:2]
+                   and (height, width) == image.shape[:2])
+        entry = {'key': key, 'image': image, 'bounds': tuple(bounds),
+                 'full': is_full, 'display': None}
+        self._results[method] = entry
+        if is_full:
+            self._full_results[method] = entry
         else:
             self._full_results.pop(method, None)
         self._errors.pop(method, None)
@@ -1093,8 +1174,8 @@ class CompareDialog(QDialog):
         self._worker_kind = None
         worker.deleteLater()
         if self._closing:
-            if not self._source_preview_workers:
-                super().done(self._close_code)
+            if not self._source_preview_workers and not self._display_workers:
+                self._finalize_close()
             return
         if self._cancel_requested:
             self._cancelled_methods.update(m for m in self._selected_methods()
@@ -1122,7 +1203,7 @@ class CompareDialog(QDialog):
         failed = [m for m in methods
                   if self._errors.get(m, (None,))[0] == self._result_key(m)]
         done = [m for m in methods
-                if self._results.get(m, (None,))[0] == self._result_key(m)]
+                if self._result_is_current(m)]
         if failed:
             self.status_label.setText(
                 trans.t("compare_done_summary").format(
@@ -1176,6 +1257,15 @@ class CompareDialog(QDialog):
             "compare_exit_fullscreen" if self.isFullScreen()
             else "compare_fullscreen"))
 
+    def event(self, event):
+        result = super().event(event)
+        screen_events = (getattr(QEvent.Type, 'ScreenChangeInternal', None),
+                         getattr(QEvent.Type, 'DevicePixelRatioChange', None))
+        if (event.type() in screen_events and hasattr(self, '_layout_timer')
+                and not self._closing):
+            self._layout_timer.start(0)
+        return result
+
     def changeEvent(self, event):  # noqa: N802
         super().changeEvent(event)
         if event.type() == QEvent.Type.WindowStateChange:
@@ -1192,6 +1282,7 @@ class CompareDialog(QDialog):
     def _refresh_layout(self):
         if self._closing:
             return
+        self._refresh_panes()
         width = max(1, self.param_scroll.viewport().width())
         height = self.param_host.heightForWidth(width) + 4
         self.param_scroll.setFixedHeight(max(48, min(210, height)))
@@ -1212,6 +1303,8 @@ class CompareDialog(QDialog):
             self.grid.addWidget(self._cards[method], index // columns, index % columns)
 
     def done(self, result):
+        if self._closing:
+            return
         get_settings().setValue("compare/preview_size", self._detail_size)
         self._closing = True
         self._close_code = result
@@ -1219,18 +1312,38 @@ class CompareDialog(QDialog):
         self._revision += 1
         self._preview_timer.stop()
         self._layout_timer.stop()
+        for worker in self._display_workers.values():
+            worker.cancel()
         self._cancel_source_previews()
         if self._worker is not None:
             self._worker.cancel()
-        if self._worker is not None or self._source_preview_workers:
+        if self._worker is not None or self._source_preview_workers or self._display_workers:
             self.status_label.setText(trans.t("compare_stopping"))
             self.setEnabled(False)
             return  # Close after every worker releases its source references.
-        super().done(result)
+        self._finalize_close()
+
+    def _finalize_close(self):
+        if self._worker is not None or self._source_preview_workers or self._display_workers:
+            return
+        self._results.clear()
+        self._full_results.clear()
+        self._errors.clear()
+        self._active_keys.clear()
+        for canvas in self._canvases.values():
+            canvas.set_result(None, None)
+        with QSignalBlocker(self.ref_canvas):
+            self.ref_canvas.set_pixmap(None)
+        self._aligned_frames = None
+        self._frames = []
+        self._raw_frames = []
+        self._calibration = {}
+        super().done(self._close_code)
+        self.deleteLater()
 
     def closeEvent(self, event):  # noqa: N802
-        if self._worker is not None or self._source_preview_workers:
+        self.done(QDialog.DialogCode.Rejected)
+        if self._worker is not None or self._source_preview_workers or self._display_workers:
             event.ignore()
-            self.done(QDialog.DialogCode.Rejected)
         else:
-            super().closeEvent(event)
+            event.accept()

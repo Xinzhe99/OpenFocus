@@ -7,6 +7,7 @@ Lets batch users and CI pipelines run registration + fusion without the GUI:
 
 Exit codes: 0 success, 1 processing error, 2 usage error.
 """
+from contextlib import contextmanager
 import argparse
 import json
 import math
@@ -204,7 +205,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dry-run", action="store_true",
                         help="Validate inputs and print the plan without fusing")
     parser.add_argument("--resume", action="store_true",
-                        help="Batch mode: skip folders whose output file already exists")
+                        help="Batch mode: skip folders only when every requested result is a nonempty file; content and settings are not checked")
     parser.add_argument("--json", default=None, metavar="FILE",
                         help="Write a machine-readable result summary to FILE when done")
     parser.add_argument("--alignment-report", default=None, metavar="FILE",
@@ -242,6 +243,71 @@ def _parameter_assignments(assignments):
         except (TypeError, ValueError) as exc:
             raise ValueError(f"Invalid JSON for parameter {key}: {exc}") from exc
     return values
+
+
+def _validate_execution_args(args):
+    """Validate execution options shared by CLI, batch overrides and recipes."""
+    import math
+
+    for name, minimum, optional in (
+            ('threads', 0, False), ('batch_size', 1, False),
+            ('downscale', 1, True), ('tile_size', 64, True),
+            ('kernel', None, True), ('tile_overlap', 0, True),
+            ('tile_threshold', 1, True), ('group_size', 0, False),
+            ('group_overlap', 0, False)):
+        value = getattr(args, name)
+        if value is None and optional:
+            continue
+        if type(value) is not int or (minimum is not None and value < minimum):
+            raise ValueError(f"invalid {name}: {value!r}")
+    for name in ('exposure_match', 'sharpen_output', 'cpu', 'keep_soft_parts'):
+        if type(getattr(args, name)) is not bool:
+            raise ValueError(f"{name} must be boolean")
+    actions = {action.dest: action for action in build_parser()._actions}
+    for name in ('method', 'align', 'base_frame', 'sort', 'ai_mode',
+                 'resource_preference', 'auto_background', 'background_mode'):
+        value = getattr(args, name)
+        if value is None and name in ('ai_mode', 'auto_background'):
+            continue
+        if not isinstance(value, str) or value not in actions[name].choices:
+            raise ValueError(f"invalid {name}: {value!r}")
+    for name in ('fusion_parameters', 'registration_parameters'):
+        if not isinstance(getattr(args, name, {}), dict):
+            raise ValueError(f"{name} must be an object")
+    value = args.align_shift_limit
+    if value is not None and (isinstance(value, bool) or not isinstance(value, (int, float))
+                              or not math.isfinite(value)):
+        raise ValueError('align_shift_limit must be a finite number')
+    if args.group_size == 1 or (args.group_size and args.group_overlap > args.group_size - 2):
+        raise ValueError('invalid group_size or group_overlap')
+    if args.group_size and args.depth_map:
+        raise ValueError('depth_map is unavailable with grouped fusion')
+    if args.tile_overlap is not None and args.tile_size is not None and args.tile_overlap >= args.tile_size:
+        raise ValueError('tile_overlap must be smaller than tile_size')
+    if args.native_batch_format and (not args.native_raw or not args.output_dir):
+        raise ValueError('native_batch_format requires native_raw and output_dir')
+    if args.native_raw and (args.suggest_duplicates or args.group_size or args.dust_map or
+                            args.defect_mask_path or args.sensor_denoise or args.depth_map):
+        raise ValueError('native_raw cannot be combined with grouped fusion, references or depth maps')
+    if args.native_raw and (args.scale_bar or args.scale_um is not None) and (
+            (args.output_dir and (args.native_batch_format or 'dng') == 'dng') or
+            (args.output and os.path.splitext(args.output)[1].lower() == '.dng')):
+        raise ValueError('scale bars are not supported in native DNG output')
+    extras = args.background_mode != 'clean' or args.keep_soft_parts or args.save_stacked or args.missing_data_map
+    if extras and not args.auto_background:
+        raise ValueError('background options require auto_background')
+    if args.auto_background and (args.group_size or args.native_raw):
+        raise ValueError('auto_background is unavailable with grouped fusion or native_raw')
+    if args.output_dir:
+        for name in ('depth_map', 'save_stacked', 'missing_data_map'):
+            if isinstance(getattr(args, name), str):
+                option = '--' + name.replace('_', '-')
+                raise ValueError(f'{option} with an explicit path cannot be used with --output-dir')
+    if isinstance(args.missing_data_map, str) and not args.missing_data_map.lower().endswith('.png'):
+        raise ValueError('missing_data_map must be a .png path')
+    if isinstance(args.save_stacked, str) and os.path.splitext(args.save_stacked)[1].lower() not in VALID_FORMATS:
+        raise ValueError('save_stacked has an unsupported extension')
+    return args
 
 
 def _resolve_algorithm_arguments(args):
@@ -331,6 +397,29 @@ def _validate_sensor_sources(paths, args):
         validate_sensor_source_orientation(paths, cancel_callback=getattr(args, "_should_cancel", None))
 
 
+@contextmanager
+def _video_directory(args, directory):
+    import tempfile
+    from core import scratch_registry
+
+    recorded = []
+    try:
+        with tempfile.TemporaryDirectory(prefix='openfocus_video_', dir=directory) as path:
+            args._video_scratch = recorded
+            recorded.append(path)
+            try:
+                scratch_registry.register(path)
+            except Exception as exc:
+                _log.warning('could not register video scratch directory: %s', exc)
+            yield path
+    finally:
+        args._video_scratch = None
+        try:
+            scratch_registry.forget([path for path in recorded if not os.path.exists(path)])
+        except Exception as exc:
+            _log.warning('could not forget video scratch: %s', exc)
+
+
 def _resolve_stack(args, video_temp_root: str) -> Tuple[str, List[str]]:
     """Return (source_label, image file paths) from folders, videos, or files.
 
@@ -357,11 +446,19 @@ def _resolve_stack(args, video_temp_root: str) -> Tuple[str, List[str]]:
             ok, message, frames, _names = loader.load_from_video(entry)
             if not ok:
                 raise RuntimeError(f"Failed to read video {entry}: {message}")
-            import cv2
             for i, frame in enumerate(frames):
-                frame_path = os.path.join(video_temp_root, f"video_{len(paths) + i:05d}.png")
+                frame_path = os.path.join(video_temp_root, f"video_{len(paths):05d}.png")
+                recorded = getattr(args, '_video_scratch', None)
+                if recorded is not None:
+                    recorded.append(frame_path)
+                    try:
+                        from core import scratch_registry
+                        scratch_registry.register(frame_path)
+                    except Exception as exc:
+                        _log.warning('could not register video scratch frame: %s', exc)
                 from utils.image_utils import imwrite_auto
-                imwrite_auto(frame_path, frame)
+                if not imwrite_auto(frame_path, frame):
+                    raise RuntimeError(f"Failed to write frame {i + 1} from video {entry}")
                 paths.append(frame_path)
         elif os.path.isfile(entry):
             paths.append(entry)
@@ -649,11 +746,11 @@ def _fuse_stack_admitted_body(images, args):
     # Flat-field correction also runs in the raw pixel domain before registration.
     dust_white = getattr(args, "dust_map", None)
     if dust_white:
-        from utils.dust_map import compute_flat_field, apply_flat_field
-        data = np.fromfile(dust_white, dtype=np.uint8)
-        white = cv2.imdecode(data, cv2.IMREAD_ANYDEPTH | cv2.IMREAD_COLOR)
-        if white is None:
-            raise RuntimeError(f"Failed to decode white-field image: {dust_white}")
+        from utils.dust_map import compute_flat_field, apply_flat_field, load_flat_field_reference
+        try:
+            white, _ = load_flat_field_reference(dust_white)
+        except ValueError as exc:
+            raise RuntimeError(f"Failed to decode white-field image: {dust_white}") from exc
         gain = compute_flat_field(white)
         images = ([process_frame(image, lambda pixels: apply_flat_field(pixels, gain),
                                  should_cancel=should_cancel) for image in images]
@@ -852,7 +949,7 @@ def _validate_alignment_report_path(args, paths=()):
         raise ValueError("--alignment-report must differ from input and output paths")
 
 
-def _replace_text_file(path, text, prefix):
+def _replace_text_file(path, text, prefix, before_replace=None):
     """Create the folder, then replace ``path`` only once ``text`` is fully written."""
     import tempfile
 
@@ -865,6 +962,8 @@ def _replace_text_file(path, text, prefix):
                                          delete=False) as stream:
             temporary = stream.name
             stream.write(text)
+        if before_replace is not None:
+            before_replace()
         os.replace(temporary, path)
         temporary = None
     finally:
@@ -1014,6 +1113,34 @@ def _input_key_sets(candidates):
     return keys, identities
 
 
+def _admitted_input_keys(candidates):
+    """Collect identities only when every selected source can be stat'ed."""
+    keys, identities = set(), set()
+    for candidate in candidates:
+        if not candidate:
+            continue
+        info = os.stat(candidate)
+        keys.add(path_key(candidate))
+        if info.st_ino:
+            identities.add((info.st_dev, info.st_ino))
+    return keys, identities
+
+
+def _single_inputs(args, loader):
+    import stat
+
+    candidates = [getattr(args, "dust_map", None),
+                  getattr(args, "defect_mask_path", None),
+                  getattr(args, "config", None)]
+    for entry in args.input:
+        info = os.stat(entry)
+        if stat.S_ISDIR(info.st_mode):
+            candidates.extend(_list_folder_images(entry, loader))
+        else:
+            candidates.append(entry)
+    return candidates, _admitted_input_keys(candidates)
+
+
 def _first_input_overlap(outputs, keys, identities):
     """The first (flag, path) planned output that would overwrite an input."""
     for flag, path in outputs:
@@ -1039,23 +1166,22 @@ def _output_over_inputs(args, fused_out: str, paths):
 
 
 def _batch_inputs(args, folders, loader):
-    """(path keys, file identities) for every file a batch run reads.
+    """Collect all batch sources without decoding or inspecting frame counts."""
+    import stat
 
-    Listing reads directory entries only -- no pixel decode -- and applies
-    each folder's own --config and dust/defect filters, exactly as the run
-    will, so the keys cover the frames that are actually loaded."""
     candidates = [getattr(args, "config", None)]
+    for entry in args.input:
+        info = os.stat(entry)
+        if not stat.S_ISDIR(info.st_mode):
+            candidates.append(entry)
     for folder in folders:
         name = os.path.basename(folder.rstrip("/\\")) or "stack"
         folder_args, _override = _folder_run_args(args, folder, name)
-        paths = _filter_stack_paths(_list_folder_images(folder, loader), folder_args.dust_map)
-        paths = _filter_stack_paths(paths, getattr(folder_args, "defect_mask_path", None))
-        candidates += paths
+        candidates.extend(_list_folder_images(folder, loader))
         candidates.append(getattr(folder_args, "dust_map", None))
         candidates.append(getattr(folder_args, "defect_mask_path", None))
-    candidates += [entry for entry in (getattr(args, "input", None) or ())
-                   if isinstance(entry, str) and os.path.isfile(entry)]
-    return _input_key_sets(candidates)
+        candidates.append(getattr(folder_args, "config", None))
+    return candidates, _admitted_input_keys(candidates)
 
 
 def _folder_run_args(args, folder: str, name: str):
@@ -1064,7 +1190,10 @@ def _folder_run_args(args, folder: str, name: str):
     override = overrides.get(name) or overrides.get(folder)
     if not override:
         return args, None
-    return argparse.Namespace(**{**vars(args), **override}), override
+    merged = argparse.Namespace(**{**vars(args), **override})
+    _validate_execution_args(merged)
+    _resolve_algorithm_arguments(merged)
+    return merged, override
 
 
 def _auto_background(args, fused):
@@ -1185,12 +1314,15 @@ def _save(path: str, fused, scale_cfg=None, icc_profile=b"") -> None:
         raise RuntimeError(f"Failed to write output: {path}")
 
 
-def _run_batch(args, _emit_json=None) -> int:
+def _run_batch(args, _emit_json=None, _allow_summary=None) -> int:
     """Batch mode: fuse every input folder into --output-dir."""
     from core.image_loader import ImageStackLoader
 
     loader = ImageStackLoader()
     folders = [os.path.abspath(p) for p in args.input if os.path.isdir(p)]
+    machine = getattr(args, '_machine_state', None)
+    if machine is not None:
+        machine['total'] = len(folders)
     skipped = [p for p in args.input if not os.path.isdir(os.path.abspath(p))]
     for p in skipped:
         print(f"warning: skipping non-folder input in batch mode: {p}", file=sys.stderr)
@@ -1206,11 +1338,14 @@ def _run_batch(args, _emit_json=None) -> int:
     # only decide the main path, so one folder's sidecar can land on another
     # folder's result, and a config can change which sidecars a folder writes.
     planned = []
+    folder_plans = []
     for folder in folders:
         name = os.path.basename(folder.rstrip("/\\")) or "stack"
-        folder_args, _override = _folder_run_args(args, folder, name)
+        folder_args, override = _folder_run_args(args, folder, name)
         out_path = os.path.join(args.output_dir, f"{name}{args._batch_ext}")
-        planned += _result_outputs(folder_args, out_path)
+        results = _result_outputs(folder_args, out_path)
+        folder_plans.append((folder, name, folder_args, override, out_path, results))
+        planned.extend(results)
     for flag, path in (("--json", args.json), ("--alignment-report", args.alignment_report)):
         if path:
             planned.append((flag, path))
@@ -1229,7 +1364,7 @@ def _run_batch(args, _emit_json=None) -> int:
     # until this holds; if the inputs cannot be listed, refuse the run rather
     # than write without the guarantee.
     try:
-        input_keys, input_files = _batch_inputs(args, folders, loader)
+        candidates, (input_keys, input_files) = _batch_inputs(args, folders, loader)
     except Exception as exc:  # noqa: BLE001 - refuse rather than write blind
         print(f"error: cannot list the batch inputs: {exc}", file=sys.stderr)
         return EXIT_USAGE
@@ -1238,17 +1373,18 @@ def _run_batch(args, _emit_json=None) -> int:
         flag, path = overlap
         print(f"error: {flag} would overwrite an input image: {path}", file=sys.stderr)
         return EXIT_USAGE
+    if _allow_summary is not None:
+        _allow_summary(planned, candidates, input_keys, input_files)
     if not args.dry_run:
         os.makedirs(args.output_dir, exist_ok=True)
 
     ok_count, failures = 0, []
     skipped_existing = []
+    if machine is not None:
+        machine['failed'] = failures
+        machine['skipped_existing'] = skipped_existing
     started = time.time()
-    for i, folder in enumerate(folders):
-        name = os.path.basename(folder.rstrip("/\\")) or "stack"
-        out_path = os.path.join(args.output_dir, f"{name}{args._batch_ext}")
-        # Per-folder overrides from --config, keyed by folder name or path.
-        folder_args, override = _folder_run_args(args, folder, name)
+    for i, (folder, name, folder_args, override, out_path, results) in enumerate(folder_plans):
         if (folder_args_mask_conflict(folder_args, out_path) or
                 (folder_args.depth_map and folder_args_mask_conflict(
                     folder_args, _depth_out_path(folder_args, out_path)))
@@ -1260,13 +1396,29 @@ def _run_batch(args, _emit_json=None) -> int:
             continue
         _say(f"\n=== {name} ===")
 
-        # --resume: a finished folder (output exists) is skipped, so rerunning
-        # a failed batch only processes what is still missing.
-        if args.resume and os.path.isfile(out_path) and os.path.getsize(out_path) > 0:
-            _say(f"skip (output exists): {out_path}")
-            skipped_existing.append(name)
-            ok_count += 1
-            continue
+        if args.resume:
+            import stat
+            complete = True
+            try:
+                for _flag, result_path in results:
+                    try:
+                        info = os.stat(result_path)
+                    except FileNotFoundError:
+                        complete = False
+                        continue
+                    if not stat.S_ISREG(info.st_mode) or info.st_size == 0:
+                        complete = False
+            except OSError as exc:
+                print(f"error: {name}: cannot inspect {result_path}: {exc}", file=sys.stderr)
+                failures.append(name)
+                continue
+            if complete:
+                _say(f"skip (all requested outputs exist): {out_path}")
+                skipped_existing.append(name)
+                ok_count += 1
+                if machine is not None:
+                    machine['succeeded'] = ok_count
+                continue
 
         if override:
             applied = ", ".join(f"{k}={v}" for k, v in override.items())
@@ -1286,6 +1438,8 @@ def _run_batch(args, _emit_json=None) -> int:
                 _say(f"[dry-run] frames={frames} method={folder_args.method} "
                      f"align={folder_args.align} output={out_path}")
                 ok_count += 1
+                if machine is not None:
+                    machine['succeeded'] = ok_count
             except Exception as exc:
                 print(f"error: {name}: {exc}", file=sys.stderr)
                 failures.append(name)
@@ -1317,8 +1471,8 @@ def _run_batch(args, _emit_json=None) -> int:
                 fused = _fuse_grouped(paths, folder_args)
             else:
                 images = _load_images(
-                    paths, thread_count=getattr(args, "threads", 0) or 0,
-                    resource_preference=getattr(args, "resource_preference", "balanced"),
+                    paths, thread_count=folder_args.threads,
+                    resource_preference=folder_args.resource_preference,
                     registration_steps=int(folder_args.align != 'none'),
                     exposure_match=getattr(folder_args, 'exposure_match', False),
                     lazy=get_fusion(folder_args.method).streaming_sources)
@@ -1341,9 +1495,11 @@ def _run_batch(args, _emit_json=None) -> int:
                 _save_background_extras(folder_args, out_path, stacked, background,
                                         scale_cfg, icc_profile)
                 background = stacked = None
-            if args.depth_map:
+            if folder_args.depth_map:
                 _save_depth(folder_args, out_path)
             ok_count += 1
+            if machine is not None:
+                machine['succeeded'] = ok_count
         except Exception as exc:
             _log.exception("batch folder failed: %s", folder)
             print(f"error: {name}: {exc}", file=sys.stderr)
@@ -1364,6 +1520,8 @@ def _run_batch(args, _emit_json=None) -> int:
         "failed": failures,
         "duration_s": round(time.time() - started, 1),
     }
+    if machine is not None:
+        machine['summary'] = summary
     _say(f"\nBatch {'validation' if args.dry_run else 'processing'} finished: "
          f"{ok_count}/{len(folders)} stacks {'validated' if args.dry_run else 'succeeded'}")
     if skipped_existing:
@@ -1557,10 +1715,34 @@ def _run_recipe_command(argv: List[str]) -> int:
         return EXIT_USAGE
 
 
+def _machine_event(state, **fields):
+    if state['broken']:
+        return
+    if fields.get('event') == 'start':
+        state['start_emitted'] = True
+        state['started_at'] = time.time()
+    elif fields.get('event') == 'done':
+        if not state['start_emitted'] or state['terminal_emitted']:
+            return
+        state['terminal_emitted'] = True
+    try:
+        print(json.dumps(fields, ensure_ascii=False), file=_machine_stream or sys.stdout, flush=True)
+    except BrokenPipeError:
+        state['broken'] = True
+
+
 def _run_with_logging(argv: List[str]) -> int:
     with log_operation("cli", args=argv) as operation:
+        state = None
+        result = EXIT_ERROR
         try:
             args = build_parser().parse_args(argv)
+            state = args._machine_state = {
+                'start_emitted': False, 'terminal_emitted': False, 'broken': False,
+                'mode': 'batch' if args.output_dir is not None else 'single',
+                'started_at': time.time(), 'total': 0, 'succeeded': 0,
+                'failed': [], 'skipped_existing': [], 'cancelled': False,
+            }
             directory = None
             if args.temp_dir is not None:
                 from core.frame_storage import validate_storage_directory
@@ -1569,6 +1751,11 @@ def _run_with_logging(argv: List[str]) -> int:
                 except OSError as exc:
                     print(f"error: --temp-dir is not a writable directory: {exc}", file=sys.stderr)
                     return EXIT_USAGE
+            try:
+                from core import scratch_registry
+                scratch_registry.sweep_in_background([directory] if directory else [])
+            except Exception as exc:
+                _log.warning('could not start scratch sweep: %s', exc)
             with heavy_job(), scratch_directory(separate=True, explicit_directory=directory):
                 result = _run_cli_admitted(args)
             if result == EXIT_ERROR:
@@ -1576,9 +1763,28 @@ def _run_with_logging(argv: List[str]) -> int:
             log_action("cli.exit", exit_code=result)
             return result
         except KeyboardInterrupt:
+            if state is not None:
+                state['cancelled'] = True
             operation.cancel()
             print("interrupted", file=sys.stderr)
             return EXIT_ERROR
+        finally:
+            if state is not None and state['start_emitted']:
+                done = {'event': 'done', 'ok': result == EXIT_OK and not state['cancelled'],
+                        'mode': state['mode'], 'exit_code': result,
+                        'duration_s': round(time.time() - state['started_at'], 1)}
+                if state['mode'] == 'batch':
+                    done.update({key: state[key] for key in
+                                 ('total', 'succeeded', 'failed', 'skipped_existing')})
+                elif 'outputs' in state:
+                    done['outputs'] = state['outputs']
+                if state['cancelled']:
+                    done.update(cancelled=True, code='cancelled', exit_code=EXIT_ERROR)
+                elif result == EXIT_USAGE:
+                    done['code'] = 'usage_error'
+                elif result == EXIT_ERROR:
+                    done['code'] = 'processing_error'
+                _machine_event(state, **done)
 
 
 def _warn_low_storage(args, paths, *, folder=None):
@@ -1796,9 +2002,20 @@ def _run_cli_parsed(args) -> int:
             print("error: --config requires batch mode (--output-dir)", file=sys.stderr)
             return EXIT_USAGE
         try:
-            import json
+            def pairs(items):
+                result = {}
+                for key, value in items:
+                    if key in result:
+                        raise ValueError(f"duplicate field: {key}")
+                    result[key] = value
+                return result
+
+            def invalid_number(value):
+                raise ValueError(f"invalid number: {value}")
+
             with open(args.config, encoding="utf-8") as f:
-                args._folder_overrides = json.load(f)
+                args._folder_overrides = json.load(f, object_pairs_hook=pairs,
+                                                   parse_constant=invalid_number)
             if not isinstance(args._folder_overrides, dict):
                 raise ValueError("top level must be a JSON object")
         except Exception as exc:
@@ -1806,6 +2023,7 @@ def _run_cli_parsed(args) -> int:
             return EXIT_USAGE
 
     try:
+        _validate_execution_args(args)
         _resolve_algorithm_arguments(args)
         for folder, override in args._folder_overrides.items():
             if not isinstance(override, dict):
@@ -1818,13 +2036,49 @@ def _run_cli_parsed(args) -> int:
                 "auto_background", "background_mode", "keep_soft_parts"}
             if unknown:
                 raise ValueError(f"Unknown override keys for {folder}: {sorted(unknown)}")
-            _resolve_algorithm_arguments(argparse.Namespace(**{**vars(args), **override}))
+            try:
+                merged = argparse.Namespace(**{**vars(args), **override})
+                _validate_execution_args(merged)
+                _resolve_algorithm_arguments(merged)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"config {folder}: {exc}") from exc
     except (TypeError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_USAGE
 
-    def _emit_json(payload: dict) -> None:
+    summary_write_allowed = False
+    summary_plan = None
+
+    def _validate_summary_plan(planned, candidates, keys, identities):
+        # Unlike file_identity, stat must not hide access errors here.
+        current_keys, current_identities = _admitted_input_keys(candidates)
+        for _flag, path in planned:
+            if path:
+                try:
+                    os.stat(path)
+                except FileNotFoundError:
+                    pass
+        duplicate = _first_duplicate(planned)
+        if duplicate:
+            path, flag, earlier = duplicate
+            raise ValueError(f"{path} would be written twice ({earlier} and {flag})")
+        overlap = _first_input_overlap(planned, keys | current_keys,
+                                       identities | current_identities)
+        if overlap:
+            flag, path = overlap
+            raise ValueError(f"{flag} would overwrite an input image: {path}")
+
+    def _allow_summary(planned, candidates, keys, identities):
+        nonlocal summary_write_allowed, summary_plan
         if not args.json:
+            return
+        _validate_summary_plan(planned, candidates, keys, identities)
+        summary_plan = (planned, candidates, keys, identities)
+        summary_write_allowed = True
+
+    def _emit_json(payload: dict) -> None:
+        nonlocal summary_write_allowed
+        if not args.json or not summary_write_allowed:
             return
         import json
         profile = getattr(args, '_performance_profile', None)
@@ -1835,20 +2089,28 @@ def _run_cli_parsed(args) -> int:
             except Exception as exc:
                 print(f"warning: --profile-performance: {exc}", file=sys.stderr)
         try:
-            os.makedirs(os.path.dirname(os.path.abspath(args.json)), exist_ok=True)
-            with open(args.json, "w", encoding="utf-8") as f:
-                json.dump(payload, f, ensure_ascii=False, indent=2)
-        except OSError as exc:
+            text = json.dumps(payload, ensure_ascii=False, indent=2)
+
+            def before_replace():
+                nonlocal summary_write_allowed
+                try:
+                    cancelled = getattr(args, '_should_cancel', None)
+                    if cancelled is not None and cancelled():
+                        raise RuntimeError("summary write cancelled")
+                    _validate_summary_plan(*summary_plan)
+                except BaseException:
+                    summary_write_allowed = False
+                    raise
+
+            _replace_text_file(args.json, text, ".openfocus_summary_", before_replace)
+        except Exception as exc:
             print(f"warning: --json: {exc}", file=sys.stderr)
 
     def _progress(**fields) -> None:
         if args.json_progress:
-            import json as _json
-            stream = _machine_stream or sys.stdout
-            print(_json.dumps(fields, ensure_ascii=False), file=stream, flush=True)
+            _machine_event(args._machine_state, **fields)
 
     args._progress = _progress
-    started_at = time.time()
 
     batch_mode = args.output_dir is not None
     if batch_mode and isinstance(args.depth_map, str) and args.depth_map:
@@ -1928,17 +2190,26 @@ def _run_cli_parsed(args) -> int:
             print("error: an output would overwrite the defect mask", file=sys.stderr)
             return EXIT_USAGE
     try:
-        import tempfile
         import cv2
 
         if batch_mode:
-            return _run_batch(args, _emit_json)
+            return _run_batch(args, _emit_json, _allow_summary)
+
+        if args.json:
+            from core.image_loader import ImageStackLoader
+            candidates, (input_keys, input_files) = _single_inputs(args, ImageStackLoader())
+            planned = _run_outputs(args, args.output)
+            try:
+                _allow_summary(planned, candidates, input_keys, input_files)
+            except ValueError as exc:
+                print(f"error: {exc}", file=sys.stderr)
+                return EXIT_USAGE
 
         from core.multi_focus_fusion import MultiFocusFusion
         from core.frame_storage import storage_directory
 
         # Video inputs are unpacked to a temp dir that is always cleaned up
-        with tempfile.TemporaryDirectory(prefix="openfocus_video_", dir=storage_directory()) as video_temp:
+        with _video_directory(args, storage_directory()) as video_temp:
             _src, paths = _resolve_stack(args, video_temp)
             # No output may replace one of the frames it is made from (or the
             # dust/defect inputs); checked before load, fusion and any write.
@@ -2048,19 +2319,14 @@ def _run_cli_parsed(args) -> int:
                                           "mode": args.background_mode,
                                           **_background_summary(background)}
         _emit_json(summary)
-        if args.json_progress:
-            _progress(event="done", ok=True,
-                      duration_s=round(time.time() - started_at, 1),
-                      outputs=outputs)
+        args._machine_state['outputs'] = outputs
         return EXIT_OK
     except Exception as exc:
         print(f"error: {exc}", file=sys.stderr)
         _log.exception("CLI processing failed")
-        _emit_json({"mode": "single", "error": str(exc)})
+        _emit_json({"mode": "batch" if batch_mode else "single", "error": str(exc)})
         if args.json_progress:
             _progress(event="error", code="processing_error", message=str(exc))
-            _progress(event="done", ok=False,
-                      duration_s=round(time.time() - started_at, 1))
         return EXIT_ERROR
 
 

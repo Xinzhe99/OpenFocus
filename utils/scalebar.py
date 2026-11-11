@@ -94,7 +94,7 @@ def _calibration_from_tags(desc, xres, resunit) -> Optional[float]:
     # ImageJ: resolution is pixels-per-unit; the unit lives in the comment
     if "ImageJ=" in desc:
         m = re.search(r"unit=([^\r\n;]+)", desc)
-        unit = m.group(1).strip() if m else "micron"
+        unit = m.group(1).strip() if m else ""
         um_per_unit = _UM_PER_UNIT.get(unit.lower())
         if um_per_unit:
             px_um = um_per_unit / xres
@@ -220,7 +220,8 @@ def draw_scale_bar_ex(img: np.ndarray, px_um: float,
                       font_bold: bool = False,
                       text_align: str = "auto",
                       custom_x: float = None,
-                      custom_y: float = None):
+                      custom_y: float = None, *, canvas_size=None,
+                      origin=(0, 0), region_mean=None, render_scale=1.0):
     """Draw the bar and report what actually happened.
 
     Returns ``(image, info)`` where info may contain ``bar_um``, ``bar_px``,
@@ -234,7 +235,8 @@ def draw_scale_bar_ex(img: np.ndarray, px_um: float,
                            font_family=font_family, font_size=font_size,
                            font_bold=font_bold, text_align=text_align,
                            custom_x=custom_x, custom_y=custom_y,
-                           _info=info)
+                           _info=info, canvas_size=canvas_size, origin=origin,
+                           region_mean=region_mean, render_scale=render_scale)
     return drawn, info
 
 
@@ -248,7 +250,7 @@ def draw_scale_bar(img: np.ndarray, px_um: float,
                    custom_x: float = None,
                    custom_y: float = None,
                    _info: Optional[dict] = None, *, canvas_size=None,
-                   origin=(0, 0), region_mean=None) -> np.ndarray:
+                   origin=(0, 0), region_mean=None, render_scale=1.0) -> np.ndarray:
     """Return a copy of ``img`` (BGR) with a scale bar burned into a corner.
 
     No-op (same array) when calibration is missing or implausible. Drawing
@@ -280,10 +282,11 @@ def draw_scale_bar(img: np.ndarray, px_um: float,
             font_size=font_size,
             font_bold=font_bold, text_align=text_align,
             custom_x=custom_x, custom_y=custom_y, _info=_info,
-            canvas_size=canvas_size, origin=origin, region_mean=region_mean)
+            canvas_size=canvas_size, origin=origin, region_mean=region_mean,
+            render_scale=render_scale)
         if drawn is img8:
             return img
-        mask = np.any(drawn != img8, axis=2)
+        mask = drawn != img8 if img.ndim == 2 else np.any(drawn != img8, axis=2)
         out = img.copy()
         if img.dtype == np.uint16:
             out[mask] = (drawn[mask].astype(np.float64) * 257.0).round().astype(np.uint16)
@@ -291,6 +294,74 @@ def draw_scale_bar(img: np.ndarray, px_um: float,
             out[mask] = drawn[mask].astype(img.dtype)
         return out
 
+    layout = _scale_bar_layout(img, px_um, position, font_family, font_size,
+                               font_bold, text_align, custom_x, custom_y,
+                               _info, canvas_size)
+    if layout is None:
+        return img
+    (font, label, font_size, left, top, text_h, stroke_w, stroke, margin,
+     thickness, bar_px, bar_x1, bar_x2, bar_y1, bar_y2, text_x, text_y) = layout
+    from PIL import Image, ImageDraw
+    from utils.fonts import load_font_for_text
+    gray = img.ndim == 2
+    pil = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_GRAY2RGB if gray else cv2.COLOR_BGR2RGB))
+    draw = ImageDraw.Draw(pil)
+    if color == "auto":
+        if region_mean is not None:
+            mean = region_mean((bar_x1 - margin, bar_y1 - margin,
+                                bar_px + 2 * margin, thickness + 2 * margin))
+        else:
+            mean = _region_mean(img, round(bar_x1 - margin - origin[0]),
+                                round(bar_y1 - margin - origin[1]),
+                                round(bar_x2 + margin - origin[0]),
+                                round(bar_y2 + margin - origin[1]))
+        bar_rgb = (255, 255, 255) if mean < 128 else (0, 0, 0)
+    else:
+        bar_rgb = (255, 255, 255) if color == "white" else (0, 0, 0)
+    edge_rgb = (0, 0, 0) if bar_rgb == (255, 255, 255) else (255, 255, 255)
+    if render_scale != 1.0:
+        scale = float(render_scale)
+        bar_x1, bar_x2 = round((bar_x1 - origin[0]) * scale), round((bar_x2 - origin[0]) * scale)
+        bar_y1, bar_y2 = round((bar_y1 - origin[1]) * scale), round((bar_y2 - origin[1]) * scale)
+        text_x, text_y = round((text_x - origin[0]) * scale), round((text_y - origin[1]) * scale)
+        bar_x2, bar_y2 = max(bar_x1 + 1, bar_x2), max(bar_y1 + 1, bar_y2)
+        stroke = max(1, round(stroke * scale))
+        stroke_w = max(1, round(stroke_w * scale))
+        font_size = max(1, round(font_size * scale))
+        if font is not None:
+            font, _, _ = load_font_for_text(font_size, font_family, label, bold=font_bold)
+            if font is not None:
+                left, top, _, _ = font.getbbox(label)
+            else:
+                left = top = 0
+        text_h = round(text_h * scale)
+    else:
+        bar_x1, bar_x2 = round(bar_x1 - origin[0]), round(bar_x2 - origin[0])
+        bar_y1, bar_y2 = round(bar_y1 - origin[1]), round(bar_y2 - origin[1])
+        text_x, text_y = round(text_x - origin[0]), round(text_y - origin[1])
+
+    # Outline pass then fill keeps the bar visible on same-color regions
+    draw.rectangle((bar_x1 - stroke, bar_y1 - stroke,
+                    bar_x2 + stroke, bar_y2 + stroke), fill=edge_rgb)
+    draw.rectangle((bar_x1, bar_y1, bar_x2 - 1, bar_y2 - 1), fill=bar_rgb)
+
+
+    if font is not None:
+        draw.text((text_x - left, text_y - top), label, font=font, fill=bar_rgb,
+                  stroke_width=stroke_w, stroke_fill=edge_rgb)
+        out = cv2.cvtColor(np.array(pil), cv2.COLOR_RGB2BGR)
+        return out[:, :, 0] if gray else out
+
+    out = cv2.cvtColor(np.array(pil), cv2.COLOR_RGB2BGR)
+    cv2.putText(out, label, (text_x, text_y + text_h),
+                cv2.FONT_HERSHEY_SIMPLEX, font_size / 30.0, bar_rgb,
+                stroke_w, cv2.LINE_AA)
+    return out[:, :, 0] if gray else out
+
+
+def _scale_bar_layout(img, px_um, position, font_family, font_size, font_bold,
+                      text_align, custom_x, custom_y, _info, canvas_size):
+    """Compute the original-pixel geometry shared by all bar renderers."""
     h, w = img.shape[:2] if canvas_size is None else (canvas_size[1], canvas_size[0])
     thickness = max(2, int(round(h * 0.004)))
     margin = max(10, int(round(min(h, w) * 0.02)))
@@ -315,7 +386,7 @@ def draw_scale_bar(img: np.ndarray, px_um: float,
         if _info is not None:
             _info["too_small"] = True
             _info["bar_um"] = bar_um if bar_um > 0 else None
-        return img
+        return None
     if _info is not None:
         _info["bar_um"] = bar_um
         _info["bar_px"] = bar_px
@@ -343,9 +414,6 @@ def draw_scale_bar(img: np.ndarray, px_um: float,
     if font is None:
         label = label.replace("µ", "u")
 
-    from PIL import Image, ImageDraw
-    pil = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
-    draw = ImageDraw.Draw(pil)
     if font is not None:
         left, top, right, bottom = font.getbbox(label)
         text_w, text_h = right - left, bottom - top
@@ -365,7 +433,7 @@ def draw_scale_bar(img: np.ndarray, px_um: float,
     if text_w + 2 * stroke_w > w or text_h + gap + thickness + 2 * stroke_w > h:
         if _info is not None:
             _info["too_small"] = True
-        return img
+        return None
 
     # Horizontal placement
     if position == "custom":
@@ -421,7 +489,7 @@ def draw_scale_bar(img: np.ndarray, px_um: float,
     if upper - lower > h:
         if _info is not None:
             _info["too_small"] = True
-        return img
+        return None
     shift = max(0, -lower) - max(0, upper - h)
     text_y += shift
     bar_y1 += shift
@@ -430,40 +498,8 @@ def draw_scale_bar(img: np.ndarray, px_um: float,
     # Clamp in the full canvas, then translate into this tile. PIL clips the
     # motif at the tile edge; it must never migrate to the crop's corner.
     text_x = max(stroke_w, min(int(text_x), w - text_w - stroke_w))
-    if color == "auto":
-        if region_mean is not None:
-            mean = region_mean((bar_x1 - margin, bar_y1 - margin,
-                                bar_px + 2 * margin, thickness + 2 * margin))
-        else:
-            mean = _region_mean(img, round(bar_x1 - margin - origin[0]),
-                                round(bar_y1 - margin - origin[1]),
-                                round(bar_x2 + margin - origin[0]),
-                                round(bar_y2 + margin - origin[1]))
-        bar_rgb = (255, 255, 255) if mean < 128 else (0, 0, 0)
-    else:
-        bar_rgb = (255, 255, 255) if color == "white" else (0, 0, 0)
-    edge_rgb = (0, 0, 0) if bar_rgb == (255, 255, 255) else (255, 255, 255)
-    bar_x1, bar_x2 = round(bar_x1 - origin[0]), round(bar_x2 - origin[0])
-    bar_y1, bar_y2 = round(bar_y1 - origin[1]), round(bar_y2 - origin[1])
-    text_x, text_y = round(text_x - origin[0]), round(text_y - origin[1])
-
-    # Outline pass then fill keeps the bar visible on same-color regions
-    draw.rectangle((bar_x1 - stroke, bar_y1 - stroke,
-                    bar_x2 + stroke, bar_y2 + stroke), fill=edge_rgb)
-    draw.rectangle((bar_x1, bar_y1, bar_x2 - 1, bar_y2 - 1), fill=bar_rgb)
-
-
-    if font is not None:
-        draw.text((text_x - left, text_y - top), label, font=font, fill=bar_rgb,
-                  stroke_width=stroke_w, stroke_fill=edge_rgb)
-        out = cv2.cvtColor(np.array(pil), cv2.COLOR_RGB2BGR)
-        return out
-
-    out = cv2.cvtColor(np.array(pil), cv2.COLOR_RGB2BGR)
-    cv2.putText(out, label, (text_x, text_y + text_h),
-                cv2.FONT_HERSHEY_SIMPLEX, font_size / 30.0, bar_rgb,
-                stroke_w, cv2.LINE_AA)
-    return out
+    return (font, label, font_size, left, top, text_h, stroke_w, stroke, margin,
+            thickness, bar_px, bar_x1, bar_x2, bar_y1, bar_y2, text_x, text_y)
 
 
 _STATE_FIELDS = {
@@ -488,8 +524,9 @@ def capture_state(window) -> dict:
     outputs = getattr(window, "output_list", None)
     if manager is not None and outputs is not None:
         state["outputs"] = {
-            record.output_id: (dict(record.scale_bar_config)
-                               if record.scale_bar_config else None)
+            record.output_id: {"config": (dict(record.scale_bar_config)
+                                           if record.scale_bar_config is not None else None),
+                               "initialized": record.scale_bar_initialized}
             for row in range(outputs.count())
             if (record := manager.record_for_row(row)) is not None
         }
@@ -508,9 +545,10 @@ def restore_state(window, state) -> None:
         for row in range(outputs.count()):
             record = manager.record_for_row(row)
             if record is not None and record.output_id in saved_outputs:
-                cfg = saved_outputs[record.output_id]
-                record.scale_bar_config = dict(cfg) if cfg else None
-                record.scale_bar_initialized = True
+                saved = saved_outputs[record.output_id]
+                cfg = saved["config"]
+                record.scale_bar_config = dict(cfg) if cfg is not None else None
+                record.scale_bar_initialized = saved["initialized"]
 
 
 def effective_px_um(window) -> Optional[float]:

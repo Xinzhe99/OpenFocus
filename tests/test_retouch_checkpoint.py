@@ -373,3 +373,49 @@ def test_legacy_tone_checkpoint_and_invalid_new_fields(tmp_path):
             doc.load_checkpoint(path)
         np.testing.assert_array_equal(doc.working, expected.working)
         del operation[name]
+
+
+def test_replay_borrows_owned_base_and_keeps_working_independent(monkeypatch):
+    from core import frame_storage
+    original = document(np.uint16)
+    allocations = []
+    store = frame_storage.store_frame
+
+    def track(image, **kwargs):
+        allocations.append(image)
+        return store(image, **kwargs)
+
+    monkeypatch.setattr(frame_storage, 'store_frame', track)
+    replay = RetouchDocument._for_replay(original, max_strokes=10, max_bytes=100000)
+    assert replay.base is original.base
+    assert len(allocations) == 1 and allocations[0] is original.base
+    replay.working[:] = 0
+    assert np.all(original.base == 12000)
+    assert np.all(original.working == 12000)
+
+
+def test_snapshot_replay_allocates_working_without_copying_base(monkeypatch):
+    from core import frame_storage
+    original = document(np.uint8)
+    def fail_copy(*args, **kwargs):
+        raise AssertionError('snapshot replay copied its base')
+    monkeypatch.setattr(frame_storage, 'store_frame', fail_copy)
+    replay = RetouchDocument._for_replay(original, max_strokes=10,
+                                          max_bytes=100000, snapshot=True)
+    assert replay.base is original.base
+    replay.working[:] = 7
+    assert np.all(original.base == 100) and np.all(original.working == 100)
+
+
+def test_document_snapshot_isolates_noncontiguous_input(monkeypatch):
+    from core import frame_storage
+    monkeypatch.setattr(frame_storage, '_try_ram_frame', lambda *args: None)
+    pixels = np.full((40, 96, 3), 75, np.uint8)
+    base = pixels[:, ::2]
+    context = build_render_context([base.copy()], base, filenames=['one'])
+    doc = RetouchDocument(base, context)
+    assert isinstance(doc.base, np.memmap) and isinstance(doc.working, np.memmap)
+    pixels[:] = 5
+    assert np.all(doc.base == 75) and np.all(doc.working == 75)
+    doc.working[:] = 10
+    assert np.all(doc.base == 75)

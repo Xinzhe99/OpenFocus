@@ -214,6 +214,16 @@ class TestSelfUpdateStaging:
         assert self_update.verify_staged_app(root)
 
 
+def _windows_script_config(text):
+    import base64
+    import json
+    import re
+
+    match = re.search(r"FromBase64String\('([A-Za-z0-9+/=]+)'\)", text)
+    assert match, "update script has no encoded configuration"
+    return json.loads(base64.b64decode(match.group(1)).decode("utf-8"))
+
+
 class TestApplyScript:
     def test_windows_script_targets_the_staged_tag(self, tmp_path, monkeypatch):
         from utils import self_update
@@ -224,15 +234,17 @@ class TestApplyScript:
         script = self_update.write_apply_script_windows(
             str(tmp_path / "install"), app, "v9.9",
             staging_root=root, zip_path=os.path.join(root, "x.zip"))
-        text = open(script, encoding="ascii").read()
-        assert "v1.23" not in text
-        assert "apply_update_v9.9.bat" in os.path.basename(script)
-        # the elevated retry must skip the unelevated first pass (no UAC loop)
-        assert 'if "%~1"=="/elevated" goto elevatedcopy' in text
-        assert text.count("elevatedcopy") == 2
-        # it waits for the process to exit instead of a fixed sleep
-        assert ":waitforexit" in text and "tasklist" in text
-        assert "timeout /t 2 /nobreak" not in text
+        with open(script, encoding="utf-8-sig") as fh:
+            text = fh.read()
+        config = _windows_script_config(text)
+        assert config["tag"] == "v9.9"
+        assert config["staged"] == os.path.abspath(app)
+        assert config["root"] == os.path.abspath(root)
+        assert config["app"] == os.path.abspath(str(tmp_path / "install"))
+        assert os.path.basename(script) == "apply_update_v9.9.ps1"
+        assert "$elevated = $false" in text
+        assert "!$elevated" in text and "-Verb RunAs" in text
+        assert "WaitForExit(60000)" in text
 
     def test_windows_script_rejects_injected_path(self, tmp_path, monkeypatch):
         from utils import self_update
@@ -248,20 +260,6 @@ class TestApplyScript:
             self_update.write_apply_script_macos(
                 str(tmp_path / "Nope.app"), str(tmp_path / "staged"), "v9.9")
 
-    def test_main_window_update_helpers_are_importable(self):
-        """The one-click update once died on a NameError for _QThread.
-
-        Importing main and resolving the helpers in module scope proves the
-        threads and dialogs those methods build actually exist.
-        """
-        import main
-        for name in ("QThread", "QProgressDialog", "QDesktopServices", "QUrl"):
-            assert hasattr(main, name), f"main.{name} missing"
-        assert main.OpenFocus._apply_update_and_restart
-        assert main.OpenFocus._stage_and_restart
-        import inspect
-        params = inspect.signature(main.OpenFocus._stage_and_restart).parameters
-        assert "tag" in params
 
 
 class TestOneClickUpdateFlow:
@@ -277,87 +275,213 @@ class TestOneClickUpdateFlow:
         from PyQt6.QtWidgets import QApplication
         return QApplication.instance() or QApplication([])
 
-    def test_download_stage_and_hand_off(self, tmp_path, monkeypatch, qapplication):
+    @pytest.fixture()
+    def update_flow(self, tmp_path, monkeypatch, qapplication):
         import shutil
-        import tempfile
+        import threading
         import time
         import zipfile
-        from PyQt6.QtWidgets import QApplication
-        from utils import self_update, updater
+        from pathlib import Path
+        from types import SimpleNamespace
+        from PyQt6.QtWidgets import QApplication, QWidget
+        from controllers import update_manager
+        from utils import recovery, self_update, updater
+        import main
 
+        artifacts = tmp_path / "update-artifacts"
+        artifacts.mkdir()
+        external = tmp_path / "external"
+        sentinel_root = external / "v9.9"
+        sentinel_root.mkdir(parents=True)
+        sentinel = sentinel_root / "sentinel"
+        sentinel.write_bytes(b"existing stage")
+        sentinel_zip = external / "OpenFocus-v9.9-portable.zip"
+        sentinel_zip.write_bytes(b"existing zip")
+        targets = []
+
+        def local_path(tag, kind):
+            safe = self_update.sanitize_tag(tag)
+            names = {"stage": safe, "zip": f"OpenFocus-{safe}-portable.zip",
+                     "result": f"OpenFocus_update_result_{safe}.txt"}
+            path = artifacts / names[kind]
+            targets.append(path)
+            return str(path)
+
+        monkeypatch.setattr(self_update, "staging_root_for",
+                            lambda tag: local_path(tag, "stage"))
+        monkeypatch.setattr(self_update, "portable_zip_path",
+                            lambda tag: local_path(tag, "zip"))
+        monkeypatch.setattr(self_update, "result_path",
+                            lambda tag: local_path(tag, "result"))
         fake_zip = tmp_path / "release.zip"
         with zipfile.ZipFile(fake_zip, "w") as zf:
             zf.writestr("OpenFocus/OpenFocus.exe", "MZ")
             zf.writestr("OpenFocus/_internal/base_library.zip", "x")
 
+        flow = SimpleNamespace(artifacts=artifacts, targets=targets, launched=[],
+                               entered=threading.Event(), release=threading.Event(),
+                               stage_entered=threading.Event(),
+                               stage_release=threading.Event(),
+                               mode="success", install_dir=str(tmp_path / "install"))
+        flow.staging_root = self_update.staging_root_for("v9.9")
+        flow.zip_path = self_update.portable_zip_path("v9.9")
+        flow.result_path = self_update.result_path("v9.9")
+
         def fake_download(url, dest, on_progress=None, should_cancel=None):
+            targets.append(Path(dest))
+            flow.entered.set()
+            while not flow.release.wait(0.01):
+                # The shutdown test deliberately holds the worker until released.
+                if should_cancel() and flow.mode != "shutdown":
+                    raise updater.DownloadCancelled()
+            if should_cancel():
+                raise updater.DownloadCancelled()
+            if flow.mode == "download_failure":
+                raise OSError("simulated download failure")
             shutil.copyfile(str(fake_zip), dest)
             return True
 
-        launched = []
-        install_dir = str(tmp_path / "install")
-        staging_root = self_update.staging_root_for("v9.9")
-        zip_path = os.path.join(tempfile.gettempdir(),
-                                "OpenFocus-v9.9-portable.zip")
-        monkeypatch.setattr(updater, "download_to_file", fake_download)
-        monkeypatch.setattr(self_update, "is_frozen", lambda: True)
-        monkeypatch.setattr(self_update, "app_install_dir", lambda: install_dir)
-        # This test drives the WINDOWS swap flow on every platform: without
-        # pinning sys.platform, can_self_update() refuses on Linux/macOS and
-        # the hand-off never happens (the ubuntu CI job failed exactly there).
-        monkeypatch.setattr(sys, "platform", "win32")
-        # The hand-off snapshots the session and writes the restore marker:
-        # without this the test leaves a real marker in the user's profile.
-        from utils import recovery as _recovery
-        monkeypatch.setattr(_recovery, "recovery_dir",
-                            lambda: str(tmp_path / "recovery"))
-        monkeypatch.setattr(self_update, "launch_detached_windows",
-                            lambda script: launched.append(script))
-        monkeypatch.setattr(QApplication, "quit", staticmethod(lambda *a: None))
+        real_extract = self_update.extract_zip
 
-        import main
-        # 失败路径上的警告框是模态 exec()——offscreen 下没人能点它，测试会
-        # 永久卡死（CI 的 ubuntu 上真实发生过：staging 校验失败 -> 警告框）。
-        # 记录下来代替弹出，让失败 loud 而不是 hang。
-        shown_warnings = []
-        monkeypatch.setattr(main, "show_warning_box",
-                            lambda *a, **k: shown_warnings.append(a))
-        # A bare QWidget hosting the two update methods: constructing the
-        # whole main window here would leak a second top-level widget into
-        # the rest of the session, and none of this code needs it.
-        from PyQt6.QtWidgets import QWidget
+        def extract(zip_path, root, on_progress=None, should_cancel=None):
+            targets.extend((Path(zip_path), Path(root)))
+            if flow.mode == "stage_failure":
+                raise OSError("simulated stage failure")
+            if flow.mode == "stage_cancel":
+                flow.stage_entered.set()
+                while not flow.stage_release.wait(0.01):
+                    if should_cancel():
+                        raise updater.DownloadCancelled()
+                if should_cancel():
+                    raise updater.DownloadCancelled()
+            return real_extract(zip_path, root, on_progress=on_progress,
+                                should_cancel=should_cancel)
+
+        def launch(script):
+            targets.append(Path(script))
+            flow.launched.append(script)
+
+        monkeypatch.setattr(updater, "download_to_file", fake_download)
+        monkeypatch.setattr(self_update, "extract_zip", extract)
+        monkeypatch.setattr(self_update, "is_frozen", lambda: True)
+        monkeypatch.setattr(self_update, "app_install_dir", lambda: flow.install_dir)
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setattr(recovery, "recovery_dir", lambda: str(tmp_path / "recovery"))
+        monkeypatch.setattr(self_update, "launch_detached_windows", launch)
+        monkeypatch.setattr(QApplication, "quit", staticmethod(lambda *a: None))
+        monkeypatch.setattr(main, "show_warning_box", lambda *a, **k: None)
 
         class _Host(QWidget):
             def prepare_for_update_restart(self):
                 return True
 
-        window = _Host()
+        window = flow.window = _Host()
         window._apply_update_and_restart = (
             main.OpenFocus._apply_update_and_restart.__get__(window))
         window._stage_and_restart = (
             main.OpenFocus._stage_and_restart.__get__(window))
-        try:
-            window._apply_update_and_restart("https://x/release.zip", "v9.9")
-            deadline = time.time() + 30
-            from controllers.update_manager import STATE_READY
-            while window.update_manager.state != STATE_READY and time.time() < deadline:
+
+        def wait_for(predicate, timeout=30):
+            deadline = time.monotonic() + timeout
+            while not predicate() and time.monotonic() < deadline:
                 qapplication.processEvents()
                 time.sleep(0.01)
-            assert window.update_manager.state == STATE_READY
-            assert not launched, "download completion restarted the application"
-            assert window.update_manager.apply_and_restart()
-            assert launched, "the explicit restart did not launch the swap script"
+            qapplication.processEvents()
+            assert predicate(), "update flow timed out"
 
-            with open(launched[0], encoding="ascii") as fh:
-                text = fh.read()
-            staged = os.path.join(staging_root, "OpenFocus")
-            assert os.path.isfile(os.path.join(staged, "OpenFocus.exe"))
-            assert staged in text
-            assert install_dir in text
-            assert "v1.23" not in text
-            assert window._restart_for_update is True
+        flow.wait_for = wait_for
+        try:
+            yield flow
         finally:
-            shutil.rmtree(staging_root, ignore_errors=True)
-            if os.path.isfile(zip_path):
-                os.remove(zip_path)
+            flow.release.set()
+            flow.stage_release.set()
+            manager = getattr(window, "update_manager", None)
+            timed_out = False
+            if manager is not None:
+                manager.shutdown(wait_ms=100)
+                threads = [t for t in (manager._download, manager._stage) if t is not None]
+                deadline = time.monotonic() + 5
+                for thread in threads:
+                    if thread.isRunning():
+                        thread.cancel()
+                    while thread.isRunning() and time.monotonic() < deadline:
+                        thread.wait(10)
+                        qapplication.processEvents()
+                timed_out = any(thread.isRunning() for thread in threads)
+                # Keep the host, workers and patched paths alive even on timeout.
+                for thread in threads:
+                    while thread.isRunning():
+                        thread.wait(50)
+                        qapplication.processEvents()
+                qapplication.processEvents()
+                for thread in threads:
+                    while thread in update_manager._ORPHAN_THREADS:
+                        update_manager._ORPHAN_THREADS.remove(thread)
             window.deleteLater()
+            qapplication.processEvents()
+            assert not timed_out, "update worker did not stop within five seconds"
+            assert all(path.is_relative_to(artifacts) for path in targets)
+            assert sentinel.read_bytes() == b"existing stage"
+            assert sentinel_zip.read_bytes() == b"existing zip"
+
+    def test_download_stage_and_hand_off(self, update_flow):
+        from utils import self_update
+        from controllers.update_manager import STATE_READY
+
+        flow = update_flow
+        flow.release.set()
+        flow.window._apply_update_and_restart("https://x/release.zip", "v9.9")
+        flow.wait_for(lambda: flow.window.update_manager.state == STATE_READY)
+        assert flow.entered.is_set()
+        assert not flow.launched, "download completion restarted the application"
+        assert self_update.staged_ready("v9.9")
+        assert flow.window.update_manager.apply_and_restart()
+        assert len(flow.launched) == 1
+        with open(flow.launched[0], encoding="utf-8-sig") as fh:
+            config = _windows_script_config(fh.read())
+        staged = os.path.join(flow.staging_root, "OpenFocus")
+        assert os.path.isfile(os.path.join(staged, "OpenFocus.exe"))
+        assert config["staged"] == os.path.abspath(staged)
+        assert config["root"] == os.path.abspath(flow.staging_root)
+        assert config["app"] == os.path.abspath(flow.install_dir)
+        assert config["zip"] == os.path.abspath(flow.zip_path)
+        assert config["result"] == flow.result_path
+        assert config["tag"] == "v9.9"
+        assert flow.window._restart_for_update is True
+
+    @pytest.mark.parametrize("mode", ["download_failure", "stage_failure",
+                                      "download_cancel", "stage_cancel", "shutdown"])
+    def test_update_cleanup_and_cancellation(self, update_flow, mode):
+        from controllers.update_manager import STATE_CANCELLED, STATE_FAILED
+        from utils import self_update
+
+        flow = update_flow
+        flow.mode = mode
+        if mode in ("download_failure", "stage_failure"):
+            flow.release.set()
+        if mode == "stage_cancel":
+            flow.release.set()
+        flow.window._apply_update_and_restart("https://x/release.zip", "v9.9")
+        manager = flow.window.update_manager
+        if mode == "stage_cancel":
+            flow.wait_for(flow.stage_entered.is_set)
+        if mode in ("download_cancel", "stage_cancel", "shutdown"):
+            if mode != "stage_cancel":
+                flow.wait_for(flow.entered.is_set)
+            if mode == "shutdown":
+                manager.shutdown(wait_ms=1)
+                assert manager._download.isRunning()
+                assert self_update.staging_root_for("v9.9") == flow.staging_root
+                assert self_update.portable_zip_path("v9.9") == flow.zip_path
+                assert self_update.result_path("v9.9") == flow.result_path
+                flow.release.set()
+                flow.wait_for(lambda: not manager._download.isRunning())
+            else:
+                manager.cancel_download()
+                flow.release.set()
+                flow.stage_release.set()
+                flow.wait_for(lambda: manager.state == STATE_CANCELLED)
+        else:
+            flow.wait_for(lambda: manager.state == STATE_FAILED)
+        assert not flow.launched
+        assert not self_update.staged_ready("v9.9")

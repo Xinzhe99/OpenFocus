@@ -1,5 +1,6 @@
 """Finish consented error-report delivery after the last window closes."""
 import threading
+import time
 
 from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 from PyQt6.QtWidgets import QApplication
@@ -8,7 +9,7 @@ from locales import trans
 from utils.account_client import AccountClient
 from utils.app_paths import user_data_dir
 from utils.report_bundle import build_report_bundle, session_has_error
-from utils.report_client import ReportClient
+from utils.report_client import ReportClient, automatic_snapshot, revoke_automatic
 from utils.reporting import retry_reports, send_bundle
 from utils.settings_store import get_settings, REPORTS_AUTO_SEND_KEY, REPORTS_CHOICE_KEY
 
@@ -24,6 +25,9 @@ class _ShutdownReport(QObject):
         self.locale = locale
         self.auto_send = auto_send
         self.account_only = account_only
+        self.cancel = threading.Event()
+        self.deadline = time.monotonic() + 5.0
+        self.permission = automatic_snapshot(user_data_dir() / 'reports')
 
     def start(self):
         _ACTIVE_JOBS.add(self)
@@ -34,14 +38,16 @@ class _ShutdownReport(QObject):
             account = self.account if self.account is not None else AccountClient()
             enabled = self.auto_send and (not self.account_only or account.is_signed_in())
             if not self.auto_send:
-                ReportClient(user_data_dir() / 'reports').discard_automatic()
+                revoke_automatic(user_data_dir() / 'reports')
+                ReportClient(user_data_dir() / 'reports').discard_automatic(only_if_revoked=True)
             if enabled and session_has_error():
                 bundle = build_report_bundle()
                 if bundle.has_error:
                     send_bundle(bundle, source='auto', locale=self.locale, account=account,
-                                require_account=self.account_only)
-            if ReportClient(user_data_dir() / 'reports').pending_count:
-                retry_reports(account, include_auto=enabled, account_only_auto=self.account_only)
+                                require_account=self.account_only, permission=self.permission,
+                                cancel=self.cancel, deadline=self.deadline)
+            retry_reports(account, include_auto=enabled, account_only_auto=self.account_only,
+                          permission=self.permission, cancel=self.cancel, deadline=self.deadline)
         except Exception:
             # Never expose request contents or prevent shutdown.
             pass
@@ -65,7 +71,10 @@ def start_shutdown_reports(window):
                           enabled, account_only)
     timer = QTimer(app)
     timer.setSingleShot(True)
-    timer.timeout.connect(app.quit)
+    def expire():
+        job.cancel.set()
+        app.quit()
+    timer.timeout.connect(expire)
     job.finished.connect(app.quit)
     job.finished.connect(timer.stop)
     timer.start(5000)

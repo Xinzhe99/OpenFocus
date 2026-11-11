@@ -85,7 +85,7 @@ def validate_recipe(recipe, recipe_path):
     Raises ValueError for an invalid schema or processing setting. This does
     not read input pixels; use run_recipe(..., dry_run=True) to check inputs.
     """
-    from core.cli import build_parser, _resolve_algorithm_arguments, VALID_FORMATS
+    from core.cli import build_parser, _resolve_algorithm_arguments, _validate_execution_args, VALID_FORMATS
     recipe = _upgrade_recipe(recipe)
 
     _object(recipe, "recipe", {"version", "input", "output", "output_dir", "options", "project_settings"})
@@ -203,6 +203,7 @@ def validate_recipe(recipe, recipe_path):
             if same_path(mask, depth_output):
                 raise ValueError("depth_map would overwrite the defect mask")
     args = parser.parse_args(argv)
+    _validate_execution_args(args)
     formats = (".dng", ".tif", ".tiff", ".png") if args.native_raw else VALID_FORMATS
     if output_key == "output" and os.path.splitext(output)[1].lower() not in formats:
         raise ValueError("unsupported output extension")

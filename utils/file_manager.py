@@ -10,10 +10,9 @@ from __future__ import annotations
 
 import os
 import shutil
-import subprocess
 import sys
 
-from PyQt6.QtCore import QProcess, QUrl
+from PyQt6.QtCore import QObject, QProcess, QTimer, QUrl
 from PyQt6.QtGui import QDesktopServices
 
 
@@ -101,44 +100,80 @@ def _open_parent(path: str, opener=None) -> bool:
         return False
 
 
-def _select_linux(path: str, *, runner=None, opener=None) -> bool:
-    """Ask the desktop file manager to select the file, else open its folder."""
-    path = os.path.abspath(os.fspath(path))
-    if shutil.which("dbus-send"):
-        # dbus-send parses its argv itself; quotes would become part of the
-        # URI. A literal comma separates array elements, so the path's commas
-        # are percent-encoded and decoded again by the file manager.
-        uri = QUrl.fromLocalFile(path).toString().replace(",", "%2C")
-        arguments = [
-            "dbus-send", "--session", "--print-reply",
-            "--dest=org.freedesktop.FileManager1",
-            "/org/freedesktop/FileManager1",
-            "org.freedesktop.FileManager1.ShowItems",
-            f"array:string:{uri}", "string:",
-        ]
-        runner = runner or subprocess.run
+class _LinuxReveal(QObject):
+    """Own a single D-Bus request until it finishes or its window closes."""
+
+    def __init__(self, path, parent, on_finished, opener):
+        super().__init__(parent)
+        self.path = path
+        self.on_finished = on_finished
+        self.opener = opener
+        self.done = False
+        self.process = QProcess(self)
+        self.timed_out = False
+        self.process.setStandardOutputFile(QProcess.nullDevice())
+        self.process.setStandardErrorFile(QProcess.nullDevice())
+        self.timer = QTimer(self)
+        self.timer.setSingleShot(True)
+        self.timer.timeout.connect(self._timeout)
+        self.process.finished.connect(self._finished)
+        self.process.errorOccurred.connect(self._error)
+        if parent is not None:
+            parent.destroyed.connect(self._parent_destroyed)
+
+    def start(self):
+        program = shutil.which("dbus-send")
+        if not program:
+            self._complete(False)
+            return
+        uri = QUrl.fromLocalFile(self.path).toString().replace(",", "%2C")
+        self.process.start(program, ["--session", "--print-reply",
+                           "--dest=org.freedesktop.FileManager1",
+                           "/org/freedesktop/FileManager1",
+                           "org.freedesktop.FileManager1.ShowItems",
+                           f"array:string:{uri}", "string:"])
+        if not self.done:
+            self.timer.start(2000)
+
+    def _finished(self, code, status):
+        self._complete(not self.timed_out and code == 0 and status == QProcess.ExitStatus.NormalExit)
+
+    def _error(self, _error):
+        self._complete(False)
+
+    def _timeout(self):
+        self.timed_out = True
+        self.process.kill()
+
+    def _parent_destroyed(self):
+        self.done = True
+        self.timer.stop()
+        self.process.kill()
+
+    def _complete(self, selected):
+        if self.done:
+            return
+        self.done = True
+        self.timer.stop()
+        success = selected or _open_parent(self.path, self.opener)
         try:
-            completed = runner(
-                arguments, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                timeout=2, check=False)
-        except (OSError, subprocess.TimeoutExpired):
-            completed = None
-        if completed is not None and completed.returncode == 0:
-            return True
-    return _open_parent(path, opener)
+            self.on_finished(bool(success))
+        finally:
+            self.deleteLater()
 
 
-def select_in_file_manager(path: str, *, platform: str | None = None,
-                           starter=None, runner=None, opener=None,
-                           windows_select=None) -> bool:
-    """Open the system file manager with ``path`` selected when supported."""
+def select_in_file_manager(path: str, *, parent, on_finished,
+                           platform: str | None = None, starter=None,
+                           opener=None, windows_select=None) -> None:
+    """Reveal a fixed path and report whether the request was accepted."""
     path = os.path.abspath(os.fspath(path))
     platform = sys.platform if platform is None else platform
     if platform.startswith("win"):
-        return (windows_select or _select_windows)(path)
-    if platform.startswith("linux") or "bsd" in platform:
-        return _select_linux(path, runner=runner, opener=opener)
-    argv = selection_argv(path, platform=platform)
-    if argv:
-        return _start_detached(argv[0], argv[1:], starter)
-    return _open_parent(path, opener)
+        on_finished(bool((windows_select or _select_windows)(path)))
+    elif platform.startswith("linux") or "bsd" in platform:
+        request = _LinuxReveal(path, parent, on_finished, opener)
+        request.start()
+    else:
+        argv = selection_argv(path, platform=platform)
+        on_finished(_start_detached(argv[0], argv[1:], starter) if argv
+                    else _open_parent(path, opener))

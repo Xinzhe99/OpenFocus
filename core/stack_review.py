@@ -51,7 +51,12 @@ def analyze_frames(frames, cancel=None):
     for index, frame in enumerate(frames):
         _check_cancel(cancel)
         from core.source_frames import resolve_frame
-        frame = resolve_frame(frame)
+        from core.registration import RegistrationCancelled
+        try:
+            frame = resolve_frame(frame, should_cancel=cancel)
+        except RegistrationCancelled as exc:
+            raise InterruptedError("Stack review cancelled") from exc
+        _check_cancel(cancel)
         if previous is not None:
             difference = _difference(previous, frame, cancel)
             if difference is not None:

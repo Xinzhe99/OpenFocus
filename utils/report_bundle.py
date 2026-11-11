@@ -83,6 +83,38 @@ _STACK_FUNCTIONS = {
 }
 _EVENT_LINE = re.compile(r'^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d,\d{3})\s+\w+\s+.*?\bevent=([^\s]+)\s+(\{.*\})\s*$')
 _FRAME = re.compile(r'^\s*File "([^"\n]+)", line (\d+), in ([^\s]+)\s*$')
+_NATIVE_FRAME = re.compile(r'^\s*File "([^"\n]+)", line (\d+) in ([^\s]+)\s*$')
+
+
+def _native_error(text):
+    """Extract only a recognized native header and the current thread's safe frames."""
+    kind = None
+    current = False
+    frames = []
+    for line in text.splitlines():
+        if line.startswith(('Fatal Python error:', 'Windows fatal exception:')):
+            title = line.partition(':')[2].strip().lower()
+            kind = {'segmentation fault': 'segmentation_fault', 'aborted': 'aborted',
+                    'bus error': 'bus_error', 'access violation': 'access_violation'}.get(title, 'unknown')
+            current = False
+            frames = []
+            continue
+        if kind is None:
+            continue
+        if line.startswith('Current thread '):
+            current = True
+            continue
+        if line.startswith('Thread ') or line.startswith('Extension modules:'):
+            current = False
+            continue
+        if current and len(frames) < _MAX_FRAMES:
+            match = _NATIVE_FRAME.match(line)
+            if match:
+                filename, number, function = match.groups()
+                basename = re.split(r'[/\\]', filename)[-1]
+                if len(number) <= 9 and 0 < int(number) < 10**9 and function in _STACK_FUNCTIONS.get(basename, ()):
+                    frames.append((basename, int(number), function))
+    return kind, list(reversed(frames))
 _EXCEPTION = re.compile(r'^([A-Za-z_][A-Za-z_0-9]*)(?::.*)?$')
 _VERSION = re.compile(r'^\d{1,6}(?:\.\d{1,6}){0,3}(?:(?:a|b|rc|\.post|\.dev)\d{1,6})?$')
 
@@ -302,18 +334,28 @@ def build_report_bundle(*, log_text=None, crash_text=None, facts=None, exc=None)
     platform = _platform()
     events, event_error, kind, message, frames, omitted = _events_and_error(log_text)
     _, crash_error, crash_kind, crash_message, crash_frames, _ = _events_and_error(crash_text)
-    if crash_kind:
-        kind, message, frames = crash_kind, crash_message, crash_frames
+    native_kind, native_frames = _native_error(crash_text)
     if exc is not None:
         kind = type(exc).__name__
         message = str(exc)
         frames = [(f.filename, f.lineno, f.name) for f in traceback.extract_tb(exc.__traceback__)]
-    fingerprint = _fingerprint(kind or 'crash', platform, frames, message)
-    safe_kind = _exception_name(kind or '') or ('Error' if kind or (live_error and not crash_text.strip()) else 'Crash')
+        native_kind = None
+    elif native_kind is not None:
+        kind, message, frames = None, '', native_frames
+    elif crash_kind:
+        kind, message, frames = crash_kind, crash_message, crash_frames
+    fingerprint_kind = f'native:{native_kind}' if native_kind is not None else kind or 'crash'
+    fingerprint = _fingerprint(fingerprint_kind, platform, frames, message)
+    safe_kind = ('Crash' if native_kind is not None else
+                 _exception_name(kind or '') or ('Error' if kind or (live_error and not crash_text.strip()) else 'Crash'))
     safe_frames = [line for _, line, _ in frames[-_MAX_FRAMES:] if 0 < line < 10**9]
     subject = f'{safe_kind}: diagnostic report'
     summary = f'{safe_kind}; {len(safe_frames)} stack frames'
+    if native_kind is not None:
+        summary = f'{safe_kind} ({native_kind}); {len(safe_frames)} stack frames'
     error = {'kind': safe_kind, 'stack_lines': safe_frames}
+    if native_kind is not None:
+        error['native_kind'] = native_kind
     stack = []
     for filename, line, func in frames[-_MAX_FRAMES:]:
         basename = re.split(r'[/\\]', filename)[-1]

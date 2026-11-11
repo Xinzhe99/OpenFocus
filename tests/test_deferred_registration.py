@@ -692,3 +692,42 @@ def test_render_scope_hashes_each_registration_input_once(tmp_path, monkeypatch,
             assert scope.enabled and not scope.degraded
     # Without the render's cache every warp validates its freshly resolved input.
     assert render() > stages * len(sources)
+
+
+@pytest.mark.parametrize('dtype', [np.uint8, np.uint16])
+def test_lent_warp_keeps_pixels_and_restores_thread_state(monkeypatch, dtype):
+    class Source:
+        def validate_pixels(self, image, should_cancel):
+            pass
+
+    image = _pixels(dtype, 3)[0]
+    matrix = np.array([[1, .01, .25], [.005, 1, -.4], [.0001, -.0002, 1]], np.float32)
+    warp = registration.PerspectiveWarp(Source(), tuple(matrix.flat), matrix.dtype.str,
+                                        (image.shape[1], image.shape[0]))
+    expected = warp(image)
+    settings = []
+    monkeypatch.setattr(cv2, 'currentParallelFramework', lambda: 'TBB', raising=False)
+    monkeypatch.setattr(cv2, 'getNumThreads', lambda: 1)
+    monkeypatch.setattr(cv2, 'setNumThreads', settings.append)
+    with registration.deferred_warp_threads(2):
+        actual = warp(image)
+    np.testing.assert_array_equal(actual, expected)
+    assert settings == [2, 0]
+
+
+def test_lent_warp_restores_thread_state_after_error(monkeypatch):
+    class Source:
+        def validate_pixels(self, image, should_cancel):
+            pass
+
+    settings = []
+    monkeypatch.setattr(cv2, 'currentParallelFramework', lambda: 'TBB', raising=False)
+    monkeypatch.setattr(cv2, 'getNumThreads', lambda: 1)
+    monkeypatch.setattr(cv2, 'setNumThreads', settings.append)
+    def fail(*args, **kwargs):
+        raise RuntimeError('warp failed')
+    monkeypatch.setattr(cv2, 'warpPerspective', fail)
+    warp = registration.PerspectiveWarp(Source(), tuple(np.eye(3).flat), '<f8', (4, 4))
+    with registration.deferred_warp_threads(2), pytest.raises(RuntimeError, match='warp failed'):
+        warp(np.zeros((4, 4), np.uint8))
+    assert settings == [2, 0]

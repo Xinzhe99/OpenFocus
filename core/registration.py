@@ -26,6 +26,7 @@ from collections import deque
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 import json
+import threading
 import time
 import cv2
 import numpy as np
@@ -51,6 +52,42 @@ grouped_crop_offsets = ContextVar('grouped_crop_offsets', default=None)
 
 # Optional per-frame diagnostics, collected on the calling thread.
 alignment_report = ContextVar('alignment_report', default=None)
+
+# OpenCV's thread setting is process-wide. All temporary exchanges share this
+# lock; the owner budget is local to the source-producing context.
+_warp_threads_lock = threading.Lock()
+_deferred_warp_threads = ContextVar('deferred_warp_threads', default=1)
+
+
+@contextmanager
+def deferred_warp_threads(threads):
+    token = _deferred_warp_threads.set(threads)
+    try:
+        yield
+    finally:
+        _deferred_warp_threads.reset(token)
+
+
+def exchange_opencv_threads(threads):
+    with _warp_threads_lock:
+        previous = cv2.getNumThreads()
+        cv2.setNumThreads(threads)
+        return previous
+
+
+def _warp_thread_budget():
+    # Build information alone does not identify the active backend.
+    current_backend = getattr(cv2, 'currentParallelFramework', None)
+    if current_backend is None:
+        return 1
+    try:
+        backend = current_backend()
+        if not isinstance(backend, str) or backend.upper() not in ('TBB', 'OPENMP', 'PTHREADS'):
+            return 1
+        threads = _deferred_warp_threads.get()
+        return max(1, int(threads() if callable(threads) else threads))
+    except Exception:
+        return 1
 
 
 def _report_alignment(frame_index, method, status, **details):
@@ -397,9 +434,19 @@ class PerspectiveWarp:
 
     def __call__(self, image):
         self.source.validate_pixels(image, self.should_cancel)
-        return cv2.warpPerspective(image,
-            np.asarray(self.matrix, dtype=self.matrix_dtype).reshape(3, 3), self.dsize,
-            flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_CONSTANT)
+        matrix = np.asarray(self.matrix, dtype=self.matrix_dtype).reshape(3, 3)
+        threads = _warp_thread_budget()
+        if threads <= 1:
+            return cv2.warpPerspective(image, matrix, self.dsize,
+                flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_CONSTANT)
+        with _warp_threads_lock:
+            previous = cv2.getNumThreads()
+            cv2.setNumThreads(threads)
+            try:
+                return cv2.warpPerspective(image, matrix, self.dsize,
+                    flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_CONSTANT)
+            finally:
+                cv2.setNumThreads(0 if previous == 1 else previous)
 
 
 def _perspective_output_shape(shape, dsize):
@@ -534,8 +581,9 @@ def _apply_perspective_warps(images, matrices, crop, dsize, workers,
     return stage.apply(images, defer_warps=defer_warps, should_cancel=should_cancel, workers=workers)
 
 @contextmanager
-def _bounded_registration_map(function, values, workers, should_cancel=None, *, stage=None):
-    """Ordered results with at most one task per worker retained or running.
+def _bounded_registration_map(function, values, workers, should_cancel=None, *,
+                              stage=None, max_in_flight=None):
+    """Consume ordered results with a bounded number of retained tasks.
 
     Leaving the scope cancels queued work and waits for native calls before
     the enclosing heavy-job lease can be released. ``stage`` names the calls in
@@ -544,16 +592,24 @@ def _bounded_registration_map(function, values, workers, should_cancel=None, *, 
     profile = _profile()
     _check_cancel(should_cancel)
     pool = concurrent.futures.ThreadPoolExecutor(max_workers=workers)
+    in_flight = workers if max_in_flight is None else max(workers, int(max_in_flight))
     pending = deque()
     source = iter(values)
     scratch = capture_scratch()
 
     def submit_one():
         _check_cancel(should_cancel)
+        for future in pending:
+            if future.done() and future.exception() is not None:
+                future.result()
         try:
             value = next(source)
         except StopIteration:
             return
+        _check_cancel(should_cancel)
+        for future in pending:
+            if future.done() and future.exception() is not None:
+                future.result()
         pending.append(pool.submit(run_with_scratch, scratch, run, value))
 
     def run(value):
@@ -567,7 +623,7 @@ def _bounded_registration_map(function, values, workers, should_cancel=None, *, 
         return result
 
     def consume():
-        for _ in range(workers):
+        for _ in range(in_flight):
             submit_one()
         while pending:
             _check_cancel(should_cancel)
@@ -614,7 +670,7 @@ def _save_registration(images, output_path, filenames, should_cancel):
     for index, image in enumerate(images):
         _check_cancel(should_cancel)
         from core.source_frames import resolve_frame
-        image = resolve_frame(image)
+        image = resolve_frame(image, should_cancel=should_cancel)
         _check_cancel(should_cancel)
         name = filenames[index] if filenames else f'frame_{index:04d}.png'
         destination = os.path.join(output_path, name)
@@ -657,7 +713,7 @@ def apply_alignment_plan(sources, plan, *, defer_warps=False, should_cancel=None
         if defer_warps:
             return result
         from core.source_frames import resolve_frame
-        return [store_frame(resolve_frame(frame)) for frame in result]
+        return [store_frame(resolve_frame(frame, should_cancel=should_cancel)) for frame in result]
     from functools import partial
     from core.openfocus_alignment import apply_alignment, alignment_resolution_bytes
     from core.source_frames import resolve_frame
@@ -688,7 +744,7 @@ def apply_alignment_plan(sources, plan, *, defer_warps=False, should_cancel=None
                 aligned = crop_frame(aligned, left, top, right - left, bottom - top,
                                      should_cancel=should_cancel)
         else:
-            image = processor(resolve_frame(source))
+            image = processor(resolve_frame(source, should_cancel=should_cancel))
             aligned = store_frame(image[top:bottom, left:right])
         result.append(aligned)
     _check_cancel(should_cancel)
@@ -733,7 +789,7 @@ def _align_openfocus_impl(input_source, output_path=None, img_filenames=None, *,
         result = apply_alignment_plan(images, plan, defer_warps=defer_warps, should_cancel=should_cancel)
         if output_path:
             from core.source_frames import resolve_frame
-            _save_registration((resolve_frame(frame) for frame in result), output_path,
+            _save_registration((resolve_frame(frame, should_cancel=should_cancel) for frame in result), output_path,
                                img_filenames, should_cancel)
         return result
 
@@ -817,17 +873,27 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
 
     source_identities = []
     def pairs():
-        # Retain only adjacent bounded-resolution planes and the active tasks.
-        # Resolving here also applies upstream deferred stages, one source at
-        # a time, without keeping their full-resolution intermediate images.
-        with _bounded_registration_map(preprocess, images, max_workers,
-                                       should_cancel, stage='registration.prepare') as results:
-            previous, scale_factor, identity = next(results)
+        # Preparation runs on the submitting thread and consumes one slot.
+        profile = _profile()
+        def prepare(image):
+            _check_cancel(should_cancel)
+            with deferred_warp_threads(1):
+                if profile.enabled:
+                    with profile.stage('registration.prepare'):
+                        result = preprocess(image)
+                else:
+                    result = preprocess(image)
+            _check_cancel(should_cancel)
+            return result
+
+        source = iter(images)
+        previous, scale_factor, identity = prepare(next(source))
+        source_identities.append(identity)
+        for idx, image in enumerate(source, 1):
+            current, _, identity = prepare(image)
             source_identities.append(identity)
-            for idx, (current, _, identity) in enumerate(results, 1):
-                source_identities.append(identity)
-                yield idx, previous, current, scale_factor
-                previous = current
+            yield idx, previous, current, scale_factor
+            previous = current
 
     def _compute_pair_transform(pair):
         """ECC transform of frame idx relative to frame idx-1 (scale-restored)."""
@@ -867,9 +933,23 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
                 warp_matrix = np.eye(2, 3, dtype=np.float32)
         return warp_matrix, cc
 
-    with _bounded_registration_map(_compute_pair_transform, pairs(), max_workers,
-                                   should_cancel, stage='registration.estimate') as results:
-        pair_transforms = list(results)
+    if max_workers == 1:
+        pair_transforms = []
+        profile = _profile()
+        for pair in pairs():
+            _check_cancel(should_cancel)
+            if profile.enabled:
+                with profile.stage('registration.estimate'):
+                    transform = _compute_pair_transform(pair)
+            else:
+                transform = _compute_pair_transform(pair)
+            _check_cancel(should_cancel)
+            pair_transforms.append(transform)
+    else:
+        with _bounded_registration_map(_compute_pair_transform, pairs(), max_workers - 1,
+                                       should_cancel, stage='registration.estimate',
+                                       max_in_flight=max_workers) as results:
+            pair_transforms = list(results)
 
     trajectory_failed = False
     for idx, (warp_matrix, cc) in enumerate(pair_transforms, start=1):
@@ -967,7 +1047,7 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
     def warp_task(args):
         from core.source_frames import resolve_frame
         img, H = args
-        img = resolve_frame(img)
+        img = resolve_frame(img, should_cancel=should_cancel)
         H_final = T_crop @ H if do_crop else H
         img_gpu = cp.asarray(img)
         y_grid, x_grid = cp.meshgrid(cp.arange(target_h), cp.arange(target_w), indexing='ij')
@@ -1215,7 +1295,7 @@ class ImageRegistration:
                             if source.ndim == 3 and source.shape[2] == 4:
                                 from core.source_frames import resolve_frame
                                 from core.image_loader import _has_transparency, UnsupportedTransparency
-                                if _has_transparency(resolve_frame(source)):
+                                if _has_transparency(resolve_frame(source, should_cancel=should_cancel)):
                                     raise UnsupportedTransparency('Registration of transparent images is unsupported')
                                 _check_cancel(should_cancel)
                                 source = process_frame(source,
@@ -1247,7 +1327,9 @@ class ImageRegistration:
                     staging = (estimate_registration_space(input_source, len(self.steps))
                                if isinstance(input_source, Sequence) else 0)
                     images = (materialize_frames(input_source, should_cancel,
-                                                 preferred_staging_bytes=staging)
+                                                 preferred_staging_bytes=staging,
+                                                 thread_count=thread_count,
+                                                 resource_preference=resource_preference)
                               if input_source is not None else [])
             if deferred and images and self.steps:
                 from core.source_frames import select_frame_scratch
@@ -1261,7 +1343,7 @@ class ImageRegistration:
             for image in images or ():
                 _check_cancel(should_cancel)
                 from core.source_frames import resolve_frame
-                if image.ndim == 3 and image.shape[2] == 4 and _has_transparency(resolve_frame(image)):
+                if image.ndim == 3 and image.shape[2] == 4 and _has_transparency(resolve_frame(image, should_cancel=should_cancel)):
                     raise UnsupportedTransparency("Registration of transparent images is unsupported")
 
             if images is None or len(images) < 2:
@@ -1269,6 +1351,7 @@ class ImageRegistration:
                 if images:
                     for step in self.steps:
                         _report_reference(step)
+                    _save_registration(images, output_path, filenames, should_cancel)
                 return images if images is not None else []
             if not self.steps:
                 _save_registration(images, output_path, filenames, should_cancel)
@@ -1301,7 +1384,8 @@ class ImageRegistration:
                     # Extensions retain their existing array input contract and
                     # receive only their declared parameters/execution keywords.
                     from core.source_frames import materialize_frames
-                    result = materialize_frames(result, should_cancel)
+                    result = materialize_frames(result, should_cancel,
+                        thread_count=thread_count, resource_preference=resource_preference)
                 parameters = {item.key: self.parameters[item.key] for item in spec.parameters}
                 with log_operation('registration_stage', method=step,
                                    parameters=parameters, provider='OpenCV',

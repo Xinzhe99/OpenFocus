@@ -283,6 +283,8 @@ class OutputRecord:
     source_exif: bytes = b""
     #: Per-source EXIF snapshot for aligned/source-frame export.
     frame_exif: tuple = ()
+    #: Per-frame ICC snapshots, in aligned output order.
+    frame_icc_profiles: tuple = ()
     linear_dng_metadata: Any = None
     source_paths: tuple = ()
 
@@ -294,6 +296,7 @@ class OutputRecord:
                    exported=exported,
                    source_exif=bytes(getattr(context, 'source_exif', b'') or b''),
                    frame_exif=tuple(getattr(context, 'frame_exif', ()) or ()),
+                   frame_icc_profiles=tuple(getattr(context, 'frame_icc_profiles', ()) or ()),
                    linear_dng_metadata=deepcopy(getattr(context, 'linear_dng_metadata', None)),
                    source_paths=tuple(getattr(context, 'source_paths', ()) or ()))
 
@@ -517,22 +520,29 @@ class OutputManager:
         if record.annotations_baked:
             applicable, scale_cfg = [], None
         else:
-            from utils.validators import parse_label_range
             labels = labels or getattr(self.window, 'label_manager', None)
             applicable = []
-            for label in getattr(labels, 'labels', ()):
-                config = label.config
-                if not label.enabled or label.target != target:
-                    continue
-                if target == 'output':
-                    if config.output_id and config.output_id != record.output_id:
-                        continue
-                    if not parse_label_range(config.range).matches(0):
-                        continue
-                data = label.to_dict()
-                for key in ('label_id', 'target_stack', 'output_id'):
-                    data.pop(key, None)
-                applicable.append(data)
+            if labels is not None:
+                if target == 'registered':
+                    frames = record.aligned_frames or record.aligned_names
+                    frame_ids = tuple(record.aligned_frame_ids or ())
+                    if (len(frame_ids) != len(frames) and any(
+                            label.enabled and label.target == 'registered'
+                            and label.config.frame_ids is not None
+                            for label in labels.labels)):
+                        raise ValueError('Aligned output is missing frame identities')
+                    labels = labels.snapshot(frame_ids_override={'registered': frame_ids})
+                    selected = set()
+                    for index in range(len(frames)):
+                        selected.update(id(label) for label in labels.applicable_labels('registered', index))
+                    selected_labels = [label for label in labels.labels if id(label) in selected]
+                else:
+                    selected_labels = labels.applicable_labels('output', 0, output_id=record.output_id)
+                for label in selected_labels:
+                    data = label.to_dict()
+                    for key in ('label_id', 'target_stack', 'output_id'):
+                        data.pop(key, None)
+                    applicable.append(data)
             scale_cfg = scalebar.export_cfg(self.window, target=target, record=record)
         return deepcopy({'labels': applicable,
                          'scale': scale_cfg,
@@ -830,10 +840,17 @@ class OutputManager:
 
     def add_retouched_output(self, base_record: OutputRecord,
                              image) -> OutputRecord:
-        """Publish a retouch buffer as a new output, leaving the base intact."""
+        """Publish an independent snapshot of pixels borrowed for this call."""
         if base_record is None or image is None:
             raise ValueError("a base output and an edited image are required")
-        image = np.ascontiguousarray(image.copy())
+
+        def snapshot():
+            from core.frame_storage import scratch_directory, select_scratch, store_frame
+            with scratch_directory():
+                select_scratch(image.nbytes)
+                return store_frame(image)
+
+        image = run_pixel_worker(self.window, trans.t('retouch_title'), snapshot)
         label = self.next_retouch_label(base_record.label)
         record = OutputRecord.create(
             image, label, context=base_record.context, kind="retouch",
@@ -940,15 +957,17 @@ class OutputManager:
         written, failed = [], []
         for original, record in snapshots:
             name = window.export_manager.filename_from_label(record.label)
-            path = unique_path(os.path.join(folder, os.path.splitext(name)[0] + '.png'))
+            path = os.path.join(folder, os.path.splitext(name)[0] + '.png')
             try:
+                annotation_state = self._annotation_state(record, labels)
                 if record.kind == 'aligned':
                     path = self._export_aligned_record(record, destination=folder, labels_snapshot=labels)
                     if not path:
                         raise OSError(trans.t('msg_save_failed_info_write'))
                 else:
-                    self._write_record(record, path, labels)
-                self._mark_record_exported(original, record.image, path, self._annotation_state(record, labels))
+                    from utils.export_paths import publish_unique
+                    path = publish_unique(path, lambda staged: self._write_record(record, staged, labels))
+                self._mark_record_exported(original, record.image, path, annotation_state)
                 written.append(path)
             except Exception as exc:
                 failed.append((path or record.label, image_write_error_text(exc)))
@@ -1334,17 +1353,17 @@ class OutputManager:
         if failures:
             self._report_share_failure(paths, failures)
             return
-        path = paths[0]
+        path = str(paths[0])
+
+        def finished(opened, error=None):
+            if not opened:
+                show_error_box(self.window, trans.t("msg_share_failed_title"),
+                               trans.t("msg_share_reveal_failed"), error or path)
+
         try:
-            opened = select_in_file_manager(path)
+            select_in_file_manager(path, parent=self.window, on_finished=finished)
         except Exception as exc:
-            show_error_box(self.window, trans.t("msg_share_failed_title"),
-                           trans.t("msg_share_reveal_failed"), str(exc))
-            return
-        if opened:
-            return
-        show_error_box(self.window, trans.t("msg_share_failed_title"),
-                       trans.t("msg_share_reveal_failed"), path)
+            finished(False, str(exc))
 
     # ------------------------------------------------------------------
     # Context menu & list operations
@@ -1661,6 +1680,8 @@ class OutputManager:
             # Keep the wipe view's right side following the latest result
             if getattr(window, "wipe_active", False):
                 window._update_wipe_images()
+            if record is not None:
+                window.preview_result = None
             return True
         except Exception as exc:  # pylint: disable=broad-except
             show_message_box(
@@ -1892,9 +1913,13 @@ class OutputManager:
             window.lbl_result_info.setText(f"{index + 1} / {len(window.registration_results)}")
             if getattr(window, "wipe_active", False):
                 window._update_wipe_images()
+            if record is not None and record.kind == 'aligned':
+                window.preview_result = None
+            return True
         except Exception as exc:  # pylint: disable=broad-except
             window.lbl_result_img.set_display_pixmap(None)
             self._registration_display_error(exc)
+            return False
 
     def _release_registration_regions(self, key):
         if key is None or key != self._registration_region_key:
@@ -1978,7 +2003,7 @@ class OutputManager:
 def publish_aligned_stack(window, frames, *, filenames=None, icc_profile=None,
                           source_frames=None, source_indices=None, source_revision=0,
                           linear_dng_metadata=None, alignment_options=None,
-                          source_exif=b"", frame_exif=()) -> None:
+                          source_exif=b"", frame_exif=(), frame_icc_profiles=()) -> None:
     """List an aligned stack once; write its folder only on explicit export."""
     if not frames:
         return
@@ -1998,6 +2023,7 @@ def publish_aligned_stack(window, frames, *, filenames=None, icc_profile=None,
     record.aligned_shape = tuple(frames[0].shape)
     record.aligned_methods = tuple(alignment_options or ())
     record.linear_dng_metadata = deepcopy(linear_dng_metadata)
+    record.frame_icc_profiles = tuple(frame_icc_profiles or ())
     if source_frames is not None and len(source_frames) == len(frames):
         record.aligned_source_frames = tuple(source_frames)
         record.aligned_source_indices = tuple(source_indices or range(len(frames)))

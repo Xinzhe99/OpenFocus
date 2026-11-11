@@ -162,17 +162,8 @@ def _largest_frame_bytes(frames):
 
 def _validate_source(frame):
     """Re-check the source fingerprint before serving a cached copy."""
-    seen = set()
-    current = frame
-    while current is not None and id(current) not in seen:
-        seen.add(id(current))
-        validate = getattr(current, 'validate_source', None)
-        if callable(validate):
-            validate()          # raises the same OSError as a fresh decode
-            return
-        current = getattr(current, 'source', None)
-        if isinstance(current, np.ndarray):
-            return
+    from core.source_frames import validate_frame_source
+    validate_frame_source(frame)
 
 
 def planned_cache_bytes(frames):
@@ -254,17 +245,19 @@ class ResolutionCache:
                     self._digests[identity] = digest
         return digest
 
-    def _cancel_requested(self):
-        cancel = self.should_cancel
-        return bool(cancel is not None and cancel())
+    def _check_cancel(self, should_cancel=None):
+        if ((self.should_cancel is not None and self.should_cancel()) or
+                (should_cancel is not None and should_cancel())):
+            from core.registration import RegistrationCancelled
+            raise RegistrationCancelled()
 
-    def get(self, frame):
+    def get(self, frame, *, should_cancel=None):
         """Return a read-only view of the cached pixels, or None on a miss."""
+        self._check_cancel(should_cancel)
         if self._closed or (self._degraded and not self._entries):
             return None
-        if self._cancel_requested():
-            return None
         with self._lock:
+            self._check_cancel(should_cancel)
             image = self._entries.get(frame)
         profile = _profile()
         if profile.enabled:
@@ -272,8 +265,10 @@ class ResolutionCache:
         if image is None:
             return None
         _validate_source(frame)
+        self._check_cancel(should_cancel)
         view = image.view()
         view.setflags(write=False)
+        self._check_cancel(should_cancel)
         return view
 
     def _admit(self, size):
@@ -290,16 +285,16 @@ class ResolutionCache:
             require_disk_space(size + self.mandatory + self.floor, self.directory)
         return True
 
-    def put(self, frame, image):
+    def put(self, frame, image, *, should_cancel=None):
         """Store one resolved frame; returns a read-only view or None on failure."""
+        self._check_cancel(should_cancel)
         if self._closed or self._degraded or image is None:
-            return None
-        if self._cancel_requested():
             return None
         size = int(image.nbytes)
         profile = _profile()
         started = time.perf_counter_ns() if profile.enabled else 0
         with self._lock:
+            self._check_cancel(should_cancel)
             if frame in self._entries:
                 stored = self._entries[frame]
             else:
@@ -330,6 +325,13 @@ class ResolutionCache:
                     profile.cache_state(degraded=True)
                     logger.info('frame resolution cache degraded: %s', exc)
                     return None
+                try:
+                    self._check_cancel(should_cancel)
+                except BaseException:
+                    # The new mapping has not been published; dropping its
+                    # owner lets frame_storage's finalizer reclaim it now.
+                    del stored
+                    raise
                 self._entries[frame] = stored
                 identity = _buffer_identity(stored)
                 if identity is not None:
@@ -343,8 +345,10 @@ class ResolutionCache:
                     self.budget = self._used
                     logger.info('frame resolution cache grew: used=%d max=%d',
                                 self._used, self.max_bytes)
+        self._check_cancel(should_cancel)
         view = stored.view()
         view.setflags(write=False)
+        self._check_cancel(should_cancel)
         return view
 
     def close(self):
@@ -432,13 +436,23 @@ class ScopedCache:
                 self._cache = None
             return self._cache
 
-    def get(self, frame):
-        cache = self._plan()
-        return None if cache is None else cache.get(frame)
+    def _check_cancel(self, should_cancel=None):
+        if ((self._should_cancel is not None and self._should_cancel()) or
+                (should_cancel is not None and should_cancel())):
+            from core.registration import RegistrationCancelled
+            raise RegistrationCancelled()
 
-    def put(self, frame, image):
+    def get(self, frame, *, should_cancel=None):
+        self._check_cancel(should_cancel)
         cache = self._plan()
-        return None if cache is None else cache.put(frame, image)
+        self._check_cancel(should_cancel)
+        return None if cache is None else cache.get(frame, should_cancel=should_cancel)
+
+    def put(self, frame, image, *, should_cancel=None):
+        self._check_cancel(should_cancel)
+        cache = self._plan()
+        self._check_cancel(should_cancel)
+        return None if cache is None else cache.put(frame, image, should_cancel=should_cancel)
 
     def pixel_digest(self, image, compute):
         # Never plans: hashing must not choose the job's scratch volume.

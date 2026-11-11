@@ -334,3 +334,88 @@ def test_openfocus_fixed_brightness_preserves_identity_codes(dtype):
     output = registration._align_openfocus_impl([frame, frame.copy()])
     for image in output:
         np.testing.assert_array_equal(image, frame)
+
+
+@pytest.mark.parametrize('workers', [1, 2, 3])
+def test_ecc_preparation_and_estimation_share_budget(monkeypatch, workers):
+    from time import sleep
+
+    lock = Lock()
+    active = 0
+    peak = 0
+    estimate_started = Event()
+    prepare_overlap = Event()
+    original_blur = cv2.GaussianBlur
+    calls = 0
+
+    def enter():
+        nonlocal active, peak
+        with lock:
+            active += 1
+            peak = max(peak, active)
+
+    def leave():
+        nonlocal active
+        with lock:
+            active -= 1
+
+    def blur(*args, **kwargs):
+        nonlocal calls
+        enter()
+        try:
+            calls += 1
+            if calls == 3 and workers > 1:
+                assert estimate_started.wait(3)
+                prepare_overlap.set()
+            sleep(0.005)
+            return original_blur(*args, **kwargs)
+        finally:
+            leave()
+
+    def estimate(_prev, _curr, matrix, *_args):
+        enter()
+        try:
+            estimate_started.set()
+            if workers > 1:
+                assert prepare_overlap.wait(3)
+            sleep(0.01)
+            return 1.0, matrix
+        finally:
+            leave()
+
+    frames = _stack(8)
+    monkeypatch.setattr(cv2, 'GaussianBlur', blur)
+    monkeypatch.setattr(cv2, 'findTransformECC', estimate)
+    result = registration._align_ecc_impl(frames, thread_count=workers, defer_warps=True)
+    assert len(result) == len(frames)
+    assert peak <= workers
+    if workers > 1:
+        assert peak >= 2
+
+
+def test_registration_forwards_preparation_resources(monkeypatch):
+    from core import source_frames
+    seen = []
+    original = source_frames.materialize_frames
+
+    def materialize(*args, **kwargs):
+        seen.append(kwargs)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(source_frames, 'materialize_frames', materialize)
+    registration.ImageRegistration('none').process(
+        _stack(2), thread_count=1, resource_preference='responsive')
+    assert seen[0]['thread_count'] == 1
+    assert seen[0]['resource_preference'] == 'responsive'
+
+
+def test_deferred_warp_budget_requires_known_active_backend(monkeypatch):
+    monkeypatch.setattr(cv2, 'currentParallelFramework', lambda: 'GCD', raising=False)
+    with registration.deferred_warp_threads(3):
+        assert registration._warp_thread_budget() == 1
+        monkeypatch.setattr(cv2, 'currentParallelFramework', lambda: 'TBB')
+        assert registration._warp_thread_budget() == 3
+        with registration.deferred_warp_threads(1):
+            assert registration._warp_thread_budget() == 1
+        assert registration._warp_thread_budget() == 3
+    assert registration._warp_thread_budget() == 1

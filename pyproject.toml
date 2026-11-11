@@ -66,9 +66,9 @@ Changelog = "https://github.com/Xinzhe99/OpenFocus/blob/main/CHANGELOG.md"
 packages = ["core", "core.control", "core.models", "core.models.stackmff_v3",
             "core.models.stackmff_v1", "core.models.stackmff_v2",
             "fusion_methods", "utils", "weights", "locales"]
-# The locale packs are submodules of the `locales` package (locales/de.py, …)
-# discovered at runtime by TranslationManager; the whole package is listed
-# above so every language ships in the wheel.
+# Release languages are registered in TranslationManager.PACK_ORDER. The
+# package ships their importable modules even when no .py files are unpacked;
+# source installations may additionally discover extra language modules.
 py-modules = ["constants"]
 
 [tool.setuptools.dynamic]

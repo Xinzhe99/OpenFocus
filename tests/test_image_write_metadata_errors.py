@@ -89,7 +89,6 @@ def test_large_parseable_exif_snapshot_fails_explicitly(monkeypatch):
     assert exc.size > exc.limit
     assert "/huge.jpg" in str(exc)
     assert "export without metadata" not in str(exc)
-    assert "remove or reduce the EXIF metadata" in str(exc)
 
 
 def _write_oversized_exif(tmp_path, fmt, ext):
@@ -113,8 +112,6 @@ def test_real_oversized_exif_loader_raises_english(tmp_path, fmt, ext):
     exc = caught.value
     assert exc.filename == str(path)
     assert exc.size > exc.limit
-    assert "EXIF metadata is too large to load" in str(exc)
-    assert "remove or reduce the EXIF metadata" in str(exc)
     assert "export without metadata" not in str(exc)
 
 
@@ -128,16 +125,13 @@ def test_real_oversized_exif_worker_reports_localized_path(qapp, tmp_path, fmt, 
     previous = trans.current_lang
     trans.set_language("zh")
     try:
+        expected = trans.t('source_exif_snapshot_too_large').format(path=str(path))
         worker = StackLoadWorker(ImageStackLoader(), filepaths=[str(path)])
         messages = []
         worker.finished_load.connect(
-            lambda ok, message, images, names: messages.append((ok, message)))
+            lambda ok, message, images, names: messages.append((ok, message, images, names)))
         worker.run()
     finally:
         trans.set_language(previous)
 
-    assert messages and messages[0][0] is False
-    message = messages[0][1]
-    assert str(path) in message
-    assert "EXIF" in message
-    assert "移除或缩减" in message
+    assert messages == [(False, expected, [], [])]

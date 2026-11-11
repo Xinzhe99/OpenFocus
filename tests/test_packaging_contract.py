@@ -4,6 +4,9 @@
 neural fusion method, along with the supported input decoders. These tests pin
 the dependency and package-data contract without requiring a GPU.
 """
+import json
+import shutil
+
 from pathlib import Path
 
 import pytest
@@ -96,3 +99,50 @@ def test_docs_do_not_advertise_extras():
             if extra in text:
                 stale.append(f"{path.name}: {extra}")
     assert not stale, f"docs still advertise removed extras: {stale}"
+
+
+def test_frozen_resource_manifest_covers_runtime_files():
+    manifest_path = ROOT / 'packaging/runtime_resources.json'
+    manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+    assert manifest['version'] == 1
+    included = set()
+    for pattern in manifest['include']:
+        paths = {path.relative_to(ROOT).as_posix() for path in ROOT.glob(pattern)
+                 if path.is_file()}
+        assert paths, pattern
+        included.update(paths)
+    expected = {
+        'LICENSE', 'packaging/runtime_resources.json', 'docs/THIRD_PARTY_NOTICES.md',
+        'assets/OpenFocus.ico', 'assets/OpenFocus.png',
+        *(f'assets/demo_stack/demo_{n:02d}.jpg' for n in range(1, 7)),
+        *(f'docs/USER_MANUAL_{lang}.md' for lang in
+          ('DE', 'EN', 'ES', 'FR', 'IT', 'JA', 'KO', 'NL', 'PL', 'PT', 'RU', 'ZH')),
+        *(f'weights/{model}.onnx' for model in
+          ('stackmff_final', 'stackmff_v2_final', 'stackmff_v3_final')),
+    }
+    assert expected <= included
+    assert {path.relative_to(ROOT).as_posix() for path in (ROOT / 'assets').glob('*.svg')} <= included
+    assert {'assets/launch.mp4', 'assets/readme/**', 'assets/Examples/**',
+            'docs/ux-specs/**', 'ui/*.py'} <= set(manifest['exclude'])
+
+
+def test_frozen_resource_verifier_checks_hashes_and_exclusions(tmp_path):
+    from tools.verify_frozen_resources import verify_resources
+
+    source, bundle = tmp_path / 'source', tmp_path / 'bundle'
+    (source / 'packaging').mkdir(parents=True)
+    (source / 'assets').mkdir()
+    manifest = {'include': ['packaging/runtime_resources.json', 'assets/icon.svg'],
+                'exclude': ['assets/readme/**', 'ui/*.py']}
+    (source / 'packaging/runtime_resources.json').write_text(json.dumps(manifest), encoding='utf-8')
+    (source / 'assets/icon.svg').write_text('icon', encoding='utf-8')
+    shutil.copytree(source, bundle)
+    assert verify_resources(bundle, source) == []
+    (bundle / 'assets/icon.svg').write_text('modified', encoding='utf-8')
+    (bundle / 'ui').mkdir()
+    (bundle / 'ui/source.py').write_text('', encoding='utf-8')
+    errors = verify_resources(bundle, source)
+    assert 'hash mismatch assets/icon.svg' in errors
+    assert 'excluded path present: ui/source.py' in errors
+    (bundle / 'packaging/runtime_resources.json').unlink()
+    assert 'missing packaging/runtime_resources.json' in verify_resources(bundle, source)

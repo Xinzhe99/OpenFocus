@@ -591,3 +591,366 @@ def test_job_probe_keeps_reported_admission_in_step_with_job_placement(monkeypat
         assert neural_runtime.admitted_kind('CUDA') == ('CUDA' if admitted else 'CPU')
     finally:
         neural_runtime.start_inference_job()
+
+
+@pytest.mark.parametrize('cached,profile_failure', [(False, False), (True, False), (False, True)])
+def test_failed_profiled_session_released_before_cpu_admission(monkeypatch, tmp_path, cached, profile_failure):
+    import logging
+    import weakref
+    from core import resource_policy
+
+    path = tmp_path / 'model.onnx'
+    path.write_bytes(b'model')
+    planes = np.zeros((1, 2, 64, 64), np.float32)
+    refs = []
+    key = neural_runtime._session_key(str(path), planes.shape[1:], 'DIRECTML', 1)
+    monkeypatch.setattr(neural_runtime, '_SESSIONS', OrderedDict())
+    monkeypatch.setattr(neural_runtime, '_TRACED', {})
+    records = []
+    class RetainingHandler(logging.Handler):
+        def emit(self, record):
+            records.append(record)
+    handler = RetainingHandler()
+    neural_runtime._LOG.addHandler(handler)
+
+    class Native:
+        def run(self, outputs, inputs):
+            if not profile_failure:
+                raise RuntimeError('accelerator failed')
+            return [inputs['input'].copy()]
+
+        def end_profiling(self):
+            profile = tmp_path / 'invalid-profile.json'
+            profile.write_text('invalid', encoding='utf-8')
+            return str(profile)
+
+    class CPU:
+        def run(self, outputs, inputs):
+            return [inputs['input'].copy()]
+
+    def create_gpu():
+        native = Native()
+        wrapper = neural_runtime._ProfiledSession(native, 'DIRECTML')
+        if cached:
+            wrapper.actual_device = 'DIRECTML'
+        refs.extend([weakref.ref(wrapper), weakref.ref(native)])
+        neural_runtime._SESSIONS[key] = wrapper
+        return wrapper
+
+    def check_released():
+        assert refs and all(ref() is None for ref in refs)
+        assert not neural_runtime._SESSIONS and not neural_runtime._TRACED
+        assert not (tmp_path / 'invalid-profile.json').exists()
+        assert any('inference failed' in record.getMessage() and 'Traceback' in record.getMessage()
+                   and record.exc_info is None for record in records)
+
+    def session(_path, _shape, device, _threads):
+        if device == 'CPU':
+            check_released()
+            return CPU()
+        return neural_runtime._SESSIONS.get(key) or create_gpu()
+
+    if cached:
+        create_gpu()
+    monkeypatch.setattr(neural_runtime, '_session', session)
+    monkeypatch.setattr(neural_runtime, '_vram_snapshot', lambda *_: resource_policy.ResourceSnapshot(
+        free_vram=8 * 1024**3, total_vram=8 * 1024**3))
+    monkeypatch.setattr(resource_policy, 'require_memory', lambda *_: check_released())
+    neural_runtime.start_inference_job()
+    try:
+        np.testing.assert_array_equal(neural_runtime.logits(planes, str(path), 'DIRECTML', 1), planes)
+        assert neural_runtime.actual_device() == 'CPU'
+    finally:
+        neural_runtime._LOG.removeHandler(handler)
+        neural_runtime._clear_sessions()
+        neural_runtime.start_inference_job()
+
+
+@pytest.mark.parametrize('device,fail_gpu', [('COREML', False), ('CPU', False), ('COREML', True)])
+def test_cancellation_during_session_acquisition_prevents_run(monkeypatch, device, fail_gpu):
+    from core.registration import RegistrationCancelled
+    from core import resource_policy
+    cancelled = [False]
+    runs = []
+
+    class Session:
+        actual_device = 'COREML'
+        def run(self, outputs, inputs):
+            runs.append('gpu')
+            raise RuntimeError('failed')
+
+    def session(_path, _shape, selected, _threads):
+        if fail_gpu and selected == 'COREML':
+            return Session()
+        cancelled[0] = True
+        return Session()
+
+    monkeypatch.setattr(neural_runtime, '_session', session)
+    monkeypatch.setattr(resource_policy, 'require_memory', lambda *_: None)
+    neural_runtime.start_inference_job()
+    try:
+        with pytest.raises(RegistrationCancelled):
+            neural_runtime.logits(np.zeros((1, 2, 64, 64), np.float32), 'model', device, 1,
+                                  lambda: cancelled[0])
+        assert runs == (['gpu'] if fail_gpu else [])
+    finally:
+        neural_runtime.start_inference_job()
+
+
+def test_cancelled_failed_gpu_does_not_start_cpu(monkeypatch):
+    from core.registration import RegistrationCancelled
+    from core import resource_policy
+    cancelled = [False]
+    class Session:
+        def run(self, *_):
+            cancelled[0] = True
+            raise RuntimeError('failed')
+    monkeypatch.setattr(neural_runtime, '_session', lambda *_: Session())
+    monkeypatch.setattr(resource_policy, 'require_memory', lambda *_: pytest.fail('CPU admission'))
+    neural_runtime.start_inference_job()
+    try:
+        with pytest.raises(RegistrationCancelled):
+            neural_runtime.logits(np.zeros((1, 2, 64, 64), np.float32), 'model', 'COREML', 1,
+                                  lambda: cancelled[0])
+        assert not neural_runtime.device_diagnostics()['fallback_cpu']
+    finally:
+        neural_runtime.start_inference_job()
+
+
+def test_reduced_buffers_released_at_consumption_boundaries(monkeypatch):
+    import weakref
+    original_resize = neural_runtime._resize_antialias
+    original_softmax = neural_runtime.softmax
+    refs = {}
+    def resize(*args):
+        small = original_resize(*args)
+        refs['small'] = weakref.ref(small)
+        refs['backing'] = weakref.ref(small.base)
+        return small
+    def softmax(values):
+        if 'small' in refs:
+            assert refs['small']() is None and refs['backing']() is None
+        result = original_softmax(values)
+        if 'small' in refs:
+            refs['q'] = weakref.ref(result)
+        return result
+    gaussian = cv2.GaussianBlur
+    def blur(*args, **kwargs):
+        assert refs['q']() is None
+        return gaussian(*args, **kwargs)
+    monkeypatch.setattr(neural_runtime, '_resize_antialias', resize)
+    monkeypatch.setattr(neural_runtime, 'logits', lambda planes, *_: planes.copy())
+    monkeypatch.setattr(neural_runtime, 'softmax', softmax)
+    monkeypatch.setattr(cv2, 'GaussianBlur', blur)
+    neural_runtime.probabilities(np.zeros((1, 3, 64, 64), np.float32), 'model', 'CPU', 1, 0.5)
+
+
+@pytest.mark.parametrize('stage', ['resize', 'gaussian'])
+def test_probability_layer_cancellation_stops_next_layer(monkeypatch, stage):
+    from core.registration import RegistrationCancelled
+    cancelled = [False]
+    counts = {'resize': 0, 'gaussian': 0}
+    resize, gaussian = cv2.resize, cv2.GaussianBlur
+    def wrapped(name, func):
+        def call(*args, **kwargs):
+            counts[name] += 1
+            result = func(*args, **kwargs)
+            if name == stage:
+                cancelled[0] = True
+            return result
+        return call
+    monkeypatch.setattr(neural_runtime, 'logits', lambda planes, *_: planes.copy())
+    monkeypatch.setattr(cv2, 'resize', wrapped('resize', resize))
+    monkeypatch.setattr(cv2, 'GaussianBlur', wrapped('gaussian', gaussian))
+    with pytest.raises(RegistrationCancelled):
+        neural_runtime.probabilities(np.zeros((1, 5, 64, 64), np.float32), 'model', 'CPU', 1,
+                                     0.5, lambda: cancelled[0])
+    assert counts == ({'resize': 1, 'gaussian': 0} if stage == 'resize'
+                      else {'resize': 5, 'gaussian': 1})
+
+
+def test_antialias_cancellation_between_output_positions(monkeypatch):
+    from core.registration import RegistrationCancelled
+    original_sum = np.sum
+    calls = []
+    def summing(*args, **kwargs):
+        calls.append(1)
+        return original_sum(*args, **kwargs)
+    monkeypatch.setattr(np, 'sum', summing)
+    with pytest.raises(RegistrationCancelled):
+        neural_runtime._resize_antialias(np.zeros((1, 3, 8, 10), np.float32), 0.75,
+                                         lambda: bool(calls))
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize('entry', ['infer', 'fusion', 'depth', 'tiled_depth', 'tiled_fusion'])
+@pytest.mark.parametrize('external_plan', [False, True])
+def test_v2_entry_job_reset_and_external_plan(monkeypatch, entry, external_plan):
+    from fusion_methods import stackmff_v2 as v2, stackmff_v2_tiled as tiled
+    resets, calls = [], []
+    monkeypatch.setattr(neural_runtime, 'start_inference_job', lambda: resets.append(1))
+    monkeypatch.setattr(v2, '_infer_under_lease', lambda *args, **kwargs: calls.append(1))
+    monkeypatch.setattr(v2, '_depth_positions_under_lease', lambda *args, **kwargs: calls.append(1))
+    monkeypatch.setattr(tiled, '_tiled_depth_under_lease', lambda *args, **kwargs: calls.append(1))
+    monkeypatch.setattr(tiled, '_tiled_fusion_under_lease', lambda *args, **kwargs: calls.append(1))
+    plan = object() if external_plan else None
+    if entry == 'infer':
+        v2.infer([], 'model', True, execution_plan=plan)
+    elif entry == 'fusion':
+        v2.stackmffv2_impl([], None, 'model', True, execution_plan=plan, tile_size=64)
+    elif entry == 'depth':
+        v2.depth_positions([], 'model', True, execution_plan=plan)
+    elif entry == 'tiled_depth':
+        tiled.tiled_depth(None, 'model', True, execution_plan=plan)
+    else:
+        tiled.tiled_fusion([], None, 'model', True, execution_plan=plan)
+    assert calls == [1]
+    assert resets == ([] if external_plan else [1])
+
+
+@pytest.mark.parametrize('entry', ['infer', 'fusion', 'depth', 'tiled_depth', 'tiled_fusion'])
+def test_v2_waiting_for_lease_cancellation_does_not_reset(monkeypatch, entry):
+    import threading
+    from core import resource_policy
+    from core.registration import RegistrationCancelled
+    from fusion_methods import stackmff_v2 as v2, stackmff_v2_tiled as tiled
+    held, release = threading.Event(), threading.Event()
+    def owner():
+        with resource_policy.heavy_job():
+            held.set()
+            release.wait()
+    worker = threading.Thread(target=owner)
+    worker.start()
+    assert held.wait(5)
+    checks = []
+    def cancelled():
+        checks.append(1)
+        return len(checks) > 1
+    monkeypatch.setattr(neural_runtime, 'start_inference_job', lambda: pytest.fail('reset before lease'))
+    try:
+        with pytest.raises(RegistrationCancelled):
+            if entry == 'infer':
+                v2.infer([], 'model', True, should_cancel=cancelled)
+            elif entry == 'fusion':
+                v2.stackmffv2_impl([], None, 'model', True, should_cancel=cancelled, tile_size=64)
+            elif entry == 'depth':
+                v2.depth_positions([], 'model', True, should_cancel=cancelled)
+            elif entry == 'tiled_depth':
+                tiled.tiled_depth(None, 'model', True, should_cancel=cancelled)
+            else:
+                tiled.tiled_fusion([], None, 'model', True, should_cancel=cancelled)
+    finally:
+        release.set()
+        worker.join()
+
+
+def test_direct_v2_tiled_jobs_retry_accelerator_after_sticky_fallback(monkeypatch):
+    from core import resource_policy
+    from fusion_methods import stackmff_v2 as v2, stackmff_v2_tiled as tiled
+    calls = []
+    class Session:
+        def __init__(self, device):
+            self.actual_device = device
+        def run(self, _outputs, inputs):
+            calls.append(self.actual_device)
+            if calls == ['COREML']:
+                raise RuntimeError('first job accelerator failure')
+            return [inputs['input'].copy()]
+    monkeypatch.setattr(tiled, '_plan', lambda *args: (64, 'model', 'COREML', SimpleNamespace(native_threads=1)))
+    monkeypatch.setattr(neural_runtime, '_session', lambda _p, _s, device, _t: Session(device))
+    monkeypatch.setattr(resource_policy, 'require_memory', lambda *_: None)
+    frames = [np.zeros((128, 128, 3), np.uint8), np.full((128, 128, 3), 100, np.uint8)]
+    try:
+        v2.stackmffv2_impl(frames, None, 'model', True, tile_size=64)
+        first_count = len(calls)
+        assert first_count > 2 and calls[0] == 'COREML'
+        assert set(calls[1:]) == {'CPU'}
+        assert neural_runtime.actual_device() == 'CPU'
+        v2.stackmffv2_impl(frames, None, 'model', True, tile_size=64)
+        assert calls[first_count] == 'COREML'
+        assert neural_runtime.actual_device() == 'COREML'
+    finally:
+        neural_runtime._clear_sessions()
+        neural_runtime.start_inference_job()
+
+
+def test_cpu_retry_failure_propagates_without_success_reporting(monkeypatch):
+    from core import resource_policy
+    class Session:
+        def __init__(self, device):
+            self.device = device
+        def run(self, *_):
+            raise RuntimeError(self.device + ' failed')
+    monkeypatch.setattr(neural_runtime, '_session', lambda _p, _s, device, _t: Session(device))
+    monkeypatch.setattr(resource_policy, 'require_memory', lambda *_: None)
+    neural_runtime.start_inference_job()
+    try:
+        with pytest.raises(RuntimeError, match='CPU failed'):
+            neural_runtime.logits(np.zeros((1, 2, 64, 64), np.float32), 'model', 'COREML', 1)
+        assert neural_runtime.actual_device() is None
+    finally:
+        neural_runtime._clear_sessions()
+        neural_runtime.start_inference_job()
+
+
+@pytest.mark.parametrize('count,shape', [(2, (64, 64)), (3, (65, 71)), (17, (66, 70))])
+@pytest.mark.parametrize('sigma', [0, 0.5])
+def test_probability_arithmetic_matches_original_order(monkeypatch, count, shape, sigma):
+    rng = np.random.default_rng(42)
+    planes = rng.random((1, count, shape[0], shape[1] * 2), dtype=np.float32)[..., ::2]
+    monkeypatch.setattr(neural_runtime, 'logits', lambda values, *_: values.copy())
+    p = neural_runtime.softmax(planes.copy())
+    small = neural_runtime._resize_antialias(planes, 0.75)
+    q = neural_runtime.softmax(small.copy())
+    h, w = shape
+    for n in range(count):
+        p[0, n] += cv2.resize(q[0, n], (w, h), interpolation=cv2.INTER_LINEAR)
+    p *= 0.5
+    if sigma:
+        radius = int(3 * sigma + 0.5)
+        for n in range(count):
+            p[0, n] = cv2.GaussianBlur(p[0, n], (radius * 2 + 1,) * 2, sigma,
+                                        borderType=cv2.BORDER_REPLICATE)
+        p /= p.sum(axis=1, keepdims=True)
+    actual = neural_runtime.probabilities(planes, 'model', 'CPU', 1, sigma)
+    np.testing.assert_array_equal(actual, p)
+
+
+@pytest.mark.parametrize('entry', ['infer', 'fusion', 'depth', 'tiled_depth', 'tiled_fusion'])
+def test_v2_external_plan_does_not_wait_for_another_threads_lease(monkeypatch, entry):
+    import threading
+    from core import resource_policy
+    from fusion_methods import stackmff_v2 as v2, stackmff_v2_tiled as tiled
+    held, release = threading.Event(), threading.Event()
+    def owner():
+        with resource_policy.heavy_job():
+            held.set()
+            release.wait()
+    owner_thread = threading.Thread(target=owner)
+    owner_thread.start()
+    assert held.wait(5)
+    called = threading.Event()
+    monkeypatch.setattr(neural_runtime, 'start_inference_job', lambda: pytest.fail('unexpected reset'))
+    for module, name in [(v2, '_infer_under_lease'), (v2, '_depth_positions_under_lease'),
+                         (tiled, '_tiled_depth_under_lease'), (tiled, '_tiled_fusion_under_lease')]:
+        monkeypatch.setattr(module, name, lambda *args, **kwargs: called.set())
+    plan = object()
+    def invoke():
+        if entry == 'infer':
+            v2.infer([], 'model', True, execution_plan=plan)
+        elif entry == 'fusion':
+            v2.stackmffv2_impl([], None, 'model', True, execution_plan=plan, tile_size=64)
+        elif entry == 'depth':
+            v2.depth_positions([], 'model', True, execution_plan=plan)
+        elif entry == 'tiled_depth':
+            tiled.tiled_depth(None, 'model', True, execution_plan=plan)
+        else:
+            tiled.tiled_fusion([], None, 'model', True, execution_plan=plan)
+    worker = threading.Thread(target=invoke)
+    worker.start()
+    try:
+        assert called.wait(2)
+    finally:
+        release.set()
+        worker.join()
+        owner_thread.join()

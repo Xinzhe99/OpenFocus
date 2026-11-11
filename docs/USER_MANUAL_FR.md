@@ -200,6 +200,8 @@ Les logiciels de microscopie (ZEN, NIS-Elements, ImageJ/Fiji) exportent souvent 
 
 ### Barre d'échelle (figures de publication)
 
+Les libellés de la barre utilisent de vrais glyphes gras si la famille choisie en propose ; sinon, une police lisible de la même famille est utilisée.
+
 Si la cible choisie ne possède pas de métadonnées utilisables, la calibration manuelle est présélectionnée et attend une taille de pixel valide.
 
 Outils → Barre d'échelle… configure une barre d'échelle intégrée aux images exportées. La taille du pixel (µm/px) est détectée automatiquement dans les métadonnées TIFF (convention `unit=micron` d'ImageJ, `PhysicalSizeX` d'OME-TIFF ou unité de résolution explicite en centimètres), de sorte que les piles de microscopie (y compris multipage) se calibrent seules. La résolution d'imprimante (72/300 dpi et autres) n'est délibérément *pas* traitée comme une calibration, et une valeur saisie manuellement l'emporte toujours sur les métadonnées détectées : une barre fausse mais plausible dans une figure est pire que pas de barre. Choisissez le coin et la couleur (Auto inverse selon le fond) ; la boîte de dialogue affiche un aperçu en direct. Une fois la barre activée, chaque export (image seule, piles en dossiers, TIFF multipage, GIF, tout exporter, lots) porte une barre de style publication : une longueur arrondie de la série 1-2-5 (~12 % de la largeur de l'image) avec un texte contourné et lisible. La CLI l'accepte via `--scale-bar` (calibration automatique) et `--scale-um <um/px>`.
@@ -417,7 +419,7 @@ OpenFocus propose dix algorithmes de fusion (plus un mode alignement seul). Un p
 
 - **Algorithme** : implémentation de Fu et al. (*Laser & Optoelectronics Progress*, 2024) : une carte de netteté par différence de flou |I − mean(I)| est enrichie par l'opérateur de gradient à quatre voisins de type gaussien (GFG), affinée par un filtre guidé rapide, décidée par pixel (les égalités sont tranchées par une mesure de petite région de Sobel 3×3), puis les cartes de décision binaires sont à nouveau lissées par le filtre guidé rapide avant le mélange pondéré.
 - **Idéal pour** : microscopie et images à régions nettes bien définies
-- **Avantages** : rapide, limites de régions nettes ; la mémoire ne croît pas avec le nombre d'images
+- **Avantages** : rapide, limites nettes ; les cartes de netteté et de poids sont traitées par fenêtres bornées. Sources et descripteurs, résultat, décodage et tampons exigent toujours de la RAM et de l'espace disque temporaire.
 - **Paramètre** : noyau = taille du filtre moyen de la carte de netteté grossière
 
 ### StackMFF (V1, apprentissage profond)
@@ -619,6 +621,8 @@ l'historique accessible et les diagnostics sans recalculer l'arrière-plan.
 
 ### Gestion des libellés
 
+À l'export, chaque pile recalée historique utilise ses propres identités d'image ; si elles manquent pour un libellé lié, une erreur est signalée. Seuls les libellés réellement applicables bloquent l'export PNG transparent. **Ajuster** utilise une miniature bornée ; **100 %** affiche la région originale à raison d'un pixel source par pixel du périphérique et peut afficher un chargement ou une erreur. Les grandes coordonnées et tailles enregistrées sont conservées lors de la modification.
+
 Ouvrez **Outils → Libellés** après avoir chargé des images ou produit un résultat. Chaque libellé a sa propre cible : la pile source, la pile recalée ou les résultats de sortie. Les libellés de sortie peuvent s'appliquer à tous les résultats ou au résultat sélectionné par son nom ; renommer ou réordonner ce résultat ne change pas l'association.
 
 Utilisez **Ajouter** pour créer un autre libellé, sélectionnez une entrée pour la modifier et utilisez sa case pour l'activer ou la désactiver. Saisissez un texte fixe ou insérez `{value}` pour un numéro d'image. Le numéro est la valeur de départ plus l'indice d'image (base zéro) multiplié par l'intervalle ; une sortie unique utilise toujours la valeur de départ.
@@ -741,6 +745,8 @@ Les photos iPhone se chargent directement. Nécessite `pillow-heif`, que `pip in
 ### Mises à jour
 
 **Aide → Rechercher des mises à jour** compare votre version aux informations de `openfocus.top`. Une version plus récente est téléchargée depuis ce site en arrière-plan pendant que l'application est inactive ; une fois la version préparée, la bannière et la zone d'état proposent **Redémarrer et mettre à jour**, qui l'applique hors ligne. Les versions qui ne peuvent pas se mettre à jour elles-mêmes ouvrent la page de téléchargement du site. La vérification automatique s'exécute silencieusement au plus une fois par jour.
+
+Sous Windows, la mise à jour prépare une version candidate distincte et déplace le marqueur portable et `OpenFocusData` lors du basculement. En cas d'échec, elle restaure l'installation précédente ; si le retour arrière échoue, la sauvegarde est conservée et l'application ne redémarre pas automatiquement. Une demande d'autorisation peut apparaître une fois. L'annulation de l'extraction supprime la préparation incomplète et est vérifiée entre les lectures et écritures de 256 Kio ; une opération disque ou réseau bloquée peut la retarder.
 
 ### Cache de recalage
 
@@ -887,7 +893,7 @@ Par exemple, ajoutez `--align openfocus --alignment-report alignment.json` à un
 | `--input, -i` | Dossier(s) d'images, fichier vidéo, un ou plusieurs fichiers image, ou TIFF multipage |
 | `--output, -o` | Chemin de l'image de sortie (l'extension détermine le format) |
 | `--output-dir, -d` | Mode lot : fusionne chaque dossier d'entrée et écrit `<dossier>.png` par pile |
-| `--resume` | Mode lot : ignore les dossiers dont la sortie existe déjà |
+| `--resume` | Ignore un dossier seulement si tous les résultats demandés sont des fichiers ordinaires non vides ; ne vérifie ni contenu ni paramètres |
 | `--config FILE` | Mode lot : surcharges JSON par dossier, p. ex. `{"stackA": {"method": "dct"}}` |
 | `--method, -m` | `stackmffv3` (défaut), `stackmffv2`, `stackmff`, `openfocus_a`, `openfocus_b`, `openfocus_c`, `guided_filter`, `dct`, `dtcwt`, `gfgfgf` |
 | `--param KEY=JSON_VALUE` | Définit tout paramètre de fusion ; répétable et prioritaire sur les options héritées |
@@ -1043,6 +1049,7 @@ Codes de sortie : `0` succès, `1` erreur de traitement, `2` erreur d'utilisatio
 
 #### IA indisponible
 
+- Activez et confirmez les fonctions expérimentales dans les paramètres avancés ; les méthodes IA du bureau restent désactivées sans ce choix. Le moteur et le modèle sont des prérequis distincts.
 - Vérifiez ONNX Runtime et le modèle fourni.
 - Vérifiez via **Aide → Informations sur l'environnement**
 

@@ -15,14 +15,34 @@ MAX_WORKING_BYTES = 512 * 1024 * 1024
 MAX_FRAMES = 128
 MAX_PROFILE_BYTES = 16 * 1024 * 1024
 
+def source_paths(*groups):
+    """Freeze path collections without splitting a single path into characters."""
+    result = []
+    for group in groups:
+        if isinstance(group, (str, bytes, os.PathLike)):
+            group = (group,)
+        for path in group or ():
+            if path:
+                result.append(os.fspath(path))
+    return tuple(result)
+
+
+def protect_sources(paths, sources):
+    for path in paths:
+        for source in sources:
+            if same_path(path, source):
+                raise ValueError(f'Cannot overwrite a source image: {source}')
+
 
 def _cancelled(cancelled):
     if cancelled is not None and cancelled():
         raise ValueError('Layered export cancelled')
 
 
-def _image_shape(image, dtype=None):
-    if not isinstance(image, np.ndarray) or image.dtype not in (np.uint8, np.uint16):
+def _image_shape(image, dtype=None, *, descriptors=False):
+    from core.source_frames import ProcessedFrame, SourceFrame
+    allowed = (np.ndarray, SourceFrame, ProcessedFrame) if descriptors else (np.ndarray,)
+    if not isinstance(image, allowed) or image.dtype not in (np.uint8, np.uint16):
         raise ValueError('Layered export requires 8-bit or 16-bit image data')
     if dtype is not None and image.dtype != dtype:
         raise ValueError('Layered export requires the same bit depth for all frames')
@@ -50,8 +70,8 @@ def _channels(image):
         return (image, image, image)
     return (image[..., 2], image[..., 1], image[..., 0])
 
-def _preflight(image, context, icc_profile, cancelled):
-    height, width = _image_shape(image)
+def _preflight_structure(image, context, icc_profile, cancelled):
+    height, width = _image_shape(image, descriptors=True)
     if context is None or not getattr(context, 'frames', None):
         raise ValueError('This result has no retained processed source frames')
     if context.width != width or context.height != height:
@@ -70,7 +90,7 @@ def _preflight(image, context, icc_profile, cancelled):
     layer_bytes = pixels * 6 * image.dtype.itemsize
     for index, frame in enumerate(context.frames, 1):
         _cancelled(cancelled)
-        fh, fw = _image_shape(frame.image, image.dtype)
+        fh, fw = _image_shape(frame.image, image.dtype, descriptors=True)
         ox, oy = frame.offset_x, frame.offset_y
         if type(ox) is not int or type(oy) is not int or ox < 0 or oy < 0 or ox + fw > width or oy + fh > height:
             raise ValueError('A processed source has unsupported geometry')
@@ -86,6 +106,14 @@ def _preflight(image, context, icc_profile, cancelled):
     limit = min(MAX_WORKING_BYTES, budget)
     if estimate > limit:
         raise ValueError('Layered export exceeds the available memory budget')
+    return estimate
+
+
+def _preflight(image, context, icc_profile, cancelled):
+    _preflight_structure(image, context, icc_profile, cancelled)
+    _image_shape(image)
+    for frame in context.frames:
+        _image_shape(frame.image, image.dtype)
     for pixels in (image, *(frame.image for frame in context.frames)):
         _cancelled(cancelled)
         if pixels.ndim == 3 and pixels.shape[2] == 4:
@@ -95,21 +123,24 @@ def _preflight(image, context, icc_profile, cancelled):
                     raise ValueError('Layered export does not support transparent inputs')
 
 
-def export_layered_tiff(path, image, context, *, icc_profile=b'', cancelled=None):
+def export_layered_tiff(path, image, context, *, icc_profile=b'', cancelled=None,
+                        protected_sources=()):
     """Export the result and its processed frames to a bounded layered TIFF.
 
     The merged image and the only visible layer are the current result.
     Processed source layers are hidden, retain their offsets and expose
     registration fill as transparent pixels. No source files are modified.
     """
+    destination = os.path.abspath(os.fspath(path))
+    frames = getattr(context, 'frames', ()) or ()
+    sources = source_paths(protected_sources, getattr(context, 'source_paths', ()),
+                           (name for frame in frames
+                            if (name := getattr(frame, 'name', None)) and os.path.isabs(name)))
+    protect_sources((destination,), sources)
     _cancelled(cancelled)
     _preflight(image, context, icc_profile, cancelled)
-    destination = os.path.abspath(os.fspath(path))
     if os.path.splitext(destination)[1].lower() not in ('.tif', '.tiff'):
         raise ValueError('Layered export requires a TIFF filename')
-    for frame in context.frames:
-        if frame.name and os.path.isfile(frame.name) and same_path(destination, frame.name):
-            raise ValueError('Cannot overwrite a source image')
     _cancelled(cancelled)
     from psdtags import (PsdChannel, PsdChannelId, PsdCompressionType, PsdFormat,
                          PsdKey, PsdLayer, PsdLayerFlag, PsdLayers, PsdRectangle,
@@ -132,7 +163,7 @@ def export_layered_tiff(path, image, context, *, icc_profile=b'', cancelled=None
     layers = [make_layer(image, 'Result', 'Result', 0, 0, False)]
     for index, frame in enumerate(context.frames, 1):
         _cancelled(cancelled)
-        mask = frame.valid_mask() if frame.aligned else None
+        mask = frame.valid_mask(should_cancel=cancelled) if frame.aligned else None
         if mask is not None and (mask.dtype != np.bool_ or mask.shape != frame.image.shape[:2]):
             raise ValueError('A processed source has an invalid registration mask')
         layers.append(make_layer(frame.image, _name(frame, index), f'Frame {index}',
@@ -160,6 +191,7 @@ def export_layered_tiff(path, image, context, *, icc_profile=b'', cancelled=None
             stream.flush()
             os.fsync(stream.fileno())
         _cancelled(cancelled)
+        protect_sources((destination,), sources)
         os.replace(temporary, destination)
     finally:
         if temporary and os.path.exists(temporary):

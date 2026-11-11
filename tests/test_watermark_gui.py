@@ -273,7 +273,16 @@ def test_copyright_state_follows_output_style_and_survives_reset(qapp):
     assert dialog.text_edit.text() == "Output"
     assert dialog.copyright_check.isChecked()
     assert dialog.copyright_position_combo.currentData() == "suffix"
+    dialog.size_spin.setValue(8)
+    dialog.opacity_spin.setValue(65)
+    dialog.angle_spin.setValue(40)
     dialog._reset_defaults()
+    assert dialog.size_slider.value() == round(wm.DEFAULT_SIZE_PERCENT * 10)
+    assert dialog.opacity_slider.value() == round(wm.DEFAULT_OPACITY * 100)
+    assert dialog.angle_slider.value() == round(wm.DEFAULT_ANGLE)
+    assert dialog._draft_config().size_percent == wm.DEFAULT_SIZE_PERCENT
+    assert dialog._draft_config().opacity == wm.DEFAULT_OPACITY
+    assert dialog._draft_config().angle == wm.DEFAULT_ANGLE
     assert dialog.text_edit.text() == "Output"
     assert dialog.copyright_check.isChecked()
     assert dialog.copyright_position_combo.currentData() == "suffix"
@@ -440,12 +449,50 @@ def test_switching_preview_to_an_output_loads_its_own_style(qapp):
     assert dialog.text_edit.text() == "OUTPUT B"
 
 
-def test_numeric_controls_reserve_suffix_width(qapp):
+@pytest.mark.parametrize("theme", ["light", "dark"])
+@pytest.mark.parametrize("font_delta", [0, 2])
+def test_numeric_controls_reserve_suffix_width(qapp, theme, font_delta):
+    from PyQt6.QtGui import QFont
+    from PyQt6.QtWidgets import QLineEdit
     from dialogs.watermark import WatermarkDialog
+    from ui import styles
 
-    dialog = WatermarkDialog(_DialogHost(source=_image()))
-    for control in (dialog.size_spin, dialog.opacity_spin, dialog.angle_spin):
-        assert control.minimumWidth() >= 112
+    old_style, old_font, old_palette = qapp.styleSheet(), QFont(qapp.font()), qapp.palette()
+    old_theme = styles.CURRENT_THEME
+    dialog = None
+    try:
+        font = QFont(old_font)
+        font.setPointSizeF(max(1, font.pointSizeF() + font_delta))
+        qapp.setFont(font)
+        styles.set_current_theme(theme)
+        qapp.setStyleSheet(styles.get_theme_style(theme))
+        dialog = WatermarkDialog(_DialogHost(source=_image()))
+        dialog.show()
+        qapp.processEvents()
+        for spin, slider, scale in ((dialog.size_spin, dialog.size_slider, 10),
+                                    (dialog.opacity_spin, dialog.opacity_slider, 1),
+                                    (dialog.angle_spin, dialog.angle_slider, 1)):
+            editor = spin.findChild(QLineEdit)
+            assert editor is not None and editor.isVisible()
+            for value in (spin.minimum(), spin.maximum()):
+                spin.setValue(value)
+                qapp.processEvents()
+                assert slider.value() == round(value * scale)
+                assert editor.text().endswith(spin.suffix())
+                margins = editor.textMargins()
+                available = editor.contentsRect().width() - margins.left() - margins.right()
+                assert editor.fontMetrics().horizontalAdvance(editor.text()) <= available
+            slider.setValue(slider.minimum())
+            assert spin.value() == pytest.approx(slider.value() / scale)
+    finally:
+        if dialog is not None:
+            dialog.close()
+            dialog.deleteLater()
+        styles.set_current_theme(old_theme)
+        qapp.setStyleSheet(old_style)
+        qapp.setFont(old_font)
+        qapp.setPalette(old_palette)
+        qapp.processEvents()
 
 
 def test_empty_text_keeps_apply_disabled(qapp):

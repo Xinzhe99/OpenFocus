@@ -388,19 +388,39 @@ Steps:
 
 1. Resolve the tag from the event (`release.tag_name`, `inputs.tag` or the
    workflow run's head branch), strip `refs/tags/`, require it to match
-   `^v[0-9A-Za-z._+-]+$`, and confirm the release exists.
+   `^v[0-9A-Za-z._+-]+$`, and require a published, non-prerelease release.
 2. Download the Windows asset manifest and its named files, verify each part
-   and reassemble any split archives with `tools/release_archives.py`. Download
-   the macOS assets and require four non-empty complete files. Older releases
-   without a manifest are downloaded directly.
-3. `aws s3 cp assets/ s3://openfocus-downloads/ --recursive` against the R2
-   S3 endpoint (`https://<R2_ACCOUNT_ID>.r2.cloudflarestorage.com`), with
-   `application/octet-stream` and `public, max-age=86400` metadata. Objects
-   keep their release filenames.
-4. If the mirrored tag is still GitHub's latest release, publish metadata for
+   and reassemble split archives with `tools/release_archives.py`; download
+   the macOS assets. Older releases without a Windows manifest use complete
+   files. Reassembly verifies each split asset before replacing its destination
+   atomically. If replacement fails, the previous destination remains intact
+   and the temporary `.joining` file is removed. Each asset is committed
+   separately; a later failure does not roll back an earlier reassembly.
+3. Before the first R2 write, verify all four complete logical assets against
+   trusted sizes and SHA-256 hashes. The release build identity and GitHub
+   asset digests supply evidence; a split manifest supplies the complete
+   Windows hash. The workflow can also use previously published mirror
+   metadata when its tag matches. For a workflow-run trigger, the release
+   identity must match that run's commit; the default-branch checkout used by
+   the mirror tools is not the release commit. Historical backfills undergo
+   the same preflight. If a legacy asset lacks a trusted upstream hash, the
+   mirror fails before writing. The workflow automatically reads only the
+   existing `openfocus-meta/latest-release.json` as prior metadata, and only
+   when its tag matches; dispatch has no input for other evidence. The
+   `write-mirror-manifest` tool accepts independently saved matching metadata
+   through `--trusted-metadata` for local verification, but that alone does
+   not supply it to the workflow. A hash calculated only from the current
+   download is not independent evidence.
+4. Upload only the four files listed in the verified temporary manifest to
+   their canonical R2 keys, with `application/octet-stream` and `public,
+   max-age=86400` metadata. Verify each uploaded object's size and streamed
+   SHA-256 before publishing metadata or pruning. A failed or cancelled
+   upload can leave some objects written; R2 does not provide a transaction
+   across the four objects.
+5. If the mirrored tag is still GitHub's latest release, publish metadata for
    those four exact assets to `openfocus-meta/latest-release.json` only after
-   their uploads complete. Older manual runs never replace that manifest.
-5. Wait 330 seconds for the five-minute Worker metadata cache to expire. If
+   all remote checks succeed. Older manual runs never replace that manifest.
+6. Wait 330 seconds for the five-minute Worker metadata cache to expire. If
    the mirrored tag is still the latest release, delete older keys matching
    the four recognized `OpenFocus-v*-...` asset names. This keeps range
    requests using cached metadata working while releases change. Current
@@ -425,19 +445,28 @@ gh workflow run r2-mirror.yml -R Xinzhe99/OpenFocus --ref main -f tag=v1.74.0
 gh run list -R Xinzhe99/OpenFocus --workflow r2-mirror.yml --limit 3
 ```
 
-If the action fails, a full download can fall back to GitHub only when that
+If the action fails, inspect the preflight or upload error and repair the
+underlying failure before re-running it. A missing trusted hash requires
+independent evidence and an available workflow evidence source, as described
+above; repeatedly dispatching the same inputs will not fix it. A preflight
+failure makes no R2 writes; a later failure can
+leave partially uploaded objects, but does not advance latest metadata or
+prune older objects. A full download can fall back to GitHub only when that
 asset exists there as a complete file. A split asset and range requests return
-`503` until its complete R2 object is ready. Fix the action, then re-run it;
-no website redeploy is needed.
+`503` until its complete R2 object is ready. No website redeploy is needed.
 
 ### Release checklist
 
-1. `constants.APP_VERSION` equals the release tag.
-2. Push the `v*` tag. **Build & Publish Release** verifies the four logical
-   installer assets, splitting oversized Windows files before publishing.
+1. `constants.APP_VERSION` equals the release tag. Published tags and their
+   bytes are immutable; issue a new version tag for changed release bytes.
+2. Push the `v*` tag. **Build & Publish Release** runs the three-OS tests and
+   installed headless wheel acceptance on the locked commit, builds the
+   desktop assets, then verifies the complete draft and build identity before
+   publishing. PyPI publication is bound to that tag, commit and successful
+   desktop release workflow; branch dispatches only produce preview artifacts.
 3. Wait for `r2-mirror` to succeed. It is chained to the release workflow; a
    release published by hand uses the `release: published` trigger. If neither
-   path fired, run the manual dispatch below.
+   path fired, run the manual dispatch above.
 4. Verify:
    - `https://openfocus.top/api/latest` returns the new tag with
      `Cache-Control: no-store`;

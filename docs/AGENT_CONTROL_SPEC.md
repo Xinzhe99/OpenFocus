@@ -63,6 +63,8 @@ file is created with owner-only permissions from the first byte (a restricted
 ACL on Windows, mode `0600` elsewhere). On Windows the server also compares
 the named-pipe client's computer with `GetComputerNameW` and rejects a remote
 or unidentifiable client; `ERROR_PIPE_LOCAL` is treated as local.
+On POSIX, a socket-name conflict does not remove the existing endpoint. Choose
+another name or manually clean it only after confirming it has no owner.
 
 ## 4. Framing
 
@@ -111,7 +113,7 @@ is `null` until a background device probe or OS hardware query has completed.
 
 | Command | Args | Result |
 |---|---|---|
-| `stack.load` | `folder` \| `files` \| `video`, `scale`, `append` | `{loading:true, source, load_id}` |
+| `stack.load` | `folder` \| `files` \| `video`, `scale`, `append`, `linear_raw?` | `{loading:true, source, load_id}` |
 | `stack.frames` | — | `{count, names, included, folder, scale, shape, dtype, load:{id,active,finished,error}}` |
 | `stack.clear` | — | `{cleared:true}` |
 | `stack.include` | `indices`, `include` | current stack info |
@@ -122,6 +124,10 @@ request instead of any non-empty stack. Poll `stack.frames` until
 `load.finished` is true and inspect `load.error`; a failed or cancelled decode
 reports `finished:true` with the reason and leaves the previous frames alone.
 
+`linear_raw` is a boolean, default `false`, passed to folder and file loads.
+`linear_raw:true` with video returns `invalid_argument`.
+`stack.include` validates every index before changing any inclusion state.
+
 ### Method, alignment and options
 
 | Command | Args | Result |
@@ -131,6 +137,13 @@ reports `finished:true` with the reason and leaves the previous frames alone.
 | `align.set` | `id`, `parameters?` | current alignment + parameters |
 | `option.set` | `name`, `value` | `{name, value}` |
 
+`method.set` and `align.set` validate the selector and all parameters before
+mutating state. `option.set` requires `value`: boolean options accept JSON
+booleans, and integer options accept integers or integer-valued floats. Thread
+count is at least 0, tile block size at least 64, overlap at least 0 and less
+than block size, tile threshold and AI batch size at least 1, and registration
+downscale width at least 64. Invalid values leave the option unchanged.
+
 `option.set` names: `base_correct`, `exposure_match`, `reverse_order`,
 `thread_count`, `use_gpu`, `tile_enabled`, `tile_block_size`, `tile_overlap`,
 `tile_threshold`, `preview`, `ai_batch_size`, `resource_preference`,
@@ -138,10 +151,10 @@ reports `finished:true` with the reason and leaves the previous frames alone.
 The diagnostics options take a JSON boolean (anything else is
 `invalid_argument`): `profile_performance` profiles the following renders, and
 `debug_logging` switches detailed (`DEBUG`) logging at once, for the window and
-its render process. `storage_directory` takes a writable directory path, or
-`""` for the system default, and is validated like the Advanced Settings field
-(`invalid_argument` when it cannot be written). It is persisted and applies to
-the next render. `app.state` reports these options.
+its render process. `storage_directory` accepts a writable directory path,
+normalized to an absolute path, or `null`/`""` for the system default; it is
+validated like the Advanced Settings field (`invalid_argument` when it cannot
+be written), persisted and applied to the next render. `app.state` reports it.
 
 ### Render
 
@@ -197,8 +210,16 @@ computed, a successful reply includes it as `storage`, so a client that passed
 `output.export` writes the selected (or given) output without a file dialog,
 through the export manager's normal writer (labels, scale bar, bit depth). For
 an aligned-stack output it writes the frame folder and returns
-`kind:"aligned"`; layered TIFF is not part of this command (use the output
-list's context menu through `ui.menu`).
+`kind:"aligned"`; layered TIFF is not part of this command. For layered TIFF,
+right-click the desired output, list its context menu with `ui.menu`, and select
+the returned Save As action. Wait for the picker, discover `fileTypeCombo`
+with `ui.find` or `ui.tree`, select the returned localized layered TIFF filter
+with `ui.set`, then submit the path with `dialog.file`. Ordinary TIFF uses the
+same extension, so the filter matters. Check source provenance and watermark
+restrictions first. Picker acceptance does not mean export succeeded: wait for
+the export progress to finish or report an error. Cancellation before commit
+preserves the existing target and unsaved protection; an encoding call may need
+to finish before cancellation takes effect, and a committed file is not undone.
 
 ### Project
 
@@ -212,6 +233,8 @@ Both commands share the GUI's project lifecycle: `project.save` updates
 `confirm_required` while the current project has unsaved changes and only
 proceeds with `force:true` (which discards them), then tracks the new path
 and clears the dirty marker once loaded.
+Omitting `project.save`'s path uses the current project; an explicit `null` or
+blank path is invalid.
 
 ### Dialogs
 
@@ -241,6 +264,10 @@ File and folder pickers opened by control-triggered actions or clicks use Qt
 dialogs so `dialog.list` and `dialog.file` can select or cancel them. Ordinary
 desktop interactions continue to use native system pickers; those native
 windows are not addressable through the control channel.
+The helper's native branch may expose an outer `QFileDialog` without exposing
+its native internal controls. Finish that interaction normally before reopening
+it through a control action, or use an applicable typed command such as
+`stack.load` or `output.export`. Rediscover the dialog after reopening.
 
 Managed dialogs and `dialog.open` are modeless so commands continue to flow.
 Dialogs opened by a menu action with `exec()` are reachable in the same way:
@@ -270,6 +297,15 @@ menu action.
 | `ui.key` | `path?`, `key`, `action?`, `modifiers?` | real key press/click/release |
 | `ui.type` | `path?`, `text`, `submit?` | types text; optional Enter |
 | `ui.menu` | `action?` or `index?` | list/trigger actions in the open context menu |
+
+`ui.mouse` defaults `steps` to 12 and requires 1–1024 inclusive for every
+action; invalid steps are rejected before resolving the widget.
+
+In `ui.type` and text sent by `ui.key`, LF, CRLF and lone CR each send one
+Return; Tab keeps its native behavior. Other C0 controls and DEL are rejected
+atomically with `invalid_argument` before focus or visibility changes; the
+error identifies only the codepoint. Only `ui.type` accepts `submit:true`,
+which sends one additional Return after the text.
 
 Paths are stable within a snapshot: `main/<controlId or objectName or
 Class[n]>/…`; dialog roots are `dialog[0]`, `dialog[1]`, … in title order and
@@ -354,6 +390,14 @@ startup. Batch folder events and result summaries are emitted with
 `--version` and `--describe` work without an input.
 `describe` also lists available CLI subcommands and long options, including
 grouped fusion, cleanup, depth and calibration exports.
+
+After a `start` event, the stream ends with exactly one `done` event on success,
+failure, usage error or cancellation, including dry runs and fully skipped
+batches. It contains `ok`, `mode`, `duration_s` and `exit_code`; batch events
+also contain `total`, `succeeded`, `failed` and `skipped_existing`. Cancellation
+sets `cancelled:true` and `code:"cancelled"`; a usage error after start sets
+`code:"usage_error"`. Errors before start do not open an event stream. A closed
+stdout pipe can prevent delivery of the terminal event.
 
 `ctl --launch` starts the GUI when no live discovery file exists.
 `OPENFOCUS_CONTROL_FILE` isolates the discovery file for tests or parallel

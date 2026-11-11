@@ -200,6 +200,8 @@ I software di microscopia (ZEN, NIS-Elements, ImageJ/Fiji) esportano spesso un i
 
 ### Barra di scala (figure per pubblicazioni)
 
+Le etichette della barra usano veri glifi in grassetto quando la famiglia scelta li offre; altrimenti viene usato un carattere leggibile della stessa famiglia.
+
 Se la destinazione scelta non ha metadati utilizzabili, viene selezionata la calibrazione manuale ed è richiesta una dimensione pixel valida.
 
 Strumenti → Barra di scala… configura una barra di scala impressa nelle immagini esportate. La dimensione del pixel (µm/px) viene rilevata automaticamente dai metadati TIFF (convenzione `unit=micron` di ImageJ, `PhysicalSizeX` di OME-TIFF o unità di risoluzione esplicita in centimetri), così gli stack di microscopia (inclusi i TIFF multipagina) si calibrano da soli. La risoluzione di stampa (72/300 dpi e simili) *non* viene deliberatamente trattata come calibrazione, e un valore inserito manualmente prevale sempre sui metadati rilevati: una barra sbagliata ma credibile in una figura è peggio di nessuna barra. Scegli l'angolo e il colore (Auto inverte rispetto allo sfondo); la finestra mostra un'anteprima dal vivo. Con la barra attiva, ogni esportazione (immagine singola, stack in cartelle, TIFF multipagina, GIF, esporta tutto, batch) porta una barra in stile pubblicazione: una lunghezza arrotondata della serie 1-2-5 (~12% della larghezza dell'immagine) con testo contornato e leggibile. La CLI la supporta con `--scale-bar` (calibrazione automatica) e `--scale-um <um/px>`.
@@ -417,7 +419,7 @@ OpenFocus offre dieci algoritmi di fusione (più una modalità solo allineamento
 
 - **Algoritmo**: implementazione di Fu et al. (*Laser & Optoelectronics Progress*, 2024): una mappa di fuoco per differenza di sfocatura |I − mean(I)| viene arricchita con l'operatore gradiente a quattro vicini di tipo gaussiano (GFG), affinata con un filtro guidato rapido, decisa per pixel (i pareggi sono risolti da una misura di piccola regione Sobel 3×3), e le mappe di decisione binarie vengono levigate di nuovo dal filtro guidato rapido prima della miscelazione pesata.
 - **Ideale per**: microscopia e immagini con regioni a fuoco nette
-- **Vantaggi**: veloce, confini delle regioni a fuoco nitidi; la memoria non cresce con il numero di fotogrammi
+- **Vantaggi**: veloce, confini nitidi; le mappe di fuoco e dei pesi sono elaborate in finestre limitate. Sorgenti e descrittori, risultato, decodifica e buffer richiedono comunque RAM e spazio temporaneo su disco.
 - **Parametro**: kernel = dimensione del filtro medio della mappa di fuoco grossolana
 
 ### StackMFF (V1, apprendimento profondo)
@@ -617,6 +619,8 @@ raggiungibile e diagnostica senza ricalcolare lo sfondo.
 
 ### Gestione delle etichette
 
+Nell'esportazione ogni stack allineato storico usa le proprie identità dei fotogrammi; se mancano per un'etichetta associata, viene segnalato un errore. Solo le etichette effettivamente applicabili bloccano l'esportazione PNG trasparente. **Adatta** usa una miniatura limitata; **100%** mostra la regione originale con un pixel sorgente per pixel del dispositivo e può mostrare caricamento o errore. Coordinate e dimensioni salvate grandi sono mantenute durante la modifica.
+
 Apri **Strumenti → Etichette** dopo aver caricato immagini o prodotto un risultato. Ogni etichetta ha il proprio bersaglio: lo stack sorgente, lo stack registrato o i risultati di output. Le etichette di output possono applicarsi a tutti i risultati o al risultato selezionato per nome; rinominare o riordinare quel risultato non cambia l'associazione.
 
 Usa **Aggiungi** per creare un'altra etichetta, seleziona una voce per modificarla e usa la casella per attivarla o disattivarla. Inserisci testo fisso o `{value}` per un numero di fotogramma. Il numero è il valore iniziale più l'indice del fotogramma (base zero) moltiplicato per l'intervallo; un output singolo usa sempre il valore iniziale.
@@ -739,6 +743,8 @@ Le foto iPhone si caricano direttamente. Richiede `pillow-heif`, installato da `
 ### Aggiornamenti
 
 **Aiuto → Controlla aggiornamenti** confronta la tua versione con le informazioni su `openfocus.top`. Una versione più recente viene scaricata dallo stesso sito in background mentre l'applicazione è inattiva; una volta preparata la build, il banner e l'area di stato offrono **Riavvia e aggiorna**, che la applica offline. Le build che non possono aggiornarsi da sole aprono la pagina di download del sito. Il controllo automatico avviene in silenzio al massimo una volta al giorno.
+
+Su Windows l'aggiornamento prepara una versione candidata separata e sposta il marcatore portatile e `OpenFocusData` durante il passaggio. Se questo fallisce ripristina l'installazione precedente; se il ripristino non riesce, conserva il backup e non riavvia automaticamente. Può comparire una richiesta di autorizzazione. L'annullamento dell'estrazione elimina la preparazione incompleta ed è controllato tra letture e scritture da 256 KiB; un'operazione disco o rete bloccata può ritardarlo.
 
 ### Cache di registrazione
 
@@ -885,7 +891,7 @@ Ad esempio, aggiungi `--align openfocus --alignment-report alignment.json` a un 
 | `--input, -i` | Cartella/e di immagini, file video, uno o più file immagine o TIFF multipagina |
 | `--output, -o` | Percorso dell'immagine di output (l'estensione determina il formato) |
 | `--output-dir, -d` | Modalità batch: fonde ogni cartella di input scrivendo `<cartella>.png` per stack |
-| `--resume` | Modalità batch: salta le cartelle il cui output esiste già |
+| `--resume` | Salta la cartella solo se tutti i risultati richiesti sono file regolari non vuoti; non verifica contenuto o parametri |
 | `--config FILE` | Modalità batch: override JSON per cartella, ad es. `{"stackA": {"method": "dct"}}` |
 | `--method, -m` | `stackmffv3` (predefinito), `stackmffv2`, `stackmff`, `openfocus_a`, `openfocus_b`, `openfocus_c`, `guided_filter`, `dct`, `dtcwt`, `gfgfgf` |
 | `--param KEY=JSON_VALUE` | Imposta qualsiasi parametro di fusione; ripetibile e prevale sulle opzioni legacy |
@@ -1041,6 +1047,7 @@ Codici di uscita: `0` successo, `1` errore di elaborazione, `2` errore d'uso. `p
 
 #### IA non disponibile
 
+- Attiva e conferma le funzioni sperimentali nelle impostazioni avanzate; senza questa scelta i metodi IA desktop sono disabilitati. Runtime e modello sono requisiti separati.
 - Controlla ONNX Runtime e il modello incluso.
 - Controlla in **Aiuto → Informazioni sull'ambiente**
 

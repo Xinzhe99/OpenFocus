@@ -43,6 +43,8 @@ class _Host:
         self.transform_manager = _TransformManager()
         self._capture_scalebar_state = lambda: {}
         self._capture_parameter_state = lambda: {}
+        self._project_dirty = False
+        self._mark_project_dirty = lambda: setattr(self, '_project_dirty', True)
 
 
 def _capture(host):
@@ -68,6 +70,7 @@ def test_exif_snapshot_follows_each_stack_revision():
 
     _restore(host, before)
     assert host.raw_images[0] is first
+    assert host._project_dirty
     assert host.image_source_exifs == [b"first-exif"]
 
     _restore(host, after)
@@ -84,3 +87,59 @@ def test_restore_keeps_exif_aligned_with_the_snapshot_paths():
     _restore(host, state)
     assert host.image_source_paths == ["/same/frame.tif"]
     assert host.image_source_exifs == [b"old"]
+
+
+def test_multi_delete_preserves_metadata_and_rejects_changed_stack(monkeypatch):
+    from controllers import source_manager
+    from PyQt6.QtWidgets import QMessageBox
+    from utils import ui_utils
+
+    class Selection:
+        def selectedItems(self):
+            return [1, 3]
+
+        def row(self, item):
+            return item
+
+    class Confirm:
+        Icon = QMessageBox.Icon
+        StandardButton = QMessageBox.StandardButton
+        hook = None
+
+        def __init__(self, *_args):
+            pass
+
+        def setIcon(self, *_args): pass
+        def setWindowTitle(self, *_args): pass
+        def setText(self, *_args): pass
+        def setStandardButtons(self, *_args): pass
+
+        def exec(self):
+            if self.hook:
+                self.hook()
+            return self.StandardButton.Yes
+
+    monkeypatch.setattr(source_manager, 'QMessageBox', Confirm)
+    monkeypatch.setattr(ui_utils, 'style_message_box', lambda *_args: None)
+    images = [np.full((2, 2), i, np.uint8) for i in range(4)]
+    host = _Host(images[0], b'a')
+    host.raw_images = list(images)
+    host.base_images = list(images)
+    host.image_filenames = list('abcd')
+    host.image_source_paths = list('ABCD')
+    host.image_source_exifs = [b'a', b'b', b'c', b'd']
+    host.image_icc_profiles = [b'A', b'B', b'C', b'D']
+    host.file_list = Selection()
+    host.push_undo = lambda: None
+    host.statusBar = lambda: SimpleNamespace(showMessage=lambda *_args: None)
+    manager = source_manager.SourceManager(host)
+    manager.delete_selected_source_images()
+    assert host.image_filenames == ['a', 'c']
+    assert host.image_source_exifs == [b'a', b'c']
+    assert host.image_icc_profiles == [b'A', b'C']
+
+    host.raw_images = list(images)
+    host.image_filenames = list('abcd')
+    Confirm.hook = staticmethod(lambda: host.raw_images.reverse())
+    manager.delete_selected_source_images()
+    assert host.image_filenames == list('abcd')

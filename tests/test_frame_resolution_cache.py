@@ -424,3 +424,33 @@ def test_remembered_digest_still_rejects_a_mismatched_fingerprint(tmp_path, monk
             with pytest.raises(ValueError, match='source pixels changed'):
                 SourceFingerprint(cached.shape, cached.dtype.str, '0' * 64).validate_pixels(cached)
     assert len(hashed) == 1
+
+
+def test_cached_materialized_snapshot_retains_original_identity(tmp_path):
+    from core.source_frames import materialize_for_repeated_access, crop_frame
+    source = _source(tmp_path)
+    snapshot = materialize_for_repeated_access([source], required=True)[0]
+    crop = crop_frame(snapshot, 0, 0, 4, 4)
+    with cache_module.render_scope([snapshot, crop]):
+        first = snapshot.full_resolution()
+        np.testing.assert_array_equal(first, snapshot.full_resolution())
+        crop.full_resolution()
+        stamp = source.fingerprint[1] + 10_000_000_000
+        os.utime(source.path, ns=(stamp, stamp))
+        with pytest.raises(OSError):
+            snapshot.full_resolution()
+        with pytest.raises(OSError):
+            crop.full_resolution()
+
+
+def test_cache_discards_unpublished_store_on_cancellation(monkeypatch):
+    from core.registration import RegistrationCancelled
+    cancelled = []
+    def store(image, **kwargs):
+        cancelled.append(True)
+        return image.copy()
+    monkeypatch.setattr(frame_storage, 'store_frame', store)
+    cache = cache_module.ResolutionCache(1000)
+    with pytest.raises(RegistrationCancelled):
+        cache.put(object(), np.zeros((2, 2), np.uint8), should_cancel=lambda: bool(cancelled))
+    assert cache._used == 0 and not cache._entries

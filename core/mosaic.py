@@ -15,7 +15,8 @@ from core.mosaic_control import (MosaicControlPoint, optimize_control_points,
 from core.mosaic_projection import (CameraSpec, ProjectionSpec, PairObservation,
     undistort_points, seed_cameras, fit_cameras, camera_rays, rotation_matrix,
     project, source_coordinates, distort_points)
-from core.mosaic_seam import SeamSpec, LowSample, build_labels, label_weight
+from core.mosaic_seam import (SeamSpec, LowSample, build_labels, label_weight,
+                              _label_blocks, _LABEL_BLOCK_PIXELS)
 from core.mosaic_blend import expanded_tile, blend_tiles
 from core.mosaic_photo import (PhotometricSpec, PhotoObservation,
     solve_photometric, apply_photometric_tile, linear_to_srgb,
@@ -932,6 +933,37 @@ def _hdr_low_groups(lows, groups, times, spec, response, directory, cancel,
     return tuple(result)
 
 
+def _planning_disk_bytes(low_boxes, low_shape, groups, spec, output_bytes):
+    areas = [(box[2] - box[0]) * (box[3] - box[1]) for box in low_boxes]
+    original = sum(areas) * 16
+    labels = math.prod(low_shape) * 2
+    peak = original
+    retained = 0
+    if spec.hdr.mode != 'off':
+        levels = max(1, spec.hdr.levels - int(math.log2(spec.seam.precision)))
+        grid = 1 << (levels - 1)
+        for group in groups:
+            x0 = min(low_boxes[i][0] for i in group) // grid * grid
+            y0 = min(low_boxes[i][1] for i in group) // grid * grid
+            x1 = min(low_shape[1], math.ceil(max(low_boxes[i][2] for i in group) / grid) * grid)
+            y1 = min(low_shape[0], math.ceil(max(low_boxes[i][3] for i in group) / grid) * grid)
+            merged = (x1 - x0) * (y1 - y0) * 16
+            peak = max(peak, original + retained + merged * len(group))
+            retained += merged
+    else:
+        retained = original
+    return max(peak, retained + labels, retained + labels + output_bytes)
+
+
+def _labels_have_holes(labels, cancel):
+    for key in _label_blocks(labels.shape):
+        _cancel(cancel)
+        with frame_region(labels, key) as block:
+            if np.any(block == 0):
+                return True
+    return False
+
+
 def plan_mosaic(frames, transforms, *, spec=RenderSpec(), alignment=None,
                 should_cancel=None, progress=None):
     try:
@@ -960,14 +992,15 @@ def plan_mosaic(frames, transforms, *, spec=RenderSpec(), alignment=None,
         has_alpha = spec.output.alpha == 'on' or (spec.output.alpha == 'auto' and (
             projection is not None or any(f.mask is not None or (f.image.ndim == 3
                 and f.image.shape[2] == 4) for f in frames)))
-        require_disk_space(size[0] * size[1] * (4 if has_alpha else 3) * dtype.itemsize
-                           + 64 * 1024**2, directory)
         p = spec.seam.precision
         low_shape = (math.ceil(size[1] / p), math.ceil(size[0] / p))
-        largest = max((math.prod((_low_box(b, origin, size, p)[3] - _low_box(b, origin, size, p)[1],
-                                _low_box(b, origin, size, p)[2] - _low_box(b, origin, size, p)[0]))
-                       for b in boxes), default=0)
-        require_memory(max(largest * 96, 128 * 256 * 128))
+        low_boxes = tuple(_low_box(box, origin, size, p) for box in boxes)
+        largest = max(((box[2] - box[0]) * (box[3] - box[1])
+                       for box in low_boxes), default=0)
+        output_bytes = size[0] * size[1] * 4 * dtype.itemsize
+        require_disk_space(_planning_disk_bytes(low_boxes, low_shape, groups, spec, output_bytes)
+                           + 64 * 1024**2, directory)
+        require_memory(max(largest * 96, 128 * 256 * 128, _LABEL_BLOCK_PIXELS))
         icc = resolve_icc_policy([frame.icc_profile for frame in frames], spec.output.icc_policy)
         if any(icc.convert_frames[i] and frame.image.dtype != np.uint8 for i, frame in enumerate(frames)):
             raise ValueError('Mixed 16-bit ICC conversion is unavailable; explicitly choose keep_first or drop')
@@ -994,7 +1027,7 @@ def plan_mosaic(frames, transforms, *, spec=RenderSpec(), alignment=None,
         if progress is not None:
             progress(3, 4)
         labels.flags.writeable = False
-        if spec.output.alpha == 'auto' and np.any(labels == 0):
+        if spec.output.alpha == 'auto' and _labels_have_holes(labels, should_cancel):
             has_alpha = True
             require_disk_space(size[0] * size[1] * 4 * dtype.itemsize + 64 * 1024**2, directory)
         if progress is not None:

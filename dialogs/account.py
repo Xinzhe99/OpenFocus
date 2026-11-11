@@ -2,7 +2,7 @@
 import threading
 from datetime import date
 
-from PyQt6.QtCore import QObject, QSize, QTimer, QUrl, QUrlQuery, Qt, pyqtSignal
+from PyQt6.QtCore import QObject, QSettings, QSize, QTimer, QUrl, QUrlQuery, Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QDesktopServices, QIcon, QPainter, QPixmap
 from PyQt6.QtWidgets import (QCheckBox, QDialog, QFrame, QHBoxLayout, QLabel,
                              QLineEdit, QPushButton, QVBoxLayout, QWidget)
@@ -67,6 +67,7 @@ class AccountDialog(QDialog):
         self._job = None
         self._operation = None
         self._cancel = threading.Event()
+        self._logout_settings_error = False
         self.setWindowTitle(trans.t('account_title'))
         self.setObjectName('accountDialog')
         self.setMinimumWidth(500)
@@ -281,9 +282,11 @@ class AccountDialog(QDialog):
     def _refresh_controls(self, busy=False):
         user = self.client.current_user() if self.client is not None else None
         signed_in = self.client is not None and self.client.is_signed_in()
-        self.form.setVisible(not signed_in)
-        self.form.setEnabled(not busy and self.client is not None)
-        self.logout_button.setVisible(signed_in)
+        pending = self.client is not None and getattr(self.client, 'logout_cleanup_pending', False)
+        self.form.setVisible(not signed_in and not pending)
+        self.form.setEnabled(not busy and self.client is not None and not pending)
+        self.logout_button.setVisible(signed_in or pending)
+        self.logout_button.setText(trans.t('account_cleanup_retry' if pending else 'account_sign_out'))
         self.center_button.setVisible(signed_in)
         self.logout_button.setEnabled(not busy)
         self.center_button.setEnabled(not busy)
@@ -293,6 +296,9 @@ class AccountDialog(QDialog):
         if signed_in:
             email = (user.get('email') or user.get('name') or trans.t('account_title')) if isinstance(user, dict) else trans.t('account_title')
             self.status.setText(trans.t('account_signed_in').format(email=email))
+            self.status.show()
+        elif pending:
+            self.status.setText(trans.t('account_cleanup_pending'))
             self.status.show()
         elif not busy:
             self.status.clear()
@@ -353,6 +359,14 @@ class AccountDialog(QDialog):
 
     def _logout(self):
         if self._job is None and self.client is not None:
+            from utils.settings_store import get_settings
+            try:
+                settings = get_settings()
+                settings.setValue('account/browser_sso_enabled', False)
+                settings.sync()
+                self._logout_settings_error = settings.status() != QSettings.Status.NoError
+            except Exception:
+                self._logout_settings_error = True
             self._start('logout', lambda _started: self.client.logout())
 
     def _finished(self, result, error):
@@ -363,34 +377,40 @@ class AccountDialog(QDialog):
             return
         if error is not None and error.category in ('terms_required', 'invalid_terms_version'):
             self.terms.setChecked(False)
-        if operation == 'logout' and self.client is not None and not self.client.is_signed_in():
-            from utils.settings_store import get_settings
-            get_settings().setValue('account/browser_sso_enabled', False)
         if error is not None:
             if operation == 'web_center' and error.category == 'timeout':
                 self._refresh_controls()
                 return
             self._refresh_controls()
-            self.status.setText(self._error_text(error))
+            self.status.setText(trans.t('account_cleanup_pending') if getattr(self.client, 'logout_cleanup_pending', False)
+                                else self._error_text(error))
+            if operation == 'logout' and self._logout_settings_error:
+                self.status.setText(self.status.text() + '\n' + trans.t('account_sso_settings_error'))
             self.status.show()
             return
+        report_cleanup_failed = False
         if operation == 'load':
             self.client = result
             self.window_main._account_client = result
-        elif operation in ('email', 'github', 'google'):
-            enable_disclosed_reports(self.window_main, result[1])
-            from utils.settings_store import get_settings
-            get_settings().setValue('account/browser_sso_enabled', True)
-        elif operation == 'browser':
-            enable_disclosed_reports(self.window_main, self.client.accepted_terms_version())
+        elif operation in ('email', 'github', 'google', 'browser'):
+            version = (self.client.accepted_terms_version() if operation == 'browser'
+                       else result[1])
+            try:
+                enable_disclosed_reports(self.window_main, version)
+            except Exception:
+                report_cleanup_failed = True
             from utils.settings_store import get_settings
             get_settings().setValue('account/browser_sso_enabled', True)
         self._refresh_controls()
+        if report_cleanup_failed:
+            self.status.setText(trans.t('report_cleanup_failed'))
+            self.status.show()
         if operation == 'web_center' and not result:
             self.status.setText(trans.t('account_generic_error'))
             self.status.show()
         if operation == 'logout':
-            self.status.setText(trans.t('account_signed_out'))
+            self.status.setText(trans.t('account_sso_settings_error') if self._logout_settings_error
+                                else trans.t('account_signed_out'))
             self.status.show()
 
     @staticmethod

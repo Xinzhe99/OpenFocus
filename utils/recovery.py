@@ -25,6 +25,8 @@ PENDING_RESTORE_FILE = "restore_pending.txt"
 def _base_dir() -> str:
     """Directory holding settings — portable-aware, so recovery data
     travels with a portable install exactly like the settings do."""
+    if os.environ.get("OPENFOCUS_DATA_DIR"):
+        return str(app_paths.user_data_dir())
     if app_paths.is_portable_mode():
         return app_paths.portable_data_dir()
     from utils.settings_store import get_settings
@@ -77,15 +79,17 @@ def write_snapshot(window) -> bool:
     """
     if not getattr(window, "raw_images", None):
         try:
-            if os.path.isfile(session_path()):
-                os.remove(session_path())
+            from utils.project_file import remove_project_snapshot
+            remove_project_snapshot(session_path())
             return True
         except OSError:
             return False
     try:
         from utils.project_file import save_project
         os.makedirs(recovery_dir(), exist_ok=True)
-        ok, _err = save_project(window, session_path())
+        document = {"version": 1, "project_path": str(getattr(window, "project_path", "") or ""),
+                    "dirty": bool(getattr(window, "_project_dirty", False))}
+        ok, _err = save_project(window, session_path(), recovery_document=document)
         return bool(ok)
     except Exception:
         return False

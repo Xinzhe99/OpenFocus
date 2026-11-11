@@ -231,11 +231,7 @@ def pyinstaller_args(name: str) -> list:
         "--version-file", "build/version_info.txt",
         "--additional-hooks-dir", "hooks",
         "--icon", "assets/OpenFocus.ico",
-        "--add-data", "assets;assets",
         "--add-data", "weights;weights",
-        "--add-data", "ui;ui",
-        "--add-data", "docs;docs",
-        "--collect-submodules", "PyQt6",
         "--collect-submodules", "fusion_methods",
         "--collect-submodules", "locales",
         "--hidden-import", "core.algorithm_adapters",
@@ -246,10 +242,9 @@ def pyinstaller_args(name: str) -> list:
         "--hidden-import", "PyQt6.QtGui",
         "--hidden-import", "PyQt6.QtWidgets",
         "--hidden-import", "PyQt6.QtNetwork",
-        "--collect-all", "scipy",
+        "--hidden-import", "PyQt6.QtSvg",
         "--copy-metadata", "imageio",
         "--collect-data", "dtcwt",
-        "--collect-all", "rawpy",
         "--collect-all", "torch",
         "--exclude-module", "torchvision",
         "--exclude-module", "torch.test",
@@ -408,6 +403,11 @@ def verify_bundle(name: str, bundle: str) -> None:
     internal = root / "_internal"
     torch_lib = internal / "torch" / "lib"
     errors = []
+    if __package__:
+        from .verify_frozen_resources import verify_resources
+    else:
+        from verify_frozen_resources import verify_resources
+    errors.extend(verify_resources(internal))
 
     if not (root / "OpenFocus.exe").is_file():
         errors.append("bundle has no OpenFocus.exe")
@@ -478,6 +478,8 @@ def verify_bundle(name: str, bundle: str) -> None:
         for error in errors:
             print(f"::error::{error}", file=sys.stderr)
         raise VariantError(f"{name}: bundled runtime verification failed")
+    _run([sys.executable, REPO_ROOT / "tools/frozen_cli_smoke.py",
+          "--executable", root.resolve() / "OpenFocus.exe"])
     print(f"{name}: source torch/accelerator DLLs and ROCm JIT resources "
           "where applicable are bundled and verified")
 

@@ -106,6 +106,9 @@ class BatchProcessingDialog(QDialog):
         self._import_worker = None
         self._import_generation = 0
         self._import_busy = False
+        self._import_callbacks = {}
+        self._pending_thumbnails = []
+        self._invalid_thumbnail_paths = set()
 
         
         # Dark palette only in dark mode: hard-coding it showed a dark slab in
@@ -501,6 +504,7 @@ class BatchProcessingDialog(QDialog):
         self.flat_field_path = QLineEdit()
         self.flat_field_path.setPlaceholderText(trans.t('dust_no_file'))
         self.flat_field_path.setToolTip(trans.t('batch_flat_field_hint'))
+        self.flat_field_path.textChanged.connect(self.update_single_folder_preview)
         flat_row.addWidget(self.flat_field_path, 1)
         flat_browse = QPushButton(trans.t('dust_browse'))
         flat_browse.clicked.connect(self._browse_flat_field)
@@ -513,6 +517,7 @@ class BatchProcessingDialog(QDialog):
             getattr(self.parent_window, 'sensor_denoise', False), show_scope=False)
         options_layout.addWidget(self.sensor_cleanup)
         self.sensor_cleanup.path.textChanged.connect(lambda: self.update_single_folder_preview())
+        self.finished.connect(lambda _result: self.sensor_cleanup.stop_inspection())
 
         last_dir = self._last_pick_dir()
         if last_dir:
@@ -802,11 +807,13 @@ class BatchProcessingDialog(QDialog):
             scale_factor=(self.load_scale_factor if scale_factor is None
                           else scale_factor),
             sort_by=sort_by,
-            exclude_paths=[self.sensor_cleanup.path.text().strip()] if self.sensor_cleanup.path.text().strip() else [],
+            exclude_paths=([self.sensor_cleanup.path.text().strip()]
+                           if mode == 'thumbnails' and self.sensor_cleanup.path.text().strip() else []),
             thread_count=self._runtime_settings.get('thread_count', 0),
             resource_preference=self._runtime_settings.get(
                 'resource_preference', 'balanced'),
         )
+        worker.import_generation = self._import_generation
         self._import_worker = worker
         self._import_busy = True
         self._import_callbacks = {'thumbnails': on_thumbnails,
@@ -825,28 +832,35 @@ class BatchProcessingDialog(QDialog):
         worker.start()
         return True
 
+    def _active_import_sender(self):
+        worker = self.sender()
+        return (worker is not None and worker is self._import_worker and
+                getattr(worker, 'import_generation', None) == self._import_generation)
+
     def _on_import_folders_ready(self, results) -> None:
-        callback = self._import_callbacks.get('thumbnails')
-        self._import_busy = False
-        self._set_import_busy(False)
+        if not self._active_import_sender():
+            return
+        callback = self._import_callbacks.pop('thumbnails', None)
         if callback is not None:
-            callback(results)
+            callback([(path, image) for path, image in results
+                      if path not in self._invalid_thumbnail_paths])
 
     def _on_import_stack_ready(self, folder, entries, message) -> None:
-        callback = self._import_callbacks.get('stack')
-        self._import_busy = False
-        self._set_import_busy(False)
+        if not self._active_import_sender():
+            return
+        callback = self._import_callbacks.pop('stack', None)
         if callback is not None:
             callback(folder, entries, message)
 
     def _on_import_finished(self) -> None:
-        worker = self.sender()
-        if worker is not self._import_worker:
+        if not self._active_import_sender():
             return
         self._import_worker = None
         self._import_callbacks = {}
         self._import_busy = False
-        self._set_import_busy(False)
+        self._invalid_thumbnail_paths.clear()
+        self._pump_folder_thumbnails()
+        self._set_import_busy(self._import_busy)
 
     def _set_import_busy(self, busy: bool) -> None:
         """Disable the actions that would need the data still decoding."""
@@ -865,6 +879,10 @@ class BatchProcessingDialog(QDialog):
         self._import_generation += 1
         self._import_busy = False
         self._import_worker = None
+        self._import_callbacks = {}
+        self._pending_thumbnails.clear()
+        self._invalid_thumbnail_paths.clear()
+        self._set_import_busy(False)
         if worker is not None:
             # The worker is tracked at module level, so it stays alive until
             # it really stops even if this dialog is being destroyed.
@@ -902,13 +920,19 @@ class BatchProcessingDialog(QDialog):
         dialog (validation, Start) sees the selection immediately; only the
         preview icon depends on the worker.
         """
-        pending = []
         for folder_path in folder_paths:
             if folder_path in self.folder_paths:
                 continue
             self.folder_paths.append(folder_path)
             self._append_folder_row(folder_path)
-            pending.append(folder_path)
+            self._pending_thumbnails.append(folder_path)
+        self._pump_folder_thumbnails()
+
+    def _pump_folder_thumbnails(self):
+        if self._import_busy:
+            return
+        pending = [path for path in self._pending_thumbnails if path in self.folder_paths]
+        self._pending_thumbnails.clear()
         if pending:
             self._start_import('thumbnails', folder_paths=pending,
                                on_thumbnails=self._apply_thumbnails)
@@ -918,7 +942,12 @@ class BatchProcessingDialog(QDialog):
         from core.image_loader import ImageStackLoader
         loader = ImageStackLoader()
         for folder_path, first in results:
-            if folder_path not in self.folder_paths or first is None:
+            if folder_path not in self.folder_paths:
+                continue
+            if first is None:
+                item = self.folder_list.item(self.folder_paths.index(folder_path))
+                if item is not None:
+                    item.setToolTip(trans.t('converter_no_preview'))
                 continue
             index = self.folder_paths.index(folder_path)
             thumbnail = loader.create_thumbnails([first], thumb_size=60)[0]
@@ -1000,7 +1029,10 @@ class BatchProcessingDialog(QDialog):
                       reverse=True)
         for row in rows:
             self.folder_list.takeItem(row)
-            self.folder_paths.pop(row)
+            path = self.folder_paths.pop(row)
+            self._pending_thumbnails = [p for p in self._pending_thumbnails if p != path]
+            if self._import_busy:
+                self._invalid_thumbnail_paths.add(path)
             if row < len(self.folder_thumbnails):
                 self.folder_thumbnails.pop(row)
         self._update_folder_placeholder()
@@ -1051,9 +1083,16 @@ class BatchProcessingDialog(QDialog):
         self.quality_value_label.setVisible(is_jpg)
         self.depth_hint.setVisible(format_text.upper() in ("JPG", "BMP"))
     
+    def _effective_single_folder_entries(self):
+        from utils.path_identity import same_path
+        references = (self.flat_field_path.text().strip(), self.sensor_cleanup.path.text().strip())
+        return [entry for entry in self.single_folder_images_with_times
+                if not any(ref and same_path(entry[0], ref) for ref in references)]
+
     def update_single_folder_preview(self):
         """更新单文件夹预览"""
         if not self.single_folder_images_with_times:
+            self.single_folder_stacks = []
             self.preview_label.setText(trans.t('batch_preview_no_folder'))
             return
         
@@ -1064,10 +1103,7 @@ class BatchProcessingDialog(QDialog):
         from core.image_loader import ImageStackLoader
         loader = ImageStackLoader()
         from utils.sorting import natural_sort_key
-        from utils.path_identity import same_path
-        mask_path = self.sensor_cleanup.path.text().strip()
-        entries = [item for item in self.single_folder_images_with_times
-                   if not mask_path or not same_path(item[0], mask_path)]
+        entries = self._effective_single_folder_entries()
         entries.sort(key=lambda item:
             natural_sort_key(item[3] if len(item) > 3 else item[0]) if split_method == 0 else
             (item[2] is None, item[2] or 0, natural_sort_key(item[3] if len(item) > 3 else item[0])))
@@ -1512,17 +1548,20 @@ class BatchProcessingDialog(QDialog):
             QMessageBox.warning(self, trans.t("msg_error"), problem)
             return
 
-        processing_settings = self.get_processing_settings()
         if import_mode == 'single_folder':
             self.update_single_folder_preview()
+            entries = self._effective_single_folder_entries()
+            if not entries or not self.single_folder_stacks:
+                QMessageBox.warning(self, trans.t('msg_no_folder_title'), trans.t('msg_no_folder_text'))
+                return
             if split_method == 'time_threshold':
                 from core.image_loader import ImageStackLoader
-                missing = ImageStackLoader.missing_timestamps(self.single_folder_images_with_times)
+                missing = ImageStackLoader.missing_timestamps(entries)
                 if missing:
                     QMessageBox.warning(self, trans.t('msg_error'),
                                         trans.t('batch_missing_times').format(n=missing))
                     return
-            if processing_settings['fusion_method'] != 'none' and any(
+            if (self.fusion_combo.currentData() or 'none') != 'none' and any(
                     len(stack) < 2 for stack in self.single_folder_stacks):
                 QMessageBox.warning(self, trans.t('msg_error'),
                                     trans.t('depth_need_two_frames').format(n=1))

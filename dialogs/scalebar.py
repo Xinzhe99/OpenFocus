@@ -10,8 +10,7 @@ from __future__ import annotations
 
 from typing import Optional
 import math
-from PyQt6.QtCore import QSignalBlocker
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import QSignalBlocker, QThread, QTimer, Qt
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
     QCheckBox,
@@ -43,6 +42,39 @@ from widgets.magnifier_label import MagnifierLabel
 CALIBRATION_METADATA = "metadata"
 CALIBRATION_MANUAL = "manual"
 
+class _PreviewWorker(QThread):
+    """Resolve and develop one bounded preview without touching Qt widgets."""
+    def __init__(self, frame, metadata, key):
+        super().__init__()
+        from utils.platform_utils import configure_native_worker_stack
+        configure_native_worker_stack(self)
+        self.frame, self.metadata, self.key = frame, metadata, key
+        self.pixels = None
+        self.error = None
+
+    def run(self):
+        try:
+            from core.resource_policy import heavy_job
+            from core.source_previews import render_source_region
+            from core.source_frames import ensure_preview
+            with heavy_job(self.isInterruptionRequested):
+                pixels = ensure_preview(self.frame, should_cancel=self.isInterruptionRequested)
+                if self.isInterruptionRequested():
+                    return
+                height, width = pixels.shape[:2]
+                scale = min(1.0, 1200.0 / max(width, height))
+                metadata = (self.metadata if not getattr(self.frame, "preview_is_display", False)
+                            and pixels.dtype == np.uint16 and pixels.ndim == 3
+                            and pixels.shape[2] == 3 else None)
+                self.pixels, _ = render_source_region(
+                    pixels, (0, 0, width, height),
+                    (max(1, round(width * scale) - 2), max(1, round(height * scale) - 2)), metadata)
+        except Exception as exc:
+            self.error = str(exc)
+        finally:
+            self.frame = None
+            self.metadata = None
+
 
 class ScaleBarDialog(QDialog):
     """Draft editor for calibration, placement, style and target."""
@@ -58,6 +90,19 @@ class ScaleBarDialog(QDialog):
             getattr(window, "current_scale_factor", 1.0) or 1.0)
         stored_manual = float(
             getattr(window, "scale_um_per_px_manual", 0.0) or 0.0)
+        self._pixel_worker = None
+        self._pixel_key = None
+        self._preview_cache = None
+        self._region_worker = None
+        self._region_pending = {}
+        self._preview_revision = 0
+        self._closing = False
+        self._accept_pending = False
+        self._displayed_record = None
+        self._preview_timer = QTimer(self)
+        self._preview_timer.setSingleShot(True)
+        self._preview_timer.setInterval(30)
+        self._preview_timer.timeout.connect(self._refresh_preview)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(14, 12, 14, 10)
@@ -220,7 +265,9 @@ class ScaleBarDialog(QDialog):
             for index in range(outputs.count()):
                 record = manager.record_for_row(index)
                 if record is not None and record.kind != "aligned":
-                    self.output_combo.addItem(record.label, record)
+                    suffix = (" · " + trans.t("scalebar_baked_marker")
+                              if getattr(record, "annotations_baked", False) else "")
+                    self.output_combo.addItem(record.label + suffix, record)
             current = manager.record_for_item(outputs.currentItem())
             for index in range(self.output_combo.count()):
                 if self.output_combo.itemData(index) is current:
@@ -341,10 +388,14 @@ class ScaleBarDialog(QDialog):
                        self.target_combo.currentIndexChanged,
                        self.custom_x.valueChanged,
                        self.custom_y.valueChanged):
-            signal.connect(self._refresh_preview)
-        self.frame_index.valueChanged.connect(self._refresh_preview)
+            signal.connect(self._schedule_preview)
+        self.frame_index.valueChanged.connect(self._schedule_preview)
+        self.preview_lbl.sourceRegionRequested.connect(self._request_region)
+        self.preview_lbl.sourceRegionsReleased.connect(self._release_regions)
         self.target_combo.currentIndexChanged.connect(self._target_changed)
         self.output_combo.currentIndexChanged.connect(self._target_changed)
+        self._drafts = {"stack": self._draft_values()}
+        self._draft_owner = None
         self._target_changed()
         if (self.calibration_mode() == CALIBRATION_METADATA
                 and self.effective_px_um() is None):
@@ -486,7 +537,9 @@ class ScaleBarDialog(QDialog):
             return metadata
         if self.target_combo.currentData() == "output":
             return None
-        return getattr(self.parent(), "linear_dng_metadata", None)
+        frame = self._preview_image()
+        metadata = getattr(frame, "linear_metadata", None)
+        return metadata if metadata is not None else getattr(self.parent(), "linear_dng_metadata", None)
 
     @staticmethod
     def _develop_preview(image, metadata):
@@ -498,38 +551,49 @@ class ScaleBarDialog(QDialog):
             return develop_linear(image, metadata)
         return image
 
+    def _draft_values(self):
+        values = self._draw_config()
+        values.update(mode=self.calibration_mode(), manual=self.manual_value(),
+                      detected=self._detected, work_scale=self._work_scale)
+        return values
+
     def _target_changed(self, *_args):
+        if self._draft_owner is not None:
+            self._drafts[self._draft_owner] = self._draft_values()
         record = self._target_record()
-        context = record.context if record is not None else None
-        self._detected = (context.source_px_um if context is not None
-                          else getattr(self.parent(), "source_px_um", None)
-                          if record is None else None)
-        self._work_scale = (context.source_scale_factor if context is not None
-                            else 1.0 if record is not None
-                            else float(getattr(self.parent(), "current_scale_factor", 1.0) or 1.0))
-        if record is not None and record.scale_bar_config:
-            cfg = record.scale_bar_config
-            controls = (self.mode_combo, self.px_spin, self.pos_combo,
-                        self.color_combo, self.font_combo, self.size_spin,
-                        self.bold_chk, self.align_combo, self.custom_x, self.custom_y)
-            blockers = [QSignalBlocker(control) for control in controls]
-            self.mode_combo.setCurrentIndex(self.mode_combo.findData(cfg.get("mode", CALIBRATION_MANUAL)))
-            # Adapt the precision BEFORE setValue: QDoubleSpinBox rounds to
-            # its current decimals, so a stored 0.0008 µm/px used to become
-            # 0.00 when the previous target needed only two decimals.
-            manual = (cfg["manual"] if "manual" in cfg
-                      else cfg["px_um"] * self._work_scale)
-            self._adapt_px_decimals(manual)
-            self.px_spin.setValue(manual)
-            self.pos_combo.setCurrentIndex(self.pos_combo.findData(cfg["position"]))
-            self.color_combo.setCurrentIndex(self.color_combo.findData(cfg["color"]))
-            self.font_combo.setCurrentFont(QFont(cfg.get("font_family") or self.font().family()))
-            self.size_spin.setValue(cfg.get("font_size", 0.0))
-            self.bold_chk.setChecked(cfg.get("font_bold", False))
-            self.align_combo.setCurrentIndex(self.align_combo.findData(cfg.get("text_align", "auto")))
-            self.custom_x.setValue(int(cfg.get("custom_x", 0.95) * 100))
-            self.custom_y.setValue(int(cfg.get("custom_y", 0.95) * 100))
-            del blockers
+        owner = ("output", record.output_id) if record is not None else "stack"
+        if owner not in self._drafts:
+            context = getattr(record, "context", None)
+            detected = getattr(context, "source_px_um", None)
+            work_scale = getattr(context, "source_scale_factor", 1.0) or 1.0
+            cfg = dict(getattr(record, "scale_bar_config", None) or {})
+            draft = dict(self._drafts["stack"])
+            draft.update(cfg)
+            draft["detected"] = detected
+            draft["work_scale"] = work_scale
+            draft["manual"] = cfg.get("manual", (cfg.get("px_um") or 0.0) * work_scale)
+            draft["mode"] = cfg.get("mode", CALIBRATION_MANUAL if draft["manual"] else CALIBRATION_METADATA)
+            self._drafts[owner] = draft
+        self._draft_owner = owner
+        cfg = self._drafts[owner]
+        self._detected = cfg["detected"]
+        self._work_scale = cfg["work_scale"]
+        controls = (self.mode_combo, self.px_spin, self.pos_combo,
+                    self.color_combo, self.font_combo, self.size_spin,
+                    self.bold_chk, self.align_combo, self.custom_x, self.custom_y)
+        blockers = [QSignalBlocker(control) for control in controls]
+        self.mode_combo.setCurrentIndex(self.mode_combo.findData(cfg["mode"]))
+        self._adapt_px_decimals(cfg["manual"])
+        self.px_spin.setValue(cfg["manual"])
+        self.pos_combo.setCurrentIndex(self.pos_combo.findData(cfg["position"]))
+        self.color_combo.setCurrentIndex(self.color_combo.findData(cfg["color"]))
+        self.font_combo.setCurrentFont(QFont(cfg.get("font_family") or self.font().family()))
+        self.size_spin.setValue(cfg.get("font_size", 0.0))
+        self.bold_chk.setChecked(cfg.get("font_bold", False))
+        self.align_combo.setCurrentIndex(self.align_combo.findData(cfg.get("text_align", "auto")))
+        self.custom_x.setValue(int(cfg.get("custom_x", 0.95) * 100))
+        self.custom_y.setValue(int(cfg.get("custom_y", 0.95) * 100))
+        del blockers
         self._target_form.setRowVisible(
             self.output_combo,
             self.output_combo.count() > 0
@@ -569,6 +633,144 @@ class ScaleBarDialog(QDialog):
                     custom_x=self.custom_x.value() / 100.0,
                     custom_y=self.custom_y.value() / 100.0)
 
+    def _stack_draft_valid(self):
+        frames = getattr(self.parent(), "raw_images", ()) or ()
+        if not frames:
+            return False
+        draft = self._draft_values() if self._draft_owner == "stack" else self._drafts["stack"]
+        if draft["mode"] == CALIBRATION_MANUAL:
+            px_um = draft["manual"] / (draft["work_scale"] or 1.0)
+        else:
+            px_um = draft["detected"]
+        if not px_um or not math.isfinite(px_um) or px_um <= 0:
+            return False
+        height, width = frames[0].shape[:2]
+        cfg = self._draw_config()
+        cfg["px_um"] = px_um
+        _, info = scalebar.draw_scale_bar_ex(
+            np.zeros((1, 1, 3), dtype=np.uint8), **cfg,
+            canvas_size=(width, height), region_mean=lambda _rect: 128.0)
+        return not info["too_small"] and info["bar_px"] is not None
+
+    def _schedule_preview(self, *_args):
+        if self._closing:
+            return
+        self._preview_revision += 1
+        if self._region_worker is not None:
+            self._region_worker.request_cancel()
+        self._region_pending.clear()
+        self._ok_button.setEnabled(False)
+        self._preview_timer.start()
+
+    def _start_pixels(self, image, key):
+        self._pixel_key = key
+        if self._pixel_worker is not None:
+            if self._pixel_worker.key != key:
+                self._pixel_worker.requestInterruption()
+            return
+        worker = _PreviewWorker(image, self._preview_metadata(), key)
+        self._pixel_worker = worker
+        def finished():
+            self._pixel_worker = None
+            if not self._closing and worker.key == self._pixel_key:
+                if worker.error:
+                    self._preview_cache = (worker.key, None, worker.error)
+                elif worker.pixels is not None:
+                    self._preview_cache = (worker.key, worker.pixels, None)
+            worker.deleteLater()
+            if self._closing:
+                self._finish_close()
+            else:
+                self._schedule_preview()
+        worker.finished.connect(finished)
+        worker.start()
+
+    def _release_regions(self, key):
+        if self._region_worker is not None and self._region_worker.key == key:
+            self._region_worker.request_cancel()
+        self._region_pending.clear()
+
+    def _request_region(self, key, request):
+        if self._closing or key != self.preview_lbl._source_key:
+            return
+        if request[0] == "view" and self.preview_lbl._zoom_factor <= 1.0:
+            return
+        worker = self._region_worker
+        if worker is not None:
+            if worker.key == key and not worker.cancelled:
+                worker.submit(request)
+            else:
+                self._region_pending[request[0]] = (key, request)
+            return
+        image = self._preview_image()
+        if image is None or id(image) != key[1]:
+            return
+        from core.source_previews import SourceRegionWorker
+        record = self._target_record()
+        baked = bool(record is not None and getattr(record, "annotations_baked", False))
+        cfg = None if baked else self._draw_config()
+        worker = SourceRegionWorker(image, key, scale_cfg=cfg,
+                                    metadata=self._preview_metadata(), develop=not baked)
+        self._region_worker = worker
+        def ready(source_key, completed, pixels, rect):
+            if (not self._closing and pixels is not None
+                    and source_key[2] == self._preview_revision):
+                self.preview_lbl.set_source_region(cv2_to_pixmap(pixels), rect,
+                                                   source_key=source_key, request=completed)
+        def failed(source_key, message):
+            if (not self._closing and source_key == self.preview_lbl._source_key
+                    and source_key[2] == self._preview_revision):
+                self._ok_button.setEnabled(False)
+                self._error.setText(message)
+        def finished():
+            self._region_worker = None
+            worker.deleteLater()
+            if self._closing:
+                self._finish_close()
+            else:
+                pending = list(self._region_pending.values())
+                self._region_pending.clear()
+                for source_key, item in pending:
+                    self._request_region(source_key, item)
+        worker.ready.connect(ready)
+        worker.failed.connect(failed)
+        worker.finished.connect(finished)
+        worker.submit(request)
+        worker.start()
+
+    def shutdown_running(self):
+        self._closing = True
+        self._preview_timer.stop()
+        self._pixel_key = None
+        self._region_pending.clear()
+        if self._pixel_worker is not None:
+            self._pixel_worker.requestInterruption()
+        if self._region_worker is not None:
+            self._region_worker.request_cancel()
+        return self._pixel_worker is not None or self._region_worker is not None
+
+    def _finish_close(self):
+        if self._closing and self._pixel_worker is None and self._region_worker is None:
+            if self._accept_pending:
+                super().accept()
+            else:
+                super().reject()
+
+    def reject(self):
+        if not self.shutdown_running():
+            super().reject()
+
+    def accept(self):
+        self._accept_pending = True
+        if not self.shutdown_running():
+            super().accept()
+
+    def closeEvent(self, event):
+        if self.shutdown_running():
+            event.ignore()
+        else:
+            super().closeEvent(event)
+
     def _refresh_preview(self, *_args):
         image = self._preview_image()
         px_um = self.effective_px_um()
@@ -586,23 +788,66 @@ class ScaleBarDialog(QDialog):
             self.preview_lbl.clear()
             self._error.setText(trans.t("label_preview_no_target"))
             return
-        if image.ndim == 3 and image.shape[2] == 4:
-            self.preview_lbl.set_display_pixmap(cv2_to_pixmap(image))
+        height, width = image.shape[:2]
+        key = (self.target_combo.currentData(), id(image),
+               getattr(self._target_record(), "output_id", None), id(self._preview_metadata()))
+        if self._preview_cache is None or self._preview_cache[0] != key:
+            self._start_pixels(image, key)
+            return
+        _, display, error = self._preview_cache
+        if error is not None:
+            self._error.setText(error)
+            return
+        if len(image.shape) == 3 and image.shape[2] == 4:
             self._error.setText(trans.t('transparent_desktop_unsupported').format(path=''))
             return
-        image = self._develop_preview(image, self._preview_metadata())
-        height, width = image.shape[:2]
+        native_image = image
+        image = display
         name = self._target_record().label if self._target_record() else self.target_combo.currentText()
         self.header.setText(name + " · " + trans.t("scalebar_header").format(
             frames=len(getattr(self.parent(), "raw_images", ()) or ()),
             outputs=self.output_combo.count(), width=width, height=height,
-            depth=image.dtype.itemsize * 8, scale=f"{self._work_scale * 100:g}"))
+            depth=native_image.dtype.itemsize * 8, scale=f"{self._work_scale * 100:g}"))
+        record = self._target_record()
+        self._displayed_record = (record, bool(record is not None and
+                                                getattr(record, "annotations_baked", False)))
+        if record is not None and getattr(record, "annotations_baked", False):
+            pixmap = cv2_to_pixmap(image)
+            if pixmap.isNull():
+                self._error.setText(trans.t("msg_save_failed_text"))
+                return
+            self.preview_lbl.set_display_pixmap(pixmap, source_size=(width, height),
+                source_key=(self.target_combo.currentData(), id(native_image), self._preview_revision))
+            self._error.setText(trans.t("scalebar_baked_notice"))
+            if self.target_combo.currentData() == "all":
+                try:
+                    self._ok_button.setEnabled(self._stack_draft_valid())
+                except Exception as exc:
+                    self._error.setText(str(exc))
+            return
         drawn = image
         if px_um is None:
             self._error.setText(trans.t("scalebar_not_calibrated"))
         else:
-            drawn, info = scalebar.draw_scale_bar_ex(image, **self._draw_config())
+            scale = image.shape[1] / width
+            def preview_mean(rect):
+                x, y, w, h = rect
+                return scalebar._region_mean(image, round(x * scale), round(y * scale),
+                                             round((x + w) * scale), round((y + h) * scale))
+            try:
+                drawn, info = scalebar.draw_scale_bar_ex(
+                    image, **self._draw_config(), canvas_size=(width, height),
+                    render_scale=scale, region_mean=preview_mean)
+            except Exception as exc:
+                self._error.setText(str(exc))
+                return
             valid = not info["too_small"] and info["bar_px"] is not None
+            if valid and self.target_combo.currentData() == "all":
+                try:
+                    valid = self._stack_draft_valid()
+                except Exception as exc:
+                    self._error.setText(str(exc))
+                    return
             self._ok_button.setEnabled(valid)
             self._error.setText("" if valid else trans.t("scalebar_too_small"))
             if info["substituted_font"]:
@@ -610,15 +855,22 @@ class ScaleBarDialog(QDialog):
             if valid:
                 self.preview_meta.setText(trans.t("scalebar_preview_meta").format(
                     length=scalebar.format_length(info["bar_um"]), px=info["bar_px"]))
-        self.preview_lbl.set_display_pixmap(cv2_to_pixmap(to_display_uint8(drawn)))
+        pixmap = cv2_to_pixmap(drawn)
+        if pixmap.isNull():
+            self._ok_button.setEnabled(False)
+            self._error.setText(trans.t("msg_save_failed_text"))
+            return
+        self.preview_lbl.set_display_pixmap(pixmap, source_size=(width, height),
+            source_key=(self.target_combo.currentData(), id(native_image), self._preview_revision))
 
     def _actual_size(self):
         pixmap = self.preview_lbl._base_pixmap
         if pixmap is None:
             return
-        fit = min(self.preview_lbl.width() / pixmap.width(),
-                  self.preview_lbl.height() / pixmap.height())
-        self.preview_lbl._zoom_factor = 1.0 / max(fit, 1e-9)
+        source = self.preview_lbl._source_size
+        fit = min(self.preview_lbl.width() / source.width(),
+                  self.preview_lbl.height() / source.height())
+        self.preview_lbl._zoom_factor = 1.0 / max(fit * self.preview_lbl.devicePixelRatioF(), 1e-9)
         self.preview_lbl.refresh_display()
 
     # ------------------------------------------------------------------
@@ -629,49 +881,85 @@ class ScaleBarDialog(QDialog):
         if parent is None:
             self.accept()
             return
+        current = self._target_record()
+        if (self._displayed_record is not None and current is self._displayed_record[0]
+                and not self._displayed_record[1] and current is not None
+                and getattr(current, "annotations_baked", False)):
+            self._error.setText(trans.t("scalebar_baked_notice"))
+            return
         self._refresh_preview()
         if not self._ok_button.isEnabled():
             return
-        effective = self.effective_px_um()
-        if effective is None:
-            self._error.setText(trans.t("scalebar_not_calibrated"))
+        target = self.target_combo.currentData()
+        record = self._target_record()
+        baked = bool(record is not None and getattr(record, "annotations_baked", False))
+        if target == "output" and (record is None or baked):
+            self._error.setText(trans.t("scalebar_baked_notice"))
             return
-        previous = scalebar.capture_state(parent)
-
-        parent.scale_bar_enabled = True
-        # Store the manual value in ORIGINAL pixel units; the drawing path
-        # converts it with the current working scale.
-        parent.scale_um_per_px_manual = (
-            self.manual_value()
-            if self.calibration_mode() == CALIBRATION_MANUAL else 0.0)
-        parent.scale_bar_position = self.pos_combo.currentData()
-        parent.scale_bar_color = self.color_combo.currentData()
-        parent.scale_bar_font_family = self._font_family()
-        parent.scale_bar_font_size = float(self.size_spin.value() or 0.0)
-        parent.scale_bar_font_bold = self.bold_chk.isChecked()
-        parent.scale_bar_text_align = self.align_combo.currentData()
-        parent.scale_bar_target = self.target_combo.currentData()
-        parent.scale_bar_custom_x = self.custom_x.value() / 100.0
-        parent.scale_bar_custom_y = self.custom_y.value() / 100.0
-        manager = getattr(parent, "output_manager", None)
-        if manager is not None and self.target_combo.currentData() in ("all", "output"):
-            record = self._target_record()
-            if record is not None:
-                record.scale_bar_config = self._draw_config()
-                record.scale_bar_config.update(mode=self.calibration_mode(),
-                                                manual=self.manual_value())
-                record.scale_bar_initialized = True
-
+        if record is not None:
+            manager = getattr(parent, "output_manager", None)
+            outputs = getattr(parent, "output_list", None)
+            if (manager is None or outputs is None or not any(
+                    manager.record_for_row(row) is record for row in range(outputs.count()))):
+                self._error.setText(trans.t("label_preview_no_target"))
+                return
+        self._drafts[self._draft_owner] = self._draft_values()
+        stack = self._drafts["stack"]
         try:
+            previous = scalebar.capture_state(parent)
+            candidate = dict(previous)
+            if "outputs" in previous:
+                candidate["outputs"] = dict(previous["outputs"])
+            if target != "output":
+                manual = stack["manual"] if stack["mode"] == CALIBRATION_MANUAL else 0.0
+                candidate.update(enabled=True, manual=manual,
+                                 position=self.pos_combo.currentData(),
+                                 color=self.color_combo.currentData(),
+                                 font_family=self._font_family(),
+                                 font_size=float(self.size_spin.value()),
+                                 font_bold=self.bold_chk.isChecked(),
+                                 text_align=self.align_combo.currentData(), target=target,
+                                 custom_x=self.custom_x.value() / 100.0,
+                                 custom_y=self.custom_y.value() / 100.0)
+            if target in ("output", "all") and record is not None and not baked:
+                cfg = self._draw_config()
+                cfg.update(mode=self.calibration_mode(), manual=self.manual_value())
+                candidate.setdefault("outputs", {})[record.output_id] = {"config": cfg, "initialized": True}
+            if candidate == previous:
+                self.accept()
+                return
+            prepared = (parent.prepare_scalebar_undo(previous)
+                        if hasattr(parent, "prepare_scalebar_undo") else None)
+            history = {name: list(getattr(parent, name)) for name in ("_undo_stack", "_redo_stack")
+                       if hasattr(parent, name)}
+            dirty = getattr(parent, "_project_dirty", None)
+            published = True
+            scalebar.restore_state(parent, candidate)
             if hasattr(parent, "persist_settings"):
                 parent.persist_settings()
             if hasattr(parent, "push_scalebar_undo"):
-                parent.push_scalebar_undo(previous)
+                if hasattr(parent, "prepare_scalebar_undo"):
+                    parent.push_scalebar_undo(previous, prepared=prepared)
+                else:
+                    parent.push_scalebar_undo(previous)
             elif hasattr(parent, "_mark_project_dirty"):
                 parent._mark_project_dirty()
-        except Exception:
-            scalebar.restore_state(parent, previous)
-            self._error.setText(trans.t("msg_save_failed_text"))
+        except Exception as exc:
+            if locals().get('published', False):
+                scalebar.restore_state(parent, previous)
+            for name, values in locals().get('history', {}).items():
+                getattr(parent, name)[:] = values
+            if 'dirty' in locals() and dirty is not None:
+                parent._project_dirty = dirty
+            if hasattr(parent, "_update_project_title"):
+                parent._update_project_title()
+            try:
+                if locals().get('published', False) and hasattr(parent, "persist_settings"):
+                    parent.persist_settings()
+            except Exception as restore_exc:
+                self._error.setText(f"{trans.t('msg_save_failed_text')} {exc}; {restore_exc}")
+                return
+            self._error.setText(f"{trans.t('msg_save_failed_text')} {exc}")
             return
         try:
             from utils import recovery

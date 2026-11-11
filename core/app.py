@@ -74,6 +74,73 @@ class PlatformFileHandler:
         return result
 
 
+def _process_explorer_import(window, paths):
+    """Import a strict selection of folders and images as one stack."""
+    src = window.source_manager
+    if len(paths) == 1 and os.path.isdir(paths[0]):
+        src.load_image_stack_from_icon(paths[0])
+        return
+    from utils.sorting import natural_sort_key
+    files = []
+    for path in paths:
+        path = PlatformFileHandler.normalize(path)
+        if os.path.isdir(path):
+            try:
+                with os.scandir(path):
+                    pass
+                files.extend(sorted(src._folder_import_paths(path, strict=True), key=natural_sort_key))
+            except OSError as exc:
+                from utils import show_warning_box
+                from locales import trans
+                show_warning_box(window, trans.t('msg_load_failed'), str(exc))
+                return
+        elif os.path.isfile(path) and PlatformFileHandler.is_image(path):
+            files.append(path)
+        else:
+            from utils import show_warning_box
+            from locales import trans
+            show_warning_box(window, trans.t('msg_load_failed'), path)
+            return
+    if files:
+        src.load_image_files_from_icon(files)
+    else:
+        from utils import show_warning_box
+        from locales import trans
+        show_warning_box(window, trans.t('msg_no_valid_files_title'),
+                         trans.t('msg_no_valid_files_text'))
+
+
+def _dispatch_external_import(window, paths):
+    """Dispatch a complete external selection without dropping media."""
+    src = window.source_manager
+    c = PlatformFileHandler.classify(paths)
+    if c['videos'] and (len(c['videos']) > 1 or c['dirs'] or c['images'] or c['other']):
+        from utils import show_warning_box
+        from locales import trans
+        involved = c['dirs'] + c['videos'] + c['images'] + c['other']
+        show_warning_box(window, trans.t('msg_load_failed'),
+                         trans.t('msg_external_import_video_combination') + '\n\n'
+                         + '\n'.join(involved))
+    elif c['dirs'] and c['images']:
+        selected = set(c['dirs'] + c['images'])
+        ordered = [PlatformFileHandler.normalize(path) for path in paths]
+        _process_explorer_import(window, [path for path in ordered if path in selected])
+    elif c['dirs']:
+        if len(c['dirs']) == 1 and not c['other']:
+            src.load_image_stack_from_icon(c['dirs'][0])
+        else:
+            src.load_multiple_folders_from_icon(c['dirs'])
+    elif c['videos']:
+        src.load_video_stack_from_icon(c['videos'][0])
+    elif c['images']:
+        src.load_image_files_from_icon(c['images'])
+    else:
+        from utils import show_warning_box
+        from locales import trans
+        show_warning_box(window, trans.t('msg_no_valid_files_title'),
+                         trans.t('msg_no_valid_files_text'))
+
+
 class OpenFocusApplication(QApplication):
     """QApplication subclass handling file open events from platform sources."""
 
@@ -184,38 +251,7 @@ class OpenFocusApplication(QApplication):
 
     def _process_explorer(self, paths):
         """Import all selected folders and image files as one stack."""
-        src = self.main_window.source_manager
-        if len(paths) == 1 and os.path.isdir(paths[0]):
-            src.load_image_stack_from_icon(paths[0])
-            return
-        from utils.sorting import natural_sort_key
-        files = []
-        for path in paths:
-            path = PlatformFileHandler.normalize(path)
-            if os.path.isdir(path):
-                try:
-                    with os.scandir(path):
-                        pass
-                except OSError as exc:
-                    from utils import show_warning_box
-                    from locales import trans
-                    show_warning_box(self.main_window, trans.t('msg_load_failed'), str(exc))
-                    return
-                files.extend(sorted(src._folder_import_paths(path), key=natural_sort_key))
-            elif os.path.isfile(path) and PlatformFileHandler.is_image(path):
-                files.append(path)
-            else:
-                from utils import show_warning_box
-                from locales import trans
-                show_warning_box(self.main_window, trans.t('msg_load_failed'), path)
-                return
-        if files:
-            src.load_image_files_from_icon(files)
-        else:
-            from utils import show_warning_box
-            from locales import trans
-            show_warning_box(self.main_window, trans.t('msg_no_valid_files_title'),
-                             trans.t('msg_no_valid_files_text'))
+        _process_explorer_import(self.main_window, paths)
 
     def _process(self, paths: List[str]):
         if (not self._ready or not self.main_window
@@ -224,26 +260,7 @@ class OpenFocusApplication(QApplication):
         if not hasattr(self.main_window, 'source_manager'):
             return
 
-        src = self.main_window.source_manager
-        c = PlatformFileHandler.classify(paths)
-        files = c['videos'] + c['images'] + c['other']
-
-        if len(c['dirs']) == 1 and not files:
-            src.load_image_stack_from_icon(c['dirs'][0])
-        elif c['dirs']:
-            src.load_multiple_folders_from_icon(c['dirs'])
-        elif len(c['videos']) == 1 and not c['images']:
-            src.load_video_stack_from_icon(c['videos'][0])
-        elif c['images']:
-            src.load_image_files_from_icon(c['images'])
-        else:
-            from utils import show_warning_box
-            from locales import trans
-            show_warning_box(
-                self.main_window,
-                trans.t("msg_no_valid_files_title"),
-                trans.t("msg_no_valid_files_text"),
-            )
+        _dispatch_external_import(self.main_window, paths)
 
 
 def process_command_line_args(main_window, args: List[str]):
@@ -263,17 +280,6 @@ def process_command_line_args(main_window, args: List[str]):
         if (getattr(main_window, '_shutting_down', False)
                 or not hasattr(main_window, 'source_manager')):
             return
-        c = PlatformFileHandler.classify(file_paths)
-        src = main_window.source_manager
-        files = c['videos'] + c['images'] + c['other']
-
-        if len(c['dirs']) == 1 and not files:
-            src.load_image_stack_from_icon(c['dirs'][0])
-        elif c['dirs']:
-            src.load_multiple_folders_from_icon(c['dirs'])
-        elif len(c['videos']) == 1 and not c['images']:
-            src.load_video_stack_from_icon(c['videos'][0])
-        elif c['images']:
-            src.load_image_files_from_icon(c['images'])
+        _dispatch_external_import(main_window, file_paths)
 
     QTimer.singleShot(100, _delayed)

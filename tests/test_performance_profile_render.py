@@ -84,7 +84,7 @@ def test_failed_render_keeps_original_error(monkeypatch):
 
 
 @pytest.fixture
-def scratch(tmp_path, monkeypatch):
+def scratch(tmp_path, monkeypatch, isolated_render_workers):
     from core import frame_storage
     directory = tmp_path / 'scratch'
     directory.mkdir()
@@ -114,6 +114,7 @@ def test_spawned_render_relays_report_to_the_gui_process(qapp, scratch):
     worker.error_signal.connect(errors.append)
     worker.start()
     _wait(worker, qapp)
+    assert list((scratch.parent / 'logs').glob('openfocus-*.log'))
     assert not errors and results
     report = worker.performance_report
     assert report['outcome'] == 'completed'

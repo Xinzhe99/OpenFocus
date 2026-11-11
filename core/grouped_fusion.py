@@ -6,20 +6,33 @@ cannot produce a per-source depth map or provenance. The callback is
 responsible for admitting its own algorithm-specific working memory.
 """
 
+from contextlib import contextmanager
 import math
 import os
-import shutil
 import tempfile
 
 import numpy as np
 from PIL import Image
 
 from core import resource_policy
-from core.frame_storage import storage_directory
+from core.frame_storage import require_disk_space, storage_directory
 from core.image_loader import RAW_FORMATS, _downscale_page, decode_image, is_raw_source, tiff_source_pages
 from core.registration import RegistrationCancelled
 from utils.image_utils import get_imwrite_params, imwrite_auto, read_image_exif
 
+
+
+@contextmanager
+def _grouped_scratch():
+    from core import scratch_registry
+    paths = []
+    try:
+        with tempfile.TemporaryDirectory(prefix='openfocus-grouped-', dir=storage_directory()) as directory:
+            paths.append(directory)
+            scratch_registry.register(directory)
+            yield directory, paths
+    finally:
+        scratch_registry.forget([path for path in paths if not os.path.lexists(path)])
 
 def _check_cancel(should_cancel):
     if should_cancel is not None and should_cancel():
@@ -127,7 +140,7 @@ def grouped_fuse(paths, group_size, overlap, fuse_group, *, scale_factor=1.0,
     if width < 1 or height < 1:
         raise ValueError('Grouped fusion scale produces an empty image')
 
-    with tempfile.TemporaryDirectory(prefix="openfocus-grouped-", dir=storage_directory()) as scratch:
+    with _grouped_scratch() as (scratch, scratch_paths):
         current = [(path, False, (0, 0, width, height)) for path in paths]
         stage = 1
         while True:
@@ -210,12 +223,11 @@ def grouped_fuse(paths, group_size, overlap, fuse_group, *, scale_factor=1.0,
                         return result
                     # Uncompressed TIFF has a small directory in addition to pixels.
                     required = result.nbytes + 65536
-                    available = shutil.disk_usage(scratch).free
-                    if available < required:
-                        raise resource_policy.ResourceLimitError(
-                            f"Insufficient scratch disk space in {scratch}: need {required} bytes, "
-                            f"with 0 bytes reserved (free: {available} bytes)")
-                    output = os.path.join(scratch, f'{stage}-{completed}.tif')
+                    require_disk_space(required, scratch)
+                    output = os.path.join(scratch, f'openfocus-grouped-{stage}-{completed}.tif')
+                    scratch_paths.append(output)
+                    from core import scratch_registry
+                    scratch_registry.register(output)
                     if not imwrite_auto(output, result, get_imwrite_params('.tif'), exif=b''):
                         raise OSError("Could not write grouped fusion scratch TIFF")
                     _check_cancel(should_cancel)

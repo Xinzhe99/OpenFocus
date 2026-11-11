@@ -340,3 +340,15 @@ def test_detail_missing_pixels_never_shift_the_requested_crop(host, qapp, region
     canvas.set_result(None, None)
     assert not canvas.has_region()
     assert _pixel_at(canvas.grab().toImage(), QPoint(50, 100)) != QColor(Qt.GlobalColor.green)
+
+
+def test_scaled_display_keeps_image_coordinates_and_explicit_full_identity(host):
+    canvas = DetailCanvas('Method', host)
+    canvas.set_result(_pixmap(50, 25), (100, 200, 400, 200), full=False)
+    canvas.set_region((300, 250, 100, 100))
+    assert canvas.has_region()
+    assert not canvas.can_show_full()
+    canvas.set_result(_pixmap(50, 25), (0, 0, 400, 200), full=False)
+    assert not canvas.can_show_full()
+    canvas.set_result(_pixmap(50, 25), (0, 0, 400, 200), full=True)
+    assert canvas.can_show_full()

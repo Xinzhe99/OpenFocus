@@ -200,6 +200,8 @@ Softwares de microscopia (ZEN, NIS-Elements, ImageJ/Fiji) frequentemente exporta
 
 ### Barra de escala (figuras para publicação)
 
+Os rótulos da barra usam glifos realmente em negrito quando a família escolhida os oferece; caso contrário, é usada uma fonte legível da mesma família.
+
 Se o destino escolhido não tiver metadados utilizáveis, a calibração manual será selecionada e exigirá um tamanho de pixel válido.
 
 Ferramentas → Barra de escala… configura uma barra de escala gravada nas imagens exportadas. O tamanho do pixel (µm/px) é detectado automaticamente nos metadados TIFF (convenção `unit=micron` do ImageJ, `PhysicalSizeX` do OME-TIFF ou unidade de resolução explícita em centímetros), então pilhas de microscopia (incluindo TIFF multipágina) se calibram sozinhas. A resolução de impressora (72/300 dpi e similares) deliberadamente *não* é tratada como calibração, e um valor digitado manualmente sempre prevalece sobre os metadados detectados: uma barra errada mas plausível em uma figura é pior que nenhuma. Escolha o canto e a cor (Auto inverte conforme o fundo); a janela mostra uma prévia ao vivo. Com a barra ativada, toda exportação (imagem única, pilhas em pastas, TIFF multipágina, GIF, exportar tudo, lote) carrega uma barra em estilo de publicação: um comprimento arredondado da série 1-2-5 (~12% da largura da imagem) com texto contornado e legível. A CLI oferece suporte com `--scale-bar` (calibração automática) e `--scale-um <um/px>`.
@@ -417,7 +419,7 @@ O OpenFocus oferece dez algoritmos de fusão (além de um modo somente alinhamen
 
 - **Algoritmo**: implementação de Fu et al. (*Laser & Optoelectronics Progress*, 2024): um mapa de foco por diferença de desfoque |I − mean(I)| é enriquecido com o operador de gradiente de quatro vizinhanças do tipo gaussiano (GFG), refinado por um filtro guiado rápido, decidido por pixel (empates resolvidos por uma medida de pequena região Sobel 3×3), e os mapas de decisão binários são suavizados novamente pelo filtro guiado rápido antes da mistura ponderada.
 - **Ideal para**: microscopia e imagens com regiões de foco claras
-- **Vantagens**: rápido, limites de região de foco nítidos; a memória não cresce com o número de quadros
+- **Vantagens**: rápido e com limites de foco nítidos; mapas de foco e pesos são processados em janelas limitadas. Origens e descritores, resultado, decodificação e buffers ainda exigem RAM e espaço temporário em disco.
 - **Parâmetro**: kernel = tamanho do filtro de média do mapa de foco grosseiro
 
 ### StackMFF (V1, aprendizado profundo)
@@ -614,6 +616,8 @@ acessível e os diagnósticos sem recalcular o fundo.
 
 ### Gerenciamento de rótulos
 
+Ao exportar uma pilha alinhada histórica, são usadas suas próprias identidades de quadros; se faltarem para um rótulo vinculado, ocorre um erro. Só rótulos realmente aplicáveis bloqueiam a exportação de PNG transparente. **Ajustar** usa uma miniatura limitada; **100%** mostra a região original com um pixel de origem por pixel do dispositivo e pode mostrar carregamento ou erro. Coordenadas e tamanhos grandes salvos são preservados na edição.
+
 Abra **Ferramentas → Rótulos** após carregar imagens ou produzir um resultado. Cada rótulo tem seu próprio destino: a pilha de origem, a pilha alinhada ou os resultados de saída. Rótulos de saída podem se aplicar a todos os resultados ou ao resultado selecionado pelo nome; renomear ou reordenar esse resultado não altera a associação.
 
 Use **Adicionar** para criar outro rótulo, selecione uma entrada para editá-la e use sua caixa para ativar ou desativar. Insira texto fixo ou `{value}` para um número de quadro. O número é o valor inicial mais o índice do quadro (base zero) multiplicado pelo intervalo; uma saída única sempre usa o valor inicial.
@@ -631,6 +635,8 @@ A prévia usa o destino real. Navegue com Anterior/Próximo ou digite o número 
 Abra **Configurações → Configurações avançadas** para preferências de desempenho, registro, limpeza do sensor, nomes de saída, IA StackMFF e inicialização. As mudanças permanecem rascunhos até **OK**; Cancelar, Esc e fechar as descartam. Reduzir o tamanho do bloco atualiza imediatamente o limite visível de sobreposição para metade de um bloco. O limite de lote salvo da seção de IA é mantido, mas a inferência atualmente envia um bloco por chamada; a largura de registro pode mudar a precisão do alinhamento. A coleta de diagnósticos de alinhamento é uma caixa da seção Registro.
 
 Downloads automáticos de atualização rodam quando o aplicativo está ocioso e nunca instalam sozinhos. Um download concluído permanece pronto até você escolher explicitamente **Reiniciar e atualizar**. A reinicialização protege edições ativas e trabalho não salvo, depois grava os dados de recuperação antes de iniciar a substituição. Cancelar um download ou preparação aguarda o limite seguro atual. Uma compilação preparada completa e mais recente pode ser instalada offline.
+
+No Windows, a atualização prepara uma versão candidata separada e move o marcador portátil e `OpenFocusData` durante a troca. Se a troca falhar, restaura a instalação anterior; se a reversão não terminar, mantém o backup e não reinicia automaticamente. Uma solicitação de permissão pode aparecer uma vez. Cancelar a extração descarta a preparação incompleta e é verificado entre leituras e gravações de 256 KiB; uma operação bloqueada de disco ou rede pode atrasá-lo.
 
 A correção de campo plano altera os pixels de trabalho da sessão sem sobrescrever os arquivos de origem. Selecione a referência branca e um quadro de prévia, depois gere a prévia novamente após mudar origem ou escala. As imagens de referência e de trabalho/base devem compartilhar domínio de coordenadas e tamanho. Aplicar prepara as duas pilhas antes de confirmar; a remoção opcional do quadro de referência faz parte da mesma etapa de desfazer. Exporte as imagens de origem corrigidas quando precisar preservar esses pixels fora da sessão.
 
@@ -882,7 +888,7 @@ Por exemplo, adicione `--align openfocus --alignment-report alignment.json` a um
 | `--input, -i` | Pasta(s) de imagens, arquivo de vídeo, um ou mais arquivos de imagem ou TIFF multipágina |
 | `--output, -o` | Caminho da imagem de saída (a extensão define o formato) |
 | `--output-dir, -d` | Modo lote: funde cada pasta de entrada gravando `<pasta>.png` por pilha |
-| `--resume` | Modo lote: ignora pastas cuja saída já existe |
+| `--resume` | Ignora a pasta somente quando todos os resultados solicitados são arquivos comuns não vazios; não verifica conteúdo ou parâmetros |
 | `--config FILE` | Modo lote: substituições JSON por pasta, p. ex. `{"stackA": {"method": "dct"}}` |
 | `--method, -m` | `stackmffv3` (padrão), `stackmffv2`, `stackmff`, `openfocus_a`, `openfocus_b`, `openfocus_c`, `guided_filter`, `dct`, `dtcwt`, `gfgfgf` |
 | `--param KEY=JSON_VALUE` | Define qualquer parâmetro de fusão; repetível e prevalece sobre opções legadas |
@@ -1038,6 +1044,7 @@ Códigos de saída: `0` sucesso, `1` erro de processamento, `2` erro de uso. Exe
 
 #### IA indisponível
 
+- Ative e confirme os recursos experimentais nas configurações avançadas; sem isso os métodos de IA no desktop ficam desativados. Runtime e modelo são requisitos separados.
 - Verifique o ONNX Runtime e o modelo incluído.
 - Verifique em **Ajuda → Informações do ambiente**
 

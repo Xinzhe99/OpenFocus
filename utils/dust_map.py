@@ -19,6 +19,7 @@ All functions accept uint8 / uint16 / float frames in either the 0-255 or
 """
 from typing import List, Sequence
 import hashlib
+import os
 
 import cv2
 import numpy as np
@@ -36,8 +37,31 @@ DEFAULT_SIGMA = 4.0
 GAIN_MIN, GAIN_MAX = 0.5, 2.0
 
 
+def _reference_header(path):
+    """Inspect the first decoded page without allocating its pixels."""
+    from PIL import Image
+    try:
+        encoded = os.path.getsize(path)
+        if os.path.splitext(os.fspath(path))[1].lower() in ('.tif', '.tiff'):
+            import tifffile
+            with tifffile.TiffFile(path) as tif:
+                page = tif.pages[0]
+                return int(page.imagewidth), int(page.imagelength), int(page.dtype.itemsize), encoded
+        with Image.open(path) as image:
+            width, height = image.size
+            sample_bytes = max(1, (int(image.info.get('bits', 8)) + 7) // 8)
+            if image.mode.startswith('I') or image.mode == 'F':
+                sample_bytes = max(sample_bytes, 4)
+            return width, height, sample_bytes, encoded
+    except Exception as exc:
+        raise ValueError(f"Cannot decode flat-field reference: {path}") from exc
+
+
 def load_flat_field_reference(path, expected_hash=None, scale=1.0):
     """Decode a white reference and optionally require its original contents."""
+    from core.resource_policy import require_memory
+    width, height, sample_bytes, encoded = _reference_header(path)
+    require_memory(encoded + 2 * width * height * 3 * max(4, sample_bytes))
     try:
         data = np.fromfile(path, dtype=np.uint8)
     except OSError as exc:
@@ -52,6 +76,7 @@ def load_flat_field_reference(path, expected_hash=None, scale=1.0):
         width, height = int(white.shape[1] * scale), int(white.shape[0] * scale)
         if width < 1 or height < 1:
             raise ValueError(f"Flat-field reference is too small: {path}")
+        require_memory(2 * width * height * white.shape[2] * white.dtype.itemsize)
         white = cv2.resize(white, (width, height), interpolation=cv2.INTER_AREA)
     return white, digest
 
@@ -60,12 +85,11 @@ def grouped_flat_field_gain(path, *, scale=1.0, should_cancel=None):
     """Admit reference decoding before allocating its encoded and pixel buffers."""
     from core.grouped_fusion import _header
     from core.registration import RegistrationCancelled
-    from core.resource_policy import require_memory
+    
 
     if should_cancel and should_cancel():
         raise RegistrationCancelled()
-    width, height, encoded = _header(path)
-    require_memory(encoded + width * height * 48)
+    _header(path)
     if should_cancel and should_cancel():
         raise RegistrationCancelled()
     white, _ = load_flat_field_reference(path, scale=scale)
@@ -90,6 +114,8 @@ def compute_flat_field(white: np.ndarray, sigma: float = DEFAULT_SIGMA
         f = f[:, :, None]
     elif f.ndim != 3 or f.shape[2] < 1:
         raise ValueError("The white-field image must be HxW or HxWxC")
+    from core.resource_policy import require_memory
+    require_memory(6 * f.size * np.dtype(np.float32).itemsize)
     f = f.astype(np.float32)
     low = cv2.GaussianBlur(f, (0, 0), float(sigma))
     # cv2 会把 (h,w,1) 压回 (h,w)，统一回 3 维
@@ -118,6 +144,20 @@ def apply_flat_field(frame: np.ndarray, gain: np.ndarray) -> np.ndarray:
             f"Flat-field shape {gain.shape[:2]} does not match the frame "
             f"{f.shape[:2]} — the white-field shot must share the stack's "
             "resolution")
+    from core.resource_policy import require_memory
+    pixels = f.shape[0] * f.shape[1]
+    channels = 3 if f.shape[2] == 4 else f.shape[2]
+    samples = pixels * channels
+    float_bytes = samples * 4
+    work_bytes = samples * np.result_type(np.float32, gain.dtype).itemsize
+    output_bytes = samples * (f.dtype.itemsize if f.dtype in (np.uint8, np.uint16) else 4)
+    extra = 0
+    if f.shape[2] == 1 and gain.ndim == 3 and gain.shape[2] > 1:
+        extra += pixels * np.result_type(gain.dtype, np.float64 if gain.dtype.kind in 'biu' else gain.dtype).itemsize
+    if f.shape[2] == 4:
+        extra += pixels * f.dtype.itemsize + output_bytes + pixels * f.dtype.itemsize
+    require_memory(max(float_bytes + work_bytes, 3 * work_bytes,
+                       2 * work_bytes + output_bytes) + extra)
     if f.shape[2] == 1 and gain.ndim == 3 and gain.shape[2] > 1:
         gain = gain.mean(axis=2, keepdims=True)
     alpha = f[:, :, 3].copy() if f.shape[2] == 4 else None

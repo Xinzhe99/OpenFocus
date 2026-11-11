@@ -30,7 +30,9 @@ are independent of account sign-in and diagnostic reporting.
   `account.openfocus.top`. The account service receives the verified email and
   identity needed for sign-in. You can skip sign-in, sign out, or delete your
   account. Authentication credentials are stored locally and are not included in
-  diagnostic reports.
+  diagnostic reports. Signing out also requests server session revocation. If
+  local credential removal fails, the account dialog reports incomplete cleanup
+  and offers a retry; signing out in memory does not erase credentials on disk.
 - **Error reports** — you can review and send a sanitized report, signed in or
   anonymously. After desktop sign-in, automatic error reporting is enabled by
   default unless you previously disabled it; a saved preference is preserved.
@@ -41,16 +43,21 @@ are independent of account sign-in and diagnostic reporting.
   software and system versions, selected hardware details, image counts and
   dimensions, the order of supported interface actions, control IDs and canvas
   gesture coordinates, effective processing options and numeric settings, error
-  types and selected application stack locations. They exclude image pixels, image and project
-  files, user file names and paths, credentials, and arbitrary user-entered text.
+  types and selected application stack locations. Native crash reports can include
+  allowlisted OpenFocus file and function names and line numbers, but not raw
+  crash text, memory addresses, user file names or paths. Reports exclude image
+  pixels, image and project files, credentials and arbitrary user-entered text.
   Reports retain at most the most recent 2,000 recognized events from a bounded
   log tail and indicate detected omissions; older rotated logs may already be gone.
   Failed reports can be stored locally for bounded retries, with at most three
   pending reports and three attempts. Account-linked queued reports are retried
-  only with the same account. Turning automatic reporting off stops new automatic
-  reports and removes queued automatic reports; a request already in flight may
-  still complete. Manually submitted reports may still be retried. Previously
-  received reports are not immediately deleted.
+  only with the same account. Turning automatic reporting off revokes permission
+  for requests that have not yet been authorized to start and removes queued
+  automatic reports. A request already authorized to start may still complete;
+  previously received reports are not immediately deleted. Manually submitted
+  reports may still be retried. Queue transactions coordinate processes sharing
+  the same local profile; a setting change is not broadcast to other running
+  processes.
 - **Website downloads** — when download analytics is enabled on the server,
   the site records aggregate download starts by date, version, asset type,
   route and source. Retries, scanners and incomplete downloads may be counted.
@@ -88,6 +95,11 @@ paths and final-pixel checksums. Usage statistics never read these logs. A local
 feedback export may include up to 20 MB of recent log tails and should be reviewed
 before sharing. The separate error-report bundle contains only the sanitized
 fields described above; raw logs and local feedback exports are not uploaded.
+If the log directory is unavailable, new native crash files use a private,
+profile-specific temporary directory and follow the same inactive-process
+retention period. Older crash files left directly in the system temporary
+directory cannot be attributed safely to a profile and are not discovered
+automatically; they can be located and exported manually for support.
 
 ## Contact
 
