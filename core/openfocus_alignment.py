@@ -36,12 +36,21 @@ def _geometry(frame, *, internal_float=False):
     return shape, dtype
 
 
-def _pixel_digest(image, should_cancel):
+def _hash_pixels(image, should_cancel):
     digest = hashlib.sha256()
     for row in image:
         _check_cancel(should_cancel)
         digest.update(memoryview(np.ascontiguousarray(row)).cast('B'))
     return digest.hexdigest()
+
+
+def _pixel_digest(image, should_cancel):
+    # A render's cached copy of a frame is hashed once: estimation records the
+    # digest and applying the transform to those same stored pixels reuses it.
+    # Arrays, fresh decodes and plans from an earlier render are always hashed.
+    from core import frame_resolution_cache
+    return frame_resolution_cache.pixel_digest(
+        image, lambda: _hash_pixels(image, should_cancel))
 
 
 def _source_file_identity(frame):
