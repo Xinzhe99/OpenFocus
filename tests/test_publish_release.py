@@ -85,6 +85,23 @@ def test_draft_verified_before_publish_and_public_retry_is_read_only(monkeypatch
     assert set(gh.calls) == {'download'}
 
 
+def test_new_draft_can_appear_after_creation(monkeypatch, tmp_path):
+    directory, gh = setup(monkeypatch, tmp_path)
+    invisible = [True, True]
+
+    def get_release(*_):
+        if gh.release is not None and invisible:
+            invisible.pop()
+            return None
+        return gh.release
+
+    monkeypatch.setattr(publisher, 'get_release', get_release)
+    monkeypatch.setattr(publisher.time, 'sleep', lambda _: None)
+    run(directory)
+    assert not invisible
+    assert gh.release['draft'] is False
+
+
 def test_beta_remains_prerelease_and_retry_is_read_only(monkeypatch, tmp_path):
     directory, gh = setup(monkeypatch, tmp_path)
     tag = 'v1.0.0-beta.1'

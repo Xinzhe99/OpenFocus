@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+import time
 
 try:
     from .release_archives import list_downloads, load_manifest, sha256_file, verify_stage
@@ -139,7 +140,12 @@ def publish(directory, notes, repo, tag, version, sha, run_id, attempt):
         command('gh', 'release', 'create', tag, '--repo', repo, '--draft', '--verify-tag',
                 *(['--prerelease', '--latest=false'] if prerelease else []),
                 '--title', f'OpenFocus {tag}', '--notes-file', str(notes))
-        release = get_release(repo, tag)
+        for attempt in range(31):
+            release = get_release(repo, tag)
+            if release is not None:
+                break
+            if attempt < 30:
+                time.sleep(2)
     if not release or not release['draft'] or release['tag_name'] != tag:
         raise ValueError('release is no longer the expected draft')
     # Only draft assets owned by this release may be removed or replaced.
