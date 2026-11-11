@@ -131,6 +131,25 @@ def test_callback_only_accepts_exact_path_host_and_single_code(caplog):
     assert "exchange-secret" not in caplog.text
 
 
+def test_loopback_callback_does_not_require_reverse_dns(monkeypatch):
+    import socket
+    import urllib.request
+
+    def unavailable_dns(*_args):
+        raise AssertionError('loopback login must not use reverse DNS')
+    monkeypatch.setattr(socket, 'getfqdn', unavailable_dns)
+    with account._CallbackServer(('127.0.0.1', 0), account._CallbackHandler) as server:
+        server.code = None
+        server.error = None
+        server.timeout = 2
+        thread = threading.Thread(target=server.handle_request, daemon=True)
+        thread.start()
+        with urllib.request.urlopen(f'http://127.0.0.1:{server.server_port}/callback?code=example', timeout=2) as response:
+            assert response.status == 200
+        thread.join(2)
+        assert server.code == 'example'
+
+
 class DummyListener:
     server_port = 41234
     def __init__(self, *args):

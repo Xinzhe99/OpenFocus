@@ -127,6 +127,50 @@ def test_browser_session_restores_account_and_logout_disables_autorestore(qapp, 
         _destroy_main_window(qapp, window)
 
 
+def test_skipping_after_browser_session_is_persisted_revokes_it(qapp, tmp_path, monkeypatch):
+    from tests.test_control_channel import _destroy_main_window, _new_main_window
+
+    window = _new_main_window(qapp, tmp_path, monkeypatch)
+    _wait(qapp, lambda: getattr(window, '_account_load_job', None) is None)
+    client = window._account_client = _Account()
+    try:
+        window.enable_browser_sso()
+        job = window._account_browser_job
+        job._thread.join(5)
+        assert not job._thread.is_alive() and client.is_signed_in()
+        window._cancel_browser_sso()
+        _wait(qapp, lambda: window._account_browser_job is None)
+        assert not client.is_signed_in()
+        assert client.calls == ['browser', 'logout']
+    finally:
+        _destroy_main_window(qapp, window)
+
+
+def test_closing_account_dialog_does_not_cancel_opening_web_center(qapp, settings):
+    from dialogs.account import AccountDialog
+
+    started, release = Event(), Event()
+    class Delayed(_Account):
+        def open_web_handoff(self, *, cancel, **kwargs):
+            started.set()
+            assert release.wait(5)
+            return not cancel.is_set()
+    window = QWidget()
+    client = window._account_client = Delayed()
+    client.user = {'id': 'owner', 'email': 'user@example.test'}
+    dialog = AccountDialog(window)
+    try:
+        dialog.center_button.click()
+        assert started.wait(5)
+        dialog.reject()
+        release.set()
+        _wait(qapp, lambda: dialog._job is None)
+        assert not dialog._cancel.is_set()
+    finally:
+        release.set()
+        window.deleteLater()
+
+
 @pytest.mark.parametrize('version', ['2026-11-08', None])
 def test_browser_restore_with_old_terms_does_not_enable_reports(qapp, tmp_path, monkeypatch, version):
     from tests.test_control_channel import _destroy_main_window, _new_main_window
