@@ -76,7 +76,7 @@ def call(server, cmd, token=None, **args):
     return server.handle_line(encode(payload), token=server.token)
 
 
-def _new_main_window(qapp, tmp_path, monkeypatch):
+def _new_main_window(qapp, tmp_path, monkeypatch, use_gpu=None):
     """A real OpenFocus window with sandboxed settings, for lifecycle tests."""
     from main import OpenFocus
     from utils import recovery, settings_store
@@ -87,11 +87,14 @@ def _new_main_window(qapp, tmp_path, monkeypatch):
     settings.setValue("ui/first_run_done", "1")
     settings.setValue("updates/last_check_epoch", 9999999999)
     settings.setValue("rendering/ai_cpu_warning_dismissed", True)
+    if use_gpu is not None:
+        settings.setValue("rendering/use_gpu", use_gpu)
     monkeypatch.setattr(settings_store, "_settings_singleton", settings)
     monkeypatch.setattr(recovery, "_base_dir", lambda: str(tmp_path / "recovery"))
     monkeypatch.setenv("OPENFOCUS_CONTROL_FILE", str(tmp_path / "control.json"))
     window = OpenFocus()
-    window.use_gpu = False
+    if use_gpu is None:
+        window.use_gpu = False
     window.restore_last_stack = False
     window.show()
     qapp.processEvents()
@@ -882,6 +885,85 @@ def test_gpu_action_disables_after_backend_probe_fails(qapp, tmp_path, monkeypat
         window._apply_device_probe_kind("N/A")
         assert not window.use_gpu
         assert not action.isEnabled()
+    finally:
+        _destroy_main_window(qapp, window)
+
+
+def test_gpu_action_allows_retry_when_memory_becomes_readable(qapp, tmp_path, monkeypatch):
+    import core.multi_focus_fusion as mff
+    from core import resource_policy
+    from fusion_methods import neural_runtime
+    from locales import trans
+    from main import OpenFocus
+    from utils import settings_store
+
+    monkeypatch.setattr(OpenFocus, "_probe_stackmff_availability_async", lambda self: None)
+    monkeypatch.setattr(OpenFocus, "_probe_device_kind_async", lambda self: None)
+    monkeypatch.setattr(mff, "neural_device_kind", lambda: "CUDA")
+    monkeypatch.setattr(neural_runtime, "_DEVICE", "CUDA")
+    monkeypatch.setattr(neural_runtime, "_UNADMITTED", "CUDA")
+    monkeypatch.setattr(neural_runtime, "_ACTUAL_DEVICE", None)
+    monkeypatch.setattr(neural_runtime, "_ACTUAL_CHECKPOINT", None)
+    monkeypatch.setattr(neural_runtime, "_FALLBACK_CPU", False)
+    monkeypatch.setattr(neural_runtime, "_SESSIONS", {})
+    monkeypatch.setattr(resource_policy, "require_memory", lambda *_: None)
+    snapshots = [resource_policy.ResourceSnapshot(), resource_policy.ResourceSnapshot(
+        available_ram=8 * 1024 ** 3, total_ram=16 * 1024 ** 3,
+        free_vram=8 * 1024 ** 3, total_vram=8 * 1024 ** 3)]
+    monkeypatch.setattr(resource_policy, "probe_resources", lambda *_: snapshots.pop(0))
+    requested = []
+
+    class Session:
+        def __init__(self, device):
+            self.actual_device = device
+
+        def run(self, outputs, inputs):
+            return [inputs["input"]]
+
+    def session(path, shape, device, threads):
+        requested.append(device)
+        return Session(device)
+
+    monkeypatch.setattr(neural_runtime, "_session", session)
+    window = _new_main_window(qapp, tmp_path, monkeypatch, use_gpu=False)
+    try:
+        monkeypatch.setattr(window, "_ai_method_selected", lambda: True)
+        window._update_dynamic_status()
+        assert window.use_gpu is False
+        settings = settings_store._settings_singleton
+        assert settings.value("rendering/use_gpu", type=bool) is False
+        action = window.ui_objs["action_gpu_accel"]
+        assert action.isEnabled() and not action.isChecked()
+
+        action.trigger()
+        assert window.use_gpu and action.isChecked()
+        assert settings.value("rendering/use_gpu", type=bool) is True
+        assert window.lbl_status_gpu.text() == trans.t('status_gpu').format('CPU')
+        explanation = trans.t('env_gpu_memory_unknown').format(device="CUDA")
+        assert explanation in action.toolTip()
+        assert explanation in window.lbl_status_gpu.toolTip()
+        assert trans.t('env_no_gpu') not in window.lbl_status_gpu.toolTip()
+
+        planes = np.zeros((1, 2, 64, 64), np.float32)
+        neural_runtime.start_inference_job()
+        device = neural_runtime.resolve_device(window.use_gpu)
+        neural_runtime.logits(planes, 'model.onnx', device, 1)
+        window._update_dynamic_status()
+        assert requested == ['CPU']
+        assert window.lbl_status_gpu.text() == trans.t('status_gpu').format('CPU')
+        assert action.isEnabled() and action.isChecked()
+
+        neural_runtime.start_inference_job()
+        device = neural_runtime.resolve_device(window.use_gpu)
+        neural_runtime.logits(planes, 'model.onnx', device, 1)
+        window._update_dynamic_status()
+        assert requested == ['CPU', 'CUDA']
+        assert neural_runtime.actual_device() == 'CUDA'
+        assert neural_runtime.unadmitted_accelerator() is None
+        assert explanation not in action.toolTip()
+        action.trigger()
+        assert not window.use_gpu and not action.isChecked()
+        assert settings.value("rendering/use_gpu", type=bool) is False
     finally:
         _destroy_main_window(qapp, window)
 
