@@ -5,6 +5,13 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- Add an optional OpenCL GPU path for OpenFocus B depth fusion and merge
+  (`device='auto'|'cpu'|'gpu'` on `openfocus_b_impl`). When `pyopencl` and an
+  OpenCL device are available it produces bit-identical output to the CPU
+  path; otherwise the CPU path is used unchanged. Disable with
+  `OPENFOCUS_DISABLE_GPU=1`.
+
 ### Fixed
 - Provide enough native thread stack for flat-field previews on macOS.
 - Keep the default Unix control socket usable when the temporary directory path is long.
