@@ -692,3 +692,114 @@ def test_render_scope_hashes_each_registration_input_once(tmp_path, monkeypatch,
             assert scope.enabled and not scope.degraded
     # Without the render's cache every warp validates its freshly resolved input.
     assert render() > stages * len(sources)
+
+
+def _budget_warp(dtype=np.uint16):
+    rng = np.random.default_rng(71)
+    image = rng.integers(0, np.iinfo(dtype).max, (240, 320, 3), dtype)
+    matrix = np.float32([[1.002, 0.004, 2.25], [-0.003, 0.998, -1.5], [1e-6, -2e-6, 1]])
+    source = types.SimpleNamespace(validate_pixels=lambda *_: None)
+    return image, registration.PerspectiveWarp(
+        source, tuple(float(v) for v in matrix.flat), matrix.dtype.str, (312, 236))
+
+
+def test_deferred_warp_thread_budget_keeps_pixels_and_restores_opencv(monkeypatch):
+    image, warp = _budget_warp()
+    serial = warp(image)
+    before = cv2.getNumThreads()
+    calls = []
+    original = cv2.setNumThreads
+    monkeypatch.setattr(cv2, 'setNumThreads', lambda n: (calls.append(n), original(n))[1])
+    assert np.array_equal(warp(image), serial)
+    assert calls == []
+    with registration.deferred_warp_threads(4):
+        lent = warp(image)
+    assert np.array_equal(lent, serial)
+    assert calls == [4, 0 if before == 1 else before]
+    assert cv2.getNumThreads() == before
+
+
+def test_deferred_warp_thread_budget_restores_opencv_after_failure(monkeypatch):
+    image, warp = _budget_warp(np.uint8)
+    before = cv2.getNumThreads()
+    monkeypatch.setattr(cv2, 'warpPerspective',
+                        lambda *args, **kwargs: (_ for _ in ()).throw(cv2.error('warp')))
+    with registration.deferred_warp_threads(3), pytest.raises(cv2.error):
+        warp(image)
+    assert cv2.getNumThreads() == before
+    assert not registration._warp_threads_lock.locked()
+
+
+def test_deferred_warp_thread_budget_is_scoped_to_its_owner_thread():
+    from concurrent.futures import ThreadPoolExecutor
+    assert registration._warp_thread_budget() == 1
+    with registration.deferred_warp_threads(lambda: 3):
+        assert registration._warp_thread_budget() == 3
+        with ThreadPoolExecutor(1) as pool:
+            assert pool.submit(registration._warp_thread_budget).result() == 1
+        with registration.deferred_warp_threads(1):
+            assert registration._warp_thread_budget() == 1
+    for invalid in (0, None, -2, 'many'):
+        with registration.deferred_warp_threads(invalid):
+            assert registration._warp_thread_budget() == 1
+    assert registration._warp_thread_budget() == 1
+
+
+def test_serial_materialization_lends_threads_and_decode_workers_stay_serial(tmp_path, monkeypatch):
+    from core import resource_policy as policy
+    seen = []
+
+    def probe(image):
+        seen.append(registration._warp_thread_budget())
+        return image
+
+    monkeypatch.setattr(policy, 'native_thread_ceiling', lambda *args: 5)
+    frame = np.zeros((8, 8, 3), np.uint8)
+    lazy = [source_frames.process_frame(frame, probe) for _ in range(2)]
+    source_frames.materialize_frames(lazy, thread_count=5)
+    assert seen == [5, 5]
+
+    del seen[:]
+    sources = _sources(tmp_path, _pixels(np.uint8, 3))
+    monkeypatch.setattr(policy, 'plan_execution', lambda *args, **kwargs: types.SimpleNamespace(
+        workers=2, max_in_flight=2))
+    source_frames.materialize_frames(
+        sources[:2] + [source_frames.process_frame(sources[2], probe)], thread_count=5)
+    assert seen == [1]
+
+
+def test_openfocus_row_mode_lends_its_idle_workers_to_deferred_warps():
+    from fusion_methods import _openfocus_execution as execution
+
+    @execution.execution_job
+    def probe(should_cancel=None):
+        job = execution._current.get()
+        before = registration._warp_thread_budget()
+        job.workers, job.row_mode = 3, True
+        return before, registration._warp_thread_budget()
+
+    assert probe() == (1, 3)
+    assert registration._warp_thread_budget() == 1
+
+
+def test_exposure_gain_pass_lends_the_planned_threads(monkeypatch):
+    from core import resource_policy as policy
+    from core.multi_focus_fusion import MultiFocusFusion
+    seen = []
+    requested = []
+    original = MultiFocusFusion._exposure_gains_for_source
+
+    def gains(self, *args, **kwargs):
+        seen.append(registration._warp_thread_budget())
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(MultiFocusFusion, '_exposure_gains_for_source', gains)
+    monkeypatch.setattr(policy, 'native_thread_ceiling',
+                        lambda preference, threads: (requested.append((preference, threads)), 3)[1])
+    frames = [np.full((32, 32, 3), value, np.uint8) for value in (90, 100)]
+    fusion = MultiFocusFusion(algorithm='guided_filter', use_gpu=False, tile_enabled=False,
+                              resource_preference='responsive')
+    assert fusion.fuse(frames, thread_count=2) is not None
+    assert seen == [3]
+    assert requested == [('responsive', 2)]
+    assert registration._warp_thread_budget() == 1

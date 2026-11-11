@@ -26,6 +26,7 @@ from collections import deque
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 import json
+import threading
 import time
 import cv2
 import numpy as np
@@ -51,6 +52,38 @@ grouped_crop_offsets = ContextVar('grouped_crop_offsets', default=None)
 
 # Optional per-frame diagnostics, collected on the calling thread.
 alignment_report = ContextVar('alignment_report', default=None)
+
+# Native threads a deferred perspective warp may use on the thread that
+# resolves it. Worker pools never inherit a budget above one.
+_deferred_warp_threads = ContextVar('deferred_warp_threads', default=1)
+# OpenCV's thread count is process-wide: one lender changes it at a time.
+_warp_threads_lock = threading.Lock()
+
+
+@contextmanager
+def deferred_warp_threads(threads):
+    """Lend idle native threads to deferred warps resolved in this scope.
+
+    A frame consumer that resolves one frame at a time on its owner thread
+    leaves the planned workers idle during each Lanczos resampling. ``threads``
+    is a count, or a callable evaluated when a warp runs. The resampled pixels
+    do not depend on the thread count.
+    """
+    token = _deferred_warp_threads.set(threads)
+    try:
+        yield
+    finally:
+        _deferred_warp_threads.reset(token)
+
+
+def _warp_thread_budget():
+    threads = _deferred_warp_threads.get()
+    if callable(threads):
+        threads = threads()
+    try:
+        return max(1, int(threads or 1))
+    except (TypeError, ValueError):
+        return 1
 
 
 def _report_alignment(frame_index, method, status, **details):
@@ -397,9 +430,20 @@ class PerspectiveWarp:
 
     def __call__(self, image):
         self.source.validate_pixels(image, self.should_cancel)
-        return cv2.warpPerspective(image,
-            np.asarray(self.matrix, dtype=self.matrix_dtype).reshape(3, 3), self.dsize,
-            flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_CONSTANT)
+        matrix = np.asarray(self.matrix, dtype=self.matrix_dtype).reshape(3, 3)
+        threads = _warp_thread_budget()
+        if threads <= 1:
+            return cv2.warpPerspective(image, matrix, self.dsize,
+                flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_CONSTANT)
+        with _warp_threads_lock:
+            previous = cv2.getNumThreads()
+            cv2.setNumThreads(threads)
+            try:
+                return cv2.warpPerspective(image, matrix, self.dsize,
+                    flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_CONSTANT)
+            finally:
+                # One reported thread is the disabled state used elsewhere.
+                cv2.setNumThreads(0 if previous == 1 else previous)
 
 
 def _perspective_output_shape(shape, dsize):

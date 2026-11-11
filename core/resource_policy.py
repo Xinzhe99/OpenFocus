@@ -381,6 +381,14 @@ def cpu_capacity(snapshot: ResourceSnapshot, preference: str) -> int:
     return max(1, min(cores - 1, math.floor(cores * 0.8)))
 
 
+def native_thread_ceiling(preference: str = PREFERENCE_BALANCED,
+                          user_threads: Optional[int] = None) -> int:
+    """Threads one serial native call may use: the planner's CPU ceiling."""
+    capacity = cpu_capacity(probe_resources(), preference)
+    return (min(capacity, int(user_threads))
+            if user_threads is not None and user_threads > 0 else capacity)
+
+
 def cpu_facts(preference: str = PREFERENCE_BALANCED) -> dict:
     """CPU topology and what automatic threads resolve to, for diagnostics."""
     snapshot = probe_resources()

@@ -1027,21 +1027,31 @@ def materialize_frames(frames, should_cancel=None, *, staging_bytes=0,
             if progress_callback is not None and total:
                 progress_callback(len(result), total)
 
+        from core.registration import deferred_warp_threads
         if workers == 1:
-            for frame in frames:
-                check_cancel()
-                if not known:
-                    mapped = is_mapped_frame(frame)
-                    select_scratch((0 if mapped else frame.nbytes) + staging_bytes,
-                                   [frame.path] if isinstance(frame, SourceFrame) else ())
-                    staging_bytes = 0
-                append(resolve_frame(frame))
+            # Frames resolve one at a time here; a deferred warp may use the
+            # threads that a pool of decoders would otherwise occupy.
+            with deferred_warp_threads(
+                    policy.native_thread_ceiling(resource_preference, thread_count)):
+                for frame in frames:
+                    check_cancel()
+                    if not known:
+                        mapped = is_mapped_frame(frame)
+                        select_scratch((0 if mapped else frame.nbytes) + staging_bytes,
+                                       [frame.path] if isinstance(frame, SourceFrame) else ())
+                        staging_bytes = 0
+                    append(resolve_frame(frame))
         else:
             from threadpoolctl import threadpool_limits
 
             def init_worker():
                 # OpenMP limits may be thread-local for the RAW decoder.
                 threadpool_limits(limits=1)
+
+            def resolve_in_worker(frame):
+                # Workers copy the caller's context; each stays serial.
+                with deferred_warp_threads(1):
+                    return resolve_frame(frame)
 
             previous_cv_threads = cv2.getNumThreads()
             cv2.setNumThreads(1)
@@ -1061,7 +1071,7 @@ def materialize_frames(frames, should_cancel=None, *, staging_bytes=0,
                                     exhausted = True
                                     break
                                 context = copy_context()
-                                pending.append((frame, pool.submit(context.run, resolve_frame, frame)))
+                                pending.append((frame, pool.submit(context.run, resolve_in_worker, frame)))
                             if not pending:
                                 break
                             # Surface a later failure without waiting for earlier work.

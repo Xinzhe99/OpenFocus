@@ -815,7 +815,11 @@ class MultiFocusFusion:
             with _profile().stage('exposure_gains'):
                 input_source = match_exposure_frames(input_source, should_cancel, reference_index=0)
         elif self.exposure_match:
-            with _profile().stage('exposure_gains'):
+            from core.registration import deferred_warp_threads
+            # The gain pass resolves one frame at a time on this thread.
+            with _profile().stage('exposure_gains'), deferred_warp_threads(
+                    policy.native_thread_ceiling(self.resource_preference,
+                                                 kwargs.get('thread_count'))):
                 exposure_gains_ = self._exposure_gains_for_source(
                     input_source, should_cancel,
                     normalize_uint16=deferred_exposure or native_codes)

@@ -24,7 +24,15 @@ def execution_job(function):
 
         job = _Execution()
         job.should_cancel = call_signature.bind_partial(*args, **kwargs).arguments.get('should_cancel')
-        with heavy_job(job.should_cancel), scratch_directory(), native_execution_scope():
+        from core.registration import deferred_warp_threads
+
+        def idle_row_workers():
+            # Row mode produces frames on this thread between band barriers,
+            # so its workers are idle while a source is resolved.
+            return job.workers if job.row_mode else 1
+
+        with heavy_job(job.should_cancel), scratch_directory(), native_execution_scope(), \
+                deferred_warp_threads(idle_row_workers):
             token = _current.set(job)
             try:
                 return function(*args, **kwargs)

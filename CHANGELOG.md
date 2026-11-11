@@ -144,6 +144,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   sign-in automatically, when the account service supports cross-device login.
 - Stop writing one-use tile regions of neural tiled fusion to the temporary
   frame cache. Renders use less temporary disk space; output pixels are unchanged.
+- Run deferred ECC and homography resampling on the render's planned threads
+  when frames are resolved one at a time (exposure matching, OpenFocus A/B/C on
+  large images, single-worker preparation). Output pixels are unchanged.
 - Recommend OpenFocus B as the default desktop fusion method. ECC remains the
   default registration method even with experimental features enabled; OpenFocus
   registration requires an explicit choice and the experimental opt-in. Saved
