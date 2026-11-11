@@ -229,10 +229,11 @@ class SourceRegionWorker(QThread):
     failed = pyqtSignal(object, str)
 
     def __init__(self, frame, key, *, labels=None, index=0, scale_cfg=None,
-                 watermark_cfg=None, metadata=None):
+                 watermark_cfg=None, metadata=None, target='input'):
         super().__init__()
         self.frame = frame
         self.key = key
+        self.target = target
         self.labels = labels
         self.index = index
         self.scale_cfg = scale_cfg
@@ -265,7 +266,7 @@ class SourceRegionWorker(QThread):
         if tile.ndim == 2:
             tile = cv2.cvtColor(tile, cv2.COLOR_GRAY2BGR)
         if self.labels is not None:
-            tile, _ = self.labels._draw_for(tile, 'input', self.index, source_rect=rect)
+            tile, _ = self.labels._draw_for(tile, self.target, self.index, source_rect=rect)
         if self.scale_cfg:
             from utils import scalebar
             from utils.frame_pixels import preview_scale_config
@@ -291,7 +292,7 @@ class SourceRegionWorker(QThread):
                         if self.labels is not None:
                             if pixels.ndim == 2:
                                 pixels = cv2.cvtColor(pixels, cv2.COLOR_GRAY2BGR)
-                            pixels, _ = self.labels._draw_for(pixels, 'input', self.index, source_rect=sampled)
+                            pixels, _ = self.labels._draw_for(pixels, self.target, self.index, source_rect=sampled)
                         total += float(pixels.sum(dtype=np.float64))
                         count += pixels.size
                 mean = total / count if count else 128.0
@@ -321,7 +322,7 @@ class SourceRegionWorker(QThread):
             if not acquired or self.cancelled:
                 return
             with heavy_job(lambda: self.cancelled):
-                image = resolve_frame(self.frame)
+                image = resolve_frame(self.frame, should_cancel=lambda: self.cancelled)
                 if self.cancelled:
                     return
                 # OpenCV silently materializes negative/column-strided inputs.

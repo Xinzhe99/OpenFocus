@@ -1419,7 +1419,7 @@ Windows の GIMP 3.2.6 はオフセットと透明な位置合わせ余白を含
 
 ## 14. コマンドラインインターフェース
 
-`pip install openfocus` には AI モデルと重み、HEIC とカメラ RAW のデコードが含まれます。Python 3.13 以降では `dtcwt` が省略され、DTCWT の項目は説明付きで無効になります。
+`pip install openfocus` には AI モデルと重み、HEIC とカメラ RAW のデコードが含まれます。Python 3.13 以降で DTCWT を使うには、続けて `python -m pip install --no-deps dtcwt==0.14.0` を実行します。OpenFocus は NumPy 2 の互換アダプターを提供しますが、`pip check` は元パッケージの NumPy 制約を報告します。
 
 OpenFocus は GUI なしでも動作します。スクリプト化したパイプラインや CI に便利です。
 pip パッケージを入れると `openfocus` コマンドを直接使えます。ソースから実行する場合は

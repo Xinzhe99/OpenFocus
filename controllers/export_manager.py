@@ -322,8 +322,8 @@ class ExportManager:
                 self.window.output_manager._mark_record_exported(
                     self._layered_record, self.layered_worker.image, message,
                     {'labels': [], 'scale': None, 'watermark': None})
-            self.window.statusBar().showMessage(
-                trans.t('msg_image_saved_info').format(path=message).replace('\n', ' '), 8000)
+            from utils.output_share import notify_saved_path
+            notify_saved_path(self.window, message)
         elif message:
             show_error_box(self.window, trans.t('action_export_layered_tiff'),
                            f"{trans.t('msg_save_failed_text')}\n{message}")
@@ -451,10 +451,8 @@ class ExportManager:
                     return written
             self._safe_export_path(file_path)
             if run_pixel_worker(window, trans.t('action_save'), write_result):
-                # Non-blocking confirmation (errors still get a dialog)
-                window.statusBar().showMessage(
-                    trans.t("msg_image_saved_info").format(path=file_path).replace("\n", " "),
-                    8000)
+                from utils.output_share import notify_saved_path
+                notify_saved_path(window, file_path)
             else:
                 show_message_box(
                     window,

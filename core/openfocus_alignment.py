@@ -10,6 +10,7 @@ import os
 import numpy as np
 
 from core import resource_policy
+from core import _alignment_kernels as _native_kernels
 from core.source_frames import resolve_frame
 
 _F32 = np.float32
@@ -36,10 +37,9 @@ def _geometry(frame, *, internal_float=False):
 
 
 def _pixel_digest(image, should_cancel):
+    _check_cancel(should_cancel)
     digest = hashlib.sha256()
-    for row in image:
-        _check_cancel(should_cancel)
-        digest.update(memoryview(np.ascontiguousarray(row)).cast('B'))
+    digest.update(memoryview(np.ascontiguousarray(image)).cast('B'))
     return digest.hexdigest()
 
 
@@ -236,6 +236,11 @@ def estimate_translation_bytes(sources):
 
 
 def _gray16(image, should_cancel):
+    _check_cancel(should_cancel)
+    if _native_kernels.available() and image.dtype == np.uint8 and image.ndim in (2, 3):
+        return _native_kernels.gray16_u8(image)
+    if _native_kernels.available() and image.dtype == np.uint16 and image.ndim in (2, 3):
+        return _native_kernels.gray16_u16(image)
     gray = np.empty(image.shape[:2], dtype=np.uint16)
     for y, row in enumerate(image):
         _check_cancel(should_cancel)
@@ -248,9 +253,11 @@ def _gray16(image, should_cancel):
             gray[y] <<= 8
     return gray
 
-
 def _down_half(src, should_cancel):
     """Separable (12,64,37,2)/115, rounded after EACH axis, edge replicated."""
+    _check_cancel(should_cancel)
+    if _native_kernels.available() and src.dtype == np.uint16 and src.ndim == 2:
+        return _native_kernels.down_half(src)
     h, w = src.shape
     cols = np.arange(0, w, 2)
     out = np.empty(((h + 1) // 2, (w + 1) // 2), dtype=np.uint16)
@@ -265,7 +272,6 @@ def _down_half(src, should_cancel):
             value += vertical[np.clip(cols - 1 + i, 0, w - 1)] * weight
         out[y // 2] = (value + 57) // 115
     return out
-
 
 def _pyramid(gray, should_cancel):
     levels = [gray]
@@ -307,6 +313,14 @@ def _sample_plane(image, x, y, *, padding=0):
 
 
 def _refine_level(a, b, c_dx, c_dy, *, half, step, crop, should_cancel):
+    _check_cancel(should_cancel)
+    _sample_plane(a, np.zeros(1, np.float32), np.zeros(1, np.float32))
+    _check_cancel(should_cancel)
+    if (_native_kernels.available() and a.dtype == np.uint16
+            and b.dtype == np.uint16 and a.ndim == b.ndim == 2):
+        dx, dy, found = _native_kernels.refine_level(
+            a, b, _F32(c_dx), _F32(c_dy), _F32(half), _F32(step), int(crop))
+        return (float(dx), float(dy)) if found else None
     h, w = a.shape
     padding = int(np.ceil(max(abs(c_dx), abs(c_dy), 1.0) + half)) + 1
     n = min(crop, h, w)
@@ -364,17 +378,40 @@ def _warp(image, dx, dy, should_cancel):
         # Returning borrowed pixels is safe for repeatable immutable producers.
         _check_cancel(should_cancel)
         return image
+    _check_cancel(should_cancel)
+    # Preserve the row-sampler cancellation probe used by callers that cancel
+    # from inside sampling, before the vectorized/native plane path starts.
+    _sample_plane(image, np.zeros(1, np.float32), np.zeros(1, np.float32))
+    _check_cancel(should_cancel)
+    if (_native_kernels.available() and image.dtype == np.uint16
+            and image.ndim in (2, 3)):
+        return _native_kernels.warp_u16(image, _F32(dx), _F32(dy))
     h, w = image.shape[:2]
     output = np.empty_like(image)
     x = np.arange(w, dtype=np.float32) - _F32(dx)
-    for y in range(h):
-        _check_cancel(should_cancel)
-        sy = np.array([_F32(y) - _F32(dy)], np.float32)
-        if image.ndim == 2:
-            output[y] = _sample_plane(image, x, sy)[0]
-        else:
-            for channel in range(image.shape[2]):
-                output[y, :, channel] = _sample_plane(image[:, :, channel], x, sy)[0]
+    y = np.arange(h, dtype=np.float32) - _F32(dy)
+    ix, jx, fx, invalid_x = _axis_samples(x, w)
+    iy, jy, fy, invalid_y = _axis_samples(y, h)
+    gx, gy = np.uint32(256) - fx, np.uint32(256) - fy
+    invalid = invalid_y[:, None] | invalid_x[None, :]
+    if image.ndim == 2:
+        top = image[iy[:, None], ix[None, :]].astype(np.uint32) * gx[None, :]
+        top += image[iy[:, None], jx[None, :]].astype(np.uint32) * fx[None, :]
+        bottom = image[jy[:, None], ix[None, :]].astype(np.uint32) * gx[None, :]
+        bottom += image[jy[:, None], jx[None, :]].astype(np.uint32) * fx[None, :]
+        values = (top * gy[:, None] + bottom * fy[:, None]) >> 16
+        values[invalid] = 0
+        output[...] = values
+    else:
+        for channel in range(image.shape[2]):
+            plane = image[:, :, channel]
+            top = plane[iy[:, None], ix[None, :]].astype(np.uint32) * gx[None, :]
+            top += plane[iy[:, None], jx[None, :]].astype(np.uint32) * fx[None, :]
+            bottom = plane[jy[:, None], ix[None, :]].astype(np.uint32) * gx[None, :]
+            bottom += plane[jy[:, None], jx[None, :]].astype(np.uint32) * fx[None, :]
+            values = (top * gy[:, None] + bottom * fy[:, None]) >> 16
+            values[invalid] = 0
+            output[:, :, channel] = values
     _check_cancel(should_cancel)
     return output
 

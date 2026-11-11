@@ -11,14 +11,18 @@ from fusion_methods._depth_kernel import njit
 
 
 @njit(nogil=True)
-def gray_rows(image, output, start, stop, scale):
+def gray_rows(image, output, start, stop, scale, depth_color=False):
     for y in range(start, stop):
         for x in range(image.shape[1]):
             if image.ndim == 2:
                 value = np.int64(image[y, x])
             elif image.shape[2] >= 3:
-                value = (np.int64(image[y, x, 0]) + np.int64(image[y, x, 1])
-                         + np.int64(image[y, x, 2])) // 3
+                total = (np.int64(image[y, x, 0]) + np.int64(image[y, x, 1])
+                         + np.int64(image[y, x, 2]))
+                if depth_color:
+                    output[y, x] = (total * scale * 85) >> 8
+                    continue
+                value = total // 3
             elif image.shape[2] == 1:
                 value = np.int64(image[y, x, 0])
             else:

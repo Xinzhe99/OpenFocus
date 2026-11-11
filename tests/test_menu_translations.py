@@ -35,9 +35,13 @@ def _menu_window(qapp):
         "save_stack_as_multipage_tiff": staticmethod(stub),
         "save_processed_input_stack": staticmethod(stub),
     })()
+    window.output_manager = type("O", (), {
+        "export_all_results": staticmethod(stub),
+    })()
     window.source_manager = type("S", (), {
         "clear_image_stack": staticmethod(stub),
         "reset_current_stack": staticmethod(stub),
+        "prompt_and_load_frames": staticmethod(stub),
     })()
     window.label_manager = type("L", (), {
         "show_add_label_dialog": staticmethod(stub),
@@ -84,6 +88,29 @@ def test_file_menu_uses_one_folder_entry(qapp):
         window.close()
         window.deleteLater()
         qapp.processEvents()
+
+
+def test_file_menu_exports_all_results(qapp):
+    from ui.menus import setup_menus
+
+    window = _menu_window(qapp)
+    calls = []
+    window.output_manager.export_all_results = lambda: calls.append(True)
+    setup_menus(window)
+    try:
+        action = window.ui_objs['menu_export_all']
+        assert action in window.ui_objs['menu_file'].actions()
+        action.trigger()
+        assert calls == [True]
+    finally:
+        window.close()
+        window.deleteLater()
+        qapp.processEvents()
+
+
+def test_export_all_menu_translation_exists_in_every_language():
+    for code in trans.PACK_ORDER:
+        assert trans.translations[code].get('menu_export_all'), code
 
 
 

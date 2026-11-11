@@ -59,6 +59,37 @@ def _finished(dialog):
     return (dialog._worker is None
             and not dialog._preview_timer.isActive())
 
+def test_parameter_cards_stack_headers_and_wrap(dialog, qapp):
+    for check in dialog._checks.values():
+        check.setChecked(False)
+    methods = list(dialog._param_rows)[:2]
+    for method in methods:
+        dialog._checks[method].setChecked(True)
+    dialog._preview_timer.stop()
+    qapp.processEvents()
+
+    cards = [dialog._param_rows[method] for method in methods]
+    for card in cards:
+        layout = card.layout()
+        title = layout.itemAt(0).widget()
+        panel = layout.itemAt(1).widget()
+        assert title.font().bold()
+        assert title.geometry().bottom() < panel.geometry().top()
+        assert title.width() >= title.fontMetrics().horizontalAdvance(title.text())
+        form = panel.layout()
+        editors = list(panel.editors.values())
+        for editor in editors:
+            label = form.labelForField(editor)
+            assert label.width() >= label.fontMetrics().horizontalAdvance(label.text())
+            assert label.geometry().right() < editor.geometry().left()
+        assert len({editor.geometry().left() for editor in editors}) == 1
+
+    widths = [card.sizeHint().width() for card in cards]
+    flow = dialog.param_host
+    narrow = max(widths)
+    wide = sum(widths) + 12
+    assert flow.heightForWidth(narrow) > flow.heightForWidth(wide)
+
 
 def test_queued_old_roi_cannot_reappear_after_selection_changes(dialog, qapp):
     dialog.mode_combo.setCurrentIndex(dialog.mode_combo.findData(True))
@@ -553,7 +584,9 @@ def test_registered_parameters_cross_dialogs_and_adoption(qapp, extra_algorithms
     window.tile_enabled = False
     window.brightness_option_for = lambda *_: False
     saved = {'dialog_extra': {'lift': 7, 'selection': 'last'}}
-    registration = {'dialog_shift': {'shift': 3}}
+    openfocus = {'max_shift_ratio': .17, 'rotation': 2.5, 'magnification': 4.5,
+                 'reference_frame': 2, 'failure_policy': 'fail'}
+    registration = {'dialog_shift': {'shift': 3}, 'openfocus': openfocus}
     window.fusion_parameters_for = lambda method, depth=False: extra_algorithms.resolve_fusion_parameters(
         method, None if depth else saved.get(method), depth=depth)
     window.registration_parameters_for = lambda method: extra_algorithms.resolve_registration_parameters(
@@ -595,6 +628,29 @@ def test_registered_parameters_cross_dialogs_and_adoption(qapp, extra_algorithms
         assert depth.fusion_parameter_panel.values() == {'threshold': .5}
         for dialog in (batch, compare, depth):
             assert dialog.registration_parameter_panel.values() == {'shift': 3}
+        for dialog in (batch, compare, depth):
+            dialog.align_combo.setCurrentIndex(dialog.align_combo.findData('openfocus'))
+            assert dialog.registration_parameter_panel.isHidden()
+            assert dialog.registration_parameter_panel.values() == openfocus
+        assert batch.get_processing_settings()['registration_parameters'] == openfocus
+        assert compare._shared['registration_parameters'] == openfocus
+        captured = []
+        def capture_alignment(images, method, settings, should_cancel):
+            captured.append((method, dict(settings['registration_parameters'])))
+            return images
+        with monkeypatch.context() as patch:
+            patch.setattr('core.compare_worker.align_frames', capture_alignment)
+            compare._preview_timer.stop()
+            compare._start_request()
+            _until(qapp, lambda: _finished(compare) and compare._results)
+            depth._compute()
+            _until(qapp, lambda: depth._worker is None)
+        assert captured == [('openfocus', openfocus), ('openfocus', openfocus)]
+        for dialog in (batch, compare, depth):
+            dialog.align_combo.setCurrentIndex(dialog.align_combo.findData('dialog_shift'))
+            assert not dialog.registration_parameter_panel.isHidden()
+            assert dialog.registration_parameter_panel.values() == {'shift': 3}
+        compare._preview_timer.stop()
         batch.fusion_parameter_panel.editors['lift'].setValue(11)
         batch.fusion_combo.setCurrentIndex(batch.fusion_combo.findData('dct'))
         batch.fusion_combo.setCurrentIndex(batch.fusion_combo.findData('dialog_extra'))
@@ -638,13 +694,22 @@ def test_registered_parameters_cross_dialogs_and_adoption(qapp, extra_algorithms
         assert undo == []
         persisted.clear()
         window.set_registration_parameters = set_registration_parameters
+        compare.align_combo.setCurrentIndex(compare.align_combo.findData('openfocus'))
+        compare._preview_timer.stop()
+        with monkeypatch.context() as patch:
+            patch.setattr('core.compare_worker.align_frames', capture_alignment)
+            compare._start_request()
+            _until(qapp, lambda: _finished(compare) and compare._results)
+        assert compare._selected_method == 'dialog_extra'
+        assert compare.btn_adopt_params.isEnabled()
         compare._adopt_params()
         assert saved['dialog_extra'] == {'lift': 13, 'selection': 'last'}
-        assert registration['dialog_shift'] == {'shift': 4}
+        assert registration['dialog_shift'] == {'shift': 3}
+        assert registration['openfocus'] == openfocus
         assert undo[0]['fusion']['dialog_extra'] == {'lift': 7, 'selection': 'last'}
         assert len(persisted) == 1
         assert persisted[0]['fusion']['dialog_extra'] == saved['dialog_extra']
-        assert persisted[0]['registration']['dialog_shift'] == registration['dialog_shift']
+        assert persisted[0]['registration']['openfocus'] == openfocus
     finally:
         batch.reject()
         compare.reject()

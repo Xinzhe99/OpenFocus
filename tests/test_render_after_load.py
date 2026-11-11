@@ -286,3 +286,23 @@ def test_resource_wait_preparation_fusion_and_late_cancel_stages_are_truthful(qa
     assert render._status_bar_label.text() == trans.t('depth_cancelling')
     assert window.statusBar().currentMessage() == trans.t('depth_cancelling')
     window._bar.deleteLater()
+
+
+def test_render_progress_count_remains_visible_after_status_message_clears(qapp):
+    from types import SimpleNamespace
+    from PyQt6.QtWidgets import QStatusBar
+    from locales import trans
+    window, render, _source = _setup(qapp)
+    window._bar = QStatusBar()
+    render.worker = SimpleNamespace(is_cancelled=False)
+    render.on_render_stage('fuse')
+    render.on_render_progress(1, 228)
+    assert render._status_bar_progress.maximum() == 228
+    assert render._status_bar_progress.value() == 1
+    assert render._status_bar_label.text().startswith(trans.t('render_stage_fuse'))
+    assert '(1/228)' in render._status_bar_label.text()
+    window.statusBar().clearMessage()
+    assert '(1/228)' in render._status_bar_label.text()
+    render.on_render_stage('finish')
+    assert render._status_bar_label.text() == trans.t('render_stage_finish')
+    window._bar.deleteLater()

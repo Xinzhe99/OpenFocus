@@ -23,7 +23,7 @@ from utils.logging_setup import get_logger
 logger = get_logger(__name__)
 _CANCEL_GRACE_SECONDS = 3.0
 _STATE_FIELDS = ('alignment_reused', 'alignment_computed', 'alignment_report',
-                 'alignment_report_provenance')
+                 'alignment_report_provenance', 'prepared_cache')
 
 
 def _exit_reason(code):

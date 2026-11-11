@@ -46,7 +46,7 @@ def frame_codes(source, img_resize, should_cancel):
     return code
 
 
-def gray_codes(code, should_cancel, *, u8=False):
+def gray_codes(code, should_cancel, *, u8=False, depth_color=False):
     """Equal integer channel mean, in the original pixel code domain."""
     from fusion_methods.openfocus_ab import _check_cancel
 
@@ -61,11 +61,11 @@ def gray_codes(code, should_cancel, *, u8=False):
             gray[rows] = pixels[:, :, 0]
         else:
             total = pixels[:, :, :3].sum(axis=2, dtype=np.int32)
-            gray[rows] = ((total >> 8) // 3) << 8 if u8 else total // 3
+            gray[rows] = (total * 85) >> 8 if depth_color else (((total >> 8) // 3) << 8 if u8 else total // 3)
     return gray
 
 
-def frame_gray_codes(source, img_resize, should_cancel):
+def frame_gray_codes(source, img_resize, should_cancel, *, depth_color=False):
     """Prepare native gray without a full-size three-channel code copy."""
     from core.source_frames import resolve_frame
     from fusion_methods.openfocus_ab import _check_cancel
@@ -80,10 +80,10 @@ def frame_gray_codes(source, img_resize, should_cancel):
         scale = 256 if frame.dtype == np.uint8 else 1
         for start in range(0, gray.shape[0], 128):
             _check_cancel(should_cancel)
-            gray_rows(frame, gray, start, min(gray.shape[0], start + 128), scale)
+            gray_rows(frame, gray, start, min(gray.shape[0], start + 128), scale, depth_color)
         return gray
     return gray_codes(frame_codes(frame, img_resize, should_cancel), should_cancel,
-                      u8=frame.dtype == np.uint8)
+                      u8=frame.dtype == np.uint8, depth_color=depth_color)
 
 
 

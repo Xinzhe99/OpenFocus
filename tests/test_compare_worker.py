@@ -241,7 +241,7 @@ def test_cancel_before_start_still_finishes_without_publishing(kind):
 
 def test_cancellation_during_real_tiled_fusion_stops_emission(monkeypatch):
     worker = PreviewWorker(
-        _stack(192, 256), ["openfocus_a", "openfocus_b"], {},
+        _stack(192, 256), ["guided_filter", "openfocus_b"], {},
         {"tile_enabled": True, "tile_threshold": 64, "tile_block_size": 96,
          "tile_overlap": 16, "thread_count": 1}, None, roi_only=False)
     original = MultiFocusFusion.fuse
@@ -258,7 +258,7 @@ def test_cancellation_during_real_tiled_fusion_stops_emission(monkeypatch):
     results, errors, progress = _run(worker)
     assert completed_tiles and completed_tiles[0][1] > 1
     assert results == errors == []
-    assert progress == [(0, 2, "openfocus_a")]
+    assert progress == [(0, 2, "guided_filter")]
 
 
 def test_cancellation_after_native_fusion_discards_result(monkeypatch):
@@ -462,3 +462,11 @@ def test_cold_background_depth_render_preserves_uint16():
         env=dict(os.environ, QT_QPA_PLATFORM='offscreen'),
         capture_output=True, text=True, timeout=60)
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.parametrize('method', ['openfocus_a', 'openfocus_b', 'openfocus_c', 'guided_filter'])
+def test_compare_keeps_native_whole_under_shared_tile_settings(method):
+    worker = PreviewWorker(_stack(), [method], {},
+                           {'tile_enabled': True, 'tile_threshold': 8}, None, False)
+    constructor, _ = worker._settings(method)
+    assert constructor['tile_enabled'] is (method == 'guided_filter')

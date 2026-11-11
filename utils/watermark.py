@@ -94,6 +94,8 @@ class WatermarkConfig:
     color: str = DEFAULT_COLOR
     angle: float = DEFAULT_ANGLE
     density: str = DEFAULT_DENSITY
+    copyright_enabled: bool = False
+    copyright_position: str = "prefix"
 
     def to_dict(self) -> dict:
         return {
@@ -104,6 +106,8 @@ class WatermarkConfig:
             "color": self.color,
             "angle": float(self.angle),
             "density": self.density,
+            "copyright_enabled": self.copyright_enabled,
+            "copyright_position": self.copyright_position,
         }
 
 
@@ -151,6 +155,22 @@ def _text(value) -> str:
     return value
 
 
+def _copyright_fields(enabled, position):
+    if not isinstance(enabled, bool):
+        raise WatermarkError("bad_config", "copyright_enabled")
+    if not isinstance(position, str) or position not in ("prefix", "suffix"):
+        raise WatermarkError("bad_config", "copyright_position")
+    return enabled, position
+
+
+def effective_text(config: WatermarkConfig) -> str:
+    if not config.copyright_enabled:
+        return config.text
+    if config.copyright_position == "suffix":
+        return config.text + " ©"
+    return "© " + config.text
+
+
 def normalize_config(config) -> WatermarkConfig:
     """Validate a mapping/config and return an immutable copy."""
     if isinstance(config, WatermarkConfig):
@@ -169,6 +189,8 @@ def normalize_config(config) -> WatermarkConfig:
     density = config.get("density", DEFAULT_DENSITY)
     if density not in DENSITY_GAPS:
         raise WatermarkError("bad_config", "density")
+    enabled, position = _copyright_fields(config.get("copyright_enabled", False),
+                                          config.get("copyright_position", "prefix"))
     return WatermarkConfig(
         text=text,
         font_family=family,
@@ -180,11 +202,14 @@ def normalize_config(config) -> WatermarkConfig:
         angle=_number(config.get("angle", DEFAULT_ANGLE),
                       "angle", MIN_ANGLE, MAX_ANGLE),
         density=density,
+        copyright_enabled=enabled,
+        copyright_position=position,
     )
 
 
 def replace_config(config: WatermarkConfig) -> WatermarkConfig:
     """Revalidate a dataclass instance (keeps frozen immutability)."""
+    enabled, position = _copyright_fields(config.copyright_enabled, config.copyright_position)
     return WatermarkConfig(
         text=_text(config.text),
         font_family=config.font_family,
@@ -194,6 +219,8 @@ def replace_config(config: WatermarkConfig) -> WatermarkConfig:
         color=config.color if config.color in COLORS else DEFAULT_COLOR,
         angle=_number(config.angle, "angle", MIN_ANGLE, MAX_ANGLE),
         density=config.density if config.density in DENSITY_GAPS else DEFAULT_DENSITY,
+        copyright_enabled=enabled,
+        copyright_position=position,
     )
 
 
@@ -223,6 +250,12 @@ def safe_config(value) -> Optional[WatermarkConfig]:
     density = mapping.get("density", DEFAULT_DENSITY)
     if density not in DENSITY_GAPS:
         density = DEFAULT_DENSITY
+    enabled = mapping.get("copyright_enabled", False)
+    if not isinstance(enabled, bool):
+        enabled = False
+    position = mapping.get("copyright_position", "prefix")
+    if not isinstance(position, str) or position not in ("prefix", "suffix"):
+        position = "prefix"
     values = {}
     for name, default, low, high in (
             ("size_percent", DEFAULT_SIZE_PERCENT, MIN_SIZE_PERCENT, MAX_SIZE_PERCENT),
@@ -233,7 +266,8 @@ def safe_config(value) -> Optional[WatermarkConfig]:
         except WatermarkError:
             values[name] = default
     return WatermarkConfig(text=text, font_family=family, color=color,
-                           density=density, **values)
+                           density=density, copyright_enabled=enabled,
+                           copyright_position=position, **values)
 
 
 def _resolve_font(font_px: int, family: str, text: str):
@@ -317,6 +351,7 @@ def _plan_cached(config: WatermarkConfig, width: int, height: int) -> Layout:
     if width <= 0 or height <= 0:
         raise WatermarkError("too_small", f"{width}x{height}")
     cfg = normalize_config(config)
+    text = effective_text(cfg)
     short = min(int(width), int(height))
     font_px = int(round(short * cfg.size_percent / 100.0))
     if font_px < MIN_FONT_PX:
@@ -324,7 +359,7 @@ def _plan_cached(config: WatermarkConfig, width: int, height: int) -> Layout:
     stroke = max(1, int(round(font_px * 0.035)))
     try:
         raw_w, raw_h, rot_w, rot_h, _actual, _sub = _estimate_stamp(
-            font_px, cfg.font_family, cfg.text, stroke, cfg.angle)
+            font_px, cfg.font_family, text, stroke, cfg.angle)
     except WatermarkError:
         raise
     except Exception as exc:
@@ -341,7 +376,7 @@ def _plan_cached(config: WatermarkConfig, width: int, height: int) -> Layout:
                              f"stamp ~{estimated_bytes // (1024 * 1024)} MiB")
     try:
         fill, ring, actual, substituted = _stamp(
-            cfg.text, font_px, cfg.font_family, cfg.angle, stroke)
+            text, font_px, cfg.font_family, cfg.angle, stroke)
     except WatermarkError:
         raise
     except Exception as exc:
@@ -497,7 +532,7 @@ def burn(image: np.ndarray, config, *, canvas_size: Optional[Sequence[int]] = No
     font_px = max(3, int(round(base.font_px * scale)))
     stroke = max(1, int(round(font_px * 0.035)))
     try:
-        fill, ring, _actual, _sub = _stamp(cfg.text, font_px, cfg.font_family,
+        fill, ring, _actual, _sub = _stamp(effective_text(cfg), font_px, cfg.font_family,
                                            cfg.angle, stroke)
     except WatermarkError:
         raise
@@ -554,6 +589,8 @@ _ATTRS = {
     "color": ("watermark_color", DEFAULT_COLOR),
     "angle": ("watermark_angle", DEFAULT_ANGLE),
     "density": ("watermark_density", DEFAULT_DENSITY),
+    "copyright_enabled": ("watermark_copyright_enabled", False),
+    "copyright_position": ("watermark_copyright_position", "prefix"),
 }
 _SCOPE_ATTRS = {
     "source": ("watermark_source_enabled", True),
@@ -828,8 +865,8 @@ def restore_state(window, state) -> None:
     if not isinstance(state, dict):
         return
     for key, (attr, default) in _ATTRS.items():
-        if key in state:
-            setattr(window, attr, state[key])
+        if key in state or key in ("copyright_enabled", "copyright_position"):
+            setattr(window, attr, state.get(key, default))
     restored_targets = False
     for target, attr in _TARGET_CONFIG_ATTRS.items():
         key = f"target_{target}"
@@ -926,11 +963,14 @@ def remove_target(window, where: str, selected_record=None) -> int:
 def settings_from_window(window) -> dict:
     """Project/QSettings values, including independent target configurations."""
     draft = draft_config(window)
-    values = (draft.to_dict() if draft is not None else
-              {"text": "", "font_family": DEFAULT_FONT_FAMILY,
-               "size_percent": DEFAULT_SIZE_PERCENT,
-               "opacity": DEFAULT_OPACITY, "color": DEFAULT_COLOR,
-               "angle": DEFAULT_ANGLE, "density": DEFAULT_DENSITY})
+    if draft is not None:
+        values = draft.to_dict()
+    else:
+        mapping = {key: getattr(window, attr, default)
+                   for key, (attr, default) in _ATTRS.items()}
+        mapping["text"] = "x"
+        values = safe_config(mapping).to_dict()
+        values["text"] = ""
     values["targets"] = list(active_targets(window))
     for target in TARGETS:
         cfg = target_config(window, target)
@@ -947,10 +987,17 @@ def apply_settings(window, settings) -> None:
         return
     mapping = {}
     for key, (attr, default) in ATTRS.items():
-        mapping[key] = settings.get(key, getattr(window, attr, default))
+        mapping[key] = settings.get(key, default if key in
+                                    ("copyright_enabled", "copyright_position")
+                                    else getattr(window, attr, default))
     cfg = safe_config(mapping)
     if cfg is None:
         window.watermark_text = ""
+        mapping["text"] = "x"
+        style = safe_config(mapping)
+        for key, value in style.to_dict().items():
+            if key != "text":
+                setattr(window, ATTRS[key][0], value)
     else:
         for key, value in cfg.to_dict().items():
             setattr(window, ATTRS[key][0], value)

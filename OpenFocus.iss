@@ -39,6 +39,7 @@ UninstallDisplayIcon={app}\{#MyAppExeName}
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
+Name: "explorercontext"; Description: "Add OpenFocus to the Windows Explorer context menu"
 
 [Files]
 Source: "dist\OpenFocus\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion
@@ -47,6 +48,24 @@ Source: "dist\OpenFocus\*"; DestDir: "{app}"; Flags: recursesubdirs createallsub
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
 Name: "{group}\{cm:UninstallProgram,{#MyAppName}}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
+
+[Registry]
+; The unique verb and CLSID are the only keys owned and removed by this
+; installer. Existing file associations and Explorer settings are untouched.
+Root: HKA; Subkey: "Software\Classes\CLSID\{{08A1D5C2-DB59-4A62-AC2B-ED9E960A986E}"; Flags: deletekey; Check: not WizardIsTaskSelected('explorercontext')
+Root: HKA; Subkey: "Software\Classes\Directory\shell\OpenFocus.Import"; Flags: deletekey; Check: not WizardIsTaskSelected('explorercontext')
+Root: HKA; Subkey: "Software\Classes\*\shell\OpenFocus.Import"; Flags: deletekey; Check: not WizardIsTaskSelected('explorercontext')
+Root: HKA; Subkey: "Software\Classes\CLSID\{{08A1D5C2-DB59-4A62-AC2B-ED9E960A986E}"; ValueType: string; ValueData: "OpenFocus Explorer import"; Flags: uninsdeletekey; Tasks: explorercontext
+Root: HKA; Subkey: "Software\Classes\CLSID\{{08A1D5C2-DB59-4A62-AC2B-ED9E960A986E}\LocalServer32"; ValueType: string; ValueData: """{app}\{#MyAppExeName}"" --shell-server"; Tasks: explorercontext
+Root: HKA; Subkey: "Software\Classes\Directory\shell\OpenFocus.Import"; ValueType: string; ValueData: "Import into OpenFocus"; Flags: uninsdeletekey; Tasks: explorercontext
+Root: HKA; Subkey: "Software\Classes\Directory\shell\OpenFocus.Import"; ValueType: string; ValueName: "Icon"; ValueData: "{app}\{#MyAppExeName},0"; Tasks: explorercontext
+Root: HKA; Subkey: "Software\Classes\Directory\shell\OpenFocus.Import"; ValueType: string; ValueName: "MultiSelectModel"; ValueData: "Player"; Tasks: explorercontext
+Root: HKA; Subkey: "Software\Classes\Directory\shell\OpenFocus.Import\DropTarget"; ValueType: string; ValueName: "Clsid"; ValueData: "{{08A1D5C2-DB59-4A62-AC2B-ED9E960A986E}"; Tasks: explorercontext
+Root: HKA; Subkey: "Software\Classes\*\shell\OpenFocus.Import"; ValueType: string; ValueData: "Import into OpenFocus"; Flags: uninsdeletekey; Tasks: explorercontext
+Root: HKA; Subkey: "Software\Classes\*\shell\OpenFocus.Import"; ValueType: string; ValueName: "Icon"; ValueData: "{app}\{#MyAppExeName},0"; Tasks: explorercontext
+Root: HKA; Subkey: "Software\Classes\*\shell\OpenFocus.Import"; ValueType: string; ValueName: "MultiSelectModel"; ValueData: "Player"; Tasks: explorercontext
+Root: HKA; Subkey: "Software\Classes\*\shell\OpenFocus.Import"; ValueType: string; ValueName: "AppliesTo"; ValueData: "System.FileName:""*.jpg"" OR System.FileName:""*.jpeg"" OR System.FileName:""*.jpe"" OR System.FileName:""*.jfif"" OR System.FileName:""*.png"" OR System.FileName:""*.bmp"" OR System.FileName:""*.tiff"" OR System.FileName:""*.tif"" OR System.FileName:""*.webp"" OR System.FileName:""*.heic"" OR System.FileName:""*.heif"" OR System.FileName:""*.3fr"" OR System.FileName:""*.arw"" OR System.FileName:""*.bay"" OR System.FileName:""*.cap"" OR System.FileName:""*.cr2"" OR System.FileName:""*.cr3"" OR System.FileName:""*.crw"" OR System.FileName:""*.dc2"" OR System.FileName:""*.dcr"" OR System.FileName:""*.dng"" OR System.FileName:""*.erf"" OR System.FileName:""*.fff"" OR System.FileName:""*.iiq"" OR System.FileName:""*.k25"" OR System.FileName:""*.kc2"" OR System.FileName:""*.kdc"" OR System.FileName:""*.mdc"" OR System.FileName:""*.mef"" OR System.FileName:""*.mos"" OR System.FileName:""*.mrw"" OR System.FileName:""*.nef"" OR System.FileName:""*.nrw"" OR System.FileName:""*.orf"" OR System.FileName:""*.pef"" OR System.FileName:""*.raf"" OR System.FileName:""*.raw"" OR System.FileName:""*.rdc"" OR System.FileName:""*.rw2"" OR System.FileName:""*.rwl"" OR System.FileName:""*.srf"" OR System.FileName:""*.sr2"" OR System.FileName:""*.srw"" OR System.FileName:""*.sti"" OR System.FileName:""*.x3f"""; Tasks: explorercontext
+Root: HKA; Subkey: "Software\Classes\*\shell\OpenFocus.Import\DropTarget"; ValueType: string; ValueName: "Clsid"; ValueData: "{{08A1D5C2-DB59-4A62-AC2B-ED9E960A986E}"; Tasks: explorercontext
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#MyAppName}}"; Flags: nowait postinstall skipifsilent

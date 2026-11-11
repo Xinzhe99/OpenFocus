@@ -23,6 +23,29 @@ def _files(tmp_path, values, dtype=np.uint8):
     return paths
 
 
+def test_grouped_tiff_ignores_reduced_directory_and_decodes_original(tmp_path, admitted):
+    import tifffile
+    path = tmp_path / 'source.tif'
+    pixels = np.full((8, 12, 3), (1000, 2000, 3000), np.uint16)
+    with tifffile.TiffWriter(path) as writer:
+        writer.write(pixels, photometric='rgb', extratags=[(274, 'H', 1, 6, False)])
+        writer.write(np.zeros((4, 6, 3), np.uint8), photometric='rgb', subfiletype=1)
+    assert grouped._header(path)[:2] == (8, 12)
+    result = grouped.grouped_fuse([path], 2, 0, lambda images: images[0])
+    np.testing.assert_array_equal(result, cv2.rotate(pixels[:, :, ::-1], cv2.ROTATE_90_CLOCKWISE))
+
+
+def test_grouped_tiff_still_rejects_multiple_full_pages(tmp_path):
+    import tifffile
+    path = tmp_path / 'multipage.tif'
+    with tifffile.TiffWriter(path) as writer:
+        writer.write(np.zeros((8, 12, 3), np.uint8), photometric='rgb')
+        writer.write(np.zeros((4, 6, 3), np.uint8), photometric='rgb', subfiletype=1)
+        writer.write(np.zeros((8, 12, 3), np.uint8), photometric='rgb')
+    with pytest.raises(ValueError, match='multipage'):
+        grouped._header(path)
+
+
 @pytest.fixture
 def admitted(monkeypatch):
     monkeypatch.setattr(grouped.resource_policy, 'plan_execution', lambda *a, **k: None)

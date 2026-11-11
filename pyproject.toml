@@ -26,11 +26,11 @@ dependencies = [
     "numpy",
     "opencv-python-headless",
     "scipy",
-    # dtcwt ships only an sdist and has no Python 3.13 wheels; making it a hard
-    # requirement made the whole install fail on newer interpreters even though
-    # it powers one of the ten methods. It is pulled in below with an
-    # environment marker covering the interpreters it actually builds on.
-    "dtcwt; python_version < '3.13'",
+    # Upstream 0.14.0 declares numpy<2, which cannot resolve on Python 3.13.
+    # On newer Python versions it can be installed separately with --no-deps;
+    # OpenFocus provides the NumPy 2 compatibility required by its backend.
+    "dtcwt==0.14.0; python_version < '3.13'",
+    "six",
     "imageio",
     "Pillow",
     "psdtags==2024.5.24",

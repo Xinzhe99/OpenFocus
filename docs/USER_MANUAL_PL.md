@@ -872,7 +872,7 @@ Dla wyniku retuszu wybierz TIFF z warstwami z listy formatów **Zapisz jako**, a
 ## 14. Interfejs wiersza poleceń
 
 `pip install openfocus` obejmuje model AI, jego wagi oraz dekodowanie HEIC i RAW aparatów.
-Na Pythonie 3.13+ pakiet `dtcwt` jest pomijany, a pozycja DTCWT pozostaje wyłączona z podpowiedzią.
+Aby włączyć DTCWT na Pythonie 3.13+, uruchom następnie `python -m pip install --no-deps dtcwt==0.14.0`. OpenFocus dostarcza adapter NumPy 2; `pip check` nadal zgłosi ograniczenie NumPy w oryginalnym pakiecie.
 
 OpenFocus może działać bez interfejsu graficznego — przydatne w potokach skryptowych i CI. Skrypt konsolowy `openfocus` (instalowany przez `pip install openfocus`) i `python main.py` z kopii roboczej udostępniają te same polecenia. Opcje fuzji działają w obu formach; podpolecenia:
 

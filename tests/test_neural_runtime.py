@@ -84,6 +84,97 @@ def test_sessions_isolate_checkpoint_shape_and_directml_adapter(monkeypatch, tmp
     assert calls[-1][1][0] == ('DmlExecutionProvider', {'device_id': 2})
 
 
+def test_accelerator_sessions_keep_two_shapes_and_evict_oldest(monkeypatch, tmp_path):
+    created = []
+
+    class Options:
+        def add_free_dimension_override_by_name(self, *args):
+            pass
+
+    class Session:
+        def __init__(self, path, sess_options, providers):
+            created.append(self)
+
+        def disable_fallback(self):
+            pass
+
+        def get_providers(self):
+            return ['DmlExecutionProvider', 'CPUExecutionProvider']
+
+    monkeypatch.setitem(sys.modules, 'onnxruntime', SimpleNamespace(
+        SessionOptions=Options, InferenceSession=Session,
+        ExecutionMode=SimpleNamespace(ORT_SEQUENTIAL=0)))
+    monkeypatch.setattr(neural_runtime, '_SESSIONS', OrderedDict())
+    path = tmp_path / 'model.onnx'
+    path.write_bytes(b'model')
+    full = neural_runtime._session(str(path), (3, 256, 256), 'DIRECTML', 1)
+    small = neural_runtime._session(str(path), (3, 192, 192), 'DIRECTML', 1)
+    assert neural_runtime._session(str(path), (3, 256, 256), 'DIRECTML', 1) is full
+    assert neural_runtime._session(str(path), (3, 192, 192), 'DIRECTML', 1) is small
+    assert len(created) == 2
+    neural_runtime._session(str(path), (3, 128, 128), 'DIRECTML', 1)
+    assert neural_runtime._session(str(path), (3, 256, 256), 'DIRECTML', 1) is not full
+
+
+def test_cached_gpu_workspace_is_not_charged_again(monkeypatch, tmp_path):
+    from core import resource_policy
+
+    path = tmp_path / 'model.onnx'
+    path.write_bytes(b'model')
+    planes = np.zeros((1, 2, 64, 64), np.float32)
+    class Session:
+        actual_device = 'DIRECTML'
+
+        def run(self, outputs, inputs):
+            return [inputs['input']]
+
+    session = Session()
+    key = neural_runtime._session_key(str(path), planes.shape[1:], 'DIRECTML', 1)
+    monkeypatch.setattr(neural_runtime, '_SESSIONS', OrderedDict([(key, session)]))
+    monkeypatch.setattr(neural_runtime, '_session', lambda *args: session)
+    monkeypatch.setattr(resource_policy, 'probe_resources', lambda *_: pytest.fail('cached workspace was charged again'))
+    neural_runtime.start_inference_job()
+    try:
+        np.testing.assert_array_equal(neural_runtime.logits(planes, str(path), 'DIRECTML', 1), planes)
+        assert neural_runtime.actual_device() == 'DIRECTML'
+    finally:
+        neural_runtime.start_inference_job()
+
+
+def test_gpu_readmission_releases_old_session_before_fallback(monkeypatch, tmp_path):
+    from core import resource_policy
+
+    path = tmp_path / 'model.onnx'
+    path.write_bytes(b'model')
+    planes = np.zeros((1, 2, 64, 64), np.float32)
+    class Session:
+        actual_device = 'DIRECTML'
+
+        def run(self, outputs, inputs):
+            return [inputs['input']]
+
+    old_key = neural_runtime._session_key(str(path), (2, 128, 128), 'DIRECTML', 1)
+    monkeypatch.setattr(neural_runtime, '_SESSIONS', OrderedDict([(old_key, Session())]))
+    snapshots = iter([
+        resource_policy.ResourceSnapshot(free_vram=1, total_vram=1),
+        resource_policy.ResourceSnapshot(free_vram=8 * 1024 ** 3, total_vram=8 * 1024 ** 3),
+    ])
+    monkeypatch.setattr(resource_policy, 'probe_resources', lambda *_: next(snapshots))
+    requests = []
+    def session(path, shape, device, threads):
+        requests.append(device)
+        return Session()
+
+    monkeypatch.setattr(neural_runtime, '_session', session)
+    neural_runtime.start_inference_job()
+    try:
+        neural_runtime.logits(planes, str(path), 'DIRECTML', 1)
+        assert requests == ['DIRECTML']
+        assert not neural_runtime.device_diagnostics()['fallback_cpu']
+    finally:
+        neural_runtime.start_inference_job()
+
+
 @pytest.mark.parametrize('hardware', [
     [(2, 'Discrete adapter', 0x10de, 8 * 1024 ** 3)],
     [(0, 'Intel UHD integrated adapter', 0x8086, 0)],

@@ -151,6 +151,7 @@ The right panel contains all configuration options organized vertically:
 1. **Fusion Settings**: Select fusion algorithm and kernel size
 2. **Registration Settings**: Enable/disable alignment methods
 3. **Action Buttons**: Start Render, plus reset, **Render settings**, and render all methods. The render settings dialog contains quick preview, frame order, exposure matching, brightness drift removal, and output sharpening
+   All five are unchecked for new settings and after reset; saved choices are preserved.
 4. **Source Images List**: Shows all loaded images with filenames
 5. **Output List**: Shows generated results
 
@@ -295,15 +296,18 @@ project and cannot be recovered by resetting.
 1. Go to **File → Open Folder** or press `Ctrl+O`
 2. Select a folder containing your image sequence, or type or paste its path
    in the address bar and press Enter to navigate before choosing it
-3. A loading-scale dialog appears — choose the scale (100% = full resolution)
+3. Choose a loading percentage or a 2K, 4K or 8K preset based on the first
+   frame's longest side (100% = full resolution)
 4. Click OK to load the images
+
+File and folder selection uses the system dialog and its navigation controls.
 
 The status bar shows processed file counts while loading. The count may stay
 unchanged while one RAW file is being decoded; cancellation takes effect after
 the current file finishes decoding.
 
-Tick **Don't ask again** in that dialog to always load at the chosen scale
-without a prompt; **Settings → Advanced Settings → Startup & updates → Ask for
+Tick **Don't ask again** to reuse the chosen percentage for later imports;
+presets are not recalculated for later images. **Settings → Advanced Settings → Startup & updates → Ask for
 Loading Scale on Import** turns the prompt back on. A loaded stack can still be
 downscaled later with **Edit → Resize**.
 
@@ -311,6 +315,19 @@ The software will automatically:
 - Detect and sort image files by filename
 - Display the first image in the source panel
 - Populate the source images list with all frames
+
+Hover over a source frame to see its working dimensions, file path, original
+dimensions and available camera metadata. File details load in the background.
+
+### Opening Selected Image Frames
+
+Choose **File → Open Image Frames…** and select the image files to include.
+You can type or paste a folder path into the address bar. After choosing the
+loading scale, the selected files form a new stack in natural filename order.
+
+The Windows installer can add **Import into OpenFocus** to File Explorer. Select
+a folder or multiple image files and choose the command; on Windows 11 it may
+appear under **Show more options**. Imports append to an existing stack.
 
 ### Opening Video Files
 
@@ -420,6 +437,10 @@ out in the rotated text coordinate system, anchored at the image centre and
 scaled from each output's own pixel rectangle, so equal-ratio resizes keep
 the same relative size, spacing and phase. Source files and in-memory arrays
 are never modified.
+
+For a new watermark, **Add ©** is selected and places the symbol before the
+text. Turn it off or choose the position after the text. Existing watermarks
+retain their original text and appearance.
 
 Scope is independent per target: source frames, registered frames and
 fusion results (defaults: source + result), each keeping its own text and
@@ -585,6 +606,10 @@ other ordinary exports also use the developed appearance. When the camera profil
 allows it, DNG annotations are burned into the exported pixels. If an annotation color cannot be represented
 in the camera color space, DNG export fails; choose a different color or export
 a developed TIFF or PNG. Regular RAW import continues to produce developed sRGB.
+For camera-linear Bayer RAW at a loading scale of 50% or less, OpenFocus uses
+half-size decoding before the final resize to reduce memory use. Its pixels can
+differ slightly from full-size decoding followed by downsampling; decoding still
+requires workspace based on the native sensor dimensions.
 For DNG inputs with complex camera profiles, the saved Linear DNG retains the
 supported color profile metadata for a DNG-aware editor. OpenFocus uses a simplified D65 matrix
 for its preview and developed TIFF/PNG; it does not apply DNG profile transforms
@@ -789,7 +814,9 @@ and grouped renders do not provide this report.
 1. In the right panel, locate the **Registration** group
 2. Pick one method from the dropdown: **No alignment**, **OpenFocus (fast)**,
    **ECC**, **Homography**, or **Homography → ECC**
-3. For OpenFocus (fast), choose a reference frame. Set **Rejected frame handling** under **Settings → Advanced Settings → Registration**; changes apply to the methods
+3. The defaults work without further adjustment. For OpenFocus (fast), adjust
+   the reference frame and search limits under **Settings → Advanced Settings → Registration**.
+   Set **Rejected frame handling** there for all registration methods.
 4. **Collect alignment diagnostics** now lives in Advanced Settings (see above)
 
 ### When to Use Registration
@@ -813,9 +840,8 @@ Access additional settings via **Settings → Advanced Settings → Registration
 ## 8. Image Fusion Methods
 
 OpenFocus offers ten fusion algorithms (plus an alignment-only mode). A fresh
-profile starts on **StackMFF V3** with **ECC** registration; the lists below
-describe every choice. Each has different characteristics suitable for
-various image types.
+desktop profile uses **OpenFocus B** with **ECC** registration; both are marked
+as recommended. Existing user selections are preserved. CLI defaults are separate.
 
 ### Guided Filter
 
@@ -1043,10 +1069,11 @@ pollutes the full-resolution alignment cache.
 
 ### Resizing
 
-1. Go to **Edit → Resize**
-2. A dialog will appear for resizing options
-3. Enter new dimensions or scale percentage
-4. All images in the stack will be resized proportionally
+1. Go to **Edit → Resize**.
+2. Choose a 2K, 4K or 8K preset, or enter a scale percentage. Presets specify
+   the longest side in pixels and preserve the aspect ratio.
+3. Presets larger than the available base images are disabled; the available
+   resolution option restores those base images without upscaling.
 
 ### Transformation Order
 
@@ -1068,9 +1095,11 @@ copies pixels from the exact frames that produced the selected result:
 2. The source frame is on the left, the result on the right. Both share zoom
    and position: wheel zooms, right/middle-drag (or Space+drag) pans, `F`
    fits, `1` shows 100 %.
-3. Pick a thumbnail, drag the frame slider, or press `,` / `.`. A stroke is locked
-   to that frame and the current brush settings; the frame cannot change
-   until the stroke ends.
+3. Pick a numbered frame, drag the frame slider, or press `,` / `.`. The
+   selected source loads in the background; its thumbnail appears when it is
+   ready. You can navigate or close the workspace while it loads. Painting is
+   available once the selected frame is ready. A stroke is locked to that
+   frame and the current brush settings until the stroke ends.
 4. Choose **Source Brush** (`B`) or **Restore Brush** (`E`). Diameter,
    hardness and opacity have both sliders and numeric fields; `[` / `]`
    adjusts the diameter. Hold `Ctrl` and scroll up to increase the diameter or
@@ -1672,19 +1701,28 @@ export names; existing results keep their names. You can still edit a name in
 the save dialog. This preference does not rename source files or change batch
 output names.
 
+### Exporting All Results
+
+Choose **File → Export All Results to Folder** and select a destination to
+export every entry in the output list. Image results are saved as PNG with
+their current annotations; aligned stack entries are saved as folders. Existing
+files and folders are preserved by giving new exports unique names. OpenFocus
+reports any export failures and warns if the output list is empty.
+
 
 ### Sharing a Result
 
 Right-click an output and use the **Share** submenu. **Copy preview image
 (JPEG)** writes the current result at full resolution, including its labels and
 scale bar, to the clipboard as a real JPEG and also provides a decoded bitmap
-for desktop applications. **Copy file paths** copies persistent file URLs for
-every selected result; unsaved or outdated results ask for one folder and are
-written as PNG with their current 8/16-bit pixels and annotations. **Show in
-folder** opens Explorer, Finder or the desktop file manager with the file
-selected. Existing exported files are reused only while they still match the
-current image and annotations. **Create private share link** stays disabled
-until hosted sharing exists.
+for desktop applications. **Copy file paths** copies the last saved path for
+each selected result as both text and file URLs. Unsaved or missing files must
+be saved first; this command never creates a file. If a result has changed
+since saving, the copied path still points to the last saved version.
+**Show in folder** opens Explorer, Finder or the desktop file manager and may
+ask where to save a new file if the current result has no matching export.
+Saving a result also copies its actual file path to the clipboard.
+**Create private share link** stays disabled until hosted sharing exists.
 
 ### Drag-out Export Format
 
@@ -1747,7 +1785,7 @@ Cancellation or a failed write leaves an existing destination file intact.
 
 ## 14. Command Line Interface
 
-Installing with `pip install openfocus` includes the AI model and weights, HEIC and camera-RAW decoding. `dtcwt` is skipped on Python 3.13+, where the DTCWT entry stays disabled with a tooltip.
+Installing with `pip install openfocus` includes the AI model and weights, HEIC and camera-RAW decoding. On Python 3.13+, upstream `dtcwt` is omitted because its metadata requires NumPy < 2. To enable DTCWT after installing OpenFocus, run `python -m pip install --no-deps dtcwt==0.14.0`. OpenFocus installs its prerequisites (NumPy, SciPy and six) and supplies the NumPy 2 compatibility adapter. Upstream's declared constraint remains unsatisfied, so `pip check` reports it; future upstream releases may resolve this conflict.
 
 OpenFocus can run without the GUI — useful for scripted pipelines and CI. The
 `openfocus` console script (installed by `pip install openfocus`) and
