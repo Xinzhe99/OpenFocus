@@ -31,9 +31,10 @@ class _AccountJob(QObject):
     started = pyqtSignal()
     finished = pyqtSignal(object, object)
 
-    def __init__(self, call):
+    def __init__(self, call, owner):
         super().__init__()
         self.call = call
+        self.owner = owner
         self._thread = None
 
     def _release(self, _result, _error):
@@ -306,7 +307,7 @@ class AccountDialog(QDialog):
 
     def _start(self, operation, call):
         self._operation = operation
-        job = _AccountJob(call)
+        job = _AccountJob(call, self.window_main)
         self._job = job
         job.started.connect(self._started)
         job.finished.connect(self._finished)
@@ -435,4 +436,4 @@ def cancel_account_jobs(window):
         cancel_browser()
     for dialog in window.findChildren(AccountDialog):
         dialog._cancel.set()
-    return bool(_ACTIVE_JOBS)
+    return any(job.owner is window for job in _ACTIVE_JOBS)

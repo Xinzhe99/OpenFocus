@@ -3494,7 +3494,7 @@ class OpenFocus(QMainWindow):
         """Restore the local session without blocking the UI or contacting the service."""
         from dialogs.account import _AccountJob
         from utils.account_client import AccountClient
-        job = _AccountJob(lambda _started: AccountClient())
+        job = _AccountJob(lambda _started: AccountClient(), self)
         self._account_load_job = job
         job.finished.connect(self._account_loaded)
         job.finished.connect(job._release)
@@ -3530,7 +3530,7 @@ class OpenFocus(QMainWindow):
         self._account_browser_cancel = threading.Event()
         language = 'zh' if trans.current_lang == 'zh' else 'en'
         job = _AccountJob(lambda started: client.login_with_browser(
-            cancel=self._account_browser_cancel, on_started=started, timeout=30, language=language))
+            cancel=self._account_browser_cancel, on_started=started, timeout=30, language=language), self)
         self._account_browser_job = job
         job.finished.connect(self._browser_sso_finished)
         job.finished.connect(job._release)
@@ -3551,7 +3551,7 @@ class OpenFocus(QMainWindow):
             # Skip can arrive after the worker persisted the session but before
             # its queued completion reaches the GUI. Revoke that session first.
             from dialogs.account import _AccountJob
-            job = _AccountJob(lambda _started: self._account_client.logout())
+            job = _AccountJob(lambda _started: self._account_client.logout(), self)
             self._account_browser_job = job
             job.finished.connect(self._cancelled_browser_session_cleared)
             job.finished.connect(job._release)

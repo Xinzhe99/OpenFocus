@@ -84,7 +84,7 @@ def test_account_menu_and_dialog_follow_sign_in_and_sign_out(qapp, tmp_path, mon
         dialog.github_button.click()
         _wait(qapp, lambda: dialog._job is None)
         qapp.processEvents()
-        assert 'user@example.test' in action.text()
+        assert 'user@example.test' in action.toolTip()
         assert dialog.center_button.isVisible() and dialog.logout_button.isVisible()
         assert not dialog.form.isVisible()
         assert dialog.height() < signed_out_height - 50
@@ -115,7 +115,7 @@ def test_browser_session_restores_account_and_logout_disables_autorestore(qapp, 
         window.enable_browser_sso()
         _wait(qapp, lambda: window._account_browser_job is None)
         assert client.is_signed_in()
-        assert 'browser@example.test' in window.ui_objs['action_account'].text()
+        assert 'browser@example.test' in window.ui_objs['action_account'].toolTip()
         dialog = AccountDialog(window)
         dialog.logout_button.click()
         _wait(qapp, lambda: dialog._job is None)
@@ -214,7 +214,7 @@ def test_account_dialog_shares_pending_session_restore(qapp, tmp_path, monkeypat
         assert dialog._job is shared
         _wait(qapp, lambda: dialog._job is None)
         assert dialog.client is window._account_client is client
-        assert 'saved@example.test' in window.ui_objs['action_account'].text()
+        assert 'saved@example.test' in window.ui_objs['action_account'].toolTip()
     finally:
         release.set()
         if dialog is not None:
