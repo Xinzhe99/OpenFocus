@@ -33,6 +33,11 @@ def update_mosaic_experimental_action(window: QMainWindow) -> None:
     action.setToolTip('' if enabled else trans.t('experimental_locked_hint'))
 
 
+def _show_support_dialog(window):
+    from dialogs.about import SupportUsDialog
+    SupportUsDialog(window).exec()
+
+
 def setup_menus(window: QMainWindow) -> None:
     """Configure the main menu bar and attach actions to the window."""
     menubar = window.menuBar()
@@ -540,6 +545,12 @@ def setup_menus(window: QMainWindow) -> None:
     contact_action.triggered.connect(window.show_contact_info)
     help_menu.addAction(contact_action)
     window.ui_objs['action_contact'] = contact_action
+
+    support_action = QAction(trans.t('support_title'), window)
+    support_action.setProperty('trans_key', 'support_title')
+    support_action.triggered.connect(lambda: _show_support_dialog(window))
+    help_menu.addAction(support_action)
+    window.ui_objs['support_title'] = support_action
 
     quickstart_action = QAction(trans.t('menu_quick_start'), window)
     quickstart_action.triggered.connect(window.show_quick_start)
