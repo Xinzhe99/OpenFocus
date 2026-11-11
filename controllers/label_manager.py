@@ -742,8 +742,7 @@ class LabelManager:
                      self.interval_spin, self.x_location_spin,
                      self.y_location_spin):
             spin.valueChanged.connect(self._refresh_preview)
-        self.font_family_combo.currentFontChanged.connect(
-            self._refresh_preview)
+        self.font_family_combo.currentFontChanged.connect(self._on_font_family_changed)
         self.transparent_bg_checkbox.toggled.connect(self._refresh_preview)
         self.target_stack_combo.currentIndexChanged.connect(
             self._on_target_changed)
@@ -908,6 +907,7 @@ class LabelManager:
                 bool(config.transparent_bg))
             self.font_family_combo.setCurrentFont(
                 QFont(config.font_family or "Arial"))
+            self._font_family_binding = config.font_family
             self.bg_color_value = tuple(config.bg_color)
             self.font_color_value = tuple(config.font_color)
             self._set_color_button_style(self.bg_color_button,
@@ -920,6 +920,10 @@ class LabelManager:
             self._loading_editor = False
         self._on_target_changed()
         self._sync_background_color_control()
+
+    def _on_font_family_changed(self, *_args) -> None:
+        self._font_family_binding = None
+        self._refresh_preview()
 
     @staticmethod
     def _rgb(bgr) -> tuple:
@@ -1052,7 +1056,8 @@ class LabelManager:
             "x_location": int(round(self.x_location_spin.value())),
             "y_location": int(round(self.y_location_spin.value())),
             "font_size": int(round(self.font_size_spin.value())),
-            "font_family": self.font_family_combo.currentFont().family(),
+            "font_family": (self._font_family_binding if self._font_family_binding is not None
+                            else self.font_family_combo.currentFont().family()),
             "text": "",
             "range": range_text,
             "transparent_bg": self.transparent_bg_checkbox.isChecked(),
@@ -1371,6 +1376,7 @@ class LabelManager:
         self._range_mode = None
         self._output_scope = None
         self._range_binding = None
+        self._font_family_binding = None
         self.target_stack_combo: Optional[QComboBox] = None
         self.format_edit: Optional[QLineEdit] = None
         self.starting_value_spin: Optional[QSpinBox] = None

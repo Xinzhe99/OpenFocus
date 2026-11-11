@@ -65,6 +65,10 @@ the named-pipe client's computer with `GetComputerNameW` and rejects a remote
 or unidentifiable client; `ERROR_PIPE_LOCAL` is treated as local.
 On POSIX, a socket-name conflict does not remove the existing endpoint. Choose
 another name or manually clean it only after confirming it has no owner.
+The server publishes an owner-only Unix socket with an exclusive hard link;
+the filesystem containing the requested socket path must support hard links to
+Unix sockets. Publication fails safely when it does not. On shutdown the server
+removes its published path if it still identifies the socket it created.
 
 ## 4. Framing
 

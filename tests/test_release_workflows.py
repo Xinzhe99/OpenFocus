@@ -3,7 +3,9 @@ from copy import deepcopy
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
+import sys
 
 import pytest
 import yaml
@@ -11,6 +13,23 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = ROOT / '.github' / 'workflows'
+
+
+@pytest.fixture(scope='module')
+def bash():
+    if sys.platform == 'win32':
+        # The Windows system bash may be the WSL launcher, not GitHub's Bash.
+        git = shutil.which('git')
+        assert git, 'Git is required to locate Git for Windows Bash'
+        git_dir = Path(git).resolve().parent
+        candidates = [parent / 'bin' / 'bash.exe' for parent in (git_dir.parent, git_dir.parent.parent)]
+        executable = next((str(path) for path in candidates if path.is_file()), None)
+    else:
+        executable = shutil.which('bash')
+    assert executable, 'Bash is required to exercise release workflow scripts'
+    probe = subprocess.run([executable, '-c', 'exit 0'], capture_output=True)
+    assert probe.returncode == 0, (probe.stdout, probe.stderr)
+    return executable
 
 
 class WorkflowLoader(yaml.SafeLoader):
@@ -141,7 +160,7 @@ def test_release_job_graph_requires_successful_dependencies(channel, failed, exp
     assert eligible is expected
 
 
-def test_called_suite_conditions_matrix_and_checkout_identity():
+def test_called_suite_conditions_matrix_and_checkout_identity(bash):
     jobs = workflow('tests.yml')['jobs']
     assert set(jobs['test']['strategy']['matrix']['os']) == {
         'ubuntu-latest', 'windows-latest', 'macos-latest'}
@@ -162,9 +181,9 @@ def test_called_suite_conditions_matrix_and_checkout_identity():
         assert expression(verify['env']['EXPECTED_SHA'], {'inputs': {'ref': sha}}) == sha
         actual = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip()
         for supplied, success in ((actual, True), ('d' * 40, False), ('invalid', False)):
-            result = subprocess.run(['bash', '-e', '-c', verify['run']], cwd=ROOT,
+            result = subprocess.run([bash, '-e', '-c', verify['run']], cwd=ROOT,
                                     env={**os.environ, 'EXPECTED_SHA': supplied}, capture_output=True)
-            assert (result.returncode == 0) is success
+            assert (result.returncode == 0) is success, (result.stdout, result.stderr)
 
 
 @pytest.mark.parametrize('suite,test_result,wheel_result,missing,expected', [
@@ -174,9 +193,14 @@ def test_called_suite_conditions_matrix_and_checkout_identity():
     (True, 'cancelled', 'success', None, False),
     (True, 'skipped', 'success', None, False),
     (True, 'success', 'failure', None, False),
+    (True, 'success', 'success', 'Linux', False),
     (True, 'success', 'success', 'Windows', False),
+    (True, 'success', 'success', 'macOS', False),
+    (True, 'success', 'success', 'wrong-Linux', False),
+    (True, 'success', 'success', 'wrong-Windows', False),
+    (True, 'success', 'success', 'wrong-macOS', False),
 ])
-def test_summary_rejects_incomplete_release_suite(tmp_path, suite, test_result, wheel_result, missing, expected):
+def test_summary_rejects_incomplete_release_suite(tmp_path, bash, suite, test_result, wheel_result, missing, expected):
     summary = workflow('tests.yml')['jobs']['release-summary']
     assert set(summary['needs']) == {'test', 'headless-wheel'}
     assert expression(summary['if'], {'inputs': {'ref': 'a' * 40}})
@@ -186,13 +210,14 @@ def test_summary_rejects_incomplete_release_suite(tmp_path, suite, test_result, 
     results.mkdir()
     for platform in ('Linux', 'Windows', 'macOS'):
         if platform != missing:
-            (results / f'release-test-{platform}').write_text('a' * 40 + '\n', encoding='utf-8')
+            artifact_sha = 'b' * 40 if missing == f'wrong-{platform}' else 'a' * 40
+            (results / f'release-test-{platform}').write_text(artifact_sha + '\n', encoding='utf-8')
     context = {'inputs': {'ref': 'a' * 40, 'run_suite': suite},
                'needs': {'test': {'result': test_result},
                          'headless-wheel': {'result': wheel_result}}}
     values = {key: expression(value, context) for key, value in step['env'].items()}
     environment = {**os.environ, **{key: str(value).lower() if isinstance(value, bool)
                                      else str(value) for key, value in values.items()}}
-    result = subprocess.run(['bash', '-e', '-c', step['run']], cwd=tmp_path,
+    result = subprocess.run([bash, '-e', '-c', step['run']], cwd=tmp_path,
                             env=environment, capture_output=True)
-    assert (result.returncode == 0) is expected
+    assert (result.returncode == 0) is expected, (result.stdout, result.stderr)

@@ -2136,6 +2136,56 @@ def test_control_socket_conflict_preserves_existing_path(qapp, tmp_path, kind):
         assert target.read_bytes() == b'preserve'
 
 
+@pytest.mark.skipif(os.name != 'posix', reason='Unix socket paths only')
+def test_control_socket_publication_race_preserves_endpoint(qapp, tmp_path, monkeypatch):
+    from core.control import server as module
+    path = tmp_path / 'raced.sock'
+    link = os.link
+    written, cleared = [], []
+
+    def occupy_before_link(source, destination):
+        path.write_bytes(b'new owner')
+        return link(source, destination)
+
+    monkeypatch.setattr(module.os, 'link', occupy_before_link)
+    monkeypatch.setattr(module, 'write_discovery', lambda *args: written.append(args))
+    monkeypatch.setattr(module, 'clear_discovery', lambda *args: cleared.append(args))
+    with pytest.raises(RuntimeError, match='Could not listen'):
+        ControlServer(None, socket_name=str(path))
+    assert path.read_bytes() == b'new owner'
+    assert not written and not cleared
+
+
+@pytest.mark.skipif(os.name != 'posix', reason='Unix socket paths only')
+def test_control_socket_private_and_removed_on_close(qapp, tmp_path, monkeypatch):
+    from PyQt6.QtNetwork import QLocalSocket
+    from core.control import server as module
+    path = tmp_path / 'private.sock'
+    monkeypatch.setattr(module, 'write_discovery', lambda *args: {'socket': str(path)})
+    monkeypatch.setattr(module, 'clear_discovery', lambda *args: None)
+    monkeypatch.setattr(QLocalSocket, 'connectToServer',
+                        lambda *args: pytest.fail('startup must not probe endpoints'))
+    instance = ControlServer(None, socket_name=str(path))
+    try:
+        assert path.stat().st_mode & 0o777 == 0o700
+    finally:
+        instance.close()
+    assert not path.exists()
+
+
+@pytest.mark.skipif(os.name != 'posix', reason='Unix socket paths only')
+def test_control_socket_close_preserves_replacement(qapp, tmp_path, monkeypatch):
+    from core.control import server as module
+    path = tmp_path / 'replaced.sock'
+    monkeypatch.setattr(module, 'write_discovery', lambda *args: {'socket': str(path)})
+    monkeypatch.setattr(module, 'clear_discovery', lambda *args: None)
+    instance = ControlServer(None, socket_name=str(path))
+    path.unlink()
+    path.write_bytes(b'new owner')
+    instance.close()
+    assert path.read_bytes() == b'new owner'
+
+
 def test_stack_load_rejects_invalid_linear_raw_mode(server, tmp_path):
     assert call(server, 'stack.load', files=[str(tmp_path / 'frame.dng')],
                 linear_raw='true')['error']['code'] == 'invalid_argument'

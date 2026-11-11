@@ -379,6 +379,7 @@ def run(executable: Path) -> None:
             root = Path(td)
             shape = _create_stack(root / "stack")
             environment = os.environ.copy()
+            environment.pop("PYTHONPATH", None)
             environment["OPENFOCUS_CONTROL_FILE"] = str(root / "control.json")
             environment["OPENFOCUS_LOG_DIR"] = str(root / "logs")
             environment["OPENFOCUS_INSTANCE_NAME"] = (
@@ -486,6 +487,7 @@ def run_installed_startup(executable: Path) -> None:
         settings.setValue("usage/enabled", False)
         settings.sync()
         environment = os.environ.copy()
+        environment.pop("PYTHONPATH", None)
         environment["OPENFOCUS_DATA_DIR"] = str(data)
         environment["OPENFOCUS_CONTROL_FILE"] = str(root / "control.json")
         environment["OPENFOCUS_INSTANCE_NAME"] = f"OpenFocus-smoke-{uuid.uuid4().hex}"

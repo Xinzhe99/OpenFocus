@@ -429,7 +429,9 @@ def test_status_block_is_readable_and_compact(qapp):
         for index, label in enumerate(labels):
             for other in labels[index + 1:]:
                 assert not label.geometry().intersects(other.geometry())
-        assert panel.height() < sum(label.height() for label in labels)
+        rows = sorted({label.y() for label in labels})
+        assert len(rows) == 2
+        assert all(sum(label.y() == row for label in labels) == 2 for row in rows)
         assert parts.file_list.isVisible()
         parts.file_list.addItem("frame.tif")
         parts.file_list.setCurrentRow(0)
