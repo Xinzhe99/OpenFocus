@@ -28,6 +28,7 @@ import webbrowser
 
 from constants import app_display_version
 from utils.app_paths import user_data_dir
+from utils.report_client import ReportError, _file_lock
 
 BASE_URL = "https://account.openfocus.top"
 _RUN_ID = secrets.token_urlsafe(16)
@@ -111,22 +112,22 @@ def _create_device_identity(store, device_name):
         return identity
     temporary = None
     try:
-        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        fd, temporary = tempfile.mkstemp(prefix=".account-device-", dir=path.parent)
-        with os.fdopen(fd, "w", encoding="utf-8") as output:
-            json.dump({"device_id": identity[0], "device_name": identity[1]}, output,
-                      separators=(",", ":"), ensure_ascii=False)
-            output.flush()
-            os.fsync(output.fileno())
-        try:
-            os.link(temporary, path)
-        except FileExistsError:
-            pass
-        loaded = _load_device_identity(store)
-        if loaded is None:
-            raise AccountError("storage")
-        return loaded
-    except OSError:
+        # The stable lock serializes both threads and processes, including on
+        # filesystems without hard-link support. Never replace an existing ID.
+        with _file_lock(path.parent, ".account-device.lock", deadline=time.monotonic() + 15):
+            loaded = _load_device_identity(store)
+            if loaded is not None:
+                return loaded
+            fd, temporary = tempfile.mkstemp(prefix=".account-device-", dir=path.parent)
+            with os.fdopen(fd, "w", encoding="utf-8") as output:
+                json.dump({"device_id": identity[0], "device_name": identity[1]}, output,
+                          separators=(",", ":"), ensure_ascii=False)
+                output.flush()
+                os.fsync(output.fileno())
+            os.replace(temporary, path)
+            temporary = None
+            return identity
+    except (OSError, ReportError):
         raise AccountError("storage") from None
     finally:
         if temporary is not None:
