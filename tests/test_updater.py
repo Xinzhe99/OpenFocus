@@ -286,9 +286,8 @@ class TestOneClickUpdateFlow:
     """
 
     @pytest.fixture()
-    def qapplication(self):
-        from PyQt6.QtWidgets import QApplication
-        return QApplication.instance() or QApplication([])
+    def qapplication(self, qapp):
+        return qapp
 
     @pytest.fixture()
     def update_flow(self, tmp_path, monkeypatch, qapplication):

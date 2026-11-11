@@ -5,30 +5,17 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+
+## [1.77.0] - 2026-11-11
+
 ### Added
 - Add the Discord community to Contact Us and a Support Us dialog with Alipay and PayPal codes.
 - Reuse a private device identity for account sign-in and display the device limit.
 - Send app run, platform and report build channel metadata to the account service.
 - Skip automatic error reports from development runs.
-
-### Changed
-- Support GitHub beta prereleases without publishing them as stable downloads or PyPI releases.
-- Identify packaged beta builds in the application and diagnostics, and offer the matching stable release when it becomes available.
-
-### Fixed
-- Show the same complete environment report in feedback and Environment Info, and let signed-in users open their account center from feedback.
-- Enable exposure matching by default for every fusion method in the desktop
-  interface and batch processing; saved per-method choices remain in effect.
-- Restore saved account sessions locally without opening an unrequested browser tab at startup.
-- Provide enough native thread stack for flat-field previews on macOS.
-- Keep the default Unix control socket usable when the temporary directory path is long.
-
-## [1.77.0] - 2026-11-11
-
-### Added
 - Offer optional account sign-in with a skippable first-launch and update prompt.
 - Show the signed-in account in Help and provide browser account management and sign-out.
-- Restore an existing browser account at startup and open the account center using a short-lived handoff.
+- Restore saved local account sessions and open the account center using a short-lived handoff.
 - Explain where to enable experimental methods in the first-run welcome dialog.
 - Allow users to review and send sanitized error reports, and choose whether to
   send reports automatically after an error. Previous native crashes require
@@ -155,6 +142,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   source coverage before compositing the display background.
 
 ### Changed
+- Support GitHub beta prereleases without publishing them as stable downloads or PyPI releases.
+- Identify packaged beta builds in the application and diagnostics, and offer the matching stable release when it becomes available.
 - Redesign the account dialog with inline agreement links and a
   low-key skip action. After sign-in under the updated terms, sanitized
   automatic error reports default on unless a previous choice is preserved;
@@ -243,6 +232,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   content. Output pixels are unchanged.
 
 ### Fixed
+- Show the same complete environment report in feedback and Environment Info, and let signed-in users open their account center from feedback.
+- Enable exposure matching by default for every fusion method in the desktop
+  interface and batch processing; saved per-method choices remain in effect.
+- Restore saved account sessions locally without opening an unrequested browser tab at startup.
+- Provide enough native thread stack for flat-field previews on macOS.
+- Keep the default Unix control socket usable when the temporary directory path is long.
 - Decode 16-bit planar LZW TIFF pages without corrupting their pixel values.
 - Include all supported interface languages in frozen desktop builds.
 - Preserve a label's saved font when its editor opens on a system that lacks it.
