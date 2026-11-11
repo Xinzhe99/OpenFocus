@@ -456,7 +456,7 @@ class OpenFocus(QMainWindow):
         # 基底校正（消除亮度漂移）：默认关闭，右面板开关控制
         self.base_frame_correct = False
         # The current method's brightness option is synchronized after UI setup.
-        self.exposure_match = True
+        self.exposure_match = False
         # Explicit choices and restored projects take priority over method defaults.
         self._alignment_choice_explicit = False
         self._applying_alignment_default = False
@@ -1275,7 +1275,7 @@ class OpenFocus(QMainWindow):
 
             self.reset_parameter_memories()
             self.base_frame_correct = False
-            self.exposure_match = True
+            self.exposure_match = False
             self.refresh_algorithm_parameters()
             self.refresh_registration_parameters()
         # Reset is an explicit user edit. Mark directly: restore_default_settings

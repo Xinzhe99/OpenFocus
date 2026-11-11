@@ -647,6 +647,7 @@ def test_producer_window_stays_bounded_as_stack_length_grows(monkeypatch):
 
 @pytest.mark.parametrize('exposure', [False, True])
 def test_large_tiff_b_snapshots_real_ecc_warps_before_whole_depth(tmp_path, monkeypatch, exposure):
+    from collections import Counter
     from core import multi_focus_fusion, registration
 
     rng = np.random.default_rng(301)
@@ -678,6 +679,12 @@ def test_large_tiff_b_snapshots_real_ecc_warps_before_whole_depth(tmp_path, monk
             return 129 * 1024 ** 2
         return original_cost(frame)
     monkeypatch.setattr(source_frames, 'frame_resolution_bytes', expensive)
+    original_warp = registration.PerspectiveWarp.__call__
+    calls = Counter()
+    def counted(warp, image):
+        calls[warp.source.path] += 1
+        return original_warp(warp, image)
+    monkeypatch.setattr(registration.PerspectiveWarp, '__call__', counted)
     preparation = []
     def progress(done, total):
         pass
@@ -686,6 +693,7 @@ def test_large_tiff_b_snapshots_real_ecc_warps_before_whole_depth(tmp_path, monk
         deferred, thread_count=1, progress_callback=progress)
     np.testing.assert_array_equal(actual, expected)
     assert preparation == [(0, 3), (1, 3), (2, 3), (3, 3)]
+    assert [calls[source.path] for source in descriptors] == [2 if exposure else 1, 1, 1]
 
 
 def test_required_source_snapshots_fail_before_writing_when_scratch_is_full(tmp_path, monkeypatch):

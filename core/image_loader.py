@@ -1250,8 +1250,8 @@ class ImageStackLoader:
                             stem = os.path.splitext(os.path.basename(path))[0]
                             images.extend(frames)
                             paths.extend([path] * len(frames))
-                            names.extend(f'{stem}_page_{frame.page + 1:03d}.tif' if len(frames) > 1
-                                         else os.path.basename(path) for frame in frames)
+                            names.extend(f'{stem}_page_{index + 1:03d}.tif' if len(frames) > 1
+                                         else os.path.basename(path) for index, frame in enumerate(frames))
                         if self.progress_callback is not None:
                             self.progress_callback(done, len(sources))
                 except _DecodeCancelled:

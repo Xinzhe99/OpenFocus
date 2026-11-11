@@ -265,7 +265,6 @@ def refresh_experimental_selectors(window):
     apply_method_availability(window.combo_align, registration_algorithms(), window,
                               alignment=True, recommended=ALIGN_DEFAULT)
 
-
 def label_recommended(combo: QComboBox, method: str) -> None:
     """Decorate a selector entry without changing its stable identifier."""
     index = combo.findData(method)

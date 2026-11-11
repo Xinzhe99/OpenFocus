@@ -52,7 +52,6 @@ class _MethodFlowPanel(FlowPanel):
             return
         super().mousePressEvent(event)
 
-
 class CompareDialog(QDialog):
     """Edit each method independently; publish only current preview requests."""
 

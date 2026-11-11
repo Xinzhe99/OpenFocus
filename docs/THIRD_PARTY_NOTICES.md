@@ -48,6 +48,14 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
+## imagecodecs — TIFF LZW decoding
+
+- **Upstream**: https://github.com/cgohlke/imagecodecs
+- **Version**: 2024.9.22 or later
+- **License**: BSD 3-Clause, Copyright (c) Christoph Gohlke. Used without
+  modification for lossless TIFF LZW decoding. Frozen builds retain the
+  distribution metadata and its original license and third-party notices.
+
 ## psdtags and tifffile — layered TIFF export
 
 - **Upstream**: https://github.com/cgohlke/psdtags and

@@ -163,7 +163,6 @@ def test_bare_save_name_gets_the_selected_filters_suffix_before_overwrite_check(
     assert same_path(result[0], tmp_path / "out.tif")
     assert result[1] == "TIFF image (*.tif *.tiff)"
 
-
 def test_open_multiple_files_retains_multiple_selection(qapp, tmp_path, monkeypatch):
     monkeypatch.setattr(file_dialogs, "_use_native_file_dialog", lambda: False)
     paths = [tmp_path / "first frame.tif", tmp_path / "第二帧.tif"]

@@ -436,6 +436,28 @@ def test_lzw_tiff_pages_and_per_page_admission(tmp_path, monkeypatch):
         np.testing.assert_array_equal(actual, expected)
 
 
+@pytest.mark.parametrize('orientation', [1, 6])
+def test_16bit_planar_lzw_pages_preserve_pixels(tmp_path, orientation):
+    source = tmp_path / 'planar-lzw.tif'
+    rows, cols = np.indices((32, 40), dtype=np.uint16)
+    rgb = np.stack((rows * 1000 + cols, cols * 1200 + rows,
+                    rows * 313 + cols * 719), axis=-1)
+    pages = (rgb, np.uint16(65535) - rgb)
+    with tifffile.TiffWriter(source) as tif:
+        for pixels in pages:
+            tif.write(np.moveaxis(pixels, -1, 0), photometric='rgb',
+                      planarconfig='separate', compression='lzw', metadata=None,
+                      extratags=[(274, 'H', 1, orientation, False)])
+    for page, pixels in enumerate(pages):
+        result = converter.convert_one(str(source), str(tmp_path), '.png', page, 2)
+        actual = cv2.imdecode(np.fromfile(result, dtype=np.uint8), cv2.IMREAD_UNCHANGED)
+        expected = pixels[..., ::-1]
+        if orientation == 6:
+            expected = np.rot90(expected, -1)
+        assert actual.dtype == np.uint16
+        np.testing.assert_array_equal(actual, expected)
+
+
 def test_jpeg_writer_preserves_safe_exif_and_icc(tmp_path):
     from PIL import ImageCms
     from utils.image_utils import imwrite_auto

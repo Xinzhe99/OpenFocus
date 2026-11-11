@@ -79,7 +79,6 @@ def _follow_filter_suffix(dialog):
     dialog.filterSelected.connect(
         lambda name: dialog.setDefaultSuffix(filter_suffix(name)))
 
-
 def _sidebar_urls(dialog):
     """Use Qt's filesystem places and real folders visited in this app."""
     from utils.settings_store import get_recent_dialog_dirs

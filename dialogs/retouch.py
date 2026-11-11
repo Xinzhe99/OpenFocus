@@ -194,7 +194,6 @@ class StandaloneRetouchLoadDialog(QDialog):
         else:
             super().closeEvent(event)
 
-
 def _release_dialog_buffers(dialog_ref):
     """Drop large Python-owned buffers even if a Qt callback retains the wrapper."""
     dialog = dialog_ref()

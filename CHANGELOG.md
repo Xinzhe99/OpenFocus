@@ -224,6 +224,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   content. Output pixels are unchanged.
 
 ### Fixed
+- Decode 16-bit planar LZW TIFF pages without corrupting their pixel values.
+- Include all supported interface languages in frozen desktop builds.
 - Report oversized TIFF EXIF snapshots as load errors instead of silently
   treating the metadata as absent.
 - Identify the rejected sidecar option in batch CLI validation errors.
