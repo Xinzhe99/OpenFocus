@@ -28,6 +28,8 @@ from constants import APP_VERSION
 from utils.app_paths import user_data_dir
 
 BASE_URL = "https://account.openfocus.top"
+_RUN_ID = secrets.token_urlsafe(16)
+_RUN_STARTED = int(time.time())
 _MAX_RESPONSE = 1024 * 1024
 _MAX_ERROR_RESPONSE = 16 * 1024
 _ERROR_CODES = frozenset({
@@ -167,7 +169,13 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 def _http(method, url, body=None, token=None, timeout=15):
-    headers = {"Accept": "application/json", "User-Agent": f"OpenFocus/{APP_VERSION}"}
+    headers = {
+        "Accept": "application/json",
+        "User-Agent": f"OpenFocus/{APP_VERSION}",
+        "X-OpenFocus-Platform": {"win32": "windows", "darwin": "macos"}.get(sys.platform, "linux"),
+        "X-OpenFocus-Run": _RUN_ID,
+        "X-OpenFocus-Run-Started": str(_RUN_STARTED),
+    }
     if body is not None:
         body = json.dumps(body, separators=(",", ":")).encode("utf-8")
         headers["Content-Type"] = "application/json"

@@ -1012,3 +1012,26 @@ def test_browser_login_cancellation_discards_exchange_result(monkeypatch):
     with pytest.raises(account.AccountError, match="cancelled"):
         client.login_with_browser(cancel=cancel)
     assert store.value == session()
+
+
+def test_http_sends_run_and_platform_headers(monkeypatch):
+    captured = {}
+    class Reply:
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            pass
+        def read(self, limit):
+            return b'{"ok": true}'
+    class Opener:
+        def open(self, request, timeout):
+            captured.update({key.lower(): value for key, value in request.header_items()})
+            return Reply()
+    monkeypatch.setattr(account.urllib.request, "build_opener", lambda *args: Opener())
+    assert account._http("GET", "https://account.example/v1/me", token="private-token") == {"ok": True}
+    assert 8 <= len(captured["x-openfocus-run"]) <= 64
+    assert all(char in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"
+               for char in captured["x-openfocus-run"])
+    assert captured["x-openfocus-run-started"].isdigit()
+    assert captured["x-openfocus-platform"] in ("windows", "macos", "linux")
+    assert captured["user-agent"].startswith("OpenFocus/")
