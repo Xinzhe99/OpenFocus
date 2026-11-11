@@ -58,6 +58,25 @@ def active(scope):
                     pass
 
 
+def pixel_digest(image, compute):
+    """Return ``compute()``, the digest of ``image``, hashing a cached copy once.
+
+    Pixels the active scope stored and still retains are immutable for the
+    render, so their digest is remembered. Any other array is hashed each time.
+    """
+    scope = current()
+    remembered = getattr(scope, 'pixel_digest', None)
+    return compute() if remembered is None else remembered(image, compute)
+
+
+def _buffer_identity(image):
+    """The memory and layout an array reads, or None for a non-array or empty one."""
+    if not isinstance(image, np.ndarray) or image.size == 0:
+        return None
+    return (image.__array_interface__['data'][0], image.shape, image.strides,
+            image.dtype.str)
+
+
 def _source_paths(frames):
     paths = []
     seen = set()
@@ -199,6 +218,8 @@ class ResolutionCache:
         self.directory = directory
         self.should_cancel = should_cancel
         self._entries = {}
+        # Buffer identity of every stored entry -> its digest once computed.
+        self._digests = {}
         self._used = 0
         self._degraded = False
         self._closed = False
@@ -211,6 +232,27 @@ class ResolutionCache:
     @property
     def degraded(self):
         return self._degraded
+
+    def pixel_digest(self, image, compute):
+        """Digest of ``image``; computed once for a whole stored entry.
+
+        Only an array reading exactly one retained entry's memory, in that
+        entry's layout, is recognised: callers receive read-only views of it,
+        and the mapping stays owned until the scope closes. A copy, a slice,
+        a reordered view or a fresh decode is hashed by ``compute`` as before.
+        """
+        identity = _buffer_identity(image)
+        with self._lock:
+            stored = identity in self._digests
+            digest = self._digests[identity] if stored else None
+        if digest is not None:
+            return digest
+        digest = compute()
+        if stored:
+            with self._lock:
+                if identity in self._digests:      # not closed in the meantime
+                    self._digests[identity] = digest
+        return digest
 
     def _cancel_requested(self):
         cancel = self.should_cancel
@@ -289,6 +331,9 @@ class ResolutionCache:
                     logger.info('frame resolution cache degraded: %s', exc)
                     return None
                 self._entries[frame] = stored
+                identity = _buffer_identity(stored)
+                if identity is not None:
+                    self._digests[identity] = None
                 self._used += size
                 if profile.enabled:
                     profile.cache_event(entry_kind(frame), 'put', size,
@@ -310,6 +355,7 @@ class ResolutionCache:
             logger.debug('frame resolution cache closed entries=%d used=%d max=%d degraded=%s',
                          len(self._entries), self._used, self.max_bytes, self._degraded)
             self._entries.clear()
+            self._digests.clear()
             self._used = 0
 
 
@@ -393,6 +439,11 @@ class ScopedCache:
     def put(self, frame, image):
         cache = self._plan()
         return None if cache is None else cache.put(frame, image)
+
+    def pixel_digest(self, image, compute):
+        # Never plans: hashing must not choose the job's scratch volume.
+        cache = self._cache
+        return compute() if cache is None else cache.pixel_digest(image, compute)
 
     def close(self):
         with self._lock:

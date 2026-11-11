@@ -318,3 +318,109 @@ def test_transform_frame_is_cached_by_identity(tmp_path):
         second = processed.full_resolution()
     assert len(counter) == 1
     assert np.array_equal(np.asarray(first), np.asarray(second))
+
+
+def _count_hashes(monkeypatch):
+    from core import openfocus_alignment as alignment
+    hashed = []
+    real = alignment._hash_pixels
+
+    def counted(image, should_cancel):
+        hashed.append(image)
+        return real(image, should_cancel)
+
+    monkeypatch.setattr(alignment, '_hash_pixels', counted)
+    return hashed
+
+
+def test_cached_pixels_are_hashed_once_per_scope(tmp_path, monkeypatch):
+    import hashlib
+    from core.openfocus_alignment import _pixel_digest
+    frame = _source(tmp_path)
+    hashed = _count_hashes(monkeypatch)
+    with cache_module.render_scope([frame]):
+        with _bound([frame]):
+            first = frame.full_resolution()
+            digest = _pixel_digest(first, None)
+            SOURCE_CACHE.clear()
+            second = frame.full_resolution()      # another view of the stored entry
+            assert second is not first
+            assert _pixel_digest(second, None) == digest
+            assert _pixel_digest(first, None) == digest
+    assert len(hashed) == 1
+    assert digest == hashlib.sha256(np.full((8, 10, 3), 32, np.uint8).tobytes()).hexdigest()
+
+
+def test_other_arrays_are_hashed_every_time(tmp_path, monkeypatch):
+    import cv2
+    from core.openfocus_alignment import _pixel_digest
+    path = tmp_path / 'gradient.png'
+    pixels = np.arange(8 * 10 * 3, dtype=np.uint8).reshape(8, 10, 3)
+    cv2.imwrite(str(path), pixels)
+    frame = scan_source(str(path))[0]
+    hashed = _count_hashes(monkeypatch)
+    with cache_module.render_scope([frame]):
+        with _bound([frame]):
+            cached = frame.full_resolution()
+            digest = _pixel_digest(cached, None)
+            assert len(hashed) == 1
+            # Same shape and memory, but not the stored layout or extent.
+            others = [np.array(cached), cached[::-1], cached[:, ::-1], cached[1:],
+                      cached[:, :, :1], pixels]
+            for count, other in enumerate(others, 1):
+                assert _pixel_digest(other, None) == _pixel_digest(other, None)
+                assert len(hashed) == 1 + 2 * count
+            assert _pixel_digest(cached[::-1], None) != digest
+            assert _pixel_digest(np.array(cached), None) == digest
+
+
+def test_digest_is_not_remembered_outside_its_scope(tmp_path, monkeypatch):
+    from core.openfocus_alignment import _pixel_digest
+    frame = _source(tmp_path)
+    hashed = _count_hashes(monkeypatch)
+    image = np.full((8, 10, 3), 32, np.uint8)
+    assert _pixel_digest(image, None) == _pixel_digest(image, None)
+    assert len(hashed) == 2                        # no scope: nothing is remembered
+    with cache_module.render_scope([frame]) as cache:
+        # Before the job binds a scratch volume the scope stays dormant, and a
+        # digest request must not plan it.
+        assert _pixel_digest(image, None) == _pixel_digest(image, None)
+        assert len(hashed) == 4 and cache.enabled is False
+        with _bound([frame]):
+            cached = frame.full_resolution()
+            digest = _pixel_digest(cached, None)
+            assert _pixel_digest(cached, None) == digest
+            assert len(hashed) == 5
+            inner = cache._cache
+    assert not inner._digests
+    assert _pixel_digest(cached, None) == digest   # closed scope: hashed again
+    assert len(hashed) == 6
+
+
+def test_cancelled_hash_is_not_remembered(tmp_path, monkeypatch):
+    from core.openfocus_alignment import _pixel_digest
+    from core.registration import RegistrationCancelled
+    frame = _source(tmp_path)
+    hashed = _count_hashes(monkeypatch)
+    with cache_module.render_scope([frame]):
+        with _bound([frame]):
+            cached = frame.full_resolution()
+            with pytest.raises(RegistrationCancelled):
+                _pixel_digest(cached, lambda: True)
+            digest = _pixel_digest(cached, None)
+            assert _pixel_digest(cached, None) == digest
+    assert len(hashed) == 2                        # the cancelled attempt and one full hash
+
+
+def test_remembered_digest_still_rejects_a_mismatched_fingerprint(tmp_path, monkeypatch):
+    from core.openfocus_alignment import SourceFingerprint, _pixel_digest
+    frame = _source(tmp_path)
+    hashed = _count_hashes(monkeypatch)
+    with cache_module.render_scope([frame]):
+        with _bound([frame]):
+            cached = frame.full_resolution()
+            digest = _pixel_digest(cached, None)
+            SourceFingerprint(cached.shape, cached.dtype.str, digest).validate_pixels(cached)
+            with pytest.raises(ValueError, match='source pixels changed'):
+                SourceFingerprint(cached.shape, cached.dtype.str, '0' * 64).validate_pixels(cached)
+    assert len(hashed) == 1
