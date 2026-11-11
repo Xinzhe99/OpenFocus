@@ -133,7 +133,7 @@ def _filter(src, radius, cancel, guide=None, low=None, *, allocate=None):
 
 
 def _activity_frames(frames, img_resize, kernel_size, thread_count, should_cancel,
-                     *, half_resolution=False, preserve_detail=False):
+                     *, half_resolution=False, preserve_detail=False, gpu=None):
     """Return ordered activity planes from the admitted source window."""
     from core.source_frames import resolve_frame
     from fusion_methods.openfocus_ab import (
@@ -147,6 +147,8 @@ def _activity_frames(frames, img_resize, kernel_size, thread_count, should_cance
     prepare_depth_kernel(guided=False, should_cancel=should_cancel)
     workers = _frame_pass_workers(frames, img_resize, 'openfocus_b', thread_count,
                                   activity_only=True)
+    if gpu is not None:
+        workers = 1
     shape = (frames[0].shape[:2] if img_resize is None
              else (int(img_resize[1]), int(img_resize[0])))
     axes = None
@@ -189,10 +191,29 @@ def _activity_frames(frames, img_resize, kernel_size, thread_count, should_cance
         coarse_radius = np.float32(extent * coarse_parameter / np.float32(100))
         fine = _filter(gray, fine_radius, cancel)
         diff = create_frame(gray.shape, np.uint16)
-        def activity(start, stop):
-            cancel()
-            activity_rows(gray, fine, diff, start, stop)
-        run_bands(gray.shape[0], 128, activity)
+        if gpu is not None and not gpu.failed:
+            from fusion_methods._openfocus_gpu import GpuError, log_fallback
+            for start in range(0, gray.shape[0], gpu.rows):
+                cancel()
+                stop = min(start + gpu.rows, gray.shape[0])
+                if not gpu.failed:
+                    gpu.acquire(cancelled)
+                    try:
+                        try:
+                            gpu.activity(gray[start:stop], fine[start:stop], diff[start:stop])
+                            gpu.used = True
+                            continue
+                        except GpuError as exc:
+                            gpu.failed = True
+                            log_fallback(exc)
+                    finally:
+                        gpu.release()
+                activity_rows(gray, fine, diff, start, stop)
+        else:
+            def activity(start, stop):
+                cancel()
+                activity_rows(gray, fine, diff, start, stop)
+            run_bands(gray.shape[0], 128, activity)
         del gray, fine
         activity = _filter(diff, coarse_radius, cancel)
         return (activity, detail) if preserve_detail else activity
@@ -203,7 +224,8 @@ def _activity_frames(frames, img_resize, kernel_size, thread_count, should_cance
 @execution_job
 def depth_map(frames, img_resize, kernel_size, smoothing, should_cancel,
               progress_callback=None, thread_count=1, *, return_codes=False,
-              half_resolution=False, preserve_detail=False, feather: int = 0):
+              half_resolution=False, preserve_detail=False, feather: int = 0,
+              use_gpu=False, device_callback=None, _gpu=None):
     """Estimate depth with the specified integer feather, defaulting to F0."""
     _validate_feather(feather)
     from fusion_methods.openfocus_ab import _check_cancel
@@ -223,6 +245,14 @@ def depth_map(frames, img_resize, kernel_size, smoothing, should_cancel,
 
     def cancel():
         _check_cancel(should_cancel)
+    gpu = _gpu
+    if gpu is None and use_gpu:
+        from fusion_methods._openfocus_gpu import Merge, GpuError, log_fallback
+        width = frames[0].shape[1] if img_resize is None else int(img_resize[0])
+        try:
+            gpu = Merge(width, 1)
+        except GpuError as exc:
+            log_fallback(exc)
 
 
     step = 65535 // (len(frames) - 1)
@@ -230,7 +260,7 @@ def depth_map(frames, img_resize, kernel_size, smoothing, should_cancel,
     detail_best = detail_second = detail_winner = None
     produced = _activity_frames(frames, img_resize, kernel_size, thread_count,
                                 should_cancel, half_resolution=half_resolution,
-                                preserve_detail=preserve_detail)
+                                preserve_detail=preserve_detail, gpu=gpu)
     try:
         for index, activity in produced:
             cancel()
@@ -326,6 +356,10 @@ def depth_map(frames, img_resize, kernel_size, smoothing, should_cancel,
         shape = (frames[0].shape[:2] if img_resize is None
                  else (int(img_resize[1]), int(img_resize[0])))
         depth = expand_depth(depth, shape, should_cancel)
+    if device_callback is not None:
+        cancel()
+        from fusion_methods._openfocus_gpu import device_status
+        device_callback(device_status(gpu))
     if return_codes:
         return depth
     result = create_frame(depth.shape, np.float32)

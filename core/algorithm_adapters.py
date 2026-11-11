@@ -189,7 +189,8 @@ def depth_openfocus_b(images, progress_callback=None, should_cancel=None, **para
     return depth_map(images, None, 2 * parameters['radius'] + 1, parameters['smoothing'],
                      should_cancel, progress_callback,
                      thread_count=parameters.get('thread_count'), half_resolution=True,
-                     preserve_detail=True, feather=parameters['feather'])
+                     preserve_detail=True, feather=parameters['feather'],
+                     use_gpu=parameters.get('use_gpu', False))
 
 
 def depth_openfocus_c(images, progress_callback=None, should_cancel=None, **parameters):

@@ -18,12 +18,18 @@ class DepthMapCancelled(Exception):
     """Raised when should_cancel returns True mid-computation."""
 
 
-def _check(images: Sequence[np.ndarray], allow_grayscale=False) -> None:
+def _check(images: Sequence[np.ndarray], allow_grayscale=False, should_cancel=None) -> None:
     if len(images) < 2:
         raise ValueError("A focus index map needs at least 2 frames")
     from core.image_loader import _has_transparency
-    if any(_has_transparency(image) for image in images):
-        raise ValueError("Depth maps of transparent images are unsupported")
+    from core.source_frames import resolve_frame
+    for image in images:
+        if should_cancel is not None and should_cancel():
+            from core.registration import RegistrationCancelled
+            raise RegistrationCancelled()
+        if image.ndim == 3 and image.shape[2] == 4:
+            if _has_transparency(resolve_frame(image, should_cancel=should_cancel)):
+                raise ValueError("Depth maps of transparent images are unsupported")
     first = images[0]
     if not ((first.ndim == 3 and first.shape[2] >= 3) or
             (allow_grayscale and (first.ndim == 2 or
@@ -332,11 +338,13 @@ def compute_focus_index(images: Sequence[np.ndarray], method: str, parameters=No
     depth_block = legacy_parameters.get('block_size')
     try:
         with heavy_job(should_cancel), scratch_directory():
-            from core.source_frames import materialize_frames
-            images = materialize_frames(images, should_cancel,
-                                        thread_count=thread_count,
-                                        resource_preference=resource_preference)
-            _check(images, allow_grayscale=method in ('openfocus_b', 'openfocus_c'))
+            if method != 'openfocus_b':
+                from core.source_frames import materialize_frames
+                images = materialize_frames(images, should_cancel,
+                                            thread_count=thread_count,
+                                            resource_preference=resource_preference)
+            _check(images, allow_grayscale=method in ('openfocus_b', 'openfocus_c'),
+                   should_cancel=should_cancel)
             if spec.neural:
                 from fusion_methods.neural_runtime import start_inference_job
                 start_inference_job()

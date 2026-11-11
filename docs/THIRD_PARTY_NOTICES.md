@@ -3,6 +3,14 @@
 OpenFocus ships code and model weights from other projects. This file records
 the origin, the license, and the changes made here.
 
+## PyOpenCL — OpenCL GPU access
+
+- **Upstream**: https://github.com/inducer/pyopencl
+- **Version**: 2025.2.7 or later
+- **License**: MIT. Used without modification for OpenCL device access. Frozen
+  builds retain the distribution metadata, including the original license and
+  any bundled OpenCL loader notices.
+
 ## Numba and llvmlite — CPU depth-filter compilation
 
 - **Upstream**: https://github.com/numba/numba and

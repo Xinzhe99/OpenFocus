@@ -1553,11 +1553,11 @@ unchanged; choosing smaller tiles yourself can change output pixels.
 
 ### GPU Acceleration Toggle
 
-StackMFF V1/V2/V3 use ONNX Runtime. DirectML on Windows and CoreML on macOS may accelerate inference; otherwise it runs on CPU. Provider availability alone does not prove GPU execution. Wider GPU support requires validation.
+OpenFocus B can use an OpenCL GPU for depth activity and source merging when a compatible GPU driver and compiler are available. It falls back to CPU when the device is unavailable, lacks sufficient workspace or fails. StackMFF V1/V2/V3 use ONNX Runtime; DirectML on Windows and CoreML on macOS may accelerate inference. Installed runtimes or available providers alone do not prove GPU execution. See [GPU support](GPU_SUPPORT.md) for platform requirements.
 
 
 - Toggle via **Settings → GPU Acceleration**
-- Unchecking forces neural methods onto the CPU — useful when GPU drivers misbehave
+- Unchecking forces supported fusion methods onto the CPU — useful when GPU drivers misbehave
 - The status panel shows `N/A` when no accelerator is used or available, and
   `CPU*` when an accelerator exists but the selected method is CPU-only
 - The choice takes effect on the next render and is remembered

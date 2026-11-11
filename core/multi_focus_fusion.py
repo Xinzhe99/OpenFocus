@@ -1,6 +1,7 @@
 import concurrent.futures
 import importlib
 import os
+import threading
 import time
 import numpy as np
 from typing import Union, List, Tuple, Optional
@@ -99,6 +100,26 @@ def neural_device_kind():
     from fusion_methods.neural_runtime import cached_device
     kind = cached_device()
     return ('N/A' if kind == 'CPU' else kind) if kind is not None else _NEURAL_DEVICE_KIND
+
+_OPENFOCUS_GPU_AVAILABLE = None
+
+
+def openfocus_gpu_available():
+    """Cached OpenCL GPU capability, or None before probing."""
+    return _OPENFOCUS_GPU_AVAILABLE
+
+
+def ensure_openfocus_gpu_available():
+    """Probe the OpenFocus OpenCL backend outside the UI thread."""
+    global _OPENFOCUS_GPU_AVAILABLE
+    if _OPENFOCUS_GPU_AVAILABLE is None:
+        try:
+            from fusion_methods._openfocus_gpu import gpu_available
+            _OPENFOCUS_GPU_AVAILABLE = bool(gpu_available())
+        except Exception:
+            _OPENFOCUS_GPU_AVAILABLE = False
+    return _OPENFOCUS_GPU_AVAILABLE
+
 
 def estimate_peak_bytes(algorithm: str, frames, block_size: int = None,
                         workers: int = 1, height: int = None, width: int = None) -> int:
@@ -230,6 +251,7 @@ class MultiFocusFusion:
         self.fusion_parameters = resolve_fusion_parameters(algorithm, fusion_parameters)
         self.use_gpu = bool(use_gpu)
         self._actual_device = None
+        self._device_lock = threading.Lock()
         # Tile (tiled fusion) related instance-level settings
         # Descriptor policy keeps whole-image methods out of automatic spatial
         # tiling; a nondefault threshold is an explicit spatial cap.
@@ -309,6 +331,13 @@ class MultiFocusFusion:
                                 should_cancel=kwargs.get('should_cancel'),
                                 progress_callback=kwargs.get('progress_callback'))
 
+    def _record_openfocus_device(self, device):
+        with self._device_lock:
+            if self._actual_device is None or self._actual_device == device:
+                self._actual_device = device
+            elif device not in self._actual_device.split(' / '):
+                self._actual_device += ' / ' + device
+
     def _fuse_openfocus_b(self,
                           input_source: Union[str, List[np.ndarray]],
                           img_resize: Optional[Tuple[int, int]] = None,
@@ -323,7 +352,9 @@ class MultiFocusFusion:
                                 should_cancel=kwargs.get('should_cancel'),
                                 depth_override=kwargs.get('depth_override'),
                                 feather=kwargs.get('feather', 3),
-                                progress_callback=kwargs.get('progress_callback'))
+                                progress_callback=kwargs.get('progress_callback'),
+                                use_gpu=self.use_gpu,
+                                device_callback=self._record_openfocus_device)
 
     def _fuse_openfocus_c(self,
                           input_source: Union[str, List[np.ndarray]],
@@ -542,7 +573,7 @@ class MultiFocusFusion:
 
     def _validate_spatial_environment(self) -> None:
         """验证空间域融合依赖"""
-        if self.use_gpu:
+        if self.use_gpu and self.algorithm != 'openfocus_b':
             print(f"Note: {self.descriptor.display_name} fusion runs on CPU only; switching to CPU mode.")
             self.use_gpu = False
 
@@ -1949,6 +1980,8 @@ class MultiFocusFusion:
             if kind is None:
                 kind = 'N/A'
             device_name = neural_runtime.display_name(kind)
+        elif self.algorithm == 'openfocus_b':
+            device_name = self._actual_device or 'CPU'
         else:
             device_name = 'CPU'
         info = {
