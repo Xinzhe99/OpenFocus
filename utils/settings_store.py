@@ -70,6 +70,9 @@ ALIGNMENT_METHOD_KEY = "registration/method"
 SMOOTHING_BY_METHOD_KEY = "fusion/smoothing_by_method"
 KERNEL_BY_MODE_KEY = "fusion/kernel_by_mode"
 BRIGHTNESS_OPTIONS = ("exposure_match", "base_correct")
+REPORTS_AUTO_SEND_KEY = "reports/auto_send"
+REPORTS_CHOICE_KEY = "reports/auto_send_choice"
+
 
 
 # window attribute -> (settings key, default, cast)
@@ -91,7 +94,7 @@ _PERSISTED_FIELDS = {
     "output_name_prefix": ("export/name_prefix", "", "str"),
     "restore_last_stack": ("ui/restore_last_stack", False, "bool"),
     "experimental_features": ("ui/experimental_features", False, "bool"),
-    "auto_error_reports": ("reports/auto_send", False, "bool"),
+    "auto_error_reports": (REPORTS_AUTO_SEND_KEY, False, "bool"),
     "ui_theme": ("ui/theme", DEFAULT_THEME, "str"),
     "scale_bar_enabled": ("export/scale_bar_enabled", False, "bool"),
     "scale_um_per_px_manual": ("export/scale_um_per_px_manual", 0.0, "float"),
@@ -443,9 +446,28 @@ def load_window_settings(window) -> None:
     window.recent_projects = [str(p) for p in raw_projects][:MAX_RECENT_PROJECTS]
 
 
+def enable_account_default_reports(window) -> None:
+    """Enable reports at sign-in only when no reporting choice is known.
+
+    Legacy stores with a reporting value but no provenance are ambiguous, so
+    preserve them. New ordinary saves mark their default as unselected.
+    """
+    settings = get_settings()
+    choice = settings.value(REPORTS_CHOICE_KEY)
+    if choice == "unselected" or (choice is None and not settings.contains(REPORTS_AUTO_SEND_KEY)):
+        settings.setValue(REPORTS_AUTO_SEND_KEY, True)
+        settings.setValue(REPORTS_CHOICE_KEY, "account_default")
+        settings.sync()
+        if settings.status() != QSettings.Status.NoError:
+            raise OSError("Could not write OpenFocus settings")
+        window.auto_error_reports = True
+
+
 def save_window_settings(window) -> None:
     """Write current window preferences (including language) to QSettings."""
     settings = get_settings()
+    if not settings.contains(REPORTS_CHOICE_KEY) and not settings.contains(REPORTS_AUTO_SEND_KEY):
+        settings.setValue(REPORTS_CHOICE_KEY, "unselected")
     for attr, (key, default, _kind) in _PERSISTED_FIELDS.items():
         settings.setValue(key, getattr(window, attr, default))
     # Privacy: older builds wrote the watermark text here.  Remove the stale
@@ -474,7 +496,7 @@ def restore_default_settings(window) -> None:
     """
     settings = get_settings()
     keys = {key for key, _default, _kind in _PERSISTED_FIELDS.values()}
-    keys.update((BRIGHTNESS_BY_METHOD_KEY, METHOD_PARAMETERS_KEY,
+    keys.update((REPORTS_CHOICE_KEY, BRIGHTNESS_BY_METHOD_KEY, METHOD_PARAMETERS_KEY,
                  REGISTRATION_PARAMETERS_KEY, SMOOTHING_BY_METHOD_KEY,
                  KERNEL_BY_MODE_KEY, FUSION_METHOD_KEY, ALIGNMENT_METHOD_KEY,
                  DRAG_FORMAT_KEY, CONVERTER_FORMAT_KEY,
@@ -498,6 +520,8 @@ def restore_default_settings(window) -> None:
             setattr(window, attr, default)
         for name in memories:
             setattr(window, name, {})
+        # Restoring the anonymous default is an explicit choice to turn off reports.
+        settings.setValue(REPORTS_CHOICE_KEY, "chosen")
         save_window_settings(window)
         # The caller resets the visible selectors after this transaction.
         settings.remove(FUSION_METHOD_KEY)
@@ -516,6 +540,9 @@ def restore_default_settings(window) -> None:
             settings.setValue(key, value)
         settings.sync()
         raise
+    if attributes["auto_error_reports"]:
+        from ui.report_retry import discard_automatic_reports
+        discard_automatic_reports()
 
 
 

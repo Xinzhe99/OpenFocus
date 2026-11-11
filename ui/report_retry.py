@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import QApplication
 from utils.app_paths import user_data_dir
 from utils.report_client import ReportClient
 from utils.reporting import retry_reports
-from utils.settings_store import get_settings
+from utils.settings_store import get_settings, REPORTS_AUTO_SEND_KEY, REPORTS_CHOICE_KEY
 
 
 def discard_automatic_reports():
@@ -43,12 +43,14 @@ class _Retry(QObject):
         self.attempts += 1
         window = self.window()
         account = getattr(window, '_account_client', None) if window is not None else None
-        auto_send = get_settings().value('reports/auto_send', False, type=bool)
-        threading.Thread(target=self._run, args=(account, auto_send), daemon=True).start()
+        settings = get_settings()
+        auto_send = settings.value(REPORTS_AUTO_SEND_KEY, False, type=bool)
+        account_only = settings.value(REPORTS_CHOICE_KEY) == 'account_default'
+        threading.Thread(target=self._run, args=(account, auto_send, account_only), daemon=True).start()
 
-    def _run(self, account, auto_send):
+    def _run(self, account, auto_send, account_only):
         try:
-            retry_reports(account, include_auto=auto_send)
+            retry_reports(account, include_auto=auto_send, account_only_auto=account_only)
             pending = bool(ReportClient(user_data_dir() / 'reports').pending_count)
         except Exception:
             pending = False

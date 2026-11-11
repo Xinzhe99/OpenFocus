@@ -59,7 +59,13 @@ def control_window(qapp, monkeypatch, tmp_path):
     window._force_quit = True
     window.source_manager.clear_image_stack()
     window.close()
+    deadline = time.monotonic() + 5
+    while window.isVisible() and time.monotonic() < deadline:
+        QTest.qWait(10)
+    assert not window.isVisible()
     window.deleteLater()
+    from PyQt6.QtCore import QCoreApplication, QEvent
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
     qapp.processEvents()
 
 
@@ -314,6 +320,8 @@ def test_default_gui_launch_and_cross_process_client(tmp_path):
     )))
     bootstrap = '''
 import runpy, sys
+import webbrowser
+webbrowser.open = lambda *args, **kwargs: False
 from PyQt6.QtCore import QSettings
 QSettings.setDefaultFormat(QSettings.Format.IniFormat)
 QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, sys.argv[2])

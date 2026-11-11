@@ -1027,6 +1027,91 @@ def test_restore_preferences_keeps_workspace_and_user_data(qapp, tmp_path, monke
     assert restored.recent_projects == ['session.ofproj']
 
 
+def test_account_report_default_survives_incidental_saves(qapp, tmp_path, monkeypatch):
+    from PyQt6.QtCore import QSettings
+    from utils import settings_store as store
+
+    settings = QSettings(str(tmp_path / 'settings.ini'), QSettings.Format.IniFormat)
+    monkeypatch.setattr(store, 'get_settings', lambda: settings)
+    window = SimpleNamespace()
+    store.load_window_settings(window)
+    assert not window.auto_error_reports
+    store.save_window_settings(window)
+    restored = SimpleNamespace()
+    store.load_window_settings(restored)
+    assert not restored.auto_error_reports
+    store.enable_account_default_reports(restored)
+    assert restored.auto_error_reports
+    assert settings.value(store.REPORTS_AUTO_SEND_KEY, type=bool)
+    store.save_window_settings(restored)
+    again = SimpleNamespace()
+    store.load_window_settings(again)
+    assert again.auto_error_reports
+
+
+@pytest.mark.parametrize('enabled', [False, True])
+def test_account_report_default_preserves_ambiguous_legacy_value(qapp, tmp_path, monkeypatch, enabled):
+    from PyQt6.QtCore import QSettings
+    from utils import settings_store as store
+
+    settings = QSettings(str(tmp_path / 'settings.ini'), QSettings.Format.IniFormat)
+    monkeypatch.setattr(store, 'get_settings', lambda: settings)
+    settings.setValue(store.REPORTS_AUTO_SEND_KEY, enabled)
+    window = SimpleNamespace()
+    store.load_window_settings(window)
+    store.save_window_settings(window)
+    store.enable_account_default_reports(window)
+    assert window.auto_error_reports is enabled
+    assert settings.value(store.REPORTS_AUTO_SEND_KEY, type=bool) is enabled
+
+
+def test_advanced_reporting_choice_and_reset_remain_off_on_sign_in(
+        settings_window, tmp_path, monkeypatch):
+    from PyQt6.QtCore import QSettings
+    from dialogs.advanced_settings import AdvancedSettingsDialog
+    from utils import settings_store as store
+    from ui import report_retry
+
+    settings = QSettings(str(tmp_path / 'settings.ini'), QSettings.Format.IniFormat)
+    monkeypatch.setattr(store, 'get_settings', lambda: settings)
+    discarded = []
+    monkeypatch.setattr(report_retry, 'discard_automatic_reports', lambda: discarded.append(True))
+    settings_window.persist_settings = lambda: store.save_window_settings(settings_window)
+    store.enable_account_default_reports(settings_window)
+    dialog = AdvancedSettingsDialog(settings_window)
+    dialog.chk_auto_error_reports.click()
+    dialog._apply()
+    assert dialog.result() == QDialog.DialogCode.Accepted
+    assert discarded == [True]
+    store.enable_account_default_reports(settings_window)
+    assert not settings_window.auto_error_reports
+    restored = SimpleNamespace()
+    store.load_window_settings(restored)
+    store.enable_account_default_reports(restored)
+    assert not restored.auto_error_reports
+
+    settings_window.auto_error_reports = True
+    store.restore_default_settings(settings_window)
+    assert discarded == [True, True]
+    store.enable_account_default_reports(settings_window)
+    assert not settings_window.auto_error_reports
+
+
+def test_unchanged_advanced_reporting_is_not_a_choice(settings_window, tmp_path, monkeypatch):
+    from PyQt6.QtCore import QSettings
+    from dialogs.advanced_settings import AdvancedSettingsDialog
+    from utils import settings_store as store
+
+    settings = QSettings(str(tmp_path / 'settings.ini'), QSettings.Format.IniFormat)
+    monkeypatch.setattr(store, 'get_settings', lambda: settings)
+    settings_window.persist_settings = lambda: store.save_window_settings(settings_window)
+    dialog = AdvancedSettingsDialog(settings_window)
+    dialog._apply()
+    assert dialog.result() == QDialog.DialogCode.Accepted
+    store.enable_account_default_reports(settings_window)
+    assert settings_window.auto_error_reports
+
+
 @pytest.mark.parametrize('decision', ['cancel', 'escape', 'busy', 'busy_after_confirmation'])
 def test_restore_confirmation_rejection_never_writes(qapp, tmp_path, monkeypatch, decision):
     from PyQt6.QtCore import QSettings

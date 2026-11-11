@@ -514,11 +514,13 @@ def setup_menus(window: QMainWindow) -> None:
     # --- Help Menu ---
     help_menu = menubar.addMenu(trans.t('menu_help'))
     window.ui_objs['menu_help'] = help_menu
-    account_action = QAction(trans.t('account_title'), window)
-    account_action.setProperty('trans_key', 'account_title')
+    account_action = QAction(trans.t('account_heading'), window)
+    account_action.setProperty('trans_key', 'account_heading')
     account_action.triggered.connect(window.show_account_dialog)
     help_menu.addAction(account_action)
     window.ui_objs['action_account'] = account_action
+    help_menu.aboutToShow.connect(
+        lambda: getattr(window, '_refresh_account_action', lambda: None)())
 
 
     env_action = QAction(trans.t('action_env_info'), window)

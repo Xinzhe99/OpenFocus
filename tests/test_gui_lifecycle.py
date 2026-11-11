@@ -32,6 +32,8 @@ from PyQt6.QtCore import QSettings, QTimer
 from PyQt6.QtWidgets import QApplication, QMainWindow
 from utils.usage_analytics import UsageAnalytics
 from dialogs.account import AccountDialog
+import webbrowser
+webbrowser.open = lambda *args, **kwargs: False
 
 original_account_exec = AccountDialog.exec
 def skip_account(dialog):
@@ -110,7 +112,8 @@ def test_close_waits_for_account_worker(qapp, tmp_path, monkeypatch):
     dialog = AccountDialog(window)
     dialog.show()
     try:
-        dialog.terms_link.click()
+        dialog.terms.setChecked(True)
+        dialog.github_button.click()
         assert started.wait(5)
         window._force_quit = True
         assert not window.close()
@@ -126,3 +129,32 @@ def test_close_waits_for_account_worker(qapp, tmp_path, monkeypatch):
         window.close()
         window.deleteLater()
         qapp.processEvents()
+
+
+def test_close_does_not_wait_for_another_windows_account_job(qapp, tmp_path, monkeypatch):
+    from threading import Event
+    from PyQt6.QtWidgets import QWidget
+    from dialogs.account import _AccountJob
+    from tests.test_control_channel import _destroy_main_window, _new_main_window, wait_until
+
+    window = _new_main_window(qapp, tmp_path, monkeypatch)
+    assert wait_until(lambda: window._account_load_job is None)
+    owner = QWidget()
+    started, release = Event(), Event()
+    def work(_started):
+        started.set()
+        release.wait(5)
+    job = _AccountJob(work, owner)
+    job.finished.connect(job._release)
+    job.start()
+    try:
+        assert started.wait(5)
+        window._force_quit = True
+        assert window.close()
+        assert not window.isVisible()
+    finally:
+        release.set()
+        job._thread.join(5)
+        qapp.processEvents()
+        _destroy_main_window(qapp, window)
+        owner.deleteLater()
