@@ -803,3 +803,34 @@ def test_exposure_gain_pass_lends_the_planned_threads(monkeypatch):
     assert seen == [3]
     assert requested == [('responsive', 2)]
     assert registration._warp_thread_budget() == 1
+
+
+def test_thread_count_exchange_never_saves_a_count_raised_for_a_warp(monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    image, warp = _budget_warp(np.uint8)
+    before = cv2.getNumThreads()
+    inside, release = Event(), Event()
+    native = cv2.warpPerspective
+
+    def held_warp(*args, **kwargs):
+        inside.set()
+        assert release.wait(5)
+        return native(*args, **kwargs)
+
+    def lend():
+        with registration.deferred_warp_threads(4):
+            return warp(image)
+
+    monkeypatch.setattr(cv2, 'warpPerspective', held_warp)
+    with ThreadPoolExecutor(2) as pool:
+        lending = pool.submit(lend)
+        assert inside.wait(5)
+        # The warp still holds four threads; the exchange must wait for it.
+        exchange = pool.submit(registration.exchange_opencv_threads, 1)
+        assert not exchange.done() and cv2.getNumThreads() == 4
+        release.set()
+        lending.result(5)
+        saved = exchange.result(5)
+    assert saved == before
+    registration.exchange_opencv_threads(0 if saved == 1 else saved)
+    assert cv2.getNumThreads() == before

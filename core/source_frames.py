@@ -1053,8 +1053,10 @@ def materialize_frames(frames, should_cancel=None, *, staging_bytes=0,
                 with deferred_warp_threads(1):
                     return resolve_frame(frame)
 
-            previous_cv_threads = cv2.getNumThreads()
-            cv2.setNumThreads(1)
+            from core.registration import exchange_opencv_threads
+            # Not while another thread's warp holds a raised count: restoring
+            # that value later would leave OpenCV's parallel regions enabled.
+            previous_cv_threads = exchange_opencv_threads(1)
             pending = deque()
             iterator = iter(frames)
             try:
@@ -1092,7 +1094,7 @@ def materialize_frames(frames, should_cancel=None, *, staging_bytes=0,
                             future.cancel()
                         pool.shutdown(wait=True, cancel_futures=True)
             finally:
-                cv2.setNumThreads(previous_cv_threads)
+                exchange_opencv_threads(previous_cv_threads)
         check_cancel()
         return result
 

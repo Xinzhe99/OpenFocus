@@ -76,7 +76,20 @@ def deferred_warp_threads(threads):
         _deferred_warp_threads.reset(token)
 
 
+def exchange_opencv_threads(threads):
+    """Set OpenCV's process-wide thread count and return the one it replaced.
+
+    The exchange waits for a warp that another thread is running on lent
+    threads, so a caller never saves, and later restores, that raised count.
+    """
+    with _warp_threads_lock:
+        previous = cv2.getNumThreads()
+        cv2.setNumThreads(threads)
+    return previous
+
+
 def _warp_thread_budget():
+    """Threads lent to a warp on this thread; one outside a lending scope."""
     threads = _deferred_warp_threads.get()
     if callable(threads):
         threads = threads()
@@ -429,6 +442,7 @@ class PerspectiveWarp:
     should_cancel: object = None
 
     def __call__(self, image):
+        """Resample validated source pixels, on lent threads when available."""
         self.source.validate_pixels(image, self.should_cancel)
         matrix = np.asarray(self.matrix, dtype=self.matrix_dtype).reshape(3, 3)
         threads = _warp_thread_budget()
