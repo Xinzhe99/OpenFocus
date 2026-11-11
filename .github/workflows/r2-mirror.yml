@@ -193,7 +193,7 @@ jobs:
             remote="$(aws s3api head-object --bucket openfocus-downloads \
               --key "$name" --endpoint-url "$endpoint" \
               --query ContentLength --output text)"
-            local="$(stat -c%s "assets/$name")"
+            local="$(python -c 'import os, sys; print(os.path.getsize(sys.argv[1]))' "assets/$name")"
             if [ "$remote" != "$local" ]; then
               echo "::error::R2 upload size mismatch for $name: $remote != $local"
               exit 1
