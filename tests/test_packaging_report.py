@@ -53,6 +53,16 @@ def test_zip_and_bundle_report_actual_member_sizes(tmp_path):
     assert zip_report["groups"]["resources/assets"]["compressed_bytes"] == info.compress_size
 
 
+@pytest.mark.parametrize("path, group", [
+    ("OpenFocus/_openfocus_runtime_v1.77.0-beta.7/assets/logo.svg", "resources/assets"),
+    ("_openfocus_runtime_v1.77.0-beta.7/weights/model.onnx", "resources/weights"),
+    ("_openfocus_runtime_v1.77.0-beta.7/PyQt6/Qt6.dll", "dependencies/PyQt6"),
+    ("_internal/assets/logo.svg", "resources/assets"),
+])
+def test_runtime_layout_groups(path, group):
+    assert packaging_report._group(path) == group
+
+
 def test_bundle_symlinks_are_reported_without_traversal(tmp_path):
     bundle = tmp_path / "OpenFocus.app"
     bundle.mkdir()

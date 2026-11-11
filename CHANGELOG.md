@@ -243,6 +243,8 @@ At the time of the [v1.77.0-beta.3 prerelease](https://github.com/Xinzhe99/OpenF
   content. Output pixels are unchanged.
 
 ### Fixed
+- Keep Windows release runtimes separate from older bundled libraries during
+  upgrades, and remove obsolete application runtimes when using the installer.
 - Allow existing desktop releases to receive beta updates through version-pinned
   compatibility aliases, and keep installed beta builds from repeatedly
   offering the same update.

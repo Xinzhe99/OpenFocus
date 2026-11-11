@@ -76,7 +76,7 @@ Unter **Speichern unter** speichert gewöhnliches TIFF das Ergebnis als einzelne
 ### Installation
 
 Laden Sie den aktuellen Windows- oder macOS-Build von der [OpenFocus-Website](https://openfocus.top/#download). Dieselben Dateien und ältere Versionen stehen auch unter [GitHub Releases](https://github.com/Xinzhe99/OpenFocus/releases) bereit.
-Website und Installationsskripte bieten auch neuere Betaversionen an, derzeit [Vorabversion v1.77.0-beta.6](https://github.com/Xinzhe99/OpenFocus/releases/tag/v1.77.0-beta.6). Der Desktop-Updater bietet ebenfalls neuere Betas an; die Linux-CLI von PyPI bleibt stabil.
+Website und Installationsskripte bieten auch neuere Betaversionen an, derzeit [Vorabversion v1.77.0-beta.7](https://github.com/Xinzhe99/OpenFocus/releases/tag/v1.77.0-beta.7). Der Desktop-Updater bietet ebenfalls neuere Betas an; die Linux-CLI von PyPI bleibt stabil.
 
 | Plattform | Datei | Typ |
 |-----------|-------|-----|

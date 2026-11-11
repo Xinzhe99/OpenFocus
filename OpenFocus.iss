@@ -41,6 +41,11 @@ UninstallDisplayIcon={app}\{#MyAppExeName}
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 Name: "explorercontext"; Description: "Add OpenFocus to the Windows Explorer context menu"
 
+[InstallDelete]
+; These directories belong to the installed application; keep user data intact.
+Type: filesandordirs; Name: "{app}\_internal"; Check: FileExists(ExpandConstant('{app}\OpenFocus.exe'))
+Type: filesandordirs; Name: "{app}\_openfocus_runtime_*"; Check: FileExists(ExpandConstant('{app}\OpenFocus.exe'))
+
 [Files]
 Source: "dist\OpenFocus\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion
 

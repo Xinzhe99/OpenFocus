@@ -96,7 +96,7 @@ OpenFocus는 연구자, 엔지니어, 이미지 처리 전문가를 위해 만�
 최신 Windows 및 macOS 버전은 [OpenFocus 공식 사이트](https://openfocus.top/#download)에서 받으세요.
 같은 파일과 이전 버전은 [GitHub Releases](https://github.com/Xinzhe99/OpenFocus/releases)에도
 있습니다. 터미널에서도 설치할 수 있습니다.
-공식 사이트와 설치 스크립트는 안정 버전보다 새로운 베타 버전도 제공합니다(현재 [v1.77.0-beta.6 사전 출시 버전](https://github.com/Xinzhe99/OpenFocus/releases/tag/v1.77.0-beta.6)). 데스크톱 자동 업데이트도 더 새로운 베타 버전을 제공하며 PyPI의 Linux CLI는 안정 버전을 유지합니다.
+공식 사이트와 설치 스크립트는 안정 버전보다 새로운 베타 버전도 제공합니다(현재 [v1.77.0-beta.7 사전 출시 버전](https://github.com/Xinzhe99/OpenFocus/releases/tag/v1.77.0-beta.7)). 데스크톱 자동 업데이트도 더 새로운 베타 버전을 제공하며 PyPI의 Linux CLI는 안정 버전을 유지합니다.
 
 ```bash
 # macOS(Apple Silicon, ~/Applications) 또는 Linux(헤드리스 CLI)

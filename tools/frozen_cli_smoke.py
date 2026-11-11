@@ -211,7 +211,7 @@ def _exercise_planar_lzw(executable: Path, environment: dict, root: Path) -> Non
 
 
 def _exercise(executable: Path, environment: dict, root: Path,
-              shape: tuple) -> None:
+              shape: tuple, resources: Path) -> None:
     if not _call(executable, environment, "ping").get("pong"):
         raise RuntimeError("Packaged agent control did not answer ping")
     context = _call(executable, environment, "ui.context")
@@ -221,9 +221,7 @@ def _exercise(executable: Path, environment: dict, root: Path,
             f"{json.dumps(context, ensure_ascii=False)}"
         )
     _exercise_languages(executable, environment)
-    bundle = (executable.parent.parent / "Resources" if executable.parent.name == "MacOS"
-              else executable.parent / "_internal")
-    demo = bundle / "assets" / "demo_stack"
+    demo = resources / "assets" / "demo_stack"
     loaded_demo = _call(executable, environment, "stack.load", "--folder", str(demo), "--wait")
     if loaded_demo.get("count") != 6:
         raise RuntimeError("Packaged desktop did not load the six demo frames")
@@ -353,8 +351,12 @@ def _exercise(executable: Path, environment: dict, root: Path,
             raise RuntimeError(f"Packaged registration {registration} failed: {result.stderr}")
 
 
-def run(executable: Path) -> None:
+def run(executable: Path, resources: Path | None = None) -> None:
     executable = executable.resolve()
+    if resources is None:
+        resources = (executable.parent.parent / "Resources" if executable.parent.name == "MacOS"
+                     else executable.parent / "_internal")
+    resources = resources.resolve()
     if not executable.is_file():
         raise FileNotFoundError(executable)
     marker = executable.parent / "OpenFocus.portable"
@@ -403,7 +405,7 @@ def run(executable: Path) -> None:
             )
             try:
                 _wait_for_control(process, root / "control.json")
-                _exercise(executable, environment, root, shape)
+                _exercise(executable, environment, root, shape, resources)
             except BaseException:
                 print(f"Desktop exit status: {process.poll()}", file=sys.stderr)
                 for path in sorted((root / "logs").glob("*")):
@@ -549,6 +551,10 @@ def main() -> None:
         help="path to the packaged desktop executable",
     )
     parser.add_argument(
+        "--resources", type=Path,
+        help="path to packaged resources (defaults to the platform bundle layout)",
+    )
+    parser.add_argument(
         "--installed-startup", action="store_true",
         help="verify first launch of a Windows installer without inherited handles",
     )
@@ -556,7 +562,7 @@ def main() -> None:
     if args.installed_startup:
         run_installed_startup(args.executable)
     else:
-        run(args.executable)
+        run(args.executable, args.resources)
 
 
 if __name__ == "__main__":
