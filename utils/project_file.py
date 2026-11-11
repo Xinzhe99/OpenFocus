@@ -1046,8 +1046,11 @@ def _apply_settings(window, state: Dict[str, Any]) -> None:
     if base_chk is not None:
         base_chk.setChecked(base_correct)
 
+    from core.algorithms import get_fusion
+    default_exposure = (get_fusion(method).default_exposure_match
+                        if method and method != "none" else False)
     exposure_match = window._brightness_by_method.get(
-        ("exposure_match", method), settings.get("exposure_match", False))
+        ("exposure_match", method), settings.get("exposure_match", default_exposure))
     if method:
         window._brightness_by_method[("exposure_match", method)] = exposure_match
     window.exposure_match = exposure_match

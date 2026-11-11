@@ -540,6 +540,34 @@ def test_batch_fusion_only_options_follow_the_selected_method(qapp):
         qapp.processEvents()
 
 
+def test_batch_exposure_uses_method_choices_and_keeps_drafts(qapp):
+    from types import SimpleNamespace
+    from dialogs.batch import BatchProcessingDialog
+
+    dialog = BatchProcessingDialog(None)
+    dialog.parent_window = SimpleNamespace(
+        brightness_option_for=lambda option, method: method != 'openfocus_a')
+    try:
+        _select_fusion(dialog, 'openfocus_a')
+        assert not dialog.chk_exposure_match.isChecked()
+        assert not dialog.get_processing_settings()['runtime_settings']['exposure_match']
+        _select_fusion(dialog, 'openfocus_b')
+        assert dialog.chk_exposure_match.isChecked()
+        dialog.chk_exposure_match.setChecked(False)
+        _select_fusion(dialog, 'none')
+        _select_fusion(dialog, 'openfocus_a')
+        assert not dialog.chk_exposure_match.isChecked()
+        dialog.chk_exposure_match.setChecked(True)
+        _select_fusion(dialog, 'openfocus_b')
+        assert not dialog.chk_exposure_match.isChecked()
+        _select_fusion(dialog, 'openfocus_a')
+        assert dialog.chk_exposure_match.isChecked()
+    finally:
+        dialog.close()
+        dialog.deleteLater()
+        qapp.processEvents()
+
+
 @pytest.mark.parametrize('method,expected', [
     ('openfocus_a', 'first'), ('openfocus_b', 'first'),
     ('openfocus_c', 'first'), ('guided_filter', 'last'),

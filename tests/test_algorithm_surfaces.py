@@ -106,9 +106,9 @@ def test_fresh_panel_defaults_and_recommended_labels(qapp):
         assert parts.combo_align.currentData() == "ecc"
         assert trans.t("recommended") in parts.combo_fusion.currentText()
         assert trans.t("recommended") in parts.combo_align.currentText()
+        assert parts.chk_exposure_match.isChecked()
         for control in (parts.chk_quick_preview, parts.chk_reverse_order,
-                        parts.chk_exposure_match, parts.chk_base_correct,
-                        parts.chk_sharpen_output):
+                        parts.chk_base_correct, parts.chk_sharpen_output):
             assert not control.isChecked()
         parts.combo_fusion.setCurrentIndex(parts.combo_fusion.findData("dct"))
         parts.combo_align.setCurrentIndex(parts.combo_align.findData("homography"))
@@ -281,7 +281,7 @@ def test_brightness_snapshot_restores_registration_reference(qapp, algorithm_hos
     assert not host.brightness_option_for("exposure_match", "extension")
 
 
-def test_exposure_defaults_off_preserves_choice_and_reset(algorithm_host):
+def test_exposure_defaults_on_preserves_choice_and_reset(algorithm_host):
     from types import SimpleNamespace
     from core.algorithms import fusion_algorithms
     from main import OpenFocus
@@ -290,16 +290,16 @@ def test_exposure_defaults_off_preserves_choice_and_reset(algorithm_host):
     host._brightness_by_method.clear()
     for method in ["none", *(spec.id for spec in fusion_algorithms())]:
         host.set_fusion_method(method)
-        assert not host.chk_exposure_match.isChecked()
+        assert host.chk_exposure_match.isChecked() == (method != "none")
         assert not host.chk_base_correct.isChecked()
 
     host.set_fusion_method("openfocus_a")
-    host.chk_exposure_match.setChecked(True)
+    host.chk_exposure_match.setChecked(False)
     host.chk_base_correct.setChecked(True)
     host.set_fusion_method("openfocus_b")
-    assert not host.chk_exposure_match.isChecked()
-    host.set_fusion_method("openfocus_a")
     assert host.chk_exposure_match.isChecked()
+    host.set_fusion_method("openfocus_a")
+    assert not host.chk_exposure_match.isChecked()
     assert host.chk_base_correct.isChecked()
     host.chk_quick_preview.setChecked(True)
     host.chk_reverse_order.setChecked(True)
@@ -309,14 +309,14 @@ def test_exposure_defaults_off_preserves_choice_and_reset(algorithm_host):
     OpenFocus.reset_to_default(host)
     assert host.current_fusion_method() == "openfocus_b"
     assert host.current_alignment_method() == "ecc"
-    assert not host.chk_exposure_match.isChecked()
+    assert host.chk_exposure_match.isChecked()
     assert not any(option.isChecked() for option in (
         host.chk_quick_preview, host.chk_reverse_order,
         host.chk_base_correct, host.chk_sharpen_output))
     assert host._brightness_by_method == {}
     for method in ["none", *(spec.id for spec in fusion_algorithms())]:
         host.set_fusion_method(method)
-        assert not host.chk_exposure_match.isChecked()
+        assert host.chk_exposure_match.isChecked() == (method != "none")
         assert not host.chk_base_correct.isChecked()
 
 

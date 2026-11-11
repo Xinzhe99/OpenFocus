@@ -408,6 +408,7 @@ class BatchProcessingDialog(QDialog):
         options_layout.addWidget(self.params_rule)
 
         self._fusion_drafts = {}
+        self._exposure_drafts = {}
         self._registration_drafts = {}
         self._editing_method = None
         self._editing_alignment = None
@@ -1369,6 +1370,15 @@ class BatchProcessingDialog(QDialog):
 
     def _sync_method_controls(self) -> None:
         method = self.fusion_combo.currentData()
+        previous = self._editing_method
+        if previous not in (None, 'none'):
+            self._exposure_drafts[previous] = self.chk_exposure_match.isChecked()
+        if method not in (None, 'none'):
+            if method not in self._exposure_drafts:
+                getter = getattr(self.parent_window, 'brightness_option_for', None)
+                self._exposure_drafts[method] = (bool(getter('exposure_match', method))
+                    if callable(getter) else get_fusion(method).default_exposure_match)
+            self.chk_exposure_match.setChecked(self._exposure_drafts[method])
         self._editing_method = method
         specs = () if method in (None, 'none') else get_fusion(method).parameters
         if method not in self._fusion_drafts:

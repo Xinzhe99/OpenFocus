@@ -130,18 +130,18 @@ def test_openfocus_brightness_defaults_preserve_explicit_choices(clean_store, me
 
     window = _window()
     window._fusion = method
-    assert not OpenFocus.brightness_option_for(window, 'exposure_match')
+    assert OpenFocus.brightness_option_for(window, 'exposure_match')
     assert not OpenFocus.brightness_option_for(window, 'base_correct')
-    assert not OpenFocus.brightness_option_for(window, 'exposure_match', 'guided_filter')
+    assert OpenFocus.brightness_option_for(window, 'exposure_match', 'guided_filter')
 
-    window._brightness_by_method = {('exposure_match', method): True,
+    window._brightness_by_method = {('exposure_match', method): False,
                                     ('base_correct', method): True}
     save_window_settings(window)
     reset_settings_singleton()
     restored = _window()
     restored._fusion = method
     load_window_settings(restored)
-    assert OpenFocus.brightness_option_for(restored, 'exposure_match')
+    assert not OpenFocus.brightness_option_for(restored, 'exposure_match')
     assert OpenFocus.brightness_option_for(restored, 'base_correct')
 
 
@@ -179,16 +179,16 @@ def test_saved_brightness_choices_survive_new_defaults(clean_store):
 
     saved = _window()
     saved._brightness_by_method = {
-        ("exposure_match", "openfocus_a"): True,
+        ("exposure_match", "openfocus_a"): False,
         ("base_correct", "openfocus_b"): True,
     }
     save_window_settings(saved)
     reset_settings_singleton()
     restored = _window()
     load_window_settings(restored)
-    assert OpenFocus.brightness_option_for(restored, "exposure_match", "openfocus_a")
+    assert not OpenFocus.brightness_option_for(restored, "exposure_match", "openfocus_a")
     assert OpenFocus.brightness_option_for(restored, "base_correct", "openfocus_b")
-    assert not OpenFocus.brightness_option_for(restored, "exposure_match", "openfocus_b")
+    assert OpenFocus.brightness_option_for(restored, "exposure_match", "openfocus_b")
     assert not OpenFocus.brightness_option_for(restored, "base_correct", "openfocus_a")
 
 
@@ -213,8 +213,8 @@ def test_project_missing_brightness_uses_defaults_or_saved_method_choices():
 
     restored = _window()
     project_file._apply_after_load(restored, {"settings": {"fusion_method": "openfocus_a"}})
-    assert not restored.exposure_match and not restored.base_frame_correct
-    assert restored._brightness_by_method[("exposure_match", "openfocus_a")] is False
+    assert restored.exposure_match and not restored.base_frame_correct
+    assert restored._brightness_by_method[("exposure_match", "openfocus_a")] is True
     assert restored._brightness_by_method[("base_correct", "openfocus_a")] is False
 
     restored = _window()
