@@ -44,15 +44,24 @@ def test_affinity_and_fractional_quota_limit_all_preferences():
 
 def test_ram_only_admission_tracks_lost_and_unknown_memory(monkeypatch):
     available = iter((8 * GiB, 0, policy.RESERVE_BYTES // 2))
-    monkeypatch.setattr(memory, 'available_memory_bytes',
-                        lambda: next(available))
-    monkeypatch.setattr(memory, 'total_memory_bytes', lambda: 16 * GiB)
+    monkeypatch.setattr(memory, 'system_memory_bytes',
+                        lambda: (next(available), 16 * GiB))
     monkeypatch.setattr(memory, 'process_rss_bytes', lambda: GiB)
     required = 64 * 1024 ** 2
     assert policy.require_memory(required, policy.probe_memory()) >= required
     for _ in range(2):
         with pytest.raises(policy.ResourceLimitError):
             policy.require_memory(required, policy.probe_memory())
+
+
+def test_memory_probe_reads_the_os_once(monkeypatch):
+    calls = []
+    monkeypatch.setattr(memory.sys, "platform", "linux")
+    monkeypatch.setattr(memory, "_posix_memory",
+                        lambda: calls.append(1) or (GiB, 4 * GiB))
+    monkeypatch.setattr(memory, "process_rss_bytes", lambda: 0)
+    snapshot = policy.probe_memory()
+    assert (snapshot.available_ram, snapshot.total_ram, len(calls)) == (GiB, 4 * GiB, 1)
 
 
 def test_fixed_allocations_reduce_concurrency_before_workers():
