@@ -1,8 +1,14 @@
 """Prepare and deliver consented, sanitized diagnostic reports."""
+import sys
+
 from constants import APP_VERSION
 from utils.account_client import AccountClient, AccountError
 from utils.app_paths import user_data_dir
 from utils.report_client import ReportClient, ReportError
+
+
+def build_channel():
+    return "release" if getattr(sys, "frozen", False) else "development"
 
 
 def report_metadata(bundle, *, source, locale, severity='error'):
@@ -12,6 +18,7 @@ def report_metadata(bundle, *, source, locale, severity='error'):
         'platform': bundle.platform,
         'severity': severity,
         'source': source,
+        'build_channel': build_channel(),
         'locale': 'zh' if locale == 'zh' else 'en',
         'subject': bundle.subject,
         'summary': bundle.summary,
@@ -30,6 +37,8 @@ def send_bundle(bundle, *, source, locale, account=None, severity='error', requi
         raise ReportError('Account identity unavailable')
     if client.is_signed_in() and (not isinstance(owner_id, str) or not owner_id):
         raise ReportError('Account identity unavailable')
+    if source == 'auto' and build_channel() == 'development':
+        return None
     metadata = report_metadata(bundle, source=source, locale=locale, severity=severity)
     if owner_id:
         return reports.enqueue_and_submit(
