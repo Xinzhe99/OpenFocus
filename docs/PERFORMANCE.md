@@ -448,7 +448,11 @@ Within a render, decoded and deferred processed frames may be reused from the
 job's selected temporary volume. The cache checks source fingerprints, leaves
 space for the pipeline's mandatory staging and falls back to normal decoding
 if storage is insufficient or unavailable. Its temporary files remain owned
-until the last view releases them.
+until the last view releases them. Registration records a SHA-256 of each
+source when it estimates a transform and compares it again before resampling;
+when both steps read the same stored copy, that copy is hashed once. Arrays,
+sources decoded again and alignment plans saved by an earlier render are
+hashed every time.
 Depth maps, batch jobs, background fill and viewport pixels retain their
 existing worker paths. Standalone callers may still use `RenderWorker`
 directly; the desktop render manager always uses the process boundary.
