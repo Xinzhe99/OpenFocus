@@ -1172,6 +1172,7 @@ PACK = {
     "env_mps_avail": "MPS 사용 가능 (Apple Silicon)",
     "env_gpu_accel": "AI: 가속 공급자 검증됨",
     "env_no_gpu": "AI: 검증된 가속 공급자 없음",
+    "env_gpu_memory_unknown": "{device}이(가) 공급자 검사를 통과했지만 사용 가능한 메모리를 읽을 수 없어 AI 작업은 CPU에서 실행됩니다",
     "env_cpu_mode": "AI: 사용 가능 (CPU 모드 - 느림)",
     "env_stackmff_unavailable": "AI 합성 사용 불가",
     "env_dtcwt_unavailable": "설치되지 않음 (DTCWT 합성 사용 불가)",
