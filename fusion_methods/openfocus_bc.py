@@ -238,7 +238,7 @@ def openfocus_b_impl(input_source, img_resize=None, kernel_size: int = 17,
 @execution_job
 def openfocus_c_impl(input_source, img_resize=None, thread_count: int = None,
                      blend_smoothing: float = 2.4, should_cancel=None,
-                     progress_callback=None):
+                     progress_callback=None, use_gpu: bool = False):
     """Fuse source frames using a streaming weighted detail pyramid."""
     from core import source_frames
     from fusion_methods._openfocus_pyramid import fuse_pyramid
@@ -247,6 +247,15 @@ def openfocus_c_impl(input_source, img_resize=None, thread_count: int = None,
     configure_rows(frames, img_resize, 'openfocus_c', thread_count, should_cancel)
     smoothing = 2.4 if blend_smoothing is None else float(blend_smoothing)
     try:
+        if use_gpu:
+            from fusion_methods._openfocus_gpu import GpuError, log_fallback
+            from fusion_methods._openfocus_gpu_c import GpuC
+            try:
+                return GpuC().fuse(frames, shape, img_resize,
+                                   smoothing * (5.0 / 3.0),
+                                   should_cancel, progress_callback)
+            except GpuError as exc:
+                log_fallback(exc)
         return fuse_pyramid(frames, shape, img_resize, smoothing * (5.0 / 3.0),
                             should_cancel, progress_callback)
     finally:
