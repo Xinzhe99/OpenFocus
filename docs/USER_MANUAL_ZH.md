@@ -97,7 +97,7 @@ CLI 也会拒绝透明输入的传感器清理与深度图。
 4. **Python 源码**：在激活的 conda 环境中执行 `python main.py`
 
 从 [OpenFocus 官网](https://openfocus.top/#download) 和安装脚本可获取最新的 Windows 或 macOS 版本，包括比稳定版更新的测试版。
-目前提供 [v1.77.0-beta.4 预发布版](https://github.com/Xinzhe99/OpenFocus/releases/tag/v1.77.0-beta.4)，也可从 GitHub 下载该版本和旧版本。桌面应用自动更新也提供更新的测试版；PyPI 上的 Linux CLI 仍使用稳定版。终端安装方式如下：
+目前提供 [v1.77.0-beta.5 预发布版](https://github.com/Xinzhe99/OpenFocus/releases/tag/v1.77.0-beta.5)，也可从 GitHub 下载该版本和旧版本。桌面应用自动更新也提供更新的测试版；PyPI 上的 Linux CLI 仍使用稳定版。终端安装方式如下：
 
 ```bash
 # macOS（Apple Silicon，安装到 ~/Applications）或 Linux（无界面 CLI）
