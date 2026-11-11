@@ -67,6 +67,122 @@ def _release(kinds):
     }}
 
 
+def _beta_release(number=4):
+    alias = f"v1.77.0.999999999.{number}"
+    return {
+        "tag": alias,
+        "actual_tag": f"v1.77.0-beta.{number}",
+        "assets": {
+            "windows-zip": {"name": f"OpenFocus-{alias}-windows-x64.zip", "size": 123,
+                            "digest": "sha256:" + "a" * 64,
+                            "url": "https://attacker.invalid/payload"},
+            "windows-setup": {"name": f"OpenFocus-{alias}-setup.exe", "size": 456,
+                              "digest": "sha256:" + "b" * 64},
+        },
+        "releases": [{"tag_name": alias, "body": "Beta changes"}],
+    }
+
+
+@pytest.mark.parametrize('current,state', [
+    ('1.76.0', 'update'), ('1.77.0-beta.3', 'update'),
+    ('1.77.0-beta.4', 'latest'), ('1.77.0', 'latest'),
+])
+def test_beta_manifest_compares_and_displays_actual_version(monkeypatch, current, state):
+    from utils import updater
+    monkeypatch.setattr(sys, 'platform', 'win32')
+    monkeypatch.setattr(updater, '_api_get', lambda *args: _beta_release())
+    seen = []
+    check_async(current, lambda *args: seen.append(args))
+    _wait_for(seen)
+    assert seen[0][0:2] == (state, 'v1.77.0-beta.4')
+    if state == 'update':
+        assert seen[0][3] == 'https://openfocus.top/download/releases/v1.77.0-beta.4/windows-zip'
+        assert seen[0][4] == 'https://openfocus.top/download/releases/v1.77.0-beta.4/windows-setup'
+        assert seen[0][5] == 'sha256:' + 'a' * 64
+        assert seen[0][6][0]['tag_name'] == 'v1.77.0-beta.4'
+
+
+def test_stable_manifest_upgrades_matching_beta(monkeypatch):
+    from utils import updater
+    manifest = _release([])
+    manifest['tag'] = 'v1.77.0'
+    monkeypatch.setattr(updater, '_api_get', lambda *args: manifest)
+    seen = []
+    check_async('1.77.0-beta.4', lambda *args: seen.append(args))
+    _wait_for(seen)
+    assert seen[0][0:2] == ('update', 'v1.77.0')
+
+
+@pytest.mark.parametrize('alias,actual', [
+    ('v1.77.0.999999999.3', 'v1.77.0-beta.4'),
+    ('v1.78.0.999999999.4', 'v1.77.0-beta.4'),
+    ('v1.77.0.4', 'v1.77.0-beta.4'),
+    ('v1.77.0.999999999.4', 'v1.77.0-beta.04'),
+    ('v1.77.0.999999999.4', 'v1.77.0'),
+    ('v1.77.0.999999999.4', '../v1.77.0-beta.4'),
+    ('v1.999999999.0.999999999.4', 'v1.999999999.0-beta.4'),
+    ('v1.0999999999.0.999999999.4', 'v1.0999999999.0-beta.4'),
+    ('v1.77.0.999999999.4', None),
+])
+def test_invalid_beta_alias_is_rejected(monkeypatch, alias, actual):
+    from utils import updater
+    manifest = _beta_release()
+    manifest.update(tag=alias, actual_tag=actual)
+    monkeypatch.setattr(updater, '_api_get', lambda *args: manifest)
+    with pytest.raises(ValueError, match='Invalid update metadata'):
+        updater.fetch_latest_release()
+    assert updater.find_portable_zip_asset(manifest) is None
+
+
+def test_reserved_alias_without_actual_tag_is_rejected(monkeypatch):
+    from utils import updater
+    manifest = _beta_release()
+    del manifest['actual_tag']
+    monkeypatch.setattr(updater, '_api_get', lambda *args: manifest)
+    with pytest.raises(ValueError, match='Invalid update metadata'):
+        updater.fetch_latest_release()
+
+
+def test_beta_assets_require_alias_names_and_valid_digests(monkeypatch):
+    from utils import updater
+    monkeypatch.setattr(sys, 'platform', 'win32')
+    manifest = _beta_release()
+    manifest['assets']['windows-zip']['name'] = 'OpenFocus-v1.77.0-beta.4-windows-x64.zip'
+    assert updater.find_portable_zip_asset(manifest) is None
+    manifest = _beta_release()
+    manifest['assets']['windows-zip']['digest'] = 'sha256:bad'
+    assert updater.find_portable_zip_asset(manifest) is None
+    manifest['assets']['windows-setup']['digest'] = 'sha256:bad'
+    assert updater.find_installer_asset(manifest) is None
+
+
+def test_beta_release_notes_are_ordered_and_distinct_from_stable():
+    from utils.updater import release_note_entries
+    releases = [
+        {'tag_name': 'v1.77.0', 'body': 'stable'},
+        {'tag_name': 'v1.77.0-beta.4', 'body': 'beta four'},
+        {'tag_name': 'v1.77.0-beta.3', 'body': 'beta three'},
+    ]
+    notes = release_note_entries('1.77.0-beta.2', 'v1.77.0', releases)
+    assert [item['tag_name'] for item in notes] == [
+        'v1.77.0', 'v1.77.0-beta.4', 'v1.77.0-beta.3']
+
+
+def test_worker_beta_notes_normalize_aliases_and_keep_stable_notes():
+    from utils.updater import release_note_entries, format_release_notes
+    releases = [
+        {'tag_name': 'v1.77.0.999999999.4', 'body': 'beta four'},
+        {'tag_name': 'v1.76.0', 'body': 'stable notes'},
+    ]
+    notes = release_note_entries('1.75.0', 'v1.77.0-beta.4', releases)
+    selected = {item['tag_name']: item['body'] for item in notes}
+    assert selected['v1.77.0-beta.4'] == 'beta four'
+    assert selected['v1.76.0'] == 'stable notes'
+    rendered = format_release_notes('1.76.0', 'v1.77.0-beta.4', releases)
+    assert 'v1.77.0-beta.4' in rendered
+    assert '999999999' not in rendered
+
+
 class TestPortableZipAsset:
     def test_windows_zip_uses_version_pinned_mirror(self, monkeypatch):
         monkeypatch.setattr(sys, "platform", "win32")

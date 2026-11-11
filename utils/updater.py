@@ -52,13 +52,34 @@ def is_newer(latest_tag: str, current_version: str) -> bool:
     return latest_beta is None or latest_beta > current_beta
 
 
-def _mirror_asset(release: dict, kind: str) -> Optional[dict]:
-    """Select a version-pinned mirror asset; never use remote URLs in metadata."""
+def _release_tags(release: dict) -> Optional[Tuple[str, str]]:
+    """Validate the legacy asset tag and its optional actual beta tag."""
     if not isinstance(release, dict):
         return None
     tag = release.get("tag")
     if not isinstance(tag, str) or not re.fullmatch(r"v[0-9]+(?:\.[0-9]+)*", tag):
         return None
+    if "actual_tag" not in release:
+        if any(int(part) == 999999999 for part in tag[1:].split('.')):
+            return None
+        return tag, tag
+    actual = release["actual_tag"]
+    if not isinstance(actual, str):
+        return None
+    match = re.fullmatch(r"(v[0-9]+(?:\.[0-9]+)*)-beta\.([1-9][0-9]*)", actual)
+    if not match or tag != f"{match.group(1)}.999999999.{match.group(2)}":
+        return None
+    if any(int(part) == 999999999 for part in match.group(1)[1:].split('.')):
+        return None
+    return tag, actual
+
+
+def _mirror_asset(release: dict, kind: str) -> Optional[dict]:
+    """Select a version-pinned mirror asset; never use remote URLs in metadata."""
+    tags = _release_tags(release)
+    if tags is None:
+        return None
+    tag, actual_tag = tags
     suffix = _ASSET_SUFFIXES.get(kind)
     assets = release.get("assets")
     asset = assets.get(kind) if isinstance(assets, dict) else None
@@ -71,9 +92,9 @@ def _mirror_asset(release: dict, kind: str) -> Optional[dict]:
     digest = str(asset.get("digest") or "")
     # Never downgrade self-update integrity when an old or incomplete mirror
     # manifest lacks the SHA-256 supplied by the release workflow.
-    if kind.endswith("-zip") and not re.fullmatch(r"sha256:[0-9a-fA-F]{64}", digest):
+    if (kind.endswith("-zip") or digest) and not re.fullmatch(r"sha256:[0-9a-fA-F]{64}", digest):
         return None
-    return {"name": name, "url": f"{RELEASE_DOWNLOAD_URL}/{tag}/{kind}",
+    return {"name": name, "url": f"{RELEASE_DOWNLOAD_URL}/{actual_tag}/{kind}",
             "size": size, "digest": digest}
 
 
@@ -102,9 +123,10 @@ def find_installer_asset(release: dict) -> Optional[dict]:
 def fetch_latest_release() -> Tuple[bool, str, str, Optional[dict], Optional[dict], list]:
     """Return the release, platform assets, and notes from one mirror request."""
     data = _api_get(RELEASES_API_URL)
-    tag = data.get("tag") if isinstance(data, dict) else None
-    if not isinstance(tag, str) or not re.fullmatch(r"v[0-9]+(?:\.[0-9]+)*", tag):
+    tags = _release_tags(data)
+    if tags is None:
         raise ValueError("Invalid update metadata")
+    _, tag = tags
     releases = data.get("releases")
     if not isinstance(releases, list):
         releases = []
@@ -160,6 +182,11 @@ def _note_version(tag: str) -> tuple:
     return version
 
 
+def _note_key(tag: str) -> tuple:
+    beta = _beta_number(tag)
+    return _note_version(tag), (0, beta) if beta is not None else (1, 0)
+
+
 def release_note_entries(current_version: str, latest_tag: str, releases,
                          max_releases: int = 10) -> list:
     """Keep bounded, sorted language-neutral notes for later UI selection.
@@ -177,8 +204,15 @@ def release_note_entries(current_version: str, latest_tag: str, releases,
         if not isinstance(item, dict):
             continue
         tag = item.get("tag_name")
-        if not isinstance(tag, str) or not re.fullmatch(r"[vV]?[0-9]+(?:\.[0-9]+)*", tag):
+        if not isinstance(tag, str) or not re.fullmatch(r"[vV]?[0-9]+(?:\.[0-9]+)*(?:-beta\.[1-9][0-9]*)?", tag):
             continue
+        # The mirror exposes numeric beta tags to legacy clients in notes too.
+        alias = re.fullmatch(r"(v[0-9]+(?:\.[0-9]+)*)\.999999999\.([1-9][0-9]*)", tag)
+        if alias:
+            actual = f"{alias.group(1)}-beta.{alias.group(2)}"
+            if _release_tags({"tag": tag, "actual_tag": actual}) is None:
+                continue
+            tag = actual
         if ((parse_version(current_version) and not is_newer(tag, current_version))
                 or is_newer(tag, latest_tag)):
             continue
@@ -190,7 +224,7 @@ def release_note_entries(current_version: str, latest_tag: str, releases,
             translations.update({lang: text.strip() for lang, text in supplied.items()
                                  if lang in LANGUAGES and isinstance(text, str)
                                  and text.strip()})
-        bundled = bundled_by_version.get(_note_version(tag), {})
+        bundled = bundled_by_version.get(_note_version(tag), {}) if _beta_number(tag) is None else {}
         translations = {**bundled, **translations}
         # Never expose other languages' blocks as the legacy fallback body.
         if localized_bodies(body):
@@ -198,14 +232,14 @@ def release_note_entries(current_version: str, latest_tag: str, releases,
         entry = {"tag_name": tag, "body": body.strip()[:12000],
                  "body_i18n": {lang: text[:12000]
                                for lang, text in translations.items()}}
-        key = _note_version(tag)
+        key = _note_key(tag)
         if entry["body"] or entry["body_i18n"]:
             candidates.setdefault(key, entry)
     for version, translations in RELEASE_NOTES.items():
         if ((parse_version(current_version) and not is_newer(version, current_version))
                 or is_newer(version, latest_tag)):
             continue
-        key = _note_version(version)
+        key = _note_key(version)
         candidates.setdefault(key, {"tag_name": "v" + version, "body": "",
                                     "body_i18n": dict(translations)})
     return [candidates[key] for key in sorted(candidates, reverse=True)

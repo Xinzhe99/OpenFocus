@@ -25,6 +25,8 @@ GITHUB_ASSET_LIMIT = 2_147_483_648
 DEFAULT_PART_BYTES = 1_900_000_000
 SAFE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+STABLE_TAG_RE = re.compile(r"^v[0-9]+(?:\.[0-9]+)*$")
+BETA_TAG_RE = re.compile(r"^v([0-9]+(?:\.[0-9]+)*)-beta\.([1-9][0-9]*)$")
 WINDOWS_KEYS = ("windows-zip", "windows-setup")
 GPU_KEY = "gpu-zip"
 GPU_KIND = "gpu-preview"
@@ -512,18 +514,42 @@ def _mirror_identity(path: Path, tag: str, release: dict, head_sha: str) -> dict
     return result
 
 
+def beta_version(tag: str) -> tuple:
+    match = BETA_TAG_RE.fullmatch(tag)
+    if not match:
+        raise ReleaseArchiveError(f"invalid beta release tag: {tag}")
+    numbers = tuple(int(part) for part in match.group(1).split("."))
+    while len(numbers) > 1 and numbers[-1] == 0:
+        numbers = numbers[:-1]
+    return numbers, int(match.group(2))
+
+
+def beta_metadata_action(tag: str, previous: Path) -> str:
+    candidate = beta_version(tag)
+    prior = _load_json(Path(previous))
+    old_tag = prior.get("tag")
+    if not isinstance(old_tag, str):
+        raise ReleaseArchiveError("invalid previous beta metadata tag")
+    return "publish" if candidate >= beta_version(old_tag) else "skip"
+
+
 def write_mirror_manifest(tag: str, release_json: Path, r2_dir: Path,
                           releases_json: Path, output: Path,
                           windows_manifest: Path = None,
                           limit: int = GITHUB_ASSET_LIMIT,
                           build_identity: Path = None, head_sha: str = "",
-                          trusted_metadata: Path = None) -> None:
+                          trusted_metadata: Path = None,
+                          allow_beta: bool = False) -> None:
     tag = _safe_basename(tag)
     release = _load_json(Path(release_json))
     if release.get("tag_name") != tag:
         raise ReleaseArchiveError("GitHub release tag does not match")
-    if release.get("draft") or release.get("prerelease"):
-        raise ReleaseArchiveError("cannot mirror a draft or prerelease")
+    if allow_beta:
+        beta_version(tag)
+    elif not STABLE_TAG_RE.fullmatch(tag):
+        raise ReleaseArchiveError("invalid stable release tag")
+    if release.get("draft", False) is not False or release.get("prerelease", False) is not allow_beta:
+        raise ReleaseArchiveError("release must be published and match the requested channel")
     if head_sha and not build_identity:
         raise ReleaseArchiveError("workflow run requires a build identity")
     trusted = _mirror_identity(Path(build_identity), tag, release, head_sha) if build_identity else {}
@@ -653,7 +679,12 @@ def _cmd_write_mirror(args) -> None:
         Path(args.releases_json), Path(args.output),
         Path(args.windows_manifest) if args.windows_manifest else None,
         args.limit, Path(args.build_identity) if args.build_identity else None,
-        args.head_sha, Path(args.trusted_metadata) if args.trusted_metadata else None)
+        args.head_sha, Path(args.trusted_metadata) if args.trusted_metadata else None,
+        allow_beta=args.allow_beta)
+
+
+def _cmd_beta_metadata_action(args) -> None:
+    print(beta_metadata_action(args.tag, Path(args.previous)))
 
 
 def _cmd_zip_tree(args) -> None:
@@ -725,8 +756,14 @@ def main(argv=None) -> int:
     p.add_argument("--build-identity", default="")
     p.add_argument("--head-sha", default="")
     p.add_argument("--trusted-metadata", default="")
+    p.add_argument("--allow-beta", action="store_true")
     p.add_argument("--limit", type=int, default=GITHUB_ASSET_LIMIT)
     p.set_defaults(func=_cmd_write_mirror)
+
+    p = sub.add_parser("beta-metadata-action")
+    p.add_argument("--tag", required=True)
+    p.add_argument("--previous", required=True)
+    p.set_defaults(func=_cmd_beta_metadata_action)
 
     args = parser.parse_args(argv)
     try:

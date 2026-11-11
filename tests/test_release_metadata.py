@@ -30,6 +30,21 @@ def test_invalid_beta_tags_are_rejected(tag):
         rm.resolve_identity('refs/tags/' + tag, tag, '42', '1.77.0')
 
 
+@pytest.mark.parametrize('version', ['1.77.0.999999999.4', '1.999999999.01',
+                                     '1.0999999999.4', '999999999.1',
+                                     '1.77.0.999999999', '1.77.0.999999999.0'])
+def test_reserved_beta_alias_versions_cannot_be_published(version):
+    tag = 'v' + version
+    with pytest.raises(rm.ReleaseIdentityError, match='reserved beta alias'):
+        rm.resolve_identity('refs/tags/' + tag, tag, '42', version)
+
+
+@pytest.mark.parametrize('version', ['1.77.0', '1.77.0.4', '1.77.0.999999998.0'])
+def test_other_numeric_versions_remain_valid(version):
+    tag = 'v' + version
+    assert rm.resolve_identity('refs/tags/' + tag, tag, '42', version)['tag'] == tag
+
+
 def test_tag_ref_must_match_name():
     with pytest.raises(rm.ReleaseIdentityError, match='ref and tag name'):
         rm.resolve_identity('refs/tags/v1.77.0', 'v1.77.0-beta.1', '42', '1.77.0')

@@ -311,21 +311,98 @@ def test_mirror_manifest_accepts_legacy_four_complete_assets(tmp_path):
         assert "source" not in entry
 
 
-def _mirror_fixture(tmp_path):
+def _mirror_fixture(tmp_path, tag=LABEL):
     directory = tmp_path / "assets"
-    files = {ra.expected_name(LABEL, key): key.encode()
+    files = {ra.expected_name(tag, key): key.encode()
              for key in (*ra.WINDOWS_KEYS, *ra.MACOS_NAMES)}
     assets = []
     for name, content in files.items():
         _write(directory / name, content)
         assets.append({"name": name, "size": len(content),
                        "digest": "sha256:" + _digest(content),
-                       "browser_download_url": f"https://github.com/o/r/releases/download/{LABEL}/{name}"})
-    release = {"tag_name": LABEL, "draft": False, "prerelease": False,
+                       "browser_download_url": f"https://github.com/o/r/releases/download/{tag}/{name}"})
+    release = {"tag_name": tag, "draft": False, "prerelease": False,
                "assets": assets}
     release_path = _write(tmp_path / "release.json", json.dumps(release).encode())
     releases_path = _write(tmp_path / "releases.json", b"[]")
     return directory, files, release, release_path, releases_path
+
+
+def test_beta_mirror_requires_explicit_opt_in_and_verified_assets(tmp_path):
+    tag = "v1.77.0-beta.3"
+    directory, files, release, release_path, releases_path = _mirror_fixture(tmp_path, tag)
+    release["prerelease"] = True
+    release_path.write_text(json.dumps(release), encoding="utf-8")
+    output = tmp_path / "beta.json"
+    with pytest.raises(ra.ReleaseArchiveError):
+        ra.write_mirror_manifest(tag, release_path, directory, releases_path, output)
+    ra.write_mirror_manifest(tag, release_path, directory, releases_path, output,
+                             allow_beta=True)
+    assert set(item["name"] for item in json.loads(output.read_text())["assets"].values()) == set(files)
+    output.unlink()
+    name, content = next(iter(files.items()))
+    _write(directory / name, b"x" * len(content))
+    with pytest.raises(ra.ReleaseArchiveError, match="SHA-256"):
+        ra.write_mirror_manifest(tag, release_path, directory, releases_path, output,
+                                 allow_beta=True)
+    assert not output.exists()
+
+
+
+
+def test_beta_workflow_run_requires_matching_build_identity(tmp_path):
+    tag = "v1.77.0-beta.3"
+    directory, files, release, release_path, releases_path = _mirror_fixture(tmp_path, tag)
+    release["prerelease"] = True
+    identity = {"schema_version": 1, "tag": tag, "version": tag[1:],
+                "sha": "a" * 40, "run_id": 123, "run_attempt": 1,
+                "assets": [{"name": name, "size": len(content), "sha256": _digest(content)}
+                           for name, content in files.items()]}
+    identity_path = _write(tmp_path / "identity.json", json.dumps(identity).encode())
+    data = identity_path.read_bytes()
+    release["assets"].append({"name": f"OpenFocus-{tag}-build.json", "size": len(data),
+                              "digest": "sha256:" + _digest(data)})
+    release_path.write_text(json.dumps(release), encoding="utf-8")
+    output = tmp_path / "beta.json"
+    with pytest.raises(ra.ReleaseArchiveError, match="workflow run SHA"):
+        ra.write_mirror_manifest(tag, release_path, directory, releases_path, output,
+                                 build_identity=identity_path, head_sha="b" * 40, allow_beta=True)
+    assert not output.exists()
+    ra.write_mirror_manifest(tag, release_path, directory, releases_path, output,
+                             build_identity=identity_path, head_sha="a" * 40, allow_beta=True)
+    assert json.loads(output.read_text())["tag"] == tag
+
+
+@pytest.mark.parametrize("tag,prerelease", [
+    ("v1.77.0", False), ("v1.77.0-beta.0", True),
+    ("v1.77.0-beta.03", True), ("v1.77.0-rc.1", True),
+    ("gpu-v1.77.0-beta.3", True), ("v1.77.0-beta.3", False),
+])
+def test_beta_mirror_rejects_other_tags_and_non_prereleases(tmp_path, tag, prerelease):
+    directory, _, release, release_path, releases_path = _mirror_fixture(tmp_path, tag)
+    release["prerelease"] = prerelease
+    release_path.write_text(json.dumps(release), encoding="utf-8")
+    with pytest.raises(ra.ReleaseArchiveError):
+        ra.write_mirror_manifest(tag, release_path, directory, releases_path,
+                                 tmp_path / "out.json", allow_beta=True)
+
+
+@pytest.mark.parametrize("candidate,previous,expected", [
+    ("v1.77.0-beta.3", "v1.77.0-beta.2", "publish"),
+    ("v1.77.0-beta.2", "v1.77.0-beta.10", "skip"),
+    ("v1.78-beta.1", "v1.77.99-beta.9", "publish"),
+    ("v1.77-beta.3", "v1.77.0-beta.3", "publish"),
+    ("v1.9-beta.99", "v1.10-beta.1", "skip"),
+])
+def test_beta_metadata_never_regresses(tmp_path, candidate, previous, expected):
+    path = _write(tmp_path / "previous.json", json.dumps({"tag": previous}).encode())
+    assert ra.beta_metadata_action(candidate, path) == expected
+
+
+def test_beta_metadata_rejects_invalid_previous_tag(tmp_path):
+    path = _write(tmp_path / "previous.json", b'{"tag":"v1.77.0"}')
+    with pytest.raises(ra.ReleaseArchiveError):
+        ra.beta_metadata_action("v1.77.0-beta.3", path)
 
 
 @pytest.mark.parametrize("failure", ["corrupt", "missing", "no-digest", "draft", "prerelease"])

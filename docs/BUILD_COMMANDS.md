@@ -27,10 +27,11 @@ signing or unsigned path as stable builds.
 
 Before freezing each desktop build, the workflow writes a validated build marker.
 Beta applications display and report the full beta version, while the numeric
-version remains the installer and package metadata version. The stable updater
-orders a beta before the stable release of the same numeric version, so a beta
-installation can upgrade when that stable release reaches the mirror. Source
-runs and ordinary package builds retain the numeric version.
+version remains the installer and package metadata version. The updater orders
+a beta before the stable release of the same numeric version. Source runs and
+ordinary package builds retain the numeric version. The version component
+`999999999` is reserved for legacy update aliases and cannot appear in an app
+version.
 
 The workflow stages a draft, checks the complete remote asset set, sizes and
 SHA-256 hashes against `OpenFocus-<tag>-build.json`, and verifies that the tag
@@ -42,9 +43,11 @@ a new version and tag. Historical releases without a verifiable build identity
 cannot be silently replaced or amended by rerunning the workflow.
 
 Beta releases are published as GitHub prereleases and explicitly excluded from
-latest. They use the numeric version's changelog and all twelve localized note
-summaries; download them from the beta release page. PyPI and the R2 stable
-mirror/updater do not publish beta tags, including manual mirror requests.
+GitHub's stable `latest`. After successful verification, the website mirror
+and desktop updater may offer a newer beta, while retaining the separate stable
+mirror. Older clients receive a numeric compatibility tag for each immutable
+beta; current clients validate the mapping and display the actual beta tag.
+PyPI publication remains limited to stable releases.
 
 PyPI publication runs only for a stable release tag, including a manual dispatch on
 that tag. It checks the tag and commit against the published desktop build

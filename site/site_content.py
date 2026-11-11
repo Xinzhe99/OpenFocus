@@ -11,7 +11,6 @@ template.html must exist under the matching locale.
 
 import os
 
-from constants import APP_VERSION
 
 REPO = "https://github.com/Xinzhe99/OpenFocus"
 RELEASES = f"{REPO}/releases"
@@ -23,7 +22,6 @@ MANUAL = {
 # Download endpoints resolve the newest complete release even without JavaScript.
 ORIGIN = os.environ.get("SITE_ORIGIN", "").strip().rstrip("/") or "https://openfocus.top"
 RELEASE = {
-    "tag": f"v{APP_VERSION}",
     "page": f"{RELEASES}/latest",
     "windows_setup": f"{ORIGIN}/download/latest/windows-setup",
     "windows_zip": f"{ORIGIN}/download/latest/windows-zip",
@@ -80,7 +78,8 @@ def _en() -> dict:
             "cta_windows": "Download for Windows",
             "cta_macos": "Download for macOS",
             "cta_github": "View on GitHub",
-            "meta": f"{RELEASE['tag']} · Windows 10/11 · macOS Apple Silicon · Linux CLI",
+            "desktop_label": "Desktop downloads (may be beta):",
+            "meta": "Windows 10/11 · macOS Apple Silicon · Linux CLI on PyPI",
             "shot_alt": (
                 "The OpenFocus window: a nine-frame stack, a wipe comparison "
                 "and a 50 mm scale bar on the fused result."
@@ -284,7 +283,8 @@ def _en() -> dict:
             "copy": "Copy",
             "copied": "Copied",
             "all": "All releases and checksums",
-            "note": f"Latest release: {RELEASE['tag']} · MIT application; StackMFF V1/V2 models have separate terms",
+            "channel_notice": "Windows and macOS downloads and updates may be beta releases. The Linux CLI on PyPI is a stable release.",
+            "note": "Desktop downloads · MIT application; StackMFF V1/V2 models have separate terms",
         },
         "privacy": {
             "title": "Privacy",
@@ -364,7 +364,8 @@ def _zh() -> dict:
             "cta_windows": "下载 Windows 版",
             "cta_macos": "下载 macOS 版",
             "cta_github": "查看源码",
-            "meta": f"{RELEASE['tag']} · Windows 10/11 · macOS Apple Silicon · Linux 命令行",
+            "desktop_label": "桌面版下载（可能为测试版）：",
+            "meta": "Windows 10/11 · macOS Apple Silicon · Linux 命令行请见 PyPI",
             "shot_alt": "OpenFocus 主窗口：九帧源图、拖拽对比，以及融合结果上的 50 mm 比例尺。",
         },
         "why": {
@@ -531,7 +532,8 @@ def _zh() -> dict:
             "copy": "复制",
             "copied": "已复制",
             "all": "所有版本与校验值",
-            "note": f"最新版本：{RELEASE['tag']} · MIT 应用；StackMFF V1/V2 模型另有许可",
+            "channel_notice": "Windows 和 macOS 的下载及更新可能是测试版；PyPI 上的 Linux 命令行版为稳定版。",
+            "note": "桌面版下载 · MIT 应用；StackMFF V1/V2 模型另有许可",
         },
         "privacy": {
             "title": "隐私",
