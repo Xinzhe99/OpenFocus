@@ -16,6 +16,7 @@ from widgets.stepper import StepperSpinBox
 from utils.dust_map import (DEFAULT_SIGMA, compute_flat_field, apply_flat_field,
                             load_flat_field_reference)
 from utils.ui_utils import size_dialog_to_content
+from utils.platform_utils import configure_native_worker_stack
 
 
 def _prepare_preview(img, width=340, *, linear_dng_metadata=None):
@@ -56,6 +57,7 @@ class _FlatFieldWorker(QThread):
     def __init__(self, operation, revision, raw, base, *, white=None, path="",
                  sigma=DEFAULT_SIGMA, target=0, gain=None, linear_dng_metadata=None):
         super().__init__()
+        configure_native_worker_stack(self)
         self.operation, self.revision = operation, revision
         self.raw, self.base = tuple(raw), tuple(base)
         self.white, self.path, self.sigma = white, path, sigma
