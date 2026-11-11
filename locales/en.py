@@ -1461,7 +1461,6 @@ EN = {
     "scalebar_baked_marker": "annotations burned in",
     "account_cleanup_pending": "Sign-out is incomplete because saved credentials could not be removed. Retry cleanup before signing in again.",
     "account_cleanup_retry": "Retry credential cleanup",
-    "account_sso_settings_error": "Could not save the browser sign-in preference.",
     "watermark_baked_marker": "watermark burned in",
     "watermark_layered_blocked": "Layered TIFF export cannot include the active watermark. Export a normal image or image stack instead.",
     "dialog_watermark_title": "Watermark",

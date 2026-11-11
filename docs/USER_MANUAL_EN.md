@@ -126,10 +126,10 @@ After sign-in, automatic error reports are enabled by default unless you
 previously disabled them. Change this under
 **Settings → Advanced Settings → Diagnostics**.
 
-When there is no desktop session, OpenFocus checks the default browser for an
-existing account at startup; this opens a browser tab. Signing out in the app
-stops automatic restoration until you sign in again. Browser and desktop
-sessions are separate, so signing out here does not sign out the browser.
+OpenFocus restores a saved desktop session locally at startup without opening a
+browser. To use an existing browser account, choose the browser sign-in button
+on the account screen. Browser and desktop sessions are separate, so signing
+out here does not sign out the browser.
 
 For email sign-in, open the link on your phone or computer and confirm it;
 the waiting desktop app signs in automatically. If the account service has

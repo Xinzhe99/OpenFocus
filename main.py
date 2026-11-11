@@ -383,8 +383,6 @@ def _restore_storage_directory(window):
 class OpenFocus(QMainWindow):
     storage_fallback_notice = pyqtSignal(str, str, str)
     account_session_loaded = pyqtSignal(object, object)
-    account_browser_started = pyqtSignal(object)
-    account_browser_finished = pyqtSignal(object, object)
 
     def __init__(self):
         super().__init__()
@@ -3556,74 +3554,6 @@ class OpenFocus(QMainWindow):
         if not getattr(self, '_shutting_down', False):
             self.account_session_loaded.emit(getattr(self, '_account_client', None), error)
             self._refresh_account_action()
-            if error is None and getattr(self, '_browser_sso_pending', False):
-                self._start_browser_sso()
-
-    def enable_browser_sso(self) -> None:
-        """Try the system browser's account once when no local session exists."""
-        from utils.settings_store import get_settings
-        self._browser_sso_pending = get_settings().value(
-            'account/browser_sso_enabled', True, type=bool)
-        if self._browser_sso_pending and getattr(self, '_account_load_job', None) is None:
-            self._start_browser_sso()
-
-    def _start_browser_sso(self) -> None:
-        self._browser_sso_pending = False
-        client = getattr(self, '_account_client', None)
-        if (client is None or getattr(client, 'logout_cleanup_pending', False)
-                or client.is_signed_in() or getattr(self, '_shutting_down', False)
-                or getattr(self, '_account_browser_job', None) is not None):
-            return
-        import threading
-        from dialogs.account import _AccountJob
-        self._account_browser_cancel = threading.Event()
-        language = 'zh' if trans.current_lang == 'zh' else 'en'
-        job = _AccountJob(lambda started: client.login_with_browser(
-            cancel=self._account_browser_cancel, on_started=started, timeout=30, language=language), self)
-        self._account_browser_job = job
-        job.finished.connect(self._browser_sso_finished)
-        job.finished.connect(job._release)
-        self.account_browser_started.emit(job)
-        job.start()
-
-    def _cancel_browser_sso(self) -> None:
-        self._browser_sso_pending = False
-        cancel = getattr(self, '_account_browser_cancel', None)
-        if cancel is not None:
-            cancel.set()
-
-    def _browser_sso_finished(self, user, error) -> None:
-        cancelled = (getattr(self, '_account_browser_cancel', None) is not None
-                     and self._account_browser_cancel.is_set())
-        self._account_browser_cancel = None
-        if cancelled and error is None and user:
-            # Skip can arrive after the worker persisted the session but before
-            # its queued completion reaches the GUI. Revoke that session first.
-            from dialogs.account import _AccountJob
-            job = _AccountJob(lambda _started: self._account_client.logout(), self)
-            self._account_browser_job = job
-            job.finished.connect(self._cancelled_browser_session_cleared)
-            job.finished.connect(job._release)
-            job.start()
-            return
-        self._account_browser_job = None
-        if getattr(self, '_shutting_down', False):
-            return
-        if error is None and user:
-            from dialogs.account import enable_disclosed_reports
-            try:
-                enable_disclosed_reports(self, self._account_client.accepted_terms_version())
-            except Exception as exc:
-                show_warning_box(self, trans.t('msg_error'), str(exc))
-        self.account_browser_finished.emit(user, error)
-        self._refresh_account_action()
-
-    def _cancelled_browser_session_cleared(self, _result, _error) -> None:
-        self._account_browser_job = None
-        if not getattr(self, '_shutting_down', False):
-            from utils.account_client import AccountError
-            self.account_browser_finished.emit(None, AccountError('cancelled'))
-            self._refresh_account_action()
 
     def _refresh_account_action(self) -> None:
         action = getattr(self, 'ui_objs', {}).get('action_account')
@@ -5037,8 +4967,6 @@ if __name__ == "__main__":
             show_warning_box(window, trans.t('update_check_failed_title'),
                              trans.t('update_failed_after_restart'))
 
-    # Restore an existing browser session while keeping sign-in optional.
-    window.enable_browser_sso()
     # The account prompt precedes the main window on first launch and updates.
     from constants import APP_VERSION
     from utils.settings_store import get_settings

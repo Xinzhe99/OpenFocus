@@ -1459,7 +1459,6 @@ PACK = {
     "scalebar_baked_marker": "adnotacje wypalone",
     "account_cleanup_pending": "Wylogowanie jest niepełne, ponieważ nie można usunąć zapisanych danych logowania. Ponów czyszczenie przed zalogowaniem.",
     "account_cleanup_retry": "Ponów usuwanie danych logowania",
-    "account_sso_settings_error": "Nie można zapisać ustawienia logowania przez przeglądarkę.",
     "watermark_baked_marker": "znak wtłoczony",
     "watermark_layered_blocked": "Eksport warstwowego TIFF nie może zawierać aktywnego znaku wodnego. Wyeksportuj zwykły obraz lub stos obrazów.",
     "dialog_watermark_title": "Znak wodny",

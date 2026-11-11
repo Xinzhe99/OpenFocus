@@ -1459,7 +1459,6 @@ PACK = {
     "scalebar_baked_marker": "Anmerkungen eingebrannt",
     "account_cleanup_pending": "Die Abmeldung ist unvollständig, da gespeicherte Zugangsdaten nicht entfernt werden konnten. Wiederholen Sie die Bereinigung vor der Anmeldung.",
     "account_cleanup_retry": "Zugangsdaten erneut bereinigen",
-    "account_sso_settings_error": "Die Einstellung für die Browser-Anmeldung konnte nicht gespeichert werden.",
     "watermark_baked_marker": "Wasserzeichen eingebrannt",
     "watermark_layered_blocked": "Der geschichtete TIFF-Export kann das aktive Wasserzeichen nicht enthalten. Exportieren Sie stattdessen ein normales Bild oder einen Bilderstapel.",
     "dialog_watermark_title": "Wasserzeichen",

@@ -1459,7 +1459,6 @@ PACK = {
     "scalebar_baked_marker": "anotações gravadas",
     "account_cleanup_pending": "A saída está incompleta porque as credenciais salvas não puderam ser removidas. Tente novamente antes de entrar.",
     "account_cleanup_retry": "Tentar remover credenciais novamente",
-    "account_sso_settings_error": "Não foi possível salvar a preferência de acesso pelo navegador.",
     "watermark_baked_marker": "marca gravada",
     "watermark_layered_blocked": "A exportação TIFF em camadas não pode incluir a marca ativa. Exporte uma imagem ou pilha normal.",
     "dialog_watermark_title": "Marca d'água",

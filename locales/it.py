@@ -1459,7 +1459,6 @@ PACK = {
     "scalebar_baked_marker": "annotazioni impresse",
     "account_cleanup_pending": "Disconnessione incompleta: impossibile eliminare le credenziali salvate. Riprova prima di accedere di nuovo.",
     "account_cleanup_retry": "Riprova a eliminare le credenziali",
-    "account_sso_settings_error": "Impossibile salvare la preferenza di accesso tramite browser.",
     "watermark_baked_marker": "filigrana impressa",
     "watermark_layered_blocked": "L'esportazione TIFF a livelli non può includere la filigrana attiva. Esporta un'immagine o uno stack normale.",
     "dialog_watermark_title": "Filigrana",
