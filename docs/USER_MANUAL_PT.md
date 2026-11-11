@@ -711,8 +711,10 @@ O planejador considera núcleos físicos, afinidade e cotas de CPU, e executa um
 
 StackMFF V1/V2/V3 usam ONNX Runtime. DirectML no Windows e CoreML no macOS podem acelerar a inferência; caso contrário, usa-se a CPU. A disponibilidade do provedor não comprova execução na GPU. O suporte a outras GPUs requer validação.
 
+OpenFocus B pode acelerar o processamento de profundidade e a mesclagem de fontes em uma GPU OpenCL compatível; conforme a memória disponível, pode usar etapas GPU limitadas ou voltar à CPU. OpenFocus A/C e alinhamento usam CPU. Consulte [suporte a GPU](GPU_SUPPORT.md).
+
 - Alterne em **Configurações → Aceleração por GPU**
-- Desmarcar força os métodos neurais na CPU — útil quando drivers de GPU dão problema
+- Desmarcar força os métodos de fusão compatíveis na CPU — útil quando drivers de GPU dão problema
 - O painel de status mostra `N/D` quando nenhum acelerador é usado ou está disponível, e `CPU*` quando existe um acelerador mas o método selecionado é somente CPU
 - A escolha se aplica à próxima renderização e é lembrada
 

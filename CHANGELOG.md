@@ -5,15 +5,16 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-### Added
-- Accelerate OpenFocus B depth activity and ordered merging on supported OpenCL
-  GPUs, with CPU fallback. Package PyOpenCL for supported desktop and CLI builds;
-  an OpenCL GPU driver and compiler remain required.
 
 
 ## [1.77.0] - 2026-11-11
 
 ### Added
+- Accelerate OpenFocus B depth processing and source merging on compatible
+  OpenCL GPUs, with bounded GPU stages and CPU fallback when full GPU depth is
+  not admitted; OpenFocus A/C and alignment use the CPU. Package PyOpenCL for
+  supported desktop and CLI builds; an OpenCL GPU driver and compiler remain
+  required.
 - Add the Discord community to Contact Us and a Support Us dialog with Alipay and PayPal codes.
 - Reuse a private device identity for account sign-in and display the device limit.
 - Send app run, platform and report build channel metadata to the account service.

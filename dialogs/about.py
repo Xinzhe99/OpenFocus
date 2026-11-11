@@ -166,6 +166,14 @@ class EnvironmentInfoDialog(QDialog):
             info_lines.append(f"  {trans.t('env_not_installed')}: {exc}")
             info_lines.append(f"  ✗ {trans.t('env_stackmff_unavailable')}")
         info_lines.append("")
+        from core.multi_focus_fusion import ensure_openfocus_gpu_available
+        openfocus_gpu = ensure_openfocus_gpu_available()
+        info_lines.append('-' * 60)
+        info_lines.append('OpenFocus B / OpenCL')
+        info_lines.append('  OpenCL GPU available; CPU fallback' if openfocus_gpu
+                          else '  CPU')
+        info_lines.append('')
+
 
         # 检测 DTCWT
         info_lines.append("-" * 60)
@@ -207,7 +215,8 @@ class EnvironmentInfoDialog(QDialog):
 
         core = available.get("cv2", False) and available.get("numpy", False)
         methods = [
-            ("Guided Filter / GFG-FGF / OpenFocus A/B/C", core, "CPU"),
+            ("Guided Filter / GFG-FGF / OpenFocus A/C", core, "CPU"),
+            ("OpenFocus B", core, "OpenCL GPU available; CPU fallback" if openfocus_gpu else "CPU"),
             ("DCT", core and available.get("scipy", False), "CPU"),
             ("DTCWT", core and available.get("dtcwt", False), "CPU"),
             ("StackMFF V1/V2/V3", core and available.get("onnxruntime", False), available.get("device", "CPU")),

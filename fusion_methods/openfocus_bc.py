@@ -165,28 +165,63 @@ def openfocus_b_impl(input_source, img_resize=None, kernel_size: int = 17,
     if gpu is not None and gpu.failed:
         gpu = None
     result = create_frame(shape, np.uint16)
-    for index, source in enumerate(frames):
-        _check_cancel(should_cancel)
-        if img_resize is None and source.shape != shape:
-            raise ValueError('OpenFocus B requires frames with matching shapes')
-        if not active[index]:
-            if isinstance(source, source_frames.ProcessedFrame) or (
-                    source.ndim == 3 and source.shape[2] == 4):
-                # Lazy processors may enforce alpha/calibration invariants.
-                source_frames.resolve_frame(source)
-            elif isinstance(source, source_frames.SourceFrame):
-                source.validate_source()
-            if progress_callback is not None:
-                progress_callback(activity_steps + index + 1, total)
-            continue
-        frame, source_scale = _source_codes(source, img_resize, should_cancel)
-        if frame.shape != shape:
-            raise ValueError("OpenFocus B requires frames with matching shapes")
-        gpu = _merge_codes(result, frame, depth, index, count, should_cancel,
-                           source_scale=source_scale, gpu=gpu)
-        del frame
-        if progress_callback is not None:
-            progress_callback(activity_steps + index + 1, total)
+    merge_progress = activity_steps
+    def merge_sources(resident):
+        nonlocal gpu, merge_progress
+        for index, source in enumerate(frames):
+            _check_cancel(should_cancel)
+            if img_resize is None and source.shape != shape:
+                raise ValueError('OpenFocus B requires frames with matching shapes')
+            if not active[index]:
+                if isinstance(source, source_frames.ProcessedFrame) or (
+                        source.ndim == 3 and source.shape[2] == 4):
+                    source_frames.resolve_frame(source)
+                elif isinstance(source, source_frames.SourceFrame):
+                    source.validate_source()
+            else:
+                frame, source_scale = _source_codes(source, img_resize, should_cancel)
+                if frame.shape != shape:
+                    raise ValueError('OpenFocus B requires frames with matching shapes')
+                if resident:
+                    try:
+                        gpu.resident_frame(frame, index, count, source_scale)
+                    except GpuError as exc:
+                        return exc
+                else:
+                    gpu = _merge_codes(result, frame, depth, index, count, should_cancel,
+                                       source_scale=source_scale, gpu=gpu)
+                del frame
+            current = activity_steps + index + 1
+            if progress_callback is not None and current > merge_progress:
+                progress_callback(current, total)
+                merge_progress = current
+        return None
+
+    resident = False
+    if gpu is not None:
+        try:
+            resident = gpu.begin_merge(depth, shape, should_cancel)
+        except GpuError as exc:
+            gpu.failed = True
+            log_fallback(exc)
+            gpu = None
+    if resident:
+        try:
+            failure = merge_sources(True)
+            if failure is None:
+                try:
+                    gpu.finish_merge(result)
+                except GpuError as exc:
+                    failure = exc
+        finally:
+            gpu.end_merge()
+        if failure is not None:
+            gpu.failed = True
+            log_fallback(failure)
+            gpu = None
+            merge_sources(False)
+    else:
+        merge_sources(False)
     del depth
     source_frames.SOURCE_CACHE.clear()
     _check_cancel(should_cancel)
