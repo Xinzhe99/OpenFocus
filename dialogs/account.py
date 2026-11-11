@@ -2,11 +2,10 @@
 import threading
 from datetime import date
 
-from PyQt6.QtCore import QObject, QSize, QUrl, QUrlQuery, Qt, pyqtSignal
+from PyQt6.QtCore import QObject, QSize, QTimer, QUrl, QUrlQuery, Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QDesktopServices, QIcon, QPainter, QPixmap
 from PyQt6.QtWidgets import (QCheckBox, QDialog, QFrame, QHBoxLayout, QLabel,
-                             QLineEdit, QMessageBox, QPushButton, QVBoxLayout,
-                             QWidget)
+                             QLineEdit, QPushButton, QVBoxLayout, QWidget)
 
 from locales import trans
 from utils.account_client import AccountClient, AccountError
@@ -17,6 +16,15 @@ from utils.ui_utils import resource_path
 _ACTIVE_JOBS = set()
 # Older service terms do not disclose the signed-in reporting default.
 _REPORT_TERMS_VERSION = date(2026, 11, 11)
+
+def enable_disclosed_reports(window, version):
+    try:
+        disclosed = date.fromisoformat(version) >= _REPORT_TERMS_VERSION
+    except (TypeError, ValueError):
+        disclosed = False
+    if disclosed:
+        enable_account_default_reports(window)
+
 
 
 class _AccountJob(QObject):
@@ -61,14 +69,14 @@ class AccountDialog(QDialog):
         self.setWindowTitle(trans.t('account_title'))
         self.setObjectName('accountDialog')
         self.setMinimumWidth(500)
-        self.resize(570, 520)
+        self._signed_in_view = None
         colors = palette(getattr(window_main, 'ui_theme', 'dark'))
         check_icon = resource_path('assets', 'check_white.svg').replace('\\', '/')
         self.setStyleSheet(f'''
             QDialog#accountDialog {{ background: {colors['bg']}; }}
             QFrame#accountCard {{ background: {colors['surface']};
                 border: 1px solid {colors['border']}; border-radius: 18px; }}
-            QLabel#accountHeading {{ color: {colors['text']}; font-size: 22pt;
+            QLabel#accountHeading {{ color: {colors['text']}; font-size: 19pt;
                 font-weight: 700; }}
             QLabel#accountSubtitle, QLabel#accountSeparator {{
                 color: {colors['textMuted']}; font-size: 10pt; }}
@@ -81,11 +89,11 @@ class AccountDialog(QDialog):
                 border-color: {colors['accent']}; image: url("{check_icon}"); }}
             QPushButton#accountSocial {{ background: {colors['surfaceHover']};
                 color: {colors['text']}; border: 0; border-radius: 10px;
-                min-height: 44px; font-weight: 600; }}
+                min-height: 36px; font-weight: 600; }}
             QPushButton#accountSocial:hover {{ background: {colors['surfaceActive']}; }}
             QPushButton#accountEmail {{ background: {colors['accent']};
                 color: {colors['textOnAccent']}; border: 0; border-radius: 10px;
-                min-height: 44px; font-weight: 600; }}
+                min-height: 36px; font-weight: 600; }}
             QPushButton#accountEmail:hover {{ background: {colors['accentHover']}; }}
             QPushButton#accountSkip {{ background: transparent; color: {colors['textMuted']};
                 border: 0; padding: 4px; }}
@@ -94,44 +102,49 @@ class AccountDialog(QDialog):
                 background: {colors['controlDisabled']}; color: {colors['textFaint']}; }}
             QLineEdit#accountEmailInput {{ background: {colors['controlBg']};
                 color: {colors['text']}; border: 1px solid {colors['controlBorder']};
-                border-radius: 10px; padding: 0 14px; min-height: 44px; }}
+                border-radius: 10px; padding: 0 14px; min-height: 36px; }}
             QLineEdit#accountEmailInput:focus {{ border: 1px solid {colors['accent']}; }}
         ''')
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(32, 28, 32, 24)
-        root.setSpacing(12)
+        root.setContentsMargins(32, 18, 32, 16)
+        root.setSpacing(8)
         logo = QLabel()
         logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
         logo.setAccessibleName('OpenFocus')
         ratio = self.devicePixelRatioF()
         logo_pixmap = QPixmap(resource_path('assets', 'OpenFocus.png')).scaled(
-            round(68 * ratio), round(68 * ratio), Qt.AspectRatioMode.KeepAspectRatio,
+            round(52 * ratio), round(52 * ratio), Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.SmoothTransformation)
         logo_pixmap.setDevicePixelRatio(ratio)
         logo.setPixmap(logo_pixmap)
         root.addWidget(logo)
-        heading = QLabel(trans.t('account_heading'))
-        heading.setObjectName('accountHeading')
-        heading.setWordWrap(True)
-        heading.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        root.addWidget(heading)
-        subtitle = QLabel(trans.t('account_subtitle'))
-        subtitle.setObjectName('accountSubtitle')
-        subtitle.setWordWrap(True)
-        subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        root.addWidget(subtitle)
-        root.addSpacing(8)
+        self.heading = QLabel(trans.t('account_heading'))
+        self.heading.setObjectName('accountHeading')
+        self.heading.setWordWrap(True)
+        self.heading.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        root.addWidget(self.heading)
+        self.subtitle = QLabel(trans.t('account_subtitle'))
+        self.subtitle.setObjectName('accountSubtitle')
+        self.subtitle.setWordWrap(True)
+        self.subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        root.addWidget(self.subtitle)
+        root.addSpacing(4)
 
         card = QFrame()
         card.setObjectName('accountCard')
         card_layout = QVBoxLayout(card)
-        card_layout.setContentsMargins(28, 26, 28, 26)
-        card_layout.setSpacing(14)
+        card_layout.setContentsMargins(24, 16, 24, 16)
+        card_layout.setSpacing(10)
         self.form = QWidget()
         form = QVBoxLayout(self.form)
         form.setContentsMargins(0, 0, 0, 0)
-        form.setSpacing(12)
+        form.setSpacing(8)
+        self.browser_button = QPushButton(trans.t('account_browser_login'))
+        self.browser_button.setObjectName('accountSocial')
+        self.browser_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.browser_button.clicked.connect(self._sign_in_browser)
+        form.addWidget(self.browser_button)
         self.google_button = QPushButton('  ' + trans.t('account_google'))
         self.github_button = QPushButton('  ' + trans.t('account_github'))
         for button, icon in ((self.google_button, 'google.svg'),
@@ -191,11 +204,12 @@ class AccountDialog(QDialog):
         card_layout.addWidget(self.status)
         account_actions = QHBoxLayout()
         self.logout_button = QPushButton(trans.t('account_sign_out'))
-        self.delete_button = QPushButton(trans.t('account_delete'))
+        self.center_button = QPushButton(trans.t('account_web_center'))
+        self.center_button.setObjectName('accountWebCenter')
+        self.center_button.clicked.connect(self._open_account_center)
         self.logout_button.clicked.connect(self._logout)
-        self.delete_button.clicked.connect(self._delete_account)
+        account_actions.addWidget(self.center_button)
         account_actions.addWidget(self.logout_button)
-        account_actions.addWidget(self.delete_button)
         card_layout.addLayout(account_actions)
         root.addWidget(card)
         self.skip_button = QPushButton(trans.t('account_skip'))
@@ -206,12 +220,50 @@ class AccountDialog(QDialog):
         self.skip_button.setFont(skip_font)
         self.skip_button.clicked.connect(self.reject)
         root.addWidget(self.skip_button, 0, Qt.AlignmentFlag.AlignHCenter)
-        root.addStretch()
+        browser_started = getattr(window_main, 'account_browser_started', None)
+        if browser_started is not None:
+            browser_started.connect(self._follow_browser_job)
+            window_main.account_browser_finished.connect(self._browser_finished)
         self._refresh_controls(busy=True)
         if self.client is None:
-            self._start('load', lambda _started: AccountClient())
+            shared_load = getattr(window_main, '_account_load_job', None)
+            if shared_load is None:
+                self._start('load', lambda _started: AccountClient())
+            else:
+                self._operation = 'load'
+                self._job = shared_load
+                window_main.account_session_loaded.connect(self._finished)
         else:
             self._refresh_controls()
+        shared_browser = getattr(window_main, '_account_browser_job', None)
+        if shared_browser is not None:
+            self._follow_browser_job(shared_browser)
+
+    def _open_account_center(self):
+        if self._job is None and self.client is not None:
+            self._start('web_center', lambda _started: self.client.open_web_handoff(
+                cancel=self._cancel, timeout=8))
+
+    def _follow_browser_job(self, job):
+        if self._job is not None:
+            return
+        self._operation = 'browser_auto'
+        self._job = job
+        self._refresh_controls(busy=True)
+        self.status.setText(trans.t('account_wait_browser'))
+        self.status.show()
+
+    def _browser_finished(self, result, error):
+        if self._operation == 'browser_auto':
+            self._finished(result, error)
+
+    def _sign_in_browser(self):
+        if self._job is not None or self.client is None:
+            return
+        self._cancel.clear()
+        language = 'zh' if trans.current_lang == 'zh' else 'en'
+        self._start('browser', lambda started: self.client.login_with_browser(
+            cancel=self._cancel, on_started=started, timeout=30, language=language))
 
     def _open_agreement(self, link):
         if link == 'terms':
@@ -231,17 +283,26 @@ class AccountDialog(QDialog):
         self.form.setVisible(not signed_in)
         self.form.setEnabled(not busy and self.client is not None)
         self.logout_button.setVisible(signed_in)
-        self.delete_button.setVisible(signed_in)
+        self.center_button.setVisible(signed_in)
         self.logout_button.setEnabled(not busy)
-        self.delete_button.setEnabled(not busy)
+        self.center_button.setEnabled(not busy)
         self.skip_button.setText(trans.t('account_continue' if signed_in else 'account_skip'))
+        self.heading.setText(trans.t('account_title' if signed_in else 'account_heading'))
+        self.subtitle.setText(trans.t('account_manage_subtitle' if signed_in else 'account_subtitle'))
         if signed_in:
-            email = user.get('email', '') if isinstance(user, dict) else ''
+            email = (user.get('email') or user.get('name') or trans.t('account_title')) if isinstance(user, dict) else trans.t('account_title')
             self.status.setText(trans.t('account_signed_in').format(email=email))
             self.status.show()
         elif not busy:
             self.status.clear()
             self.status.hide()
+        if self._signed_in_view != signed_in:
+            self._signed_in_view = signed_in
+            self.layout().invalidate()
+            QTimer.singleShot(0, self.adjustSize)
+        refresh_menu = getattr(self.window_main, '_refresh_account_action', None)
+        if refresh_menu is not None:
+            refresh_menu()
 
     def _start(self, operation, call):
         self._operation = operation
@@ -293,14 +354,6 @@ class AccountDialog(QDialog):
         if self._job is None and self.client is not None:
             self._start('logout', lambda _started: self.client.logout())
 
-    def _delete_account(self):
-        if self._job is not None or self.client is None:
-            return
-        if QMessageBox.question(self, trans.t('account_title'), trans.t('account_delete_confirm'),
-                                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                                QMessageBox.StandardButton.No) == QMessageBox.StandardButton.Yes:
-            self._start('delete', lambda _started: self.client.delete_account())
-
     def _finished(self, result, error):
         operation = self._operation
         self._job = None
@@ -309,7 +362,13 @@ class AccountDialog(QDialog):
             return
         if error is not None and error.category in ('terms_required', 'invalid_terms_version'):
             self.terms.setChecked(False)
+        if operation == 'logout' and self.client is not None and not self.client.is_signed_in():
+            from utils.settings_store import get_settings
+            get_settings().setValue('account/browser_sso_enabled', False)
         if error is not None:
+            if operation == 'web_center' and error.category == 'timeout':
+                self._refresh_controls()
+                return
             self._refresh_controls()
             self.status.setText(self._error_text(error))
             self.status.show()
@@ -318,22 +377,25 @@ class AccountDialog(QDialog):
             self.client = result
             self.window_main._account_client = result
         elif operation in ('email', 'github', 'google'):
-            try:
-                disclosed = date.fromisoformat(result[1]) >= _REPORT_TERMS_VERSION
-            except ValueError:
-                disclosed = False
-            if disclosed:
-                enable_account_default_reports(self.window_main)
+            enable_disclosed_reports(self.window_main, result[1])
+            from utils.settings_store import get_settings
+            get_settings().setValue('account/browser_sso_enabled', True)
+        elif operation == 'browser':
+            enable_disclosed_reports(self.window_main, self.client.accepted_terms_version())
+            from utils.settings_store import get_settings
+            get_settings().setValue('account/browser_sso_enabled', True)
         self._refresh_controls()
+        if operation == 'web_center' and not result:
+            self.status.setText(trans.t('account_generic_error'))
+            self.status.show()
         if operation == 'logout':
             self.status.setText(trans.t('account_signed_out'))
-            self.status.show()
-        elif operation == 'delete':
-            self.status.setText(trans.t('account_deleted'))
             self.status.show()
 
     @staticmethod
     def _error_text(error):
+        if error.category == 'not_signed_in':
+            return trans.t('account_browser_not_signed_in')
         if error.category in ('terms_required', 'invalid_terms_version'):
             key = 'account_terms_required'
         elif error.category == 'verified_email_required':
@@ -359,11 +421,17 @@ class AccountDialog(QDialog):
 
     def reject(self):
         self._cancel.set()
+        cancel_browser = getattr(self.window_main, '_cancel_browser_sso', None)
+        if cancel_browser is not None:
+            cancel_browser()
         super().reject()
 
 
 def cancel_account_jobs(window):
     """Cancel pending sign-ins and report whether account workers remain."""
+    cancel_browser = getattr(window, '_cancel_browser_sso', None)
+    if cancel_browser is not None:
+        cancel_browser()
     for dialog in window.findChildren(AccountDialog):
         dialog._cancel.set()
     return bool(_ACTIVE_JOBS)

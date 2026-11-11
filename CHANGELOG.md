@@ -7,6 +7,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 - Offer optional account sign-in with a skippable first-launch and update prompt.
+- Show the signed-in account in Help and provide browser account management and sign-out.
+- Restore an existing browser account at startup and open the account center using a short-lived handoff.
 - Explain where to enable experimental methods in the first-run welcome dialog.
 - Allow users to review and send sanitized error reports, and choose whether to
   send reports automatically after an error. Previous native crashes require
@@ -211,6 +213,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   scroll phase, including X11, where only angle deltas are reliable.
 
 ### Fixed
+- Dispose closed windows before Qt application teardown during normal exit.
 - Identify account and diagnostic report requests as OpenFocus so supported
   services can distinguish them from generic automated traffic.
 - Cancel and finish account background work before quitting, including when the

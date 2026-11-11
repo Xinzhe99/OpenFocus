@@ -32,6 +32,8 @@ from PyQt6.QtCore import QSettings, QTimer
 from PyQt6.QtWidgets import QApplication, QMainWindow
 from utils.usage_analytics import UsageAnalytics
 from dialogs.account import AccountDialog
+import webbrowser
+webbrowser.open = lambda *args, **kwargs: False
 
 original_account_exec = AccountDialog.exec
 def skip_account(dialog):

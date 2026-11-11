@@ -47,6 +47,136 @@ class _Account:
         self.user = {'id': 'owner', 'email': 'user@example.test'}
         return self.user
 
+    def open_web_handoff(self, **kwargs):
+        self.calls.append('web_handoff')
+        return True
+
+    def login_with_browser(self, **kwargs):
+        self.calls.append('browser')
+        self.user = {'id': 'owner', 'email': 'browser@example.test'}
+        return self.user
+
+    def accepted_terms_version(self):
+        return '2026-11-11'
+
+    def logout(self):
+        self.calls.append('logout')
+        self.user = None
+
+
+def test_account_menu_and_dialog_follow_sign_in_and_sign_out(qapp, tmp_path, monkeypatch):
+    from dialogs.account import AccountDialog
+    from locales import trans
+    from tests.test_control_channel import _destroy_main_window, _new_main_window
+
+    window = _new_main_window(qapp, tmp_path, monkeypatch)
+    _wait(qapp, lambda: getattr(window, '_account_load_job', None) is None)
+    client = window._account_client = _Account()
+    dialog = AccountDialog(window)
+    try:
+        window._refresh_account_action()
+        action = window.ui_objs['action_account']
+        assert action.text() == trans.t('account_heading')
+        dialog.show()
+        qapp.processEvents()
+        signed_out_height = dialog.height()
+        dialog.terms.setChecked(True)
+        dialog.github_button.click()
+        _wait(qapp, lambda: dialog._job is None)
+        qapp.processEvents()
+        assert 'user@example.test' in action.text()
+        assert dialog.center_button.isVisible() and dialog.logout_button.isVisible()
+        assert not dialog.form.isVisible()
+        assert dialog.height() < signed_out_height - 50
+        assert dialog.height() - dialog.skip_button.geometry().bottom() < 70
+        dialog.center_button.click()
+        _wait(qapp, lambda: dialog._job is None)
+        assert client.calls[-1] == 'web_handoff'
+        assert not hasattr(dialog, 'delete_button')
+        dialog.logout_button.click()
+        _wait(qapp, lambda: dialog._job is None)
+        assert client.calls[-1] == 'logout'
+        assert action.text() == trans.t('account_heading')
+        assert dialog.form.isVisible() and not dialog.center_button.isVisible()
+    finally:
+        dialog.reject()
+        _destroy_main_window(qapp, window)
+
+
+def test_browser_session_restores_account_and_logout_disables_autorestore(qapp, tmp_path, monkeypatch):
+    from dialogs.account import AccountDialog
+    from tests.test_control_channel import _destroy_main_window, _new_main_window
+    from utils.settings_store import get_settings
+
+    window = _new_main_window(qapp, tmp_path, monkeypatch)
+    _wait(qapp, lambda: getattr(window, '_account_load_job', None) is None)
+    client = window._account_client = _Account()
+    try:
+        window.enable_browser_sso()
+        _wait(qapp, lambda: window._account_browser_job is None)
+        assert client.is_signed_in()
+        assert 'browser@example.test' in window.ui_objs['action_account'].text()
+        dialog = AccountDialog(window)
+        dialog.logout_button.click()
+        _wait(qapp, lambda: dialog._job is None)
+        assert not get_settings().value('account/browser_sso_enabled', True, type=bool)
+        window.enable_browser_sso()
+        assert client.calls == ['browser', 'logout']
+        dialog.reject()
+    finally:
+        _destroy_main_window(qapp, window)
+
+
+@pytest.mark.parametrize('version', ['2026-11-08', None])
+def test_browser_restore_with_old_terms_does_not_enable_reports(qapp, tmp_path, monkeypatch, version):
+    from tests.test_control_channel import _destroy_main_window, _new_main_window
+    from utils.settings_store import get_settings
+
+    window = _new_main_window(qapp, tmp_path, monkeypatch)
+    _wait(qapp, lambda: getattr(window, '_account_load_job', None) is None)
+    client = window._account_client = _Account()
+    client.accepted_terms_version = lambda: version
+    try:
+        window.enable_browser_sso()
+        _wait(qapp, lambda: window._account_browser_job is None)
+        assert client.is_signed_in()
+        assert not get_settings().value('reports/auto_send', False, type=bool)
+    finally:
+        _destroy_main_window(qapp, window)
+
+
+def test_account_dialog_shares_pending_session_restore(qapp, tmp_path, monkeypatch):
+    from dialogs.account import AccountDialog
+    from tests.test_control_channel import _destroy_main_window, _new_main_window
+    import utils.account_client as account_module
+
+    entered, release = Event(), Event()
+    client = _Account()
+    client.user = {'id': 'owner', 'email': 'saved@example.test'}
+    def load():
+        entered.set()
+        assert release.wait(5)
+        return client
+    monkeypatch.setattr(account_module, 'AccountClient', load)
+    window = _new_main_window(qapp, tmp_path, monkeypatch)
+    dialog = None
+    try:
+        assert entered.wait(5)
+        shared = window._account_load_job
+        release.set()
+        shared._thread.join(5)
+        assert not shared._thread.is_alive()
+        dialog = AccountDialog(window)
+        assert dialog._job is shared
+        _wait(qapp, lambda: dialog._job is None)
+        assert dialog.client is window._account_client is client
+        assert 'saved@example.test' in window.ui_objs['action_account'].text()
+    finally:
+        release.set()
+        if dialog is not None:
+            dialog.reject()
+        _destroy_main_window(qapp, window)
+
 
 def test_account_requires_consent_without_opening_links_and_defaults_reporting(qapp, settings, monkeypatch):
     from dialogs.account import AccountDialog

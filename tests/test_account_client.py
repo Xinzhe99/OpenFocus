@@ -112,9 +112,12 @@ class FakeServer:
     error = None
 
 
-def callback(path, host="127.0.0.1:41234"):
+def callback(path, host="127.0.0.1:41234", expected_state=None, language=None):
     sock = FakeSocket(("GET " + path + " HTTP/1.1\r\nHost: " + host + "\r\n\r\n").encode())
     server = FakeServer()
+    server.language = language
+    if expected_state is not None:
+        server.expected_state = expected_state
     account._CallbackHandler(sock, ("127.0.0.1", 1234), server)
     return server.code, sock.output.getvalue(), server.error
 
@@ -714,3 +717,279 @@ def test_social_default_timeout_remains_five_minutes(monkeypatch):
     with pytest.raises(account.AccountError, match="timeout"):
         client.login("github")
     assert now[0] == 401.0
+
+
+def handoff_url(body, ticket="one-time_ticket"):
+    return (account.BASE_URL + "/account/desktop-bridge#ticket=" + ticket
+            + "&port=" + str(body["port"]) + "&state=" + body["state"])
+
+
+class HandoffListener(DummyListener):
+    def handle_request(self):
+        self.proof_served = True
+
+
+def test_web_handoff_binds_proof_and_preserves_session(monkeypatch, caplog):
+    calls, opened, proofs = [], [], []
+    class Listener(HandoffListener):
+        def handle_request(self):
+            proofs.append(self.handoff_proof)
+            assert hashlib.sha256(self.handoff_proof.encode("ascii")).hexdigest() == calls[0][2]["proof_hash"]
+            super().handle_request()
+    monkeypatch.setattr(account, "_CallbackServer", Listener)
+    def request(method, target, body=None, token=None, timeout=None):
+        calls.append((method, target, body, token))
+        return {"url": handoff_url(body)}
+    monkeypatch.setattr(account.webbrowser, "open", lambda url: opened.append(url) or True)
+    store = MemoryStore(session())
+    client = account.AccountClient(store=store, request=request)
+    with caplog.at_level(logging.DEBUG):
+        assert client.open_web_handoff() is True
+    method, target, body, token = calls[0]
+    assert (method, target, token) == ("POST", account.BASE_URL + "/v1/auth/web-handoff", "private-token")
+    assert body["port"] == 41234 and len(body["state"]) >= 32
+    assert len(body["proof_hash"]) == 64 and set(body["proof_hash"]) <= set("0123456789abcdef")
+    assert opened == [handoff_url(body)] and "private-token" not in opened[0] and proofs[0] not in opened[0]
+    assert store.value == session()
+    assert all(secret not in caplog.text for secret in (body["state"], "private-token", proofs[0]))
+
+
+def test_web_handoff_signed_out_does_not_request_network():
+    client = account.AccountClient(store=MemoryStore(), request=lambda *args, **kwargs: pytest.fail("unexpected request"))
+    assert client.open_web_handoff() is None
+
+
+@pytest.mark.parametrize("mutation", ["missing", "http", "host", "userinfo", "query", "extra",
+                                     "empty_ticket", "bearer", "escaped", "path", "port", "state", "duplicate"])
+def test_web_handoff_rejects_untrusted_urls(monkeypatch, mutation):
+    monkeypatch.setattr(account, "_CallbackServer", HandoffListener)
+    monkeypatch.setattr(account.webbrowser, "open", lambda url: pytest.fail("unexpected browser open"))
+    def request(method, target, body=None, token=None, timeout=None):
+        valid = handoff_url(body)
+        urls = {
+            "missing": None,
+            "http": valid.replace("https://", "http://"),
+            "host": valid.replace("account.openfocus.top", "account.openfocus.top.evil.test"),
+            "userinfo": valid.replace("account.openfocus.top", "account.openfocus.top@evil.test"),
+            "query": valid.replace("#", "?next=evil#"),
+            "extra": valid + "&next=evil",
+            "empty_ticket": valid.replace("ticket=one-time_ticket", "ticket="),
+            "bearer": valid.replace("ticket=one-time_ticket", "ticket=private-token"),
+            "escaped": valid.replace("ticket=one-time_ticket", "ticket=abc%0d%0a"),
+            "path": valid.replace("desktop-bridge#", "desktop-bridge/#"),
+            "port": valid.replace("port=41234", "port=41235"),
+            "state": valid.replace(body["state"], "wrong"),
+            "duplicate": valid + "&state=" + body["state"],
+        }
+        return {"url": urls[mutation]}
+    client = account.AccountClient(store=MemoryStore(session()), request=request)
+    with pytest.raises(account.AccountError, match="invalid_response"):
+        client.open_web_handoff()
+
+
+def test_web_handoff_discards_result_after_logout(monkeypatch):
+    monkeypatch.setattr(account, "_CallbackServer", HandoffListener)
+    entered, release = threading.Event(), threading.Event()
+    def request(method, url, body=None, token=None, timeout=None):
+        if url.endswith("/web-handoff"):
+            entered.set()
+            assert release.wait(5)
+            return {"url": handoff_url(body)}
+        return {"ok": True}
+    client = account.AccountClient(store=MemoryStore(session()), request=request)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        result = executor.submit(client.open_web_handoff)
+        assert entered.wait(5)
+        client.logout()
+        release.set()
+        with pytest.raises(account.AccountError, match="cancelled"):
+            result.result()
+
+
+def handoff_request(server, method="GET", path="/account-handoff?state=state-secret", origin=account.BASE_URL,
+                    host="127.0.0.1:41234", extra_headers=""):
+    request = (method + " " + path + " HTTP/1.1\r\nHost: " + host + "\r\nOrigin: " + origin
+               + "\r\n" + extra_headers + "\r\n").encode()
+    sock = FakeSocket(request)
+    account._HandoffHandler(sock, ("127.0.0.1", 1234), server)
+    return sock.output.getvalue()
+
+
+def handoff_server():
+    server = FakeServer()
+    server.allowed_origin = account.BASE_URL
+    server.handoff_state = "state-secret"
+    server.handoff_proof = "proof-secret"
+    server.proof_served = False
+    server.check_handoff = lambda: None
+    return server
+
+
+def test_handoff_proof_requires_origin_state_and_is_one_time(caplog):
+    server = handoff_server()
+    with caplog.at_level(logging.DEBUG):
+        for kwargs in ({"origin": "https://evil.test"}, {"host": "evil.test"},
+                       {"path": "/account-handoff?state=wrong"},
+                       {"path": "/account-handoff?state=state-secret&state=state-secret"},
+                       {"path": "/other?state=state-secret"}):
+            response = handoff_request(server, **kwargs)
+            assert b"403" in response and b"proof-secret" not in response
+        response = handoff_request(server)
+        assert b'"proof":"proof-secret"' in response
+        assert b"Access-Control-Allow-Origin: https://account.openfocus.top" in response
+        assert b"Cache-Control: no-store" in response
+        assert b"403" in handoff_request(server)
+    assert "proof-secret" not in caplog.text and "state-secret" not in caplog.text
+
+
+def test_handoff_preflight_allows_private_network_only_for_expected_origin():
+    server = handoff_server()
+    headers = "Access-Control-Request-Method: GET\r\nAccess-Control-Request-Private-Network: true\r\n"
+    rejected = handoff_request(server, "OPTIONS", origin="https://evil.test", extra_headers=headers)
+    assert b"403" in rejected and b"Access-Control-Allow-Private-Network" not in rejected
+    allowed = handoff_request(server, "OPTIONS", extra_headers=headers)
+    assert b"204" in allowed and b"Access-Control-Allow-Private-Network: true" in allowed
+    assert b"Access-Control-Allow-Origin: https://account.openfocus.top" in allowed
+    assert server.proof_served is False
+
+
+def test_handoff_does_not_release_proof_after_cancellation():
+    server = handoff_server()
+    def cancelled():
+        raise account.AccountError("cancelled")
+    server.check_handoff = cancelled
+    response = handoff_request(server)
+    assert b"403" in response and b"proof-secret" not in response
+    assert server.proof_served is False
+
+
+@pytest.mark.parametrize("failure", ["cancel", "browser", "timeout"])
+def test_handoff_failures_preserve_session(monkeypatch, failure):
+    monkeypatch.setattr(account, "_CallbackServer", DummyListener)
+    monkeypatch.setattr(account.webbrowser, "open", lambda url: failure != "browser")
+    cancel = threading.Event()
+    if failure == "cancel":
+        cancel.set()
+    store = MemoryStore(session())
+    client = account.AccountClient(store=store, request=lambda method, target, body=None, **kwargs: {"url": handoff_url(body)})
+    with pytest.raises(account.AccountError, match={"cancel": "cancelled", "browser": "browser", "timeout": "timeout"}[failure]):
+        client.open_web_handoff(cancel, timeout=0.001)
+    assert store.value == session()
+
+
+def test_browser_callback_requires_exact_single_state_and_valid_host(caplog):
+    state = "unpredictable-state"
+    with caplog.at_level(logging.DEBUG):
+        assert callback("/callback?code=secret&state=" + state, expected_state=state)[0] == "secret"
+        for path in ("/callback?code=secret", "/callback?code=secret&state=wrong",
+                     "/callback?code=secret&state=" + state + "&state=" + state,
+                     "/callback?error=not_signed_in&state=wrong"):
+            code, _, error = callback(path, expected_state=state)
+            assert code is None and error is None
+        assert callback("/callback?code=secret&state=" + state, host="evil.test", expected_state=state)[0] is None
+        assert callback("/callback?error=not_signed_in&state=" + state, expected_state=state)[2] == "not_signed_in"
+    assert "secret" not in caplog.text and state not in caplog.text
+
+
+@pytest.mark.parametrize("language,text", [("en", "The browser has no current account session."),
+                                           ("zh", "浏览器当前没有可用的账号会话。")])
+def test_browser_callback_explains_missing_session(language, text):
+    code, response, error = callback("/callback?error=not_signed_in&state=state",
+                                     expected_state="state", language=language)
+    assert code is None and error == "not_signed_in"
+    assert text.encode("utf-8") in response
+    assert b"Cache-Control: no-store" in response
+
+
+def test_other_callback_errors_keep_existing_response():
+    _, response, error = callback("/callback?error=terms_required")
+    assert error == "terms_required"
+    assert b"Sign-in could not be completed. Return to OpenFocus." in response
+
+
+def test_browser_login_exchanges_pkce_and_persists_terms(monkeypatch, caplog):
+    from urllib.parse import parse_qs, urlsplit
+    opened, calls, started = [], [], []
+    class Listener(DummyListener):
+        def handle_request(self):
+            self.code = "exchange-secret"
+    monkeypatch.setattr(account, "_CallbackServer", Listener)
+    monkeypatch.setattr(account.webbrowser, "open", lambda url: opened.append(url) or True)
+    saved = session()
+    saved["terms"] = {"version": "2026-11-11", "accepted_at": 1234}
+    def request(method, url, body=None, token=None, timeout=None):
+        calls.append((method, url, body, token))
+        return saved
+    store = MemoryStore()
+    client = account.AccountClient(store=store, request=request)
+    with caplog.at_level(logging.DEBUG):
+        assert client.login_with_browser(language="zh", on_started=lambda: started.append(True)) == {"id": "user"}
+    parts = urlsplit(opened[0])
+    query = parse_qs(parts.query)
+    assert (parts.scheme, parts.netloc, parts.path) == ("https", "account.openfocus.top", "/v1/auth/browser/start")
+    assert query["redirect_uri"] == ["http://127.0.0.1:41234/callback"]
+    assert query["lang"] == ["zh"] and len(query["state"][0]) >= 32
+    assert len(calls) == 1 and calls[0][0:2] == ("POST", account.BASE_URL + "/v1/auth/exchange")
+    body = calls[0][2]
+    assert calls[0][3] is None and body["code"] == "exchange-secret"
+    expected = base64.urlsafe_b64encode(hashlib.sha256(body["code_verifier"].encode()).digest()).rstrip(b"=").decode()
+    assert query["code_challenge"] == [expected]
+    assert store.value == saved and started == [True]
+    assert client.accepted_terms_version() == "2026-11-11"
+    assert all(secret not in caplog.text for secret in ("exchange-secret", "private-token", body["code_verifier"], query["state"][0]))
+
+
+@pytest.mark.parametrize("terms", [None, {}, {"version": "2026-11-11"},
+                                   {"version": "bad\n", "accepted_at": 1},
+                                   {"version": "2026-11-11", "accepted_at": True},
+                                   {"version": "2026-11-11", "accepted_at": "1234"},
+                                   {"version": "2026-11-11", "accepted_at": -1},
+                                   {"version": "2026-11-11", "accepted_at": float("nan")}])
+def test_accepted_terms_version_requires_explicit_metadata(terms):
+    saved = session()
+    saved["terms"] = terms
+    assert account.AccountClient(store=MemoryStore(saved)).accepted_terms_version() is None
+
+
+def test_browser_login_reports_unsigned_browser_without_exchange(monkeypatch):
+    class Listener(DummyListener):
+        def handle_request(self):
+            self.error = "not_signed_in"
+    monkeypatch.setattr(account, "_CallbackServer", Listener)
+    monkeypatch.setattr(account.webbrowser, "open", lambda url: True)
+    store = MemoryStore(session())
+    client = account.AccountClient(store=store, request=lambda *args, **kwargs: pytest.fail("unexpected exchange"))
+    with pytest.raises(account.AccountError, match="not_signed_in"):
+        client.login_with_browser()
+    assert store.value == session()
+
+
+@pytest.mark.parametrize("failure", ["cancel", "browser", "timeout"])
+def test_browser_login_failure_preserves_session(monkeypatch, failure):
+    monkeypatch.setattr(account, "_CallbackServer", DummyListener)
+    cancel = threading.Event()
+    if failure == "cancel":
+        cancel.set()
+    monkeypatch.setattr(account.webbrowser, "open", lambda url: failure != "browser")
+    store = MemoryStore(session())
+    client = account.AccountClient(store=store, request=lambda *args, **kwargs: pytest.fail("unexpected exchange"))
+    with pytest.raises(account.AccountError, match={"cancel": "cancelled", "browser": "browser", "timeout": "timeout"}[failure]):
+        client.login_with_browser(cancel=cancel, timeout=0.001)
+    assert store.value == session()
+
+
+def test_browser_login_cancellation_discards_exchange_result(monkeypatch):
+    class Listener(DummyListener):
+        def handle_request(self):
+            self.code = "exchange-secret"
+    monkeypatch.setattr(account, "_CallbackServer", Listener)
+    monkeypatch.setattr(account.webbrowser, "open", lambda url: True)
+    cancel = threading.Event()
+    def request(method, url, body=None, token=None, timeout=None):
+        cancel.set()
+        return session("new-token")
+    store = MemoryStore(session())
+    client = account.AccountClient(store=store, request=request)
+    with pytest.raises(account.AccountError, match="cancelled"):
+        client.login_with_browser(cancel=cancel)
+    assert store.value == session()
