@@ -88,9 +88,32 @@ def exchange_opencv_threads(threads):
     return previous
 
 
+_bounded_backend = None
+
+
+def _backend_bounds_threads():
+    """True when OpenCV's parallel backend runs at most setNumThreads() workers.
+
+    Apple's GCD backend treats any count above one as "use the host's whole
+    dispatch pool", so a lent budget cannot be enforced there and warps stay
+    serial, as they were before lending.
+    """
+    global _bounded_backend
+    if _bounded_backend is None:
+        import re
+        try:
+            match = re.search(r'Parallel framework:\s*(\S+)', cv2.getBuildInformation())
+        except Exception:
+            match = None
+        _bounded_backend = bool(match) and match.group(1).lower() != 'gcd'
+    return _bounded_backend
+
+
 def _warp_thread_budget():
     """Threads lent to a warp on this thread; one outside a lending scope."""
     threads = _deferred_warp_threads.get()
+    if threads != 1 and not _backend_bounds_threads():
+        return 1
     if callable(threads):
         threads = threads()
     try:

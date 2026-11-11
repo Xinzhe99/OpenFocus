@@ -977,9 +977,17 @@ def scratch_source_headers(paths, should_cancel=None):
 
 
 def materialize_frames(frames, should_cancel=None, *, staging_bytes=0,
-                       preferred_staging_bytes=0, thread_count=0,
+                       preferred_staging_bytes=0, thread_count=None,
                        resource_preference='balanced', progress_callback=None, prefer_ram=True):
-    """Prepare ordered frames with bounded decoding and an explicit storage preference."""
+    """Prepare ordered frames with bounded decoding and an explicit storage preference.
+
+    ``thread_count`` is the caller's planned limit (0 for automatic). Only a
+    caller that passes one lends idle threads to deferred warps; without a
+    plan, warps stay serial, so jobs that never planned threads (for example a
+    depth map limited to one thread) are not given the automatic budget.
+    """
+    planned_threads = thread_count is not None
+    thread_count = thread_count or 0
     from contextvars import copy_context
     from collections import deque
     from collections.abc import Sequence
@@ -1032,7 +1040,8 @@ def materialize_frames(frames, should_cancel=None, *, staging_bytes=0,
             # Frames resolve one at a time here; a deferred warp may use the
             # threads that a pool of decoders would otherwise occupy.
             with deferred_warp_threads(
-                    policy.native_thread_ceiling(resource_preference, thread_count)):
+                    policy.native_thread_ceiling(resource_preference, thread_count)
+                    if planned_threads else 1):
                 for frame in frames:
                     check_cancel()
                     if not known:

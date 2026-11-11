@@ -333,7 +333,8 @@ def compute_focus_index(images: Sequence[np.ndarray], method: str, parameters=No
     try:
         with heavy_job(should_cancel), scratch_directory():
             from core.source_frames import materialize_frames
-            images = materialize_frames(images, should_cancel)
+            images = materialize_frames(images, should_cancel, thread_count=thread_count,
+                                        resource_preference=resource_preference)
             _check(images, allow_grayscale=method in ('openfocus_b', 'openfocus_c'))
             if spec.neural:
                 from fusion_methods.neural_runtime import start_inference_job

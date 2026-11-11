@@ -703,6 +703,13 @@ def _budget_warp(dtype=np.uint16):
         source, tuple(float(v) for v in matrix.flat), matrix.dtype.str, (312, 236))
 
 
+@pytest.fixture(autouse=True)
+def bounded_opencv_backend(monkeypatch):
+    """Lending tests describe a backend that honours setNumThreads (the
+    pthreads, TBB and OpenMP builds); GCD has its own test."""
+    monkeypatch.setattr(registration, '_bounded_backend', True, raising=False)
+
+
 def test_deferred_warp_thread_budget_keeps_pixels_and_restores_opencv(monkeypatch):
     image, warp = _budget_warp()
     serial = warp(image)
@@ -839,3 +846,51 @@ def test_thread_count_exchange_never_saves_a_count_raised_for_a_warp(monkeypatch
     assert saved == before
     registration.exchange_opencv_threads(0 if saved == 1 else saved)
     assert cv2.getNumThreads() == before
+
+
+def test_gcd_backend_keeps_deferred_warps_serial(monkeypatch):
+    """GCD runs any count above one on the host's whole dispatch pool, so a
+    lent budget could not be enforced: warps stay serial there."""
+    monkeypatch.setattr(registration, '_bounded_backend', None, raising=False)
+    monkeypatch.setattr(registration.cv2, 'getBuildInformation',
+                        lambda: '  Parallel framework:            GCD\n')
+    with registration.deferred_warp_threads(4):
+        assert registration._warp_thread_budget() == 1
+    monkeypatch.setattr(registration, '_bounded_backend', None, raising=False)
+    monkeypatch.setattr(registration.cv2, 'getBuildInformation',
+                        lambda: '  Parallel framework:            pthreads\n')
+    with registration.deferred_warp_threads(4):
+        assert registration._warp_thread_budget() == 4
+
+
+def test_materialization_without_a_thread_plan_keeps_warps_serial(monkeypatch):
+    """Callers that plan no threads (CLI, export, retouch, depth maps before
+    they forwarded theirs) must not receive the automatic budget."""
+    from core import resource_policy as policy
+    seen = []
+
+    def probe(image):
+        seen.append(registration._warp_thread_budget())
+        return image
+
+    monkeypatch.setattr(policy, 'native_thread_ceiling', lambda *args: 6)
+    frame = np.zeros((8, 8, 3), np.uint8)
+    source_frames.materialize_frames([source_frames.process_frame(frame, probe)])
+    source_frames.materialize_frames([source_frames.process_frame(frame, probe)], thread_count=0)
+    assert seen == [1, 6]
+
+
+def test_depth_map_preparation_keeps_the_jobs_thread_limit(monkeypatch):
+    from core import depth_map
+    calls = []
+
+    def materialize(images, should_cancel=None, **kwargs):
+        calls.append(kwargs)
+        raise RuntimeError('stop after preparation')
+
+    monkeypatch.setattr(source_frames, 'materialize_frames', materialize)
+    frames = [np.zeros((16, 16, 3), np.uint8)] * 2
+    with pytest.raises(RuntimeError, match='stop after preparation'):
+        depth_map.compute_focus_index(frames, 'openfocus_b', thread_count=1,
+                                      resource_preference='responsive')
+    assert calls == [{'thread_count': 1, 'resource_preference': 'responsive'}]
