@@ -1180,8 +1180,17 @@ def test_http_sends_run_and_platform_headers(monkeypatch):
     assert all("private-token" not in value for key, value in captured.items() if key != "authorization")
 
 
-def _identity_in_process(path):
-    return account.AccountClient(store=account.TokenStore(path)).device_id
+def _identity_in_process(path, barrier):
+    # Simulate a filesystem where hard links are unavailable in every process.
+    original_link = account.os.link
+    def no_link(*args, **kwargs):
+        raise OSError("hard links unsupported")
+    account.os.link = no_link
+    try:
+        barrier.wait(timeout=30)
+        return account.AccountClient(store=account.TokenStore(path)).device_id
+    finally:
+        account.os.link = original_link
 
 
 def test_device_identity_concurrent_processes_share_one_id(tmp_path):
@@ -1189,8 +1198,11 @@ def test_device_identity_concurrent_processes_share_one_id(tmp_path):
     from concurrent.futures import ProcessPoolExecutor
 
     path = str(tmp_path / "profile" / "session")
-    with ProcessPoolExecutor(max_workers=4, mp_context=multiprocessing.get_context("spawn")) as pool:
-        ids = list(pool.map(_identity_in_process, [path] * 8))
+    context = multiprocessing.get_context("spawn")
+    with context.Manager() as manager:
+        barrier = manager.Barrier(4)
+        with ProcessPoolExecutor(max_workers=4, mp_context=context) as pool:
+            ids = list(pool.map(_identity_in_process, [path] * 4, [barrier] * 4))
     assert len(set(ids)) == 1
     assert account._valid_device_id(ids[0])
     assert account.AccountClient(store=account.TokenStore(path)).device_id == ids[0]
@@ -1198,16 +1210,25 @@ def test_device_identity_concurrent_processes_share_one_id(tmp_path):
 
 def test_device_storage_failure_blocks_exchange_and_can_retry(monkeypatch, tmp_path):
     store = account.TokenStore(tmp_path / "profile" / "session")
-    original_link = account.os.link
-    def fail_link(*args):
+    original_replace = account.os.replace
+    def fail_replace(*args):
         raise OSError("private path")
-    monkeypatch.setattr(account.os, "link", fail_link)
+    monkeypatch.setattr(account.os, "replace", fail_replace)
     client = account.AccountClient(store=store)
     with pytest.raises(account.AccountError, match="storage"):
         client._device_fields()
     assert not (tmp_path / "profile" / "account-device").exists()
-    monkeypatch.setattr(account.os, "link", original_link)
+    monkeypatch.setattr(account.os, "replace", original_replace)
     first = client._device_fields()
+    assert account.AccountClient(store=store)._device_fields() == first
+
+
+def test_device_identity_persists_without_hard_links(monkeypatch, tmp_path):
+    def no_link(*args, **kwargs):
+        raise OSError("hard links unsupported")
+    monkeypatch.setattr(account.os, "link", no_link)
+    store = account.TokenStore(tmp_path / "session")
+    first = account.AccountClient(store=store)._device_fields()
     assert account.AccountClient(store=store)._device_fields() == first
 
 
