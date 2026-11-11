@@ -7,6 +7,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 - Add the Discord community to Contact Us and a Support Us dialog with Alipay and PayPal codes.
+- Reuse a private device identity for account sign-in and display the device limit.
+- Send app run, platform and report build channel metadata to the account service.
+- Skip automatic error reports from development runs.
 
 ### Changed
 - Support GitHub beta prereleases without publishing them as stable downloads or PyPI releases.
