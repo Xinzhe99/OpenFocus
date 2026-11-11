@@ -1153,3 +1153,68 @@ def test_exchange_sends_device_identity(monkeypatch):
     client.login("email", "user@example.test")
     assert bodies[0]["device_id"] == "test-device-123"
     assert bodies[0]["device_name"] == "Test PC"
+
+
+def test_http_sends_run_and_platform_headers(monkeypatch):
+    captured = {}
+    class Reply:
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            pass
+        def read(self, limit):
+            return b'{"ok": true}'
+    class Opener:
+        def open(self, request, timeout):
+            captured.update({key.lower(): value for key, value in request.header_items()})
+            return Reply()
+    monkeypatch.setattr(account.urllib.request, "build_opener", lambda *args: Opener())
+    assert account._http("GET", "https://account.example/v1/me", token="private-token") == {"ok": True}
+    assert 8 <= len(captured["x-openfocus-run"]) <= 64
+    assert all(char in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"
+               for char in captured["x-openfocus-run"])
+    assert captured["x-openfocus-run-started"].isdigit()
+    assert captured["x-openfocus-platform"] in ("windows", "macos", "linux")
+    assert captured["user-agent"].startswith("OpenFocus/")
+    assert captured["authorization"] == "Bearer private-token"
+    assert all("private-token" not in value for key, value in captured.items() if key != "authorization")
+
+
+def _identity_in_process(path):
+    return account.AccountClient(store=account.TokenStore(path)).device_id
+
+
+def test_device_identity_concurrent_processes_share_one_id(tmp_path):
+    import multiprocessing
+    from concurrent.futures import ProcessPoolExecutor
+
+    path = str(tmp_path / "profile" / "session")
+    with ProcessPoolExecutor(max_workers=4, mp_context=multiprocessing.get_context("spawn")) as pool:
+        ids = list(pool.map(_identity_in_process, [path] * 8))
+    assert len(set(ids)) == 1
+    assert account._valid_device_id(ids[0])
+    assert account.AccountClient(store=account.TokenStore(path)).device_id == ids[0]
+
+
+def test_device_storage_failure_blocks_exchange_and_can_retry(monkeypatch, tmp_path):
+    store = account.TokenStore(tmp_path / "profile" / "session")
+    original_link = account.os.link
+    def fail_link(*args):
+        raise OSError("private path")
+    monkeypatch.setattr(account.os, "link", fail_link)
+    client = account.AccountClient(store=store)
+    with pytest.raises(account.AccountError, match="storage"):
+        client._device_fields()
+    assert not (tmp_path / "profile" / "account-device").exists()
+    monkeypatch.setattr(account.os, "link", original_link)
+    first = client._device_fields()
+    assert account.AccountClient(store=store)._device_fields() == first
+
+
+def test_corrupt_device_identity_does_not_generate_new_seat(tmp_path):
+    path = tmp_path / "account-device"
+    path.write_text("corrupt", encoding="utf-8")
+    client = account.AccountClient(store=account.TokenStore(tmp_path / "session"))
+    with pytest.raises(account.AccountError, match="storage"):
+        client._device_fields()
+    assert path.read_text(encoding="utf-8") == "corrupt"
