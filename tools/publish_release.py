@@ -10,8 +10,10 @@ import tempfile
 
 try:
     from .release_archives import list_downloads, load_manifest, sha256_file, verify_stage
+    from .release_metadata import resolve_identity
 except ImportError:
     from release_archives import list_downloads, load_manifest, sha256_file, verify_stage
+    from release_metadata import resolve_identity
 
 
 def command(*args, check=True):
@@ -107,14 +109,17 @@ def download_identity(repo, tag, directory):
 
 
 def publish(directory, notes, repo, tag, version, sha, run_id, attempt):
+    channel = resolve_identity('refs/tags/' + tag, tag, '', version)['channel']
+    prerelease = channel == 'beta'
+    prerelease_flag = '--prerelease=true' if prerelease else '--prerelease=false'
     records = local_assets(directory, tag)
     identity_name = f'OpenFocus-{tag}-build.json'
     if tag_commit(repo, tag) != sha:
         raise ValueError('release tag moved from the build commit')
     release = get_release(repo, tag)
     if release and not release['draft']:
-        if release.get('prerelease') or release.get('tag_name') != tag:
-            raise ValueError('existing release is not a stable release')
+        if release.get('prerelease') is not prerelease or release.get('tag_name') != tag:
+            raise ValueError('existing release has the wrong prerelease status')
         with tempfile.TemporaryDirectory() as temp:
             identity = download_identity(repo, tag, Path(temp))
             if (identity.get('schema_version') != 1 or identity.get('tag') != tag or
@@ -132,6 +137,7 @@ def publish(directory, notes, repo, tag, version, sha, run_id, attempt):
     all_records = records + [record(identity_path)]
     if release is None:
         command('gh', 'release', 'create', tag, '--repo', repo, '--draft', '--verify-tag',
+                *(['--prerelease', '--latest=false'] if prerelease else []),
                 '--title', f'OpenFocus {tag}', '--notes-file', str(notes))
         release = get_release(repo, tag)
     if not release or not release['draft'] or release['tag_name'] != tag:
@@ -146,17 +152,19 @@ def publish(directory, notes, repo, tag, version, sha, run_id, attempt):
     for item in all_records:
         command('gh', 'release', 'upload', tag, str(directory / item['name']), '--repo', repo)
     command('gh', 'release', 'edit', tag, '--repo', repo, '--title', f'OpenFocus {tag}',
-            '--notes-file', str(notes), '--draft=true', '--prerelease=false')
+            '--notes-file', str(notes), '--draft=true', prerelease_flag,
+            *(['--latest=false'] if prerelease else []))
     release = get_release(repo, tag)
     if not release or not release['draft'] or release['tag_name'] != tag:
         raise ValueError('release changed before verification')
-    if (release.get('prerelease') or release.get('name') != f'OpenFocus {tag}' or
+    if (release.get('prerelease') is not prerelease or release.get('name') != f'OpenFocus {tag}' or
             release.get('body') != notes.read_text(encoding='utf-8')):
-        raise ValueError('draft title, notes or signing status did not match')
+        raise ValueError('draft title, notes or prerelease status did not match')
     verify_remote(repo, tag, release, all_records)
     if tag_commit(repo, tag) != sha:
         raise ValueError('release tag moved before publication')
-    command('gh', 'release', 'edit', tag, '--repo', repo, '--draft=false', '--prerelease=false')
+    command('gh', 'release', 'edit', tag, '--repo', repo, '--draft=false', prerelease_flag,
+            *(['--latest=false'] if prerelease else []))
 
 
 def main():

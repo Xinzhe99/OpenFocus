@@ -31,7 +31,7 @@ jobs:
     # Prereleases (for example the independent gpu-v<version> previews) are
     # never stable downloads: ignore them instead of failing on the four-asset
     # contract and never let them replace the manifest the updater reads.
-    if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'release' && github.event.release.prerelease == false) || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && startsWith(github.event.workflow_run.head_branch || '', 'v')) }}
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'release' && github.event.release.prerelease == false) || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && startsWith(github.event.workflow_run.head_branch || '', 'v') && !contains(github.event.workflow_run.head_branch || '', '-beta.')) }}
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
@@ -60,8 +60,8 @@ jobs:
             tag="$(gh release view -R "$GITHUB_REPOSITORY" --json tagName --jq .tagName)"
           fi
           tag="${tag#refs/tags/}"
-          if ! [[ "$tag" =~ ^v[0-9A-Za-z._+-]+$ ]]; then
-            echo "::error::Refusing unexpected release tag '$tag'."
+          if ! [[ "$tag" =~ ^v[0-9]+(\.[0-9]+)*$ ]]; then
+            echo "::error::Refusing non-stable release tag '$tag'."
             exit 1
           fi
           gh release view "$tag" -R "$GITHUB_REPOSITORY" --json tagName >/dev/null

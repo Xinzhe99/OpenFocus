@@ -449,14 +449,16 @@ paths after integration. Record only checks actually executed.
 
 ## Localized in-app release notes
 
-Before tagging a stable release, add its concise user-facing release summary to
+Before tagging a stable or beta release, add its concise user-facing release summary to
 `utils/release_notes.py` in all twelve selectable interface languages. Translate
 the actual changes in each body. The release workflow requires all twelve
 translations and publishes explicit `openfocus-notes:<language>` comment blocks
 in the GitHub release body, followed by the common download/install guidance.
 The mirror preserves these bodies, so existing mirror generation needs no
 translation service or separate publication step. Update the normal changelog
-section as well; the release workflow still requires it.
+section as well; the release workflow still requires it. Beta tags use the
+numeric `APP_VERSION` section and translations, as described in
+[BUILD_COMMANDS.md](docs/BUILD_COMMANDS.md).
 
 The updater also accepts a release-level `body_i18n` dictionary keyed by the same
 language codes. These explicit translations take precedence over the bundled

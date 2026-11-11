@@ -14,6 +14,41 @@ def test_tag_build_keeps_the_exact_version():
         "tag": "v1.75.3",
     }
 
+def test_beta_tag_keeps_numeric_version_and_exact_label():
+    assert rm.resolve_identity('refs/tags/v1.77.0-beta.1', 'v1.77.0-beta.1',
+                               '42', '1.77.0') == {
+        'version': '1.77.0', 'label': 'v1.77.0-beta.1',
+        'channel': 'beta', 'tag': 'v1.77.0-beta.1',
+    }
+
+
+@pytest.mark.parametrize('tag', ['v1.77.1-beta.1', 'v1.77.0-beta.0',
+                                 'v1.77.0-beta.01', 'v1.77.0-beta.x',
+                                 'v1.77.0-rc.1', 'v1.77.0-beta.1-extra'])
+def test_invalid_beta_tags_are_rejected(tag):
+    with pytest.raises(rm.ReleaseIdentityError):
+        rm.resolve_identity('refs/tags/' + tag, tag, '42', '1.77.0')
+
+
+def test_tag_ref_must_match_name():
+    with pytest.raises(rm.ReleaseIdentityError, match='ref and tag name'):
+        rm.resolve_identity('refs/tags/v1.77.0', 'v1.77.0-beta.1', '42', '1.77.0')
+
+
+def test_pypi_verification_rejects_beta_identity(tmp_path):
+    dist = tmp_path / 'dist'
+    dist.mkdir()
+    (dist / 'openfocus.whl').write_bytes(b'wheel')
+    (dist / 'openfocus.tar.gz').write_bytes(b'source')
+    identity = tmp_path / 'identity.json'
+    args = ['--identity', str(identity), '--dist', str(dist), '--sha', 'a' * 40,
+            '--version', '1.77.0', '--channel', 'beta', '--tag', 'v1.77.0-beta.1']
+    rm.pypi_main(['create', *args])
+    with pytest.raises(rm.ReleaseIdentityError, match='only an exact release tag'):
+        rm.pypi_main(['verify', *args])
+    with pytest.raises(rm.ReleaseIdentityError, match='only an exact release tag'):
+        rm.pypi_main(['tag', *args])
+
 
 def test_tag_build_rejects_a_mismatched_app_version():
     with pytest.raises(rm.ReleaseIdentityError, match="APP_VERSION"):
