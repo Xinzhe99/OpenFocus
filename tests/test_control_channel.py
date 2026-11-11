@@ -2089,11 +2089,39 @@ def test_mouse_accepts_bounded_steps(server, monkeypatch, steps, expected):
     assert call(server, 'ui.mouse', **args)['result']['steps'] == expected
 
 
+@pytest.fixture
+def unix_socket_dir():
+    import tempfile
+    with tempfile.TemporaryDirectory(prefix='openfocus-test-', dir='/tmp') as directory:
+        yield Path(directory)
+
+
 @pytest.mark.skipif(os.name != 'posix', reason='Unix socket paths only')
-def test_control_socket_conflict_does_not_remove_live_endpoint(qapp, tmp_path, monkeypatch):
+def test_default_control_socket_survives_long_temp_directory(qapp, tmp_path, monkeypatch):
+    from PyQt6.QtCore import QDir
+    from PyQt6.QtNetwork import QLocalSocket
+    from core.control import server as module
+
+    long_dir = tmp_path / ('x' * 110)
+    long_dir.mkdir()
+    monkeypatch.setattr(QDir, 'tempPath', lambda: str(long_dir))
+    monkeypatch.setattr(module, 'write_discovery', lambda *args: {'socket': args[0]})
+    monkeypatch.setattr(module, 'clear_discovery', lambda *args: None)
+    instance = ControlServer(None)
+    try:
+        client = QLocalSocket()
+        client.connectToServer(instance.socket_name)
+        assert client.waitForConnected(5000), client.errorString()
+        client.abort()
+    finally:
+        instance.close()
+
+
+@pytest.mark.skipif(os.name != 'posix', reason='Unix socket paths only')
+def test_control_socket_conflict_does_not_remove_live_endpoint(qapp, unix_socket_dir, monkeypatch):
     from PyQt6.QtNetwork import QLocalServer, QLocalSocket
     from core.control import server as module
-    path = str(tmp_path / 'live.sock')
+    path = str(unix_socket_dir / 'live.sock')
     first = QLocalServer()
     assert first.listen(path), first.errorString()
     removed, written, cleared = [], [], []
@@ -2114,9 +2142,9 @@ def test_control_socket_conflict_does_not_remove_live_endpoint(qapp, tmp_path, m
 
 @pytest.mark.skipif(os.name != 'posix', reason='Unix socket paths only')
 @pytest.mark.parametrize('kind', ['socket', 'file', 'symlink'])
-def test_control_socket_conflict_preserves_existing_path(qapp, tmp_path, kind):
+def test_control_socket_conflict_preserves_existing_path(qapp, unix_socket_dir, kind):
     import socket
-    path = tmp_path / 'occupied.sock'
+    path = unix_socket_dir / 'occupied.sock'
     if kind == 'socket':
         sock = socket.socket(socket.AF_UNIX)
         sock.bind(str(path))
@@ -2124,7 +2152,7 @@ def test_control_socket_conflict_preserves_existing_path(qapp, tmp_path, kind):
     elif kind == 'file':
         path.write_bytes(b'preserve')
     else:
-        target = tmp_path / 'target'
+        target = unix_socket_dir / 'target'
         target.write_bytes(b'preserve')
         path.symlink_to(target)
     with pytest.raises(RuntimeError, match='Could not listen'):
@@ -2137,9 +2165,9 @@ def test_control_socket_conflict_preserves_existing_path(qapp, tmp_path, kind):
 
 
 @pytest.mark.skipif(os.name != 'posix', reason='Unix socket paths only')
-def test_control_socket_publication_race_preserves_endpoint(qapp, tmp_path, monkeypatch):
+def test_control_socket_publication_race_preserves_endpoint(qapp, unix_socket_dir, monkeypatch):
     from core.control import server as module
-    path = tmp_path / 'raced.sock'
+    path = unix_socket_dir / 'raced.sock'
     link = os.link
     written, cleared = [], []
 
@@ -2157,10 +2185,10 @@ def test_control_socket_publication_race_preserves_endpoint(qapp, tmp_path, monk
 
 
 @pytest.mark.skipif(os.name != 'posix', reason='Unix socket paths only')
-def test_control_socket_private_and_removed_on_close(qapp, tmp_path, monkeypatch):
+def test_control_socket_private_and_removed_on_close(qapp, unix_socket_dir, monkeypatch):
     from PyQt6.QtNetwork import QLocalSocket
     from core.control import server as module
-    path = tmp_path / 'private.sock'
+    path = unix_socket_dir / 'private.sock'
     monkeypatch.setattr(module, 'write_discovery', lambda *args: {'socket': str(path)})
     monkeypatch.setattr(module, 'clear_discovery', lambda *args: None)
     monkeypatch.setattr(QLocalSocket, 'connectToServer',
@@ -2174,9 +2202,9 @@ def test_control_socket_private_and_removed_on_close(qapp, tmp_path, monkeypatch
 
 
 @pytest.mark.skipif(os.name != 'posix', reason='Unix socket paths only')
-def test_control_socket_close_preserves_replacement(qapp, tmp_path, monkeypatch):
+def test_control_socket_close_preserves_replacement(qapp, unix_socket_dir, monkeypatch):
     from core.control import server as module
-    path = tmp_path / 'replaced.sock'
+    path = unix_socket_dir / 'replaced.sock'
     monkeypatch.setattr(module, 'write_discovery', lambda *args: {'socket': str(path)})
     monkeypatch.setattr(module, 'clear_discovery', lambda *args: None)
     instance = ControlServer(None, socket_name=str(path))

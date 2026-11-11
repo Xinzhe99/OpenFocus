@@ -66,12 +66,22 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt -r requirements-dev.txt
 
-      - name: Check macOS GUI shutdown
+      - name: Check macOS GUI lifecycle and control sockets
         if: runner.os == 'macOS'
         env:
           QT_QPA_PLATFORM: offscreen
           PYTHONFAULTHANDLER: '1'
-        run: python -m pytest -o addopts='' tests/test_gui_lifecycle.py -x -q --timeout=60 --timeout-method=thread
+        run: >-
+          python -m pytest -o addopts='' -x -q --timeout=90 --timeout-method=thread
+          tests/test_gui_lifecycle.py
+          tests/test_stack_tools.py::TestDustMapDialog::test_native_raw_preview_uses_developed_colors
+          tests/test_control_channel.py::test_default_gui_launch_and_cross_process_client
+          tests/test_control_channel.py::test_default_control_socket_survives_long_temp_directory
+          tests/test_control_channel.py::test_control_socket_conflict_does_not_remove_live_endpoint
+          tests/test_control_channel.py::test_control_socket_conflict_preserves_existing_path
+          tests/test_control_channel.py::test_control_socket_publication_race_preserves_endpoint
+          tests/test_control_channel.py::test_control_socket_private_and_removed_on_close
+          tests/test_control_channel.py::test_control_socket_close_preserves_replacement
 
       - name: Check Windows GUI shutdown
         if: runner.os == 'Windows'

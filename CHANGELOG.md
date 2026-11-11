@@ -7,6 +7,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 - Provide enough native thread stack for flat-field previews on macOS.
+- Keep the default Unix control socket usable when the temporary directory path is long.
 
 ## [1.77.0] - 2026-11-11
 
