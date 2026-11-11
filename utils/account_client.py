@@ -12,8 +12,10 @@ import json
 import math
 import os
 from pathlib import Path
+import platform
 import secrets
 import socketserver
+import string
 import subprocess
 import sys
 import tempfile
@@ -34,6 +36,7 @@ _ERROR_CODES = frozenset({
     "verified_email_required", "email_required", "invalid_code", "invalid_verifier",
     "terms_required", "invalid_terms_version", "account_disabled", "invalid_email",
     "rate_limited", "provider_error", "email_not_configured", "email_delivery_failed",
+    "device_limit_reached",
 })
 
 
@@ -64,6 +67,57 @@ def _valid_session(value):
             and 0 < expiry < 10**20 and math.isfinite(expiry)
             and isinstance(user, dict) and isinstance(user.get('id'), str)
             and bool(user['id']) and len(user['id']) <= 512)
+
+
+def _valid_device_id(value):
+    return (isinstance(value, str) and 8 <= len(value) <= 128
+            and all(char in string.ascii_letters + string.digits + "-_" for char in value))
+
+
+def _default_device_name():
+    name = ''.join(char for char in platform.node() if char.isprintable() and char != '"')
+    return name.strip()[:80] or "OpenFocus desktop"
+
+
+def _device_path(store):
+    path = getattr(store, "path", None)
+    return Path(path).parent / "account-device" if path is not None else None
+
+
+def _load_device_identity(store):
+    path = _device_path(store)
+    if path is None:
+        return None
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, UnicodeError):
+        return None
+    if not isinstance(value, dict):
+        return None
+    device_id, device_name = value.get("device_id"), value.get("device_name")
+    if not _valid_device_id(device_id):
+        return None
+    if not isinstance(device_name, str) or not device_name.strip():
+        device_name = _default_device_name()
+    return device_id, device_name.strip()[:80]
+
+
+def _save_device_identity(store, device_id, device_name):
+    path = _device_path(store)
+    if path is None:
+        return
+    try:
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        temporary = path.with_name(".account-device.tmp")
+        temporary.write_text(json.dumps({
+            "device_id": device_id, "device_name": device_name,
+        }, separators=(",", ":"), ensure_ascii=False), encoding="utf-8")
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, path)
+    except OSError:
+        # A read-only profile still allows sign-in; the seat becomes per-process.
+        return False
+    return True
 
 
 def _dpapi(data, decrypt=False):
@@ -341,7 +395,8 @@ class AccountClient:
     sign-in. Email defaults to 15 minutes, social sign-in to 5 minutes.
     on_started takes no arguments; cancel is a threading.Event.
     """
-    def __init__(self, store=None, *, base_url=BASE_URL, request=None, clock=time.time):
+    def __init__(self, store=None, *, base_url=BASE_URL, request=None, clock=time.time,
+                 device_id=None, device_name=None):
         parsed = urllib.parse.urlsplit(base_url)
         if parsed.scheme != "https" or not parsed.netloc or parsed.username or parsed.password or parsed.query or parsed.fragment or parsed.path not in ("", "/"):
             raise ValueError("Account base URL must be an HTTPS origin")
@@ -349,6 +404,19 @@ class AccountClient:
         self.store = store if store is not None else TokenStore()
         self._request = request or _http
         self._clock = clock
+        if device_id is not None:
+            if not _valid_device_id(device_id):
+                raise ValueError("Invalid device id")
+            self.device_id = device_id
+            self.device_name = (device_name or _default_device_name()).strip()[:80] or _default_device_name()
+        else:
+            loaded = _load_device_identity(self.store)
+            if loaded is None:
+                self.device_id = secrets.token_urlsafe(32)
+                self.device_name = (device_name or _default_device_name()).strip()[:80] or _default_device_name()
+                _save_device_identity(self.store, self.device_id, self.device_name)
+            else:
+                self.device_id, self.device_name = loaded
         self._condition = threading.Condition(threading.RLock())
         self._session = copy.deepcopy(self.store.load())
         if not _valid_session(self._session):
@@ -361,6 +429,9 @@ class AccountClient:
         self._logout_in_progress = False
         self._pending_logout_token = None
         self.email_handoff_mode = None
+
+    def _device_fields(self):
+        return {"device_id": self.device_id, "device_name": self.device_name}
 
     def _call(self, method, path, body=None, token=None, timeout=15):
         result = self._request(method, self.base_url + path, body=body, token=token, timeout=timeout)
@@ -540,7 +611,9 @@ class AccountClient:
                                     self._clear_storage()
                         raise AccountError(server.error)
                     code = server.code
-                session = self._login_call(generation, "POST", "/v1/auth/exchange", {"code": code, "code_verifier": verifier}, cancel=cancel)
+                session = self._login_call(generation, "POST", "/v1/auth/exchange",
+                                           {"code": code, "code_verifier": verifier,
+                                            **self._device_fields()}, cancel=cancel)
                 with self._condition:
                     if generation != (self._generation, self._login_epoch) or (cancel is not None and cancel.is_set()):
                         raise AccountError("cancelled")
@@ -605,7 +678,8 @@ class AccountClient:
                             self._clear_storage()
                 raise AccountError(server.error)
             session = self._login_call(generation, "POST", "/v1/auth/exchange",
-                                       {"code": server.code, "code_verifier": verifier}, cancel=cancel)
+                                       {"code": server.code, "code_verifier": verifier,
+                                        **self._device_fields()}, cancel=cancel)
             with self._condition:
                 if generation != (self._generation, self._login_epoch) or (cancel is not None and cancel.is_set()):
                     raise AccountError("cancelled")
