@@ -6,6 +6,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Fixed
+- Show the same complete environment report in feedback and Environment Info, and let signed-in users open their account center from feedback.
 - Provide enough native thread stack for flat-field previews on macOS.
 - Keep the default Unix control socket usable when the temporary directory path is long.
 

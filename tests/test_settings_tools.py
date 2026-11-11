@@ -4,7 +4,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from PyQt6.QtWidgets import QDialog, QWidget
+from PyQt6.QtWidgets import QDialog, QPushButton, QWidget
 
 
 @pytest.fixture
@@ -761,16 +761,58 @@ def test_environment_explains_an_unadmitted_provider(monkeypatch):
     assert trans.t('env_cpu_mode') in text
 
 
-def test_environment_probe_does_not_block_dialog_and_copy_uses_report(qapp, monkeypatch):
+def test_environment_probe_populates_selectable_report(qapp, monkeypatch):
     from dialogs import about
     monkeypatch.setattr(about._EnvironmentProbe, "start", lambda self: None)
     dialog = about.EnvironmentInfoDialog()
-    assert not dialog.copy_button.isEnabled()
     dialog._probe.text = "CPU methods available; optional AI missing"
     dialog._probe_finished()
-    dialog._copy()
-    assert qapp.clipboard().text() == dialog._probe.text
+    assert dialog.text_edit.toPlainText() == dialog._probe.text
+    assert not dialog.findChildren(QPushButton)
     dialog.deleteLater()
+
+
+def test_feedback_uses_environment_probe_and_offers_signed_in_account(qapp, monkeypatch):
+    from dialogs import about, feedback
+    from locales import trans
+
+    monkeypatch.setattr(about._EnvironmentProbe, "start", lambda self: None)
+    window = QWidget()
+    window._account_client = SimpleNamespace(is_signed_in=lambda: True)
+    dialog = feedback.FeedbackDialog(window)
+    assert dialog.account_button.text() == trans.t('account_web_center')
+    dialog._show_facts(True)
+    dialog._facts_probe.text = "shared environment report"
+    dialog._facts_probe.finished.set()
+    dialog._poll_facts()
+    assert dialog.facts_view.toPlainText() == dialog._facts_probe.text
+    dialog.deleteLater()
+    window.deleteLater()
+
+
+def test_feedback_account_handoff_uses_account_client(qapp, monkeypatch):
+    from dialogs import account, feedback
+
+    calls = []
+    class Job:
+        def __init__(self, call, owner):
+            self.call = call
+            self.finished = SimpleNamespace(connect=lambda callback: None)
+        def start(self):
+            self.call(None)
+        def _release(self, *_args):
+            pass
+
+    monkeypatch.setattr(account, '_AccountJob', Job)
+    window = QWidget()
+    window._account_client = SimpleNamespace(
+        is_signed_in=lambda: True,
+        open_web_handoff=lambda **kwargs: calls.append(kwargs))
+    dialog = feedback.FeedbackDialog(window)
+    dialog._open_account_center()
+    assert calls == [{'timeout': 8}]
+    dialog.deleteLater()
+    window.deleteLater()
 
 
 def test_environment_dialog_closes_while_probe_is_running(qapp, monkeypatch):
