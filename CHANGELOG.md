@@ -161,6 +161,11 @@ At the time of the [v1.77.0-beta.3 prerelease](https://github.com/Xinzhe99/OpenF
   Advanced Settings can turn them off.
 - Allow email sign-in to be confirmed on a phone while the desktop completes
   sign-in automatically, when the account service supports cross-device login.
+- Reduce the tile overlap of neural tiled fusion in proportion when the tile is
+  made smaller to fit memory, instead of keeping the overlap requested for the
+  larger tile, but never below 128 pixels. A default 1024-pixel tile halved to
+  512 computes about half as many tiles; its blend bands are narrower, so
+  pixels can differ slightly from earlier versions.
 - Stop writing one-use tile regions of neural tiled fusion to the temporary
   frame cache. Renders use less temporary disk space; output pixels are unchanged.
 - Recommend OpenFocus B as the default desktop fusion method. ECC remains the
