@@ -54,7 +54,7 @@ EN = {
     "account_generic_error": "Sign-in could not be completed. Please try again.",
     "account_rate_limited": "Too many requests. Please wait before trying again.",
     "account_expired": "The sign-in link expired or was already used. Request a new link.",
-    "account_disabled": "This account is unavailable. Contact support@openfocus.top.",
+    "account_device_limit": "This account is already registered on 3 computers. Remove a device in the account center, then try again.",
     "account_signed_out": "Signed out on this device.",
     "account_email_unverified": "A verified email address is required. Try email sign-in.",
     "recommended": "Recommended",

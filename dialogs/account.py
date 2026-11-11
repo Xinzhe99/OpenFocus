@@ -403,6 +403,8 @@ class AccountDialog(QDialog):
             key = 'account_email_unverified'
         elif error.category == 'account_disabled':
             key = 'account_disabled'
+        elif error.category == 'device_limit_reached':
+            key = 'account_device_limit'
         elif error.category in ('invalid_code', 'sign_in_expired'):
             key = 'account_expired'
         elif error.category == 'terms_unavailable':
