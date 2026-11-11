@@ -2,16 +2,20 @@
 """About and contact information dialogs."""
 
 import threading
-from PyQt6.QtCore import QTimer
-from PyQt6.QtGui import QFont
+from PyQt6.QtCore import QTimer, Qt
+from PyQt6.QtGui import QFont, QPixmap
 from PyQt6.QtWidgets import (
     QDialog,
     QVBoxLayout,
+    QHBoxLayout,
+    QLabel,
+    QScrollArea,
+    QWidget,
     QTextEdit,
     QPushButton,
 )
 from locales import trans
-from utils import get_monospace_font_family
+from utils import get_monospace_font_family, resource_path
 from ui.styles import PRIMARY_BLUE
 
 
@@ -229,6 +233,7 @@ class ContactInfoDialog(QDialog):
     <p>{trans.t('contact_email')}: xiexinzhe@zju.edu.cn</p>
     <p>{trans.t('contact_institution')}: {trans.t('contact_zju')}</p>
     <p>{trans.t('contact_github')}: <a href="https://github.com/Xinzhe99/OpenFocus">https://github.com/Xinzhe99/OpenFocus</a></p>
+    <p>Discord: <a href="https://discord.gg/afzmwgPt">https://discord.gg/afzmwgPt</a></p>
     <p>{trans.t('contact_welcome')}</p>"""
         
         super().__init__(parent)
@@ -261,3 +266,56 @@ class ContactInfoDialog(QDialog):
                 parent.x() + parent.width() // 2 - self.width() // 2,
                 parent.y() + parent.height() // 2 - self.height() // 2,
             )
+
+
+class _SupportCode(QLabel):
+    """Scale the original payment image for the available logical size."""
+
+    def __init__(self, filename):
+        super().__init__()
+        self._original = QPixmap(resource_path('assets', 'readme', filename))
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setMinimumSize(130, 160)
+        self.setStyleSheet('background: white;')
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        ratio = self.devicePixelRatioF()
+        pixmap = self._original.scaled(
+            round(self.width() * ratio), round(self.height() * ratio),
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation)
+        pixmap.setDevicePixelRatio(ratio)
+        self.setPixmap(pixmap)
+
+
+class SupportUsDialog(QDialog):
+    """Display the project's payment codes and acknowledgment information."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(trans.t('support_title'))
+        self.resize(640, 600)
+        layout = QVBoxLayout(self)
+        scroll = QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        content = QWidget()
+        body = QVBoxLayout(content)
+        message = QLabel(trans.t('support_message'))
+        message.setWordWrap(True)
+        body.addWidget(message)
+        codes = QHBoxLayout()
+        for title, filename in (('Alipay', 'alipay-coffee.jpg'),
+                                ('PayPal', 'paypal-coffee.png')):
+            column = QVBoxLayout()
+            label = QLabel(title)
+            label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            column.addWidget(label)
+            column.addWidget(_SupportCode(filename), 1)
+            codes.addLayout(column, 1)
+        body.addLayout(codes, 1)
+        scroll.setWidget(content)
+        layout.addWidget(scroll, 1)
+        close_btn = QPushButton(trans.t('btn_close'))
+        close_btn.clicked.connect(self.accept)
+        layout.addWidget(close_btn)

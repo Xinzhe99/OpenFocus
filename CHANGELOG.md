@@ -5,6 +5,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- Add the Discord community to Contact Us and a Support Us dialog with Alipay and PayPal codes.
+
 ### Fixed
 - Show the same complete environment report in feedback and Environment Info, and let signed-in users open their account center from feedback.
 - Enable exposure matching by default for every fusion method in the desktop

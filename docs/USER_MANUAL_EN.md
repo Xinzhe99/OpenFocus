@@ -183,7 +183,7 @@ The top menu bar provides access to all functions:
 - **Edit**: Undo/redo, reset the current stack, image transformations and retouching
 - **Tools**: Image stitching, batch processing and conversion, method comparison, depth map, flat-field correction, scale bar, watermark and labels
 - **Settings**: Advanced Settings (performance, registration and alignment diagnostics, sensor cleanup, output naming, AI, diagnostics, startup), GPU acceleration, theme and language
-- **Help**: Environment info, contact information, update check, and the log folder
+- **Help**: Environment info, contact information and the Discord community, Support Us, update check, and the log folder. Support Us displays Alipay and PayPal codes; include your username in the transfer note for permanent project acknowledgment.
 
 **Tools → Stitch Images…** opens a separate workspace for already-fused
 microscope regions and camera panoramas; it does not modify the current stack.
