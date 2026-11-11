@@ -53,8 +53,9 @@ def _entry(path, original_bytes, compressed_bytes, **extra):
 
 def _group(path: str) -> str:
     parts = path.replace("\\", "/").split("/")
-    while parts and parts[0].lower() in {"openfocus", "openfocus.app", "contents",
-                                          "resources", "frameworks", "_internal"}:
+    while parts and (parts[0].lower() in {"openfocus", "openfocus.app", "contents",
+                                           "resources", "frameworks", "_internal"}
+                     or parts[0].lower().startswith("_openfocus_runtime_")):
         parts.pop(0)
     if not parts:
         return "application"

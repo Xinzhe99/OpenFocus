@@ -100,7 +100,7 @@ In **Save As**, ordinary TIFF saves the result as a single image; layered TIFF i
 
 The [project website](https://openfocus.top/#download) and its installation
 scripts offer the newest Windows or macOS build, including a beta when newer
-than stable (currently [v1.77.0-beta.6 prerelease](https://github.com/Xinzhe99/OpenFocus/releases/tag/v1.77.0-beta.6)). Downloads are also available on
+than stable (currently [v1.77.0-beta.7 prerelease](https://github.com/Xinzhe99/OpenFocus/releases/tag/v1.77.0-beta.7)). Downloads are also available on
 [GitHub Releases](https://github.com/Xinzhe99/OpenFocus/releases). Desktop automatic updates also offer newer beta
 releases. The Linux CLI installed from PyPI remains stable.
 `pip install openfocus` installs only the headless command-line interface (the

@@ -76,7 +76,7 @@ Bij **Opslaan als** bewaart gewone TIFF het resultaat als één afbeelding; TIFF
 ### Installatie
 
 Download de nieuwste Windows- of macOS-build van de [OpenFocus-website](https://openfocus.top/#download). Dezelfde bestanden en oudere versies staan ook op [GitHub Releases](https://github.com/Xinzhe99/OpenFocus/releases).
-De website en installatiescripts bieden ook nieuwere bèta’s, momenteel [vooruitgave v1.77.0-beta.6](https://github.com/Xinzhe99/OpenFocus/releases/tag/v1.77.0-beta.6). De desktopupdater biedt ook nieuwere bèta’s; de Linux-CLI van PyPI blijft stabiel.
+De website en installatiescripts bieden ook nieuwere bèta’s, momenteel [vooruitgave v1.77.0-beta.7](https://github.com/Xinzhe99/OpenFocus/releases/tag/v1.77.0-beta.7). De desktopupdater biedt ook nieuwere bèta’s; de Linux-CLI van PyPI blijft stabiel.
 
 | Platform | Bestand | Type |
 |----------|---------|------|

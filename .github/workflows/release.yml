@@ -97,6 +97,7 @@ jobs:
         run: |
           pyinstaller --clean --noconfirm --onedir --noconsole --noupx `
             --name OpenFocus `
+            --contents-directory "_openfocus_runtime_${{ needs.prepare.outputs.label }}" `
             --version-file build/version_info.txt `
             --additional-hooks-dir hooks `
             --icon "assets/OpenFocus.ico" `
@@ -126,18 +127,23 @@ jobs:
             --exclude-module PyQt6.QtDesigner `
             --exclude-module PyQt6.QtQuick `
             main.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 
       - name: Remove incompatible ICU shadow library
         shell: pwsh
         run: |
           # Qt requires the unversioned Windows ICU API.
-          $icu = "dist/OpenFocus/_internal/icuuc.dll"
+          $resources = "dist/OpenFocus/_openfocus_runtime_${{ needs.prepare.outputs.label }}"
+          $icu = Join-Path $resources "icuuc.dll"
           if (Test-Path $icu) { Remove-Item -Path $icu -Force }
-          python tools/verify_frozen_resources.py dist/OpenFocus/_internal
+          python tools/verify_frozen_resources.py $resources
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python -c "from pathlib import Path; assert any(p.parent.name == 'pyopencl' for p in Path('dist/OpenFocus/_internal').rglob('_cl*.pyd')), 'PyOpenCL extension missing from bundle'"
+          python -c "from pathlib import Path; import sys; assert any(p.parent.name == 'pyopencl' for p in Path(sys.argv[1]).rglob('_cl*.pyd')), 'PyOpenCL extension missing from bundle'" $resources
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # Older updaters require this directory to exist in the new payload.
+          New-Item -ItemType Directory -Path "dist/OpenFocus/_internal" -Force | Out-Null
+          Set-Content -Path "dist/OpenFocus/_internal/legacy-layout.marker" -Value "Compatibility marker for older updaters." -Encoding utf8
 
       - name: Detect SignPath signing configuration
         id: signpath
@@ -218,7 +224,22 @@ jobs:
       - name: Verify packaged CLI and desktop control
         env:
           QT_QPA_PLATFORM: offscreen
-        run: python tools/frozen_cli_smoke.py --executable dist/OpenFocus/OpenFocus.exe
+        run: python tools/frozen_cli_smoke.py --executable dist/OpenFocus/OpenFocus.exe --resources "dist/OpenFocus/_openfocus_runtime_${{ needs.prepare.outputs.label }}"
+
+      - name: Verify upgrade from v1.76.0
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $previous = Join-Path $env:RUNNER_TEMP "OpenFocus-v1.76.0-windows-x64.zip"
+          gh release download v1.76.0 --repo $env:GITHUB_REPOSITORY --pattern "OpenFocus-v1.76.0-windows-x64.zip" --output $previous
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $hash = (Get-FileHash -Path $previous -Algorithm SHA256).Hash
+          if ($hash -ne "b125290a52da1ddd90e590f876e583d21d14d74cf563329bb0f00975b834c47a") {
+            throw "Unexpected SHA-256 for v1.76.0 Windows ZIP: $hash"
+          }
+          python tools/frozen_upgrade_smoke.py --executable dist/OpenFocus/OpenFocus.exe --previous-zip $previous --runtime-name "_openfocus_runtime_${{ needs.prepare.outputs.label }}"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Package zip (portable)
         shell: pwsh
@@ -240,6 +261,7 @@ jobs:
             /DAPP_VERSION=${{ needs.prepare.outputs.label }} `
             /DAPP_VERSION_NUM=${{ needs.prepare.outputs.version }} `
             OpenFocus.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Copy-Item installer/OpenFocus-*-setup.exe .
 
       - name: Upload unsigned installer
@@ -290,11 +312,27 @@ jobs:
           QT_QPA_PLATFORM: windows
         run: |
           $setup = (Resolve-Path "OpenFocus-${{ needs.prepare.outputs.label }}-setup.exe").Path
-          $target = Join-Path $env:RUNNER_TEMP "OpenFocus-installed"
+          $previous = Join-Path $env:RUNNER_TEMP "OpenFocus-v1.76.0-windows-x64.zip"
+          $previousRoot = Join-Path $env:RUNNER_TEMP "OpenFocus-installer-previous"
+          python -m zipfile -e $previous $previousRoot
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $target = Join-Path $previousRoot "OpenFocus"
+          Remove-Item -Path "$target/OpenFocus.portable" -Force
+          $oldFile = Get-ChildItem "$target/_internal" -File -Recurse | Select-Object -First 1
+          if (-not $oldFile) { throw "Previous installation has no runtime files." }
+          New-Item -ItemType Directory -Path "$target/_openfocus_runtime_obsolete", "$target/OpenFocusData" -Force | Out-Null
+          Set-Content -Path "$target/_openfocus_runtime_obsolete/old.txt" -Value "old runtime"
+          Set-Content -Path "$target/OpenFocusData/keep.txt" -Value "user data"
           $install = Start-Process -FilePath $setup -Wait -PassThru -ArgumentList @(
             "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SP-", "/DIR=`"$target`""
           )
           if ($install.ExitCode -ne 0) { throw "Installer failed: $($install.ExitCode)" }
+          if ((Test-Path $oldFile.FullName) -or (Test-Path "$target/_openfocus_runtime_obsolete")) {
+            throw "Installer retained an obsolete application runtime."
+          }
+          if ((Get-Content "$target/OpenFocusData/keep.txt" -Raw).Trim() -ne "user data") {
+            throw "Installer changed existing user data."
+          }
           python tools/frozen_cli_smoke.py --executable "$target/OpenFocus.exe" --installed-startup
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 

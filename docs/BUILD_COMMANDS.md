@@ -76,10 +76,20 @@ library dependencies, and distribution metadata including its license. Keep
 `--additional-hooks-dir hooks` in local and release builds, and exercise a
 16-bit planar LZW TIFF in frozen builds on each target platform.
 
+Windows onedir builds use `--contents-directory _openfocus_runtime_<label>`,
+where `<label>` is the full release or preview build label. Create a nonempty
+`dist/OpenFocus/_internal/legacy-layout.marker` before smoke testing and
+packaging so older updaters recognize the payload. Preserve `OpenFocusData`
+and `OpenFocus.portable` when upgrading an existing portable installation.
+Pass the versioned runtime directory to `tools/frozen_cli_smoke.py --resources`;
+without that option the smoke helper uses the macOS or legacy Windows layout.
+
 On Windows 10/11, run the release job's pruning step after PyInstaller: remove
-`dist/OpenFocus/_internal/icuuc.dll` if it was collected. Qt uses the Windows
-ICU API; a Conda DLL with the same name but version-suffixed exports shadows it
-and prevents `QtWidgets` from loading. Keep the packaged CLI and first-run
-desktop smoke checks enabled after pruning.
+`dist/OpenFocus/_openfocus_runtime_<label>/icuuc.dll` if it was collected. Qt
+uses the Windows ICU API; a Conda DLL with the same name but version-suffixed
+exports shadows it and prevents `QtWidgets` from loading. Keep the packaged
+CLI and first-run desktop smoke checks enabled after pruning. The release job
+also downloads the v1.76.0 Windows ZIP, checks its pinned SHA-256, and runs
+`tools/frozen_upgrade_smoke.py` against it before packaging.
 
 The original PyTorch checkpoints and export tooling are development artifacts and are excluded from desktop bundles. The wheel's package data includes the dynamic `.onnx` checkpoints. Local builds and releases should be verified on their target platforms, including the intended accelerators.
