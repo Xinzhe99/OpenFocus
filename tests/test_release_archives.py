@@ -354,7 +354,7 @@ def test_beta_workflow_run_requires_matching_build_identity(tmp_path):
     tag = "v1.77.0-beta.3"
     directory, files, release, release_path, releases_path = _mirror_fixture(tmp_path, tag)
     release["prerelease"] = True
-    identity = {"schema_version": 1, "tag": tag, "version": tag[1:],
+    identity = {"schema_version": 1, "tag": tag, "version": "1.77.0",
                 "sha": "a" * 40, "run_id": 123, "run_attempt": 1,
                 "assets": [{"name": name, "size": len(content), "sha256": _digest(content)}
                            for name, content in files.items()]}
@@ -371,6 +371,15 @@ def test_beta_workflow_run_requires_matching_build_identity(tmp_path):
     ra.write_mirror_manifest(tag, release_path, directory, releases_path, output,
                              build_identity=identity_path, head_sha="a" * 40, allow_beta=True)
     assert json.loads(output.read_text())["tag"] == tag
+    output.unlink()
+    identity["version"] = tag[1:]
+    identity_path.write_text(json.dumps(identity), encoding="utf-8")
+    data = identity_path.read_bytes()
+    release["assets"][-1].update(size=len(data), digest="sha256:" + _digest(data))
+    release_path.write_text(json.dumps(release), encoding="utf-8")
+    with pytest.raises(ra.ReleaseArchiveError, match="invalid build identity"):
+        ra.write_mirror_manifest(tag, release_path, directory, releases_path, output,
+                                 build_identity=identity_path, head_sha="a" * 40, allow_beta=True)
 
 
 @pytest.mark.parametrize("tag,prerelease", [
