@@ -4965,6 +4965,8 @@ if __name__ == "__main__":
             # The prompt runs before app.exec(); release control and instance
             # resources without reopening the window after an authorized close.
             app.aboutToQuit.emit()
+            window.deleteLater()
+            QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
             sys.exit(0)
         _account_settings.setValue('account/intro_version', APP_VERSION)
 
