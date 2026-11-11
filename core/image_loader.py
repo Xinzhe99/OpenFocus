@@ -285,6 +285,18 @@ def _has_transparency(image: np.ndarray) -> bool:
     return (image.dtype not in (np.uint8, np.uint16)
             or (image.size > 0 and np.min(image[:, :, 3]) != np.iinfo(image.dtype).max))
 
+def rgb_to_bgr(rgb: np.ndarray) -> np.ndarray:
+    """Reverse the channel order of decoded RGB samples into a new BGR array.
+
+    OpenCV swaps three 8/16-bit channels several times faster than copying a
+    reversed NumPy view and returns the same pixels. Any other layout keeps
+    the plain copy.
+    """
+    if rgb.ndim == 3 and rgb.shape[2] == 3 and rgb.dtype in (np.uint8, np.uint16):
+        return cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+    return np.ascontiguousarray(rgb[:, :, ::-1])
+
+
 def _read_raw(path: str, scale_factor: float = 1.0) -> Optional[np.ndarray]:
     """Camera RAW -> 16-bit BGR (sRGB color space, camera white balance).
 
@@ -307,7 +319,7 @@ def _read_raw(path: str, scale_factor: float = 1.0) -> Optional[np.ndarray]:
         # copy. INTER_AREA treats each channel independently, so the result
         # is identical to resizing BGR after conversion.
         rgb = _downscale_page(rgb, scale_factor)
-        return np.ascontiguousarray(rgb[:, :, ::-1])
+        return rgb_to_bgr(rgb)
     except Exception:
         return None
 
