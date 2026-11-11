@@ -812,7 +812,11 @@ def test_thread_count_exchange_never_saves_a_count_raised_for_a_warp(monkeypatch
     inside, release = Event(), Event()
     native = cv2.warpPerspective
 
+    raised = []
+
     def held_warp(*args, **kwargs):
+        # A backend may cap the requested count at the machine's cores.
+        raised.append(cv2.getNumThreads())
         inside.set()
         assert release.wait(5)
         return native(*args, **kwargs)
@@ -825,9 +829,10 @@ def test_thread_count_exchange_never_saves_a_count_raised_for_a_warp(monkeypatch
     with ThreadPoolExecutor(2) as pool:
         lending = pool.submit(lend)
         assert inside.wait(5)
-        # The warp still holds four threads; the exchange must wait for it.
+        # The warp still holds its lent threads; the exchange must wait for it.
         exchange = pool.submit(registration.exchange_opencv_threads, 1)
-        assert not exchange.done() and cv2.getNumThreads() == 4
+        assert not exchange.done() and cv2.getNumThreads() == raised[0]
+        assert registration._warp_threads_lock.locked()
         release.set()
         lending.result(5)
         saved = exchange.result(5)
