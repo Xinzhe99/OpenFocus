@@ -1555,12 +1555,14 @@ class OutputManager:
             filters = ('PNG 8/16-bit (*.png);;TIFF 8/16-bit (*.tif *.tiff);;JPG 8-bit (*.jpg);;'
                        'WebP 8-bit (*.webp);;BMP 8-bit (*.bmp);;'
                        + trans.t('linear_dng_filter') + ';;' + layered_filter)
-            from utils.settings_store import image_save_default, remember_image_save
+            from utils.settings_store import (image_save_default, image_save_filter,
+                                              remember_image_save)
             file_path, selected_filter = FileDialog.getSaveFileName(
-                window, trans.t('action_save'), image_save_default(default_filename), filters)
+                window, trans.t('action_save'), image_save_default(default_filename, filters),
+                filters, image_save_filter(filters))
             if not file_path:
                 return
-            remember_image_save(file_path)
+            remember_image_save(file_path, selected_filter)
             if selected_filter == layered_filter:
                 window.export_manager.export_layered_tiff(record, original, file_path)
                 return

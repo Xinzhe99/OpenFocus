@@ -145,7 +145,8 @@ class EnvironmentInfoDialog(QDialog):
             from fusion_methods import neural_runtime
             from core.multi_focus_fusion import ensure_neural_device_kind
             available["onnxruntime"] = True
-            kind = ensure_neural_device_kind()
+            kind = neural_runtime.admitted_kind(ensure_neural_device_kind())
+            unadmitted = neural_runtime.unadmitted_accelerator()
             available["device"] = (neural_runtime.display_name(kind)
                                    if neural_runtime.is_accelerator(kind)
                                    else "CPU")
@@ -162,7 +163,13 @@ class EnvironmentInfoDialog(QDialog):
             if neural_runtime.is_accelerator(kind):
                 info_lines.append(f"  ✓ {trans.t('env_gpu_accel')} ({available['device']})")
             else:
-                info_lines.append(f"  ⚠ {trans.t('env_no_gpu')}")
+                if unadmitted:
+                    # The provider was verified; say why it is not used
+                    # instead of claiming no provider passed.
+                    info_lines.append("  ⚠ " + trans.t('env_gpu_memory_unknown').format(
+                        device=neural_runtime.display_name(unadmitted)))
+                else:
+                    info_lines.append(f"  ⚠ {trans.t('env_no_gpu')}")
                 info_lines.append(f"  ✓ {trans.t('env_cpu_mode')}")
             info_lines.append('  ' + trans.t('msg_gpu_accel_hint'))
         except Exception as exc:

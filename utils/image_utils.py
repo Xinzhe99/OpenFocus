@@ -1028,7 +1028,8 @@ def imwrite_auto(path: str, image: Optional[np.ndarray] = None, params: Optional
                     require_memory(image.nbytes * 4)
                 if image.dtype == np.uint16 and ext not in ('.png', '.tif', '.tiff'):
                     image = to_display_uint8(image)
-                ok, encoded = cv2.imencode(ext, image, params or [])
+                encode_ext = '.jpg' if ext in jpeg_exts else ext
+                ok, encoded = cv2.imencode(encode_ext, image, params or [])
                 if not ok:
                     return False
                 if meta is not None and ext == '.png':
