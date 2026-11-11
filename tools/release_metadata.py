@@ -54,6 +54,8 @@ def resolve_identity(ref: str, ref_name: str, run_number: str, version: str,
     if not VERSION_RE.fullmatch(version):
         raise ReleaseIdentityError(
             f"constants.APP_VERSION '{version}' is not a dotted numeric version")
+    if any(int(part) == 999999999 for part in version.split('.')):
+        raise ReleaseIdentityError("constants.APP_VERSION uses the reserved beta alias namespace")
 
     ref = str(ref or "")
     ref_name = str(ref_name or "")

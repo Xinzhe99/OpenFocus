@@ -17,6 +17,7 @@ const REPO = "Xinzhe99/OpenFocus";
 const RELEASE_API = `https://api.github.com/repos/${REPO}/releases/latest`;
 const CACHE_URL = "https://openfocus.internal/latest-release.json";
 const MIRROR_MANIFEST = "openfocus-meta/latest-release.json";
+const PREVIEW_MANIFEST = "openfocus-meta/beta-release.json";
 const DOWNLOAD_PREFIX = "/download/latest/";
 const VERSIONED_DOWNLOAD_PREFIX = "/download/releases/";
 const DOWNLOAD_SUFFIXES = {
@@ -145,13 +146,15 @@ function releasePayload(release) {
 // The mirror workflow publishes this manifest only after uploading all four
 // assets. It keeps downloads available when GitHub's shared-IP rate limit is
 // exhausted; the response identifies the mirror as its metadata source.
-async function mirroredRelease(env) {
+async function mirroredRelease(env, key = MIRROR_MANIFEST) {
   if (!env || !env.DOWNLOADS || typeof env.DOWNLOADS.get !== "function") return null;
   try {
-    const object = await env.DOWNLOADS.get(MIRROR_MANIFEST);
+    const object = await env.DOWNLOADS.get(key);
     if (!object || !object.body || object.size > 5000000) return null;
     const data = await new Response(object.body).json();
     if (!data || typeof data.tag !== "string" || !/^v[0-9A-Za-z._+-]+$/.test(data.tag)) return null;
+    if (key === PREVIEW_MANIFEST && !/^v[0-9]+(?:\.[0-9]+)*-beta\.[1-9][0-9]*$/.test(data.tag)) return null;
+    if (key === PREVIEW_MANIFEST && data.tag.split("-beta.")[0].split(".").includes("999999999")) return null;
     const suffixes = {
       "windows-setup": "setup.exe",
       "windows-zip": "windows-x64.zip",
@@ -185,7 +188,7 @@ async function latestFailure(message, env) {
 }
 
 
-async function latestRelease(ctx, env) {
+async function stableRelease(ctx, env) {
   const cache = typeof caches !== "undefined" ? caches.default : null;
   const key = new Request(CACHE_URL);
 
@@ -262,6 +265,72 @@ async function latestRelease(ctx, env) {
   }
 
   return new Response(body, { headers: jsonHeaders() });
+}
+
+// Compare numeric components as strings so even unusually large versions stay exact.
+function compareVersions(left, right) {
+  const parse = (tag) => {
+    const match = /^v([0-9]+(?:\.[0-9]+)*)(?:-beta\.([1-9][0-9]*))?$/.exec(tag);
+    return match && { parts: match[1].split("."), beta: match[2] };
+  };
+  const a = parse(left);
+  const b = parse(right);
+  if (!a || !b) return null;
+  const compareNumber = (x, y) => {
+    x = x.replace(/^0+/, "") || "0";
+    y = y.replace(/^0+/, "") || "0";
+    return x.length - y.length || (x < y ? -1 : x > y ? 1 : 0);
+  };
+  for (let i = 0; i < Math.max(a.parts.length, b.parts.length); i++) {
+    const difference = compareNumber(a.parts[i] || "0", b.parts[i] || "0");
+    if (difference) return difference;
+  }
+  if (!a.beta || !b.beta) return a.beta ? -1 : b.beta ? 1 : 0;
+  return compareNumber(a.beta, b.beta);
+}
+
+function betaAlias(tag) {
+  const match = /^(v[0-9]+(?:\.[0-9]+)*)-beta\.([1-9][0-9]*)$/.exec(tag);
+  if (!match || match[1].split(".").includes("999999999")) return null;
+  return `${match[1]}.999999999.${match[2]}`;
+}
+
+function previewUpdate(preview) {
+  const alias = betaAlias(preview.tag);
+  if (!alias || [...DOWNLOAD_KINDS].some((kind) =>
+    !/^sha256:[0-9a-fA-F]{64}$/.test(preview.assets[kind].digest || ""))) return null;
+  const assets = Object.fromEntries(Object.entries(DOWNLOAD_SUFFIXES).map(([kind, suffix]) => [kind, {
+    ...preview.assets[kind], name: `OpenFocus-${alias}-${suffix}`,
+  }]));
+  const result = { ...preview, tag: alias, actual_tag: preview.tag, assets };
+  if (Array.isArray(preview.releases)) {
+    result.releases = preview.releases.flatMap((release) => {
+      if (!release || typeof release.tag_name !== "string") return [];
+      const tag = betaAlias(release.tag_name) ||
+        (/^v[0-9]+(?:\.[0-9]+)*$/.test(release.tag_name) ? release.tag_name : null);
+      return tag ? [{ ...release, tag_name: tag }] : [];
+    });
+  }
+  return result;
+}
+
+async function latestRelease(ctx, env) {
+  const [stable, preview] = await Promise.all([
+    stableRelease(ctx, env),
+    mirroredRelease(env, PREVIEW_MANIFEST),
+  ]);
+  if (!stable.ok || !preview) return stable;
+  try {
+    const data = await stable.clone().json();
+    if (compareVersions(preview.tag, data.tag) > 0) {
+      return new Response(JSON.stringify(preview), {
+        headers: { ...jsonHeaders(), "X-OpenFocus-Release-Source": "mirror" },
+      });
+    }
+  } catch {
+    // Preserve the stable response if its metadata cannot be compared.
+  }
+  return stable;
 }
 
 /**
@@ -627,11 +696,17 @@ async function handleVersionedDownload(request, env, ctx) {
   }
   const parts = new URL(request.url).pathname.slice(VERSIONED_DOWNLOAD_PREFIX.length).split("/");
   const [tag, kind] = parts;
-  if (parts.length !== 2 || !/^v[0-9]+(?:\.[0-9]+)*$/.test(tag) || !DOWNLOAD_KINDS.has(kind)) {
+  const alias = /^(v[0-9]+(?:\.[0-9]+)*)\.999999999\.([1-9][0-9]*)$/.exec(tag);
+  const objectTag = alias && !alias[1].split(".").includes("999999999")
+    ? `${alias[1]}-beta.${alias[2]}` : tag;
+  if (parts.length !== 2 || !/^v[0-9]+(?:\.[0-9]+)*(?:-beta\.[1-9][0-9]*)?$/.test(tag) ||
+      (tag.split("-beta.")[0].split(".").includes("999999999") && !alias) ||
+      (alias && objectTag === tag) || !DOWNLOAD_KINDS.has(kind)) {
     return textResponse("Unknown release download", 404, {}, method);
   }
-  const name = `OpenFocus-${tag}-${DOWNLOAD_SUFFIXES[kind]}`;
-  const response = await r2Download(request, env, name, name);
+  const name = `OpenFocus-${objectTag}-${DOWNLOAD_SUFFIXES[kind]}`;
+  const downloadName = `OpenFocus-${tag}-${DOWNLOAD_SUFFIXES[kind]}`;
+  const response = await r2Download(request, env, name, downloadName);
   if (response) recordDownload(request, response, env, ctx, tag, kind, "in-app", "r2");
   return response || textResponse("The download mirror is not ready; retry the download.", 503, { "Retry-After": "60" }, method);
 }
@@ -668,7 +743,11 @@ export default {
       if (method !== "GET" && method !== "HEAD") {
         return textResponse("Method Not Allowed", 405, { Allow: "GET, HEAD" }, method);
       }
-      const mirror = await mirroredRelease(env);
+      const [stable, preview] = await Promise.all([
+        mirroredRelease(env), mirroredRelease(env, PREVIEW_MANIFEST),
+      ]);
+      const candidate = preview && previewUpdate(preview);
+      const mirror = stable && candidate && compareVersions(preview.tag, stable.tag) > 0 ? candidate : stable;
       if (!mirror) return textResponse("Update mirror is unavailable", 503, { "Retry-After": "60" }, method);
       return new Response(method === "HEAD" ? null : JSON.stringify(mirror), {
         headers: { ...jsonHeaders(), "X-OpenFocus-Release-Source": "mirror" },

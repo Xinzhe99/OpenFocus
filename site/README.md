@@ -85,7 +85,7 @@ footer; publish it before enabling the analytics binding.
 
 | File | Holds |
 |---|---|
-| `site/site_content.py` | Copy, links and download cards; static version comes from `constants.APP_VERSION` |
+| `site/site_content.py` | Copy, links and download cards; the current desktop version comes from `/api/latest` |
 | `site/template.html` | Page structure; `{{placeholders}}` resolve from the content |
 | `site/style.css` | Design tokens (light/dark), layout, responsive rules |
 | `site/app.js` | Theme, OS-aware navigation download, copy button, menus; the hero shows both desktop downloads |
@@ -104,22 +104,16 @@ and system changes still work for the current page. With JavaScript disabled,
 the English and Chinese links and all navigation links remain available,
 including on mobile screens.
 
-Releasing: the Worker resolves `/api/latest` from GitHub's latest **stable** release and serves
-`/download/latest/*` from R2. For a split Windows release it fills missing
-complete assets from the validated same-tag mirror manifest. A complete GitHub
-asset is a fallback for full requests; a mirror-only asset or range request
-returns `503` until R2 is ready. Complete GitHub metadata is cached for five
-minutes per data center, while clients receive `no-store`. If GitHub is
-unavailable, the Worker serves the last complete mirror manifest with
-`X-OpenFocus-Release-Source: mirror`.
-Without JavaScript, download links still use `/download/latest/*`. The scripts,
-website downloads and desktop update mirror exclude prereleases; beta assets are
-available from their GitHub release page. JavaScript updates the displayed
-version from `/api/latest`. Static version labels and JSON-LD are generated
-from `constants.APP_VERSION`, which may be ahead of the latest stable release
-during beta development; check the live API rather than relying on those labels
-when JavaScript is unavailable. File sizes are shown only when live release
-metadata is available, avoiding stale sizes in static pages.
+The Worker selects the newer of the latest stable release and the verified
+beta mirror for `/api/latest` and `/download/latest/*`. A stable release
+outranks a beta of the same version. Desktop downloads and installation scripts
+may therefore offer a beta; the Linux CLI from PyPI remains a stable package.
+The site marks that desktop downloads may be prereleases. With JavaScript
+disabled, the download links still work and no unverified static version is
+displayed. With JavaScript enabled, the version and file sizes come from the
+live release metadata. Complete GitHub metadata is cached for five minutes per
+data center; clients receive `no-store`. The Worker falls back to the R2
+metadata when GitHub is unavailable. Range requests require the R2 object.
 
 ## Download mirror (R2)
 
@@ -127,32 +121,29 @@ Installers are mirrored to Cloudflare R2 and served from
 `/download/latest/<kind>`. The Worker streams the complete R2 object; a full
 request can fall back to GitHub when the complete asset exists there.
 
-Desktop updates use `GET` or `HEAD /api/updates` to read the R2 manifest
-directly. It contains the latest mirrored tag, publication date and four
-assets; newer manifests also include each asset's GitHub SHA-256 `digest` and
-up to 30 public stable releases as `{tag_name, body}`. Older manifests can
-omit both fields. An unavailable or invalid manifest returns `503` without
-contacting GitHub.
+Desktop updates use `GET` or `HEAD /api/updates` to select between the stable
+and beta R2 manifests without contacting GitHub. A beta is advertised to older
+clients using a numeric compatibility tag of the form
+`v<version>.999999999.<beta-number>` and its real tag in `actual_tag`. New
+clients validate the association and display the beta tag. The numeric alias
+is reserved for this purpose, and its versioned download always resolves to the
+same beta bytes. Metadata carries the four asset sizes and SHA-256 digests.
 
-`GET` and `HEAD /download/releases/<tag>/<kind>` serve only R2 objects,
-supporting byte ranges and ETag validation. Tags use `v` followed by numeric
-components separated by dots, such as `v1.10` or `v1.2.3`. Kinds are
-`windows-setup`, `windows-zip`, `macos-dmg` and `macos-zip`. Invalid paths
-return `404`, and missing or unavailable objects return `503` without a GitHub
-redirect. Older objects are pruned after the latest release is mirrored, so a
-previously advertised version may become unavailable.
+`GET` and `HEAD /download/releases/<tag>/<kind>` serve stable, beta and
+compatibility-alias downloads from R2, with byte ranges and ETag validation.
+The recognized kinds are `windows-setup`, `windows-zip`, `macos-dmg` and
+`macos-zip`. Invalid paths return `404`; missing objects return `503` without a
+GitHub redirect. Stable objects may be pruned after a newer stable release;
+beta objects are retained for version-pinned and cached update requests.
 
 - Bucket: `openfocus-downloads` (binding `DOWNLOADS`)
 - Workflow: `.github/workflows/r2-mirror.yml` runs after a successful
-  **Build & Publish Release** run for a `v*` tag (the release event is
-  suppressed for `GITHUB_TOKEN` releases), on manually published releases, and
-  on manual dispatch (`tag` input). It downloads and verifies Windows parts,
-  reassembles oversized files, downloads the macOS assets, and uploads the four
-  complete files under their release filenames. Only after all uploads succeed
-  does it publish digests and stable release notes under
-  `openfocus-meta/latest-release.json` for the current latest release.
-  After the five-minute metadata cache expires, it prunes older recognized
-  `OpenFocus-v*` keys. Runs are serialized.
+  **Build & Publish Release** run, on manually published releases, and on
+  manual dispatch. It verifies and uploads the four complete files before
+  publishing either `openfocus-meta/latest-release.json` for the latest stable
+  release or `openfocus-meta/beta-release.json` for the newest beta. Beta
+  mirroring never replaces the stable manifest. Stable pruning preserves beta
+  assets; beta mirrors do not prune. Runs are serialized.
 - Secrets: `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` (an R2
   API token with Object Read & Write on the bucket).
 - Free tier: 10 GB-month storage, 1M Class A and 10M Class B operations per

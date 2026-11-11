@@ -98,10 +98,10 @@ OpenFocus は、研究者、エンジニア、画像処理の専門家のため�
 3. **Linux**：デスクトップ版は提供していません。pip パッケージを入れて `openfocus` コマンドを使ってください
 4. **Python ソース**：有効化した conda 環境で `python main.py` を実行します
 
-最新の安定版は [OpenFocus 公式サイト](https://openfocus.top/#download) から入手してください。
+最新の Windows・macOS 版は [OpenFocus 公式サイト](https://openfocus.top/#download) から入手してください。
 同じファイルと旧バージョンは [GitHub Releases](https://github.com/Xinzhe99/OpenFocus/releases)
 にもあります。ターミナルからもインストールできます。
-インストールスクリプトも最新の安定版を提供します。[v1.77.0-beta.3 のプレリリース](https://github.com/Xinzhe99/OpenFocus/releases/tag/v1.77.0-beta.3)は GitHub からダウンロードできます。
+公式サイトとインストールスクリプトは安定版より新しいベータ版も提供します（現在は [v1.77.0-beta.4 のプレリリース](https://github.com/Xinzhe99/OpenFocus/releases/tag/v1.77.0-beta.4)）。デスクトップの自動更新でも新しいベータ版を提供し、PyPI の Linux CLI は安定版のままです。
 
 ```bash
 # macOS（Apple Silicon、~/Applications へ）または Linux（ヘッドレス CLI）

@@ -114,7 +114,7 @@
           {{hero.cta_github}}
         </a>
       </div>
-      <p class="meta">{{hero.meta}}</p>
+      <p class="meta">{{hero.desktop_label}} <span data-release-tag></span>{{hero.meta}}</p>
     </div>
     <div class="shot">
       <img src="/assets/ui.webp" alt="{{hero.shot_alt}}" width="1600" height="857" fetchpriority="high">
@@ -187,6 +187,7 @@
     <p class="eyebrow">{{download.eyebrow}}</p>
     <h2>{{download.title}}</h2>
     <p class="sub">{{download.sub}}</p>
+    <p class="note">{{download.channel_notice}}</p>
     <div class="plats">{{download_cards}}</div>
     <div class="install-block">
       <p class="note">{{download.script_label}}</p>
@@ -200,7 +201,7 @@
         <button class="copy" type="button" data-copied="{{download.copied}}">{{download.copy}}</button>
       </div>
     </div>
-    <p class="note">{{download.note}} · <a href="{{releases}}" rel="noopener">{{download.all}}</a></p>
+    <p class="note"><span data-release-tag></span>{{download.note}} · <a href="{{releases}}" rel="noopener">{{download.all}}</a></p>
   </section>
   <section id="privacy">
     <h2>{{privacy.title}}</h2>

@@ -7,6 +7,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 
 
+
 ## [1.77.0] - 2026-11-11
 
 At the time of the [v1.77.0-beta.3 prerelease](https://github.com/Xinzhe99/OpenFocus/releases/tag/v1.77.0-beta.3), v1.76.0 is the latest stable release.
@@ -150,7 +151,9 @@ At the time of the [v1.77.0-beta.3 prerelease](https://github.com/Xinzhe99/OpenF
   source coverage before compositing the display background.
 
 ### Changed
-- Support GitHub beta prereleases without publishing them as stable downloads or PyPI releases.
+- Offer newer beta desktop releases through website downloads, installation
+  scripts and automatic updates while keeping PyPI releases stable.
+- Support GitHub beta prereleases without publishing them as PyPI releases.
 - Identify packaged beta builds in the application and diagnostics, and offer the matching stable release when it becomes available.
 - Redesign the account dialog with inline agreement links and a
   low-key skip action. After sign-in under the updated terms, sanitized
@@ -240,6 +243,9 @@ At the time of the [v1.77.0-beta.3 prerelease](https://github.com/Xinzhe99/OpenF
   content. Output pixels are unchanged.
 
 ### Fixed
+- Allow existing desktop releases to receive beta updates through version-pinned
+  compatibility aliases, and keep installed beta builds from repeatedly
+  offering the same update.
 - Show the same complete environment report in feedback and Environment Info, and let signed-in users open their account center from feedback.
 - Enable exposure matching by default for every fusion method in the desktop
   interface and batch processing; saved per-method choices remain in effect.

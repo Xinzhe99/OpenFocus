@@ -40,6 +40,23 @@ function releaseBody() {
   };
 }
 
+function manifestFor(tag) {
+  return {
+    tag,
+    assets: Object.fromEntries(Object.entries(NAMES).map(([kind, name]) => {
+      name = name.replace(TAG, tag);
+      return [kind, {
+        name, size: PAYLOAD.length, digest: `sha256:${"a".repeat(64)}`,
+        url: `https://github.com/Xinzhe99/OpenFocus/releases/download/${tag}/${name}`,
+      }];
+    })),
+  };
+}
+
+function manifestBytes(manifest) {
+  return new TextEncoder().encode(JSON.stringify(manifest));
+}
+
 function installCache() {
   const entries = new Map();
   Object.defineProperty(globalThis, "caches", {
@@ -331,6 +348,129 @@ test("mirror metadata keeps downloads available when GitHub is rate limited", as
   assert.equal(download.status, 206);
   assert.equal(download.headers.get("content-range"), "bytes 2-4/10");
   assert.equal(await download.text(), "234");
+});
+
+test("website selects only a newer numeric preview and final releases win ties", async () => {
+  for (const [stableTag, previewTag, expected] of [
+    ["v1.76.9", "v1.77.0-beta.3", "v1.77.0-beta.3"],
+    ["v1.78.0", "v1.77.0-beta.3", "v1.78.0"],
+    ["v1.77.0", "v1.77.0-beta.3", "v1.77.0"],
+    ["v1.9.0", "v1.10.0-beta.12", "v1.10.0-beta.12"],
+    ["v1.77", "v1.77.0-beta.3", "v1.77"],
+  ]) {
+    installCache();
+    const stable = manifestFor(stableTag);
+    installReleaseFetch({ release: {
+      tag_name: stableTag,
+      assets: Object.values(stable.assets).map((asset) => ({
+        name: asset.name, size: asset.size, browser_download_url: asset.url,
+      })),
+    } });
+    const env = makeEnv({ "openfocus-meta/beta-release.json": manifestBytes(manifestFor(previewTag)) });
+    const response = await run("https://openfocus.top/api/latest", { env });
+    assert.equal((await response.json()).tag, expected);
+  }
+});
+
+test("preview downloads and update aliases work offline", async () => {
+  installCache();
+  installReleaseFetch({ fail: true });
+  const stable = manifestFor(TAG);
+  const preview = manifestFor("v1.77.0-beta.3");
+  preview.releases = [{ tag_name: preview.tag, body: "Beta notes" }];
+  const name = preview.assets["windows-setup"].name;
+  const env = makeEnv({
+    "openfocus-meta/latest-release.json": manifestBytes(stable),
+    "openfocus-meta/beta-release.json": manifestBytes(preview),
+    [name]: PAYLOAD,
+    [NAMES["windows-setup"]]: PAYLOAD,
+  });
+  const latest = await run("https://openfocus.top/api/latest", { env });
+  assert.equal((await latest.json()).tag, preview.tag);
+  for (const [method, headers, status, body] of [
+    ["GET", {}, 200, "0123456789"],
+    ["HEAD", {}, 200, ""],
+    ["GET", { Range: "bytes=2-4" }, 206, "234"],
+    ["HEAD", { Range: "bytes=2-4" }, 206, ""],
+  ]) {
+    const response = await run("https://openfocus.top/download/latest/windows-setup", { env, method, headers });
+    assert.equal(response.status, status);
+    assert.equal(response.headers.get("cache-control"), "no-store");
+    if (status === 206) assert.equal(response.headers.get("content-range"), "bytes 2-4/10");
+    assert.equal(await response.text(), body);
+  }
+  const updates = await run("https://openfocus.top/api/updates", { env });
+  const update = await updates.json();
+  assert.equal(update.tag, "v1.77.0.999999999.3");
+  assert.equal(update.actual_tag, preview.tag);
+  assert.equal(update.assets["windows-setup"].name, `OpenFocus-${update.tag}-setup.exe`);
+  assert.equal(update.assets["windows-setup"].digest, preview.assets["windows-setup"].digest);
+  assert.equal(update.releases[0].tag_name, update.tag);
+  const versioned = await run(`https://openfocus.top/download/releases/${TAG}/windows-setup`, { env });
+  assert.equal(versioned.status, 200);
+  assert.equal(await versioned.text(), "0123456789");
+  const betaUrl = `https://openfocus.top/download/releases/${preview.tag}/windows-setup`;
+  const aliasUrl = `https://openfocus.top/download/releases/${update.tag}/windows-setup`;
+  for (const url of [betaUrl, aliasUrl]) {
+    for (const method of ["GET", "HEAD"]) {
+      const response = await run(url, { env, method, headers: { Range: "bytes=2-4" } });
+      assert.equal(response.status, 206);
+      assert.equal(response.headers.get("content-range"), "bytes 2-4/10");
+      assert.equal(await response.text(), method === "GET" ? "234" : "");
+    }
+  }
+  for (const tag of ["v1.77.0-beta.0", "v1.77.0-beta.03", "v1.77.0-rc.1", "v1.77.0-beta.3-extra", "v1.77.0.999999999.0", "v1.77.0.999999999.03", "v1.77.0.999999999.3.4", "v1.77.0.999999999.2.999999999.3"]) {
+    const response = await run(`https://openfocus.top/download/releases/${tag}/windows-setup`, { env });
+    assert.equal(response.status, 404);
+  }
+  const finalEnv = makeEnv({
+    "openfocus-meta/latest-release.json": manifestBytes(manifestFor("v1.77.0")),
+    "openfocus-meta/beta-release.json": manifestBytes(preview),
+    [name]: PAYLOAD,
+  });
+  const finalUpdate = await run("https://openfocus.top/api/updates", { env: finalEnv });
+  assert.equal((await finalUpdate.json()).tag, "v1.77.0");
+  const pinned = await run(aliasUrl, { env: finalEnv });
+  assert.equal(await pinned.text(), "0123456789");
+});
+
+test("updates fall back to stable for older or unverifiable previews", async () => {
+  installReleaseFetch({ fail: true });
+  const stable = manifestFor("v1.77.0");
+  const older = manifestFor("v1.76.9-beta.4");
+  const incomplete = manifestFor("v1.78.0-beta.4");
+  delete incomplete.assets["windows-zip"].digest;
+  for (const preview of [older, incomplete]) {
+    const env = makeEnv({
+      "openfocus-meta/latest-release.json": manifestBytes(stable),
+      "openfocus-meta/beta-release.json": manifestBytes(preview),
+    });
+    const response = await run("https://openfocus.top/api/updates", { env });
+    assert.deepEqual(await response.json(), stable);
+  }
+});
+
+test("invalid or missing preview never pollutes the stable edge cache", async () => {
+  installCache();
+  const calls = installReleaseFetch();
+  const valid = manifestFor("v1.77.0-beta.3");
+  const invalid = [
+    { ...valid, tag: "v1.77.0-rc.1" },
+    { ...valid, tag: "v1.77.0-beta.0" },
+    { ...valid, assets: { ...valid.assets, "windows-setup": { ...valid.assets["windows-setup"], name: "unverified.exe" } } },
+    { ...valid, assets: { ...valid.assets, "windows-setup": { ...valid.assets["windows-setup"], url: "https://example.com/file" } } },
+    { ...valid, assets: {} },
+  ];
+  const previewKey = "openfocus-meta/beta-release.json";
+  let response = await run("https://openfocus.top/api/latest", { env: makeEnv({ [previewKey]: manifestBytes(valid) }) });
+  assert.equal((await response.json()).tag, valid.tag);
+  for (const bad of invalid) {
+    response = await run("https://openfocus.top/api/latest", { env: makeEnv({ [previewKey]: manifestBytes(bad) }) });
+    assert.equal((await response.json()).tag, TAG);
+  }
+  response = await run("https://openfocus.top/api/latest", { env: makeEnv() });
+  assert.equal((await response.json()).tag, TAG);
+  assert.equal(calls(), 1);
 });
 
 test("split Windows release is served from its complete, verified mirror", async () => {

@@ -55,7 +55,7 @@
 ## 📢 News
 
 > [!NOTE]
-> **[v1.77.0-beta.3 voorlopige release](https://github.com/Xinzhe99/OpenFocus/releases/tag/v1.77.0-beta.3)** — GPU-versnelling voor compatibele OpenCL-apparaten in OpenFocus B met terugval op de CPU, een gecorrigeerde veegvergelijking, automatische achtergrond en retouche. Zie het [wijzigingslogboek](../../CHANGELOG.md) voor details.
+> **[v1.77.0-beta.4 voorlopige release](https://github.com/Xinzhe99/OpenFocus/releases/tag/v1.77.0-beta.4)** — GPU-versnelling voor compatibele OpenCL-apparaten in OpenFocus B met terugval op de CPU, een gecorrigeerde veegvergelijking, automatische achtergrond en retouche. Zie het [wijzigingslogboek](../../CHANGELOG.md) voor details.
 
 Oudere versies staan in het [wijzigingslogboek](../../CHANGELOG.md).
 
@@ -220,7 +220,7 @@ Bestuur de desktopapp via een tokenbeveiligd lokaal agentkanaal.
 <a id="install"></a>
 ## ⬇️ Installatie
 
-De [OpenFocus-website](https://openfocus.top/#download) biedt standaard de nieuwste stabiele versie voor Windows of macOS. Bètaversies en oudere versies staan op [GitHub Releases](https://github.com/Xinzhe99/OpenFocus/releases).
+De [OpenFocus-website](https://openfocus.top/#download) en installatiescripts bieden voor Windows en macOS de nieuwste versie, inclusief een nieuwere bèta (momenteel v1.77.0-beta.4). Downloads staan ook op [GitHub Releases](https://github.com/Xinzhe99/OpenFocus/releases). Automatische desktopupdates bieden ook nieuwere bèta’s; de Linux-CLI van PyPI blijft stabiel.
 
 Zie de [handleiding](../USER_MANUAL_NL.md) voor installatie en probleemoplossing.
 

@@ -136,7 +136,6 @@ def json_ld(locale: dict, canonical: str) -> str:
         "name": "OpenFocus",
         "applicationCategory": "MultimediaApplication",
         "operatingSystem": "Windows 10, Windows 11, macOS 13+",
-        "softwareVersion": RELEASE["tag"].lstrip("v"),
         "description": locale["desc"],
         "url": canonical,
         "downloadUrl": RELEASE["windows_setup"],

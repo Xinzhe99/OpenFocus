@@ -13,7 +13,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Release tag to mirror (for example v1.75.0)
+        description: Stable or beta release tag to mirror (for example v1.77.0-beta.3)
         required: true
         type: string
 
@@ -28,10 +28,7 @@ concurrency:
 
 jobs:
   mirror:
-    # Prereleases (for example the independent gpu-v<version> previews) are
-    # never stable downloads: ignore them instead of failing on the four-asset
-    # contract and never let them replace the manifest the updater reads.
-    if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'release' && github.event.release.prerelease == false) || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && startsWith(github.event.workflow_run.head_branch || '', 'v') && !contains(github.event.workflow_run.head_branch || '', '-beta.')) }}
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'release' && startsWith(github.event.release.tag_name, 'v')) || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && startsWith(github.event.workflow_run.head_branch || '', 'v')) }}
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
@@ -60,8 +57,8 @@ jobs:
             tag="$(gh release view -R "$GITHUB_REPOSITORY" --json tagName --jq .tagName)"
           fi
           tag="${tag#refs/tags/}"
-          if ! [[ "$tag" =~ ^v[0-9]+(\.[0-9]+)*$ ]]; then
-            echo "::error::Refusing non-stable release tag '$tag'."
+          if ! [[ "$tag" =~ ^v[0-9]+(\.[0-9]+)*(-beta\.[1-9][0-9]*)?$ ]]; then
+            echo "::error::Refusing unsupported release tag '$tag'."
             exit 1
           fi
           gh release view "$tag" -R "$GITHUB_REPOSITORY" --json tagName >/dev/null
@@ -74,8 +71,10 @@ jobs:
           rm -rf assets windows
           mkdir -p assets
           gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" > release.json
-          if ! jq -e --arg tag "$tag" '.tag_name == $tag and .draft == false and .prerelease == false' release.json >/dev/null; then
-            echo "::error::Release must be published, stable, and match the requested tag."
+          prerelease=false
+          [[ "$tag" != *-beta.* ]] || prerelease=true
+          if ! jq -e --arg tag "$tag" --argjson prerelease "$prerelease" '.tag_name == $tag and .draft == false and .prerelease == $prerelease' release.json >/dev/null; then
+            echo "::error::Release must be published and match the requested tag and channel."
             exit 1
           fi
           release_id="$(jq -er '.id' release.json)"
@@ -158,8 +157,17 @@ jobs:
           releases="$RUNNER_TEMP/openfocus-releases.json"
           gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100" |
             jq '[.[][] | select(.draft == false and .prerelease == false) | {tag_name, body}] | .[:30]' > "$releases"
+          if [[ "$tag" == *-beta.* ]]; then
+            jq --slurpfile release release.json '[{tag_name: $release[0].tag_name, body: $release[0].body}] + .' "$releases" > "$RUNNER_TEMP/releases-with-beta.json"
+            mv "$RUNNER_TEMP/releases-with-beta.json" "$releases"
+          fi
           args=(--tag "$tag" --release-json release.json --r2-dir assets
                 --releases-json "$releases" --output "$manifest")
+          metadata_key="openfocus-meta/latest-release.json"
+          if [[ "$tag" == *-beta.* ]]; then
+            args+=(--allow-beta)
+            metadata_key="openfocus-meta/beta-release.json"
+          fi
           if [ -n "${WINDOWS_MANIFEST:-}" ]; then
             args+=(--windows-manifest "$WINDOWS_MANIFEST")
           fi
@@ -172,7 +180,7 @@ jobs:
             args+=(--head-sha "$HEAD_SHA")
           fi
           previous="$RUNNER_TEMP/previous-latest.json"
-          if aws s3 cp "s3://openfocus-downloads/openfocus-meta/latest-release.json" "$previous" \
+          if aws s3 cp "s3://openfocus-downloads/$metadata_key" "$previous" \
               --endpoint-url "https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com" \
               --only-show-errors --no-progress && jq -e --arg tag "$tag" '.tag == $tag' "$previous" >/dev/null; then
             args+=(--trusted-metadata "$previous")
@@ -211,25 +219,47 @@ jobs:
         run: |
           set -euo pipefail
           tag="${{ steps.release.outputs.tag }}"
-          latest="$(gh release view -R "$GITHUB_REPOSITORY" --json tagName --jq .tagName)"
-          if [ "$tag" != "$latest" ]; then
-            echo "Skipping metadata: $tag is not the latest release ($latest)."
-            exit 0
+          endpoint="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          metadata_key="openfocus-meta/latest-release.json"
+          if [[ "$tag" == *-beta.* ]]; then
+            metadata_key="openfocus-meta/beta-release.json"
+            previous="$RUNNER_TEMP/previous-beta-publish.json"
+            existing="$(aws s3api list-objects-v2 --bucket openfocus-downloads \
+              --prefix "$metadata_key" --endpoint-url "$endpoint" --output json | \
+              jq -r --arg key "$metadata_key" '[.Contents[]? | select(.Key == $key)] | length')"
+            if [ "$existing" -gt 0 ]; then
+              aws s3 cp "s3://openfocus-downloads/$metadata_key" "$previous" \
+                --endpoint-url "$endpoint" --only-show-errors --no-progress
+              action="$(python tools/release_archives.py beta-metadata-action --tag "$tag" --previous "$previous")"
+              if [ "$action" = skip ]; then
+                echo "Skipping metadata: a newer beta is already published."
+                exit 0
+              fi
+            fi
+          else
+            latest="$(gh release view -R "$GITHUB_REPOSITORY" --json tagName --jq .tagName)"
+            if [ "$tag" != "$latest" ]; then
+              echo "Skipping metadata: $tag is not the latest release ($latest)."
+              exit 0
+            fi
           fi
           manifest="$RUNNER_TEMP/openfocus-latest.json"
-          aws s3 cp "$manifest" "s3://openfocus-downloads/openfocus-meta/latest-release.json" \
-            --endpoint-url "https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com" \
-            --content-type "application/json" --cache-control "no-store" \
-            --only-show-errors --no-progress
+          aws s3 cp "$manifest" "s3://openfocus-downloads/$metadata_key" \
+            --endpoint-url "$endpoint" --content-type "application/json" \
+            --cache-control "no-store" --only-show-errors --no-progress
 
       - name: Prune older mirrored releases
         run: |
           set -euo pipefail
+          tag="${{ steps.release.outputs.tag }}"
+          if [[ "$tag" == *-beta.* ]]; then
+            echo "Skipping prune for a beta mirror."
+            exit 0
+          fi
           # Old release metadata can remain in a Worker's edge cache for five
           # minutes. Keep its R2 objects until those cached names have expired.
           sleep 330
           endpoint="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
-          tag="${{ steps.release.outputs.tag }}"
           latest="$(gh release view -R "$GITHUB_REPOSITORY" --json tagName --jq .tagName)"
           if [ "$tag" != "$latest" ]; then
             echo "Skipping prune: $tag is not the latest release ($latest)."
@@ -246,6 +276,11 @@ jobs:
             --output json | jq -r '.[]?')"
           while IFS= read -r key; do
             [ -n "$key" ] || continue
+            # Preserve all beta objects, including older versions that may still
+            # be referenced by cached website or desktop update responses.
+            if [[ "$key" =~ ^OpenFocus-v[0-9]+(\.[0-9]+)*-beta\.[1-9][0-9]*- ]]; then
+              continue
+            fi
             case "$key" in
               "OpenFocus-${tag}-"*)
                 continue
