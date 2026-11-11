@@ -5,6 +5,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- Add an experimental ``blend_mode='opacity'`` path for OpenFocus A that
+  weights each source by an HF9-style difference-of-blur focus measure
+  (``opacity_map**opacity_power``, default power 28) and blends in one
+  streaming pass, removing the hard-selection block artifacts. Opt-in via
+  ``blend_mode``/``opacity_power``; the default hard path is unchanged.
 
 
 ## [1.77.0] - 2026-11-11

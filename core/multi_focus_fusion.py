@@ -328,6 +328,10 @@ class MultiFocusFusion:
                                 kernel_size=2 * radius + 1,
                                 thread_count=kwargs.get('thread_count', None),
                                 blend_smoothing=kwargs.get('smoothing', 4.),
+                                blend_mode=kwargs.get('blend_mode', 'hard'),
+                                soft_gamma=kwargs.get('soft_gamma', 1.0),
+                                feather_theta=kwargs.get('feather_theta', 0.9),
+                                opacity_power=kwargs.get('opacity_power', 28.0),
                                 should_cancel=kwargs.get('should_cancel'),
                                 progress_callback=kwargs.get('progress_callback'))
 
