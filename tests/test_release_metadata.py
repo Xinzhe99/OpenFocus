@@ -35,6 +35,34 @@ def test_tag_ref_must_match_name():
         rm.resolve_identity('refs/tags/v1.77.0', 'v1.77.0-beta.1', '42', '1.77.0')
 
 
+@pytest.mark.parametrize('ref,name,expected', [
+    ('refs/tags/v1.77.0-beta.1', 'v1.77.0-beta.1', '-beta.1'),
+    ('refs/tags/v1.77.0', 'v1.77.0', ''),
+    ('refs/heads/main', 'main', ''),
+])
+def test_build_marker_matches_resolved_channel(tmp_path, ref, name, expected):
+    marker = tmp_path / 'build_identity.py'
+    assert rm.main(['--version', '1.77.0', '--ref', ref, '--ref-name', name,
+                    '--run-number', '123', '--write-build-identity', str(marker)]) == 0
+    namespace = {}
+    exec(marker.read_text(encoding='utf-8'), namespace)
+    assert namespace['BETA_SUFFIX'] == expected
+
+
+def test_beta_runtime_identity_reaches_report_metadata(monkeypatch):
+    from types import SimpleNamespace
+    import build_identity
+    import constants
+    from utils.reporting import report_metadata
+    monkeypatch.setattr(constants, 'APP_VERSION', '1.77.0')
+    monkeypatch.setattr(build_identity, 'BETA_SUFFIX', '-beta.1')
+    bundle = SimpleNamespace(fingerprint='abc', platform='windows', subject='error',
+                             summary='error', log_excerpt='', occurred_at='2026-11-11')
+    assert constants.app_display_version() == '1.77.0-beta.1'
+    assert report_metadata(bundle, source='manual', locale='en')['app_version'] == '1.77.0-beta.1'
+    assert constants.APP_VERSION == '1.77.0'
+
+
 def test_pypi_verification_rejects_beta_identity(tmp_path):
     dist = tmp_path / 'dist'
     dist.mkdir()

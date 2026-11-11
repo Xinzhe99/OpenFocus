@@ -41,6 +41,21 @@ class TestIsNewer:
     def test_garbage_is_never_newer(self):
         assert not is_newer("garbage", "1.10")
 
+    def test_beta_and_stable_ordering(self):
+        assert is_newer('v1.77.0', '1.77.0-beta.1')
+        assert is_newer('v1.77.0-beta.2', '1.77.0-beta.1')
+        assert is_newer('v1.78.0-beta.1', '1.77.0')
+        assert not is_newer('v1.77.0-beta.1', '1.77.0')
+        assert not is_newer('v1.77.0-beta.1', '1.77.0-beta.2')
+        assert not is_newer('v1.76.9', '1.77.0-beta.1')
+        assert not is_newer('v1.77.0', '1.77.0-beta.0')
+
+    def test_beta_receives_matching_stable_release_notes(self):
+        from utils.updater import release_note_entries
+        notes = release_note_entries('1.77.0-beta.1', 'v1.77.0',
+                                     [{'tag_name': 'v1.77.0', 'body': 'Stable release'}])
+        assert notes and notes[0]['tag_name'] == 'v1.77.0'
+
 
 def _release(kinds):
     suffixes = {"windows-setup": "setup.exe", "windows-zip": "windows-x64.zip",

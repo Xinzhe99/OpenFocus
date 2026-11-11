@@ -18,7 +18,7 @@ import threading
 import time
 import traceback
 
-from constants import APP_VERSION
+from constants import app_display_version
 from utils.logging_setup import get_logger, session_id, session_log_path
 from utils import logging_setup
 
@@ -87,7 +87,7 @@ def _prune_fallback_crashes(directory):
 def system_facts() -> dict:
     """Collect versions without importing optional GUI/ML packages."""
     facts = {
-        "OpenFocus": APP_VERSION,
+        "OpenFocus": app_display_version(),
         "date": datetime.datetime.now().isoformat(timespec="seconds"),
         "session": session_id(),
         "pid": os.getpid(),

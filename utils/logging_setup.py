@@ -18,7 +18,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 import zipfile
 
-from constants import APP_VERSION
+from constants import app_display_version
 from utils.app_paths import user_data_dir
 
 LOG_DIR_NAME = "logs"
@@ -277,7 +277,7 @@ def log_session_start() -> None:
         if _session_started or _handler is None:
             return
         _session_started = True
-        log_action("session.started", version=APP_VERSION,
+        log_action("session.started", version=app_display_version(),
                    python=sys.version.split()[0], platform=sys.platform,
                    frozen=bool(getattr(sys, "frozen", False)),
                    log_level=logging.getLevelName(_logger.level))
@@ -462,7 +462,7 @@ def export_feedback_package(dest_path, description: str = "",
                 if crash is not None:
                     paths = [crash, *(path for path in paths if path != crash)]
                 index = [
-                    f"OpenFocus {APP_VERSION}; session {session_id()}",
+                    f"OpenFocus {app_display_version()}; session {session_id()}",
                     "Read session_log.txt for the current session, then logs/ for retained history.",
                     "Match operation=<id> to follow a task; parent_operation_id links nested stages.",
                     "Events end in .started, .completed, .failed or .cancelled; elapsed_ms is duration.",

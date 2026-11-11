@@ -1,7 +1,7 @@
 """Prepare and deliver consented, sanitized diagnostic reports."""
 import sys
 
-from constants import APP_VERSION
+from constants import app_display_version
 from utils.account_client import AccountClient, AccountError
 from utils.app_paths import user_data_dir
 from utils.report_client import ReportClient, ReportError
@@ -14,7 +14,7 @@ def build_channel():
 def report_metadata(bundle, *, source, locale, severity='error'):
     return {
         'fingerprint': bundle.fingerprint,
-        'app_version': APP_VERSION,
+        'app_version': app_display_version(),
         'platform': bundle.platform,
         'severity': severity,
         'source': source,

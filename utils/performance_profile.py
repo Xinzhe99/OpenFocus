@@ -221,14 +221,14 @@ def finished_now():
 
 def runtime_metadata():
     """Versions and platform facts; reads only modules that are already imported."""
-    from constants import APP_VERSION
+    from constants import app_display_version
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     commit, dirty = _git_revision(root)
     versions = {'python': platform.python_version()}
     for name, module in (('numpy', 'numpy'), ('opencv', 'cv2'), ('onnxruntime', 'onnxruntime')):
         loaded = sys.modules.get(module)
         versions[name] = getattr(loaded, '__version__', None) if loaded is not None else None
-    return {'openfocus_version': APP_VERSION, 'commit': commit, 'dirty': dirty,
+    return {'openfocus_version': app_display_version(), 'commit': commit, 'dirty': dirty,
             'versions': versions, 'os': platform.platform(terse=True),
             'machine': platform.machine()}
 

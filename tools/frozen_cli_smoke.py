@@ -24,7 +24,7 @@ from PyQt6.QtCore import QSettings
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-from constants import APP_VERSION  # noqa: E402
+from constants import app_display_version  # noqa: E402
 from utils.image_utils import imwrite_auto  # noqa: E402
 
 
@@ -370,7 +370,7 @@ def run(executable: Path) -> None:
             str(data_dir / "settings.ini"), QSettings.Format.IniFormat,
         )
         settings.setValue("ui/first_run_done", "1")
-        settings.setValue("account/intro_version", APP_VERSION)
+        settings.setValue("account/intro_version", app_display_version())
         settings.setValue("ui/language", "en")
         settings.setValue("updates/last_check_epoch", 9999999999)
         settings.setValue("usage/enabled", False)
@@ -392,7 +392,7 @@ def run(executable: Path) -> None:
                 capture_output=True, text=True, encoding="utf-8",
                 errors="replace", timeout=90,
             )
-            if version.returncode or APP_VERSION not in version.stdout:
+            if version.returncode or version.stdout.strip() != app_display_version():
                 raise RuntimeError(
                     f"Packaged CLI version failed: {version.stdout!r} "
                     f"{version.stderr!r}"
@@ -458,7 +458,7 @@ def run(executable: Path) -> None:
                 if process.poll() is None:
                     process.terminate()
                     process.wait(timeout=15)
-            print(f"Packaged CLI and GUI smoke passed: {APP_VERSION}")
+            print(f"Packaged CLI and GUI smoke passed: {app_display_version()}")
     finally:
         if process is not None and process.poll() is None:
             process.terminate()
@@ -535,7 +535,7 @@ def run_installed_startup(executable: Path) -> None:
             process.wait(timeout=60)
             if process.returncode:
                 raise RuntimeError(f"Installed desktop exited with {process.returncode}")
-            print(f"Installed first-run desktop smoke passed: {APP_VERSION}")
+            print(f"Installed first-run desktop smoke passed: {app_display_version()}")
         finally:
             if process.poll() is None:
                 process.terminate()

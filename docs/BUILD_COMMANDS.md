@@ -16,6 +16,13 @@ headless wheel smoke for that commit, alongside the desktop builds. All must
 succeed before publication. Beta builds follow the same configured SignPath
 signing or unsigned path as stable builds.
 
+Before freezing each desktop build, the workflow writes a validated build marker.
+Beta applications display and report the full beta version, while the numeric
+version remains the installer and package metadata version. The stable updater
+orders a beta before the stable release of the same numeric version, so a beta
+installation can upgrade when that stable release reaches the mirror. Source
+runs and ordinary package builds retain the numeric version.
+
 The workflow stages a draft, checks the complete remote asset set, sizes and
 SHA-256 hashes against `OpenFocus-<tag>-build.json`, and verifies that the tag
 still points to the locked commit before publishing. A failed draft can be

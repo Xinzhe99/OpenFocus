@@ -26,7 +26,7 @@ import urllib.parse
 import urllib.request
 import webbrowser
 
-from constants import APP_VERSION
+from constants import app_display_version
 from utils.app_paths import user_data_dir
 
 BASE_URL = "https://account.openfocus.top"
@@ -240,7 +240,7 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 def _http(method, url, body=None, token=None, timeout=15):
     headers = {
         "Accept": "application/json",
-        "User-Agent": f"OpenFocus/{APP_VERSION}",
+        "User-Agent": f"OpenFocus/{app_display_version()}",
         "X-OpenFocus-Platform": {"win32": "windows", "darwin": "macos"}.get(sys.platform, "linux"),
         "X-OpenFocus-Run": _RUN_ID,
         "X-OpenFocus-Run-Started": str(_RUN_STARTED),

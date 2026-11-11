@@ -1570,8 +1570,8 @@ class OpenFocus(QMainWindow):
         # the banner back up.
         if tag == self._banner_dismissed_tag():
             return
-        from constants import APP_VERSION
-        banner.show_for(tag, APP_VERSION, ready=ready)
+        from constants import app_display_version
+        banner.show_for(tag, app_display_version(), ready=ready)
 
     def _on_banner_update_clicked(self) -> None:
         """Primary action: install when staged, otherwise start the update."""
@@ -2084,12 +2084,12 @@ class OpenFocus(QMainWindow):
         elif not self._update_manager().manual_check:
             return
         elif state == "latest":
-            from constants import APP_VERSION
+            from constants import app_display_version
             show_message_box(
                 self,
                 trans.t('update_up_to_date_title'),
                 trans.t('update_up_to_date_text') + "\n" +
-                trans.t('update_banner_hint').format(current=APP_VERSION),
+                trans.t('update_banner_hint').format(current=app_display_version()),
                 icon=QMessageBox.Icon.Information,
             )
         else:
@@ -4968,11 +4968,11 @@ if __name__ == "__main__":
                              trans.t('update_failed_after_restart'))
 
     # The account prompt precedes the main window on first launch and updates.
-    from constants import APP_VERSION
+    from constants import app_display_version
     from utils.settings_store import get_settings
     _account_settings = get_settings()
     _shown_version = str(_account_settings.value('account/intro_version', '') or '')
-    if _shown_version != APP_VERSION or any(ok for _, ok, _ in _update_results):
+    if _shown_version != app_display_version() or any(ok for _, ok, _ in _update_results):
         _quit_on_last_window = app.quitOnLastWindowClosed()
         app.setQuitOnLastWindowClosed(False)
         try:
@@ -4986,7 +4986,7 @@ if __name__ == "__main__":
             window.deleteLater()
             QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
             sys.exit(0)
-        _account_settings.setValue('account/intro_version', APP_VERSION)
+        _account_settings.setValue('account/intro_version', app_display_version())
 
     # Crash auto-recovery: a leftover lock means the last session died
     # without a clean close. Offer the saved snapshot before anything else.

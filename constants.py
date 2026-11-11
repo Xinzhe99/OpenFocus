@@ -1,5 +1,12 @@
 APP_VERSION = "1.77.0"
 
+
+def app_display_version():
+    """Return the build identity while preserving the numeric package version."""
+    from build_identity import BETA_SUFFIX
+    return APP_VERSION + BETA_SUFFIX
+
+
 WINDOW_WIDTH = 1600
 WINDOW_HEIGHT = 950
 

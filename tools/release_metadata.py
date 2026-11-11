@@ -105,6 +105,8 @@ def main(argv=None) -> int:
     parser.add_argument("--sha", default=os.environ.get("GITHUB_SHA", ""))
     parser.add_argument("--checkout-sha", default="",
                         help="Full SHA of the actual checked-out commit")
+    parser.add_argument("--write-build-identity", default="",
+                        help="Write a Python marker for the packaged build")
     args = parser.parse_args(argv)
 
     try:
@@ -118,6 +120,11 @@ def main(argv=None) -> int:
     except ReleaseIdentityError as exc:
         print(f"::error::{exc}", file=sys.stderr)
         return 1
+    if args.write_build_identity:
+        suffix = identity["tag"][len("v" + version):] if identity["channel"] == "beta" else ""
+        Path(args.write_build_identity).write_text(
+            '"""Generated build-time beta identity."""\nBETA_SUFFIX = ' + repr(suffix) + '\n',
+            encoding="utf-8")
 
     if args.github_output:
         _append_github_output(args.github_output, identity)

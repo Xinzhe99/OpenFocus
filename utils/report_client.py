@@ -17,7 +17,7 @@ import urllib.parse
 import urllib.request
 import uuid
 
-from constants import APP_VERSION
+from constants import app_display_version
 
 BASE_URL = "https://account.openfocus.top"
 MAX_BUNDLE_BYTES = 2 * 1024 * 1024
@@ -370,7 +370,7 @@ class ReportClient:
             try:
                 metadata = dict(entry["metadata"], installation_id=installation_id)
                 body = json.dumps(metadata, ensure_ascii=True, allow_nan=False).encode("utf-8")
-                headers = {"Content-Type": "application/json", "User-Agent": f"OpenFocus/{APP_VERSION}"}
+                headers = {"Content-Type": "application/json", "User-Agent": f"OpenFocus/{app_display_version()}"}
                 if bearer_token:
                     headers["Authorization"] = "Bearer " + bearer_token
                 request = urllib.request.Request(self._base_url + "/v1/reports", body, headers, method="POST")
@@ -389,7 +389,7 @@ class ReportClient:
                 if len(bundle) > MAX_BUNDLE_BYTES:
                     raise ValueError
                 request = urllib.request.Request(url, bundle, {
-                    "Content-Type": "application/zip", "User-Agent": f"OpenFocus/{APP_VERSION}"
+                    "Content-Type": "application/zip", "User-Agent": f"OpenFocus/{app_display_version()}"
                 }, method="PUT")
                 if not self._eligible(entry_id, attempt, permission, cancel, deadline):
                     return "dropped"
