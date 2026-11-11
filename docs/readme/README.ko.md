@@ -55,7 +55,7 @@
 ## 📢 소식
 
 > [!NOTE]
-> **[v1.77.0-beta.5 사전 릴리스](https://github.com/Xinzhe99/OpenFocus/releases/tag/v1.77.0-beta.5)** — OpenFocus B에서 호환되는 OpenCL 장치의 GPU 가속과 CPU 대체 실행, 수정된 와이프 비교, 자동 배경 및 리터치를 제공합니다. 자세한 내용은 [변경 기록](../../CHANGELOG.md)을 참고하세요.
+> **[v1.77.0-beta.6 사전 릴리스](https://github.com/Xinzhe99/OpenFocus/releases/tag/v1.77.0-beta.6)** — OpenFocus B에서 호환되는 OpenCL 장치의 GPU 가속과 CPU 대체 실행, 수정된 와이프 비교, 자동 배경 및 리터치를 제공합니다. 자세한 내용은 [변경 기록](../../CHANGELOG.md)을 참고하세요.
 
 이전 릴리스는 [변경 기록](../../CHANGELOG.md)에서 확인할 수 있습니다.
 
@@ -219,7 +219,7 @@ TIFF 메타데이터 또는 직접 입력으로 보정한 스케일 바를 이�
 <a id="install"></a>
 ## ⬇️ 설치
 
-[OpenFocus 공식 사이트](https://openfocus.top/#download)와 설치 스크립트는 Windows와 macOS용으로 안정 버전보다 새로운 베타 버전도 제공합니다(현재 v1.77.0-beta.5). [GitHub Releases](https://github.com/Xinzhe99/OpenFocus/releases)에서도 다운로드할 수 있습니다. 데스크톱 자동 업데이트도 더 새로운 베타 버전을 제공하며 PyPI의 Linux CLI는 안정 버전을 유지합니다.
+[OpenFocus 공식 사이트](https://openfocus.top/#download)와 설치 스크립트는 Windows와 macOS용으로 안정 버전보다 새로운 베타 버전도 제공합니다(현재 v1.77.0-beta.6). [GitHub Releases](https://github.com/Xinzhe99/OpenFocus/releases)에서도 다운로드할 수 있습니다. 데스크톱 자동 업데이트도 더 새로운 베타 버전을 제공하며 PyPI의 Linux CLI는 안정 버전을 유지합니다.
 
 설치와 문제 해결은 [사용자 설명서](../USER_MANUAL_KO.md)를 참고하세요.
 
