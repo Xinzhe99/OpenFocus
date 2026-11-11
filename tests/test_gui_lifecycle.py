@@ -40,11 +40,17 @@ from utils.usage_analytics import UsageAnalytics
 from dialogs.account import AccountDialog
 from dialogs.welcome import WelcomeDialog
 import webbrowser
-webbrowser.open = lambda *args, **kwargs: False
+browser_calls = []
+webbrowser.open = lambda *args, **kwargs: browser_calls.append((args, kwargs)) or False
 
 original_account_exec = AccountDialog.exec
 def skip_account(dialog):
-    QTimer.singleShot(0, dialog.reject)
+    def skip_after_load():
+        if getattr(dialog.window_main, '_account_load_job', None) is not None:
+            QTimer.singleShot(10, skip_after_load)
+        else:
+            QTimer.singleShot(100, dialog.reject)
+    QTimer.singleShot(0, skip_after_load)
     return original_account_exec(dialog)
 AccountDialog.exec = skip_account
 
@@ -104,6 +110,7 @@ else:
     raise AssertionError("GUI entry point did not exit")
 assert reporters and all(captured is sender for captured in reporters)
 assert welcome_events == ['scheduled', 'dispatched'], welcome_events
+assert not browser_calls, browser_calls
 '''
     try:
         result = subprocess.run(

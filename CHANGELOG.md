@@ -12,6 +12,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Show the same complete environment report in feedback and Environment Info, and let signed-in users open their account center from feedback.
 - Enable exposure matching by default for every fusion method in the desktop
   interface and batch processing; saved per-method choices remain in effect.
+- Restore saved account sessions locally without opening an unrequested browser tab at startup.
 - Provide enough native thread stack for flat-field previews on macOS.
 - Keep the default Unix control socket usable when the temporary directory path is long.
 

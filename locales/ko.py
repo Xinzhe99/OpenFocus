@@ -1459,7 +1459,6 @@ PACK = {
     "scalebar_baked_marker": "주석 새겨짐",
     "account_cleanup_pending": "저장된 자격 증명을 삭제하지 못해 로그아웃이 완료되지 않았습니다. 다시 로그인하기 전에 정리를 재시도하세요.",
     "account_cleanup_retry": "자격 증명 정리 재시도",
-    "account_sso_settings_error": "브라우저 로그인 설정을 저장하지 못했습니다.",
     "watermark_baked_marker": "워터마크 새겨짐",
     "watermark_layered_blocked": "레이어 TIFF에는 활성 워터마크를 포함할 수 없습니다. 일반 이미지나 이미지 스택으로 내보내세요.",
     "dialog_watermark_title": "워터마크",

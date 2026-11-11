@@ -2,7 +2,7 @@
 import threading
 from datetime import date
 
-from PyQt6.QtCore import QObject, QSettings, QSize, QTimer, QUrl, QUrlQuery, Qt, pyqtSignal
+from PyQt6.QtCore import QObject, QSize, QTimer, QUrl, QUrlQuery, Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QDesktopServices, QIcon, QPainter, QPixmap
 from PyQt6.QtWidgets import (QCheckBox, QDialog, QFrame, QHBoxLayout, QLabel,
                              QLineEdit, QPushButton, QVBoxLayout, QWidget)
@@ -67,7 +67,6 @@ class AccountDialog(QDialog):
         self._job = None
         self._operation = None
         self._cancel = threading.Event()
-        self._logout_settings_error = False
         self.setWindowTitle(trans.t('account_title'))
         self.setObjectName('accountDialog')
         self.setMinimumWidth(500)
@@ -222,10 +221,6 @@ class AccountDialog(QDialog):
         self.skip_button.setFont(skip_font)
         self.skip_button.clicked.connect(self.reject)
         root.addWidget(self.skip_button, 0, Qt.AlignmentFlag.AlignHCenter)
-        browser_started = getattr(window_main, 'account_browser_started', None)
-        if browser_started is not None:
-            browser_started.connect(self._follow_browser_job)
-            window_main.account_browser_finished.connect(self._browser_finished)
         self._refresh_controls(busy=True)
         if self.client is None:
             shared_load = getattr(window_main, '_account_load_job', None)
@@ -237,27 +232,12 @@ class AccountDialog(QDialog):
                 window_main.account_session_loaded.connect(self._finished)
         else:
             self._refresh_controls()
-        shared_browser = getattr(window_main, '_account_browser_job', None)
-        if shared_browser is not None:
-            self._follow_browser_job(shared_browser)
 
     def _open_account_center(self):
         if self._job is None and self.client is not None:
             self._start('web_center', lambda _started: self.client.open_web_handoff(
                 cancel=self._cancel, timeout=8))
 
-    def _follow_browser_job(self, job):
-        if self._job is not None:
-            return
-        self._operation = 'browser_auto'
-        self._job = job
-        self._refresh_controls(busy=True)
-        self.status.setText(trans.t('account_wait_browser'))
-        self.status.show()
-
-    def _browser_finished(self, result, error):
-        if self._operation == 'browser_auto':
-            self._finished(result, error)
 
     def _sign_in_browser(self):
         if self._job is not None or self.client is None:
@@ -359,14 +339,6 @@ class AccountDialog(QDialog):
 
     def _logout(self):
         if self._job is None and self.client is not None:
-            from utils.settings_store import get_settings
-            try:
-                settings = get_settings()
-                settings.setValue('account/browser_sso_enabled', False)
-                settings.sync()
-                self._logout_settings_error = settings.status() != QSettings.Status.NoError
-            except Exception:
-                self._logout_settings_error = True
             self._start('logout', lambda _started: self.client.logout())
 
     def _finished(self, result, error):
@@ -384,8 +356,6 @@ class AccountDialog(QDialog):
             self._refresh_controls()
             self.status.setText(trans.t('account_cleanup_pending') if getattr(self.client, 'logout_cleanup_pending', False)
                                 else self._error_text(error))
-            if operation == 'logout' and self._logout_settings_error:
-                self.status.setText(self.status.text() + '\n' + trans.t('account_sso_settings_error'))
             self.status.show()
             return
         report_cleanup_failed = False
@@ -399,8 +369,6 @@ class AccountDialog(QDialog):
                 enable_disclosed_reports(self.window_main, version)
             except Exception:
                 report_cleanup_failed = True
-            from utils.settings_store import get_settings
-            get_settings().setValue('account/browser_sso_enabled', True)
         self._refresh_controls()
         if report_cleanup_failed:
             self.status.setText(trans.t('report_cleanup_failed'))
@@ -409,8 +377,7 @@ class AccountDialog(QDialog):
             self.status.setText(trans.t('account_generic_error'))
             self.status.show()
         if operation == 'logout':
-            self.status.setText(trans.t('account_sso_settings_error') if self._logout_settings_error
-                                else trans.t('account_signed_out'))
+            self.status.setText(trans.t('account_signed_out'))
             self.status.show()
 
     @staticmethod
@@ -443,17 +410,11 @@ class AccountDialog(QDialog):
     def reject(self):
         if self._operation != 'web_center':
             self._cancel.set()
-        cancel_browser = getattr(self.window_main, '_cancel_browser_sso', None)
-        if cancel_browser is not None:
-            cancel_browser()
         super().reject()
 
 
 def cancel_account_jobs(window):
     """Cancel pending sign-ins and report whether account workers remain."""
-    cancel_browser = getattr(window, '_cancel_browser_sso', None)
-    if cancel_browser is not None:
-        cancel_browser()
     for dialog in window.findChildren(AccountDialog):
         dialog._cancel.set()
     return any(job.owner is window for job in _ACTIVE_JOBS)

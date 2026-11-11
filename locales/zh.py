@@ -1459,7 +1459,6 @@ ZH = {
     "scalebar_baked_marker": "标注已烙入",
     "account_cleanup_pending": "无法删除保存的凭据，退出登录尚未完成。请在重新登录前重试清理。",
     "account_cleanup_retry": "重试清理凭据",
-    "account_sso_settings_error": "无法保存浏览器登录偏好。",
     "watermark_baked_marker": "已烙入水印",
     "watermark_layered_blocked": "分层 TIFF 无法包含当前水印；请改为导出普通图像或图像栈。",
     "dialog_watermark_title": "水印",

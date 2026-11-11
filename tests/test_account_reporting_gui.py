@@ -83,7 +83,6 @@ def test_sign_in_reports_cleanup_failure_without_losing_session(qapp, settings, 
         assert window._account_client.is_signed_in()
         assert dialog.status.text() == trans.t('report_cleanup_failed')
         assert 'private storage detail' not in dialog.status.text()
-        assert settings.value('account/browser_sso_enabled', False, type=bool)
     finally:
         dialog.reject()
         window.deleteLater()
@@ -128,7 +127,7 @@ def test_account_menu_and_dialog_follow_sign_in_and_sign_out(qapp, tmp_path, mon
         _destroy_main_window(qapp, window)
 
 
-def test_logout_storage_failure_shows_retry_and_disables_browser_restore(qapp, settings):
+def test_logout_storage_failure_shows_retry(qapp, settings):
     from dialogs.account import AccountDialog
     from locales import trans
     from utils.account_client import AccountClient, AccountError
@@ -153,10 +152,8 @@ def test_logout_storage_failure_shows_retry_and_disables_browser_restore(qapp, s
     window._account_client = AccountClient(store=store, request=request)
     dialog = AccountDialog(window)
     try:
-        settings.setValue('account/browser_sso_enabled', True)
         dialog.show()
         dialog.logout_button.click()
-        assert not settings.value('account/browser_sso_enabled', True, type=bool)
         _wait(qapp, lambda: dialog._job is None)
         assert window._account_client.logout_cleanup_pending
         assert dialog.status.text() == trans.t('account_cleanup_pending')
@@ -173,46 +170,28 @@ def test_logout_storage_failure_shows_retry_and_disables_browser_restore(qapp, s
         window.deleteLater()
 
 
-def test_browser_session_restores_account_and_logout_disables_autorestore(qapp, tmp_path, monkeypatch):
+def test_browser_sign_in_requires_user_action_and_logout_stays_signed_out(qapp, tmp_path, monkeypatch):
     from dialogs.account import AccountDialog
     from tests.test_control_channel import _destroy_main_window, _new_main_window
-    from utils.settings_store import get_settings
 
     window = _new_main_window(qapp, tmp_path, monkeypatch)
     _wait(qapp, lambda: getattr(window, '_account_load_job', None) is None)
     client = window._account_client = _Account()
+    dialog = AccountDialog(window)
     try:
-        window.enable_browser_sso()
-        _wait(qapp, lambda: window._account_browser_job is None)
-        assert client.is_signed_in()
+        qapp.processEvents()
+        assert client.calls == []
+        dialog.browser_button.click()
+        _wait(qapp, lambda: dialog._job is None)
+        assert client.calls == ['browser']
         assert 'browser@example.test' in window.ui_objs['action_account'].toolTip()
-        dialog = AccountDialog(window)
         dialog.logout_button.click()
         _wait(qapp, lambda: dialog._job is None)
-        assert not get_settings().value('account/browser_sso_enabled', True, type=bool)
-        window.enable_browser_sso()
+        qapp.processEvents()
         assert client.calls == ['browser', 'logout']
-        dialog.reject()
-    finally:
-        _destroy_main_window(qapp, window)
-
-
-def test_skipping_after_browser_session_is_persisted_revokes_it(qapp, tmp_path, monkeypatch):
-    from tests.test_control_channel import _destroy_main_window, _new_main_window
-
-    window = _new_main_window(qapp, tmp_path, monkeypatch)
-    _wait(qapp, lambda: getattr(window, '_account_load_job', None) is None)
-    client = window._account_client = _Account()
-    try:
-        window.enable_browser_sso()
-        job = window._account_browser_job
-        job._thread.join(5)
-        assert not job._thread.is_alive() and client.is_signed_in()
-        window._cancel_browser_sso()
-        _wait(qapp, lambda: window._account_browser_job is None)
         assert not client.is_signed_in()
-        assert client.calls == ['browser', 'logout']
     finally:
+        dialog.reject()
         _destroy_main_window(qapp, window)
 
 
@@ -242,7 +221,8 @@ def test_closing_account_dialog_does_not_cancel_opening_web_center(qapp, setting
 
 
 @pytest.mark.parametrize('version', ['2026-11-08', None])
-def test_browser_restore_with_old_terms_does_not_enable_reports(qapp, tmp_path, monkeypatch, version):
+def test_browser_sign_in_with_old_terms_does_not_enable_reports(qapp, tmp_path, monkeypatch, version):
+    from dialogs.account import AccountDialog
     from tests.test_control_channel import _destroy_main_window, _new_main_window
     from utils.settings_store import get_settings
 
@@ -250,12 +230,14 @@ def test_browser_restore_with_old_terms_does_not_enable_reports(qapp, tmp_path, 
     _wait(qapp, lambda: getattr(window, '_account_load_job', None) is None)
     client = window._account_client = _Account()
     client.accepted_terms_version = lambda: version
+    dialog = AccountDialog(window)
     try:
-        window.enable_browser_sso()
-        _wait(qapp, lambda: window._account_browser_job is None)
+        dialog.browser_button.click()
+        _wait(qapp, lambda: dialog._job is None)
         assert client.is_signed_in()
         assert not get_settings().value('reports/auto_send', False, type=bool)
     finally:
+        dialog.reject()
         _destroy_main_window(qapp, window)
 
 

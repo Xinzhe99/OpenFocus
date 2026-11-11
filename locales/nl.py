@@ -1459,7 +1459,6 @@ PACK = {
     "scalebar_baked_marker": "annotaties ingebrand",
     "account_cleanup_pending": "Afmelden is niet voltooid omdat opgeslagen gegevens niet konden worden verwijderd. Probeer dit opnieuw voordat u zich aanmeldt.",
     "account_cleanup_retry": "Inloggegevens opnieuw verwijderen",
-    "account_sso_settings_error": "De voorkeur voor aanmelden via de browser kon niet worden opgeslagen.",
     "watermark_baked_marker": "watermerk ingebrand",
     "watermark_layered_blocked": "Gelaagde TIFF-export kan het actieve watermerk niet bevatten. Exporteer een normale afbeelding of stapel.",
     "dialog_watermark_title": "Watermerk",

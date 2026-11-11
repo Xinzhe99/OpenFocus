@@ -1459,7 +1459,6 @@ PACK = {
     "scalebar_baked_marker": "annotations incrustées",
     "account_cleanup_pending": "La déconnexion est incomplète : les identifiants enregistrés n'ont pas pu être supprimés. Réessayez avant de vous reconnecter.",
     "account_cleanup_retry": "Réessayer la suppression des identifiants",
-    "account_sso_settings_error": "Impossible d'enregistrer la préférence de connexion par navigateur.",
     "watermark_baked_marker": "filigrane incrusté",
     "watermark_layered_blocked": "L'export TIFF en couches ne peut pas inclure le filigrane actif. Exportez plutôt une image ou une pile normale.",
     "dialog_watermark_title": "Filigrane",
