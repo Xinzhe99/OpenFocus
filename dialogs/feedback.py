@@ -11,13 +11,14 @@ from PyQt6.QtWidgets import (
     QPlainTextEdit, QPushButton, QVBoxLayout,
 )
 
-from constants import APP_VERSION
+from constants import app_display_version
 from locales import trans
 from utils import logging_setup
 
 ISSUES_URL = "https://github.com/Xinzhe99/OpenFocus/issues"
 
 MAX_INLINE_LOG = 40_000
+
 
 
 
@@ -73,13 +74,13 @@ class FeedbackDialog(QDialog):
 
         buttons = QHBoxLayout()
         copy_btn = QPushButton(trans.t("feedback_copy_log"))
-        copy_btn.setToolTip(trans.t("feedback_head").format(version=APP_VERSION))
+        copy_btn.setToolTip(trans.t("feedback_head").format(version=app_display_version()))
         copy_btn.clicked.connect(self._copy_log)
         issues_btn = QPushButton(trans.t("feedback_open_issues"))
-        issues_btn.setToolTip(trans.t("feedback_head").format(version=APP_VERSION))
+        issues_btn.setToolTip(trans.t("feedback_head").format(version=app_display_version()))
         issues_btn.clicked.connect(self._open_issues)
         export_btn = QPushButton(trans.t("feedback_export"))
-        export_btn.setToolTip(trans.t("feedback_head").format(version=APP_VERSION))
+        export_btn.setToolTip(trans.t("feedback_head").format(version=app_display_version()))
         export_btn.clicked.connect(self._export_package)
         buttons.addWidget(copy_btn)
         buttons.addWidget(issues_btn)

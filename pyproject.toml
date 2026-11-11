@@ -70,7 +70,7 @@ packages = ["core", "core.control", "core.models", "core.models.stackmff_v3",
 # Release languages are registered in TranslationManager.PACK_ORDER. The
 # package ships their importable modules even when no .py files are unpacked;
 # source installations may additionally discover extra language modules.
-py-modules = ["constants"]
+py-modules = ["constants", "build_identity"]
 
 [tool.setuptools.dynamic]
 version = { attr = "constants.APP_VERSION" }

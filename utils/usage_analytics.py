@@ -12,7 +12,7 @@ import uuid
 
 from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 
-from constants import APP_VERSION
+from constants import app_display_version
 from utils.settings_store import get_settings
 
 ENABLED_KEY = "usage/enabled"
@@ -36,7 +36,7 @@ def _platform():
 def _send(payload):
     request = urllib.request.Request(
         ENDPOINT, data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json", "User-Agent": f"OpenFocus/{APP_VERSION}"},
+        headers={"Content-Type": "application/json", "User-Agent": f"OpenFocus/{app_display_version()}"},
         method="POST")
     with urllib.request.urlopen(request, timeout=5) as response:
         return response.status == 204
@@ -112,7 +112,7 @@ class UsageAnalytics(QObject):
             return
         cancel = threading.Event()
         self._cancel = cancel
-        payload = {"installation_id": installation_id, "version": APP_VERSION,
+        payload = {"installation_id": installation_id, "version": app_display_version(),
                    "platform": platform}
         sender = self.sender
         finished = self._finished

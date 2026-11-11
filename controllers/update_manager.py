@@ -181,10 +181,10 @@ class UpdateManager(QObject):
         Without this a build staged before the user installed a newer release
         was still offered as "restart to update" — a downgrade.
         """
-        from constants import APP_VERSION
+        from constants import app_display_version
         from utils.updater import is_newer
         try:
-            return is_newer(tag, APP_VERSION)
+            return is_newer(tag, app_display_version())
         except Exception:
             return False
 
@@ -207,10 +207,10 @@ class UpdateManager(QObject):
     @property
     def notes(self) -> str:
         """Select the current UI language at display time, including offline."""
-        from constants import APP_VERSION
+        from constants import app_display_version
         from locales import trans
         from utils.updater import format_release_notes
-        return format_release_notes(APP_VERSION, self._notes_tag,
+        return format_release_notes(app_display_version(), self._notes_tag,
                                     self._note_entries, trans.current_lang)
 
     def _emit_notes_changed(self) -> None:
@@ -218,7 +218,7 @@ class UpdateManager(QObject):
 
     def _load_note_cache(self) -> None:
         try:
-            from constants import APP_VERSION
+            from constants import app_display_version
             from utils.settings_store import get_settings
             from utils.updater import release_note_entries
             raw = get_settings().value(NOTES_CACHE_KEY, "")
@@ -228,7 +228,7 @@ class UpdateManager(QObject):
             if not isinstance(cached, dict) or not isinstance(cached.get("tag"), str):
                 return
             self._note_entries = release_note_entries(
-                APP_VERSION, cached["tag"], cached.get("releases", []))
+                app_display_version(), cached["tag"], cached.get("releases", []))
             self._notes_tag = cached["tag"]
         except Exception:
             # Missing/corrupt cached notes must never prevent an offline update.
@@ -340,7 +340,7 @@ class UpdateManager(QObject):
     def check(self, quiet: bool = False) -> None:
         """Check the update service; quiet checks are rate-limited."""
         import time
-        from constants import APP_VERSION
+        from constants import app_display_version
         from utils import updater
 
         if (getattr(self, "_shutting_down", False)
@@ -385,7 +385,7 @@ class UpdateManager(QObject):
                                     zip_digest, notes)
 
         self._checking = True
-        updater.check_async(APP_VERSION, done, quiet=False)
+        updater.check_async(app_display_version(), done, quiet=False)
 
     @pyqtSlot(str, str, str, str, str, str, object)
     def _on_check_result(self, state, tag, page_url, zip_url="", setup_url="",
@@ -407,9 +407,9 @@ class UpdateManager(QObject):
         self.zip_url = zip_url
         self.setup_url = setup_url
         self.tag = tag
-        from constants import APP_VERSION
+        from constants import app_display_version
         from utils.updater import release_note_entries
-        self._note_entries = release_note_entries(APP_VERSION, tag, notes)
+        self._note_entries = release_note_entries(app_display_version(), tag, notes)
         self._notes_tag = tag
         self._emit_notes_changed()
         self.zip_digest = zip_digest

@@ -179,7 +179,7 @@ def _validate_source_transforms(transforms, scale, *, require_sources=True):
 
 def _collect_state(window) -> Dict[str, Any]:
     """Snapshot everything restorable from the main window."""
-    from constants import APP_VERSION
+    from constants import app_display_version
     method = window.current_fusion_method()
     brightness = getattr(window, "brightness_option_for", None)
     alignment = window.current_alignment_method()
@@ -312,7 +312,7 @@ def _collect_state(window) -> Dict[str, Any]:
     abs_paths = sources
     return {
         "openfocus_project": FORMAT_VERSION,
-        "app_version": APP_VERSION,
+        "app_version": app_display_version(),
         "sources": abs_paths,
         # Folder each frame was read from, so the stack still round-trips after
         # the frames are reached through another directory (moved, network

@@ -89,6 +89,9 @@ jobs:
             Write-Output ("AI model {0}: {1:N0} bytes" -f $w, $len)
           }
 
+      - name: Write packaged build identity
+        run: python tools/release_metadata.py --write-build-identity build_identity.py
+
       - name: Build with PyInstaller
         shell: pwsh
         run: |
@@ -377,6 +380,9 @@ jobs:
             if [ "$size" -lt 600000 ]; then echo "$w is only $size bytes"; exit 1; fi
             echo "AI model $w: $size bytes"
           done
+
+      - name: Write packaged build identity
+        run: python tools/release_metadata.py --write-build-identity build_identity.py
 
       - name: Build with PyInstaller
         run: |

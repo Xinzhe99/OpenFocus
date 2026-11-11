@@ -145,6 +145,18 @@ def test_release_calls_suite_and_locks_every_checkout():
             assert expression(checkout(jobs[name])['with']['ref'], context) == sha
 
 
+def test_packaged_platforms_embed_identity_before_build():
+    jobs = workflow('release.yml')['jobs']
+    for name in ('build-windows', 'build-macos'):
+        steps = jobs[name]['steps']
+        marker = next(i for i, step in enumerate(steps)
+                      if step.get('name') == 'Write packaged build identity')
+        build = next(i for i, step in enumerate(steps)
+                     if step.get('name') == 'Build with PyInstaller')
+        assert marker < build
+        assert '--write-build-identity build_identity.py' in steps[marker]['run']
+
+
 def test_beta_uses_signing_gate_and_cannot_publish_to_pypi():
     release = workflow('release.yml')['jobs']
     sign = next(step for step in release['build-windows']['steps']

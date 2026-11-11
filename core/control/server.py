@@ -19,7 +19,7 @@ from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (QApplication, QColorDialog, QFileDialog,
                              QLineEdit, QMenu)
 
-from constants import APP_VERSION
+from constants import app_display_version
 from core.control.color_dialogs import (install_non_native_color_dialogs,
                                         uninstall_non_native_color_dialogs)
 from core.control.protocol import (
@@ -274,7 +274,7 @@ class ControlServer(QObject):
         self._server.newConnection.connect(self._accept)
         try:
             self.discovery = write_discovery(
-                self.socket_name, self.token, os.getpid(), APP_VERSION)
+                self.socket_name, self.token, os.getpid(), app_display_version())
             self._install_tracking()
             self._dialogs_patched = install_non_native_color_dialogs()
             if os.environ.get("OPENFOCUS_CONTROL_WATCHDOG"):
@@ -704,7 +704,7 @@ class ControlServer(QObject):
 
     # ----------------------------------------------------------- app/stack
     def _cmd_ping(self, args):
-        return {"pong": True, "version": APP_VERSION, "schema": SCHEMA}
+        return {"pong": True, "version": app_display_version(), "schema": SCHEMA}
 
     def _cmd_app_info(self, args):
         import platform
@@ -736,7 +736,7 @@ class ControlServer(QObject):
         except Exception:
             capabilities["gpu"] = None
         return {
-            "version": APP_VERSION,
+            "version": app_display_version(),
             "pid": os.getpid(),
             "platform": platform.platform(),
             "python": sys.version.split()[0],

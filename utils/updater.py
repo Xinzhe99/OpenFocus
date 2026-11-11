@@ -24,13 +24,16 @@ REQUEST_TIMEOUT_S = 10
 
 
 def parse_version(tag: str) -> Optional[Tuple[int, ...]]:
-    """Turn 'v1.10' / '1.10.2' into a comparable tuple; None if unparsable."""
-    tag = tag.strip().lstrip("vV")
-    parts = tag.split(".")
-    try:
-        return tuple(int(p) for p in parts)
-    except ValueError:
+    """Return numeric components for a stable or beta version."""
+    if not isinstance(tag, str):
         return None
+    match = re.fullmatch(r"[vV]?([0-9]+(?:\.[0-9]+)*)(?:-beta\.([1-9][0-9]*))?", tag.strip())
+    return tuple(map(int, match.group(1).split('.'))) if match else None
+
+
+def _beta_number(tag: str) -> Optional[int]:
+    match = re.search(r"-beta\.([1-9][0-9]*)$", tag.strip())
+    return int(match.group(1)) if match else None
 
 
 def is_newer(latest_tag: str, current_version: str) -> bool:
@@ -41,7 +44,12 @@ def is_newer(latest_tag: str, current_version: str) -> bool:
     width = max(len(latest), len(current))
     latest += (0,) * (width - len(latest))
     current += (0,) * (width - len(current))
-    return latest > current
+    if latest != current:
+        return latest > current
+    latest_beta, current_beta = _beta_number(latest_tag), _beta_number(current_version)
+    if current_beta is None:
+        return False
+    return latest_beta is None or latest_beta > current_beta
 
 
 def _mirror_asset(release: dict, kind: str) -> Optional[dict]:

@@ -35,7 +35,7 @@ from core.frame_storage import scratch_directory
 from core.algorithms import (fusion_algorithms, registration_algorithms, get_fusion,
                              get_registration, resolve_fusion_parameters,
                              resolve_registration_parameters, alignment_steps)
-from constants import APP_VERSION
+from constants import app_display_version
 from utils.logging_setup import (setup_logging, log_session_start, log_operation,
                                  log_action, get_logger, frame_details)
 
@@ -1572,7 +1572,7 @@ def run_cli(argv: List[str]) -> int:
     if argv:
         head = argv[0]
         if head in ("version", "--version", "-V"):
-            print(APP_VERSION)
+            print(app_display_version())
             return EXIT_OK
         if head in ("describe", "--describe"):
             print(json.dumps(describe_payload(), ensure_ascii=False))
@@ -2120,7 +2120,7 @@ def _run_cli_parsed(args) -> int:
               file=sys.stderr)
         return EXIT_USAGE
     if args.json_progress:
-        _progress(event="start", version=APP_VERSION,
+        _progress(event="start", version=app_display_version(),
                   mode="batch" if batch_mode else "single",
                   method=args.method, align=args.align)
     if batch_mode:
@@ -2371,7 +2371,7 @@ def describe_payload() -> dict:
         capabilities["gpu"] = None
     return {
         "schema": "openfocus/describe/1",
-        "version": APP_VERSION,
+        "version": app_display_version(),
         "capabilities": capabilities,
         "methods": methods,
         "registrations": [spec.id for spec in registration_algorithms()],

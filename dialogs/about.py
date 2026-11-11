@@ -81,8 +81,8 @@ class EnvironmentInfoDialog(QDialog):
         info_lines = []
         available = {}
         info_lines.append("=" * 60)
-        from constants import APP_VERSION
-        info_lines.append(f"OpenFocus v{APP_VERSION}")
+        from constants import app_display_version
+        info_lines.append(f"OpenFocus v{app_display_version()}")
         info_lines.append("=" * 60)
         info_lines.append("")
 

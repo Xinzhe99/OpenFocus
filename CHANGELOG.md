@@ -13,6 +13,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 - Support GitHub beta prereleases without publishing them as stable downloads or PyPI releases.
+- Identify packaged beta builds in the application and diagnostics, and offer the matching stable release when it becomes available.
 
 ### Fixed
 - Show the same complete environment report in feedback and Environment Info, and let signed-in users open their account center from feedback.
