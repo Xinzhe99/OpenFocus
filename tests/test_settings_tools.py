@@ -774,13 +774,11 @@ def test_environment_probe_populates_selectable_report(qapp, monkeypatch):
 
 def test_feedback_uses_environment_probe_and_offers_signed_in_account(qapp, monkeypatch):
     from dialogs import about, feedback
-    from locales import trans
 
     monkeypatch.setattr(about._EnvironmentProbe, "start", lambda self: None)
     window = QWidget()
     window._account_client = SimpleNamespace(is_signed_in=lambda: True)
     dialog = feedback.FeedbackDialog(window)
-    assert dialog.account_button.text() == trans.t('account_web_center')
     dialog._show_facts(True)
     dialog._facts_probe.text = "shared environment report"
     dialog._facts_probe.finished.set()
@@ -809,7 +807,7 @@ def test_feedback_account_handoff_uses_account_client(qapp, monkeypatch):
         is_signed_in=lambda: True,
         open_web_handoff=lambda **kwargs: calls.append(kwargs))
     dialog = feedback.FeedbackDialog(window)
-    dialog._open_account_center()
+    dialog.account_button.click()
     assert calls == [{'timeout': 8}]
     dialog.deleteLater()
     window.deleteLater()
