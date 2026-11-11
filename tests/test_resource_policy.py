@@ -508,6 +508,17 @@ def test_cgroup_path_cache_observes_migration_mounts_and_read_failure(monkeypatc
     assert list(paths("memory")) == []
 
 
+def test_cgroup_names_keep_non_newline_line_boundary_characters(monkeypatch):
+    _files(monkeypatch, {
+        "/proc/self/cgroup": "0::/job\x0cone/part\u2028two\n",
+        "/proc/self/mountinfo": "30 20 0:27 / /sys/fs/cgroup rw - cgroup2 cgroup rw\n",
+    })
+    assert list(platform_utils._linux_cgroup_paths("memory")) == [
+        ("/sys/fs/cgroup/job\x0cone/part\u2028two", "cgroup2"),
+        ("/sys/fs/cgroup/job\x0cone", "cgroup2"),
+        ("/sys/fs/cgroup", "cgroup2")]
+
+
 def test_cached_cgroup_paths_keep_limits_and_occupancy_live(monkeypatch):
     files = {
         "/proc/self/cgroup": "0::/\n",
