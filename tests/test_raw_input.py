@@ -89,3 +89,45 @@ def test_scaled_raw_preserves_full_decode_colors_and_size(monkeypatch, tmp_path)
         np.testing.assert_array_equal(frame.full_resolution(), expected)
 
 
+def _reversed_copy(rgb):
+    return np.ascontiguousarray(rgb[:, :, ::-1])
+
+
+def test_rgb_to_bgr_returns_the_reversed_copy_for_decoded_samples():
+    rng = np.random.default_rng(11)
+    for dtype in (np.uint8, np.uint16):
+        rgb = rng.integers(0, np.iinfo(dtype).max + 1, (37, 53, 3), dtype=dtype)
+        for source in (rgb, rgb[::2, 3:], rgb[:, ::-1], np.asfortranarray(rgb)):
+            before = source.copy()
+            bgr = il.rgb_to_bgr(source)
+            assert bgr.dtype == dtype and bgr.shape == source.shape
+            assert bgr.flags.c_contiguous and bgr.flags.writeable
+            assert not np.shares_memory(bgr, source)
+            np.testing.assert_array_equal(bgr, _reversed_copy(source))
+            np.testing.assert_array_equal(source, before)
+    extremes = np.array([[[0, 1, 65535], [65534, 32768, 255]]], np.uint16)
+    np.testing.assert_array_equal(il.rgb_to_bgr(extremes), _reversed_copy(extremes))
+
+
+def test_rgb_to_bgr_uses_the_native_swap_only_for_three_integer_channels(monkeypatch):
+    calls = []
+    real = cv2.cvtColor
+
+    def counted(image, code, *args, **kwargs):
+        calls.append(code)
+        return real(image, code, *args, **kwargs)
+
+    monkeypatch.setattr(il.cv2, 'cvtColor', counted)
+    rng = np.random.default_rng(12)
+    il.rgb_to_bgr(rng.integers(0, 65536, (5, 7, 3), dtype=np.uint16))
+    il.rgb_to_bgr(rng.integers(0, 256, (5, 7, 3), dtype=np.uint8))
+    assert calls == [cv2.COLOR_RGB2BGR] * 2
+    # Layouts LibRaw is not expected to return keep the plain reversed copy.
+    for other in (rng.integers(0, 65536, (5, 7, 1), dtype=np.uint16),
+                  rng.integers(0, 65536, (5, 7, 4), dtype=np.uint16),
+                  rng.integers(-99, 99, (5, 7, 3)).astype(np.int16),
+                  rng.random((5, 7, 3)), rng.random((5, 7, 3), dtype=np.float32)):
+        result = il.rgb_to_bgr(other)
+        assert result.flags.c_contiguous and result.dtype == other.dtype
+        np.testing.assert_array_equal(result, _reversed_copy(other))
+    assert len(calls) == 2

@@ -175,6 +175,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   stack can still use camera-linear import and Linear DNG export.
 - Prepare source frames with bounded parallel decoding and publish thumbnails
   incrementally, while respecting the configured thread and memory budgets.
+- Reorder decoded camera RAW samples into the working channel order with a
+  faster native copy. Decoded pixels are unchanged.
 - Move frame-review messages to the bottom status bar, leaving more room for
   the source list while preserving temporary render and update messages.
 - Apply explicit descending frame order before OpenFocus registration, and
