@@ -1,4 +1,6 @@
 """Bounded OpenFocus B depth fusion and C weighted-pyramid fusion."""
+import os
+
 import numpy as np
 
 from fusion_methods.openfocus_depth import depth_map, _validate_feather
@@ -107,12 +109,35 @@ def _active_sources(depth, count, should_cancel):
 def openfocus_b_impl(input_source, img_resize=None, kernel_size: int = 17,
                      thread_count: int = None, depth_smoothing: float = 1.44,
                      should_cancel=None, depth_override=None, progress_callback=None,
-                     *, feather: int = 0):
-    """Fuse integer source codes with ordered weighted-merge bands and B feathering."""
+                     *, feather: int = 0, device: str = 'auto'):
+    """Fuse integer source codes with ordered weighted-merge bands and B feathering.
+
+    ``device='auto'`` uses the optional OpenCL path when pyopencl, a device and
+    the input contract are available, and falls back to CPU otherwise;
+    ``device='gpu'`` requires the GPU path and raises on failure;
+    ``device='cpu'`` disables it.
+    """
     _validate_feather(feather)
+    if device not in ('auto', 'cpu', 'gpu'):
+        raise ValueError("device must be 'auto', 'cpu' or 'gpu'")
     from core import source_frames
     from fusion_methods.openfocus_ab import _check_cancel
     frames, shape = _inputs(input_source, img_resize, should_cancel)
+    if device != 'cpu' and not os.environ.get('OPENFOCUS_DISABLE_GPU'):
+        try:
+            from fusion_methods import _openfocus_gpu as _gpu
+            if _gpu.gpu_available() and _gpu.gpu_supported(
+                    frames, shape, img_resize, depth_override):
+                return _gpu.openfocus_b_gpu(
+                    frames, shape, img_resize, kernel_size, thread_count,
+                    depth_smoothing, should_cancel, depth_override,
+                    progress_callback, feather)
+            if device == 'gpu':
+                raise RuntimeError('OpenFocus B GPU path does not support these inputs')
+        except Exception as exc:
+            from core.registration import RegistrationCancelled
+            if device == 'gpu' or isinstance(exc, RegistrationCancelled):
+                raise
     configure_rows(frames, img_resize, 'openfocus_b', thread_count, should_cancel)
     smoothing = 1.44 if depth_smoothing is None else float(depth_smoothing)
     count = len(frames)
