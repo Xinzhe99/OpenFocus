@@ -5,6 +5,7 @@ import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
 
 import pytest
 
@@ -305,17 +306,21 @@ def test_other_process_can_revoke_while_post_is_blocked(tmp_path):
     assert [entry['metadata']['source'] for entry in state['pending']] == ['manual']
 
 
-def test_deadline_after_post_prevents_upload(tmp_path):
+def test_deadline_after_post_prevents_upload(tmp_path, monkeypatch):
+    from utils import report_client
+
     client = ReportClient(tmp_path)
     client.enqueue({'source': 'manual'}, b'zip')
-    entered, release = threading.Event(), threading.Event()
+    entered, release, expired = threading.Event(), threading.Event(), threading.Event()
     server = client._opener = Server('POST', entered, release)
-    deadline = time.monotonic() + 0.2
+    clock = SimpleNamespace(monotonic=lambda: 2 if expired.is_set() else 0,
+                            sleep=time.sleep)
+    monkeypatch.setattr(report_client, 'time', clock)
     with ThreadPoolExecutor(max_workers=1) as pool:
-        retry = pool.submit(client.retry_pending, deadline=deadline)
+        retry = pool.submit(client.retry_pending, deadline=1)
         try:
             assert entered.wait(5)
-            threading.Event().wait(max(0, deadline - time.monotonic()) + 0.05)
+            expired.set()
         finally:
             release.set()
         assert retry.result(timeout=5) == 0
