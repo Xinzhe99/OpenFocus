@@ -474,8 +474,10 @@ def _mirror_identity(path: Path, tag: str, release: dict, head_sha: str) -> dict
     digest = matches[0].get("digest")
     if digest and digest.lower() != "sha256:" + sha256_file(path):
         raise ReleaseArchiveError("build identity GitHub digest differs")
+    beta = BETA_TAG_RE.fullmatch(tag)
+    version = beta.group(1) if beta else tag.removeprefix("v")
     if (identity.get("schema_version") != 1 or identity.get("tag") != tag or
-            identity.get("version") != tag.removeprefix("v") or
+            identity.get("version") != version or
             not re.fullmatch(r"[0-9a-f]{40}", str(identity.get("sha", ""))) or
             not str(identity.get("run_id", "")).isdigit() or
             not str(identity.get("run_attempt", "")).isdigit() or
