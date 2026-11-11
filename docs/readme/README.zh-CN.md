@@ -55,7 +55,7 @@
 ## 📢 最新动态
 
 > [!NOTE]
-> **[v1.77.0-beta.4 预发布版](https://github.com/Xinzhe99/OpenFocus/releases/tag/v1.77.0-beta.4)** — OpenFocus B 为兼容的 OpenCL 设备提供 GPU 加速，并可回退到 CPU；修复了滑动对比，提供自动背景和修图功能。详情见[更新日志](../../CHANGELOG.md)。
+> **[v1.77.0-beta.5 预发布版](https://github.com/Xinzhe99/OpenFocus/releases/tag/v1.77.0-beta.5)** — OpenFocus B 为兼容的 OpenCL 设备提供 GPU 加速，并可回退到 CPU；修复了滑动对比，提供自动背景和修图功能。详情见[更新日志](../../CHANGELOG.md)。
 
 更早的版本见 [更新日志](../../CHANGELOG.md)。
 
@@ -227,7 +227,7 @@ JPEG/RAW 显示预览优先读取可用的内嵌图像；正式处理和原始�
 <a id="install"></a>
 ## ⬇️ 安装
 
-[OpenFocus 官网](https://openfocus.top/#download)及其安装脚本为 Windows 和 macOS 提供最新版本，包括比稳定版更新的测试版（目前为 v1.77.0-beta.4）。也可从 [GitHub Releases](https://github.com/Xinzhe99/OpenFocus/releases) 下载。桌面应用自动更新也提供更新的测试版；PyPI 上的 Linux CLI 仍使用稳定版。
+[OpenFocus 官网](https://openfocus.top/#download)及其安装脚本为 Windows 和 macOS 提供最新版本，包括比稳定版更新的测试版（目前为 v1.77.0-beta.5）。也可从 [GitHub Releases](https://github.com/Xinzhe99/OpenFocus/releases) 下载。桌面应用自动更新也提供更新的测试版；PyPI 上的 Linux CLI 仍使用稳定版。
 
 安装和故障排除请参阅[用户手册](../USER_MANUAL_ZH.md)。
 

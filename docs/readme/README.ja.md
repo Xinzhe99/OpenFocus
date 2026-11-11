@@ -55,7 +55,7 @@
 ## 📢 お知らせ
 
 > [!NOTE]
-> **[v1.77.0-beta.4 プレリリース](https://github.com/Xinzhe99/OpenFocus/releases/tag/v1.77.0-beta.4)** — OpenFocus B で対応する OpenCL デバイスの GPU アクセラレーションと CPU へのフォールバック、修正されたワイプ比較、自動背景とレタッチを提供します。詳細は[変更履歴](../../CHANGELOG.md)をご覧ください。
+> **[v1.77.0-beta.5 プレリリース](https://github.com/Xinzhe99/OpenFocus/releases/tag/v1.77.0-beta.5)** — OpenFocus B で対応する OpenCL デバイスの GPU アクセラレーションと CPU へのフォールバック、修正されたワイプ比較、自動背景とレタッチを提供します。詳細は[変更履歴](../../CHANGELOG.md)をご覧ください。
 
 以前のリリースは [変更履歴](../../CHANGELOG.md) にあります。
 
@@ -219,7 +219,7 @@ TIFF メタデータまたは手入力で校正したスケールバーを画像
 <a id="install"></a>
 ## ⬇️ インストール
 
-[OpenFocus 公式サイト](https://openfocus.top/#download)とインストールスクリプトは、Windows と macOS 向けに安定版より新しいベータ版も提供します（現在は v1.77.0-beta.4）。[GitHub Releases](https://github.com/Xinzhe99/OpenFocus/releases) からもダウンロードできます。デスクトップの自動更新でも新しいベータ版を提供し、PyPI の Linux CLI は安定版のままです。
+[OpenFocus 公式サイト](https://openfocus.top/#download)とインストールスクリプトは、Windows と macOS 向けに安定版より新しいベータ版も提供します（現在は v1.77.0-beta.5）。[GitHub Releases](https://github.com/Xinzhe99/OpenFocus/releases) からもダウンロードできます。デスクトップの自動更新でも新しいベータ版を提供し、PyPI の Linux CLI は安定版のままです。
 
 インストールとトラブルシューティングは[ユーザーマニュアル](../USER_MANUAL_JA.md)を参照してください。
 

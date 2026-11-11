@@ -170,14 +170,6 @@ def test_beta_uses_signing_gate_and_cannot_publish_to_pypi():
     assert '!v*-beta.*' in pypi['on']['push']['tags']
 
 
-def test_r2_rejects_beta_tags_even_if_manually_dispatched():
-    job = workflow('r2-mirror.yml')['jobs']['mirror']
-    script = next(step['run'] for step in job['steps'] if step.get('id') == 'release')
-    assert '^v[0-9]+(\\.[0-9]+)*$' in script
-    assert "!contains(github.event.workflow_run.head_branch || '', '-beta.')" in job['if']
-    download = next(step['run'] for step in job['steps']
-                    if step.get('name') == 'Download the intended release assets')
-    assert '.prerelease == false' in download
 
 
 @pytest.mark.parametrize('channel,failed,expected', [

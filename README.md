@@ -55,7 +55,7 @@
 ## 📢 News
 
 > [!NOTE]
-> **[v1.77.0-beta.4 is available](https://github.com/Xinzhe99/OpenFocus/releases/tag/v1.77.0-beta.4)** — This prerelease adds OpenCL GPU acceleration for OpenFocus B on compatible devices, with CPU fallback. It also fixes wipe comparison and adds auto background and restorable retouch sessions. See the [Changelog](./CHANGELOG.md) for the full update and supported inputs.
+> **[v1.77.0-beta.5 is available](https://github.com/Xinzhe99/OpenFocus/releases/tag/v1.77.0-beta.5)** — This prerelease adds OpenCL GPU acceleration for OpenFocus B on compatible devices, with CPU fallback. It also fixes wipe comparison and adds auto background and restorable retouch sessions. See the [Changelog](./CHANGELOG.md) for the full update and supported inputs.
 
 Earlier releases are in the [Changelog](./CHANGELOG.md).
 
@@ -237,7 +237,7 @@ space for the selected source, processing workspace and full-size result.
 <a id="install"></a>
 ## ⬇️ Install
 
-The [OpenFocus website](https://openfocus.top/#download) and its install scripts offer the newest Windows or macOS build, including a beta when it is newer than stable (currently [v1.77.0-beta.4](https://github.com/Xinzhe99/OpenFocus/releases/tag/v1.77.0-beta.4)). Portable builds and older versions are also available on [GitHub Releases](https://github.com/Xinzhe99/OpenFocus/releases). Desktop automatic updates also offer newer beta releases; the Linux CLI installed from PyPI remains stable.
+The [OpenFocus website](https://openfocus.top/#download) and its install scripts offer the newest Windows or macOS build, including a beta when it is newer than stable (currently [v1.77.0-beta.5](https://github.com/Xinzhe99/OpenFocus/releases/tag/v1.77.0-beta.5)). Portable builds and older versions are also available on [GitHub Releases](https://github.com/Xinzhe99/OpenFocus/releases). Desktop automatic updates also offer newer beta releases; the Linux CLI installed from PyPI remains stable.
 
 On macOS (Apple Silicon) or Linux, install from a terminal. Linux installs the
 headless CLI; macOS installs the app in `~/Applications`.
