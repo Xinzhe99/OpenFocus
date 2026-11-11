@@ -486,6 +486,49 @@ def test_missing_memory_availability_is_never_invented(monkeypatch):
     assert memory.total_memory_bytes() == 8 * GiB
 
 
+def test_cgroup_path_cache_observes_migration_mounts_and_read_failure(monkeypatch):
+    files = {
+        "/proc/self/cgroup": "0::/job\n",
+        "/proc/self/mountinfo": "30 20 0:27 / /sys/fs/cgroup rw - cgroup2 cgroup rw\n",
+    }
+    _files(monkeypatch, files)
+    paths = platform_utils._linux_cgroup_paths
+    parser = platform_utils._parse_linux_cgroup_paths
+    parser.cache_clear()
+    assert list(paths("memory")) == [
+        ("/sys/fs/cgroup/job", "cgroup2"), ("/sys/fs/cgroup", "cgroup2")]
+    assert list(paths("memory")) == list(paths("memory"))
+    assert parser.cache_info().hits == 2
+    files["/proc/self/cgroup"] = "0::/other\n"
+    assert list(paths("memory"))[0] == ("/sys/fs/cgroup/other", "cgroup2")
+    files["/proc/self/mountinfo"] = (
+        "30 20 0:27 / /new/mount rw - cgroup2 cgroup rw\n")
+    assert list(paths("memory"))[0] == ("/new/mount/other", "cgroup2")
+    del files["/proc/self/cgroup"]
+    assert list(paths("memory")) == []
+
+
+def test_cached_cgroup_paths_keep_limits_and_occupancy_live(monkeypatch):
+    files = {
+        "/proc/self/cgroup": "0::/\n",
+        "/proc/self/mountinfo": "30 20 0:27 / /sys/fs/cgroup rw - cgroup2 cgroup rw\n",
+        "/sys/fs/cgroup/memory.max": str(4 * GiB),
+        "/sys/fs/cgroup/memory.current": str(GiB),
+        "/sys/fs/cgroup/cpu.max": "200000 100000",
+    }
+    _files(monkeypatch, files)
+    assert memory._linux_memory_limit(8 * GiB, 16 * GiB) == (3 * GiB, 4 * GiB)
+    assert platform_utils._linux_cpu_quota() == 2
+    files["/sys/fs/cgroup/memory.current"] = str(3 * GiB)
+    assert memory._linux_memory_limit(8 * GiB, 16 * GiB) == (GiB, 4 * GiB)
+    files["/sys/fs/cgroup/memory.max"] = str(2 * GiB)
+    files["/sys/fs/cgroup/cpu.max"] = "100000 100000"
+    assert memory._linux_memory_limit(8 * GiB, 16 * GiB) == (0, 2 * GiB)
+    assert platform_utils._linux_cpu_quota() == 1
+    del files["/sys/fs/cgroup/memory.current"]
+    assert memory._linux_memory_limit(8 * GiB, 16 * GiB) == (0, 2 * GiB)
+
+
 @pytest.mark.parametrize("kind", ["ROCM", "XPU"])
 def test_rocm_and_xpu_require_known_vram_like_cuda(kind):
     workload = _workload(algorithm='stackmffv3', parallel_layer='native',
