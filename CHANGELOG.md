@@ -5,6 +5,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.77.0] - 2026-11-11
+
 ### Added
 - Offer optional account sign-in with a skippable first-launch and update prompt.
 - Show the signed-in account in Help and provide browser account management and sign-out.
@@ -453,7 +455,6 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   GPU Acceleration action follows the same rule, and a failing memory probe no
   longer fails the job.
 
-## [1.77.0] - 2026-11-06
 
 ### Added
 - Add Auto background to Retouch: replace the stacked background with one real

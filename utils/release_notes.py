@@ -12,6 +12,7 @@ LANGUAGES = ("en", "zh", "ja", "es", "de", "fr", "ru", "ko", "pt", "it", "nl", "
 RELEASE_NOTES = {
     "1.77.0": {
         "en": """- Auto background replaces a stacked background with a real source frame. Retouch checkpoints preserve exact edits, undo/redo and missing-data maps; repeated background changes keep subject edits and untouched floating-point pixels.
+- Optional accounts and reviewable error reports; corrected wipe comparison, GPU execution reporting and 16-bit planar LZW TIFF conversion.
 - Restore defaults after confirmation; keep loupe zoom and continuous native previews. Retouch moves to the output header, shortcut help is grouped, loading states are accurate, and clearing sources resets frame review.
 - A/B/C process the whole image by default. Correct microscope mosaic scale/rotation, bound exposure and alignment scratch, and stream TIFF conversion while retaining supported metadata and bit depth.
 - Open large JPEG/RAW stacks with bounded previews and inspect original pixels through zoom and the loupe. CPU fusion admits frame work within the RAM budget; alignment reports estimation and output progress. Actual GPU execution is shown separately from device availability.
@@ -20,6 +21,7 @@ RELEASE_NOTES = {
 - Batch exports use each stack's own EXIF and physical calibration. CLI folders can follow EXIF focus order; recipes preserve native RAW mode and batch format. Reject conflicting output paths and fractional control indices before changing files or outputs.
 - Save dialogs remember the last export folder. Update notes follow the selected language, including offline use. Algorithm resize capabilities and shared development dependencies make extensions and validation more consistent.""",
         "zh": """- 自动背景使用真实源帧替换融合背景。修图检查点精确保留编辑、撤销/重做与缺失数据图；重复替换背景时保留主体笔刷编辑和未改动的浮点像素。
+- 新增可选账号和可审阅的错误报告；修复擦除对比、GPU 实际执行状态显示及 16 位分平面 LZW TIFF 转换。
 - 新增二次确认的恢复默认设置；放大镜持续显示图像并记住倍率。修饰入口移到输出标题行，快捷键帮助分组展示；加载状态准确显示，清空源图时重置检查帧状态。
 - A/B/C 默认整图处理。修复显微拼接的倍率与旋转，限制曝光与配准工作内存，逐条带转换 TIFF 并保留支持的元数据和位深。
 - 大型 JPEG/RAW 图像栈使用有内存上限的预览，可通过缩放和放大镜检查原始像素。CPU 融合按 RAM 预算并发，对齐显示估计与输出进度；设备可用性和实际 GPU 执行状态分别展示。
@@ -28,6 +30,7 @@ RELEASE_NOTES = {
 - 批量导出使用各图像栈自己的 EXIF 与物理标定。CLI 文件夹可按 EXIF 对焦步数排序，配方保留原生 RAW 模式与批量格式；冲突输出路径和小数控制索引会在修改前被拒绝。
 - 保存对话框记住上次导出目录。更新说明按当前语言显示，也可离线查看；统一算法缩放能力和开发依赖，改善扩展与验证的一致性。""",
         "ja": """- 自動背景は実際のソースフレームで合成背景を置き換えます。レタッチのチェックポイントは編集、元に戻す・やり直し、欠損データマップを正確に保持し、背景を繰り返し変更しても被写体の編集と未変更の浮動小数点画素を保ちます。
+- 任意のアカウントと確認可能なエラー報告を追加し、ワイプ比較、GPU の実行表示、16 ビット平面 LZW TIFF 変換を修正しました。
 - 確認付きの設定初期化を追加し、ルーペ倍率と連続した原画プレビューを保持します。レタッチを出力見出しへ移し、ショートカットを分類表示します。読み込み状態を正しく表示し、ソース消去時にフレーム確認をリセットします。
 - A/B/C は既定で画像全体を処理します。顕微鏡モザイクの倍率・回転を修正し、露出と位置合わせの作業メモリを制限します。TIFF は対応メタデータとビット深度を保ってストリップ単位で変換します。
 - 大きな JPEG/RAW スタックをメモリ使用量を制限したプレビューで開き、ズームとルーペで元の画素を確認できます。CPU 融合は RAM 予算に従って並列化され、位置合わせは推定と出力の進捗を表示します。GPU の利用可能性と実際の実行状態を区別します。
@@ -36,6 +39,7 @@ RELEASE_NOTES = {
 - 一括出力は各スタック固有の EXIF と物理校正を使います。CLI は EXIF のフォーカス順を利用でき、レシピはネイティブ RAW モードと一括形式を保持します。出力パスの衝突と小数の制御インデックスを変更前に拒否します。
 - 保存先フォルダーを記憶し、オフラインでも選択言語の更新説明を表示します。アルゴリズムのリサイズ能力と開発依存関係を統一し、拡張と検証の一貫性を改善しました。""",
         "es": """- Fondo automático sustituye el fondo apilado por un fotograma real. Los puntos de control conservan exactamente los retoques, deshacer/rehacer y los mapas de datos ausentes; los cambios repetidos de fondo mantienen las ediciones del sujeto y los píxeles flotantes intactos.
+- Cuentas opcionales e informes de errores revisables; correcciones en la comparación por barrido, la ejecución GPU y la conversión TIFF LZW planar de 16 bits.
 - Se restauran los ajustes tras confirmar y se conservan el aumento de la lupa y la vista original continua. Retoque pasa a la cabecera de salidas, la ayuda agrupa los atajos y los estados de carga son correctos; vaciar las fuentes reinicia la revisión.
 - A/B/C procesan la imagen completa por defecto. Se corrigen escala y rotación del mosaico microscópico, se limita la memoria de exposición y alineación y se convierte TIFF por franjas conservando metadatos compatibles y profundidad.
 - Las pilas JPEG/RAW grandes usan vistas previas con memoria limitada e inspección de píxeles originales mediante zoom y lupa. La fusión CPU respeta el presupuesto RAM y la alineación muestra el progreso de estimación y salida. Se distingue la GPU disponible de la ejecución real.
@@ -44,6 +48,7 @@ RELEASE_NOTES = {
 - Cada exportación por lotes usa su propio EXIF y calibración física. CLI puede ordenar por enfoque EXIF y las recetas conservan RAW nativo y formato por lotes. Los conflictos de rutas y los índices fraccionarios se rechazan antes de modificar datos.
 - Se recuerda la última carpeta de exportación y las notas siguen el idioma seleccionado, incluso sin conexión. Las capacidades de redimensionado y las dependencias de desarrollo compartidas mejoran la extensión y validación.""",
         "de": """- Der automatische Hintergrund ersetzt den gestapelten Hintergrund durch ein echtes Quellbild. Retusche-Prüfpunkte bewahren Änderungen, Rückgängig/Wiederholen und Fehlstellenkarten exakt; erneute Hintergrundwechsel erhalten Motivretuschen und unveränderte Gleitkommapixel.
+- Optionale Konten und überprüfbare Fehlerberichte; Korrekturen für Wischvergleich, GPU-Ausführungsanzeige und planares 16-Bit-LZW-TIFF.
 - Einstellungen werden nach Bestätigung zurückgesetzt; Lupenvergrößerung und kontinuierliche Originalvorschau bleiben erhalten. Retusche steht im Ausgabekopf, Tastenkürzel sind gruppiert und Ladezustände stimmen. Quellenleeren setzt die Bildprüfung zurück.
 - A/B/C verarbeiten standardmäßig das ganze Bild. Maßstab und Drehung von Mikroskopmosaiken wurden korrigiert; Belichtung und Ausrichtung nutzen begrenzten Arbeitsspeicher. TIFF wird streifenweise mit unterstützten Metadaten und Bittiefe konvertiert.
 - Große JPEG/RAW-Stapel öffnen mit begrenztem Vorschau-Speicher; Zoom und Lupe zeigen Originalpixel. CPU-Fusion hält das RAM-Budget ein, und die Ausrichtung zeigt Schätzung und Ausgabe an. Verfügbare GPU und tatsächliche Ausführung werden getrennt dargestellt.
@@ -52,6 +57,7 @@ RELEASE_NOTES = {
 - Jeder Stapel exportiert mit eigenen EXIF-Daten und physikalischer Kalibrierung. CLI kann nach EXIF-Fokus sortieren; Rezepte behalten nativen RAW-Modus und Stapelformat. Kollidierende Pfade und gebrochene Steuerindizes werden vor Änderungen abgewiesen.
 - Der letzte Exportordner wird gemerkt; Aktualisierungshinweise folgen der gewählten Sprache auch offline. Einheitliche Skalierungsfähigkeiten und Entwicklungsabhängigkeiten erleichtern Erweiterung und Prüfung.""",
         "fr": """- L’arrière-plan automatique remplace le fond empilé par une vraie image source. Les points de contrôle conservent exactement les retouches, annulations/rétablissements et cartes de données manquantes ; les changements répétés préservent les retouches du sujet et les pixels flottants intacts.
+- Comptes facultatifs et rapports d’erreur vérifiables ; corrections de la comparaison par balayage, de l’exécution GPU et de la conversion TIFF LZW planaire 16 bits.
 - Le rétablissement des réglages demande confirmation ; le grossissement de la loupe et l’aperçu original continu sont conservés. Retouche passe dans l’en-tête des sorties, les raccourcis sont regroupés et les états de chargement sont exacts. Vider les sources réinitialise leur vérification.
 - A/B/C traitent par défaut l’image entière. Correction de l’échelle et de la rotation des mosaïques microscopiques, mémoire de travail bornée pour exposition et recalage, conversion TIFF par bandes avec métadonnées prises en charge et profondeur conservées.
 - Les grandes piles JPEG/RAW utilisent des aperçus à mémoire limitée et une inspection des pixels d’origine par zoom et loupe. La fusion CPU respecte le budget RAM et le recalage indique la progression de l’estimation et de la sortie. La disponibilité GPU est distinguée de l’exécution réelle.
@@ -60,6 +66,7 @@ RELEASE_NOTES = {
 - Chaque export par lot utilise ses propres EXIF et calibration physique. CLI peut suivre l’ordre de mise au point EXIF ; les recettes conservent RAW natif et format par lot. Les chemins incompatibles et indices fractionnaires sont refusés avant modification.
 - Le dernier dossier d’export est mémorisé ; les notes suivent la langue choisie, même hors ligne. Les capacités de redimensionnement et dépendances de développement communes facilitent l’extension et la validation.""",
         "ru": """- Автоматический фон заменяет составной фон реальным исходным кадром. Контрольные точки точно сохраняют ретушь, отмену/повтор и карты недостающих данных; повторная смена фона сохраняет правки объекта и неизменённые пиксели с плавающей точкой.
+- Необязательные учётные записи и проверяемые отчёты об ошибках; исправлены сравнение шторкой, отображение работы GPU и преобразование 16-битных планарных LZW TIFF.
 - Сброс настроек требует подтверждения; масштаб лупы и непрерывный просмотр оригинала сохраняются. Ретушь перенесена в заголовок выходных данных, сочетания клавиш сгруппированы, состояния загрузки точны. Очистка источников сбрасывает проверку кадров.
 - A/B/C по умолчанию обрабатывают целое изображение. Исправлены масштаб и поворот микроскопических мозаик, ограничена рабочая память экспозиции и выравнивания. TIFF преобразуется полосами с сохранением поддерживаемых метаданных и разрядности.
 - Большие JPEG/RAW-стеки открываются с ограниченным расходом памяти предпросмотра; масштаб и лупа показывают исходные пиксели. Слияние CPU соблюдает бюджет RAM, выравнивание показывает оценку и вывод. Доступность GPU отделена от фактического выполнения.
@@ -68,6 +75,7 @@ RELEASE_NOTES = {
 - Пакетный экспорт использует EXIF и физическую калибровку каждого стека. CLI поддерживает порядок фокусировки EXIF, рецепты сохраняют нативный RAW и пакетный формат. Конфликтующие пути и дробные индексы отклоняются до изменения данных.
 - Запоминается последняя папка экспорта; описания обновлений следуют выбранному языку и доступны офлайн. Общие возможности масштабирования и зависимости разработки упрощают расширение и проверку.""",
         "ko": """- 자동 배경은 합성 배경을 실제 원본 프레임으로 바꿉니다. 체크포인트는 편집, 실행 취소/다시 실행, 누락 데이터 맵을 정확히 보존하며, 배경을 반복 변경해도 피사체 편집과 변경하지 않은 실수 픽셀을 유지합니다.
+- 선택적 계정과 검토 가능한 오류 보고서를 추가하고 와이프 비교, GPU 실행 표시, 16비트 평면 LZW TIFF 변환을 수정했습니다.
 - 확인 후 기본 설정을 복원하며 돋보기 배율과 연속 원본 미리보기를 유지합니다. 리터치를 출력 머리글로 옮기고 단축키 도움말을 그룹화했습니다. 로드 상태를 정확히 표시하고 원본을 비우면 프레임 검토를 초기화합니다.
 - A/B/C는 기본적으로 전체 이미지를 처리합니다. 현미경 모자이크의 배율과 회전을 수정하고 노출·정합 작업 메모리를 제한했습니다. TIFF는 지원 메타데이터와 비트 깊이를 유지하며 스트립 단위로 변환합니다.
 - 큰 JPEG/RAW 스택은 메모리를 제한한 미리보기로 열고 확대와 돋보기로 원본 픽셀을 확인합니다. CPU 합성은 RAM 예산을 따르고 정합은 추정 및 출력 진행 상황을 표시합니다. GPU 가용성과 실제 실행 상태를 구분합니다.
@@ -76,6 +84,7 @@ RELEASE_NOTES = {
 - 일괄 내보내기는 각 스택의 EXIF와 물리 보정을 사용합니다. CLI는 EXIF 초점 순서를 지원하고 레시피는 네이티브 RAW와 일괄 형식을 보존합니다. 충돌 경로와 소수 제어 인덱스는 변경 전에 거부합니다.
 - 마지막 내보내기 폴더를 기억하고 오프라인에서도 선택 언어로 업데이트 내용을 표시합니다. 공통 크기 변경 기능과 개발 의존성으로 확장 및 검증의 일관성을 높였습니다.""",
         "pt": """- Fundo automático substitui o fundo empilhado por um quadro real. Os pontos de controle preservam exatamente retoques, desfazer/refazer e mapas de dados ausentes; mudanças repetidas mantêm as edições do assunto e os pixels flutuantes intactos.
+- Contas opcionais e relatórios de erros revisáveis; correções na comparação deslizante, na execução GPU e na conversão TIFF LZW planar de 16 bits.
 - A restauração dos ajustes exige confirmação; o aumento da lupa e a prévia original contínua são mantidos. Retoque passa ao cabeçalho das saídas, os atalhos são agrupados e os estados de carregamento são corretos. Limpar fontes reinicia a revisão de quadros.
 - A/B/C processam a imagem inteira por padrão. Corrigidas escala e rotação dos mosaicos microscópicos, com memória limitada para exposição e alinhamento. TIFF é convertido por faixas, preservando metadados compatíveis e profundidade de bits.
 - Pilhas JPEG/RAW grandes usam prévias com memória limitada e inspeção dos pixels originais por zoom e lupa. A fusão CPU respeita o orçamento RAM e o alinhamento mostra estimativa e saída. A GPU disponível é distinguida da execução real.
@@ -84,6 +93,7 @@ RELEASE_NOTES = {
 - Cada exportação em lote usa seu próprio EXIF e calibração física. CLI pode seguir a ordem de foco EXIF; receitas preservam RAW nativo e formato em lote. Caminhos conflitantes e índices fracionários são rejeitados antes de alterar dados.
 - A última pasta de exportação é lembrada e as notas seguem o idioma selecionado, inclusive offline. Capacidades de redimensionamento e dependências de desenvolvimento comuns melhoram extensão e validação.""",
         "it": """- Lo sfondo automatico sostituisce lo sfondo impilato con un fotogramma reale. I checkpoint conservano esattamente ritocchi, annulla/ripeti e mappe dei dati mancanti; cambi ripetuti mantengono le modifiche al soggetto e i pixel in virgola mobile intatti.
+- Account facoltativi e rapporti di errore verificabili; corretti confronto a tendina, indicazione GPU e conversione TIFF LZW planare a 16 bit.
 - Il ripristino delle impostazioni richiede conferma; ingrandimento della lente e anteprima originale continua vengono mantenuti. Ritocco passa all’intestazione delle uscite, i tasti sono raggruppati e gli stati di caricamento sono corretti. Svuotare le sorgenti azzera la revisione dei fotogrammi.
 - A/B/C elaborano l’immagine intera per impostazione predefinita. Corretti scala e rotazione dei mosaici microscopici, con memoria limitata per esposizione e allineamento. TIFF viene convertito a strisce conservando metadati supportati e profondità.
 - Gli stack JPEG/RAW grandi usano anteprime con memoria limitata e ispezione dei pixel originali tramite zoom e lente. La fusione CPU rispetta il budget RAM e l’allineamento mostra stima e uscita. La GPU disponibile è distinta dall’esecuzione effettiva.
@@ -92,6 +102,7 @@ RELEASE_NOTES = {
 - Ogni esportazione in serie usa EXIF e calibrazione fisica del proprio stack. CLI può seguire l’ordine di fuoco EXIF; le ricette conservano RAW nativo e formato in serie. Percorsi incompatibili e indici frazionari sono rifiutati prima delle modifiche.
 - La cartella di esportazione viene ricordata e le note seguono la lingua scelta anche offline. Capacità di ridimensionamento e dipendenze di sviluppo comuni migliorano estensione e verifica.""",
         "nl": """- Automatische achtergrond vervangt de gestapelde achtergrond door een echt bronbeeld. Controlepunten bewaren retouches, ongedaan maken/opnieuw en ontbrekende-data-kaarten exact; herhaalde achtergrondwissels behouden onderwerpbewerkingen en ongewijzigde zwevendekommapixels.
+- Optionele accounts en controleerbare foutrapporten; verbeteringen voor veegvergelijking, GPU-uitvoering en 16-bits planaire LZW-TIFF-conversie.
 - Standaardinstellingen herstellen vraagt bevestiging; loepvergroting en doorlopende originele voorbeelden blijven behouden. Retouche staat bij de uitvoerkop, sneltoetsen zijn gegroepeerd en laadstatussen kloppen. Bronnen wissen herstelt de beeldcontrole.
 - A/B/C verwerken standaard het hele beeld. Schaal en rotatie van microscoopmozaïeken zijn hersteld; belichting en uitlijning gebruiken begrensd werkgeheugen. TIFF wordt per strook omgezet met behoud van ondersteunde metadata en bitdiepte.
 - Grote JPEG/RAW-stapels openen met begrensde voorbeelden; zoom en loep tonen originele pixels. CPU-fusie blijft binnen het RAM-budget en uitlijning toont schatting en uitvoer. Beschikbare GPU en werkelijke uitvoering worden apart weergegeven.
@@ -100,6 +111,7 @@ RELEASE_NOTES = {
 - Elke batchuitvoer gebruikt eigen EXIF en fysieke kalibratie. CLI kan EXIF-focusvolgorde volgen; recepten behouden native RAW en batchformaat. Botsende paden en fractionele besturingsindices worden vóór wijzigingen geweigerd.
 - De laatste exportmap wordt onthouden; notities volgen de gekozen taal, ook offline. Gedeelde schaalmogelijkheden en ontwikkelafhankelijkheden verbeteren uitbreidingen en validatie.""",
         "pl": """- Automatyczne tło zastępuje tło stosu rzeczywistą klatką źródłową. Punkty kontrolne dokładnie zachowują retusz, cofanie/ponawianie i mapy brakujących danych; kolejne zmiany tła zachowują edycje obiektu i niezmienione piksele zmiennoprzecinkowe.
+- Opcjonalne konta i raporty błędów do sprawdzenia; poprawiono porównanie kurtyną, wskazanie pracy GPU i konwersję 16-bitowych planarnych TIFF LZW.
 - Przywracanie ustawień wymaga potwierdzenia; powiększenie lupy i ciągły podgląd oryginału są zachowywane. Retusz przeniesiono do nagłówka wyników, skróty pogrupowano, a stany ładowania są poprawne. Usunięcie źródeł resetuje przegląd klatek.
 - A/B/C domyślnie przetwarzają cały obraz. Poprawiono skalę i obrót mozaik mikroskopowych oraz ograniczono pamięć roboczą ekspozycji i wyrównania. TIFF jest konwertowany pasami z zachowaniem obsługiwanych metadanych i głębi bitowej.
 - Duże stosy JPEG/RAW używają podglądów z ograniczonym zużyciem pamięci; zoom i lupa pokazują oryginalne piksele. Fuzja CPU przestrzega budżetu RAM, a wyrównanie pokazuje szacowanie i zapis. Dostępność GPU jest oddzielona od rzeczywistego wykonania.
