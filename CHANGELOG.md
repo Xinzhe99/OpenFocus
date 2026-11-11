@@ -204,6 +204,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   scroll phase, including X11, where only angle deltas are reliable.
 
 ### Fixed
+- Keep the GPU acceleration preference available when a verified provider's
+  memory is unreadable, allowing later AI jobs to retry while reporting CPU.
 - Identify account and diagnostic report requests as OpenFocus so supported
   services can distinguish them from generic automated traffic.
 - Cancel and finish account background work before quitting, including when the
@@ -400,6 +402,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   checking whether the volume is internal and fixed.
 - Quantize fusion results in bounded sample chunks instead of allocating
   whole-image float copies, preserving 8/16-bit rounding and strided inputs.
+- Show CPU in the status bar and the About dialog when a verified GPU provider
+  cannot report its free memory, because AI jobs then run on the CPU. The
+  GPU Acceleration action follows the same rule, and a failing memory probe no
+  longer fails the job.
 
 ## [1.77.0] - 2026-11-06
 

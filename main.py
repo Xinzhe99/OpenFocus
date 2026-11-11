@@ -895,6 +895,10 @@ class OpenFocus(QMainWindow):
             neural = self._ai_method_selected()
             checkpoint = (get_fusion(self.combo_fusion.currentData()).weights or ''
                           if neural else '')
+            # A verified provider whose free memory cannot be read is never
+            # admitted by AI jobs; show the CPU they will actually run on.
+            unadmitted = neural_runtime.unadmitted_accelerator()
+            capability = neural_runtime.admitted_kind(capability)
             device, state = neural_runtime.execution_status(
                 neural, getattr(self, 'use_gpu', True), checkpoint, capability)
             kind = ('…' if state == 'pending'
@@ -907,7 +911,10 @@ class OpenFocus(QMainWindow):
                 hardware,
                 'ONNX Runtime: ' + ', '.join(diagnostics['providers']),
                 trans.t('env_gpu_accel') + ': ' + neural_runtime.display_name(capability)
-                if neural_runtime.is_accelerator(capability) else trans.t('env_no_gpu'),
+                if neural_runtime.is_accelerator(capability)
+                else trans.t('env_gpu_memory_unknown').format(
+                    device=neural_runtime.display_name(unadmitted)) if unadmitted
+                else trans.t('env_no_gpu'),
                 trans.t('status_gpu').format(kind),
                 trans.t('msg_gpu_accel_hint'),
                 '\n'.join(diagnostics['probe_errors'])))))
@@ -1427,11 +1434,10 @@ class OpenFocus(QMainWindow):
         self._update_dynamic_status()
 
     def _refresh_gpu_action(self) -> None:
-        """Enable/check the GPU action from the authoritative backend state.
+        """Keep the preference reachable for a verified accelerator.
 
-        While the backend is unresolved the action stays reachable; once it
-        resolves, only a usable accelerator enables it. The checked state
-        follows the user's preference and never opts them back in.
+        The checked state is the user's preference, not a claim that the
+        accelerator is admitted or that a job ran on it.
         """
         action = getattr(self, 'ui_objs', {}).get('action_gpu_accel')
         if action is None:
@@ -1445,8 +1451,12 @@ class OpenFocus(QMainWindow):
             is_ai_fusion_available() if kind is None else False)
         action.setEnabled(enabled)
         action.setChecked(checked)
-        action.setToolTip(trans.t('msg_gpu_accel_hint') if enabled
-                          else trans.t('msg_gpu_accel_unavailable'))
+        tooltip = (trans.t('msg_gpu_accel_hint') if enabled
+                   else trans.t('msg_gpu_accel_unavailable'))
+        if kind is not None and kind == neural_runtime.unadmitted_accelerator():
+            tooltip = (trans.t('env_gpu_memory_unknown').format(
+                device=neural_runtime.display_name(kind)) + '\n' + tooltip)
+        action.setToolTip(tooltip)
 
     def refresh_method_availability(self) -> None:
         """Keep unavailable entries disabled without changing the request."""
@@ -4621,8 +4631,6 @@ class OpenFocus(QMainWindow):
             self.btn_wipe.setToolTip(trans.t('wipe_hint'))
             self.chk_wipe_follow_left.setText(trans.t('wipe_follow_source'))
             self.chk_wipe_follow_right.setText(trans.t('wipe_follow_latest'))
-        if 'action_gpu_accel' in getattr(self, 'ui_objs', {}):
-            self.ui_objs['action_gpu_accel'].setToolTip(trans.t('msg_gpu_accel_hint'))
         if 'usage_opt_in' in getattr(self, 'ui_objs', {}):
             self.ui_objs['usage_opt_in'].setToolTip(trans.t('usage_disclosure'))
         # The tuning knobs live in the Advanced settings page now, so there are

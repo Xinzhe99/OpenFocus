@@ -1172,6 +1172,7 @@ PACK = {
     "env_mps_avail": "MPS beschikbaar (Apple Silicon)",
     "env_gpu_accel": "AI: versnellingsprovider getest",
     "env_no_gpu": "AI: geen geteste versnellingsprovider",
+    "env_gpu_memory_unknown": "{device} heeft de providercontrole doorstaan, maar het vrije geheugen is niet leesbaar; AI-taken draaien daarom op de CPU",
     "env_cpu_mode": "AI: beschikbaar (CPU-modus - langzamer)",
     "env_stackmff_unavailable": "AI-fusie niet beschikbaar",
     "env_dtcwt_unavailable": "Niet geïnstalleerd (DTCWT-fusie niet beschikbaar)",

@@ -742,6 +742,25 @@ def test_environment_reports_neural_provider(monkeypatch, kind, device):
         assert trans.t('env_no_gpu') not in text
 
 
+def test_environment_explains_an_unadmitted_provider(monkeypatch):
+    """A verified provider whose memory cannot be read is reported as such,
+    not as a failed verification."""
+    import sys
+    from dialogs.about import EnvironmentInfoDialog
+    from fusion_methods import neural_runtime
+    from locales import trans
+    import core.multi_focus_fusion as mff
+
+    monkeypatch.setitem(sys.modules, "onnxruntime", SimpleNamespace(__version__="1.0"))
+    monkeypatch.setattr(mff, "ensure_neural_device_kind", lambda: "CUDA")
+    monkeypatch.setattr(neural_runtime, "_UNADMITTED", "CUDA")
+    text = EnvironmentInfoDialog.environment_report()
+    assert "StackMFF V1/V2/V3: CPU" in text
+    assert trans.t('env_gpu_memory_unknown').format(device="CUDA") in text
+    assert trans.t('env_no_gpu') not in text
+    assert trans.t('env_cpu_mode') in text
+
+
 def test_environment_probe_does_not_block_dialog_and_copy_uses_report(qapp, monkeypatch):
     from dialogs import about
     monkeypatch.setattr(about._EnvironmentProbe, "start", lambda self: None)
