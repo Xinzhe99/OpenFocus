@@ -55,10 +55,7 @@
 ## 📢 News
 
 > [!NOTE]
-> **v1.77.0 release candidate** — Auto background and restorable retouch sessions,
-> confirmed settings reset, continuous native inspection, bounded large-stack
-> processing and TIFF conversion, plus microscope mosaic scale/rotation fixes.
-> See the changelog for supported inputs and feature limitations.
+> **[v1.77.0-beta.3 is available](https://github.com/Xinzhe99/OpenFocus/releases/tag/v1.77.0-beta.3)** — This prerelease adds OpenCL GPU acceleration for OpenFocus B on compatible devices, with CPU fallback. It also fixes wipe comparison and adds auto background and restorable retouch sessions. See the [Changelog](./CHANGELOG.md) for the full update and supported inputs.
 
 Earlier releases are in the [Changelog](./CHANGELOG.md).
 
@@ -240,7 +237,7 @@ space for the selected source, processing workspace and full-size result.
 <a id="install"></a>
 ## ⬇️ Install
 
-Download the latest Windows or macOS build from the [OpenFocus website](https://openfocus.top/#download). Portable builds and older versions are also available on [GitHub Releases](https://github.com/Xinzhe99/OpenFocus/releases).
+Download the latest stable Windows or macOS build from the [OpenFocus website](https://openfocus.top/#download). Download [v1.77.0-beta.3](https://github.com/Xinzhe99/OpenFocus/releases/tag/v1.77.0-beta.3) separately from GitHub; it is a prerelease. Portable builds and older versions are also available on [GitHub Releases](https://github.com/Xinzhe99/OpenFocus/releases).
 
 On macOS (Apple Silicon) or Linux, install from a terminal. Linux installs the
 headless CLI; macOS installs the app in `~/Applications`.

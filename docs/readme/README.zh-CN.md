@@ -55,7 +55,7 @@
 ## 📢 最新动态
 
 > [!NOTE]
-> **v1.77.0 候选版** — 自动背景与可恢复的修图会话、二次确认的设置重置、连续原始像素检查、有界大栈处理与 TIFF 转换，以及显微拼接倍率/旋转修复。支持的输入与功能限制见更新日志。
+> **[v1.77.0-beta.3 预发布版](https://github.com/Xinzhe99/OpenFocus/releases/tag/v1.77.0-beta.3)** — OpenFocus B 为兼容的 OpenCL 设备提供 GPU 加速，并可回退到 CPU；修复了滑动对比，提供自动背景和修图功能。详情见[更新日志](../../CHANGELOG.md)。
 
 更早的版本见 [更新日志](../../CHANGELOG.md)。
 
@@ -227,7 +227,7 @@ JPEG/RAW 显示预览优先读取可用的内嵌图像；正式处理和原始�
 <a id="install"></a>
 ## ⬇️ 安装
 
-从 [OpenFocus 官网](https://openfocus.top/#download) 下载最新的 Windows 或 macOS 版本；同样的文件和旧版本也保留在 [GitHub Releases](https://github.com/Xinzhe99/OpenFocus/releases)。
+从 [OpenFocus 官网](https://openfocus.top/#download) 默认可下载最新的 Windows 或 macOS 稳定版；测试版和旧版本可从 [GitHub Releases](https://github.com/Xinzhe99/OpenFocus/releases) 下载。
 
 安装和故障排除请参阅[用户手册](../USER_MANUAL_ZH.md)。
 

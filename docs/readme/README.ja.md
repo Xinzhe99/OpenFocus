@@ -55,7 +55,7 @@
 ## 📢 お知らせ
 
 > [!NOTE]
-> **v1.77.0 リリース候補** — 自動背景と復元可能なレタッチセッション、メモリ使用量を抑えた JPEG/RAW プレビューと原寸ピクセルの確認、RAM 予算に応じた CPU 融合、分かりやすい GPU 実行状態。対応入力と制限は変更履歴を参照してください。
+> **[v1.77.0-beta.3 プレリリース](https://github.com/Xinzhe99/OpenFocus/releases/tag/v1.77.0-beta.3)** — OpenFocus B で対応する OpenCL デバイスの GPU アクセラレーションと CPU へのフォールバック、修正されたワイプ比較、自動背景とレタッチを提供します。詳細は[変更履歴](../../CHANGELOG.md)をご覧ください。
 
 以前のリリースは [変更履歴](../../CHANGELOG.md) にあります。
 
@@ -219,7 +219,7 @@ TIFF メタデータまたは手入力で校正したスケールバーを画像
 <a id="install"></a>
 ## ⬇️ インストール
 
-最新の Windows または macOS ビルドは [OpenFocus 公式サイト](https://openfocus.top/#download) からダウンロードしてください。同じファイルと旧バージョンは [GitHub Releases](https://github.com/Xinzhe99/OpenFocus/releases) にもあります。
+[OpenFocus 公式サイト](https://openfocus.top/#download)では、Windows と macOS 向けの最新安定版を標準で提供しています。ベータ版と旧バージョンは [GitHub Releases](https://github.com/Xinzhe99/OpenFocus/releases) からダウンロードできます。
 
 インストールとトラブルシューティングは[ユーザーマニュアル](../USER_MANUAL_JA.md)を参照してください。
 

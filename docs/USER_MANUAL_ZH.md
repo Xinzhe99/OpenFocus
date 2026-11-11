@@ -96,8 +96,8 @@ CLI 也会拒绝透明输入的传感器清理与深度图。
 3. **Linux**：不提供桌面构建，请安装 pip 包并使用 `openfocus` 命令行
 4. **Python 源码**：在激活的 conda 环境中执行 `python main.py`
 
-建议从 [OpenFocus 官网](https://openfocus.top/#download) 下载最新版本；同样的文件和旧版本也在
-[GitHub Releases](https://github.com/Xinzhe99/OpenFocus/releases) 提供。也可以从终端安装：
+从 [OpenFocus 官网](https://openfocus.top/#download) 可下载最新稳定版；官网安装脚本也安装稳定版。
+[v1.77.0-beta.3 预发布版](https://github.com/Xinzhe99/OpenFocus/releases/tag/v1.77.0-beta.3)和旧版本可从 GitHub 下载。终端安装方式如下：
 
 ```bash
 # macOS（Apple Silicon，安装到 ~/Applications）或 Linux（无界面 CLI）

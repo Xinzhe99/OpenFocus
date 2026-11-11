@@ -75,7 +75,8 @@ Unter **Speichern unter** speichert gewöhnliches TIFF das Ergebnis als einzelne
 
 ### Installation
 
-Laden Sie den aktuellen Windows- oder macOS-Build von der [OpenFocus-Website](https://openfocus.top/#download). Dieselben Dateien und ältere Versionen stehen auch unter [GitHub Releases](https://github.com/Xinzhe99/OpenFocus/releases) bereit.
+Laden Sie den aktuellen stabilen Windows- oder macOS-Build von der [OpenFocus-Website](https://openfocus.top/#download). Dieselben Dateien und ältere Versionen stehen auch unter [GitHub Releases](https://github.com/Xinzhe99/OpenFocus/releases) bereit.
+Die Installationsskripte stellen ebenfalls die neueste stabile Version bereit. Downloads der [Vorabversion v1.77.0-beta.3](https://github.com/Xinzhe99/OpenFocus/releases/tag/v1.77.0-beta.3) sind auf GitHub verfügbar.
 
 | Plattform | Datei | Typ |
 |-----------|-------|-----|

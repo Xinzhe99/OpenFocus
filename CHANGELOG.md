@@ -9,6 +9,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [1.77.0] - 2026-11-11
 
+At the time of the [v1.77.0-beta.3 prerelease](https://github.com/Xinzhe99/OpenFocus/releases/tag/v1.77.0-beta.3), v1.76.0 is the latest stable release.
+
 ### Added
 - Accelerate OpenFocus B depth processing and source merging on compatible
   OpenCL GPUs, with bounded GPU stages and CPU fallback when full GPU depth is

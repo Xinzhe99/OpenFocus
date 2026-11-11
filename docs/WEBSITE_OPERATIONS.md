@@ -88,18 +88,18 @@ Every page and asset request therefore counts as a Worker invocation.
   `/?lang=en`; `?lang=zh` stays Chinese. Valid explicit selections on either
   page set a one-year, host-only `lang` cookie (`SameSite=Lax`, `Secure` on
   HTTPS) and return `no-store`, including for HEAD requests.
-- `/api/latest` — GitHub `releases/latest` reduced to
-  `{tag, published, assets: {windows-setup, windows-zip, macos-dmg,
-  macos-zip}}`. For a release with split GitHub assets, missing complete files
-  are filled from the validated R2 manifest only when its tag matches GitHub.
+- `/api/latest` — GitHub `releases/latest` (the latest stable release, excluding
+  prereleases) reduced to `{tag, published, assets: {windows-setup, windows-zip,
+  macos-dmg, macos-zip}}`. For a release with split GitHub assets, missing complete
+  files are filled from the validated R2 manifest only when its tag matches GitHub.
   Complete responses are cached per data center for five minutes; incomplete
   responses are not cached. Clients receive `Cache-Control: no-store`. If
   GitHub is unavailable, the Worker serves the last complete mirror manifest
   and identifies it with `X-OpenFocus-Release-Source: mirror`.
-- `/download/latest/<kind>` — resolves the latest asset, streams the R2 object
-  with `ETag`, `Last-Modified`, `If-None-Match`/`304`, and single-range
+- `/download/latest/<kind>` — resolves the latest stable asset, streams the R2
+  object with `ETag`, `Last-Modified`, `If-None-Match`/`304`, and single-range
   `Range`/`206` support. All responses are `Cache-Control: no-store` because
-  the URL always names the latest release. When a complete GitHub asset exists,
+  the URL always names the latest stable release. When a complete GitHub asset exists,
   a full request can fall back to a `302` GitHub URL if R2 is missing. Range
   requests and assets assembled only on R2 return `503` with `Retry-After`
   when the object is unavailable; split parts are never offered as a full file.
@@ -313,8 +313,11 @@ template resolves `{{dotted.key}}` placeholders; missing keys fail the build.
 - Media is copied from `assets/` (app screenshot, README posters, benchmark
   chart) — do not duplicate binaries under `site/`.
 - `site_content.py` derives the static version from `constants.APP_VERSION`.
-  Static download links use the Worker's latest endpoints; rebuild and
-  redeploy to refresh no-JavaScript version labels and JSON-LD.
+  During beta development this can be newer than the latest stable download.
+  JavaScript replaces visible version labels from `/api/latest`; without it,
+  labels and JSON-LD can reflect the source version instead. Static download
+  links still use the Worker's stable endpoints; rebuild and redeploy when the
+  static labels and JSON-LD need refreshing.
 - The English and Chinese slogans are intentionally different: the English
   line is "Every pixel, its sharpest frame."; the Chinese line is
   "每一像素，皆取自最清晰的一帧。"
@@ -323,11 +326,12 @@ template resolves `{{dotted.key}}` placeholders; missing keys fail the build.
 
 ## 5. Installer scripts
 
-The macOS and Windows installers resolve the latest release from
+The macOS and Windows installers resolve the latest stable release from
 `https://openfocus.top/api/latest` and download through
 `https://openfocus.top/download/latest/<kind>` so China downloads use the R2
-mirror instead of GitHub. The Linux path installs the CLI from PyPI and does
-not use the release API.
+mirror instead of GitHub. Prerelease installers are available on their GitHub
+release pages and do not enter the stable mirror or updater. The Linux path
+installs the CLI from PyPI and does not use the release API.
 
 `install.sh`:
 

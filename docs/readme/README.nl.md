@@ -55,7 +55,7 @@
 ## 📢 News
 
 > [!NOTE]
-> **v1.77.0 releasekandidaat** — Automatische achtergrond en herstelbare retoucheersessies, JPEG/RAW-voorbeelden met begrensd geheugengebruik en inspectie van originele pixels, CPU-fusie binnen het RAM-budget en een duidelijkere GPU-uitvoeringsstatus. Zie het wijzigingslogboek voor ondersteunde invoer en beperkingen.
+> **[v1.77.0-beta.3 voorlopige release](https://github.com/Xinzhe99/OpenFocus/releases/tag/v1.77.0-beta.3)** — GPU-versnelling voor compatibele OpenCL-apparaten in OpenFocus B met terugval op de CPU, een gecorrigeerde veegvergelijking, automatische achtergrond en retouche. Zie het [wijzigingslogboek](../../CHANGELOG.md) voor details.
 
 Oudere versies staan in het [wijzigingslogboek](../../CHANGELOG.md).
 
@@ -220,7 +220,7 @@ Bestuur de desktopapp via een tokenbeveiligd lokaal agentkanaal.
 <a id="install"></a>
 ## ⬇️ Installatie
 
-Download de nieuwste Windows- of macOS-build van de [OpenFocus-website](https://openfocus.top/#download). Dezelfde bestanden en oudere versies staan ook op [GitHub Releases](https://github.com/Xinzhe99/OpenFocus/releases).
+De [OpenFocus-website](https://openfocus.top/#download) biedt standaard de nieuwste stabiele versie voor Windows of macOS. Bètaversies en oudere versies staan op [GitHub Releases](https://github.com/Xinzhe99/OpenFocus/releases).
 
 Zie de [handleiding](../USER_MANUAL_NL.md) voor installatie en probleemoplossing.
 

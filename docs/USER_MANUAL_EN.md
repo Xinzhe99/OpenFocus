@@ -98,10 +98,10 @@ In **Save As**, ordinary TIFF saves the result as a single image; layered TIFF i
 
 ### Downloading and Starting the Application
 
-The preferred way to install a packaged build is the project website,
-**https://openfocus.top** — it links the current Windows installer, macOS build
-and Linux package, with install scripts for terminal use. Prefer it over
-rebuilding: those artifacts are the exact release pipeline output.
+The [project website](https://openfocus.top/#download) and its installation
+scripts provide the latest stable Windows installer, macOS build and Linux
+package. The packaged builds are the exact release pipeline output. Download
+the [v1.77.0-beta.3 prerelease](https://github.com/Xinzhe99/OpenFocus/releases/tag/v1.77.0-beta.3) separately from GitHub.
 `pip install openfocus` installs only the headless command-line interface (the
 wheel deliberately does not depend on PyQt6); use a desktop build or a source
 checkout for the GUI.

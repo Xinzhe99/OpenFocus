@@ -55,7 +55,7 @@
 ## 📢 소식
 
 > [!NOTE]
-> **v1.77.0 릴리스 후보** — 자동 배경과 복원 가능한 리터치 세션, 메모리 사용을 제한한 JPEG/RAW 미리보기와 원본 픽셀 확인, RAM 예산에 따른 CPU 합성, 더 명확한 GPU 실행 상태를 제공합니다. 지원 입력과 제한은 변경 기록을 참고하세요.
+> **[v1.77.0-beta.3 사전 릴리스](https://github.com/Xinzhe99/OpenFocus/releases/tag/v1.77.0-beta.3)** — OpenFocus B에서 호환되는 OpenCL 장치의 GPU 가속과 CPU 대체 실행, 수정된 와이프 비교, 자동 배경 및 리터치를 제공합니다. 자세한 내용은 [변경 기록](../../CHANGELOG.md)을 참고하세요.
 
 이전 릴리스는 [변경 기록](../../CHANGELOG.md)에서 확인할 수 있습니다.
 
@@ -219,7 +219,7 @@ TIFF 메타데이터 또는 직접 입력으로 보정한 스케일 바를 이�
 <a id="install"></a>
 ## ⬇️ 설치
 
-최신 Windows 또는 macOS 빌드는 [OpenFocus 공식 사이트](https://openfocus.top/#download)에서 내려받으세요. 같은 파일과 이전 버전은 [GitHub Releases](https://github.com/Xinzhe99/OpenFocus/releases)에도 있습니다.
+[OpenFocus 공식 사이트](https://openfocus.top/#download)는 기본적으로 Windows 및 macOS용 최신 안정 버전을 제공합니다. 베타 버전과 이전 버전은 [GitHub Releases](https://github.com/Xinzhe99/OpenFocus/releases)에서 내려받을 수 있습니다.
 
 설치와 문제 해결은 [사용자 설명서](../USER_MANUAL_KO.md)를 참고하세요.
 

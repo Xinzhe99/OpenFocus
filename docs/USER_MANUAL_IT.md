@@ -73,7 +73,8 @@ In **Salva con nome**, il TIFF normale salva il risultato come immagine singola;
 
 ### Avvio dell'applicazione
 
-Il modo preferito per installare una build pacchettizzata è il sito del progetto, **https://openfocus.top**: collega l'installer Windows corrente, la build macOS e il pacchetto Linux, con script di installazione per il terminale. Preferiscilo alla ricompilazione: quegli artefatti sono l'output esatto della pipeline di rilascio. `pip install openfocus` installa solo l'interfaccia a riga di comando headless (la wheel non dipende deliberatamente da PyQt6); usa una build desktop o una copia del codice sorgente per la GUI.
+Il modo preferito per installare una build pacchettizzata è il sito del progetto, **https://openfocus.top**: collega l'installer Windows stabile, la build macOS e il pacchetto Linux, con script di installazione per il terminale. Preferiscilo alla ricompilazione: quegli artefatti sono l'output esatto della pipeline di rilascio. `pip install openfocus` installa solo l'interfaccia a riga di comando headless (la wheel non dipende deliberatamente da PyQt6); usa una build desktop o una copia del codice sorgente per la GUI.
+Anche gli script di installazione forniscono la versione stabile più recente. I download della [versione preliminare v1.77.0-beta.3](https://github.com/Xinzhe99/OpenFocus/releases/tag/v1.77.0-beta.3) sono disponibili su GitHub.
 
 Per installare da terminale, visualizza prima l'anteprima del comando e poi eseguilo senza `--dry-run`: su macOS o Linux, `curl -fsSL https://openfocus.top/install.sh | sh -s -- --dry-run` e poi `curl -fsSL https://openfocus.top/install.sh | sh` (su Linux installa la CLI); su Windows, `irm https://openfocus.top/install.ps1 | iex` da PowerShell.
 
