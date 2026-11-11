@@ -177,13 +177,17 @@ class ReportClient:
         self._save(state)
         return state, entry
 
-    def retry_pending(self, bearer_token=None, *, owner_id=None, include_auto=True):
+    def retry_pending(self, bearer_token=None, *, owner_id=None, include_auto=True,
+                      include_anonymous_auto=True):
         self._validate_owner(owner_id, bearer_token)
         with _LOCK:
             state = self._load()
             successes = 0
             for entry in list(state["pending"]):
                 if not include_auto and entry.get("metadata", {}).get("source") == "auto":
+                    continue
+                if (not include_anonymous_auto and entry.get("owner_id") is None
+                        and entry.get("metadata", {}).get("source") == "auto"):
                     continue
                 if entry.get("attempts", 0) >= MAX_ATTEMPTS:
                     state["pending"].remove(entry)

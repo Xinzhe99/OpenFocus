@@ -2,6 +2,10 @@
 
 PACK = {
     "account_title": "OpenFocus-account",
+    "account_heading": "Aanmelden bij OpenFocus",
+    "account_subtitle": "Beheer je account of ga verder zonder aan te melden.",
+    "account_or": "of",
+    "account_agreement": "Ik ga akkoord met de <a href='terms'>servicevoorwaarden</a> en het <a href='privacy'>privacybeleid</a>",
     "account_explanation": "Meld je aan om OpenFocus te helpen verbeteren met foutrapporten. Rapporten kunnen gegevens bevatten over je apparaat, verwerkingsstappen en het aantal en de afmetingen van afbeeldingen. Ze bevatten nooit afbeeldingsbestanden, pixels, projectbestanden, bestandsnamen van gebruikers, paden of accountgegevens. Je kunt automatische rapportage op elk moment aanpassen.",
     "account_usage_note": "Gebruiksstatistieken zijn een aparte instelling en staan standaard aan. Je kunt ze uitschakelen in de geavanceerde instellingen; ze bevatten geen diagnostische logboeken.",
     "feedback_local_export_scope": "Geëxporteerde ZIP-bestanden bevatten recente lokale logboeken en systeemgegevens; ze kunnen paden bevatten. Controleer ze voordat je ze deelt. Foutrapporten gebruiken een afzonderlijk opgeschoond pakket.",
@@ -30,6 +34,7 @@ PACK = {
     "account_skip": "Doorgaan zonder account",
     "account_continue": "Doorgaan",
     "account_wait_email": "Controleer je e-mail en open de aanmeldlink op deze computer.",
+    "account_wait_email_phone": "Open en bevestig de e-maillink op je telefoon of computer. Je wordt hier automatisch aangemeld.",
     "account_wait_browser": "Voltooi het aanmelden in je browser of ga verder zonder account.",
     "account_checking": "Accountinstellingen controleren…",
     "account_signed_in": "Aangemeld als {email}",

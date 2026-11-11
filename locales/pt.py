@@ -2,6 +2,10 @@
 
 PACK = {
     "account_title": "Conta OpenFocus",
+    "account_heading": "Entrar no OpenFocus",
+    "account_subtitle": "Gerencie sua conta ou continue sem entrar.",
+    "account_or": "ou",
+    "account_agreement": "Concordo com os <a href='terms'>Termos de Serviço</a> e a <a href='privacy'>Política de Privacidade</a>",
     "account_explanation": "Entre na sua conta para ajudar a melhorar o OpenFocus por meio de relatórios de erros. Os relatórios podem incluir seu dispositivo, etapas de processamento, quantidade e dimensões das imagens. Eles nunca incluem arquivos de imagem, pixels, arquivos de projeto, nomes de arquivos do usuário, caminhos ou credenciais da conta. Você pode alterar o envio automático de relatórios a qualquer momento.",
     "account_usage_note": "As estatísticas de uso são uma configuração separada, ativada por padrão. Você pode desativá-las nas Configurações avançadas; elas não incluem registros de diagnóstico.",
     "feedback_local_export_scope": "Os arquivos ZIP exportados incluem registros locais recentes e detalhes do sistema; eles podem conter caminhos. Revise-os antes de compartilhar. Os relatórios de erros usam um pacote separado, sem informações sensíveis.",
@@ -30,6 +34,7 @@ PACK = {
     "account_skip": "Continuar sem uma conta",
     "account_continue": "Continuar",
     "account_wait_email": "Verifique seu e-mail e abra o link de acesso neste computador.",
+    "account_wait_email_phone": "Abra e confirme o link do e-mail no celular ou computador. O acesso aqui será automático.",
     "account_wait_browser": "Conclua o acesso no navegador ou continue sem uma conta.",
     "account_checking": "Verificando as configurações da conta…",
     "account_signed_in": "Conectado como {email}",

@@ -258,9 +258,9 @@ class AccountClient:
     """Thread-safe session client; all network operations are synchronous.
 
     UI code should invoke network methods in workers. login(provider, email=None,
-    cancel=None, on_started=None, timeout=300, terms_version=None) waits for the
-    browser callback. on_started is called after the browser opens or the email
-    is requested; cancel is a threading.Event. AccountError is safe to display.
+    cancel=None, on_started=None, timeout=None, terms_version=None) waits for
+    sign-in. Email defaults to 15 minutes, social sign-in to 5 minutes.
+    on_started takes no arguments; cancel is a threading.Event.
     """
     def __init__(self, store=None, *, base_url=BASE_URL, request=None, clock=time.time):
         parsed = urllib.parse.urlsplit(base_url)
@@ -275,11 +275,13 @@ class AccountClient:
         if not _valid_session(self._session):
             self._session = None
         self._generation = 0
+        self._login_epoch = 0
         self._refreshing = False
         self._last_refresh_error = None
+        self.email_handoff_mode = None
 
-    def _call(self, method, path, body=None, token=None):
-        result = self._request(method, self.base_url + path, body=body, token=token, timeout=15)
+    def _call(self, method, path, body=None, token=None, timeout=15):
+        result = self._request(method, self.base_url + path, body=body, token=token, timeout=timeout)
         if not isinstance(result, dict):
             raise AccountError("invalid_response")
         return result
@@ -296,28 +298,88 @@ class AccountClient:
         self._generation += 1
         self.store.clear()
 
-    def _login_call(self, generation, method, path, body):
+    def _check_login(self, generation, cancel):
+        with self._condition:
+            if generation != (self._generation, self._login_epoch) or (cancel is not None and cancel.is_set()):
+                raise AccountError("cancelled")
+
+    def _login_call(self, generation, method, path, body=None, *, cancel=None, timeout=15, check_after=True):
+        self._check_login(generation, cancel)
         try:
-            return self._call(method, path, body)
+            result = self._call(method, path, body, timeout=timeout)
         except AccountError as exc:
-            if exc.category == "account_disabled":
-                with self._condition:
-                    if generation == self._generation:
-                        self._clear()
+            with self._condition:
+                if generation != (self._generation, self._login_epoch) or (cancel is not None and cancel.is_set()):
+                    raise AccountError("cancelled") from None
+                if exc.category == "account_disabled":
+                    self._clear()
             raise
+        if check_after:
+            self._check_login(generation, cancel)
+        return result
 
+    def _poll_email(self, generation, cancel, flow_id, poll_token, deadline):
+        while True:
+            self._check_login(generation, cancel)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise AccountError("timeout")
+            result = self._login_call(generation, "POST", "/v1/auth/email/poll",
+                                      {"flow_id": flow_id, "poll_token": poll_token},
+                                      cancel=cancel, timeout=min(15, remaining))
+            if time.monotonic() >= deadline:
+                raise AccountError("timeout")
+            status = result.get("status")
+            if status == "approved":
+                code = result.get("code")
+                if (not isinstance(code, str) or not 1 <= len(code) <= 4096
+                        or any(ord(c) <= 32 or ord(c) >= 127 for c in code)):
+                    raise AccountError("invalid_response")
+                return code
+            if status == "expired":
+                raise AccountError("sign_in_expired")
+            if status != "pending":
+                raise AccountError("invalid_response")
+            next_poll = min(deadline, time.monotonic() + 2)
+            while time.monotonic() < next_poll:
+                self._check_login(generation, cancel)
+                with self._condition:
+                    self._condition.wait(timeout=min(0.2, max(0, next_poll - time.monotonic())))
 
-    def login(self, provider, email=None, *, cancel=None, on_started=None, timeout=300, terms_version=None, language=None):
+    def _cancel_email(self, flow_id, poll_token):
+        try:
+            self._call("POST", "/v1/auth/email/cancel",
+                       {"flow_id": flow_id, "poll_token": poll_token}, timeout=2)
+        except AccountError:
+            pass
+
+    def login(self, provider, email=None, *, cancel=None, on_started=None, timeout=None, terms_version=None, language=None):
         if provider not in ("email", "github", "google") or (provider == "email" and (not isinstance(email, str) or not email.strip())):
             raise ValueError("Invalid sign-in method")
         if terms_version is not None and not isinstance(terms_version, str):
             raise ValueError("Invalid terms version")
         if language is not None and language not in ("en", "zh"):
             raise ValueError("Invalid language")
+        if timeout is None:
+            timeout = 900 if provider == "email" else 300
         if timeout <= 0:
             raise AccountError("timeout")
         with self._condition:
-            generation = self._generation
+            generation = (self._generation, self._login_epoch)
+            if provider == "email":
+                self.email_handoff_mode = None
+        self._check_login(generation, cancel)
+        handoff = "loopback"
+        if provider == "email":
+            try:
+                capabilities = self._login_call(generation, "GET", "/v1/auth/email/capabilities", cancel=cancel)
+            except AccountError as exc:
+                if exc.status not in (404, 405):
+                    raise
+            else:
+                if capabilities.get("cross_device") != "poll-v1":
+                    raise AccountError("invalid_response")
+                handoff = "poll-v1"
         verifier, challenge = pkce_pair()
         try:
             server = _CallbackServer(("127.0.0.1", 0), _CallbackHandler)
@@ -328,45 +390,68 @@ class AccountClient:
             server.error = None
             server.timeout = 0.2
             redirect = "http://127.0.0.1:%d/callback" % server.server_port
-            if cancel is not None and cancel.is_set():
-                raise AccountError("cancelled")
+            self._check_login(generation, cancel)
             parameters = {"code_challenge": challenge, "redirect_uri": redirect}
             if terms_version and terms_version.strip():
                 parameters["terms_version"] = terms_version
             if language is not None:
                 parameters["lang"] = language
             if provider == "email":
-                result = self._login_call(generation, "POST", "/v1/auth/email/start", {"email": email.strip(), **parameters})
+                start = {"email": email.strip(), **parameters}
+                if handoff == "poll-v1":
+                    start["handoff"] = handoff
+                result = self._login_call(generation, "POST", "/v1/auth/email/start", start, cancel=cancel, check_after=False)
                 if result.get("ok") is not True:
                     raise AccountError("invalid_response")
+                if handoff == "poll-v1":
+                    flow_id, poll_token = result.get("flow_id"), result.get("poll_token")
+                    if not all(isinstance(value, str) and 1 <= len(value) <= 4096
+                               and all(32 < ord(c) < 127 for c in value)
+                               for value in (flow_id, poll_token)):
+                        raise AccountError("invalid_response")
+                if handoff == "loopback":
+                    self._check_login(generation, cancel)
             else:
                 query = urllib.parse.urlencode(parameters)
                 if not webbrowser.open(self.base_url + "/v1/auth/" + provider + "/start?" + query):
                     raise AccountError("browser")
-            if on_started:
-                on_started()
-            deadline = time.monotonic() + timeout
-            while not server.code and not server.error:
-                if cancel is not None and cancel.is_set():
-                    raise AccountError("cancelled")
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    raise AccountError("timeout")
-                server.timeout = min(0.2, remaining)
-                server.handle_request()
-            if cancel is not None and cancel.is_set():
-                raise AccountError("cancelled")
-            if server.error:
-                if server.error == "account_disabled":
+            try:
+                self._check_login(generation, cancel)
+                if provider == "email":
                     with self._condition:
-                        if generation == self._generation:
-                            self._clear()
-                raise AccountError(server.error)
-            session = self._login_call(generation, "POST", "/v1/auth/exchange", {"code": server.code, "code_verifier": verifier})
-            with self._condition:
-                if generation != self._generation or (cancel is not None and cancel.is_set()):
-                    raise AccountError("cancelled")
-                self._replace(session)
+                        if generation != (self._generation, self._login_epoch) or (cancel is not None and cancel.is_set()):
+                            raise AccountError("cancelled")
+                        self.email_handoff_mode = handoff
+                if on_started:
+                    on_started()
+                deadline = time.monotonic() + timeout
+                if provider == "email" and handoff == "poll-v1":
+                    code = self._poll_email(generation, cancel, flow_id, poll_token, deadline)
+                else:
+                    while not server.code and not server.error:
+                        self._check_login(generation, cancel)
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            raise AccountError("timeout")
+                        server.timeout = min(0.2, remaining)
+                        server.handle_request()
+                    self._check_login(generation, cancel)
+                    if server.error:
+                        if server.error == "account_disabled":
+                            with self._condition:
+                                if generation == (self._generation, self._login_epoch):
+                                    self._clear()
+                        raise AccountError(server.error)
+                    code = server.code
+                session = self._login_call(generation, "POST", "/v1/auth/exchange", {"code": code, "code_verifier": verifier}, cancel=cancel)
+                with self._condition:
+                    if generation != (self._generation, self._login_epoch) or (cancel is not None and cancel.is_set()):
+                        raise AccountError("cancelled")
+                    self._replace(session)
+            except AccountError as exc:
+                if provider == "email" and handoff == "poll-v1" and exc.category in ("cancelled", "timeout"):
+                    self._cancel_email(flow_id, poll_token)
+                raise
             return self.current_user()
 
     def current_user(self):
@@ -484,6 +569,8 @@ class AccountClient:
 
     def logout(self):
         with self._condition:
+            self._login_epoch += 1
+            self._condition.notify_all()
             owner = self._session['user'].get('id') if self._session else None
             while self._refreshing:
                 self._condition.wait()

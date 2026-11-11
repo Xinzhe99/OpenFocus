@@ -2,6 +2,10 @@
 
 PACK = {
     "account_title": "OpenFocus-Konto",
+    "account_heading": "Bei OpenFocus anmelden",
+    "account_subtitle": "Verwalten Sie Ihr Konto oder fahren Sie ohne Anmeldung fort.",
+    "account_or": "oder",
+    "account_agreement": "Ich stimme den <a href='terms'>Nutzungsbedingungen</a> und der <a href='privacy'>Datenschutzerklärung</a> zu",
     "account_explanation": "Melden Sie sich an, um OpenFocus durch Fehlerberichte zu verbessern. Berichte können Angaben zu Ihrem Gerät, Verarbeitungsschritten sowie Anzahl und Abmessungen der Bilder enthalten. Sie enthalten niemals Bilddateien, Pixel, Projektdateien, Dateinamen von Nutzern, Pfade oder Zugangsdaten. Sie können die automatische Berichterstattung jederzeit ändern.",
     "account_usage_note": "Nutzungsstatistiken sind eine separate Einstellung und standardmäßig aktiviert. Sie können sie in den erweiterten Einstellungen deaktivieren; sie enthalten keine Diagnoseprotokolle.",
     "feedback_local_export_scope": "Exportierte ZIP-Dateien enthalten aktuelle lokale Protokolle und Systeminformationen; sie können Pfade enthalten. Prüfen Sie sie vor der Weitergabe. Fehlerberichte verwenden ein separates, bereinigtes Paket.",
@@ -30,6 +34,7 @@ PACK = {
     "account_skip": "Ohne Konto fortfahren",
     "account_continue": "Weiter",
     "account_wait_email": "Prüfen Sie Ihre E-Mails und öffnen Sie den Anmeldelink auf diesem Computer.",
+    "account_wait_email_phone": "Öffnen und bestätigen Sie den E-Mail-Link auf Ihrem Smartphone oder Computer. Die Anmeldung erfolgt hier automatisch.",
     "account_wait_browser": "Schließen Sie die Anmeldung in Ihrem Browser ab oder fahren Sie ohne Konto fort.",
     "account_checking": "Kontoeinstellungen werden geprüft…",
     "account_signed_in": "Angemeldet als {email}",

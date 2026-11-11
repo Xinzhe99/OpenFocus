@@ -354,6 +354,8 @@ def test_optional_terms_are_forwarded(monkeypatch, provider, terms):
     monkeypatch.setattr(account.webbrowser, "open", lambda url: opened.append(url) or True)
     calls = []
     def request(method, url, body=None, token=None, timeout=None):
+        if url.endswith("/email/capabilities"):
+            raise account.AccountError("http", 404)
         calls.append((url, body))
         return {"ok": True} if url.endswith("/email/start") else session()
     client = account.AccountClient(store=MemoryStore(), request=request)
@@ -411,7 +413,9 @@ def test_disabled_login_clears_existing_session(monkeypatch):
 
 def test_disabled_email_start_clears_existing_session(monkeypatch):
     monkeypatch.setattr(account, "_CallbackServer", DummyListener)
-    def request(*args, **kwargs):
+    def request(method, url, **kwargs):
+        if url.endswith("/email/capabilities"):
+            return {"cross_device": "poll-v1"}
         raise account.AccountError("account_disabled", 403)
     store = MemoryStore(session())
     client = account.AccountClient(store=store, request=request)
@@ -479,3 +483,234 @@ def test_login_rejects_unrecognized_language():
     client = account.AccountClient(store=MemoryStore())
     with pytest.raises(ValueError, match="language"):
         client.login("github", language="fr")
+
+
+def test_phone_handoff_exchanges_pkce_code_without_exposing_secrets(monkeypatch, caplog):
+    monkeypatch.setattr(account, "_CallbackServer", DummyListener)
+    calls = []
+    def request(method, url, body=None, token=None, timeout=None):
+        calls.append((method, url, body))
+        if url.endswith("/capabilities"):
+            return {"cross_device": "poll-v1"}
+        if url.endswith("/start"):
+            return {"ok": True, "flow_id": "flow-secret", "poll_token": "poll-secret"}
+        if url.endswith("/poll"):
+            return {"status": "approved", "code": "code-secret"}
+        if url.endswith("/exchange"):
+            return session()
+        pytest.fail("unexpected request")
+    client = account.AccountClient(store=MemoryStore(), request=request)
+    started = []
+    with caplog.at_level(logging.DEBUG):
+        assert client.login("email", " user@example.test ", terms_version="2026-01", language="zh",
+                            on_started=lambda: started.append(client.email_handoff_mode)) == {"id": "user"}
+    assert started == ["poll-v1"]
+    assert [item[1].rsplit("/", 1)[-1] for item in calls] == ["capabilities", "start", "poll", "exchange"]
+    start, poll, exchange = (item[2] for item in calls[1:])
+    assert start["email"] == "user@example.test" and start["handoff"] == "poll-v1"
+    assert start["terms_version"] == "2026-01" and start["lang"] == "zh"
+    assert poll == {"flow_id": "flow-secret", "poll_token": "poll-secret"}
+    assert exchange["code"] == "code-secret"
+    expected = base64.urlsafe_b64encode(hashlib.sha256(exchange["code_verifier"].encode()).digest()).rstrip(b"=").decode()
+    assert start["code_challenge"] == expected
+    assert all(secret not in caplog.text for secret in ("flow-secret", "poll-secret", "code-secret", "private-token"))
+
+
+@pytest.mark.parametrize("status", [404, 405])
+def test_email_capability_fallback_preserves_old_loopback(monkeypatch, status):
+    class Listener(DummyListener):
+        def handle_request(self):
+            self.code = "old-code"
+    monkeypatch.setattr(account, "_CallbackServer", Listener)
+    calls = []
+    def request(method, url, body=None, **kwargs):
+        calls.append((url, body))
+        if url.endswith("/capabilities"):
+            raise account.AccountError("http", status)
+        return {"ok": True} if url.endswith("/start") else session()
+    client = account.AccountClient(store=MemoryStore(), request=request)
+    started = []
+    client.login("email", "user@example.test", on_started=lambda: started.append(client.email_handoff_mode))
+    assert started == ["loopback"]
+    assert "handoff" not in calls[1][1]
+    assert calls[1][1]["redirect_uri"] == "http://127.0.0.1:41234/callback"
+    assert calls[2][1]["code"] == "old-code"
+
+
+@pytest.mark.parametrize("response", [{}, {"cross_device": None}, {"cross_device": "other"}])
+def test_email_rejects_invalid_capabilities(response):
+    client = account.AccountClient(store=MemoryStore(), request=lambda *args, **kwargs: response)
+    with pytest.raises(account.AccountError, match="invalid_response"):
+        client.login("email", "user@example.test")
+
+
+def test_email_capability_error_is_not_fallback():
+    def request(*args, **kwargs):
+        raise account.AccountError("network")
+    client = account.AccountClient(store=MemoryStore(), request=request)
+    with pytest.raises(account.AccountError, match="network"):
+        client.login("email", "user@example.test")
+
+
+@pytest.mark.parametrize("result", [
+    {"ok": True}, {"ok": True, "flow_id": "", "poll_token": "token"},
+    {"ok": True, "flow_id": "flow", "poll_token": "bad\ntoken"},
+])
+def test_email_rejects_invalid_handoff_start(monkeypatch, result):
+    monkeypatch.setattr(account, "_CallbackServer", DummyListener)
+    def request(method, url, **kwargs):
+        return {"cross_device": "poll-v1"} if url.endswith("/capabilities") else result
+    client = account.AccountClient(store=MemoryStore(), request=request)
+    with pytest.raises(account.AccountError, match="invalid_response"):
+        client.login("email", "user@example.test")
+    assert not client.is_signed_in()
+
+
+@pytest.mark.parametrize("result,error", [
+    ({"status": "expired"}, "sign_in_expired"),
+    ({"status": "approved"}, "invalid_response"),
+    ({"status": "approved", "code": "bad\ncode"}, "invalid_response"),
+    ({"status": "replayed"}, "invalid_response"),
+    ({}, "invalid_response"),
+])
+def test_email_poll_expiry_and_invalid_results_do_not_exchange(monkeypatch, result, error):
+    monkeypatch.setattr(account, "_CallbackServer", DummyListener)
+    def request(method, url, **kwargs):
+        if url.endswith("/capabilities"):
+            return {"cross_device": "poll-v1"}
+        if url.endswith("/start"):
+            return {"ok": True, "flow_id": "flow", "poll_token": "token"}
+        if url.endswith("/poll"):
+            return result
+        pytest.fail("unexpected request")
+    client = account.AccountClient(store=MemoryStore(), request=request)
+    with pytest.raises(account.AccountError, match=error):
+        client.login("email", "user@example.test")
+    assert not client.is_signed_in()
+
+
+def test_email_exchange_replay_error_does_not_sign_in(monkeypatch):
+    monkeypatch.setattr(account, "_CallbackServer", DummyListener)
+    def request(method, url, **kwargs):
+        if url.endswith("/capabilities"):
+            return {"cross_device": "poll-v1"}
+        if url.endswith("/start"):
+            return {"ok": True, "flow_id": "flow", "poll_token": "token"}
+        if url.endswith("/poll"):
+            return {"status": "approved", "code": "already-used"}
+        raise account.AccountError("invalid_code", 400)
+    client = account.AccountClient(store=MemoryStore(), request=request)
+    with pytest.raises(account.AccountError, match="invalid_code"):
+        client.login("email", "user@example.test")
+    assert not client.is_signed_in()
+
+
+@pytest.mark.parametrize("stage,action", [("start", "cancel"), ("poll", "cancel"), ("exchange", "cancel"), ("poll", "logout"), ("exchange", "logout")])
+def test_email_cancellation_discards_inflight_result_and_revokes_handoff(monkeypatch, stage, action):
+    monkeypatch.setattr(account, "_CallbackServer", DummyListener)
+    entered, release, cancel = threading.Event(), threading.Event(), threading.Event()
+    calls = []
+    def request(method, url, body=None, timeout=None, **kwargs):
+        endpoint = url.rsplit("/", 1)[-1]
+        calls.append((endpoint, body, timeout))
+        if endpoint == stage:
+            entered.set()
+            assert release.wait(5)
+        if endpoint == "capabilities":
+            return {"cross_device": "poll-v1"}
+        if endpoint == "start":
+            return {"ok": True, "flow_id": "flow", "poll_token": "token"}
+        if endpoint == "poll":
+            return {"status": "approved", "code": "code"}
+        if endpoint == "exchange":
+            return session()
+        if endpoint == "cancel":
+            raise account.AccountError("network")
+        pytest.fail("unexpected request")
+    store = MemoryStore()
+    client = account.AccountClient(store=store, request=request)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(client.login, "email", "user@example.test", cancel=cancel)
+        assert entered.wait(5)
+        if action == "cancel":
+            cancel.set()
+        else:
+            client.logout()
+        release.set()
+        with pytest.raises(account.AccountError, match="cancelled"):
+            future.result(timeout=5)
+    assert store.value is None and not client.is_signed_in()
+    assert calls[-1] == ("cancel", {"flow_id": "flow", "poll_token": "token"}, 2)
+    if stage != "exchange":
+        assert not any(call[0] == "exchange" for call in calls)
+
+
+def test_email_pending_timeout_cancels_handoff(monkeypatch):
+    monkeypatch.setattr(account, "_CallbackServer", DummyListener)
+    calls = []
+    def request(method, url, body=None, timeout=None, **kwargs):
+        endpoint = url.rsplit("/", 1)[-1]
+        calls.append((endpoint, body, timeout))
+        if endpoint == "capabilities":
+            return {"cross_device": "poll-v1"}
+        if endpoint == "start":
+            return {"ok": True, "flow_id": "flow", "poll_token": "token"}
+        if endpoint == "poll":
+            return {"status": "pending"}
+        if endpoint == "cancel":
+            return {"ok": True}
+        pytest.fail("unexpected request")
+    client = account.AccountClient(store=MemoryStore(), request=request)
+    with pytest.raises(account.AccountError, match="timeout"):
+        client.login("email", "user@example.test", timeout=0.01)
+    assert calls[-1] == ("cancel", {"flow_id": "flow", "poll_token": "token"}, 2)
+    assert not client.is_signed_in()
+
+
+def test_email_default_timeout_matches_service_lifetime(monkeypatch):
+    monkeypatch.setattr(account, "_CallbackServer", DummyListener)
+    monkeypatch.setattr(account.time, "monotonic", lambda: 100.0)
+    deadlines = []
+    def poll(self, generation, cancel, flow_id, poll_token, deadline):
+        deadlines.append(deadline)
+        raise account.AccountError("sign_in_expired")
+    monkeypatch.setattr(account.AccountClient, "_poll_email", poll)
+    def request(method, url, **kwargs):
+        if url.endswith("/capabilities"):
+            return {"cross_device": "poll-v1"}
+        return {"ok": True, "flow_id": "flow", "poll_token": "token"}
+    client = account.AccountClient(store=MemoryStore(), request=request)
+    with pytest.raises(account.AccountError, match="sign_in_expired"):
+        client.login("email", "user@example.test")
+    assert deadlines == [1000.0]
+
+
+def test_email_poll_error_is_surfaced_without_exchange(monkeypatch):
+    monkeypatch.setattr(account, "_CallbackServer", DummyListener)
+    def request(method, url, **kwargs):
+        if url.endswith("/capabilities"):
+            return {"cross_device": "poll-v1"}
+        if url.endswith("/start"):
+            return {"ok": True, "flow_id": "flow", "poll_token": "token"}
+        if url.endswith("/poll"):
+            raise account.AccountError("rate_limited", 429, 30)
+        pytest.fail("unexpected request")
+    client = account.AccountClient(store=MemoryStore(), request=request)
+    with pytest.raises(account.AccountError) as exc:
+        client.login("email", "user@example.test")
+    assert exc.value.category == "rate_limited" and exc.value.retry_after == 30
+    assert not client.is_signed_in()
+
+
+def test_social_default_timeout_remains_five_minutes(monkeypatch):
+    now = [100.0]
+    class Listener(DummyListener):
+        def handle_request(self):
+            now[0] += 301
+    monkeypatch.setattr(account, "_CallbackServer", Listener)
+    monkeypatch.setattr(account.webbrowser, "open", lambda url: True)
+    monkeypatch.setattr(account.time, "monotonic", lambda: now[0])
+    client = account.AccountClient(store=MemoryStore())
+    with pytest.raises(account.AccountError, match="timeout"):
+        client.login("github")
+    assert now[0] == 401.0

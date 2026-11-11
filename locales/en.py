@@ -6,6 +6,10 @@ fall back to this table.
 
 EN = {
     "account_title": "OpenFocus account",
+    "account_heading": "Sign in to OpenFocus",
+    "account_subtitle": "Manage your account, or continue without signing in.",
+    "account_or": "or",
+    "account_agreement": "I agree to the <a href='terms'>Terms of Service</a> and <a href='privacy'>Privacy Policy</a>",
     "account_explanation": "Sign in to help improve OpenFocus through error reports. Reports may include your device, processing steps, image counts and dimensions. They never include image files, pixels, project files, user file names, paths or account credentials. You can change automatic reporting at any time.",
     "account_usage_note": "Usage statistics are a separate setting, enabled by default. You can turn them off in Advanced Settings; they do not include diagnostic logs.",
     "feedback_local_export_scope": "Exported ZIPs include recent local logs and system details; they may contain paths. Review before sharing. Error reports use a separate sanitized bundle.",
@@ -34,6 +38,7 @@ EN = {
     "account_skip": "Continue without an account",
     "account_continue": "Continue",
     "account_wait_email": "Check your email and open the sign-in link on this computer.",
+    "account_wait_email_phone": "Open the email link on your phone or computer and confirm. This window will sign in automatically.",
     "account_wait_browser": "Complete sign-in in your browser, or continue without an account.",
     "account_checking": "Checking account settings…",
     "account_signed_in": "Signed in as {email}",

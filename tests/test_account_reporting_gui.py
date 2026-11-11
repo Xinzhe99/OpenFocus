@@ -39,7 +39,7 @@ class _Account:
 
     def terms(self):
         self.calls.append('terms')
-        return {'version': '2026-11-08', 'url': 'https://account.openfocus.top/terms',
+        return {'version': '2026-11-11', 'url': 'https://account.openfocus.top/terms',
                 'draft': True, 'required': True}
 
     def login(self, provider, **kwargs):
@@ -48,7 +48,7 @@ class _Account:
         return self.user
 
 
-def test_account_requires_review_and_consent_then_remembers_reporting(qapp, settings, monkeypatch):
+def test_account_requires_consent_without_opening_links_and_defaults_reporting(qapp, settings, monkeypatch):
     from dialogs.account import AccountDialog
     from PyQt6.QtGui import QDesktopServices
     opened = []
@@ -57,28 +57,114 @@ def test_account_requires_review_and_consent_then_remembers_reporting(qapp, sett
     client = window._account_client = _Account()
     dialog = AccountDialog(window)
     try:
-        assert not dialog.auto_reports.isChecked()
-        assert not dialog.terms.isEnabled()
+        assert not dialog.terms.isChecked()
         dialog.github_button.click()
         assert client.calls == []
-        dialog.terms_link.click()
-        _wait(qapp, lambda: dialog._job is None)
-        assert opened and opened[0].startswith('https://account.openfocus.top/terms?')
         dialog.terms.setChecked(True)
         dialog.github_button.click()
         _wait(qapp, lambda: dialog._job is None)
-        assert client.calls[1][0:2] == ('github', '2026-11-08')
-        assert not settings.value('reports/auto_send', type=bool)
-        assert not window.auto_error_reports
-        dialog.auto_reports.setChecked(True)
-        dialog.reject()
+        assert client.calls[0] == 'terms'
+        assert client.calls[1][0:2] == ('github', '2026-11-11')
+        assert not opened
         assert settings.value('reports/auto_send', type=bool)
+        assert window.auto_error_reports
     finally:
         dialog.reject()
         window.deleteLater()
 
 
-def test_skip_while_terms_load_does_not_open_browser(qapp, settings, monkeypatch):
+def test_agreement_links_are_optional_and_open_independently(qapp, settings, monkeypatch):
+    from dialogs.account import AccountDialog
+    from PyQt6.QtGui import QDesktopServices
+    opened = []
+    monkeypatch.setattr(QDesktopServices, 'openUrl', lambda url: opened.append(url.toString()) or True)
+    window = QWidget()
+    client = window._account_client = _Account()
+    dialog = AccountDialog(window)
+    try:
+        dialog.agreement.linkActivated.emit('terms')
+        dialog.agreement.linkActivated.emit('privacy')
+        assert opened[0].startswith('https://account.openfocus.top/terms?')
+        assert opened[1].startswith('https://openfocus.top/')
+        assert not client.calls and not dialog.terms.isChecked()
+    finally:
+        dialog.reject()
+        window.deleteLater()
+
+
+def test_sign_in_preserves_existing_reporting_opt_out(qapp, settings):
+    from dialogs.account import AccountDialog
+    settings.setValue('reports/auto_send', False)
+    window = QWidget()
+    window.auto_error_reports = False
+    window._account_client = _Account()
+    dialog = AccountDialog(window)
+    try:
+        dialog.terms.setChecked(True)
+        dialog.github_button.click()
+        _wait(qapp, lambda: dialog._job is None)
+        assert not settings.value('reports/auto_send', type=bool)
+        assert not window.auto_error_reports
+    finally:
+        dialog.reject()
+        window.deleteLater()
+
+
+@pytest.mark.parametrize('version', ['2026-11-08', 'unversioned'])
+def test_old_or_unknown_terms_do_not_enable_automatic_reports(qapp, settings, version):
+    from dialogs.account import AccountDialog
+
+    class PreviousTerms(_Account):
+        def terms(self):
+            return {'version': version, 'url': 'https://account.openfocus.top/terms',
+                    'draft': True, 'required': False}
+
+    window = QWidget()
+    window._account_client = PreviousTerms()
+    dialog = AccountDialog(window)
+    try:
+        dialog.terms.setChecked(True)
+        dialog.github_button.click()
+        _wait(qapp, lambda: dialog._job is None)
+        assert window._account_client.is_signed_in()
+        assert not settings.value('reports/auto_send', False, type=bool)
+    finally:
+        dialog.reject()
+        window.deleteLater()
+
+
+@pytest.mark.parametrize(('mode', 'message'), [
+    ('poll-v1', 'account_wait_email_phone'),
+    ('loopback', 'account_wait_email'),
+])
+def test_email_status_matches_available_verification_mode(qapp, settings, mode, message):
+    from dialogs.account import AccountDialog
+    from locales import trans
+    release = Event()
+
+    class Waiting(_Account):
+        def login(self, provider, **kwargs):
+            self.email_handoff_mode = mode
+            kwargs['on_started']()
+            assert release.wait(5)
+            return super().login(provider, **kwargs)
+
+    window = QWidget()
+    window._account_client = Waiting()
+    dialog = AccountDialog(window)
+    try:
+        dialog.terms.setChecked(True)
+        dialog.email.setText('user@example.test')
+        dialog.email_button.click()
+        _wait(qapp, lambda: dialog.status.text() == trans.t(message))
+    finally:
+        release.set()
+        _wait(qapp, lambda: dialog._job is None)
+        dialog.reject()
+        window.deleteLater()
+
+
+def test_skip_while_sign_in_loads_terms_does_not_start_login(qapp, settings, monkeypatch):
     from dialogs.account import AccountDialog
     from PyQt6.QtGui import QDesktopServices
     entered, release = Event(), Event()
@@ -93,12 +179,14 @@ def test_skip_while_terms_load_does_not_open_browser(qapp, settings, monkeypatch
     window._account_client = Delayed()
     dialog = AccountDialog(window)
     try:
-        dialog.terms_link.click()
+        dialog.terms.setChecked(True)
+        dialog.github_button.click()
         assert entered.wait(5)
         dialog.reject()
         release.set()
         _wait(qapp, lambda: dialog._job is None)
         assert not opened
+        assert window._account_client.calls == ['terms']
         assert not settings.contains('reports/auto_send')
     finally:
         release.set()
