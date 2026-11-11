@@ -104,7 +104,7 @@ and system changes still work for the current page. With JavaScript disabled,
 the English and Chinese links and all navigation links remain available,
 including on mobile screens.
 
-Releasing: the Worker resolves `/api/latest` from GitHub and serves
+Releasing: the Worker resolves `/api/latest` from GitHub's latest **stable** release and serves
 `/download/latest/*` from R2. For a split Windows release it fills missing
 complete assets from the validated same-tag mirror manifest. A complete GitHub
 asset is a fallback for full requests; a mirror-only asset or range request
@@ -112,11 +112,14 @@ returns `503` until R2 is ready. Complete GitHub metadata is cached for five
 minutes per data center, while clients receive `no-store`. If GitHub is
 unavailable, the Worker serves the last complete mirror manifest with
 `X-OpenFocus-Release-Source: mirror`.
-Without JavaScript, download links still use `/download/latest/*`. Static
-version labels and JSON-LD are generated from `constants.APP_VERSION`; rebuild
-and redeploy when those labels must match the latest release.
-File sizes are shown only when live release metadata is available, avoiding
-stale sizes in static pages.
+Without JavaScript, download links still use `/download/latest/*`. The scripts,
+website downloads and desktop update mirror exclude prereleases; beta assets are
+available from their GitHub release page. JavaScript updates the displayed
+version from `/api/latest`. Static version labels and JSON-LD are generated
+from `constants.APP_VERSION`, which may be ahead of the latest stable release
+during beta development; check the live API rather than relying on those labels
+when JavaScript is unavailable. File sizes are shown only when live release
+metadata is available, avoiding stale sizes in static pages.
 
 ## Download mirror (R2)
 

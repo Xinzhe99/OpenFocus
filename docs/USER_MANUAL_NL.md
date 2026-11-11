@@ -75,7 +75,8 @@ Bij **Opslaan als** bewaart gewone TIFF het resultaat als één afbeelding; TIFF
 
 ### Installatie
 
-Download de nieuwste Windows- of macOS-build van de [OpenFocus-website](https://openfocus.top/#download). Dezelfde bestanden en oudere versies staan ook op [GitHub Releases](https://github.com/Xinzhe99/OpenFocus/releases).
+Download de nieuwste stabiele Windows- of macOS-build van de [OpenFocus-website](https://openfocus.top/#download). Dezelfde bestanden en oudere versies staan ook op [GitHub Releases](https://github.com/Xinzhe99/OpenFocus/releases).
+Ook de installatiescripts bieden de nieuwste stabiele versie. Downloads van de [vooruitgave v1.77.0-beta.3](https://github.com/Xinzhe99/OpenFocus/releases/tag/v1.77.0-beta.3) zijn beschikbaar op GitHub.
 
 | Platform | Bestand | Type |
 |----------|---------|------|

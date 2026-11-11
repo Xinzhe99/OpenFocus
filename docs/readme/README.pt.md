@@ -55,7 +55,7 @@
 ## 📢 Novidades
 
 > [!NOTE]
-> **v1.77.0 candidata a lançamento** — Fundo automático e sessões de retoque restauráveis, prévias JPEG/RAW com memória limitada e inspeção dos pixels originais, fusão CPU conforme o orçamento de RAM e estado de execução GPU mais claro. Consulte o registro de alterações para entradas suportadas e limitações.
+> **[v1.77.0-beta.3, versão preliminar](https://github.com/Xinzhe99/OpenFocus/releases/tag/v1.77.0-beta.3)** — Aceleração por GPU para dispositivos OpenCL compatíveis no OpenFocus B, com alternativa em CPU; comparação por deslizamento corrigida; fundo automático e retoque. Detalhes no [registro de alterações](../../CHANGELOG.md).
 
 As versões anteriores estão no [registro de alterações](../../CHANGELOG.md).
 
@@ -219,7 +219,7 @@ Um agente pode controlar o aplicativo por um canal local protegido por token.
 <a id="install"></a>
 ## ⬇️ Instalação
 
-Baixe a compilação mais recente para Windows ou macOS no [site do OpenFocus](https://openfocus.top/#download). Os mesmos arquivos e versões anteriores também estão no [GitHub Releases](https://github.com/Xinzhe99/OpenFocus/releases).
+O [site do OpenFocus](https://openfocus.top/#download) oferece por padrão a versão estável mais recente para Windows ou macOS. As versões beta e anteriores estão no [GitHub Releases](https://github.com/Xinzhe99/OpenFocus/releases).
 
 Consulte o [manual](../USER_MANUAL_PT.md) para instalação e solução de problemas.
 

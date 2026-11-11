@@ -55,10 +55,7 @@
 ## 📢 Aktualności
 
 > [!NOTE]
-> **v1.77.0 — kandydat do wydania** — Automatyczne tło i odtwarzalne sesje retuszu,
-> podglądy JPEG/RAW z ograniczonym zużyciem pamięci i kontrola oryginalnych pikseli,
-> fuzja CPU w ramach budżetu RAM oraz czytelniejszy stan wykonania GPU.
-> Obsługiwane dane wejściowe i ograniczenia opisuje historia zmian.
+> **[v1.77.0-beta.3 — wydanie wstępne](https://github.com/Xinzhe99/OpenFocus/releases/tag/v1.77.0-beta.3)** — Przyspieszenie GPU dla zgodnych urządzeń OpenCL w OpenFocus B z przełączeniem na CPU, poprawione porównanie suwakiem oraz automatyczne tło i retusz. Szczegóły w [historii zmian](../../CHANGELOG.md).
 
 Wcześniejsze wydania opisuje [historia zmian](../../CHANGELOG.md).
 
@@ -222,7 +219,7 @@ Steruj aplikacją przez lokalny kanał agenta chroniony tokenem.
 <a id="install"></a>
 ## ⬇️ Instalacja
 
-Pobierz najnowszą kompilację dla Windows lub macOS ze [strony OpenFocus](https://openfocus.top/#download). Te same pliki i starsze wersje są dostępne na [GitHub Releases](https://github.com/Xinzhe99/OpenFocus/releases).
+Na [stronie OpenFocus](https://openfocus.top/#download) domyślnie dostępna jest najnowsza stabilna wersja dla Windows i macOS. Wersje beta i starsze wydania można pobrać z [GitHub Releases](https://github.com/Xinzhe99/OpenFocus/releases).
 
 Informacje o instalacji i rozwiązywaniu problemów zawiera [podręcznik](../USER_MANUAL_PL.md).
 
