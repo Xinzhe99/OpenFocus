@@ -366,7 +366,8 @@ class MultiFocusFusion:
                                 thread_count=kwargs.get('thread_count', None),
                                 blend_smoothing=kwargs.get('smoothing', 4.) * .6,
                                 should_cancel=kwargs.get('should_cancel'),
-                                progress_callback=kwargs.get('progress_callback'))
+                                progress_callback=kwargs.get('progress_callback'),
+                                use_gpu=self.use_gpu)
 
     # ------------------------------------------------------------------
     # 基底校正（消除亮度漂移）

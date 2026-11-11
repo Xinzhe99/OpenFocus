@@ -5,6 +5,13 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- Add an opt-in OpenCL GPU path for OpenFocus C pyramid fusion
+  (\`use_gpu=True\`), porting the full weighted-pyramid chain — normalize,
+  Gaussian down/up, detail+weight, IIR weight filter, merge, collapse and
+  output — to device kernels. Verified bit-exact against the CPU path
+  (92-frame 2048x1366 stack: ndiff=0, ~3.8x faster on RTX 4060 Laptop);
+  falls back to CPU when the device budget or build fails.
 
 
 ## [1.77.0] - 2026-11-11
