@@ -388,8 +388,13 @@ def _open_by_any_process():
     return busy
 
 
-def _sweep_legacy(directories, live):
-    """Loose scratch from builds that predate the registry."""
+def _sweep_legacy(directories, live, registry=None):
+    """Loose scratch from builds that predate the registry.
+
+    *live* is read before the folders are listed, so it can miss a frame a
+    running process creates and records during the sweep. With *registry*,
+    the live registries are read again after the process scan; see below.
+    """
     candidates = []
     for directory in directories:
         try:
@@ -404,10 +409,19 @@ def _sweep_legacy(directories, live):
         return 0, 0
     boot = _boot_time()
     busy = _open_by_any_process()
+    if registry is not None:
+        # A new frame's descriptor is closed before the file is mapped, so a
+        # process scan that lands in between finds it open nowhere. Its owner
+        # records it before closing the descriptor, so registries read after
+        # the scan always list it.
+        recorded = _live_registry_paths(registry)
+        if recorded is None:
+            return 0, 0
+        live = set(live) | {_norm(path) for path in recorded if path}
     removed, freed = 0, 0
     for path in candidates:
         target = _safe_target(os.path.abspath(path))
-        if target is None:
+        if target is None or _owned_by_live(target, live):
             continue
         try:
             info = target.stat()
@@ -444,7 +458,7 @@ def sweep_abandoned(extra_directories=()):
     removed, freed = _sweep_stale_registries(directory, live)
     folders = {os.path.abspath(tempfile.gettempdir())}
     folders.update(os.path.abspath(os.fsdecode(d)) for d in extra_directories if d)
-    legacy = _sweep_legacy(sorted(folders), live)
+    legacy = _sweep_legacy(sorted(folders), live, directory)
     removed, freed = removed + legacy[0], freed + legacy[1]
     if removed:
         log.info("removed %d abandoned scratch item(s), %.1f MiB, left by an "
