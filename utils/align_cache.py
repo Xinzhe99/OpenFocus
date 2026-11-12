@@ -282,6 +282,20 @@ def _plan_backend(identity):
             'opencv-perspective-v1' else 'openfocus-wide4d-v3')
 
 
+def _reduced_raw_decode(source):
+    """True for standard camera RAW loaded at a scale that can decode at half size.
+
+    A plan records a digest of each decoded source. Plans written before
+    half-size decoding hold digests of other pixels, so these sources sign a
+    different request and the earlier plan is not found.
+    """
+    from core.image_loader import is_raw_source
+    path = getattr(source, 'path', '')
+    scale = getattr(source, 'scale', 1.0)
+    return bool(path and getattr(source, 'linear_metadata', None) is None
+                and 0 < scale <= 0.5 and is_raw_source(path))
+
+
 def _plan_signature(folder, filenames, sources, identity):
     from core.source_frames import SourceFrame
     from core.openfocus_alignment import _source_context
@@ -299,6 +313,8 @@ def _plan_signature(folder, filenames, sources, identity):
             'shape': list(source.shape), 'dtype': np.dtype(source.dtype).str,
             'context': _source_context(source), 'path': os.fspath(getattr(source, 'path', '')),
             'page': int(getattr(source, 'page', 0))})
+        if _reduced_raw_decode(source):
+            descriptions[-1]['decode'] = 'raw-half-size'
     request = {'version': PLAN_CACHE_VERSION, 'backend': _plan_backend(identity),
                'sources': descriptions, 'identity': identity or {}}
     encoded = json.dumps(request, sort_keys=True, separators=(',', ':'), allow_nan=False).encode('utf-8')

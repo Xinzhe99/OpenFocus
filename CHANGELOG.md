@@ -196,6 +196,10 @@ At the time of the [v1.77.0-beta.3 prerelease](https://github.com/Xinzhe99/OpenF
   stack can still use camera-linear import and Linear DNG export.
 - Prepare source frames with bounded parallel decoding and publish thumbnails
   incrementally, while respecting the configured thread and memory budgets.
+- Decode Bayer camera RAW at half size when the loading scale is 50% or less,
+  as camera-linear import already does. Loading and rendering such stacks is
+  faster; pixels can differ slightly from a full-size decode followed by
+  downsampling, and frame dimensions are unchanged.
 - Reorder decoded camera RAW samples into the working channel order with a
   faster native copy. Decoded pixels are unchanged.
 - Move frame-review messages to the bottom status bar, leaving more room for
