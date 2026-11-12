@@ -31,7 +31,7 @@ def _retained(tmp_path, monkeypatch):
     path = tmp_path / 'source.tif'
     assert imwrite_auto(str(path), pixels)
     source = sources.scan_source(str(path), header_only=True)[0]
-    aligned = sources.process_frame(source, _identity)
+    aligned = sources.crop_frame(source, 0, 0, 16, 12)
     with cache.render_scope([source]):
         sources.resolve_frame(aligned)
         result = cache.retain_aligned_frames([aligned])[0]
@@ -88,6 +88,34 @@ def test_changed_processing_does_not_reuse_retained_result(tmp_path, monkeypatch
     retained, expected, _ = _retained(tmp_path, monkeypatch)
     changed = sources.process_frame(retained, lambda pixels: pixels + np.uint16(5))
     np.testing.assert_array_equal(sources.resolve_frame(changed), expected + 5)
+
+
+def test_retained_preview_stays_geometric_without_reading_full_pixels(tmp_path, monkeypatch):
+    from core.aligned_previews import can_preview, registered_preview
+    retained, _, _ = _retained(tmp_path, monkeypatch)
+    expected = registered_preview(retained.source)
+    monkeypatch.setattr(sources.RetainedFrame, 'full_resolution',
+                        lambda *a, **k: pytest.fail('read full retained image'))
+    assert can_preview(retained)
+    actual = registered_preview(retained)
+    np.testing.assert_array_equal(actual[0], expected[0])
+    assert actual[1] == expected[1]
+
+
+@pytest.mark.parametrize('crop', [False, True])
+def test_history_releases_retained_files_but_preserves_pixels(tmp_path, monkeypatch, crop):
+    from core.render_context import build_render_context
+    retained, expected, _ = _retained(tmp_path, monkeypatch)
+    path = Path(storage.describe_frame(retained.pixels)['path'])
+    frame = sources.crop_frame(retained, 1, 1, 8, 6) if crop else retained
+    expected = expected[1:7, 1:9] if crop else expected
+    context = build_render_context([frame], expected)
+    assert context is not None
+    del retained, frame
+    sources.SOURCE_CACHE.clear()
+    gc.collect()
+    assert not path.exists()
+    np.testing.assert_array_equal(sources.resolve_frame(context.frames[0].image), expected)
 
 
 def test_spawned_repeated_render_uses_retained_pixels(qapp, tmp_path, monkeypatch):

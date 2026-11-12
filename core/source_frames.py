@@ -814,6 +814,17 @@ class RetainedFrame(ProcessedFrame):
         return view
 
 
+def without_retained_pixels(frame):
+    """Keep historical provenance without owning the current alignment cache."""
+    if isinstance(frame, RetainedFrame):
+        return without_retained_pixels(frame.source)
+    if isinstance(frame, ProcessedFrame):
+        source = without_retained_pixels(frame.source)
+        if source is not frame.source:
+            return replace(frame, source=source)
+    return frame
+
+
 def process_frame(frame, processor, *, shape=None, dtype=None, should_cancel=None,
                   scratch_bytes=None):
     """Describe processing and its additional peak workspace without decoding."""

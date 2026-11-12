@@ -490,8 +490,9 @@ Changing the source, registration request or processing settings still uses the
 existing validation and alignment-invalidation rules. Preview, ROI, sensor
 cleanup and alignment-report jobs do not populate this cache. Dropping the
 aligned stack and its last borrowed views releases the mappings; there is no
-persistent cache across application sessions. The limit is per aligned stack,
-and outputs or retouch views can keep their own references alive.
+persistent cache across application sessions. Historical render contexts keep
+the original lazy descriptors rather than owning this cache, and bounded
+geometric previews also use those original descriptors.
 
 Depth maps, batch jobs, background fill and viewport pixels retain their
 existing worker paths. Standalone callers may still use `RenderWorker`
