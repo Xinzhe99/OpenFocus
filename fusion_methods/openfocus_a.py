@@ -118,11 +118,44 @@ def _hard_response(gray, radius, should_cancel, check_cancel):
     return response
 
 
+def _opacity_filter(gray, radius_px, should_cancel):
+    """Unguided type-1 IIR blur, vertical then horizontal (helicon 'vh')."""
+    from fusion_methods.openfocus_depth import _axis
+    count = int(np.float32(radius_px))
+    cur = gray
+    for axis in (0, 1):
+        cur = _axis(cur, None, radius_px, radius_px, count, axis,
+                    should_cancel, create_frame)
+    return cur
+
+
+def _opacity_map(gray, radius, should_cancel, check_cancel):
+    """HF9 A opacity candidate: blur -> normalized difference -> blur.
+
+    Mirrors ``helicon_exact.opacity_map`` (``filter_type7`` init='type1',
+    ``diff_map``): ``p = R*0.075``, radii ``p*0.5`` and ``p*2.0`` scaled by
+    ``maxdim/100``. Returns a uint16 opacity plane.
+    """
+    from fusion_methods._openfocus_depth_rows import activity_rows
+    maxdim = np.float32(max(gray.shape))
+    p = float(np.float64(radius) * np.float32(0.075))
+    r1 = np.float32(maxdim * np.float32(p * 0.5) / np.float32(100))
+    r2 = np.float32(maxdim * np.float32(p * 2.0) / np.float32(100))
+    blur1 = _opacity_filter(gray, r1, should_cancel)
+    diff = create_frame(gray.shape, np.uint16)
+    def diff_rows(start, stop):
+        check_cancel(should_cancel)
+        activity_rows(gray, blur1, diff, start, stop)
+    run_bands(gray.shape[0], 128, diff_rows,
+              scratch_bytes=min(128, gray.shape[0]) * gray.shape[1] * 4)
+    return _opacity_filter(diff, r2, should_cancel)
+
+
 @execution_job
 def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 17,
                      thread_count: int = None, blend_smoothing: float = 2.0,
                      blend_mode: str = 'hard', soft_gamma: float = 1.0,
-                     feather_theta: float = 0.9,
+                     feather_theta: float = 0.9, opacity_power: float = 28.0,
                      should_cancel=None, progress_callback=None):
     """Fuse with the Burt-pyramid focus response.
 
@@ -131,8 +164,10 @@ def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 17,
     low-response areas blend the stack unless all responses tie. Eight-bit
     output applies E-37; sixteen-bit codes retain their input precision.
 
-    ``soft`` and ``feather`` are experimental, unregistered merge modes.
-    Their historical blending stays separate from the default path.
+    ``soft``, ``feather`` and ``opacity`` are experimental, unregistered merge
+    modes. ``opacity`` weights each source by ``opacity_map**opacity_power``
+    (HF9-style normalized difference-of-blur focus measure) and blends in a
+    single streaming pass; it removes the hard-selection block artifacts.
     """
     from fusion_methods.openfocus_ab import (
         _check_cancel, _collect_images, _prepare_frame,
@@ -141,7 +176,8 @@ def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 17,
     frames = _collect_images(input_source, normalize=False, should_cancel=should_cancel)
     configure_rows(frames, img_resize, 'openfocus_a', thread_count, should_cancel)
     radius = max(1, int(kernel_size) // 2)
-    hard = blend_mode not in ('soft', 'feather')
+    hard = blend_mode not in ('soft', 'feather', 'opacity')
+    opacity = blend_mode == 'opacity'
     fast_hard = hard and img_resize is None and all(
         source.dtype in (np.uint8, np.uint16) for source in frames)
     workers = _frame_pass_workers(frames, img_resize, 'openfocus_a', thread_count)
@@ -161,6 +197,10 @@ def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 17,
             response = _hard_response(gray, radius, cancelled, _check_cancel)
             return frame, response
         code = frame_codes(source, img_resize, cancelled)
+        if opacity:
+            gray = gray_codes(code, cancelled, u8=source.dtype == np.uint8)
+            response = _opacity_map(gray, radius, cancelled, _check_cancel)
+            return code, response
         if hard:
             gray = gray_codes(code, cancelled, u8=source.dtype == np.uint8)
             response = _hard_response(gray, radius, cancelled, _check_cancel)
@@ -320,6 +360,59 @@ def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 17,
                 if progress_callback is not None:
                     progress_callback(step, total_steps)
             output = accumulated
+        elif opacity:
+            # Single streaming pass: per-pixel normalized opacity weights.
+            power = float(opacity_power)
+            accumulated = weight_sum = None
+            for index, (frame, response) in produced:
+                _check_cancel(should_cancel)
+                if accumulated is None:
+                    accumulated = np.zeros(frame.shape, np.float64)
+                    weight_sum = np.zeros(response.shape, np.float64)
+                    height, width = accumulated.shape[:2]
+                def accumulate_opacity(start, stop):
+                    _check_cancel(should_cancel)
+                    rows = slice(start, stop)
+                    w = np.power(response[rows].astype(np.float64)
+                                 * np.float64(1.0 / 65535.0), power)
+                    weight_sum[rows] += w
+                    if frame.ndim == 3:
+                        accumulated[rows] += w[:, :, None] * frame[rows]
+                    else:
+                        accumulated[rows] += w * frame[rows]
+                run_bands(height, 128, accumulate_opacity,
+                          scratch_bytes=min(128, height) * width * 64)
+                del frame, response
+                step += 1
+                if progress_callback is not None:
+                    progress_callback(step, total_steps)
+            _check_cancel(should_cancel)
+            produced.close()
+
+            fused = create_frame(accumulated.shape, np.float32)
+            def finalize_opacity(start, stop):
+                _check_cancel(should_cancel)
+                rows = slice(start, stop)
+                wsum = np.maximum(weight_sum[rows], np.float64(1e-300))
+                if accumulated.ndim == 3:
+                    fused[rows] = accumulated[rows] / wsum[:, :, None]
+                else:
+                    fused[rows] = accumulated[rows] / wsum
+            run_bands(fused.shape[0], 128, finalize_opacity,
+                      scratch_bytes=min(128, fused.shape[0]) * fused.shape[1] * 16)
+            del accumulated, weight_sum
+            is_u8 = all(source.dtype == np.uint8 for source in frames)
+            if is_u8:
+                # Codes are v<<8: the weighted mean returns the u8 domain.
+                output = create_frame(fused.shape, np.uint8)
+                for start in range(0, fused.shape[0], 128):
+                    _check_cancel(should_cancel)
+                    rows = slice(start, min(fused.shape[0], start + 128))
+                    output[rows] = np.clip(np.rint(fused[rows] / 256.0),
+                                           0, 255).astype(np.uint8)
+                del fused
+            else:
+                output = fused / np.float32(257.0)
         else:
             from fusion_methods._openfocus_kernels import select_rows
             for index, (frame, response) in produced:
