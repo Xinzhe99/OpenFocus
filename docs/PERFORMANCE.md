@@ -103,8 +103,8 @@ What usually bounds a render:
   share.
 - **Tiling:** `redundancy` is the share of pixels computed more than once
   because tiles overlap; `block_requested` → `block_after_memory_plan` shows a
-  tile size reduced to fit memory. A neural method then reduces the overlap in
-  the same proportion (`overlap_requested` → `overlap_effective`), so a halved
+  tile size reduced to fit memory. StackMFF V1/V3 then reduce the overlap in the
+  same proportion (`overlap_requested` -> `overlap_effective`), so a halved
   tile keeps the requested share of overlap instead of doubling it. The
   overlap is not scaled below 128 pixels: a default tile reduced to 256 keeps
   overlap 128.
