@@ -29,6 +29,7 @@ from core.algorithms import alignment_steps
 from core.frame_storage import frame_region, is_mapped_frame, store_frame
 from core.source_frames import (
     SourceFrame as LazySourceFrame, ProcessedFrame, crop_frame, resolve_frame, store_preview,
+    without_retained_pixels,
 )
 
 
@@ -283,7 +284,7 @@ def build_render_context(
     """
     if result is None or not processed_images:
         return None
-    frames_in = list(processed_images)
+    frames_in = [without_retained_pixels(image) for image in processed_images]
     if not frames_in or not isinstance(frames_in[0], (np.ndarray, LazySourceFrame, ProcessedFrame)):
         return None
 
