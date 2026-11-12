@@ -791,6 +791,29 @@ class ProcessedFrame:
         return store_frame(self.full_resolution())
 
 
+@dataclass(frozen=True, eq=False)
+class RetainedFrame(ProcessedFrame):
+    """Read-only aligned pixels with their original lazy source provenance.
+
+    The mapped view owns its scratch file through the normal frame transport.
+    No decode or processing is needed, but source identity is checked on every
+    access. The original descriptor remains available for metadata and retouch.
+    """
+    pixels: object = None
+
+    def full_resolution(self, *, should_cancel=None, cache_result=True):
+        from core.registration import RegistrationCancelled
+        if ((should_cancel is not None and should_cancel()) or
+                (self.should_cancel is not None and self.should_cancel())):
+            raise RegistrationCancelled()
+        validate_frame_source(self.source)
+        if self.pixels.shape != self.shape or self.pixels.dtype != self.dtype:
+            raise ValueError('Retained frame does not match its declared shape/dtype')
+        view = self.pixels.view()
+        view.setflags(write=False)
+        return view
+
+
 def process_frame(frame, processor, *, shape=None, dtype=None, should_cancel=None,
                   scratch_bytes=None):
     """Describe processing and its additional peak workspace without decoding."""
@@ -967,6 +990,8 @@ def processing_preview(frame):
 def frame_source_cache_bytes(frame):
     """Decoded pixels retained by SOURCE_CACHE, independent of a lazy ROI."""
     while isinstance(frame, ProcessedFrame):
+        if isinstance(frame, RetainedFrame):
+            return 0
         frame = frame.source
     return frame.nbytes if isinstance(frame, SourceFrame) else 0
 
@@ -979,6 +1004,8 @@ def source_cache_growth_bytes(frames):
 
 def frame_resolution_bytes(frame):
     """Additional peak pixels/encoded input needed to resolve a descriptor."""
+    if isinstance(frame, RetainedFrame):
+        return 0
     if isinstance(frame, ProcessedFrame):
         return frame_resolution_bytes(frame.source) + frame.scratch_bytes
     if isinstance(frame, SourceFrame):
