@@ -328,9 +328,10 @@ def _gpu_memory(kind: str) -> tuple:
 
 def probe_memory() -> ResourceSnapshot:
     """Read current RAM for admission without CPU topology or GPU queries."""
+    available, total = memory.system_memory_bytes()
     return ResourceSnapshot(
-        available_ram=int(memory.available_memory_bytes() or 0),
-        total_ram=int(memory.total_memory_bytes() or 0),
+        available_ram=int(available or 0),
+        total_ram=int(total or 0),
         process_rss=int(memory.process_rss_bytes() or 0),
     )
 
