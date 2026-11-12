@@ -235,6 +235,45 @@ def test_legacy_sweep_skips_paths_recorded_by_a_live_process(registry, monkeypat
         process.communicate("\n", timeout=60)
 
 
+def test_legacy_sweep_keeps_a_frame_recorded_during_the_sweep(registry, monkeypatch):
+    directory, scratch = registry
+    frame = scratch / "openfocus-frame-new.bin"
+    process = subprocess.Popen([sys.executable, "-c", textwrap.dedent(f"""
+        import pathlib, sys
+        sys.path.insert(0, {ROOT!r})
+        from core import scratch_registry
+        scratch_registry._directory_override = {str(directory)!r}
+        scratch_registry.register({str(scratch / "placeholder")!r})  # live, locked registry
+        print("ready", flush=True)
+        sys.stdin.readline()
+        path = pathlib.Path({str(frame)!r}); path.write_bytes(b"x")
+        scratch_registry.register(path)
+        print("created", flush=True)
+        sys.stdin.readline()
+    """)], cwd=ROOT, text=True, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+    try:
+        assert process.stdout.readline().strip() == "ready"
+        sweep_stale = scratch_registry._sweep_stale_registries
+
+        def owner_creates_a_frame(*args, **kwargs):
+            # After the sweep has read the live registries, before it lists
+            # the folders: the owner creates and records a new frame.
+            result = sweep_stale(*args, **kwargs)
+            process.stdin.write("\n")
+            process.stdin.flush()
+            assert process.stdout.readline().strip() == "created"
+            return result
+
+        monkeypatch.setattr(scratch_registry, "_sweep_stale_registries", owner_creates_a_frame)
+        # The process scan lands after the frame's descriptor is closed and
+        # before it is mapped, so the frame looks open nowhere.
+        monkeypatch.setattr(scratch_registry, "_open_by_any_process", lambda: set())
+        sweep()
+        assert frame.exists()
+    finally:
+        process.communicate("\n", timeout=60)
+
+
 def test_unavailable_registry_never_blocks_processing(registry, tmp_path, monkeypatch):
     blocker = tmp_path / "blocked"
     blocker.write_text("not a folder")
