@@ -75,17 +75,53 @@ def exchange_opencv_threads(threads):
         return previous
 
 
+# OpenCV parallel backends whose setNumThreads(N) caps a parallel region at N
+# workers. GCD only switches parallelism on or off, and HPX and WinRT are not
+# known to cap it, so those keep warps serial. The names are those reported by
+# currentParallelFramework() and the build summary's "Parallel framework".
+_BOUNDED_PARALLEL_BACKENDS = ('TBB', 'ONETBB', 'OPENMP', 'PTHREADS',
+                              'CONCURRENCY', 'MS-CONCURRENCY')
+# The only parallel plugins OpenCV registers itself; each caps its workers.
+_BOUNDED_PARALLEL_PLUGINS = ('TBB', 'ONETBB', 'OPENMP')
+
+
+def _bounded_backend_name(name):
+    if not isinstance(name, str) or not name.strip():
+        return False
+    return name.strip().split()[0].upper() in _BOUNDED_PARALLEL_BACKENDS
+
+
+def _active_backend_bounds_threads():
+    """True when OpenCV's active parallel backend caps a call's workers.
+
+    Bindings that expose currentParallelFramework() answer directly. The
+    published Python packages do not, so the compiled framework is read from
+    the build summary. A runtime plugin can replace it, but OpenCV registers
+    only oneTBB, TBB and OpenMP plugins, which all cap their workers; a plugin
+    named through the environment that is not one of those keeps warps serial.
+    """
+    current = getattr(cv2, 'currentParallelFramework', None)
+    if current is not None:
+        return _bounded_backend_name(current())
+    for variable in ('OPENCV_PARALLEL_BACKEND', 'OPENCV_PARALLEL_PRIORITY_LIST'):
+        for name in os.environ.get(variable, '').replace(';', ',').split(','):
+            if name.strip() and name.strip().upper() not in _BOUNDED_PARALLEL_PLUGINS:
+                return False
+    for line in cv2.getBuildInformation().splitlines():
+        label, _, value = line.partition(':')
+        if label.strip() == 'Parallel framework':
+            return _bounded_backend_name(value)
+    return False
+
+
 def _warp_thread_budget():
-    # Build information alone does not identify the active backend.
-    current_backend = getattr(cv2, 'currentParallelFramework', None)
-    if current_backend is None:
-        return 1
+    """Threads lent to a warp on this thread; one outside a lending scope."""
     try:
-        backend = current_backend()
-        if not isinstance(backend, str) or backend.upper() not in ('TBB', 'OPENMP', 'PTHREADS'):
-            return 1
         threads = _deferred_warp_threads.get()
-        return max(1, int(threads() if callable(threads) else threads))
+        threads = max(1, int(threads() if callable(threads) else threads))
+        if threads == 1 or not _active_backend_bounds_threads():
+            return 1
+        return threads
     except Exception:
         return 1
 
