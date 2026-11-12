@@ -3,6 +3,7 @@
 """
 
 import os
+from functools import lru_cache
 import platform
 import struct
 import sys
@@ -259,14 +260,29 @@ def _macos_physical_cores() -> int:
 
 def _linux_cgroup_paths(controller):
     """Yield this cgroup and its ancestors on matching v1/v2 mounts."""
-    from pathlib import PurePosixPath
     try:
         with open("/proc/self/cgroup", encoding="utf-8") as fh:
-            memberships = [line.strip().split(":", 2) for line in fh]
+            memberships = fh.read()
         with open("/proc/self/mountinfo", encoding="utf-8") as fh:
-            mounts = fh.readlines()
+            mounts = fh.read()
     except OSError:
         return
+    yield from _parse_linux_cgroup_paths(controller, memberships, mounts)
+
+
+@lru_cache(maxsize=8)
+def _parse_linux_cgroup_paths(controller, membership_text, mount_text):
+    """Reuse parsing only for identical live membership and mount snapshots.
+
+    Limits and occupancy remain uncached. Including both proc snapshots in the
+    key also observes cgroup migration and mount changes on the next probe.
+    """
+    from pathlib import PurePosixPath
+    # Only "\n" ends a record: cgroup names may hold the other characters
+    # str.splitlines() treats as line boundaries.
+    memberships = [line.strip().split(":", 2) for line in membership_text.split("\n")]
+    mounts = mount_text.split("\n")
+    paths = []
     seen = set()
     for line in mounts:
         before, separator, after = line.partition(" - ")
@@ -308,10 +324,12 @@ def _linux_cgroup_paths(controller):
                 key = (str(current), version)
                 if key not in seen:
                     seen.add(key)
-                    yield key
+                    paths.append(key)
                 if current == mount:
                     break
                 current = current.parent
+
+    return tuple(paths)
 
 
 def _linux_cpu_quota():
