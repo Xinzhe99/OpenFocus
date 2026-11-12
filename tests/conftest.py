@@ -10,6 +10,12 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
 os.chdir(PROJECT_ROOT)
 
+# A desktop platform theme (for example QT_QPA_PLATFORMTHEME=gtk3) gives the
+# test QApplication that desktop's palette and fonts, so GUI tests that
+# assume Qt's own defaults fail locally while passing in CI. Remove it before
+# any QApplication exists; child processes inherit the same environment.
+os.environ.pop("QT_QPA_PLATFORMTHEME", None)
+
 
 @pytest.fixture(autouse=True)
 def isolate_scratch_registry(request, tmp_path, monkeypatch):
