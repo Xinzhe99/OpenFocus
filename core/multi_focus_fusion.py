@@ -198,6 +198,30 @@ def _tile_axis_starts(length, block, overlap, grid=1):
     return [min(start, last) for start in range(0, length, step)]
 
 
+# Narrowest blend band a reduced neural tile is given. On a 52-frame 20 MP
+# stack, 128 pixels reproduced the fully overlapped render at tiles of 512 and
+# 256 (mean difference under 0.01 % of full scale); 64 pixels at a 256 tile
+# did not (ten times that, with visibly different detail).
+_PLANNED_TILE_OVERLAP_FLOOR = 128
+
+
+def _planned_tile_overlap(overlap, admitted_block, planned_block):
+    """Keep the overlap-to-tile ratio when the memory plan shrinks the tile.
+
+    A tile halved to fit memory would otherwise keep the overlap chosen for
+    the larger tile, up to half of the new one: every pixel is then computed
+    four times and the tile count roughly doubles. The overlap is never scaled
+    below the floor above, nor raised above the request.
+    """
+    overlap = max(0, int(overlap))
+    admitted_block = int(admitted_block)
+    planned_block = int(planned_block)
+    if admitted_block <= 0 or planned_block >= admitted_block:
+        return overlap
+    scaled = (overlap * planned_block + admitted_block // 2) // admitted_block
+    return max(scaled, min(overlap, _PLANNED_TILE_OVERLAP_FLOOR))
+
+
 def _ai_effective_tiling(n_frames, block_size, h, w, overlap, batch_pref):
     """Build a spatial grid for the admitted tile size.
 
@@ -1805,6 +1829,7 @@ class MultiFocusFusion:
                 source_resolution_bytes=source_resolution, source_cache_bytes=source_cache,
                 preference=self.resource_preference, user_threads=thread_count)
         planned_block = block_size
+        overlap = _planned_tile_overlap(overlap, clamped_block, planned_block)
         block_size, _, tile_coords = _ai_effective_tiling(
             count, block_size, h, w, overlap, self.ai_batch_size)
         overlap = max(0, min(int(overlap), block_size // 2))
