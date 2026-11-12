@@ -31,6 +31,8 @@ from utils.performance_profile import current as _profile
 
 logger = get_logger(__name__)
 
+RETAINED_FRAME_LIMIT_BYTES = 2 * 1024 ** 3
+
 _active = []
 _active_lock = threading.RLock()
 
@@ -39,6 +41,40 @@ def current():
     """Return the innermost active scope object, or None outside a render."""
     with _active_lock:
         return _active[-1] if _active else None
+
+
+def retain_aligned_frames(frames, should_cancel=None):
+    """Keep only existing mapped alignment results for a bounded GUI stack.
+
+    Never decode or copy to populate this optional cache. Large stacks, disabled
+    caches and cache misses retain their normal lazy descriptors. Mappings are
+    released when the GUI drops its aligned stack and any borrowed views.
+    """
+    from core.source_frames import ProcessedFrame, RetainedFrame
+    from core.frame_storage import is_mapped_frame
+
+    if sum(frame.nbytes for frame in frames) > RETAINED_FRAME_LIMIT_BYTES:
+        return frames
+    scope = current()
+    if scope is None:
+        return frames
+    retained = []
+    for frame in frames:
+        if isinstance(frame, RetainedFrame):
+            retained.append(frame)
+            continue
+        # Only file-backed, aligned descriptors have immutable provenance.
+        if not isinstance(frame, ProcessedFrame) or not _source_paths([frame]):
+            retained.append(frame)
+            continue
+        pixels = scope.get(frame)
+        if pixels is None or not is_mapped_frame(pixels):
+            retained.append(frame)
+            continue
+        retained.append(RetainedFrame(source=frame, processor=None,
+            shape=frame.shape, dtype=frame.dtype, should_cancel=should_cancel,
+            scratch_bytes=0, pixels=pixels))
+    return retained
 
 
 @contextlib.contextmanager

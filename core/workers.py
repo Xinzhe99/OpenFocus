@@ -461,7 +461,8 @@ class RenderWorker(QThread):
                  sharpen_output=False, defect_mask_path='', sensor_denoise=False,
                  load_scale_factor=1.0, source_paths=None,
                  collect_alignment_report=False, prepared_cache=None,
-                 retain_preparation=False, profile_performance=False):
+                 retain_preparation=False, profile_performance=False,
+                 retain_aligned_pixels=False):
         super().__init__()
         configure_native_worker_stack(self)
         if algorithm is None:
@@ -515,6 +516,7 @@ class RenderWorker(QThread):
         self.alignment_report = [] if collect_alignment_report else None
         self.prepared_cache = prepared_cache
         self.retain_preparation = bool(retain_preparation)
+        self.retain_aligned_pixels = bool(retain_aligned_pixels)
         self.alignment_report_provenance = None
         self.profile_performance = bool(profile_performance)
         self.performance_report = None
@@ -845,6 +847,12 @@ class RenderWorker(QThread):
         logger.info("render final result device=%s alignment_reused=%s alignment_seconds=%.6f "
                     "fusion_seconds=%.6f pixels=%s", device_name,
                     self.alignment_reused, alignment_time, fusion_time, result_details)
+        if (self.retain_aligned_pixels and registration_performed and self.need_fusion
+                and not self.preview and self.roi_rect is None and not cleanup
+                and self.alignment_report is None):
+            from core.frame_resolution_cache import retain_aligned_frames
+            processed_images = retain_aligned_frames(
+                processed_images, should_cancel=lambda: self.is_cancelled)
         self.finished_signal.emit(
             processed_images,
             fusion_result,
