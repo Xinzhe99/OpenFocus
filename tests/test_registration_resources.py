@@ -419,3 +419,46 @@ def test_deferred_warp_budget_requires_known_active_backend(monkeypatch):
             assert registration._warp_thread_budget() == 1
         assert registration._warp_thread_budget() == 3
     assert registration._warp_thread_budget() == 1
+
+
+def _without_framework_query(monkeypatch, framework):
+    monkeypatch.delattr(cv2, 'currentParallelFramework', raising=False)
+    monkeypatch.delenv('OPENCV_PARALLEL_BACKEND', raising=False)
+    monkeypatch.delenv('OPENCV_PARALLEL_PRIORITY_LIST', raising=False)
+    monkeypatch.setattr(cv2, 'getBuildInformation', lambda: (
+        'General configuration for OpenCV 5.0.0 =====\n'
+        '  Parallel framework:            %s\n'
+        '  Trace:                         YES (with Intel ITT)\n' % framework))
+
+
+@pytest.mark.parametrize('framework,lent', [
+    ('pthreads', 3), ('TBB (ver 2022.0 interface 12140)', 3), ('OpenMP', 3),
+    ('Concurrency', 3), ('GCD', 1), ('HPX', 1), ('NO', 1), ('', 1)])
+def test_deferred_warp_budget_reads_the_build_when_bindings_lack_the_query(
+        monkeypatch, framework, lent):
+    # Published Python packages do not bind currentParallelFramework().
+    _without_framework_query(monkeypatch, framework)
+    with registration.deferred_warp_threads(3):
+        assert registration._warp_thread_budget() == lent
+    assert registration._warp_thread_budget() == 1
+
+
+def test_deferred_warp_budget_stays_serial_for_unknown_environment_plugins(monkeypatch):
+    _without_framework_query(monkeypatch, 'pthreads')
+    with registration.deferred_warp_threads(3):
+        monkeypatch.setenv('OPENCV_PARALLEL_BACKEND', 'ONETBB')
+        assert registration._warp_thread_budget() == 3
+        monkeypatch.setenv('OPENCV_PARALLEL_PRIORITY_LIST', 'tbb,custom_pool')
+        assert registration._warp_thread_budget() == 1
+
+
+def test_installed_opencv_lends_warp_threads_on_a_bounded_backend(monkeypatch):
+    # The installed bindings, unpatched: a bounded build must lend threads.
+    monkeypatch.delenv('OPENCV_PARALLEL_BACKEND', raising=False)
+    monkeypatch.delenv('OPENCV_PARALLEL_PRIORITY_LIST', raising=False)
+    framework = next((line.partition(':')[2] for line in cv2.getBuildInformation().splitlines()
+                      if line.partition(':')[0].strip() == 'Parallel framework'), '')
+    bounded = registration._bounded_backend_name(
+        cv2.currentParallelFramework() if hasattr(cv2, 'currentParallelFramework') else framework)
+    with registration.deferred_warp_threads(3):
+        assert registration._warp_thread_budget() == (3 if bounded else 1)

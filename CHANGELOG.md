@@ -5,6 +5,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+- Run deferred ECC and homography resampling on the render's planned threads
+  with the published OpenCV packages. Their Python bindings do not expose the
+  active parallel backend, so every warp ran on one core; the backend is now
+  read from OpenCV's build summary. Output pixels are unchanged.
+
 
 
 
