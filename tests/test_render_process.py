@@ -470,3 +470,149 @@ def test_prepared_cache_invalidation_preserves_inflight_reader(qapp, scratch, ch
     reader.clear()
     gc.collect()
     assert not path.exists()
+
+
+@pytest.mark.parametrize('isolated', [False, True])
+def test_nonstreaming_reuse_preserves_provenance_and_releases_history(
+        qapp, tmp_path, isolated_process_env, monkeypatch, isolated):
+    from PyQt6.QtCore import QCoreApplication, QEvent
+    from core import algorithms, frame_storage, source_frames
+    from core.render_context import build_render_context
+    from core.render_process import RenderProcessWorker
+    from core.workers import RenderWorker
+
+    scratch = tmp_path / 'scratch'
+    scratch.mkdir()
+    monkeypatch.setattr(frame_storage, '_storage_directory', str(scratch))
+
+    monkeypatch.setattr(algorithms, '_FUSION', dict(algorithms._FUSION))
+    algorithms.register_fusion(algorithms.FusionAlgorithm(
+        'retention_extension', 'test_extension', 'Extension', 'Extension',
+        'tests.test_algorithms:Extension.blend'))
+    frames = _sources(tmp_path)
+    options = dict(alignment='openfocus', thread_count=1, tile_enabled=False,
+                   use_gpu=False, sort_mode='off', exposure_match=False)
+    first = RenderProcessWorker(frames, algorithm='openfocus_a', **options)
+    initial, errors = _start(first)
+    _wait(first, qapp)
+    assert not errors and len(initial) == 1
+    aligned = initial[0][0]
+    assert all(isinstance(frame, source_frames.RetainedFrame) for frame in aligned)
+    paths = [Path(frame_storage.describe_frame(frame.pixels)['path']) for frame in aligned]
+    cls = RenderProcessWorker if isolated else RenderWorker
+    second = cls(frames, aligned_images=aligned, is_images_aligned=True,
+                 last_alignment_options=(first.alignment, first.registration_parameters,
+                                         first._reverse_registration),
+                 algorithm='retention_extension', **options)
+    results, errors = [], []
+    second.finished_signal.connect(lambda *value: results.append(value))
+    second.error_signal.connect(errors.append)
+    if isolated:
+        second.start()
+        _wait(second, qapp)
+    else:
+        second.run()
+    assert not errors and len(results) == 1 and second.alignment_reused
+    assert all(isinstance(frame, source_frames.RetainedFrame) for frame in results[0][0])
+    context = build_render_context(results[0][0], results[0][1])
+    assert context is not None
+    Path(frames[0].path).write_bytes(b'changed source')
+    with pytest.raises(OSError, match='Source changed'):
+        source_frames.resolve_frame(results[0][0][0])
+
+    initial.clear()
+    results.clear()
+    del aligned
+    first.deleteLater()
+    second.deleteLater()
+    del first, second
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    qapp.processEvents()
+    source_frames.SOURCE_CACHE.clear()
+    gc.collect()
+    assert all(not path.exists() for path in paths)
+    assert not any(isinstance(frame.image, source_frames.RetainedFrame)
+                   for frame in context.frames)
+
+
+@pytest.mark.parametrize('existing', [False, True])
+@pytest.mark.parametrize('fits', [False, True])
+def test_aligned_and_prepared_caches_share_retention_budget(
+        qapp, tmp_path, scratch, monkeypatch, existing, fits):
+    from core import frame_resolution_cache as cache, source_frames
+    from core.workers import RenderWorker
+
+    frames = _sources(tmp_path)
+    aligned = [source_frames.crop_frame(frame, 0, 0, frame.shape[1], frame.shape[0])
+               for frame in frames]
+    if existing:
+        with cache.render_scope(frames):
+            for frame in aligned:
+                source_frames.resolve_frame(frame)
+            aligned = cache.retain_aligned_frames(aligned)
+        assert all(isinstance(frame, source_frames.RetainedFrame) for frame in aligned)
+    aligned_bytes = sum(frame.nbytes for frame in aligned)
+    prepared = [np.zeros((16,), np.uint8)]
+    monkeypatch.setattr(cache, 'RETAINED_FRAME_LIMIT_BYTES',
+                        aligned_bytes + prepared[0].nbytes - (0 if fits else 1))
+    options = dict(algorithm='openfocus_a', alignment='openfocus', thread_count=1,
+                   tile_enabled=False, use_gpu=False, sort_mode='off',
+                   exposure_match=False, retain_aligned_pixels=True)
+    worker = RenderWorker(frames, aligned_images=aligned if existing else None,
+                          is_images_aligned=existing, **options)
+    worker.last_alignment_options = (worker.alignment, worker.registration_parameters,
+                                     worker._reverse_registration)
+    if not existing:
+        monkeypatch.setattr(worker, '_run_registration',
+                            lambda images, should_cancel=None: (aligned, 0.0))
+
+    def fuse(images, **kwargs):
+        for image in images:
+            source_frames.resolve_frame(image)
+        worker.prepared_cache = prepared
+        return np.zeros(frames[0].shape, frames[0].dtype), 'CPU'
+
+    monkeypatch.setattr(worker, '_run_fusion', fuse)
+    results = []
+    worker.finished_signal.connect(lambda *value: results.append(value))
+    worker._run_admitted()
+    assert len(results) == 1
+    output = results[0][0]
+    if existing or fits:
+        assert all(isinstance(frame, source_frames.RetainedFrame) for frame in output)
+    else:
+        assert all(not isinstance(frame, source_frames.RetainedFrame) for frame in output)
+    assert (worker.prepared_cache is None) == (existing and not fits)
+    retained_bytes = sum(frame.nbytes for frame in output
+                         if isinstance(frame, source_frames.RetainedFrame))
+    prepared_bytes = sum(frame.nbytes for frame in worker.prepared_cache or ())
+    assert retained_bytes + prepared_bytes <= cache.RETAINED_FRAME_LIMIT_BYTES
+
+
+def test_nonstreaming_reuse_keeps_mixed_frame_positions(qapp, tmp_path, scratch, monkeypatch):
+    from core import algorithms, frame_resolution_cache as cache, source_frames
+    from core.workers import RenderWorker
+
+    monkeypatch.setattr(algorithms, '_FUSION', dict(algorithms._FUSION))
+    algorithms.register_fusion(algorithms.FusionAlgorithm(
+        'mixed_extension', 'test_extension', 'Extension', 'Extension',
+        'tests.test_algorithms:Extension.blend'))
+    frames = _sources(tmp_path)
+    descriptor = source_frames.crop_frame(frames[0], 0, 0, frames[0].shape[1], frames[0].shape[0])
+    with cache.render_scope(frames):
+        source_frames.resolve_frame(descriptor)
+        retained = cache.retain_aligned_frames([descriptor])[0]
+    assert isinstance(retained, source_frames.RetainedFrame)
+    ordinary = np.full(frames[0].shape, 321, frames[0].dtype)
+    aligned = [ordinary, retained]
+    worker = RenderWorker(frames, aligned_images=aligned, is_images_aligned=True,
+        algorithm='mixed_extension', alignment='openfocus', thread_count=1,
+        tile_enabled=False, use_gpu=False, sort_mode='off', exposure_match=False)
+    worker.last_alignment_options = (worker.alignment, worker.registration_parameters,
+                                     worker._reverse_registration)
+    results = []
+    worker.finished_signal.connect(lambda *value: results.append(value))
+    worker._run_admitted()
+    output = results[0][0]
+    np.testing.assert_array_equal(output[0], ordinary)
+    assert output[1] is retained

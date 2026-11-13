@@ -480,6 +480,24 @@ source when it estimates a transform and compares it again before resampling;
 when both steps read the same stored copy, that copy is hashed once. Arrays,
 sources decoded again and alignment plans saved by an earlier render are
 hashed every time.
+
+Completed full-frame GUI fusion renders can also return already-cached aligned
+pixels for reuse by the next render process. Aligned mappings and the neural
+prepared-frame cache share a 2 GiB retention limit. If aligned mappings already
+exist, a prepared cache that does not fit the remaining space is discarded.
+Otherwise the prepared cache is kept, and aligned pixels are retained only if
+the entire aligned stack fits in the remaining space. Retention never decodes
+or copies pixels to fill a miss or calculate the budget. Each read-only mapping
+travels through the normal ownership handoff and keeps its original lazy source
+descriptor for fingerprint checks and metadata.
+Changing the source, registration request or processing settings still uses the
+existing validation and alignment-invalidation rules. Preview, ROI, sensor
+cleanup and alignment-report jobs do not populate this cache. Dropping the
+aligned stack and its last borrowed views releases the mappings; there is no
+persistent cache across application sessions. Historical render contexts keep
+the original lazy descriptors rather than owning this cache, and bounded
+geometric previews also use those original descriptors.
+
 Depth maps, batch jobs, background fill and viewport pixels retain their
 existing worker paths. Standalone callers may still use `RenderWorker`
 directly; the desktop render manager always uses the process boundary.
