@@ -43,7 +43,7 @@ def current():
         return _active[-1] if _active else None
 
 
-def retain_aligned_frames(frames, should_cancel=None):
+def retain_aligned_frames(frames, should_cancel=None, *, limit_bytes=None):
     """Keep only existing mapped alignment results for a bounded GUI stack.
 
     Never decode or copy to populate this optional cache. Large stacks, disabled
@@ -53,7 +53,8 @@ def retain_aligned_frames(frames, should_cancel=None):
     from core.source_frames import ProcessedFrame, RetainedFrame
     from core.frame_storage import is_mapped_frame
 
-    if sum(frame.nbytes for frame in frames) > RETAINED_FRAME_LIMIT_BYTES:
+    limit = RETAINED_FRAME_LIMIT_BYTES if limit_bytes is None else limit_bytes
+    if sum(frame.nbytes for frame in frames) > limit:
         return frames
     scope = current()
     # An unplanned scope stored nothing; do not plan it just to miss.

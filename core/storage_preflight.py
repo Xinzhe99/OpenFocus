@@ -25,7 +25,7 @@ def render_storage_estimate(frames, *, algorithm, alignment, need_fusion=True,
     Optional storage is the resolution cache's working set and staging floor.
     """
     from core.frame_resolution_cache import mandatory_staging_bytes, planned_cache_bytes
-    from core.frame_storage import is_mapped_frame
+    from core.source_frames import frame_has_mapped_pixels
     frames = list(frames)
     if not frames:
         return 0, 0, 0, []
@@ -35,7 +35,7 @@ def render_storage_estimate(frames, *, algorithm, alignment, need_fusion=True,
     minimum = 0
     materialization = 0
     if not (deferred or (lazy and not steps)):
-        materialization = sum(frame.nbytes for frame in frames if not is_mapped_frame(frame))
+        materialization = sum(frame.nbytes for frame in frames if not frame_has_mapped_pixels(frame))
         # An aligned stack may be reused as mapped frames or lazy sources.
         if not steps:
             minimum = materialization

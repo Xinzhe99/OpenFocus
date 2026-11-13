@@ -236,6 +236,29 @@ def test_estimate_follows_the_pipeline_materialization_rules(tmp_path, monkeypat
     assert sorted(source_paths) == sorted(paths)
 
 
+def test_preflight_counts_only_unmapped_retained_pixels(tmp_path, monkeypatch):
+    from dataclasses import replace
+    from core import source_frames, storage_preflight
+    from core.algorithms import get_fusion
+
+    pixels = np.memmap(tmp_path / 'retained.bin', mode='w+', dtype=np.uint16,
+                       shape=(12, 16, 3))
+    retained = source_frames.RetainedFrame(
+        source=np.zeros(pixels.shape, pixels.dtype), processor=None,
+        shape=pixels.shape, dtype=pixels.dtype, pixels=pixels)
+    descriptor = replace(get_fusion('dct'), streaming_sources=False)
+    monkeypatch.setattr(storage_preflight, 'get_fusion', lambda algorithm: descriptor)
+
+    mapped = storage_preflight.render_storage_estimate(
+        [retained], algorithm='dct', alignment='none')
+    unmapped = storage_preflight.render_storage_estimate(
+        [replace(retained, pixels=np.array(pixels))], algorithm='dct', alignment='none')
+
+    assert mapped[0] == 0
+    assert unmapped[0] == retained.nbytes
+    assert unmapped[1] - mapped[1] == retained.nbytes
+
+
 # ---- GUI and control channel -------------------------------------------------
 
 @pytest.fixture

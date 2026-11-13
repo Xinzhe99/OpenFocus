@@ -814,6 +814,11 @@ class RetainedFrame(ProcessedFrame):
         return view
 
 
+def frame_has_mapped_pixels(frame):
+    """Whether materializing this frame can reuse existing mapped pixels."""
+    return is_mapped_frame(frame.pixels if isinstance(frame, RetainedFrame) else frame)
+
+
 def without_retained_pixels(frame):
     """Keep historical provenance without owning the current alignment cache."""
     if isinstance(frame, RetainedFrame):
@@ -1115,7 +1120,7 @@ def materialize_frames(frames, should_cancel=None, *, staging_bytes=0,
         total = len(frames) if known else 0
         workers = 1
         if known:
-            size = sum(frame.nbytes for frame in frames if not is_mapped_frame(frame))
+            size = sum(frame.nbytes for frame in frames if not frame_has_mapped_pixels(frame))
             paths = [frame.path for frame in frames if isinstance(frame, SourceFrame)]
             select_scratch(size + staging_bytes, paths,
                            preferred_size=size + staging_bytes + preferred_staging_bytes)
@@ -1143,7 +1148,7 @@ def materialize_frames(frames, should_cancel=None, *, staging_bytes=0,
             for frame in frames:
                 check_cancel()
                 if not known:
-                    mapped = is_mapped_frame(frame)
+                    mapped = frame_has_mapped_pixels(frame)
                     select_scratch((0 if mapped else frame.nbytes) + staging_bytes,
                                    [frame.path] if isinstance(frame, SourceFrame) else ())
                     staging_bytes = 0
