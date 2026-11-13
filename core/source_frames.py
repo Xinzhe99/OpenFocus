@@ -1221,9 +1221,11 @@ def materialize_for_repeated_access(frames, should_cancel=None, *, thread_count=
     """Snapshot lazy sources once, retaining their source identity checks.
 
     Required snapshots fail at scratch admission instead of streaming sources.
+    Retained frames are already mapped and validate their source on access.
     """
     indices = [i for i, frame in enumerate(frames)
-               if isinstance(frame, (SourceFrame, ProcessedFrame))]
+               if isinstance(frame, (SourceFrame, ProcessedFrame))
+               and not isinstance(frame, RetainedFrame)]
     if not indices:
         return frames
     lazy = [frames[i] for i in indices]
