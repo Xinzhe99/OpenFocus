@@ -791,6 +791,45 @@ class ProcessedFrame:
         return store_frame(self.full_resolution())
 
 
+@dataclass(frozen=True, eq=False)
+class RetainedFrame(ProcessedFrame):
+    """Read-only aligned pixels with their original lazy source provenance.
+
+    The mapped view owns its scratch file through the normal frame transport.
+    No decode or processing is needed, but source identity is checked on every
+    access. The original descriptor remains available for metadata and retouch.
+    """
+    pixels: object = None
+
+    def full_resolution(self, *, should_cancel=None, cache_result=True):
+        from core.registration import RegistrationCancelled
+        if ((should_cancel is not None and should_cancel()) or
+                (self.should_cancel is not None and self.should_cancel())):
+            raise RegistrationCancelled()
+        validate_frame_source(self.source)
+        if self.pixels.shape != self.shape or self.pixels.dtype != self.dtype:
+            raise ValueError('Retained frame does not match its declared shape/dtype')
+        view = self.pixels.view()
+        view.setflags(write=False)
+        return view
+
+
+def frame_has_mapped_pixels(frame):
+    """Whether materializing this frame can reuse existing mapped pixels."""
+    return is_mapped_frame(frame.pixels if isinstance(frame, RetainedFrame) else frame)
+
+
+def without_retained_pixels(frame):
+    """Keep historical provenance without owning the current alignment cache."""
+    if isinstance(frame, RetainedFrame):
+        return without_retained_pixels(frame.source)
+    if isinstance(frame, ProcessedFrame):
+        source = without_retained_pixels(frame.source)
+        if source is not frame.source:
+            return replace(frame, source=source)
+    return frame
+
+
 def process_frame(frame, processor, *, shape=None, dtype=None, should_cancel=None,
                   scratch_bytes=None):
     """Describe processing and its additional peak workspace without decoding."""
@@ -967,6 +1006,8 @@ def processing_preview(frame):
 def frame_source_cache_bytes(frame):
     """Decoded pixels retained by SOURCE_CACHE, independent of a lazy ROI."""
     while isinstance(frame, ProcessedFrame):
+        if isinstance(frame, RetainedFrame):
+            return 0
         frame = frame.source
     return frame.nbytes if isinstance(frame, SourceFrame) else 0
 
@@ -979,6 +1020,8 @@ def source_cache_growth_bytes(frames):
 
 def frame_resolution_bytes(frame):
     """Additional peak pixels/encoded input needed to resolve a descriptor."""
+    if isinstance(frame, RetainedFrame):
+        return 0
     if isinstance(frame, ProcessedFrame):
         return frame_resolution_bytes(frame.source) + frame.scratch_bytes
     if isinstance(frame, SourceFrame):
@@ -1077,7 +1120,7 @@ def materialize_frames(frames, should_cancel=None, *, staging_bytes=0,
         total = len(frames) if known else 0
         workers = 1
         if known:
-            size = sum(frame.nbytes for frame in frames if not is_mapped_frame(frame))
+            size = sum(frame.nbytes for frame in frames if not frame_has_mapped_pixels(frame))
             paths = [frame.path for frame in frames if isinstance(frame, SourceFrame)]
             select_scratch(size + staging_bytes, paths,
                            preferred_size=size + staging_bytes + preferred_staging_bytes)
@@ -1105,7 +1148,7 @@ def materialize_frames(frames, should_cancel=None, *, staging_bytes=0,
             for frame in frames:
                 check_cancel()
                 if not known:
-                    mapped = is_mapped_frame(frame)
+                    mapped = frame_has_mapped_pixels(frame)
                     select_scratch((0 if mapped else frame.nbytes) + staging_bytes,
                                    [frame.path] if isinstance(frame, SourceFrame) else ())
                     staging_bytes = 0
@@ -1183,9 +1226,11 @@ def materialize_for_repeated_access(frames, should_cancel=None, *, thread_count=
     """Snapshot lazy sources once, retaining their source identity checks.
 
     Required snapshots fail at scratch admission instead of streaming sources.
+    Retained frames are already mapped and validate their source on access.
     """
     indices = [i for i, frame in enumerate(frames)
-               if isinstance(frame, (SourceFrame, ProcessedFrame))]
+               if isinstance(frame, (SourceFrame, ProcessedFrame))
+               and not isinstance(frame, RetainedFrame)]
     if not indices:
         return frames
     lazy = [frames[i] for i in indices]

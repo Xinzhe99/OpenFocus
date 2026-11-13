@@ -223,6 +223,7 @@ class RenderProcessWorker(RenderWorker):
     """Retain RenderWorker's signal/lifecycle API, isolating its native work."""
 
     def __init__(self, *args, **kwargs):
+        kwargs.setdefault('retain_aligned_pixels', True)
         super().__init__(*args, **kwargs)
         # A directory chosen for this render only (set before start). It binds
         # the parent's job scope and therefore the child (see _run_process).

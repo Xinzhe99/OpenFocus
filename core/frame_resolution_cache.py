@@ -31,6 +31,8 @@ from utils.performance_profile import current as _profile
 
 logger = get_logger(__name__)
 
+RETAINED_FRAME_LIMIT_BYTES = 2 * 1024 ** 3
+
 _active = []
 _active_lock = threading.RLock()
 
@@ -39,6 +41,51 @@ def current():
     """Return the innermost active scope object, or None outside a render."""
     with _active_lock:
         return _active[-1] if _active else None
+
+
+def retain_aligned_frames(frames, should_cancel=None, *, limit_bytes=None):
+    """Keep only existing mapped alignment results for a bounded GUI stack.
+
+    Never decode or copy to populate this optional cache. Large stacks, disabled
+    caches and cache misses retain their normal lazy descriptors. Mappings are
+    released when the GUI drops its aligned stack and any borrowed views.
+    """
+    from core.source_frames import ProcessedFrame, RetainedFrame
+    from core.frame_storage import is_mapped_frame
+
+    limit = RETAINED_FRAME_LIMIT_BYTES if limit_bytes is None else limit_bytes
+    if sum(frame.nbytes for frame in frames) > limit:
+        return frames
+    scope = current()
+    # An unplanned scope stored nothing; do not plan it just to miss.
+    if scope is None or not getattr(scope, 'enabled', True):
+        return frames
+    retained = []
+    count = 0
+    for frame in frames:
+        if isinstance(frame, RetainedFrame):
+            retained.append(frame)
+            continue
+        # Only file-backed, aligned descriptors have immutable provenance.
+        if not isinstance(frame, ProcessedFrame) or not _source_paths([frame]):
+            retained.append(frame)
+            continue
+        try:
+            pixels = scope.get(frame, should_cancel=should_cancel)
+        except OSError as exc:
+            # The fused result is complete; a source changed since fusion only
+            # forfeits retention. Later access revalidates the lazy descriptor.
+            logger.info('aligned frame not retained: %s', exc)
+            pixels = None
+        if pixels is None or not is_mapped_frame(pixels):
+            retained.append(frame)
+            continue
+        retained.append(RetainedFrame(source=frame, processor=None,
+            shape=frame.shape, dtype=frame.dtype, should_cancel=should_cancel,
+            scratch_bytes=0, pixels=pixels))
+        count += 1
+    logger.info('retained aligned frames=%d/%d', count, len(frames))
+    return retained
 
 
 @contextlib.contextmanager
