@@ -5,6 +5,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+- Prepare ECC source frames concurrently within the alignment stage's CPU and
+  memory budgets. Preparation and pair estimation share one bounded worker
+  pool; RAW decoder OpenMP work stays serial inside each worker. Alignment
+  transforms, cropping and output pixels are unchanged.
+
 ### Fixed
 - Run deferred ECC and homography resampling on the render's planned threads
   with the published OpenCV packages. Their Python bindings do not expose the
