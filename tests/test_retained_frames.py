@@ -67,6 +67,36 @@ def test_retention_is_optional_bounded_and_does_not_fill_misses(tmp_path, monkey
     assert cache.retain_aligned_frames([aligned]) == [aligned]
 
 
+def test_source_change_after_fusion_forfeits_retention_without_failing(tmp_path, monkeypatch):
+    from utils.image_utils import imwrite_auto
+    monkeypatch.setattr(storage, '_storage_directory', str(tmp_path))
+    path = tmp_path / 'source.tif'
+    assert imwrite_auto(str(path), np.zeros((12, 16, 3), np.uint16))
+    source = sources.scan_source(str(path), header_only=True)[0]
+    aligned = sources.crop_frame(source, 0, 0, 16, 12)
+    with cache.render_scope([source]):
+        sources.resolve_frame(aligned)
+        path.write_bytes(b'changed after fusion')
+        assert cache.retain_aligned_frames([aligned]) == [aligned]
+
+
+def test_unplanned_scope_is_not_planned_for_retention(tmp_path, monkeypatch):
+    retained, _, _ = _retained(tmp_path, monkeypatch)
+    aligned = retained.source
+    with cache.render_scope([aligned]) as scope:
+        monkeypatch.setattr(scope, '_plan', lambda: pytest.fail('planned'))
+        assert cache.retain_aligned_frames([aligned]) == [aligned]
+
+
+def test_repeated_access_snapshot_keeps_retained_frames(tmp_path, monkeypatch):
+    retained, expected, _ = _retained(tmp_path, monkeypatch)
+    monkeypatch.setattr(sources, 'materialize_frames',
+                        lambda *a, **k: pytest.fail('copied retained pixels'))
+    frames = [retained]
+    assert sources.materialize_for_repeated_access(frames, required=True) is frames
+    np.testing.assert_array_equal(sources.resolve_frame(frames[0]), expected)
+
+
 def test_retained_mapping_transfer_preserves_provenance_and_releases(tmp_path, monkeypatch):
     from core.frame_transport import FrameEncoder, FrameDecoder
     retained, expected, _ = _retained(tmp_path, monkeypatch)

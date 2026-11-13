@@ -56,9 +56,11 @@ def retain_aligned_frames(frames, should_cancel=None):
     if sum(frame.nbytes for frame in frames) > RETAINED_FRAME_LIMIT_BYTES:
         return frames
     scope = current()
-    if scope is None:
+    # An unplanned scope stored nothing; do not plan it just to miss.
+    if scope is None or not getattr(scope, 'enabled', True):
         return frames
     retained = []
+    count = 0
     for frame in frames:
         if isinstance(frame, RetainedFrame):
             retained.append(frame)
@@ -67,13 +69,21 @@ def retain_aligned_frames(frames, should_cancel=None):
         if not isinstance(frame, ProcessedFrame) or not _source_paths([frame]):
             retained.append(frame)
             continue
-        pixels = scope.get(frame)
+        try:
+            pixels = scope.get(frame, should_cancel=should_cancel)
+        except OSError as exc:
+            # The fused result is complete; a source changed since fusion only
+            # forfeits retention. Later access revalidates the lazy descriptor.
+            logger.info('aligned frame not retained: %s', exc)
+            pixels = None
         if pixels is None or not is_mapped_frame(pixels):
             retained.append(frame)
             continue
         retained.append(RetainedFrame(source=frame, processor=None,
             shape=frame.shape, dtype=frame.dtype, should_cancel=should_cancel,
             scratch_bytes=0, pixels=pixels))
+        count += 1
+    logger.info('retained aligned frames=%d/%d', count, len(frames))
     return retained
 
 
