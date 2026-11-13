@@ -647,6 +647,7 @@ class RenderWorker(QThread):
         lazy_fusion = (self.need_fusion and not self.preview
                        and get_fusion(self.algorithm).streaming_sources)
     
+        retained_alignment = None
         # 1. 配准阶段
         if need_registration and can_reuse_aligned_images:
             if lazy_fusion or self._defer_warps:
@@ -659,6 +660,9 @@ class RenderWorker(QThread):
                         preferred_staging_bytes=preferred, thread_count=self.thread_count,
                         resource_preference=self.resource_preference,
                         progress_callback=self.progress_signal.emit)
+                from core.source_frames import RetainedFrame
+                retained_alignment = [frame if isinstance(frame, RetainedFrame) else None
+                                      for frame in self.aligned_images]
             registration_performed = True
             self.alignment_reused = True
         else:
@@ -847,12 +851,24 @@ class RenderWorker(QThread):
         logger.info("render final result device=%s alignment_reused=%s alignment_seconds=%.6f "
                     "fusion_seconds=%.6f pixels=%s", device_name,
                     self.alignment_reused, alignment_time, fusion_time, result_details)
+        if retained_alignment is not None:
+            processed_images = [original if original is not None else image
+                                for original, image in zip(retained_alignment, processed_images)]
+        from core.frame_resolution_cache import RETAINED_FRAME_LIMIT_BYTES
+        from core.source_frames import RetainedFrame
+        retained_bytes = sum(frame.nbytes for frame in processed_images
+                             if isinstance(frame, RetainedFrame))
+        prepared_bytes = sum(frame.nbytes for frame in self.prepared_cache or ())
+        if retained_bytes and retained_bytes + prepared_bytes > RETAINED_FRAME_LIMIT_BYTES:
+            self.prepared_cache = None
+            prepared_bytes = 0
         if (self.retain_aligned_pixels and registration_performed and self.need_fusion
                 and not self.preview and self.roi_rect is None and not cleanup
                 and self.alignment_report is None):
             from core.frame_resolution_cache import retain_aligned_frames
             processed_images = retain_aligned_frames(
-                processed_images, should_cancel=lambda: self.is_cancelled)
+                processed_images, should_cancel=lambda: self.is_cancelled,
+                limit_bytes=max(0, RETAINED_FRAME_LIMIT_BYTES - prepared_bytes))
         self.finished_signal.emit(
             processed_images,
             fusion_result,

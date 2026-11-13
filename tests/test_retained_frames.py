@@ -1,5 +1,6 @@
 """Bounded, validated alignment pixels survive isolated render handoffs."""
 import gc
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -95,6 +96,35 @@ def test_repeated_access_snapshot_keeps_retained_frames(tmp_path, monkeypatch):
     frames = [retained]
     assert sources.materialize_for_repeated_access(frames, required=True) is frames
     np.testing.assert_array_equal(sources.resolve_frame(frames[0]), expected)
+
+
+@pytest.mark.parametrize('as_iterator', [False, True])
+def test_materialize_retained_mapping_without_remaining_scratch(tmp_path, monkeypatch, as_iterator):
+    retained, expected, _ = _retained(tmp_path, monkeypatch)
+    assert storage.is_mapped_frame(retained.pixels)
+    monkeypatch.setattr(storage, '_space', lambda directory: (None, 0, 0))
+    frames = iter([retained]) if as_iterator else [retained]
+
+    result = sources.materialize_frames(frames)
+
+    assert len(result) == 1
+    np.testing.assert_array_equal(result[0], expected)
+    assert storage.is_mapped_frame(result[0])
+    assert np.shares_memory(result[0], retained.pixels)
+
+
+@pytest.mark.parametrize('as_iterator', [False, True])
+@pytest.mark.parametrize('case', ['nonmapped', 'staging'])
+def test_materialize_retained_frame_still_admits_required_scratch(
+        tmp_path, monkeypatch, as_iterator, case):
+    retained, _, _ = _retained(tmp_path, monkeypatch)
+    if case == 'nonmapped':
+        retained = replace(retained, pixels=np.array(retained.pixels))
+    monkeypatch.setattr(storage, '_space', lambda directory: (None, 0, 0))
+    frames = iter([retained]) if as_iterator else [retained]
+
+    with pytest.raises(storage.ScratchSpaceError):
+        sources.materialize_frames(frames, staging_bytes=1 if case == 'staging' else 0)
 
 
 def test_retained_mapping_transfer_preserves_provenance_and_releases(tmp_path, monkeypatch):
