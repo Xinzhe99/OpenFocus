@@ -308,6 +308,28 @@ instead of 448, which gives seven session shapes for a two-entry CPU session
 cache: the reason for 20 sessions in the first row of the table. A 448 tile
 needs two.
 
+#### Thread recheck (2026-11-13)
+
+Same machine and software, `sweep --full`, 3 warm repetitions, after the
+deferred-warp thread changes. Seconds are warm medians of the whole tile.
+
+| Tile | Mode | 1 | 2 | 4 | 6 |
+|---|---|---:|---:|---:|---:|
+| 24×256² | soft | 1.719 | 1.214 | 1.115 | 1.099 |
+| 24×256² | hard | 1.788 | 1.447 | 1.266 | 1.265 |
+| 82×448² | soft | — | 15.215 | 12.695 | 12.335 |
+| 82×448² | hard | — | 15.031 | 12.772 | 12.529 |
+
+Output hashes were identical across thread counts within each mode. Two to
+four threads saved 15–17 % on the 448 tile; four to six saved 2–3 %, and on
+2026-11-09 six was 4 % slower than four. The four-versus-six difference is
+inside run-to-run spread, so the thread policy is unchanged: StackMFF uses
+the render's planned thread count. Peak process RSS was 8.57–8.61 GB for the
+448 tile against a 5.41 GB planner estimate (1.59×, consistent with the ratio
+above). For the 24×256 tile it was 0.95 GB against 0.45 GB; at that size the
+process baseline (runtime, model, libraries) dominates, so the ratio does not
+describe the per-tile working set.
+
 ## Current bounded execution (unreleased)
 
 OpenFocus A/B/C choose either a RAM-admitted frame window or one reusable row
@@ -411,11 +433,53 @@ Retained processing frames open the same scoped admission when resolved later,
 so temporary mappings survive until their final views are released. Explicit
 temporary-directory choices stay saved; an unavailable directory falls back
 with a warning, while a full selected disk remains binding.
-ECC's stage CPU budget includes synchronous frame preprocessing and transform
-estimation together. Registration materialization follows the request's thread
+ECC's stage CPU budget includes frame preprocessing and transform estimation
+together. Both use one worker pool, allowing several sources to decode while
+adjacent prepared frames are estimated. The admitted worker count bounds native
+calls. At most that count plus one distinct prepared frames are retained,
+counting both frames of every unfinished estimate, since estimates can finish
+out of order; tasks drop their frames before reporting completion. RAW
+decoder OpenMP work stays serial inside each worker.
+The owner also scopes the limit for process-wide OpenMP runtimes and restores
+the previous setting after all workers have stopped, including on failure.
+Completed frames remain available for their adjacent pairs without polling
+them repeatedly while other work runs. Cancellation and failures drain native
+calls before releasing the stage's resources. A one-thread request keeps
+preparation and estimation on the calling thread.
+Registration materialization follows the request's thread
 limit and resource mode. A serial deferred warp can borrow idle threads only
 when the active OpenCV backend can be shown to enforce the limit; unknown or
 unbounded backends keep native parallelism disabled.
+
+#### ECC preparation measurements (2026-11-13)
+
+The first 12 frames of a real 5220×3912 Olympus ORF stack were registered
+with `ImageRegistration('ecc', defer_warps=True)` inside `render_scope`,
+comparing the revision before this change with this change. Each run used a
+fresh process, with the RAW files already in the page cache and no cgroup
+memory limit. After one discarded warm-up pair, seven repetitions alternated
+the arm order. The timings cover registration only, not deferred output
+warping or fusion. Same machine and software as the StackMFF measurements.
+
+| Source scale, threads | Before median / p95 | After median / p95 | Peak RSS before → after |
+|---|---:|---:|---:|
+| 0.11, 2 | 6.673 / 6.767 s | 4.114 / 4.401 s (−38 %) | 319 → 409 MB |
+| 1.0, 4 | 17.673 / 23.585 s | 9.718 / 10.234 s (−45 %) | 1.92 → 2.31 GB |
+
+p95 is the nearest rank of seven samples. The 23.6 s full-resolution sample
+before the change is a shared-machine outlier; an earlier set of runs saw
+before-change samples up to 28.8 s. Every run produced the same alignment
+plan hash per scale (source identities and digests, matrices, crop and
+order). One end-to-end OpenFocus B render (ECC, CPU, 4 threads) of the same
+12 full-resolution frames wrote identical uint16 pixels before and after the
+change, and so did one render of the six demo JPEGs.
+
+The added RSS is the concurrent RAW decodes, which the stage's per-worker
+admission already charges. Decodes are still admitted against the memory
+available at the time. Under a 12 GiB cgroup memory limit, that admission
+drained concurrent decodes to nearly one at a time, and both arms took
+16.5–17 s at full resolution. The gain therefore depends on memory headroom,
+not only on the thread count.
 
 Alignment plan manifests and encoded aligned images share the alignment cache
 budget. Accounting covers manifest file bytes and encoded image bytes, not all
