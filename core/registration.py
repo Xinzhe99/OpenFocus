@@ -695,6 +695,137 @@ def _bounded_registration_map(function, values, workers, should_cancel=None, *,
             close()
 
 
+def _prepare_and_estimate_pairs(values, prepare, estimate, workers, should_cancel=None, *,
+                                on_prepared=None, window=None):
+    """Prepare each value and estimate each adjacent pair in one bounded pool.
+
+    ``prepare(value)`` returns a tuple whose last item is the source identity;
+    ``estimate(index, previous, current)`` receives the prepared tuples of
+    values ``index - 1`` and ``index``. Both kinds of task share ``workers``
+    threads, so preparation (source decoding) of several frames overlaps
+    without exceeding the stage's thread budget. At most ``window`` distinct
+    prepared values are retained, including those still held by unfinished
+    estimates. Returns the estimates in pair order and the identities in
+    value order.
+
+    Leaving early, through cancellation or a failed task, cancels queued work
+    and waits for running native calls before returning.
+    """
+    profile = _profile()
+    _check_cancel(should_cancel)
+    count = len(values)
+    if count < 2:
+        raise ValueError('pair estimation needs at least two values')
+    window = max(2, int(window if window is not None else workers + 1))
+    scratch = capture_scratch()
+
+    def staged(stage, function, *args):
+        # The pool's work item keeps this task alive until after its future
+        # completes. Drop the arguments (prepared frames) before returning so
+        # the retention window is not exceeded while the worker lets go.
+        held = list(args)
+
+        def run():
+            try:
+                _check_cancel(should_cancel)
+                if profile.enabled:
+                    with profile.stage(stage):
+                        result = function(*held)
+                else:
+                    result = function(*held)
+                _check_cancel(should_cancel)
+                return result
+            finally:
+                held.clear()
+        return run
+
+    from threadpoolctl import ThreadpoolController
+
+    def init_worker():
+        # Some OpenMP runtimes apply limits per thread, so each worker needs
+        # its own limit even when the owner is already limited.
+        ThreadpoolController().select(user_api='openmp').limit(limits=1)
+
+    # Other OpenMP runtimes use a process-wide limit. Restore the owner's
+    # previous setting only after all worker calls have stopped.
+    with ThreadpoolController().select(user_api='openmp').limit(limits=1):
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers=workers, initializer=init_worker)
+        prepared = {}
+        # Preparation hands its result over here and returns None: the pool's
+        # worker keeps a task's return value referenced for a moment after its
+        # future completes, which would let a released frame outlive the window.
+        ready = {}
+        estimates = {}
+        identities = [None] * count
+        results = [None] * (count - 1)
+        next_prepare = 0
+        next_estimate = 1
+        try:
+            while next_estimate < count or estimates:
+                _check_cancel(should_cancel)
+                for future in (*prepared.values(), *estimates.values()):
+                    if future.done() and future.exception() is not None:
+                        future.result()
+                for index in [index for index, future in estimates.items() if future.done()]:
+                    results[index - 1] = estimates.pop(index).result()
+                # Pairs go first: they release prepared frames.
+                while (next_estimate < count and next_estimate in prepared
+                       and prepared[next_estimate - 1].done() and prepared[next_estimate].done()):
+                    # A future can fail after the scan above and before this pair
+                    # becomes ready. Propagate its error before accessing pixels.
+                    prepared[next_estimate - 1].result()
+                    prepared[next_estimate].result()
+                    prepared.pop(next_estimate - 1)
+                    previous = ready.pop(next_estimate - 1)
+                    current = ready[next_estimate]
+                    estimates[next_estimate] = pool.submit(
+                        run_with_scratch, scratch,
+                        staged('registration.estimate', estimate, next_estimate, previous, current))
+                    del previous, current
+                    next_estimate += 1
+                # Count every distinct frame still referenced: a pending estimate
+                # holds both of its frames, and estimates can finish out of
+                # order, so its later frame may already have left ``prepared``.
+                retained = set(prepared)
+                for index in estimates:
+                    retained.update((index - 1, index))
+                while next_prepare < count and len(retained) < window:
+                    index = next_prepare
+
+                    def prepare_one(index=index, value=values[index]):
+                        result = prepare(value)
+                        identities[index] = result[-1]
+                        if on_prepared is not None:
+                            on_prepared(index, result)
+                        ready[index] = result
+
+                    prepared[index] = pool.submit(
+                        run_with_scratch, scratch,
+                        staged('registration.prepare', prepare_one))
+                    retained.add(index)
+                    next_prepare += 1
+                if next_estimate >= count and not estimates:
+                    break
+                # Completed preparation stays available for its adjacent pairs.
+                # Including it in FIRST_COMPLETED would return immediately and
+                # spin while the remaining native decode/estimate is running.
+                waiting = [future for future in (*prepared.values(), *estimates.values())
+                           if not future.done()]
+                if waiting:
+                    concurrent.futures.wait(waiting, timeout=0.05,
+                                            return_when=concurrent.futures.FIRST_COMPLETED)
+                waiting.clear()
+        finally:
+            for future in list(prepared.values()) + list(estimates.values()):
+                future.cancel()
+            pool.shutdown(wait=True, cancel_futures=True)
+            prepared.clear()
+            ready.clear()
+            estimates.clear()
+    _check_cancel(should_cancel)
+    return results, identities
+
+
 def _save_registration(images, output_path, filenames, should_cancel):
     """Publish only after all transforms succeed; each file commits atomically."""
     _check_cancel(should_cancel)
@@ -982,10 +1113,23 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
             _check_cancel(should_cancel)
             pair_transforms.append(transform)
     else:
-        with _bounded_registration_map(_compute_pair_transform, pairs(), max_workers - 1,
-                                       should_cancel, stage='registration.estimate',
-                                       max_in_flight=max_workers) as results:
-            pair_transforms = list(results)
+        def prepare_frame(image):
+            with deferred_warp_threads(1):
+                return preprocess(image)
+
+        def estimate_pair(index, previous, current):
+            return _compute_pair_transform((index, previous[0], current[0], scale_of[0]))
+
+        scale_of = []
+
+        def remember_scale(index, prepared):
+            if index == 0:
+                scale_of.append(prepared[1])
+
+        pair_transforms, prepared_identities = _prepare_and_estimate_pairs(
+            images, prepare_frame, estimate_pair, max_workers, should_cancel,
+            on_prepared=remember_scale)
+        source_identities.extend(prepared_identities)
 
     trajectory_failed = False
     for idx, (warp_matrix, cc) in enumerate(pair_transforms, start=1):
