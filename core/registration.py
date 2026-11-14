@@ -739,82 +739,89 @@ def _prepare_and_estimate_pairs(values, prepare, estimate, workers, should_cance
                 held.clear()
         return run
 
+    from threadpoolctl import ThreadpoolController
+
     def init_worker():
-        # LibRaw's OpenMP limit belongs to the calling thread. A limit on the
-        # submitting thread does not constrain these new workers. BLAS limits
-        # are process-wide, so do not change them from pool threads.
-        from threadpoolctl import threadpool_limits
-        threadpool_limits(limits=1, user_api='openmp')
+        # Some OpenMP runtimes apply limits per thread, so each worker needs
+        # its own limit even when the owner is already limited.
+        ThreadpoolController().select(user_api='openmp').limit(limits=1)
 
-    pool = concurrent.futures.ThreadPoolExecutor(max_workers=workers, initializer=init_worker)
-    prepared = {}
-    # Preparation hands its result over here and returns None: the pool's
-    # worker keeps a task's return value referenced for a moment after its
-    # future completes, which would let a released frame outlive the window.
-    ready = {}
-    estimates = {}
-    identities = [None] * count
-    results = [None] * (count - 1)
-    next_prepare = 0
-    next_estimate = 1
-    try:
-        while next_estimate < count or estimates:
-            _check_cancel(should_cancel)
-            for future in (*prepared.values(), *estimates.values()):
-                if future.done() and future.exception() is not None:
-                    future.result()
-            for index in [index for index, future in estimates.items() if future.done()]:
-                results[index - 1] = estimates.pop(index).result()
-            # Pairs go first: they release prepared frames.
-            while (next_estimate < count and next_estimate in prepared
-                   and prepared[next_estimate - 1].done() and prepared[next_estimate].done()):
-                prepared.pop(next_estimate - 1)
-                previous = ready.pop(next_estimate - 1)
-                current = ready[next_estimate]
-                estimates[next_estimate] = pool.submit(
-                    run_with_scratch, scratch,
-                    staged('registration.estimate', estimate, next_estimate, previous, current))
-                del previous, current
-                next_estimate += 1
-            # Count every distinct frame still referenced: a pending estimate
-            # holds both of its frames, and estimates can finish out of
-            # order, so its later frame may already have left ``prepared``.
-            retained = set(prepared)
-            for index in estimates:
-                retained.update((index - 1, index))
-            while next_prepare < count and len(retained) < window:
-                index = next_prepare
+    # Other OpenMP runtimes use a process-wide limit. Restore the owner's
+    # previous setting only after all worker calls have stopped.
+    with ThreadpoolController().select(user_api='openmp').limit(limits=1):
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers=workers, initializer=init_worker)
+        prepared = {}
+        # Preparation hands its result over here and returns None: the pool's
+        # worker keeps a task's return value referenced for a moment after its
+        # future completes, which would let a released frame outlive the window.
+        ready = {}
+        estimates = {}
+        identities = [None] * count
+        results = [None] * (count - 1)
+        next_prepare = 0
+        next_estimate = 1
+        try:
+            while next_estimate < count or estimates:
+                _check_cancel(should_cancel)
+                for future in (*prepared.values(), *estimates.values()):
+                    if future.done() and future.exception() is not None:
+                        future.result()
+                for index in [index for index, future in estimates.items() if future.done()]:
+                    results[index - 1] = estimates.pop(index).result()
+                # Pairs go first: they release prepared frames.
+                while (next_estimate < count and next_estimate in prepared
+                       and prepared[next_estimate - 1].done() and prepared[next_estimate].done()):
+                    # A future can fail after the scan above and before this pair
+                    # becomes ready. Propagate its error before accessing pixels.
+                    prepared[next_estimate - 1].result()
+                    prepared[next_estimate].result()
+                    prepared.pop(next_estimate - 1)
+                    previous = ready.pop(next_estimate - 1)
+                    current = ready[next_estimate]
+                    estimates[next_estimate] = pool.submit(
+                        run_with_scratch, scratch,
+                        staged('registration.estimate', estimate, next_estimate, previous, current))
+                    del previous, current
+                    next_estimate += 1
+                # Count every distinct frame still referenced: a pending estimate
+                # holds both of its frames, and estimates can finish out of
+                # order, so its later frame may already have left ``prepared``.
+                retained = set(prepared)
+                for index in estimates:
+                    retained.update((index - 1, index))
+                while next_prepare < count and len(retained) < window:
+                    index = next_prepare
 
-                def prepare_one(index=index, value=values[index]):
-                    result = prepare(value)
-                    identities[index] = result[-1]
-                    if on_prepared is not None:
-                        on_prepared(index, result)
-                    ready[index] = result
+                    def prepare_one(index=index, value=values[index]):
+                        result = prepare(value)
+                        identities[index] = result[-1]
+                        if on_prepared is not None:
+                            on_prepared(index, result)
+                        ready[index] = result
 
-                prepared[index] = pool.submit(
-                    run_with_scratch, scratch,
-                    staged('registration.prepare', prepare_one))
-                retained.add(index)
-                next_prepare += 1
-            if next_estimate >= count and not estimates:
-                break
-            # Completed preparation stays available for its adjacent pairs.
-            # Including it in FIRST_COMPLETED would return immediately and
-            # spin while the remaining native decode/estimate is running.
-            waiting = [future for future in (*prepared.values(), *estimates.values())
-                       if not future.done()]
-            if waiting:
-                concurrent.futures.wait(waiting, timeout=0.05,
-                                        return_when=concurrent.futures.FIRST_COMPLETED)
-            waiting.clear()
-    finally:
-        for future in list(prepared.values()) + list(estimates.values()):
-            future.cancel()
-        pool.shutdown(wait=True, cancel_futures=True)
-        prepared.clear()
-        ready.clear()
-        estimates.clear()
+                    prepared[index] = pool.submit(
+                        run_with_scratch, scratch,
+                        staged('registration.prepare', prepare_one))
+                    retained.add(index)
+                    next_prepare += 1
+                if next_estimate >= count and not estimates:
+                    break
+                # Completed preparation stays available for its adjacent pairs.
+                # Including it in FIRST_COMPLETED would return immediately and
+                # spin while the remaining native decode/estimate is running.
+                waiting = [future for future in (*prepared.values(), *estimates.values())
+                           if not future.done()]
+                if waiting:
+                    concurrent.futures.wait(waiting, timeout=0.05,
+                                            return_when=concurrent.futures.FIRST_COMPLETED)
+                waiting.clear()
+        finally:
+            for future in list(prepared.values()) + list(estimates.values()):
+                future.cancel()
+            pool.shutdown(wait=True, cancel_futures=True)
+            prepared.clear()
+            ready.clear()
+            estimates.clear()
     _check_cancel(should_cancel)
     return results, identities
 
