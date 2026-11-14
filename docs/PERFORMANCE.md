@@ -440,6 +440,8 @@ calls. At most that count plus one distinct prepared frames are retained,
 counting both frames of every unfinished estimate, since estimates can finish
 out of order; tasks drop their frames before reporting completion. RAW
 decoder OpenMP work stays serial inside each worker.
+The owner also scopes the limit for process-wide OpenMP runtimes and restores
+the previous setting after all workers have stopped, including on failure.
 Completed frames remain available for their adjacent pairs without polling
 them repeatedly while other work runs. Cancellation and failures drain native
 calls before releasing the stage's resources. A one-thread request keeps

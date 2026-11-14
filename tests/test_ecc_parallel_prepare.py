@@ -186,6 +186,45 @@ def test_a_failed_preparation_stops_the_run_and_running_calls_finish_first():
     assert max(snapshot) < 10
 
 
+@pytest.mark.parametrize('error_type', [ValueError, RegistrationCancelled])
+def test_late_preparation_failure_preserves_the_original_error(monkeypatch, error_type):
+    """A frame can fail between the scheduler's scan and pair submission."""
+    import concurrent.futures
+
+    release = threading.Event()
+    futures = []
+    real_executor = concurrent.futures.ThreadPoolExecutor
+    real_exception = concurrent.futures.Future.exception
+
+    class TrackingExecutor(real_executor):
+        def submit(self, *args, **kwargs):
+            future = super().submit(*args, **kwargs)
+            if len(futures) < 2:
+                futures.append(future)
+            return future
+
+    def exception_after_failure(future, timeout=None):
+        if len(futures) == 2 and future is futures[1] and not release.is_set():
+            release.set()
+            with pytest.raises(error_type, match='late preparation failure'):
+                futures[0].result(timeout=5)
+        return real_exception(future, timeout)
+
+    def prepare(value):
+        if value == 0:
+            assert release.wait(5)
+            raise error_type('late preparation failure')
+        return value, value
+
+    monkeypatch.setattr(concurrent.futures, 'ThreadPoolExecutor', TrackingExecutor)
+    monkeypatch.setattr(concurrent.futures.Future, 'exception', exception_after_failure)
+    try:
+        with pytest.raises(error_type, match='late preparation failure'):
+            _prepare_and_estimate_pairs([0, 1], prepare, lambda i, p, c: i, 2)
+    finally:
+        release.set()
+
+
 def test_cancellation_is_raised_and_leaves_no_running_task():
     cancel = threading.Event()
     running = []
@@ -209,9 +248,9 @@ def test_fewer_than_two_values_are_refused():
         _prepare_and_estimate_pairs([1], lambda v: (v, v), lambda i, p, c: i, 2)
 
 
-def test_worker_openmp_pools_are_serial_and_owner_limit_is_preserved():
-    # Exercise the loaded native runtime: setting a limit only on the owner
-    # thread does not constrain OpenMP in newly created Python threads.
+@pytest.mark.parametrize('outcome', ['success', 'prepare_error', 'estimate_error', 'cancel'])
+def test_worker_openmp_pools_are_serial_and_owner_limit_is_preserved(outcome):
+    # OpenMP limits can be thread-local or process-wide, depending on the runtime.
     from threadpoolctl import threadpool_info, threadpool_limits
 
     def limits():
@@ -220,16 +259,75 @@ def test_worker_openmp_pools_are_serial_and_owner_limit_is_preserved():
 
     if not limits():
         pytest.skip('No OpenMP runtime installed')
+    cancelled = threading.Event()
     with threadpool_limits(limits=3, user_api='openmp'):
         before = limits()
 
         def prepare(value):
             assert limits()
             assert set(limits().values()) == {1}
+            if value == 1 and outcome == 'prepare_error':
+                raise ValueError('decode failed')
+            if value == 1 and outcome == 'cancel':
+                cancelled.set()
             return value, value
 
-        _prepare_and_estimate_pairs(list(range(8)), prepare, lambda i, p, c: i, 3)
+        def estimate(index, previous, current):
+            if outcome == 'estimate_error':
+                raise RuntimeError('estimation failed')
+            return index
+
+        if outcome == 'success':
+            _prepare_and_estimate_pairs(list(range(8)), prepare, estimate, 3,
+                                        should_cancel=cancelled.is_set)
+        else:
+            error = {'prepare_error': ValueError, 'estimate_error': RuntimeError,
+                     'cancel': RegistrationCancelled}[outcome]
+            with pytest.raises(error):
+                _prepare_and_estimate_pairs(list(range(8)), prepare, estimate, 3,
+                                            should_cancel=cancelled.is_set)
         assert limits() == before
+
+
+def test_ecc_openmp_scope_preserves_concurrent_blas_change():
+    """A concurrent BLAS limit is not reset when ECC's OpenMP scope exits."""
+    import subprocess
+    import sys
+
+    script = '''
+import sys
+from threadpoolctl import ThreadpoolController
+from core.registration import _prepare_and_estimate_pairs
+
+controller = ThreadpoolController()
+libraries = [item for item in controller.select(user_api="blas").info()
+             if item.get("internal_api") == "openblas"
+             and item.get("threading_layer") in ("pthreads", "windows")]
+if not libraries:
+    sys.exit(77)
+target = controller.select(filepath=libraries[0]["filepath"])
+before = target.info()[0]["num_threads"]
+if before is None:
+    sys.exit(77)
+desired = 1 if before != 1 else 2
+observed = []
+
+def prepare(value):
+    if value == 0:
+        target.limit(limits=desired)
+        observed.append(target.info()[0]["num_threads"])
+    return value, value
+
+_prepare_and_estimate_pairs([0, 1], prepare, lambda i, previous, current: i, 2)
+if observed != [desired]:
+    sys.exit(77)
+assert target.info()[0]["num_threads"] == desired
+'''
+    result = subprocess.run([sys.executable, '-c', script], capture_output=True,
+                            text=True, timeout=30)
+    if result.returncode == 77:
+        pytest.skip('No independently adjustable process-wide OpenBLAS runtime')
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_failed_estimate_drains_preparation_before_returning():
@@ -287,8 +385,15 @@ def test_ecc_gives_identical_frames_at_every_thread_count(tmp_path, defer):
 
 def test_ecc_prepares_on_pool_threads_when_given_several(tmp_path, monkeypatch):
     sources = _stack(tmp_path, count=6)
+    from core import resource_policy
+
+    snapshot = resource_policy.ResourceSnapshot(
+        available_ram=4 * 1024**3, total_ram=8 * 1024**3,
+        physical_cores=4, logical_cpus=4, physical_cores_known=True)
+    monkeypatch.setattr(resource_policy, 'probe_resources', lambda *args, **kwargs: snapshot)
+    barrier = threading.Barrier(2)
     lock = threading.Lock()
-    state = {'running': 0, 'peak': 0, 'threads': set()}
+    state = {'running': 0, 'peak': 0, 'threads': set(), 'calls': 0}
     original = source_frames.resolve_frame
 
     def slow_resolve(frame, *args, **kwargs):
@@ -296,8 +401,11 @@ def test_ecc_prepares_on_pool_threads_when_given_several(tmp_path, monkeypatch):
             state['running'] += 1
             state['peak'] = max(state['peak'], state['running'])
             state['threads'].add(threading.get_ident())
+            state['calls'] += 1
+            first_pair = state['calls'] <= 2
         try:
-            time.sleep(0.05)
+            if first_pair:
+                barrier.wait(timeout=5)
             return original(frame, *args, **kwargs)
         finally:
             with lock:
