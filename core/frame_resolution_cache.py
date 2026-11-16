@@ -50,7 +50,7 @@ def retain_aligned_frames(frames, should_cancel=None, *, limit_bytes=None):
     caches and cache misses retain their normal lazy descriptors. Mappings are
     released when the GUI drops its aligned stack and any borrowed views.
     """
-    from core.source_frames import ProcessedFrame, RetainedFrame
+    from core.source_frames import ProcessedFrame, RetainedFrame, without_retained_pixels
     from core.frame_storage import is_mapped_frame
 
     limit = RETAINED_FRAME_LIMIT_BYTES if limit_bytes is None else limit_bytes
@@ -80,7 +80,10 @@ def retain_aligned_frames(frames, should_cancel=None, *, limit_bytes=None):
         if pixels is None or not is_mapped_frame(pixels):
             retained.append(frame)
             continue
-        retained.append(RetainedFrame(source=frame, processor=None,
+        # The wrapper's provenance keeps the processing chain and the original
+        # descriptor, but never an older retained mapping: that would stay
+        # alive beside this one without being counted against the limit.
+        retained.append(RetainedFrame(source=without_retained_pixels(frame), processor=None,
             shape=frame.shape, dtype=frame.dtype, should_cancel=should_cancel,
             scratch_bytes=0, pixels=pixels))
         count += 1
