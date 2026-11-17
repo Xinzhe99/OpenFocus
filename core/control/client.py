@@ -178,8 +178,12 @@ def _launch_command(socket_name=None, paths=()):
     return command
 
 
-def launch_gui(socket_name=None, timeout=45.0, paths=(), *, env=None):
-    """Start a detached GUI and wait for its control discovery file."""
+def launch_gui(socket_name=None, timeout=45.0, paths=(), *, env=None, process_factory=None):
+    """Start a detached GUI and wait for its control discovery file.
+
+    ``process_factory``, when provided, receives the same arguments as
+    ``subprocess.Popen`` and returns a process with ``poll`` and ``returncode``.
+    """
     before = None
     child_env = os.environ.copy() if env is None else env.copy()
     override = child_env.get("OPENFOCUS_CONTROL_FILE")
@@ -193,7 +197,7 @@ def launch_gui(socket_name=None, timeout=45.0, paths=(), *, env=None):
         creation = 0x00000008 | 0x00000200  # DETACHED_PROCESS | NEW_GROUP
     if override:
         child_env["OPENFOCUS_CONTROL_FILE"] = str(path)
-    process = subprocess.Popen(
+    process = (subprocess.Popen if process_factory is None else process_factory)(
         _launch_command(socket_name, paths), cwd=str(Path(__file__).resolve().parents[2]), env=child_env,
         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         creationflags=creation,

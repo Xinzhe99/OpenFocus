@@ -287,6 +287,9 @@ def test_successful_video_load_after_corrupt_image_is_not_a_failure(tmp_path, di
     assert abs(means[0] - 60) <= 3 and abs(means[1] - 100) <= 3, means
     assert means[0] < means[1]
     assert results[0][2][0].dtype == np.uint8
+    admitted = next(record for record in diagnostics if record.event == 'stack_load.admitted')
+    assert _details(admitted) == {}
+    assert str(video) not in admitted.getMessage()
     _assert_outcome(diagnostics, "stack_load", "completed")
 
 

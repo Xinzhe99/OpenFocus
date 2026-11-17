@@ -11,6 +11,8 @@ relevant source, tests, or documentation linked from [CONTRIBUTING.md](CONTRIBUT
 - Separate an observation from its cause. A crash timestamp, a passing retry,
   or an enabled provider does not establish the failing thread or where work
   ran. Preserve diagnostics and state what remains unknown.
+- A crash handler can fail while reporting an earlier fault. Resolve the
+  recorded address before treating the handler's module as the original cause.
 - Verify the path users actually exercise. For GUI changes, cover the rendered
   controls and relevant cross-process interactions; for accelerators, observe
   execution and fallback as well as provider availability.

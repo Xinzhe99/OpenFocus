@@ -418,6 +418,23 @@ def _session(path, shape, device, threads):
     return _SESSIONS[key]
 
 
+def _log_session_failure(shape, session, device):
+    """Record bounded failure context without paths or exception text."""
+    try:
+        from utils.memory import failure_memory_snapshot
+        details = failure_memory_snapshot()
+        details['shape'] = [int(value) for value in shape]
+        if device in _PROVIDER:
+            details['requested_provider'] = _PROVIDER[device]
+        actual = ('CPU' if session is not None and device == 'CPU'
+                  else getattr(session, 'actual_device', None))
+        if actual in _PROVIDER:
+            details['provider'] = _PROVIDER[actual]
+        log_action('neural_session_failure', **details)
+    except Exception:
+        pass
+
+
 def logits(planes, path, device, threads, should_cancel=None):
     from fusion_methods.neural_common import cancel
     from core.registration import RegistrationCancelled
@@ -472,10 +489,22 @@ def logits(planes, path, device, threads, should_cancel=None):
     device_failed = False
     try:
         with profile.stage('session.acquire'):
-            session = _session(path, shape, device, threads)
+            try:
+                session = _session(path, shape, device, threads)
+            except RegistrationCancelled:
+                raise
+            except Exception:
+                _log_session_failure(shape, None, device)
+                raise
         cancel(should_cancel)
         with profile.stage('session.run'):
-            result = session.run(['logits'], {'input': planes})[0]
+            try:
+                result = session.run(['logits'], {'input': planes})[0]
+            except RegistrationCancelled:
+                raise
+            except Exception:
+                _log_session_failure(shape, session, device)
+                raise
         if device != 'CPU':
             device = session.actual_device
             if device == 'CPU':
@@ -501,10 +530,22 @@ def logits(planes, path, device, threads, should_cancel=None):
         from core.resource_policy import require_memory
         require_memory(estimate_inference_bytes(*shape, 'CPU'))
         with profile.stage('session.acquire'):
-            session = _session(path, shape, 'CPU', threads)
+            try:
+                session = _session(path, shape, 'CPU', threads)
+            except RegistrationCancelled:
+                raise
+            except Exception:
+                _log_session_failure(shape, None, 'CPU')
+                raise
         cancel(should_cancel)
         with profile.stage('session.run'):
-            result = session.run(['logits'], {'input': planes})[0]
+            try:
+                result = session.run(['logits'], {'input': planes})[0]
+            except RegistrationCancelled:
+                raise
+            except Exception:
+                _log_session_failure(shape, session, 'CPU')
+                raise
         device = 'CPU'
     _ACTUAL_DEVICE = device
     _ACTUAL_CHECKPOINT = os.path.basename(os.path.splitext(path)[0] + '.onnx')
