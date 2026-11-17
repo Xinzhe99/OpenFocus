@@ -741,6 +741,19 @@ def test_environment_reports_neural_provider(monkeypatch, kind, device):
         assert trans.t('env_no_gpu') not in text
 
 
+@pytest.mark.parametrize('available', [False, True])
+def test_environment_reports_openfocus_bc_capability(monkeypatch, available):
+    from dialogs.about import EnvironmentInfoDialog
+    import core.multi_focus_fusion as mff
+
+    monkeypatch.setattr(mff, 'ensure_openfocus_gpu_available', lambda: available)
+    text = EnvironmentInfoDialog.environment_report()
+    expected = 'OpenCL GPU available; CPU fallback' if available else 'CPU'
+    assert f'OpenFocus B/C: {expected}' in text
+    assert 'Guided Filter / GFG-FGF / OpenFocus A: CPU' in text
+    assert 'OpenFocus B/C / OpenCL' in text
+
+
 def test_environment_explains_an_unadmitted_provider(monkeypatch):
     """A verified provider whose memory cannot be read is reported as such,
     not as a failed verification."""

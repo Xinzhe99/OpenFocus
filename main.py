@@ -911,7 +911,7 @@ class OpenFocus(QMainWindow):
             kind = ('…' if state == 'pending'
                     else trans.t('neural_provider_ready').format(neural_runtime.display_name(device))
                     if state == 'ready' else neural_runtime.display_name(device))
-            if self.combo_fusion.currentData() == 'openfocus_b':
+            if self.combo_fusion.currentData() in ('openfocus_b', 'openfocus_c'):
                 kind = ('CPU' if not getattr(self, 'use_gpu', True) or opencl is False
                         else '…' if opencl is None
                         else trans.t('neural_provider_ready').format('OpenCL'))
@@ -921,7 +921,7 @@ class OpenFocus(QMainWindow):
             self.lbl_status_gpu.setToolTip('\n'.join(filter(None, (
                 hardware,
                 'ONNX Runtime: ' + ', '.join(diagnostics['providers']),
-                'OpenFocus B: ' + ('OpenCL' if opencl else 'CPU' if opencl is False else '…'),
+                'OpenFocus B/C: ' + ('OpenCL' if opencl else 'CPU' if opencl is False else '…'),
                 trans.t('env_gpu_accel') + ': ' + neural_runtime.display_name(capability)
                 if neural_runtime.is_accelerator(capability)
                 else trans.t('env_gpu_memory_unknown').format(
@@ -1426,7 +1426,7 @@ class OpenFocus(QMainWindow):
         """Resolve the accelerator only when the selected method uses it."""
         try:
             code = self.combo_fusion.currentData()
-            if code == 'openfocus_b' or (code != 'none' and get_fusion(code).neural):
+            if code in ('openfocus_b', 'openfocus_c') or (code != 'none' and get_fusion(code).neural):
                 self._probe_device_kind_async()
         except Exception:
             pass
