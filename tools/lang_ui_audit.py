@@ -120,6 +120,8 @@ def _run_audit(lang, app):
     from dialogs import settings, welcome
 
     win = app_main.OpenFocus()
+    # The audit owns a disposable profile and never edits a user's project.
+    win._force_quit = True
     win.resize(1500, 950)
     win.show()
 

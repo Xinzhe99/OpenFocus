@@ -66,7 +66,7 @@ def test_affinity_and_fractional_quota_limit_all_preferences():
 def test_ram_only_admission_tracks_lost_and_unknown_memory(monkeypatch):
     available = iter((8 * GiB, 0, policy.RESERVE_BYTES // 2))
     monkeypatch.setattr(memory, 'admission_memory_bytes',
-                        lambda: (next(available), 16 * GiB, None))
+                        lambda: (next(available), 16 * GiB, None, None))
     monkeypatch.setattr(memory, 'process_rss_bytes', lambda: GiB)
     required = 64 * 1024 ** 2
     assert policy.require_memory(required, policy.probe_memory()) >= required
@@ -90,6 +90,7 @@ def test_windows_commit_limit_caps_admission_without_changing_physical_reading(m
                              ullAvailPageFile=GiB)
     monkeypatch.setattr(memory.sys, 'platform', 'win32')
     monkeypatch.setattr(memory, '_windows_memory_status', lambda: status)
+    monkeypatch.setattr(memory, '_windows_job_process_limit', lambda: None)
     monkeypatch.setattr(memory, 'process_rss_bytes', lambda: 0)
     events = []
     monkeypatch.setattr(policy, 'log_action', lambda name, **fields: events.append((name, fields)))
@@ -108,6 +109,48 @@ def test_windows_commit_limit_caps_admission_without_changing_physical_reading(m
     assert exhausted.commit_headroom == 0
     with pytest.raises(policy.ResourceLimitError, match='Insufficient memory'):
         policy.require_memory(1, exhausted)
+
+
+@pytest.mark.parametrize('private_usage,reported_commit,expected', [
+    (GiB // 2, 8 * GiB, GiB // 2),
+    (GiB // 2, GiB // 4, GiB // 4),
+    (GiB, 8 * GiB, 0),
+    (None, 8 * GiB, 0),
+])
+def test_windows_job_process_limit_caps_admission(
+        monkeypatch, private_usage, reported_commit, expected):
+    status = SimpleNamespace(ullAvailPhys=8 * GiB, ullTotalPhys=16 * GiB,
+                             ullAvailPageFile=reported_commit)
+    monkeypatch.setattr(memory.sys, 'platform', 'win32')
+    monkeypatch.setattr(memory, '_windows_memory_status', lambda: status)
+    monkeypatch.setattr(memory, '_windows_job_process_limit', lambda: GiB)
+    monkeypatch.setattr(memory, '_process_counters', lambda extended: (
+        SimpleNamespace(PrivateUsage=private_usage) if private_usage is not None else None))
+    monkeypatch.setattr(memory, 'process_rss_bytes', lambda: 0)
+
+    snapshot = policy.probe_memory()
+    assert snapshot.commit_headroom == reported_commit
+    assert snapshot.process_commit_headroom == (
+        max(0, GiB - private_usage) if private_usage is not None else 0)
+    assert policy.ram_ceiling(snapshot) == expected
+    with pytest.raises(policy.ResourceLimitError, match='Insufficient memory'):
+        policy.require_memory(expected + 1, snapshot)
+
+
+def test_child_budget_does_not_inherit_parents_process_commit_usage(monkeypatch):
+    parent = _snapshot(commit_headroom=8 * GiB, process_commit_headroom=GiB // 4)
+    monkeypatch.setattr(policy, 'probe_memory', lambda: parent)
+    assert policy.ram_ceiling(parent) == GiB // 4
+    budget = policy.make_process_budget(snapshot=parent)
+    assert budget == policy.make_process_budget()
+    assert budget.maximum_ram == policy.ram_ceiling(
+        replace(parent, process_commit_headroom=None))
+
+    child = replace(parent, process_commit_headroom=GiB)
+    with policy.process_budget(budget):
+        assert policy.ram_ceiling(child) == GiB
+        with pytest.raises(policy.ResourceLimitError):
+            policy.require_memory(GiB + 1, child)
 
 
 def test_child_budget_tightens_for_commit_without_widening(monkeypatch):
