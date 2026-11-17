@@ -176,7 +176,7 @@ ran, with `outcome` set accordingly.
 
 `state` is `idle`, `rendering`, `done`, `cancelled`, `discarded` or `error`.
 `stage` is the last reported active worker stage (`waiting`, `prepare`, `align`,
-`fuse`, `finish` or `cancelling`), or `null` when no worker is running. It
+`fuse` or `cancelling`), or `null` when no worker is running. It
 helps identify where a render is waiting; it is not an exact call stack.
 
 A cancelled render and a result discarded because the stack changed while it
