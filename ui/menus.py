@@ -7,7 +7,7 @@ from locales import trans
 from core.experimental import experimental_enabled
 
 
-class _LockedMosaicHint(QObject):
+class _LockedExperimentalHint(QObject):
     def __init__(self, menu, action):
         super().__init__(menu)
         self.menu = menu
@@ -22,15 +22,15 @@ class _LockedMosaicHint(QObject):
         return super().eventFilter(watched, event)
 
 
-def update_mosaic_experimental_action(window: QMainWindow) -> None:
-    """Refresh the mosaic action after settings or language changes."""
-    action = getattr(window, 'ui_objs', {}).get('mosaic_title')
-    if action is None:
-        return
+def update_experimental_actions(window: QMainWindow) -> None:
+    """Refresh experimental tool actions after settings or language changes."""
     enabled = experimental_enabled(window)
-    action.setText(f"{trans.t('mosaic_title')} ({trans.t('experimental_label')})")
-    action.setEnabled(enabled)
-    action.setToolTip('' if enabled else trans.t('experimental_locked_hint'))
+    for key in ('mosaic_title', 'menu_dust_map'):
+        action = getattr(window, 'ui_objs', {}).get(key)
+        if action is not None:
+            action.setText(f"{trans.t(key)} ({trans.t('experimental_label')})")
+            action.setEnabled(enabled)
+            action.setToolTip('' if enabled else trans.t('experimental_locked_hint'))
 
 
 def _show_support_dialog(window):
@@ -287,9 +287,9 @@ def setup_menus(window: QMainWindow) -> None:
     mosaic_action.triggered.connect(window.show_mosaic_dialog)
     batch_menu.addAction(mosaic_action)
     window.ui_objs['mosaic_title'] = mosaic_action
-    batch_menu._locked_mosaic_hint = _LockedMosaicHint(batch_menu, mosaic_action)
+    batch_menu._locked_mosaic_hint = _LockedExperimentalHint(batch_menu, mosaic_action)
     batch_menu.installEventFilter(batch_menu._locked_mosaic_hint)
-    update_mosaic_experimental_action(window)
+    update_experimental_actions(window)
 
     def open_converter():
         from dialogs.batch_converter import BatchConverterDialog
@@ -315,6 +315,9 @@ def setup_menus(window: QMainWindow) -> None:
     dust_action.setProperty("trans_key", 'menu_dust_map')
     batch_menu.addAction(dust_action)
     window.ui_objs['menu_dust_map'] = dust_action
+    batch_menu._locked_dust_hint = _LockedExperimentalHint(batch_menu, dust_action)
+    batch_menu.installEventFilter(batch_menu._locked_dust_hint)
+    update_experimental_actions(window)
 
     batch_menu.addSeparator()
 

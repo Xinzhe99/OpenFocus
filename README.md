@@ -237,7 +237,7 @@ space for the selected source, processing workspace and full-size result.
 <a id="install"></a>
 ## ⬇️ Install
 
-The [OpenFocus website](https://openfocus.top/#download) and its install scripts offer the newest Windows or macOS build, including a beta when it is newer than stable (currently [v1.77.0-beta.7](https://github.com/Xinzhe99/OpenFocus/releases/tag/v1.77.0-beta.7)). Portable builds and older versions are also available on [GitHub Releases](https://github.com/Xinzhe99/OpenFocus/releases). Desktop automatic updates also offer newer beta releases; the Linux CLI installed from PyPI remains stable.
+The [OpenFocus website](https://openfocus.top/#download) and its install scripts offer the latest stable Windows or macOS build. Desktop updates also use the stable channel by default; enable beta updates in Advanced Settings or the welcome dialog to receive newer prereleases. Portable builds, beta releases, and older versions are available on [GitHub Releases](https://github.com/Xinzhe99/OpenFocus/releases). The Linux CLI installed from PyPI remains stable.
 
 On macOS (Apple Silicon) or Linux, install from a terminal. Linux installs the
 headless CLI; macOS installs the app in `~/Applications`.

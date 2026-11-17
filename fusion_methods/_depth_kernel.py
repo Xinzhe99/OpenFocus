@@ -5,9 +5,11 @@ isolated render processes can reuse them; an unavailable cache keeps the
 same in-memory compilation path.
 """
 from contextlib import contextmanager
+import errno
 import logging
 import os
 import pickle
+import time
 from threading import Lock
 
 from core.algorithm_adapters import DEPTH_KERNEL_STARTUP_BYTES
@@ -20,21 +22,39 @@ from numba import njit as _numba_njit  # noqa: E402 - admit compiler memory firs
 
 @contextmanager
 def _cache_access(directory):
-    """Serialize a Numba index/data transaction without waiting for other jobs."""
+    """Serialize cache transactions, falling back to in-memory compilation."""
     descriptor = None
+    held = False
     locked = False
     try:
-        descriptor = os.open(os.path.join(directory, '.openfocus-numba.lock'),
-                             os.O_CREAT | os.O_RDWR, 0o600)
+        for attempt in range(51):
+            try:
+                descriptor = os.open(os.path.join(directory, '.openfocus-numba.lock'),
+                                     os.O_CREAT | os.O_RDWR, 0o600)
+                break
+            except PermissionError:
+                if os.name != 'nt' or attempt == 50:
+                    raise
+                time.sleep(0.01)
         if os.name == 'nt':
             import msvcrt
+            for attempt in range(51):
+                try:
+                    os.lseek(descriptor, 0, os.SEEK_SET)
+                    msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+                    held = True
+                    break
+                except OSError as exc:
+                    if exc.errno not in (errno.EACCES, errno.EAGAIN, errno.EDEADLK) or attempt == 50:
+                        raise
+                    time.sleep(0.01)
             if os.fstat(descriptor).st_size == 0:
+                os.lseek(descriptor, 0, os.SEEK_SET)
                 os.write(descriptor, b'\0')
-            os.lseek(descriptor, 0, os.SEEK_SET)
-            msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
         else:
             import fcntl
             fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            held = True
         locked = True
     except OSError:
         pass
@@ -43,10 +63,10 @@ def _cache_access(directory):
     finally:
         if descriptor is not None:
             try:
-                if locked and os.name == 'nt':
+                if held and os.name == 'nt':
                     os.lseek(descriptor, 0, os.SEEK_SET)
                     msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
-                elif locked:
+                elif held:
                     fcntl.flock(descriptor, fcntl.LOCK_UN)
             finally:
                 os.close(descriptor)

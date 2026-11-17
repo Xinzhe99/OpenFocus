@@ -26,10 +26,12 @@ are independent of account sign-in and diagnostic reporting.
   Turning the setting off deletes the local ID and send timestamp and stops
   future reports; enabling it again creates a new ID. Closing the application
   also cancels future reports. A request already in flight may still complete.
-- **Optional account** — email, GitHub or Google sign-in uses your browser and
-  `account.openfocus.top`. The account service receives the verified email and
-  identity needed for sign-in. You can skip sign-in, sign out, or delete your
-  account. Authentication credentials are stored locally and are not included in
+- **Account** — desktop use requires an account. Sign in online once on each
+  device; the saved local session permits offline use until sign-out or removal.
+  A device that has never signed in cannot enter while offline. Email, GitHub or
+  Google sign-in uses your browser and `account.openfocus.top`. The account service
+  receives the verified email and identity needed for sign-in. You can sign out
+  or delete your account. Authentication credentials are stored locally and are not included in
   diagnostic reports. Signing out also requests server session revocation. If
   local credential removal fails, the account dialog reports incomplete cleanup
   and offers a retry; signing out in memory does not erase credentials on disk.

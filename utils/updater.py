@@ -35,6 +35,12 @@ def _beta_number(tag: str) -> Optional[int]:
     match = re.search(r"-beta\.([1-9][0-9]*)$", tag.strip())
     return int(match.group(1)) if match else None
 
+def is_beta(tag: str) -> bool:
+    """Recognize both actual beta tags and legacy numeric aliases."""
+    return isinstance(tag, str) and bool(
+        re.search(r"-beta\.[1-9][0-9]*$", tag)
+        or re.search(r"\.999999999\.[1-9][0-9]*$", tag))
+
 
 def is_newer(latest_tag: str, current_version: str) -> bool:
     latest = parse_version(latest_tag)
@@ -120,16 +126,22 @@ def find_installer_asset(release: dict) -> Optional[dict]:
     return None
 
 
-def fetch_latest_release() -> Tuple[bool, str, str, Optional[dict], Optional[dict], list]:
-    """Return the release, platform assets, and notes from one mirror request."""
-    data = _api_get(RELEASES_API_URL)
+def fetch_latest_release(include_beta: bool = False) -> Tuple[bool, str, str, Optional[dict], Optional[dict], list]:
+    """Return the selected release, platform assets, and notes."""
+    channel = "beta" if include_beta else "stable"
+    data = _api_get(f"{RELEASES_API_URL}?channel={channel}")
     tags = _release_tags(data)
     if tags is None:
         raise ValueError("Invalid update metadata")
     _, tag = tags
+    if not include_beta and (is_beta(tag) or is_beta(data.get("tag", ""))):
+        raise ValueError("Beta update returned for stable channel")
     releases = data.get("releases")
     if not isinstance(releases, list):
         releases = []
+    if not include_beta:
+        releases = [item for item in releases if isinstance(item, dict)
+                    and not is_beta(item.get("tag_name", ""))]
     return (True, tag, RELEASES_PAGE_URL, find_installer_asset(data),
             find_portable_zip_asset(data), releases)
 
@@ -388,7 +400,8 @@ def download_async(url: str, dest_path: str,
     threading.Thread(target=worker, daemon=True, name="update-download").start()
 
 
-def check_async(current_version: str, on_result: Callable[..., None], quiet: bool = False) -> None:
+def check_async(current_version: str, on_result: Callable[..., None], quiet: bool = False,
+                include_beta: bool = False) -> None:
     """Check for updates off-thread.
 
     on_result receives (state, tag, download_url) where state is:
@@ -406,7 +419,7 @@ def check_async(current_version: str, on_result: Callable[..., None], quiet: boo
 
     def worker():
         try:
-            ok, tag, url, asset, portable_zip, releases = fetch_latest_release()
+            ok, tag, url, asset, portable_zip, releases = fetch_latest_release(include_beta)
             if not ok:
                 raise ValueError("Invalid update metadata")
             setup_url = (asset or {}).get("url", "")

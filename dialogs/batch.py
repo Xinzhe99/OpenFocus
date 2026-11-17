@@ -500,8 +500,10 @@ class BatchProcessingDialog(QDialog):
         self.chk_sharpen_output.setToolTip(trans.t('chk_sharpen_output_hint'))
         options_layout.addWidget(self.chk_sharpen_output)
 
-        flat_row = QHBoxLayout()
-        flat_row.addWidget(QLabel(trans.t('dust_from_file')))
+        self.flat_field_group = QWidget()
+        flat_row = QHBoxLayout(self.flat_field_group)
+        flat_row.setContentsMargins(0, 0, 0, 0)
+        flat_row.addWidget(QLabel(f"{trans.t('dust_from_file')} ({trans.t('experimental_label')})"))
         self.flat_field_path = QLineEdit()
         self.flat_field_path.setPlaceholderText(trans.t('dust_no_file'))
         self.flat_field_path.setToolTip(trans.t('batch_flat_field_hint'))
@@ -510,7 +512,10 @@ class BatchProcessingDialog(QDialog):
         flat_browse = QPushButton(trans.t('dust_browse'))
         flat_browse.clicked.connect(self._browse_flat_field)
         flat_row.addWidget(flat_browse)
-        options_layout.addLayout(flat_row)
+        self.flat_field_group.setEnabled(experimental_enabled(self.parent_window))
+        if not experimental_enabled(self.parent_window):
+            self.flat_field_group.setToolTip(trans.t('experimental_locked_hint'))
+        options_layout.addWidget(self.flat_field_group)
 
         from ui.sensor_cleanup import SensorCleanupControls
         self.sensor_cleanup = SensorCleanupControls(
@@ -1398,7 +1403,8 @@ class BatchProcessingDialog(QDialog):
                 raise ValueError(combo.currentData(Qt.ItemDataRole.ToolTipRole) or '')
         if (not experimental_enabled(self.parent_window)
                 and (fusion_is_experimental(self.fusion_combo.currentData())
-                     or alignment_is_experimental(self.align_combo.currentData()))):
+                     or alignment_is_experimental(self.align_combo.currentData())
+                     or bool(self.flat_field_path.text().strip()))):
             raise ValueError(trans.t('experimental_locked_hint'))
         format_str = self.format_combo.currentText().lower()
         
@@ -1516,7 +1522,8 @@ class BatchProcessingDialog(QDialog):
                 or not selected_item_enabled(self.align_combo)
                 or (not experimental_enabled(self.parent_window)
                     and (fusion_is_experimental(self.fusion_combo.currentData())
-                         or alignment_is_experimental(self.align_combo.currentData())))):
+                         or alignment_is_experimental(self.align_combo.currentData())
+                         or bool(self.flat_field_path.text().strip())))):
             for combo in (self.fusion_combo, self.align_combo):
                 if not selected_item_enabled(combo):
                     QMessageBox.warning(self, trans.t('msg_error'),

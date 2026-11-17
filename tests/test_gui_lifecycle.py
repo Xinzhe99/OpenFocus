@@ -6,7 +6,7 @@ import subprocess
 import sys
 
 import pytest
-from tests.process_isolation import sandbox_env
+from tests.process_isolation import sandbox_env, seed_test_account
 
 pytest.importorskip("PyQt6")
 
@@ -21,6 +21,7 @@ def test_close_does_not_open_overdue_first_run_dialog(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENFOCUS_DATA_DIR", str(sentinel))
     env = sandbox_env(tmp_path, {"QT_QPA_PLATFORM": "offscreen"},
                       instance_name=f"OpenFocus-lifecycle-{os.getpid()}-{tmp_path.name}")
+    account_store = seed_test_account(env['OPENFOCUS_DATA_DIR'])
     if os.name != 'nt':
         # Exercise the real instance listener when even its short name would
         # exceed the Unix socket pathname limit under an isolated TMPDIR.
@@ -43,16 +44,6 @@ import webbrowser
 browser_calls = []
 webbrowser.open = lambda *args, **kwargs: browser_calls.append((args, kwargs)) or False
 
-original_account_exec = AccountDialog.exec
-def skip_account(dialog):
-    def skip_after_load():
-        if getattr(dialog.window_main, '_account_load_job', None) is not None:
-            QTimer.singleShot(10, skip_after_load)
-        else:
-            QTimer.singleShot(100, dialog.reject)
-    QTimer.singleShot(0, skip_after_load)
-    return original_account_exec(dialog)
-AccountDialog.exec = skip_account
 
 def fail_warning(parent, title, text, *args, **kwargs):
     raise RuntimeError(f"Unexpected startup warning: {title}: {text}")
@@ -120,6 +111,8 @@ assert not browser_calls, browser_calls
         )
     except subprocess.TimeoutExpired as exc:
         pytest.fail((exc.stderr or b'').decode('utf-8', 'replace'))
+    finally:
+        account_store.clear()
     assert result.returncode == 0, result.stdout + result.stderr
     assert not discovery.exists()
     assert {path.name: path.read_bytes() for path in sentinel.iterdir()} == {

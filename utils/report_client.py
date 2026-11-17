@@ -78,11 +78,30 @@ def _file_lock(directory, name, cancel=None, deadline=None):
                 break
         if not acquired or _cancelled(cancel, deadline):
             raise ReportError("Report operation cancelled")
-        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-        fd = os.open(directory / name, os.O_RDWR | os.O_CREAT, 0o600)
-        stream = os.fdopen(fd, "r+b", buffering=0)
-        if os.fstat(stream.fileno()).st_size == 0:
-            stream.write(b"\0")
+        # Windows can transiently deny concurrent first creation of either path.
+        def create_with_retry(operation):
+            for attempt in range(11):
+                if _cancelled(cancel, deadline):
+                    raise ReportError("Report operation cancelled")
+                try:
+                    return operation()
+                except PermissionError:
+                    if _cancelled(cancel, deadline):
+                        raise ReportError("Report operation cancelled")
+                    if os.name != "nt" or attempt == 10:
+                        raise
+                    if cancel is not None:
+                        cancel.wait(0.05)
+                    else:
+                        time.sleep(0.05)
+
+        create_with_retry(lambda: directory.mkdir(mode=0o700, parents=True, exist_ok=True))
+        fd = create_with_retry(lambda: os.open(directory / name, os.O_RDWR | os.O_CREAT, 0o600))
+        try:
+            stream = os.fdopen(fd, "r+b", buffering=0)
+        except BaseException:
+            os.close(fd)
+            raise
         while not _cancelled(cancel, deadline):
             try:
                 if os.name == "nt":
@@ -103,22 +122,31 @@ def _file_lock(directory, name, cancel=None, deadline=None):
                     time.sleep(0.05)
         if not locked:
             raise ReportError("Report operation cancelled")
+        if _cancelled(cancel, deadline):
+            raise ReportError("Report operation cancelled")
+        if os.fstat(stream.fileno()).st_size == 0:
+            stream.seek(0)
+            stream.write(b"\0")
         yield
     except OSError:
         raise ReportError("Could not lock report queue") from None
     finally:
-        if stream is not None:
-            if locked:
-                if os.name == "nt":
-                    import msvcrt
-                    stream.seek(0)
-                    msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
-                else:
-                    import fcntl
-                    fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
-            stream.close()
-        if acquired:
-            local.release()
+        try:
+            if stream is not None:
+                try:
+                    if locked:
+                        if os.name == "nt":
+                            import msvcrt
+                            stream.seek(0)
+                            msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+                        else:
+                            import fcntl
+                            fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+                finally:
+                    stream.close()
+        finally:
+            if acquired:
+                local.release()
 
 
 class ReportError(Exception):

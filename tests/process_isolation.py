@@ -1,5 +1,6 @@
 """Private environments and analytics injection for process tests."""
 import os
+from unittest.mock import patch
 
 
 def sandbox_env(tmp_path, overrides=None, *, instance_name=None):
@@ -22,6 +23,17 @@ def sandbox_env(tmp_path, overrides=None, *, instance_name=None):
         "TMPDIR": str(scratch),
     })
     return env
+
+def seed_test_account(root):
+    """Give an isolated GUI a synthetic account using its normal token store."""
+    from utils.account_client import TokenStore
+
+    with patch.dict(os.environ, {'OPENFOCUS_DATA_DIR': str(root)}):
+        store = TokenStore()
+        store.save({'token': 'test-session-token', 'token_type': 'Bearer',
+                    'expires_at': 9999999999, 'user': {'id': 'test-user'}})
+    return store
+
 
 
 def install_usage_sender():

@@ -1475,6 +1475,10 @@ class SourceManager(QObject):
         window.transform_manager.reset_roi_selection()
         self._refresh_source_count()
         self.decorate_source_items()
+        # Inclusion changes the processing revision but leaves the source
+        # frames in place. Replace any preview request invalidated by it.
+        if getattr(window, '_source_preview_workers', None):
+            window._start_source_previews()
         if hasattr(window, "_mark_project_dirty"):
             window._mark_project_dirty()
 

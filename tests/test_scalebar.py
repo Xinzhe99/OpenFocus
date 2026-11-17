@@ -388,6 +388,78 @@ def test_output_draft_keeps_stack_calibration(qapp):
     assert record.scale_bar_initialized
     host.deleteLater()
 
+@pytest.mark.parametrize("mode, stack_metadata, output_metadata, expected_stack, expected_output", [
+    ("manual", None, None, 1.0, 2.0),
+    ("metadata", 0.8, 1.2, 0.8, 1.2),
+])
+def test_all_target_applies_calibration_in_each_scope(
+        qapp, monkeypatch, mode, stack_metadata, output_metadata,
+        expected_stack, expected_output):
+    from types import SimpleNamespace
+    from dialogs.scalebar import ScaleBarDialog
+    from utils import scalebar
+
+    image = np.zeros((240, 400, 3), np.uint8)
+    record = SimpleNamespace(
+        kind="fusion", label="result", image=image, output_id="result",
+        context=SimpleNamespace(source_px_um=output_metadata, source_scale_factor=0.25),
+        scale_bar_config=None, scale_bar_initialized=False, annotations_baked=False)
+    host = _scale_dialog_host(image)
+    host.scale_bar_target = "all"
+    host.scale_um_per_px_manual = 0.0
+    host.current_scale_factor = 0.5
+    host.source_px_um = stack_metadata
+    host.output_manager = SimpleNamespace(record_for_row=lambda _: record,
+                                          record_for_item=lambda _: record)
+    host.output_list = SimpleNamespace(count=lambda: 1, currentItem=lambda: object())
+    stack_calibrations = []
+    draw = scalebar.draw_scale_bar_ex
+
+    def capture_stack(image, **kwargs):
+        if image.shape[:2] == (1, 1):
+            stack_calibrations.append(kwargs["px_um"])
+        return draw(image, **kwargs)
+
+    monkeypatch.setattr(scalebar, "draw_scale_bar_ex", capture_stack)
+    dialog = ScaleBarDialog(host)
+    dialog.mode_combo.setCurrentIndex(dialog.mode_combo.findData(mode))
+    if mode == "manual":
+        dialog.px_spin.setValue(0.5)
+    _preview_scale(qapp, dialog)
+    assert dialog._ok_button.isEnabled()
+    assert stack_calibrations[-1] == pytest.approx(expected_stack)
+    assert dialog.effective_px_um() == pytest.approx(expected_output)
+    dialog._save_and_accept()
+    _wait_scale(qapp, lambda: dialog._pixel_worker is None and dialog._region_worker is None)
+    assert scalebar.effective_px_um(host) == pytest.approx(expected_stack)
+    assert record.scale_bar_config["px_um"] == pytest.approx(expected_output)
+    assert record.scale_bar_config["mode"] == mode
+    host.deleteLater()
+
+
+def test_all_target_reports_missing_stack_metadata(qapp):
+    from types import SimpleNamespace
+    from dialogs.scalebar import ScaleBarDialog
+    from locales import trans
+
+    image = np.zeros((240, 400, 3), np.uint8)
+    record = SimpleNamespace(
+        kind="fusion", label="result", image=image, output_id="result",
+        context=SimpleNamespace(source_px_um=1.2, source_scale_factor=0.25),
+        scale_bar_config=None, annotations_baked=False)
+    host = _scale_dialog_host(image)
+    host.scale_bar_target = "all"
+    host.scale_um_per_px_manual = 0.0
+    host.output_manager = SimpleNamespace(record_for_row=lambda _: record,
+                                          record_for_item=lambda _: record)
+    host.output_list = SimpleNamespace(count=lambda: 1, currentItem=lambda: object())
+    dialog = ScaleBarDialog(host)
+    _preview_scale(qapp, dialog)
+    assert not dialog._ok_button.isEnabled()
+    assert dialog._error.text() == trans.t("scalebar_not_calibrated")
+    _close_scale(qapp, dialog)
+    host.deleteLater()
+
 @pytest.mark.parametrize("failure", ["prepare", "persist", "undo"])
 def test_scale_commit_failure_restores_state_and_history(qapp, monkeypatch, failure):
     from dialogs.scalebar import ScaleBarDialog

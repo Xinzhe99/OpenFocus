@@ -22,7 +22,7 @@ from core.control.protocol import (
 )
 from core.control.server import ControlServer
 from utils.image_utils import imwrite_auto
-from tests.process_isolation import sandbox_env
+from tests.process_isolation import sandbox_env, seed_test_account
 
 
 @pytest.fixture
@@ -326,6 +326,16 @@ def test_settings_data_override_bypasses_portable_store(tmp_path, monkeypatch):
 
 def test_private_tool_launches_isolate_settings_and_instances(tmp_path, monkeypatch):
     from core.control.client import tool_session
+    from core.control import client as control_client
+
+    launch = control_client.launch_gui
+    stores = []
+
+    def launch_with_account(*args, **kwargs):
+        stores.append(seed_test_account(kwargs['env']['OPENFOCUS_DATA_DIR']))
+        return launch(*args, **kwargs)
+
+    monkeypatch.setattr(control_client, 'launch_gui', launch_with_account)
 
     real_root = tmp_path / "real"
     real_root.mkdir()
@@ -359,6 +369,8 @@ def test_private_tool_launches_isolate_settings_and_instances(tmp_path, monkeypa
                 session.call("app.quit", {"force": True}, timeout=10)
             finally:
                 session.close()
+        for store in stores:
+            store.clear()
 
 
 def test_default_gui_launch_and_cross_process_client(tmp_path, monkeypatch):
@@ -375,6 +387,7 @@ def test_default_gui_launch_and_cross_process_client(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENFOCUS_DATA_DIR", str(sentinel))
     env = sandbox_env(tmp_path, {"QT_QPA_PLATFORM": "offscreen"},
                       instance_name=f"OpenFocus-test-{os.getpid()}-{time.monotonic_ns()}")
+    account_store = seed_test_account(env['OPENFOCUS_DATA_DIR'])
     env.pop("OPENFOCUS_CONTROL", None)
     env["PYTHONPATH"] = os.pathsep.join(filter(None, (
         site.getusersitepackages(), env.get("PYTHONPATH"),
@@ -429,7 +442,7 @@ try:
     assert session.call("ping")["pong"] is True
     deadline = time.monotonic() + 10
     context = session.call("ui.context")
-    while not any(dialog["class"] == "AccountDialog"
+    while not any(dialog["class"] == "WelcomeDialog"
                   and dialog["visible"] and dialog["modal"]
                   for dialog in context["dialogs"]):
         assert time.monotonic() < deadline, context
@@ -455,6 +468,7 @@ finally:
             gui.kill()
             gui.wait(timeout=10)
         log.close()
+        account_store.clear()
 
 
 def test_stack_method_render_export_and_project(server, stack_frames, tmp_path):
@@ -1580,6 +1594,16 @@ def test_stack_include_uses_the_checkbox_path(server, control_window):
     control_window.image_filenames = []
 
 
+def test_dust_dialog_requires_experimental_opt_in(server, control_window):
+    control_window.experimental_features = False
+    response = call(server, 'dialog.open', name='dust')
+    assert response['error']['code'] == 'invalid_argument'
+
+    control_window.experimental_features = True
+    assert call(server, 'dialog.open', name='dust')['result']['opened']
+    call(server, 'dialog.reject')
+
+
 def test_dialog_open_reuses_the_managed_instance(server):
     first = call(server, "dialog.open", name="depth")["result"]
     assert first["opened"] is True
@@ -2258,6 +2282,45 @@ def test_native_picker_blocks_control_reentry(server, control_window, monkeypatc
         file_dialogs.FileDialog.getOpenFileName(control_window, 'File')
     assert [response['error']['code'] for response in responses] == ['busy', 'busy']
     assert not file_dialogs.native_picker_active()
+
+
+def test_retouch_reports_busy_while_loading_source(server, qapp, monkeypatch):
+    import threading
+    from PyQt6.QtTest import QTest
+    from dialogs.retouch import _SourceWorker
+    from tests.test_retouch import _dialog, _wait_for_source
+
+    dialog, _ = _dialog(qapp)
+    entered, release = threading.Event(), threading.Event()
+    original = _SourceWorker.run
+
+    def delayed(worker):
+        entered.set()
+        if release.wait(5):
+            original(worker)
+
+    monkeypatch.setattr(_SourceWorker, 'run', delayed)
+    monkeypatch.setattr(server, '_retouch_dialog', lambda: dialog)
+    try:
+        assert call(server, 'dialog.open', name='retouch')['result']['opened']
+        dialog._select_frame(1)
+        for _ in range(500):
+            if entered.is_set():
+                break
+            QTest.qWait(10)
+        assert entered.is_set()
+        entries = call(server, 'dialog.list')['result']['dialogs']
+        retouch = next(item for item in entries if item['class'] == 'RetouchDialog')
+        assert retouch['busy']
+        assert call(server, 'dialog.accept', index=retouch['index'])['error']['code'] == 'busy'
+        release.set()
+        _wait_for_source(qapp, dialog)
+        entries = call(server, 'dialog.list')['result']['dialogs']
+        assert not next(item for item in entries if item['class'] == 'RetouchDialog')['busy']
+    finally:
+        release.set()
+        dialog._allow_close = True
+        dialog.close()
 
 
 def test_retouch_managed_dialog_can_reopen_after_deletion(server, qapp, monkeypatch):

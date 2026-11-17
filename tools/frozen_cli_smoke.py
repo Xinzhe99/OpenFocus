@@ -514,30 +514,17 @@ def run_installed_startup(executable: Path) -> None:
                 account = next((d for d in dialogs if d.get("class") == "AccountDialog"), None)
                 if account:
                     buttons = _call(executable, environment, "ui.find", "--window",
-                                    account["root"], "--object-name", "accountSkip").get("matches", [])
+                                    account["root"], "--object-name", "accountClose").get("matches", [])
                     if buttons:
                         _call(executable, environment, "ui.click", "--path", buttons[0]["path"])
-                    continue
-                welcome = next((d for d in dialogs if d.get("class") == "WelcomeDialog"), None)
-                if welcome:
-                    break
+                        break
                 time.sleep(0.2)
             else:
-                raise RuntimeError(f"First-run welcome dialog did not appear: {dialogs}")
-            for control_class in ("QCheckBox", "QRadioButton"):
-                choices = _call(executable, environment, "ui.find", "--window",
-                                welcome["root"], "--class", control_class).get("matches", [])
-                if choices:
-                    raise RuntimeError(f"Unexpected first-run consent choice: {choices}")
-            _call(executable, environment, "dialog.accept", "--index", str(welcome["index"]))
-            context = _call(executable, environment, "ui.context")
-            if context.get("level") != "main":
-                raise RuntimeError(f"Installed desktop did not reach its main window: {context}")
-            _call(executable, environment, "app.quit", "--force")
+                raise RuntimeError(f"Required account dialog did not appear: {dialogs}")
             process.wait(timeout=60)
             if process.returncode:
                 raise RuntimeError(f"Installed desktop exited with {process.returncode}")
-            print(f"Installed first-run desktop smoke passed: {app_display_version()}")
+            print(f"Installed first-run account gate smoke passed: {app_display_version()}")
         finally:
             if process.poll() is None:
                 process.terminate()
