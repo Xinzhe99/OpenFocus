@@ -136,8 +136,8 @@ def total_memory_bytes() -> int:
     return system_memory_bytes()[1]
 
 
-def _process_counters():
-    """Win32 PROCESS_MEMORY_COUNTERS for this process, or None."""
+def _process_counters(extended=False):
+    """Win32 process memory counters for this process, or None."""
     import ctypes
     from ctypes import wintypes
 
@@ -154,9 +154,14 @@ def _process_counters():
             ("PagefileUsage", ctypes.c_size_t),
             ("PeakPagefileUsage", ctypes.c_size_t),
         ]
+    counter_type = PROCESS_MEMORY_COUNTERS
+    if extended:
+        class PROCESS_MEMORY_COUNTERS_EX(PROCESS_MEMORY_COUNTERS):
+            _fields_ = [("PrivateUsage", ctypes.c_size_t)]
+        counter_type = PROCESS_MEMORY_COUNTERS_EX
 
-    counters = PROCESS_MEMORY_COUNTERS()
-    counters.cb = ctypes.sizeof(PROCESS_MEMORY_COUNTERS)
+    counters = counter_type()
+    counters.cb = ctypes.sizeof(counter_type)
     # GetCurrentProcess must be typed: its pseudo-handle is -1, and without an
     # explicit restype ctypes truncates it to a 32-bit int, the call fails and
     # every memory reading silently came back as 0.
@@ -166,13 +171,52 @@ def _process_counters():
     # argtypes are required as well: without them ctypes passes the 64-bit
     # pseudo-handle as a 32-bit int and the call fails silently.
     psapi.GetProcessMemoryInfo.argtypes = [
-        wintypes.HANDLE, ctypes.POINTER(PROCESS_MEMORY_COUNTERS),
+        wintypes.HANDLE, ctypes.POINTER(counter_type),
         wintypes.DWORD]
     psapi.GetProcessMemoryInfo.restype = wintypes.BOOL
     handle = kernel32.GetCurrentProcess()
     ok = psapi.GetProcessMemoryInfo(handle, ctypes.byref(counters),
                                     counters.cb)
     return counters if ok else None
+
+
+def failure_memory_snapshot():
+    """Available Windows memory counters; omit readings that cannot be obtained."""
+    if sys.platform != 'win32':
+        return {}
+    import ctypes
+    from ctypes import wintypes
+
+    class PERFORMANCE_INFORMATION(ctypes.Structure):
+        _fields_ = [('cb', wintypes.DWORD)] + [
+            (name, ctypes.c_size_t) for name in (
+                'CommitTotal', 'CommitLimit', 'CommitPeak', 'PhysicalTotal',
+                'PhysicalAvailable', 'SystemCache', 'KernelTotal',
+                'KernelPaged', 'KernelNonpaged', 'PageSize')
+        ] + [(name, wintypes.DWORD) for name in (
+            'HandleCount', 'ProcessCount', 'ThreadCount')]
+
+    result = {}
+    try:
+        info = PERFORMANCE_INFORMATION()
+        info.cb = ctypes.sizeof(info)
+        psapi = ctypes.WinDLL('psapi', use_last_error=True)
+        psapi.GetPerformanceInfo.argtypes = [ctypes.POINTER(PERFORMANCE_INFORMATION), wintypes.DWORD]
+        psapi.GetPerformanceInfo.restype = wintypes.BOOL
+        if psapi.GetPerformanceInfo(ctypes.byref(info), info.cb) and info.PageSize:
+            result.update(commit_total_bytes=int(info.CommitTotal * info.PageSize),
+                          commit_limit_bytes=int(info.CommitLimit * info.PageSize),
+                          available_ram_bytes=int(info.PhysicalAvailable * info.PageSize))
+    except Exception:
+        pass
+    try:
+        counters = _process_counters(extended=True)
+        if counters is not None:
+            result.update(private_commit_bytes=int(counters.PrivateUsage),
+                          working_set_bytes=int(counters.WorkingSetSize))
+    except Exception:
+        pass
+    return {key: value for key, value in result.items() if 0 <= value <= sys.maxsize}
 
 
 def process_rss_bytes() -> int:
