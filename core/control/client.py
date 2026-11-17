@@ -365,8 +365,10 @@ def tool_session(timeout=60.0, launch=False, allow_existing=False,
         env["OPENFOCUS_CONTROL_FILE"] = str(root / "control.json")
         env["OPENFOCUS_INSTANCE_NAME"] = f"OpenFocus-tool-instance-{root.name}"
         env.pop("OPENFOCUS_LOG_DIR", None)
-        discovery = launch_gui(f"OpenFocus-tool-control-{root.name}",
-                               timeout=launch_timeout, env=env)
+        socket_name = f"OpenFocus-tool-control-{root.name}"
+        if os.name == 'posix':
+            socket_name = f"/tmp/ofc-{root.name}"
+        discovery = launch_gui(socket_name, timeout=launch_timeout, env=env)
         return Session(discovery=discovery, timeout=timeout)
     if not allow_existing and discovery_path().exists():
         raise ControlError(

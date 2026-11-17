@@ -31,6 +31,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   choosing another method or retrying cancels the previous attempt and ignores
   its late callbacks.
 - Wait for asynchronous image progress dialogs in the menu action sweep.
+- Keep private control sockets within Unix path length limits.
 - Honor cancellation after the final linear RAW header is read, before memory
   admission, and ignore native crash headers embedded in exception text.
 - Apply watermark changes and keep source and output scale-bar calibration
