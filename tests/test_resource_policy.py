@@ -65,8 +65,8 @@ def test_affinity_and_fractional_quota_limit_all_preferences():
 
 def test_ram_only_admission_tracks_lost_and_unknown_memory(monkeypatch):
     available = iter((8 * GiB, 0, policy.RESERVE_BYTES // 2))
-    monkeypatch.setattr(memory, 'system_memory_bytes',
-                        lambda: (next(available), 16 * GiB))
+    monkeypatch.setattr(memory, 'admission_memory_bytes',
+                        lambda: (next(available), 16 * GiB, None))
     monkeypatch.setattr(memory, 'process_rss_bytes', lambda: GiB)
     required = 64 * 1024 ** 2
     assert policy.require_memory(required, policy.probe_memory()) >= required
@@ -83,6 +83,46 @@ def test_memory_probe_reads_the_os_once(monkeypatch):
     monkeypatch.setattr(memory, "process_rss_bytes", lambda: 0)
     snapshot = policy.probe_memory()
     assert (snapshot.available_ram, snapshot.total_ram, len(calls)) == (GiB, 4 * GiB, 1)
+
+
+def test_windows_commit_limit_caps_admission_without_changing_physical_reading(monkeypatch):
+    status = SimpleNamespace(ullAvailPhys=8 * GiB, ullTotalPhys=16 * GiB,
+                             ullAvailPageFile=GiB)
+    monkeypatch.setattr(memory.sys, 'platform', 'win32')
+    monkeypatch.setattr(memory, '_windows_memory_status', lambda: status)
+    monkeypatch.setattr(memory, 'process_rss_bytes', lambda: 0)
+    events = []
+    monkeypatch.setattr(policy, 'log_action', lambda name, **fields: events.append((name, fields)))
+
+    snapshot = policy.probe_memory()
+    assert memory.system_memory_bytes() == (8 * GiB, 16 * GiB)
+    assert snapshot.commit_headroom == GiB
+    assert policy.ram_ceiling(snapshot) == GiB
+    assert policy.require_memory(GiB // 2, snapshot) >= GiB // 2
+    with pytest.raises(policy.ResourceLimitError, match='Insufficient memory'):
+        policy.require_memory(2 * GiB, snapshot)
+    assert events[-1][1]['available_commit_bytes'] == GiB
+
+    status.ullAvailPageFile = 0
+    exhausted = policy.probe_memory()
+    assert exhausted.commit_headroom == 0
+    with pytest.raises(policy.ResourceLimitError, match='Insufficient memory'):
+        policy.require_memory(1, exhausted)
+
+
+def test_child_budget_tightens_for_commit_without_widening(monkeypatch):
+    admitted = _snapshot(commit_headroom=4 * GiB)
+    monkeypatch.setattr(policy, 'probe_memory', lambda: _snapshot(commit_headroom=2 * GiB))
+    reduced = policy.make_process_budget(snapshot=admitted)
+    assert reduced.maximum_ram == 2 * GiB
+    assert reduced.comfortable_ram == int(policy.BUDGET_RATIO * 2 * GiB)
+
+    monkeypatch.setattr(policy, 'probe_memory', lambda: _snapshot(commit_headroom=8 * GiB))
+    assert policy.make_process_budget(snapshot=admitted).maximum_ram == 4 * GiB
+    monkeypatch.setattr(policy, 'probe_memory', lambda: _snapshot())
+    assert policy.make_process_budget(snapshot=admitted).maximum_ram == 4 * GiB
+    monkeypatch.setattr(policy, 'probe_memory', lambda: _snapshot(commit_headroom=GiB))
+    assert policy.make_process_budget(snapshot=_snapshot()).maximum_ram == GiB
 
 
 def test_ram_only_admission_does_not_query_cpu_topology(monkeypatch):

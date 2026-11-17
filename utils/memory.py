@@ -13,8 +13,8 @@ import os
 import sys
 
 
-def _windows_memory():
-    """(available_bytes, total_bytes) via the Win32 GlobalMemoryStatusEx."""
+def _windows_memory_status():
+    """Return one Win32 physical and commit-memory reading."""
     import ctypes
 
     class MEMORYSTATUSEX(ctypes.Structure):
@@ -34,9 +34,12 @@ def _windows_memory():
     stat.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
     if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat)):
         raise OSError("GlobalMemoryStatusEx failed")
-    # "Available" must be the physical figure: the page-file numbers include
-    # disk-backed virtual memory, and allocating into that is what makes a
-    # fusion appear to hang while the machine swaps.
+    return stat
+
+
+def _windows_memory():
+    stat = _windows_memory_status()
+    # Public memory readings remain physical; admission also checks commit.
     return int(stat.ullAvailPhys), int(stat.ullTotalPhys)
 
 
@@ -125,6 +128,18 @@ def system_memory_bytes():
         return _posix_memory()
     except Exception:
         return 0, 0
+
+
+def admission_memory_bytes():
+    """Return available/total physical bytes and optional commit headroom."""
+    try:
+        if sys.platform == "win32":
+            stat = _windows_memory_status()
+            return int(stat.ullAvailPhys), int(stat.ullTotalPhys), int(stat.ullAvailPageFile)
+        available, total = system_memory_bytes()
+        return available, total, None
+    except Exception:
+        return 0, 0, None
 
 
 def available_memory_bytes() -> int:
