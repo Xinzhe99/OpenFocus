@@ -346,7 +346,6 @@ def test_ecc_preparation_and_estimation_share_budget(monkeypatch, workers):
     estimate_started = Event()
     prepare_overlap = Event()
     original_blur = cv2.GaussianBlur
-    calls = 0
 
     def enter():
         nonlocal active, peak
@@ -360,12 +359,11 @@ def test_ecc_preparation_and_estimation_share_budget(monkeypatch, workers):
             active -= 1
 
     def blur(*args, **kwargs):
-        nonlocal calls
         enter()
         try:
-            calls += 1
-            if calls == 3 and workers > 1:
-                assert estimate_started.wait(3)
+            # Frame 2 can overlap estimation of the already prepared pair 0–1.
+            if workers > 1 and args[0][0, 0] == 2:
+                assert estimate_started.wait(10)
                 prepare_overlap.set()
             sleep(0.005)
             return original_blur(*args, **kwargs)
@@ -377,13 +375,15 @@ def test_ecc_preparation_and_estimation_share_budget(monkeypatch, workers):
         try:
             estimate_started.set()
             if workers > 1:
-                assert prepare_overlap.wait(3)
+                assert prepare_overlap.wait(10)
             sleep(0.01)
             return 1.0, matrix
         finally:
             leave()
 
     frames = _stack(8)
+    for index, frame in enumerate(frames):
+        frame[0, 0] = index
     monkeypatch.setattr(cv2, 'GaussianBlur', blur)
     monkeypatch.setattr(cv2, 'findTransformECC', estimate)
     result = registration._align_ecc_impl(frames, thread_count=workers, defer_warps=True)
