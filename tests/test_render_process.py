@@ -154,6 +154,53 @@ def test_isolated_render_reports_preparation_after_admission(qapp, monkeypatch):
     assert messages == [('stage', 'prepare')]
 
 
+def test_spawn_failure_reports_pending_dispatch_and_releases_worker(qapp, scratch, monkeypatch, caplog):
+    import logging
+    from threading import Event
+    from types import SimpleNamespace
+    from core import render_process
+
+    real_context = render_process.multiprocessing.get_context('spawn')
+    entered, release = Event(), Event()
+    closed = []
+    private_detail = 'private/source-video.mp4'
+
+    class BlockedProcess:
+        pid = None
+
+        def start(self):
+            entered.set()
+            release.wait()
+            raise OSError(private_detail)
+
+        def close(self):
+            closed.append(True)
+
+    context = SimpleNamespace(Event=real_context.Event, Pipe=real_context.Pipe,
+                              Process=lambda **kwargs: BlockedProcess())
+    monkeypatch.setattr(render_process.multiprocessing, 'get_context', lambda method: context)
+    caplog.set_level(logging.INFO, logger='openfocus')
+    worker = render_process.RenderProcessWorker([], algorithm=None, need_fusion=False)
+    results, errors = _start(worker)
+    try:
+        assert entered.wait(5)
+        dispatch = [r for r in caplog.records
+                    if getattr(r, 'event', '').startswith('render_dispatch.')]
+        assert any(r.event == 'render_dispatch.spawn_started' for r in dispatch)
+        assert not any(r.event == 'render_dispatch.spawn_completed' for r in dispatch)
+        assert worker.isRunning()
+    finally:
+        release.set()
+        _wait(worker, qapp)
+    assert not results and errors == [private_detail]
+    assert closed and not worker.isRunning()
+    dispatch = [r for r in caplog.records
+                if getattr(r, 'event', '').startswith('render_dispatch.')]
+    assert not any(r.event == 'render_dispatch.spawn_completed' for r in dispatch)
+    assert all(r.getMessage().endswith(' {}') for r in dispatch)
+    assert all(private_detail not in r.getMessage() for r in dispatch)
+
+
 def test_relay_keeps_stage_order_and_first_progress_per_stage(monkeypatch):
     from core import render_process
 
@@ -265,7 +312,8 @@ def test_child_error_event_and_user_message(qapp, scratch, monkeypatch, target, 
 
     events = []
     monkeypatch.setattr(render_process, '_render_child', target)
-    monkeypatch.setattr(render_process, 'log_action', lambda event, **fields: events.append((event, fields)))
+    monkeypatch.setattr(render_process, 'log_action', lambda event, **fields:
+                        events.append((event, fields)) if event == 'render_child_error' else None)
     worker = render_process.RenderProcessWorker([], algorithm=None, need_fusion=False)
     results, errors = _start(worker)
     _wait(worker, qapp)
@@ -318,7 +366,8 @@ def test_failed_render_preserves_parent_cache_and_cleans_child_scratch(
 
     monkeypatch.setattr(frame_storage, 'open_frame', record_open)
     monkeypatch.setattr(render_process, '_cleanup_files', record_cleanup)
-    monkeypatch.setattr(render_process, 'log_action', lambda event, **fields: events.append((event, fields)))
+    monkeypatch.setattr(render_process, 'log_action', lambda event, **fields:
+                        events.append((event, fields)) if event == 'render_child_error' else None)
     monkeypatch.setattr(render_process.logger, 'warning', record_warning)
     frames = _sources(tmp_path)
     with monkeypatch.context() as patch:
