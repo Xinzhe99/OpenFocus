@@ -598,3 +598,16 @@ def test_render_worker_keeps_openfocus_whole_with_shared_tile_settings(qapp, mon
                         lambda *args, **kwargs: pytest.fail('OpenFocus GUI render tiled'))
     actual, device = worker._run_fusion(frames)
     assert actual.shape == frames[0].shape and device == 'CPU'
+
+
+def test_render_worker_reports_openfocus_c_actual_device(qapp, monkeypatch):
+    from fusion_methods import _openfocus_gpu
+    if not _openfocus_gpu.gpu_available():
+        pytest.skip('No OpenCL GPU is available')
+    monkeypatch.setattr(_openfocus_gpu, '_free_vram',
+                        lambda device: (int(device.global_mem_size),
+                                        int(device.global_mem_size)))
+    frames = [np.full((24, 32, 3), value, np.uint8) for value in (31, 123)]
+    worker = workers.RenderWorker(frames, algorithm='openfocus_c', use_gpu=True)
+    _, reported_device = worker._run_fusion(frames)
+    assert reported_device.startswith('OpenCL: ')

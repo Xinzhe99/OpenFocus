@@ -391,7 +391,8 @@ class MultiFocusFusion:
                                 blend_smoothing=kwargs.get('smoothing', 4.) * .6,
                                 should_cancel=kwargs.get('should_cancel'),
                                 progress_callback=kwargs.get('progress_callback'),
-                                use_gpu=self.use_gpu)
+                                use_gpu=self.use_gpu,
+                                device_callback=self._record_openfocus_device)
 
     # ------------------------------------------------------------------
     # 基底校正（消除亮度漂移）
@@ -598,7 +599,7 @@ class MultiFocusFusion:
 
     def _validate_spatial_environment(self) -> None:
         """验证空间域融合依赖"""
-        if self.use_gpu and self.algorithm != 'openfocus_b':
+        if self.use_gpu and self.algorithm not in ('openfocus_b', 'openfocus_c'):
             print(f"Note: {self.descriptor.display_name} fusion runs on CPU only; switching to CPU mode.")
             self.use_gpu = False
 
@@ -2006,7 +2007,7 @@ class MultiFocusFusion:
             if kind is None:
                 kind = 'N/A'
             device_name = neural_runtime.display_name(kind)
-        elif self.algorithm == 'openfocus_b':
+        elif self.algorithm in ('openfocus_b', 'openfocus_c'):
             device_name = self._actual_device or 'CPU'
         else:
             device_name = 'CPU'

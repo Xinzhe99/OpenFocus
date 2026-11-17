@@ -238,7 +238,8 @@ def openfocus_b_impl(input_source, img_resize=None, kernel_size: int = 17,
 @execution_job
 def openfocus_c_impl(input_source, img_resize=None, thread_count: int = None,
                      blend_smoothing: float = 2.4, should_cancel=None,
-                     progress_callback=None, use_gpu: bool = False):
+                     progress_callback=None, use_gpu: bool = False,
+                     device_callback=None):
     """Fuse source frames using a streaming weighted detail pyramid."""
     from core import source_frames
     from fusion_methods._openfocus_pyramid import fuse_pyramid
@@ -246,17 +247,33 @@ def openfocus_c_impl(input_source, img_resize=None, thread_count: int = None,
     frames, shape = _inputs(input_source, img_resize, should_cancel)
     configure_rows(frames, img_resize, 'openfocus_c', thread_count, should_cancel)
     smoothing = 2.4 if blend_smoothing is None else float(blend_smoothing)
+    if progress_callback is not None:
+        callback = progress_callback
+        reported = -1
+        def progress_callback(index, total):
+            nonlocal reported
+            if index > reported:
+                callback(index, total)
+                reported = index
     try:
         if use_gpu:
             from fusion_methods._openfocus_gpu import GpuError, log_fallback
             from fusion_methods._openfocus_gpu_c import GpuC
             try:
-                return GpuC().fuse(frames, shape, img_resize,
-                                   smoothing * (5.0 / 3.0),
-                                   should_cancel, progress_callback)
+                gpu = GpuC()
+                result = gpu.fuse(frames, shape, img_resize,
+                                  smoothing * (5.0 / 3.0),
+                                  should_cancel, progress_callback)
+                if device_callback is not None:
+                    device_callback(gpu.device_name)
+                return result
             except GpuError as exc:
                 log_fallback(exc)
-        return fuse_pyramid(frames, shape, img_resize, smoothing * (5.0 / 3.0),
-                            should_cancel, progress_callback)
+                gpu = None
+        result = fuse_pyramid(frames, shape, img_resize, smoothing * (5.0 / 3.0),
+                              should_cancel, progress_callback)
+        if device_callback is not None:
+            device_callback('CPU')
+        return result
     finally:
         source_frames.SOURCE_CACHE.clear()

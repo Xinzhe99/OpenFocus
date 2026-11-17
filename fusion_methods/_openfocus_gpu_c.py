@@ -172,15 +172,15 @@ class GpuC:
     """Device-resident C pyramid fusion; mirrors fuse_pyramid step for step."""
 
     def __init__(self):
+        from fusion_methods._openfocus_gpu import GpuError, _FILTER_K, _device
         try:
             import pyopencl as cl
-            from fusion_methods._openfocus_gpu import (
-                GpuError, _FILTER_K, _device, _device_lock)
             device = _device(cl)
             if device is None:
                 raise GpuError('No available OpenCL GPU')
             self.cl = cl
             self.device = device
+            self.device_name = 'OpenCL: ' + str(device.name).strip()
             self.ctx = cl.Context(devices=[device])
             self.q = cl.CommandQueue(self.ctx, device=device)
             self.mf = cl.mem_flags
@@ -260,12 +260,28 @@ class GpuC:
                       np.int32(parity), np.int32(c))
     def fuse(self, frames, shape, img_resize, smoothing,
              should_cancel=None, progress_callback=None):
-        from fusion_methods._openfocus_gpu import _device_lock
+        from fusion_methods._openfocus_gpu import GpuError, _device_lock
+
+        class CallbackFailure(BaseException):
+            pass
+
+        def progress(index, total):
+            try:
+                progress_callback(index, total)
+            except BaseException as exc:
+                raise CallbackFailure() from exc
+
         while not _device_lock.acquire(timeout=0.1):
             _check_cancel(should_cancel)
         try:
-            return self._fuse_locked(frames, shape, img_resize, smoothing,
-                                     should_cancel, progress_callback)
+            try:
+                return self._fuse_locked(frames, shape, img_resize, smoothing,
+                                         should_cancel,
+                                         progress if progress_callback is not None else None)
+            except CallbackFailure as exc:
+                raise exc.__cause__
+            except self.cl.Error as exc:
+                raise GpuError('OpenCL GPU C execution failed') from exc
         finally:
             _device_lock.release()
 
@@ -286,15 +302,35 @@ class GpuC:
         if progress_callback is not None:
             progress_callback(0, total)
         parameter = np.float32(max(0.0, (float(smoothing) - 1.0) / 5.0))
-        # Conservative device budget: ~7 float planes + 8 uint16 planes per level.
-        need = 0
-        for h, w in levels:
-            need += h * w * (channels * 4 * 7 + 2 * 8)
+        from dataclasses import replace
+        from core import resource_policy
+        from core.multi_focus_fusion import memory_budget_bytes
+        from core.source_frames import frame_resolution_bytes, source_cache_growth_bytes
+        from fusion_methods._openfocus_gpu import GpuError, _free_vram
+
+        snapshot = resource_policy.probe_resources()
+        host_budget = min(int(memory_budget_bytes()),
+                          int(resource_policy.frame_ram_budget(snapshot)))
+        staging = (height * width * channels * (2 + (1 if is_u8 else 4))
+                   + max((frame_resolution_bytes(frame) for frame in frames), default=0)
+                   + source_cache_growth_bytes(frames) + 16 * 1024 * 1024)
+        if staging > host_budget:
+            raise GpuError('OpenFocus C GPU staging exceeds the host memory budget')
+        # Includes all cached pyramid planes, input/output buffers and context headroom.
+        need = sum(h * w * (channels * 4 * 8 + 2 * 4) for h, w in levels)
+        need += height * width * channels * 6 + 16 * 1024 * 1024
         limit = int(self.device.global_mem_size) // 2
+        if self.device.host_unified_memory:
+            limit = min(limit, host_budget - staging)
+        else:
+            memory = _free_vram(self.device)
+            if memory is None:
+                raise GpuError('OpenFocus C GPU free memory is unknown')
+            snapshot = replace(snapshot, free_vram=memory[0], total_vram=memory[1])
+            limit = min(limit, resource_policy.vram_budget(snapshot))
         single = int(self.device.max_mem_alloc_size)
-        level0 = levels[0][0] * levels[0][1] * channels * 4
+        level0 = height * width * channels * 4
         if need > limit or level0 > single:
-            from fusion_methods._openfocus_gpu import GpuError
             raise GpuError('OpenFocus C GPU workspace exceeds the device budget')
 
 
@@ -302,8 +338,6 @@ class GpuC:
         for h, w in levels:
             acc = self._plane(('acc', h, w, channels), h, w, channels)
             best = self._u16(h, w)
-            self.cl.enqueue_copy(self.q, acc, np.zeros(h * w * channels, np.float32))
-            self.cl.enqueue_copy(self.q, best, np.zeros(h * w, np.uint16))
             accumulators.append(acc)
             maxima.append(best)
 
@@ -357,6 +391,8 @@ class GpuC:
                           accumulators[level], maxima[level],
                           np.int32(1 if index == 0 else 0),
                           np.int32(w), np.int32(h), np.int32(c))
+            # Bound queued frame uploads to one source, even for very deep stacks.
+            self.q.finish()
             if progress_callback is not None:
                 progress_callback(index + 1, total)
 
