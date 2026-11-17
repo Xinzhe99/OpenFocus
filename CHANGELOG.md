@@ -31,6 +31,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   transforms, cropping and output pixels are unchanged.
 
 ### Fixed
+- Release the heavy-job lock if a wait diagnostic fails, so later renders and
+  stack loads can continue.
 - Bound Windows memory admission by reported commit headroom as well as
   available physical RAM, avoiding plans above the reported commit limit.
 - Include the immediate Windows job object's per-process commit limit in
