@@ -144,6 +144,29 @@ def test_retained_mapping_transfer_preserves_provenance_and_releases(tmp_path, m
     assert not path.exists()
 
 
+def test_retaining_a_derived_frame_releases_the_older_mapping(tmp_path, monkeypatch):
+    older, expected, _ = _retained(tmp_path, monkeypatch)
+    older_path = Path(storage.describe_frame(older.pixels)['path'])
+    derived = sources.crop_frame(older, 1, 1, 8, 6)
+    with cache.render_scope([derived]):
+        sources.resolve_frame(derived)
+        result = cache.retain_aligned_frames([derived])[0]
+    assert isinstance(result, sources.RetainedFrame)
+    np.testing.assert_array_equal(sources.resolve_frame(result), expected[1:7, 1:9])
+    # Provenance keeps the processing chain and the original descriptor...
+    link = result.source
+    while isinstance(link, sources.ProcessedFrame):
+        assert not isinstance(link, sources.RetainedFrame)
+        link = link.source
+    assert link.path == older.source.source.path
+    # ...but not the older mapping, which the 2 GiB limit no longer counts.
+    del older, derived, link
+    sources.SOURCE_CACHE.clear()
+    gc.collect()
+    assert not older_path.exists()
+    np.testing.assert_array_equal(sources.resolve_frame(result), expected[1:7, 1:9])
+
+
 def test_changed_processing_does_not_reuse_retained_result(tmp_path, monkeypatch):
     retained, expected, _ = _retained(tmp_path, monkeypatch)
     changed = sources.process_frame(retained, lambda pixels: pixels + np.uint16(5))
