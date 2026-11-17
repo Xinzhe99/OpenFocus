@@ -9,11 +9,12 @@ from fusion_methods import stackmff_v1 as v1, stackmff_v2 as v2, stackmffv3 as v
 GiB = 1024 ** 3
 
 
-def _snapshot(kind='CPU', free_vram=0, total_vram=0, available_ram=8 * GiB):
+def _snapshot(kind='CPU', free_vram=0, total_vram=0, available_ram=8 * GiB,
+              commit_headroom=None):
     return resource_policy.ResourceSnapshot(
         available_ram=available_ram, total_ram=16 * GiB,
         physical_cores=4, logical_cpus=4, device_kind=kind,
-        free_vram=free_vram, total_vram=total_vram)
+        free_vram=free_vram, total_vram=total_vram, commit_headroom=commit_headroom)
 
 
 def _frames():
@@ -35,6 +36,11 @@ def test_all_adapters_admit_host_memory_before_session(monkeypatch, adapter, dev
 
     monkeypatch.setattr(resource_policy, 'probe_resources',
                         lambda *a, **k: _snapshot(available_ram=1024))
+    with pytest.raises(resource_policy.ResourceLimitError):
+        adapter._prepare_inference(_frames(), 'model.onnx', device != 'CPU')
+
+    monkeypatch.setattr(resource_policy, 'probe_resources',
+                        lambda *a, **k: _snapshot(commit_headroom=1024))
     with pytest.raises(resource_policy.ResourceLimitError):
         adapter._prepare_inference(_frames(), 'model.onnx', device != 'CPU')
 
