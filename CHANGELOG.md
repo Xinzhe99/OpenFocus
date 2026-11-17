@@ -33,6 +33,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 - Bound Windows memory admission by reported commit headroom as well as
   available physical RAM, avoiding plans above the reported commit limit.
+- Include the immediate Windows job object's per-process commit limit in
+  admission when that limit is present.
 - Remove temporary launch-film frames when full video generation fails or is
   interrupted with Ctrl-C; preview frames remain available for inspection.
 - Keep sign-in methods available while a browser or email sign-in is pending;
