@@ -544,6 +544,8 @@ def test_mirror_workflow_preflight_precedes_r2_writes(tmp_path, corrupt):
                 data = json.load(stream)
             print(next(item['digest'] for item in data['assets'].values() if item['name'] == name))
         else:
+            if any('.[][]' in arg for arg in args):
+                json.load(sys.stdin)
             print('[]')
     """)
     command("aws", """
