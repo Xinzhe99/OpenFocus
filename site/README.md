@@ -104,11 +104,9 @@ and system changes still work for the current page. With JavaScript disabled,
 the English and Chinese links and all navigation links remain available,
 including on mobile screens.
 
-The Worker selects the newer of the latest stable release and the verified
-beta mirror for `/api/latest` and `/download/latest/*`. A stable release
-outranks a beta of the same version. Desktop downloads and installation scripts
-may therefore offer a beta; the Linux CLI from PyPI remains a stable package.
-The site marks that desktop downloads may be prereleases. With JavaScript
+The Worker serves the latest stable release for `/api/latest` and
+`/download/latest/*`. Desktop installation scripts and the Linux CLI from PyPI
+use stable releases. With JavaScript
 disabled, the download links still work and no unverified static version is
 displayed. With JavaScript enabled, the version and file sizes come from the
 live release metadata. Complete GitHub metadata is cached for five minutes per
@@ -121,13 +119,14 @@ Installers are mirrored to Cloudflare R2 and served from
 `/download/latest/<kind>`. The Worker streams the complete R2 object; a full
 request can fall back to GitHub when the complete asset exists there.
 
-Desktop updates use `GET` or `HEAD /api/updates` to select between the stable
-and beta R2 manifests without contacting GitHub. A beta is advertised to older
-clients using a numeric compatibility tag of the form
-`v<version>.999999999.<beta-number>` and its real tag in `actual_tag`. New
-clients validate the association and display the beta tag. The numeric alias
-is reserved for this purpose, and its versioned download always resolves to the
-same beta bytes. Metadata carries the four asset sizes and SHA-256 digests.
+Desktop updates use `GET` or `HEAD /api/updates?channel=stable` for stable
+releases, or `?channel=beta` to select the newer verified stable or beta R2
+manifest, without contacting GitHub. An omitted channel defaults to stable.
+A beta uses a numeric compatibility tag of the form
+`v<version>.999999999.<beta-number>` and its real tag in `actual_tag`.
+Clients validate the association and display the beta tag. Versioned alias
+downloads continue to resolve to the same beta bytes. Metadata carries the
+four asset sizes and SHA-256 digests.
 
 `GET` and `HEAD /download/releases/<tag>/<kind>` serve stable, beta and
 compatibility-alias downloads from R2, with byte ranges and ETag validation.

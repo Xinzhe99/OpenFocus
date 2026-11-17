@@ -107,8 +107,13 @@ def test_batch_corrects_before_registration_and_reports_missing(qapp, tmp_path, 
 
 def test_batch_dialog_includes_selected_reference(qapp, tmp_path):
     from dialogs.batch import BatchProcessingDialog
+    from PyQt6.QtWidgets import QWidget
     path, _ = _reference(tmp_path)
-    dialog = BatchProcessingDialog()
+    parent = QWidget()
+    parent.experimental_features = True
+    parent.current_fusion_method = lambda: 'none'
+    parent.current_alignment_method = lambda: 'none'
+    dialog = BatchProcessingDialog(parent)
     try:
         assert dialog.get_processing_settings()['flat_field_path'] == ''
         dialog.flat_field_path.setText(str(path))
@@ -116,6 +121,7 @@ def test_batch_dialog_includes_selected_reference(qapp, tmp_path):
     finally:
         dialog.close()
         dialog.deleteLater()
+        parent.deleteLater()
 
 
 def test_split_batch_uses_same_flat_field(qapp, tmp_path, monkeypatch):

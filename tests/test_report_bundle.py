@@ -216,3 +216,65 @@ def test_native_top_frames_and_selection_precedence():
     assert 'native_kind' not in _contents(explicit)['error.json']
     truncated = report_bundle.build_report_bundle(log_text='', crash_text='Fatal Python error: Aborted\nCurrent thread 0x', facts={})
     assert _contents(truncated)['error.json']['stack_lines'] == []
+
+
+def test_child_and_admission_diagnostics_are_strictly_sanitized():
+    secret = 'privateperson@example.com /home/private/photo.png token-xyz'
+    child = {'error_category': 'resource_limit', 'error_origin': 'child_worker',
+             'render_stage': 'prepare', 'message': secret, 'control': 'secret_identifier',
+             'required_bytes': 42}
+    admission = {'resource_status': 'insufficient', 'required_bytes': 3000,
+                 'available_ram_bytes': 2000, 'total_ram_bytes': 4000, 'ram_ceiling': 500,
+                 'error_category': 'memory', 'message': secret}
+    text = _event('render_child_error', child) + _event('resource_admission', admission)
+    text += ('Traceback (most recent call last):\n'
+             '  File "/home/private/render_process.py", line 10, in run\n'
+             '  File "/home/private/render_process.py", line 11, in _run_process\n'
+             '  File "/home/private/render_process.py", line 12, in _render_child\n'
+             '  File "/home/private/image_loader.py", line 13, in load_linear_raw_stack\n'
+             '  File "/home/private/resource_policy.py", line 14, in plan_execution\n'
+             '  File "/home/private/resource_policy.py", line 15, in require_memory\n'
+             'core.resource_policy.ResourceLimitError: ' + secret + '\n')
+    bundle = report_bundle.build_report_bundle(log_text=text, crash_text='', facts={})
+    contents = _contents(bundle)
+    assert contents['events.json'][0]['parameters'] == {k: child[k] for k in
+        ('error_category', 'error_origin', 'render_stage')}
+    assert contents['events.json'][1]['parameters'] == {k: admission[k] for k in
+        ('resource_status', 'required_bytes', 'available_ram_bytes', 'total_ram_bytes', 'ram_ceiling')}
+    assert contents['error.json']['kind'] == 'ResourceLimitError'
+    assert [item['function'] for item in contents['error.json']['stack']] == [
+        'run', '_run_process', '_render_child', 'load_linear_raw_stack', 'plan_execution', 'require_memory']
+    assert all(value not in repr(contents) + bundle.subject + bundle.summary + bundle.log_excerpt
+               for value in ('privateperson', '/home/private', 'photo.png', 'token-xyz', 'secret_identifier'))
+
+
+def test_new_events_reject_untrusted_values_and_do_not_mark_session_failed():
+    text = _event('render_child_error', {'error_category': 'private', 'error_origin': 'private',
+                  'render_stage': 'private'})
+    text += _event('resource_admission', {'resource_status': 'unknown', 'required_bytes': -1,
+                   'available_ram_bytes': 10**16, 'total_ram_bytes': True, 'ram_ceiling': 1.5})
+    bundle = report_bundle.build_report_bundle(log_text=text, crash_text='', facts={})
+    assert [e['parameters'] for e in _contents(bundle)['events.json']] == [{}, {'resource_status': 'unknown'}]
+    assert not bundle.has_error
+
+
+@pytest.mark.parametrize('category', ['resource_limit', 'memory', 'os', 'value', 'runtime', 'other'])
+@pytest.mark.parametrize('origin', ['child_worker', 'child_setup_or_transfer'])
+@pytest.mark.parametrize('stage', ['prepare', 'align', 'fuse', 'finish', 'unknown'])
+def test_child_error_taxonomy_survives_bundle(category, origin, stage):
+    fields = {'error_category': category, 'error_origin': origin, 'render_stage': stage}
+    bundle = report_bundle.build_report_bundle(log_text=_event('render_child_error', fields),
+                                                crash_text='', facts={})
+    assert _contents(bundle)['events.json'][0]['parameters'] == fields
+
+
+def test_traceback_timestamp_requires_adjacent_error_header():
+    trace = 'Traceback (most recent call last):\nValueError: private\n'
+    header = '2026-11-10 10:11:12,123 ERROR pid=1 thread=Main session=x operation=x openfocus: private\n'
+    def error(text):
+        return _contents(report_bundle.build_report_bundle(log_text=text, crash_text='', facts={}))['error.json']
+    assert error(header + trace)['timestamp'] == '2026-11-10T10:11:12.123'
+    assert 'timestamp' not in error(header + 'intervening line\n' + trace)
+    assert 'timestamp' not in error(header.replace('ERROR', 'INFO') + trace)
+    assert 'timestamp' not in error(header.replace('2026-11-10', '2026-99-99') + trace)
+    assert 'timestamp' not in error(header + trace + trace)

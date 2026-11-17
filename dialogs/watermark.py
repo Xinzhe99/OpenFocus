@@ -285,7 +285,7 @@ class WatermarkDialog(QDialog):
         for signal in (self.size_slider.valueChanged, self.opacity_slider.valueChanged,
                        self.angle_slider.valueChanged):
             signal.connect(self._schedule_preview)
-        self.text_edit.textEdited.connect(self._schedule_preview)
+        self.text_edit.textChanged.connect(self._schedule_preview)
         self.copyright_check.toggled.connect(self.copyright_position_combo.setEnabled)
         self.copyright_check.toggled.connect(self._schedule_preview)
         self.copyright_position_combo.currentIndexChanged.connect(self._schedule_preview)

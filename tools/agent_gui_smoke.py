@@ -221,29 +221,26 @@ class Smoke:
         self.call("dialog.open", name="retouch")
         windows = self.wait_windows(
             lambda items: len(items) == 1 and items[0]["class"] == "RetouchDialog"
-            and not items[0].get("busy"))
+            and not items[0].get("busy"), timeout=60)
         window = windows[0]
         self.call("ui.context")
         canvas = self.call("ui.find", window=window["root"],
                            object_name="retouch_result")["matches"][0]
         geometry = canvas["geometry"]
+        cx, cy = geometry["width"] // 2, geometry["height"] // 2
         self.call("ui.mouse", path=canvas["path"], action="drag",
-                  x=int(geometry["width"] * 0.3),
-                  y=int(geometry["height"] * 0.3),
-                  to_x=int(geometry["width"] * 0.55),
-                  to_y=int(geometry["height"] * 0.55), steps=16)
+                  x=cx - 30, y=cy - 30, to_x=cx + 30, to_y=cy + 30, steps=16)
         undo = self.call("ui.find", window=window["root"],
                          object_name="retouch_undo")["matches"][0]
+        assert undo["enabled"], "retouch brush did not create an undoable stroke"
         assert self.call("ui.click", path=undo["path"])["clicked"]
         self.call("ui.mouse", path=canvas["path"], action="drag",
-                  x=int(geometry["width"] * 0.3),
-                  y=int(geometry["height"] * 0.3),
-                  to_x=int(geometry["width"] * 0.55),
-                  to_y=int(geometry["height"] * 0.55), steps=16)
+                  x=cx - 30, y=cy - 30, to_x=cx + 30, to_y=cy + 30, steps=16)
         before = self.call("output.list")["count"]
         apply_button = self.call("ui.find", window=window["root"],
                                  object_name="retouch_apply")["matches"][0]
-        self.call("ui.click", path=apply_button["path"])
+        assert apply_button["enabled"], "retouch apply is disabled after the stroke"
+        self.call("ui.click", path=apply_button["path"], **{"async": True})
         self.wait_windows(lambda items: not items, timeout=20)
         after = self.call("output.list")["count"]
         assert after > before, (before, after)

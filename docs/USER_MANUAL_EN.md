@@ -121,24 +121,28 @@ The first launch opens the welcome dialog, where you can choose the theme and
 load the bundled demo stack. A fresh profile defaults to the light theme; the
 choice is remembered.
 
-On first launch and after an update, the optional account screen offers email,
-GitHub and Google sign-in. You can continue without an account or network. To
-sign in, accept the service terms and privacy policy; the links are available
-to review. The **Help** menu shows **Sign in to OpenFocus** or your signed-in
+Sign in online once on each device using email, GitHub or Google. A saved local
+session permits offline use until you sign out or remove it. A device that has
+never signed in cannot enter while offline. To sign in, accept the service terms
+and privacy policy; the links are available to review. The **Help** menu shows **Sign in to OpenFocus** or your signed-in
 account. Open it to sign out or securely open your account center in the browser.
 After sign-in, automatic error reports are enabled by default unless you
 previously disabled them. Change this under
 **Settings → Advanced Settings → Diagnostics**.
 
 OpenFocus restores a saved desktop session locally at startup without opening a
-browser. To use an existing browser account, choose the browser sign-in button
-on the account screen. Browser and desktop sessions are separate, so signing
-out here does not sign out the browser.
+browser, including while offline. After sign-out or session removal, sign in
+online again. To use an existing browser account, choose the browser sign-in
+button on the account screen. Browser and desktop sessions are separate, so
+signing out here does not sign out the browser.
 
 For email sign-in, open the link on your phone or computer and confirm it;
 the waiting desktop app signs in automatically. If the account service has
 not yet been updated for cross-device sign-in, the app instead asks you to
 open the link on the same computer.
+
+While a sign-in is pending, choose another method or select the same method
+again to retry. The previous desktop sign-in attempt is canceled.
 
 ### Quick Start Workflow
 
@@ -1377,6 +1381,9 @@ existing settings are kept.
 Automatic update downloads run while idle and never install automatically. A completed download remains ready until you explicitly choose **Restart and Update**. Restart protects active edits and unsaved work, then writes recovery data before launching replacement. Cancelling a download or preparation waits for the current safe boundary. An existing complete, newer staged build can be installed offline.
 
 On Windows, the updater builds a separate candidate and moves the portable marker and `OpenFocusData` during the switch. If the switch fails it restores the old installation; if rollback cannot finish, the backup is kept and the app does not restart automatically. A permission prompt may appear once. Cancelling extraction discards incomplete staging and is checked between 256 KiB reads and writes; a blocked disk or network operation can delay it.
+
+The Dust Map tool and batch flat-field option are experimental. Enable
+**Experimental features** in Advanced Settings to use them.
 
 Flat-field correction changes session working pixels without overwriting source files. Select the white reference and a preview frame, then generate the preview again after changing source or scale. Reference and working/base images must share a coordinate domain and size. Applying prepares both stacks before committing; optional reference-frame removal belongs to the same undo step. Export corrected source images when you need to preserve these pixels outside the session.
 

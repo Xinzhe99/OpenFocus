@@ -326,6 +326,28 @@ def test_settings_data_override_bypasses_portable_store(tmp_path, monkeypatch):
 
 def test_private_tool_launches_isolate_settings_and_instances(tmp_path, monkeypatch):
     from core.control.client import tool_session
+    from core.control import client as control_client
+    import tempfile
+
+    launch_command = control_client._launch_command
+
+    def command_with_account(*args, **kwargs):
+        command = launch_command(*args, **kwargs)
+        bootstrap = (
+            "import runpy, sys; "
+            "from tests.process_isolation import install_test_account; "
+            "install_test_account(); "
+            "sys.argv = sys.argv[1:]; "
+            "runpy.run_path(sys.argv[0], run_name='__main__')"
+        )
+        return [command[0], '-c', bootstrap, *command[1:]]
+
+    monkeypatch.setattr(control_client, '_launch_command', command_with_account)
+    for name, value in sandbox_env(tmp_path).items():
+        if name in ('HOME', 'USERPROFILE', 'APPDATA', 'XDG_CONFIG_HOME',
+                    'XDG_DATA_HOME', 'TMP', 'TEMP', 'TMPDIR', 'OPENFOCUS_LOG_DIR'):
+            monkeypatch.setenv(name, value)
+    monkeypatch.setattr(tempfile, 'tempdir', str(tmp_path / 'tmp'))
 
     real_root = tmp_path / "real"
     real_root.mkdir()
@@ -382,7 +404,8 @@ def test_default_gui_launch_and_cross_process_client(tmp_path, monkeypatch):
     bootstrap = '''
 import runpy, sys
 import webbrowser
-from tests.process_isolation import install_usage_sender
+from tests.process_isolation import install_test_account, install_usage_sender
+install_test_account()
 sender, reporters, calls = install_usage_sender()
 webbrowser.open = lambda *args, **kwargs: False
 from PyQt6.QtCore import QSettings
@@ -429,7 +452,7 @@ try:
     assert session.call("ping")["pong"] is True
     deadline = time.monotonic() + 10
     context = session.call("ui.context")
-    while not any(dialog["class"] == "AccountDialog"
+    while not any(dialog["class"] == "WelcomeDialog"
                   and dialog["visible"] and dialog["modal"]
                   for dialog in context["dialogs"]):
         assert time.monotonic() < deadline, context
@@ -1485,6 +1508,21 @@ def test_render_state_keeps_cancelled_and_discarded_terminal(server, control_win
         control_window.fusion_result = None
 
 
+def test_render_state_reports_only_the_active_worker_stage(server, control_window, monkeypatch):
+    manager = control_window.render_manager
+    class Worker:
+        running = True
+        def isRunning(self):
+            return self.running
+
+    worker = Worker()
+    monkeypatch.setattr(manager, 'worker', worker)
+    monkeypatch.setattr(manager, '_render_progress_stage', 'align', raising=False)
+    assert call(server, 'render.state')['result']['stage'] == 'align'
+    worker.running = False
+    assert call(server, 'render.state')['result']['stage'] is None
+
+
 def test_render_state_is_idle_without_a_finished_render(server, control_window):
     control_window.fusion_result = np.zeros((4, 4, 3), np.uint8)
     try:
@@ -1578,6 +1616,16 @@ def test_stack_include_uses_the_checkbox_path(server, control_window):
     control_window.file_list.clear()
     control_window.raw_images = []
     control_window.image_filenames = []
+
+
+def test_dust_dialog_requires_experimental_opt_in(server, control_window):
+    control_window.experimental_features = False
+    response = call(server, 'dialog.open', name='dust')
+    assert response['error']['code'] == 'invalid_argument'
+
+    control_window.experimental_features = True
+    assert call(server, 'dialog.open', name='dust')['result']['opened']
+    call(server, 'dialog.reject')
 
 
 def test_dialog_open_reuses_the_managed_instance(server):
@@ -2258,6 +2306,45 @@ def test_native_picker_blocks_control_reentry(server, control_window, monkeypatc
         file_dialogs.FileDialog.getOpenFileName(control_window, 'File')
     assert [response['error']['code'] for response in responses] == ['busy', 'busy']
     assert not file_dialogs.native_picker_active()
+
+
+def test_retouch_reports_busy_while_loading_source(server, qapp, monkeypatch):
+    import threading
+    from PyQt6.QtTest import QTest
+    from dialogs.retouch import _SourceWorker
+    from tests.test_retouch import _dialog, _wait_for_source
+
+    dialog, _ = _dialog(qapp)
+    entered, release = threading.Event(), threading.Event()
+    original = _SourceWorker.run
+
+    def delayed(worker):
+        entered.set()
+        if release.wait(5):
+            original(worker)
+
+    monkeypatch.setattr(_SourceWorker, 'run', delayed)
+    monkeypatch.setattr(server, '_retouch_dialog', lambda: dialog)
+    try:
+        assert call(server, 'dialog.open', name='retouch')['result']['opened']
+        dialog._select_frame(1)
+        for _ in range(500):
+            if entered.is_set():
+                break
+            QTest.qWait(10)
+        assert entered.is_set()
+        entries = call(server, 'dialog.list')['result']['dialogs']
+        retouch = next(item for item in entries if item['class'] == 'RetouchDialog')
+        assert retouch['busy']
+        assert call(server, 'dialog.accept', index=retouch['index'])['error']['code'] == 'busy'
+        release.set()
+        _wait_for_source(qapp, dialog)
+        entries = call(server, 'dialog.list')['result']['dialogs']
+        assert not next(item for item in entries if item['class'] == 'RetouchDialog')['busy']
+    finally:
+        release.set()
+        dialog._allow_close = True
+        dialog.close()
 
 
 def test_retouch_managed_dialog_can_reopen_after_deletion(server, qapp, monkeypatch):

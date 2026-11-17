@@ -633,24 +633,27 @@ class ScaleBarDialog(QDialog):
                     custom_x=self.custom_x.value() / 100.0,
                     custom_y=self.custom_y.value() / 100.0)
 
-    def _stack_draft_valid(self):
+    def _stack_draft_error(self):
         frames = getattr(self.parent(), "raw_images", ()) or ()
         if not frames:
-            return False
-        draft = self._draft_values() if self._draft_owner == "stack" else self._drafts["stack"]
+            return trans.t("label_preview_no_target")
+        # "All" applies the visible calibration choice to both scopes, but
+        # each scope retains its own sampling scale and detected metadata.
+        draft = self._draft_values()
+        stack = self._drafts["stack"]
         if draft["mode"] == CALIBRATION_MANUAL:
-            px_um = draft["manual"] / (draft["work_scale"] or 1.0)
+            px_um = draft["manual"] / (stack["work_scale"] or 1.0)
         else:
-            px_um = draft["detected"]
+            px_um = stack["detected"]
         if not px_um or not math.isfinite(px_um) or px_um <= 0:
-            return False
+            return trans.t("scalebar_not_calibrated")
         height, width = frames[0].shape[:2]
         cfg = self._draw_config()
         cfg["px_um"] = px_um
         _, info = scalebar.draw_scale_bar_ex(
             np.zeros((1, 1, 3), dtype=np.uint8), **cfg,
             canvas_size=(width, height), region_mean=lambda _rect: 128.0)
-        return not info["too_small"] and info["bar_px"] is not None
+        return "" if not info["too_small"] and info["bar_px"] is not None else trans.t("scalebar_too_small")
 
     def _schedule_preview(self, *_args):
         if self._closing:
@@ -821,7 +824,10 @@ class ScaleBarDialog(QDialog):
             self._error.setText(trans.t("scalebar_baked_notice"))
             if self.target_combo.currentData() == "all":
                 try:
-                    self._ok_button.setEnabled(self._stack_draft_valid())
+                    error = self._stack_draft_error()
+                    self._ok_button.setEnabled(not error)
+                    if error:
+                        self._error.setText(error)
                 except Exception as exc:
                     self._error.setText(str(exc))
             return
@@ -841,15 +847,16 @@ class ScaleBarDialog(QDialog):
             except Exception as exc:
                 self._error.setText(str(exc))
                 return
-            valid = not info["too_small"] and info["bar_px"] is not None
-            if valid and self.target_combo.currentData() == "all":
+            error = "" if not info["too_small"] and info["bar_px"] is not None else trans.t("scalebar_too_small")
+            if not error and self.target_combo.currentData() == "all":
                 try:
-                    valid = self._stack_draft_valid()
+                    error = self._stack_draft_error()
                 except Exception as exc:
                     self._error.setText(str(exc))
                     return
+            valid = not error
             self._ok_button.setEnabled(valid)
-            self._error.setText("" if valid else trans.t("scalebar_too_small"))
+            self._error.setText(error)
             if info["substituted_font"]:
                 self.font_note.setText(trans.t("label_font_substituted").format(name=info["substituted_font"]))
             if valid:
@@ -911,7 +918,8 @@ class ScaleBarDialog(QDialog):
             if "outputs" in previous:
                 candidate["outputs"] = dict(previous["outputs"])
             if target != "output":
-                manual = stack["manual"] if stack["mode"] == CALIBRATION_MANUAL else 0.0
+                calibration = self._draft_values() if target == "all" else stack
+                manual = calibration["manual"] if calibration["mode"] == CALIBRATION_MANUAL else 0.0
                 candidate.update(enabled=True, manual=manual,
                                  position=self.pos_combo.currentData(),
                                  color=self.color_combo.currentData(),

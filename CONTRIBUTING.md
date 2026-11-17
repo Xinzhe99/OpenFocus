@@ -19,6 +19,9 @@ UI changes must follow [UI and UX guidelines](docs/UI_UX_GUIDELINES.md), includi
 using control tooltips for persistent explanatory text while keeping necessary
 status, errors and decision-critical information visible.
 
+Consult [engineering lessons](LESSONS.md) when planning changes. Add reusable
+lessons as they become clear, and keep existing entries current and concise.
+
 ## Agent control surface
 
 `core/control/` hosts a local command server (`openfocus/control/1`) that lets

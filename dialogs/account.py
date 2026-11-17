@@ -58,11 +58,12 @@ class _AccountJob(QObject):
 
 
 class AccountDialog(QDialog):
-    """Sign in voluntarily or continue immediately without an account."""
+    """Sign in, manage the local session, or exit the application."""
 
-    def __init__(self, window_main, parent=None):
+    def __init__(self, window_main, parent=None, *, required=False):
         super().__init__(parent or window_main)
         self.window_main = window_main
+        self.required = required
         self.client = getattr(window_main, '_account_client', None)
         self._job = None
         self._operation = None
@@ -71,6 +72,12 @@ class AccountDialog(QDialog):
         self.setObjectName('accountDialog')
         self.setMinimumWidth(500)
         self._signed_in_view = None
+        self._layout_timer = QTimer(self)
+        self._layout_timer.setSingleShot(True)
+        self._layout_timer.timeout.connect(self.adjustSize)
+        self._accept_timer = QTimer(self)
+        self._accept_timer.setSingleShot(True)
+        self._accept_timer.timeout.connect(self.accept)
         colors = palette(getattr(window_main, 'ui_theme', 'dark'))
         check_icon = resource_path('assets', 'check_white.svg').replace('\\', '/')
         self.setStyleSheet(f'''
@@ -96,9 +103,9 @@ class AccountDialog(QDialog):
                 color: {colors['textOnAccent']}; border: 0; border-radius: 10px;
                 min-height: 36px; font-weight: 600; }}
             QPushButton#accountEmail:hover {{ background: {colors['accentHover']}; }}
-            QPushButton#accountSkip {{ background: transparent; color: {colors['textMuted']};
+            QPushButton#accountClose {{ background: transparent; color: {colors['textMuted']};
                 border: 0; padding: 4px; }}
-            QPushButton#accountSkip:hover {{ color: {colors['accent']}; }}
+            QPushButton#accountClose:hover {{ color: {colors['accent']}; }}
             QPushButton#accountSocial:disabled, QPushButton#accountEmail:disabled {{
                 background: {colors['controlDisabled']}; color: {colors['textFaint']}; }}
             QLineEdit#accountEmailInput {{ background: {colors['controlBg']};
@@ -184,6 +191,7 @@ class AccountDialog(QDialog):
         self.terms = QCheckBox()
         self.terms.setObjectName('accountConsent')
         self.terms.setAccessibleName(trans.t('account_terms'))
+        self.terms.toggled.connect(self._terms_changed)
         agreement_row.addWidget(self.terms, 0, Qt.AlignmentFlag.AlignTop)
         agreement_text = trans.t('account_agreement').replace(
             '<a ', f'<a style="color:{colors["accent"]};" ')
@@ -203,6 +211,10 @@ class AccountDialog(QDialog):
         self.status.setWordWrap(True)
         self.status.setTextFormat(Qt.TextFormat.PlainText)
         card_layout.addWidget(self.status)
+        self.retry_button = QPushButton(trans.t('btn_retry'))
+        self.retry_button.setObjectName('accountRetry')
+        self.retry_button.clicked.connect(self._retry_account_load)
+        card_layout.addWidget(self.retry_button)
         account_actions = QHBoxLayout()
         self.logout_button = QPushButton(trans.t('account_sign_out'))
         self.center_button = QPushButton(trans.t('account_web_center'))
@@ -213,14 +225,14 @@ class AccountDialog(QDialog):
         account_actions.addWidget(self.logout_button)
         card_layout.addLayout(account_actions)
         root.addWidget(card)
-        self.skip_button = QPushButton(trans.t('account_skip'))
-        self.skip_button.setObjectName('accountSkip')
-        self.skip_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        skip_font = self.skip_button.font()
-        skip_font.setUnderline(True)
-        self.skip_button.setFont(skip_font)
-        self.skip_button.clicked.connect(self.reject)
-        root.addWidget(self.skip_button, 0, Qt.AlignmentFlag.AlignHCenter)
+        self.close_button = QPushButton(trans.t('action_exit'))
+        self.close_button.setObjectName('accountClose')
+        self.close_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        close_font = self.close_button.font()
+        close_font.setUnderline(True)
+        self.close_button.setFont(close_font)
+        self.close_button.clicked.connect(self._close_dialog)
+        root.addWidget(self.close_button, 0, Qt.AlignmentFlag.AlignHCenter)
         self._refresh_controls(busy=True)
         if self.client is None:
             shared_load = getattr(window_main, '_account_load_job', None)
@@ -232,6 +244,21 @@ class AccountDialog(QDialog):
                 window_main.account_session_loaded.connect(self._finished)
         else:
             self._refresh_controls()
+            if self.required and self.client.is_signed_in():
+                self._accept_timer.start(0)
+
+    def _retry_account_load(self):
+        if self._job is None and self.client is None:
+            self._cancel = threading.Event()
+            self.status.setText(trans.t('account_checking'))
+            self.status.show()
+            self._start('load', lambda _started: AccountClient())
+
+    def _close_dialog(self):
+        if self.client is not None and self.client.is_signed_in():
+            self.accept()
+        else:
+            self.reject()
 
     def _open_account_center(self):
         if self._job is None and self.client is not None:
@@ -240,12 +267,13 @@ class AccountDialog(QDialog):
 
 
     def _sign_in_browser(self):
-        if self._job is not None or self.client is None:
+        cancel = self._begin_sign_in()
+        if cancel is None:
             return
-        self._cancel.clear()
+        client = self.client
         language = 'zh' if trans.current_lang == 'zh' else 'en'
-        self._start('browser', lambda started: self.client.login_with_browser(
-            cancel=self._cancel, on_started=started, timeout=30, language=language))
+        self._start('browser', lambda started: client.login_with_browser(
+            cancel=cancel, on_started=started, timeout=30, language=language))
 
     def _open_agreement(self, link):
         if link == 'terms':
@@ -264,13 +292,15 @@ class AccountDialog(QDialog):
         signed_in = self.client is not None and self.client.is_signed_in()
         pending = self.client is not None and getattr(self.client, 'logout_cleanup_pending', False)
         self.form.setVisible(not signed_in and not pending)
-        self.form.setEnabled(not busy and self.client is not None and not pending)
+        switching = self._operation in ('email', 'github', 'google', 'browser')
+        self.form.setEnabled((not busy or switching) and self.client is not None and not pending)
+        self.retry_button.setVisible(not busy and self.client is None)
         self.logout_button.setVisible(signed_in or pending)
         self.logout_button.setText(trans.t('account_cleanup_retry' if pending else 'account_sign_out'))
         self.center_button.setVisible(signed_in)
         self.logout_button.setEnabled(not busy)
         self.center_button.setEnabled(not busy)
-        self.skip_button.setText(trans.t('account_continue' if signed_in else 'account_skip'))
+        self.close_button.setText(trans.t('account_continue' if signed_in else 'action_exit'))
         self.heading.setText(trans.t('account_title' if signed_in else 'account_heading'))
         self.subtitle.setText(trans.t('account_manage_subtitle' if signed_in else 'account_subtitle'))
         if signed_in:
@@ -286,7 +316,7 @@ class AccountDialog(QDialog):
         if self._signed_in_view != signed_in:
             self._signed_in_view = signed_in
             self.layout().invalidate()
-            QTimer.singleShot(0, self.adjustSize)
+            self._layout_timer.start(0)
         refresh_menu = getattr(self.window_main, '_refresh_account_action', None)
         if refresh_menu is not None:
             refresh_menu()
@@ -301,17 +331,35 @@ class AccountDialog(QDialog):
         self._refresh_controls(busy=True)
         job.start()
 
+    def _terms_changed(self, checked):
+        if not checked and self._operation in ('email', 'github', 'google'):
+            self._cancel.set()
+            self.status.setText(trans.t('account_terms_required'))
+            self.status.show()
+
+    def _begin_sign_in(self):
+        if self.client is None or (self._job is not None and
+                self._operation not in ('email', 'github', 'google', 'browser')):
+            return None
+        self._cancel.set()
+        self._cancel = threading.Event()
+        return self._cancel
+
     def _started(self):
+        if (self.sender() is not None and self.sender() is not self._job) or self._cancel.is_set():
+            return
         if self._operation == 'email':
             key = ('account_wait_email_phone'
                    if getattr(self.client, 'email_handoff_mode', None) == 'poll-v1'
                    else 'account_wait_email')
         else:
             key = 'account_wait_browser'
-        self.status.setText(trans.t(key))
+        self.status.setText(trans.t(key) + '\n' + trans.t('account_switch_hint'))
+        self.status.show()
 
     def _sign_in(self, provider):
-        if self._job is not None or self.client is None:
+        if self.client is None or (self._job is not None and
+                self._operation not in ('email', 'github', 'google', 'browser')):
             return
         if not self.terms.isChecked():
             self.status.setText(trans.t('account_terms_required'))
@@ -322,15 +370,17 @@ class AccountDialog(QDialog):
             self.status.setText(trans.t('account_email_required'))
             self.status.show()
             return
-        self._cancel.clear()
+        cancel = self._begin_sign_in()
+        if cancel is None:
+            return
         client = self.client
         language = 'zh' if trans.current_lang == 'zh' else 'en'
         def login(started):
             terms = client.terms()
-            if self._cancel.is_set():
+            if cancel.is_set():
                 return None
             user = client.login(provider, email=email if provider == 'email' else None,
-                                cancel=self._cancel, on_started=started,
+                                cancel=cancel, on_started=started,
                                 terms_version=terms['version'], language=language)
             return user, terms['version']
         self.status.setText(trans.t('account_checking'))
@@ -342,10 +392,16 @@ class AccountDialog(QDialog):
             self._start('logout', lambda _started: self.client.logout())
 
     def _finished(self, result, error):
+        sender = self.sender()
+        if (sender is not None and sender is not self._job and not
+                (sender is self.window_main and self._operation == 'load')):
+            return
         operation = self._operation
         self._job = None
         self._operation = None
         if self._cancel.is_set():
+            if self.isVisible() and self.client is not None and self.client.is_signed_in():
+                self._refresh_controls()
             return
         if error is not None and error.category in ('terms_required', 'invalid_terms_version'):
             self.terms.setChecked(False)
@@ -370,6 +426,10 @@ class AccountDialog(QDialog):
             except Exception:
                 report_cleanup_failed = True
         self._refresh_controls()
+        if (self.required and not report_cleanup_failed and self.client is not None
+                and self.client.is_signed_in() and operation in ('load', 'email', 'github', 'google', 'browser')):
+            self.accept()
+            return
         if report_cleanup_failed:
             self.status.setText(trans.t('report_cleanup_failed'))
             self.status.show()
@@ -410,13 +470,16 @@ class AccountDialog(QDialog):
 
 
     def reject(self):
-        if self._operation != 'web_center':
-            self._cancel.set()
+        cancel = getattr(self, '_cancel', None)
+        if cancel is not None and getattr(self, '_operation', None) != 'web_center':
+            cancel.set()
         super().reject()
 
 
 def cancel_account_jobs(window):
     """Cancel pending sign-ins and report whether account workers remain."""
     for dialog in window.findChildren(AccountDialog):
-        dialog._cancel.set()
+        cancel = getattr(dialog, '_cancel', None)
+        if cancel is not None:
+            cancel.set()
     return any(job.owner is window for job in _ACTIVE_JOBS)

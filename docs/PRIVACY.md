@@ -26,10 +26,12 @@ are independent of account sign-in and diagnostic reporting.
   Turning the setting off deletes the local ID and send timestamp and stops
   future reports; enabling it again creates a new ID. Closing the application
   also cancels future reports. A request already in flight may still complete.
-- **Optional account** — email, GitHub or Google sign-in uses your browser and
-  `account.openfocus.top`. The account service receives the verified email and
-  identity needed for sign-in. You can skip sign-in, sign out, or delete your
-  account. Authentication credentials are stored locally and are not included in
+- **Account** — desktop use requires an account. Sign in online once on each
+  device; the saved local session permits offline use until sign-out or removal.
+  A device that has never signed in cannot enter while offline. Email, GitHub or
+  Google sign-in uses your browser and `account.openfocus.top`. The account service
+  receives the verified email and identity needed for sign-in. You can sign out
+  or delete your account. Authentication credentials are stored locally and are not included in
   diagnostic reports. Signing out also requests server session revocation. If
   local credential removal fails, the account dialog reports incomplete cleanup
   and offers a retry; signing out in memory does not erase credentials on disk.
@@ -53,6 +55,13 @@ are independent of account sign-in and diagnostic reporting.
   allowlisted OpenFocus file and function names and line numbers, but not raw
   crash text, memory addresses, user file names or paths. Reports exclude image
   pixels, image and project files, credentials and arbitrary user-entered text.
+  Render-child errors may include a fixed error category, origin and last
+  reported render stage; that stage does not establish where the error occurred.
+  Rejected memory admissions may include a fixed unknown or insufficient status
+  and bounded required, available, total and ceiling byte counts when known.
+  An unavailable memory measurement is omitted, not reported as zero. A Python
+  traceback may include the timestamp from its immediately preceding error log
+  header when available. Arbitrary error messages and source code are excluded.
   Reports retain at most the most recent 2,000 recognized events from a bounded
   log tail and indicate detected omissions; older rotated logs may already be gone.
   Failed reports can be stored locally for bounded retries, with at most three

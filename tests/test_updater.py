@@ -92,7 +92,7 @@ def test_beta_manifest_compares_and_displays_actual_version(monkeypatch, current
     monkeypatch.setattr(sys, 'platform', 'win32')
     monkeypatch.setattr(updater, '_api_get', lambda *args: _beta_release())
     seen = []
-    check_async(current, lambda *args: seen.append(args))
+    check_async(current, lambda *args: seen.append(args), include_beta=True)
     _wait_for(seen)
     assert seen[0][0:2] == (state, 'v1.77.0-beta.4')
     if state == 'update':
@@ -100,6 +100,17 @@ def test_beta_manifest_compares_and_displays_actual_version(monkeypatch, current
         assert seen[0][4] == 'https://openfocus.top/download/releases/v1.77.0-beta.4/windows-setup'
         assert seen[0][5] == 'sha256:' + 'a' * 64
         assert seen[0][6][0]['tag_name'] == 'v1.77.0-beta.4'
+
+
+def test_channel_query_and_old_server_beta_rejected(monkeypatch):
+    from utils import updater
+    calls = []
+    monkeypatch.setattr(updater, '_api_get', lambda url: calls.append(url) or _beta_release())
+    with pytest.raises(ValueError, match='Beta update'):
+        updater.fetch_latest_release()
+    assert calls[-1].endswith('?channel=stable')
+    assert updater.fetch_latest_release(True)[1] == 'v1.77.0-beta.4'
+    assert calls[-1].endswith('?channel=beta')
 
 
 def test_stable_manifest_upgrades_matching_beta(monkeypatch):
@@ -226,7 +237,7 @@ def test_fetch_latest_release_uses_website_and_ignores_remote_asset_urls(monkeyp
     monkeypatch.setattr(updater.urllib.request, "urlopen", respond)
     ok, tag, page, installer, portable, releases = updater.fetch_latest_release()
     assert ok and tag == "v9.9"
-    assert seen == ["https://openfocus.top/api/updates"]
+    assert seen == ["https://openfocus.top/api/updates?channel=stable"]
     assert page == "https://openfocus.top/#download"
     assert installer["url"] == "https://openfocus.top/download/releases/v9.9/windows-setup"
     assert portable["url"] == "https://openfocus.top/download/releases/v9.9/windows-zip"
@@ -259,7 +270,7 @@ def test_update_check_uses_notes_from_the_same_manifest(monkeypatch):
     _wait_for(seen)
     assert seen[0][0] == "update"
     assert "Improved output" in updater.format_release_notes("9.0", "v9.9", seen[0][6])
-    assert calls == [updater.RELEASES_API_URL]
+    assert calls == [updater.RELEASES_API_URL + "?channel=stable"]
 
 
 class TestCheckAsyncContract:
@@ -272,7 +283,7 @@ class TestCheckAsyncContract:
     def test_update_state_reports_both_urls(self, monkeypatch):
         monkeypatch.setattr(
             "utils.updater.fetch_latest_release",
-            lambda: (True, "v9.9", "https://x/releases/tag/v9.9",
+            lambda include_beta: (True, "v9.9", "https://x/releases/tag/v9.9",
                      {"url": "https://x/Setup.exe"}, {"url": "https://x/p.zip"},
                      [{"tag_name": "v9.9", "body_i18n": {"en": "NOTES", "fr": "NOUVEAUTÉS"}}]))
         seen = []
@@ -288,7 +299,7 @@ class TestCheckAsyncContract:
     def test_latest_state_reports_page_not_asset(self, monkeypatch):
         monkeypatch.setattr(
             "utils.updater.fetch_latest_release",
-            lambda: (True, "v1.0", "https://x/releases/tag/v1.0",
+            lambda include_beta: (True, "v1.0", "https://x/releases/tag/v1.0",
                      {"url": "https://x/Setup.exe"}, None, []))
         seen = []
         check_async("1.0", lambda *args: seen.append(args))

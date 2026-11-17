@@ -197,6 +197,42 @@ def test_login_exchange_uses_pkce_and_does_not_log_secrets(monkeypatch, caplog):
     assert "private-token" not in caplog.text
 
 
+def test_switching_login_discards_inflight_exchange(monkeypatch):
+    class Listener(DummyListener):
+        def handle_request(self):
+            self.code = 'exchange-secret'
+
+    monkeypatch.setattr(account, '_CallbackServer', Listener)
+    monkeypatch.setattr(account.webbrowser, 'open', lambda url: True)
+    entered, release = threading.Event(), threading.Event()
+    first_cancel = threading.Event()
+    calls = []
+
+    def request(method, url, body=None, token=None, timeout=None):
+        calls.append(url)
+        if len(calls) == 1:
+            entered.set()
+            assert release.wait(5)
+            return session('obsolete-token')
+        return session('current-token')
+
+    store = MemoryStore()
+    client = account.AccountClient(store=store, request=request,
+                                   device_id='test-device-123', device_name='Test PC')
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(client.login, 'github', cancel=first_cancel)
+        try:
+            assert entered.wait(5)
+            first_cancel.set()
+            assert client.login('google', cancel=threading.Event()) == {'id': 'user'}
+            release.set()
+            with pytest.raises(account.AccountError, match='cancelled'):
+                first.result(timeout=5)
+        finally:
+            release.set()
+    assert store.value == session('current-token')
+
+
 def test_unauthorized_me_clears_persisted_token():
     store = MemoryStore(session())
     def request(*args, **kwargs):

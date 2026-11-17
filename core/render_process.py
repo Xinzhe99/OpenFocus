@@ -16,15 +16,18 @@ from core.algorithms import (fusion_algorithms, registration_algorithms,
 from core.frame_transport import FrameDecoder, FrameEncoder
 from core.resource_policy import heavy_job, make_process_budget, process_budget
 from core.registration import RegistrationCancelled
-from core.workers import RenderWorker
+from core.workers import RenderWorker, _render_error_category
 from locales import trans
-from utils.logging_setup import debug_enabled, get_logger
+from utils.logging_setup import debug_enabled, get_logger, log_action
 
 logger = get_logger(__name__)
 _CANCEL_GRACE_SECONDS = 3.0
 _ERROR_STATE_FIELDS = ('alignment_reused', 'alignment_computed', 'alignment_report',
                        'alignment_report_provenance', 'performance_report')
 _SUCCESS_STATE_FIELDS = (*_ERROR_STATE_FIELDS, 'prepared_cache')
+_RENDER_STAGES = ('prepare', 'align', 'fuse', 'finish')
+_ERROR_CATEGORIES = ('resource_limit', 'memory', 'os', 'value', 'runtime', 'other')
+_ERROR_ORIGINS = ('child_worker', 'child_setup_or_transfer')
 
 
 def _exit_reason(code):
@@ -61,6 +64,7 @@ class _Relay:
         self.cancel_event = cancel_event
         self.lock = threading.RLock()
         self.last_progress = None
+        self.last_stage = 'prepare'
         self.directories = set()
 
     def send(self, message):
@@ -84,6 +88,7 @@ class _Relay:
         # process-local lease does not represent a wait for another GUI job.
         if stage != 'waiting':
             with self.lock:
+                self.last_stage = stage if stage in _RENDER_STAGES else 'unknown'
                 self.last_progress = None
                 self.send(('stage', stage))
 
@@ -134,7 +139,9 @@ def _render_child(connection, cancel_event, request, budget, directory, language
             if errors:
                 state = {name: getattr(worker, name) for name in _ERROR_STATE_FIELDS}
                 encoder = FrameEncoder()
-                relay.send(('error', errors[-1], encoder.encode(state)))
+                metadata = ((worker._render_error_category, 'child_worker', relay.last_stage)
+                            if worker._render_error_category is not None else None)
+                relay.send(('error', errors[-1], encoder.encode(state), metadata))
                 return
             if not results:
                 raise RuntimeError('Render worker produced neither a result nor an error')
@@ -153,10 +160,11 @@ def _render_child(connection, cancel_event, request, budget, directory, language
                 from core import scratch_registry
                 scratch_registry.forget([*paths, *relay.directories])
     except RegistrationCancelled:
-        relay.send(('error', 'CANCELLED: render cancelled', None))
+        relay.send(('error', 'CANCELLED: render cancelled', None, None))
     except Exception as exc:
         logger.exception('isolated render failed')
-        relay.send(('error', str(exc), None))
+        relay.send(('error', str(exc), None,
+                    (_render_error_category(exc), 'child_setup_or_transfer', relay.last_stage)))
     finally:
         connection.close()
 
@@ -186,6 +194,7 @@ class _RenderExchange:
         self.packet = None
         self.decoder = None
         self.error = None
+        self.error_metadata = None
 
     def restore_state(self, state, fields=_SUCCESS_STATE_FIELDS):
         for name in fields:
@@ -207,6 +216,12 @@ class _RenderExchange:
             self.worker.stage_signal.emit(message[1])
         elif kind == 'error':
             self.error = message[1]
+            if len(message) > 3 and message[3] is not None:
+                category, origin, stage = message[3]
+                self.error_metadata = (
+                    category if category in _ERROR_CATEGORIES else 'other',
+                    origin if origin in _ERROR_ORIGINS else 'child_setup_or_transfer',
+                    stage if stage in _RENDER_STAGES else 'unknown')
             if message[2] is not None:
                 self.restore_state(FrameDecoder().decode(message[2]), _ERROR_STATE_FIELDS)
         elif kind == 'completed':
@@ -324,6 +339,13 @@ class RenderProcessWorker(RenderWorker):
                 raise RuntimeError(trans.t('render_worker_crashed').format(
                     reason=_exit_reason(process.exitcode)))
             if exchange.error is not None:
+                if exchange.error_metadata is not None:
+                    category, origin, stage = exchange.error_metadata
+                    try:
+                        log_action('render_child_error', error_category=category,
+                                   error_origin=origin, render_stage=stage)
+                    except Exception:
+                        pass
                 raise RuntimeError(exchange.error)
             exchange.restore_state(exchange.packet['state'])
             adopted = exchange.decoder.adopted_paths

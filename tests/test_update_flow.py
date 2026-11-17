@@ -192,7 +192,7 @@ class TestReleaseNotes:
         import threading
         seen = {}
 
-        def fake_latest():
+        def fake_latest(include_beta):
             return True, "v1.49", "http://page", None, {
                 "url": "http://zip", "digest": "sha256:ab"}, [
                     {"tag_name": "v1.49", "body": "NOTES-TEXT"}]

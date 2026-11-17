@@ -88,13 +88,11 @@ Every page and asset request therefore counts as a Worker invocation.
   `/?lang=en`; `?lang=zh` stays Chinese. Valid explicit selections on either
   page set a one-year, host-only `lang` cookie (`SameSite=Lax`, `Secure` on
   HTTPS) and return `no-store`, including for HEAD requests.
-- `/api/latest` — selects the newer of GitHub's latest stable release and the
-  verified beta R2 manifest. A stable release outranks a beta of the same
-  version. The response includes `{tag, published, assets}`; a matching stable
-  mirror supplies complete assets missing from a split GitHub release.
-  Complete GitHub responses are cached per data center for five minutes;
-  clients receive `Cache-Control: no-store`. If GitHub is unavailable, the
-  Worker uses the stable R2 manifest when available before comparing beta.
+- `/api/latest` — returns GitHub's latest stable release. The response includes
+  `{tag, published, assets}`; a matching stable mirror supplies complete assets
+  missing from a split GitHub release. Complete GitHub responses are cached per
+  data center for five minutes; clients receive `Cache-Control: no-store`. If
+  GitHub is unavailable, the Worker uses the stable R2 manifest when available.
 - `/download/latest/<kind>` — resolves the selected desktop asset, streams the R2
   object with `ETag`, `Last-Modified`, `If-None-Match`/`304`, and single-range
   `Range`/`206` support. Responses are `Cache-Control: no-store` because
@@ -102,11 +100,13 @@ Every page and asset request therefore counts as a Worker invocation.
   a full request can fall back to a `302` GitHub URL if R2 is missing. Range
   requests and assets assembled only on R2 return `503` with `Retry-After`
   when the object is unavailable; split parts are never offered as a full file.
-- `/api/updates` — selects the newer verified stable or beta R2 manifest without
-  contacting GitHub. For beta updates, it includes the real `actual_tag` and a
-  numeric `tag` of the form `v<version>.999999999.<beta-number>` for older
-  clients. Asset names use this alias while sizes and digests identify the
-  real beta files. The marker is reserved from release version numbers.
+- `/api/updates` — returns the verified stable R2 manifest by default or with
+  `?channel=stable`. With `?channel=beta` it selects the newer verified stable
+  or beta manifest. No GitHub request is needed. Beta metadata includes the real
+  `actual_tag` and a numeric `tag` of the form
+  `v<version>.999999999.<beta-number>` for older clients. Asset names use this
+  alias while sizes and digests identify the real beta files. The marker is
+  reserved from release version numbers.
 - `/download/releases/<tag>/<kind>` — streams the specified stable or beta
   asset; numeric beta aliases resolve to the corresponding immutable beta
   object. The route supports ranges and validators; missing assets return `503`
@@ -316,8 +316,7 @@ template resolves `{{dotted.key}}` placeholders; missing keys fail the build.
   chart) — do not duplicate binaries under `site/`.
 - The website inserts the selected desktop version from `/api/latest` when
   JavaScript is available. Static pages do not claim a version that might be
-  newer than the available download; they identify desktop downloads as
-  potentially beta. Linux CLI installation through PyPI stays on the stable
+  newer than the available download. Linux CLI installation through PyPI stays on the stable
   package channel.
 - The English and Chinese slogans are intentionally different: the English
   line is "Every pixel, its sharpest frame."; the Chinese line is
@@ -330,8 +329,7 @@ template resolves `{{dotted.key}}` placeholders; missing keys fail the build.
 The macOS and Windows installers resolve the latest selected desktop release
 from `https://openfocus.top/api/latest` and download through
 `https://openfocus.top/download/latest/<kind>`, using the R2 mirror when
-available. They may install a newer beta. The Linux path installs the stable CLI
-from PyPI and does not use the release API.
+available. The Linux path installs the stable CLI from PyPI and does not use the release API.
 
 `install.sh`:
 
