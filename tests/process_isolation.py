@@ -1,6 +1,5 @@
 """Private environments and analytics injection for process tests."""
 import os
-from unittest.mock import patch
 
 
 def sandbox_env(tmp_path, overrides=None, *, instance_name=None):
@@ -24,16 +23,28 @@ def sandbox_env(tmp_path, overrides=None, *, instance_name=None):
     })
     return env
 
-def seed_test_account(root):
-    """Give an isolated GUI a synthetic account using its normal token store."""
-    from utils.account_client import TokenStore
+def install_test_account():
+    """Install a saved synthetic session in this isolated child process."""
+    from pathlib import Path
+    from utils import account_client
 
-    with patch.dict(os.environ, {'OPENFOCUS_DATA_DIR': str(root)}):
-        store = TokenStore()
-        store.save({'token': 'test-session-token', 'token_type': 'Bearer',
-                    'expires_at': 9999999999, 'user': {'id': 'test-user'}})
-    return store
+    session_path = Path(os.environ["OPENFOCUS_DATA_DIR"]) / "test-account-session"
+    token_store = account_client.TokenStore
+    store = token_store(session_path)
+    session = {'token': 'test-session-token', 'token_type': 'Bearer',
+               'expires_at': 9999999999, 'user': {'id': 'test-user'}}
+    store.save(session)
+    assert store.load() == session
 
+    def isolated_store(path=None):
+        return token_store(session_path if path is None else path)
+
+    account_client.TokenStore = isolated_store
+
+    def unexpected_request(*args, **kwargs):
+        raise AssertionError("An isolated GUI must not contact the account service")
+
+    account_client._http = unexpected_request
 
 
 def install_usage_sender():

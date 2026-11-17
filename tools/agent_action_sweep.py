@@ -147,7 +147,8 @@ class Sweep:
 
     def settle(self, key, seen):
         empty_rounds = 0
-        for _ in range(20):
+        deadline = time.monotonic() + self.timeout
+        while time.monotonic() < deadline:
             open_windows = self.windows()
             if not open_windows:
                 empty_rounds += 1
@@ -158,10 +159,13 @@ class Sweep:
             empty_rounds = 0
             open_windows.sort(key=lambda item: (not item["active"], item["index"]))
             window = open_windows[0]
+            if window['class'] == '_PixelProgress':
+                time.sleep(0.25)
+                continue
             if (seen and window["class"] not in (
                     "QFileDialog", "QColorDialog", "QInputDialog", "QMenu",
                     "QMessageBox") and not (
-                        key in ("standalone_retouch_action", "action_retouch")
+                        'retouch' in key
                         and window["class"] == "RetouchDialog")):
                 raise RuntimeError(f"unrecognized continuation dialog: {window}")
             seen.append(f"{window['class']}:{window['title']}")
