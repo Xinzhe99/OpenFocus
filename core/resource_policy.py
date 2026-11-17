@@ -28,7 +28,7 @@ import numpy as np
 
 from constants import FRAME_RAM_BUDGET_BYTES
 from utils import memory
-from utils.logging_setup import debug_enabled, log_debug
+from utils.logging_setup import debug_enabled, log_action, log_debug
 from utils.platform_utils import cpu_limits
 from core.algorithms import get_fusion
 from core import torch_backend
@@ -484,6 +484,24 @@ def _detected_ram_ceiling(snapshot: ResourceSnapshot) -> int:
     return max(0, int(snapshot.available_ram - reserve))
 
 
+def _log_memory_rejection(required_bytes, snapshot, ceiling):
+    # Diagnostics must never affect the admission decision.
+    try:
+        details = {'resource_status': 'insufficient' if snapshot.ram_known else 'unknown'}
+        values = {'required_bytes': required_bytes}
+        if snapshot.available_ram > 0:
+            values['available_ram_bytes'] = snapshot.available_ram
+        if snapshot.total_ram > 0:
+            values['total_ram_bytes'] = snapshot.total_ram
+        if snapshot.ram_known:
+            values['ram_ceiling'] = ceiling
+        details.update({key: min(int(value), 10**15) for key, value in values.items()
+                        if value >= 0})
+        log_action('resource_admission', **details)
+    except Exception:
+        pass
+
+
 def require_memory(required_bytes: int, snapshot: Optional[ResourceSnapshot] = None,
                    user_limit: Optional[int] = None) -> int:
     """Admit a known new allocation; return the RAM budget the stage may use.
@@ -503,11 +521,13 @@ def require_memory(required_bytes: int, snapshot: Optional[ResourceSnapshot] = N
         budget = min(budget, max(0, int(user_limit)))
         ceiling = min(ceiling, max(0, int(user_limit)))
     if not snapshot.ram_known:
+        _log_memory_rejection(required_bytes, snapshot, ceiling)
         raise ResourceLimitError("Available physical memory could not be determined")
     if budget > 0 and required_bytes <= budget:
         return budget
     if ceiling > 0 and required_bytes <= ceiling:
         return max(1, int(required_bytes))
+    _log_memory_rejection(required_bytes, snapshot, ceiling)
     raise ResourceLimitError(
         f"Insufficient memory: need {memory.mb(required_bytes):.0f} MB "
         f"of new allocations; at most {memory.mb(ceiling):.0f} MB is available")

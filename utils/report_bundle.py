@@ -32,7 +32,7 @@ registration_warp registration_plan registration_stage render_resources executio
 neural_tile_plan heavy_job.waited source_decode source_previews stack_load stack_load.decoded roi_alignment
 render batch_import batch_image_write batch batch_folder batch_stack gif_save
 settings.applied depth_map neural_provider_probe neural_provider_selected neural_session
-ort_operator_trace'''.split())
+ort_operator_trace render_child_error resource_admission'''.split())
 _NUMBERS = frozenset('''elapsed_ms seconds frame_count frames loaded_frames file_count
 folder_count count workers preview_threads thread_count native_threads page pages files
 success total index column stack_index scale scale_factor reg_downscale_width duration_sec
@@ -70,18 +70,25 @@ _ENUMS = {
     'failure_policy': frozenset(('continue', 'fail')),
     'roi_mode': frozenset(('crop', 'paste')),
     'action': frozenset(('press', 'move', 'release', 'scroll')),
+    'error_category': frozenset(('resource_limit', 'memory', 'os', 'value', 'runtime', 'other')),
+    'error_origin': frozenset(('child_worker', 'child_setup_or_transfer')),
+    'render_stage': frozenset(('prepare', 'align', 'fuse', 'finish', 'unknown')),
+    'resource_status': frozenset(('unknown', 'insufficient')),
 }
 _GPU_MODEL = re.compile(r'^(?:NVIDIA (?:GeForce (?:RTX|GTX) [1-9][0-9]{2,3}(?: Ti| SUPER| Laptop GPU)?|RTX [1-9][0-9]{3}(?: Ada Generation)?)|AMD Radeon (?:RX [1-9][0-9]{3}(?: XT| XTX)?|Graphics)|Intel (?:Arc A[0-9]{3}M?|Iris Xe Graphics|UHD Graphics [0-9]{3,4}))$')
 _STACK_FUNCTIONS = {
     'workers.py': frozenset(('run', '_run_admitted')),
     'registration.py': frozenset(('_align_homography_impl', 'align', 'register')),
     'multi_focus_fusion.py': frozenset(('fuse', '_fuse_tiled_ai_batched', '_fuse_stackmffv3', '_fuse_openfocus_a', '_fuse_openfocus_b', '_fuse_openfocus_c')),
-    'image_loader.py': frozenset(('load_from_filepaths', 'load_from_folder', 'load_from_video')),
+    'image_loader.py': frozenset(('load_from_filepaths', 'load_from_folder', 'load_from_video', 'load_linear_raw_stack')),
+    'render_process.py': frozenset(('run', '_run_process', '_render_child')),
+    'resource_policy.py': frozenset(('require_memory', 'plan_execution')),
     'source_frames.py': frozenset(('resolve', 'decode')),
     'depth_map.py': frozenset(('compute_focus_index',)),
     'cli.py': frozenset(('_run_with_logging', 'main')),
 }
 _EVENT_LINE = re.compile(r'^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d,\d{3})\s+\w+\s+.*?\bevent=([^\s]+)\s+(\{.*\})\s*$')
+_ERROR_HEADER = re.compile(r'^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d,\d{3})\s+(?:ERROR|CRITICAL)\s+pid=\d+\s+thread=\S+\s+session=\S+\s+operation=\S+\s+\S+.*$')
 _FRAME = re.compile(r'^\s*File "([^"\n]+)", line (\d+), in ([^\s]+)\s*$')
 _NATIVE_FRAME = re.compile(r'^\s*File "([^"\n]+)", line (\d+) in ([^\s]+)\s*$')
 
@@ -115,7 +122,7 @@ def _native_error(text):
                 if len(number) <= 9 and 0 < int(number) < 10**9 and function in _STACK_FUNCTIONS.get(basename, ()):
                     frames.append((basename, int(number), function))
     return kind, list(reversed(frames))
-_EXCEPTION = re.compile(r'^([A-Za-z_][A-Za-z_0-9]*)(?::.*)?$')
+_EXCEPTION = re.compile(r'^((?:core\.resource_policy\.)?[A-Za-z_][A-Za-z_0-9]*)(?::.*)?$')
 _VERSION = re.compile(r'^\d{1,6}(?:\.\d{1,6}){0,3}(?:(?:a|b|rc|\.post|\.dev)\d{1,6})?$')
 
 
@@ -137,6 +144,8 @@ def _platform():
 
 
 def _exception_name(name):
+    if name in ('ResourceLimitError', 'core.resource_policy.ResourceLimitError'):
+        return 'ResourceLimitError'
     value = getattr(builtins, name, None)
     return name if isinstance(value, type) and issubclass(value, BaseException) else None
 
@@ -208,7 +217,11 @@ def _events_and_error(text):
     error_name = None
     error_message = ''
     in_traceback = False
+    error_timestamp = None
+    traceback_timestamp = None
+    previous_line = ''
     for line in text.splitlines():
+        preceding_line, previous_line = previous_line, line
         match = _EVENT_LINE.match(line)
         if match:
             timestamp, name, payload = match.groups()
@@ -225,7 +238,16 @@ def _events_and_error(text):
                 continue
             if outcome == 'failed':
                 has_error = True
-            events.append({'timestamp': stamp.isoformat(timespec='milliseconds'), 'event': name, 'parameters': _numeric_fields(parsed)})
+            parameters = _numeric_fields(parsed)
+            if name == 'render_child_error':
+                parameters = {key: value for key, value in parameters.items()
+                              if key in ('error_category', 'error_origin', 'render_stage')}
+            elif name == 'resource_admission':
+                parameters = {key: value for key, value in parameters.items()
+                              if key in ('resource_status', 'required_bytes', 'available_ram_bytes',
+                                         'ram_ceiling', 'total_ram_bytes')
+                              and (key == 'resource_status' or type(value) is int and 0 <= value <= 10**15)}
+            events.append({'timestamp': stamp.isoformat(timespec='milliseconds'), 'event': name, 'parameters': parameters})
             if len(events) > _MAX_EVENTS:
                 del events[0]
                 omitted += 1
@@ -233,6 +255,14 @@ def _events_and_error(text):
         if line.strip() == 'Traceback (most recent call last):':
             in_traceback = True
             frames = []
+            traceback_timestamp = None
+            header = _ERROR_HEADER.match(preceding_line)
+            if header:
+                try:
+                    traceback_timestamp = datetime.datetime.strptime(
+                        header.group(1), '%Y-%m-%d %H:%M:%S,%f').isoformat(timespec='milliseconds')
+                except ValueError:
+                    pass
             continue
         if in_traceback:
             frame = _FRAME.match(line)
@@ -245,8 +275,9 @@ def _events_and_error(text):
                 error_name = match.group(1)
                 error_message = line.partition(':')[2].strip()
                 has_error = True
+                error_timestamp = traceback_timestamp
                 in_traceback = False
-    return events, has_error, error_name, error_message, frames, omitted
+    return events, has_error, error_name, error_message, frames, omitted, error_timestamp
 
 
 def _normalize_message(message):
@@ -332,18 +363,21 @@ def build_report_bundle(*, log_text=None, crash_text=None, facts=None, exc=None)
     if facts is None:
         facts = diagnostics.system_facts()
     platform = _platform()
-    events, event_error, kind, message, frames, omitted = _events_and_error(log_text)
-    _, crash_error, crash_kind, crash_message, crash_frames, _ = _events_and_error(crash_text)
+    events, event_error, kind, message, frames, omitted, error_timestamp = _events_and_error(log_text)
+    _, crash_error, crash_kind, crash_message, crash_frames, _, crash_timestamp = _events_and_error(crash_text)
     native_kind, native_frames = _native_error(crash_text)
     if exc is not None:
         kind = type(exc).__name__
         message = str(exc)
         frames = [(f.filename, f.lineno, f.name) for f in traceback.extract_tb(exc.__traceback__)]
         native_kind = None
+        error_timestamp = None
     elif native_kind is not None:
         kind, message, frames = None, '', native_frames
+        error_timestamp = None
     elif crash_kind:
         kind, message, frames = crash_kind, crash_message, crash_frames
+        error_timestamp = crash_timestamp
     fingerprint_kind = f'native:{native_kind}' if native_kind is not None else kind or 'crash'
     fingerprint = _fingerprint(fingerprint_kind, platform, frames, message)
     safe_kind = ('Crash' if native_kind is not None else
@@ -354,6 +388,8 @@ def build_report_bundle(*, log_text=None, crash_text=None, facts=None, exc=None)
     if native_kind is not None:
         summary = f'{safe_kind} ({native_kind}); {len(safe_frames)} stack frames'
     error = {'kind': safe_kind, 'stack_lines': safe_frames}
+    if error_timestamp is not None:
+        error['timestamp'] = error_timestamp
     if native_kind is not None:
         error['native_kind'] = native_kind
     stack = []

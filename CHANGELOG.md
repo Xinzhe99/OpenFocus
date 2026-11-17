@@ -14,6 +14,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   falls back to CPU when the device budget or build fails.
 
 ### Changed
+- Include allowlisted error categories, render stages, and memory admission
+  figures in sanitized reports, without adding exception messages or paths.
 - Require an account to enter the desktop application; a saved sign-in can be
   used offline. Signing out returns to the sign-in screen.
 - Mark Dust Map and batch flat-field correction as experimental desktop tools.
@@ -29,6 +31,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   choosing another method or retrying cancels the previous attempt and ignores
   its late callbacks.
 - Wait for asynchronous image progress dialogs in the menu action sweep.
+- Honor cancellation after the final linear RAW header is read, before memory
+  admission, and ignore native crash headers embedded in exception text.
 - Apply watermark changes and keep source and output scale-bar calibration
   separate when both targets are selected.
 - Close finished batch progress dialogs before showing their summaries, and
