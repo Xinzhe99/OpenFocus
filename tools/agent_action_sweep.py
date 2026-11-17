@@ -118,27 +118,37 @@ class Sweep:
         index = window["index"]
         if key == "action_open_folder":
             path = self.demo
+        elif key in ("action_open_frames", "standalone_retouch_action"):
+            path = self.demo / "demo_01.jpg"
         elif key == "action_open_video":
             path = self.video
         elif key in ("menu_open_project", "menu_open_template"):
             path = self.project
-        elif key == "standalone_retouch_action":
-            path = self.demo / "demo_01.jpg"
+        elif key == "menu_export_all":
+            path = self.save_dir
         elif key == "menu_save_template":
             path = self.save_dir / "template.oftemplate"
         elif key in ("action_save_folder_input", "action_save_folder_reg"):
             path = self.save_dir / f"{key}_dir"
             path.mkdir(exist_ok=True)
-        elif "project" in key:
+        elif key in ("menu_save_project", "menu_save_project_as"):
             path = self.save_dir / f"{key}.ofproj"
-        else:
+        elif key.startswith(("action_save", "menu_save", "action_export", "menu_export")):
             suffix = ".gif" if "gif" in key else ".tif" if ("mtiff" in key or "layered" in key) else ".png"
             path = self.save_dir / f"{key}{suffix}"
+        else:
+            self.call("dialog.file", index=index, cancel=True)
+            return
+        if key in ("action_open_folder", "action_open_frames", "action_open_video",
+                   "menu_open_project", "menu_open_template", "standalone_retouch_action") and not path.exists():
+            self.call("dialog.file", index=index, cancel=True)
+            return
         self.call("dialog.file", index=index, path=str(path))
 
     def settle(self, key, seen):
         empty_rounds = 0
-        for _ in range(20):
+        deadline = time.monotonic() + self.timeout
+        while time.monotonic() < deadline:
             open_windows = self.windows()
             if not open_windows:
                 empty_rounds += 1
@@ -149,10 +159,13 @@ class Sweep:
             empty_rounds = 0
             open_windows.sort(key=lambda item: (not item["active"], item["index"]))
             window = open_windows[0]
+            if window['class'] == '_PixelProgress':
+                time.sleep(0.25)
+                continue
             if (seen and window["class"] not in (
                     "QFileDialog", "QColorDialog", "QInputDialog", "QMenu",
                     "QMessageBox") and not (
-                        key == "standalone_retouch_action"
+                        'retouch' in key
                         and window["class"] == "RetouchDialog")):
                 raise RuntimeError(f"unrecognized continuation dialog: {window}")
             seen.append(f"{window['class']}:{window['title']}")

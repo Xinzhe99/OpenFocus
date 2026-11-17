@@ -22,7 +22,7 @@ The macOS job uses `macos-latest`, matching the test matrix. A manual branch
 dispatch produces preview artifacts; it does not publish a GitHub release or
 PyPI package. For a stable release, the tag is `v<APP_VERSION>`; for a GitHub
 beta, use `v<APP_VERSION>-beta.<N>` with a positive integer `N`, for example
-`v1.77.0-beta.1`. Keep `constants.APP_VERSION` numeric. Both tagged channels
+`v1.78.0-beta.1`. Keep `constants.APP_VERSION` numeric. Both tagged channels
 lock the checked-out commit and run the three-OS test suite and installed
 headless wheel smoke for that commit, alongside the desktop builds. All must
 succeed before publication. Beta builds follow the same configured SignPath
@@ -46,10 +46,10 @@ a new version and tag. Historical releases without a verifiable build identity
 cannot be silently replaced or amended by rerunning the workflow.
 
 Beta releases are published as GitHub prereleases and explicitly excluded from
-GitHub's stable `latest`. After successful verification, the website mirror
-and desktop updater may offer a newer beta, while retaining the separate stable
-mirror. Older clients receive a numeric compatibility tag for each immutable
-beta; current clients validate the mapping and display the actual beta tag.
+GitHub's stable `latest`. The website serves stable builds by default; the
+desktop updater offers a newer beta only when the user enables beta updates.
+The separate stable mirror remains available. Beta metadata retains numeric
+compatibility aliases for installed clients, which resolve to immutable beta bytes.
 PyPI publication remains limited to stable releases.
 
 PyPI publication runs only for a stable release tag, including a manual dispatch on

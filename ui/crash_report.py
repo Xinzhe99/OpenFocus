@@ -50,7 +50,8 @@ def previous_native_crash(acknowledged=()):
         if key in acknowledged or (source == 'logs' and legacy_key in acknowledged):
             continue
         text = _tail(path)
-        if 'Fatal Python error:' not in text and 'Windows fatal exception:' not in text:
+        if not any(line.startswith(('Fatal Python error:', 'Windows fatal exception:'))
+                   for line in text.splitlines()):
             continue
         stem = path.name[:-len('.crash.txt')]
         return key, text, _tail(logging_setup.logs_dir() / (stem + '.log'))

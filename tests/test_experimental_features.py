@@ -40,12 +40,14 @@ def test_experimental_default_toggle_and_preserved_selection(window, qapp):
         item = w.combo_align.model().item(w.combo_align.findData(spec.id))
         assert item.isEnabled() == (spec.id in ('none', 'ecc'))
     assert not w.ui_objs['mosaic_title'].isEnabled()
+    assert not w.ui_objs['menu_dust_map'].isEnabled()
 
     dialog = AdvancedSettingsDialog(w)
     dialog.chk_experimental_features.setChecked(True)
     dialog._apply()
     assert w.experimental_features and settings.value('ui/experimental_features', type=bool)
     assert w.ui_objs['mosaic_title'].isEnabled()
+    assert w.ui_objs['menu_dust_map'].isEnabled()
     w.set_fusion_method('guided_filter')
     assert w.current_fusion_method() == 'guided_filter'
 
@@ -56,6 +58,7 @@ def test_experimental_default_toggle_and_preserved_selection(window, qapp):
     assert w.current_fusion_method() == 'guided_filter'
     assert not w.btn_render.isEnabled()
     assert not w.ui_objs['mosaic_title'].isEnabled()
+    assert not w.ui_objs['menu_dust_map'].isEnabled()
     from locales import trans
     with pytest.raises(ValueError) as error:
         w.set_alignment_method('openfocus')
@@ -97,12 +100,13 @@ def test_project_restores_experimental_methods_without_enabling_them(window):
     assert not w.btn_render.isEnabled()
 
 
-def test_clicking_locked_mosaic_shows_guidance(window, qapp):
+@pytest.mark.parametrize('key', ['mosaic_title', 'menu_dust_map'])
+def test_clicking_locked_tool_shows_guidance(window, qapp, key):
     from locales import trans
 
     w, _settings = window
     menu = w.ui_objs['menu_tools']
-    action = w.ui_objs['mosaic_title']
+    action = w.ui_objs[key]
     menu.popup(w.mapToGlobal(w.rect().center()))
     qapp.processEvents()
     QToolTip.hideText()
@@ -110,6 +114,33 @@ def test_clicking_locked_mosaic_shows_guidance(window, qapp):
                      pos=menu.actionGeometry(action).center())
     assert QToolTip.text() == trans.t('experimental_locked_hint')
     menu.hide()
+
+
+def test_batch_flat_field_requires_experimental_opt_in(window):
+    from dialogs.batch import BatchProcessingDialog
+    from locales import trans
+
+    w, _settings = window
+    dialog = BatchProcessingDialog(w)
+    try:
+        assert not dialog.flat_field_group.isEnabled()
+        dialog.flat_field_path.setText('reference.png')
+        with pytest.raises(ValueError, match=trans.t('experimental_locked_hint')):
+            dialog.get_processing_settings()
+    finally:
+        dialog.close()
+        dialog.deleteLater()
+
+    w.experimental_features = True
+    w.apply_experimental_features()
+    dialog = BatchProcessingDialog(w)
+    try:
+        assert dialog.flat_field_group.isEnabled()
+        dialog.flat_field_path.setText('reference.png')
+        assert dialog.get_processing_settings()['flat_field_path'] == 'reference.png'
+    finally:
+        dialog.close()
+        dialog.deleteLater()
 
 
 def test_clicking_locked_comparison_method_shows_guidance(window, qapp):

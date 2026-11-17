@@ -27,7 +27,7 @@ def manager(qapp, monkeypatch, tmp_path):
 
 def test_check_deduplicates_and_hops_to_gui_before_notification(manager, qapp, monkeypatch):
     callbacks = []
-    monkeypatch.setattr(updater, "check_async", lambda version, callback, quiet: callbacks.append(callback))
+    monkeypatch.setattr(updater, "check_async", lambda version, callback, quiet, include_beta: callbacks.append(callback))
     manager.check(quiet=True)
     manager.check(quiet=False)
     assert len(callbacks) == 1
@@ -53,7 +53,7 @@ def test_check_result_respects_manual_intent(manager, qapp, monkeypatch, state, 
     from PyQt6 import QtWidgets
 
     callbacks, messages, banners, dialogs = [], [], [], []
-    monkeypatch.setattr(updater, "check_async", lambda version, callback, quiet: callbacks.append(callback))
+    monkeypatch.setattr(updater, "check_async", lambda version, callback, quiet, include_beta: callbacks.append(callback))
     monkeypatch.setattr(manager, "can_self_update", lambda: False)
     monkeypatch.setattr(main.trans, "t", lambda key: key)
     monkeypatch.setattr(main, "show_message_box", lambda *args, **kwargs: messages.append((args, kwargs)))
@@ -137,6 +137,45 @@ def test_auto_download_defaults_on_and_preserves_opt_out(manager):
     finally:
         restored._idle_timer.stop()
         restored.deleteLater()
+
+
+def test_beta_preference_persists_and_invalidates_inflight_check(manager, qapp, monkeypatch):
+    calls, results = [], []
+    monkeypatch.setattr(updater, "check_async", lambda version, callback, quiet, include_beta: calls.append((callback, include_beta)))
+    manager.check_finished.connect(lambda *args: results.append(args))
+    assert manager.include_beta is False
+    manager.set_include_beta(True)
+    restored = um.UpdateManager(manager._window)
+    assert restored.include_beta is True
+    restored.deleteLater()
+    manager.check()
+    assert calls[0][1] is True
+    manager.set_include_beta(False)
+    calls[0][0]("update", "v999-beta.1", "page", "zip")
+    qapp.processEvents()
+    assert not results and not manager.tag and not manager._idle_timer.isActive()
+    manager.check()
+    assert calls[1][1] is False
+    calls[1][0]("update", "v999-beta.1", "page", "zip")
+    qapp.processEvents()
+    assert not manager.tag and results[-1][0] == "error"
+
+
+def test_disabling_beta_cancels_active_stage_and_hides_it(manager, monkeypatch):
+    manager.set_include_beta(True)
+    manager.tag = "v999-beta.1"
+    manager.zip_url = "zip"
+    manager.state = um.STATE_STAGING
+    calls = []
+    manager._stage = SimpleNamespace(isRunning=lambda: True, cancel=lambda: calls.append("cancel"))
+    monkeypatch.setattr(self_update, "discard_staging", lambda tag: calls.append(tag))
+    manager.set_include_beta(False)
+    assert calls == ["cancel"] and not manager.tag and not manager.zip_url
+    manager.set_include_beta(True)
+    manager._on_staged(True, "", "zip", "root", "v999-beta.1", generation=1)
+    assert calls == ["cancel", "v999-beta.1"]
+    assert manager.state == um.STATE_CANCELLED
+    manager._stage = None
 
 def test_disable_auto_download_stops_schedule_without_cancelling_work(manager):
     manager._idle_timer.start(10000)
@@ -528,7 +567,7 @@ def test_notes_follow_language_changed_during_and_after_background_check(manager
     monkeypatch.setattr(trans, "current_lang", "en")
     monkeypatch.setattr(manager, "can_self_update", lambda: False)
     callbacks = []
-    monkeypatch.setattr(updater, "check_async", lambda version, callback, quiet: callbacks.append(callback))
+    monkeypatch.setattr(updater, "check_async", lambda version, callback, quiet, include_beta: callbacks.append(callback))
     manager.check(quiet=True)
     worker = threading.Thread(target=lambda: callbacks[0](
         "update", "v1.76.0", updater.RELEASES_PAGE_URL, "", "", "",

@@ -14,12 +14,32 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   falls back to CPU when the device budget or build fails.
 
 ### Changed
+- Include allowlisted error categories, render stages, and memory admission
+  figures in sanitized reports, without adding exception messages or paths.
+- Require an account to enter the desktop application; a saved sign-in can be
+  used offline. Signing out returns to the sign-in screen.
+- Expose the active render stage through the local control channel.
+- Mark Dust Map and batch flat-field correction as experimental desktop tools.
+- Default desktop updates and public downloads to stable releases. Users can
+  opt in to beta updates through Advanced Settings or the welcome dialog.
 - Prepare ECC source frames concurrently within the alignment stage's CPU and
   memory budgets. Preparation and pair estimation share one bounded worker
   pool; RAW decoder OpenMP work stays serial inside each worker. Alignment
   transforms, cropping and output pixels are unchanged.
 
 ### Fixed
+- Keep sign-in methods available while a browser or email sign-in is pending;
+  choosing another method or retrying cancels the previous attempt and ignores
+  its late callbacks.
+- Wait for asynchronous image progress dialogs in the menu action sweep.
+- Keep private control sockets within Unix path length limits.
+- Honor cancellation after the final linear RAW header is read, before memory
+  admission, and ignore native crash headers embedded in exception text.
+- Apply watermark changes and keep source and output scale-bar calibration
+  separate when both targets are selected.
+- Close finished batch progress dialogs before showing their summaries, and
+  report retouch source loading as busy to the local control channel.
+- Handle Windows lock contention when opening the report queue and depth cache.
 - Run deferred ECC and homography resampling on the render's planned threads
   with the published OpenCV packages. Their Python bindings do not expose the
   active parallel backend, so every warp ran on one core; the backend is now

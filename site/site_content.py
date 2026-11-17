@@ -288,7 +288,7 @@ def _en() -> dict:
         },
         "privacy": {
             "title": "Privacy",
-            "accounts": "The optional account service stores your email address, display name, linked sign-in provider identifiers, sessions and device labels, consent choices and the service records needed to operate your account. These records are separate from desktop usage statistics and are not covered by the 90-day statistics retention period.",
+            "accounts": "Desktop use requires an account. Sign in online once on each device; a saved local session permits offline use until sign-out or removal. The account service stores your email address, display name, linked sign-in provider identifiers, sessions and device labels, consent choices and the service records needed to operate your account. These records are separate from desktop usage statistics and are not covered by the 90-day statistics retention period.",
             "reports": "Optional diagnostic reports can include software and device details, image counts and dimensions, processing settings, interface actions and sanitized error information. They exclude image pixels, image and project files, file names, paths and account credentials. You can review manual reports before sending them; after desktop sign-in, automatic error reporting is enabled by default unless you previously disabled it. You can change it in Advanced Settings. Reports may be sent anonymously or linked to your account.",
             "controls": "You can revoke sessions or delete your account from the account page. Deletion removes your contact profile, linked sign-in identities and sessions; some account, consent and administrative records may remain. Product email is optional: choose whether to opt in during account setup, and use the unsubscribe link in those emails to opt out. Sign-in links and service notices are separate.",
             "manage": "Manage your account",
@@ -537,7 +537,7 @@ def _zh() -> dict:
         },
         "privacy": {
             "title": "隐私",
-            "accounts": "可选账号服务为提供账号功能，会保存你的邮箱、显示名称、关联登录平台的用户标识、会话与设备标签、同意选择，以及运营账号所需的服务记录。这些记录与桌面使用统计分开保存，不适用统计数据的 90 天保留期限。",
+            "accounts": "桌面应用需要账号。请在每台设备上先联网登录一次；保存的本地会话可供离线使用，直到退出登录或移除会话。账号服务为提供账号功能，会保存你的邮箱、显示名称、关联登录平台的用户标识、会话与设备标签、同意选择，以及运营账号所需的服务记录。这些记录与桌面使用统计分开保存，不适用统计数据的 90 天保留期限。", 
             "reports": "可选错误报告可能包含软件和设备信息、图像数量与尺寸、处理设置、界面操作及脱敏后的错误信息，不包含图像像素、图像或项目文件、文件名、路径或账号凭据。手动发送前可查看报告；登录桌面应用后，默认启用自动错误报告，此前明确关闭的设置会保留。你可以在高级设置中更改此选项。报告可以匿名发送，也可以关联账号。",
             "controls": "你可以在账号页面撤销会话或删除账号。删除会清除联系资料、关联登录身份和会话；部分账号、同意和管理记录可能保留。产品邮件为可选项：可在账号设置流程中自主选择接收，并通过邮件中的退订链接取消订阅。登录链接和服务通知另行发送。",
             "manage": "管理你的账号",

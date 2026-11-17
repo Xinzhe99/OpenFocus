@@ -34,7 +34,8 @@ def test_close_does_not_open_overdue_first_run_dialog(tmp_path, monkeypatch):
 import faulthandler, runpy, sys, time
 from PyQt6.QtCore import QSettings, QTimer
 from PyQt6.QtWidgets import QApplication, QMainWindow, QMessageBox
-from tests.process_isolation import install_usage_sender
+from tests.process_isolation import install_test_account, install_usage_sender
+install_test_account()
 sender, reporters, calls = install_usage_sender()
 from utils.usage_analytics import UsageAnalytics
 from dialogs.account import AccountDialog
@@ -43,16 +44,6 @@ import webbrowser
 browser_calls = []
 webbrowser.open = lambda *args, **kwargs: browser_calls.append((args, kwargs)) or False
 
-original_account_exec = AccountDialog.exec
-def skip_account(dialog):
-    def skip_after_load():
-        if getattr(dialog.window_main, '_account_load_job', None) is not None:
-            QTimer.singleShot(10, skip_after_load)
-        else:
-            QTimer.singleShot(100, dialog.reject)
-    QTimer.singleShot(0, skip_after_load)
-    return original_account_exec(dialog)
-AccountDialog.exec = skip_account
 
 def fail_warning(parent, title, text, *args, **kwargs):
     raise RuntimeError(f"Unexpected startup warning: {title}: {text}")

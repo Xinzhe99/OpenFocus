@@ -145,6 +145,7 @@ class BatchManager:
         from utils.logging_setup import log_action
         log_action("batch_finished", **{k: results.get(k) for k in
                    ("success", "total", "cancelled")})
+        progress_dialog = self._progress_dialog
         try:
             success_count = results.get("success", 0)
             total_count = results.get("total", 0)
@@ -184,6 +185,7 @@ class BatchManager:
             if failed_folders:
                 info_lines.append("")
                 info_lines.extend(failed_folders)
+            self._close_progress_dialog()
             problems = (counts.get("partial", 0) + counts.get("failed", 0))
             self._show_message(
                 title=(trans.t('compare_cancelled') if was_cancelled else
@@ -195,7 +197,8 @@ class BatchManager:
                       else QMessageBox.Icon.Information),
             )
         finally:
-            self._close_progress_dialog()
+            if self._progress_dialog is progress_dialog:
+                self._close_progress_dialog()
 
     def _render_owns_controls(self) -> bool:
         """True while a render/compare run owns the fusion controls."""
@@ -225,13 +228,13 @@ class BatchManager:
 
     def _handle_error(self, error_msg: str) -> None:
         self.last_error = str(error_msg)
+        self._close_progress_dialog()
         self._show_message(
             title=trans.t("batch_error_title"),
             text=trans.t("batch_error_title"),
             info=trans.t("batch_error_info").format(error=error_msg),
             icon=QMessageBox.Icon.Critical,
         )
-        self._close_progress_dialog()
 
     def _show_message(
         self,

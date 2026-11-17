@@ -112,7 +112,7 @@ def test_account_menu_and_dialog_follow_sign_in_and_sign_out(qapp, tmp_path, mon
         assert dialog.center_button.isVisible() and dialog.logout_button.isVisible()
         assert not dialog.form.isVisible()
         assert dialog.height() < signed_out_height - 50
-        assert dialog.height() - dialog.skip_button.geometry().bottom() < 70
+        assert dialog.height() - dialog.close_button.geometry().bottom() < 70
         dialog.center_button.click()
         _wait(qapp, lambda: dialog._job is None)
         assert client.calls[-1] == 'web_handoff'
@@ -382,10 +382,169 @@ def test_email_status_matches_available_verification_mode(qapp, settings, mode, 
         dialog.terms.setChecked(True)
         dialog.email.setText('user@example.test')
         dialog.email_button.click()
-        _wait(qapp, lambda: dialog.status.text() == trans.t(message))
+        _wait(qapp, lambda: dialog.status.text().startswith(trans.t(message)))
+        assert trans.t('account_switch_hint') in dialog.status.text()
     finally:
         release.set()
         _wait(qapp, lambda: dialog._job is None)
+        dialog.reject()
+        window.deleteLater()
+
+
+@pytest.mark.parametrize(('first', 'second'), [
+    ('github', 'google'), ('github', 'email'), ('github', 'browser'),
+    ('github', 'github'), ('email', 'google'), ('browser', 'google'),
+])
+def test_pending_sign_in_can_switch_methods(qapp, settings, first, second):
+    from dialogs.account import AccountDialog, _ACTIVE_JOBS
+    from utils.account_client import AccountError
+
+    entered = [Event(), Event()]
+    release = [Event(), Event()]
+    attempts = []
+
+    class Waiting(_Account):
+        def attempt(self, method, **kwargs):
+            index = len(attempts)
+            attempts.append((method, kwargs['cancel']))
+            kwargs['on_started']()
+            entered[index].set()
+            assert release[index].wait(5)
+            if kwargs['cancel'].is_set():
+                raise AccountError('cancelled')
+            self.user = {'id': method}
+            return self.user
+
+        def login(self, provider, **kwargs):
+            return self.attempt(provider, **kwargs)
+
+        def login_with_browser(self, **kwargs):
+            return self.attempt('browser', **kwargs)
+
+    window = QWidget()
+    client = window._account_client = Waiting()
+    dialog = AccountDialog(window)
+    dialog.show()
+    buttons = {'github': dialog.github_button, 'google': dialog.google_button,
+               'email': dialog.email_button, 'browser': dialog.browser_button}
+    try:
+        dialog.terms.setChecked(True)
+        dialog.email.setText('user@example.test')
+        buttons[first].click()
+        _wait(qapp, entered[0].is_set)
+        first_job = dialog._job
+        assert all(button.isEnabled() for button in buttons.values())
+        buttons[second].click()
+        _wait(qapp, entered[1].is_set)
+        second_job = dialog._job
+        assert first_job is not second_job
+        assert attempts[0][1].is_set() and not attempts[1][1].is_set()
+        release[0].set()
+        _wait(qapp, lambda: first_job not in _ACTIVE_JOBS)
+        assert dialog._job is second_job
+        assert all(button.isEnabled() for button in buttons.values())
+        release[1].set()
+        _wait(qapp, lambda: dialog._job is None)
+        assert client.current_user()['id'] == second
+    finally:
+        for event in release:
+            event.set()
+        dialog.reject()
+        window.deleteLater()
+
+
+def test_withdrawing_consent_cancels_pending_sign_in(qapp, settings):
+    from dialogs.account import AccountDialog
+    from locales import trans
+    from utils.account_client import AccountError
+    entered, release = Event(), Event()
+    cancelled = []
+
+    class Waiting(_Account):
+        def login(self, provider, **kwargs):
+            cancelled.append(kwargs['cancel'])
+            kwargs['on_started']()
+            entered.set()
+            assert release.wait(5)
+            if kwargs['cancel'].is_set():
+                raise AccountError('cancelled')
+            return super().login(provider, **kwargs)
+
+    window = QWidget()
+    client = window._account_client = Waiting()
+    dialog = AccountDialog(window)
+    try:
+        dialog.terms.setChecked(True)
+        dialog.github_button.click()
+        _wait(qapp, entered.is_set)
+        dialog.terms.setChecked(False)
+        assert cancelled[0].is_set()
+        assert dialog.status.text() == trans.t('account_terms_required')
+        release.set()
+        _wait(qapp, lambda: dialog._job is None)
+        assert not client.is_signed_in()
+        assert dialog.github_button.isEnabled()
+    finally:
+        release.set()
+        dialog.reject()
+        window.deleteLater()
+
+
+@pytest.mark.parametrize('failure', ['browser', 'network', 'timeout', 'provider_error'])
+def test_failed_sign_in_can_be_retried(qapp, settings, failure):
+    from dialogs.account import AccountDialog
+    from utils.account_client import AccountError
+
+    class Retry(_Account):
+        def login(self, provider, **kwargs):
+            if not getattr(self, 'failed', False):
+                self.failed = True
+                raise AccountError(failure)
+            return super().login(provider, **kwargs)
+
+    window = QWidget()
+    client = window._account_client = Retry()
+    dialog = AccountDialog(window)
+    try:
+        dialog.terms.setChecked(True)
+        dialog.github_button.click()
+        _wait(qapp, lambda: dialog._job is None)
+        assert dialog.github_button.isEnabled() and dialog.google_button.isEnabled()
+        dialog.github_button.click()
+        _wait(qapp, lambda: dialog._job is None)
+        assert client.is_signed_in()
+    finally:
+        dialog.reject()
+        window.deleteLater()
+
+
+def test_switch_to_browser_while_terms_are_loading(qapp, settings):
+    from dialogs.account import AccountDialog, _ACTIVE_JOBS
+    entered, release = Event(), Event()
+
+    class Delayed(_Account):
+        def terms(self):
+            entered.set()
+            assert release.wait(5)
+            return super().terms()
+
+    window = QWidget()
+    client = window._account_client = Delayed()
+    dialog = AccountDialog(window)
+    try:
+        dialog.terms.setChecked(True)
+        dialog.github_button.click()
+        _wait(qapp, entered.is_set)
+        first_job = dialog._job
+        dialog.browser_button.click()
+        _wait(qapp, lambda: dialog._job is None)
+        assert client.current_user()['email'] == 'browser@example.test'
+        release.set()
+        _wait(qapp, lambda: first_job not in _ACTIVE_JOBS)
+        assert not any(isinstance(call, tuple) and call[0] == 'github' for call in client.calls)
+        assert client.current_user()['email'] == 'browser@example.test'
+    finally:
+        release.set()
         dialog.reject()
         window.deleteLater()
 

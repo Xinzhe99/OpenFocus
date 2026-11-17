@@ -9,6 +9,7 @@ import pytest
 
 pytest.importorskip('PyQt6')
 from PyQt6.QtTest import QTest
+from core.resource_policy import ResourceLimitError
 
 
 def _crash_child(connection, cancel_event, request, budget, directory, language):
@@ -27,6 +28,17 @@ def _abort_child(connection, cancel_event, request, budget, directory, language)
         import ctypes
         ctypes.windll.kernel32.SetErrorMode(3)
     os.abort()
+
+def _diagnostic_error_child(connection, cancel_event, request, budget, directory, language):
+    connection.send(('error', 'user-visible private detail', None,
+                     ('value', 'child_setup_or_transfer', 'unknown')))
+    connection.close()
+
+
+def _diagnostic_cancel_child(connection, cancel_event, request, budget, directory, language):
+    connection.send(('error', 'CANCELLED: render cancelled', None, None))
+    connection.close()
+
 
 
 def _render_with_prepared_cache(connection, cancel_event, request, budget, directory, language, failure):
@@ -162,19 +174,131 @@ def test_relay_keeps_stage_order_and_first_progress_per_stage(monkeypatch):
                         ('progress', 1, 3), ('progress', 3, 3),
                         ('stage', 'finish')]
 
+@pytest.mark.parametrize('exception, category', [
+    (lambda: ResourceLimitError('private'), 'resource_limit'),
+    (lambda: MemoryError('private'), 'memory'),
+    (lambda: OSError('private'), 'os'),
+    (lambda: ValueError('private'), 'value'),
+    (lambda: RuntimeError('private'), 'runtime'),
+    (lambda: TypeError('private'), 'other'),
+])
+def test_worker_captures_exception_type_without_changing_error(qapp, monkeypatch, exception, category):
+    from core.workers import RenderWorker
 
-@pytest.mark.parametrize('target, message', [
-    (_sharpen_failure_child, 'injected sharpen memory failure'),
-    (_store_failure_child, 'injected output store failure'),
+    worker = RenderWorker([], algorithm=None, need_fusion=False)
+    errors = []
+    worker.error_signal.connect(errors.append)
+
+    def fail():
+        raise exception()
+
+    monkeypatch.setattr(worker, '_run_admitted', fail)
+    worker.run()
+    assert errors == ['private']
+    assert worker._render_error_category == category
+
+
+def test_worker_cancellation_has_no_error_category(qapp, monkeypatch):
+    from core.registration import RegistrationCancelled
+    from core.workers import RenderWorker
+
+    worker = RenderWorker([], algorithm=None, need_fusion=False)
+    errors = []
+    worker.error_signal.connect(errors.append)
+
+    def cancel():
+        raise RegistrationCancelled()
+
+    monkeypatch.setattr(worker, '_run_admitted', cancel)
+    worker.run()
+    assert errors == ['CANCELLED: render cancelled']
+    assert worker._render_error_category is None
+
+
+def test_child_setup_failure_and_cancellation_packets(monkeypatch):
+    from contextlib import nullcontext
+    from threading import Event
+    from core import render_process
+    from core.registration import RegistrationCancelled
+    from utils import diagnostics, logging_setup
+
+    class Connection:
+        def __init__(self):
+            self.messages = []
+
+        def send(self, message):
+            self.messages.append(message)
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(logging_setup, 'setup_logging', lambda: None)
+    monkeypatch.setattr(diagnostics, 'install_exception_hooks', lambda: None)
+    monkeypatch.setattr(render_process.storage, 'restore_storage_directory', lambda directory: None)
+    monkeypatch.setattr(render_process, 'process_budget', lambda budget: nullcontext())
+    monkeypatch.setattr(render_process.storage, 'observe_temp_files', lambda callback: nullcontext())
+
+    class Decoder:
+        def __init__(self, **kwargs):
+            pass
+
+        def decode(self, request):
+            raise request
+
+    monkeypatch.setattr(render_process, 'FrameDecoder', Decoder)
+    connection = Connection()
+    render_process._render_child(connection, Event(), ValueError('private path'), None, None, 'en')
+    assert connection.messages == [('error', 'private path', None,
+                                    ('value', 'child_setup_or_transfer', 'prepare'))]
+    connection = Connection()
+    render_process._render_child(connection, Event(), RegistrationCancelled(), None, None, 'en')
+    assert connection.messages == [('error', 'CANCELLED: render cancelled', None, None)]
+
+
+@pytest.mark.parametrize('target, expected_event, expected_error', [
+    (_diagnostic_error_child, {'error_category': 'value', 'error_origin': 'child_setup_or_transfer',
+                               'render_stage': 'unknown'}, 'user-visible private detail'),
+    (_diagnostic_cancel_child, None, 'CANCELLED: render cancelled'),
+])
+def test_child_error_event_and_user_message(qapp, scratch, monkeypatch, target, expected_event, expected_error):
+    from core import render_process
+
+    events = []
+    monkeypatch.setattr(render_process, '_render_child', target)
+    monkeypatch.setattr(render_process, 'log_action', lambda event, **fields: events.append((event, fields)))
+    worker = render_process.RenderProcessWorker([], algorithm=None, need_fusion=False)
+    results, errors = _start(worker)
+    _wait(worker, qapp)
+    assert not results and errors == [expected_error]
+    assert events == ([] if expected_event is None else [('render_child_error', expected_event)])
+
+
+def test_relay_sanitizes_unknown_stage(monkeypatch):
+    from core.render_process import _Relay
+
+    relay = _Relay(None, None)
+    monkeypatch.setattr(relay, 'send', lambda message: None)
+    relay.stage('align')
+    assert relay.last_stage == 'align'
+    relay.stage('private stage')
+    assert relay.last_stage == 'unknown'
+    relay.stage('waiting')
+    assert relay.last_stage == 'unknown'
+
+
+@pytest.mark.parametrize('target, message, category', [
+    (_sharpen_failure_child, 'injected sharpen memory failure', 'resource_limit'),
+    (_store_failure_child, 'injected output store failure', 'os'),
 ])
 def test_failed_render_preserves_parent_cache_and_cleans_child_scratch(
-        qapp, tmp_path, scratch, monkeypatch, target, message):
+        qapp, tmp_path, scratch, monkeypatch, target, message, category):
     from core import frame_storage, render_process
 
     parent_cache = [frame_storage.store_frame(
         np.full((8, 9), 137, np.uint16), prefer_ram=False)]
     parent_path = Path(frame_storage.describe_frame(parent_cache[0])['path'])
     opened, cleaned, directories, warnings = [], set(), set(), []
+    events = []
     open_frame = frame_storage.open_frame
     cleanup = render_process._cleanup_files
     warning = render_process.logger.warning
@@ -194,6 +318,7 @@ def test_failed_render_preserves_parent_cache_and_cleans_child_scratch(
 
     monkeypatch.setattr(frame_storage, 'open_frame', record_open)
     monkeypatch.setattr(render_process, '_cleanup_files', record_cleanup)
+    monkeypatch.setattr(render_process, 'log_action', lambda event, **fields: events.append((event, fields)))
     monkeypatch.setattr(render_process.logger, 'warning', record_warning)
     frames = _sources(tmp_path)
     with monkeypatch.context() as patch:
@@ -207,6 +332,11 @@ def test_failed_render_preserves_parent_cache_and_cleans_child_scratch(
         _wait(worker, qapp)
 
     assert not results and len(errors) == 1 and message in errors[0]
+    assert len(events) == 1 and events[0][0] == 'render_child_error'
+    assert events[0][1]['error_category'] == category
+    assert events[0][1]['error_origin'] == 'child_worker'
+    assert events[0][1]['render_stage'] in ('prepare', 'align', 'fuse', 'finish')
+    assert len(events[0][1]) == 3
     assert worker.prepared_cache is parent_cache
     assert worker.alignment_report == [{'probe': 'alignment diagnostic'}]
     assert worker.alignment_report_provenance == {'probe': 'child'}

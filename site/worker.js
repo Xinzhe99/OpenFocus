@@ -153,6 +153,8 @@ async function mirroredRelease(env, key = MIRROR_MANIFEST) {
     if (!object || !object.body || object.size > 5000000) return null;
     const data = await new Response(object.body).json();
     if (!data || typeof data.tag !== "string" || !/^v[0-9A-Za-z._+-]+$/.test(data.tag)) return null;
+    if (key === MIRROR_MANIFEST && (!/^v[0-9]+(?:\.[0-9]+)*$/.test(data.tag) ||
+        data.tag.split(".").some((part) => /^0*999999999$/.test(part)) || data.actual_tag)) return null;
     if (key === PREVIEW_MANIFEST && !/^v[0-9]+(?:\.[0-9]+)*-beta\.[1-9][0-9]*$/.test(data.tag)) return null;
     if (key === PREVIEW_MANIFEST && data.tag.split("-beta.")[0].split(".").includes("999999999")) return null;
     const suffixes = {
@@ -172,6 +174,11 @@ async function mirroredRelease(env, key = MIRROR_MANIFEST) {
           !Number.isSafeInteger(asset.size) || asset.size <= 0) return null;
       if (!mirrorOnly && (!remote || decodeURIComponent(new URL(remote).pathname) !==
           `/${REPO}/releases/download/${data.tag}/${expected}`)) return null;
+    }
+    if (key === MIRROR_MANIFEST && Array.isArray(data.releases)) {
+      data.releases = data.releases.filter((release) => release &&
+        /^v[0-9]+(?:\.[0-9]+)*$/.test(release.tag_name || "") &&
+        !release.tag_name.split(".").some((part) => /^0*999999999$/.test(part)));
     }
     return data;
   } catch {
@@ -196,8 +203,11 @@ async function stableRelease(ctx, env) {
     try {
       const hit = await cache.match(key);
       if (hit) {
-        const body = await hit.text();
-        return new Response(body, { status: 200, headers: jsonHeaders() });
+        const data = await hit.json();
+        if (/^v[0-9]+(?:\.[0-9]+)*$/.test(data.tag || "") &&
+            !data.tag.split(".").some((part) => /^0*999999999$/.test(part)) && !data.actual_tag) {
+          return new Response(JSON.stringify(data), { status: 200, headers: jsonHeaders() });
+        }
       }
     } catch {
       // A cache miss or an unavailable cache must not fail the request.
@@ -228,7 +238,8 @@ async function stableRelease(ctx, env) {
   if (
     !release ||
     typeof release.tag_name !== "string" ||
-    !release.tag_name ||
+    !/^v[0-9]+(?:\.[0-9]+)*$/.test(release.tag_name) ||
+    release.tag_name.split(".").some((part) => /^0*999999999$/.test(part)) || release.prerelease || release.draft ||
     !Array.isArray(release.assets)
   ) {
     return latestFailure("GitHub release API returned an incomplete release", env);
@@ -314,24 +325,6 @@ function previewUpdate(preview) {
   return result;
 }
 
-async function latestRelease(ctx, env) {
-  const [stable, preview] = await Promise.all([
-    stableRelease(ctx, env),
-    mirroredRelease(env, PREVIEW_MANIFEST),
-  ]);
-  if (!stable.ok || !preview) return stable;
-  try {
-    const data = await stable.clone().json();
-    if (compareVersions(preview.tag, data.tag) > 0) {
-      return new Response(JSON.stringify(preview), {
-        headers: { ...jsonHeaders(), "X-OpenFocus-Release-Source": "mirror" },
-      });
-    }
-  } catch {
-    // Preserve the stable response if its metadata cannot be compared.
-  }
-  return stable;
-}
 
 /**
  * Parse one `bytes=` range against a known representation size.
@@ -636,7 +629,7 @@ async function handleDownload(request, env, ctx) {
 
   let latest;
   try {
-    latest = await latestRelease(ctx, env);
+    latest = await stableRelease(ctx, env);
   } catch {
     return badGateway("Latest release lookup failed", method);
   }
@@ -743,11 +736,15 @@ export default {
       if (method !== "GET" && method !== "HEAD") {
         return textResponse("Method Not Allowed", 405, { Allow: "GET, HEAD" }, method);
       }
+      const channel = url.searchParams.get("channel") || "stable";
+      if ((channel !== "stable" && channel !== "beta") || url.searchParams.getAll("channel").length > 1) {
+        return textResponse("Unknown update channel", 400, {}, method);
+      }
       const [stable, preview] = await Promise.all([
-        mirroredRelease(env), mirroredRelease(env, PREVIEW_MANIFEST),
+        mirroredRelease(env), channel === "beta" ? mirroredRelease(env, PREVIEW_MANIFEST) : null,
       ]);
       const candidate = preview && previewUpdate(preview);
-      const mirror = stable && candidate && compareVersions(preview.tag, stable.tag) > 0 ? candidate : stable;
+      const mirror = candidate && (!stable || compareVersions(preview.tag, stable.tag) > 0) ? candidate : stable;
       if (!mirror) return textResponse("Update mirror is unavailable", 503, { "Retry-After": "60" }, method);
       return new Response(method === "HEAD" ? null : JSON.stringify(mirror), {
         headers: { ...jsonHeaders(), "X-OpenFocus-Release-Source": "mirror" },
@@ -762,7 +759,7 @@ export default {
       if (method !== "GET" && method !== "HEAD") {
         return textResponse("Method Not Allowed", 405, { Allow: "GET, HEAD" }, method);
       }
-      const response = await latestRelease(ctx, env);
+      const response = await stableRelease(ctx, env);
       if (method === "HEAD") {
         return new Response(null, { status: response.status, headers: response.headers });
       }

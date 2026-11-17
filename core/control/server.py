@@ -161,8 +161,8 @@ def _stack_info(window):
 def _render_state(window):
     manager = getattr(window, "render_manager", None)
     worker = getattr(manager, "worker", None)
-    busy = bool((worker is not None and worker.isRunning())
-                or getattr(manager, '_pending_storage', None) is not None)
+    worker_running = worker is not None and worker.isRunning()
+    busy = bool(worker_running or getattr(manager, '_pending_storage', None) is not None)
     error = getattr(manager, "last_error", None)
     last_state = getattr(manager, "last_state", None)
     if busy or last_state == "running":
@@ -182,6 +182,8 @@ def _render_state(window):
     return {
         "state": state,
         "busy": busy,
+        "stage": (getattr(manager, "_render_progress_stage", None)
+                  if worker_running else None),
         "progress": ({"done": int(progress[0]), "total": int(progress[1])}
                      if progress else None),
         "method": (getattr(manager, "_render_context", None) or {}).get("algorithm")
@@ -1309,6 +1311,8 @@ class ControlServer(QObject):
     def _dialog_busy(dialog):
         if getattr(dialog, "_import_busy", False):
             return True
+        if getattr(dialog, "_source_loading", False):
+            return True
         sensor = getattr(dialog, "sensor_cleanup", None)
         if getattr(sensor, "_pending", False):
             return True
@@ -1425,6 +1429,9 @@ class ControlServer(QObject):
             from dialogs.scalebar import ScaleBarDialog
             dialog = ScaleBarDialog(window)
         elif name == "dust":
+            from core.experimental import experimental_enabled
+            if not experimental_enabled(window):
+                raise ControlError('invalid_argument', trans.t('experimental_locked_hint'))
             from dialogs.dustmap import DustMapDialog
             dialog = DustMapDialog(window)
         elif name == "retouch":

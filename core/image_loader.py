@@ -1052,6 +1052,8 @@ class ImageStackLoader:
             except (OSError, ValueError, rawpy.LibRawError):
                 # The ordered scan reports the original file error below.
                 continue
+        if self.should_cancel():
+            return False, 'CANCELLED', [], []
         per_worker = 64 * 1024 * 1024 + sensor_pixels * 4
         plan = plan_execution(Workload(algorithm='source_manifest', frames=len(paths),
                                        fixed_bytes=0, per_worker_bytes=per_worker,

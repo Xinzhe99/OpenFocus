@@ -21,6 +21,27 @@ def _snapshot(**changes):
     return replace(snapshot, **changes)
 
 
+def test_rejected_admissions_record_safe_snapshot_without_changing_decisions(monkeypatch):
+    events = []
+    monkeypatch.setattr(policy, 'log_action', lambda name, **fields: events.append((name, fields)))
+    snapshot = _snapshot()
+    policy.require_memory(1, snapshot)
+    assert events == []
+    with pytest.raises(policy.ResourceLimitError, match='Insufficient memory'):
+        policy.require_memory(100 * GiB, snapshot)
+    assert events == [('resource_admission', {'resource_status': 'insufficient',
+        'required_bytes': 100 * GiB, 'available_ram_bytes': 8 * GiB,
+        'total_ram_bytes': 16 * GiB, 'ram_ceiling': policy.ram_ceiling(snapshot)})]
+    events.clear()
+    with pytest.raises(policy.ResourceLimitError, match='could not be determined'):
+        policy.require_memory(10**16, _snapshot(available_ram=0))
+    assert events == [('resource_admission', {'resource_status': 'unknown',
+        'required_bytes': 10**15, 'total_ram_bytes': 16 * GiB})]
+    monkeypatch.setattr(policy, 'log_action', lambda *args, **kwargs: 1 / 0)
+    with pytest.raises(policy.ResourceLimitError, match='Insufficient memory'):
+        policy.require_memory(100 * GiB, snapshot)
+
+
 def _workload(**changes):
     workload = policy.Workload(algorithm="guided_filter", frames=10,
                                height=200, width=300, fixed_bytes=200,

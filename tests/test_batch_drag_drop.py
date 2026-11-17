@@ -703,8 +703,13 @@ def test_batch_depth_warning_only_appears_for_eight_bit_formats(qapp):
 
 def test_split_preview_tracks_current_reference_paths(qapp, tmp_path):
     from dialogs.batch import BatchProcessingDialog
+    from PyQt6.QtWidgets import QWidget
 
-    dialog = BatchProcessingDialog(None)
+    parent = QWidget()
+    parent.experimental_features = True
+    parent.current_fusion_method = lambda: 'none'
+    parent.current_alignment_method = lambda: 'none'
+    dialog = BatchProcessingDialog(parent)
     try:
         paths = [str(tmp_path / name) for name in ('a.png', 'b.png', 'c.png', 'flat.png')]
         dialog.single_folder_images_with_times = [(path, None, float(i), os.path.basename(path))
@@ -721,6 +726,7 @@ def test_split_preview_tracks_current_reference_paths(qapp, tmp_path):
     finally:
         dialog.close()
         dialog.deleteLater()
+        parent.deleteLater()
         qapp.processEvents()
 
 

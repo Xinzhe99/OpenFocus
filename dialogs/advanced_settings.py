@@ -294,6 +294,15 @@ class AdvancedSettingsDialog(QDialog):
             self.chk_auto_update.setChecked(True)
         other.addRow(trans.t("action_auto_download"), self.chk_auto_update)
         self.chk_auto_update.setToolTip(trans.t("action_auto_download_hint"))
+        self.chk_include_beta = QCheckBox()
+        self.chk_include_beta.setProperty("controlId", "chk_include_beta")
+        self.chk_include_beta.setChecked(bool(getattr(
+            getattr(w, "update_manager", None), "include_beta", False)))
+        self.chk_include_beta.setToolTip(trans.t("action_include_beta_hint"))
+        other.addRow(trans.t("action_include_beta"), self.chk_include_beta)
+        beta_hint = QLabel(trans.t("action_include_beta_hint"))
+        beta_hint.setWordWrap(True)
+        other.addRow("", beta_hint)
         self.chk_usage = QCheckBox()
         self.chk_usage.setProperty("controlId", "chk_usage")
         analytics = getattr(w, "usage_analytics", None)
@@ -419,6 +428,7 @@ class AdvancedSettingsDialog(QDialog):
         previous = {key: getattr(w, key, None) for key in draft}
         manager = getattr(w, "update_manager", None)
         previous_auto = manager.auto_download if manager is not None else None
+        previous_beta = getattr(manager, "include_beta", False)
         previous_storage = getattr(w, "storage_directory", "") or ""
         if draft["storage_directory"] != previous_storage:
             try:
@@ -446,6 +456,10 @@ class AdvancedSettingsDialog(QDialog):
                 manager.set_auto_download(self.chk_auto_update.isChecked())
                 if manager.auto_download != self.chk_auto_update.isChecked():
                     raise RuntimeError(trans.t("action_auto_download"))
+                if getattr(manager, "include_beta", False) != self.chk_include_beta.isChecked():
+                    manager.set_include_beta(self.chk_include_beta.isChecked())
+                if getattr(manager, "include_beta", False) != self.chk_include_beta.isChecked():
+                    raise RuntimeError(trans.t("action_include_beta"))
             if settings is not None:
                 settings.setValue(REPORTS_CHOICE_KEY, 'chosen')
             for key, value in draft.items():
@@ -480,6 +494,8 @@ class AdvancedSettingsDialog(QDialog):
             try:
                 if manager is not None and manager.auto_download != previous_auto:
                     manager.set_auto_download(previous_auto)
+                if manager is not None and getattr(manager, "include_beta", False) != previous_beta:
+                    manager.set_include_beta(previous_beta)
                 if hasattr(w, "persist_settings"):
                     w.persist_settings()
             except Exception:
