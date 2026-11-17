@@ -861,10 +861,10 @@ def heavy_job(should_cancel=None):
         if _HEAVY_JOB_LOCK.acquire(timeout=0.05):
             break
         waited += 1
-    if waited:
-        # Another heavy job held the lease; the wait is not processing time.
-        log_debug('heavy_job.waited', waited_ms=waited * 50)
     try:
+        if waited:
+            # Another heavy job held the lease; the wait is not processing time.
+            log_debug('heavy_job.waited', waited_ms=waited * 50)
         check_cancel()
         yield
     finally:

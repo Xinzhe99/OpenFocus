@@ -509,6 +509,42 @@ def test_heavy_job_releases_on_exception_and_preentry_cancellation():
     assert entered.is_set()
 
 
+def test_wait_diagnostic_failure_does_not_block_later_jobs(monkeypatch):
+    lock = threading.RLock()
+    waited = threading.Event()
+    checks = 0
+    monkeypatch.setattr(policy, '_HEAVY_JOB_LOCK', lock)
+
+    def should_cancel():
+        nonlocal checks
+        checks += 1
+        if checks >= 2:
+            waited.set()
+        return False
+
+    def fail_log(*args, **kwargs):
+        raise MemoryError('diagnostic allocation failed')
+
+    monkeypatch.setattr(policy, 'log_debug', fail_log)
+
+    def waiter():
+        with policy.heavy_job(should_cancel):
+            pytest.fail('work should not start after the diagnostic fails')
+
+    with lock:
+        call = _thread_call(waiter)
+        assert waited.wait(2), 'waiter never encountered lock contention'
+    with pytest.raises(MemoryError, match='diagnostic allocation failed'):
+        _result(call)
+
+    acquired = lock.acquire(timeout=1)
+    try:
+        assert acquired, 'later jobs could not acquire the heavy-job lock'
+    finally:
+        if acquired:
+            lock.release()
+
+
 def test_cancellation_after_acquiring_lease_releases_it():
     checks = iter((False, True))
     with pytest.raises(RegistrationCancelled):
