@@ -1495,6 +1495,7 @@ class RenderManager:
         self.worker.progress_signal.connect(self.on_render_progress)
         self.worker.stage_signal.connect(self.on_render_stage)
         window.statusBar().clearMessage()  # stale "loading…" etc.
+        self._render_progress_stage = 'waiting'
         self._show_progress_bar(trans.t('render_stage_waiting'))
         self.worker.start()
 
