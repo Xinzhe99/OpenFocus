@@ -77,7 +77,10 @@ depth processing requires sufficient host and verified device memory; otherwise
 bounded GPU activity and merging can still run. A compatible GPU driver and
 compiler are required. Unavailable devices and device failures fall back to CPU.
 See [GPU support](GPU_SUPPORT.md).
-OpenFocus A, OpenFocus C and application alignment use the CPU.
+With GPU acceleration enabled, OpenFocus C can run full-image pyramid fusion on
+a compatible OpenCL GPU; insufficient memory, an unavailable device or a device
+failure can cause CPU fallback. C's depth-map export uses the CPU. OpenFocus A
+and application alignment use the CPU.
 
 
 StackMFF V1 and V2 use retrained single-scale attention networks, each with
