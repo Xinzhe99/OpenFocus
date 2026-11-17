@@ -31,6 +31,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   transforms, cropping and output pixels are unchanged.
 
 ### Fixed
+- Remove temporary launch-film frames when full video generation fails or is
+  interrupted with Ctrl-C; preview frames remain available for inspection.
 - Keep sign-in methods available while a browser or email sign-in is pending;
   choosing another method or retrying cancels the previous attempt and ignores
   its late callbacks.

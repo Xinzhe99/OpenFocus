@@ -704,30 +704,30 @@ def main():
         print("preview frames:", out_dir)
         return
 
-    out_dir = Path(tempfile.mkdtemp(prefix="of_film_"))
-    frames = int(total * FPS)
-    print(f"rendering {frames} frames at {W}x{H}...")
-    for i in range(frames):
-        film.frame(i / FPS).save(out_dir / f"f{i:05d}.png")
-        if i % 90 == 0:
-            print(f"  {i}/{frames}", flush=True)
+    with tempfile.TemporaryDirectory(prefix="of_film_", ignore_cleanup_errors=True) as directory:
+        out_dir = Path(directory)
+        frames = int(total * FPS)
+        print(f"rendering {frames} frames at {W}x{H}...")
+        for i in range(frames):
+            film.frame(i / FPS).save(out_dir / f"f{i:05d}.png")
+            if i % 90 == 0:
+                print(f"  {i}/{frames}", flush=True)
 
-    audio = out_dir / "score.wav"
-    synth_audio(total, audio)
+        audio = out_dir / "score.wav"
+        synth_audio(total, audio)
 
-    ffmpeg = shutil.which("ffmpeg")
-    if ffmpeg is None:
-        raise RuntimeError("ffmpeg must be available on PATH")
-    cmd = [ffmpeg, "-y", "-loglevel", "error",
-           "-framerate", str(FPS), "-i", str(out_dir / "f%05d.png"),
-           "-i", str(audio),
-           "-c:v", "libx264", "-preset", "slow", "-crf", "19",
-           "-pix_fmt", "yuv420p", "-profile:v", "high", "-level", "4.1",
-           "-c:a", "aac", "-b:a", "192k", "-shortest",
-           "-movflags", "+faststart", args.out]
-    subprocess.run(cmd, check=True)
-    print("wrote", args.out, Path(args.out).stat().st_size // 1024 // 1024, "MB")
-    shutil.rmtree(out_dir, ignore_errors=True)
+        ffmpeg = shutil.which("ffmpeg")
+        if ffmpeg is None:
+            raise RuntimeError("ffmpeg must be available on PATH")
+        cmd = [ffmpeg, "-y", "-loglevel", "error",
+               "-framerate", str(FPS), "-i", str(out_dir / "f%05d.png"),
+               "-i", str(audio),
+               "-c:v", "libx264", "-preset", "slow", "-crf", "19",
+               "-pix_fmt", "yuv420p", "-profile:v", "high", "-level", "4.1",
+               "-c:a", "aac", "-b:a", "192k", "-shortest",
+               "-movflags", "+faststart", args.out]
+        subprocess.run(cmd, check=True)
+        print("wrote", args.out, Path(args.out).stat().st_size // 1024 // 1024, "MB")
 
 
 if __name__ == "__main__":
