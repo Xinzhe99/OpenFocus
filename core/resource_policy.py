@@ -85,6 +85,8 @@ class ResourceSnapshot:
     device_kind: str = "CPU"
     cpu_limit: float = 0
     physical_cores_known: bool = False
+    # Windows-reported commit headroom; None means unavailable, zero exhausted.
+    commit_headroom: Optional[int] = None
 
     @property
     def ram_known(self) -> bool:
@@ -327,12 +329,13 @@ def _gpu_memory(kind: str) -> tuple:
 
 
 def probe_memory() -> ResourceSnapshot:
-    """Read current RAM for admission without CPU topology or GPU queries."""
-    available, total = memory.system_memory_bytes()
+    """Read current physical and commit memory without CPU or GPU queries."""
+    available, total, commit_headroom = memory.admission_memory_bytes()
     return ResourceSnapshot(
         available_ram=int(available or 0),
         total_ram=int(total or 0),
         process_rss=int(memory.process_rss_bytes() or 0),
+        commit_headroom=commit_headroom,
     )
 
 
@@ -374,7 +377,10 @@ def _detected_ram_budget(snapshot: ResourceSnapshot) -> int:
     """Comfortable share the machine offers, before any child-job envelope."""
     if not snapshot.ram_known:
         return 0
-    return max(0, int(min(BUDGET_RATIO * snapshot.available_ram,
+    available = snapshot.available_ram
+    if snapshot.commit_headroom is not None:
+        available = min(available, max(0, snapshot.commit_headroom))
+    return max(0, int(min(BUDGET_RATIO * available,
                           _detected_ram_ceiling(snapshot))))
 
 
@@ -481,7 +487,10 @@ def _detected_ram_ceiling(snapshot: ResourceSnapshot) -> int:
         return 0
     reserve = max(RESERVE_BYTES,
                   min(int(RESERVE_RATIO * snapshot.total_ram), RESERVE_CAP_BYTES))
-    return max(0, int(snapshot.available_ram - reserve))
+    ceiling = max(0, int(snapshot.available_ram - reserve))
+    if snapshot.commit_headroom is not None:
+        ceiling = min(ceiling, max(0, snapshot.commit_headroom))
+    return ceiling
 
 
 def _log_memory_rejection(required_bytes, snapshot, ceiling):
@@ -493,6 +502,8 @@ def _log_memory_rejection(required_bytes, snapshot, ceiling):
             values['available_ram_bytes'] = snapshot.available_ram
         if snapshot.total_ram > 0:
             values['total_ram_bytes'] = snapshot.total_ram
+        if snapshot.commit_headroom is not None:
+            values['available_commit_bytes'] = snapshot.commit_headroom
         if snapshot.ram_known:
             values['ram_ceiling'] = ceiling
         details.update({key: min(int(value), 10**15) for key, value in values.items()
@@ -561,17 +572,22 @@ def make_process_budget(parent_frame_bytes: int = 0,
 def _account_consumed_headroom(snapshot: ResourceSnapshot) -> ResourceSnapshot:
     """Lower an admission snapshot by the headroom this process already used.
 
-    ``available_ram`` excludes everything already resident, so a current
-    reading covers this process's own RSS growth (imports, decoders) without
-    subtracting RSS a second time. It is a tightening pass only: a machine
-    that freed memory meanwhile does not widen the admitted envelope.
+    Physical and commit headroom already exclude allocations made so far.
+    A new reading can only tighten the admitted envelope; a machine that
+    freed memory meanwhile does not widen it.
     """
     if not snapshot.ram_known:
         return snapshot
     current = probe_memory()
-    if not current.ram_known or current.available_ram >= snapshot.available_ram:
+    available = (min(snapshot.available_ram, current.available_ram)
+                 if current.ram_known else snapshot.available_ram)
+    commit = snapshot.commit_headroom
+    if current.commit_headroom is not None:
+        commit = (current.commit_headroom if commit is None
+                  else min(commit, current.commit_headroom))
+    if available == snapshot.available_ram and commit == snapshot.commit_headroom:
         return snapshot
-    return replace(snapshot, available_ram=int(current.available_ram))
+    return replace(snapshot, available_ram=int(available), commit_headroom=commit)
 
 
 @contextmanager
