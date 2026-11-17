@@ -16,6 +16,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   with the published OpenCV packages. Their Python bindings do not expose the
   active parallel backend, so every warp ran on one core; the backend is now
   read from OpenCV's build summary. Output pixels are unchanged.
+- Release an older retained aligned mapping when a frame derived from it is
+  retained again. The new mapping's provenance kept the older one alive
+  beside it, outside the 2 GiB retention limit.
 
 
 
