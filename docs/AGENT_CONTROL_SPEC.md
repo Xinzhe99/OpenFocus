@@ -166,7 +166,7 @@ be written), persisted and applied to the next render. `app.state` reports it.
 |---|---|---|
 | `render.start` | `preview?`, `confirm?`, `roi_mode?`, `roi_base_index?` | `{started, render_id, method, alignment, preview, storage?}` |
 | `render.cancel` | — | `{cancelling:true}` |
-| `render.state` | — | `{state, render_id, busy, progress:{done,total}, method, result, error}` |
+| `render.state` | — | `{state, render_id, busy, stage, progress:{done,total}, method, result, error}` |
 | `render.result` | — | result metadata + selected output record + `performance?` |
 
 `performance` is the report of the most recent profiled render (see
@@ -175,6 +175,10 @@ be written), persisted and applied to the next render. `app.state` reports it.
 ran, with `outcome` set accordingly.
 
 `state` is `idle`, `rendering`, `done`, `cancelled`, `discarded` or `error`.
+`stage` is the last reported active worker stage (`waiting`, `prepare`, `align`,
+`fuse`, `finish` or `cancelling`), or `null` when no worker is running. It
+helps identify where a render is waiting; it is not an exact call stack.
+
 A cancelled render and a result discarded because the stack changed while it
 ran are terminal failures, not `done`, even when an older `fusion_result`
 still exists. `render.start` answers `confirm_required` instead of opening the

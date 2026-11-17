@@ -1508,6 +1508,21 @@ def test_render_state_keeps_cancelled_and_discarded_terminal(server, control_win
         control_window.fusion_result = None
 
 
+def test_render_state_reports_only_the_active_worker_stage(server, control_window, monkeypatch):
+    manager = control_window.render_manager
+    class Worker:
+        running = True
+        def isRunning(self):
+            return self.running
+
+    worker = Worker()
+    monkeypatch.setattr(manager, 'worker', worker)
+    monkeypatch.setattr(manager, '_render_progress_stage', 'align', raising=False)
+    assert call(server, 'render.state')['result']['stage'] == 'align'
+    worker.running = False
+    assert call(server, 'render.state')['result']['stage'] is None
+
+
 def test_render_state_is_idle_without_a_finished_render(server, control_window):
     control_window.fusion_result = np.zeros((4, 4, 3), np.uint8)
     try:

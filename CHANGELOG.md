@@ -18,6 +18,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   figures in sanitized reports, without adding exception messages or paths.
 - Require an account to enter the desktop application; a saved sign-in can be
   used offline. Signing out returns to the sign-in screen.
+- Expose the active render stage through the local control channel.
 - Mark Dust Map and batch flat-field correction as experimental desktop tools.
 - Default desktop updates and public downloads to stable releases. Users can
   opt in to beta updates through Advanced Settings or the welcome dialog.
