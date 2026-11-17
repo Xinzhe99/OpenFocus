@@ -43,6 +43,45 @@ def _windows_memory():
     return int(stat.ullAvailPhys), int(stat.ullTotalPhys)
 
 
+def _windows_job_process_limit():
+    """Return the immediate job's process commit limit, if exposed."""
+    import ctypes
+    from ctypes import wintypes
+
+    class BasicLimits(ctypes.Structure):
+        _fields_ = [("process_time", ctypes.c_longlong), ("job_time", ctypes.c_longlong),
+                    ("flags", wintypes.DWORD), ("minimum_working_set", ctypes.c_size_t),
+                    ("maximum_working_set", ctypes.c_size_t), ("active_limit", wintypes.DWORD),
+                    ("affinity", ctypes.c_size_t), ("priority", wintypes.DWORD),
+                    ("scheduling", wintypes.DWORD)]
+
+    class IoCounters(ctypes.Structure):
+        _fields_ = [(name, ctypes.c_ulonglong) for name in (
+            "read_operations", "write_operations", "other_operations",
+            "read_bytes", "write_bytes", "other_bytes")]
+
+    class ExtendedLimits(ctypes.Structure):
+        _fields_ = [("basic", BasicLimits), ("io", IoCounters),
+                    ("process_memory", ctypes.c_size_t), ("job_memory", ctypes.c_size_t),
+                    ("peak_process_memory", ctypes.c_size_t), ("peak_job_memory", ctypes.c_size_t)]
+
+    try:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.QueryInformationJobObject.argtypes = [
+            wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD,
+            ctypes.POINTER(wintypes.DWORD)]
+        kernel32.QueryInformationJobObject.restype = wintypes.BOOL
+        limits = ExtendedLimits()
+        if not kernel32.QueryInformationJobObject(None, 9, ctypes.byref(limits),
+                                                  ctypes.sizeof(limits), None):
+            return None
+        if limits.basic.flags & 0x100:  # JOB_OBJECT_LIMIT_PROCESS_MEMORY
+            return int(limits.process_memory)
+    except (OSError, AttributeError):
+        return None
+    return None
+
+
 def _macos_memory():
     """Physical total and reclaimable pages from Darwin's native VM counters."""
     import ctypes
@@ -131,15 +170,21 @@ def system_memory_bytes():
 
 
 def admission_memory_bytes():
-    """Return available/total physical bytes and optional commit headroom."""
+    """Return physical bytes, reported commit and immediate-job headroom."""
     try:
         if sys.platform == "win32":
             stat = _windows_memory_status()
-            return int(stat.ullAvailPhys), int(stat.ullTotalPhys), int(stat.ullAvailPageFile)
+            commit = int(stat.ullAvailPageFile)
+            limit = _windows_job_process_limit()
+            job_headroom = None
+            if limit is not None:
+                counters = _process_counters(extended=True)
+                job_headroom = max(0, limit - int(counters.PrivateUsage)) if counters else 0
+            return int(stat.ullAvailPhys), int(stat.ullTotalPhys), commit, job_headroom
         available, total = system_memory_bytes()
-        return available, total, None
+        return available, total, None, None
     except Exception:
-        return 0, 0, None
+        return 0, 0, None, None
 
 
 def available_memory_bytes() -> int:
