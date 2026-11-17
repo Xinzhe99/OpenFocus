@@ -28,9 +28,11 @@ def settings_window(qapp):
     window.ask_load_scale = True
     window.saved = []
     window.persist_settings = lambda: window.saved.append(window.tile_block_size)
-    window.update_manager = SimpleNamespace(auto_download=True)
+    window.update_manager = SimpleNamespace(auto_download=True, include_beta=False)
     window.update_manager.set_auto_download = lambda value: setattr(
         window.update_manager, "auto_download", value)
+    window.update_manager.set_include_beta = lambda value: setattr(
+        window.update_manager, "include_beta", value)
     yield window
     window.deleteLater()
     qapp.processEvents()
@@ -76,10 +78,12 @@ def test_settings_overlap_is_visible_and_cancel_is_a_draft(settings_window):
     assert dialog.spin_overlap.maximum() == 128
     assert dialog.spin_overlap.value() == 128
     dialog.chk_auto_update.setChecked(False)
+    dialog.chk_include_beta.setChecked(True)
     dialog.reject()
     assert settings_window.tile_block_size == 1024
     assert settings_window.tile_overlap == 256
     assert settings_window.update_manager.auto_download
+    assert not settings_window.update_manager.include_beta
     assert not settings_window.saved
     dialog.deleteLater()
 
@@ -318,12 +322,55 @@ def test_settings_submit_commits_visible_values_and_update_preference(settings_w
     dialog = AdvancedSettingsDialog(settings_window)
     dialog.spin_block.setValue(256)
     dialog.chk_auto_update.setChecked(False)
+    dialog.chk_include_beta.setChecked(True)
     dialog._apply()
     assert dialog.result() == QDialog.DialogCode.Accepted
     assert settings_window.tile_block_size == 256
     assert settings_window.tile_overlap == 128
     assert settings_window.update_manager.auto_download is False
+    assert settings_window.update_manager.include_beta is True
     assert settings_window.saved == [256]
+    dialog.deleteLater()
+
+
+def test_beta_preference_in_welcome_and_settings(settings_window):
+    from dialogs.advanced_settings import AdvancedSettingsDialog
+    from dialogs.welcome import WelcomeDialog
+
+    welcome = WelcomeDialog(settings_window, main_window=settings_window)
+    assert not welcome.chk_include_beta.isChecked()
+    welcome.chk_include_beta.setChecked(True)
+    assert settings_window.update_manager.include_beta
+    welcome.close()
+
+    welcome = WelcomeDialog(settings_window, main_window=settings_window)
+    assert welcome.chk_include_beta.isChecked()
+    welcome.close()
+
+    dialog = AdvancedSettingsDialog(settings_window)
+    assert dialog.chk_include_beta.isChecked()
+    dialog.chk_include_beta.setChecked(False)
+    dialog._apply()
+    assert dialog.result() == QDialog.DialogCode.Accepted
+    assert not settings_window.update_manager.include_beta
+    welcome = WelcomeDialog(settings_window, main_window=settings_window)
+    assert not welcome.chk_include_beta.isChecked()
+    welcome.close()
+    dialog.deleteLater()
+
+
+def test_beta_preference_rolls_back_if_settings_save_fails(settings_window):
+    from dialogs.advanced_settings import AdvancedSettingsDialog
+
+    def fail():
+        raise OSError("settings unavailable")
+
+    settings_window.persist_settings = fail
+    dialog = AdvancedSettingsDialog(settings_window)
+    dialog.chk_include_beta.setChecked(True)
+    dialog._apply()
+    assert not settings_window.update_manager.include_beta
+    assert dialog.result() != QDialog.DialogCode.Accepted
     dialog.deleteLater()
 
 

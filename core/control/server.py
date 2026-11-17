@@ -1309,6 +1309,8 @@ class ControlServer(QObject):
     def _dialog_busy(dialog):
         if getattr(dialog, "_import_busy", False):
             return True
+        if getattr(dialog, "_source_loading", False):
+            return True
         sensor = getattr(dialog, "sensor_cleanup", None)
         if getattr(sensor, "_pending", False):
             return True
@@ -1425,6 +1427,9 @@ class ControlServer(QObject):
             from dialogs.scalebar import ScaleBarDialog
             dialog = ScaleBarDialog(window)
         elif name == "dust":
+            from core.experimental import experimental_enabled
+            if not experimental_enabled(window):
+                raise ControlError('invalid_argument', trans.t('experimental_locked_hint'))
             from dialogs.dustmap import DustMapDialog
             dialog = DustMapDialog(window)
         elif name == "retouch":

@@ -1,6 +1,7 @@
 """First-run welcome dialog: quick start guide + theme choice."""
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
+    QCheckBox,
     QDialog,
     QGroupBox,
     QHBoxLayout,
@@ -53,6 +54,19 @@ class WelcomeDialog(QDialog):
             self._theme_buttons[code] = btn
             theme_row.addWidget(btn)
         layout.addLayout(theme_row)
+
+        manager = getattr(self._main_window, 'update_manager', None)
+        self.chk_include_beta = QCheckBox(trans.t('action_include_beta'))
+        self.chk_include_beta.setProperty('controlId', 'chk_include_beta')
+        self.chk_include_beta.setChecked(bool(getattr(manager, 'include_beta', False)))
+        self.chk_include_beta.setToolTip(trans.t('action_include_beta_hint'))
+        self.chk_include_beta.setEnabled(manager is not None)
+        if manager is not None:
+            self.chk_include_beta.toggled.connect(manager.set_include_beta)
+        layout.addWidget(self.chk_include_beta)
+        beta_hint = QLabel(trans.t('action_include_beta_hint'))
+        beta_hint.setWordWrap(True)
+        layout.addWidget(beta_hint)
 
         # Demo stack: zero-friction first success
         demo_row = QHBoxLayout()

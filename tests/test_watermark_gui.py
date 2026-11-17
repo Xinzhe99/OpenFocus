@@ -495,6 +495,28 @@ def test_numeric_controls_reserve_suffix_width(qapp, theme, font_delta):
         qapp.processEvents()
 
 
+def test_programmatic_text_updates_preview_and_apply(qapp):
+    from PyQt6.QtTest import QTest
+    from dialogs.watermark import WatermarkDialog
+    from utils.image_utils import pixmap_to_cv2
+
+    image = _image()
+    window = _DialogHost(source=image)
+    dialog = WatermarkDialog(window)
+    assert not dialog._ok_button.isEnabled()
+
+    dialog.text_edit.setText("Creator")
+    QTest.qWait(150)
+    assert dialog._ok_button.isEnabled(), dialog._error.text()
+    expected = wm.burn(image, wm.normalize_config({"text": "© Creator"}))
+    assert np.array_equal(pixmap_to_cv2(dialog.preview_lbl._base_pixmap), expected)
+
+    dialog.text_edit.clear()
+    QTest.qWait(150)
+    assert not dialog._ok_button.isEnabled()
+    dialog.close()
+
+
 def test_empty_text_keeps_apply_disabled(qapp):
     from dialogs.watermark import WatermarkDialog
 

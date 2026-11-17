@@ -163,6 +163,33 @@ def test_batch_output_panel_lists_folders_only_without_fusion(qapp, tmp_path):
     assert window.output_list.item(0).text() == 'stack.png'
 
 
+@pytest.mark.parametrize('outcome', ['finished', 'error'])
+def test_batch_summary_releases_previous_progress_dialog(qapp, outcome):
+    from controllers.batch_manager import BatchManager
+
+    window = host(qapp)
+    manager = BatchManager(window)
+    manager._initialise_progress_dialog(1)
+    previous = manager._progress_dialog
+    replacements = []
+
+    def show_summary(**_):
+        assert previous.isHidden()
+        manager._initialise_progress_dialog(1)
+        replacements.append(manager._progress_dialog)
+
+    manager._show_message = show_summary
+    if outcome == 'finished':
+        manager._handle_finished({'success': 1, 'total': 1})
+    else:
+        manager._handle_error('failed')
+
+    assert manager._progress_dialog is replacements[0]
+    assert not replacements[0].isHidden()
+    manager._close_progress_dialog()
+    window.close()
+
+
 def test_explicit_encoding_and_duplicate_stems_do_not_overwrite(qapp, tmp_path):
     source = make_stack(tmp_path / 'stack', ('frame.png', 'frame.tif'))
     _, result = run_batch([source], tmp_path / 'out', format='jpg')

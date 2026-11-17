@@ -350,12 +350,12 @@ test("mirror metadata keeps downloads available when GitHub is rate limited", as
   assert.equal(await download.text(), "234");
 });
 
-test("website selects only a newer numeric preview and final releases win ties", async () => {
+test("opted-in updates select the newest version and stable wins ties", async () => {
   for (const [stableTag, previewTag, expected] of [
-    ["v1.76.9", "v1.77.0-beta.3", "v1.77.0-beta.3"],
+    ["v1.76.9", "v1.77.0-beta.3", "v1.77.0.999999999.3"],
     ["v1.78.0", "v1.77.0-beta.3", "v1.78.0"],
     ["v1.77.0", "v1.77.0-beta.3", "v1.77.0"],
-    ["v1.9.0", "v1.10.0-beta.12", "v1.10.0-beta.12"],
+    ["v1.9.0", "v1.10.0-beta.12", "v1.10.0.999999999.12"],
     ["v1.77", "v1.77.0-beta.3", "v1.77"],
   ]) {
     installCache();
@@ -366,9 +366,15 @@ test("website selects only a newer numeric preview and final releases win ties",
         name: asset.name, size: asset.size, browser_download_url: asset.url,
       })),
     } });
-    const env = makeEnv({ "openfocus-meta/beta-release.json": manifestBytes(manifestFor(previewTag)) });
-    const response = await run("https://openfocus.top/api/latest", { env });
+    const env = makeEnv({
+      "openfocus-meta/latest-release.json": manifestBytes(stable),
+      "openfocus-meta/beta-release.json": manifestBytes(manifestFor(previewTag)),
+    });
+    const response = await run("https://openfocus.top/api/updates?channel=beta", { env });
     assert.equal((await response.json()).tag, expected);
+    for (const url of ["/api/latest", "/api/updates", "/api/updates?channel=stable"]) {
+      assert.equal((await (await run(`https://openfocus.top${url}`, { env })).json()).tag, stableTag);
+    }
   }
 });
 
@@ -386,7 +392,7 @@ test("preview downloads and update aliases work offline", async () => {
     [NAMES["windows-setup"]]: PAYLOAD,
   });
   const latest = await run("https://openfocus.top/api/latest", { env });
-  assert.equal((await latest.json()).tag, preview.tag);
+  assert.equal((await latest.json()).tag, stable.tag);
   for (const [method, headers, status, body] of [
     ["GET", {}, 200, "0123456789"],
     ["HEAD", {}, 200, ""],
@@ -399,7 +405,7 @@ test("preview downloads and update aliases work offline", async () => {
     if (status === 206) assert.equal(response.headers.get("content-range"), "bytes 2-4/10");
     assert.equal(await response.text(), body);
   }
-  const updates = await run("https://openfocus.top/api/updates", { env });
+  const updates = await run("https://openfocus.top/api/updates?channel=beta", { env });
   const update = await updates.json();
   assert.equal(update.tag, "v1.77.0.999999999.3");
   assert.equal(update.actual_tag, preview.tag);
@@ -428,7 +434,7 @@ test("preview downloads and update aliases work offline", async () => {
     "openfocus-meta/beta-release.json": manifestBytes(preview),
     [name]: PAYLOAD,
   });
-  const finalUpdate = await run("https://openfocus.top/api/updates", { env: finalEnv });
+  const finalUpdate = await run("https://openfocus.top/api/updates?channel=beta", { env: finalEnv });
   assert.equal((await finalUpdate.json()).tag, "v1.77.0");
   const pinned = await run(aliasUrl, { env: finalEnv });
   assert.equal(await pinned.text(), "0123456789");
@@ -445,7 +451,7 @@ test("updates fall back to stable for older or unverifiable previews", async () 
       "openfocus-meta/latest-release.json": manifestBytes(stable),
       "openfocus-meta/beta-release.json": manifestBytes(preview),
     });
-    const response = await run("https://openfocus.top/api/updates", { env });
+    const response = await run("https://openfocus.top/api/updates?channel=beta", { env });
     assert.deepEqual(await response.json(), stable);
   }
 });
@@ -463,7 +469,7 @@ test("invalid or missing preview never pollutes the stable edge cache", async ()
   ];
   const previewKey = "openfocus-meta/beta-release.json";
   let response = await run("https://openfocus.top/api/latest", { env: makeEnv({ [previewKey]: manifestBytes(valid) }) });
-  assert.equal((await response.json()).tag, valid.tag);
+  assert.equal((await response.json()).tag, TAG);
   for (const bad of invalid) {
     response = await run("https://openfocus.top/api/latest", { env: makeEnv({ [previewKey]: manifestBytes(bad) }) });
     assert.equal((await response.json()).tag, TAG);
@@ -471,6 +477,19 @@ test("invalid or missing preview never pollutes the stable edge cache", async ()
   response = await run("https://openfocus.top/api/latest", { env: makeEnv() });
   assert.equal((await response.json()).tag, TAG);
   assert.equal(calls(), 1);
+  response = await run("https://openfocus.top/api/updates?channel=other", { env: makeEnv() });
+  assert.equal(response.status, 400);
+  const poisoned = makeEnv({ "openfocus-meta/latest-release.json": manifestBytes(valid) });
+  response = await run("https://openfocus.top/api/updates", { env: poisoned });
+  assert.equal(response.status, 503);
+});
+
+test("beta channel can use a verified preview when stable metadata is unavailable", async () => {
+  const preview = manifestFor("v1.78.0-beta.1");
+  const env = makeEnv({ "openfocus-meta/beta-release.json": manifestBytes(preview) });
+  assert.equal((await run("https://openfocus.top/api/updates", { env })).status, 503);
+  const response = await run("https://openfocus.top/api/updates?channel=beta", { env });
+  assert.equal((await response.json()).actual_tag, preview.tag);
 });
 
 test("split Windows release is served from its complete, verified mirror", async () => {
