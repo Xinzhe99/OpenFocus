@@ -1,4 +1,4 @@
-"""OpenFocus B device selection and deterministic CPU/OpenCL parity."""
+"""OpenFocus B/C device selection and deterministic CPU/OpenCL parity."""
 import numpy as np
 import pytest
 
@@ -28,6 +28,107 @@ def test_opencl_matches_cpu_for_lazy_sources(dtype, channels, resize):
     actual = gpu.fuse(lazy, img_resize=resize, thread_count=1)
     assert cpu.get_info()['device'] == 'CPU'
     assert gpu.get_info()['device'] != 'CPU', 'GPU job silently fell back to CPU'
+    np.testing.assert_array_equal(actual, expected)
+
+
+@pytest.mark.parametrize('dtype,channels,resize,smoothing', [
+    (np.uint8, 1, None, 0.),
+    (np.uint8, 3, (51, 49), 4.),
+    (np.uint16, 1, None, 4.),
+    (np.uint16, 3, None, 0.),
+    (np.float32, 3, None, 4.),
+])
+def test_openfocus_c_gpu_matches_cpu_and_reports_device(
+        dtype, channels, resize, smoothing, monkeypatch):
+    from fusion_methods import _openfocus_gpu
+    if not _openfocus_gpu.gpu_available():
+        pytest.skip('No OpenCL GPU is available')
+    monkeypatch.setattr(_openfocus_gpu, '_free_vram',
+                        lambda device: (int(device.global_mem_size),
+                                        int(device.global_mem_size)))
+    if dtype == np.float32:
+        rng = np.random.default_rng(4019)
+        frames = [rng.uniform(0, 255, (65, 67, channels)).astype(dtype)
+                  for _ in range(3)]
+    else:
+        frames = _stack(dtype, channels)
+    lazy = [process_frame(frame, lambda image: image.copy()) for frame in frames]
+    options = dict(algorithm='openfocus_c', exposure_match=False,
+                   base_frame='none', sort_mode='off')
+    cpu = MultiFocusFusion(use_gpu=False, **options)
+    gpu = MultiFocusFusion(use_gpu=True, **options)
+    expected = cpu.fuse(lazy, img_resize=resize, thread_count=1, smoothing=smoothing)
+    actual = gpu.fuse(lazy, img_resize=resize, thread_count=1, smoothing=smoothing)
+    assert cpu.get_info()['device'] == 'CPU'
+    assert gpu.get_info()['device'].startswith('OpenCL: ')
+    np.testing.assert_array_equal(actual, expected)
+
+
+def test_openfocus_c_missing_opencl_falls_back(monkeypatch):
+    import builtins
+    frames = _stack(np.uint8, 3)
+    options = dict(algorithm='openfocus_c', exposure_match=False,
+                   base_frame='none', sort_mode='off')
+    expected = MultiFocusFusion(use_gpu=False, **options).fuse(frames, thread_count=1)
+    original_import = builtins.__import__
+
+    def without_opencl(name, *args, **kwargs):
+        if name == 'pyopencl':
+            raise ModuleNotFoundError('pyopencl unavailable')
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, '__import__', without_opencl)
+    fusion = MultiFocusFusion(use_gpu=True, **options)
+    actual = fusion.fuse(frames, thread_count=1)
+    assert fusion.get_info()['device'] == 'CPU'
+    np.testing.assert_array_equal(actual, expected)
+
+
+def test_openfocus_c_device_failure_falls_back_with_monotonic_progress(monkeypatch):
+    from types import SimpleNamespace
+    from fusion_methods._openfocus_gpu_c import GpuC
+
+    class DeviceError(Exception):
+        pass
+
+    def initialize(self):
+        self.cl = SimpleNamespace(Error=DeviceError)
+
+    def fail(self, frames, shape, resize, smoothing, cancel, progress):
+        progress(1, len(frames) + 1)
+        raise DeviceError('device lost')
+
+    frames = _stack(np.uint8, 3)
+    options = dict(algorithm='openfocus_c', exposure_match=False,
+                   base_frame='none', sort_mode='off')
+    expected = MultiFocusFusion(use_gpu=False, **options).fuse(frames, thread_count=1)
+    monkeypatch.setattr(GpuC, '__init__', initialize)
+    monkeypatch.setattr(GpuC, '_fuse_locked', fail)
+    progress = []
+    fusion = MultiFocusFusion(use_gpu=True, **options)
+    actual = fusion.fuse(frames, thread_count=1,
+                         progress_callback=lambda current, total: progress.append(current))
+    assert progress == sorted(progress)
+    assert progress[-1] == len(frames) + 1
+    assert fusion.get_info()['device'] == 'CPU'
+    np.testing.assert_array_equal(actual, expected)
+
+
+def test_openfocus_c_unknown_gpu_memory_falls_back(monkeypatch):
+    from fusion_methods import _openfocus_gpu
+    if not _openfocus_gpu.gpu_available():
+        pytest.skip('No OpenCL GPU is available')
+    device = _openfocus_gpu._device(__import__('pyopencl'))
+    if device.host_unified_memory:
+        pytest.skip('Discrete GPU required')
+    monkeypatch.setattr(_openfocus_gpu, '_free_vram', lambda device: None)
+    frames = _stack(np.uint8, 3)
+    options = dict(algorithm='openfocus_c', exposure_match=False,
+                   base_frame='none', sort_mode='off')
+    expected = MultiFocusFusion(use_gpu=False, **options).fuse(frames, thread_count=1)
+    fusion = MultiFocusFusion(use_gpu=True, **options)
+    actual = fusion.fuse(frames, thread_count=1)
+    assert fusion.get_info()['device'] == 'CPU'
     np.testing.assert_array_equal(actual, expected)
 
 

@@ -755,7 +755,7 @@ Der Planer berücksichtigt physische Kerne, CPU-Affinität und Kontingente und f
 
 StackMFF V1/V2/V3 nutzen ONNX Runtime. DirectML unter Windows und CoreML unter macOS können die Inferenz beschleunigen; andernfalls wird die CPU verwendet. Die Verfügbarkeit eines Providers belegt keine GPU-Ausführung. Weitere GPU-Unterstützung muss validiert werden.
 
-OpenFocus B kann Tiefenverarbeitung und Quellenzusammenführung mit einer kompatiblen OpenCL-GPU beschleunigen; je nach Speicherbudget sind begrenzte GPU-Schritte oder CPU-Rückfall möglich. OpenFocus A/C und Ausrichtung laufen auf der CPU. Siehe [GPU-Unterstützung](GPU_SUPPORT.md).
+OpenFocus B kann Tiefenverarbeitung und Quellenzusammenführung mit einer kompatiblen OpenCL-GPU beschleunigen; je nach Speicherbudget sind begrenzte GPU-Schritte oder CPU-Rückfall möglich. Bei aktivierter GPU-Beschleunigung kann OpenFocus C die Ganzbild-Pyramidenfusion auf einer kompatiblen OpenCL-GPU ausführen; bei unzureichendem Speicher oder Geräte- bzw. Treiberproblemen fällt es auf die CPU zurück. Der Tiefenkartenexport von C verwendet die CPU. OpenFocus A und Ausrichtung laufen auf der CPU. Siehe [GPU-Unterstützung](GPU_SUPPORT.md).
 
 - Umschalten über **Einstellungen → GPU-Beschleunigung**
 - Deaktivieren zwingt unterstützte Fusionsmethoden auf die CPU – nützlich bei Problemen mit GPU-Treibern
