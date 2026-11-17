@@ -1,4 +1,5 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from PyQt6.QtCore import QSettings
@@ -8,13 +9,15 @@ from core.control import client
 from tools import agent_action_sweep
 
 
-def test_tool_launch_seeds_only_private_settings(tmp_path, monkeypatch):
+@pytest.mark.parametrize('platform_name', ['nt', 'posix'])
+def test_tool_launch_seeds_only_private_settings(tmp_path, monkeypatch, platform_name):
     user = tmp_path / "user"
     user.mkdir()
     profile = user / "settings.ini"
     profile.write_text("[ui]\nexperimental_features=false\n", encoding="utf-8")
     original = profile.read_bytes()
     monkeypatch.setenv("OPENFOCUS_DATA_DIR", str(user))
+    monkeypatch.setattr(client, 'os', SimpleNamespace(name=platform_name, environ=client.os.environ))
     captured = {}
 
     def launch(socket_name, timeout, env):
@@ -29,7 +32,11 @@ def test_tool_launch_seeds_only_private_settings(tmp_path, monkeypatch):
     assert private != user
     assert settings.value("ui/experimental_features", type=bool)
     assert settings.value("account/intro_version") == app_display_version()
-    assert result["discovery"]["socket"].startswith("OpenFocus-tool-control-")
+    socket = result["discovery"]["socket"]
+    if client.os.name == 'posix':
+        assert socket == f"/tmp/ofc-{private.name}"
+    else:
+        assert socket.startswith("OpenFocus-tool-control-")
     assert profile.read_bytes() == original
     assert client.os.environ["OPENFOCUS_DATA_DIR"] == str(user)
 
