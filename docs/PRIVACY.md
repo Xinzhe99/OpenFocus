@@ -55,6 +55,13 @@ are independent of account sign-in and diagnostic reporting.
   allowlisted OpenFocus file and function names and line numbers, but not raw
   crash text, memory addresses, user file names or paths. Reports exclude image
   pixels, image and project files, credentials and arbitrary user-entered text.
+  Render-child errors may include a fixed error category, origin and last
+  reported render stage; that stage does not establish where the error occurred.
+  Rejected memory admissions may include a fixed unknown or insufficient status
+  and bounded required, available, total and ceiling byte counts when known.
+  An unavailable memory measurement is omitted, not reported as zero. A Python
+  traceback may include the timestamp from its immediately preceding error log
+  header when available. Arbitrary error messages and source code are excluded.
   Reports retain at most the most recent 2,000 recognized events from a bounded
   log tail and indicate detected omissions; older rotated logs may already be gone.
   Failed reports can be stored locally for bounded retries, with at most three

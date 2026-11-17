@@ -59,6 +59,39 @@ def test_linear_stack_cancel_does_not_replace_previous_stack(monkeypatch):
     assert loader.images[0] is old and calls == ['a.cr3']
 
 
+def test_linear_stack_cancel_during_last_header_skips_resource_admission(monkeypatch):
+    import rawpy
+    from core import resource_policy
+
+    cancelled = False
+
+    class RawHeader:
+        sizes = SimpleNamespace(raw_width=10, raw_height=10, width=10, height=10)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            pass
+
+        def open_file(self, _path):
+            nonlocal cancelled
+            cancelled = True
+
+    monkeypatch.setattr(rawpy, 'RawPy', RawHeader)
+    monkeypatch.setattr(resource_policy, 'plan_execution',
+                        lambda *_args, **_kwargs: pytest.fail('cancelled load planned resources'))
+    loader = ImageStackLoader()
+    previous = object()
+    loader.images = [previous]
+    loader.should_cancel = lambda: cancelled
+
+    ok, message, frames, names = loader.load_linear_raw_stack(['last.cr3'])
+
+    assert not ok and message == 'CANCELLED' and frames == [] and names == []
+    assert loader.images == [previous]
+
+
 @pytest.mark.parametrize('mismatch', [False, True])
 def test_linear_manifest_preserves_input_order_when_scans_finish_out_of_order(monkeypatch, mismatch):
     import threading
