@@ -193,6 +193,7 @@ class StackLoadWorker(QThread):
             self.loader.progress_callback = self.progress.emit
             try:
                 with heavy_job(lambda: self.is_cancelled):
+                    log_action('stack_load.admitted')
                     if self.is_cancelled:
                         operation.cancel()
                         self._previous_loader_state.clear()

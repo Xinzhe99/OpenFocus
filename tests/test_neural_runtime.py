@@ -954,3 +954,149 @@ def test_v2_external_plan_does_not_wait_for_another_threads_lease(monkeypatch, e
         release.set()
         worker.join()
         owner_thread.join()
+
+
+@pytest.mark.parametrize('failure_stage', ['acquire', 'run'])
+def test_cpu_session_failure_logs_memory_without_private_text(monkeypatch, failure_stage):
+    from utils import memory
+
+    events = []
+    secret = 'private-path-and-exception-text'
+    error = RuntimeError(secret)
+
+    class Session:
+        def run(self, *_):
+            raise error
+
+    def acquire(*_):
+        if failure_stage == 'acquire':
+            raise error
+        return Session()
+
+    monkeypatch.setattr(neural_runtime, '_session', acquire)
+    monkeypatch.setattr(memory, 'failure_memory_snapshot', lambda: {
+        'commit_total_bytes': 100, 'commit_limit_bytes': 200,
+        'private_commit_bytes': 30, 'working_set_bytes': 20})
+    monkeypatch.setattr(neural_runtime, 'log_action', lambda event, **details: events.append((event, details)))
+    neural_runtime.start_inference_job()
+    with pytest.raises(RuntimeError) as caught:
+        neural_runtime.logits(np.zeros((1, 2, 64, 64), np.float32), secret, 'CPU', 1)
+    assert caught.value is error
+    expected = {'shape': [2, 64, 64], 'commit_total_bytes': 100,
+                'commit_limit_bytes': 200, 'private_commit_bytes': 30,
+                'working_set_bytes': 20, 'requested_provider': 'CPUExecutionProvider'}
+    if failure_stage == 'run':
+        expected['provider'] = 'CPUExecutionProvider'
+    assert events == [('neural_session_failure', expected)]
+    assert secret not in repr(events)
+
+
+@pytest.mark.parametrize('snapshot_fails', [False, True])
+def test_failure_diagnostics_do_not_change_accelerator_fallback(monkeypatch, snapshot_fails):
+    from core import resource_policy
+    from utils import memory
+
+    events = []
+    class Session:
+        actual_device = 'COREML'
+
+        def __init__(self, device):
+            self.device = device
+
+        def run(self, _outputs, inputs):
+            if self.device == 'COREML':
+                raise RuntimeError('private failure')
+            return [inputs['input']]
+
+    def snapshot():
+        if snapshot_fails:
+            raise OSError('private diagnostic failure')
+        return {'private_commit_bytes': 42}
+
+    monkeypatch.setattr(memory, 'failure_memory_snapshot', snapshot)
+    monkeypatch.setattr(neural_runtime, '_session', lambda _p, _s, device, _t: Session(device))
+    monkeypatch.setattr(neural_runtime, 'log_action', lambda event, **details: events.append((event, details)))
+    monkeypatch.setattr(resource_policy, 'require_memory', lambda *_: None)
+    neural_runtime.start_inference_job()
+    planes = np.zeros((1, 2, 64, 64), np.float32)
+    try:
+        np.testing.assert_array_equal(neural_runtime.logits(planes, 'private-path', 'COREML', 1), planes)
+        assert neural_runtime.actual_device() == 'CPU'
+        assert events == ([] if snapshot_fails else [('neural_session_failure', {
+            'shape': [2, 64, 64], 'private_commit_bytes': 42,
+            'requested_provider': 'CoreMLExecutionProvider',
+            'provider': 'CoreMLExecutionProvider'})])
+    finally:
+        neural_runtime.start_inference_job()
+
+
+def test_successful_inference_does_not_collect_failure_snapshot(monkeypatch):
+    from utils import memory
+
+    class Session:
+        def run(self, _outputs, inputs):
+            return [inputs['input']]
+
+    snapshots = []
+    monkeypatch.setattr(memory, 'failure_memory_snapshot', lambda: snapshots.append(True) or {})
+    monkeypatch.setattr(neural_runtime, '_session', lambda *_: Session())
+    neural_runtime.start_inference_job()
+    planes = np.zeros((1, 2, 64, 64), np.float32)
+    np.testing.assert_array_equal(neural_runtime.logits(planes, 'model', 'CPU', 1), planes)
+    assert snapshots == []
+
+
+@pytest.mark.parametrize('available', [True, False])
+def test_failure_snapshot_uses_windows_commit_and_private_counters(monkeypatch, available):
+    import ctypes
+    from utils import memory
+
+    class Call:
+        def __init__(self, fn):
+            self.fn = fn
+
+        def __call__(self, *args):
+            return self.fn(*args)
+
+    def performance(pointer, _size):
+        if not available:
+            return 0
+        info = pointer._obj
+        info.PageSize = 4096
+        info.CommitTotal = 10
+        info.CommitLimit = 20
+        info.PhysicalAvailable = 5
+        return 1
+
+    psapi = SimpleNamespace(GetPerformanceInfo=Call(performance))
+    monkeypatch.setattr(memory.sys, 'platform', 'win32')
+    monkeypatch.setattr(ctypes, 'WinDLL', lambda *_args, **_kwargs: psapi, raising=False)
+    monkeypatch.setattr(memory, '_process_counters', lambda extended=False:
+                        SimpleNamespace(PrivateUsage=123, WorkingSetSize=45) if available else None)
+    expected = {'commit_total_bytes': 40960, 'commit_limit_bytes': 81920,
+                'available_ram_bytes': 20480, 'private_commit_bytes': 123,
+                'working_set_bytes': 45} if available else {}
+    assert memory.failure_memory_snapshot() == expected
+
+
+@pytest.mark.parametrize('failure', ['snapshot', 'logging'])
+def test_cpu_inference_error_survives_failure_diagnostics(monkeypatch, failure):
+    from utils import memory
+
+    original = RuntimeError('original inference failure')
+
+    class Session:
+        def run(self, *_):
+            raise original
+
+    def broken(*_args, **_kwargs):
+        raise OSError('diagnostic failure')
+
+    monkeypatch.setattr(neural_runtime, '_session', lambda *_: Session())
+    monkeypatch.setattr(memory, 'failure_memory_snapshot', broken if failure == 'snapshot' else lambda: {})
+    if failure == 'logging':
+        monkeypatch.setattr(neural_runtime, 'log_action', broken)
+    neural_runtime.start_inference_job()
+    with pytest.raises(RuntimeError) as caught:
+        neural_runtime.logits(np.zeros((1, 2, 64, 64), np.float32), 'model', 'CPU', 1)
+    assert caught.value is original

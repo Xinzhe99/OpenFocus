@@ -265,8 +265,10 @@ class RenderProcessWorker(RenderWorker):
         result = None
         error = None
         try:
+            log_action('render_dispatch.worker_started')
             self.stage_signal.emit('waiting')
             with heavy_job(self._check_current), storage.scratch_directory() as scratch:
+                log_action('render_dispatch.admitted')
                 if self.storage_directory is not None:
                     scratch.explicit_directory = self.storage_directory
                 self.stage_signal.emit('prepare')
@@ -293,10 +295,12 @@ class RenderProcessWorker(RenderWorker):
         adopted = set()
         encoder = None
         try:
+            log_action('render_dispatch.ipc_ready')
             encoder = FrameEncoder(self._check_current)
             request = encoder.encode({'args': self._render_args, 'kwargs': self._render_kwargs,
                 'fusions': fusion_algorithms(), 'registrations': registration_algorithms(),
                 'detailed_logging': debug_enabled()})
+            log_action('render_dispatch.request_encoded')
             budget = make_process_budget(storage.ram_snapshot_bytes())
             scratch = storage.capture_scratch()
             directory = scratch.explicit_directory if scratch is not None else None
@@ -305,7 +309,9 @@ class RenderProcessWorker(RenderWorker):
                       directory, trans.current_lang),
                 name='OpenFocus render', daemon=True)
             self._process = process
+            log_action('render_dispatch.spawn_started')
             process.start()
+            log_action('render_dispatch.spawn_completed')
             self.child_pid = process.pid
             child.close()
             cancel_deadline = None
