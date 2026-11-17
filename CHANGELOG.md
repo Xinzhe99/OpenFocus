@@ -28,6 +28,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Keep sign-in methods available while a browser or email sign-in is pending;
   choosing another method or retrying cancels the previous attempt and ignores
   its late callbacks.
+- Wait for asynchronous image progress dialogs in the menu action sweep.
 - Apply watermark changes and keep source and output scale-bar calibration
   separate when both targets are selected.
 - Close finished batch progress dialogs before showing their summaries, and

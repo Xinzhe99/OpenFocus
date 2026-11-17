@@ -6,7 +6,7 @@ import subprocess
 import sys
 
 import pytest
-from tests.process_isolation import sandbox_env, seed_test_account
+from tests.process_isolation import sandbox_env
 
 pytest.importorskip("PyQt6")
 
@@ -21,7 +21,6 @@ def test_close_does_not_open_overdue_first_run_dialog(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENFOCUS_DATA_DIR", str(sentinel))
     env = sandbox_env(tmp_path, {"QT_QPA_PLATFORM": "offscreen"},
                       instance_name=f"OpenFocus-lifecycle-{os.getpid()}-{tmp_path.name}")
-    account_store = seed_test_account(env['OPENFOCUS_DATA_DIR'])
     if os.name != 'nt':
         # Exercise the real instance listener when even its short name would
         # exceed the Unix socket pathname limit under an isolated TMPDIR.
@@ -35,7 +34,8 @@ def test_close_does_not_open_overdue_first_run_dialog(tmp_path, monkeypatch):
 import faulthandler, runpy, sys, time
 from PyQt6.QtCore import QSettings, QTimer
 from PyQt6.QtWidgets import QApplication, QMainWindow, QMessageBox
-from tests.process_isolation import install_usage_sender
+from tests.process_isolation import install_test_account, install_usage_sender
+install_test_account()
 sender, reporters, calls = install_usage_sender()
 from utils.usage_analytics import UsageAnalytics
 from dialogs.account import AccountDialog
@@ -111,8 +111,6 @@ assert not browser_calls, browser_calls
         )
     except subprocess.TimeoutExpired as exc:
         pytest.fail((exc.stderr or b'').decode('utf-8', 'replace'))
-    finally:
-        account_store.clear()
     assert result.returncode == 0, result.stdout + result.stderr
     assert not discovery.exists()
     assert {path.name: path.read_bytes() for path in sentinel.iterdir()} == {

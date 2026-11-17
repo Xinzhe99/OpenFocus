@@ -22,7 +22,7 @@ from core.control.protocol import (
 )
 from core.control.server import ControlServer
 from utils.image_utils import imwrite_auto
-from tests.process_isolation import sandbox_env, seed_test_account
+from tests.process_isolation import sandbox_env
 
 
 @pytest.fixture
@@ -327,15 +327,27 @@ def test_settings_data_override_bypasses_portable_store(tmp_path, monkeypatch):
 def test_private_tool_launches_isolate_settings_and_instances(tmp_path, monkeypatch):
     from core.control.client import tool_session
     from core.control import client as control_client
+    import tempfile
 
-    launch = control_client.launch_gui
-    stores = []
+    launch_command = control_client._launch_command
 
-    def launch_with_account(*args, **kwargs):
-        stores.append(seed_test_account(kwargs['env']['OPENFOCUS_DATA_DIR']))
-        return launch(*args, **kwargs)
+    def command_with_account(*args, **kwargs):
+        command = launch_command(*args, **kwargs)
+        bootstrap = (
+            "import runpy, sys; "
+            "from tests.process_isolation import install_test_account; "
+            "install_test_account(); "
+            "sys.argv = sys.argv[1:]; "
+            "runpy.run_path(sys.argv[0], run_name='__main__')"
+        )
+        return [command[0], '-c', bootstrap, *command[1:]]
 
-    monkeypatch.setattr(control_client, 'launch_gui', launch_with_account)
+    monkeypatch.setattr(control_client, '_launch_command', command_with_account)
+    for name, value in sandbox_env(tmp_path).items():
+        if name in ('HOME', 'USERPROFILE', 'APPDATA', 'XDG_CONFIG_HOME',
+                    'XDG_DATA_HOME', 'TMP', 'TEMP', 'TMPDIR', 'OPENFOCUS_LOG_DIR'):
+            monkeypatch.setenv(name, value)
+    monkeypatch.setattr(tempfile, 'tempdir', str(tmp_path / 'tmp'))
 
     real_root = tmp_path / "real"
     real_root.mkdir()
@@ -369,8 +381,6 @@ def test_private_tool_launches_isolate_settings_and_instances(tmp_path, monkeypa
                 session.call("app.quit", {"force": True}, timeout=10)
             finally:
                 session.close()
-        for store in stores:
-            store.clear()
 
 
 def test_default_gui_launch_and_cross_process_client(tmp_path, monkeypatch):
@@ -387,7 +397,6 @@ def test_default_gui_launch_and_cross_process_client(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENFOCUS_DATA_DIR", str(sentinel))
     env = sandbox_env(tmp_path, {"QT_QPA_PLATFORM": "offscreen"},
                       instance_name=f"OpenFocus-test-{os.getpid()}-{time.monotonic_ns()}")
-    account_store = seed_test_account(env['OPENFOCUS_DATA_DIR'])
     env.pop("OPENFOCUS_CONTROL", None)
     env["PYTHONPATH"] = os.pathsep.join(filter(None, (
         site.getusersitepackages(), env.get("PYTHONPATH"),
@@ -395,7 +404,8 @@ def test_default_gui_launch_and_cross_process_client(tmp_path, monkeypatch):
     bootstrap = '''
 import runpy, sys
 import webbrowser
-from tests.process_isolation import install_usage_sender
+from tests.process_isolation import install_test_account, install_usage_sender
+install_test_account()
 sender, reporters, calls = install_usage_sender()
 webbrowser.open = lambda *args, **kwargs: False
 from PyQt6.QtCore import QSettings
@@ -468,7 +478,6 @@ finally:
             gui.kill()
             gui.wait(timeout=10)
         log.close()
-        account_store.clear()
 
 
 def test_stack_method_render_export_and_project(server, stack_frames, tmp_path):

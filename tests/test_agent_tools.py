@@ -37,6 +37,7 @@ def test_tool_launch_seeds_only_private_settings(tmp_path, monkeypatch):
 @pytest.fixture
 def sweep(tmp_path):
     obj = agent_action_sweep.Sweep.__new__(agent_action_sweep.Sweep)
+    obj.timeout = 1
     obj.demo = tmp_path / "demo"
     obj.demo.mkdir()
     (obj.demo / "demo_01.jpg").write_bytes(b"frame")
@@ -107,6 +108,31 @@ def test_sweep_accepts_retouch_continuation(sweep, key, monkeypatch):
     assert sweep.settle(key, seen) == []
     assert seen[-1] == "RetouchDialog:Retouch"
     assert sweep.calls == [("dialog.reject", {"index": 0})]
+
+
+def test_sweep_waits_for_progress_before_retouch(sweep, monkeypatch):
+    progress = {'index': 0, 'class': '_PixelProgress', 'title': 'Loading',
+                'active': True, 'root': 'dialog'}
+    retouch = {'index': 0, 'class': 'RetouchDialog', 'title': 'Retouch',
+               'active': True, 'root': 'dialog'}
+    windows = iter([[progress], [progress], [retouch], [], []])
+    sweep.windows = lambda: next(windows)
+    monkeypatch.setattr(agent_action_sweep.time, 'sleep', lambda _: None)
+    seen = ['QFileDialog:Open']
+    assert sweep.settle('standalone_retouch_action', seen) == []
+    assert seen[-1] == 'RetouchDialog:Retouch'
+    assert sweep.calls == [('dialog.reject', {'index': 0})]
+
+
+def test_sweep_reports_progress_that_never_closes(sweep, monkeypatch):
+    progress = {'index': 0, 'class': '_PixelProgress', 'title': 'Loading',
+                'active': True, 'root': 'dialog'}
+    sweep.windows = lambda: [progress]
+    times = iter([0, 0, 0.5, 2])
+    monkeypatch.setattr(agent_action_sweep.time, 'monotonic', lambda: next(times))
+    monkeypatch.setattr(agent_action_sweep.time, 'sleep', lambda _: None)
+    assert sweep.settle('menu_export_all', []) == ['UNRESOLVED']
+    assert sweep.calls == []
 
 
 def test_sweep_rejects_unrelated_retouch_continuation(sweep):
