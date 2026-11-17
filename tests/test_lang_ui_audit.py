@@ -30,7 +30,8 @@ def test_audit_uses_private_profile_and_cleans_up(tmp_path, language, failure):
     env.update(OPENFOCUS_DATA_DIR=str(data), OPENFOCUS_LOG_DIR=str(logs),
                QT_QPA_PLATFORM="offscreen")
     script = textwrap.dedent('''
-        import os, sys, threading
+        import faulthandler, os, sys, threading
+        faulthandler.dump_traceback_later(60, repeat=False)
         from pathlib import Path
         from tools import lang_ui_audit as audit
         from utils import usage_analytics
@@ -49,7 +50,11 @@ def test_audit_uses_private_profile_and_cleans_up(tmp_path, language, failure):
             assert Path(frame_storage.storage_directory()) == root
             assert str(get_settings().value("usage/enabled")).lower() == "false"
             if failure:
-                def fail(_):
+                def fail(window):
+                    window._project_dirty = True
+                    def unexpected_confirmation(*args):
+                        raise AssertionError("An isolated audit must not ask to discard a project")
+                    window._confirm_discard_project_changes = unexpected_confirmation
                     if failure == "interrupt":
                         raise KeyboardInterrupt()
                     raise RuntimeError("injected audit failure")
@@ -76,8 +81,13 @@ def test_audit_uses_private_profile_and_cleans_up(tmp_path, language, failure):
                        for t in threading.enumerate())
     ''')
     env.update(EXPECTED_DATA=str(data), EXPECTED_LOGS=str(logs))
-    result = subprocess.run([sys.executable, "-c", script, language, failure],
-                            cwd=ROOT, env=env, capture_output=True, text=True, timeout=180)
+    try:
+        result = subprocess.run([sys.executable, "-c", script, language, failure],
+                                cwd=ROOT, env=env, capture_output=True, text=True, timeout=75)
+    except subprocess.TimeoutExpired as exc:
+        def output(value):
+            return value.decode('utf-8', 'replace') if isinstance(value, bytes) else value or ''
+        pytest.fail(f"Language audit timed out:\n{output(exc.stdout)}\n{output(exc.stderr)}")
     assert result.returncode == 0, result.stdout + result.stderr
     if not failure:
         assert f"### {language}:" in result.stdout
