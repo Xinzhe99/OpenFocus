@@ -279,7 +279,7 @@ ZH = {
     "alignment_reason_insufficient_features": "特征点不足",
     "alignment_reason_insufficient_matches": "匹配点不足",
     "alignment_reason_homography_failed": "单应性计算失败",
-    "alignment_reason_ecc_failed": "ECC 失败",
+    "alignment_reason_ecc_failed": "ECC 未能将此帧与前一帧稳定对齐。",
     'alignment_report_collect': '收集配准诊断', 'alignment_report_collect_hint': '重新计算配准以收集逐帧结果，不使用配准缓存。',
     'perf_profile_collect': '分析渲染性能',
     'perf_profile_collect_hint': '为支持的渲染阶段收集详细耗时，便于诊断渲染缓慢的问题。可能带来少量额外处理开销。',
