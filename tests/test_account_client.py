@@ -1044,20 +1044,24 @@ def test_browser_callback_requires_exact_single_state_and_valid_host(caplog):
     assert "secret" not in caplog.text and state not in caplog.text
 
 
-@pytest.mark.parametrize("language,text", [("en", "The browser has no current account session."),
-                                           ("zh", "浏览器当前没有可用的账号会话。")])
-def test_browser_callback_explains_missing_session(language, text):
-    code, response, error = callback("/callback?error=not_signed_in&state=state",
-                                     expected_state="state", language=language)
-    assert code is None and error == "not_signed_in"
-    assert text.encode("utf-8") in response
-    assert b"Cache-Control: no-store" in response
-
-
-def test_other_callback_errors_keep_existing_response():
-    _, response, error = callback("/callback?error=terms_required")
-    assert error == "terms_required"
-    assert b"Sign-in could not be completed. Return to OpenFocus." in response
+@pytest.mark.parametrize("language,html_language", [(None, b"en"), ("zh", b"zh")])
+@pytest.mark.parametrize("query,expected", [
+    ("code=exchange-receipt-secret", ("exchange-receipt-secret", None)),
+    ("error=not_signed_in", (None, "not_signed_in")),
+    ("error=opaque-provider-error", (None, "provider_error")),
+])
+def test_browser_callback_receipt_is_localized_and_keeps_auth_values_private(language, html_language, query, expected):
+    code, response, error = callback(f"/callback?{query}&state=private-state",
+                                     expected_state="private-state", language=language)
+    assert (code, error) == expected
+    headers, body = response.split(b"\r\n\r\n", 1)
+    assert b"200 OK" in headers
+    assert b"Content-Type: text/html; charset=utf-8" in headers
+    assert b"Cache-Control: no-store" in headers
+    assert b"Referrer-Policy: no-referrer" in headers
+    assert b'<html lang="' + html_language + b'">' in body
+    for value in (b"exchange-receipt-secret", b"opaque-provider-error", b"private-state"):
+        assert value not in body
 
 
 def test_browser_login_exchanges_pkce_and_persists_terms(monkeypatch, caplog):
