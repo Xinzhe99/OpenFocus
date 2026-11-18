@@ -240,7 +240,7 @@ PACK = {
     "alignment_reason_insufficient_features": "Zu wenige Merkmale",
     "alignment_reason_insufficient_matches": "Zu wenige Übereinstimmungen",
     "alignment_reason_homography_failed": "Homographie fehlgeschlagen",
-    "alignment_reason_ecc_failed": "ECC fehlgeschlagen",
+    "alignment_reason_ecc_failed": "ECC konnte für dieses und das vorherige Bild keine stabile Ausrichtung ermitteln.",
     'alignment_report_collect': 'Ausrichtungsdiagnose erfassen', 'alignment_report_collect_hint': 'Ausrichtung neu berechnen und Ergebnisse pro Bild erfassen, statt den Cache zu verwenden.',
     'perf_profile_collect': 'Renderleistung analysieren',
     'perf_profile_collect_hint': 'Erfasst detaillierte Zeiten für unterstützte Renderphasen. Hilfreich zur Diagnose langsamer Renderings. Kann einen geringen Mehraufwand verursachen.',

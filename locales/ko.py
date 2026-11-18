@@ -240,7 +240,7 @@ PACK = {
     "alignment_reason_insufficient_features": "특징점 부족",
     "alignment_reason_insufficient_matches": "일치점 부족",
     "alignment_reason_homography_failed": "호모그래피 실패",
-    "alignment_reason_ecc_failed": "ECC 실패",
+    "alignment_reason_ecc_failed": "ECC가 이 프레임을 이전 프레임과 안정적으로 정렬하지 못했습니다.",
     'alignment_report_collect': '정렬 진단 수집', 'alignment_report_collect_hint': '캐시를 재사용하지 않고 정렬을 다시 계산하여 프레임별 결과를 수집합니다.',
     'perf_profile_collect': '렌더링 성능 분석',
     'perf_profile_collect_hint': '지원되는 렌더링 단계의 상세 소요 시간을 수집합니다. 느린 렌더링을 진단하는 데 유용합니다. 약간의 처리 오버헤드가 추가될 수 있습니다.',
