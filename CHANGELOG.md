@@ -19,6 +19,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Require an account to enter the desktop application; a saved sign-in can be
   used offline. Signing out returns to the sign-in screen.
 - Expose the active render stage through the local control channel.
+- Stop writing aligned frames to the render's frame cache when only their
+  exposure-matched frames are read again and the stack is too large for the
+  desktop to retain aligned pixels, halving that scratch traffic for large
+  OpenFocus stacks. Output pixels are unchanged.
 - Record render dispatch and stack-load admission milestones in local logs to
   help diagnose stalled work.
 - Record Windows memory commitment and process usage when neural sessions fail.
