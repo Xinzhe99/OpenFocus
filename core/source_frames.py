@@ -5,6 +5,7 @@ never cause a full-resolution decode; transforms retain that separation.
 """
 from collections import OrderedDict
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from functools import partial
 from io import BytesIO
@@ -75,6 +76,18 @@ class FrameCache:
 
 SOURCE_CACHE = FrameCache()
 PREVIEW_CACHE = FrameCache(64 * 1024 * 1024)
+_retain_decoded_sources = ContextVar('retain_decoded_sources', default=True)
+
+
+@contextmanager
+def without_source_cache_growth():
+    """Reuse cached source pixels during a streaming pass without retaining new ones."""
+    token = _retain_decoded_sources.set(False)
+    try:
+        yield
+    finally:
+        _retain_decoded_sources.reset(token)
+
 
 _decode_condition = threading.Condition()
 _active_decodes = 0
@@ -610,7 +623,8 @@ class SourceFrame:
         if cached is not None:
             _check_resolution_cancel(should_cancel)
             return cached
-        SOURCE_CACHE.make_room(self.nbytes)
+        if _retain_decoded_sources.get():
+            SOURCE_CACHE.make_room(self.nbytes)
         with _admit_source_decode(frame_resolution_bytes(self), should_cancel):
             return self._decode(key, cache, should_cancel)
 
@@ -679,10 +693,8 @@ class SourceFrame:
                 if stored is not None:
                     _check_resolution_cancel(should_cancel)
                     return stored
-            # Scope exists but the disk cache is disabled, degraded, or a write
-            # failed: keep the historical bounded RAM cache so a later consumer
-            # does not decode the same source again.
-            SOURCE_CACHE.put(key, image, should_cancel=should_cancel)
+            if _retain_decoded_sources.get():
+                SOURCE_CACHE.put(key, image, should_cancel=should_cancel)
             _check_resolution_cancel(should_cancel)
             return image
 
