@@ -18,33 +18,39 @@ __kernel void activity(__global const ushort *gray, __global const ushort *fine,
     out[i] = (ushort)min(65535ul, 110ul * difference / (denominator + 10ul));
 }
 
-__kernel void merge(__global ushort *acc, __global const ushort *img,
-                    __global const long *depth, const int width,
-                    const int channels, const int step, const int index,
-                    const int scale, const int first)
-{
-    size_t pixel = get_global_id(0);
-    int weight = 1024;
-    if (!first) {
-        long code = depth[pixel];
-        if (code < 0 || code > 131070) return;
-        long delta = code - (long)step * index;
-        if (delta >= 0) {
-            if (delta > step) return;
-        } else {
-            if (delta <= -step) return;
-            weight = 1024 - (int)(((-delta) << 10) / step);
-            if (weight <= 0) return;
-        }
-    }
-    for (int c = 0; c < channels; ++c) {
-        size_t k = pixel * channels + c;
-        int value = (int)img[k] * scale;
-        if (weight == 1024) acc[k] = (ushort)value;
-        else acc[k] = (ushort)(((int)acc[k] * (1024 - weight)
-                                + value * weight) >> 10);
-    }
+#define DEFINE_MERGE(NAME, IMG_T, DEPTH_T, CHECK_BOUNDS) \
+__kernel void NAME(__global ushort *acc, __global const IMG_T *img, \
+                   __global const DEPTH_T *depth, const int width, \
+                   const int channels, const int step, const int index, \
+                   const int scale, const int first) \
+{ \
+    size_t pixel = get_global_id(0); \
+    int weight = 1024; \
+    if (!first) { \
+        long code = (long)depth[pixel]; \
+        if (CHECK_BOUNDS && (code < 0 || code > 131070)) return; \
+        long delta = code - (long)step * index; \
+        if (delta >= 0) { \
+            if (delta > step) return; \
+        } else { \
+            if (delta <= -step) return; \
+            weight = 1024 - (int)(((-delta) << 10) / step); \
+            if (weight <= 0) return; \
+        } \
+    } \
+    for (int c = 0; c < channels; ++c) { \
+        size_t k = pixel * channels + c; \
+        int value = (int)img[k] * scale; \
+        if (weight == 1024) acc[k] = (ushort)value; \
+        else acc[k] = (ushort)(((int)acc[k] * (1024 - weight) \
+                                + value * weight) >> 10); \
+    } \
 }
+
+DEFINE_MERGE(merge, ushort, long, 1)
+DEFINE_MERGE(merge_u8_i64, uchar, long, 1)
+DEFINE_MERGE(merge_u16_u16, ushort, ushort, 0)
+DEFINE_MERGE(merge_u8_u16, uchar, ushort, 0)
 '''
 
 
@@ -101,6 +107,85 @@ def device_status(gpu):
     return gpu.device_name
 
 
+def _nvml_free_vram(device):
+    """Query free/total bytes via in-process NVML, returning None if unavailable."""
+    import ctypes
+    import os
+    import sys
+
+    lib = None
+    for candidate in (('nvml.dll',) if sys.platform == 'win32'
+                      else ('libnvidia-ml.so.1', 'libnvidia-ml.so')):
+        try:
+            lib = ctypes.CDLL(candidate)
+            break
+        except OSError:
+            continue
+    if lib is None and sys.platform == 'win32':
+        nvsmi = os.path.join(os.environ.get('ProgramFiles', r'C:\Program Files'),
+                             'NVIDIA Corporation', 'NVSMI', 'nvml.dll')
+        if os.path.isfile(nvsmi):
+            try:
+                lib = ctypes.CDLL(nvsmi)
+            except OSError:
+                lib = None
+    if lib is None:
+        return None
+
+    class _MemInfo(ctypes.Structure):
+        _fields_ = [('total', ctypes.c_uint64),
+                    ('free', ctypes.c_uint64),
+                    ('used', ctypes.c_uint64)]
+
+    try:
+        init = lib.nvmlInit_v2
+        shutdown = lib.nvmlShutdown
+        get_count = lib.nvmlDeviceGetCount_v2
+        get_handle = lib.nvmlDeviceGetHandleByIndex_v2
+        get_name = lib.nvmlDeviceGetName
+        get_mem = lib.nvmlDeviceGetMemoryInfo
+    except AttributeError:
+        return None
+    get_count.argtypes = (ctypes.POINTER(ctypes.c_uint),)
+    get_handle.argtypes = (ctypes.c_uint, ctypes.POINTER(ctypes.c_void_p))
+    get_name.argtypes = (ctypes.c_void_p, ctypes.c_char_p, ctypes.c_uint)
+    get_mem.argtypes = (ctypes.c_void_p, ctypes.POINTER(_MemInfo))
+    try:
+        if init() != 0:
+            return None
+    except Exception:
+        return None
+    try:
+        count = ctypes.c_uint()
+        if get_count(ctypes.byref(count)) != 0:
+            return None
+        target_name = str(device.name).strip()
+        target_total = int(device.global_mem_size)
+        matches = []
+        buf = ctypes.create_string_buffer(256)
+        info = _MemInfo()
+        for idx in range(count.value):
+            handle = ctypes.c_void_p()
+            if get_handle(idx, ctypes.byref(handle)) != 0:
+                continue
+            if get_name(handle, buf, len(buf)) != 0:
+                continue
+            if get_mem(handle, ctypes.byref(info)) != 0:
+                continue
+            name = buf.value.decode('utf-8', errors='replace').strip()
+            total_bytes = int(info.total)
+            if name == target_name and abs(total_bytes - target_total) <= 64 * 1024 * 1024:
+                matches.append((int(info.free), total_bytes))
+        return matches[0] if len(matches) == 1 else None
+    except Exception:
+        return None
+    finally:
+        try:
+            shutdown()
+        except Exception:
+            pass
+
+
 def _free_vram(device):
     """Read free memory from the selected OpenCL GPU's matching driver."""
     import subprocess
@@ -114,6 +199,9 @@ def _free_vram(device):
             pass
     if int(device.vendor_id) != 0x10de:
         return None
+    nvml = _nvml_free_vram(device)
+    if nvml is not None:
+        return nvml
     try:
         result = subprocess.run(
             ['nvidia-smi', '--query-gpu=name,memory.free,memory.total',
@@ -161,6 +249,10 @@ class Merge:
             self.device_name = opencl_device_name(device)
             self.activity_kernel = cl.Kernel(self.program, 'activity')
             self.kernel = cl.Kernel(self.program, 'merge')
+            self.merge_u8_i64_kernel = cl.Kernel(self.program, 'merge_u8_i64')
+            self.merge_u16_u16_kernel = cl.Kernel(self.program, 'merge_u16_u16')
+            self.merge_u8_u16_kernel = cl.Kernel(self.program, 'merge_u8_u16')
+            self._merge_u16_depth = False
             self.rows = rows
             self.failed = False
             self.used = False
@@ -196,7 +288,7 @@ class Merge:
                           int(resource_policy.frame_ram_budget(resource_policy.probe_resources())))
         source_bytes = max((frame_resolution_bytes(frame) for frame in frames), default=0)
         source_bytes += source_cache_growth_bytes(frames)
-        if (pixels * 112 + source_bytes + 16 * 1024 * 1024 > host_budget
+        if (pixels * 24 + source_bytes + 16 * 1024 * 1024 > host_budget
                 or pixels * 8 > int(self.device.max_mem_alloc_size)):
             logging.getLogger(__name__).info('OpenFocus full GPU depth exceeds the job memory budget')
             return None
@@ -215,7 +307,7 @@ class Merge:
         try:
             if self.device.host_unified_memory:
                 # Device allocations share the same physical RAM as staging.
-                if pixels * 160 + source_bytes + 32 * 1024 * 1024 > host_budget:
+                if pixels * 48 + source_bytes + 32 * 1024 * 1024 > host_budget:
                     logging.getLogger(__name__).info('OpenFocus full GPU depth exceeds unified memory budget')
                     return None
             else:
@@ -226,7 +318,7 @@ class Merge:
                     return None
                 snapshot = replace(resource_policy.probe_resources(),
                                    free_vram=memory[0], total_vram=memory[1])
-                if pixels * 48 + 16 * 1024 * 1024 > resource_policy.vram_budget(snapshot):
+                if pixels * 24 + 16 * 1024 * 1024 > resource_policy.vram_budget(snapshot):
                     logging.getLogger(__name__).info('OpenFocus full GPU depth exceeds the free VRAM budget')
                     return None
             try:
@@ -240,6 +332,7 @@ class Merge:
             except (self.cl.Error, MemoryError) as exc:
                 raise GpuError('OpenCL GPU depth failed') from exc
         finally:
+            self.depth_program = None
             self.release()
 
     def activity(self, gray, fine, output):
@@ -266,12 +359,14 @@ class Merge:
         height, width = shape[:2]
         channels = 1 if len(shape) == 2 else shape[2]
         pixels = int(height) * int(width)
-        required = pixels * (8 + 4 * channels)
+        u16_depth = getattr(depth, 'dtype', None) == np.uint16
+        depth_bytes = 2 if u16_depth else 8
+        required = pixels * (depth_bytes + 4 * channels)
         host = min(int(memory_budget_bytes()),
                    int(resource_policy.frame_ram_budget(resource_policy.probe_resources())))
         if required * 2 + 16 * 1024 * 1024 > host:
             return False
-        if pixels * max(8, 2 * channels) > int(self.device.max_mem_alloc_size):
+        if pixels * max(depth_bytes, 2 * channels) > int(self.device.max_mem_alloc_size):
             return False
         self.acquire(should_cancel)
         try:
@@ -288,30 +383,37 @@ class Merge:
                 self.release()
                 return False
             cl = self.cl
-            codes = np.ascontiguousarray(depth, dtype=np.int64)
+            codes = np.ascontiguousarray(depth, dtype=np.uint16 if u16_depth else np.int64)
             self._merge_depth = cl.Buffer(self.context, cl.mem_flags.READ_ONLY |
                                           cl.mem_flags.COPY_HOST_PTR, hostbuf=codes)
             self._merge_acc = cl.Buffer(self.context, cl.mem_flags.READ_WRITE,
                                         pixels * channels * 2)
             self._merge_shape = shape
+            self._merge_u16_depth = u16_depth
             return True
         except Exception as exc:
             self._merge_acc = self._merge_depth = None
+            self._merge_u16_depth = False
             self.release()
             raise GpuError('OpenCL GPU merge allocation failed') from exc
 
     def resident_frame(self, frame, index, count, scale):
         try:
             cl = self.cl
-            image = np.ascontiguousarray(frame, dtype=np.uint16)
+            is_u8 = getattr(frame, 'dtype', None) == np.uint8
+            image = np.ascontiguousarray(frame, dtype=np.uint8 if is_u8 else np.uint16)
             ib = cl.Buffer(self.context, cl.mem_flags.READ_ONLY | cl.mem_flags.COPY_HOST_PTR,
                            hostbuf=image)
             height, width = self._merge_shape[:2]
             channels = 1 if image.ndim == 2 else image.shape[2]
-            event = self.kernel(self.queue, (height * width,), None, self._merge_acc,
-                                ib, self._merge_depth, np.int32(width), np.int32(channels),
-                                np.int32(65535 // max(1, count - 1)), np.int32(index),
-                                np.int32(scale), np.int32(index == 0))
+            if self._merge_u16_depth:
+                kern = self.merge_u8_u16_kernel if is_u8 else self.merge_u16_u16_kernel
+            else:
+                kern = self.merge_u8_i64_kernel if is_u8 else self.kernel
+            event = kern(self.queue, (height * width,), None, self._merge_acc,
+                         ib, self._merge_depth, np.int32(width), np.int32(channels),
+                         np.int32(65535 // max(1, count - 1)), np.int32(index),
+                         np.int32(scale), np.int32(index == 0))
             event.wait()
             self.used = True
         except Exception as exc:
@@ -319,14 +421,21 @@ class Merge:
 
     def finish_merge(self, result):
         try:
-            output = np.empty(self._merge_shape, dtype=np.uint16)
+            direct = (isinstance(result, np.ndarray)
+                      and result.dtype == np.uint16
+                      and result.shape == tuple(self._merge_shape)
+                      and result.flags.c_contiguous
+                      and result.flags.writeable)
+            output = result if direct else np.empty(self._merge_shape, dtype=np.uint16)
             self.cl.enqueue_copy(self.queue, output, self._merge_acc, is_blocking=True)
         except Exception as exc:
             raise GpuError('OpenCL GPU merge download failed') from exc
-        result[...] = output
+        if not direct:
+            result[...] = output
 
     def end_merge(self):
         self._merge_acc = self._merge_depth = None
+        self._merge_u16_depth = False
         self.release()
 
     def band(self, accumulator, image, depth, index, step, scale, first):
@@ -456,6 +565,14 @@ __kernel void filt4(__global const ushort* src, __global ushort* out,
         }
     }
 }
+
+__kernel void transpose_u16(__global const ushort* s, __global ushort* d,
+                            const int W, const int H)
+{
+    int x = get_global_id(0); if (x >= W) return;
+    int y = get_global_id(1); if (y >= H) return;
+    d[(size_t)x * H + y] = s[(size_t)y * W + x];
+}
 '''
 
 _DEPTH_K = r'''
@@ -541,14 +658,32 @@ __kernel void detail_smooth(__global const ushort* src, __global ushort* out,
         total += (long)src[(size_t)refl(y+dy,H)*W+refl(x+dx,W)];
     out[(size_t)y*W+x]=(ushort)(total/25);
 }
-__kernel void gray_u8(__global const uchar* src, __global ushort* out,
-                      const int H, const int W, const int C, const int scale)
+#define DEFINE_GRAY(NAME, SRC_T) \
+__kernel void NAME(__global const SRC_T* src, __global ushort* out, \
+                   const int H, const int W, const int C, const int scale) \
+{ \
+    int x = get_global_id(0), y = get_global_id(1); \
+    if (x >= W || y >= H) return; \
+    size_t p = (size_t)y * W + x; \
+    if (C == 1) { \
+        out[p] = (ushort)((ulong)src[p] * (ulong)scale); \
+        return; \
+    } \
+    size_t base = p * C; \
+    if (C >= 3) { \
+        ulong total = (ulong)src[base] + (ulong)src[base + 1] + (ulong)src[base + 2]; \
+        out[p] = (ushort)((total * (ulong)scale * 85ul) >> 8); \
+    } else { \
+        ulong total = (ulong)src[base] + (ulong)src[base + 1]; \
+        out[p] = (ushort)((total / 3ul) * (ulong)scale); \
+    } \
+}
+DEFINE_GRAY(gray_u8, uchar)
+DEFINE_GRAY(gray_u16, ushort)
+__kernel void init_detail(__global ushort* second, __global ushort* winner, const int n)
 {
-    int x=get_global_id(0), y=get_global_id(1);
-    if(x>=W||y>=H)return;
-    ulong total=0;
-    for(int c=0;c<3&&c<C;c++) total+=(ulong)src[((size_t)y*W+x)*C+c];
-    out[(size_t)y*W+x]=(ushort)((total*(ulong)scale*85ul)>>8);
+    int i=get_global_id(0); if(i>=n)return;
+    second[i]=0; winner[i]=0;
 }
 __kernel void detail_select(__global const ushort* a, __global ushort* best,
                             __global ushort* second, __global ushort* winner,
@@ -558,6 +693,26 @@ __kernel void detail_select(__global const ushort* a, __global ushort* best,
     uint v=a[i];
     if(v>(uint)best[i]){second[i]=best[i];best[i]=(ushort)v;winner[i]=code;}
     else if(v>(uint)second[i]) second[i]=(ushort)v;
+}
+__kernel void detail_confidence(__global const ushort* coarse, __global const ushort* best,
+                                __global ushort* second, const int n)
+{
+    int i=get_global_id(0); if(i>=n)return;
+    long top=(long)best[i];
+    long gap=top-(long)second[i];
+    second[i]=(ushort)(top>=128L && top>4L*((long)coarse[i]+1L) && 2L*gap>top);
+}
+__kernel void confidence(__global ushort* best, __global const ushort* votes, const int n)
+{
+    int i=get_global_id(0); if(i>=n)return;
+    long diff=(long)best[i]-(long)votes[i];
+    best[i]=(ushort)(diff<0L?-diff:diff);
+}
+__kernel void apply_detail(__global ushort* depth, __global const ushort* mask,
+                           __global const ushort* winner, const int n)
+{
+    int i=get_global_id(0); if(i>=n)return;
+    if(mask[i]) depth[i]=winner[i];
 }
 '''
 
@@ -597,7 +752,8 @@ class _Filter:
         self.q = q
         self.mf = mf
         self.p = prg
-        self.kernels = {name: cl.Kernel(self.p, name) for name in ('filt4', 'filt_guided')}
+        self.kernels = {name: cl.Kernel(self.p, name)
+                        for name in ('filt4', 'filt_guided', 'transpose_u16')}
         self._bufs = {}
 
     def _bufs_for(self, h, w, guided):
@@ -605,10 +761,14 @@ class _Filter:
         if key not in self._bufs:
             n = h * w
             if guided:
-                # filt_guided keeps uint32 forward state in `first`.
-                self._bufs[key] = (self.cl.Buffer(self.ctx, self.mf.READ_WRITE, n * 4),)
+                self._bufs[key] = (
+                    self.cl.Buffer(self.ctx, self.mf.READ_WRITE, n * 4),
+                    self.cl.Buffer(self.ctx, self.mf.READ_WRITE, n * 2),
+                    self.cl.Buffer(self.ctx, self.mf.READ_WRITE, n * 2),
+                    self.cl.Buffer(self.ctx, self.mf.READ_WRITE, n * 2))
             else:
                 self._bufs[key] = (
+                    self.cl.Buffer(self.ctx, self.mf.READ_WRITE, n * 2),
                     self.cl.Buffer(self.ctx, self.mf.READ_WRITE, n * 2),
                     self.cl.Buffer(self.ctx, self.mf.READ_WRITE, n * 2))
         return self._bufs[key]
@@ -622,44 +782,70 @@ class _Filter:
         self.cl.enqueue_copy(self.q, out, buf, is_blocking=True)
         return out
 
-    def _axis(self, src, count, q, t, axis=0):
-        data = np.ascontiguousarray(src if axis == 0 else src.T, np.uint16)
-        h, w = data.shape
-        ib = self._upload(data)
-        step = (w + 3) // 4
-        ob, fb = self._bufs_for(h, w, False)
-        self.kernels['filt4'](self.q, (step,), None, ib, ob, fb,
-                                        np.int32(h), np.int32(w), np.int32(count),
-                                        np.uint32(q), np.uint32(t), np.int32(step))
-        out = self._download(ob, (h, w))
-        return out if axis == 0 else out.T.copy()
-
-    def run(self, src, radius):
+    def run_buf(self, src_buf, out_buf, h, w, radius):
         from fusion_methods.openfocus_depth import _weight
+        if radius == 0:
+            if src_buf is not out_buf:
+                self.cl.enqueue_copy(self.q, out_buf, src_buf)
+            return
         q = int(_weight(radius))
         t = (4096 - q) >> 1
-        h, w = src.shape
-        r = self._axis(src, max(1, min(int(radius), w)), q, t, 1)
-        return self._axis(r, max(1, min(int(radius), h)), q, t, 0)
+        count_h = max(1, min(int(radius), w))
+        count_v = max(1, min(int(radius), h))
+        ta, tb, first = self._bufs_for(h, w, False)
+        self.kernels['transpose_u16'](self.q, (w, h), None, src_buf, ta,
+                                      np.int32(w), np.int32(h))
+        step_h = (h + 3) // 4
+        self.kernels['filt4'](self.q, (step_h,), None, ta, tb, first,
+                              np.int32(w), np.int32(h), np.int32(count_h),
+                              np.uint32(q), np.uint32(t), np.int32(step_h))
+        self.kernels['transpose_u16'](self.q, (h, w), None, tb, ta,
+                                      np.int32(h), np.int32(w))
+        step_v = (w + 3) // 4
+        self.kernels['filt4'](self.q, (step_v,), None, ta, out_buf, first,
+                              np.int32(h), np.int32(w), np.int32(count_v),
+                              np.uint32(q), np.uint32(t), np.int32(step_v))
 
-    def axis_guided(self, src, guide, main, low, axis=0):
+    def axis_guided_buf(self, src_buf, guide_buf, out_buf, h, w, main, low, axis=0):
         from fusion_methods.openfocus_depth import _weight
-        data = np.ascontiguousarray(src if axis == 0 else src.T, np.uint16)
-        gd = np.ascontiguousarray(guide if axis == 0 else guide.T, np.uint16)
-        h, w = data.shape
-        count = max(1, min(int(main), h))
+        if main == 0:
+            if src_buf is not out_buf:
+                self.cl.enqueue_copy(self.q, out_buf, src_buf)
+            return
+        first, ta, tb, tg = self._bufs_for(h, w, True)
         tm = (4096 - (int(_weight(main)) or 0)) >> 1
         tl = (4096 - int(_weight(low))) >> 1
-        ib = self._upload(data)
-        gb = self._upload(gd)
-        (fb,) = self._bufs_for(h, w, True)
-        ob = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, data.nbytes)
-        self.kernels['filt_guided'](self.q, (w,), None, ib, gb, ob, fb,
-                                              np.int32(h), np.int32(w),
-                                              np.int32(count), np.uint32(tm),
-                                              np.uint32(tl))
-        out = self._download(ob, (h, w))
-        return out if axis == 0 else out.T.copy()
+        if axis == 1:
+            self.kernels['transpose_u16'](self.q, (w, h), None, src_buf, ta,
+                                          np.int32(w), np.int32(h))
+            self.kernels['transpose_u16'](self.q, (w, h), None, guide_buf, tg,
+                                          np.int32(w), np.int32(h))
+            count = max(1, min(int(main), w))
+            self.kernels['filt_guided'](self.q, (h,), None, ta, tg, tb, first,
+                                        np.int32(w), np.int32(h), np.int32(count),
+                                        np.uint32(tm), np.uint32(tl))
+            self.kernels['transpose_u16'](self.q, (h, w), None, tb, out_buf,
+                                          np.int32(h), np.int32(w))
+        else:
+            count = max(1, min(int(main), h))
+            self.kernels['filt_guided'](self.q, (w,), None, src_buf, guide_buf, out_buf, first,
+                                        np.int32(h), np.int32(w), np.int32(count),
+                                        np.uint32(tm), np.uint32(tl))
+
+    def run(self, src, radius):
+        h, w = src.shape
+        sb = self._upload(src)
+        ob = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, h * w * 2)
+        self.run_buf(sb, ob, h, w, radius)
+        return self._download(ob, (h, w))
+
+    def axis_guided(self, src, guide, main, low, axis=0):
+        h, w = src.shape
+        sb = self._upload(src)
+        gb = self._upload(guide)
+        ob = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, h * w * 2)
+        self.axis_guided_buf(sb, gb, ob, h, w, main, low, axis=axis)
+        return self._download(ob, (h, w))
 
 
 class _HalfResample:
@@ -671,6 +857,7 @@ class _HalfResample:
         self.p = prg
         self.kernels = {name: cl.Kernel(self.p, name) for name in ('vert', 'horiz')}
         self._cache = {}
+        self._scratch = {}
 
     def _axes(self, shape):
         if shape not in self._cache:
@@ -685,18 +872,30 @@ class _HalfResample:
                                   mk(h.weights, np.float32), mk(h.counts, np.int64))
         return self._cache[shape]
 
+    def _vb(self, OH, W):
+        key = (OH, W)
+        if key not in self._scratch:
+            self._scratch[key] = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, OH * W * 4)
+        return self._scratch[key]
+
+    def run_buf(self, gray_buf, out_buf, H, W):
+        v, h, vix, vw, vc, hix, hw, hc = self._axes((H, W))
+        OH, OW = v.indices.shape[0], h.indices.shape[0]
+        vb = self._vb(OH, W)
+        self.kernels['vert'](self.q, (W, OH), None, gray_buf, vb, vix, vw, vc,
+                             np.int32(OH), np.int32(W))
+        self.kernels['horiz'](self.q, (OW, OH), None, vb, out_buf, hix, hw, hc,
+                              np.int32(OH), np.int32(OW), np.int32(W))
+        return OH, OW
+
     def run(self, gray):
-        v, h, vix, vw, vc, hix, hw, hc = self._axes(gray.shape)
         H, W = gray.shape
+        v, h, _, _, _, _, _, _ = self._axes((H, W))
         OH, OW = v.indices.shape[0], h.indices.shape[0]
         ib = self.cl.Buffer(self.ctx, self.mf.READ_ONLY | self.mf.COPY_HOST_PTR,
                             hostbuf=np.ascontiguousarray(gray))
-        vb = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, OH * W * 4)
-        self.kernels['vert'](self.q, (W, OH), None, ib, vb, vix, vw, vc,
-                                       np.int32(OH), np.int32(W))
         ob = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, OH * OW * 2)
-        self.kernels['horiz'](self.q, (OW, OH), None, vb, ob, hix, hw, hc,
-                                        np.int32(OH), np.int32(OW), np.int32(W))
+        self.run_buf(ib, ob, H, W)
         self.q.finish()
         out = np.empty((OH, OW), np.uint16)
         self.cl.enqueue_copy(self.q, out, ob, is_blocking=True)
@@ -704,19 +903,18 @@ class _HalfResample:
 
 
 class _ExpandDepth(_HalfResample):
-    def run(self, depth, shape):
+    def run_buf(self, depth_buf, src_shape, dst_shape):
+        from core.frame_storage import create_transient_frame
         from fusion_methods._openfocus_resample import _axis_plan
-        v = _axis_plan(depth.shape[0], int(shape[0]), linear=True)
-        h = _axis_plan(depth.shape[1], int(shape[1]), linear=True)
+        v = _axis_plan(src_shape[0], int(dst_shape[0]), linear=True)
+        h = _axis_plan(src_shape[1], int(dst_shape[1]), linear=True)
 
         def pad(a, taps=8):
             b = np.zeros((a.shape[0], taps), a.dtype)
             b[:, :a.shape[1]] = a
             return b
-        H, W = depth.shape
-        OH, OW = int(shape[0]), int(shape[1])
-        ib = self.cl.Buffer(self.ctx, self.mf.READ_ONLY | self.mf.COPY_HOST_PTR,
-                            hostbuf=np.ascontiguousarray(depth))
+        H, W = src_shape
+        OH, OW = int(dst_shape[0]), int(dst_shape[1])
         vb = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, OH * W * 4)
         vix = self.cl.Buffer(self.ctx, self.mf.READ_ONLY | self.mf.COPY_HOST_PTR,
                              hostbuf=pad(v.indices))
@@ -724,8 +922,8 @@ class _ExpandDepth(_HalfResample):
                             hostbuf=pad(v.weights))
         vc = self.cl.Buffer(self.ctx, self.mf.READ_ONLY | self.mf.COPY_HOST_PTR,
                             hostbuf=v.counts.astype(np.int64))
-        self.kernels['vert'](self.q, (W, OH), None, ib, vb, vix, vw, vc,
-                                       np.int32(OH), np.int32(W))
+        self.kernels['vert'](self.q, (W, OH), None, depth_buf, vb, vix, vw, vc,
+                             np.int32(OH), np.int32(W))
         ob = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, OH * OW * 2)
         hix = self.cl.Buffer(self.ctx, self.mf.READ_ONLY | self.mf.COPY_HOST_PTR,
                              hostbuf=pad(h.indices))
@@ -734,11 +932,16 @@ class _ExpandDepth(_HalfResample):
         hc = self.cl.Buffer(self.ctx, self.mf.READ_ONLY | self.mf.COPY_HOST_PTR,
                             hostbuf=h.counts.astype(np.int64))
         self.kernels['horiz'](self.q, (OW, OH), None, vb, ob, hix, hw, hc,
-                                        np.int32(OH), np.int32(OW), np.int32(W))
+                              np.int32(OH), np.int32(OW), np.int32(W))
         self.q.finish()
-        out = np.empty((OH, OW), np.uint16)
+        out = create_transient_frame((OH, OW), np.uint16)
         self.cl.enqueue_copy(self.q, out, ob, is_blocking=True)
         return out
+
+    def run(self, depth, shape):
+        ib = self.cl.Buffer(self.ctx, self.mf.READ_ONLY | self.mf.COPY_HOST_PTR,
+                            hostbuf=np.ascontiguousarray(depth))
+        return self.run_buf(ib, depth.shape, shape)
 
 
 class _GpuB:
@@ -754,197 +957,174 @@ class _GpuB:
         self.q = q
         self.mf = mf
         self.p = pk
-        self.kernels = {name: cl.Kernel(self.p, name) for name in ('gray_u8', 'detail_pool', 'detail_smooth', 'activity', 'init_activity', 'select_activity', 'guide', 'snap')}
+        self.kernels = {name: cl.Kernel(self.p, name) for name in (
+            'gray_u8', 'gray_u16', 'detail_pool', 'detail_smooth', 'detail_select',
+            'init_detail', 'detail_confidence', 'confidence', 'apply_detail',
+            'activity', 'init_activity', 'select_activity', 'guide', 'snap')}
         self.filt = _Filter(cl, ctx, q, mf, pk)
         self.half = _HalfResample(cl, ctx, q, mf, pk)
         self.expand = _ExpandDepth(cl, ctx, q, mf, pk)
         self._cbuf = {}
 
+    def _buf(self, key, nbytes):
+        buf = self._cbuf.get(key)
+        if buf is None:
+            buf = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, max(1, int(nbytes)))
+            self._cbuf[key] = buf
+        return buf
+
     # -- per-frame stages -------------------------------------------------
-    def _gray(self, frame):
+    def _gray_into(self, frame, gray_buf, height, width):
         from fusion_methods._openfocus_pixels import frame_gray_codes
         from core.source_frames import resolve_frame
         pixels = resolve_frame(frame, should_cancel=self.should_cancel)
-        if (self.img_resize is None and pixels.dtype == np.uint8
-                and pixels.ndim == 3 and pixels.shape[2] == 3):
-            height, width, channels = pixels.shape
-            source = np.ascontiguousarray(pixels)
-            gray = np.empty((height, width), dtype=np.uint16)
-            ib = self.cl.Buffer(self.ctx, self.mf.READ_ONLY | self.mf.COPY_HOST_PTR,
-                                hostbuf=source)
-            ob = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, gray.nbytes)
-            self.kernels['gray_u8'](self.q, (width, height), None, ib, ob,
-                                              np.int32(height), np.int32(width),
-                                              np.int32(channels), np.int32(256))
-            self.cl.enqueue_copy(self.q, gray, ob, is_blocking=True)
-            self.gpu.used = True
-            return gray
+        if self.img_resize is None:
+            if pixels.shape[:2] != (height, width):
+                raise ValueError("OpenFocus depth requires frames with matching shapes")
+            if pixels.dtype in (np.uint8, np.uint16):
+                channels = 1 if pixels.ndim == 2 else int(pixels.shape[2])
+                is_u8 = pixels.dtype == np.uint8
+                source = np.ascontiguousarray(pixels)
+                ib = self._buf(('src_in', height, width, channels, source.dtype.itemsize),
+                               source.nbytes)
+                self.cl.enqueue_copy(self.q, ib, source, is_blocking=True)
+                kern = self.kernels['gray_u8' if is_u8 else 'gray_u16']
+                kern(self.q, (width, height), None, ib, gray_buf,
+                     np.int32(height), np.int32(width), np.int32(channels),
+                     np.int32(256 if is_u8 else 1))
+                self.gpu.used = True
+                return
         gray = frame_gray_codes(pixels, self.img_resize, self.should_cancel, depth_color=True)
-        return np.ascontiguousarray(gray, dtype=np.uint16)
-
-    def _detail(self, gray):
-        h, w = gray.shape
-        oh, ow = h // 2, w // 2
-        key = ('detail', h, w)
-        if key not in self._cbuf:
-            self._cbuf[key] = (
-                self.cl.Buffer(self.ctx, self.mf.READ_WRITE, oh * ow * 2),
-                self.cl.Buffer(self.ctx, self.mf.READ_WRITE, oh * ow * 2))
-        pb, sb = self._cbuf[key]
-        gb = self.cl.Buffer(self.ctx, self.mf.READ_ONLY | self.mf.COPY_HOST_PTR,
-                            hostbuf=np.ascontiguousarray(gray))
-        self.kernels['detail_pool'](self.q, (ow, oh), None, gb, pb,
-                                              np.int32(h), np.int32(w),
-                                              np.int32(oh), np.int32(ow))
-        self.kernels['detail_smooth'](self.q, (ow, oh), None, pb, sb,
-                                                np.int32(oh), np.int32(ow))
-        self.q.finish()
-        out = np.empty((oh, ow), np.uint16)
-        self.cl.enqueue_copy(self.q, out, sb, is_blocking=True)
-        return out
-
-    def _act(self, half, fine, coarse):
-        h, w = half.shape
-        key = ('act', h, w)
-        if key not in self._cbuf:
-            self._cbuf[key] = self.cl.Buffer(self.ctx, self.mf.READ_WRITE,
-                                             half.nbytes)
-        fb = self.cl.Buffer(self.ctx, self.mf.READ_ONLY | self.mf.COPY_HOST_PTR,
-                            hostbuf=np.ascontiguousarray(fine))
-        gb = self.cl.Buffer(self.ctx, self.mf.READ_ONLY | self.mf.COPY_HOST_PTR,
-                            hostbuf=np.ascontiguousarray(half))
-        self.kernels['activity'](self.q, (h * w,), None, gb, fb,
-                                           self._cbuf[key], np.int32(h * w))
-        self.q.finish()
-        out = np.empty_like(half)
-        self.cl.enqueue_copy(self.q, out, self._cbuf[key], is_blocking=True)
-        return self.filt.run(out, coarse)
-
-    def _select_init(self, a, count):
-        depth = np.zeros_like(a)
-        votes = np.empty_like(a)
-        ab = self.cl.Buffer(self.ctx, self.mf.READ_ONLY | self.mf.COPY_HOST_PTR,
-                            hostbuf=np.ascontiguousarray(a))
-        db = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, a.nbytes)
-        vb = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, a.nbytes)
-        self.kernels['init_activity'](self.q, (a.size,), None, ab, db,
-                                                vb, np.uint32(count),
-                                                np.int32(a.size))
-        self.cl.enqueue_copy(self.q, depth, db)
-        self.cl.enqueue_copy(self.q, votes, vb)
-        self.q.finish()
-        return a.copy(), depth, votes
-
-    def _select(self, a, best, depth, votes, code, count):
-        ab = self.cl.Buffer(self.ctx, self.mf.READ_ONLY | self.mf.COPY_HOST_PTR,
-                            hostbuf=np.ascontiguousarray(a))
-        bb = self.cl.Buffer(self.ctx, self.mf.READ_WRITE | self.mf.COPY_HOST_PTR,
-                            hostbuf=best)
-        db = self.cl.Buffer(self.ctx, self.mf.READ_WRITE | self.mf.COPY_HOST_PTR,
-                            hostbuf=depth)
-        vb = self.cl.Buffer(self.ctx, self.mf.READ_WRITE | self.mf.COPY_HOST_PTR,
-                            hostbuf=votes)
-        self.kernels['select_activity'](self.q, (a.size,), None, ab,
-                                                  bb, db, vb, np.uint16(code),
-                                                  np.uint32(count), np.int32(a.size))
-        self.cl.enqueue_copy(self.q, best, bb)
-        self.cl.enqueue_copy(self.q, depth, db)
-        self.cl.enqueue_copy(self.q, votes, vb)
-        self.q.finish()
+        if gray.shape != (height, width):
+            raise ValueError("OpenFocus depth requires frames with matching shapes")
+        host_gray = np.ascontiguousarray(gray, dtype=np.uint16)
+        self.cl.enqueue_copy(self.q, gray_buf, host_gray, is_blocking=True)
 
     # -- depth_map equivalent ---------------------------------------------
     def depth(self, frames, kernel_size, smoothing, feather, shape, count,
               should_cancel, progress_callback=None):
         from fusion_methods.openfocus_depth import _snap_lut
-        from fusion_methods._openfocus_depth_rows import (
-            confidence_rows, detail_confidence_rows,
-            apply_detail_rows, select_detail_rows)
         from fusion_methods.openfocus_ab import _check_cancel
 
         def cancel():
             _check_cancel(should_cancel)
 
+        height, width = int(shape[0]), int(shape[1])
+        oh, ow = height // 2, width // 2
+        m = oh * ow
+        m_bytes = m * 2
+
         radius = max(1, int(kernel_size or 17) // 2)
         parameter = float(np.float64(radius) * np.float64(np.float32(0.075)))
         fine_p = np.float32(parameter * 0.5)
         coarse_p = np.float32(parameter * 2.0)
+        extent = np.float32(max(oh, ow))
+        fine_r = float(np.float32(extent * fine_p / np.float32(100)))
+        coarse_r = float(np.float32(extent * coarse_p / np.float32(100)))
         step = 65535 // (count - 1)
-        best = depth = votes = None
-        d_best = d_second = d_winner = None
-        for idx, frame in enumerate(frames):
+
+        try:
+            gray_buf = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, height * width * 2)
+            pb = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, m_bytes)
+            sb = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, m_bytes)
+            d_best_buf = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, m_bytes)
+            d_second_buf = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, m_bytes)
+            d_winner_buf = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, m_bytes)
+            half_buf = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, m_bytes)
+            fine_buf = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, m_bytes)
+            act_raw_buf = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, m_bytes)
+            act_buf = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, m_bytes)
+            best_buf = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, m_bytes)
+            depth_buf = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, m_bytes)
+            votes_buf = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, m_bytes)
+
+            for idx, frame in enumerate(frames):
+                cancel()
+                self._gray_into(frame, gray_buf, height, width)
+                cancel()
+                self.kernels['detail_pool'](self.q, (ow, oh), None, gray_buf, pb,
+                                            np.int32(height), np.int32(width),
+                                            np.int32(oh), np.int32(ow))
+                self.kernels['detail_smooth'](self.q, (ow, oh), None, pb, sb,
+                                              np.int32(oh), np.int32(ow))
+                self.gpu.used = True
+                cancel()
+                self.half.run_buf(gray_buf, half_buf, height, width)
+                cancel()
+                self.filt.run_buf(half_buf, fine_buf, oh, ow, fine_r)
+                cancel()
+                self.kernels['activity'](self.q, (m,), None, half_buf, fine_buf,
+                                         act_raw_buf, np.int32(m))
+                self.filt.run_buf(act_raw_buf, act_buf, oh, ow, coarse_r)
+                code = idx * step
+                if idx == 0:
+                    self.cl.enqueue_copy(self.q, best_buf, act_buf)
+                    self.kernels['init_activity'](self.q, (m,), None, act_buf, depth_buf,
+                                                  votes_buf, np.uint32(count), np.int32(m))
+                    self.cl.enqueue_copy(self.q, d_best_buf, sb)
+                    self.kernels['init_detail'](self.q, (m,), None, d_second_buf, d_winner_buf,
+                                                np.int32(m))
+                else:
+                    self.kernels['select_activity'](self.q, (m,), None, act_buf, best_buf,
+                                                    depth_buf, votes_buf, np.uint16(code),
+                                                    np.uint32(count), np.int32(m))
+                    self.kernels['detail_select'](self.q, (m,), None, sb, d_best_buf,
+                                                  d_second_buf, d_winner_buf, np.uint16(code),
+                                                  np.int32(m))
+                self.q.finish()
+                if progress_callback is not None:
+                    progress_callback(idx, count)
+
             cancel()
-            gray = self._gray(frame)
-            if gray.shape != tuple(shape[:2]):
-                raise ValueError("OpenFocus depth requires frames with matching shapes")
-            cancel()
-            detail = self._detail(gray)
-            self.gpu.used = True
-            cancel()
-            half = self.half.run(gray)
-            cancel()
-            extent = np.float32(max(half.shape))
-            fine_r = np.float32(extent * fine_p / np.float32(100))
-            coarse_r = np.float32(extent * coarse_p / np.float32(100))
-            fine = self.filt.run(half, fine_r)
-            cancel()
-            activity = self._act(half, fine, coarse_r)
-            code = idx * step
-            if best is None:
-                best, depth, votes = self._select_init(activity, count)
-                d_best = detail.copy()
-                d_second = np.zeros_like(detail)
-                d_winner = np.zeros_like(detail)
-            else:
-                self._select(activity, best, depth, votes, code, count)
-                select_detail_rows(detail, d_best, d_second, d_winner, code,
-                                   0, detail.shape[0])
-            if progress_callback is not None:
-                progress_callback(idx, count)
-        cancel()
-        detail_confidence_rows(best, d_best, d_second, 0, d_best.shape[0])
-        confidence_rows(best, votes, 0, best.shape[0])
-        hist = np.bincount(best.ravel(), minlength=65536)
-        threshold = int(np.float32(np.float32(best.size)
-                                   * np.float32(0.009999999776482582)))
-        lo = int(np.searchsorted(np.cumsum(hist), threshold)) if threshold else 0
-        hi = (65535 - int(np.searchsorted(np.cumsum(hist[::-1]), threshold))
-              if threshold else 65535)
-        positions = np.arange(4096, dtype=np.float64) * 65535.0 / 4095.0
-        span = max(hi - lo, 1)
-        lut = (65535.0 * np.sqrt(np.clip((positions - lo) / span, 0, 1))
-               ).astype(np.float32)
-        g = np.empty_like(best)
-        bb = self.cl.Buffer(self.ctx, self.mf.READ_ONLY | self.mf.COPY_HOST_PTR,
-                            hostbuf=best)
-        lb = self.cl.Buffer(self.ctx, self.mf.READ_ONLY | self.mf.COPY_HOST_PTR,
-                            hostbuf=lut)
-        ob = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, best.nbytes)
-        self.kernels['guide'](self.q, (best.size,), None, bb, lb, ob,
-                                        np.int32(best.size))
-        self.cl.enqueue_copy(self.q, g, ob)
-        self.q.finish()
-        smooth = np.float32(np.float32(smoothing) * np.float32(0.75)
-                            * np.float32(0.03125))
-        extent = np.float32(max(depth.shape))
-        scale = np.float32(extent * smooth / np.float32(100))
-        low = np.float32(extent * np.float32(smooth * np.float32(64))
-                         / np.float32(100))
-        for _ in range(2):
-            cancel()
-            depth = self.filt.axis_guided(depth, g, scale, low, 1)
-            cancel()
-            depth = self.filt.axis_guided(depth, g, scale, low, 0)
-        half_step = step >> 1
-        if half_step:
-            sl = _snap_lut(feather).astype(np.int64)
-            db = self.cl.Buffer(self.ctx, self.mf.READ_WRITE | self.mf.COPY_HOST_PTR,
-                                hostbuf=depth)
-            sb = self.cl.Buffer(self.ctx, self.mf.READ_ONLY | self.mf.COPY_HOST_PTR,
-                                hostbuf=sl)
-            self.kernels['snap'](self.q, (depth.size,), None, db, sb,
-                                           np.int32(step), np.int32(depth.size))
-            self.cl.enqueue_copy(self.q, depth, db)
-            self.q.finish()
-        apply_detail_rows(depth, d_second, d_winner, 0, depth.shape[0])
-        return self.expand.run(depth, shape)
+            self.kernels['detail_confidence'](self.q, (m,), None, best_buf, d_best_buf,
+                                              d_second_buf, np.int32(m))
+            self.kernels['confidence'](self.q, (m,), None, best_buf, votes_buf, np.int32(m))
+            best = np.empty((oh, ow), dtype=np.uint16)
+            self.cl.enqueue_copy(self.q, best, best_buf, is_blocking=True)
+
+            hist = np.bincount(best.ravel(), minlength=65536)
+            threshold = int(np.float32(np.float32(best.size)
+                                       * np.float32(0.009999999776482582)))
+            lo = int(np.searchsorted(np.cumsum(hist), threshold)) if threshold else 0
+            hi = (65535 - int(np.searchsorted(np.cumsum(hist[::-1]), threshold))
+                  if threshold else 65535)
+            positions = np.arange(4096, dtype=np.float64) * 65535.0 / 4095.0
+            span = max(hi - lo, 1)
+            lut = (65535.0 * np.sqrt(np.clip((positions - lo) / span, 0, 1))
+                   ).astype(np.float32)
+
+            lb = self.cl.Buffer(self.ctx, self.mf.READ_ONLY | self.mf.COPY_HOST_PTR,
+                                hostbuf=lut)
+            guide_buf = pb
+            self.kernels['guide'](self.q, (m,), None, best_buf, lb, guide_buf, np.int32(m))
+            smooth = np.float32(np.float32(smoothing) * np.float32(0.75)
+                                * np.float32(0.03125))
+            scale = float(np.float32(extent * smooth / np.float32(100)))
+            low = float(np.float32(extent * np.float32(smooth * np.float32(64))
+                                   / np.float32(100)))
+            tmp_depth_buf = sb
+            for _ in range(2):
+                cancel()
+                self.filt.axis_guided_buf(depth_buf, guide_buf, tmp_depth_buf, oh, ow,
+                                          scale, low, axis=1)
+                cancel()
+                self.filt.axis_guided_buf(tmp_depth_buf, guide_buf, depth_buf, oh, ow,
+                                          scale, low, axis=0)
+            half_step = step >> 1
+            if half_step:
+                sl = _snap_lut(feather).astype(np.int64)
+                sb_lut = self.cl.Buffer(self.ctx, self.mf.READ_ONLY | self.mf.COPY_HOST_PTR,
+                                        hostbuf=sl)
+                self.kernels['snap'](self.q, (m,), None, depth_buf, sb_lut,
+                                     np.int32(step), np.int32(m))
+            self.kernels['apply_detail'](self.q, (m,), None, depth_buf, d_second_buf,
+                                         d_winner_buf, np.int32(m))
+            return self.expand.run_buf(depth_buf, (oh, ow), shape)
+        finally:
+            self._cbuf.clear()
+            self.filt._bufs.clear()
+            self.half._cache.clear()
+            self.half._scratch.clear()
+            self.expand._cache.clear()
+            self.expand._scratch.clear()
 
