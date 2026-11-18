@@ -4986,6 +4986,7 @@ if __name__ == "__main__":
                 recovery.clear_pending_restore()
                 window._show_status_message(
                     trans.t('update_restored_session'), 8000)
+                _log.info("restored the session after an update (%s)", window.project_path)
 
             def _restored_failed(reason: str):
                 _log.warning("update restore failed: %s", reason)
@@ -4996,8 +4997,6 @@ if __name__ == "__main__":
                 apply_project(window, state, on_loaded=_restored_ok,
                               on_error=_restored_failed)
                 recovered = True
-                _log.info("restoring the session after an update (%s)",
-                          window.project_path)
             except Exception as exc:
                 _restored_failed(str(exc))
         else:
