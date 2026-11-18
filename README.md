@@ -22,7 +22,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/Windows-10%2F11-0078D7?logo=windows&logoColor=white" alt="Windows 10/11">
   <img src="https://img.shields.io/badge/macOS-Apple%20Silicon-000000?logo=apple&logoColor=white" alt="macOS Apple Silicon">
-  <img src="https://img.shields.io/badge/Linux-CLI-FCC624?logo=linux&logoColor=black" alt="Linux CLI">
+  <img src="https://img.shields.io/badge/Linux-x86--64-FCC624?logo=linux&logoColor=black" alt="Linux x86-64 desktop and CLI">
   <a href="https://pypi.org/project/openfocus/"><img src="https://img.shields.io/badge/PyPI-openfocus-3775A9?logo=pypi&logoColor=white" alt="PyPI"></a>
 </p>
 
@@ -237,10 +237,10 @@ space for the selected source, processing workspace and full-size result.
 <a id="install"></a>
 ## ⬇️ Install
 
-The [OpenFocus website](https://openfocus.top/#download) and its install scripts offer the latest stable Windows or macOS build. Desktop updates also use the stable channel by default; enable beta updates in Advanced Settings or the welcome dialog to receive newer prereleases. Portable builds, beta releases, and older versions are available on [GitHub Releases](https://github.com/Xinzhe99/OpenFocus/releases). The Linux CLI installed from PyPI remains stable.
+The [OpenFocus website](https://openfocus.top/#download) offers the latest stable desktop builds. Starting with v1.77.0, Linux x86-64 users can download a portable desktop archive alongside Windows and macOS builds. Extract it and run `OpenFocus/OpenFocus`; the separate PyPI package provides the headless CLI. Desktop updates use the stable channel by default; enable beta updates in Advanced Settings or the welcome dialog to receive newer prereleases. Linux desktop updates are installed manually from the download page. Older versions and prereleases are available on [GitHub Releases](https://github.com/Xinzhe99/OpenFocus/releases).
 
-On macOS (Apple Silicon) or Linux, install from a terminal. Linux installs the
-headless CLI; macOS installs the app in `~/Applications`.
+On macOS (Apple Silicon) or Linux, install from a terminal. On Linux this
+command installs the headless CLI; on macOS it installs the app in `~/Applications`.
 
 ```bash
 curl -fsSL https://openfocus.top/install.sh | sh

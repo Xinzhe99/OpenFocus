@@ -75,8 +75,8 @@ Bij **Opslaan als** bewaart gewone TIFF het resultaat als één afbeelding; TIFF
 
 ### Installatie
 
-Download de nieuwste Windows- of macOS-build van de [OpenFocus-website](https://openfocus.top/#download). Dezelfde bestanden en oudere versies staan ook op [GitHub Releases](https://github.com/Xinzhe99/OpenFocus/releases).
-De website en installatiescripts bieden ook nieuwere bèta’s, momenteel [vooruitgave v1.77.0-beta.7](https://github.com/Xinzhe99/OpenFocus/releases/tag/v1.77.0-beta.7). De desktopupdater biedt ook nieuwere bèta’s; de Linux-CLI van PyPI blijft stabiel.
+Download de nieuwste Windows-, macOS- of Linux-x86-64-desktopbuild van de [OpenFocus-website](https://openfocus.top/#download). De Linux-desktopbuild is beschikbaar vanaf v1.77.0; oudere versies staan ook op [GitHub Releases](https://github.com/Xinzhe99/OpenFocus/releases).
+De website biedt standaard stabiele desktopversies. Op Windows en macOS kunt u bèta-updates inschakelen; op Linux werkt u bij door een nieuw desktoparchief te downloaden. De PyPI-CLI wordt afzonderlijk uitgebracht.
 
 | Platform | Bestand | Type |
 |----------|---------|------|
@@ -84,6 +84,7 @@ De website en installatiescripts bieden ook nieuwere bèta’s, momenteel [vooru
 | Windows 10/11 (64-bit) | `OpenFocus-*-windows-x64.zip` | Draagbaar (uitpakken en starten) |
 | macOS Apple Silicon (M1–M4) | `OpenFocus-*-macos.dmg` | Schijfimage (naar Programma's slepen) |
 | macOS Apple Silicon (M1–M4) | `OpenFocus-*-macos-arm64.zip` | Draagbaar (uitpakken) |
+| Linux x86-64 | `OpenFocus-*-linux-x86_64.tar.gz` | Draagbaar (uitpakken en `OpenFocus/OpenFocus` starten) |
 
 Of de Windows-builds ondertekend zijn, hangt af van de specifieke release (zie de releaseopmerkingen); een handtekening is niet gegarandeerd. Bij de eerste start kan daarom een beveiligingsvraag verschijnen: onder **Windows** SmartScreen → 'Meer informatie' → 'Toch uitvoeren' (de eerste start kan 30–60 s duren). De macOS-builds zijn niet genotariseerd; na de DMG-installatie (naar Programma's) voert u indien nodig `xattr -cr /Applications/OpenFocus.app` uit, na de terminalinstallatie (naar `~/Applications`) `xattr -cr ~/Applications/OpenFocus.app`, of u klikt met rechts op de app → **Open**.
 

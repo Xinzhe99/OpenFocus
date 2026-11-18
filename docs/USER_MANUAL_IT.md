@@ -74,7 +74,7 @@ In **Salva con nome**, il TIFF normale salva il risultato come immagine singola;
 ### Avvio dell'applicazione
 
 Il modo preferito per installare una build pacchettizzata è il sito del progetto, **https://openfocus.top**: collega l'installer Windows, la build macOS e il pacchetto Linux, con script di installazione per il terminale. Preferiscilo alla ricompilazione: quegli artefatti sono l'output esatto della pipeline di rilascio. `pip install openfocus` installa solo l'interfaccia a riga di comando headless (la wheel non dipende deliberatamente da PyQt6); usa una build desktop o una copia del codice sorgente per la GUI.
-Il sito e gli script di installazione offrono anche beta più recenti, attualmente [versione preliminare v1.77.0-beta.7](https://github.com/Xinzhe99/OpenFocus/releases/tag/v1.77.0-beta.7). Gli aggiornamenti automatici desktop offrono anche beta più recenti; la CLI Linux da PyPI rimane stabile. La beta è disponibile anche su GitHub.
+Il sito offre per impostazione predefinita le versioni desktop stabili. Su Windows e macOS puoi attivare gli aggiornamenti beta; su Linux aggiorna scaricando un nuovo archivio desktop. La CLI di PyPI è distribuita separatamente.
 
 Per installare da terminale, visualizza prima l'anteprima del comando e poi eseguilo senza `--dry-run`: su macOS o Linux, `curl -fsSL https://openfocus.top/install.sh | sh -s -- --dry-run` e poi `curl -fsSL https://openfocus.top/install.sh | sh` (su Linux installa la CLI); su Windows, `irm https://openfocus.top/install.ps1 | iex` da PowerShell.
 
@@ -82,7 +82,8 @@ Dopo l'installazione, avvia OpenFocus in uno dei seguenti modi:
 
 1. **Windows (eseguibile)**: fai doppio clic sul collegamento o sull'eseguibile di OpenFocus
 2. **macOS**: trascina `OpenFocus.app` in Applicazioni e aprilo da lì
-3. **Sorgente Python**: esegui `pip install -r requirements.txt`, poi `python main.py` nell'ambiente attivato
+3. **Linux (x86-64)**: estrai l'archivio desktop ed esegui `OpenFocus/OpenFocus` nella cartella estratta
+4. **Sorgente Python**: esegui `pip install -r requirements.txt`, poi `python main.py` nell'ambiente attivato
 
 Il primo avvio apre la finestra di benvenuto, dove puoi scegliere il tema e caricare lo stack demo incluso. Un profilo nuovo usa il tema chiaro per impostazione predefinita; la scelta viene ricordata.
 

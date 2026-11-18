@@ -25,12 +25,14 @@ const DOWNLOAD_SUFFIXES = {
   "windows-zip": "windows-x64.zip",
   "macos-dmg": "macos.dmg",
   "macos-zip": "macos-arm64.zip",
+  "linux-desktop": "linux-x86_64.tar.gz",
 };
 const DOWNLOAD_KINDS = new Set([
   "windows-setup",
   "windows-zip",
   "macos-dmg",
   "macos-zip",
+  "linux-desktop",
 ]);
 const EDGE_CACHE_SECONDS = 300;
 const NO_STORE = "no-store";
@@ -115,6 +117,21 @@ function safeObjectKey(value) {
   return /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(value) ? value : null;
 }
 
+function linuxRequired(tag) {
+  if (!/^v[0-9]+(?:\.[0-9]+)*$/.test(tag)) return false;
+  const [major, minor = 0] = tag.slice(1).split(".").map(Number);
+  return major > 1 || (major === 1 && minor >= 77);
+}
+
+function validLinuxAsset(asset, tag) {
+  const name = `OpenFocus-${tag}-${DOWNLOAD_SUFFIXES["linux-desktop"]}`;
+  const remote = asset && githubAssetUrl(asset.url);
+  return !!asset && asset.name === name && safeObjectKey(name) &&
+    Number.isSafeInteger(asset.size) && asset.size > 0 && !!remote &&
+    remote === `https://github.com/${REPO}/releases/download/${tag}/${name}` &&
+    (!asset.digest || /^sha256:[0-9a-fA-F]{64}$/.test(asset.digest));
+}
+
 function releasePayload(release) {
   const assets = Array.isArray(release.assets) ? release.assets : [];
   const pick = (pattern) => {
@@ -131,6 +148,12 @@ function releasePayload(release) {
       url: githubAssetUrl(asset.browser_download_url),
     };
   };
+  const linuxName = `OpenFocus-${release.tag_name}-${DOWNLOAD_SUFFIXES["linux-desktop"]}`;
+  const linux = assets.find((item) => item && item.name === linuxName);
+  const linuxAsset = linux ? {
+    name: linux.name, size: linux.size, url: githubAssetUrl(linux.browser_download_url),
+    ...(linux.digest ? { digest: linux.digest } : {}),
+  } : null;
 
   return {
     tag: release.tag_name,
@@ -140,10 +163,11 @@ function releasePayload(release) {
       "windows-zip": pick(/-windows-x64\.zip$/i),
       "macos-dmg": pick(/-macos\.dmg$/i),
       "macos-zip": pick(/-macos-arm64\.zip$/i),
+      "linux-desktop": validLinuxAsset(linuxAsset, release.tag_name) ? linuxAsset : null,
     },
   };
 }
-// The mirror workflow publishes this manifest only after uploading all four
+// The mirror workflow publishes metadata only after uploading all required
 // assets. It keeps downloads available when GitHub's shared-IP rate limit is
 // exhausted; the response identifies the mirror as its metadata source.
 async function mirroredRelease(env, key = MIRROR_MANIFEST) {
@@ -174,6 +198,11 @@ async function mirroredRelease(env, key = MIRROR_MANIFEST) {
           !Number.isSafeInteger(asset.size) || asset.size <= 0) return null;
       if (!mirrorOnly && (!remote || decodeURIComponent(new URL(remote).pathname) !==
           `/${REPO}/releases/download/${data.tag}/${expected}`)) return null;
+    }
+    const linux = data.assets && data.assets["linux-desktop"];
+    if (linux && (!validLinuxAsset(linux, data.tag) ||
+        !/^sha256:[0-9a-fA-F]{64}$/.test(linux.digest || ""))) {
+      delete data.assets["linux-desktop"];
     }
     if (key === MIRROR_MANIFEST && Array.isArray(data.releases)) {
       data.releases = data.releases.filter((release) => release &&
@@ -246,17 +275,19 @@ async function stableRelease(ctx, env) {
   }
 
   const payload = releasePayload(release);
-  if (Object.values(payload.assets).some((asset) => !asset)) {
+  const requiredKinds = [...DOWNLOAD_KINDS].filter((kind) =>
+    kind !== "linux-desktop" || linuxRequired(payload.tag));
+  if (requiredKinds.some((kind) => !payload.assets[kind])) {
     const mirror = await mirroredRelease(env);
     if (mirror && mirror.tag === payload.tag) {
       for (const kind of DOWNLOAD_KINDS) {
-        if (!payload.assets[kind]) payload.assets[kind] = mirror.assets[kind];
+        if (!payload.assets[kind] && mirror.assets[kind]) payload.assets[kind] = mirror.assets[kind];
       }
     }
   }
   const body = JSON.stringify(payload);
   // Do not cache a release while its split Windows assets are still mirroring.
-  if (cache && Object.values(payload.assets).every(Boolean)) {
+  if (cache && requiredKinds.every((kind) => payload.assets[kind])) {
     const cacheable = new Response(body, {
       headers: {
         "Content-Type": "application/json; charset=utf-8",
@@ -308,11 +339,13 @@ function betaAlias(tag) {
 
 function previewUpdate(preview) {
   const alias = betaAlias(preview.tag);
-  if (!alias || [...DOWNLOAD_KINDS].some((kind) =>
-    !/^sha256:[0-9a-fA-F]{64}$/.test(preview.assets[kind].digest || ""))) return null;
-  const assets = Object.fromEntries(Object.entries(DOWNLOAD_SUFFIXES).map(([kind, suffix]) => [kind, {
-    ...preview.assets[kind], name: `OpenFocus-${alias}-${suffix}`,
-  }]));
+  if (!alias || Object.values(preview.assets).some((asset) =>
+    !asset || !/^sha256:[0-9a-fA-F]{64}$/.test(asset.digest || ""))) return null;
+  const assets = Object.fromEntries(Object.entries(DOWNLOAD_SUFFIXES)
+    .filter(([kind]) => preview.assets[kind])
+    .map(([kind, suffix]) => [kind, {
+      ...preview.assets[kind], name: `OpenFocus-${alias}-${suffix}`,
+    }]));
   const result = { ...preview, tag: alias, actual_tag: preview.tag, assets };
   if (Array.isArray(preview.releases)) {
     result.releases = preview.releases.flatMap((release) => {

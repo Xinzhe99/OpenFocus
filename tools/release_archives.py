@@ -38,6 +38,8 @@ MACOS_NAMES = {
     "macos-dmg": "macos.dmg",
     "macos-zip": "macos-arm64.zip",
 }
+LINUX_KEY = "linux-desktop"
+LINUX_SUFFIX = "linux-x86_64.tar.gz"
 RECOVERY_SCRIPT = "join-openfocus-parts.ps1"
 
 
@@ -84,6 +86,8 @@ def expected_name(label: str, key: str) -> str:
         return f"OpenFocus-{label}-{WINDOWS_NAMES[key]}"
     if key in MACOS_NAMES:
         return f"OpenFocus-{label}-{MACOS_NAMES[key]}"
+    if key == LINUX_KEY:
+        return f"OpenFocus-{label}-{LINUX_SUFFIX}"
     raise ReleaseArchiveError(f"unknown logical asset: {key}")
 
 
@@ -343,6 +347,8 @@ def check_release_assets(manifest_path: Path, asset_list: Path,
         raise ReleaseArchiveError(f"duplicate release assets: {duplicates}")
     present = set(names)
     errors = []
+    if linux_required(tag) and expected_name(tag, LINUX_KEY) not in present:
+        errors.append(f"missing required Linux asset: {expected_name(tag, LINUX_KEY)}")
     expected_parts = set()
     for key in WINDOWS_KEYS:
         info = manifest["assets"][key]
@@ -463,6 +469,35 @@ def _github_asset(release: dict, name: str, r2_dir: Path,
     return {"name": name, "size": size, "url": url, "digest": local_digest}
 
 
+def linux_required(tag: str) -> bool:
+    if not STABLE_TAG_RE.fullmatch(tag):
+        return False
+    parts = tuple(int(part) for part in tag[1:].split("."))
+    return (parts + (0, 0, 0))[:3] >= (1, 77, 0)
+
+
+def _linux_asset(release: dict, tag: str, r2_dir: Path, trusted: dict,
+                 build_identity: bool) -> dict | None:
+    name = expected_name(tag, LINUX_KEY)
+    items = release.get("assets")
+    if not isinstance(items, list):
+        raise ReleaseArchiveError("GitHub release has no asset list")
+    matches = [item for item in items if isinstance(item, dict) and item.get("name") == name]
+    if not matches:
+        if linux_required(tag):
+            raise ReleaseArchiveError(f"missing required Linux asset: {name}")
+        return None
+    if len(matches) != 1:
+        raise ReleaseArchiveError(f"expected exactly one GitHub asset {name!r}")
+    url = str(matches[0].get("browser_download_url") or "")
+    if not re.fullmatch(r"https://github\.com/[^/?#]+/[^/?#]+/releases/download/"
+                        + re.escape(tag) + "/" + re.escape(name), url):
+        raise ReleaseArchiveError(f"invalid GitHub asset URL: {name}")
+    if build_identity and name not in trusted:
+        raise ReleaseArchiveError(f"build identity missing asset: {name}")
+    return _github_asset(release, name, r2_dir, trusted)
+
+
 def _mirror_identity(path: Path, tag: str, release: dict, head_sha: str) -> dict:
     identity = _load_json(path)
     identity_name = f"OpenFocus-{tag}-build.json"
@@ -559,7 +594,10 @@ def write_mirror_manifest(tag: str, release_json: Path, r2_dir: Path,
         previous = _load_json(Path(trusted_metadata))
         if previous.get("tag") != tag or not isinstance(previous.get("assets"), dict):
             raise ReleaseArchiveError("trusted mirror metadata tag or assets differ")
-        for key in (*WINDOWS_KEYS, *MACOS_NAMES):
+        keys = [*WINDOWS_KEYS, *MACOS_NAMES]
+        if LINUX_KEY in previous["assets"]:
+            keys.append(LINUX_KEY)
+        for key in keys:
             entry = previous["assets"].get(key)
             name = expected_name(tag, key)
             if (not isinstance(entry, dict) or entry.get("name") != name or
@@ -615,6 +653,9 @@ def write_mirror_manifest(tag: str, release_json: Path, r2_dir: Path,
         if build_identity and name not in trusted:
             raise ReleaseArchiveError(f"build identity missing asset: {name}")
         assets[key] = _github_asset(release, name, r2_dir, trusted)
+    linux = _linux_asset(release, tag, r2_dir, trusted, bool(build_identity))
+    if linux:
+        assets[LINUX_KEY] = linux
     with open(releases_json, encoding="utf-8") as stream:
         releases = json.load(stream)
     if isinstance(releases, dict):

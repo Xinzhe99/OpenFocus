@@ -174,3 +174,34 @@ def test_public_release_without_identity_is_immutable(monkeypatch, tmp_path):
     with pytest.raises(KeyError):
         run(directory)
     assert gh.calls == ['download']
+
+
+@pytest.mark.parametrize(('tag', 'required'), [
+    ('v1.76.0', False), ('v1.77.0-beta.7', False), ('v1.77.0', True),
+])
+def test_release_inventory_includes_linux_and_preserves_legacy(tmp_path, tag, required):
+    from tools.release_archives import stage_windows
+
+    zip_file = tmp_path / f'OpenFocus-{tag}-windows-x64.zip'
+    setup_file = tmp_path / f'OpenFocus-{tag}-setup.exe'
+    recovery = tmp_path / 'join-openfocus-parts.ps1'
+    for path in (zip_file, setup_file, recovery):
+        path.write_bytes(b'asset')
+    directory = tmp_path / 'release'
+    stage_windows(tag, zip_file, setup_file, directory, recovery)
+    for suffix in ('macos.dmg', 'macos-arm64.zip'):
+        (directory / f'OpenFocus-{tag}-{suffix}').write_bytes(b'macos')
+
+    if required:
+        with pytest.raises(ValueError, match='missing staged assets'):
+            publisher.local_assets(directory, tag)
+    else:
+        assert not any(item['name'].endswith('-linux-x86_64.tar.gz')
+                       for item in publisher.local_assets(directory, tag))
+
+    linux = directory / f'OpenFocus-{tag}-linux-x86_64.tar.gz'
+    linux.write_bytes(b'linux desktop')
+    assert publisher.record(linux) in publisher.local_assets(directory, tag)
+    linux.write_bytes(b'')
+    with pytest.raises(ValueError, match='missing or empty asset'):
+        publisher.local_assets(directory, tag)

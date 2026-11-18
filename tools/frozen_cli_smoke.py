@@ -7,6 +7,7 @@ renders and exports a 16-bit stack through separate CLI processes.
 from __future__ import annotations
 
 import argparse
+from contextlib import ExitStack, contextmanager
 import json
 import os
 from pathlib import Path
@@ -16,6 +17,7 @@ import sys
 import tempfile
 import time
 import uuid
+from unittest.mock import patch
 
 import cv2
 import numpy as np
@@ -25,7 +27,26 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 from constants import app_display_version  # noqa: E402
+from utils.account_client import TokenStore  # noqa: E402
 from utils.image_utils import imwrite_auto  # noqa: E402
+
+
+@contextmanager
+def _synthetic_session(profile: Path):
+    """Use the same profile-derived backend and identity as the frozen child."""
+    # On macOS the default store uses a Keychain account derived from the
+    # profile path; an explicit TokenStore(path) would instead use a file.
+    with patch.dict(os.environ, {"OPENFOCUS_DATA_DIR": str(profile)}):
+        store = TokenStore()
+    session = {
+        "token": "synthetic-test-token", "token_type": "Bearer",
+        "expires_at": 1, "user": {"id": "synthetic-test-user"},
+    }
+    try:
+        store.save(session)
+        yield
+    finally:
+        store.clear()
 
 
 def _call(executable: Path, environment: dict, *arguments: str) -> dict:
@@ -211,7 +232,7 @@ def _exercise_planar_lzw(executable: Path, environment: dict, root: Path) -> Non
 
 
 def _exercise(executable: Path, environment: dict, root: Path,
-              shape: tuple, resources: Path) -> None:
+              shape: tuple, resources: Path, *, headless_wayland: bool) -> None:
     if not _call(executable, environment, "ping").get("pong"):
         raise RuntimeError("Packaged agent control did not answer ping")
     context = _call(executable, environment, "ui.context")
@@ -252,6 +273,11 @@ def _exercise(executable: Path, environment: dict, root: Path,
         raise RuntimeError("Packaged desktop export lost image shape or bit depth")
     if not np.any(result % 257):
         raise RuntimeError("Packaged desktop export lost 16-bit precision")
+
+    if headless_wayland:
+        # Weston headless has no input seat for Qt's grabbing context menu.
+        _call(executable, environment, "ui.grab", "--output", str(root / "wayland.png"))
+        return
 
     # Exercise Save As and its layered TIFF filter so the actual output-list
     # path and the 16-bit Photoshop layer tag are checked on both platforms.
@@ -351,7 +377,7 @@ def _exercise(executable: Path, environment: dict, root: Path,
             raise RuntimeError(f"Packaged registration {registration} failed: {result.stderr}")
 
 
-def run(executable: Path, resources: Path | None = None) -> None:
+def run(executable: Path, resources: Path | None = None, *, headless_wayland: bool = False) -> None:
     executable = executable.resolve()
     if resources is None:
         resources = (executable.parent.parent / "Resources" if executable.parent.name == "MacOS"
@@ -366,10 +392,14 @@ def run(executable: Path, resources: Path | None = None) -> None:
 
     marker.touch()
     process = None
+    sessions = ExitStack()
     try:
         data_dir.mkdir()
+        profile = data_dir / f"smoke-{uuid.uuid4().hex}"
+        profile.mkdir()
+        sessions.enter_context(_synthetic_session(profile))
         settings = QSettings(
-            str(data_dir / "settings.ini"), QSettings.Format.IniFormat,
+            str(profile / "settings.ini"), QSettings.Format.IniFormat,
         )
         settings.setValue("ui/first_run_done", "1")
         settings.setValue("account/intro_version", app_display_version())
@@ -383,12 +413,16 @@ def run(executable: Path, resources: Path | None = None) -> None:
             shape = _create_stack(root / "stack")
             environment = os.environ.copy()
             environment.pop("PYTHONPATH", None)
+            environment["OPENFOCUS_DATA_DIR"] = str(profile)
             environment["OPENFOCUS_CONTROL_FILE"] = str(root / "control.json")
             environment["OPENFOCUS_LOG_DIR"] = str(root / "logs")
             environment["OPENFOCUS_INSTANCE_NAME"] = (
                 f"OpenFocus-smoke-{uuid.uuid4().hex}"
             )
-            environment.setdefault("QT_QPA_PLATFORM", "offscreen")
+            if headless_wayland:
+                environment["QT_QPA_PLATFORM"] = "wayland"
+            else:
+                environment.setdefault("QT_QPA_PLATFORM", "offscreen")
             version = subprocess.run(
                 [str(executable), "version"], env=environment,
                 capture_output=True, text=True, encoding="utf-8",
@@ -399,13 +433,13 @@ def run(executable: Path, resources: Path | None = None) -> None:
                     f"Packaged CLI version failed: {version.stdout!r} "
                     f"{version.stderr!r}"
                 )
-            process = subprocess.Popen(
-                [str(executable)], env=environment,
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            )
+            # Keep Qt plugin loader errors visible when QApplication aborts.
+            process = subprocess.Popen([str(executable)], env=environment,
+                                       stdout=subprocess.DEVNULL)
             try:
                 _wait_for_control(process, root / "control.json")
-                _exercise(executable, environment, root, shape, resources)
+                _exercise(executable, environment, root, shape, resources,
+                          headless_wayland=headless_wayland)
             except BaseException:
                 print(f"Desktop exit status: {process.poll()}", file=sys.stderr)
                 for path in sorted((root / "logs").glob("*")):
@@ -445,10 +479,8 @@ def run(executable: Path, resources: Path | None = None) -> None:
                 )
             # A second frozen process must restore the last selected language.
             (root / "control.json").unlink(missing_ok=True)
-            process = subprocess.Popen(
-                [str(executable)], env=environment,
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            )
+            process = subprocess.Popen([str(executable)], env=environment,
+                                       stdout=subprocess.DEVNULL)
             try:
                 _wait_for_control(process, root / "control.json")
                 _check_language(executable, environment, "pl")
@@ -460,14 +492,20 @@ def run(executable: Path, resources: Path | None = None) -> None:
                 if process.poll() is None:
                     process.terminate()
                     process.wait(timeout=15)
-            print(f"Packaged CLI and GUI smoke passed: {app_display_version()}")
+            print(f"Packaged desktop smoke passed ({environment['QT_QPA_PLATFORM']}): "
+                  f"{app_display_version()}")
     finally:
-        if process is not None and process.poll() is None:
-            process.terminate()
-            process.wait(timeout=15)
-        if data_dir.exists():
-            shutil.rmtree(data_dir)
-        marker.unlink()
+        try:
+            if process is not None and process.poll() is None:
+                process.terminate()
+                process.wait(timeout=15)
+        finally:
+            try:
+                sessions.close()
+            finally:
+                if data_dir.exists():
+                    shutil.rmtree(data_dir)
+                marker.unlink()
 
 
 def run_installed_startup(executable: Path) -> None:
@@ -480,10 +518,11 @@ def run_installed_startup(executable: Path) -> None:
     if (executable.parent / "OpenFocus.portable").exists():
         raise RuntimeError("Installer unexpectedly contains the portable marker")
 
-    with tempfile.TemporaryDirectory(prefix="openfocus_installed_smoke_") as td:
+    with tempfile.TemporaryDirectory(prefix="openfocus_installed_smoke_") as td, ExitStack() as sessions:
         root = Path(td)
         data = root / "data"
         data.mkdir()
+        sessions.enter_context(_synthetic_session(data))
         settings = QSettings(str(data / "settings.ini"), QSettings.Format.IniFormat)
         settings.setValue("updates/last_check_epoch", 9999999999)
         settings.setValue("usage/enabled", False)
@@ -511,20 +550,21 @@ def run_installed_startup(executable: Path) -> None:
                 if process.poll() is not None:
                     raise RuntimeError(f"Installed desktop exited: {process.returncode}")
                 dialogs = _call(executable, environment, "dialog.list").get("dialogs", [])
-                account = next((d for d in dialogs if d.get("class") == "AccountDialog"), None)
-                if account:
+                welcome = next((d for d in dialogs if d.get("class") == "WelcomeDialog"), None)
+                if welcome:
                     buttons = _call(executable, environment, "ui.find", "--window",
-                                    account["root"], "--object-name", "accountClose").get("matches", [])
+                                    welcome["root"], "--object-name", "primaryButton").get("matches", [])
                     if buttons:
                         _call(executable, environment, "ui.click", "--path", buttons[0]["path"])
                         break
                 time.sleep(0.2)
             else:
-                raise RuntimeError(f"Required account dialog did not appear: {dialogs}")
+                raise RuntimeError(f"First-run welcome dialog did not appear: {dialogs}")
+            _call(executable, environment, "app.quit", "--force")
             process.wait(timeout=60)
             if process.returncode:
                 raise RuntimeError(f"Installed desktop exited with {process.returncode}")
-            print(f"Installed first-run account gate smoke passed: {app_display_version()}")
+            print(f"Installed first-run desktop smoke passed: {app_display_version()}")
         finally:
             if process.poll() is None:
                 process.terminate()
@@ -541,15 +581,20 @@ def main() -> None:
         "--resources", type=Path,
         help="path to packaged resources (defaults to the platform bundle layout)",
     )
-    parser.add_argument(
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
         "--installed-startup", action="store_true",
         help="verify first launch of a Windows installer without inherited handles",
+    )
+    mode.add_argument(
+        "--headless-wayland", action="store_true",
+        help="verify the frozen Wayland window, import, render and export under headless Weston",
     )
     args = parser.parse_args()
     if args.installed_startup:
         run_installed_startup(args.executable)
     else:
-        run(args.executable, args.resources)
+        run(args.executable, args.resources, headless_wayland=args.headless_wayland)
 
 
 if __name__ == "__main__":

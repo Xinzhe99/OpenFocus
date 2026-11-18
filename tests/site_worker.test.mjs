@@ -927,3 +927,73 @@ test("scheduled cleanup removes expired pseudonymous activity", async () => {
   assert.equal(db.writes.length, 1);
   assert.match(db.writes[0].sql, /^DELETE FROM active_installations WHERE day < date\('now', '-89 days'\)$/);
 });
+
+test("Linux desktop metadata and downloads preserve historical releases", async () => {
+  installCache();
+  installReleaseFetch();
+  const legacyEnv = makeEnv({ [NAMES["windows-setup"]]: PAYLOAD });
+  let response = await run("https://openfocus.top/api/latest", { env: legacyEnv });
+  assert.equal((await response.json()).assets["linux-desktop"], null);
+  response = await run("https://openfocus.top/download/latest/linux-desktop", { env: legacyEnv });
+  assert.equal(response.status, 503);
+  assert.equal(response.headers.get("location"), null);
+  response = await run("https://openfocus.top/download/latest/windows-setup", { env: legacyEnv });
+  assert.equal(response.status, 200);
+
+  installCache();
+  const tag = "v1.77.0";
+  const current = releaseBody();
+  current.tag_name = tag;
+  current.assets = current.assets.map((asset) => {
+    const name = asset.name.replace(TAG, tag);
+    return { ...asset, name, browser_download_url: `https://github.com/Xinzhe99/OpenFocus/releases/download/${tag}/${name}` };
+  });
+  const name = `OpenFocus-${tag}-linux-x86_64.tar.gz`;
+  const linux = { name, size: PAYLOAD.length, digest: `sha256:${"a".repeat(64)}`,
+    browser_download_url: `https://github.com/Xinzhe99/OpenFocus/releases/download/${tag}/${name}` };
+  current.assets.push(linux);
+  installReleaseFetch({ release: current });
+  const env = makeEnv({ [name]: PAYLOAD });
+  response = await run("https://openfocus.top/api/latest", { env });
+  assert.equal((await response.json()).assets["linux-desktop"].name, name);
+  for (const url of ["https://openfocus.top/download/latest/linux-desktop", `https://openfocus.top/download/releases/${tag}/linux-desktop`]) {
+    response = await run(url, { env, headers: { Range: "bytes=2-4" } });
+    assert.equal(response.status, 206);
+    assert.equal(await response.text(), "234");
+  }
+  installCache();
+  linux.browser_download_url += "?redirect=evil";
+  response = await run("https://openfocus.top/api/latest", { env });
+  assert.equal((await response.json()).assets["linux-desktop"], null);
+});
+
+test("Linux mirror metadata preserves other platforms and supports beta", async () => {
+  installReleaseFetch({ fail: true });
+  for (const tag of ["v1.76.0", "v1.77.0-beta.7", "v1.77.0"]) {
+    const beta = tag.includes("-beta.");
+    const key = beta ? "openfocus-meta/beta-release.json" : "openfocus-meta/latest-release.json";
+    const api = `https://openfocus.top/api/updates${beta ? "?channel=beta" : ""}`;
+    const manifest = manifestFor(tag);
+    const env = () => makeEnv({ [key]: manifestBytes(manifest) });
+    let response = await run(api, { env: env() });
+    assert.equal(response.status, 200);
+    assert.ok((await response.json()).assets["windows-setup"]);
+    const name = `OpenFocus-${tag}-linux-x86_64.tar.gz`;
+    manifest.assets["linux-desktop"] = { name, size: PAYLOAD.length,
+      url: `https://github.com/Xinzhe99/OpenFocus/releases/download/${tag}/${name}`,
+      digest: `sha256:${"a".repeat(64)}` };
+    response = await run(api, { env: env() });
+    assert.equal(response.status, 200);
+    const downloadEnv = makeEnv({ [name]: PAYLOAD });
+    response = await run(`https://openfocus.top/download/releases/${tag}/linux-desktop`,
+      { env: downloadEnv, headers: { Range: "bytes=2-4" } });
+    assert.equal(response.status, 206);
+    assert.equal(await response.text(), "234");
+    manifest.assets["linux-desktop"].digest = "sha256:bad";
+    response = await run(api, { env: env() });
+    assert.equal(response.status, 200);
+    const update = await response.json();
+    assert.ok(update.assets["windows-setup"]);
+    assert.equal(update.assets["linux-desktop"], undefined);
+  }
+});
