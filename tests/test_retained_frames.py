@@ -251,3 +251,59 @@ def test_spawned_repeated_render_uses_retained_pixels(qapp, tmp_path, monkeypatc
     sources.SOURCE_CACHE.clear()
     gc.collect()
     assert all(not p.exists() for p in paths)
+
+
+def _aligned_pair(tmp_path, monkeypatch, calls):
+    from utils.image_utils import imwrite_auto
+    monkeypatch.setattr(storage, '_storage_directory', str(tmp_path))
+    descriptors = []
+    for name, value in (('a.tif', 20000), ('b.tif', 31000)):
+        pixels = np.full((12, 16, 3), value, np.uint16)
+        pixels[3:9, 4:12] += 5000
+        path = tmp_path / name
+        assert imwrite_auto(str(path), pixels)
+        descriptors.append(sources.scan_source(str(path), header_only=True)[0])
+
+    def shifted(image):
+        calls.append(image.shape)
+        return np.ascontiguousarray(image[::-1])
+    aligned = [sources.process_frame(source, shifted) for source in descriptors]
+    return descriptors, aligned
+
+
+@pytest.mark.parametrize('limit,stores_aligned', [(0, False), (cache.RETAINED_FRAME_LIMIT_BYTES, True)])
+def test_matched_frames_store_aligned_sources_only_when_retention_is_possible(
+        tmp_path, monkeypatch, limit, stores_aligned):
+    monkeypatch.setattr(cache, 'RETAINED_FRAME_LIMIT_BYTES', limit)
+    calls = []
+    descriptors, aligned = _aligned_pair(tmp_path, monkeypatch, calls)
+    with cache.render_scope(descriptors) as scope:
+        matched = sources.match_exposure_frames(aligned, reference_index=0)
+        assert len(calls) == 1               # the reference, resolved for the target
+        sources.resolve_frame(matched[0])
+        second = np.array(sources.resolve_frame(matched[1]))
+        assert len(calls) == 2               # the reference's aligned pixels were reused
+        assert scope.get(matched[0]) is not None and scope.get(matched[1]) is not None
+        assert scope.get(aligned[0]) is not None     # stored when the target resolved it
+        assert (scope.get(aligned[1]) is not None) == stores_aligned
+        np.testing.assert_array_equal(sources.resolve_frame(matched[1]), second)
+        assert len(calls) == 2               # matched frames are read back, not recomputed
+        retained = cache.retain_aligned_frames(aligned, limit_bytes=limit)
+    expected_retained = [True, True] if stores_aligned else [False, False]
+    assert [isinstance(frame, sources.RetainedFrame) for frame in retained] == expected_retained
+
+
+def test_skipping_aligned_storage_keeps_matched_pixels(tmp_path, monkeypatch):
+    results = []
+    for limit in (0, cache.RETAINED_FRAME_LIMIT_BYTES):
+        with monkeypatch.context() as patch:
+            patch.setattr(cache, 'RETAINED_FRAME_LIMIT_BYTES', limit)
+            calls = []
+            directory = tmp_path / str(limit)
+            directory.mkdir()
+            descriptors, aligned = _aligned_pair(directory, patch, calls)
+            with cache.render_scope(descriptors):
+                matched = sources.match_exposure_frames(aligned, reference_index=0)
+                results.append([np.array(sources.resolve_frame(frame)) for frame in matched])
+    for skipped, stored in zip(*results):
+        np.testing.assert_array_equal(skipped, stored)

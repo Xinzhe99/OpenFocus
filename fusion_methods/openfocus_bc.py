@@ -112,17 +112,13 @@ def _output_codes(codes, frames, should_cancel, *, source_scale=1):
 def _active_sources(depth, count, should_cancel):
     """Reject whole sources before decoding when no code band uses them."""
     from fusion_methods.openfocus_ab import _check_cancel
+    from fusion_methods._openfocus_kernels import active_source_rows
     active = np.zeros(count, dtype=bool)
     active[0] = True  # The first merge initializes every output sample.
     step = 65535 // (count - 1)
     for start in range(0, depth.shape[0], 128):
         _check_cancel(should_cancel)
-        codes = depth[start:start + 128].astype(np.int64)
-        lower = np.clip(codes // step, 0, count - 1)
-        active |= np.bincount(lower.ravel(), minlength=count).astype(bool)
-        fraction = codes % step != 0
-        upper = np.minimum(lower[fraction] + 1, count - 1)
-        active |= np.bincount(upper, minlength=count).astype(bool)
+        active_source_rows(depth, step, active, start, min(depth.shape[0], start + 128))
     return active
 
 

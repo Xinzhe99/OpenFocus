@@ -717,3 +717,119 @@ def test_required_source_snapshots_check_source_identity_after_staging(tmp_path)
         stream.write(b'changed')
     with pytest.raises(OSError, match='Source changed'):
         source_frames.resolve_frame(staged[0])
+
+
+def _strip_reference(image, gain):
+    """Exposure matching strip by strip, as the matcher did before lookup tables."""
+    from utils.image_utils import apply_exposure_gain, normalize_fuse_input, quantize_fuse_output
+    output = np.empty_like(image)
+    for y in range(0, image.shape[0], 128):
+        strip = image[y:y + 128]
+        if image.dtype == np.uint16:
+            normalized, _ = normalize_fuse_input([strip])
+            output[y:y + 128] = quantize_fuse_output(apply_exposure_gain(normalized[0], gain), True)
+        else:
+            output[y:y + 128] = apply_exposure_gain(strip, gain)
+    return output
+
+
+def _every_code(dtype, shape):
+    codes = np.arange(np.iinfo(dtype).max + 1, dtype=dtype)
+    count = int(np.prod(shape[:2]))
+    rows = np.resize(codes, count).reshape(shape[:2])
+    if len(shape) == 2:
+        return rows
+    # Each channel holds every code, shifted so channels differ per pixel.
+    return np.ascontiguousarray(np.stack(
+        [np.roll(rows, 977 * channel) for channel in range(shape[2])], axis=2))
+
+
+def _count_table_rows(monkeypatch):
+    """Record (image dimensions, table columns) of every table kernel call."""
+    from fusion_methods import _openfocus_kernels
+    calls = []
+    original = _openfocus_kernels.table_rows
+
+    def counted(image, table, *args):
+        calls.append((image.ndim, table.shape[1]))
+        return original(image, table, *args)
+    monkeypatch.setattr(_openfocus_kernels, 'table_rows', counted)
+    return calls
+
+
+def _matched_and_gain(reference, image):
+    from utils.image_utils import _exposure_mean
+    frames = source_frames.match_exposure_frames([reference, image], reference_index=0)
+    gain = (_exposure_mean(reference, normalize_uint16=True)
+            / _exposure_mean(image, normalize_uint16=True))
+    return source_frames.resolve_frame(frames[1]), gain
+
+
+@pytest.mark.parametrize('dtype,shape', [
+    (np.uint16, (512, 512)), (np.uint16, (512, 512, 3)), (np.uint16, (521, 509, 4)),
+    (np.uint8, (61, 67)), (np.uint8, (61, 67, 3)), (np.uint8, (61, 67, 4)),
+])
+@pytest.mark.parametrize('level', [0.11, 0.47, 0.5003, 0.93])
+def test_exposure_table_matches_the_strip_path_for_every_code(monkeypatch, dtype, shape, level):
+    calls = _count_table_rows(monkeypatch)
+    image = _every_code(dtype, shape)
+    reference = np.full(shape, int(level * np.iinfo(dtype).max), dtype)
+    matched, gain = _matched_and_gain(reference, image)
+
+    assert gain != 1.0
+    assert matched.dtype == dtype
+    np.testing.assert_array_equal(matched, _strip_reference(image, gain))
+    if len(shape) == 3 and shape[2] == 4:
+        # Alpha is not gained, and its trip through float32 returns every code.
+        np.testing.assert_array_equal(matched[:, :, 3], image[:, :, 3])
+        assert set(calls) == {(3, 4)}        # so it keeps a column of its own
+    else:
+        assert set(calls) == {(2, 1)}        # one plane of samples, one column
+
+
+def test_exposure_table_maps_strided_frames_per_channel(monkeypatch):
+    calls = _count_table_rows(monkeypatch)
+    image = _every_code(np.uint16, (512, 512, 4))[:, :, :3]
+    assert not image.flags.c_contiguous      # cannot be viewed as one plane
+    matched, gain = _matched_and_gain(np.full(image.shape, 30000, np.uint16), image)
+    assert set(calls) == {(3, 3)}
+    np.testing.assert_array_equal(matched, _strip_reference(image, gain))
+
+
+def test_exposure_matching_keeps_the_strip_path_for_small_frames(monkeypatch):
+    from fusion_methods import _openfocus_kernels
+    monkeypatch.setattr(_openfocus_kernels, 'table_rows',
+                        lambda *args: pytest.fail('small frames must not build a table'))
+    rng = np.random.default_rng(5)
+    image = rng.integers(0, 65536, (37, 41, 3), dtype=np.uint16)
+    matched, gain = _matched_and_gain(np.full(image.shape, 30000, np.uint16), image)
+    np.testing.assert_array_equal(matched, _strip_reference(image, gain))
+
+
+@pytest.mark.parametrize('thread_count', [1, 2])
+def test_openfocus_b_exposure_table_matches_strip_matching(monkeypatch, thread_count):
+    from core.multi_focus_fusion import MultiFocusFusion
+    rng = np.random.default_rng(73)
+    base = rng.integers(2000, 50000, (523, 517, 3)).astype(np.float64)
+    frames = [np.clip(base * scale + rng.normal(0, 900, base.shape), 0, 65535).astype(np.uint16)
+              for scale in (1.0, 0.83, 1.17)]
+    options = dict(algorithm='openfocus_b', use_gpu=False, exposure_match=True,
+                   base_frame='none', sort_mode='off', tile_enabled=False)
+    with_table = MultiFocusFusion(**options).fuse(list(frames), thread_count=thread_count)
+    monkeypatch.setattr(source_frames, '_EXPOSURE_TABLE_MIN_RATIO', 1 << 40)
+    strips = MultiFocusFusion(**options).fuse(list(frames), thread_count=thread_count)
+    np.testing.assert_array_equal(np.asarray(with_table), np.asarray(strips))
+
+
+@pytest.mark.parametrize('dtype,shape,table', [
+    (np.uint16, (4096, 64, 3), True), (np.uint16, (4096, 256), True), (np.uint8, (64, 64, 4), True),
+    (np.uint16, (128, 64, 3), False), (np.uint16, (130, 1000, 3), False), (np.uint8, (8, 9, 3), False),
+])
+def test_exposure_matching_admits_the_workspace_of_the_path_it_takes(dtype, shape, table):
+    frame = np.zeros(shape, dtype)
+    matched = source_frames.match_exposure_frames([frame, frame], reference_index=0)[1]
+    assert source_frames._uses_exposure_table(shape, dtype) == table
+    channels = shape[2] if len(shape) == 3 else 1
+    strip = min(shape[0], 128) * int(np.prod(shape[1:])) * (12 if dtype == np.uint16 else 5)
+    workspace = max(strip, (np.iinfo(dtype).max + 1) * channels * 16) if table else strip
+    assert matched.scratch_bytes == frame.nbytes + workspace
