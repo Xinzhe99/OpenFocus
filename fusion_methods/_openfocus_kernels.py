@@ -251,3 +251,18 @@ def merge_rows(accumulator, image, depth, index, step, start, stop,
                              + value * weight) >> 10)
 
 
+@njit(nogil=True)
+def active_source_rows(depth, step, active, start, stop):
+    """Mark every source that a depth code in these rows gives merge weight.
+
+    A code selects source code // step (clipped to the stack), and also the
+    next source when it falls between two sources.
+    """
+    last = active.shape[0] - 1
+    for y in range(start, stop):
+        for x in range(depth.shape[1]):
+            code = np.int64(depth[y, x])
+            lower = min(max(code // step, 0), last)
+            active[lower] = True
+            if code % step != 0:
+                active[min(lower + 1, last)] = True
