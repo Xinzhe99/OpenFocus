@@ -435,8 +435,9 @@ if reporters:
                             + log_path.read_text(encoding="utf-8", errors="replace"))
             time.sleep(0.05)
         assert discovery.is_file(), "GUI did not publish control discovery"
+        client_env = dict(env, TMPDIR=str(tmp_path))
         cli = subprocess.run([sys.executable, str(root / "main.py"), "ctl", "ping"],
-                             cwd=root, env=env, capture_output=True, text=True, timeout=30)
+                             cwd=root, env=client_env, capture_output=True, text=True, timeout=30)
         assert cli.returncode == 0, cli.stderr
         assert json.loads(cli.stdout)["result"]["pong"] is True
         forwarded = subprocess.run(command, cwd=root, env=env, capture_output=True,
@@ -464,7 +465,7 @@ try:
 finally:
     session.close()
 '''
-        client = subprocess.run([sys.executable, "-c", script], cwd=root, env=env,
+        client = subprocess.run([sys.executable, "-c", script], cwd=root, env=client_env,
                                 capture_output=True, text=True, timeout=45)
         assert client.returncode == 0, client.stderr
         assert gui.wait(timeout=30) == 0, log_path.read_text(encoding="utf-8", errors="replace")
