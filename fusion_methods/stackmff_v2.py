@@ -105,7 +105,7 @@ def stackmffv2_impl(input_source, img_resize, model_path, use_gpu,
                     should_cancel=None, progress_callback=None,
                     thread_count=None, resource_preference='balanced',
                     execution_plan=None, tile_size=None, tile_overlap=0,
-                    exposure_gains=None, source_all_uint8=None, **kwargs):
+                    exposure_gains=None, source_all_uint8=None, focus_callback=None, **kwargs):
     """Whole-stack fusion; the caller may already hold the heavy-job lease."""
     from core.resource_policy import heavy_job
 
@@ -120,7 +120,7 @@ def stackmffv2_impl(input_source, img_resize, model_path, use_gpu,
             return _tiled_fusion_under_lease(
                 input_source, img_resize, model_path, use_gpu, should_cancel,
                 execution_plan, thread_count, resource_preference, tile_size,
-                tile_overlap, progress_callback, exposure_gains, source_all_uint8)
+                tile_overlap, progress_callback, exposure_gains, source_all_uint8, focus_callback)
         frames = common.read_stack(input_source, img_resize, should_cancel,
                                    execution_plan, preserve_grayscale=False)
         if len(frames) < 2:
@@ -135,6 +135,8 @@ def stackmffv2_impl(input_source, img_resize, model_path, use_gpu,
         if progress_callback is not None:
             progress_callback(1, 1)
         common.cancel(should_cancel)
+        if focus_callback is not None:
+            focus_callback(_index, len(frames) - 1)
         return fused
 
 

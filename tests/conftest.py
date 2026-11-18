@@ -33,6 +33,14 @@ def isolate_scratch_registry(request, tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def isolate_alignment_cache(tmp_path, monkeypatch):
+    """Cache tests must not write to or evict entries from a real user profile."""
+    from utils import align_cache
+
+    monkeypatch.setattr(align_cache, 'cache_dir', lambda: str(tmp_path / 'test-data' / 'alignment-cache'))
+
+
+@pytest.fixture(autouse=True)
 def restore_unadmitted_accelerator():
     """Tests that call the real resolve_device() record an unadmitted
     accelerator in neural_runtime's module state; never leak it onward."""

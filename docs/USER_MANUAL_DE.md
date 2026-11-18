@@ -792,7 +792,7 @@ iPhone-Fotos lassen sich direkt laden. Erfordert `pillow-heif`; `pip install ope
 
 ### Registrierungs-Cache
 
-OpenFocus kann Registrierungsergebnisse in einem Ordner `.openfocus_cache` neben dem Quellstapel ablegen. Wird derselbe Stapel erneut geöffnet (Dateien unverändert), entfällt die Ausrichtung vollständig. Umschalten über **Einstellungen → Erweiterte Einstellungen… → Registrierung → Registrierungs-Cache**; veraltete Einträge werden automatisch ersetzt. Der Schalter ist standardmäßig an.
+OpenFocus speichert Registrierungsergebnisse im Cache-Ordner des Benutzers. Wird derselbe unveränderte Stapel mit denselben Einstellungen erneut geöffnet, verwendet OpenFocus die gespeicherten Ergebnisse. Der Schalter befindet sich unter **Einstellungen → Erweiterte Einstellungen… → Registrierung → Registrierungs-Cache**. Alle Stapel teilen sich ein Limit von 2 GiB. Bei Platzbedarf werden die am längsten nicht verwendeten Einträge entfernt. Frühere `.openfocus_cache`-Ordner neben dem Quellstapel bleiben erhalten.
 
 ### Gespeicherte Einstellungen
 

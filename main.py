@@ -149,7 +149,7 @@ from PyQt6.QtWidgets import (
     QDialog,
     QPushButton,
 )
-from PyQt6.QtCore import Qt, QThread, QUrl, QEvent, pyqtSignal
+from PyQt6.QtCore import Qt, QThread, QUrl, QEvent, QSignalBlocker, pyqtSignal
 from PyQt6.QtGui import QKeySequence, QShortcut
 from PyQt6.QtGui import QFont, QIcon, QDesktopServices, QDragEnterEvent, QDropEvent, QPixmap
 from core import ImageStackLoader
@@ -538,8 +538,8 @@ class OpenFocus(QMainWindow):
         # Connect language change signal
         trans.languageChanged.connect(self.update_ui_text)
 
-        # Restore last session's window geometry and splitter positions
-        restore_window_layout(self)
+        # Restore geometry and splitter positions before the first show.
+        self._size_right_splitter_on_show = not restore_window_layout(self)
 
         # Optionally re-load the last opened stack a moment after launch
         if getattr(self, "restore_last_stack", False):
@@ -559,6 +559,12 @@ class OpenFocus(QMainWindow):
              self.lbl_source_img.setText(trans.t('drag_hint'))
         if hasattr(self, 'lbl_result_img'):
             self.lbl_result_img.setText(trans.t('result_hint'))
+
+    def showEvent(self, event):  # noqa: N802
+        super().showEvent(event)
+        if self._size_right_splitter_on_show:
+            self._size_right_splitter_on_show = False
+            self.right_panel_components.set_initial_sizes()
 
     def _show_storage_fallback(self, path, error, fallback):
         if not getattr(self, '_shutting_down', False):
@@ -890,44 +896,58 @@ class OpenFocus(QMainWindow):
         else:
             self.lbl_status_memory.setText(trans.t('status_ram').format('N/A'))
 
-        from core.multi_focus_fusion import (neural_device_kind,
-                                             is_ai_fusion_available,
-                                             openfocus_gpu_available)
+        from core.multi_focus_fusion import (is_ai_fusion_available,
+                                             neural_device_kind, openfocus_gpu_available,
+                                             openfocus_gpu_name, short_render_device_name)
         from fusion_methods import neural_runtime
         try:
             capability = neural_device_kind()
             opencl = openfocus_gpu_available()
             if opencl is None or (capability is None and is_ai_fusion_available()):
                 self._probe_device_kind_async()
-            neural = self._ai_method_selected()
-            checkpoint = (get_fusion(self.combo_fusion.currentData()).weights or ''
-                          if neural else '')
-            # A verified provider whose free memory cannot be read is never
-            # admitted by AI jobs; show the CPU they will actually run on.
+            opencl_name = openfocus_gpu_name() or 'OpenCL'
+            method = self.combo_fusion.currentData()
+            result = (self.render_manager.last_result
+                      if self.render_manager.last_state == 'done' else None)
             unadmitted = neural_runtime.unadmitted_accelerator()
             capability = neural_runtime.admitted_kind(capability)
-            device, state = neural_runtime.execution_status(
-                neural, getattr(self, 'use_gpu', True), checkpoint, capability)
-            kind = ('…' if state == 'pending'
-                    else trans.t('neural_provider_ready').format(neural_runtime.display_name(device))
-                    if state == 'ready' else neural_runtime.display_name(device))
-            if self.combo_fusion.currentData() in ('openfocus_a', 'openfocus_b', 'openfocus_c'):
-                kind = ('CPU' if not getattr(self, 'use_gpu', True) or opencl is False
-                        else '…' if opencl is None
-                        else trans.t('neural_provider_ready').format('OpenCL'))
+
+            state = 'selected'
+            device = 'CPU'
+            if getattr(self, 'use_gpu', True):
+                if result and result.get('method') == method:
+                    device = result['device']
+                    state = 'actual'
+                elif method in ('openfocus_a', 'openfocus_b', 'openfocus_c'):
+                    if opencl:
+                        device, state = opencl_name, 'ready'
+                    elif opencl is None:
+                        device, state = '…', 'pending'
+                elif self._ai_method_selected():
+                    if neural_runtime.is_accelerator(capability):
+                        device, state = neural_runtime.display_name(capability), 'ready'
+                    elif capability is None:
+                        device, state = '…', 'pending'
+
+            kind = short_render_device_name(device).removeprefix('NVIDIA GeForce ')
+            detail = trans.t('status_gpu').format(device)
+            if state == 'ready':
+                detail = trans.t('neural_provider_ready').format(device)
+            elif state == 'actual':
+                detail = trans.t('info_proc_unit').format(device)
             self.lbl_status_gpu.setText(trans.t('status_gpu').format(kind))
             diagnostics = neural_runtime.device_diagnostics()
             hardware = '\n'.join(f'{name} (DXGI {index})' for index, name, *_ in diagnostics['hardware'])
             self.lbl_status_gpu.setToolTip('\n'.join(filter(None, (
+                detail,
                 hardware,
                 'ONNX Runtime: ' + ', '.join(diagnostics['providers']),
-                'OpenFocus A/B/C: ' + ('OpenCL' if opencl else 'CPU' if opencl is False else '…'),
+                'OpenFocus A/B/C: ' + (opencl_name if opencl else 'CPU' if opencl is False else '…'),
                 trans.t('env_gpu_accel') + ': ' + neural_runtime.display_name(capability)
                 if neural_runtime.is_accelerator(capability)
                 else trans.t('env_gpu_memory_unknown').format(
                     device=neural_runtime.display_name(unadmitted)) if unadmitted
                 else 'ONNX Runtime: CPU',
-                trans.t('status_gpu').format(kind),
                 trans.t('msg_gpu_accel_hint'),
                 '\n'.join(diagnostics['probe_errors'])))))
         except Exception:
@@ -1755,19 +1775,10 @@ class OpenFocus(QMainWindow):
                 action.setText(trans.t('menu_install_update').format(version=staged))
 
     def startup_update_check(self) -> None:
-        """Startup entry point: staged build, then the quiet daily check.
-
-        Runs on a timer after the window is up. `start_idle` restores an
-        already-staged build without a network call; its state goes straight
-        to READY, before any state_changed listener existed, so the banner is
-        raised here explicitly.
-        """
+        """Restore a staged update and start quiet checks after startup."""
         if getattr(self, "_shutting_down", False):
             return
         self.update_manager.start_idle()
-        staged = self.update_manager.staged_tag()
-        if staged:
-            self._show_update_banner(staged, ready=True)
 
     def _on_update_state(self, state: str, tag: str, percent: int) -> None:
         if state == STATE_READY and tag:
@@ -1777,6 +1788,8 @@ class OpenFocus(QMainWindow):
             # user hid this version; the status bar and Help menu still lead
             # to the restart, so the choice is not lost.
             self._show_update_banner(tag, ready=True)
+        elif not tag and getattr(self, "update_banner", None) is not None:
+            self.update_banner.hide_banner()
         self._refresh_update_indicator()
 
     def _on_update_action_clicked(self) -> None:
@@ -2049,13 +2062,7 @@ class OpenFocus(QMainWindow):
             style_message_box(box)
             box.setIcon(QMessageBox.Icon.Information)
             box.setWindowTitle(trans.t('update_available_title'))
-            can_one_click = (
-                getattr(sys, "frozen", False)
-                and sys.platform in ("win32", "darwin")
-                and (bool(zip_url) or staged)
-            )
-            # 更新说明：把已安装版本到最新版之间每个 release 的正文都带上，
-            # 放"详细信息"按钮里（用户特别要求逐版本展示，不只是提示有更新）
+            can_one_click = manager.can_self_update() and (bool(zip_url) or staged)
             notes = getattr(self.update_manager, "notes", "") or ""
             if notes:
                 box.setDetailedText(notes)
@@ -2085,6 +2092,8 @@ class OpenFocus(QMainWindow):
                 box.addButton(trans.t('btn_later'), QMessageBox.ButtonRole.RejectRole)
             box.exec()
             clicked = box.clickedButton()
+            if manager.tag != tag:
+                return
             if staged and clicked is install_btn:
                 self.install_update_now()
             elif can_one_click and clicked is install_btn:
@@ -2998,13 +3007,18 @@ class OpenFocus(QMainWindow):
             for pending_key, worker in getattr(self, '_source_decode_workers', {}).items():
                 if pending_key != key:
                     worker.request_cancel()
+            # Navigation state is independent of asynchronous RAW decoding.
+            self.lbl_stack_info.setText(f"{index + 1} / {len(self.stack_images)}")
+            if self.file_list.currentRow() != index:
+                with QSignalBlocker(self.file_list):
+                    self.file_list.setCurrentRow(index)
+            self.sharpness_curve.set_current(index)
             from core.source_frames import preview_ready
             from core.image_loader import is_raw_source
             if (not preview_ready(frame) or
                     (not getattr(frame, 'preview_is_available', True) and is_raw_source(frame.path))):
                 self.lbl_source_img.clear()
                 self.lbl_source_img.setText(trans.t('msg_loading_stack'))
-                self.lbl_stack_info.setText(f'{index + 1} / {len(self.stack_images)}')
                 self._start_source_previews(selected_index=index)
                 return
             
@@ -3024,15 +3038,6 @@ class OpenFocus(QMainWindow):
                 self.lbl_source_img.set_display_pixmap(
                     display_pixmap, source_size=(frame.shape[1], frame.shape[0]), source_key=key)
                 
-                # 更新文字
-                self.lbl_stack_info.setText(f"{index + 1} / {len(self.stack_images)}")
-                
-                # 只有当列表选中项和当前slider不一致时才去设置列表，防止信号死循环
-                if self.file_list.currentRow() != index:
-                    self.file_list.setCurrentRow(index)
-
-                self.sharpness_curve.set_current(index)
-
                 # Keep the wipe view's left side following the current frame
                 if self.wipe_active and self.chk_wipe_follow_left.isChecked():
                     self.slider_wipe_left.setValue(index)

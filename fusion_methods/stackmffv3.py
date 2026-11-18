@@ -75,7 +75,7 @@ def _probabilities(batch_input, model, device, mode, should_cancel=None, threads
                                   should_cancel, threads)
 
 
-def _blend_tile(probs, frames, mode, should_cancel=None):
+def _blend_tile(probs, frames, mode, should_cancel=None, focus_callback=None):
     """Combine probabilities with one source frame at a time in 0-255."""
     _cancel(should_cancel)
     height, width = frames[0].shape[:2]
@@ -83,6 +83,7 @@ def _blend_tile(probs, frames, mode, should_cancel=None):
     result = np.zeros((height, width, channels), dtype=np.float32)
     normalize_stack = any(frame.dtype == np.uint16 for frame in frames)
     selected_indices = None
+    expected = None
     if mode == 'hard':
         from core.frame_storage import create_frame
         selected_indices = create_frame((height, width), np.intp)
@@ -90,6 +91,10 @@ def _blend_tile(probs, frames, mode, should_cancel=None):
             _cancel(should_cancel)
             stop = min(row + 256, height)
             selected_indices[row:stop] = probs[:, row:stop].argmax(0)
+    elif focus_callback is not None:
+        from core.frame_storage import create_transient_frame
+        expected = create_transient_frame((height, width), np.float32)
+        expected[...] = 0
     from core.source_frames import resolve_frame
     for index, frame in enumerate(frames):
         _cancel(should_cancel)
@@ -103,12 +108,16 @@ def _blend_tile(probs, frames, mode, should_cancel=None):
             output = result[row:stop]
             if selected_indices is None:
                 output += probs[index, row:stop, :, None] * source
+                if expected is not None and index:
+                    expected[row:stop] += probs[index, row:stop] * np.float32(index)
             else:
                 np.copyto(output, source,
                           where=(selected_indices[row:stop] == index)[:, :, None])
             del source
         del image
     _cancel(should_cancel)
+    if focus_callback is not None:
+        focus_callback(selected_indices if expected is None else expected, len(frames) - 1)
     return result
 
 
@@ -157,7 +166,8 @@ def _prepare_inference(frames, model_path, use_gpu, thread_count=None,
 
 def _stackmffv3_batch_impl(tiles_list, model_path, use_gpu, mode='soft',
                           should_cancel=None, thread_count=None,
-                          resource_preference='balanced', execution_plan=None):
+                          resource_preference='balanced', execution_plan=None,
+                          focus_callback=None):
     """Fuse tiles in order with B=1 until true batching passes GPU gates.
 
     A supplied plan means the caller owns the heavy-job lease, including when
@@ -197,7 +207,8 @@ def _stackmffv3_batch_impl(tiles_list, model_path, use_gpu, mode='soft',
             # Color mixing does not need an N-frame color stack.
             grayscale = frames[0].ndim == 2
             with profile.stage('blend_tile'):
-                fused = _blend_tile(probs[0, :, :h, :w], frames, mode, should_cancel)
+                fused = _blend_tile(probs[0, :, :h, :w], frames, mode, should_cancel,
+                                   focus_callback)
             del probs
             if not is_16bit and fuse_output_dtype(frames) is np.uint8:
                 fused = np.clip(np.round(fused), 0, 255).astype(np.uint8)
@@ -218,7 +229,7 @@ def _read_stack(input_source, img_resize, should_cancel=None, execution_plan=Non
 def _stackmffv3_impl(input_source, img_resize, model_path, use_gpu,
                      mode='soft', progress_callback=None, should_cancel=None,
                      thread_count=None, resource_preference='balanced',
-                     execution_plan=None):
+                     execution_plan=None, focus_callback=None):
     """Whole-frame fusion with the same resource contract as tiled fusion."""
     from core.resource_policy import heavy_job
 
@@ -233,7 +244,8 @@ def _stackmffv3_impl(input_source, img_resize, model_path, use_gpu,
         out = _stackmffv3_batch_impl(
             [frames], model_path, use_gpu, mode,
             should_cancel=should_cancel, thread_count=thread_count,
-            resource_preference=resource_preference, execution_plan=execution_plan)[0]
+            resource_preference=resource_preference, execution_plan=execution_plan,
+            focus_callback=focus_callback)[0]
         _cancel(should_cancel)
         if progress_callback is not None:
             progress_callback(1, 1)

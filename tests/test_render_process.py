@@ -40,6 +40,23 @@ def _diagnostic_cancel_child(connection, cancel_event, request, budget, director
     connection.close()
 
 
+def _legacy_source_child(connection, cancel_event, request, budget, directory, language):
+    from core.frame_transport import FrameDecoder
+    try:
+        FrameDecoder().decode(request)
+    except ValueError as exc:
+        connection.send(('error', str(exc), None, ('value', 'child_setup_or_transfer', 'prepare')))
+    finally:
+        connection.close()
+
+
+def _changed_source_child(connection, cancel_event, request, budget, directory, language):
+    from core import render_process
+    render_process._windows_source_run = lambda: True
+    render_process._LOADED_SOURCE_REVISION = b'new worker revision'
+    render_process._render_child(connection, cancel_event, request, budget, directory, language)
+
+
 
 def _render_with_prepared_cache(connection, cancel_event, request, budget, directory, language, failure):
     """Run the real child pipeline with a mapped cache produced after fusion."""
@@ -201,6 +218,48 @@ def test_spawn_failure_reports_pending_dispatch_and_releases_worker(qapp, scratc
     assert all(private_detail not in r.getMessage() for r in dispatch)
 
 
+def test_changed_render_source_reports_restart_before_spawn(qapp, tmp_path, monkeypatch):
+    from core import render_process
+
+    source_file = tmp_path / 'source_frames.py'
+    source_file.write_text('revision = 1\n', encoding='utf-8')
+    monkeypatch.setattr(render_process, '_windows_source_run', lambda: True)
+    monkeypatch.setattr(render_process, '_RENDER_SOURCE_FILES', (source_file,))
+    monkeypatch.setattr(render_process, '_LOADED_SOURCE_REVISION', render_process._render_source_revision())
+    monkeypatch.setattr(render_process.trans, 'current_lang', 'en')
+    monkeypatch.setattr(render_process.multiprocessing, 'get_context',
+                        lambda method: pytest.fail('Spawn attempted with changed source code'))
+    source_file.write_text('revision = 2\n', encoding='utf-8')
+
+    worker = render_process.RenderProcessWorker([], algorithm=None, need_fusion=False)
+    errors = []
+    worker.error_signal.connect(errors.append)
+    worker.run()
+    assert errors == [render_process.trans.t('render_source_changed')]
+    assert 'Restart OpenFocus' in errors[0]
+    assert worker.child_pid is None
+
+
+@pytest.mark.parametrize('exception, category', [
+    (MemoryError('allocation failed'), 'memory'),
+    (ResourceLimitError('render limit exceeded'), 'resource_limit'),
+])
+def test_render_process_classifies_parent_memory_failure(qapp, monkeypatch, exception, category):
+    from core.render_process import RenderProcessWorker
+
+    worker = RenderProcessWorker([], algorithm=None, need_fusion=False)
+    errors = []
+    worker.error_signal.connect(errors.append)
+
+    def fail():
+        raise exception
+
+    monkeypatch.setattr(worker, '_run_process', fail)
+    worker.run()
+    assert errors == [str(exception)]
+    assert worker.failure_category == category
+
+
 def test_relay_keeps_stage_order_and_first_progress_per_stage(monkeypatch):
     from core import render_process
 
@@ -262,12 +321,42 @@ def test_worker_cancellation_has_no_error_category(qapp, monkeypatch):
     assert worker._render_error_category is None
 
 
-def test_child_setup_failure_and_cancellation_packets(monkeypatch):
+def test_source_child_rejects_legacy_gui_before_decoding(monkeypatch):
+    from threading import Event
+    from core import render_process
+    from utils import diagnostics, logging_setup
+
+    request = render_process.FrameEncoder().encode({'args': []})
+    receiver, sender = render_process.multiprocessing.Pipe(duplex=False)
+    monkeypatch.setattr(logging_setup, 'setup_logging', lambda: None)
+    monkeypatch.setattr(diagnostics, 'install_exception_hooks', lambda: None)
+    monkeypatch.setattr(render_process, '_windows_source_run', lambda: True)
+    monkeypatch.setattr(render_process, '_LOADED_SOURCE_REVISION', b'worker revision')
+    monkeypatch.setattr(render_process.multiprocessing, 'parent_process', object)
+    monkeypatch.setattr(render_process.trans, 'current_lang', 'en')
+    monkeypatch.setattr(render_process, 'FrameDecoder',
+                        lambda **kwargs: pytest.fail('Legacy descriptors reached the decoder'))
+
+    with receiver, sender:
+        render_process._render_child(sender, Event(), request, None, None, 'zh')
+        assert receiver.poll()
+        assert receiver.recv() == (
+            'error', render_process.trans.t('render_source_changed'), None,
+            ('runtime', 'child_setup_or_transfer', 'prepare'))
+        assert '重启 OpenFocus' in render_process.trans.t('render_source_changed')
+
+
+@pytest.mark.parametrize('frozen', [False, True])
+def test_child_setup_failure_and_cancellation_packets(monkeypatch, frozen):
     from contextlib import nullcontext
     from threading import Event
+    from types import SimpleNamespace
     from core import render_process
     from core.registration import RegistrationCancelled
     from utils import diagnostics, logging_setup
+
+    monkeypatch.setattr(render_process, 'sys', SimpleNamespace(platform='win32', frozen=frozen))
+    monkeypatch.setattr(render_process.multiprocessing, 'parent_process', lambda: frozen or None)
 
     class Connection:
         def __init__(self):
@@ -319,6 +408,23 @@ def test_child_error_event_and_user_message(qapp, scratch, monkeypatch, target, 
     _wait(worker, qapp)
     assert not results and errors == [expected_error]
     assert events == ([] if expected_event is None else [('render_child_error', expected_event)])
+    assert worker.failure_category == (expected_event['error_category'] if expected_event else None)
+
+
+@pytest.mark.parametrize('target', [_legacy_source_child, _changed_source_child])
+def test_spawn_revision_mismatch_relays_restart(qapp, scratch, monkeypatch, target):
+    from core import render_process
+
+    monkeypatch.setattr(render_process, '_windows_source_run', lambda: True)
+    monkeypatch.setattr(render_process, '_LOADED_SOURCE_REVISION', render_process._render_source_revision())
+    monkeypatch.setattr(render_process, '_render_child', target)
+    monkeypatch.setattr(render_process.trans, 'current_lang', 'en')
+    worker = render_process.RenderProcessWorker([], algorithm=None, need_fusion=False)
+    results, errors = _start(worker)
+    _wait(worker, qapp)
+    assert worker.child_pid is not None
+    assert not results and errors == [render_process.trans.t('render_source_changed')]
+    assert not list(scratch.glob('openfocus-frame-*'))
 
 
 def test_relay_sanitizes_unknown_stage(monkeypatch):
@@ -795,3 +901,26 @@ def test_nonstreaming_reuse_keeps_mixed_frame_positions(qapp, tmp_path, scratch,
     output = results[0][0]
     np.testing.assert_array_equal(output[0], ordinary)
     assert output[1] is retained
+
+
+def test_isolated_render_adopts_readonly_focus_map(qapp, scratch):
+    from core.frame_storage import describe_frame, owns_temp_file
+    from core.render_process import RenderProcessWorker
+
+    shape = (32, 39)
+    sharp = (np.indices(shape).sum(axis=0) % 2 * 240 + 8).astype(np.uint8)
+    flat = np.full(shape, 128, np.uint8)
+    worker = RenderProcessWorker([sharp, flat], algorithm='openfocus_c', use_gpu=False,
+        sort_mode='desc', fusion_parameters={'smoothing': 0}, thread_count=1, exposure_match=False)
+    results, errors = _start(worker)
+    _wait(worker, qapp)
+    assert len(results) == 1 and not errors
+    retained = worker.rendered_depth
+    index = retained['index']
+    assert retained['frame_count'] == 2 and retained['reverse_order']
+    assert retained['valid_rect'] == (0, 0, shape[1], shape[0])
+    assert index.dtype == np.float32 and not index.flags.writeable
+    mapping = describe_frame(index)
+    assert Path(mapping['path']).parent.is_relative_to(scratch)
+    assert owns_temp_file(mapping['path'])
+    np.testing.assert_array_equal(index[1:-1, 1:-1], 1)

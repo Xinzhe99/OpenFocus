@@ -18,6 +18,13 @@ Output goes to `site/dist/` (git-ignored). The build also writes `robots.txt`,
 `sitemap.xml`, `_headers` and a bilingual `404.html`, and derives the icon,
 Open Graph image and WebP screenshots from `assets/`.
 
+The build copies `assets/readme/wechat-group.png` unchanged to
+`/wechat-group.png`. The English and Chinese community sections and the desktop
+Contact Us dialog use that URL. It has a five-minute cache lifetime so the
+invite can be rotated by replacing the PNG and redeploying. Desktop packages
+also include that PNG for offline use and label it as the bundled copy when
+the live request fails.
+
 Set the public Worker origin so canonical URLs, Open Graph tags, the sitemap
 and no-JavaScript download links point at the correct deployment:
 
@@ -104,14 +111,14 @@ and system changes still work for the current page. With JavaScript disabled,
 the English and Chinese links and all navigation links remain available,
 including on mobile screens.
 
-The Worker resolves `/api/latest` and `/download/latest/*` from release
-metadata. Linux x86-64 desktop downloads are shown only when `/api/latest`
-reports `assets["linux-desktop"]`; without JavaScript or when metadata cannot
-be fetched, the page explains that availability cannot be checked. Historical
-releases may not include the desktop archive. Linux navigation points to the
-download section, and `install.sh` continues to install the separate PyPI
-headless CLI on Linux. Windows and macOS links work without JavaScript. With
-JavaScript enabled, the desktop version and file sizes come from live metadata.
+The Worker resolves `/api/latest` and `/download/latest/*` from stable release
+metadata. The Linux x86-64 desktop download and extraction commands appear only
+when `/api/latest` reports `assets["linux-desktop"]`. Without JavaScript or when
+metadata cannot be fetched, the page explains that availability cannot be
+checked. Linux navigation points to the download section, and `install.sh`
+installs the separate PyPI headless CLI on Linux. Windows and macOS download
+links work without JavaScript. With JavaScript enabled, the desktop version and
+file sizes come from live metadata.
 Complete GitHub metadata is cached for five minutes per data center; clients
 receive `no-store`. The Worker falls back to R2 metadata when GitHub is
 unavailable. Range requests require the R2 object.

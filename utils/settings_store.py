@@ -607,14 +607,14 @@ _MIN_RESTORABLE_WIDTH = 640
 _MIN_RESTORABLE_HEIGHT = 480
 
 
-def restore_window_layout(window) -> None:
+def restore_window_layout(window) -> bool:
     """Restore window geometry and splitter positions saved on last close.
 
     A saved geometry is rejected when it is unusable or off-screen. Qt stores
     whatever size the window had when it closed, and a window created at a
     tiny size (by a script, a screenshot harness, or a broken layout) would
     otherwise be restored as a sliver the user cannot grab — the app looked
-    like it failed to start.
+    like it failed to start. Return whether the right splitter was restored.
     """
     settings = get_settings()
     try:
@@ -640,9 +640,10 @@ def restore_window_layout(window) -> None:
             window.main_splitter.restoreState(main_state)
         right_state = settings.value(RIGHT_SPLITTER_KEY)
         if right_state is not None and getattr(window, "right_splitter", None) is not None:
-            window.right_splitter.restoreState(right_state)
+            return window.right_splitter.restoreState(right_state)
     except Exception:
         pass
+    return False
 
 
 def get_drag_export_format(window) -> str:

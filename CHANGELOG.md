@@ -21,6 +21,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   output — to device kernels. Verified bit-exact against the CPU path
   (92-frame 2048x1366 stack: ndiff=0, ~3.8x faster on RTX 4060 Laptop);
   falls back to CPU when the device budget or build fails.
+- Show estimated RAM and GPU memory in Render Settings, including expected CPU
+  fallback when the selected neural render does not fit the device budget.
+- Open the selected render's retained focus positions for export in Depth Map for
+  OpenFocus B/C and StackMFF V2/V3.
+- Show the current WeChat group invite in Contact Us, with a bundled QR code for offline use.
 
 ### Changed
 - Include allowlisted error categories, render stages, and memory admission
@@ -51,6 +56,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   of NumPy slices. Output pixels are unchanged.
 - Default desktop updates and public downloads to stable releases. Users can
   opt in to beta updates through Advanced Settings or the welcome dialog.
+- Download and verify supported desktop updates while the app is idle. Keep
+  release notes with the staged version and apply it from Restart and Update.
+- Store registration results in the user cache with a shared 2 GiB budget and
+  a Clear Registration Cache action in Advanced Settings.
 - Prepare ECC source frames concurrently within the alignment stage's CPU and
   memory budgets. Preparation and pair estimation share one bounded worker
   pool; RAW decoder OpenMP work stays serial inside each worker. Alignment
@@ -88,6 +97,14 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Release an older retained aligned mapping when a frame derived from it is
   retained again. The new mapping's provenance kept the older one alive
   beside it, outside the 2 GiB retention limit.
+- Size the right panel on first launch so Render, Render Settings and Compare
+  stay visible when the window has room for the configuration and lists.
+- Show the selected fusion method's GPU model or CPU in the right panel. The
+  tooltip identifies the backend and whether a device ran the last render.
+- Guard against render process mismatches after a Windows source checkout changes
+  while OpenFocus is running.
+- Keep the sharpness curve and navigation in source order after a drag reorder,
+  and prevent an unmodified scroll wheel from changing settings controls.
 
 
 ## [1.77.0] - 2026-11-11

@@ -7,7 +7,7 @@ import pytest
 pytest.importorskip("PyQt6")
 from PyQt6.QtCore import QEventLoop, QTimer, Qt
 from PyQt6.QtGui import QPixmap
-from PyQt6.QtWidgets import QMainWindow
+from PyQt6.QtWidgets import QMainWindow, QMenu
 
 from controllers.source_manager import SourceManager
 from locales import trans
@@ -344,6 +344,53 @@ def test_review_error_is_visible_and_does_not_change_checks(qapp, monkeypatch):
                for i in range(3))
 
 
+def test_bulk_source_context_menu_changes_only_selected_frames(qapp, monkeypatch):
+    window, manager, panel = _window()
+    view = window.file_list
+    original = window.raw_images
+    view.setCurrentRow(0)
+    view.item(2).setSelected(True)
+    window.excluded_frames = {0, 1}
+    manager.decorate_source_items()
+    undo = []
+    window.push_undo = lambda: undo.append(set(window.excluded_frames))
+    revision = getattr(window, 'source_revision', 0)
+
+    menus = iter([
+        (True, True, 'source_exclude_selected'),
+        (True, False, 'source_include_selected'),
+        (False, True, None),
+    ])
+
+    def choose_action(menu, position):
+        by_text = {action.text(): action for action in menu.actions()}
+        include, exclude, trigger = next(menus)
+        assert by_text[trans.t('source_include_selected')].isEnabled() is include
+        assert by_text[trans.t('source_exclude_selected')].isEnabled() is exclude
+        assert by_text[trans.t('action_delete')].isEnabled()
+        if trigger is not None:
+            by_text[trans.t(trigger)].trigger()
+
+    monkeypatch.setattr(QMenu, 'exec', choose_action)
+    position = view.visualItemRect(view.item(0)).center()
+    try:
+        manager.show_source_context_menu(position)
+        assert window.excluded_frames == {0, 1, 2}
+        assert all(view.item(row).checkState() == Qt.CheckState.Unchecked for row in range(3))
+        assert undo == [{0, 1}]
+        assert window.source_revision == revision + 1
+
+        manager.show_source_context_menu(position)
+        assert window.excluded_frames == {1}
+        assert [view.item(row).font().strikeOut() for row in range(3)] == [False, True, False]
+        assert undo == [{0, 1}, {0, 1, 2}]
+        assert window.source_revision == revision + 2
+        assert window.raw_images is original
+        assert {view.row(item) for item in view.selectedItems()} == {0, 2}
+        assert view.currentRow() == 0
+        manager.show_source_context_menu(position)
+    finally:
+        panel.widget.close()
 
 
 def test_review_text_is_available_in_every_locale(qapp):
@@ -357,6 +404,8 @@ def test_review_text_is_available_in_every_locale(qapp):
                 "stale", "error", "found", "none", "row"]
         for language in trans.PACK_ORDER:
             assert all("stack_review_" + key in trans.translations[language] for key in keys)
+            assert 'source_include_selected' in trans.translations[language]
+            assert 'source_exclude_selected' in trans.translations[language]
             trans.set_language(language)
             manager.decorate_source_items()
             assert panel.btn_review_stack.text() == trans.t("stack_review_button")

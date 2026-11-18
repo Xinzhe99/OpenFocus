@@ -27,16 +27,23 @@ def test_localized_pages_keep_linux_download_safe_without_javascript():
         elements.feed(page)
         linux = next(attrs for tag, attrs in elements.items if attrs.get('id') == 'linux-download')
         status = next(attrs for tag, attrs in elements.items if attrs.get('id') == 'linux-status')
+        install = next(attrs for tag, attrs in elements.items if attrs.get('id') == 'linux-install')
         nav = next(attrs for tag, attrs in elements.items if 'data-url-linux' in attrs)
         assert linux['href'] == '/download/latest/linux-desktop'
         assert 'hidden' in linux
+        assert 'hidden' in install
         assert status['role'] == 'status'
         assert nav['data-url-linux'] == '#download'
-        assert 'OpenFocus-v1.77.0-linux-x86_64.tar.gz' in page
-        assert './OpenFocus/OpenFocus' in page
+        assert 'OpenFocus-v1.77.0-linux-x86_64.tar.gz' not in page
+        assert 'python3 OpenFocus/install_linux_desktop.py' in page
         assert 'pip install openfocus' in page
         assert locale['download']['linux_unknown'] in page
         assert locale['download']['script_label'] in page
+        qr = next(attrs for tag, attrs in elements.items if tag == 'img' and attrs['src'] == '/wechat-group.png')
+        assert qr['alt'] == locale['community']['qr_alt']
+        assert ('a', {'class': 'community-qr', 'href': '/wechat-group.png'}) in elements.items
+        assert any(tag == 'a' and attrs.get('href') == build_site.RELEASE['page'] for tag, attrs in elements.items)
+        assert locale['footer']['license_details'] in page
 
 
 def test_linux_download_release_states():

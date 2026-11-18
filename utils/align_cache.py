@@ -4,13 +4,19 @@ The manifest atomically selects an immutable generation. A cancelled encoder
 or failed replacement leaves the previous generation readable. Identity is
 supplied by the worker request, including source revision and numeric backend.
 """
+import errno
 import hashlib
 import json
 import os
+import re
 import shutil
+import stat
+import sys
 import tempfile
 import threading
+import time
 from contextlib import contextmanager
+from pathlib import Path
 from typing import List, Optional, Tuple
 
 import cv2
@@ -18,10 +24,19 @@ import numpy as np
 
 from utils.image_utils import imwrite_auto
 
-CACHE_DIR_NAME = ".openfocus_cache"
 CACHE_FORMAT_VERSION = 6  # Aligned-reference transforms no longer double-count motion.
 DEFAULT_CACHE_BYTES = 2 * 1024 ** 3
-_cache_lock = threading.RLock()
+_cache_lock = threading.Lock()
+_SIGNATURE_NAME = re.compile(r'[0-9a-f]{32}')
+_GENERATION_NAME = re.compile(r'generation-[a-z0-9_]{8}')
+_PENDING_NAME = re.compile(r'\.pending-[a-z0-9_]{8}')
+_FRAME_NAME = re.compile(r'aligned_[0-9]{4,}\.png')
+_ENCODER_TEMP_NAME = re.compile(r'tmp[a-z0-9_]{8}\.png')
+_CHECKSUM = re.compile(r'[0-9a-f]{64}')
+
+
+class _CacheBusy(Exception):
+    pass
 
 
 def _check_cancel(should_cancel):
@@ -30,13 +45,77 @@ def _check_cancel(should_cancel):
         raise RegistrationCancelled()
 
 
+def cache_dir() -> str:
+    """Shared alignment cache for this user, independent of the source stack."""
+    if os.environ.get('OPENFOCUS_DATA_DIR'):
+        from utils.app_paths import user_data_dir
+        return os.fspath(user_data_dir() / 'alignment-cache')
+    if sys.platform == 'win32':
+        base = Path(os.environ.get('LOCALAPPDATA') or '')
+        if not base.is_absolute():
+            base = Path.home() / 'AppData' / 'Local'
+    elif sys.platform == 'darwin':
+        base = Path.home() / 'Library' / 'Caches'
+    else:
+        base = Path(os.environ.get('XDG_CACHE_HOME') or '')
+        if not base.is_absolute():
+            base = Path.home() / '.cache'
+    return os.fspath(base / 'OpenFocus' / 'alignment-cache')
+
+
+def _plain_path(path, kind):
+    return _plain_stat(os.lstat(path), kind)
+
+
+def _plain_stat(info, kind):
+    return (kind(info.st_mode) and
+            not (getattr(info, 'st_file_attributes', 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT))
+
+
+def _cache_directory(path, *, create=False):
+    if create:
+        os.makedirs(path, mode=0o700, exist_ok=True)
+    if not _plain_path(path, stat.S_ISDIR):
+        raise OSError(f'Not an alignment cache directory: {path}')
+
+
 @contextmanager
-def _cache_access(should_cancel):
-    while not _cache_lock.acquire(timeout=0.05):
-        _check_cancel(should_cancel)
+def _cache_access(root, should_cancel, *, create=False, blocking=True):
+    """Serialize cache access across threads, render workers and application instances."""
+    if blocking:
+        while not _cache_lock.acquire(timeout=0.05):
+            _check_cancel(should_cancel)
+    elif not _cache_lock.acquire(blocking=False):
+        raise _CacheBusy
     try:
         _check_cancel(should_cancel)
-        yield
+        _cache_directory(root, create=create)
+        path = os.path.join(root, '.lock')
+        if os.path.lexists(path) and not _plain_path(path, stat.S_ISREG):
+            raise OSError('Invalid alignment cache lock file')
+        flags = os.O_WRONLY | os.O_CREAT | getattr(os, 'O_NOFOLLOW', 0)
+        fd = os.open(path, flags, 0o600)
+        try:
+            while True:
+                _check_cancel(should_cancel)
+                try:
+                    if os.name == 'nt':
+                        import msvcrt
+                        msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+                    else:
+                        import fcntl
+                        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except OSError as exc:
+                    if exc.errno not in (errno.EACCES, errno.EAGAIN, errno.EDEADLK):
+                        raise
+                    if not blocking:
+                        raise _CacheBusy from exc
+                    time.sleep(0.05)
+            _check_cancel(should_cancel)
+            yield
+        finally:
+            os.close(fd)
     finally:
         _cache_lock.release()
 
@@ -58,24 +137,27 @@ def _signature(folder: str, filenames: List[str], align_options: Tuple[str, ...]
     """Hash ordered source files and the complete effective alignment request."""
     from core.algorithms import alignment_steps
 
-    align_options = alignment_steps(align_options)
-    parts = [f"v={CACHE_FORMAT_VERSION}",
-             f"opts={tuple(align_options)}|downscale={downscale_width}"
-             f"|scale={scale_factor}|shape={frame_shape}",
-             json.dumps(identity or {}, sort_keys=True, separators=(",", ":"),
-                        ensure_ascii=False, allow_nan=False)]
+    sources = []
     for name in filenames:
-        path = os.path.join(folder, name)
+        path = _source_path(folder, name)
         try:
-            st = os.stat(path)
-            parts.append(f'{name}:{st.st_size}:{st.st_mtime_ns}')
+            info = os.stat(path)
+            sources.append((path, info.st_size, info.st_mtime_ns))
         except OSError:
-            parts.append(f"{name}:missing")
-    return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:32]
+            sources.append((path,))
+    request = (CACHE_FORMAT_VERSION, alignment_steps(align_options), downscale_width,
+               scale_factor, frame_shape, identity or {}, sources)
+    return _request_hash(request)
 
 
-def cache_dir(folder: str) -> str:
-    return os.path.join(folder, CACHE_DIR_NAME)
+def _source_path(folder, name):
+    return os.path.realpath(os.path.join(folder, name))
+
+
+def _request_hash(request):
+    encoded = json.dumps(request, sort_keys=True, separators=(',', ':'),
+                         allow_nan=False).encode('utf-8')
+    return hashlib.sha256(encoded).hexdigest()[:32]
 
 
 def load_aligned(folder: str, filenames: List[str], align_options: Tuple[str, ...],
@@ -89,9 +171,13 @@ def load_aligned(folder: str, filenames: List[str], align_options: Tuple[str, ..
     try:
         sig = _signature(folder, filenames, align_options, downscale_width,
                          scale_factor, frame_shape, identity=identity)
-        cdir = os.path.join(cache_dir(folder), sig)
+        root = cache_dir()
+        cdir = os.path.join(root, sig)
         meta_path = os.path.join(cdir, "meta.json")
-        with _cache_access(should_cancel):
+        with _cache_access(root, should_cancel):
+            _cache_directory(cdir)
+            if not _plain_path(meta_path, stat.S_ISREG):
+                return None
             with open(meta_path, encoding="utf-8") as handle:
                 meta = json.load(handle)
             if (meta.get("version") != CACHE_FORMAT_VERSION
@@ -99,8 +185,10 @@ def load_aligned(folder: str, filenames: List[str], align_options: Tuple[str, ..
                     or meta.get("count") != len(filenames)):
                 return None
             generation = meta.get("generation", "")
-            if not generation.startswith("generation-") or os.path.basename(generation) != generation:
+            if not _GENERATION_NAME.fullmatch(generation):
                 return None
+            generation_dir = os.path.join(cdir, generation)
+            _cache_directory(generation_dir)
             descriptions = meta.get("frames", [])
             if len(descriptions) != len(filenames):
                 return None
@@ -113,7 +201,9 @@ def load_aligned(folder: str, filenames: List[str], align_options: Tuple[str, ..
             frames = []
             for index, description in enumerate(descriptions):
                 _check_cancel(should_cancel)
-                frame_path = os.path.join(cdir, generation, f"aligned_{index:04d}.png")
+                frame_path = os.path.join(generation_dir, f"aligned_{index:04d}.png")
+                if not _plain_path(frame_path, stat.S_ISREG):
+                    return None
                 image = _read_frame(frame_path)
                 _check_cancel(should_cancel)
                 if (image is None or list(image.shape) != description["shape"]
@@ -132,69 +222,99 @@ def load_aligned(folder: str, filenames: List[str], align_options: Tuple[str, ..
         return None
 
 
-def _prune(root, keep, max_bytes):
-    """Evict owned aligned generations and plan manifests by oldest access."""
-    entries = []
-    total = 0
+def _generation_size(directory, *, pending=False):
+    """Return the size of an owned PNG generation, or None for other content."""
+    if not _plain_path(directory, stat.S_ISDIR):
+        return None
+    size = 0
+    with os.scandir(directory) as frames:
+        for frame in frames:
+            info = frame.stat(follow_symlinks=False)
+            known = (_FRAME_NAME.fullmatch(frame.name) or
+                     (pending and _ENCODER_TEMP_NAME.fullmatch(frame.name)))
+            if not known or not _plain_stat(info, stat.S_ISREG):
+                return None
+            size += info.st_size
+    return size
+
+
+def _remove_pending(root):
+    """Remove incomplete writes abandoned by a terminated cache writer."""
     for name in os.listdir(root):
-        if len(name) not in (16, 32) or any(char not in "0123456789abcdef" for char in name):
+        if not _PENDING_NAME.fullmatch(name):
             continue
         directory = os.path.join(root, name)
         try:
-            meta_path = os.path.join(directory, "meta.json")
-            if os.path.islink(directory) or os.path.islink(meta_path):
-                continue
-            with open(meta_path, encoding="utf-8") as handle:
-                meta = json.load(handle)
-            if meta.get("signature") != name:
-                continue
-            if meta.get("version") in (3, 4, 5, CACHE_FORMAT_VERSION):
-                # Older generation manifests still count toward the budget.
-                size = int(meta["encoded_bytes"])
-                if size < 0:
+            _cache_directory(directory)
+            for child in os.listdir(directory):
+                path = os.path.join(directory, child)
+                if child == 'meta.json' and _plain_path(path, stat.S_ISREG):
                     continue
-            elif len(name) == 16 and isinstance(meta.get("count"), int):
-                expected = {f"aligned_{i:04d}.png" for i in range(meta["count"])}
-                if set(os.listdir(directory)) != expected | {"meta.json"}:
+                if _GENERATION_NAME.fullmatch(child) and _generation_size(path, pending=True) is not None:
                     continue
-                size = sum(os.stat(os.path.join(directory, frame)).st_size
-                           for frame in expected)
+                break
             else:
-                continue
-            total += size
-            entries.append((os.stat(meta_path).st_mtime_ns, ('aligned', name), directory, size))
-        except (OSError, ValueError, TypeError, KeyError, AttributeError):
+                shutil.rmtree(directory)
+        except OSError:
             continue
 
-    plans = os.path.join(root, 'plans')
-    if not os.path.islink(plans) and os.path.isdir(plans):
+
+def _owned_entries(root):
+    """Yield committed entries and their sizes, leaving unknown content alone."""
+    for kind, parent in (('aligned', root), ('plan', os.path.join(root, 'plans'))):
         try:
-            names = os.listdir(plans)
+            _cache_directory(parent)
+            names = os.listdir(parent)
         except OSError:
-            names = ()
+            if kind == 'aligned':
+                raise
+            continue
         for name in names:
-            if len(name) != 32 or any(char not in '0123456789abcdef' for char in name):
+            if not _SIGNATURE_NAME.fullmatch(name):
                 continue
-            directory = os.path.join(plans, name)
+            directory = os.path.join(parent, name)
             meta_path = os.path.join(directory, 'meta.json')
             try:
-                if (os.path.islink(directory) or not os.path.isdir(directory)
-                        or os.path.islink(meta_path) or not os.path.isfile(meta_path)
-                        or set(os.listdir(directory)) != {'meta.json'}):
+                _cache_directory(directory)
+                info = os.lstat(meta_path)
+                if not _plain_stat(info, stat.S_ISREG):
                     continue
                 with open(meta_path, encoding='utf-8') as handle:
                     meta = json.load(handle)
                 count = meta.get('count')
-                if (meta.get('version') != PLAN_CACHE_VERSION or meta.get('signature') != name
-                        or meta.get('backend') not in ('opencv-perspective-v1', 'openfocus-wide4d-v3')
-                        or type(count) is not int or count < 0):
+                if (meta.get('signature') != name or type(count) is not int or count < 0):
                     continue
-                stat = os.stat(meta_path, follow_symlinks=False)
-                total += stat.st_size
-                entries.append((stat.st_mtime_ns, ('plan', name), directory, stat.st_size))
+                children = set(os.listdir(directory)) - {'meta.json'}
+                size = info.st_size
+                if kind == 'plan':
+                    if (children or meta.get('version') != PLAN_CACHE_VERSION or
+                            meta.get('backend') not in ('opencv-perspective-v1', 'openfocus-wide4d-v3') or
+                            not isinstance(meta.get('plan'), dict) or
+                            not _CHECKSUM.fullmatch(meta.get('sha256', ''))):
+                        continue
+                else:
+                    if (meta.get('version') not in (3, 4, 5, 6, CACHE_FORMAT_VERSION) or
+                            meta.get('generation') not in children):
+                        continue
+                    for child in children:
+                        if not _GENERATION_NAME.fullmatch(child):
+                            break
+                        generation_size = _generation_size(os.path.join(directory, child))
+                        if generation_size is None:
+                            break
+                        size += generation_size
+                    else:
+                        yield info.st_mtime_ns, (kind, name), directory, size
+                    continue
+                yield info.st_mtime_ns, (kind, name), directory, size
             except (OSError, ValueError, TypeError, AttributeError):
                 continue
 
+
+def _prune(root, keep, max_bytes):
+    """Evict the least recently used entries across all stacks and cache types."""
+    entries = list(_owned_entries(root))
+    total = sum(size for _, _, _, size in entries)
     for _, key, directory, size in sorted(entries):
         if total <= max_bytes:
             break
@@ -204,6 +324,23 @@ def _prune(root, keep, max_bytes):
             except OSError:
                 continue
             total -= size
+
+
+def clear_alignment_cache() -> Optional[int]:
+    """Remove owned entries, returning their count or None if the cache is busy."""
+    root = cache_dir()
+    try:
+        with _cache_access(root, None, blocking=False):
+            _remove_pending(root)
+            removed = 0
+            for _, _, directory, _ in _owned_entries(root):
+                shutil.rmtree(directory)
+                removed += 1
+            return removed
+    except FileNotFoundError:
+        return 0
+    except _CacheBusy:
+        return None
 
 
 def save_aligned(folder: str, filenames: List[str], aligned_images: List[np.ndarray],
@@ -216,62 +353,63 @@ def save_aligned(folder: str, filenames: List[str], aligned_images: List[np.ndar
     if (not folder or not os.path.isdir(folder) or not aligned_images
             or len(filenames) != len(aligned_images) or max_cache_bytes <= 0):
         return
-    temporary = generation_path = manifest_path = None
     try:
         sig = _signature(folder, filenames, align_options, downscale_width,
                          scale_factor, frame_shape, identity=identity)
-        root = cache_dir(folder)
+        root = cache_dir()
         cdir = os.path.join(root, sig)
-        os.makedirs(cdir, exist_ok=True)
         from core.resource_policy import require_memory
         require_memory(max(image.nbytes for image in aligned_images) * 3)
-        temporary = tempfile.mkdtemp(prefix=".pending-", dir=cdir)
-        encoded_bytes = 0
-        descriptions = []
-        for index, image in enumerate(aligned_images):
-            _check_cancel(should_cancel)
-            path = os.path.join(temporary, f"aligned_{index:04d}.png")
-            if not imwrite_auto(path, image, exif=b""):
-                return
-            _check_cancel(should_cancel)
-            encoded_bytes += os.stat(path).st_size
-            if encoded_bytes > max_cache_bytes:
-                return
-            descriptions.append({"shape": list(image.shape), "dtype": image.dtype.str,
-                                 "nbytes": image.nbytes})
-        generation = "generation-" + os.path.basename(temporary)[len(".pending-"):]
-        generation_path = os.path.join(cdir, generation)
-        meta = {"version": CACHE_FORMAT_VERSION, "signature": sig,
-                "count": len(aligned_images), "generation": generation,
-                "frames": descriptions, "encoded_bytes": encoded_bytes}
-        with _cache_access(should_cancel):
-            os.replace(temporary, generation_path)
-            temporary = None
-            fd, manifest_path = tempfile.mkstemp(prefix=".manifest-", dir=cdir)
-            with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                json.dump(meta, handle)
-            if sig != _signature(folder, filenames, align_options, downscale_width,
-                                  scale_factor, frame_shape, identity=identity):
-                return
-            _check_cancel(should_cancel)
-            os.replace(manifest_path, os.path.join(cdir, "meta.json"))
-            manifest_path = None
-            generation_path = None
-            for name in os.listdir(cdir):
-                if name.startswith("generation-") and name != generation:
-                    shutil.rmtree(os.path.join(cdir, name), ignore_errors=True)
-            _prune(root, ('aligned', sig), max_cache_bytes)
+        with _cache_access(root, should_cancel, create=True):
+            _remove_pending(root)
+            with tempfile.TemporaryDirectory(prefix='.pending-', dir=root) as staging:
+                generation = 'generation-' + os.path.basename(staging)[len('.pending-'):]
+                frames = os.path.join(staging, generation)
+                os.mkdir(frames)
+                encoded_bytes = 0
+                descriptions = []
+                for index, image in enumerate(aligned_images):
+                    _check_cancel(should_cancel)
+                    path = os.path.join(frames, f'aligned_{index:04d}.png')
+                    if not imwrite_auto(path, image, exif=b''):
+                        return
+                    _check_cancel(should_cancel)
+                    encoded_bytes += os.stat(path).st_size
+                    if encoded_bytes > max_cache_bytes:
+                        return
+                    descriptions.append({'shape': list(image.shape), 'dtype': image.dtype.str,
+                                         'nbytes': image.nbytes})
+                meta = {'version': CACHE_FORMAT_VERSION, 'signature': sig,
+                        'count': len(aligned_images), 'generation': generation,
+                        'frames': descriptions, 'encoded_bytes': encoded_bytes}
+                manifest = os.path.join(staging, 'meta.json')
+                with open(manifest, 'w', encoding='utf-8') as handle:
+                    json.dump(meta, handle)
+                if encoded_bytes + os.stat(manifest).st_size > max_cache_bytes:
+                    return
+                if sig != _signature(folder, filenames, align_options, downscale_width,
+                                     scale_factor, frame_shape, identity=identity):
+                    return
+                _check_cancel(should_cancel)
+                if not os.path.lexists(cdir):
+                    os.replace(staging, cdir)
+                else:
+                    _cache_directory(cdir)
+                    generation_path = os.path.join(cdir, generation)
+                    os.replace(frames, generation_path)
+                    try:
+                        os.replace(manifest, os.path.join(cdir, 'meta.json'))
+                    except OSError:
+                        shutil.rmtree(generation_path, ignore_errors=True)
+                        raise
+                    for name in os.listdir(cdir):
+                        if name != generation and _GENERATION_NAME.fullmatch(name):
+                            old = os.path.join(cdir, name)
+                            if _generation_size(old) is not None:
+                                shutil.rmtree(old, ignore_errors=True)
+                _prune(root, ('aligned', sig), max_cache_bytes)
     except (OSError, ValueError, TypeError, MemoryError, cv2.error):
         pass
-    finally:
-        if manifest_path:
-            try:
-                os.unlink(manifest_path)
-            except OSError:
-                pass
-        for directory in (temporary, generation_path):
-            if directory:
-                shutil.rmtree(directory, ignore_errors=True)
 
 
 PLAN_CACHE_VERSION = 2
@@ -307,18 +445,17 @@ def _plan_signature(folder, filenames, sources, identity):
         # decoded digest is sufficient only for an in-memory plan.
         if not isinstance(source, (np.ndarray, SourceFrame)):
             raise ValueError('Processed sources cannot use the disk alignment plan cache')
-        path = os.path.join(folder, name)
+        path = _source_path(folder, name)
         stamp = os.stat(path)
-        descriptions.append({'name': name, 'size': stamp.st_size, 'mtime': stamp.st_mtime_ns,
+        descriptions.append({'path': path, 'size': stamp.st_size, 'mtime': stamp.st_mtime_ns,
             'shape': list(source.shape), 'dtype': np.dtype(source.dtype).str,
-            'context': _source_context(source), 'path': os.fspath(getattr(source, 'path', '')),
+            'context': _source_context(source), 'source_path': os.fspath(getattr(source, 'path', '')),
             'page': int(getattr(source, 'page', 0))})
         if _reduced_raw_decode(source):
             descriptions[-1]['decode'] = 'raw-half-size'
     request = {'version': PLAN_CACHE_VERSION, 'backend': _plan_backend(identity),
                'sources': descriptions, 'identity': identity or {}}
-    encoded = json.dumps(request, sort_keys=True, separators=(',', ':'), allow_nan=False).encode('utf-8')
-    return hashlib.sha256(encoded).hexdigest()[:32]
+    return _request_hash(request)
 
 
 def _plan_payload(plan):
@@ -358,8 +495,15 @@ def load_alignment_plan(folder, filenames, sources, *, identity=None, should_can
         return None
     try:
         signature = _plan_signature(folder, filenames, sources, identity)
-        path = os.path.join(cache_dir(folder), 'plans', signature, 'meta.json')
-        with _cache_access(should_cancel):
+        root = cache_dir()
+        plans = os.path.join(root, 'plans')
+        directory = os.path.join(plans, signature)
+        path = os.path.join(directory, 'meta.json')
+        with _cache_access(root, should_cancel):
+            _cache_directory(plans)
+            _cache_directory(directory)
+            if not _plain_path(path, stat.S_ISREG):
+                return None
             # A plan contains only small per-source records. Reject a corrupt
             # manifest before allowing an unbounded JSON allocation.
             if os.stat(path).st_size > max(65536, len(sources) * 32768):
@@ -394,7 +538,6 @@ def save_alignment_plan(folder, filenames, plan, sources, *, identity=None, shou
     _check_cancel(should_cancel)
     if not folder or not os.path.isdir(folder) or max_cache_bytes <= 0:
         return
-    temporary = None
     try:
         signature = _plan_signature(folder, filenames, sources, identity)
         _validate_plan_request(plan, identity)
@@ -403,28 +546,29 @@ def save_alignment_plan(folder, filenames, plan, sources, *, identity=None, shou
                     'backend': _plan_backend(identity),
                     'count': len(sources), 'plan': plan.to_dict(),
                     'sha256': hashlib.sha256(_plan_payload(plan)).hexdigest()}
-        directory = os.path.join(cache_dir(folder), 'plans', signature)
-        os.makedirs(directory, exist_ok=True)
-        with _cache_access(should_cancel):
-            fd, temporary = tempfile.mkstemp(prefix='.plan-', dir=directory)
-            with os.fdopen(fd, 'w', encoding='utf-8') as handle:
-                json.dump(manifest, handle, allow_nan=False)
-            if os.stat(temporary).st_size > max_cache_bytes:
-                return
-            plan.validate_sources(sources, should_cancel=should_cancel)
-            if signature != _plan_signature(folder, filenames, sources, identity):
-                return
-            _check_cancel(should_cancel)
-            os.replace(temporary, os.path.join(directory, 'meta.json'))
-            temporary = None
-            _prune(cache_dir(folder), ('plan', signature), max_cache_bytes)
+        root = cache_dir()
+        plans = os.path.join(root, 'plans')
+        directory = os.path.join(plans, signature)
+        with _cache_access(root, should_cancel, create=True):
+            _remove_pending(root)
+            _cache_directory(plans, create=True)
+            with tempfile.TemporaryDirectory(prefix='.pending-', dir=root) as staging:
+                temporary = os.path.join(staging, 'meta.json')
+                with open(temporary, 'w', encoding='utf-8') as handle:
+                    json.dump(manifest, handle, allow_nan=False)
+                if os.stat(temporary).st_size > max_cache_bytes:
+                    return
+                plan.validate_sources(sources, should_cancel=should_cancel)
+                if signature != _plan_signature(folder, filenames, sources, identity):
+                    return
+                _check_cancel(should_cancel)
+                if not os.path.lexists(directory):
+                    os.replace(staging, directory)
+                else:
+                    _cache_directory(directory)
+                    os.replace(temporary, os.path.join(directory, 'meta.json'))
+                _prune(root, ('plan', signature), max_cache_bytes)
     except (OSError, ValueError, TypeError, KeyError, OverflowError):
         # Cache persistence is optional; source validation is repeated by
         # apply_alignment before any plan can affect pixels.
         pass
-    finally:
-        if temporary is not None:
-            try:
-                os.unlink(temporary)
-            except OSError:
-                pass

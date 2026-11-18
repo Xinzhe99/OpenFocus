@@ -26,7 +26,7 @@ from typing import Iterable, Optional, Sequence, Tuple
 import cv2
 import numpy as np
 from core.algorithms import alignment_steps
-from core.frame_storage import frame_region, is_mapped_frame, store_frame
+from core.frame_storage import create_frame, frame_region, is_mapped_frame, store_frame
 from core.source_frames import (
     SourceFrame as LazySourceFrame, ProcessedFrame, crop_frame, resolve_frame, store_preview,
     without_retained_pixels,
@@ -178,6 +178,48 @@ def _alignment_valid_mask(image: np.ndarray, *, should_cancel=None) -> Optional[
     return allow[labels]
 
 
+@dataclass(frozen=True)
+class RenderedDepth:
+    index: np.ndarray
+    valid_rect: Tuple[int, int, int, int]
+    reverse_order: bool
+    parameters: dict
+
+
+def store_rendered_focus(positions, scale, domain_shape, *, crop=None, transparent=None,
+                         should_cancel=None):
+    """Normalize merger-owned positions, reusing their mapping when possible."""
+    height, width = domain_shape
+    x0, y0, x1, y1 = 0, 0, width, height
+    if transparent is not None:
+        _, _, y0, y1, x0, x1, _ = transparent
+    if positions.shape != (y1 - y0, x1 - x0):
+        raise ValueError('Merger focus positions do not match the fusion domain')
+    x, y, w, h = crop if crop is not None else (0, 0, width, height)
+    left, top = max(x, x0), max(y, y0)
+    right, bottom = min(x + w, x1), min(y + h, y1)
+    if right <= left or bottom <= top:
+        return None
+    valid_rect = left - x, top - y, right - left, bottom - top
+    # A full-size float32 mapping owned by the merger can become the output
+    # directly. Cropped maps get independent files so they cannot pin a canvas.
+    if (valid_rect == (0, 0, w, h) and crop is None and positions.dtype == np.float32
+            and positions.flags.writeable and is_mapped_frame(positions)):
+        index = positions
+    else:
+        index = create_frame((h, w), np.float32)
+    if valid_rect != (0, 0, w, h):
+        index[...] = 0
+    for row in range(top, bottom, 128):
+        _check_cancel(should_cancel)
+        stop = min(row + 128, bottom)
+        dest = index[row - y:stop - y, left - x:right - x]
+        np.divide(positions[row - y0:stop - y0, left - x0:right - x0],
+                  np.float32(scale), out=dest, dtype=np.float32)
+        np.clip(dest, 0, 1, out=dest)
+    return index, valid_rect
+
+
 @dataclass
 class RenderContext:
     """What a result was made from, in result pixel coordinates."""
@@ -207,6 +249,7 @@ class RenderContext:
     frame_icc_profiles: Tuple[bytes, ...] = ()
     linear_dng_metadata: object = None
     source_paths: Tuple[str, ...] = ()
+    rendered_depth: Optional[RenderedDepth] = None
 
     @property
     def alignment(self) -> str:
@@ -223,6 +266,12 @@ class RenderContext:
 
     def iter_frames(self) -> Iterable[SourceFrame]:
         return iter(self.frames)
+
+    def matching_depth(self, method, parameters):
+        depth = self.rendered_depth
+        if depth is not None and self.algorithm == method and depth.parameters == parameters:
+            return depth
+        return None
 
 
 
@@ -272,6 +321,7 @@ def build_render_context(
     frame_icc_profiles: Optional[Sequence[bytes]] = None,
     linear_dng_metadata=None,
     source_paths: Optional[Sequence[str]] = None,
+    rendered_depth: Optional[dict] = None,
     should_cancel=None,
 ) -> Optional[RenderContext]:
     """Build the provenance context for one completed fusion.
@@ -362,6 +412,15 @@ def build_render_context(
     frame_icc_profiles = tuple(frame_icc_profiles or ())
     frame_icc_profiles = (frame_icc_profiles + (b'',) * len(frames))[:len(frames)]
 
+    depth = None
+    if rendered_depth is not None and len(frames) == rendered_depth['frame_count']:
+        index = rendered_depth['index']
+        origin = frames[0].offset_x, frames[0].offset_y
+        if all(frame.image.shape[:2] == index.shape and
+               (frame.offset_x, frame.offset_y) == origin for frame in frames):
+            depth = RenderedDepth(index, rendered_depth['valid_rect'],
+                                  rendered_depth['reverse_order'], rendered_depth['parameters'])
+
     return RenderContext(
         context_id=new_context_id(),
         algorithm=str(algorithm or "unknown"),
@@ -385,4 +444,5 @@ def build_render_context(
         frame_icc_profiles=frame_icc_profiles,
         linear_dng_metadata=linear_dng_metadata,
         source_paths=paths,
+        rendered_depth=depth,
     )

@@ -749,7 +749,7 @@ Fotos de iPhone carregam diretamente. Requer `pillow-heif`, que `pip install ope
 
 ### Cache de registro
 
-O OpenFocus pode armazenar resultados de registro em uma pasta `.openfocus_cache` ao lado da pilha de origem. Reabrir a mesma pilha (arquivos inalterados) então pula o alinhamento por completo. Ative ou desative em **Configurações → Configurações avançadas → Registro → Cache de registro**; entradas obsoletas são substituídas automaticamente.
+O OpenFocus salva os resultados de registro no cache do usuário. Ao reabrir uma pilha inalterada com as mesmas configurações, o OpenFocus reutiliza o resultado salvo. A opção fica em **Configurações → Configurações avançadas → Registro → Cache de registro**. Todas as pilhas compartilham um limite de 2 GiB. Quando é necessário liberar espaço, as entradas usadas há mais tempo são removidas. As pastas antigas `.openfocus_cache` ao lado das pilhas de origem são preservadas.
 
 ### Configurações persistidas
 

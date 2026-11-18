@@ -195,10 +195,11 @@
       <p>{{download.linux_intro}}</p>
       <p id="linux-status" class="note" role="status" data-unavailable="{{download.linux_unavailable}}" data-available="{{download.linux_available}}">{{download.linux_unknown}}</p>
       <a id="linux-download" class="btn" href="/download/latest/linux-desktop" hidden>{{download.linux_action}}</a>
-      <p class="linux-instructions">{{download.linux_extract}}</p>
-      <pre><code>tar -xzf OpenFocus-v1.77.0-linux-x86_64.tar.gz
-./OpenFocus/OpenFocus</code></pre>
-      <p class="note">{{download.linux_filename}}</p>
+      <div id="linux-install" hidden>
+        <p class="linux-instructions">{{download.linux_extract}}</p>
+        <pre><code id="linux-command"></code></pre>
+        <p class="note">{{download.linux_menu}} <code>python3 OpenFocus/install_linux_desktop.py</code></p>
+      </div>
     </div>
     <div class="install-block">
       <p class="note">{{download.script_label}}</p>
@@ -212,7 +213,14 @@
         <button class="copy" type="button" data-copied="{{download.copied}}">{{download.copy}}</button>
       </div>
     </div>
-    <p class="note"><span data-release-tag></span>{{download.note}} · <a href="{{releases}}" rel="noopener">{{download.all}}</a></p>
+    <p class="note"><span data-release-tag></span>{{download.note}} · <a href="{{stable_release}}" rel="noopener">{{download.all}}</a></p>
+  </section>
+  <section id="community">
+    <h2>{{community.title}}</h2>
+    <p class="note">{{community.intro}}</p>
+    <a class="community-qr" href="/wechat-group.png">
+      <img src="/wechat-group.png" width="369" height="373" alt="{{community.qr_alt}}" loading="lazy">
+    </a>
   </section>
   <section id="privacy">
     <h2>{{privacy.title}}</h2>
@@ -235,6 +243,7 @@
   </div>
   <div class="wrap">
     <span>{{footer.license}}</span>
+    <a href="{{repo}}/blob/main/docs/THIRD_PARTY_NOTICES.md" rel="noopener">{{footer.license_details}}</a>
   </div>
 </footer>
 

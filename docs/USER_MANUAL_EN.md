@@ -511,10 +511,12 @@ recorded source. Missing historical provenance is never replaced with the
 current stack. The source and texture stay bound to that snapshot.
 Depth maps are unavailable for transparent PNG stacks, in the GUI and the CLI.
 
-All seven depth-capable methods — DCT, DTCWT, GFG-FGF, OpenFocus B, OpenFocus C,
-StackMFF V2 and StackMFF V3 — require an explicit **Compute** click. StackMFF V1
-has no depth map. Opening the dialog or changing the measure,
-source, registration or parameters never starts computation. The parameter editor
+Selected outputs from OpenFocus B/C and StackMFF V2/V3 can retain their focus
+positions. When the selected output has a retained map and the method and parameters
+match, the dialog opens it for export. OpenFocus C uses the winning frame in its
+finest detail layer. Press **Compute** to run a separate estimate. Other outputs,
+the current stack, and changed methods or parameters need an explicit **Compute**
+click. StackMFF V1 has no depth map. The parameter editor
 appears directly below the measure selector: DCT median kernel and GFG initial kernel
 use odd values 1–51 (default 7). OpenFocus B uses Radius, Smoothing and Feather;
 OpenFocus C's depth export uses Smoothing without a radius. DTCWT decomposition levels
@@ -1617,21 +1619,31 @@ iPhone photos load directly. Requires `pillow-heif`, which
 ### Updates
 
 **Help → Check for Updates** compares your version with the release information
-at `openfocus.top`. A newer release is downloaded from the same site in the
-background while the app is idle; once the build is staged, the banner and
-status area offer **Restart and Update**, which applies it offline. Builds that
-cannot self-update open the website download page instead. Automatic checks run
-quietly at most once a day.
+at `openfocus.top`. Supported desktop builds download the newest release for
+the selected channel while the app is idle. Choose **Restart and Update** when
+the verified package is ready. The update can then be applied offline. Use
+**View What's New** to see the changes by version. In Advanced Settings you can
+opt in to beta releases or disable automatic downloads. Automatic checks still
+run quietly at most once a day. Builds without self-update open the website.
 
 ### Registration Cache
 
-OpenFocus can store registration results in a `.openfocus_cache` folder
-next to the source stack. Re-opening the same stack (files unchanged)
-then skips alignment entirely. Toggle it in **Settings → Advanced Settings →
-Registration**; stale entries are replaced automatically.
-Encoded aligned frames and registration plan manifests share the default 2 GiB
-cache budget. Evicted plans are estimated again when needed; source files are
-not affected by eviction.
+OpenFocus stores registration results in your user cache. Reopening an
+unchanged stack with the same registration settings reuses the saved result.
+The registration cache toggle is under **Settings → Advanced Settings →
+Registration**.
+
+- Windows — `%LOCALAPPDATA%\OpenFocus\alignment-cache`
+- macOS — `~/Library/Caches/OpenFocus/alignment-cache`
+- Linux — `$XDG_CACHE_HOME/OpenFocus/alignment-cache`, or
+  `~/.cache/OpenFocus/alignment-cache` by default
+
+Encoded aligned frames and registration plans share a 2 GiB budget across
+all stacks. Cache entries persist across launches. When a new entry needs
+space, OpenFocus evicts the least recently used entries. Use **Clear
+Registration Cache** in Advanced Settings to reclaim that space now. Evicted
+or cleared entries are recomputed when needed. OpenFocus leaves legacy
+`.openfocus_cache` folders beside source stacks in place.
 
 ### Persisted Settings
 

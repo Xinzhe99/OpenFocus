@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 
-from PyQt6.QtCore import Qt, QSize
+from PyQt6.QtCore import Qt, QSize, pyqtSignal
 from PyQt6.QtGui import QKeySequence, QShortcut, QFont
 from PyQt6.QtWidgets import (
     QAbstractItemView,
@@ -272,10 +272,49 @@ def label_recommended(combo: QComboBox, method: str) -> None:
         combo.setItemText(index, f"{combo.itemText(index)} ({trans.t('recommended')})")
 
 
+class _SourceListWidget(QListWidget):
+    order_changed = pyqtSignal()
+
+    def dropEvent(self, event) -> None:
+        if event.source() is not self:
+            super().dropEvent(event)
+            return
+        # Qt may change the current row before the final permutation exists.
+        blocked = self.blockSignals(True)
+        try:
+            super().dropEvent(event)
+        finally:
+            self.blockSignals(blocked)
+        self.order_changed.emit()
+
+
+class _DeviceStatusLabel(QLabel):
+    def __init__(self, text):
+        super().__init__()
+        self.setTextFormat(Qt.TextFormat.PlainText)
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.setText(text)
+
+    def setText(self, text):
+        self._full_text = text
+        self._refit()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._refit()
+
+    def _refit(self):
+        available = self.contentsRect().width() - 2 * self.margin()
+        # Keep the distinguishing model suffix visible at narrow widths.
+        super().setText(self.fontMetrics().elidedText(
+            self._full_text, Qt.TextElideMode.ElideLeft, max(0, available)))
+
+
 @dataclass
 class RightPanelComponents:
     widget: QFrame
     splitter: QSplitter
+    config_scroll: QScrollArea
     btn_reset: QPushButton
     btn_render: QPushButton
     btn_compare: QPushButton
@@ -310,6 +349,20 @@ class RightPanelComponents:
     lbl_status_gpu: QLabel
     lbl_status_memory: QLabel
 
+    def set_initial_sizes(self) -> None:
+        # Use the first laid-out height so the splitter preserves the space
+        # needed by the styled controls when sizing both lists.
+        config = self.config_scroll.widget()
+        config.layout().activate()
+        config_height = config.sizeHint().height()
+        available = sum(self.splitter.sizes())
+        source_min = self.splitter.widget(1).minimumSizeHint().height()
+        output_min = self.splitter.widget(2).minimumSizeHint().height()
+        extra = max(0, available - config_height - source_min - output_min)
+        source_extra = 3 * extra // 5
+        self.splitter.setSizes([config_height, source_min + source_extra,
+                                output_min + extra - source_extra])
+
 
 
 def _fill_combo(combo: QComboBox, items) -> None:
@@ -335,8 +388,6 @@ def create_right_panel() -> RightPanelComponents:
     config_widget = QWidget()
     config_layout = QVBoxLayout(config_widget)
     config_layout.setContentsMargins(10, 10, 10, 10)
-
-    method_registration_layout = QHBoxLayout()
 
     method_group = QGroupBox(trans.t('group_fusion'))
     method_layout = QVBoxLayout(method_group)
@@ -482,8 +533,9 @@ def create_right_panel() -> RightPanelComponents:
     source_header.addWidget(btn_none)
     source_list_layout.addLayout(source_header)
 
-    file_list = QListWidget()
+    file_list = _SourceListWidget()
     file_list.setIconSize(QSize(40, 40))
+    file_list.setMinimumHeight(file_list.iconSize().height() + 8)
     file_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
     file_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
     file_list.setObjectName("sourceList")
@@ -509,6 +561,7 @@ def create_right_panel() -> RightPanelComponents:
     output_list_layout.addLayout(output_header)
     output_list = OutputListWidget()
     output_list.setIconSize(QSize(40, 40))
+    output_list.setMinimumHeight(output_list.iconSize().height() + 8)
     output_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
     output_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
     output_list.setDragEnabled(True)
@@ -527,10 +580,6 @@ def create_right_panel() -> RightPanelComponents:
     right_splitter.setStretchFactor(0, 0)
     right_splitter.setStretchFactor(1, 3)
     right_splitter.setStretchFactor(2, 3)
-    # Start with the config block fully readable and give the lists the rest.
-    # The user can drag it smaller now (it is inside a scroll area), which was
-    # impossible while its minimum height was the sum of every control.
-    right_splitter.setSizes([335, 345, 345])
 
     # Status Panel -----------------------------------------
     status_widget = QFrame()
@@ -541,21 +590,18 @@ def create_right_panel() -> RightPanelComponents:
     status_layout.setVerticalSpacing(6)
 
     lbl_status_loaded = QLabel(trans.t('status_loaded').format(0))
-    lbl_status_gpu = QLabel(trans.t('status_gpu').format('-'))
+    lbl_status_gpu = _DeviceStatusLabel(trans.t('status_gpu').format('-'))
     lbl_status_resolution = QLabel(trans.t('status_res').format('-'))
     lbl_status_memory = QLabel(trans.t('status_ram').format('-'))
 
-    # Two rows of two. Measured against every shipped language: the widest
-    # single statistic is 132 px (French "Memoire: 15.5 GB / 32 GB"), so a
-    # half of the 400 px panel leaves ~60 px of slack. Four rows were used
-    # briefly - they also fit, but the block grew from 56 to 107 px tall and
-    # ate the space of the source list above it for no gain.
+    # Keep two rows to leave room for the lists. Give the device label the
+    # wider column and keep the full report in its tooltip.
     status_layout.addWidget(lbl_status_loaded, 0, 0)
     status_layout.addWidget(lbl_status_gpu, 0, 1)
     status_layout.addWidget(lbl_status_resolution, 1, 0)
     status_layout.addWidget(lbl_status_memory, 1, 1)
     status_layout.setColumnStretch(0, 1)
-    status_layout.setColumnStretch(1, 1)
+    status_layout.setColumnStretch(1, 2)
 
     right_layout.addWidget(status_widget)
 
@@ -572,6 +618,7 @@ def create_right_panel() -> RightPanelComponents:
     return RightPanelComponents(
         widget=right_panel,
         splitter=right_splitter,
+        config_scroll=config_scroll,
         btn_reset=btn_reset,
         btn_render=btn_render,
         btn_compare=btn_compare,
@@ -642,12 +689,7 @@ def bind_right_panel(window, components: RightPanelComponents) -> None:
         lambda values: window.set_fusion_parameters(window.current_fusion_method(), values))
     components.registration_parameter_panel.valuesChanged.connect(
         lambda values: window.set_registration_parameters(window.current_alignment_method(), values))
-    # Provider validation runs a small inference, so probe off the UI thread
-    # only when a neural method is selected.
-    components.combo_fusion.currentIndexChanged.connect(
-        lambda: components.combo_fusion.currentData() != "none"
-        and get_fusion(components.combo_fusion.currentData()).neural
-        and window._probe_device_kind_async())
+    components.combo_fusion.currentIndexChanged.connect(window._update_dynamic_status)
 
     # 基底校正开关（消除亮度漂移）：立即持久化，渲染时读取
     components.chk_base_correct.toggled.connect(window.set_base_correct)
@@ -691,8 +733,7 @@ def bind_right_panel(window, components: RightPanelComponents) -> None:
     # maps it back onto the data arrays.
     components.file_list.setDragDropMode(
         QAbstractItemView.DragDropMode.InternalMove)
-    components.file_list.model().rowsInserted.connect(
-        window.source_manager.apply_list_order)
+    components.file_list.order_changed.connect(window.source_manager.apply_list_order)
     components.output_list.customContextMenuRequested.connect(window.output_manager.show_output_context_menu)
     components.output_list.currentRowChanged.connect(window.output_manager.sync_output_slider_from_list)
     # Selection changes cover mouse, keyboard and programmatic navigation;

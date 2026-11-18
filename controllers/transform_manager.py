@@ -194,7 +194,6 @@ class TransformManager:
             # Per-frame sharpness for the curve above the navigation slider
             self._update_sharpness_curve(window)
             window.source_manager.update_file_list(window.image_filenames, thumbnails)
-            window.source_manager.update_slider_range()
 
             if window.stack_images:
                 window.source_control_bar.setVisible(True)
@@ -207,11 +206,14 @@ class TransformManager:
                 target_index = 0 if initial_index is None else int(initial_index)
                 target_index = max(0, min(target_index, len(window.stack_images) - 1))
 
-                window.update_source_view(target_index)
-                window.stack_slider.blockSignals(True)
-                window.stack_slider.setValue(target_index)
-                window.stack_slider.blockSignals(False)
+                blocked = window.stack_slider.blockSignals(True)
+                try:
+                    window.source_manager.update_slider_range()
+                    window.stack_slider.setValue(target_index)
+                finally:
+                    window.stack_slider.blockSignals(blocked)
                 window.file_list.setCurrentRow(target_index)
+                window.update_source_view(target_index)
             if hasattr(window, '_start_source_previews'):
                 window._start_source_previews()
                 

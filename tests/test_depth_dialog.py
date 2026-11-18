@@ -1584,3 +1584,67 @@ def test_depth_visual_discards_obsolete_parameter_request(depth_dialog, monkeypa
     release.set()
     _wait(qapp, lambda: dialog._visual_ready_revision == dialog._visual_revision)
     assert dialog._visual_cache['smooth_key'][-1] == 2
+
+
+def test_selected_render_exports_roi_depth_without_measuring(depth_dialog, monkeypatch, qapp, tmp_path):
+    from PyQt6.QtCore import QRect
+    from core import depth_map
+    from core.workers import RenderWorker
+    import dialogs.depthmap as dm
+
+    frames = _synthetic_thirds(48, 64)
+    roi = (6, 7, 40, 32)
+    worker = RenderWorker(frames, algorithm='openfocus_b', sort_mode='desc',
+                          roi_rect=QRect(*roi), roi_mode='paste', thread_count=1, use_gpu=False)
+    results = []
+    worker.finished_signal.connect(lambda *result: results.append(result))
+    worker._run_admitted()
+    processed, output, *_ = results[0]
+    parameters = {'fusion_parameters': worker.fusion_parameters, 'sort_mode': 'desc'}
+    context = _output_context(processed, output, 'openfocus_b', roi_rect=roi, roi_mode='paste',
+                              parameters=parameters, rendered_depth=worker.rendered_depth)
+    measurements = []
+
+    def measure(images, method, **kwargs):
+        measurements.append((method, kwargs['parameters']))
+        return _ramp(images, method)
+
+    monkeypatch.setattr(depth_map, 'compute_focus_index', measure)
+    dialog, _ = depth_dialog('openfocus_b', frames, output, context)
+    _wait(qapp, dialog._has_current_map)
+    assert measurements == []
+    assert dialog._map_indices == [8, 5, 2]
+    assert dialog._map_names == ['historical-2.tif', 'historical-1.tif', 'historical-0.tif']
+    assert dialog.btn_save_indices.isEnabled()
+    np.testing.assert_array_equal(dialog._index01, context.rendered_depth.index)
+
+    path = tmp_path / 'selected-depth.tif'
+    monkeypatch.setattr(dm.FileDialog, 'getSaveFileName', lambda *args: (str(path), 'TIFF'))
+    dialog.btn_save_indices.click()
+    _wait(qapp, lambda: dialog._export_worker is None)
+    from core.depth_products import estimate_indices
+    from PIL import Image
+    x, y, w, h = roi
+    expected = np.zeros(frames[0].shape[:2], np.uint16)
+    expected[y:y + h, x:x + w] = estimate_indices(context.rendered_depth.index, len(frames))
+    with Image.open(path) as saved:
+        np.testing.assert_array_equal(np.asarray(saved), expected)
+        metadata = json.loads(saved.tag_v2[270])
+    assert metadata['focus_source'] == 'render'
+    assert metadata['domain'] == {'offset': [x, y], 'shape': [h, w]}
+
+    editor = dialog.fusion_parameter_panel.editors['smoothing']
+    editor.setValue(editor.value() + 1)
+    assert dialog._worker is None and not dialog.btn_save_indices.isEnabled()
+    _click_and_finish(qapp, dialog)
+    assert measurements == [('openfocus_b', dialog._parameters_for('openfocus_b'))]
+    assert not dialog._map_rendered
+
+    _select(dialog.source_combo, 'current')
+    assert dialog._worker is None and not dialog.btn_save_indices.isEnabled()
+    _select(dialog.source_combo, 'output')
+    editor = dialog.fusion_parameter_panel.editors['smoothing']
+    editor.setValue(worker.fusion_parameters['smoothing'])
+    _wait(qapp, dialog._has_current_map)
+    assert dialog._map_rendered
+    assert len(measurements) == 1

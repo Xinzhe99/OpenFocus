@@ -39,7 +39,8 @@ def test_built_installer_runs_shell_syntax_check_after_crlf_checkout(tmp_path, m
     installer = (original_root / "site" / "install.sh").read_text(encoding="utf-8")
     (site / "install.sh").write_bytes(installer.replace("\n", "\r\n").encode("utf-8"))
     for name in ("OpenFocus.png", "ui.png", "benchmark.png",
-                 "readme/method-comparison_poster.jpg", "readme/retouch_poster.jpg"):
+                 "readme/method-comparison_poster.jpg", "readme/retouch_poster.jpg",
+                 "readme/wechat-group.png"):
         target = root / "assets" / name
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(original_root / "assets" / name, target)

@@ -6,6 +6,7 @@
     "assets/OpenFocus.png",
     "assets/readme/alipay-coffee.jpg",
     "assets/readme/paypal-coffee.png",
+    "assets/readme/wechat-group.png",
     "assets/demo_stack/demo_01.jpg",
     "assets/demo_stack/demo_02.jpg",
     "assets/demo_stack/demo_03.jpg",
@@ -53,6 +54,7 @@
   "exclude_exceptions": [
     "assets/readme/alipay-coffee.jpg",
     "assets/readme/paypal-coffee.png",
+    "assets/readme/wechat-group.png",
     "docs/AGENT_CONTROL_SPEC.md"
   ]
 }
