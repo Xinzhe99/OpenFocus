@@ -461,13 +461,14 @@ class ControlServer(QObject):
 
     def _load_info(self) -> dict:
         manager = self.window.source_manager
-        active = (getattr(manager, "_load_worker", None) is not None
-                  and not self._load_finished)
+        # Frames can be applied one event-loop turn before the loader is released.
+        active = getattr(manager, "_load_worker", None) is not None
+        finished = self._load_finished and not active
         return {
             "id": self._load_id,
             "active": active,
-            "finished": bool(self._load_finished),
-            "error": self._load_error if self._load_finished else None,
+            "finished": finished,
+            "error": self._load_error if finished else None,
             "baseline_count": self._load_baseline,
         }
 
@@ -1083,6 +1084,9 @@ class ControlServer(QObject):
             raise ControlError("busy", "A render is already running",
                                "Wait for render.state to leave 'rendering' or "
                                "call render.cancel.")
+        if status == "loading":
+            raise ControlError("busy", "A stack is still loading",
+                               "Wait for stack.frames load.finished, then retry.")
         if status == "confirm_ai":
             raise ControlError(
                 "confirm_required",
