@@ -130,7 +130,7 @@ and privacy policy; the links are available to review. The **Help** menu shows *
 account. Open it to sign out or securely open your account center in the browser.
 After sign-in, automatic error reports are enabled by default unless you
 previously disabled them. Change this under
-**Settings → Advanced Settings → Diagnostics**.
+**Settings → Advanced Settings → General → Privacy**.
 
 OpenFocus restores a saved desktop session locally at startup without opening a
 browser, including while offline. After sign-out or session removal, sign in
@@ -192,7 +192,7 @@ The top menu bar provides access to all functions:
 - **File**: import/export operations, projects, processing templates and the recent-files list
 - **Edit**: Undo/redo, reset the current stack, image transformations and retouching
 - **Tools**: Image stitching, batch processing and conversion, method comparison, depth map, flat-field correction, scale bar, watermark and labels
-- **Settings**: Advanced Settings (performance, registration and alignment diagnostics, sensor cleanup, output naming, AI, diagnostics, startup), GPU acceleration, theme and language
+- **Settings**: Advanced Settings (General, Fusion, Registration, Startup & updates), GPU acceleration, theme and language
 - **Help**: Environment info, contact information and the Discord community, Support Us, update check, and the log folder. Support Us displays Alipay and PayPal codes; include your username in the transfer note for permanent project acknowledgment.
 
 **Tools → Stitch Images…** opens a separate workspace for already-fused
@@ -803,16 +803,12 @@ Image registration corrects spatial misalignment between frames in your image st
   changed with `--align-shift-limit`. Successive estimates can accumulate beyond
   that range; it is not a guaranteed rejection threshold.
 - For non-rigid or extreme geometry, pick ECC or Homography instead
-- **Rejected frame handling** defaults to continuing with the unaligned frame
-  when estimation fails. Choose **Stop on rejected frame** to fail the render
-  or batch item instead. Frames are numbered from 1 in the processed stack;
+- Desktop registration stops the affected stack if a frame is rejected. Read the frame and reason in the error message and inspect that source image before retrying. Frames are numbered from 1 in the processed stack. Their
   geometry defaults to frame 1 and successive estimates follow the adjacent
   aligned frame. Low texture, repeated patterns, occlusion, large motion, or
   focus changes can still produce an inaccurate match without an error.
   Inspect the result.
-- In the CLI, select the same policy with `--align openfocus --align-param
-  'failure_policy="fail"'` (use shell-appropriate quoting). Batch items use
-  the selected policy independently. The default is `"continue"`.
+- The CLI defaults to `continue`. Use `--align openfocus --align-param 'failure_policy="fail"'` to stop the stack on a rejected frame.
 - Set **Reference frame** to a 1-based number in the included, processed stack
   order to anchor geometry to that frame. Frame order is preserved; brightness
   equalization uses its own reference. Every batch stack must contain that
@@ -820,35 +816,14 @@ Image registration corrects spatial misalignment between frames in your image st
   reference_frame=3`. Choosing a reference cannot correct parallax or a poor
   match; inspect the result.
 
-Alignment reports identify the reference and each frame's outcome. A fallback
-means the method could not establish the alignment or depends on an earlier
-failed estimate; the reported reason distinguishes weak estimates and motion
-outside the limits when known. Quality values are method-specific, not a
-guarantee of accuracy.
-Transforms map source coordinates to the registration stage's reference canvas
-before the common crop; composite methods report their stages separately.
-Homography and ECC also accept the opt-in `failure_policy="fail"` registration
-parameter to stop when their algorithms detect failure. The default remains
-`"continue"`; inspect results even when alignment succeeds.
-
-To inspect a render, enable **Settings → Advanced Settings → Registration →
-Collect alignment diagnostics** and render again. This recomputes alignment
-instead of reusing cached images. The completion
-status highlights fallbacks; open **Settings → Advanced Settings → Registration → Alignment diagnostics** for the
-per-frame report. It shows available failure reasons, method-specific scores,
-match counts, referenced frames and transforms. Reference numbers and names
-refer to the original source list, including when frames are excluded. Batch
-and grouped renders do not provide this report.
+For a single, non-grouped CLI render with registration, `--alignment-report FILE` saves the per-frame results.
 
 ### Enabling Registration
 
 1. In the right panel, locate the **Registration** group
 2. Pick one method from the dropdown: **No alignment**, **OpenFocus (fast)**,
    **ECC**, **Homography**, or **Homography → ECC**
-3. The defaults work without further adjustment. For OpenFocus (fast), adjust
-   the reference frame and search limits under **Settings → Advanced Settings → Registration**.
-   Set **Rejected frame handling** there for all registration methods.
-4. **Collect alignment diagnostics** now lives in Advanced Settings (see above)
+3. Adjust the OpenFocus reference frame and search limits in **Settings → Advanced Settings → Registration**.
 
 ### When to Use Registration
 
@@ -873,8 +848,6 @@ Access additional settings via **Settings → Advanced Settings → Registration
 - **Downscale Width**: Control preprocessing resolution (default: 1024px)
 - Lower values = faster processing, potentially lower accuracy
 - Higher values = slower processing, potentially higher accuracy
-- **Collect alignment diagnostics** and **Registration cache** sit in the same
-  section
 
 ---
 
@@ -968,7 +941,7 @@ explicitly selected directory stays in the settings. If it becomes unavailable,
 OpenFocus warns and temporarily uses the system temporary directory; each new
 job retries the saved choice. A full selected disk is not replaced automatically.
 Choose an existing writable folder under **Settings → Advanced Settings →
-Performance → Temporary directory** if a storage error occurs. Free-space
+General → Working storage → Temporary directory** if a storage error occurs. Free-space
 checks are estimates, not reservations; space may run out later. Existing
 frames remain in their original directory until released.
 
@@ -1344,7 +1317,7 @@ export an image to write the annotations to a file.
 
 ## 11. Settings and Configuration
 
-**Enable experimental features** in **Settings → Advanced Settings** is off by
+**Enable experimental features** in **Settings → Advanced Settings → General** is off by
 default and is remembered for this installation. With it off, desktop fusion
 offers OpenFocus A/B/C and No fusion; registration offers ECC and No alignment.
 Other fusion and registration methods and image stitching remain visible as
@@ -1354,15 +1327,16 @@ features are under development and may have performance, quality or availability
 limitations. Projects and templates do not override this preference. Restoring
 default settings turns it off again.
 
-Open **Settings → Advanced Settings** for performance, registration, sensor
-cleanup, output naming, StackMFF AI, diagnostics and startup preferences. Changes remain
-drafts until **OK**; Cancel, Esc and closing discard them. Reducing the tile
-size immediately updates the visible overlap limit to half a tile. The AI
-section's saved batch limit is retained, but inference currently submits one
-tile per call; registration width can change alignment accuracy.
-Alignment-diagnostic collection is a checkbox in the Registration section.
+**Settings → Advanced Settings**
 
-**Settings → Advanced Settings → Share usage statistics** is enabled by
+- **General** — Experimental features, working storage and the output filename prefix. Under **Privacy**, automatic error reports and usage statistics have separate checkboxes. Both start checked. An explicit opt-out stays saved for each. Release builds send an automatic report after a session records an error if you accepted the reporting terms at sign-in or explicitly enabled reporting. A previous native crash requires confirmation.
+- **Fusion** — Choose the resource mode and tile settings. Select **Sensor cleanup** to expand its controls.
+- **Registration** — Set the downscale width. Select **OpenFocus (fast)** to expand the reference frame and search limits.
+- **Startup & updates** — Restore the previous stack, choose the import scale prompt and manage updates.
+
+Choose **OK** to save changes. Cancel, Esc or closing the dialog discards them.
+
+**Settings → Advanced Settings → General → Privacy → Share usage statistics** is enabled by
 default when no preference exists; an explicit previous opt-out is preserved.
 OpenFocus sends only a random installation ID, application version and operating
 system to openfocus.top, at most once per day after a successful send. No images,
@@ -1402,7 +1376,7 @@ correction. The CLI also accepts the reference with `--dust-map WHITE`.
 
 Sensor cleanup is optional and runs on the original sensor-coordinate frames
 before registration. In the desktop application it lives in **Settings →
-Advanced Settings → Sensor cleanup**; the batch dialog has the same controls.
+Advanced Settings → Fusion → Sensor cleanup**; the batch dialog has the same controls.
 Select an explicit defect mask to correct known hot or
 dead pixels; OpenFocus does not infer a mask from specimen images. The mask must
 be a single-channel 8-bit or 16-bit image with the same dimensions as the source:
@@ -1474,24 +1448,25 @@ outcomes; unexpected errors include a full traceback. The feedback ZIP also
 includes the current crash report and dependency versions. Use **Help → Open Logs
 Folder** or the path shown on the feedback page to find the files. Logs rotate at
 1 MB with three backups per process; inactive session logs older than 14 days are
-removed. For detailed support logs, enable **Settings → Advanced Settings →
-Diagnostics → Detailed logging** (see [Diagnostics](#diagnostics)), or set
-`OPENFOCUS_LOG_LEVEL=DEBUG` before launch; `OPENFOCUS_LOG_DIR` optionally selects
+removed. For detailed support logs, set `OPENFOCUS_LOG_LEVEL=DEBUG` before
+launch. `OPENFOCUS_LOG_DIR` optionally selects
 a different log folder.
 
 ### Tile Settings (Memory Optimization)
 
-Methods supporting external tiles can use them above the configured threshold.
-OpenFocus A/B/C process the whole image at the default threshold. For A and B,
-changing the threshold explicitly enables their external tile path; C does not
-support external tiles. Their bounded row/frame
-passes still reduce working memory while retaining global depth and reconstruction.
+Tiled fusion is on by default. The status below the controls describes how the selected method processes the image. OpenFocus A, B and C process the whole image on the desktop. Alignment only skips fusion. With any of these selected, you can still set tile size, overlap and threshold for the next compatible method. DTCWT uses estimated memory to decide when to tile, so you can set its tile size and overlap. Its threshold field is disabled. Deep neural stacks can tile below the size threshold. Turning tiling off disables all three numeric fields and preserves their values.
 
-Access via **Settings → Advanced Settings → Performance**:
+Access via **Settings → Advanced Settings → Fusion**:
 
 - **Tile Block Size**: Size of each processing tile (default: 1024px)
 - **Tile Overlap**: Overlap between tiles for seamless blending (default: 256px)
 - **Tile Threshold**: Image size above which tiles are used (default: 2048px)
+
+Limits in pixels
+
+- Tile Block Size — 64–16384
+- Tile Overlap — 0–min(4096, half the tile size)
+- Tile Threshold — 256–131072
 
 **Recommendations**:
 - Smaller block size: Lower memory usage, slower processing
@@ -1515,43 +1490,13 @@ high-resolution input.
 The status panel shows used and total physical memory when the operating
 system can provide both readings; otherwise it shows `N/A`.
 
-### Diagnostics
+### Diagnosing a slow render
 
-Access via **Settings → Advanced Settings → Diagnostics**. Both switches are
-off by default, are remembered for this installation only (not in projects or
-templates) and do not change the rendered image.
-
-- **Profile rendering performance** times the stages of each following render,
-  preview and comparison render. **Performance report** shows the most recent
-  report with its finish time: where the time went, the stage tree in execution order with CPU time
-  and peak-memory growth, tile geometry, thread counts and cache activity. A
-  cancelled or failed render still reports the part that ran. **Save as JSON…**
-  exports the full report; reports are otherwise kept only until the
-  application closes. Collecting the report adds negligible time to a render.
-- **Detailed logging** records why a render was planned as it was: resource
-  plans, tile size and count, the temporary directory chosen, memory before
-  and after, and the time of every tile. It takes effect immediately, including
-  for the next render, and makes log files grow faster. **Open Logs Folder**
-  opens the same folder as **Help → Open Logs Folder**.
-
-Turn both on before reproducing a slow render, then attach the saved report
-and a feedback package. [PERFORMANCE.md](./PERFORMANCE.md#diagnosing-a-slow-render)
-explains how to read them.
-
-### Thread Count Settings
-
-Control CPU parallel processing:
-
-Access via **Settings → Advanced Settings → Performance**:
-
-- `0` selects automatic scheduling and is the default for new settings.
-- Positive values are upper limits; saved limits survive upgrades.
-- CPU capacity, resource mode and memory headroom may lower concurrency.
-  More threads do not necessarily make a render faster.
+For a single, non-grouped CLI render, add `--profile-performance FILE` to save the stage timings. Use `--log-level debug` for detailed logging during that run. Find the desktop logs under **Help → Open Logs Folder**. [Performance guide](./PERFORMANCE.md#diagnosing-a-slow-render)
 
 ### Resource Mode
 
-**Settings → Advanced Settings → Performance → Resource mode** decides how
+**Settings → Advanced Settings → Fusion → Resource mode** decides how
 much of the machine a render may use. It never changes the fused image.
 
 | Mode | Behaviour |
@@ -1578,15 +1523,6 @@ With GPU acceleration enabled, OpenFocus A and OpenFocus C can use a compatible 
 - The status panel shows `N/A` when no accelerator is used or available, and
   `CPU*` when an accelerator exists but the selected method is CPU-only
 - The choice takes effect on the next render and is remembered
-
-### AI Batch Size
-
-Access via **Settings → Advanced Settings → AI**:
-
-- The saved batch limit defaults to 2; the current execution policy caps actual
-  inference at one tile per call on every device.
-- Increasing this limit does not enable unvalidated GPU batching or reduce
-  spatial tile size.
 
 ### Themes
 
@@ -1630,8 +1566,6 @@ run quietly at most once a day. Builds without self-update open the website.
 
 OpenFocus stores registration results in your user cache. Reopening an
 unchanged stack with the same registration settings reuses the saved result.
-The registration cache toggle is under **Settings → Advanced Settings →
-Registration**.
 
 - Windows — `%LOCALAPPDATA%\OpenFocus\alignment-cache`
 - macOS — `~/Library/Caches/OpenFocus/alignment-cache`
@@ -1640,17 +1574,15 @@ Registration**.
 
 Encoded aligned frames and registration plans share a 2 GiB budget across
 all stacks. Cache entries persist across launches. When a new entry needs
-space, OpenFocus evicts the least recently used entries. Use **Clear
-Registration Cache** in Advanced Settings to reclaim that space now. Evicted
-or cleared entries are recomputed when needed. OpenFocus leaves legacy
+space, OpenFocus evicts the least recently used entries. Evicted entries are
+recomputed when needed. OpenFocus leaves legacy
 `.openfocus_cache` folders beside source stacks in place.
 
 ### Persisted Settings
 
 All of the following survive an application restart automatically:
-thread count, resource mode, tile parameters, registration downscale width, AI
-Fusion (StackMFF V3) batch size, the GPU acceleration toggle, the registration
-cache and alignment-diagnostic toggles, interface language, window size/panel
+resource mode, tile parameters, registration downscale width, GPU acceleration,
+interface language, window size/panel
 layout, the drag-out export format, the per-method brightness options,
 smoothing and Radius values, and your recently opened stacks. Settings dialogs
 save when you confirm them; everything is also saved when the application
@@ -1845,7 +1777,7 @@ name, including names created concurrently. If safe publication is unavailable,
 the export reports failure and keeps existing files. Explicit **Save As** still
 allows replacement when you choose and confirm the target.
 
-In **Settings → Advanced Settings → Output naming**, an optional filename
+In **Settings → Advanced Settings → General → Output naming**, an optional filename
 prefix helps identify newly rendered results. The example updates as you type;
 use up to 40 letters, numbers, underscores or hyphens. Leave it empty for the
 original naming. Confirm with **OK** to remember it, or cancel to discard the
@@ -2250,7 +2182,7 @@ Exit codes: `0` success, `1` processing error, `2` usage error. Running
 
 #### Out of Memory Errors
 
-- Enable tile processing in **Settings → Advanced Settings → Performance**
+- Enable tile processing in **Settings → Advanced Settings → Fusion**
 - Reduce tile block size
 - Large stacks retain source and aligned images in system RAM; GPU memory does
   not replace those allocations
@@ -2259,23 +2191,16 @@ Exit codes: `0` success, `1` processing error, `2` usage error. Running
 
 #### Registration Fails
 
-- Use **OpenFocus (fast)** for bounded rigid motion, or enable **Stop on
-  rejected frame** to fail early instead of accepting unaligned frames
+- Desktop registration stops the affected stack if a frame is rejected. Read the frame and reason in the error message and inspect that source image before retrying.
 - Reduce the downscale width in **Settings → Advanced Settings → Registration**
 - Ensure images have sufficient contrast and features
-- Enable **Collect alignment diagnostics**, render again, and read
-  **Settings → Advanced Settings → Registration → Alignment diagnostics** for the failing frames
 
 #### Slow Processing
 
-- Leave threads at automatic (`0`); CPU capacity, resource mode and memory
-  headroom already cap concurrency
 - Use Maximum resource mode for an unattended batch, or Guided Filter /
   GFG-FGF instead of an AI method
 - Reduce image resolution or use **Quick preview** while tuning
-- To see which stage takes the time, enable **Settings → Advanced Settings →
-  Diagnostics → Profile rendering performance**, render again and open
-  **Performance report**
+- For a single, non-grouped CLI render, add `--profile-performance FILE` to see which stage takes the most time.
 
 #### Windows SmartScreen Warning on First Launch
 

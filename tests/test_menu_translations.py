@@ -50,9 +50,6 @@ def _menu_window(qapp):
         "delete_output_labels": staticmethod(stub),
         "delete_all_labels": staticmethod(stub),
     })()
-    window.render_manager = type("R", (), {
-        "show_alignment_report": staticmethod(stub),
-    })()
     for name in (
             "open_folder_dialog", "open_video_dialog", "open_project_dialog",
             "save_project_dialog", "open_template_dialog", "save_template_dialog",

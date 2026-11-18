@@ -5,6 +5,7 @@ never cause a full-resolution decode; transforms retain that separation.
 """
 from collections import OrderedDict
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from functools import partial
 from io import BytesIO
@@ -75,6 +76,18 @@ class FrameCache:
 
 SOURCE_CACHE = FrameCache()
 PREVIEW_CACHE = FrameCache(64 * 1024 * 1024)
+_retain_decoded_sources = ContextVar('retain_decoded_sources', default=True)
+
+
+@contextmanager
+def without_source_cache_growth():
+    """Reuse cached source pixels during a streaming pass without retaining new ones."""
+    token = _retain_decoded_sources.set(False)
+    try:
+        yield
+    finally:
+        _retain_decoded_sources.reset(token)
+
 
 _decode_condition = threading.Condition()
 _active_decodes = 0
@@ -610,7 +623,8 @@ class SourceFrame:
         if cached is not None:
             _check_resolution_cancel(should_cancel)
             return cached
-        SOURCE_CACHE.make_room(self.nbytes)
+        if _retain_decoded_sources.get():
+            SOURCE_CACHE.make_room(self.nbytes)
         with _admit_source_decode(frame_resolution_bytes(self), should_cancel):
             return self._decode(key, cache, should_cancel)
 
@@ -679,10 +693,8 @@ class SourceFrame:
                 if stored is not None:
                     _check_resolution_cancel(should_cancel)
                     return stored
-            # Scope exists but the disk cache is disabled, degraded, or a write
-            # failed: keep the historical bounded RAM cache so a later consumer
-            # does not decode the same source again.
-            SOURCE_CACHE.put(key, image, should_cancel=should_cancel)
+            if _retain_decoded_sources.get():
+                SOURCE_CACHE.put(key, image, should_cancel=should_cancel)
             _check_resolution_cancel(should_cancel)
             return image
 
@@ -1472,15 +1484,17 @@ def _tiff_preview(page, should_cancel=None):
     if channels not in (1, 3, 4) or page.planarconfig != 1:
         raise ValueError('Unsupported TIFF sample/planar layout')
     orientation = _tiff_orientation(page)
-    from core.image_loader import validate_tiff_page, cmyk_to_bgr
+    from core.image_loader import validate_tiff_page, cmyk_to_bgr, tiff_palette_bgr
     path = page.parent.filehandle.path
     cmyk = validate_tiff_page(path, page)
-    if int(getattr(page, 'compression', 1)) == 5 and not cmyk:
-        # LZW is supported by OpenCV's bundled libtiff; tifffile requires
-        # optional imagecodecs, which is deliberately not a dependency.
+    palette = int(page.photometric) == 3
+    if int(getattr(page, 'compression', 1)) == 5 and not (cmyk or palette):
+        # Ordinary LZW pages can use OpenCV's bundled libtiff.
         return _opencv_tiff_preview(page)
     from core.resource_policy import require_memory
     small_bytes = math.ceil(h / step) * math.ceil(w / step) * channels * np.dtype(page.dtype).itemsize
+    if palette:
+        small_bytes *= 4  # Keep the sampled indices alongside their three color channels.
     if page.is_memmappable:
         require_memory(small_bytes * 4)
         # is_memmappable guarantees asarray maps the existing source rather
@@ -1514,9 +1528,11 @@ def _tiff_preview(page, should_cancel=None):
                 if hh > 0 and ww > 0:
                     small[sy:sy + hh, sx:sx + ww] = sampled[:hh, :ww]
         except (ImportError, ValueError):
-            if cmyk:
+            if cmyk or palette:
                 raise
             return _opencv_tiff_preview(page)
+    if palette:
+        return _orient(tiff_palette_bgr(page, small[:, :, 0]), orientation)
     if cmyk:
         tag = page.tags.get(34675)
         profile = tag.value if tag is not None else b''

@@ -131,7 +131,7 @@ La barra de menús superior da acceso a todas las funciones:
 - **Archivo**: operaciones de importación y exportación, proyectos, plantillas de procesamiento y la lista de archivos recientes
 - **Editar**: transformaciones de imagen, retoque y etiquetas
 - **Herramientas**: unión de imágenes, procesamiento por lotes, comparación de métodos, mapa de profundidad, corrección de campo plano, barra de escala y etiquetas
-- **Ajustes**: ajustes avanzados (rendimiento, registro y diagnósticos de alineación, limpieza del sensor, nombres de salida, IA y arranque), aceleración por GPU, tema e idioma
+- **Ajustes**: ajustes avanzados (General, Fusión, Registro, Arranque y actualizaciones), aceleración por GPU, tema e idioma
 - **Ayuda**: información del entorno, contacto, búsqueda de actualizaciones y carpeta de registros
 
 **Herramientas → Unir imágenes…** abre un espacio de trabajo independiente para regiones de microscopio ya fusionadas y panoramas de cámara; no modifica la pila actual. La pestaña **Asistente de proyecto** reúne importación, alineación y puntos de control; **Imágenes de origen** contiene la lista, la cuadrícula y la colocación manual; **Editor de panoramas** contiene los ajustes de costuras, mezcla, exposición/color, salida, proyección, cámara y HDR, además de las superposiciones de vista previa. Use **Añadir archivos…**, **Abrir carpeta** o **Añadir resultados…** para copiar resultados elegidos de la sesión actual, o arrastre archivos o carpetas a la lista o al lienzo. La carpeta solo importa los archivos compatibles directamente dentro de ella, no subcarpetas. Las importaciones usan el orden natural del nombre, ignoran rutas duplicadas y añaden cada página de un TIFF multipágina como imagen independiente. Seleccione una imagen y pulse Suprimir o Retroceso para quitarla del espacio de trabajo sin borrar el archivo.
@@ -159,7 +159,7 @@ El **Editor de panoramas** controla la mezcla real. En **Buscar costuras óptima
 3. Aparece un diálogo de escala de carga: elige la escala (100 % = resolución completa)
 4. Pulsa OK para cargar las imágenes
 
-Marca **No volver a preguntar** en ese diálogo para cargar siempre con la escala elegida sin preguntar; **Ajustes → Ajustes avanzados → Preguntar la escala de carga al importar** reactiva el aviso. Una pila ya cargada se puede reducir más adelante con **Editar → Redimensionar**.
+Marca **No volver a preguntar** en ese diálogo para cargar siempre con la escala elegida sin preguntar; **Ajustes → Ajustes avanzados → Arranque y actualizaciones → Preguntar la escala de carga al importar** reactiva el aviso. Una pila ya cargada se puede reducir más adelante con **Editar → Redimensionar**.
 
 El programa hará lo siguiente automáticamente:
 
@@ -356,20 +356,17 @@ El registro de imágenes corrige la desalineación espacial entre los fotogramas
 - Busca transformaciones de similitud acotadas mediante diferencias de imagen muestreadas y transforma las imágenes con interpolación Lanczos
 - El dominio de búsqueda del desplazamiento es por defecto el 3 % del tamaño del fotograma y se cambia con `--align-shift-limit`. La búsqueda usa el fotograma alineado anterior y parte del movimiento acumulado; el desplazamiento total puede superar el 3 %.
 - Para geometrías no rígidas o extremas, elige mejor ECC u homografía
-- Ante un error real de estimación, `failure_policy=continue` (predeterminado) conserva el fotograma sin alinear; `fail` interrumpe el proceso. La falta de textura, los patrones repetidos y los cambios de enfoque aún pueden producir coincidencias imprecisas.
-- En la CLI, selecciona la misma política con `--align openfocus --align-param 'failure_policy="fail"'` (usa las comillas adecuadas para tu shell). Los elementos de lote usan la política seleccionada de forma independiente. El valor predeterminado es `"continue"`.
+- Si el registro rechaza un fotograma, la aplicación de escritorio detiene la pila afectada. Consulta el fotograma y el motivo en el mensaje de error y revisa esa imagen antes de reintentar. La falta de textura, los patrones repetidos y los cambios de enfoque aún pueden producir coincidencias imprecisas.
+- La CLI usa `continue` por defecto. Usa `--align openfocus --align-param 'failure_policy="fail"'` para detener la pila si se rechaza un fotograma.
 - Ajusta **Fotograma de referencia** a un número basado en 1 dentro del orden de la pila incluida y procesada para anclar la geometría a ese fotograma. El orden se conserva; la ecualización de brillo usa su propia referencia. Cada pila por lotes debe contener ese número o el elemento falla. Ejemplo de CLI: `--align openfocus --align-param reference_frame=3`. Elegir una referencia no corrige el paralaje ni una mala coincidencia; inspecciona el resultado.
 
-Los informes de alineación identifican la referencia y el resultado de cada fotograma. Un respaldo significa que el método no pudo establecer la alineación o depende de una estimación anterior fallida; el motivo indicado distingue las estimaciones débiles y el movimiento fuera de los límites cuando se conoce. Los valores de calidad son específicos de cada método, no una garantía de precisión. Las transformaciones asignan coordenadas de origen al lienzo de referencia de la etapa de registro antes del recorte común; los métodos compuestos informan de sus etapas por separado. Homografía y ECC también aceptan el parámetro opcional `failure_policy="fail"` para detenerse cuando sus algoritmos detectan un fallo. El valor predeterminado sigue siendo `"continue"`; inspecciona los resultados incluso cuando la alineación tenga éxito.
-
-Para inspeccionar un renderizado, activa **Ajustes → Ajustes avanzados → Registro → Recopilar diagnósticos de alineación** y vuelve a renderizar. Esto recalcula la alineación en lugar de reutilizar imágenes en caché. El estado de finalización resalta los respaldos; abre **Ajustes → Ajustes avanzados → Registro → Diagnósticos de alineación** para ver el informe por fotograma. Muestra los motivos de fallo disponibles, las puntuaciones específicas del método, los recuentos de coincidencias, los fotogramas referenciados y las transformaciones. Los números y nombres de referencia se refieren a la lista de origen original, incluso cuando se excluyen fotogramas. Los renderizados por lotes y agrupados no ofrecen este informe.
+En una ejecución individual de la CLI con registro y sin grupos, `--alignment-report FILE` guarda un informe por fotograma. Los informes de alineación identifican la referencia y el resultado de cada fotograma. Un respaldo significa que el método no pudo establecer la alineación o depende de una estimación anterior fallida; el motivo indicado distingue las estimaciones débiles y el movimiento fuera de los límites cuando se conoce. Los valores de calidad son específicos de cada método, no una garantía de precisión. Las transformaciones asignan coordenadas de origen al lienzo de referencia de la etapa de registro antes del recorte común; los métodos compuestos informan de sus etapas por separado. Homografía y ECC también aceptan el parámetro opcional `failure_policy="fail"` para detenerse cuando sus algoritmos detectan un fallo. El valor predeterminado sigue siendo `"continue"`; inspecciona los resultados incluso cuando la alineación tenga éxito.
 
 ### Activar el registro
 
 1. En el panel derecho, localiza el grupo **Registro**
 2. Elige un método en la lista desplegable: **Sin alineación**, **OpenFocus (rápida)**, **Alinear (ECC)**, **Alinear (homografía)** o **Homografía → ECC** (encadenado)
-3. Para OpenFocus (rápida), elige un fotograma de referencia. En **Ajustes → Ajustes avanzados → Registro**, selecciona **Gestión de fotogramas rechazados**; al cambiarla se aplica a los métodos de registro
-4. **Recopilar diagnósticos de alineación** ahora está en Ajustes avanzados (ver arriba)
+3. Ajusta el fotograma de referencia y los límites de búsqueda de OpenFocus en **Ajustes → Ajustes avanzados → Registro**.
 
 ### Cuándo usar el registro
 
@@ -385,7 +382,6 @@ Accede a los ajustes adicionales en **Ajustes → Ajustes avanzados → Registro
 - **Ancho de reducción**: controla la resolución de preprocesamiento (1024 px por defecto)
 - Valores menores = procesamiento más rápido, posiblemente menos precisión
 - Valores mayores = procesamiento más lento, posiblemente más precisión
-- **Recopilar diagnósticos de alineación** y **Caché de registro** están en la misma sección
 
 ---
 
@@ -637,7 +633,14 @@ La vista previa usa el destino real. Navega con Anterior/Siguiente o escribe su 
 
 ## 11. Ajustes y configuración
 
-Abre **Ajustes → Ajustes avanzados** para las preferencias de rendimiento, registro, limpieza del sensor, nombres de salida, IA de StackMFF y arranque. Los cambios siguen siendo borradores hasta **OK**; Cancelar, Esc y cerrar los descartan. Reducir el tamaño de mosaico actualiza de inmediato el límite de solape visible a la mitad de un mosaico. El límite de lote guardado de la sección de IA se conserva, pero la inferencia actualmente envía un mosaico por llamada; el ancho de registro puede cambiar la precisión de la alineación. La recopilación de diagnósticos de alineación es una casilla de la sección de Registro.
+**Ajustes → Ajustes avanzados**
+
+- **General** — Funciones experimentales, directorio de trabajo y prefijo del nombre de salida. En **Privacidad**, los informes automáticos de errores y las estadísticas de uso tienen casillas independientes. Ambas empiezan marcadas y se conserva cada desactivación explícita. Las versiones de distribución envían un informe tras una sesión con errores si has aceptado las condiciones al iniciar sesión o has activado expresamente el envío. Un fallo nativo anterior requiere confirmación.
+- **Fusión** — Elige el modo de recursos y los ajustes de mosaicos. Selecciona **Limpieza del sensor** para desplegar sus controles.
+- **Registro** — Ajusta el ancho de reducción. Selecciona **OpenFocus (rápida)** para desplegar el fotograma de referencia y los límites de búsqueda.
+- **Arranque y actualizaciones** — Restauración de la última pila, consulta de escala al importar y actualizaciones.
+
+Pulsa **Aceptar** para guardar. Cancelar, Esc o cerrar descartan los cambios.
 
 Las descargas automáticas de actualizaciones se ejecutan mientras la aplicación está inactiva y nunca se instalan solas. Una descarga completada permanece lista hasta que elijas explícitamente **Reiniciar y actualizar**. El reinicio protege las ediciones activas y el trabajo sin guardar, y después escribe los datos de recuperación antes de lanzar el reemplazo. Cancelar una descarga o preparación espera al límite seguro actual. Una compilación preparada completa y más reciente puede instalarse sin conexión.
 
@@ -659,13 +662,19 @@ Cada inicio escribe su propio registro rotativo, de modo que los trabajos concur
 
 ### Ajustes de mosaicos (optimización de memoria)
 
-Para imágenes grandes, OpenFocus procesa por mosaicos para evitar problemas de memoria.
+El procesamiento por mosaicos está activado por defecto. El estado bajo los campos describe cómo procesa la imagen el método seleccionado. En el escritorio, OpenFocus A, B y C procesan la imagen entera. El modo de solo alineación omite la fusión. En estos modos puedes ajustar el tamaño, el solape y el umbral para el próximo método compatible. DTCWT decide según la memoria estimada. Puedes ajustar el tamaño y el solape, y el campo del umbral queda desactivado. Los métodos neuronales pueden usar mosaicos por debajo del umbral en pilas profundas. Desactivar los mosaicos deshabilita los tres campos numéricos y conserva sus valores.
 
-Accede en **Ajustes → Ajustes avanzados → Rendimiento**:
+Accede en **Ajustes → Ajustes avanzados → Fusión**:
 
 - **Tamaño de bloque de mosaico**: tamaño de cada bloque de procesamiento (1024 px por defecto)
 - **Solape de mosaico**: solape entre mosaicos para una mezcla sin costuras (256 px por defecto)
 - **Umbral de mosaico**: tamaño de imagen a partir del cual se usan mosaicos (2048 px por defecto)
+
+Límites en píxeles
+
+- Tamaño de bloque de mosaico — 64–16384
+- Solape de mosaico — 0–min(4096, la mitad del mosaico)
+- Umbral de mosaico — 256–131072
 
 **Recomendaciones**:
 
@@ -680,7 +689,6 @@ Accede en **Ajustes → Ajustes avanzados → Registro**:
 - **Ancho de reducción**: resolución de preprocesamiento para el registro
   - Predeterminado: 1024 px
   - Menor para ganar velocidad, mayor para ganar precisión
-- **Recopilar diagnósticos de alineación**: recalcula la alineación en el siguiente renderizado y habilita **Ajustes → Ajustes avanzados → Registro → Diagnósticos de alineación**
 
 ### Referencia de rendimiento
 
@@ -688,19 +696,9 @@ Consulta [PERFORMANCE.md](./PERFORMANCE.md) para ver cifras medidas de rendimien
 
 El panel de estado muestra la memoria física usada y total cuando el sistema operativo puede proporcionar ambas lecturas; de lo contrario, muestra `N/D`.
 
-### Ajustes de hilos
-
-Controla el procesamiento paralelo de la CPU:
-
-Accede en **Ajustes → Ajustes avanzados → Rendimiento**:
-
-- `0` selecciona la planificación automática y es el valor predeterminado para ajustes nuevos.
-- Los valores positivos son límites superiores; los límites guardados sobreviven a las actualizaciones.
-- La capacidad de CPU, el modo de recursos y el margen de memoria pueden reducir la concurrencia. Más hilos no hacen necesariamente más rápido un renderizado.
-
 ### Modo de recursos
 
-**Ajustes → Ajustes avanzados → Rendimiento → Modo de recursos** decide cuánto de la máquina puede usar un renderizado. Nunca cambia la imagen fusionada.
+**Ajustes → Ajustes avanzados → Fusión → Modo de recursos** decide cuánto de la máquina puede usar un renderizado. Nunca cambia la imagen fusionada.
 
 | Modo | Comportamiento |
 |---|---|
@@ -720,13 +718,6 @@ OpenFocus B puede acelerar el procesamiento de profundidad y la combinación de 
 - Al desmarcarla, los métodos de fusión compatibles se fuerzan a la CPU; es útil si fallan los controladores de la GPU
 - El panel de estado muestra `N/D` cuando no se usa o no hay acelerador, y `CPU*` cuando existe un acelerador pero el método seleccionado es solo de CPU
 - La elección se aplica en el siguiente renderizado y se recuerda
-
-### Tamaño de lote de IA
-
-Accede en **Ajustes → Ajustes avanzados → IA**:
-
-- El límite de lote guardado es 2 por defecto; la política de ejecución actual limita la inferencia real a un mosaico por llamada en todos los dispositivos.
-- Aumentar este límite no activa lotes de GPU sin validar ni reduce el tamaño de los mosaicos espaciales.
 
 ### Temas
 
@@ -752,11 +743,11 @@ En Windows, la actualización crea una versión candidata separada y mueve el ma
 
 ### Caché de registro
 
-OpenFocus guarda los resultados de registro en la caché del usuario. Al volver a abrir una pila sin cambios con los mismos ajustes, reutiliza el resultado guardado. El interruptor está en **Ajustes → Ajustes avanzados → Registro → Caché de registro**. Todas las pilas comparten un límite de 2 GiB. Cuando se necesita espacio, se eliminan las entradas menos recientes. Las carpetas antiguas `.openfocus_cache` junto a las pilas de origen se conservan.
+OpenFocus guarda los resultados de registro en la caché del usuario. Al volver a abrir una pila sin cambios con los mismos ajustes, reutiliza el resultado guardado. Todas las pilas comparten un límite de 2 GiB. Cuando se necesita espacio, se eliminan las entradas menos recientes. Las carpetas antiguas `.openfocus_cache` junto a las pilas de origen se conservan.
 
 ### Ajustes persistidos
 
-Todo lo siguiente sobrevive automáticamente al reinicio de la aplicación: número de hilos, modo de recursos, parámetros de mosaicos, ancho de reducción del registro, tamaño de lote de la fusión por IA (StackMFF V3), la aceleración por GPU, la caché de registro y los interruptores de diagnósticos de alineación, el idioma de la interfaz, el tamaño de la ventana y la distribución de paneles, el formato de exportación al arrastrar, las opciones de brillo por método, los valores de suavizado y radio, y tus pilas abiertas recientemente. Los diálogos de ajustes guardan en el momento en que confirmas; todo se guarda también al cerrar la aplicación. Las preferencias se almacenan por usuario en `OpenFocus/OpenFocus.ini` (formato INI de QSettings).
+Todo lo siguiente sobrevive automáticamente al reinicio de la aplicación: modo de recursos, parámetros de mosaicos, ancho de reducción del registro, la aceleración por GPU, el idioma de la interfaz, el tamaño de la ventana y la distribución de paneles, el formato de exportación al arrastrar, las opciones de brillo por método, los valores de suavizado y radio, y tus pilas abiertas recientemente. Los diálogos de ajustes guardan en el momento en que confirmas; todo se guarda también al cerrar la aplicación. Las preferencias se almacenan por usuario en `OpenFocus/OpenFocus.ini` (formato INI de QSettings).
 
 ### Idioma de la interfaz
 
@@ -811,7 +802,7 @@ El diálogo de lote muestra el progreso en tiempo real. Puedes cancelar el proce
 3. Elige formato y ubicación
 4. Pulsa Guardar
 
-En **Ajustes → Ajustes avanzados → Nombres de salida**, un prefijo de nombre de archivo opcional ayuda a identificar los resultados recién renderizados. El ejemplo se actualiza mientras escribes; usa hasta 40 letras, números, guiones bajos o guiones. Déjalo vacío para conservar la nomenclatura original. Confirma con **OK** para recordarlo o cancela para descartar el cambio. El prefijo forma parte de los nuevos nombres de la lista de salida y de sus nombres de exportación sugeridos; los resultados existentes conservan sus nombres. Aún puedes editar un nombre en el diálogo de guardado. Esta preferencia no renombra archivos de origen ni cambia los nombres de salida por lotes.
+En **Ajustes → Ajustes avanzados → General → Nombres de salida**, un prefijo de nombre de archivo opcional ayuda a identificar los resultados recién renderizados. El ejemplo se actualiza mientras escribes; usa hasta 40 letras, números, guiones bajos o guiones. Déjalo vacío para conservar la nomenclatura original. Confirma con **OK** para recordarlo o cancela para descartar el cambio. El prefijo forma parte de los nuevos nombres de la lista de salida y de sus nombres de exportación sugeridos; los resultados existentes conservan sus nombres. Aún puedes editar un nombre en el diálogo de guardado. Esta preferencia no renombra archivos de origen ni cambia los nombres de salida por lotes.
 
 ### Compartir un resultado
 
@@ -1057,21 +1048,19 @@ Códigos de salida: `0` éxito, `1` error de procesamiento, `2` error de uso. Ej
 
 #### Errores de memoria insuficiente
 
-- Activa el procesamiento por mosaicos en **Ajustes → Ajustes avanzados → Rendimiento**
+- Activa el procesamiento por mosaicos en **Ajustes → Ajustes avanzados → Fusión**
 - Reduce el tamaño de bloque de mosaico
 - Usa tamaños de núcleo menores
 - Redimensiona las imágenes a dimensiones más pequeñas
 
 #### El registro falla
 
-- Usa **OpenFocus (rápida)** para movimiento rígido acotado, o activa **Detener en fotograma rechazado** para fallar pronto en lugar de aceptar fotogramas sin alinear
+- Si el registro rechaza un fotograma, la aplicación de escritorio detiene la pila afectada. Consulta el fotograma y el motivo en el mensaje de error y revisa esa imagen antes de reintentar.
 - Reduce el ancho de reducción en **Ajustes → Ajustes avanzados → Registro**
 - Asegúrate de que las imágenes tienen suficiente contraste y características
-- Activa **Recopilar diagnósticos de alineación**, vuelve a renderizar y consulta **Ajustes → Ajustes avanzados → Registro → Diagnósticos de alineación** para los fotogramas que fallan
 
 #### Procesamiento lento
 
-- Deja los hilos en automático (`0`); la capacidad de CPU, el modo de recursos y el margen de memoria ya limitan la concurrencia
 - Usa el modo de recursos Máximo para un lote desatendido, o el filtro guiado / GFG-FGF en lugar de un método de IA
 - Reduce la resolución de las imágenes o usa **Vista previa rápida** mientras ajustas
 
