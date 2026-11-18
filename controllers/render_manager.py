@@ -809,12 +809,12 @@ class RenderManager:
                 else:
                     self.worker.is_cancelled = True
                 self.refresh_action_labels()
+                self._show_progress_bar(trans.t('depth_cancelling'))
             else:
                 # Between two queued renders nothing is running, so the UI has
                 # to be unlocked here instead of by the cancel callback.
                 self._restore_ui_controls()
-            window.statusBar().showMessage(trans.t(
-                'depth_cancelling' if running else 'msg_render_cancelled'), 0)
+                window.statusBar().showMessage(trans.t('msg_render_cancelled'), 4000)
             return
 
         if (getattr(self, "_render_pending", False) or self._render_after_load is not None
@@ -936,7 +936,6 @@ class RenderManager:
                 window.btn_render.setEnabled(False)
                 window.btn_render.setText(trans.t('depth_cancelling'))
                 self._show_progress_bar(trans.t('depth_cancelling'))
-                window.statusBar().showMessage(trans.t('depth_cancelling'))
                 QApplication.processEvents()
             return
         if self._render_after_load is not None:
@@ -977,7 +976,6 @@ class RenderManager:
                 }
                 self.last_state = 'queued'
                 self.refresh_action_labels()
-                window.statusBar().showMessage(trans.t("msg_render_queued_after_load"))
             return
         # A previous render may have aborted without clearing this; it decides
         # whether the result is treated as a throwaway draft.
@@ -1492,7 +1490,7 @@ class RenderManager:
         self.worker.error_signal.connect(self.on_render_error)
         self.worker.progress_signal.connect(self.on_render_progress)
         self.worker.stage_signal.connect(self.on_render_stage)
-        window.statusBar().clearMessage()  # stale "loading…" etc.
+        window.statusBar().clearMessage()
         self._render_progress_stage = 'waiting'
         if memory_estimate:
             summary = self._memory_summary(memory_estimate)
@@ -2074,8 +2072,8 @@ class RenderManager:
             bar.setFixedWidth(180)
             bar.setFixedHeight(14)
             bar.setTextVisible(False)
-            sb.addPermanentWidget(label)
-            sb.addPermanentWidget(bar)
+            sb.add_activity(label)
+            sb.add_activity(bar)
             label.hide()
             bar.hide()
             self._status_bar_progress = bar
@@ -2115,12 +2113,10 @@ class RenderManager:
         self._progress_first_t = None
         self._progress_last_t = None
         self._show_progress_bar(text)
-        self.window.statusBar().showMessage(text)
 
     def on_render_progress(self, done: int, total: int) -> None:
         """Surface completed preparation frames or fusion tiles with an ETA."""
         import time as _time
-        window = self.window
         if self.worker is not None and getattr(self.worker, 'is_cancelled', False):
             self.on_render_stage('cancelling')
             return
@@ -2152,7 +2148,6 @@ class RenderManager:
             label = getattr(self, '_status_bar_label', None)
             if label is not None:
                 label.setText(text)
-            window.statusBar().showMessage(text, 5000)
 
     def _finish_compare_run(self) -> None:
         """End a comparison run: unlock the UI and report skipped methods."""

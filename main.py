@@ -386,6 +386,8 @@ class OpenFocus(QMainWindow):
 
     def __init__(self):
         super().__init__()
+        from ui.status_bar import WorkspaceStatusBar
+        self.setStatusBar(WorkspaceStatusBar(self))
 
         # Logging must exist however the class is constructed: the packaged
         # app calls setup_logging() from the __main__ block, but tests,
@@ -1656,16 +1658,11 @@ class OpenFocus(QMainWindow):
             trans.languageChanged.disconnect(refresh_labels)
 
     def _build_update_indicator(self) -> None:
-        """Status-bar widget: background download progress / "restart to update"."""
+        """Build the update indicator and sponsor contact link."""
         from PyQt6.QtWidgets import QHBoxLayout, QLabel, QProgressBar, QPushButton, QWidget
+        from ui.status_bar import SponsorLink
 
         bar = self.statusBar()
-        from PyQt6.QtWidgets import QSizePolicy
-
-        self._review_status = QLabel("", bar)
-        self._review_status.setSizePolicy(QSizePolicy.Policy.Ignored,
-                                          QSizePolicy.Policy.Preferred)
-        bar.addWidget(self._review_status, 1)
         container = QWidget(bar)
         layout = QHBoxLayout(container)
         layout.setContentsMargins(6, 0, 6, 0)
@@ -1681,44 +1678,42 @@ class OpenFocus(QMainWindow):
         layout.addWidget(self.lbl_update_status)
         layout.addWidget(self.update_progress)
         layout.addWidget(self.btn_update_action)
-        bar.addPermanentWidget(container)
+        bar.add_activity(container)
         container.hide()
-        # Always visible: showing/hiding the bar per message made the image
-        # panels jump by one row on every render (and hidden-by-default bars
-        # swallowed every direct statusBar().showMessage call).
-        bar.messageChanged.connect(self._on_status_message_changed)
-        bar.setSizeGripEnabled(False)
+        self.lbl_status_sponsor = SponsorLink(bar)
+        self.lbl_status_sponsor.setObjectName('statusSponsor')
+        self.lbl_status_sponsor.setContentsMargins(0, 0, 6, 0)
+        self.lbl_status_sponsor.setTextFormat(Qt.TextFormat.RichText)
+        self.lbl_status_sponsor.setTextInteractionFlags(
+            Qt.TextInteractionFlag.LinksAccessibleByMouse
+            | Qt.TextInteractionFlag.LinksAccessibleByKeyboard)
+        self.lbl_status_sponsor.linkActivated.connect(self.show_contact_info)
+        self._refresh_status_sponsor()
+        bar.addPermanentWidget(self.lbl_status_sponsor)
         bar.setVisible(True)
         self._update_indicator = container
         self.source_manager.refresh_review_text()
 
+    def _refresh_status_sponsor(self) -> None:
+        from html import escape
+        from utils.design_tokens import palette
+
+        label = getattr(self, 'lbl_status_sponsor', None)
+        if label is None:
+            return
+        text = trans.t('status_sponsor')
+        color = palette(self.ui_theme)['textMuted']
+        label.setText(
+            f'<a href="contact" style="color: {color}; text-decoration: none">{escape(text)}</a>')
+        label.setAccessibleName(text)
+
     def _set_review_status(self, text: str) -> None:
-        label = getattr(self, '_review_status', None)
-        if label is not None:
-            label.setText(text)
-            label.setToolTip(text)
-            label.setAccessibleName(text)
-            if text:
-                self.statusBar().setVisible(True)
+        self.statusBar().set_review_status(text)
 
     def _show_status_message(self, text: str, timeout_ms: int = 5000) -> None:
         bar = self.statusBar()
         bar.setVisible(True)
         bar.showMessage(text, timeout_ms)
-
-    def _on_status_message_changed(self, text: str) -> None:
-        if text:
-            self.statusBar().setVisible(True)
-
-    def _status_bar_busy(self) -> bool:
-        """True while a permanent status widget (update indicator, render
-        progress) is showing."""
-        indicator = getattr(self, '_update_indicator', None)
-        if indicator is not None and indicator.isVisible():
-            return True
-        progress = getattr(getattr(self, 'render_manager', None),
-                           '_status_bar_progress', None)
-        return progress is not None and progress.isVisible()
 
     def _refresh_update_indicator(self) -> None:
         """Render the manager's current state into the status bar + menu."""
@@ -4003,6 +3998,7 @@ class OpenFocus(QMainWindow):
         # first re-applied the OLD theme's colours (the dark chip survived the
         # switch to light). Dialogs opened later read the same global.
         set_current_theme(theme)
+        self._refresh_status_sponsor()
         # Inline "?" button styles are captured at creation; re-apply them for
         # the new theme or the dark chip stays dark on the light panel.
         from ui.styles import help_button_style
@@ -4804,6 +4800,7 @@ class OpenFocus(QMainWindow):
         # sweep above cannot render it; the indicator does (and hides it when
         # no build is staged).
         self._refresh_update_indicator()
+        self._refresh_status_sponsor()
         banner = getattr(self, "update_banner", None)
         if banner is not None:
             banner.retranslate()

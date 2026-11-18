@@ -26,6 +26,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Open the selected render's retained focus positions for export in Depth Map for
   OpenFocus B/C and StackMFF V2/V3.
 - Show the current WeChat group invite in Contact Us, with a bundled QR code for offline use.
+- Keep progress, cancel controls, and timed notices on the left of the desktop
+  status bar and a sponsor invitation that opens Contact Us on the right.
 - Open the user manual on GitHub in the current interface language from Help.
 
 ### Changed
