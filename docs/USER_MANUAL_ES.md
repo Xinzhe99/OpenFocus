@@ -82,7 +82,8 @@ Después de la instalación, abre OpenFocus de una de estas formas:
 
 1. **Windows (ejecutable)**: haz doble clic en el acceso directo o en el ejecutable de OpenFocus
 2. **macOS**: arrastra `OpenFocus.app` a Aplicaciones y ábrelo desde allí
-3. **Código fuente de Python**: ejecuta `pip install -r requirements.txt` y luego `python main.py` en tu entorno activado
+3. **Linux (x86-64)**: extrae el archivo de escritorio y ejecuta `OpenFocus/OpenFocus` en la carpeta extraída
+4. **Código fuente de Python**: ejecuta `pip install -r requirements.txt` y luego `python main.py` en tu entorno activado
 
 El primer arranque abre el diálogo de bienvenida, donde puedes elegir el tema y cargar la pila de demostración incluida. Un perfil nuevo usa el tema claro por defecto; la elección se recuerda.
 

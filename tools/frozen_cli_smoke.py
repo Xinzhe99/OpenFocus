@@ -7,6 +7,7 @@ renders and exports a 16-bit stack through separate CLI processes.
 from __future__ import annotations
 
 import argparse
+from contextlib import ExitStack, contextmanager
 import json
 import os
 from pathlib import Path
@@ -16,6 +17,7 @@ import sys
 import tempfile
 import time
 import uuid
+from unittest.mock import patch
 
 import cv2
 import numpy as np
@@ -25,7 +27,26 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 from constants import app_display_version  # noqa: E402
+from utils.account_client import TokenStore  # noqa: E402
 from utils.image_utils import imwrite_auto  # noqa: E402
+
+
+@contextmanager
+def _synthetic_session(profile: Path):
+    """Use the same profile-derived backend and identity as the frozen child."""
+    # On macOS the default store uses a Keychain account derived from the
+    # profile path; an explicit TokenStore(path) would instead use a file.
+    with patch.dict(os.environ, {"OPENFOCUS_DATA_DIR": str(profile)}):
+        store = TokenStore()
+    session = {
+        "token": "synthetic-test-token", "token_type": "Bearer",
+        "expires_at": 1, "user": {"id": "synthetic-test-user"},
+    }
+    try:
+        store.save(session)
+        yield
+    finally:
+        store.clear()
 
 
 def _call(executable: Path, environment: dict, *arguments: str) -> dict:
@@ -366,10 +387,14 @@ def run(executable: Path, resources: Path | None = None) -> None:
 
     marker.touch()
     process = None
+    sessions = ExitStack()
     try:
         data_dir.mkdir()
+        profile = data_dir / f"smoke-{uuid.uuid4().hex}"
+        profile.mkdir()
+        sessions.enter_context(_synthetic_session(profile))
         settings = QSettings(
-            str(data_dir / "settings.ini"), QSettings.Format.IniFormat,
+            str(profile / "settings.ini"), QSettings.Format.IniFormat,
         )
         settings.setValue("ui/first_run_done", "1")
         settings.setValue("account/intro_version", app_display_version())
@@ -383,6 +408,7 @@ def run(executable: Path, resources: Path | None = None) -> None:
             shape = _create_stack(root / "stack")
             environment = os.environ.copy()
             environment.pop("PYTHONPATH", None)
+            environment["OPENFOCUS_DATA_DIR"] = str(profile)
             environment["OPENFOCUS_CONTROL_FILE"] = str(root / "control.json")
             environment["OPENFOCUS_LOG_DIR"] = str(root / "logs")
             environment["OPENFOCUS_INSTANCE_NAME"] = (
@@ -462,12 +488,17 @@ def run(executable: Path, resources: Path | None = None) -> None:
                     process.wait(timeout=15)
             print(f"Packaged CLI and GUI smoke passed: {app_display_version()}")
     finally:
-        if process is not None and process.poll() is None:
-            process.terminate()
-            process.wait(timeout=15)
-        if data_dir.exists():
-            shutil.rmtree(data_dir)
-        marker.unlink()
+        try:
+            if process is not None and process.poll() is None:
+                process.terminate()
+                process.wait(timeout=15)
+        finally:
+            try:
+                sessions.close()
+            finally:
+                if data_dir.exists():
+                    shutil.rmtree(data_dir)
+                marker.unlink()
 
 
 def run_installed_startup(executable: Path) -> None:
@@ -480,10 +511,11 @@ def run_installed_startup(executable: Path) -> None:
     if (executable.parent / "OpenFocus.portable").exists():
         raise RuntimeError("Installer unexpectedly contains the portable marker")
 
-    with tempfile.TemporaryDirectory(prefix="openfocus_installed_smoke_") as td:
+    with tempfile.TemporaryDirectory(prefix="openfocus_installed_smoke_") as td, ExitStack() as sessions:
         root = Path(td)
         data = root / "data"
         data.mkdir()
+        sessions.enter_context(_synthetic_session(data))
         settings = QSettings(str(data / "settings.ini"), QSettings.Format.IniFormat)
         settings.setValue("updates/last_check_epoch", 9999999999)
         settings.setValue("usage/enabled", False)
@@ -511,20 +543,21 @@ def run_installed_startup(executable: Path) -> None:
                 if process.poll() is not None:
                     raise RuntimeError(f"Installed desktop exited: {process.returncode}")
                 dialogs = _call(executable, environment, "dialog.list").get("dialogs", [])
-                account = next((d for d in dialogs if d.get("class") == "AccountDialog"), None)
-                if account:
+                welcome = next((d for d in dialogs if d.get("class") == "WelcomeDialog"), None)
+                if welcome:
                     buttons = _call(executable, environment, "ui.find", "--window",
-                                    account["root"], "--object-name", "accountClose").get("matches", [])
+                                    welcome["root"], "--object-name", "primaryButton").get("matches", [])
                     if buttons:
                         _call(executable, environment, "ui.click", "--path", buttons[0]["path"])
                         break
                 time.sleep(0.2)
             else:
-                raise RuntimeError(f"Required account dialog did not appear: {dialogs}")
+                raise RuntimeError(f"First-run welcome dialog did not appear: {dialogs}")
+            _call(executable, environment, "app.quit", "--force")
             process.wait(timeout=60)
             if process.returncode:
                 raise RuntimeError(f"Installed desktop exited with {process.returncode}")
-            print(f"Installed first-run account gate smoke passed: {app_display_version()}")
+            print(f"Installed first-run desktop smoke passed: {app_display_version()}")
         finally:
             if process.poll() is None:
                 process.terminate()
