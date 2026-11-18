@@ -37,6 +37,67 @@ def _capture(worker):
     return results, errors
 
 
+@pytest.mark.parametrize('alignment,reason', [
+    ('homography', 'insufficient features'), ('both', 'insufficient features'),
+    ('ecc', 'ECC failed to converge'), ('openfocus', 'at least two pixels'),
+])
+def test_desktop_render_rejects_frame_before_fusion(alignment, reason):
+    shape = (1, 8, 3) if alignment == 'openfocus' else (40, 40, 3)
+    images = [np.full(shape, value, np.uint8) for value in (0, 230)]
+    worker = workers.RenderWorker(images, algorithm='guided_filter', alignment=alignment,
+        registration_parameters={'failure_policy': 'continue'}, thread_count=1, use_gpu=False)
+    results, errors = _capture(worker)
+    stages = []
+    worker.stage_signal.connect(stages.append)
+    worker.run()
+    assert not results and len(errors) == 1
+    assert 'frame 2' in errors[0] and reason in errors[0]
+    assert worker.alignment_report[-1]['frame_index'] == 1
+    assert 'fuse' not in stages
+
+
+@pytest.mark.parametrize('collect_report', [False, True])
+def test_reverse_render_reports_original_frame_position(collect_report):
+    images = [np.full((1, 8), value, np.uint16) for value in (1000, 2000)]
+    worker = workers.RenderWorker(images, algorithm='openfocus_b', alignment='openfocus',
+        sort_mode='desc', thread_count=1, use_gpu=False, collect_alignment_report=collect_report)
+    results, errors = _capture(worker)
+    worker.run()
+    assert not results and len(errors) == 1 and 'frame 1:' in errors[0]
+    failed = [entry for entry in worker.alignment_report if entry['status'] == 'failed']
+    assert len(failed) == 1 and failed[0]['frame_index'] == 0
+
+
+def test_desktop_render_rejects_permissive_memory_cache():
+    images = [np.zeros((40, 40, 3), np.uint8) for _ in range(2)]
+    worker = workers.RenderWorker(images, aligned_images=images, is_images_aligned=True,
+        last_alignment_options=(('homography',), {'failure_policy': 'continue'}),
+        algorithm=None, alignment='homography', need_fusion=False, thread_count=1)
+    results, errors = _capture(worker)
+    worker.run()
+    assert not results and not worker.alignment_reused
+    assert len(errors) == 1 and 'frame 2: insufficient features' in errors[0]
+
+
+@pytest.mark.parametrize('group_size', [0, 2])
+def test_desktop_batch_reports_rejected_source_without_output(tmp_path, group_size):
+    folder = tmp_path / 'input'
+    folder.mkdir()
+    for name in ('first.png', 'second.png'):
+        assert cv2.imwrite(str(folder / name), np.zeros((40, 40, 3), np.uint8))
+    settings = {'alignment': 'both', 'registration_parameters': {'failure_policy': 'continue'},
+                'fusion_method': 'guided_filter', 'format': 'png', 'group_size': group_size}
+    worker = workers.BatchWorker([str(folder)], 'same', str(folder), settings,
+                                 thread_count=1, use_gpu=False)
+    results = []
+    worker.finished.connect(results.append)
+    worker.run()
+    task, = results[0]['tasks']
+    assert task['status'] == 'failed' and task['artifacts'] == []
+    assert 'frame 2: insufficient features' in task['error'] and 'second.png' in task['error']
+    assert results[0]['outputs'] == []
+
+
 def test_render_resolves_original_geometry(tmp_path):
     frame, original = _source(tmp_path)
     worker = workers.RenderWorker([frame], algorithm=None, need_fusion=False)

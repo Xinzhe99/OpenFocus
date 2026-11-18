@@ -225,7 +225,7 @@ from constants import (
 )
 from core.algorithms import (
     fusion_algorithms, registration_algorithms, get_fusion, get_registration,
-    fusion_defaults, resolve_fusion_parameters, resolve_registration_parameters,
+    fusion_defaults, resolve_fusion_parameters, desktop_registration_parameters,
     registration_parameter_specs,
 )
 
@@ -1119,7 +1119,7 @@ class OpenFocus(QMainWindow):
         """Restore arbitrary registered parameters in one persisted operation."""
         fusion = {method: resolve_fusion_parameters(method, values)
                   for method, values in saved["fusion_parameters"].items()}
-        registration = {method: resolve_registration_parameters(method, values)
+        registration = {method: desktop_registration_parameters(method, values)
                         for method, values in saved["registration_parameters"].items()}
         with self._restore_scope():
             self._fusion_parameters_by_method = fusion
@@ -3118,7 +3118,7 @@ class OpenFocus(QMainWindow):
         if method == "none":
             return {}
         values = getattr(self, "_registration_parameters_by_method", {}).get(method, {})
-        return resolve_registration_parameters(method, values)
+        return desktop_registration_parameters(method, values)
 
     def set_registration_parameters(self, method: str, values: dict) -> None:
         if method == "none":
@@ -3127,7 +3127,7 @@ class OpenFocus(QMainWindow):
             return
         previous = self.registration_parameters_for(method)
         memory = self.__dict__.setdefault("_registration_parameters_by_method", {})
-        memory[method] = resolve_registration_parameters(
+        memory[method] = desktop_registration_parameters(
             method, {**memory.get(method, {}), **values})
         if (method == self.current_alignment_method()
                 and self.registration_parameter_panel.values() != memory[method]):

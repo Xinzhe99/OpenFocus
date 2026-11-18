@@ -13,6 +13,7 @@ import numpy as np
 from core import resource_policy
 from core import _alignment_kernels as _native_kernels
 from core.source_frames import resolve_frame
+from core.registration_errors import AlignmentEstimationError, RejectedAlignmentFrame
 
 _F32 = np.float32
 _WEIGHTS = (12, 64, 37, 2)
@@ -914,10 +915,6 @@ def align_pair_wide(ref_u16, test_u16, h_pct=12.0, v_pct=12.0, rot_deg=6.0,
     return base, rounds_total
 
 
-class AlignmentEstimationError(ValueError):
-    """The verified detector could not estimate this frame pair."""
-
-
 def _source_context(frame):
     import dataclasses
     import json
@@ -1231,8 +1228,7 @@ def estimate_alignment_plan(sources, *, max_shift_ratio=.05, reference_frame=1,
                     should_cancel=should_cancel, initial_f8=transforms[previous_index].f8)
             except AlignmentEstimationError as error:
                 if failure_policy == 'fail':
-                    failure = AlignmentEstimationError(f'OpenFocus alignment failed at frame {index + 1}: {error}')
-                    failure.frame_index = index
+                    failure = RejectedAlignmentFrame('OpenFocus', index, str(error))
                     failure.completed_transforms = tuple(t for t in transforms if t is not None)
                     raise failure from error
                 failure = str(error)

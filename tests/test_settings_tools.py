@@ -280,6 +280,28 @@ def test_settings_pages_expose_translated_controls_and_privacy_defaults(settings
         dialog.deleteLater()
 
 
+def test_registration_page_fits_collapsed_and_expanded_controls(qapp, settings_window):
+    from dialogs.advanced_settings import AdvancedSettingsDialog
+
+    dialog = AdvancedSettingsDialog(settings_window)
+    try:
+        dialog.show()
+        dialog.tabs.setCurrentIndex(2)
+        qapp.processEvents()
+        collapsed = dialog.height()
+        toggle = dialog.registration_options_disclosure
+        toggle.click()
+        qapp.processEvents()
+        assert dialog.openfocus_registration_panel.isVisible()
+        assert dialog.height() > collapsed
+        toggle.click()
+        qapp.processEvents()
+        assert dialog.height() == collapsed
+    finally:
+        dialog.reject()
+        dialog.deleteLater()
+
+
 def test_collapsing_optional_settings_preserves_edits(settings_window):
     from PyQt6.QtCore import Qt
     from PyQt6.QtTest import QTest

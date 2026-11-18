@@ -27,6 +27,32 @@ def _base_frame(method, enabled):
     return "first" if method in ("openfocus_a", "openfocus_b", "openfocus_c") else "last"
 
 
+def _failed_alignment_detail(entries, names, indices):
+    reason_keys = {
+        'low detector quality': 'alignment_reason_low_quality',
+        'motion outside limits': 'alignment_reason_outside_limits',
+        'reference alignment fell back': 'alignment_reason_reference_fallback',
+        'insufficient features': 'alignment_reason_insufficient_features',
+        'insufficient matches': 'alignment_reason_insufficient_matches',
+        'homography estimation failed': 'alignment_reason_homography_failed',
+        'ECC failed to converge': 'alignment_reason_ecc_failed',
+    }
+    for entry in entries:
+        index = entry.get('frame_index')
+        if entry.get('status') != 'failed' or not isinstance(index, int) or not 0 <= index < len(names):
+            continue
+        number = indices[index] + 1 if index < len(indices) else index + 1
+        description = trans.t('alignment_report_frame').format(
+            number=number, name=names[index], method=entry.get('method', ''),
+            status=trans.t('alignment_report_failed'))
+        reason = entry.get('reason')
+        if reason:
+            text = trans.t(reason_keys[reason]) if reason in reason_keys else reason
+            description += f"\n{trans.t('alignment_detail_reason')}: {text}"
+        return description
+    return ''
+
+
 class _StorageProbe(QObject):
     completed = pyqtSignal(object)
 
@@ -2239,6 +2265,8 @@ class RenderManager:
         logging.getLogger("openfocus").error("render failed: %s", error_message)
 
         if getattr(self, "_render_interactive", True):
+            # Source names belong in the local dialog, outside error logging and reporting.
+            error_message = _failed_alignment_detail(*self.alignment_diagnostics) or error_message
             show_message_box(
                 window,
                 trans.t("msg_error"),

@@ -78,7 +78,7 @@ class AdvancedSettingsDialog(QDialog):
         super().__init__(parent or window)
         self.window_main = window
         self.setWindowTitle(trans.t("advanced_settings_title"))
-        self.resize(640, 620)
+        self.resize(min(640, self.screen().availableGeometry().width()), 400)
 
         root = QVBoxLayout(self)
         self.tabs = QTabWidget()
@@ -105,6 +105,7 @@ class AdvancedSettingsDialog(QDialog):
         self.status.setWordWrap(True)
         self.status.setTextFormat(Qt.TextFormat.PlainText)
         root.addWidget(self.status)
+        self.status.hide()
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         buttons.button(QDialogButtonBox.StandardButton.Ok).setText(trans.t("btn_ok"))
@@ -112,6 +113,31 @@ class AdvancedSettingsDialog(QDialog):
         buttons.accepted.connect(self._apply)
         buttons.rejected.connect(self.reject)
         root.addWidget(buttons)
+        self.tabs.currentChanged.connect(self._fit_page)
+        self.sensor_cleanup_disclosure.toggled.connect(self._fit_page)
+        self.registration_options_disclosure.toggled.connect(self._fit_page)
+        self.chk_ask_scale.toggled.connect(self._fit_page)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._fit_page()
+
+    def _fit_page(self):
+        if not self.isVisible():
+            return
+        self.layout().activate()
+        scroll = self.tabs.currentWidget()
+        page = scroll.widget().layout()
+        page.activate()
+        viewport = scroll.viewport()
+        content = page.totalHeightForWidth(viewport.width()) if page.hasHeightForWidth() else page.sizeHint().height()
+        available = self.screen().availableGeometry()
+        frame_height = self.frameGeometry().height() - self.height()
+        height = self.height() - viewport.height() + content
+        self.resize(self.width(), min(height, available.height() - frame_height))
+        overflow = self.frameGeometry().bottom() - available.bottom()
+        if overflow > 0:
+            self.move(self.x(), max(available.top(), self.y() - overflow))
 
     def _build_general(self, page_lay):
         w = self.window_main
@@ -327,6 +353,8 @@ class AdvancedSettingsDialog(QDialog):
                 page.ensureWidgetVisible(field)
                 break
         self.status.setText(message)
+        self.status.show()
+        self._fit_page()
         field.setFocus()
 
     def _field_values(self):
@@ -476,6 +504,8 @@ class AdvancedSettingsDialog(QDialog):
             except Exception:
                 pass
             self.status.setText(str(exc))
+            self.status.show()
+            self._fit_page()
             return
         apply_experimental = getattr(w, "apply_experimental_features", None)
         if 'experimental_features' in draft and callable(apply_experimental):
