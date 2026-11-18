@@ -262,6 +262,40 @@ def test_uint16_rgb_exif_non_ascii_and_opaque_alpha(tmp_path, extension, channel
     assert metadata[271] == 'Regression Camera'
 
 
+@pytest.mark.parametrize('dtype,compression', [(np.uint8, None), (np.uint16, 'lzw')])
+def test_indexed_tiff_uses_the_page_color_map_and_retains_metadata(tmp_path, dtype, compression):
+    from core.batch_converter import convert_one
+    from core.image_loader import _frame_metadata
+    from core.source_frames import ensure_preview
+
+    path = tmp_path / 'indexed.tif'
+    levels = np.iinfo(dtype).max + 1
+    indices = np.array([[levels - 1, 2, 0], [1, 0, 2]], dtype=dtype)
+    palette = np.zeros((3, levels), np.uint16)
+    palette[:, [0, 1, 2, -1]] = [[1200, 65535, 0, 24576],
+                                  [32784, 0, 49024, 12345], [256, 912, 65535, 0]]
+    profile = srgb_icc_profile()
+    tifffile.imwrite(path, indices, photometric='palette', colormap=palette,
+                     compression=compression, rowsperstrip=1, iccprofile=profile,
+                     extratags=[(274, 'H', 1, 6, False), (315, 's', 0, 'Camera artist', False)])
+    expected = np.rot90(palette[::-1, indices].transpose(1, 2, 0), -1)
+    if dtype == np.uint8:
+        expected = (expected >> 8).astype(dtype)
+    frame, = scan_source(path)
+    converted = convert_one(str(path), str(tmp_path), '.png')
+    for pixels in (ensure_preview(frame), frame.full_resolution(), decode_image(str(path)),
+                   cv2.imread(converted, cv2.IMREAD_UNCHANGED)):
+        assert pixels.dtype == expected.dtype
+        np.testing.assert_array_equal(pixels, expected)
+    metadata = Image.Exif()
+    metadata.load(_read_exif_bytes(str(path)))
+    assert metadata[274] == 1 and metadata[315] == 'Camera artist'
+    assert _read_icc_profile(str(path)) == profile
+    assert _read_icc_profile(converted) == profile
+    (page_exif, page_profile), = _frame_metadata(str(path), [frame], lambda: False)
+    assert page_exif == metadata.tobytes() and page_profile == profile
+
+
 def test_multipage_tiff_independent_orientation_and_cmyk_conversion(tmp_path):
     path = tmp_path / '多頁.tif'
     cmyk = _cmyk_pixels()
