@@ -74,7 +74,7 @@ Em **Salvar como**, TIFF comum salva o resultado como uma única imagem; TIFF em
 ### Iniciar o aplicativo
 
 A forma preferida de instalar uma compilação empacotada é o site do projeto, **https://openfocus.top**: ele aponta para o instalador do Windows, a compilação do macOS e o pacote do Linux, com scripts de instalação para terminal. Prefira-o a recompilar: esses artefatos são a saída exata do pipeline de lançamento. `pip install openfocus` instala apenas a interface de linha de comando headless (a wheel não depende de PyQt6 de propósito); use uma compilação desktop ou uma cópia do código-fonte para a GUI.
-O site e os scripts de instalação também oferecem betas mais novas, atualmente [versão preliminar v1.77.0-beta.7](https://github.com/Xinzhe99/OpenFocus/releases/tag/v1.77.0-beta.7). As atualizações automáticas do desktop também oferecem betas mais novas; a CLI Linux do PyPI permanece estável. A beta também está disponível no GitHub.
+O site oferece versões desktop estáveis por padrão. No Windows e no macOS, você pode ativar atualizações beta; no Linux, atualize baixando um novo arquivo desktop. A CLI do PyPI é distribuída separadamente.
 
 Para instalar pelo terminal, visualize primeiro o comando e depois execute-o sem `--dry-run`: no macOS ou Linux, `curl -fsSL https://openfocus.top/install.sh | sh -s -- --dry-run` e depois `curl -fsSL https://openfocus.top/install.sh | sh` (no Linux instala a CLI); no Windows, `irm https://openfocus.top/install.ps1 | iex` no PowerShell.
 
@@ -82,7 +82,8 @@ Após a instalação, inicie o OpenFocus de uma destas formas:
 
 1. **Windows (executável)**: dê dois cliques no atalho ou no executável do OpenFocus
 2. **macOS**: arraste `OpenFocus.app` para Aplicativos e abra-o de lá
-3. **Código-fonte Python**: execute `pip install -r requirements.txt` e depois `python main.py` no ambiente ativado
+3. **Linux (x86-64)**: extraia o arquivo desktop e execute `OpenFocus/OpenFocus` na pasta extraída
+4. **Código-fonte Python**: execute `pip install -r requirements.txt` e depois `python main.py` no ambiente ativado
 
 A primeira inicialização abre a janela de boas-vindas, onde você pode escolher o tema e carregar a pilha de demonstração incluída. Um perfil novo usa o tema claro por padrão; a escolha é lembrada.
 

@@ -74,7 +74,7 @@ Dans **Enregistrer sous**, le TIFF ordinaire enregistre le résultat comme une s
 ### Lancer l'application
 
 La façon préférée d'installer une version packagée est le site du projet, **https://openfocus.top** : il pointe vers l'installateur Windows, la version macOS et le paquet Linux, avec des scripts d'installation pour le terminal. Préférez-le à une recompilation : ces artefacts sont la sortie exacte du pipeline de publication. `pip install openfocus` installe uniquement l'interface en ligne de commande headless (le paquet wheel ne dépend volontairement pas de PyQt6) ; utilisez une version de bureau ou une copie du code source pour l'interface graphique.
-Le site et les scripts d’installation proposent aussi les bêtas plus récentes, actuellement [version préliminaire v1.77.0-beta.7](https://github.com/Xinzhe99/OpenFocus/releases/tag/v1.77.0-beta.7). Les mises à jour automatiques du bureau proposent aussi les bêtas plus récentes ; la CLI Linux de PyPI reste stable. La bêta est aussi disponible sur GitHub.
+Le site propose par défaut les versions stables de bureau. Sous Windows et macOS, vous pouvez activer les mises à jour bêta ; sous Linux, mettez à jour en téléchargeant une nouvelle archive de bureau. La CLI PyPI est distribuée séparément.
 
 Pour installer depuis un terminal, prévisualisez d'abord la commande puis exécutez-la sans `--dry-run` : sous macOS ou Linux, `curl -fsSL https://openfocus.top/install.sh | sh -s -- --dry-run` puis `curl -fsSL https://openfocus.top/install.sh | sh` (la CLI est installée sous Linux) ; sous Windows, `irm https://openfocus.top/install.ps1 | iex` dans PowerShell.
 
@@ -82,7 +82,8 @@ Après l'installation, lancez OpenFocus de l'une des façons suivantes :
 
 1. **Windows (exécutable)** : double-cliquez sur le raccourci ou l'exécutable OpenFocus
 2. **macOS** : glissez `OpenFocus.app` dans Applications et ouvrez-le depuis ce dossier
-3. **Source Python** : exécutez `pip install -r requirements.txt`, puis `python main.py` dans votre environnement activé
+3. **Linux (x86-64)** : extrayez l'archive de bureau et lancez `OpenFocus/OpenFocus` dans le dossier extrait
+4. **Source Python** : exécutez `pip install -r requirements.txt`, puis `python main.py` dans votre environnement activé
 
 Le premier lancement ouvre la boîte de bienvenue, où vous pouvez choisir le thème et charger la pile de démonstration fournie. Un profil neuf utilise le thème clair par défaut ; le choix est mémorisé.
 

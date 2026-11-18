@@ -615,3 +615,65 @@ def test_gpu_preview_stage_reuses_split_contract(tmp_path):
     assert data2["assets"]["gpu-zip"]["parts"] == []
     assert (out2 / whole.name).is_file()
     ra.verify_stage(manifest2, out2, limit=20, kind=ra.GPU_KIND)
+
+
+@pytest.mark.parametrize("tag,required", [
+    ("v1.76.0", False), ("v1.77.0-beta.7", False),
+    ("v1.77.0", True), ("v1.78.0", True), ("v2.0.0", True),
+])
+def test_linux_mirror_release_contract(tmp_path, tag, required):
+    r2_dir = tmp_path / "r2"
+    files = {ra.expected_name(tag, key): key.encode()
+             for key in (*ra.WINDOWS_KEYS, *ra.MACOS_NAMES)}
+    assets = []
+    for name, payload in files.items():
+        _write(r2_dir / name, payload)
+        assets.append({"name": name, "size": len(payload),
+                       "digest": "sha256:" + _digest(payload),
+                       "browser_download_url": f"https://github.com/o/r/releases/download/{tag}/{name}"})
+    beta = "-beta." in tag
+    release = {"tag_name": tag, "assets": assets, "prerelease": beta}
+    release_json = tmp_path / "release.json"
+    releases_json = _write(tmp_path / "releases.json", b"[]")
+    output = tmp_path / "latest.json"
+
+    def generate():
+        _write(release_json, json.dumps(release).encode())
+        ra.write_mirror_manifest(tag, release_json, r2_dir, releases_json, output,
+                                 allow_beta=beta)
+
+    if required:
+        with pytest.raises(ra.ReleaseArchiveError, match="missing required Linux"):
+            generate()
+        assert not output.exists()
+    else:
+        generate()
+        assert "linux-desktop" not in json.loads(output.read_text())["assets"]
+
+    name = ra.expected_name(tag, ra.LINUX_KEY)
+    payload = b"linux archive"
+    _write(r2_dir / name, payload)
+    linux = {"name": name, "size": len(payload), "digest": "sha256:" + _digest(payload),
+             "browser_download_url": f"https://github.com/o/r/releases/download/{tag}/{name}"}
+    assets.append(linux)
+    generate()
+    assert json.loads(output.read_text())["assets"]["linux-desktop"] == {
+        "name": name, "size": len(payload), "digest": linux["digest"],
+        "url": linux["browser_download_url"]}
+    (r2_dir / name).unlink()
+    with pytest.raises(ra.ReleaseArchiveError, match="missing or wrong size"):
+        generate()
+    _write(r2_dir / name, b"short")
+    with pytest.raises(ra.ReleaseArchiveError, match="missing or wrong size"):
+        generate()
+    _write(r2_dir / name, b"X" * len(payload))
+    with pytest.raises(ra.ReleaseArchiveError, match="SHA-256"):
+        generate()
+    _write(r2_dir / name, payload)
+    linux["browser_download_url"] += "?redirect=evil"
+    with pytest.raises(ra.ReleaseArchiveError, match="URL"):
+        generate()
+    linux["browser_download_url"] = f"https://github.com/o/r/releases/download/{tag}/{name}"
+    linux["digest"] = None
+    with pytest.raises(ra.ReleaseArchiveError, match="SHA-256"):
+        generate()

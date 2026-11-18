@@ -134,20 +134,20 @@ def test_release_calls_suite_and_locks_every_checkout():
     assert caller['needs'] == 'prepare'
     assert caller['with']['run_suite'] is True
     assert set(jobs['release']['needs']) == {
-        'prepare', 'release-tests', 'build-windows', 'build-macos'}
+        'prepare', 'release-tests', 'build-windows', 'build-macos', 'build-linux'}
     sha = 'a' * 40
     for channel in ('preview', 'release', 'beta'):
         context = {'needs': {'prepare': {'outputs': {'sha': sha, 'channel': channel}}}}
         assert bool(expression(caller['if'], context)) == (channel in ('release', 'beta'))
         assert bool(expression(jobs['release']['if'], context)) == (channel in ('release', 'beta'))
         assert expression(caller['with']['ref'], context) == sha
-        for name in ('build-windows', 'build-macos', 'release'):
+        for name in ('build-windows', 'build-macos', 'build-linux', 'release'):
             assert expression(checkout(jobs[name])['with']['ref'], context) == sha
 
 
 def test_packaged_platforms_embed_identity_before_build():
     jobs = workflow('release.yml')['jobs']
-    for name in ('build-windows', 'build-macos'):
+    for name in ('build-windows', 'build-macos', 'build-linux'):
         steps = jobs[name]['steps']
         marker = next(i for i, step in enumerate(steps)
                       if step.get('name') == 'Write packaged build identity')

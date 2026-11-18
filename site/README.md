@@ -88,7 +88,7 @@ footer; publish it before enabling the analytics binding.
 | `site/site_content.py` | Copy, links and download cards; the current desktop version comes from `/api/latest` |
 | `site/template.html` | Page structure; `{{placeholders}}` resolve from the content |
 | `site/style.css` | Design tokens (light/dark), layout, responsive rules |
-| `site/app.js` | Theme, OS-aware navigation download, copy button, menus; the hero shows both desktop downloads |
+| `site/app.js` | Theme, OS-aware navigation download, Linux desktop availability, copy button and menus |
 | `site/worker.js` | `/` language negotiation; `www` → apex; `/api/latest` and `/download/latest/*` for website downloads; mirror-only `/api/updates` and `/download/releases/<tag>/<kind>` for desktop updates |
 | `site/install.sh` | macOS app installer + Linux CLI installer (`curl … | sh`, `--dry-run`) |
 | `site/install.ps1` | Windows installer (`irm … | iex`, `OPENFOCUS_DRY_RUN=1`) |
@@ -104,14 +104,17 @@ and system changes still work for the current page. With JavaScript disabled,
 the English and Chinese links and all navigation links remain available,
 including on mobile screens.
 
-The Worker serves the latest stable release for `/api/latest` and
-`/download/latest/*`. Desktop installation scripts and the Linux CLI from PyPI
-use stable releases. With JavaScript
-disabled, the download links still work and no unverified static version is
-displayed. With JavaScript enabled, the version and file sizes come from the
-live release metadata. Complete GitHub metadata is cached for five minutes per
-data center; clients receive `no-store`. The Worker falls back to the R2
-metadata when GitHub is unavailable. Range requests require the R2 object.
+The Worker resolves `/api/latest` and `/download/latest/*` from release
+metadata. Linux x86-64 desktop downloads are shown only when `/api/latest`
+reports `assets["linux-desktop"]`; without JavaScript or when metadata cannot
+be fetched, the page explains that availability cannot be checked. Historical
+releases may not include the desktop archive. Linux navigation points to the
+download section, and `install.sh` continues to install the separate PyPI
+headless CLI on Linux. Windows and macOS links work without JavaScript. With
+JavaScript enabled, the desktop version and file sizes come from live metadata.
+Complete GitHub metadata is cached for five minutes per data center; clients
+receive `no-store`. The Worker falls back to R2 metadata when GitHub is
+unavailable. Range requests require the R2 object.
 
 ## Download mirror (R2)
 
@@ -126,20 +129,20 @@ A beta uses a numeric compatibility tag of the form
 `v<version>.999999999.<beta-number>` and its real tag in `actual_tag`.
 Clients validate the association and display the beta tag. Versioned alias
 downloads continue to resolve to the same beta bytes. Metadata carries the
-four asset sizes and SHA-256 digests.
+asset sizes and SHA-256 digests, including `linux-desktop` when available.
 
 `GET` and `HEAD /download/releases/<tag>/<kind>` serve stable, beta and
 compatibility-alias downloads from R2, with byte ranges and ETag validation.
-The recognized kinds are `windows-setup`, `windows-zip`, `macos-dmg` and
-`macos-zip`. Invalid paths return `404`; missing objects return `503` without a
+The recognized kinds are `windows-setup`, `windows-zip`, `macos-dmg`,
+`macos-zip` and `linux-desktop`. Invalid paths return `404`; missing objects return `503` without a
 GitHub redirect. Stable objects may be pruned after a newer stable release;
 beta objects are retained for version-pinned and cached update requests.
 
 - Bucket: `openfocus-downloads` (binding `DOWNLOADS`)
 - Workflow: `.github/workflows/r2-mirror.yml` runs after a successful
   **Build & Publish Release** run, on manually published releases, and on
-  manual dispatch. It verifies and uploads the four complete files before
-  publishing either `openfocus-meta/latest-release.json` for the latest stable
+  manual dispatch. It verifies and uploads complete release files, including
+  Linux desktop when present, before publishing either `openfocus-meta/latest-release.json` for the latest stable
   release or `openfocus-meta/beta-release.json` for the newest beta. Beta
   mirroring never replaces the stable manifest. Stable pruning preserves beta
   assets; beta mirrors do not prune. Runs are serialized.

@@ -10,10 +10,12 @@ import tempfile
 import time
 
 try:
-    from .release_archives import list_downloads, load_manifest, sha256_file, verify_stage
+    from .release_archives import (expected_name, linux_required, list_downloads,
+                                   load_manifest, sha256_file, verify_stage)
     from .release_metadata import resolve_identity
 except ImportError:
-    from release_archives import list_downloads, load_manifest, sha256_file, verify_stage
+    from release_archives import (expected_name, linux_required, list_downloads,
+                                  load_manifest, sha256_file, verify_stage)
     from release_metadata import resolve_identity
 
 
@@ -67,6 +69,9 @@ def local_assets(directory, tag):
     verify_stage(manifest, directory)
     names = list_downloads(manifest) + [manifest.name, 'join-openfocus-parts.ps1',
         f'OpenFocus-{tag}-macos.dmg', f'OpenFocus-{tag}-macos-arm64.zip']
+    linux = expected_name(tag, 'linux-desktop')
+    if linux_required(tag) or (directory / linux).exists():
+        names.append(linux)
     if len(names) != len(set(names)):
         raise ValueError('duplicate expected asset names')
     actual = {p.name for p in directory.iterdir() if p.is_file()}

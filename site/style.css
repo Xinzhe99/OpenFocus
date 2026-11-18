@@ -273,6 +273,14 @@ pre .flag { color: var(--accent); }
 .plat i { grid-row: 1 / 3; grid-column: 2; font-style: normal; font-size: 13px; color: var(--ink3); }
 .plat:hover i { color: var(--ink); }
 
+.linux-desktop { margin-top: 28px; }
+.linux-desktop h3 { margin: 0 0 8px; font-size: 17px; }
+.linux-desktop p { max-width: 70ch; }
+.linux-instructions { margin: 14px 0 0; font-size: 14px; color: var(--ink2); }
+.linux-desktop .btn { margin-top: 14px; }
+.linux-desktop .btn[hidden] { display: none; }
+.linux-desktop pre { margin-top: 12px; }
+
 /* footer */
 footer {
   margin-top: 96px; padding: 26px 0 40px;

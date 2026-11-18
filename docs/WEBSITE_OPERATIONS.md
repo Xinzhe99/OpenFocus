@@ -469,20 +469,28 @@ asset exists there as a complete file. A split asset and range requests return
 3. Wait for `r2-mirror` to succeed. It is chained to the release workflow; a
    release published by hand uses the `release: published` trigger. If neither
    path fired, run the manual dispatch above.
-4. Verify:
-   - `https://openfocus.top/api/latest` returns the new tag with
-     `Cache-Control: no-store`;
+4. For the 1.77.0 stable release, build and deploy the site from the release
+   commit using the production configuration described in section 3, preserving
+   the existing bindings. Deploy after the stable release is published: the new
+   Worker selects the stable channel for website downloads, while the current
+   site continues to offer 1.77 beta until then.
+5. Verify:
+   - for a stable release, `https://openfocus.top/api/latest` returns the new
+     tag with `Cache-Control: no-store`; from 1.77.0 it also lists the
+     `linux-desktop` asset;
+   - for a beta release, `/api/latest` continues to select stable and
+     `/api/updates?channel=beta` offers the newer beta when available;
    - `curl -fsS -r 0-0 -D - -o /dev/null https://openfocus.top/download/latest/windows-setup`
      returns `206`, a `Content-Range: bytes 0-0/<size>` total matching the
      complete asset size in the mirror manifest, and `Cache-Control: no-store`.
-     HEAD does not validate the byte range. A `503` means the R2 object is
-     missing or not ready for ranges; a `302` is the full download's GitHub
-     fallback and does not occur for a range request;
-   - `https://openfocus.top/` shows the new version within 5 minutes per data
-     center.
-5. Rebuild and redeploy the site for changes to its code or content. Its static
-   pages do not claim a desktop version; JavaScript displays the selected
-   version from `/api/latest`, and links resolve through the Worker.
+     Repeat for `linux-desktop` when present. HEAD does not validate the byte
+     range. A `503` means the R2 object is missing or not ready for ranges; a
+     `302` is the full download's GitHub fallback and does not occur for a
+     range request;
+   - the website shows the selected version and, when available, the Linux
+     desktop download within 5 minutes per data center.
+6. For future releases, redeploy the site when its code or content changes.
+   Otherwise its pages and download links use the release metadata dynamically.
 
 ---
 

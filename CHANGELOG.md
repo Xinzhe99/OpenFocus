@@ -1,4 +1,5 @@
 # Changelog
+- Open Linux desktop menu entries from bundle paths that contain percent signs.
 
 All notable changes to OpenFocus are documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
@@ -6,6 +7,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- Prepare Linux x86-64 desktop release archives and website downloads, alongside
+  the separate headless CLI distributed through PyPI.
 - Add an opt-in OpenCL GPU path for OpenFocus C pyramid fusion
   (`use_gpu=True`), porting the full weighted-pyramid chain — normalize,
   Gaussian down/up, detail+weight, IIR weight filter, merge, collapse and
@@ -48,6 +51,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   transforms, cropping and output pixels are unchanged.
 
 ### Fixed
+- Include the Qt XCB shape dependency in Linux desktop builds and use the
+  OpenCV wheel without its own Qt libraries.
 - Release the heavy-job lock if a wait diagnostic fails, so later renders and
   stack loads can continue.
 - Bound Windows memory admission by reported commit headroom as well as

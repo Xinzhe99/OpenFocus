@@ -522,13 +522,109 @@ jobs:
             OpenFocus-*-macos.dmg
           retention-days: 7
 
+  build-linux:
+    name: Build Linux (x86-64)
+    needs: prepare
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+      - name: Install system and Python dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb xauth weston libegl1 libgl1 libglib2.0-0 libdbus-1-3 libxkbcommon0 libxkbcommon-x11-0 libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 libwayland-client0 libwayland-cursor0 libwayland-egl1
+          python -m pip install --upgrade pip
+          python -m pip install --only-binary=pyopencl -r requirements.txt pyinstaller
+          python -m pip check
+          python -c "import onnxruntime as ort; assert 'CPUExecutionProvider' in ort.get_available_providers()"
+      - name: Verify AI models
+        run: |
+          for w in weights/stackmff_final.onnx weights/stackmff_v2_final.onnx weights/stackmff_v3_final.onnx; do
+            test -f "$w" && test "$(wc -c < "$w")" -ge 600000 || { echo "Missing or incomplete model: $w"; exit 1; }
+          done
+      - name: Write packaged build identity
+        run: python tools/release_metadata.py --write-build-identity build_identity.py
+      - name: Build with PyInstaller
+        run: |
+          pyinstaller --clean --noconfirm --onedir --noupx \
+            --name OpenFocus --additional-hooks-dir hooks \
+            --collect-submodules fusion_methods --hidden-import pyopencl \
+            --collect-submodules locales \
+            --hidden-import core.algorithm_adapters --hidden-import core.depth_map \
+            --hidden-import core.registration --hidden-import core.torch_backend \
+            --hidden-import PyQt6.QtCore --hidden-import PyQt6.QtGui \
+            --hidden-import PyQt6.QtWidgets --hidden-import PyQt6.QtNetwork \
+            --hidden-import PyQt6.QtSvg --copy-metadata imageio --collect-data dtcwt \
+            --exclude-module torch --exclude-module matplotlib --exclude-module tkinter \
+            --exclude-module IPython --exclude-module pytest \
+            --exclude-module PyQt6.QtWebEngineCore --exclude-module PyQt6.Qt3DCore \
+            --exclude-module PyQt6.QtMultimedia --exclude-module PyQt6.QtBluetooth \
+            --exclude-module PyQt6.QtDesigner --exclude-module PyQt6.QtQuick main.py
+      - name: Verify packaged resources and Qt plugins
+        run: |
+          python tools/verify_frozen_resources.py dist/OpenFocus/_internal
+          python -c "from pathlib import Path; p = Path('dist/OpenFocus/_internal'); assert any(x.parent.name == 'pyopencl' for x in p.rglob('_cl*.so')); assert list(p.rglob('libqxcb.so')); assert list(p.rglob('libqwayland*.so'))"
+          cp assets/openfocus.desktop packaging/install_linux_desktop.py dist/OpenFocus/
+      - name: Package and verify extracted desktop and CLI
+        env:
+          QT_QPA_PLATFORM: xcb
+        run: |
+          tar -C dist -czf "OpenFocus-${{ needs.prepare.outputs.label }}-linux-x86_64.tar.gz" OpenFocus
+          mkdir -p "$RUNNER_TEMP/linux-extracted"
+          tar -xzf "OpenFocus-${{ needs.prepare.outputs.label }}-linux-x86_64.tar.gz" -C "$RUNNER_TEMP/linux-extracted"
+          xvfb-run -a python tools/frozen_cli_smoke.py --executable "$RUNNER_TEMP/linux-extracted/OpenFocus/OpenFocus" --resources "$RUNNER_TEMP/linux-extracted/OpenFocus/_internal"
+      - name: Verify extracted desktop on native Wayland
+        run: |
+          set -euo pipefail
+          export XDG_RUNTIME_DIR="$RUNNER_TEMP/openfocus-wayland"
+          export WAYLAND_DISPLAY=openfocus-test
+          mkdir -m 700 "$XDG_RUNTIME_DIR"
+          weston --backend=headless-backend.so --socket="$WAYLAND_DISPLAY" --idle-time=0 --log="$RUNNER_TEMP/weston.log" &
+          compositor=$!
+          cleanup() {
+            status=$?
+            trap - EXIT
+            if [ "$status" -ne 0 ]; then cat "$RUNNER_TEMP/weston.log" || true; fi
+            kill "$compositor" 2>/dev/null || true
+            wait "$compositor" 2>/dev/null || true
+            rm -rf "$XDG_RUNTIME_DIR"
+            exit "$status"
+          }
+          trap cleanup EXIT
+          for attempt in $(seq 1 30); do
+            [ -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY" ] && break
+            kill -0 "$compositor"
+            sleep 1
+          done
+          test -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY"
+          python tools/frozen_cli_smoke.py --headless-wayland --executable "$RUNNER_TEMP/linux-extracted/OpenFocus/OpenFocus" --resources "$RUNNER_TEMP/linux-extracted/OpenFocus/_internal"
+      - name: Report Linux package contents
+        run: |
+          python tools/packaging_report.py --toc build/OpenFocus/Analysis-00.toc --toc build/OpenFocus/COLLECT-00.toc --package dist/OpenFocus --package "OpenFocus-${{ needs.prepare.outputs.label }}-linux-x86_64.tar.gz" --output "$RUNNER_TEMP/linux-packaging-report.json"
+      - uses: actions/upload-artifact@v5
+        with:
+          name: packaging-report-linux
+          path: ${{ runner.temp }}/linux-packaging-report.json
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v5
+        with:
+          name: OpenFocus-linux
+          path: OpenFocus-*-linux-x86_64.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
   release:
     name: Publish GitHub Release
-    needs: [prepare, release-tests, build-windows, build-macos]
+    needs: [prepare, release-tests, build-windows, build-macos, build-linux]
     runs-on: ubuntu-latest
     # Tags only: a workflow_dispatch run on a branch uploads downloadable
     # artifacts for acceptance testing and must never create or overwrite a
-    # release (or its four stable assets).
+    # release or its stable assets.
     if: ${{ needs.prepare.outputs.channel == 'release' || needs.prepare.outputs.channel == 'beta' }}
     permissions:
       contents: write
@@ -563,6 +659,7 @@ jobs:
           | Windows 10/11 (64-bit) | site download, or `OpenFocus-*-windows-x64.zip[.partNNN]` | Portable (unzip and run) |
           | macOS Apple Silicon (M1/M2/M3/M4) | `OpenFocus-*-macos.dmg` | **Installer image** (recommended) |
           | macOS Apple Silicon (M1/M2/M3/M4) | `OpenFocus-*-macos-arm64.zip` | Portable (unzip) |
+          | Linux x86-64 (glibc 2.35+) | `OpenFocus-*-linux-x86_64.tar.gz` | Desktop portable (extract and run) |
 
           [Code signing policy](https://github.com/${{ github.repository }}/blob/main/docs/CODE_SIGNING_POLICY.md)
 
@@ -588,6 +685,13 @@ jobs:
 
           When the portable zip is split, join it with the same script first;
           the manifest verifies both the zip and setup files.
+
+          ### Linux x86-64 (desktop portable)
+          1. Create a new directory, then extract the archive into it: `mkdir openfocus-v1.77.0 && tar -xzf OpenFocus-v1.77.0-linux-x86_64.tar.gz -C openfocus-v1.77.0` (replace the version with the downloaded tag).
+          2. Change into that directory and run `./OpenFocus/OpenFocus`.
+          3. Optionally run `python3 OpenFocus/install_linux_desktop.py` to add a per-user application-menu entry. The helper refuses to overwrite an existing entry.
+
+          The Linux build targets glibc 2.35 or newer and needs a graphical X11 or Wayland session and the corresponding system libraries. The independent PyPI `openfocus` package is a headless CLI.
 
           ### macOS (DMG)
           1. Open `OpenFocus-*-macos.dmg`.
@@ -644,6 +748,7 @@ jobs:
           for name in \
             "OpenFocus-${tag}-macos.dmg" \
             "OpenFocus-${tag}-macos-arm64.zip" \
+            "OpenFocus-${tag}-linux-x86_64.tar.gz" \
             "join-openfocus-parts.ps1" \
             "OpenFocus-${tag}-windows-assets.json"; do
             if [ ! -s "release/$name" ]; then

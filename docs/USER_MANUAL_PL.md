@@ -78,11 +78,12 @@ W oknie **Zapisz jako** zwykły TIFF zapisuje wynik jako jeden obraz, a TIFF z w
 ### Uruchamianie aplikacji
 
 Pobierz najnowszą kompilację ze [strony OpenFocus](https://openfocus.top/#download) lub z [GitHub Releases](https://github.com/Xinzhe99/OpenFocus/releases). Strona jest preferowana: publikuje bieżący instalator Windows, kompilację macOS i pakiet Linux ze skryptami instalacyjnymi; te artefakty są dokładnym wynikiem potoku wydania, więc wybieraj je zamiast ponownej kompilacji. `pip install openfocus` instaluje tylko headless CLI (koło celowo nie zależy od PyQt6); do interfejsu graficznego użyj gotowej kompilacji albo kodu źródłowego. Po instalacji uruchom OpenFocus na jeden z sposobów:
-Strona i skrypty instalacyjne oferują także nowsze wersje beta, obecnie [wydania przedpremierowego v1.77.0-beta.7](https://github.com/Xinzhe99/OpenFocus/releases/tag/v1.77.0-beta.7). Automatyczne aktualizacje aplikacji oferują także nowsze wersje beta; linuksowe CLI z PyPI pozostaje stabilne.
+Strona domyślnie udostępnia stabilne wersje aplikacji. W systemach Windows i macOS można włączyć aktualizacje beta; w systemie Linux aktualizacja wymaga pobrania nowego archiwum aplikacji. CLI z PyPI jest publikowane osobno.
 
 1. **Windows (instalator lub wersja przenośna)**: kliknij dwukrotnie skrót lub `OpenFocus.exe`
 2. **macOS**: przeciągnij `OpenFocus.app` do Programów i uruchom; kompilacje są przeznaczone dla Apple Silicon
-3. **Kod źródłowy Pythona**: zainstaluj zależności poleceniem `pip install -r requirements.txt`, a następnie uruchom `python main.py` w aktywowanym środowisku
+3. **Linux (x86-64)**: rozpakuj archiwum aplikacji i uruchom `OpenFocus/OpenFocus` w rozpakowanym katalogu
+4. **Kod źródłowy Pythona**: zainstaluj zależności poleceniem `pip install -r requirements.txt`, a następnie uruchom `python main.py` w aktywowanym środowisku
 
 Instalacja z terminala:
 

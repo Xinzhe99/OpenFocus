@@ -7,7 +7,7 @@
 # macOS: installs the latest Apple Silicon build into ~/Applications. The new
 #        app is staged and checked first, then swapped in; the previous app is
 #        restored if the swap fails.
-# Linux: installs the headless CLI from PyPI (there is no Linux GUI build) with
+# Linux: installs the separate headless CLI from PyPI with
 #        pipx or a private virtual environment. System Python is never modified,
 #        including on PEP 668 (externally managed) distributions.
 # Windows: prints the PowerShell command instead.

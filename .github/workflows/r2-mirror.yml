@@ -125,6 +125,11 @@ jobs:
               --pattern '*-macos.dmg' \
               --pattern '*-macos-arm64.zip'
           fi
+          linux="OpenFocus-${tag}-linux-x86_64.tar.gz"
+          if grep -Fxq "$linux" assets.txt; then
+            gh release download "$tag" -R "$GITHUB_REPOSITORY" \
+              --pattern "$linux" --dir assets
+          fi
           for name in \
             "OpenFocus-${tag}-setup.exe" \
             "OpenFocus-${tag}-windows-x64.zip" \
@@ -136,9 +141,8 @@ jobs:
             fi
           done
           total="$(find assets -maxdepth 1 -type f | wc -l | tr -d ' ')"
-          if [ "$total" -ne 4 ]; then
-            echo "::error::Expected four complete files after reassembly, found $total."
-            find assets -maxdepth 1 -type f -printf '%f\n'
+          if [ "$total" -ne 4 ] && [ "$total" -ne 5 ]; then
+            echo "::error::Expected four or five complete files after reassembly, found $total."
             exit 1
           fi
           if find assets -maxdepth 1 -type f -name '*.part*' | grep -q .; then
@@ -266,9 +270,7 @@ jobs:
             exit 0
           fi
 
-          # Never touch the tag that was just mirrored, and never touch keys
-          # that are not one of the four release asset names. This keeps
-          # unrelated objects and a concurrent/manual upload intact.
+          # Keep the current tag and unrelated objects intact.
           keys="$(aws s3api list-objects-v2 \
             --bucket openfocus-downloads \
             --endpoint-url "$endpoint" \
@@ -285,7 +287,7 @@ jobs:
               "OpenFocus-${tag}-"*)
                 continue
                 ;;
-              OpenFocus-v*-setup.exe|OpenFocus-v*-windows-x64.zip|OpenFocus-v*-macos.dmg|OpenFocus-v*-macos-arm64.zip)
+              OpenFocus-v*-setup.exe|OpenFocus-v*-windows-x64.zip|OpenFocus-v*-macos.dmg|OpenFocus-v*-macos-arm64.zip|OpenFocus-v*-linux-x86_64.tar.gz)
                 echo "Deleting $key"
                 aws s3 rm "s3://openfocus-downloads/$key" \
                   --endpoint-url "$endpoint" \

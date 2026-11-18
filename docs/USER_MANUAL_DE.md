@@ -75,8 +75,8 @@ Unter **Speichern unter** speichert gewöhnliches TIFF das Ergebnis als einzelne
 
 ### Installation
 
-Laden Sie den aktuellen Windows- oder macOS-Build von der [OpenFocus-Website](https://openfocus.top/#download). Dieselben Dateien und ältere Versionen stehen auch unter [GitHub Releases](https://github.com/Xinzhe99/OpenFocus/releases) bereit.
-Website und Installationsskripte bieten auch neuere Betaversionen an, derzeit [Vorabversion v1.77.0-beta.7](https://github.com/Xinzhe99/OpenFocus/releases/tag/v1.77.0-beta.7). Der Desktop-Updater bietet ebenfalls neuere Betas an; die Linux-CLI von PyPI bleibt stabil.
+Laden Sie den aktuellen Windows-, macOS- oder Linux-x86-64-Desktop-Build von der [OpenFocus-Website](https://openfocus.top/#download). Der Linux-Desktop-Build ist ab v1.77.0 verfügbar; ältere Versionen stehen auch unter [GitHub Releases](https://github.com/Xinzhe99/OpenFocus/releases) bereit.
+Die Website bietet standardmäßig stabile Desktopversionen. Unter Windows und macOS können Betaversionen für automatische Updates aktiviert werden; unter Linux laden Sie zum Aktualisieren ein neues Desktoparchiv herunter. Die PyPI-CLI wird separat veröffentlicht.
 
 | Plattform | Datei | Typ |
 |-----------|-------|-----|
@@ -84,6 +84,7 @@ Website und Installationsskripte bieten auch neuere Betaversionen an, derzeit [V
 | Windows 10/11 (64 Bit) | `OpenFocus-*-windows-x64.zip` | Portabel (entpacken und starten) |
 | macOS Apple Silicon (M1–M4) | `OpenFocus-*-macos.dmg` | Disk-Image (in „Programme“ ziehen) |
 | macOS Apple Silicon (M1–M4) | `OpenFocus-*-macos-arm64.zip` | Portabel (entpacken) |
+| Linux x86-64 | `OpenFocus-*-linux-x86_64.tar.gz` | Portabel (entpacken und `OpenFocus/OpenFocus` starten) |
 
 Ob die Windows-Builds signiert sind, hängt vom jeweiligen Release ab (siehe Release-Notes); eine Signatur ist nicht garantiert. Beim ersten Start kann daher eine Sicherheitsabfrage erscheinen: unter **Windows** SmartScreen → „Weitere Informationen“ → „Trotzdem ausführen“ (der erste Start kann 30–60 s dauern). Die macOS-Builds sind nicht notarisiert; nach der DMG-Installation (in „Programme“) führen Sie bei Bedarf `xattr -cr /Applications/OpenFocus.app` aus, nach der Terminal-Installation (nach `~/Applications`) `xattr -cr ~/Applications/OpenFocus.app`, oder Sie klicken mit der rechten Maustaste auf die App und wählen **Öffnen**.
 
