@@ -338,8 +338,12 @@ def test_beta_preference_in_welcome_and_settings(settings_window):
     from dialogs.welcome import WelcomeDialog
 
     welcome = WelcomeDialog(settings_window, main_window=settings_window)
+    welcome.show()
+    assert not welcome.chk_include_beta.isVisible()
+    welcome._settings_button.click()
+    assert welcome.chk_include_beta.isVisible()
     assert not welcome.chk_include_beta.isChecked()
-    welcome.chk_include_beta.setChecked(True)
+    welcome.chk_include_beta.click()
     assert settings_window.update_manager.include_beta
     welcome.close()
 
