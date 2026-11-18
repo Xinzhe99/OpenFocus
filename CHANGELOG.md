@@ -33,6 +33,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   transforms, cropping and output pixels are unchanged.
 
 ### Fixed
+- Include the Qt XCB shape dependency in Linux desktop builds and use the
+  OpenCV wheel without its own Qt libraries.
 - Release the heavy-job lock if a wait diagnostic fails, so later renders and
   stack loads can continue.
 - Bound Windows memory admission by reported commit headroom as well as

@@ -1,5 +1,7 @@
 # OpenFocus runtime dependencies (Python 3.10+)
-opencv-python
+# PyQt6 provides the Linux GUI. The regular Linux OpenCV wheel bundles Qt 5.
+opencv-python-headless; sys_platform == 'linux'
+opencv-python; sys_platform != 'linux'
 pyqt6
 numpy
 imageio

@@ -537,7 +537,7 @@ jobs:
       - name: Install system and Python dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y xvfb xauth weston libegl1 libgl1 libglib2.0-0 libdbus-1-3 libxkbcommon0 libxkbcommon-x11-0 libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-xinerama0 libwayland-client0 libwayland-cursor0 libwayland-egl1
+          sudo apt-get install -y xvfb xauth weston libegl1 libgl1 libglib2.0-0 libdbus-1-3 libxkbcommon0 libxkbcommon-x11-0 libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 libwayland-client0 libwayland-cursor0 libwayland-egl1
           python -m pip install --upgrade pip
           python -m pip install --only-binary=pyopencl -r requirements.txt pyinstaller
           python -m pip check
