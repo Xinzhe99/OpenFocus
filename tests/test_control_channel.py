@@ -994,7 +994,7 @@ def test_context_menu_catalog_and_trigger(server, control_window):
     action.triggered.connect(lambda: hit.append(True))
     menu.addAction(action)
     menu.popup(control_window.mapToGlobal(control_window.rect().center()))
-    QTest.qWait(30)
+    assert wait_until(menu.isVisible)
     catalog = call(server, "ui.menu")["result"]
     assert any(item["text"] == "Do thing" for item in catalog["actions"])
     context = call(server, "ui.context")["result"]
@@ -1002,8 +1002,7 @@ def test_context_menu_catalog_and_trigger(server, control_window):
     triggered = call(server, "ui.menu", action="Do thing")["result"]
     assert triggered["scheduled"] is True
     assert hit == []
-    QTest.qWait(200)
-    assert hit == [True]
+    assert wait_until(lambda: hit == [True]), hit
     menu.hide()
 
 
