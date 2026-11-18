@@ -3,18 +3,21 @@ import numpy as np
 import pytest
 
 pytest.importorskip("PyQt6")
-from PyQt6.QtCore import QObject, Qt, pyqtSignal
-from PyQt6.QtGui import QIcon, QPixmap
+from PyQt6.QtCore import QMimeData, QModelIndex, QObject, QPoint, QPointF, Qt, pyqtSignal
+from PyQt6.QtGui import QDropEvent, QIcon, QPixmap
+from PyQt6.QtTest import QTest
+from PyQt6.QtWidgets import QListWidget
 
 from controllers.transform_manager import TransformManager
 from core.source_frames import SourceFrame
+from tests.test_control_channel import control_window as control_window
 from tests.test_stack_review_gui import _window
 from widgets.sharpness_curve import SharpnessCurveWidget
 
 
-def test_curve_tracks_completed_previews_and_ignores_replaced_stack(qapp, monkeypatch):
+@pytest.fixture
+def preview_workers(monkeypatch):
     import core.source_previews
-    from main import OpenFocus
 
     workers = []
 
@@ -37,7 +40,17 @@ def test_curve_tracks_completed_previews_and_ignores_replaced_stack(qapp, monkey
         def request_cancel(self):
             self.cancelled = True
 
+        def isRunning(self):
+            return False
+
     monkeypatch.setattr(core.source_previews, "SourcePreviewWorker", Worker)
+    return workers
+
+
+def test_curve_tracks_completed_previews_and_ignores_replaced_stack(qapp, preview_workers):
+    from main import OpenFocus
+
+    workers = preview_workers
     window, manager, panel = _window()
     window.sharpness_curve = SharpnessCurveWidget()
     window.current_display_index = -1
@@ -105,32 +118,10 @@ def test_curve_tracks_completed_previews_and_ignores_replaced_stack(qapp, monkey
     (None, False), (0, False), (None, True),
 ])
 def test_inclusion_change_keeps_pending_sharpness_previews(
-        qapp, monkeypatch, selected, completed_before_change):
-    import core.source_previews
+        qapp, preview_workers, selected, completed_before_change):
     from main import OpenFocus
 
-    workers = []
-
-    class Worker(QObject):
-        ready = pyqtSignal(object, int, object, object)
-        failed = pyqtSignal(object, str)
-        finished = pyqtSignal()
-
-        def __init__(self, frames, request, indices, **kwargs):
-            super().__init__()
-            self.frames = tuple(frames)
-            self.request = request
-            self.indices = tuple(indices)
-            self.cancelled = False
-            workers.append(self)
-
-        def start(self):
-            pass
-
-        def request_cancel(self):
-            self.cancelled = True
-
-    monkeypatch.setattr(core.source_previews, "SourcePreviewWorker", Worker)
+    workers = preview_workers
     window, manager, panel = _window()
     window.sharpness_curve = SharpnessCurveWidget()
     window.source_revision = 1
@@ -177,3 +168,91 @@ def test_inclusion_change_keeps_pending_sharpness_previews(
     finally:
         window.sharpness_curve.close()
         panel.widget.close()
+
+
+def test_source_drop_remaps_navigation_and_in_flight_previews(
+        control_window, monkeypatch, preview_workers):
+    window = control_window
+    view = window.file_list
+    curve = window.sharpness_curve
+    names = ['one.nef', 'two.nef', 'three.nef', 'four.nef']
+
+    def pattern(value):
+        image = np.zeros((16, 16, 3), dtype=np.uint8)
+        image[::2, ::2] = value
+        return image
+
+    frames = [SourceFrame(name, 0, (16, 16, 3), np.dtype('uint8'), preview, ())
+              for name, preview in zip(names, [pattern(10), pattern(20), pattern(30), None])]
+    window.raw_images = list(frames)
+    window.image_filenames = list(names)
+    window.image_source_exifs = [b'a', b'b', b'c', b'd']
+    window.excluded_frames = {2}
+    assert window.transform_manager.reload_image_stack(initial_index=1)
+    old = preview_workers[-1]
+    assert old.indices == (3,)
+    view.item(3).setSelected(True)
+
+    class InternalDrop(QDropEvent):
+        def source(self):
+            return view
+
+    def native_drop(widget, event):
+        # Exercise the QListWidget model's native rowsMoved path. The OS
+        # drag session that stamps QDropEvent.source() is outside this test.
+        model = widget.model()
+        root = QModelIndex()
+        assert model.moveRows(root, 1, 1, root, 4)
+        assert model.moveRows(root, 2, 1, root, 0)
+        event.accept()
+
+    monkeypatch.setattr(QListWidget, 'dropEvent', native_drop)
+    mime = QMimeData()
+    event = InternalDrop(QPointF(1, 1), Qt.DropAction.MoveAction, mime,
+                         Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier)
+    view.dropEvent(event)
+    assert old.cancelled
+    assert window.image_filenames == [names[3], names[0], names[2], names[1]]
+    assert window.image_source_exifs == [b'd', b'a', b'c', b'b']
+    assert window.excluded_frames == {2}
+    assert {view.row(item) for item in view.selectedItems()} == {0, 3}
+    assert window.stack_slider.value() == view.currentRow() == window.current_display_index == 3
+    assert window.lbl_source_img._source_key[1] == id(frames[1])
+    assert curve.isHidden()
+
+    window.stack_slider.setValue(0)
+    assert view.currentRow() == window.current_display_index == curve._current == 0
+    assert window.lbl_stack_info.text() == '1 / 4'
+    assert window.lbl_source_img._base_pixmap is None
+
+    # The obsolete index is still in range and now belongs to a different frame.
+    previous_icon = view.item(3).icon().cacheKey()
+    old.ready.emit(old.request, 3, id(frames[3]), pattern(99))
+    assert view.item(3).icon().cacheKey() == previous_icon
+    old.finished.emit()
+    current = preview_workers[-1]
+    assert current is not old and current.indices == (0,)
+    pixels = pattern(40)
+    object.__setattr__(frames[3], 'preview', pixels)
+    current.ready.emit(current.request, 0, id(frames[3]), pixels)
+    current.finished.emit()
+    assert window.lbl_source_img._base_pixmap.toImage().pixelColor(0, 0).red() == 40
+    assert not curve.isHidden()
+    assert sorted(range(4), key=curve._values.__getitem__) == [1, 3, 2, 0]
+
+    x = round(1 + 2 * (curve.width() - 2) / 3)
+    QTest.mouseClick(curve, Qt.MouseButton.LeftButton, pos=QPoint(x, 10))
+    assert window.stack_slider.value() == view.currentRow() == curve._current == 2
+    assert view.currentItem().text() == names[2]
+    assert window.lbl_source_img._source_key[1] == id(frames[2])
+
+
+def test_curve_click_uses_the_plotted_x_coordinates(qapp):
+    curve = SharpnessCurveWidget()
+    curve.resize(200, 40)
+    curve.set_data([1.0] * 211)
+    clicked = []
+    curve.frame_clicked.connect(clicked.append)
+    QTest.mouseClick(curve, Qt.MouseButton.LeftButton, pos=QPoint(197, 10))
+    assert clicked == [208]
+    curve.close()

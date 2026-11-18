@@ -24,6 +24,7 @@ def _exercise_wheel_delivery():
                                  QScrollArea, QSpinBox, QStyle,
                                  QStyleOptionSpinBox, QVBoxLayout, QWidget)
     from core.app import OpenFocusApplication
+    from dialogs.advanced_settings import AdvancedSettingsDialog
     from widgets.compare_canvas import SourceCanvas
 
     app = OpenFocusApplication([])
@@ -98,6 +99,43 @@ def _exercise_wheel_delivery():
     assert popup_scroll.value() > 0
     assert scrollbar.value() == 0
     combo.hidePopup()
+
+    settings = AdvancedSettingsDialog(QWidget())
+    settings.show()
+    app.processEvents()
+    settings_scroll = settings.findChild(QScrollArea)
+    settings_bar = settings_scroll.verticalScrollBar()
+    reference = settings.openfocus_registration_panel.editors['reference_frame']
+    for editor, target, value in (
+        (settings.spin_threads, settings.spin_threads, settings.spin_threads.value),
+        (settings.spin_threads, settings.spin_threads.lineEdit(), settings.spin_threads.value),
+        (settings.combo_resources, settings.combo_resources, settings.combo_resources.currentData),
+        (reference, reference.lineEdit(), reference.value),
+    ):
+        settings.chk_experimental_features.setFocus()
+        settings_scroll.ensureWidgetVisible(editor)
+        before = settings_bar.value(), value()
+        wheel(target, 120 if before[0] else -120)
+        assert settings_bar.value() != before[0]
+        assert value() == before[1]
+        assert not editor.hasFocus()
+    settings_scroll.ensureWidgetVisible(settings.spin_threads)
+    QTest.mouseClick(settings.spin_threads.lineEdit(), Qt.MouseButton.LeftButton)
+    assert settings.spin_threads.hasFocus()
+    before = settings.spin_threads.value()
+    QTest.keyClick(settings.spin_threads, Qt.Key.Key_Up)
+    assert settings.spin_threads.value() == before + 1
+    settings_scroll.ensureWidgetVisible(settings.combo_resources)
+    settings.combo_resources.setFocus()
+    QTest.keyClick(settings.combo_resources, Qt.Key.Key_Down)
+    assert settings.combo_resources.currentData() == 'responsive'
+    settings.combo_resources.showPopup()
+    app.processEvents()
+    view = settings.combo_resources.view()
+    target = view.visualRect(view.model().index(2, 0)).center()
+    QTest.mouseClick(view.viewport(), Qt.MouseButton.LeftButton, pos=target)
+    assert settings.combo_resources.currentData() == 'maximum'
+    settings.reject()
 
     canvas = SourceCanvas("Source")
     canvas.resize(400, 300)

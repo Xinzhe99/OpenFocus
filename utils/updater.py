@@ -14,6 +14,7 @@ from utils.release_notes import LANGUAGES, RELEASE_NOTES, localized_bodies
 RELEASES_API_URL = "https://openfocus.top/api/updates"
 RELEASES_PAGE_URL = "https://openfocus.top/#download"
 RELEASE_DOWNLOAD_URL = "https://openfocus.top/download/releases"
+SHA256_DIGEST_RE = re.compile(r"sha256:[0-9a-fA-F]{64}")
 _ASSET_SUFFIXES = {
     "windows-setup": "setup.exe",
     "windows-zip": "windows-x64.zip",
@@ -21,6 +22,8 @@ _ASSET_SUFFIXES = {
     "macos-zip": "macos-arm64.zip",
 }
 REQUEST_TIMEOUT_S = 10
+# The mirror retains 30 stable releases and, when selected, the latest beta.
+_MAX_RELEASE_NOTES = 31
 
 
 def parse_version(tag: str) -> Optional[Tuple[int, ...]]:
@@ -98,7 +101,7 @@ def _mirror_asset(release: dict, kind: str) -> Optional[dict]:
     digest = str(asset.get("digest") or "")
     # Never downgrade self-update integrity when an old or incomplete mirror
     # manifest lacks the SHA-256 supplied by the release workflow.
-    if (kind.endswith("-zip") or digest) and not re.fullmatch(r"sha256:[0-9a-fA-F]{64}", digest):
+    if (kind.endswith("-zip") or digest) and not SHA256_DIGEST_RE.fullmatch(digest):
         return None
     return {"name": name, "url": f"{RELEASE_DOWNLOAD_URL}/{actual_tag}/{kind}",
             "size": size, "digest": digest}
@@ -200,7 +203,7 @@ def _note_key(tag: str) -> tuple:
 
 
 def release_note_entries(current_version: str, latest_tag: str, releases,
-                         max_releases: int = 10) -> list:
+                         max_releases: int = _MAX_RELEASE_NOTES) -> list:
     """Keep bounded, sorted language-neutral notes for later UI selection.
 
     The mirror may contain explicit ``body_i18n`` dictionaries or GitHub
@@ -238,7 +241,7 @@ def release_note_entries(current_version: str, latest_tag: str, releases,
                                  and text.strip()})
         bundled = bundled_by_version.get(_note_version(tag), {}) if _beta_number(tag) is None else {}
         translations = {**bundled, **translations}
-        # Never expose other languages' blocks as the legacy fallback body.
+        # Keep a clean source-body fallback without other language blocks.
         if localized_bodies(body):
             body = translations.get("en", "")
         entry = {"tag_name": tag, "body": body.strip()[:12000],
@@ -259,7 +262,7 @@ def release_note_entries(current_version: str, latest_tag: str, releases,
 
 
 def format_release_notes(current_version: str, latest_tag: str, releases,
-                         language: str = "en", max_releases: int = 10) -> str:
+                         language: str = "en", max_releases: int = _MAX_RELEASE_NOTES) -> str:
     """Render retained release data without network access or Qt imports."""
     language = str(language).lower().replace("-", "_").split("_")[0]
     blocks = []
@@ -270,11 +273,11 @@ def format_release_notes(current_version: str, latest_tag: str, releases,
             source = "https://github.com/Xinzhe99/OpenFocus/releases/tag/v" + item["tag_name"].lstrip("vV")
             blocks.append(item["tag_name"].lstrip("vV") + "\n" + source
                           + "\n\n" + _md_to_plain(body))
-    return "\n\n".join(blocks)[:12000]
+    return "\n\n".join(blocks)
 
 
 def fetch_release_notes(current_version: str, latest_tag: str,
-                        max_releases: int = 10, timeout: int = 3,
+                        max_releases: int = _MAX_RELEASE_NOTES, timeout: int = 3,
                         releases=None, language: str = "en") -> str:
     """Fetch if necessary, then select actual text in the requested language."""
     if not parse_version(latest_tag) or max_releases <= 0:

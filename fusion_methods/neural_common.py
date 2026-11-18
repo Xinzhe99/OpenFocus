@@ -106,13 +106,23 @@ def normalized_frames(frames, should_cancel=None):
     return normalize_frames(frames, should_cancel)
 
 
+def attention_inference_bytes(frames, height, width, channels, device, result_count=1):
+    """Host working set and new VRAM requirement for a whole inference."""
+    from fusion_methods.neural_runtime import estimate_inference_bytes
+    hp = height + (-height) % ATTENTION_PAD_ALIGN
+    wp = width + (-width) % ATTENTION_PAD_ALIGN
+    inference = estimate_inference_bytes(frames, height, width, device)
+    host = (frames * hp * wp * 4 * (2 * channels + 3)
+            + result_count * height * width * channels * 4 + inference)
+    return host, inference + frames * hp * wp * 4 * 6
+
+
 def plan_attention_inference(algorithm, frames, model_path, device,
                              thread_count=None,
                              resource_preference='balanced', execution_plan=None,
                              result_count=1, fixed_bytes=0, height=None, width=None):
     """Admit the compact runtime's working set before creating a session."""
     from core.resource_policy import Workload, plan_execution, probe_resources
-    from fusion_methods.neural_runtime import estimate_inference_bytes
 
     if execution_plan is not None:
         device = getattr(execution_plan, 'device_kind', device)
@@ -123,10 +133,8 @@ def plan_attention_inference(algorithm, frames, model_path, device,
     w = int(width) if width is not None else w
     n = len(frames)
     c = frames[0].shape[2] if frames[0].ndim == 3 else 1
-    hp, wp = h + (-h) % 64, w + (-w) % 64
-    inference = estimate_inference_bytes(n, h, w, device)
-    host = (fixed_bytes + n * hp * wp * 4 * (2 * c + 3)
-            + result_count * h * w * c * 4 + inference)
+    host, _ = attention_inference_bytes(n, h, w, c, device, result_count)
+    host += fixed_bytes
     from core.source_frames import frame_resolution_bytes, source_cache_growth_bytes
     host += max(frame_resolution_bytes(frame) for frame in frames) + source_cache_growth_bytes(frames)
     workload = Workload(algorithm=algorithm, frames=n, height=h, width=w,

@@ -10,6 +10,24 @@ from core import frame_storage as storage
 from core.source_frames import PreviewPixels
 
 
+_SOURCE_REQUEST_KIND = 'render_source_request'
+LEGACY_SOURCE_REQUEST_ERROR = f'Unknown render transfer type: {_SOURCE_REQUEST_KIND}'
+
+
+def wrap_source_request(payload, revision):
+    # An older worker sees an unknown kind and rejects it before visiting any frames.
+    return ('value', 0, _SOURCE_REQUEST_KIND, (revision, payload))
+
+
+def unwrap_source_request(request, revision):
+    if (revision is not None and isinstance(request, tuple) and len(request) == 4
+            and request[:3] == ('value', 0, _SOURCE_REQUEST_KIND)):
+        sender_revision, payload = request[3]
+        if sender_revision == revision:
+            return payload
+    return None
+
+
 def _locate(module, name):
     value = import_module(module)
     for part in name.split('.'):

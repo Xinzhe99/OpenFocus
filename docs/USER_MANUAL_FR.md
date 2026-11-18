@@ -754,7 +754,7 @@ Sous Windows, la mise à jour prépare une version candidate distincte et dépla
 
 ### Cache de recalage
 
-OpenFocus peut stocker les résultats de recalage dans un dossier `.openfocus_cache` à côté de la pile source. Rouvrir la même pile (fichiers inchangés) évite alors totalement l'alignement. Activez ou désactivez via **Paramètres → Paramètres avancés → Recalage → Cache de recalage** ; les entrées obsolètes sont remplacées automatiquement.
+OpenFocus enregistre les résultats de recalage dans le cache de l’utilisateur. Lorsqu’une pile inchangée est rouverte avec les mêmes paramètres, OpenFocus réutilise le résultat enregistré. Le réglage se trouve dans **Paramètres → Paramètres avancés → Recalage → Cache de recalage**. Toutes les piles partagent une limite de 2 Gio. Les entrées les moins récemment utilisées sont supprimées lorsque de l’espace est nécessaire. Les anciens dossiers `.openfocus_cache` à côté des piles sources sont conservés.
 
 ### Paramètres persistants
 

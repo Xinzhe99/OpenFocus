@@ -576,3 +576,90 @@ def test_depth_guided_render_rejects_out_of_range_index():
     frames = [np.zeros((1, 1), np.uint8)] * 2
     with pytest.raises(ValueError):
         render_indices(np.array([[3]], np.uint16), frames)
+
+
+def test_openfocus_b_merger_emits_its_normalized_depth():
+    from core.multi_focus_fusion import MultiFocusFusion
+    from core.render_context import store_rendered_focus
+    from core.frame_storage import is_mapped_frame
+
+    frames = _synthetic_thirds(64, 75)
+    parameters = {'smoothing': 3, 'radius': 4, 'feather': 2}
+    fusion = MultiFocusFusion(algorithm='openfocus_b', use_gpu=False,
+        tile_enabled=False, exposure_match=False, base_frame='none',
+        sort_mode='desc', fusion_parameters=parameters)
+    retained = []
+    fusion.fuse(frames, thread_count=1, focus_callback=lambda positions, scale: retained.append(
+        store_rendered_focus(positions, scale, frames[0].shape[:2])))
+    assert len(retained) == 1
+    positions, valid_rect = retained[0]
+    assert is_mapped_frame(positions)
+    assert valid_rect == (0, 0, 75, 64)
+    expected = compute_focus_index(frames[::-1], 'openfocus_b', parameters, thread_count=1)
+    np.testing.assert_allclose(positions, expected, atol=1e-7, rtol=0)
+
+
+@pytest.mark.parametrize('use_gpu', [False, True])
+def test_openfocus_c_records_finest_detail_winners(use_gpu, monkeypatch):
+    from fusion_methods.openfocus_bc import openfocus_c_impl
+    if use_gpu:
+        from fusion_methods import _openfocus_gpu
+        if not _openfocus_gpu.gpu_available():
+            pytest.skip('OpenCL GPU unavailable')
+        monkeypatch.setattr(_openfocus_gpu, '_free_vram',
+                            lambda device: (int(device.global_mem_size), int(device.global_mem_size)))
+
+    shape = (41, 47)
+    sharp = (np.indices(shape).sum(axis=0) % 2 * 240 + 8).astype(np.uint8)
+    flat = np.full(shape, 128, np.uint8)
+    maps, devices = [], []
+    openfocus_c_impl([flat, sharp, sharp], blend_smoothing=0, thread_count=1, use_gpu=use_gpu,
+                     focus_callback=lambda positions, scale: maps.append((positions, scale)),
+                     device_callback=devices.append)
+    assert len(maps) == 1
+    positions, scale = maps[0]
+    assert scale == 2
+    np.testing.assert_array_equal(positions[1:-1, 1:-1], 1)
+    np.testing.assert_array_equal(positions[[0, -1]], 0)
+    if use_gpu:
+        assert devices[0].startswith('OpenCL: ')
+
+
+@pytest.mark.parametrize('method, mode', [('stackmffv2', None), ('stackmffv3', 'hard'),
+                                         ('stackmffv3', 'soft')])
+@pytest.mark.parametrize('tiled', [False, True])
+def test_neural_fusion_retains_the_positions_used_to_mix_color(method, mode, tiled):
+    pytest.importorskip('onnxruntime')
+    from core.multi_focus_fusion import MultiFocusFusion
+    from core.render_context import store_rendered_focus
+
+    frames = [np.full((83, 91, 3), value, np.uint8) for value in (11, 87, 163)]
+    fusion = MultiFocusFusion(algorithm=method, use_gpu=False, exposure_match=False,
+        base_frame='none', tile_enabled=tiled, tile_block_size=64, tile_overlap=16,
+        tile_threshold=32, fusion_parameters={'mode': mode} if mode else None)
+    focus = []
+    progress = []
+    fused = fusion.fuse(frames, thread_count=1,
+        progress_callback=lambda done, total: progress.append(total),
+        focus_callback=lambda positions, scale: focus.append(
+            store_rendered_focus(positions, scale, frames[0].shape[:2])[0]))
+    assert len(focus) == 1
+    assert (max(progress) > 1) is tiled
+    reconstructed = np.rint(11 + 152 * focus[0])
+    np.testing.assert_allclose(fused[..., 0], reconstructed, rtol=0,
+                               atol=1 if mode == 'soft' else 0)
+
+
+def test_render_focus_intersects_transparency_with_a_full_frame_roi():
+    from core.render_context import store_rendered_focus
+    from core.frame_storage import is_mapped_frame
+
+    positions = np.arange(24, dtype=np.uint16).reshape(4, 6)
+    region = ((7, 10, 4), np.dtype(np.uint8), 2, 6, 3, 9, 255)
+    index, rectangle = store_rendered_focus(positions, 23, (7, 10),
+        crop=(2, 3, 5, 4), transparent=region)
+    assert is_mapped_frame(index)
+    assert rectangle == (1, 0, 4, 3)
+    expected = np.zeros((4, 5), dtype=np.float32)
+    expected[:3, 1:] = positions[1:, :4] / np.float32(23)
+    np.testing.assert_array_equal(index, expected)

@@ -809,3 +809,43 @@ def test_raw_sensor_rejects_invalid_aspect(aspect):
     sizes = SimpleNamespace(width=2, height=2, raw_width=2, raw_height=2, pixel_aspect=aspect)
     with pytest.raises(ValueError):
         policy.raw_sensor_shape(sizes)
+
+
+def test_render_estimate_uses_raw_metadata_and_predicts_v2_cpu_fallback(monkeypatch, tmp_path):
+    import numpy as np
+    from core.render_preflight import estimate_render_memory
+    from core.source_frames import SourceFrame
+    from fusion_methods import neural_runtime
+
+    # No file on disk: the descriptor retains the scale, sensor shape and encoded size.
+    encoded = 50 * 1024 ** 2
+    frame = SourceFrame(str(tmp_path / 'frame.nef'), 0, (5504, 8256, 3),
+                        np.dtype('uint16'), None, (encoded, 0), raw_sensor_shape=(5520, 8288))
+    snapshot = _snapshot(available_ram=18 * GiB, total_ram=32 * GiB,
+                         free_vram=0, total_vram=8 * GiB, device_kind='DIRECTML',
+                         commit_headroom=12 * GiB, process_commit_headroom=1)
+    monkeypatch.setattr(policy, 'probe_resources', lambda kind: snapshot)
+    monkeypatch.setattr(neural_runtime, 'cached_device', lambda: 'DIRECTML')
+
+    estimate = estimate_render_memory([frame] * 57, 'stackmffv2', {}, register=True,
+                                      tile_block=1024)
+    assert (estimate.width, estimate.height, estimate.frames) == (8256, 5504, 57)
+    assert estimate.source_ram == policy.raw_decode_bytes(8288, 5520, frame.nbytes, encoded)
+    assert estimate.registration_ram > estimate.source_ram
+    assert estimate.gpu_fallback and estimate.accelerator == 'DIRECTML'
+    assert estimate.vram_required > 0 and estimate.tile < 1024
+    assert estimate.whole_ram > estimate.fusion_ram and not estimate.ram_short
+    assert policy.ram_ceiling(estimate.snapshot) == 12 * GiB
+
+
+def test_render_estimate_tracks_preview_and_roi_working_geometry(monkeypatch):
+    import numpy as np
+    from core.render_preflight import estimate_render_memory
+
+    frames = [np.zeros((600, 800, 3), dtype=np.uint8)] * 3
+    monkeypatch.setattr(policy, 'probe_resources', lambda kind: _snapshot())
+    preview = estimate_render_memory(frames, 'guided_filter', {}, preview=True)
+    roi = estimate_render_memory(frames, 'guided_filter', {}, roi=(720, 550, 100, 100))
+    assert (preview.width, preview.height) == (400, 300)
+    assert (roi.width, roi.height) == (80, 50)
+    assert 0 < roi.fusion_ram < preview.fusion_ram

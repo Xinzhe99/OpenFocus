@@ -4,7 +4,7 @@ Single scroll page with four sections (performance / registration / AI /
 startup), not a tab book: the whole point is to see everything at once instead
 of hunting through four dialogs and a menu.
 """
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QThreadPool, pyqtSignal
 from utils.file_dialogs import FileDialog
 from PyQt6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QFrame,
@@ -22,6 +22,7 @@ from core.frame_storage import configure_storage_directory, restore_storage_dire
 from locales import trans
 from utils.export_paths import prefix_output_name, valid_output_prefix
 from ui.algorithm_parameters import AlgorithmParameterPanel
+from ui.parameter_help import add_help_row
 from widgets.stepper import StepperSpinBox
 
 # Registration downscale bounds mirror dialogs/settings.py, the other surface
@@ -57,6 +58,8 @@ def _note(parent_layout, text: str) -> QLabel:
 
 class AdvancedSettingsDialog(QDialog):
     """Advanced settings in one scrollable page."""
+
+    _alignment_cache_cleared = pyqtSignal(object, str)
 
     def __init__(self, window, parent=None):
         super().__init__(parent or window)
@@ -101,7 +104,8 @@ class AdvancedSettingsDialog(QDialog):
         self.spin_overlap = StepperSpinBox(
             minimum=0, maximum=TILE_OVERLAP_MAX, step=32, decimals=0,
             value=int(getattr(w, "tile_overlap", 256)))
-        perf.addRow(trans.t("advanced_tile_overlap"), self.spin_overlap)
+        overlap_row, _ = add_help_row(perf, trans.t("advanced_tile_overlap"), self.spin_overlap,
+                                      "tiles", "parameter_help_tiles")
         self.spin_block.valueChanged.connect(self._sync_overlap_limit)
         self._sync_overlap_limit(self.spin_block.value())
         self.spin_threshold = StepperSpinBox(
@@ -148,7 +152,7 @@ class AdvancedSettingsDialog(QDialog):
             self.tile_note.setVisible(bool(spec is not None and spatial and explicit
                                            and not spec.external_tiling_default))
             perf.setRowVisible(self.spin_threshold, enabled)
-            for control in (self.spin_block, self.spin_overlap):
+            for control in (self.spin_block, overlap_row):
                 perf.setRowVisible(control, spatial)
             if spec is None:
                 key = 'advanced_tile_alignment_only'
@@ -169,8 +173,9 @@ class AdvancedSettingsDialog(QDialog):
         self.spin_reg_width = StepperSpinBox(
             minimum=REG_WIDTH_MIN, maximum=REG_WIDTH_MAX, step=64, decimals=0,
             value=int(getattr(w, "reg_downscale_width", 1024)))
-        self.spin_reg_width.setToolTip(trans.t("advanced_settings_intro"))
-        reg.addRow(trans.t("advanced_reg_width"), self.spin_reg_width)
+        self.spin_reg_width.setToolTip(trans.t("parameter_help_registration_width"))
+        add_help_row(reg, trans.t("advanced_reg_width"), self.spin_reg_width,
+                     "registration_width", "parameter_help_registration_width")
         self.combo_align_failure = QComboBox()
         self.combo_align_failure.setProperty("controlId", "combo_align_failure")
         failure_spec = next(spec for spec in registration_parameter_specs("homography")
@@ -192,6 +197,14 @@ class AdvancedSettingsDialog(QDialog):
         self.chk_align_cache.setChecked(
             bool(getattr(w, "align_cache_enabled", True)))
         reg.addRow(trans.t("action_align_cache"), self.chk_align_cache)
+        from utils.align_cache import cache_dir
+        self.chk_align_cache.setToolTip(trans.t("action_align_cache_hint"))
+        self.btn_clear_align_cache = QPushButton(trans.t("clear_alignment_cache"))
+        self.btn_clear_align_cache.setProperty("controlId", "btn_clear_align_cache")
+        self.btn_clear_align_cache.setToolTip(cache_dir())
+        self.btn_clear_align_cache.clicked.connect(self._clear_alignment_cache)
+        self._alignment_cache_cleared.connect(self._on_alignment_cache_cleared)
+        reg.addRow(self.btn_clear_align_cache)
         self.chk_collect_alignment_report = QCheckBox()
         self.chk_collect_alignment_report.setProperty("controlId", "chk_collect_alignment_report")
         self.chk_collect_alignment_report.setChecked(
@@ -327,6 +340,33 @@ class AdvancedSettingsDialog(QDialog):
         buttons.accepted.connect(self._apply)
         buttons.rejected.connect(self.reject)
         root.addWidget(buttons)
+
+    def _clear_alignment_cache(self):
+        from utils.align_cache import clear_alignment_cache
+
+        self.btn_clear_align_cache.setEnabled(False)
+
+        def clear():
+            try:
+                count, error = clear_alignment_cache(), ""
+            except OSError as exc:
+                count, error = None, str(exc)
+            try:
+                self._alignment_cache_cleared.emit(count, error)
+            except RuntimeError:
+                pass  # The dialog can be closed while deletion finishes.
+
+        QThreadPool.globalInstance().start(clear)
+
+    def _on_alignment_cache_cleared(self, count, error):
+        self.btn_clear_align_cache.setEnabled(True)
+        if error:
+            message = trans.t("clear_alignment_cache_failed").format(error=error)
+        elif count is None:
+            message = trans.t("clear_alignment_cache_busy")
+        else:
+            message = trans.t("clear_alignment_cache_done").format(count=count)
+        self.status.setText(message)
 
     def _browse_storage_directory(self):
         path = FileDialog.getExistingDirectory(

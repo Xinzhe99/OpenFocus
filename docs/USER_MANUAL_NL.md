@@ -792,7 +792,7 @@ iPhone-foto's laden rechtstreeks. Vereist `pillow-heif`; `pip install openfocus`
 
 ### Registratiecache
 
-OpenFocus kan registratieresultaten opslaan in een map `.openfocus_cache` naast de bronstapel. Dezelfde stapel opnieuw openen (bestanden ongewijzigd) slaat de uitlijning dan volledig over. Schakel via **Instellingen → Geavanceerde instellingen… → Registratie → Registratiecache**; verouderde items worden automatisch vervangen. De schakelaar staat standaard aan.
+OpenFocus bewaart registratieresultaten in de cachemap van de gebruiker. Als je een ongewijzigde stapel met dezelfde instellingen heropent, gebruikt OpenFocus het opgeslagen resultaat opnieuw. De schakelaar staat onder **Instellingen → Geavanceerde instellingen… → Registratie → Registratiecache**. Alle stapels delen een limiet van 2 GiB. Als er ruimte nodig is, worden de langst ongebruikte items verwijderd. Oude `.openfocus_cache`-mappen naast de bronstapels blijven behouden.
 
 ### Bewaarde instellingen
 
