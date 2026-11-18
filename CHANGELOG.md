@@ -23,6 +23,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   help diagnose stalled work.
 - Record Windows memory commitment and process usage when neural sessions fail.
 - Mark Dust Map and batch flat-field correction as experimental desktop tools.
+- Find the sources an OpenFocus B depth map uses in one compiled pass instead
+  of NumPy slices. Output pixels are unchanged.
 - Default desktop updates and public downloads to stable releases. Users can
   opt in to beta updates through Advanced Settings or the welcome dialog.
 - Prepare ECC source frames concurrently within the alignment stage's CPU and
