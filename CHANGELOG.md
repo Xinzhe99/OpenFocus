@@ -82,8 +82,6 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   available physical RAM, avoiding plans above the reported commit limit.
 - Include the immediate Windows job object's per-process commit limit in
   admission when that limit is present.
-- Restore the saved desktop workspace after an update without showing a failure
-  dialog while its source images are still loading.
 - Close the isolated language audit without project confirmation, including
   when an audit error interrupts the run.
 - Remove temporary launch-film frames when full video generation fails or is
@@ -91,6 +89,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Keep sign-in methods available while a browser or email sign-in is pending;
   choosing another method or retrying cancels the previous attempt and ignores
   its late callbacks.
+- Restore the saved desktop workspace after an update without showing a failure
+  dialog while its source images are still loading.
 - Wait for asynchronous image progress dialogs in the menu action sweep.
 - Keep private control sockets within Unix path length limits.
 - Honor cancellation after the final linear RAW header is read, before memory
