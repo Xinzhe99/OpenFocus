@@ -8,10 +8,11 @@ import os
 import threading
 import urllib.error
 from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
 
 import pytest
 
-from utils import account_client as account
+from utils import account_client as account, app_paths
 
 
 def session(token="private-token", expiry=9999999999):
@@ -1145,6 +1146,111 @@ def test_browser_login_cancellation_discards_exchange_result(monkeypatch):
     with pytest.raises(account.AccountError, match="cancelled"):
         client.login_with_browser(cancel=cancel)
     assert store.value == session()
+
+
+@pytest.fixture
+def windows_account_dirs(monkeypatch, tmp_path):
+    local = tmp_path / "local"
+    roaming = tmp_path / "roaming"
+    windows = SimpleNamespace(platform="win32")
+    monkeypatch.setattr(app_paths, "sys", windows)
+    monkeypatch.setattr(account, "sys", windows)
+    monkeypatch.setattr(app_paths, "is_portable_mode", lambda: False)
+    monkeypatch.setenv("LOCALAPPDATA", str(local))
+    monkeypatch.setenv("APPDATA", str(roaming))
+    monkeypatch.delenv("OPENFOCUS_DATA_DIR", raising=False)
+    return local, roaming / "OpenFocus"
+
+
+def test_windows_release_adopts_device_from_signed_in_preview(monkeypatch, windows_account_dirs):
+    local, roaming = windows_account_dirs
+    preview = local / "OpenFocus Preview" / "6c66f5b9-render" / "profile"
+    preview_store = account.TokenStore(preview / "account-session")
+    preview_store.save(session("preview-token"))
+    legacy = account.AccountClient(store=preview_store)._device_fields()
+    unused = account.AccountClient(store=account.TokenStore(roaming / "account-session"))
+    assert unused.device_id != legacy["device_id"]
+
+    class Listener(DummyListener):
+        def handle_request(self):
+            self.code = "exchange-code"
+
+    exchanges = []
+    revocations = []
+
+    def request(method, url, body=None, token=None, **kwargs):
+        if url.endswith("/logout"):
+            revocations.append(token)
+            return {"ok": True}
+        assert (method, url.rsplit("/", 1)[-1]) == ("POST", "exchange")
+        exchanges.append({key: body[key] for key in legacy})
+        return session("release-token")
+
+    monkeypatch.setattr(account, "_CallbackServer", Listener)
+    monkeypatch.setattr(account.webbrowser, "open", lambda _url: True)
+    stable = account.AccountClient(request=request)
+    assert stable.token() is None
+    with monkeypatch.context() as preview_env:
+        preview_env.setenv("OPENFOCUS_DATA_DIR", str(preview))
+        upgraded_preview = account.AccountClient()
+        assert upgraded_preview.token() == "preview-token"
+    stable.login("github")
+    assert exchanges == [legacy]
+    assert stable.token() == "release-token"
+    assert (local / "OpenFocus" / "account-device").is_file()
+    assert upgraded_preview._device_fields() == legacy
+
+    stable.logout()
+    assert revocations == ["release-token"]
+    assert account.AccountClient().token() is None
+    assert account.AccountClient()._device_fields() == legacy
+    assert preview_store.load() == session("preview-token")
+
+
+def test_windows_portable_adopts_legacy_device_and_old_release_session_can_refresh(
+        monkeypatch, tmp_path, windows_account_dirs):
+    local, roaming = windows_account_dirs
+    old_store = account.TokenStore(roaming / "account-session")
+    old_store.save(session("old-release-token"))
+    old_device = account.AccountClient(store=old_store)._device_fields()
+
+    def request(method, url, body=None, token=None, **kwargs):
+        assert (method, url.rsplit("/", 1)[-1]) == ("POST", "refresh")
+        assert body is None and token == "old-release-token"
+        return session("refreshed-release-token")
+
+    stable = account.AccountClient(request=request)
+    assert not (local / "OpenFocus" / "account-device").exists()
+    portable = tmp_path / "portable" / "OpenFocusData"
+    portable_store = account.TokenStore(portable / "account-session")
+    portable_store.save(session("portable-token"))
+    legacy = account.AccountClient(store=portable_store)._device_fields()
+    assert legacy != old_device
+
+    monkeypatch.setattr(app_paths, "is_portable_mode", lambda: True)
+    monkeypatch.setattr(app_paths, "portable_data_dir", lambda: str(portable))
+    client = account.AccountClient()
+    assert client._device_fields() == legacy
+    assert stable._device_fields() == legacy
+    assert client.token() == "portable-token"
+    assert stable.refresh()
+    assert old_store.load() == session("refreshed-release-token")
+
+
+def test_windows_isolated_stores_do_not_share_devices(monkeypatch, tmp_path, windows_account_dirs):
+    local, _ = windows_account_dirs
+    isolated = tmp_path / "isolated"
+    monkeypatch.setenv("OPENFOCUS_DATA_DIR", str(isolated))
+    override = account.AccountClient(device_name="Same name")
+    preview = local / "OpenFocus Preview" / "6c66f5b9-render" / "profile"
+    explicit = account.AccountClient(store=account.TokenStore(preview / "test-session"),
+                                     device_name="Same name")
+
+    assert account._valid_device_id(override.device_id)
+    assert account._valid_device_id(explicit.device_id)
+    assert override.device_name == explicit.device_name
+    assert override.device_id != explicit.device_id
+    assert not (local / "OpenFocus" / "account-device").exists()
 
 
 def test_device_identity_is_stable_and_private(tmp_path):

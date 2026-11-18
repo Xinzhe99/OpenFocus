@@ -243,8 +243,8 @@ class ControlServer(QObject):
             # macOS limits sockaddr_un paths to 103 bytes, including the
             # private staging directory used to publish the socket safely.
             stage_path = os.path.join(temp_dir, '.of-12345678', 's')
-            endpoint = os.path.join(temp_dir, self.socket_name)
-            if max(len(os.fsencode(stage_path)), len(os.fsencode(endpoint))) >= 104:
+            self.socket_name = os.path.join(temp_dir, self.socket_name)
+            if max(len(os.fsencode(stage_path)), len(os.fsencode(self.socket_name))) >= 104:
                 self.socket_name = os.path.join('/tmp', f'ofc-{os.getpid()}')
         self._buffers = {}
         self._pending_replies = {}
