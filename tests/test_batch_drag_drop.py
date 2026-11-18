@@ -76,6 +76,26 @@ def _select_fusion(dialog, method='openfocus_b'):
     assert dialog.fusion_combo.currentData() == method
 
 
+def test_dropped_folder_choice_fits_screen_and_keeps_full_path(qapp):
+    from PyQt6.QtWidgets import QLineEdit
+    from dialogs.batch import FolderImportDialog
+
+    folder = os.path.join('photos', *(['focus-session-with-a-long-name'] * 60), 'frame-set')
+    dialog = FolderImportDialog(folder)
+    try:
+        dialog.show()
+        qapp.processEvents()
+        assert dialog.frameGeometry().width() <= dialog.screen().availableGeometry().width()
+        path_field = dialog.findChild(QLineEdit)
+        path_field.selectAll()
+        assert path_field.selectedText() == folder
+        dialog.rb_batch.click()
+        dialog.ok_button.click()
+        assert dialog.result() == dialog.DialogCode.Accepted and not dialog.is_single_stack()
+    finally:
+        dialog.close()
+
+
 def test_drop_queues_every_folder_in_order(qapp, tmp_path):
     from dialogs.batch import BatchProcessingDialog
 
