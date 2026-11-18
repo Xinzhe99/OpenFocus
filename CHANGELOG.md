@@ -1,4 +1,5 @@
 # Changelog
+- Open Linux desktop menu entries from bundle paths that contain percent signs.
 
 All notable changes to OpenFocus are documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).

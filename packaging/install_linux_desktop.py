@@ -26,7 +26,12 @@ def install(bundle: Path, data_home: Path) -> Path:
     if not executable.is_file() or not os.access(executable, os.X_OK) or not icon.is_file():
         raise ValueError("Run this script from an intact, extracted OpenFocus bundle")
     text = template.read_text(encoding="utf-8")
-    text = text.replace("Exec=OpenFocus\n", f"Exec={exec_argument(str(executable))}\n")
+    # GLib checks the command's first token before expanding %% to %. Keep
+    # the bundle path as an argument and test its existence with TryExec.
+    text = text.replace("Exec=OpenFocus\n", (
+        f"TryExec={desktop_string(str(executable))}\n"
+        f"Exec=/usr/bin/env -- {exec_argument(str(executable))}\n"
+    ))
     text = text.replace("Icon=OpenFocus\n", f"Icon={desktop_string(str(icon))}\n")
     applications = data_home / "applications"
     applications.mkdir(parents=True, exist_ok=True)
