@@ -77,11 +77,18 @@ def test_roi_base_preview_uses_included_snapshot_and_actual_dimensions(qapp):
     frames = [np.zeros((12, 18, 3), np.uint8), np.full((24, 32, 3), 255, np.uint8)]
     dialog = ROIRenderOptionsDialog(2, frame_names=["first.png", "fourth.png"],
                                     frame_indices=[0, 3], frames=frames, roi_size=(5, 6))
+    dialog.show()
+    qapp.processEvents()
+    crop_height = dialog.height()
     assert dialog.frame_container.isHidden()
     dialog.rb_paste.setChecked(True)
+    qapp.processEvents()
+    assert dialog.height() > crop_height
     dialog.combo_frames.setCurrentIndex(1)
     assert not dialog.frame_container.isHidden()
     dialog.rb_crop.setChecked(True)
+    qapp.processEvents()
+    assert dialog.height() == crop_height
     assert dialog.frame_container.isHidden()
     dialog.rb_paste.setChecked(True)
     assert dialog.combo_frames.currentIndex() == 1
