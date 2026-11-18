@@ -4041,10 +4041,15 @@ class OpenFocus(QMainWindow):
             pass
 
     def show_contact_info(self):
-        """显示联系信息"""
-        # 创建联系信息对话框
-        dialog = ContactInfoDialog(self)
-        dialog.exec()
+        """Open Contact Us without interrupting work in the main window."""
+        dialog = next((item for item in self.findChildren(ContactInfoDialog)
+                       if item.isVisible()), None)
+        if dialog is None:
+            dialog = ContactInfoDialog(self)
+            dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+            dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
     
     def show_batch_processing_dialog(self, preload_folder_paths: list[str] = None, scale_factor: float = 1.0):
         """显示批处理设置对话框
