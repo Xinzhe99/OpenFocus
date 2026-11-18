@@ -16,7 +16,7 @@ from utils.image_utils import cv2_to_pixmap
 from utils.settings_store import get_settings
 from core.algorithms import (alignment_steps, fusion_algorithms, get_fusion,
     registration_parameter_specs, registration_algorithms, resolve_fusion_parameters,
-    resolve_registration_parameters)
+    desktop_registration_parameters)
 from ui.algorithm_parameters import AlgorithmParameterPanel
 from ui.algorithm_combo import (apply_method_availability, experimental_method_label,
                                 selected_item_enabled)
@@ -598,7 +598,7 @@ class CompareDialog(QDialog):
         if method not in self._registration_drafts:
             getter = getattr(self.window_main, 'registration_parameters_for', None)
             self._registration_drafts[method] = (getter(method) if callable(getter)
-                else resolve_registration_parameters(method))
+                else desktop_registration_parameters(method))
         self._editing_alignment = method
         specs = registration_parameter_specs(method)
         self.registration_parameter_panel.set_parameters(specs, self._registration_drafts[method])

@@ -37,6 +37,7 @@ from typing import Union, List, Optional
 
 from utils.sorting import natural_sort_key as _image_sort_key
 from core.image_loader import apply_exif_orientation
+from core.registration_errors import RejectedAlignmentFrame
 from core.frame_storage import capture_scratch, create_frame, run_with_scratch, store_frame
 from utils.logging_setup import log_action, log_operation
 from utils.performance_profile import current as _profile
@@ -353,10 +354,10 @@ def _align_homography_impl(input_source, output_path=None, img_filenames=None, d
             source_identities.append(identity)
             _check_cancel(should_cancel)
             if curr_des is None or len(curr_kps) < 4 or last_des is None:
-                print(f"Warning: Frame {idx} features insufficient. Keeping original position.")
                 if failure_policy == 'fail':
                     _report_alignment(idx, 'homography', 'failed', reason='insufficient features', reference_index=last_index)
-                    raise ValueError(f'Homography alignment failed at frame {idx + 1}: insufficient features')
+                    raise RejectedAlignmentFrame('Homography', idx, 'insufficient features')
+                print(f"Warning: Frame {idx} features insufficient. Keeping original position.")
                 _report_alignment(idx, 'homography', 'fallback', reason='insufficient features',
                                   reference_index=last_index, transform=H_global)
                 H_matrices.append(H_global.copy())
@@ -370,10 +371,10 @@ def _align_homography_impl(input_source, output_path=None, img_filenames=None, d
                     if m.distance < 0.70 * n.distance:
                         good_matches.append(m)
             if len(good_matches) < 6:
-                print(f"Warning: Frame {idx} poor matches ({len(good_matches)}). Keeping previous trajectory.")
                 if failure_policy == 'fail':
                     _report_alignment(idx, 'homography', 'failed', reason='insufficient matches', reference_index=last_index, match_count=len(good_matches))
-                    raise ValueError(f'Homography alignment failed at frame {idx + 1}: insufficient matches')
+                    raise RejectedAlignmentFrame('Homography', idx, 'insufficient matches')
+                print(f"Warning: Frame {idx} poor matches ({len(good_matches)}). Keeping previous trajectory.")
                 _report_alignment(idx, 'homography', 'fallback', reason='insufficient matches',
                                   reference_index=last_index, transform=H_global,
                                   match_count=len(good_matches))
@@ -389,7 +390,7 @@ def _align_homography_impl(input_source, output_path=None, img_filenames=None, d
                 print(f"Frame {idx} alignment failed.")
                 if failure_policy == 'fail':
                     _report_alignment(idx, 'homography', 'failed', reason='homography estimation failed', reference_index=last_index, match_count=len(good_matches))
-                    raise ValueError(f'Homography alignment failed at frame {idx + 1}: homography estimation failed')
+                    raise RejectedAlignmentFrame('Homography', idx, 'homography estimation failed')
                 _report_alignment(idx, 'homography', 'fallback', reason='homography estimation failed',
                                   reference_index=last_index, transform=H_global,
                                   match_count=len(good_matches))
@@ -923,7 +924,7 @@ def _align_openfocus_impl(input_source, output_path=None, img_filenames=None, *,
                         reference_frame=1, rotation=0., magnification=3.,
                         defer_warps=False, plan_callback=None):
     """Wide detector using the verified search and sampling behavior."""
-    from core.openfocus_alignment import estimate_alignment_plan, AlignmentEstimationError
+    from core.openfocus_alignment import estimate_alignment_plan
     images = input_source
     if isinstance(input_source, str):
         from dataclasses import replace
@@ -946,10 +947,10 @@ def _align_openfocus_impl(input_source, output_path=None, img_filenames=None, *,
                 reference_frame=reference_frame, rotation=rotation, magnification=magnification,
                 should_cancel=should_cancel,
                 failure_policy=failure_policy)
-        except AlignmentEstimationError as error:
-            for transform in getattr(error, 'completed_transforms', ()):
+        except RejectedAlignmentFrame as error:
+            for transform in error.completed_transforms:
                 _report_openfocus_transform(transform, reference_frame - 1)
-            _report_alignment(getattr(error, 'frame_index', None), 'openfocus', 'failed', reason=str(error))
+            _report_alignment(error.frame_index, 'openfocus', 'failed', reason=error.reason)
             raise
         if plan_callback is not None:
             plan_callback(plan)
@@ -1081,6 +1082,8 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
                 None,
                 1
             )
+            if failure_policy == 'fail' and (cc is None or not np.isfinite(cc)):
+                raise RejectedAlignmentFrame('ECC', idx, 'ECC failed to converge')
 
             # 尺度还原
             if warp_mode == cv2.MOTION_HOMOGRAPHY:
@@ -1091,7 +1094,9 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
             else:
                 warp_matrix[0, 2] /= scale_factor
                 warp_matrix[1, 2] /= scale_factor
-        except cv2.error:
+        except cv2.error as exc:
+            if failure_policy == 'fail':
+                raise RejectedAlignmentFrame('ECC', idx, 'ECC failed to converge') from exc
             cc = None
             print(f"Warning: ECC failed to converge at frame {idx}. Assuming no motion.")
             if warp_mode == cv2.MOTION_HOMOGRAPHY:
@@ -1134,10 +1139,6 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
     trajectory_failed = False
     for idx, (warp_matrix, cc) in enumerate(pair_transforms, start=1):
         _check_cancel(should_cancel)
-        if cc is None and failure_policy == 'fail':
-            _report_alignment(idx, 'ecc', 'failed', reason='ECC failed to converge',
-                              reference_index=idx - 1)
-            raise ValueError(f'ECC alignment failed at frame {idx + 1}: ECC failed to converge')
         # 矩阵累积：warp_matrix maps frame k-1 -> frame k, so the map
         # frame0 -> frame_k is Wk @ ... @ W1 — compose on the LEFT.
         # (The old right-side product W1 @ W2 @ ... left frame 3+ misaligned
@@ -1620,7 +1621,16 @@ class ImageRegistration:
         Returns:
             配准后的图像列表
         """
-        return _align_ecc_impl(input_source, output_path, downscale_width=self.downscale_width, thread_count=thread_count, should_cancel=should_cancel, use_gpu=self.use_gpu, failure_policy=failure_policy, defer_warps=self.defer_warps, plan_callback=self._perspective_stages.append)
+        try:
+            return _align_ecc_impl(input_source, output_path, downscale_width=self.downscale_width,
+                thread_count=thread_count, should_cancel=should_cancel, use_gpu=self.use_gpu,
+                failure_policy=failure_policy, defer_warps=self.defer_warps,
+                plan_callback=self._perspective_stages.append)
+        except RejectedAlignmentFrame as error:
+            # Pair estimation may run on a pool thread. Record it in the caller's report.
+            _report_alignment(error.frame_index, 'ecc', 'failed', reason=error.reason,
+                              reference_index=error.frame_index - 1)
+            raise
 
 
     def set_method(self, method):
