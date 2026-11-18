@@ -453,16 +453,28 @@ def decode_image(path: str, *, allow_transparent_png: bool = False,
 _RAW_TIFF_MAGICS = {b"II*\x00", b"MM\x00*", b"IIRO", b"IIRS", b"MMOR", b"IIU\x00"}
 
 
-class _RawExifReader:
-    """Seek within a RAW while bounding the total metadata read by Pillow."""
+_EXIF_SNAPSHOT_LIMIT = 16 * 1024 * 1024
+
+
+class _ExifReadLimit(Exception):
+    """Stop Pillow's IFD parser, which treats OSError as a missing tag."""
+
+    def __init__(self, size):
+        self.size = size
+
+
+class _BoundedExifReader:
+    """Bound the total metadata read while Pillow traverses an IFD and its children."""
 
     def __init__(self, stream):
         self.stream = stream
-        self.remaining = 16 * 1024 * 1024
+        self.remaining = _EXIF_SNAPSHOT_LIMIT
 
     def read(self, size=-1):
-        if size < 0 or size > self.remaining:
-            raise OSError("RAW EXIF metadata exceeds the read limit")
+        if size < 0:
+            raise OSError('Unbounded EXIF read')
+        if size > self.remaining:
+            raise _ExifReadLimit(_EXIF_SNAPSHOT_LIMIT - self.remaining + size)
         data = self.stream.read(size)
         self.remaining -= len(data)
         return data
@@ -489,7 +501,7 @@ def _read_raw_exif_bytes(path: str) -> bytes:
             # Pillow use a standard header without copying or changing the file.
             src = PILImage.Exif()
             src.endian = "<" if magic[:2] == b"II" else ">"
-            src.load_from_fp(_RawExifReader(fh), int.from_bytes(
+            src.load_from_fp(_BoundedExifReader(fh), int.from_bytes(
                 offset, "little" if src.endian == "<" else "big"))
             exif = _sanitize_exif(src)
             return exif.tobytes() if exif is not None else b""
@@ -512,13 +524,16 @@ def _exif_bytes_from_image(image) -> bytes:
         return b''
 
 
-def _tiff_page_exif(tif, page):
+def _tiff_page_exif(tif, page, path):
     # Read the IFD directly even when Pillow has no decoder for the pixel layout.
     src = PILImage.Exif()
     src.endian = tif.byteorder
     src.bigtiff = tif.is_bigtiff
-    src.load_from_fp(_RawExifReader(tif.filehandle), page.offset)
-    clean = _sanitize_exif(src)
+    try:
+        src.load_from_fp(_BoundedExifReader(tif.filehandle), page.offset)
+        clean = _sanitize_exif(src)
+    except _ExifReadLimit as exc:
+        raise SourceExifTooLarge(path, exc.size, _EXIF_SNAPSHOT_LIMIT) from exc
     return clean.tobytes() if clean is not None else b''
 
 
@@ -534,16 +549,15 @@ def _read_exif_bytes(path: str, page: Optional[int] = None) -> bytes:
             import tifffile
             with tifffile.TiffFile(path) as tif:
                 entry = next(tiff_source_pages(tif))[1] if page is None else tif.pages[page]
-                return _tiff_page_exif(tif, entry)
+                return _tiff_page_exif(tif, entry, path)
         if ext not in ('.jpg', '.jpeg', '.jpe', '.jfif', '.png', '.webp'):
             return b''
         with PILImage.open(path) as image:
             return _exif_bytes_from_image(image)
+    except SourceExifTooLarge:
+        raise
     except Exception:
         return b''
-
-
-_EXIF_SNAPSHOT_LIMIT = 16 * 1024 * 1024
 
 
 def _read_safe_exif(path: str, page: Optional[int] = None) -> bytes:
@@ -635,9 +649,9 @@ def _frame_metadata(path, frames, should_cancel):
                     raise _DecodeCancelled()
                 try:
                     page = tif.pages[frame.page]
-                    raw = _tiff_page_exif(tif, page)
+                    raw = _tiff_page_exif(tif, page, path)
                     profile = _tiff_page_profile(path, page)
-                except UnsupportedColorSpace:
+                except (SourceExifTooLarge, UnsupportedColorSpace):
                     raise
                 except (OSError, ValueError, TypeError, EOFError):
                     raw, profile = b'', b''
