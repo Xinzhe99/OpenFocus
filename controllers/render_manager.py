@@ -3,8 +3,7 @@ from copy import deepcopy
 
 
 from PyQt6.QtCore import QObject, QTimer, Qt, pyqtSignal
-from PyQt6.QtWidgets import (QApplication, QMessageBox, QDialog, QDialogButtonBox,
-                             QPlainTextEdit, QVBoxLayout)
+from PyQt6.QtWidgets import QApplication, QDialog, QMessageBox
 
 from utils import show_message_box, show_warning_box
 from utils.image_utils import cv2_to_pixmap
@@ -130,7 +129,7 @@ class RenderManager:
                 tuple(getattr(window, name, None) for name in (
                     'thread_count', 'resource_preference', 'current_scale_factor',
                     'align_cache_enabled', 'collect_alignment_report', 'roi_mode_active',
-                    'current_folder_path', 'tile_enabled', 'profile_performance', 'debug_logging')),
+                    'current_folder_path', 'tile_enabled', 'profile_performance')),
                 bool(window.chk_quick_preview.isChecked()), frame_storage._storage_directory,
                 self._compare_token)
 
@@ -234,136 +233,11 @@ class RenderManager:
         if completion is not None:
             completion(status)
 
-    def show_alignment_report(self, *, parent=None) -> None:
-        dialog = QDialog(parent or self.window)
-        dialog.setWindowTitle(trans.t('alignment_report_title'))
-        dialog.resize(640, 420)
-        layout = QVBoxLayout(dialog)
-        text = QPlainTextEdit(dialog)
-        text.setReadOnly(True)
-        text.setPlainText(self.alignment_report_text())
-        layout.addWidget(text)
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close, parent=dialog)
-        buttons.button(QDialogButtonBox.StandardButton.Close).setText(trans.t('dialog_close'))
-        buttons.rejected.connect(dialog.reject)
-        layout.addWidget(buttons)
-        dialog.exec()
-
-    def show_performance_report(self, *, parent=None) -> None:
-        from PyQt6.QtGui import QFontDatabase
-        from utils.performance_profile import summary
-        dialog = QDialog(parent or self.window)
-        dialog.setWindowTitle(trans.t('perf_report_title'))
-        dialog.resize(900, 620)
-        layout = QVBoxLayout(dialog)
-        text = QPlainTextEdit(dialog)
-        text.setReadOnly(True)
-        # The summary is a table and a tree: its columns need a fixed pitch.
-        # A widget style sheet, because the application's own overrides setFont().
-        fixed = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
-        text.setFont(fixed)
-        text.setStyleSheet(f'QPlainTextEdit {{ font-family: "{fixed.family()}", monospace; }}')
-        report = self.performance_report
-        text.setPlainText(summary(report) if report else trans.t('perf_report_unavailable'))
-        layout.addWidget(text)
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close, parent=dialog)
-        buttons.button(QDialogButtonBox.StandardButton.Close).setText(trans.t('dialog_close'))
-        save = buttons.addButton(trans.t('perf_report_save'), QDialogButtonBox.ButtonRole.ActionRole)
-        save.setProperty('controlId', 'btn_performance_report_save')
-        save.setEnabled(bool(report))
-        save.clicked.connect(lambda: self.save_performance_report(parent=dialog))
-        buttons.rejected.connect(dialog.reject)
-        layout.addWidget(buttons)
-        dialog.exec()
-
-    def save_performance_report(self, path: Optional[str] = None, *, parent=None) -> Optional[str]:
-        """Write the latest report as JSON; asks for a path when none is given."""
-        from utils.file_dialogs import FileDialog
-        from utils.performance_profile import dumps
-        if not self.performance_report:
-            return None
-        if path is None:
-            path, _ = FileDialog.getSaveFileName(
-                parent or self.window, trans.t('perf_report_save'),
-                'openfocus-performance.json', 'JSON (*.json)')
-            if not path:
-                return None
-        try:
-            with open(path, 'w', encoding='utf-8') as stream:
-                stream.write(dumps(self.performance_report) + '\n')
-        except OSError as exc:
-            show_warning_box(parent or self.window, trans.t('perf_report_title'),
-                             trans.t('perf_report_save_failed').format(error=str(exc)))
-            return None
-        return path
-
     def _capture_performance_report(self) -> None:
         """Keep the finished worker's report, including a partial one."""
         report = getattr(self.worker, 'performance_report', None)
         if report:
             self.performance_report = report
-
-    def alignment_report_text(self) -> str:
-        diagnostic = self.alignment_diagnostics
-        if not diagnostic:
-            return trans.t('alignment_report_unavailable')
-        entries, names, indices = diagnostic
-        if not entries:
-            return trans.t('alignment_report_unavailable')
-        reason_keys = {
-            'low detector quality': 'alignment_reason_low_quality',
-            'motion outside limits': 'alignment_reason_outside_limits',
-            'reference alignment fell back': 'alignment_reason_reference_fallback',
-            'insufficient features': 'alignment_reason_insufficient_features',
-            'insufficient matches': 'alignment_reason_insufficient_matches',
-            'homography estimation failed': 'alignment_reason_homography_failed',
-            'ECC failed to converge': 'alignment_reason_ecc_failed',
-        }
-
-        def frame_label(index):
-            if not isinstance(index, int) or not 0 <= index < len(names):
-                return None
-            number = indices[index] + 1 if index < len(indices) else index + 1
-            return number, names[index]
-
-        lines = []
-        for entry in entries:
-            frame = frame_label(entry.get('frame_index'))
-            if frame is None:
-                continue
-            number, name = frame
-            method = entry.get('method', '')
-            status = entry.get('status', '')
-            status_key = 'alignment_report_' + status
-            status_text = trans.t(status_key) if status in ('reference', 'aligned', 'fallback', 'failed') else status
-            lines.append(trans.t('alignment_report_frame').format(
-                number=number, name=name, method=method, status=status_text))
-            details = []
-            reason = entry.get('reason')
-            if reason:
-                reason_text = trans.t(reason_keys[reason]) if reason in reason_keys else reason
-                details.append(f"{trans.t('alignment_detail_reason')}: {reason_text}")
-            quality_key = {'openfocus': 'alignment_detail_quality_fast',
-                           'ecc': 'alignment_detail_quality_ecc'}.get(method)
-            if quality_key and entry.get('quality') is not None:
-                details.append(f"{trans.t(quality_key)}: {entry['quality']:.4g}")
-            for field, label in (('match_count', 'alignment_detail_matches'),
-                                 ('inlier_count', 'alignment_detail_inliers')):
-                if entry.get(field) is not None:
-                    details.append(f"{trans.t(label)}: {entry[field]}")
-            reference = frame_label(entry.get('reference_index'))
-            if reference is not None:
-                details.append(f"{trans.t('alignment_detail_reference')}: {reference[0]} — {reference[1]}")
-            if entry.get('chained'):
-                details.append(trans.t('alignment_detail_chained'))
-            if details:
-                lines.append('  ' + ' · '.join(details))
-            matrix = entry.get('transform')
-            if matrix is not None:
-                lines.append(f"  {trans.t('alignment_detail_transform')}:")
-                lines.extend('    [' + ', '.join(f'{value:.6g}' for value in row) + ']'
-                             for row in matrix)
-        return '\n'.join(lines) if lines else trans.t('alignment_report_unavailable')
 
     def _alignment_key(self, included, method=None):
         window = self.window
@@ -1993,7 +1867,6 @@ class RenderManager:
                                       if entry.get('status') == 'fallback' and 'frame_index' in entry})
                 if fallback_count:
                     info_lines.append(f"{trans.t('alignment_report_fallback')}: {fallback_count}")
-                info_lines.append(trans.t('alignment_report_available'))
 
             # Non-blocking completion report: a modal "Completed" box after
             # every render (incl. quick previews) cost a click per iteration
@@ -2370,8 +2243,7 @@ class RenderManager:
                 window,
                 trans.t("msg_error"),
                 trans.t("msg_proc_error"),
-                (error_message + '\n\n' + trans.t('alignment_report_available')
-                 if self.alignment_diagnostics[0] else error_message),
+                error_message,
                 QMessageBox.Icon.Critical,
             )
 

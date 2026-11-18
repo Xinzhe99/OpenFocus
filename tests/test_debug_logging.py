@@ -1,5 +1,4 @@
-"""Detailed (DEBUG) logging: runtime switch, what it records, child processes, CLI."""
-import logging
+"""Detailed session logs, explicit support overrides, isolated renders and CLI."""
 import os
 import subprocess
 import sys
@@ -41,27 +40,25 @@ def _tiled_fusion():
 
 def test_runtime_level_survives_repeated_setup_and_returns_to_the_default(log_folder):
     logger = logs.get_logger(__name__)
-    assert not logs.debug_enabled()
-    assert logs.set_debug_logging(True) == logging.DEBUG
     assert logs.debug_enabled()
     logs.setup_logging()                     # every new window calls this again
-    logger.debug("detail while on")
-    logs.set_debug_logging(False)
-    logger.debug("detail while off")
+    logger.debug("default detail")
+    logs.set_log_level("INFO")
+    logs.setup_logging()
+    logger.debug("suppressed detail")
+    logs.set_log_level(None)
+    logger.debug("detail after reset")
     text = logs.session_log_excerpt()
-    assert "detail while on" in text and "detail while off" not in text
-    # The log itself shows where its detail starts and stops.
-    changes = [line for line in text.splitlines() if "event=log_level.changed" in line]
-    assert ['"level": "DEBUG"' in line for line in changes] == [True, False]
-    assert not logs.debug_enabled()
+    assert "default detail" in text and "detail after reset" in text
+    assert "suppressed detail" not in text
 
 
 def test_switching_off_returns_to_the_environment_level(log_folder, monkeypatch):
     monkeypatch.setenv("OPENFOCUS_LOG_LEVEL", "WARNING")
     logs.setup_logging()
-    logs.set_debug_logging(True)
+    logs.set_log_level("DEBUG")
     assert logs.debug_enabled()
-    logs.set_debug_logging(False)
+    logs.set_log_level(None)
     logs.log_action("quiet_action")
     logs.get_logger(__name__).warning("still recorded")
     text = logs.session_log_excerpt()
@@ -75,7 +72,7 @@ def test_a_change_between_quiet_levels_is_still_recorded(log_folder):
     changes = [line for line in logs.session_log_excerpt().splitlines()
                if "event=log_level.changed" in line]
     assert ['"level": "%s"' % name in line for line, name in
-            zip(changes, ("WARNING", "ERROR", "INFO"))] == [True, True, True]
+            zip(changes, ("WARNING", "ERROR", "DEBUG"))] == [True, True, True]
 
 
 def test_moving_the_log_folder_keeps_the_chosen_detail(log_folder, tmp_path):
@@ -86,8 +83,9 @@ def test_moving_the_log_folder_keeps_the_chosen_detail(log_folder, tmp_path):
 
 
 def test_debug_events_are_recorded_only_with_detail(log_folder):
+    logs.set_log_level("INFO")
     logs.log_debug("hidden_plan", workers=1)
-    logs.set_debug_logging(True)
+    logs.set_log_level(None)
     logs.log_debug("visible_plan", workers=2, shape=(3, 4))
     text = logs.session_log_excerpt()
     assert "hidden_plan" not in text
@@ -96,9 +94,10 @@ def test_debug_events_are_recorded_only_with_detail(log_folder):
 
 
 def test_detail_explains_tiling_planning_and_scratch_without_changing_pixels(log_folder):
+    logs.set_log_level("INFO")
     reference = _tiled_fusion()
     quiet = logs.session_log_excerpt(1_000_000)
-    logs.set_debug_logging(True)
+    logs.set_log_level(None)
     detailed = _tiled_fusion()
     text = logs.session_log_excerpt(1_000_000)
     np.testing.assert_array_equal(detailed, reference)
@@ -110,50 +109,6 @@ def test_detail_explains_tiling_planning_and_scratch_without_changing_pixels(log
     assert text.count("event=fusion_tile ") == 12
     # Pixels and paths stay out of these records.
     assert not any("ndarray" in line or "array(" in line for line in text.splitlines())
-
-
-def test_advanced_settings_switch_applies_at_once_and_is_not_a_template_setting(
-        qapp, log_folder):
-    from types import SimpleNamespace
-    from PyQt6.QtWidgets import QWidget
-    from dialogs.advanced_settings import AdvancedSettingsDialog
-    from utils.project_file import TEMPLATE_SETTINGS
-    from utils.settings_store import _PERSISTED_FIELDS
-
-    window = QWidget()
-    window.saved = []
-    window.persist_settings = lambda: window.saved.append(window.debug_logging)
-    window.update_manager = SimpleNamespace(auto_download=True)
-    window.update_manager.set_auto_download = lambda value: setattr(
-        window.update_manager, "auto_download", value)
-    try:
-        dialog = AdvancedSettingsDialog(window)
-        assert dialog.chk_debug_logging.property("controlId") == "chk_debug_logging"
-        assert dialog.btn_open_logs.property("controlId") == "btn_open_logs"
-        assert not dialog.chk_debug_logging.isChecked()
-        dialog.chk_debug_logging.setChecked(True)
-        dialog.reject()                        # Cancel changes nothing
-        assert not logs.debug_enabled()
-        dialog.deleteLater()
-
-        dialog = AdvancedSettingsDialog(window)
-        dialog.chk_debug_logging.setChecked(True)
-        dialog._apply()
-        assert window.debug_logging is True and window.saved == [True]
-        assert logs.debug_enabled()
-        dialog.deleteLater()
-
-        dialog = AdvancedSettingsDialog(window)
-        assert dialog.chk_debug_logging.isChecked()
-        dialog.chk_debug_logging.setChecked(False)
-        dialog._apply()
-        assert not logs.debug_enabled()
-        dialog.deleteLater()
-    finally:
-        window.deleteLater()
-        qapp.processEvents()
-    assert "debug_logging" in _PERSISTED_FIELDS
-    assert "debug_logging" not in TEMPLATE_SETTINGS
 
 
 def _wait(worker, qapp):
@@ -174,7 +129,8 @@ def test_isolated_render_records_the_same_detail_as_its_window(
     scratch = tmp_path / 'scratch'
     scratch.mkdir()
     monkeypatch.setattr(frame_storage, '_storage_directory', str(scratch))
-    logs.set_debug_logging(detailed)
+    if not detailed:
+        logs.set_log_level("INFO")
     worker = RenderProcessWorker(
         _stack(), algorithm='guided_filter', use_gpu=False, thread_count=1,
         exposure_match=False, tile_enabled=True, tile_block_size=64, tile_overlap=16,
@@ -209,7 +165,7 @@ def test_cli_log_level_selects_detail_and_names_the_log_file(tmp_path):
         assert imwrite_auto(str(stack / f'f{index}.png'), image)
     tiles = ('--method', 'guided_filter', '--threads', '1', '--tile-size', '64',
              '--tile-overlap', '16', '--tile-threshold', '32')
-    env = {'OPENFOCUS_LOG_DIR': str(tmp_path / 'logs'), 'OPENFOCUS_LOG_LEVEL': ''}
+    env = {'OPENFOCUS_LOG_DIR': str(tmp_path / 'logs'), 'OPENFOCUS_LOG_LEVEL': 'info'}
     plain = _run_cli('--input', str(stack), '--output', str(tmp_path / 'plain.png'), *tiles,
                      env=env)
     assert plain.returncode == 0, plain.stderr

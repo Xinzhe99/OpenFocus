@@ -36,6 +36,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Output pixels are unchanged.
 - Require an account to enter the desktop application; a saved sign-in can be
   used offline. Signing out returns to the sign-in screen.
+- Group advanced desktop settings into General, Fusion, Registration, and Startup and Updates.
+  Keep the tile size and overlap visible and write detailed session logs by default.
+  Automatic error reports and usage statistics start checked and preserve saved opt-outs.
 - Smooth OpenFocus B detail scores with per-row column sums, reflecting rows
   once per row and columns only at the edges. Output pixels are unchanged.
 - Expose the active render stage through the local control channel.

@@ -751,6 +751,7 @@ class ControlServer(QObject):
 
     def _cmd_app_state(self, args):
         window = self.window
+        from utils.logging_setup import debug_enabled
         method = window.current_fusion_method()
         alignment = window.current_alignment_method()
         return {
@@ -777,7 +778,7 @@ class ControlServer(QObject):
                 "reg_downscale_width": int(getattr(window, "reg_downscale_width", 1024)),
                 "storage_directory": getattr(window, "storage_directory", "") or "",
                 "profile_performance": bool(getattr(window, "profile_performance", False)),
-                "debug_logging": bool(getattr(window, "debug_logging", False)),
+                "debug_logging": debug_enabled(),
             },
             "render": _render_state(window),
             "outputs": {"count": window.output_list.count(),
@@ -988,10 +989,8 @@ class ControlServer(QObject):
             window.storage_directory = value
             value = window.storage_directory
         elif name == "debug_logging":
-            from utils.logging_setup import set_debug_logging
-            window.debug_logging = value
-            set_debug_logging(value)
-            value = window.debug_logging
+            from utils.logging_setup import set_log_level
+            set_log_level("DEBUG" if value else "INFO")
         else:
             setattr(window, name, value)
             value = getattr(window, name)

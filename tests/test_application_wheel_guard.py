@@ -101,30 +101,36 @@ def _exercise_wheel_delivery():
     combo.hidePopup()
 
     settings = AdvancedSettingsDialog(QWidget())
+    settings.resize(480, 200)
     settings.show()
     app.processEvents()
-    settings_scroll = settings.findChild(QScrollArea)
-    settings_bar = settings_scroll.verticalScrollBar()
+    settings.registration_options_disclosure.setChecked(True)
     reference = settings.openfocus_registration_panel.editors['reference_frame']
-    for editor, target, value in (
-        (settings.spin_threads, settings.spin_threads, settings.spin_threads.value),
-        (settings.spin_threads, settings.spin_threads.lineEdit(), settings.spin_threads.value),
-        (settings.combo_resources, settings.combo_resources, settings.combo_resources.currentData),
-        (reference, reference.lineEdit(), reference.value),
+    for page, editor, target, value in (
+        (1, settings.spin_block, settings.spin_block, settings.spin_block.value),
+        (1, settings.spin_block, settings.spin_block.lineEdit(), settings.spin_block.value),
+        (1, settings.combo_resources, settings.combo_resources, settings.combo_resources.currentData),
+        (2, reference, reference.lineEdit(), reference.value),
     ):
-        settings.chk_experimental_features.setFocus()
+        settings.tabs.setCurrentIndex(page)
+        settings.tabs.tabBar().setFocus()
+        app.processEvents()
+        settings_scroll = settings.tabs.currentWidget()
+        settings_bar = settings_scroll.verticalScrollBar()
         settings_scroll.ensureWidgetVisible(editor)
         before = settings_bar.value(), value()
         wheel(target, 120 if before[0] else -120)
         assert settings_bar.value() != before[0]
         assert value() == before[1]
         assert not editor.hasFocus()
-    settings_scroll.ensureWidgetVisible(settings.spin_threads)
-    QTest.mouseClick(settings.spin_threads.lineEdit(), Qt.MouseButton.LeftButton)
-    assert settings.spin_threads.hasFocus()
-    before = settings.spin_threads.value()
-    QTest.keyClick(settings.spin_threads, Qt.Key.Key_Up)
-    assert settings.spin_threads.value() == before + 1
+    settings.tabs.setCurrentIndex(1)
+    settings_scroll = settings.tabs.currentWidget()
+    settings_scroll.ensureWidgetVisible(settings.spin_block)
+    QTest.mouseClick(settings.spin_block.lineEdit(), Qt.MouseButton.LeftButton)
+    assert settings.spin_block.hasFocus()
+    before = settings.spin_block.value()
+    QTest.keyClick(settings.spin_block, Qt.Key.Key_Up)
+    assert settings.spin_block.value() == before + settings.spin_block.singleStep()
     settings_scroll.ensureWidgetVisible(settings.combo_resources)
     settings.combo_resources.setFocus()
     QTest.keyClick(settings.combo_resources, Qt.Key.Key_Down)
