@@ -108,7 +108,7 @@ jobs:
       - name: Run test suite
         id: pytest
         shell: bash
-        timeout-minutes: 30
+        timeout-minutes: ${{ matrix.os == 'macos-latest' && 60 || 30 }}
         env:
           QT_QPA_PLATFORM: offscreen
           PYTHONFAULTHANDLER: '1'
