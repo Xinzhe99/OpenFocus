@@ -425,10 +425,9 @@ def run(executable: Path, resources: Path | None = None) -> None:
                     f"Packaged CLI version failed: {version.stdout!r} "
                     f"{version.stderr!r}"
                 )
-            process = subprocess.Popen(
-                [str(executable)], env=environment,
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            )
+            # Keep Qt plugin loader errors visible when QApplication aborts.
+            process = subprocess.Popen([str(executable)], env=environment,
+                                       stdout=subprocess.DEVNULL)
             try:
                 _wait_for_control(process, root / "control.json")
                 _exercise(executable, environment, root, shape, resources)
@@ -471,10 +470,8 @@ def run(executable: Path, resources: Path | None = None) -> None:
                 )
             # A second frozen process must restore the last selected language.
             (root / "control.json").unlink(missing_ok=True)
-            process = subprocess.Popen(
-                [str(executable)], env=environment,
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            )
+            process = subprocess.Popen([str(executable)], env=environment,
+                                       stdout=subprocess.DEVNULL)
             try:
                 _wait_for_control(process, root / "control.json")
                 _check_language(executable, environment, "pl")

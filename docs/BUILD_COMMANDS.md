@@ -20,6 +20,11 @@ Stable desktop builds and GPU variants share [runtime_resources.json](../packagi
 
 ## Linux desktop package
 
+Use a clean Python environment for Linux builds. `requirements.txt` selects
+`opencv-python-headless` for image processing and PyQt6 provides the desktop UI.
+Install only one OpenCV wheel in that environment since both variants provide
+the `cv2` module.
+
 The x86-64 bundle is built on Ubuntu 22.04 (glibc 2.35); it targets modern
 glibc-based distributions including Arch and Omarchy, and needs a graphical
 X11 or Wayland session. It does not use AppImage or FUSE. The system must
