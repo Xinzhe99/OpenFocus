@@ -918,7 +918,7 @@ class OpenFocus(QMainWindow):
                 if result and result.get('method') == method:
                     device = result['device']
                     state = 'actual'
-                elif method in ('openfocus_b', 'openfocus_c'):
+                elif method in ('openfocus_a', 'openfocus_b', 'openfocus_c'):
                     if opencl:
                         device, state = opencl_name, 'ready'
                     elif opencl is None:
@@ -942,7 +942,7 @@ class OpenFocus(QMainWindow):
                 detail,
                 hardware,
                 'ONNX Runtime: ' + ', '.join(diagnostics['providers']),
-                'OpenFocus B/C: ' + (opencl_name if opencl else 'CPU' if opencl is False else '…'),
+                'OpenFocus A/B/C: ' + (opencl_name if opencl else 'CPU' if opencl is False else '…'),
                 trans.t('env_gpu_accel') + ': ' + neural_runtime.display_name(capability)
                 if neural_runtime.is_accelerator(capability)
                 else trans.t('env_gpu_memory_unknown').format(

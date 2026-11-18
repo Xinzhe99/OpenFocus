@@ -266,7 +266,7 @@ class GpuA:
     """Device-resident OpenFocus A fusion; mirrors openfocus_a_impl (hard) step for step."""
 
     def __init__(self):
-        from fusion_methods._openfocus_gpu import GpuError, _device
+        from fusion_methods._openfocus_gpu import GpuError, _device, opencl_device_name
         try:
             import pyopencl as cl
             device = _device(cl)
@@ -274,7 +274,7 @@ class GpuA:
                 raise GpuError('No available OpenCL GPU')
             self.cl = cl
             self.device = device
-            self.device_name = 'OpenCL: ' + str(device.name).strip()
+            self.device_name = opencl_device_name(device)
             self.ctx = cl.Context(devices=[device])
             self.q = cl.CommandQueue(self.ctx, device=device)
             self.mf = cl.mem_flags
