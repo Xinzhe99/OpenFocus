@@ -278,7 +278,8 @@ def test_unavailable_preview_decode_failure_does_not_publish_canvas(tmp_path, mo
 
 
 def test_roi_alignment_preserves_original_descriptors(tmp_path, monkeypatch):
-    frame, original = _source(tmp_path)
+    texture = np.random.default_rng(71).integers(0, 256, (40, 56, 1), dtype=np.uint8)
+    frame, original = _source(tmp_path, value=texture)
     def forbidden(*args, **kwargs):
         raise AssertionError('ROI alignment staged all original frames')
     monkeypatch.setattr(workers, 'materialize_frames', forbidden)
