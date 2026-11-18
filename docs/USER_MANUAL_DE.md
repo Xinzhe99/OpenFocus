@@ -76,7 +76,7 @@ Unter **Speichern unter** speichert gewöhnliches TIFF das Ergebnis als einzelne
 ### Installation
 
 Laden Sie den aktuellen Windows-, macOS- oder Linux-x86-64-Desktop-Build von der [OpenFocus-Website](https://openfocus.top/#download). Der Linux-Desktop-Build ist ab v1.77.0 verfügbar; ältere Versionen stehen auch unter [GitHub Releases](https://github.com/Xinzhe99/OpenFocus/releases) bereit.
-Website und Installationsskripte bieten auch neuere Betaversionen an, derzeit [Vorabversion v1.77.0-beta.7](https://github.com/Xinzhe99/OpenFocus/releases/tag/v1.77.0-beta.7). Der Desktop-Updater bietet ebenfalls neuere Betas an; die Linux-CLI von PyPI bleibt stabil.
+Die Website bietet standardmäßig stabile Desktopversionen. Unter Windows und macOS können Betaversionen für automatische Updates aktiviert werden; unter Linux laden Sie zum Aktualisieren ein neues Desktoparchiv herunter. Die PyPI-CLI wird separat veröffentlicht.
 
 | Plattform | Datei | Typ |
 |-----------|-------|-----|
