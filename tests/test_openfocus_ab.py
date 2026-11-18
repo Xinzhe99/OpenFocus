@@ -815,3 +815,18 @@ def test_c_odd_tiles_keep_full_image_pyramid_phase(shape, block_size, overlap):
     difference = np.abs(tiled.astype(np.int16) - whole.astype(np.int16))
     assert difference.max() <= 1
     assert difference.mean() < 0.2
+
+
+@pytest.mark.parametrize('guided', [False, True])
+def test_depth_recurrence_is_independent_of_native_block_rows(monkeypatch, guided):
+    from fusion_methods import openfocus_depth as depth
+
+    rng = np.random.default_rng(4421)
+    source = rng.integers(0, 65536, (301, 133), dtype=np.uint16)
+    guide = rng.integers(0, 65536, source.shape, dtype=np.uint16) if guided else None
+    results = []
+    for rows in (5, 128, depth._AXIS_BLOCK_ROWS):
+        monkeypatch.setattr(depth, '_AXIS_BLOCK_ROWS', rows)
+        results.append(depth._filter(source, 2.4, lambda: None, guide, 153.6))
+    for result in results[1:]:
+        np.testing.assert_array_equal(result, results[0])

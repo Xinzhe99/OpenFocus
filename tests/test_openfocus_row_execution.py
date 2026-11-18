@@ -78,6 +78,40 @@ def test_native_parallel_result_matches_serial_with_odd_edges(resources, monkeyp
 
 
 @pytest.mark.parametrize('dtype', [np.uint8, np.uint16])
+@pytest.mark.parametrize('depth_color', [False, True])
+def test_gray_codes_share_rows_among_job_workers(resources, monkeypatch, dtype, depth_color):
+    from fusion_methods import _openfocus_kernels, _openfocus_pixels
+    frame = _stack(dtype)[0]
+    # Outside a job the same kernel converts every band on the calling thread.
+    serial = np.array(_openfocus_pixels.frame_gray_codes(frame, None, None,
+                                                         depth_color=depth_color))
+    original = _openfocus_kernels.gray_rows
+    lock = threading.Lock()
+    barrier = threading.Barrier(4)
+    identities = set()
+    bands = []
+
+    def native(image, gray, start, stop, *args):
+        with lock:
+            first = threading.get_ident() not in identities
+            identities.add(threading.get_ident())
+            bands.append((start, stop))
+        if first:
+            barrier.wait(timeout=5)
+        return original(image, gray, start, stop, *args)
+    monkeypatch.setattr(_openfocus_kernels, 'gray_rows', native)
+
+    @execution.execution_job
+    def convert():
+        execution.configure_rows([frame, frame], None, 'openfocus_b', 4, None)
+        return np.array(_openfocus_pixels.frame_gray_codes(frame, None, None,
+                                                           depth_color=depth_color))
+    np.testing.assert_array_equal(convert(), serial)
+    assert len(identities) == 4
+    assert sorted(bands) == [(start, min(513, start + 128)) for start in range(0, 513, 128)]
+
+
+@pytest.mark.parametrize('dtype', [np.uint8, np.uint16])
 def test_c_parallel_matches_serial_on_odd_dimensions(resources, dtype):
     frames = _stack(dtype)
     originals = [frame.copy() for frame in frames]

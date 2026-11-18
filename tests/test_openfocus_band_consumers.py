@@ -146,3 +146,34 @@ def test_depth_filter_respects_a_half_mebibyte_scratch_budget(guided):
     np.testing.assert_array_equal(actual, expected)
 
 
+def _numpy_active_sources(depth, count):
+    """The original NumPy selection, kept as the reference definition."""
+    active = np.zeros(count, dtype=bool)
+    active[0] = True
+    step = 65535 // (count - 1)
+    codes = depth.astype(np.int64)
+    lower = np.clip(codes // step, 0, count - 1)
+    active |= np.bincount(lower.ravel(), minlength=count).astype(bool)
+    upper = np.minimum(lower[codes % step != 0] + 1, count - 1)
+    active |= np.bincount(upper, minlength=count).astype(bool)
+    return active
+
+
+@pytest.mark.parametrize('count', [2, 3, 7, 52, 92, 65536])
+@pytest.mark.parametrize('dtype', [np.uint16, np.int64])
+def test_b_active_sources_match_the_numpy_selection(count, dtype):
+    rng = np.random.default_rng(count * 31 + np.dtype(dtype).itemsize)
+    step = 65535 // (count - 1)
+    shape = (261, 7)
+    if dtype == np.uint16:
+        # Sparse exact and fractional codes, so most sources stay inactive.
+        depth = np.full(shape, 3 * step if count > 3 else 0, dtype)
+        picks = rng.integers(0, depth.size, 11)
+        depth.flat[picks] = rng.integers(0, 65536, picks.size)
+    else:
+        # Depth overrides arrive as int64 codes, also outside the code range.
+        depth = rng.integers(-3 * step, 65535 + 5 * step, shape, dtype=np.int64)
+        depth[::2] = 2 * step
+    active = bc._active_sources(depth, count, None)
+    assert active.dtype == np.bool_
+    np.testing.assert_array_equal(active, _numpy_active_sources(depth, count))
