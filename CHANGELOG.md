@@ -109,6 +109,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   separate when both targets are selected.
 - Close finished batch progress dialogs before showing their summaries, and
   report retouch source loading as busy to the local control channel.
+- Report a stack load as finished only after the desktop releases its loader,
+  so control clients can render as soon as their load completes.
 - Handle Windows lock contention when opening the report queue and depth cache.
 - Run deferred ECC and homography resampling on the render's planned threads
   with the published OpenCV packages. Their Python bindings do not expose the
