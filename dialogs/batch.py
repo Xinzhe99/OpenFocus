@@ -32,7 +32,7 @@ from PyQt6.QtWidgets import (
 from ui.styles import PRIMARY_BLUE, _ARROW_DOWN_DARK
 from core.algorithms import (alignment_steps, fusion_algorithms, get_fusion,
     registration_parameter_specs, registration_algorithms, resolve_fusion_parameters,
-    resolve_registration_parameters)
+    desktop_registration_parameters)
 from ui.algorithm_parameters import AlgorithmParameterPanel
 from ui.algorithm_combo import apply_method_availability, selected_item_enabled
 from core.experimental import (alignment_is_experimental, experimental_enabled,
@@ -1253,7 +1253,7 @@ class BatchProcessingDialog(QDialog):
         if method not in self._registration_drafts:
             getter = getattr(self.parent_window, 'registration_parameters_for', None)
             self._registration_drafts[method] = (getter(method) if callable(getter)
-                else resolve_registration_parameters(method))
+                else desktop_registration_parameters(method))
         self._editing_alignment = method
         specs = registration_parameter_specs(method)
         self.registration_parameter_panel.set_parameters(specs, self._registration_drafts[method])

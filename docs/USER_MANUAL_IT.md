@@ -131,7 +131,7 @@ La barra dei menu superiore dà accesso a tutte le funzioni:
 - **File**: operazioni di importazione ed esportazione, progetti, modelli di elaborazione ed elenco file recenti
 - **Modifica**: trasformazioni delle immagini, ritocco ed etichette
 - **Strumenti**: unione di immagini, elaborazione batch, confronto metodi, mappa di profondità, correzione di campo piatto, barra di scala ed etichette
-- **Impostazioni**: impostazioni avanzate (prestazioni, registrazione e diagnostica di allineamento, pulizia del sensore, nomi output, IA e avvio), accelerazione GPU, tema e lingua
+- **Impostazioni**: impostazioni avanzate (Generali, Fusione, Registrazione, Avvio e aggiornamenti), accelerazione GPU, tema e lingua
 - **Aiuto**: informazioni sull'ambiente, contatto, controllo aggiornamenti e cartella dei log
 
 **Strumenti → Unisci immagini…** apre uno spazio di lavoro separato per regioni di microscopio già fuse e panorami fotografici; non modifica lo stack corrente. La scheda **Assistente progetto** raccoglie importazione, allineamento e punti di controllo; **Immagini sorgente** contiene elenco, griglia e posizionamento manuale; **Editor panoramico** contiene impostazioni di giunzioni, fusione, esposizione/colore, uscita, proiezione, fotocamera e HDR oltre alle sovrapposizioni dell’anteprima. Usa **Aggiungi file…**, **Apri cartella** o **Aggiungi risultati…** per copiare risultati scelti della sessione corrente, oppure trascina file o cartelle nell’elenco o sulla tela. L’importazione di una cartella include solo i file supportati direttamente al suo interno, non le sottocartelle. Gli import seguono l’ordine naturale dei nomi, ignorano percorsi duplicati e aggiungono ogni pagina di un TIFF multipagina come immagine separata. Seleziona un’immagine e premi Canc o Backspace per rimuoverla dallo spazio di lavoro senza eliminare il file.
@@ -159,7 +159,7 @@ L’**Editor panoramico** controlla la fusione effettiva. In **Trova giunzioni o
 3. Compare una finestra per la scala di caricamento: scegli la scala (100% = risoluzione piena)
 4. Fai clic su OK per caricare le immagini
 
-Seleziona **Non chiedere più** in quella finestra per caricare sempre alla scala scelta senza richiesta; **Impostazioni → Impostazioni avanzate → Chiedi la scala di caricamento all'importazione** riattiva la richiesta. Uno stack già caricato può essere ridotto in seguito con **Modifica → Ridimensiona**.
+Seleziona **Non chiedere più** in quella finestra per caricare sempre alla scala scelta senza richiesta; **Impostazioni → Impostazioni avanzate → Avvio e aggiornamenti → Chiedi la scala di caricamento all'importazione** riattiva la richiesta. Uno stack già caricato può essere ridotto in seguito con **Modifica → Ridimensiona**.
 
 Il software esegue automaticamente queste operazioni:
 
@@ -356,20 +356,17 @@ La registrazione corregge il disallineamento spaziale tra i fotogrammi dello sta
 - Cerca trasformazioni di similarità limitate usando differenze di immagine campionate e applica warp con interpolazione Lanczos
 - Il dominio di ricerca dello spostamento è pari per impostazione predefinita al 3% della dimensione del fotogramma e si modifica con `--align-shift-limit`. La ricerca usa il fotogramma precedente allineato e parte dal movimento cumulativo; lo spostamento totale può superare il 3%.
 - Per geometrie non rigide o estreme, scegli ECC o omografia
-- In caso di errore effettivo di stima, `failure_policy=continue` (predefinito) mantiene il fotogramma non allineato; `fail` interrompe il processo. Scarsa trama, motivi ripetuti e variazioni di fuoco possono comunque causare corrispondenze imprecise.
-- Nella CLI, seleziona la stessa politica con `--align openfocus --align-param 'failure_policy="fail"'` (usa le virgolette adatte alla shell). Gli elementi batch usano la politica scelta in modo indipendente. Il valore predefinito è `"continue"`.
+- Se la registrazione rifiuta un fotogramma, l’applicazione desktop interrompe lo stack interessato. Controlla il fotogramma e il motivo nel messaggio di errore ed esamina l’immagine prima di riprovare. Scarsa trama, motivi ripetuti e variazioni di fuoco possono comunque causare corrispondenze imprecise.
+- La CLI usa `continue` per impostazione predefinita. Usa `--align openfocus --align-param 'failure_policy="fail"'` per fermare lo stack se un fotogramma viene rifiutato.
 - Imposta **Fotogramma di riferimento** su un numero basato su 1 nell'ordine dello stack incluso ed elaborato per ancorare la geometria a quel fotogramma. L'ordine viene conservato; l'equalizzazione della luminosità usa un proprio riferimento. Ogni stack batch deve contenere quel numero, altrimenti l'elemento fallisce. Esempio CLI: `--align openfocus --align-param reference_frame=3`. Scegliere un riferimento non corregge la parallasse né una corrispondenza scadente; ispeziona il risultato.
 
-I report di allineamento identificano il riferimento e l'esito di ogni fotogramma. Un ripiego significa che il metodo non è riuscito a stabilire l'allineamento o dipende da una stima precedente fallita; la ragione riportata distingue stime deboli e movimento fuori dai limiti quando noto. I valori di qualità sono specifici del metodo, non una garanzia di accuratezza. Le trasformazioni mappano le coordinate sorgente sulla tela di riferimento della fase di registrazione prima del ritaglio comune; i metodi compositi riportano le loro fasi separatamente. Anche omografia ed ECC accettano il parametro facoltativo `failure_policy="fail"` per fermarsi quando i loro algoritmi rilevano un errore. Il valore predefinito resta `"continue"`; ispeziona i risultati anche quando l'allineamento riesce.
-
-Per ispezionare un rendering, attiva **Impostazioni → Impostazioni avanzate → Registrazione → Raccogli diagnostica di allineamento** e renderizza di nuovo. L'allineamento viene ricalcolato invece di riutilizzare le immagini in cache. Lo stato di completamento evidenzia i ripieghi; apri **Impostazioni → Impostazioni avanzate → Registrazione → Diagnostica di allineamento** per il report per fotogramma. Mostra le ragioni di errore disponibili, i punteggi specifici del metodo, i conteggi delle corrispondenze, i fotogrammi di riferimento e le trasformazioni. Numeri e nomi di riferimento si riferiscono all'elenco sorgente originale, anche quando i fotogrammi sono esclusi. I rendering batch e raggruppati non forniscono questo report.
+Per una singola esecuzione CLI con registrazione e senza gruppi, `--alignment-report FILE` salva un rapporto per fotogramma. I report di allineamento identificano il riferimento e l'esito di ogni fotogramma. Un ripiego significa che il metodo non è riuscito a stabilire l'allineamento o dipende da una stima precedente fallita; la ragione riportata distingue stime deboli e movimento fuori dai limiti quando noto. I valori di qualità sono specifici del metodo, non una garanzia di accuratezza. Le trasformazioni mappano le coordinate sorgente sulla tela di riferimento della fase di registrazione prima del ritaglio comune; i metodi compositi riportano le loro fasi separatamente. Anche omografia ed ECC accettano il parametro facoltativo `failure_policy="fail"` per fermarsi quando i loro algoritmi rilevano un errore. Il valore predefinito resta `"continue"`; ispeziona i risultati anche quando l'allineamento riesce.
 
 ### Attivazione della registrazione
 
 1. Nel pannello destro, individua il gruppo **Registrazione**
 2. Scegli un metodo dall'elenco: **Nessun allineamento**, **OpenFocus (veloce)**, **Allinea (ECC)**, **Allinea (omografia)** o **Omografia → ECC** (concatenato)
-3. Per OpenFocus (veloce), scegli un fotogramma di riferimento. In **Impostazioni → Impostazioni avanzate → Registrazione**, scegli **Gestione fotogrammi rifiutati**; la modifica viene applicata ai metodi di registrazione
-4. **Raccogli diagnostica di allineamento** ora si trova in Impostazioni avanzate (vedi sopra)
+3. Regola il fotogramma di riferimento e i limiti di ricerca di OpenFocus in **Impostazioni → Impostazioni avanzate → Registrazione**.
 
 ### Quando usare la registrazione
 
@@ -385,7 +382,6 @@ Le impostazioni aggiuntive si trovano in **Impostazioni → Impostazioni avanzat
 - **Larghezza di riduzione**: risoluzione di pre-elaborazione per la registrazione (1024 px predefiniti)
 - Valori più bassi = elaborazione più veloce, precisione eventualmente inferiore
 - Valori più alti = elaborazione più lenta, precisione eventualmente superiore
-- **Raccogli diagnostica di allineamento** e **Cache di registrazione** si trovano nella stessa sezione
 
 ---
 
@@ -637,7 +633,14 @@ L'anteprima usa il bersaglio reale. Naviga con Precedente/Successivo o digita il
 
 ## 11. Impostazioni e configurazione
 
-Apri **Impostazioni → Impostazioni avanzate** per le preferenze di prestazioni, registrazione, pulizia del sensore, nomi output, IA StackMFF e avvio. Le modifiche restano bozze fino a **OK**; Annulla, Esc e la chiusura le scartano. Ridurre la dimensione dei tasselli aggiorna subito il limite di sovrapposizione visibile a metà tassello. Il limite batch salvato della sezione IA viene mantenuto, ma l'inferenza attuale invia un tassello per chiamata; la larghezza di registrazione può cambiare l'accuratezza dell'allineamento. La raccolta dei diagnostici di allineamento è una casella della sezione Registrazione.
+**Impostazioni → Impostazioni avanzate**
+
+- **Generali** — Funzioni sperimentali, directory di lavoro e prefisso del nome di output. In **Privacy** i rapporti automatici sugli errori e le statistiche di utilizzo hanno caselle indipendenti. All’inizio sono entrambe selezionate. Una disattivazione esplicita viene conservata per ciascuna. Le versioni distribuite inviano un rapporto dopo una sessione con un errore se hai accettato le condizioni all’accesso o attivato esplicitamente l’invio. Un arresto anomalo nativo precedente richiede conferma.
+- **Fusione** — Scegli la modalità risorse e le impostazioni dei tasselli. Seleziona **Pulizia del sensore** per espandere i relativi controlli.
+- **Registrazione** — Imposta la larghezza di riduzione. Seleziona **OpenFocus (veloce)** per espandere le impostazioni del fotogramma di riferimento e dei limiti di ricerca.
+- **Avvio e aggiornamenti** — Ripristino dell’ultimo stack, richiesta della scala all’importazione e aggiornamenti.
+
+Conferma con **OK**. Annulla, Esc o la chiusura della finestra scartano le modifiche.
 
 I download automatici degli aggiornamenti avvengono mentre l'applicazione è inattiva e non si installano mai da soli. Un download completato resta pronto finché non scegli esplicitamente **Riavvia e aggiorna**. Il riavvio protegge le modifiche attive e il lavoro non salvato, poi scrive i dati di recupero prima di avviare la sostituzione. Annullare un download o una preparazione attende il limite di sicurezza corrente. Una build preparata completa e più recente può essere installata offline.
 
@@ -659,13 +662,19 @@ Ogni avvio scrive il proprio log rotante, così i lavori GUI/CLI concorrenti man
 
 ### Impostazioni dei tasselli (ottimizzazione della memoria)
 
-Per immagini grandi, OpenFocus usa l'elaborazione a tasselli per evitare problemi di memoria.
+L’elaborazione a tasselli è attiva per impostazione predefinita. Il messaggio sotto i campi indica come il metodo selezionato elabora l’immagine. Sul desktop OpenFocus A, B e C elaborano l’intera immagine. La modalità di solo allineamento salta la fusione. Anche in queste modalità puoi impostare dimensione, sovrapposizione e soglia per il prossimo metodo compatibile. DTCWT decide in base alla memoria stimata. Puoi regolare dimensione e sovrapposizione, mentre il campo della soglia è disabilitato. I metodi neurali possono usare tasselli sotto la soglia per stack profondi. Disattivando i tasselli, tutti e tre i campi numerici vengono disabilitati e mantengono i loro valori.
 
-Accesso: **Impostazioni → Impostazioni avanzate → Prestazioni**:
+Accesso: **Impostazioni → Impostazioni avanzate → Fusione**:
 
 - **Dimensione blocco tassello**: dimensione di ogni tassello di elaborazione (1024 px predefiniti)
 - **Sovrapposizione tasselli**: sovrapposizione tra tasselli per una miscelazione senza cuciture (256 px predefiniti)
 - **Soglia tasselli**: dimensione immagine oltre la quale si usano i tasselli (2048 px predefiniti)
+
+Limiti in pixel
+
+- Dimensione blocco tassello — 64–16384
+- Sovrapposizione tasselli — 0–min(4096, metà tassello)
+- Soglia tasselli — 256–131072
 
 **Consigli**:
 
@@ -680,7 +689,6 @@ Accesso: **Impostazioni → Impostazioni avanzate → Registrazione**:
 - **Larghezza di riduzione**: risoluzione di pre-elaborazione per la registrazione
   - Predefinito: 1024 px
   - Più bassa per la velocità, più alta per l'accuratezza
-- **Raccogli diagnostica di allineamento**: ricalcola l'allineamento al prossimo rendering e abilita **Impostazioni → Impostazioni avanzate → Registrazione → Diagnostica di allineamento**
 
 ### Riferimenti sulle prestazioni
 
@@ -688,19 +696,9 @@ Vedi [PERFORMANCE.md](./PERFORMANCE.md) per velocità e memoria misurate su gran
 
 Il pannello di stato mostra la memoria fisica usata e totale quando il sistema operativo fornisce entrambe le letture; altrimenti mostra `N/D`.
 
-### Impostazioni del numero di thread
-
-Controlla l'elaborazione parallela della CPU:
-
-Accesso: **Impostazioni → Impostazioni avanzate → Prestazioni**:
-
-- `0` seleziona la pianificazione automatica ed è il valore predefinito per le nuove impostazioni.
-- I valori positivi sono limiti superiori; i limiti salvati sopravvivono agli aggiornamenti.
-- Capacità CPU, modalità risorse e margine di memoria possono ridurre la concorrenza. Più thread non rendono necessariamente più veloce un rendering.
-
 ### Modalità risorse
 
-**Impostazioni → Impostazioni avanzate → Prestazioni → Modalità risorse** decide quanta parte della macchina può usare un rendering. Non cambia mai l'immagine fusa.
+**Impostazioni → Impostazioni avanzate → Fusione → Modalità risorse** decide quanta parte della macchina può usare un rendering. Non cambia mai l'immagine fusa.
 
 | Modalità | Comportamento |
 |---|---|
@@ -720,13 +718,6 @@ OpenFocus B può accelerare l’elaborazione della profondità e l’unione dell
 - Deselezionandola si forzano sulla CPU i metodi di fusione compatibili — utile se i driver GPU danno problemi
 - Il pannello di stato mostra `N/D` quando nessun acceleratore è usato o disponibile, e `CPU*` quando un acceleratore esiste ma il metodo selezionato è solo CPU
 - La scelta si applica al rendering successivo e viene ricordata
-
-### Dimensione batch IA
-
-Accesso: **Impostazioni → Impostazioni avanzate → IA**:
-
-- Il limite batch salvato è 2 per impostazione predefinita; la politica di esecuzione corrente limita l'inferenza reale a un tassello per chiamata su ogni dispositivo.
-- Aumentare questo limite non abilita batch GPU non validati né riduce la dimensione spaziale dei tasselli.
 
 ### Temi
 
@@ -752,11 +743,11 @@ Su Windows l'aggiornamento prepara una versione candidata separata e sposta il m
 
 ### Cache di registrazione
 
-OpenFocus salva i risultati di registrazione nella cache dell’utente. Riaprendo uno stack invariato con le stesse impostazioni, OpenFocus riutilizza il risultato salvato. L’opzione è in **Impostazioni → Impostazioni avanzate → Registrazione → Cache di registrazione**. Tutti gli stack condividono un limite di 2 GiB. Quando serve spazio, vengono rimosse le voci utilizzate meno di recente. Le vecchie cartelle `.openfocus_cache` accanto agli stack sorgente vengono mantenute.
+OpenFocus salva i risultati di registrazione nella cache dell’utente. Riaprendo uno stack invariato con le stesse impostazioni, OpenFocus riutilizza il risultato salvato. Tutti gli stack condividono un limite di 2 GiB. Quando serve spazio, vengono rimosse le voci utilizzate meno di recente. Le vecchie cartelle `.openfocus_cache` accanto agli stack sorgente vengono mantenute.
 
 ### Impostazioni persistenti
 
-Tutto quanto segue sopravvive automaticamente al riavvio: numero di thread, modalità risorse, parametri dei tasselli, larghezza di riduzione della registrazione, dimensione batch della fusione IA (StackMFF V3), accelerazione GPU, cache di registrazione e interruttori dei diagnostici di allineamento, lingua dell'interfaccia, dimensioni della finestra e disposizione dei pannelli, formato di esportazione per trascinamento, opzioni di luminosità per metodo, valori di levigatura e raggio, e stack aperti di recente. Le finestre delle impostazioni salvano al momento della conferma; tutto viene salvato anche alla chiusura. Le preferenze sono memorizzate per utente in `OpenFocus/OpenFocus.ini` (formato INI di QSettings).
+Tutto quanto segue sopravvive automaticamente al riavvio: modalità risorse, parametri dei tasselli, larghezza di riduzione della registrazione, accelerazione GPU, lingua dell'interfaccia, dimensioni della finestra e disposizione dei pannelli, formato di esportazione per trascinamento, opzioni di luminosità per metodo, valori di levigatura e raggio, e stack aperti di recente. Le finestre delle impostazioni salvano al momento della conferma; tutto viene salvato anche alla chiusura. Le preferenze sono memorizzate per utente in `OpenFocus/OpenFocus.ini` (formato INI di QSettings).
 
 ### Lingua dell'interfaccia
 
@@ -811,7 +802,7 @@ La finestra batch mostra l'avanzamento in tempo reale. Puoi annullare l'elaboraz
 3. Scegli formato e posizione
 4. Fai clic su Salva
 
-In **Impostazioni → Impostazioni avanzate → Nomi dei risultati**, un prefisso facoltativo del nome file aiuta a identificare i risultati appena renderizzati. L'esempio si aggiorna mentre digiti; usa fino a 40 lettere, numeri, underscore o trattini. Lascialo vuoto per la denominazione originale. Conferma con **OK** per ricordarlo, o annulla per scartare la modifica. Il prefisso entra nei nuovi nomi dell'elenco output e nei nomi di esportazione suggeriti; i risultati esistenti mantengono i loro nomi. Puoi comunque modificare un nome nella finestra di salvataggio. Questa preferenza non rinomina i file sorgente né cambia i nomi di output batch.
+In **Impostazioni → Impostazioni avanzate → Generali → Nomi dei risultati**, un prefisso facoltativo del nome file aiuta a identificare i risultati appena renderizzati. L'esempio si aggiorna mentre digiti; usa fino a 40 lettere, numeri, underscore o trattini. Lascialo vuoto per la denominazione originale. Conferma con **OK** per ricordarlo, o annulla per scartare la modifica. Il prefisso entra nei nuovi nomi dell'elenco output e nei nomi di esportazione suggeriti; i risultati esistenti mantengono i loro nomi. Puoi comunque modificare un nome nella finestra di salvataggio. Questa preferenza non rinomina i file sorgente né cambia i nomi di output batch.
 
 ### Condividere un risultato
 
@@ -1057,21 +1048,19 @@ Codici di uscita: `0` successo, `1` errore di elaborazione, `2` errore d'uso. `p
 
 #### Errori di memoria esaurita
 
-- Attiva l'elaborazione a tasselli in **Impostazioni → Impostazioni avanzate → Prestazioni**
+- Attiva l'elaborazione a tasselli in **Impostazioni → Impostazioni avanzate → Fusione**
 - Riduci la dimensione del blocco tassello
 - Usa kernel più piccoli
 - Ridimensiona le immagini
 
 #### La registrazione non riesce
 
-- Usa **OpenFocus (veloce)** per movimento rigido limitato, oppure attiva **Interrompi su fotogramma rifiutato** per fallire presto invece di accettare fotogrammi non allineati
+- Se la registrazione rifiuta un fotogramma, l’applicazione desktop interrompe lo stack interessato. Controlla il fotogramma e il motivo nel messaggio di errore ed esamina l’immagine prima di riprovare.
 - Riduci la larghezza di riduzione in **Impostazioni → Impostazioni avanzate → Registrazione**
 - Assicurati che le immagini abbiano contrasto e caratteristiche sufficienti
-- Attiva **Raccogli diagnostica di allineamento**, renderizza di nuovo e leggi **Impostazioni → Impostazioni avanzate → Registrazione → Diagnostica di allineamento** per i fotogrammi in errore
 
 #### Elaborazione lenta
 
-- Lascia i thread su automatico (`0`); capacità CPU, modalità risorse e margine di memoria limitano già la concorrenza
 - Usa la modalità risorse Massima per un batch non presidiato, oppure filtro guidato / GFG-FGF invece di un metodo IA
 - Riduci la risoluzione delle immagini o usa **Anteprima rapida** durante la regolazione
 
