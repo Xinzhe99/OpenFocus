@@ -80,6 +80,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   available physical RAM, avoiding plans above the reported commit limit.
 - Include the immediate Windows job object's per-process commit limit in
   admission when that limit is present.
+- Keep OpenFocus A on the GPU when a streamed source and the fusion workspace fit
+  in memory. Long stacks can reuse cached frames without filling the decoded RAM cache.
 - Close the isolated language audit without project confirmation, including
   when an audit error interrupts the run.
 - Remove temporary launch-film frames when full video generation fails or is
