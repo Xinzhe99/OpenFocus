@@ -6,6 +6,8 @@ low-response blending, and output code exit onto OpenCL kernels.
 """
 from __future__ import annotations
 
+import math
+
 import numpy as np
 
 from fusion_methods._openfocus_pixels import frame_codes
@@ -262,6 +264,32 @@ __kernel void a_out_f32(__global const ushort* src, __global float* dst, const i
 '''
 
 
+def _source_staging_bytes(frame, shape, img_resize, fast_hard):
+    from core.source_frames import frame_has_mapped_pixels, frame_resolution_bytes
+
+    # Resolution accounts for decode and deferred processors (including ECC).
+    # Mapped input may also fault in pages while it is being read.
+    resolution = frame_resolution_bytes(frame)
+    if frame_has_mapped_pixels(frame):
+        resolution = max(resolution, frame.nbytes)
+    if fast_hard:
+        packed = 0 if isinstance(frame, np.ndarray) and frame.flags.c_contiguous else frame.nbytes
+        return resolution + packed + frame.nbytes  # packing and native upload staging
+
+    source_strip = min(frame.shape[0], 128) * math.prod(frame.shape[1:])
+    samples = math.prod(shape)
+    # Upload can hold int32 codes, packed uint16 codes and native staging.
+    upload = samples * 8
+    conversion = frame.size * 4
+    if img_resize is not None:
+        output_strip = min(shape[0], 128) * math.prod(shape[1:])
+        source_strip = max(source_strip, output_strip)
+        # Area resize can hold both integer code planes and the float32
+        # OpenCV input/output; keep room for conversion strips as well.
+        conversion = 8 * (frame.size + samples)
+    return resolution + max(upload, conversion + source_strip * 16)
+
+
 class GpuA:
     """Device-resident OpenFocus A fusion; mirrors openfocus_a_impl (hard) step for step."""
 
@@ -324,8 +352,7 @@ class GpuA:
     def _fuse_locked(self, frames, img_resize, radius, should_cancel, progress_callback):
         from dataclasses import replace
         from core import resource_policy
-        from core.multi_focus_fusion import memory_budget_bytes
-        from core.source_frames import frame_resolution_bytes, resolve_frame, source_cache_growth_bytes
+        from core.source_frames import resolve_frame, without_source_cache_growth
         from fusion_methods._openfocus_gpu import GpuError, _free_vram
 
         shape = frames[0].shape
@@ -353,27 +380,31 @@ class GpuA:
         fast_hard = img_resize is None and all(
             getattr(source, 'dtype', None) in (np.uint8, np.uint16) for source in frames)
 
-        snapshot = resource_policy.probe_resources()
-        host_budget = min(int(memory_budget_bytes()),
-                          int(resource_policy.frame_ram_budget(snapshot)))
-        out_sample_bytes = 1 if is_u8 else 4
-        if fast_hard:
-            in_sample_bytes = 2 if any(getattr(f, 'dtype', None) == np.uint16 for f in frames) else 1
-        else:
-            in_sample_bytes = 6
-        staging = (n * channels * (out_sample_bytes + in_sample_bytes)
-                   + max((frame_resolution_bytes(frame) for frame in frames), default=0)
-                   + source_cache_growth_bytes(frames) + 16 * 1024 * 1024)
+        snapshot = resource_policy.probe_memory()
+        # This serial stage can spend the reserve-protected headroom, including
+        # the child job's hard limit. Managed frame residency has its own cap.
+        host_budget = resource_policy.ram_ceiling(snapshot)
+        samples = n * channels
+        out_bytes = samples * (1 if is_u8 else 4)
+        source_peak = 0
+        for frame in frames:
+            _check_cancel(should_cancel)
+            source_peak = max(source_peak, _source_staging_bytes(frame, shape, img_resize, fast_hard))
+        # Upload and readback never overlap. The latter can hold the output and
+        # a native transfer copy. Budget context/driver overhead separately.
+        staging = max(source_peak, out_bytes * 2) + 16 * 1024 * 1024
         if staging > host_budget:
-            raise GpuError('OpenFocus A GPU staging exceeds the host memory budget')
+            raise GpuError(f'OpenFocus A GPU staging exceeds the host memory budget '
+                           f'({staging >> 20} MiB needed, {host_budget >> 20} MiB available)')
 
         lap_bytes = max(1, pyr_shapes[1][0] * pyr_shapes[1][1]) * 4 if levels_count > 1 else 0
+        src_bytes = samples * (1 if fast_hard and is_u8 else 2)
         need = (sum(max(1, h * w) * 4 for h, w in pyr_shapes)
                 + lap_bytes
                 + n * 4 * 4          # resp, best, wt, stat
                 + n * channels * 2   # output codes
                 + n * channels * 4   # accumulated sums
-                + n * channels * 4   # per-frame source / final output buffer
+                + max(src_bytes, out_bytes)  # upload and readback are disjoint
                 + 16 * 1024 * 1024)
         limit = int(self.device.global_mem_size) // 2
         if self.device.host_unified_memory:
@@ -403,11 +434,13 @@ class GpuA:
         for index, source in enumerate(frames):
             _check_cancel(should_cancel)
             if fast_hard:
-                raw = resolve_frame(source)
+                with without_source_cache_growth():
+                    raw = resolve_frame(source, should_cancel=should_cancel)
                 _check_cancel(should_cancel)
                 if tuple(raw.shape) != tuple(shape):
                     raise ValueError('OpenFocus A requires frames with matching shapes')
                 host_src = np.ascontiguousarray(raw)
+                del raw
                 src_buf = self.cl.Buffer(self.ctx, self.mf.READ_ONLY | self.mf.COPY_HOST_PTR,
                                          hostbuf=host_src)
                 src_is_u8 = host_src.dtype == np.uint8
@@ -418,10 +451,12 @@ class GpuA:
                     self._run(self.k['a_gray_u16'], n, src_buf, gray_bufs[0],
                               np.int32(n), np.int32(channels), np.int32(0))
             else:
-                raw_code = frame_codes(source, img_resize, should_cancel)
+                with without_source_cache_growth():
+                    raw_code = frame_codes(source, img_resize, should_cancel)
                 if tuple(raw_code.shape) != tuple(shape):
                     raise ValueError('OpenFocus A requires frames with matching shapes')
                 host_src = np.ascontiguousarray(raw_code, dtype=np.uint16)
+                del raw_code
                 src_buf = self.cl.Buffer(self.ctx, self.mf.READ_ONLY | self.mf.COPY_HOST_PTR,
                                          hostbuf=host_src)
                 u8_gray = 1 if getattr(source, 'dtype', None) == np.uint8 else 0
@@ -465,14 +500,13 @@ class GpuA:
 
         out_dtype = np.uint8 if is_u8 else np.float32
         out = np.empty(shape, dtype=out_dtype)
-        dst_buf = self.cl.Buffer(self.ctx, self.mf.WRITE_ONLY, max(1, out.nbytes))
-        total_samples = n * channels
+        dst_buf = self.cl.Buffer(self.ctx, self.mf.WRITE_ONLY, out_bytes)
         if is_u8:
-            self._run(self.k['a_out_u8'], total_samples, out_buf, dst_buf,
-                      np.int32(total_samples), np.int32(channels))
+            self._run(self.k['a_out_u8'], samples, out_buf, dst_buf,
+                      np.int32(samples), np.int32(channels))
         else:
-            self._run(self.k['a_out_f32'], total_samples, out_buf, dst_buf,
-                      np.int32(total_samples))
+            self._run(self.k['a_out_f32'], samples, out_buf, dst_buf,
+                      np.int32(samples))
         self.cl.enqueue_copy(self.q, out, dst_buf, is_blocking=True)
         _check_cancel(should_cancel)
         return out

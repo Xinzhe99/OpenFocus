@@ -10,7 +10,7 @@ from locales import trans
 from utils.app_paths import user_data_dir
 from utils.report_client import ReportClient, automatic_snapshot, revoke_automatic
 from utils.reporting import retry_reports
-from utils.settings_store import get_settings, REPORTS_AUTO_SEND_KEY, REPORTS_CHOICE_KEY
+from utils.settings_store import automatic_reports_allowed, get_settings, REPORTS_AUTO_SEND_KEY, REPORTS_CHOICE_KEY
 
 class _CleanupNotifier(QObject):
     failed = pyqtSignal()
@@ -69,7 +69,7 @@ class _Retry(QObject):
         window = self.window()
         account = getattr(window, '_account_client', None) if window is not None else None
         settings = get_settings()
-        auto_send = settings.value(REPORTS_AUTO_SEND_KEY, False, type=bool)
+        auto_send = automatic_reports_allowed(settings)
         account_only = settings.value(REPORTS_CHOICE_KEY) == 'account_default'
         permission = automatic_snapshot(user_data_dir() / 'reports')
         threading.Thread(target=self._run, args=(account, auto_send, account_only, permission), daemon=True).start()
@@ -96,7 +96,7 @@ def schedule_report_retries(window):
     if app is None:
         return
     settings = get_settings()
-    if not settings.value(REPORTS_AUTO_SEND_KEY, False, type=bool):
+    if not settings.value(REPORTS_AUTO_SEND_KEY, True, type=bool):
         discard_automatic_reports()
     # One timer services the entire queue; each entry has its own backoff.
     if not _ACTIVE:

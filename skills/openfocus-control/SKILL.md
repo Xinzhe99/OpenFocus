@@ -121,6 +121,9 @@ Only `ui.type --submit` sends an additional Return after the text.
 
 `ui.set` supports combo boxes (by data or text), checkboxes/radios,
 spin boxes, sliders, line edits, text areas, tabs, stacked pages and lists.
+For a tab widget, `value` is the active index. Its `tabs` array lists the
+localized labels and whether each tab is visible and enabled. Pass the desired
+zero-based index to `ui.set`, then inspect the controls on the selected page.
 
 ## 5. Core workflows
 
@@ -132,22 +135,34 @@ openfocus ctl stack.load --folder 'F:/stacks/session'
 # poll stack.frames until load.finished for the returned load_id
 openfocus ctl method.set --id openfocus_b
 openfocus ctl align.set --id ecc
-openfocus ctl option.set --name thread_count --value 4
+openfocus ctl option.set --name resource_preference --value balanced
 openfocus ctl render.start --wait --timeout 300
 openfocus ctl render.state
 openfocus ctl output.list
 openfocus ctl output.export --path 'F:/out/result.tif' --index 0
 ```
 
-DCT, AI and other experimental desktop methods require a persistent opt-in.
-Open `dialog.open --name settings`, discover `chk_experimental_features` with
-`ui.find` or `ui.tree`, set it checked, and accept the dialog. Confirm that
-settings were saved before selecting the method; cancellation, closing the
-dialog or a save failure does not enable the draft. AI also needs its runtime
-and bundled model. This preference persists for the current installation.
+Open Advanced Settings with `openfocus ctl dialog.open --name settings`.
+Find `advanced_settings_tabs` with `ui.find --control-id advanced_settings_tabs`
+in the settings dialog, then use `ui.set` on the returned path. The indices are
+stable across languages: 0 General, 1 Fusion, 2 Registration, 3 Startup & updates.
+Registration initially shows the downscale width. To edit the OpenFocus
+reference or search limits, find `registration_options_disclosure` on page 2.
+If `checked` is false, use `ui.click` on its path or send `ui.key --key Space`
+to that path. Inspect the revealed controls with `ui.find`.
 
-To learn why a render was slow, profile the next one and read the report; add
-`debug_logging` for the plans, tile sizes and directories behind it:
+On Fusion, `effective_tiling_status` explains the current method. With tiling
+enabled, you can save block size and overlap for a later method while OpenFocus
+A/B/C uses the full image. DT-CWT determines its need for tiles from memory
+and disables the size threshold field.
+
+DCT, AI and other experimental desktop methods require a persistent opt-in.
+On General, find `chk_experimental_features`, set it checked and accept the
+dialog. Confirm the save before selecting the method. AI also needs its runtime
+and bundled model.
+
+To profile the next render through the control channel, use the typed options
+below. Detailed logging also records plans, tile sizes and directories.
 
 ```bash
 openfocus ctl option.set --name profile_performance --value true
@@ -177,11 +192,12 @@ For grouped processing, set `chk_grouping` to true before setting
 `group_size_spin` and `group_overlap_spin`. Grouped fusion is approximate,
 uses temporary disk space, and does not produce original-frame depth maps.
 
-Sensor defect repair and denoising are configured in the settings dialog or
-the batch dialog. Inspect the controls and allow mask inspection to finish
-before accepting. Alignment diagnostic collection is in Advanced Settings
-(`dialog.open --name settings`, `chk_collect_alignment_report`); use the
-`btn_alignment_report` button in that dialog to view it. Collection requires alignment.
+For desktop sensor defect repair and denoising, select Fusion (page 1) and
+expand `sensor_cleanup_disclosure` using the same click or Space action.
+Batch jobs have their own sensor controls in the batch dialog. Let mask
+inspection finish before accepting. For an alignment report from a single, non-grouped CLI run,
+select an alignment method and pass `--alignment-report FILE`. In the desktop
+app, **Help → Open Logs Folder** opens the session logs.
 
 For a layered TIFF, first check that the result has source-frame provenance and
 no active watermark. Right-click the desired output, list the context menu via

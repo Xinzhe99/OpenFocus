@@ -11,7 +11,7 @@ from utils.app_paths import user_data_dir
 from utils.report_bundle import build_report_bundle, session_has_error
 from utils.report_client import ReportClient, automatic_snapshot, revoke_automatic
 from utils.reporting import retry_reports, send_bundle
-from utils.settings_store import get_settings, REPORTS_AUTO_SEND_KEY, REPORTS_CHOICE_KEY
+from utils.settings_store import automatic_reports_allowed, get_settings, REPORTS_CHOICE_KEY
 
 _ACTIVE_JOBS = set()
 
@@ -59,7 +59,7 @@ class _ShutdownReport(QObject):
 def start_shutdown_reports(window):
     """Keep only the event loop alive for up to five seconds after UI closure."""
     settings = get_settings()
-    enabled = settings.value(REPORTS_AUTO_SEND_KEY, False, type=bool)
+    enabled = automatic_reports_allowed(settings)
     if not enabled and not (user_data_dir() / 'reports' / 'reports.json').exists():
         return
     app = QApplication.instance()
