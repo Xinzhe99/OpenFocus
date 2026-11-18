@@ -119,7 +119,7 @@ assert not browser_calls, browser_calls
     }
 
 
-def test_update_restart_restores_frames_without_a_warning(tmp_path):
+def test_update_restart_restores_frames_without_a_warning(qapp, tmp_path):
     from core.control.client import launch_gui, request, require_ok, wait_for
     from utils import recovery
 
