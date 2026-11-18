@@ -31,6 +31,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Changed
 - Include allowlisted error categories, render stages, and memory admission
   figures in sanitized reports, without adding exception messages or paths.
+- Use each indexed TIFF page's color map for previews, full-resolution fusion and conversion.
+  Preserve 16-bit palette colors, orientation and embedded RGB profiles.
 - Apply exposure matching in OpenFocus fusion through a per-frame lookup table
   of every 8- or 16-bit code, computed by the existing per-sample arithmetic
   and applied in parallel row bands, instead of float strips on one thread.
@@ -82,6 +84,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   available physical RAM, avoiding plans above the reported commit limit.
 - Include the immediate Windows job object's per-process commit limit in
   admission when that limit is present.
+- Keep OpenFocus A on the GPU when a streamed source and the fusion workspace fit
+  in memory. Long stacks can reuse cached frames without filling the decoded RAM cache.
 - Close the isolated language audit without project confirmation, including
   when an audit error interrupts the run.
 - Remove temporary launch-film frames when full video generation fails or is
