@@ -1006,28 +1006,27 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
     criteria = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, number_of_iterations, termination_eps)
 
     # 预处理函数：转灰度 + 降采样 + 高斯模糊 + 归一化
-    def preprocess(img):
+    def preprocess(source):
         from core.source_frames import resolve_frame
-        source = img
-        img = resolve_frame(img, should_cancel=should_cancel)
-        identity = _perspective_source(source, img, should_cancel)
-        h, w = img.shape[:2]
+        # Replace each intermediate so a deferred full-size decode can be
+        # released as soon as resize or color conversion no longer needs it.
+        pixels = resolve_frame(source, should_cancel=should_cancel)
+        identity = _perspective_source(source, pixels, should_cancel)
+        w = pixels.shape[1]
         scale = downscale_width / float(w) if w > downscale_width else 1.0
         if scale < 1.0:
-            small_img = cv2.resize(img, (0, 0), fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
-        else:
-            small_img = img # 引用即可，无需拷贝
+            pixels = cv2.resize(pixels, (0, 0), fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
 
-        if small_img.ndim == 2:
-            gray = small_img
-        elif small_img.shape[2] == 1:
-            gray = small_img[:, :, 0]
-        else:
-            gray = cv2.cvtColor(small_img, cv2.COLOR_BGR2GRAY)
-        gray = cv2.GaussianBlur(gray, (5, 5), 0)
+        if pixels.ndim != 2:
+            if pixels.shape[2] == 1:
+                pixels = pixels[:, :, 0]
+            else:
+                pixels = cv2.cvtColor(pixels, cv2.COLOR_BGR2GRAY)
+        pixels = cv2.GaussianBlur(pixels, (5, 5), 0)
         # findTransformECC 的数值稳定性依赖归一化的浮点输入：uint8 的
         # 大幅值梯度会让优化步长过大，常见于小位移场景直接不收敛
-        gray = gray.astype(np.float32) / (65535.0 if gray.dtype == np.uint16 else 255.0)
+        divisor = 65535.0 if pixels.dtype == np.uint16 else 255.0
+        gray = np.divide(pixels, divisor, dtype=np.float32)
         return gray, scale, identity
 
     print(f"Aligning {len(images)} images using ECC (Parallel Optimized)...")
