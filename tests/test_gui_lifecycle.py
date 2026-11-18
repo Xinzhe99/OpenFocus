@@ -153,7 +153,7 @@ runpy.run_path(sys.argv[0], run_name="__main__")
         return gui
 
     try:
-        access = launch_gui(f"of-restore-{os.getpid()}", env=env, process_factory=start)
+        access = launch_gui(env=env, process_factory=start)
         frames = wait_for("stack.frames", lambda state: state.get("load", {}).get("finished"),
                           timeout=20, discovery=access)
         assert frames["names"] == [source.name] and not frames["load"]["error"]
