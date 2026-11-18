@@ -29,7 +29,7 @@ from core.control.protocol import (
 )
 from core.algorithms import (
     fusion_algorithms, get_fusion, get_registration, registration_algorithms,
-    resolve_fusion_parameters, resolve_registration_parameters,
+    resolve_fusion_parameters, desktop_registration_parameters,
 )
 from locales import trans
 from utils.logging_setup import get_logger
@@ -751,6 +751,7 @@ class ControlServer(QObject):
 
     def _cmd_app_state(self, args):
         window = self.window
+        from utils.logging_setup import debug_enabled
         method = window.current_fusion_method()
         alignment = window.current_alignment_method()
         return {
@@ -777,7 +778,7 @@ class ControlServer(QObject):
                 "reg_downscale_width": int(getattr(window, "reg_downscale_width", 1024)),
                 "storage_directory": getattr(window, "storage_directory", "") or "",
                 "profile_performance": bool(getattr(window, "profile_performance", False)),
-                "debug_logging": bool(getattr(window, "debug_logging", False)),
+                "debug_logging": debug_enabled(),
             },
             "render": _render_state(window),
             "outputs": {"count": window.output_list.count(),
@@ -930,8 +931,10 @@ class ControlServer(QObject):
             return
         current = (window.fusion_parameters_for(method) if fusion
                    else window.registration_parameters_for(method))
-        resolver = resolve_fusion_parameters if fusion else resolve_registration_parameters
-        resolver(method, {**current, **values})
+        resolver = resolve_fusion_parameters if fusion else desktop_registration_parameters
+        resolved = resolver(method, {**current, **values})
+        if not fusion and 'failure_policy' in values and values['failure_policy'] != resolved['failure_policy']:
+            raise ValueError('Desktop registration requires failure_policy="fail"')
 
     def _cmd_option_set(self, args):
         name = _string(args, "name")
@@ -988,10 +991,8 @@ class ControlServer(QObject):
             window.storage_directory = value
             value = window.storage_directory
         elif name == "debug_logging":
-            from utils.logging_setup import set_debug_logging
-            window.debug_logging = value
-            set_debug_logging(value)
-            value = window.debug_logging
+            from utils.logging_setup import set_log_level
+            set_log_level("DEBUG" if value else "INFO")
         else:
             setattr(window, name, value)
             value = getattr(window, name)
