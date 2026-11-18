@@ -108,6 +108,9 @@ def _summary(widget, path):
     if isinstance(widget, QAbstractButton) and widget.isCheckable():
         node["checkable"] = True
         node["checked"] = bool(widget.isChecked())
+    if isinstance(widget, QTabWidget):
+        node["tabs"] = [{"text": widget.tabText(i), "enabled": widget.isTabEnabled(i),
+                         "visible": widget.isTabVisible(i)} for i in range(widget.count())]
     return node
 
 
@@ -398,7 +401,14 @@ def set_widget_value(widget, value):
         widget.setPlainText(str(value))
         return {"text_length": len(widget.toPlainText())}
     if isinstance(widget, QTabWidget):
-        widget.setCurrentIndex(int(value))
+        if isinstance(value, bool) or (isinstance(value, float) and not value.is_integer()):
+            raise ValueError("Tab index must be an integer")
+        index = int(value)
+        if not 0 <= index < widget.count():
+            raise ValueError(f"Tab index out of range: {index}")
+        if not widget.isTabEnabled(index) or not widget.isTabVisible(index):
+            raise ValueError(f"Tab is unavailable: {index}")
+        widget.setCurrentIndex(index)
         return int(widget.currentIndex())
     if isinstance(widget, QStackedWidget):
         widget.setCurrentIndex(int(value))

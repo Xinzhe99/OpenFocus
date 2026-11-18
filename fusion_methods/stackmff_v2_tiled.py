@@ -163,6 +163,24 @@ def _weights(x0, y0, x1, y1, width, height, overlap):
         None, x0, y0, x1, y1, x1-x0, y1-y0, width, height, overlap)
 
 
+def _stage_tile_planes(source, region, should_cancel):
+    """Stage an already padded tile, releasing each crop before the next read."""
+    _, _, width, height = region
+    count = len(source.items)
+    planes = np.empty((1, count, height, width), dtype=np.float32)
+    for index in range(count):
+        common.cancel(should_cancel)
+        frame = source.get(index, region)
+        if frame.shape[:2] != (height, width):
+            raise ValueError('All frames must have the same dimensions')
+        frame = common.working_frame(frame, source.mixed_16 or frame.dtype == np.uint16)
+        # Keep the packed conversion grid for OpenCV's edge rounding.
+        planes[0, index] = common.luma_plane(np.ascontiguousarray(frame))
+        del frame
+    common.cancel(should_cancel)
+    return planes
+
+
 def tiled_depth(source, model_path, use_gpu, should_cancel=None,
                 execution_plan=None, thread_count=None,
                 resource_preference='balanced', tile_size=None, tile_overlap=0,
@@ -209,15 +227,7 @@ def _tiled_depth_under_lease(source, model_path, use_gpu, should_cancel=None,
     for y in ys:
         for x in xs:
             common.cancel(should_cancel)
-            crops = []
-            for i in range(count):
-                frame = source.get(i, (x, y, block, block))
-                if frame.shape[:2] != (block, block):
-                    raise ValueError('All frames must have the same dimensions')
-                crops.append(common.working_frame(
-                    frame, source.mixed_16 or frame.dtype == np.uint16).copy())
-            planes = common.stage_planes(crops, common.ATTENTION_PAD_ALIGN, should_cancel)
-            del crops
+            planes = _stage_tile_planes(source, (x, y, block, block), should_cancel)
             probs = neural_runtime.softmax(neural_runtime.logits(
                 planes, model, device, plan.native_threads, should_cancel))
             del planes

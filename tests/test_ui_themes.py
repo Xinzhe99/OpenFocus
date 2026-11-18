@@ -25,7 +25,22 @@ def theme_environment(qapp):
         qapp.processEvents()
 
 
-def test_contact_link_colour_follows_the_theme(qapp, theme_environment):
+@pytest.fixture
+def invite_server(qapp, monkeypatch):
+    from PyQt6.QtNetwork import QHostAddress, QTcpServer
+    from dialogs.about import ContactInfoDialog
+
+    server = QTcpServer()
+    assert server.listen(QHostAddress(QHostAddress.SpecialAddress.LocalHost))
+    monkeypatch.setenv('no_proxy', '127.0.0.1')
+    monkeypatch.setattr(ContactInfoDialog, '_WECHAT_URL',
+                        f'http://127.0.0.1:{server.serverPort()}/wechat-group.png')
+    yield server
+    server.close()
+    server.deleteLater()
+
+
+def test_contact_link_colour_follows_the_theme(qapp, theme_environment, invite_server):
     from PyQt6.QtGui import QPalette
     from PyQt6.QtWidgets import QWidget
     from dialogs.about import ContactInfoDialog
@@ -69,57 +84,73 @@ def test_contact_link_colour_follows_the_theme(qapp, theme_environment):
         qapp.processEvents()
 
 
-@pytest.mark.parametrize('response', ['png', 'invalid', 'timeout'])
-def test_contact_wechat_invite_refresh(qapp, monkeypatch, response):
+@pytest.mark.parametrize('response', ['png', 'invalid', 'oversized', 'timeout',
+                                      'redirect', 'cross_origin', 'no_bundle'])
+def test_contact_wechat_invite_refresh(qapp, monkeypatch, invite_server, response):
     from pathlib import Path
 
-    from PyQt6.QtCore import QEventLoop, QTimer
     from PyQt6.QtNetwork import QHostAddress, QTcpServer
 
+    from dialogs import about
     from dialogs.about import ContactInfoDialog
+    from tests.test_control_channel import wait_until
     from locales import trans
     from utils import resource_path
 
-    server = QTcpServer()
-    assert server.listen(QHostAddress(QHostAddress.SpecialAddress.LocalHost))
+    data = Path(resource_path('assets', 'readme', 'wechat-group.png')).read_bytes()
+    if response == 'oversized':
+        # Valid PNG followed by padding. Invalid image data alone would test decoding.
+        data = data.ljust(ContactInfoDialog._WECHAT_MAX_BYTES + 1, b'\0')
+    elif response in ('invalid', 'no_bundle'):
+        data = b'invalid PNG'
+    if response == 'no_bundle':
+        monkeypatch.setattr(about, 'resource_path', lambda *parts: '')
+
+    other_origin = QTcpServer()
+    if response == 'cross_origin':
+        assert other_origin.listen(QHostAddress(QHostAddress.SpecialAddress.LocalHost))
 
     def accept_connection():
-        socket = server.nextPendingConnection()
+        socket = invite_server.nextPendingConnection()
         if response == 'timeout':
             return
-        data = (Path(resource_path('assets', 'readme', 'wechat-group.png')).read_bytes()
-                if response == 'png' else b'invalid PNG')
 
         def write_response():
+            if not socket.canReadLine():
+                return
+            request = bytes(socket.readLine())
             socket.readAll()
-            headers = (f'HTTP/1.1 200 OK\r\nContent-Type: image/png\r\n'
-                       f'Content-Length: {len(data)}\r\nConnection: close\r\n\r\n')
-            socket.write(headers.encode('ascii') + data)
+            if response in ('redirect', 'cross_origin') and b' /wechat-group.png ' in request:
+                location = ('/current.png' if response == 'redirect' else
+                            f'http://127.0.0.1:{other_origin.serverPort()}/current.png')
+                socket.write(f'HTTP/1.1 302 Found\r\nLocation: {location}\r\n\r\n'.encode('ascii'))
+            else:
+                headers = (f'HTTP/1.1 200 OK\r\nContent-Type: image/png\r\n'
+                           f'Content-Length: {len(data)}\r\nConnection: close\r\n\r\n')
+                socket.write(headers.encode('ascii') + data)
             socket.disconnectFromHost()
 
         socket.readyRead.connect(write_response)
         if socket.bytesAvailable():
             write_response()
 
-    server.newConnection.connect(accept_connection)
-    monkeypatch.setattr(ContactInfoDialog, '_WECHAT_URL', f'http://127.0.0.1:{server.serverPort()}/wechat-group.png')
+    invite_server.newConnection.connect(accept_connection)
     if response == 'timeout':
         monkeypatch.setattr(ContactInfoDialog, '_WECHAT_TIMEOUT_MS', 100)
     dialog = ContactInfoDialog()
     try:
         assert dialog._wechat_status.text() == trans.t('contact_wechat_loading')
-        bundled = dialog._wechat_qr.pixmap().cacheKey()
-        loop = QEventLoop()
-        watchdog = QTimer()
-        watchdog.setSingleShot(True)
-        watchdog.timeout.connect(loop.quit)
-        dialog._wechat_reply.finished.connect(loop.quit)
-        watchdog.start(5000)
-        loop.exec()
-
-        assert dialog._wechat_reply is None
+        if response != 'no_bundle':
+            bundled = dialog._wechat_qr.pixmap().cacheKey()
+        assert wait_until(lambda: dialog._wechat_refresh is None)
+        if response == 'no_bundle':
+            assert dialog._wechat_qr.isHidden()
+            assert dialog._wechat_status.text() == trans.t('contact_wechat_unavailable')
+            return
+        if response == 'cross_origin':
+            assert not other_origin.hasPendingConnections()
         assert not dialog._wechat_qr.pixmap().isNull()
-        if response == 'png':
+        if response in ('png', 'redirect'):
             assert dialog._wechat_status.isHidden()
         else:
             assert dialog._wechat_qr.pixmap().cacheKey() == bundled
@@ -127,6 +158,59 @@ def test_contact_wechat_invite_refresh(qapp, monkeypatch, response):
     finally:
         dialog.close()
         dialog.deleteLater()
+
+
+def test_contact_menu_allows_main_window_input_while_refreshing(
+        qapp, tmp_path, monkeypatch, theme_environment, invite_server):
+    from PyQt6 import sip
+    from PyQt6.QtCore import QTimer, Qt
+    from PyQt6.QtNetwork import QAbstractSocket
+    from PyQt6.QtTest import QTest
+    from dialogs.about import ContactInfoDialog
+    from tests.test_control_channel import _new_main_window, _destroy_main_window, wait_until
+
+    monkeypatch.setattr(ContactInfoDialog, '_WECHAT_TIMEOUT_MS', 30_000)
+    window = _new_main_window(qapp, tmp_path, monkeypatch)
+    contact_action = window.ui_objs['action_contact']
+
+    def dismiss_modal_contact():
+        dialog = qapp.activeModalWidget()
+        if isinstance(dialog, ContactInfoDialog):
+            dialog.reject()
+
+    def open_from_menu():
+        # A regression to exec() must fail the assertion instead of hanging the test.
+        QTimer.singleShot(0, dismiss_modal_contact)
+        contact_action.trigger()
+        dialogs = [d for d in window.findChildren(ContactInfoDialog) if d.isVisible()]
+        assert len(dialogs) == 1 and qapp.activeModalWidget() is None
+        return dialogs[0]
+
+    try:
+        for _ in range(2):
+            dialog = open_from_menu()
+            assert open_from_menu() is dialog
+            assert wait_until(invite_server.hasPendingConnections)
+            socket = invite_server.nextPendingConnection()
+            assert wait_until(socket.canReadLine)
+
+            combo = window.combo_align
+            before = window.current_alignment_method()
+            next_method = 'ecc' if before == 'none' else 'none'
+            key = (Qt.Key.Key_Down if combo.findData(next_method) > combo.currentIndex()
+                   else Qt.Key.Key_Up)
+            QTest.keyClick(combo, key)
+            assert window.current_alignment_method() == next_method
+            assert dialog.isVisible()
+
+            dialog.close()
+            assert wait_until(lambda: sip.isdeleted(dialog))
+            # Let the outstanding header read finish. The closed dialog's worker
+            # must disconnect even though the server never sends the PNG body.
+            socket.write(b'HTTP/1.1 200 OK\r\nContent-Length: 1024\r\n\r\n')
+            assert wait_until(lambda: socket.state() == QAbstractSocket.SocketState.UnconnectedState)
+    finally:
+        _destroy_main_window(qapp, window)
 
 
 def test_dustmap_preview_follows_the_theme(qapp, theme_environment):
