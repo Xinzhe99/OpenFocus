@@ -127,6 +127,9 @@ menu or a drag-drop advance the same `load_id`, so a wait can bind to one
 request instead of any non-empty stack. Poll `stack.frames` until
 `load.finished` is true and inspect `load.error`; a failed or cancelled decode
 reports `finished:true` with the reason and leaves the previous frames alone.
+A successful load reports `finished:true` once the desktop has released the
+loader and can accept a new load or render. An earlier `render.start`
+returns `busy` while the stack is loading.
 
 `linear_raw` is a boolean, default `false`, passed to folder and file loads.
 `linear_raw:true` with video returns `invalid_argument`.
