@@ -7,6 +7,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- Add an opt-in OpenCL GPU path for OpenFocus A fusion (`use_gpu=True`),
+  porting the Burt-pyramid focus response, winner-take-all selection with
+  low-response background accumulation, low-response blending and output
+  conversion to device kernels. Verified bit-exact against the CPU path
+  (`ndiff=0`, ~2.0x faster end-to-end on a 60-frame 2048x1366 stack on RTX 4060
+  Laptop); falls back to CPU when the device budget or build fails.
 - Prepare Linux x86-64 desktop release archives and website downloads, alongside
   the separate headless CLI distributed through PyPI.
 - Add an opt-in OpenCL GPU path for OpenFocus C pyramid fusion

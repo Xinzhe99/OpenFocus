@@ -1137,7 +1137,7 @@ class RenderWorker(QThread):
             from utils.output_sharpen import sharpen_output
             with profile.stage('sharpen'):
                 result = sharpen_output(result, should_cancel)
-        device = fusion.get_info()['device'] if (get_fusion(self.algorithm).neural or self.algorithm in ('openfocus_b', 'openfocus_c')) else 'CPU'
+        device = fusion.get_info()['device'] if (get_fusion(self.algorithm).neural or self.algorithm in ('openfocus_a', 'openfocus_b', 'openfocus_c')) else 'CPU'
         with profile.stage('finalize_output'):
             result = quantize_fuse_output(result, is_16bit)
             return store_frame(restore_transparent_canvas(result, transparent)), device
@@ -1338,7 +1338,7 @@ class BatchWorker(QThread):
         self.split_method = split_method
         self.split_param = split_param
         self.single_folder_images_with_times = single_folder_images_with_times or []
-        # GPU preference applies to OpenFocus B/C and supported neural methods.
+        # GPU preference applies to OpenFocus A/B/C and supported neural methods.
         self.use_gpu = bool(use_gpu)
         self.runtime_settings = dict(self.processing_settings.get('runtime_settings') or {})
         self.runtime_settings.update(runtime_settings or {})
