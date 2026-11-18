@@ -41,6 +41,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   when the browser has no active session, or when the user needs to try again.
 - Require an account to enter the desktop application; a saved sign-in can be
   used offline. Signing out returns to the sign-in screen.
+- Reuse one account device slot across installed, portable and recognized preview
+  builds on the same Windows PC for the same user. Each profile keeps its own sign-in.
 - Group advanced desktop settings into General, Fusion, Registration, and Startup and Updates.
   Keep the tile size and overlap visible and write detailed session logs by default.
   Automatic error reports and usage statistics start checked and preserve saved opt-outs.
@@ -84,6 +86,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   available physical RAM, avoiding plans above the reported commit limit.
 - Include the immediate Windows job object's per-process commit limit in
   admission when that limit is present.
+- Keep OpenFocus A on the GPU when a streamed source and the fusion workspace fit
+  in memory. Long stacks can reuse cached frames without filling the decoded RAM cache.
 - Close the isolated language audit without project confirmation, including
   when an audit error interrupts the run.
 - Remove temporary launch-film frames when full video generation fails or is

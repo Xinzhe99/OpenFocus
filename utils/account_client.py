@@ -27,12 +27,14 @@ import urllib.request
 import webbrowser
 
 from constants import app_display_version
-from utils.app_paths import user_data_dir
+from utils.app_paths import legacy_windows_account_dirs, shared_account_device_dir, user_data_dir
 from utils.report_client import ReportError, _file_lock
 
 BASE_URL = "https://account.openfocus.top"
 _RUN_ID = secrets.token_urlsafe(16)
 _RUN_STARTED = int(time.time())
+_SESSION_FILENAME = "account-session"
+_DEVICE_FILENAME = "account-device"
 _MAX_RESPONSE = 1024 * 1024
 _MAX_ERROR_RESPONSE = 16 * 1024
 _ERROR_CODES = frozenset({
@@ -82,15 +84,7 @@ def _default_device_name():
     return name.strip()[:80] or "OpenFocus desktop"
 
 
-def _device_path(store):
-    path = getattr(store, "path", None)
-    return Path(path).parent / "account-device" if path is not None else None
-
-
-def _load_device_identity(store):
-    path = _device_path(store)
-    if path is None:
-        return None
+def _load_device_identity(path):
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
@@ -105,19 +99,49 @@ def _load_device_identity(store):
     return value["device_id"], device_name.strip()[:80]
 
 
-def _create_device_identity(store, device_name):
-    path = _device_path(store)
-    identity = (secrets.token_urlsafe(32), device_name)
-    if path is None:
-        return identity
+def _legacy_device_identity(profile, shared_dir):
+    fallback = None
+    invalid = False
+    for directory in legacy_windows_account_dirs(profile, shared_dir):
+        try:
+            identity = _load_device_identity(directory / _DEVICE_FILENAME)
+        except AccountError:
+            invalid = True
+            continue
+        if identity is None:
+            continue
+        # A saved session is the best local evidence that this ID was used.
+        # The session itself stays in its original profile.
+        if (directory / _SESSION_FILENAME).is_file():
+            return identity
+        if fallback is None:
+            fallback = identity
+    if fallback is None and invalid:
+        raise AccountError("storage")
+    return fallback
+
+
+def _device_identity(store, device_name):
+    session_path = getattr(store, "path", None)
+    if session_path is None:
+        return secrets.token_urlsafe(32), device_name
+    profile = Path(session_path).parent
+    shared_dir = getattr(store, "_shared_device_dir", None)
+    path = (shared_dir or profile) / _DEVICE_FILENAME
+    loaded = _load_device_identity(path)
+    if loaded is not None:
+        return loaded
     temporary = None
     try:
         # The stable lock serializes both threads and processes, including on
         # filesystems without hard-link support. Never replace an existing ID.
         with _file_lock(path.parent, ".account-device.lock", deadline=time.monotonic() + 15):
-            loaded = _load_device_identity(store)
+            loaded = _load_device_identity(path)
             if loaded is not None:
                 return loaded
+            identity = _legacy_device_identity(profile, shared_dir) if shared_dir is not None else None
+            if identity is None:
+                identity = (secrets.token_urlsafe(32), device_name)
             fd, temporary = tempfile.mkstemp(prefix=".account-device-", dir=path.parent)
             with os.fdopen(fd, "w", encoding="utf-8") as output:
                 json.dump({"device_id": identity[0], "device_name": identity[1]}, output,
@@ -168,9 +192,11 @@ class TokenStore:
     """
     def __init__(self, path=None):
         self._keychain = sys.platform == "darwin" and path is None
+        self._shared_device_dir = None
         if path is None:
             root = user_data_dir()
-            path = root / "account-session"
+            path = root / _SESSION_FILENAME
+            self._shared_device_dir = shared_account_device_dir(root)
             profile = os.path.normcase(os.path.realpath(os.fspath(root)))
             self._keychain_account = "session-" + hashlib.sha256(os.fsencode(profile)).hexdigest()
         self.path = Path(path)
@@ -427,17 +453,15 @@ class AccountClient:
         self.store = store if store is not None else TokenStore()
         self._request = request or _http
         self._clock = clock
-        if device_id is not None:
-            if not _valid_device_id(device_id):
-                raise ValueError("Invalid device id")
-            self.device_id = device_id
-            self.device_name = (device_name or _default_device_name()).strip()[:80] or _default_device_name()
-        else:
-            self.device_name = (device_name or _default_device_name()).strip()[:80] or _default_device_name()
-            self.device_id = None
+        if device_id is not None and not _valid_device_id(device_id):
+            raise ValueError("Invalid device id")
+        self.device_name = (device_name or _default_device_name()).strip()[:80] or _default_device_name()
+        self.device_id = device_id
+        # A fresh Windows profile should not mint a shared ID at startup. The
+        # first exchange can adopt an ID once a legacy portable profile is in use.
+        if device_id is None and getattr(self.store, "_shared_device_dir", None) is None:
             try:
-                identity = _load_device_identity(self.store) or _create_device_identity(self.store, self.device_name)
-                self.device_id, self.device_name = identity
+                self._device_fields()
             except AccountError:
                 # Loading the app remains possible; exchange must retry persistence.
                 pass
@@ -456,8 +480,7 @@ class AccountClient:
 
     def _device_fields(self):
         if self.device_id is None:
-            self.device_id, self.device_name = (_load_device_identity(self.store)
-                                                or _create_device_identity(self.store, self.device_name))
+            self.device_id, self.device_name = _device_identity(self.store, self.device_name)
         return {"device_id": self.device_id, "device_name": self.device_name}
 
     def _call(self, method, path, body=None, token=None, timeout=15):
