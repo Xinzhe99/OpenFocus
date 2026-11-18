@@ -1472,15 +1472,17 @@ def _tiff_preview(page, should_cancel=None):
     if channels not in (1, 3, 4) or page.planarconfig != 1:
         raise ValueError('Unsupported TIFF sample/planar layout')
     orientation = _tiff_orientation(page)
-    from core.image_loader import validate_tiff_page, cmyk_to_bgr
+    from core.image_loader import validate_tiff_page, cmyk_to_bgr, tiff_palette_bgr
     path = page.parent.filehandle.path
     cmyk = validate_tiff_page(path, page)
-    if int(getattr(page, 'compression', 1)) == 5 and not cmyk:
-        # LZW is supported by OpenCV's bundled libtiff; tifffile requires
-        # optional imagecodecs, which is deliberately not a dependency.
+    palette = int(page.photometric) == 3
+    if int(getattr(page, 'compression', 1)) == 5 and not (cmyk or palette):
+        # Ordinary LZW pages can use OpenCV's bundled libtiff.
         return _opencv_tiff_preview(page)
     from core.resource_policy import require_memory
     small_bytes = math.ceil(h / step) * math.ceil(w / step) * channels * np.dtype(page.dtype).itemsize
+    if palette:
+        small_bytes *= 4  # Keep the sampled indices alongside their three color channels.
     if page.is_memmappable:
         require_memory(small_bytes * 4)
         # is_memmappable guarantees asarray maps the existing source rather
@@ -1514,9 +1516,11 @@ def _tiff_preview(page, should_cancel=None):
                 if hh > 0 and ww > 0:
                     small[sy:sy + hh, sx:sx + ww] = sampled[:hh, :ww]
         except (ImportError, ValueError):
-            if cmyk:
+            if cmyk or palette:
                 raise
             return _opencv_tiff_preview(page)
+    if palette:
+        return _orient(tiff_palette_bgr(page, small[:, :, 0]), orientation)
     if cmyk:
         tag = page.tags.get(34675)
         profile = tag.value if tag is not None else b''
