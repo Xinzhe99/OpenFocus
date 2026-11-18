@@ -3,7 +3,7 @@
 OpenFocus does not upload your images, file names or project data. Desktop
 usage reporting is enabled by default when no preference exists. An existing
 explicitly disabled preference stays disabled. Change the switch in
-**Settings → Advanced Settings → Share usage statistics**, then choose **OK**;
+**Settings → Advanced Settings → General → Share usage statistics**, then choose **OK**.
 Cancel, Esc or closing the settings dialog discards the draft. Usage statistics
 are independent of account sign-in and diagnostic reporting.
 
@@ -39,11 +39,12 @@ are independent of account sign-in and diagnostic reporting.
   label based on the computer name when exchanging a sign-in code, to manage
   the three-device limit. Account requests include the app version, operating
   system, and a random ID and start time for the current app run.
-- **Error reports** — you can review and send a sanitized report, signed in or
-  anonymously. After desktop sign-in, automatic error reporting is enabled by
-  default unless you previously disabled it; a saved preference is preserved.
-  You can change it in Advanced Settings. Automatic reports are prepared only
-  after a session records an error; a previous native crash is offered for review
+- **Error reports** — you can review and send a sanitized report while signed in or
+  anonymously. **Automatically send error reports** is checked by default in
+  **Settings → Advanced Settings → General**. The default takes effect after
+  signing in with the reporting terms. Your saved choice also applies after
+  restarting or resetting other settings. A session with an error may send an
+  automatic report. The app offers a previous native crash for review
   and requires a separate confirmation. Automatic reports are skipped for
   development runs; report metadata includes the build channel.
   Reports can include a separate random
@@ -103,8 +104,8 @@ local machine (in portable mode, beside the executable). Image and project data
 are not uploaded. When usage reporting is enabled, its random installation ID is
 also stored locally and sent as described above.
 
-Diagnostic logs remain on the local machine unless you choose to share them;
-they rotate at approximately 1 MB per file with three backups per process, and
+Detailed session logs are written locally. Open **Help → Open Logs Folder** to
+find them. They rotate at approximately 1 MB per file with three backups per process, and
 inactive process logs expire after 14 days. Local logs may contain source/output
 paths and final-pixel checksums. Usage statistics never read these logs. A local
 feedback export may include up to 20 MB of recent log tails and should be reviewed
