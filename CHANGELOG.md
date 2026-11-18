@@ -16,6 +16,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Changed
 - Include allowlisted error categories, render stages, and memory admission
   figures in sanitized reports, without adding exception messages or paths.
+- Apply exposure matching in OpenFocus fusion through a per-frame lookup table
+  of every 8- or 16-bit code, computed by the existing per-sample arithmetic
+  and applied in parallel row bands, instead of float strips on one thread.
+  Output pixels are unchanged.
 - Require an account to enter the desktop application; a saved sign-in can be
   used offline. Signing out returns to the sign-in screen.
 - Expose the active render stage through the local control channel.
