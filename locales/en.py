@@ -279,7 +279,7 @@ EN = {
     "alignment_reason_insufficient_features": "Insufficient features",
     "alignment_reason_insufficient_matches": "Insufficient matches",
     "alignment_reason_homography_failed": "Homography failed",
-    "alignment_reason_ecc_failed": "ECC failed",
+    "alignment_reason_ecc_failed": "ECC could not find a stable alignment with the previous frame.",
     'alignment_report_collect': 'Collect alignment diagnostics',
     'perf_profile_collect': 'Profile rendering performance',
     'perf_profile_collect_hint': 'Collect detailed timings for supported rendering stages. Useful for diagnosing slow renders. May add a small processing overhead.',

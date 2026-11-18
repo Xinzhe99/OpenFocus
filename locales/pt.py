@@ -240,7 +240,7 @@ PACK = {
     "alignment_reason_insufficient_features": "Pontos de interesse insuficientes",
     "alignment_reason_insufficient_matches": "Correspondências insuficientes",
     "alignment_reason_homography_failed": "Falha na homografia",
-    "alignment_reason_ecc_failed": "Falha no ECC",
+    "alignment_reason_ecc_failed": "O ECC não encontrou um alinhamento estável com a imagem anterior.",
     'alignment_report_collect': 'Coletar diagnóstico de alinhamento', 'alignment_report_collect_hint': 'Recalcule o alinhamento para coletar resultados por quadro sem reutilizar o cache.',
     'perf_profile_collect': 'Analisar o desempenho da renderização',
     'perf_profile_collect_hint': 'Coleta tempos detalhados das etapas de renderização compatíveis. Útil para diagnosticar renderizações lentas. Pode adicionar uma pequena sobrecarga de processamento.',

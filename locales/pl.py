@@ -240,7 +240,7 @@ PACK = {
     "alignment_reason_insufficient_features": "Zbyt mało cech",
     "alignment_reason_insufficient_matches": "Zbyt mało dopasowań",
     "alignment_reason_homography_failed": "Niepowodzenie homografii",
-    "alignment_reason_ecc_failed": "Niepowodzenie ECC",
+    "alignment_reason_ecc_failed": "Metoda ECC nie znalazła stabilnego dopasowania do poprzedniej klatki.",
     'alignment_report_collect': 'Zbieraj diagnostykę wyrównania', 'alignment_report_collect_hint': 'Oblicz wyrównanie ponownie, aby zebrać wyniki dla klatek bez użycia pamięci podręcznej.',
     'perf_profile_collect': 'Analizuj wydajność renderowania',
     'perf_profile_collect_hint': 'Zbiera szczegółowe czasy obsługiwanych etapów renderowania. Przydatne przy diagnozowaniu wolnych renderów. Może nieznacznie zwiększyć narzut przetwarzania.',

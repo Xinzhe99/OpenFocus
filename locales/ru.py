@@ -240,7 +240,7 @@ PACK = {
     "alignment_reason_insufficient_features": "Недостаточно характерных точек",
     "alignment_reason_insufficient_matches": "Недостаточно совпадений",
     "alignment_reason_homography_failed": "Ошибка гомографии",
-    "alignment_reason_ecc_failed": "Ошибка ECC",
+    "alignment_reason_ecc_failed": "ECC не удалось устойчиво совместить этот кадр с предыдущим.",
     'alignment_report_collect': 'Собирать диагностику выравнивания', 'alignment_report_collect_hint': 'Повторно вычислить выравнивание для сбора результатов по кадрам без использования кэша.',
     'perf_profile_collect': 'Профилировать производительность рендеринга',
     'perf_profile_collect_hint': 'Собирает подробные замеры времени для поддерживаемых этапов рендеринга. Помогает диагностировать медленный рендеринг. Может немного увеличить накладные расходы.',

@@ -240,7 +240,7 @@ PACK = {
     "alignment_reason_insufficient_features": "Onvoldoende kenmerken",
     "alignment_reason_insufficient_matches": "Onvoldoende overeenkomsten",
     "alignment_reason_homography_failed": "Homografie mislukt",
-    "alignment_reason_ecc_failed": "ECC mislukt",
+    "alignment_reason_ecc_failed": "ECC kon dit beeld niet stabiel uitlijnen met het vorige beeld.",
     'alignment_report_collect': 'Uitlijningsdiagnose verzamelen', 'alignment_report_collect_hint': 'Bereken de uitlijning opnieuw voor resultaten per beeld in plaats van de cache te gebruiken.',
     'perf_profile_collect': 'Renderprestaties analyseren',
     'perf_profile_collect_hint': 'Verzamelt gedetailleerde tijden voor ondersteunde renderfasen. Handig om trage renders te diagnosticeren. Kan een kleine verwerkingsoverhead toevoegen.',

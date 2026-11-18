@@ -240,7 +240,7 @@ PACK = {
     "alignment_reason_insufficient_features": "Points caractéristiques insuffisants",
     "alignment_reason_insufficient_matches": "Correspondances insuffisantes",
     "alignment_reason_homography_failed": "Échec de l’homographie",
-    "alignment_reason_ecc_failed": "Échec ECC",
+    "alignment_reason_ecc_failed": "ECC n’a pas trouvé d’alignement stable avec l’image précédente.",
     'alignment_report_collect': 'Collecter les diagnostics d’alignement', 'alignment_report_collect_hint': 'Recalculer l’alignement pour collecter les résultats par image sans utiliser le cache.',
     'perf_profile_collect': 'Analyser les performances du rendu',
     'perf_profile_collect_hint': 'Collecte des temps détaillés pour les étapes de rendu prises en charge. Utile pour diagnostiquer les rendus lents. Peut ajouter un léger surcoût de traitement.',
