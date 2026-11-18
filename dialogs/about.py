@@ -1,10 +1,14 @@
 # dialogs/about.py
 """About and contact information dialogs."""
 
+from http.client import HTTPException
 import threading
-from PyQt6.QtCore import QTimer, QUrl, Qt
+import time
+from urllib.parse import urljoin, urlsplit
+from urllib.request import HTTPErrorProcessor, build_opener
+
+from PyQt6.QtCore import QTimer, Qt
 from PyQt6.QtGui import QFont, QPixmap
-from PyQt6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
 from PyQt6.QtWidgets import (
     QDialog,
     QVBoxLayout,
@@ -228,6 +232,65 @@ class EnvironmentInfoDialog(QDialog):
         return "\n".join(summary + [""] + info_lines)
 
 
+class _InviteResponses(HTTPErrorProcessor):
+    # Inspect redirects before urllib follows them or drains their bodies.
+    def http_response(self, request, response):
+        return response
+
+    https_response = http_response
+
+
+def _origin(url):
+    parts = urlsplit(url)
+    port = parts.port if parts.port is not None else (443 if parts.scheme == 'https' else 80)
+    return parts.scheme, parts.hostname, port
+
+
+class _WechatInviteDownload(threading.Thread):
+    """Own the network connection entirely off the GUI thread, including close."""
+
+    def __init__(self, url, timeout_ms, max_bytes):
+        super().__init__(name='wechat-invite-download', daemon=True)
+        self.url = url
+        self.deadline = time.monotonic() + timeout_ms / 1000
+        self.max_bytes = max_bytes
+        self.cancelled = threading.Event()
+        self.png = None
+
+    def run(self):
+        try:
+            opener = build_opener(_InviteResponses())
+            url = self.url
+            for _ in range(11):  # Initial request plus at most ten redirects.
+                remaining = self.deadline - time.monotonic()
+                if self.cancelled.is_set() or remaining <= 0:
+                    return
+                with opener.open(url, timeout=remaining) as reply:
+                    if reply.status == 200:
+                        self._read_png(reply)
+                        return
+                    location = reply.headers.get('Location')
+                    if reply.status not in (301, 302, 303, 307, 308) or not location:
+                        return
+                    url = urljoin(url, location)
+                    if _origin(url) != _origin(self.url):
+                        return
+        except (OSError, HTTPException, ValueError):
+            pass  # The dialog already displays the offline invite.
+
+    def _read_png(self, reply):
+        data = bytearray()
+        while not self.cancelled.is_set() and time.monotonic() < self.deadline:
+            chunk = reply.read1(self.max_bytes + 1 - len(data))
+            if not chunk:
+                if not reply.length and time.monotonic() < self.deadline:
+                    self.png = bytes(data)
+                return
+            data.extend(chunk)
+            if len(data) > self.max_bytes:
+                return
+
+
 class ContactInfoDialog(QDialog):
     """Show contact links and refresh the WeChat invite from the website."""
 
@@ -290,18 +353,13 @@ class ContactInfoDialog(QDialog):
         else:
             self._show_wechat_qr(bundled)
 
-        self._wechat_network = QNetworkAccessManager(self)
-        request = QNetworkRequest(QUrl(self._WECHAT_URL))
-        request.setAttribute(QNetworkRequest.Attribute.RedirectPolicyAttribute,
-                             QNetworkRequest.RedirectPolicy.SameOriginRedirectPolicy)
-        self._wechat_reply = self._wechat_network.get(request)
-        self._wechat_reply.setReadBufferSize(self._WECHAT_MAX_BYTES + 1)
-        self._wechat_reply.readyRead.connect(self._limit_wechat_reply)
-        self._wechat_reply.finished.connect(self._finish_wechat_reply)
+        self._wechat_refresh = _WechatInviteDownload(
+            self._WECHAT_URL, self._WECHAT_TIMEOUT_MS, self._WECHAT_MAX_BYTES)
+        self.destroyed.connect(self._wechat_refresh.cancelled.set)
         self._wechat_timer = QTimer(self)
-        self._wechat_timer.setSingleShot(True)
-        self._wechat_timer.timeout.connect(self._wechat_reply.abort)
-        self._wechat_timer.start(self._WECHAT_TIMEOUT_MS)
+        self._wechat_timer.timeout.connect(self._poll_wechat_invite)
+        self._wechat_refresh.start()
+        self._wechat_timer.start(50)
 
         # 关闭按钮
         close_btn = QPushButton(trans.t('btn_close'))
@@ -325,18 +383,18 @@ class ContactInfoDialog(QDialog):
         self._wechat_qr.setPixmap(pixmap)
         self._wechat_qr.show()
 
-    def _limit_wechat_reply(self):
-        if self._wechat_reply.bytesAvailable() > self._WECHAT_MAX_BYTES:
-            self._wechat_reply.abort()
-
-    def _finish_wechat_reply(self):
+    def _poll_wechat_invite(self):
+        refresh = self._wechat_refresh
+        pending = refresh.is_alive()
+        if pending and time.monotonic() < refresh.deadline:
+            return
         self._wechat_timer.stop()
-        reply, self._wechat_reply = self._wechat_reply, None
-        status = reply.attribute(QNetworkRequest.Attribute.HttpStatusCodeAttribute)
+        self._wechat_refresh = None
         image = QPixmap()
-        if reply.error() == QNetworkReply.NetworkError.NoError and status == 200:
-            image.loadFromData(reply.readAll(), 'PNG')
-        reply.deleteLater()
+        if pending:
+            refresh.cancelled.set()
+        elif refresh.png:
+            image.loadFromData(refresh.png, 'PNG')
         if image.isNull():
             has_fallback = not self._wechat_qr.isHidden()
             key = 'contact_wechat_bundled' if has_fallback else 'contact_wechat_unavailable'
@@ -346,8 +404,10 @@ class ContactInfoDialog(QDialog):
             self._wechat_status.hide()
 
     def done(self, result):
-        if self._wechat_reply is not None:
-            self._wechat_reply.abort()
+        self._wechat_timer.stop()
+        if self._wechat_refresh is not None:
+            self._wechat_refresh.cancelled.set()
+            self._wechat_refresh = None
         super().done(result)
 
 

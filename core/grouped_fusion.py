@@ -18,6 +18,7 @@ from core import resource_policy
 from core.frame_storage import require_disk_space, storage_directory
 from core.image_loader import RAW_FORMATS, _downscale_page, decode_image, is_raw_source, tiff_source_pages
 from core.registration import RegistrationCancelled
+from core.registration_errors import RejectedAlignmentFrame
 from utils.image_utils import get_imwrite_params, imwrite_auto, read_image_exif
 
 
@@ -198,6 +199,9 @@ def grouped_fuse(paths, group_size, overlap, fuse_group, *, scale_factor=1.0,
                     token = grouped_crop_offsets.set(offsets)
                     try:
                         result = images[0] if len(images) == 1 else fuse_group(images)
+                    except RejectedAlignmentFrame as error:
+                        error.source_name = os.path.basename(group[error.frame_index][0])
+                        raise
                     finally:
                         grouped_crop_offsets.reset(token)
                     result_left, result_top = left, top
