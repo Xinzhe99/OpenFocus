@@ -752,7 +752,7 @@ Su Windows l'aggiornamento prepara una versione candidata separata e sposta il m
 
 ### Cache di registrazione
 
-OpenFocus può memorizzare i risultati di registrazione in una cartella `.openfocus_cache` accanto allo stack sorgente. Riaprendo lo stesso stack (file invariati) l'allineamento viene saltato del tutto. Attiva o disattiva in **Impostazioni → Impostazioni avanzate → Registrazione → Cache di registrazione**; le voci obsolete vengono sostituite automaticamente.
+OpenFocus salva i risultati di registrazione nella cache dell’utente. Riaprendo uno stack invariato con le stesse impostazioni, OpenFocus riutilizza il risultato salvato. L’opzione è in **Impostazioni → Impostazioni avanzate → Registrazione → Cache di registrazione**. Tutti gli stack condividono un limite di 2 GiB. Quando serve spazio, vengono rimosse le voci utilizzate meno di recente. Le vecchie cartelle `.openfocus_cache` accanto agli stack sorgente vengono mantenute.
 
 ### Impostazioni persistenti
 

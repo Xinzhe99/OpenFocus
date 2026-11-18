@@ -69,6 +69,66 @@ def test_contact_link_colour_follows_the_theme(qapp, theme_environment):
         qapp.processEvents()
 
 
+@pytest.mark.parametrize('response', ['png', 'invalid', 'timeout'])
+def test_contact_wechat_invite_refresh(qapp, monkeypatch, response):
+    from pathlib import Path
+
+    from PyQt6.QtCore import QEventLoop, QTimer
+    from PyQt6.QtNetwork import QHostAddress, QTcpServer
+
+    from dialogs.about import ContactInfoDialog
+    from locales import trans
+    from utils import resource_path
+
+    server = QTcpServer()
+    assert server.listen(QHostAddress(QHostAddress.SpecialAddress.LocalHost))
+
+    def accept_connection():
+        socket = server.nextPendingConnection()
+        if response == 'timeout':
+            return
+        data = (Path(resource_path('assets', 'readme', 'wechat-group.png')).read_bytes()
+                if response == 'png' else b'invalid PNG')
+
+        def write_response():
+            socket.readAll()
+            headers = (f'HTTP/1.1 200 OK\r\nContent-Type: image/png\r\n'
+                       f'Content-Length: {len(data)}\r\nConnection: close\r\n\r\n')
+            socket.write(headers.encode('ascii') + data)
+            socket.disconnectFromHost()
+
+        socket.readyRead.connect(write_response)
+        if socket.bytesAvailable():
+            write_response()
+
+    server.newConnection.connect(accept_connection)
+    monkeypatch.setattr(ContactInfoDialog, '_WECHAT_URL', f'http://127.0.0.1:{server.serverPort()}/wechat-group.png')
+    if response == 'timeout':
+        monkeypatch.setattr(ContactInfoDialog, '_WECHAT_TIMEOUT_MS', 100)
+    dialog = ContactInfoDialog()
+    try:
+        assert dialog._wechat_status.text() == trans.t('contact_wechat_loading')
+        bundled = dialog._wechat_qr.pixmap().cacheKey()
+        loop = QEventLoop()
+        watchdog = QTimer()
+        watchdog.setSingleShot(True)
+        watchdog.timeout.connect(loop.quit)
+        dialog._wechat_reply.finished.connect(loop.quit)
+        watchdog.start(5000)
+        loop.exec()
+
+        assert dialog._wechat_reply is None
+        assert not dialog._wechat_qr.pixmap().isNull()
+        if response == 'png':
+            assert dialog._wechat_status.isHidden()
+        else:
+            assert dialog._wechat_qr.pixmap().cacheKey() == bundled
+            assert dialog._wechat_status.text() == trans.t('contact_wechat_bundled')
+    finally:
+        dialog.close()
+        dialog.deleteLater()
+
+
 def test_dustmap_preview_follows_the_theme(qapp, theme_environment):
     from PyQt6.QtGui import QColor, QPalette
     from PyQt6.QtWidgets import QWidget

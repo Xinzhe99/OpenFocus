@@ -4,8 +4,11 @@ from __future__ import annotations
 import multiprocessing
 import os
 import signal
+import sys
 import threading
 import time
+from hashlib import sha256
+from pathlib import Path
 
 from PyQt6.QtCore import Qt
 
@@ -13,7 +16,8 @@ from core import frame_storage as storage
 from core.algorithms import (fusion_algorithms, registration_algorithms,
                              get_fusion, get_registration,
                              register_fusion, register_registration)
-from core.frame_transport import FrameDecoder, FrameEncoder
+from core.frame_transport import (FrameDecoder, FrameEncoder, LEGACY_SOURCE_REQUEST_ERROR,
+                                  unwrap_source_request, wrap_source_request)
 from core.resource_policy import heavy_job, make_process_budget, process_budget
 from core.registration import RegistrationCancelled
 from core.workers import RenderWorker, _render_error_category
@@ -24,10 +28,34 @@ logger = get_logger(__name__)
 _CANCEL_GRACE_SECONDS = 3.0
 _ERROR_STATE_FIELDS = ('alignment_reused', 'alignment_computed', 'alignment_report',
                        'alignment_report_provenance', 'performance_report')
-_SUCCESS_STATE_FIELDS = (*_ERROR_STATE_FIELDS, 'prepared_cache')
+_SUCCESS_STATE_FIELDS = (*_ERROR_STATE_FIELDS, 'prepared_cache', 'rendered_depth')
 _RENDER_STAGES = ('prepare', 'align', 'fuse', 'finish')
 _ERROR_CATEGORIES = ('resource_limit', 'memory', 'os', 'value', 'runtime', 'other')
 _ERROR_ORIGINS = ('child_worker', 'child_setup_or_transfer')
+_RENDER_SOURCE_FILES = tuple(Path(__file__).with_name(f'{name}.py') for name in (
+    'render_process', 'frame_transport', 'source_frames', 'frame_storage',
+    'frame_resolution_cache', 'workers', 'registration', 'resource_policy',
+    'algorithms', 'multi_focus_fusion',
+))
+
+
+def _windows_source_run():
+    return sys.platform == 'win32' and not getattr(sys, 'frozen', False)
+
+
+def _render_source_revision():
+    digest = sha256()
+    try:
+        for path in _RENDER_SOURCE_FILES:
+            digest.update(sha256(path.read_bytes()).digest())
+    except OSError:
+        return None
+    return digest.digest()
+
+
+# Capture the transport and pipeline boundary files when this process loads them.
+# Reading only at dispatch would give an old GUI the revision of the new files.
+_LOADED_SOURCE_REVISION = _render_source_revision() if _windows_source_run() else None
 
 
 def _exit_reason(code):
@@ -118,10 +146,14 @@ def _render_child(connection, cancel_event, request, budget, directory, language
     from utils.diagnostics import install_exception_hooks
     setup_logging()
     install_exception_hooks()
-    storage.restore_storage_directory(directory)
     trans.current_lang = language
     relay = _Relay(connection, cancel_event)
     try:
+        if _windows_source_run() and multiprocessing.parent_process() is not None:
+            request = unwrap_source_request(request, _LOADED_SOURCE_REVISION)
+            if request is None:
+                raise RuntimeError(trans.t('render_source_changed'))
+        storage.restore_storage_directory(directory)
         with process_budget(budget), storage.observe_temp_files(relay.temporary_file):
             inputs = FrameDecoder(should_cancel=cancel_event.is_set).decode(request)
             if inputs.get('detailed_logging'):
@@ -249,6 +281,7 @@ class RenderProcessWorker(RenderWorker):
         self._process = None
         self._cancel_event = None
         self.child_pid = None
+        self.failure_category = None
 
     def cancel(self):
         super().cancel()
@@ -262,6 +295,7 @@ class RenderProcessWorker(RenderWorker):
         return self.is_cancelled
 
     def run(self):
+        self.failure_category = None
         result = None
         error = None
         try:
@@ -276,9 +310,12 @@ class RenderProcessWorker(RenderWorker):
         except RegistrationCancelled:
             error = 'CANCELLED: render cancelled'
         except Exception as exc:
+            if self.failure_category is None and isinstance(exc, MemoryError):
+                self.failure_category = _render_error_category(exc)
             logger.exception('could not complete isolated render')
             error = str(exc)
         if self.is_cancelled:
+            self.failure_category = None
             result = None
             error = 'CANCELLED: render cancelled'
         if error is not None:
@@ -287,6 +324,11 @@ class RenderProcessWorker(RenderWorker):
             self.finished_signal.emit(*result)
 
     def _run_process(self):
+        source_revision = None
+        if _windows_source_run():
+            source_revision = _LOADED_SOURCE_REVISION
+            if source_revision is None or _render_source_revision() != source_revision:
+                raise RuntimeError(trans.t('render_source_changed'))
         context = multiprocessing.get_context('spawn')
         self._cancel_event = context.Event()
         parent, child = context.Pipe()
@@ -300,6 +342,8 @@ class RenderProcessWorker(RenderWorker):
             request = encoder.encode({'args': self._render_args, 'kwargs': self._render_kwargs,
                 'fusions': fusion_algorithms(), 'registrations': registration_algorithms(),
                 'detailed_logging': debug_enabled()})
+            if source_revision is not None:
+                request = wrap_source_request(request, source_revision)
             log_action('render_dispatch.request_encoded')
             budget = make_process_budget(storage.ram_snapshot_bytes())
             scratch = storage.capture_scratch()
@@ -347,11 +391,14 @@ class RenderProcessWorker(RenderWorker):
             if exchange.error is not None:
                 if exchange.error_metadata is not None:
                     category, origin, stage = exchange.error_metadata
+                    self.failure_category = category
                     try:
                         log_action('render_child_error', error_category=category,
                                    error_origin=origin, render_stage=stage)
                     except Exception:
                         pass
+                if source_revision is not None and exchange.error == LEGACY_SOURCE_REQUEST_ERROR:
+                    raise RuntimeError(trans.t('render_source_changed'))
                 raise RuntimeError(exchange.error)
             exchange.restore_state(exchange.packet['state'])
             adopted = exchange.decoder.adopted_paths

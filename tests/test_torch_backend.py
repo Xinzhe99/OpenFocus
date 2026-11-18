@@ -423,7 +423,7 @@ def test_fusion_info_reports_the_backend_label(monkeypatch, kind, label):
     from fusion_methods import neural_runtime
 
     monkeypatch.setattr(mff, "is_ai_fusion_available", lambda: True)
-    monkeypatch.setattr(neural_runtime, "_DIRECTML_ADAPTER_NAME", "")
+    monkeypatch.setattr(neural_runtime, "_ADAPTER_NAME", "")
     monkeypatch.setattr(neural_runtime, '_DEVICE', kind)
     monkeypatch.setattr(neural_runtime, "resolve_device", lambda use_gpu: kind)
     fusion = mff.MultiFocusFusion("stackmffv3", use_gpu=True)

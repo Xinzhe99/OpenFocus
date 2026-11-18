@@ -61,13 +61,27 @@ def _device(cl):
     return None
 
 
-def gpu_available():
-    """Return whether an available OpenCL GPU with a compiler is present."""
+def opencl_device_name(device):
+    try:
+        name = str(device.name or '').strip()
+    except Exception:
+        # A missing descriptive field does not invalidate a compatible GPU.
+        name = ''
+    return f'OpenCL: {name}' if name else 'OpenCL'
+
+
+def probe_device_name():
+    """Return the OpenCL backend and model of the preferred compatible GPU."""
     try:
         import pyopencl as cl
-        return _device(cl) is not None
+        device = _device(cl)
+        return opencl_device_name(device) if device is not None else ''
     except Exception:
-        return False
+        return ''
+
+
+def gpu_available():
+    return bool(probe_device_name())
 
 
 class GpuError(RuntimeError):
@@ -144,7 +158,7 @@ class Merge:
             self.context = cl.Context(devices=[device])
             self.queue = cl.CommandQueue(self.context, device=device)
             self.program = cl.Program(self.context, _MERGE_KERNEL).build()
-            self.device_name = 'OpenCL: ' + str(device.name).strip()
+            self.device_name = opencl_device_name(device)
             self.activity_kernel = cl.Kernel(self.program, 'activity')
             self.kernel = cl.Kernel(self.program, 'merge')
             self.rows = rows

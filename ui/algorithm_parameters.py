@@ -5,8 +5,22 @@ from PyQt6.QtCore import QSignalBlocker, Qt, pyqtSignal
 from PyQt6.QtWidgets import QComboBox, QFormLayout, QLabel, QWidget
 
 from locales import trans
+from ui.parameter_help import add_help_row, set_help_caption
 from widgets.stepper import StepperSpinBox
 
+
+_ILLUSTRATED_HELP = {
+    'label_ai_mode': ('ai_mode', 'parameter_help_ai_mode'),
+    'label_kernel_guided': ('kernel', 'parameter_help_kernel'),
+    'label_kernel_dct': ('kernel', 'parameter_help_kernel'),
+    'label_kernel_gfg': ('kernel', 'parameter_help_kernel'),
+    'label_of_radius': ('radius', 'parameter_help_radius'),
+    'label_of_smoothing': ('blend', 'parameter_help_smoothing'),
+    'label_of_feather': ('blend', 'parameter_help_feather'),
+    'compare_levels': ('levels', 'parameter_help_levels'),
+    'label_align_reference_frame': ('reference', 'parameter_help_reference',
+                                    'align_reference_frame_hint'),
+}
 
 
 class AlgorithmParameterPanel(QWidget):
@@ -17,6 +31,8 @@ class AlgorithmParameterPanel(QWidget):
     def __init__(self, parent=None, *, hidden_parameters=()):
         super().__init__(parent)
         self.editors = {}
+        self._labels = {}
+        self._help_buttons = {}
         self._specs = ()
         self._hidden_parameters = frozenset(hidden_parameters)
         self._hidden_values = {}
@@ -40,8 +56,10 @@ class AlgorithmParameterPanel(QWidget):
         if specs == self._specs:
             for spec in specs:
                 editor = self.editors[spec.key]
-                label = self._form.labelForField(editor)
+                label = self._labels[spec.key]
                 label.setText(trans.t(spec.label_key))
+                if button := self._help_buttons.get(spec.key):
+                    set_help_caption(button, label.text())
                 editor.setAccessibleName(label.text())
                 if not spec.choices:
                     editor.lineEdit().setAccessibleName(label.text())
@@ -58,7 +76,9 @@ class AlgorithmParameterPanel(QWidget):
             return
         while self._form.rowCount():
             self._form.removeRow(0)
-        self.editors = {}
+        self.editors.clear()
+        self._labels.clear()
+        self._help_buttons.clear()
         self._specs = specs
         for spec in specs:
             label = QLabel(trans.t(spec.label_key), self)
@@ -86,7 +106,12 @@ class AlgorithmParameterPanel(QWidget):
                 label.setToolTip(hint)
                 editor.setToolTip(hint)
             self.editors[spec.key] = editor
-            self._form.addRow(label, editor)
+            self._labels[spec.key] = label
+            help_spec = _ILLUSTRATED_HELP.get(spec.label_key)
+            if help_spec and spec.hint_key != 'label_of_smoothing_a_hint':
+                _, self._help_buttons[spec.key] = add_help_row(self._form, label, editor, *help_spec)
+            else:
+                self._form.addRow(label, editor)
 
     @staticmethod
     def _choice_index(spec, value):

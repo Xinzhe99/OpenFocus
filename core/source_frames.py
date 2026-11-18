@@ -1111,14 +1111,14 @@ def source_cache_growth_bytes(frames):
     return min(remaining, sum(frame_source_cache_bytes(frame) for frame in frames))
 
 
-def frame_resolution_bytes(frame):
+def frame_resolution_bytes(frame, *, metadata_only=False):
     """Additional peak pixels/encoded input needed to resolve a descriptor."""
     if isinstance(frame, RetainedFrame):
         return 0
     if isinstance(frame, ProcessedFrame):
-        return frame_resolution_bytes(frame.source) + frame.scratch_bytes
+        return frame_resolution_bytes(frame.source, metadata_only=metadata_only) + frame.scratch_bytes
     if isinstance(frame, SourceFrame):
-        encoded = os.path.getsize(frame.path)
+        encoded = frame.fingerprint[0] if metadata_only else os.path.getsize(frame.path)
         if frame.raw_sensor_shape:
             from core.resource_policy import raw_decode_bytes
             height, width = frame.raw_sensor_shape

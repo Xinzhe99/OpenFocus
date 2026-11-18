@@ -6,9 +6,9 @@ persisted "build already staged" bookkeeping.
 
 Behaviour (modelled on the update flow of modern desktop tools):
 
-* the startup check is quiet and rate-limited to one request per day;
-* when a newer release exists it is downloaded in the background while the
-  user keeps working — no modal dialog, no blocking, cancellable;
+* the quiet check runs on startup and daily while the app stays open;
+* newer releases are downloaded in the background when no other app work
+  is active;
 * the unpacked build is verified and stays staged, so "update now" is
   instant and works offline;
 * applying it snapshots the session, hands off to a detached swap script
@@ -19,6 +19,7 @@ import json
 import sys
 
 from PyQt6.QtCore import QObject, QThread, QTimer, Qt, pyqtSignal, pyqtSlot
+from PyQt6.QtWidgets import QApplication
 
 from utils import self_update
 from utils.updater import DownloadCancelled, is_beta
@@ -40,7 +41,7 @@ STATE_CANCELLED = "cancelled"
 AUTO_DOWNLOAD_KEY = "updates/auto_download"
 INCLUDE_BETA_KEY = "updates/include_beta"
 LATEST_TAG_KEY = "updates/latest_tag"
-LATEST_URL_KEY = "updates/latest_zip_url"
+LEGACY_URL_KEY = "updates/latest_zip_url"
 NOTES_CACHE_KEY = "updates/release_notes"
 CHECK_INTERVAL_S = 24 * 3600
 IDLE_DELAY_MS = 6000      # first idle download attempt after startup
@@ -93,7 +94,7 @@ class _StageThread(QThread):
                 raise DownloadCancelled()
             verdict = verify_file_digest(self._zip, self._digest,
                                          should_cancel=lambda: self._cancelled)
-            if verdict is False:
+            if self._digest and verdict is not True:
                 os.remove(self._zip)
                 from locales import trans
                 self.done.emit(False, trans.t("msg_update_digest_mismatch"))
@@ -146,10 +147,12 @@ class UpdateManager(QObject):
         self._download = None
         self._stage = None
         self._manual = False
+        self._manual_download = False
         self._auto = True
         self._include_beta = False
         self._check_generation = 0
         self._checking = False
+        self._channel_check_pending = False
         self._task_digest = ""
         self._task_generation = 0
         self._check_result.connect(self._on_check_result,
@@ -158,6 +161,10 @@ class UpdateManager(QObject):
         self._idle_timer = QTimer(self)
         self._idle_timer.setSingleShot(True)
         self._idle_timer.timeout.connect(self._maybe_idle_download)
+        self._check_timer = QTimer(self)
+        self._check_timer.setTimerType(Qt.TimerType.PreciseTimer)
+        self._check_timer.setInterval(CHECK_INTERVAL_S * 1000)
+        self._check_timer.timeout.connect(lambda: self.check(quiet=True))
         self._load_settings()
         self._load_note_cache()
         from locales import trans
@@ -225,18 +232,39 @@ class UpdateManager(QObject):
         try:
             from constants import app_display_version
             from utils.settings_store import get_settings
-            from utils.updater import release_note_entries
+            from utils.updater import RELEASES_PAGE_URL, SHA256_DIGEST_RE, release_note_entries
             raw = get_settings().value(NOTES_CACHE_KEY, "")
             if not isinstance(raw, str) or len(raw) > 2_000_000:
                 return
             cached = json.loads(raw)
             if not isinstance(cached, dict) or not isinstance(cached.get("tag"), str):
                 return
-            if not self._tag_allowed(cached["tag"]):
+            tag = cached["tag"]
+            if not self._tag_allowed(tag) or not self._is_newer_than_current(tag):
                 return
             self._note_entries = release_note_entries(
-                app_display_version(), cached["tag"], cached.get("releases", []))
-            self._notes_tag = cached["tag"]
+                app_display_version(), tag, cached.get("releases", []))
+            self._notes_tag = tag
+            self.tag = tag
+            self.page_url = RELEASES_PAGE_URL
+            zip_url = cached.get("zip_url")
+            digest = cached.get("zip_digest")
+            from utils.updater import RELEASE_DOWNLOAD_URL
+            if sys.platform == "win32":
+                zip_kind, setup_kind = "windows-zip", "windows-setup"
+            elif sys.platform == "darwin":
+                import platform
+                if platform.machine().lower() not in ("arm64", "aarch64"):
+                    return
+                zip_kind, setup_kind = "macos-zip", "macos-dmg"
+            else:
+                return
+            prefix = f"{RELEASE_DOWNLOAD_URL}/{tag}/"
+            if (zip_url == prefix + zip_kind and isinstance(digest, str)
+                    and SHA256_DIGEST_RE.fullmatch(digest)):
+                self.zip_url, self.zip_digest = zip_url, digest
+            if cached.get("setup_url") == prefix + setup_kind:
+                self.setup_url = cached["setup_url"]
         except Exception:
             # Missing/corrupt cached notes must never prevent an offline update.
             pass
@@ -307,11 +335,10 @@ class UpdateManager(QObject):
         return self._include_beta
 
     def _tag_allowed(self, tag: str) -> bool:
-        from utils.updater import is_beta
         return self._include_beta or not is_beta(tag)
 
     def set_include_beta(self, enabled: bool) -> None:
-        from utils.settings_store import get_settings
+        from utils.settings_store import LAST_UPDATE_CHECK_KEY, get_settings
         enabled = bool(enabled)
         settings = get_settings()
         settings.setValue(INCLUDE_BETA_KEY, enabled)
@@ -324,6 +351,8 @@ class UpdateManager(QObject):
             return
         self._include_beta = enabled
         self._check_generation += 1
+        settings.remove(LAST_UPDATE_CHECK_KEY)
+        self._channel_check_pending = self._check_timer.isActive()
         if not enabled and not self._tag_allowed(self.tag):
             self._idle_timer.stop()
             self.tag = self.page_url = self.zip_url = self.setup_url = self.zip_digest = ""
@@ -344,14 +373,21 @@ class UpdateManager(QObject):
             cached_tag = str(settings.value(LATEST_TAG_KEY, "") or "")
             if not self._tag_allowed(cached_tag):
                 settings.remove(LATEST_TAG_KEY)
-                settings.remove(LATEST_URL_KEY)
+                settings.remove(LEGACY_URL_KEY)
             try:
                 cached = json.loads(settings.value(NOTES_CACHE_KEY, "") or "{}")
                 if not self._tag_allowed(cached.get("tag", "")):
                     settings.remove(NOTES_CACHE_KEY)
             except (TypeError, ValueError, AttributeError):
                 pass
-            settings.sync()
+        settings.sync()
+        self._check_changed_channel()
+
+    def _check_changed_channel(self) -> None:
+        if (self._channel_check_pending and not self._checking
+                and self.state not in (STATE_DOWNLOADING, STATE_STAGING, STATE_CANCELLING)):
+            self._channel_check_pending = False
+            self.check(quiet=True)
 
     def set_auto_download(self, enabled: bool) -> None:
         from utils.settings_store import get_settings
@@ -372,10 +408,16 @@ class UpdateManager(QObject):
     # ------------------------------------------------------------ check flow
 
     def start_idle(self) -> None:
-        """Called once after startup: reuse a staged build, then check quietly."""
+        """Restore the selected release and schedule quiet checks."""
         if self_update.gpu_variant():
             return
-        self._restore_staged_state()
+        if not self._restore_staged_state() and self.tag:
+            self._manual = False
+            self.check_finished.emit("update", self.tag, self.page_url,
+                                     self.zip_url, self.setup_url)
+            if self._auto and self.zip_url and self.can_self_update():
+                self._idle_timer.start(IDLE_DELAY_MS)
+        self._check_timer.start()
         self.check(quiet=True)
 
     def _restore_staged_state(self) -> bool:
@@ -459,6 +501,7 @@ class UpdateManager(QObject):
         if generation is not None and generation != self._check_generation:
             if self.state == STATE_CHECKING:
                 self._set_state(STATE_IDLE, "", 0)
+            self._check_changed_channel()
             return
         if tag and not self._tag_allowed(tag):
             if self.state == STATE_CHECKING:
@@ -466,10 +509,19 @@ class UpdateManager(QObject):
             self.check_finished.emit("error", "", page_url, "", "")
             return
         if self.state in (STATE_DOWNLOADING, STATE_STAGING, STATE_CANCELLING):
-            self.check_finished.emit(state, tag, page_url, zip_url, setup_url)
             return
         if state != "update":
-            if self.state == STATE_CHECKING:
+            if state == "latest" and self.tag:
+                self.tag = self.page_url = self.zip_url = self.setup_url = self.zip_digest = ""
+                self._note_entries, self._notes_tag = [], ""
+                self._idle_timer.stop()
+                from utils.settings_store import get_settings
+                settings = get_settings()
+                settings.remove(LATEST_TAG_KEY)
+                settings.remove(NOTES_CACHE_KEY)
+                self._emit_notes_changed()
+                self._set_state(STATE_IDLE)
+            elif self.state == STATE_CHECKING:
                 self._set_state(STATE_IDLE, self.tag, 0)
             self.check_finished.emit(state, tag, page_url, zip_url, setup_url)
             return
@@ -489,9 +541,11 @@ class UpdateManager(QObject):
             settings = get_settings()
             settings.setValue(LATEST_TAG_KEY, tag)
             settings.setValue(NOTES_CACHE_KEY, json.dumps(
-                {"tag": tag, "releases": self._note_entries}, ensure_ascii=False))
-            if self.zip_url:
-                settings.setValue(LATEST_URL_KEY, self.zip_url)
+                {"tag": tag, "releases": self._note_entries,
+                 "zip_url": zip_url, "zip_digest": zip_digest,
+                 "setup_url": setup_url}, ensure_ascii=False))
+            settings.remove(LEGACY_URL_KEY)
+            settings.sync()
         except Exception:
             pass
 
@@ -516,6 +570,9 @@ class UpdateManager(QObject):
                 or not self.can_self_update() or not self._tag_allowed(self.tag)
                 or not self._is_newer_than_current(self.tag)):
             return
+        if self._checking:
+            self._idle_timer.start(IDLE_RETRY_MS)
+            return
         if self_update.staged_ready(self_update.sanitize_tag(self.tag)):
             self._set_state(STATE_READY, self.tag, 100)
             return
@@ -524,7 +581,7 @@ class UpdateManager(QObject):
             busy = bool(self._window._has_work_in_flight())
         except Exception:
             busy = False
-        if busy:
+        if busy or QApplication.activeModalWidget() is not None:
             # Never compete with a render for disk/CPU; try again later.
             self._idle_timer.start(IDLE_RETRY_MS)
             return
@@ -561,14 +618,14 @@ class UpdateManager(QObject):
 
         digest = self.zip_digest if tag == self.tag and zip_url == self.zip_url else ""
         self.tag = tag
-        self._manual = manual
+        self._manual_download = manual
         self.zip_url = zip_url
         self._task_digest = digest
         self._task_generation = self._check_generation
-        if self._staged_zip == self_update.portable_zip_path(safe_tag) and os.path.isfile(self._staged_zip):
-            self._stage_zip(self._staged_zip, staging_root, safe_tag)
-            return True
         dest = self_update.portable_zip_path(safe_tag)
+        if (digest or self._staged_zip == dest) and os.path.isfile(dest):
+            self._stage_zip(dest, staging_root, safe_tag)
+            return True
         thread = _DownloadThread(zip_url, dest)
         thread.progress.connect(self._on_download_progress)
         thread.done.connect(
@@ -609,13 +666,16 @@ class UpdateManager(QObject):
         if (self.state == STATE_CANCELLING or not self._tag_allowed(safe_tag)
                 or (is_beta(safe_tag) and generation is not None and generation != self._check_generation)):
             self._set_state(STATE_CANCELLED, self.tag, 0)
+            self._check_changed_channel()
             return
         if not ok:
             if detail == "cancelled":
                 self._set_state(STATE_CANCELLED, self.tag, 0)
+                self._check_changed_channel()
                 return
             self._set_state(STATE_FAILED, self.tag, 0)
-            if self._manual:
+            self._check_changed_channel()
+            if self._manual_download:
                 self._fail("update_status_failed", detail)
             return
         self._staged_zip = detail
@@ -656,18 +716,21 @@ class UpdateManager(QObject):
             self_update.discard_staging(safe_tag)
             self._set_state(STATE_CANCELLED if detail == "cancelled" else STATE_FAILED,
                             self.tag, 0)
-            if self._manual and detail != "cancelled":
+            self._check_changed_channel()
+            if self._manual_download and detail != "cancelled":
                 self._fail("msg_update_stage_failed", detail)
             return
         # Only a complete extraction is marked usable.
         if not self_update.mark_staging_complete(safe_tag):
             self_update.discard_staging(safe_tag)
             self._set_state(STATE_FAILED, self.tag, 0)
-            if self._manual:
+            self._check_changed_channel()
+            if self._manual_download:
                 self._fail("msg_update_stage_failed")
             return
         self._staged_zip = zip_path
         self._set_state(STATE_READY, self.tag, 100)
+        self._check_changed_channel()
 
     # ------------------------------------------------------------ apply/quit
 
@@ -768,6 +831,7 @@ class UpdateManager(QObject):
         """Stop background update work (called from the window close path)."""
         self._shutting_down = True
         self._idle_timer.stop()
+        self._check_timer.stop()
         if self._download is not None:
             self._download.cancel()
         if self._stage is not None:

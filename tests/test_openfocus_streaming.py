@@ -1,6 +1,7 @@
 """Bounded source preparation, ownership, and producer lifecycle contracts."""
 import gc
 import threading
+from pathlib import Path
 from types import SimpleNamespace
 
 import cv2
@@ -316,7 +317,7 @@ def test_gui_openfocus_plan_cache_cold_warm_keeps_originals(qapp, tmp_path, monk
     cold, cold_frames, cold_result = render()
     assert cold.alignment_computed and not cold.alignment_reused
     assert cold._alignment_plan is not None
-    assert not list((tmp_path / align_cache.CACHE_DIR_NAME).rglob('*.png'))
+    assert not list(Path(align_cache.cache_dir()).rglob('*.png'))
     monkeypatch.setattr(workers.ImageRegistration, 'process', forbidden)
     warm, warm_frames, warm_result = render()
     assert warm.alignment_reused and not warm.alignment_computed
@@ -527,7 +528,7 @@ def test_gui_corrupt_plan_cache_falls_back_to_cold_estimation(qapp, tmp_path):
     worker = workers.RenderWorker([first, last], algorithm='openfocus_a', alignment='openfocus',
         disk_cache=request, tile_enabled=False, thread_count=1)
     worker._run_admitted()
-    cached_files = list((tmp_path / align_cache.CACHE_DIR_NAME).rglob('*.json'))
+    cached_files = list(Path(align_cache.cache_dir()).rglob('*.json'))
     assert cached_files
     for path in cached_files:
         path.write_text('{invalid-json', encoding='utf-8')
@@ -674,10 +675,10 @@ def test_large_tiff_b_snapshots_real_ecc_warps_before_whole_depth(tmp_path, monk
     monkeypatch.setattr(source_frames, 'SOURCE_CACHE', source_frames.FrameCache(0))
     monkeypatch.setattr(multi_focus_fusion, 'memory_budget_bytes', lambda: 512 * 1024 ** 2)
     original_cost = source_frames.frame_resolution_bytes
-    def expensive(frame):
+    def expensive(frame, *, metadata_only=False):
         if isinstance(frame, source_frames.ProcessedFrame) and not isinstance(frame.source, np.ndarray):
             return 129 * 1024 ** 2
-        return original_cost(frame)
+        return original_cost(frame, metadata_only=metadata_only)
     monkeypatch.setattr(source_frames, 'frame_resolution_bytes', expensive)
     original_warp = registration.PerspectiveWarp.__call__
     calls = Counter()

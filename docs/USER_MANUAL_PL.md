@@ -767,7 +767,7 @@ Zdjęcia iPhone'a wczytują się bezpośrednio. Wymagany jest pakiet `pillow-hei
 
 ### Pamięć rejestracji
 
-OpenFocus może przechowywać wyniki rejestracji w folderze `.openfocus_cache` obok stosu źródłowego. Ponowne otwarcie tego samego stosu (bez zmian plików) całkowicie pomija wyrównanie. Przełącznik — **Ustawienia → Ustawienia zaawansowane → Rejestracja → Pamięć rejestracji**; nieaktualne wpisy są automatycznie zastępowane.
+OpenFocus zapisuje wyniki rejestracji w pamięci podręcznej użytkownika. Po ponownym otwarciu niezmienionego stosu z tymi samymi ustawieniami OpenFocus używa zapisanego wyniku. Przełącznik znajduje się w **Ustawienia → Ustawienia zaawansowane → Rejestracja → Pamięć rejestracji**. Wszystkie stosy korzystają ze wspólnego limitu 2 GiB. Gdy potrzeba miejsca, usuwane są najdawniej używane wpisy. Starsze foldery `.openfocus_cache` obok stosów źródłowych pozostają na miejscu.
 
 ### Zapamiętywane ustawienia
 

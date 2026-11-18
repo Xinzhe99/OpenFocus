@@ -132,6 +132,8 @@ class ExecutionPlan:
     device_kind: str = "CPU"
     reasons: tuple = field(default_factory=tuple)
     tile_size: Optional[int] = None
+    required_ram: int = 0
+    required_vram: int = 0
 
     def describe(self) -> str:
         return (f"workers={self.workers}, threads={self.native_threads}, "
@@ -637,6 +639,11 @@ def frame_ram_budget(snapshot: ResourceSnapshot) -> int:
     return max(0, int(cap))
 
 
+def registration_working_set(height, width, worker_bytes):
+    """Reference gray buffer and one active pair-estimation workspace."""
+    return height * width * 4, worker_bytes
+
+
 def estimate_working_set(workload: Workload) -> tuple:
     """Conservative fixed and per-worker allocation estimates for CPU stages."""
     pixels = max(0, workload.height) * max(0, workload.width)
@@ -750,6 +757,21 @@ def plan_execution(workload: Workload, snapshot: Optional[ResourceSnapshot] = No
     return plan
 
 
+def neural_tile_bytes(frames, height, width, channels, block, kind,
+                      estimate_inference, source_bytes=0):
+    """Host and device working sets for one complete-stack spatial tile."""
+    padded = ((block + 63) // 64) * 64
+    tile_pixels = padded * padded
+    fixed = height * width * ((channels + 1) * 4 + channels * 4) + source_bytes
+    # Matched/normalized crops may coexist with their predecessors.
+    crops = frames * block * block * channels * 8
+    staging = frames * tile_pixels * 4 * (2 * channels + 3)
+    reduction = tile_pixels * (channels * 4 * 3 + 8)
+    inference = estimate_inference(frames, block, block, kind)
+    device = inference + staging + reduction
+    return fixed + crops + device, device
+
+
 def plan_neural_tiles(frames: int, height: int, width: int, channels: int,
                       block_size: int, device_kind: str, estimate_inference,
                       *, directory: bool = False, itemsize: int = 1,
@@ -768,14 +790,10 @@ def plan_neural_tiles(frames: int, height: int, width: int, channels: int,
     snapshot = snapshot or probe_resources(device_kind)
     maximum = max(1, min(int(block_size), height, width))
     minimum = min(maximum, 64)
-    pixels = height * width
-    fixed = pixels * ((channels + 1) * 4 + channels * 4)
-    fixed += source_cache_bytes
-    if source_resolution_bytes:
-        fixed += source_resolution_bytes
-    elif directory:
+    source_bytes = source_cache_bytes + source_resolution_bytes
+    if not source_resolution_bytes and directory:
         # Legacy directories lack descriptor geometry/decoder information.
-        fixed += pixels * channels * max(4, itemsize) * 2
+        source_bytes += height * width * channels * max(4, itemsize) * 2
     ceiling = ram_ceiling(snapshot)
     if not snapshot.ram_known:
         raise ResourceLimitError('Available physical memory could not be determined')
@@ -791,15 +809,8 @@ def plan_neural_tiles(frames: int, height: int, width: int, channels: int,
             continue
         block = maximum
         while True:
-            padded = ((block + 63) // 64) * 64
-            tile_pixels = padded * padded
-            # Matched/normalized crops may coexist with their predecessors.
-            crops = frames * block * block * channels * 8
-            staging = frames * tile_pixels * 4 * (2 * channels + 3)
-            reduction = tile_pixels * (channels * 4 * 3 + 8)
-            inference = estimate_inference(frames, block, block, kind)
-            required = fixed + crops + staging + reduction + inference
-            device_required = inference + staging + reduction
+            required, device_required = neural_tile_bytes(
+                frames, height, width, channels, block, kind, estimate_inference, source_bytes)
             device_fits = (not dedicated or
                            fits_in_budget(device_required, vram_budget(snapshot)))
             if required <= ceiling and ceiling > 0 and device_fits:
@@ -811,7 +822,7 @@ def plan_neural_tiles(frames: int, height: int, width: int, channels: int,
                 log_debug('neural_tile_plan', frames=frames, shape=(height, width, channels),
                           block_requested=int(block_size), block_after_image_clamp=maximum,
                           block=block, device=kind, required_bytes=required,
-                          fixed_bytes=fixed, inference_bytes=inference, ram_ceiling=ceiling,
+                          required_vram_bytes=device_required if dedicated else 0, ram_ceiling=ceiling,
                           available_ram=snapshot.available_ram, preference=preference,
                           user_threads=user_threads, cpu_capacity=capacity,
                           native_threads=max(1, threads))
@@ -820,6 +831,8 @@ def plan_neural_tiles(frames: int, height: int, width: int, channels: int,
                     ram_budget=ceiling,
                     vram_budget=vram_budget(snapshot) if dedicated else 0,
                     device_kind=kind,
+                    required_ram=required,
+                    required_vram=device_required if dedicated else 0,
                     reasons=(f'neural tile {block}px, {kind}',))
             if block <= minimum:
                 break

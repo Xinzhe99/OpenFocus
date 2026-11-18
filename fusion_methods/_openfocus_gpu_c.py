@@ -133,6 +133,22 @@ __kernel void c_merge(__global const float* detail, __global const ushort* weigh
     }
 }
 
+__kernel void c_merge_focus(__global const float* detail, __global const ushort* weight,
+                            __global float* acc, __global ushort* best,
+                            __global ushort* winner, const int index,
+                            const int W, const int H, const int C)
+{
+    int x=get_global_id(0); if(x>=W)return;
+    int y=get_global_id(1); if(y>=H)return;
+    int k=y*W+x;
+    ushort w=weight[k];
+    if(index==0||w>best[k]){
+        best[k]=w;
+        winner[k]=(ushort)index;
+        for(int c=0;c<C;c++) acc[k*C+c]=detail[k*C+c];
+    }
+}
+
 __kernel void c_collapse(__global const float* coarse, __global const float* detail,
                          __global float* out, const int n)
 {
@@ -172,7 +188,7 @@ class GpuC:
     """Device-resident C pyramid fusion; mirrors fuse_pyramid step for step."""
 
     def __init__(self):
-        from fusion_methods._openfocus_gpu import GpuError, _FILTER_K, _device
+        from fusion_methods._openfocus_gpu import GpuError, _FILTER_K, _device, opencl_device_name
         try:
             import pyopencl as cl
             device = _device(cl)
@@ -180,7 +196,7 @@ class GpuC:
                 raise GpuError('No available OpenCL GPU')
             self.cl = cl
             self.device = device
-            self.device_name = 'OpenCL: ' + str(device.name).strip()
+            self.device_name = opencl_device_name(device)
             self.ctx = cl.Context(devices=[device])
             self.q = cl.CommandQueue(self.ctx, device=device)
             self.mf = cl.mem_flags
@@ -189,6 +205,7 @@ class GpuC:
             self.k = {n: cl.Kernel(prog, n) for n in (
                 'c_norm', 'c_down_h', 'c_down_v', 'c_up_h', 'c_up_v',
                 'c_detail_w', 'c_last_w', 'c_merge', 'c_collapse',
+                'c_merge_focus',
                 'c_out_u8', 'c_out_f32', 'c_transpose', 'filt4')}
         except GpuError:
             raise
@@ -259,7 +276,7 @@ class GpuC:
                       np.int32(sw), np.int32(sh), np.int32(dw), np.int32(dh),
                       np.int32(parity), np.int32(c))
     def fuse(self, frames, shape, img_resize, smoothing,
-             should_cancel=None, progress_callback=None):
+             should_cancel=None, progress_callback=None, focus_callback=None):
         from fusion_methods._openfocus_gpu import GpuError, _device_lock
 
         class CallbackFailure(BaseException):
@@ -275,9 +292,11 @@ class GpuC:
             _check_cancel(should_cancel)
         try:
             try:
-                return self._fuse_locked(frames, shape, img_resize, smoothing,
-                                         should_cancel,
-                                         progress if progress_callback is not None else None)
+                args = (frames, shape, img_resize, smoothing, should_cancel,
+                        progress if progress_callback is not None else None)
+                if focus_callback is not None:
+                    return self._fuse_locked(*args, focus_callback=focus_callback)
+                return self._fuse_locked(*args)
             except CallbackFailure as exc:
                 raise exc.__cause__
             except self.cl.Error as exc:
@@ -286,7 +305,7 @@ class GpuC:
             _device_lock.release()
 
     def _fuse_locked(self, frames, shape, img_resize, smoothing,
-                     should_cancel, progress_callback):
+                     should_cancel, progress_callback, focus_callback=None):
         height, width = shape[0], shape[1]
         is_gray = len(shape) == 2
         channels = 1 if is_gray else shape[2]
@@ -319,6 +338,8 @@ class GpuC:
         # Includes all cached pyramid planes, input/output buffers and context headroom.
         need = sum(h * w * (channels * 4 * 8 + 2 * 4) for h, w in levels)
         need += height * width * channels * 6 + 16 * 1024 * 1024
+        if focus_callback is not None:
+            need += height * width * 2
         limit = int(self.device.global_mem_size) // 2
         if self.device.host_unified_memory:
             limit = min(limit, host_budget - staging)
@@ -340,6 +361,7 @@ class GpuC:
             best = self._u16(h, w)
             accumulators.append(acc)
             maxima.append(best)
+        winner = self._u16(height, width) if focus_callback is not None else None
 
         for index, frame in enumerate(frames):
             _check_cancel(should_cancel)
@@ -387,10 +409,14 @@ class GpuC:
                 if parameter > 0:
                     radius = np.float32(np.float32(max(h, w)) * parameter / np.float32(100))
                     self._filter_w(weight, h, w, float(radius))
-                self._run(self.k['c_merge'], (w, h), detail, weight,
-                          accumulators[level], maxima[level],
-                          np.int32(1 if index == 0 else 0),
-                          np.int32(w), np.int32(h), np.int32(c))
+                buffers = detail, weight, accumulators[level], maxima[level]
+                dimensions = np.int32(w), np.int32(h), np.int32(c)
+                if level == 0 and winner is not None:
+                    self._run(self.k['c_merge_focus'], (w, h), *buffers, winner,
+                              np.int32(index), *dimensions)
+                else:
+                    self._run(self.k['c_merge'], (w, h), *buffers,
+                              np.int32(index == 0), *dimensions)
             # Bound queued frame uploads to one source, even for very deep stacks.
             self.q.finish()
             if progress_callback is not None:
@@ -416,6 +442,12 @@ class GpuC:
         kern = self.k['c_out_u8'] if is_u8 else self.k['c_out_f32']
         self._run(kern, (n,), result, dst, np.int32(n))
         self.cl.enqueue_copy(self.q, out, dst)
+        if winner is not None:
+            from core.frame_storage import create_frame
+            positions = create_frame((height, width), np.uint16)
+            self.cl.enqueue_copy(self.q, positions, winner)
+            _check_cancel(should_cancel)
+            focus_callback(positions, count - 1)
         if progress_callback is not None:
             progress_callback(total, total)
         _check_cancel(should_cancel)

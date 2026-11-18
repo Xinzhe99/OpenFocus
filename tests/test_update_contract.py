@@ -21,6 +21,7 @@ def manager(qapp, monkeypatch, tmp_path):
     result = um.UpdateManager(host)
     yield result
     result._idle_timer.stop()
+    result._check_timer.stop()
     result.deleteLater()
     qapp.processEvents()
 
@@ -159,6 +160,67 @@ def test_beta_preference_persists_and_invalidates_inflight_check(manager, qapp, 
     calls[1][0]("update", "v999-beta.1", "page", "zip")
     qapp.processEvents()
     assert not manager.tag and results[-1][0] == "error"
+
+
+def test_running_app_rechecks_the_selected_channel(manager, qapp, monkeypatch):
+    calls, results = [], []
+    monkeypatch.setattr(updater, "check_async", lambda version, callback, quiet, include_beta:
+                        calls.append((callback, include_beta)))
+    manager.check_finished.connect(lambda state, tag, *_: results.append((state, tag)))
+    manager.start_idle()
+    manager.set_include_beta(True)
+    calls[0][0]("update", "v999", updater.RELEASES_PAGE_URL)
+    qapp.processEvents()
+    assert [include for _, include in calls] == [False, True]
+    assert not results
+    calls[1][0]("update", "v1000-beta.1", updater.RELEASES_PAGE_URL)
+    qapp.processEvents()
+    assert results == [("update", "v1000-beta.1")]
+    manager.set_include_beta(False)
+    assert manager.tag == "" and manager.notes == ""
+    assert [include for _, include in calls] == [False, True, False]
+    calls[2][0]("update", "v999", updater.RELEASES_PAGE_URL)
+    qapp.processEvents()
+    assert manager.tag == "v999"
+
+
+def test_idle_reuses_cached_download_and_checks_its_digest(manager, qapp, monkeypatch, tmp_path):
+    import hashlib
+    from utils import settings_store
+
+    monkeypatch.setattr(um.sys, "platform", "win32")
+    monkeypatch.setattr(self_update, "is_frozen", lambda: True)
+    monkeypatch.setattr(self_update, "gpu_variant", lambda: {})
+    monkeypatch.setattr(self_update, "staging_root_for", lambda tag: str(tmp_path / tag))
+    package = tmp_path / "update.zip"
+    monkeypatch.setattr(self_update, "portable_zip_path", lambda tag: str(package))
+    requests = []
+    monkeypatch.setattr(updater, "check_async", lambda *a, **kw: requests.append("metadata"))
+    monkeypatch.setattr(updater, "download_to_file", lambda *a, **kw: requests.append("archive"))
+    tag = "v999"
+    with zipfile.ZipFile(package, "w") as archive:
+        archive.writestr("OpenFocus/OpenFocus.exe", b"MZ")
+        archive.writestr("OpenFocus/version.txt", b"999")
+    digest = "sha256:" + hashlib.sha256(package.read_bytes()).hexdigest()
+    manager._on_check_result("update", tag, updater.RELEASES_PAGE_URL,
+                             f"{updater.RELEASE_DOWNLOAD_URL}/{tag}/windows-zip", zip_digest=digest)
+    settings_store.get_settings().setValue(settings_store.LAST_UPDATE_CHECK_KEY, 9999999999)
+    restored = um.UpdateManager(manager._window)
+    try:
+        restored.start_idle()
+        restored._window._has_work_in_flight = lambda: True
+        restored._maybe_idle_download()
+        assert not self_update.staged_ready(tag)
+        restored._window._has_work_in_flight = lambda: False
+        restored._maybe_idle_download()
+        assert restored._stage is not None and restored._stage.wait(5000)
+        qapp.processEvents()
+        assert restored.staged_tag() == tag
+        assert (tmp_path / tag / "OpenFocus" / "version.txt").read_text() == "999"
+        assert not requests
+    finally:
+        restored.shutdown()
+        restored.deleteLater()
 
 
 def test_disabling_beta_cancels_active_stage_and_hides_it(manager, monkeypatch):

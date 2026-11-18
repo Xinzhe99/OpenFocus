@@ -7,7 +7,7 @@ from PyQt6 import sip
 from PyQt6.QtCore import QCoreApplication, QEvent, QPoint, QPointF, Qt
 from PyQt6.QtGui import QWheelEvent
 from PyQt6.QtTest import QTest
-from PyQt6.QtWidgets import QApplication, QWidget
+from PyQt6.QtWidgets import QApplication, QLabel, QWidget
 
 from conftest import make_two_focus_stack
 from core.algorithms import get_fusion
@@ -81,10 +81,10 @@ def test_parameter_cards_stack_headers_and_wrap(dialog, qapp):
         assert title.font().bold()
         assert title.geometry().bottom() < panel.geometry().top()
         assert title.width() >= title.fontMetrics().horizontalAdvance(title.text())
-        form = panel.layout()
+        labels = {label.text(): label for label in panel.findChildren(QLabel)}
         editors = list(panel.editors.values())
         for editor in editors:
-            label = form.labelForField(editor)
+            label = labels[editor.accessibleName()]
             assert label.width() >= label.fontMetrics().horizontalAdvance(label.text())
             assert label.geometry().right() < editor.geometry().left()
         assert len({editor.geometry().left() for editor in editors}) == 1

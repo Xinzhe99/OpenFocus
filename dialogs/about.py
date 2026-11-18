@@ -2,8 +2,9 @@
 """About and contact information dialogs."""
 
 import threading
-from PyQt6.QtCore import QTimer, Qt
+from PyQt6.QtCore import QTimer, QUrl, Qt
 from PyQt6.QtGui import QFont, QPixmap
+from PyQt6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
 from PyQt6.QtWidgets import (
     QDialog,
     QVBoxLayout,
@@ -228,7 +229,11 @@ class EnvironmentInfoDialog(QDialog):
 
 
 class ContactInfoDialog(QDialog):
-    """联系信息对话框"""
+    """Show contact links and refresh the WeChat invite from the website."""
+
+    _WECHAT_URL = "https://openfocus.top/wechat-group.png"
+    _WECHAT_TIMEOUT_MS = 4000
+    _WECHAT_MAX_BYTES = 512 * 1024
 
     def __init__(self, parent=None):
         # Link colour must follow the theme: a hard-coded white link was
@@ -247,10 +252,7 @@ class ContactInfoDialog(QDialog):
         
         super().__init__(parent)
         self.setWindowTitle(trans.t('dialog_contact_title'))
-        self.resize(500, 400)
-
-        # Styling comes from the generated application stylesheet.
-
+        self.resize(500, 620)
 
         layout = QVBoxLayout(self)
 
@@ -264,6 +266,43 @@ class ContactInfoDialog(QDialog):
         self.text_browser.setWordWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
         layout.addWidget(self.text_browser)
 
+        self._wechat_qr = QLabel()
+        self._wechat_qr.setAccessibleName(trans.t('contact_wechat_group'))
+        self._wechat_qr.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._wechat_qr.setFixedSize(320, 324)
+        self._wechat_qr.setStyleSheet('background: white;')
+        layout.addWidget(self._wechat_qr, alignment=Qt.AlignmentFlag.AlignHCenter)
+
+        self._wechat_status = QLabel(trans.t('contact_wechat_loading'))
+        self._wechat_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._wechat_status.setWordWrap(True)
+        layout.addWidget(self._wechat_status)
+
+        group_link = QLabel(f'<a style="color: {link};" href="{self._WECHAT_URL}">'
+                            f'{trans.t("contact_wechat_group")}</a>')
+        group_link.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        group_link.setOpenExternalLinks(True)
+        layout.addWidget(group_link)
+
+        bundled = QPixmap(resource_path('assets', 'readme', 'wechat-group.png'))
+        if bundled.isNull():
+            self._wechat_qr.hide()
+        else:
+            self._show_wechat_qr(bundled)
+
+        self._wechat_network = QNetworkAccessManager(self)
+        request = QNetworkRequest(QUrl(self._WECHAT_URL))
+        request.setAttribute(QNetworkRequest.Attribute.RedirectPolicyAttribute,
+                             QNetworkRequest.RedirectPolicy.SameOriginRedirectPolicy)
+        self._wechat_reply = self._wechat_network.get(request)
+        self._wechat_reply.setReadBufferSize(self._WECHAT_MAX_BYTES + 1)
+        self._wechat_reply.readyRead.connect(self._limit_wechat_reply)
+        self._wechat_reply.finished.connect(self._finish_wechat_reply)
+        self._wechat_timer = QTimer(self)
+        self._wechat_timer.setSingleShot(True)
+        self._wechat_timer.timeout.connect(self._wechat_reply.abort)
+        self._wechat_timer.start(self._WECHAT_TIMEOUT_MS)
+
         # 关闭按钮
         close_btn = QPushButton(trans.t('btn_close'))
         close_btn.clicked.connect(self.accept)
@@ -275,6 +314,41 @@ class ContactInfoDialog(QDialog):
                 parent.x() + parent.width() // 2 - self.width() // 2,
                 parent.y() + parent.height() // 2 - self.height() // 2,
             )
+
+    def _show_wechat_qr(self, original):
+        ratio = self.devicePixelRatioF()
+        pixmap = original.scaled(
+            round(self._wechat_qr.width() * ratio), round(self._wechat_qr.height() * ratio),
+            Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.FastTransformation,
+        )
+        pixmap.setDevicePixelRatio(ratio)
+        self._wechat_qr.setPixmap(pixmap)
+        self._wechat_qr.show()
+
+    def _limit_wechat_reply(self):
+        if self._wechat_reply.bytesAvailable() > self._WECHAT_MAX_BYTES:
+            self._wechat_reply.abort()
+
+    def _finish_wechat_reply(self):
+        self._wechat_timer.stop()
+        reply, self._wechat_reply = self._wechat_reply, None
+        status = reply.attribute(QNetworkRequest.Attribute.HttpStatusCodeAttribute)
+        image = QPixmap()
+        if reply.error() == QNetworkReply.NetworkError.NoError and status == 200:
+            image.loadFromData(reply.readAll(), 'PNG')
+        reply.deleteLater()
+        if image.isNull():
+            has_fallback = not self._wechat_qr.isHidden()
+            key = 'contact_wechat_bundled' if has_fallback else 'contact_wechat_unavailable'
+            self._wechat_status.setText(trans.t(key))
+        else:
+            self._show_wechat_qr(image)
+            self._wechat_status.hide()
+
+    def done(self, result):
+        if self._wechat_reply is not None:
+            self._wechat_reply.abort()
+        super().done(result)
 
 
 class _SupportCode(QLabel):
