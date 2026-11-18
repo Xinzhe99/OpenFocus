@@ -232,7 +232,7 @@ def _exercise_planar_lzw(executable: Path, environment: dict, root: Path) -> Non
 
 
 def _exercise(executable: Path, environment: dict, root: Path,
-              shape: tuple, resources: Path) -> None:
+              shape: tuple, resources: Path, *, headless_wayland: bool) -> None:
     if not _call(executable, environment, "ping").get("pong"):
         raise RuntimeError("Packaged agent control did not answer ping")
     context = _call(executable, environment, "ui.context")
@@ -273,6 +273,11 @@ def _exercise(executable: Path, environment: dict, root: Path,
         raise RuntimeError("Packaged desktop export lost image shape or bit depth")
     if not np.any(result % 257):
         raise RuntimeError("Packaged desktop export lost 16-bit precision")
+
+    if headless_wayland:
+        # Weston headless has no input seat for Qt's grabbing context menu.
+        _call(executable, environment, "ui.grab", "--output", str(root / "wayland.png"))
+        return
 
     # Exercise Save As and its layered TIFF filter so the actual output-list
     # path and the 16-bit Photoshop layer tag are checked on both platforms.
@@ -372,7 +377,7 @@ def _exercise(executable: Path, environment: dict, root: Path,
             raise RuntimeError(f"Packaged registration {registration} failed: {result.stderr}")
 
 
-def run(executable: Path, resources: Path | None = None) -> None:
+def run(executable: Path, resources: Path | None = None, *, headless_wayland: bool = False) -> None:
     executable = executable.resolve()
     if resources is None:
         resources = (executable.parent.parent / "Resources" if executable.parent.name == "MacOS"
@@ -414,7 +419,10 @@ def run(executable: Path, resources: Path | None = None) -> None:
             environment["OPENFOCUS_INSTANCE_NAME"] = (
                 f"OpenFocus-smoke-{uuid.uuid4().hex}"
             )
-            environment.setdefault("QT_QPA_PLATFORM", "offscreen")
+            if headless_wayland:
+                environment["QT_QPA_PLATFORM"] = "wayland"
+            else:
+                environment.setdefault("QT_QPA_PLATFORM", "offscreen")
             version = subprocess.run(
                 [str(executable), "version"], env=environment,
                 capture_output=True, text=True, encoding="utf-8",
@@ -430,7 +438,8 @@ def run(executable: Path, resources: Path | None = None) -> None:
                                        stdout=subprocess.DEVNULL)
             try:
                 _wait_for_control(process, root / "control.json")
-                _exercise(executable, environment, root, shape, resources)
+                _exercise(executable, environment, root, shape, resources,
+                          headless_wayland=headless_wayland)
             except BaseException:
                 print(f"Desktop exit status: {process.poll()}", file=sys.stderr)
                 for path in sorted((root / "logs").glob("*")):
@@ -483,7 +492,8 @@ def run(executable: Path, resources: Path | None = None) -> None:
                 if process.poll() is None:
                     process.terminate()
                     process.wait(timeout=15)
-            print(f"Packaged CLI and GUI smoke passed: {app_display_version()}")
+            print(f"Packaged desktop smoke passed ({environment['QT_QPA_PLATFORM']}): "
+                  f"{app_display_version()}")
     finally:
         try:
             if process is not None and process.poll() is None:
@@ -571,15 +581,20 @@ def main() -> None:
         "--resources", type=Path,
         help="path to packaged resources (defaults to the platform bundle layout)",
     )
-    parser.add_argument(
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
         "--installed-startup", action="store_true",
         help="verify first launch of a Windows installer without inherited handles",
+    )
+    mode.add_argument(
+        "--headless-wayland", action="store_true",
+        help="verify the frozen Wayland window, import, render and export under headless Weston",
     )
     args = parser.parse_args()
     if args.installed_startup:
         run_installed_startup(args.executable)
     else:
-        run(args.executable, args.resources)
+        run(args.executable, args.resources, headless_wayland=args.headless_wayland)
 
 
 if __name__ == "__main__":

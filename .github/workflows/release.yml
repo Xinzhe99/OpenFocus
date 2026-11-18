@@ -583,7 +583,6 @@ jobs:
           set -euo pipefail
           export XDG_RUNTIME_DIR="$RUNNER_TEMP/openfocus-wayland"
           export WAYLAND_DISPLAY=openfocus-test
-          export QT_QPA_PLATFORM=wayland
           mkdir -m 700 "$XDG_RUNTIME_DIR"
           weston --backend=headless-backend.so --socket="$WAYLAND_DISPLAY" --idle-time=0 --log="$RUNNER_TEMP/weston.log" &
           compositor=$!
@@ -603,7 +602,7 @@ jobs:
             sleep 1
           done
           test -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY"
-          python tools/frozen_cli_smoke.py --executable "$RUNNER_TEMP/linux-extracted/OpenFocus/OpenFocus" --resources "$RUNNER_TEMP/linux-extracted/OpenFocus/_internal"
+          python tools/frozen_cli_smoke.py --headless-wayland --executable "$RUNNER_TEMP/linux-extracted/OpenFocus/OpenFocus" --resources "$RUNNER_TEMP/linux-extracted/OpenFocus/_internal"
       - name: Report Linux package contents
         run: |
           python tools/packaging_report.py --toc build/OpenFocus/Analysis-00.toc --toc build/OpenFocus/COLLECT-00.toc --package dist/OpenFocus --package "OpenFocus-${{ needs.prepare.outputs.label }}-linux-x86_64.tar.gz" --output "$RUNNER_TEMP/linux-packaging-report.json"

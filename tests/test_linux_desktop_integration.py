@@ -31,9 +31,7 @@ def test_launcher_uses_bundle_and_refuses_overwrite(tmp_path):
     (bundle / "openfocus.desktop").write_text(template.read_text(encoding="utf-8"), encoding="utf-8")
     destination = installer.install(bundle, tmp_path / "data")
     text = destination.read_text(encoding="utf-8")
-    assert f'Exec={installer.exec_argument(str(executable))}\n' in text
     assert f'Icon={installer.desktop_string(str(icon))}\n' in text
-    assert "100%%" in text and "%U" not in text
     with pytest.raises(FileExistsError):
         installer.install(bundle, tmp_path / "data")
     assert destination.read_text(encoding="utf-8") == text

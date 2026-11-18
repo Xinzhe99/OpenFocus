@@ -56,10 +56,12 @@ moving the bundle, remove the old entry and run the helper again. The entry
 starts the GUI and does not register file associations. The independent PyPI
 `openfocus` command is a headless CLI, not this desktop application.
 
-The Linux release job extracts the archive and runs the frozen CLI and GUI
-smoke with Xvfb/X11 and a headless Weston Wayland compositor. It checks bundled
-models and resources, the X11 and Wayland plugins, and PyOpenCL. To repeat the
-X11 smoke after a local build with the build Python environment and Xvfb installed:
+The Linux release job extracts the archive, checks the bundled models,
+resources, X11 and Wayland plugins and PyOpenCL, and runs the full CLI and
+GUI smoke under Xvfb. A headless Weston compositor also checks native Wayland
+startup, window capture, stack import, fusion and a 16-bit TIFF export. The
+Xvfb run exercises the Save As menu, which needs an input seat on Wayland.
+To repeat the X11 smoke with the build Python environment and Xvfb installed:
 
 ```sh
 QT_QPA_PLATFORM=xcb xvfb-run -a python tools/frozen_cli_smoke.py --executable dist/OpenFocus/OpenFocus --resources dist/OpenFocus/_internal
