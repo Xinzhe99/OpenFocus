@@ -663,8 +663,10 @@ def test_cancelled_render_clears_preview_mode(qapp, monkeypatch):
 def test_compare_all_second_click_cancels_the_run(qapp, monkeypatch):
     """The compare button stayed enabled while btn_render (the only cancel
     affordance) was disabled, so a compare-all could not be stopped."""
+    from ui.status_bar import WorkspaceStatusBar
     frames = [np.zeros((30, 40, 3), dtype=np.uint8) for _ in range(3)]
     w = _render_window(frames)
+    w.status = WorkspaceStatusBar()
     rm, _saved = _patched_render_manager(monkeypatch, w)
 
     rm.start_compare_all()
@@ -683,7 +685,9 @@ def test_compare_all_second_click_cancels_the_run(qapp, monkeypatch):
     assert rm._compare_queue == []
     assert rm._compare_current is None
     assert running.is_cancelled is True
-    assert w.status.messages[-1] == trans.t("depth_cancelling")
+    assert rm._status_bar_label.text() == trans.t('depth_cancelling')
+    assert w.status.currentMessage() != trans.t('depth_cancelling')
+    w.status.deleteLater()
 
 
 def test_compare_all_cancel_between_renders_unlocks_the_ui(qapp, monkeypatch):
@@ -1799,10 +1803,12 @@ def test_directory_export_does_not_overwrite_existing_files(tmp_path):
 
 
 def test_stack_load_progress_status_and_cancel(qapp, monkeypatch):
-    from PyQt6.QtCore import QObject, pyqtSignal
-    from PyQt6.QtWidgets import QMainWindow
+    from PyQt6.QtCore import QObject, Qt, pyqtSignal
+    from PyQt6.QtTest import QTest
+    from PyQt6.QtWidgets import QLabel, QMainWindow
     from controllers import source_manager
     from locales import trans
+    from ui.status_bar import WorkspaceStatusBar
 
     class Worker(QObject):
         progress = pyqtSignal(int, int)
@@ -1825,6 +1831,10 @@ def test_stack_load_progress_status_and_cancel(qapp, monkeypatch):
 
     monkeypatch.setattr(source_manager, 'StackLoadWorker', Worker)
     window = QMainWindow()
+    status = WorkspaceStatusBar(window)
+    window.setStatusBar(status)
+    window.resize(960, 300)
+    window.show()
     window.image_loader = object()
     manager = source_manager.SourceManager(window)
     manager._start_load_worker(filepaths=['a', 'b', 'c'])
@@ -1834,14 +1844,21 @@ def test_stack_load_progress_status_and_cancel(qapp, monkeypatch):
     worker.progress.emit(1, 3)
     assert (bar.maximum(), bar.value()) == (3, 1)
     assert manager._load_status_label.text() == f"{trans.t('msg_loading_stack')} (1/3)"
+    qapp.processEvents()
+    assert [label for label in status.findChildren(QLabel)
+            if '(1/3)' in label.text() and label.isVisible()] == [manager._load_status_label]
+    status.showMessage('Background notice', 5000)
     worker.progress.emit(2, 0)
     assert (bar.minimum(), bar.maximum()) == (0, 0)
     assert manager._load_status_label.text().endswith('(2)')
-    manager.cancel_load()
+    assert manager._load_cancel_button.isVisible()
+    QTest.mouseClick(manager._load_cancel_button, Qt.MouseButton.LeftButton)
+    assert worker.is_cancelled
     worker.progress.emit(3, 3)
     assert manager._load_status_label.text() == trans.t('depth_cancelling')
     assert not manager._load_cancel_button.isEnabled()
     worker.finished.emit()
+    assert status.currentMessage() == 'Background notice'
     manager._start_load_worker(video='clip.mp4')
     video_worker = manager._load_worker
     assert (bar.minimum(), bar.maximum()) == (0, 0)
@@ -1853,6 +1870,7 @@ def test_stack_load_progress_status_and_cancel(qapp, monkeypatch):
     worker.progress.emit(3, 3)
     assert (bar.minimum(), bar.maximum()) == (0, 0)
     video_worker.finished.emit()
+    window.close()
 
 
 def test_compare_failure_after_a_stack_change_stops_the_run(qapp, monkeypatch):

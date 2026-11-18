@@ -48,22 +48,23 @@ class TranslationManager(QObject):
                 self.translations[code]['menu_github_manual'] = f'{title} (GitHub)'
 
         support_text = {
-            'en': ('Support Us', 'Thank you for supporting OpenFocus! Include your username in the transfer note to receive permanent acknowledgment in the project.'),
-            'zh': ('支持我们', '感谢您支持 OpenFocus！请在转账备注中填写您的用户名，项目将永久鸣谢您。'),
-            'ja': ('応援する', 'OpenFocus へのご支援ありがとうございます。送金時のメモにユーザー名を記入すると、プロジェクトに永続的に謝辞が掲載されます。'),
-            'es': ('Apóyanos', '¡Gracias por apoyar OpenFocus! Incluye tu nombre de usuario en la nota de la transferencia para recibir un reconocimiento permanente en el proyecto.'),
-            'de': ('Unterstützen', 'Vielen Dank für Ihre Unterstützung von OpenFocus! Geben Sie Ihren Benutzernamen im Verwendungszweck an, um dauerhaft im Projekt erwähnt zu werden.'),
-            'fr': ('Nous soutenir', 'Merci de soutenir OpenFocus ! Indiquez votre nom d’utilisateur dans la note du transfert pour recevoir une mention permanente dans le projet.'),
-            'ru': ('Поддержать нас', 'Спасибо за поддержку OpenFocus! Укажите имя пользователя в комментарии к переводу, чтобы получить постоянную благодарность в проекте.'),
-            'ko': ('후원하기', 'OpenFocus를 후원해 주셔서 감사합니다! 송금 메모에 사용자 이름을 적어 주시면 프로젝트에 영구적으로 감사 인사를 남깁니다.'),
-            'pt': ('Apoie-nos', 'Obrigado por apoiar o OpenFocus! Inclua seu nome de usuário na nota da transferência para receber um agradecimento permanente no projeto.'),
-            'it': ('Sostienici', 'Grazie per sostenere OpenFocus! Inserisci il tuo nome utente nella nota del trasferimento per ricevere un ringraziamento permanente nel progetto.'),
-            'nl': ('Steun ons', 'Bedankt voor uw steun aan OpenFocus! Vermeld uw gebruikersnaam in de omschrijving van de overschrijving voor een blijvende vermelding in het project.'),
-            'pl': ('Wesprzyj nas', 'Dziękujemy za wsparcie OpenFocus! Podaj nazwę użytkownika w tytule przelewu, aby otrzymać trwałe podziękowanie w projekcie.'),
+            'en': ('Support Us', 'Thank you for supporting OpenFocus! Include your username in the transfer note to receive permanent acknowledgment in the project.', 'Sponsor OpenFocus and help it grow'),
+            'zh': ('支持我们', '感谢您支持 OpenFocus！请在转账备注中填写您的用户名，项目将永久鸣谢您。', '欢迎成为 OpenFocus 的赞助商，帮助 OpenFocus 发展'),
+            'ja': ('応援する', 'OpenFocus へのご支援ありがとうございます。送金時のメモにユーザー名を記入すると、プロジェクトに永続的に謝辞が掲載されます。', 'OpenFocus の開発をスポンサーとして支援する'),
+            'es': ('Apóyanos', '¡Gracias por apoyar OpenFocus! Incluye tu nombre de usuario en la nota de la transferencia para recibir un reconocimiento permanente en el proyecto.', 'Patrocina OpenFocus y ayúdalo a crecer'),
+            'de': ('Unterstützen', 'Vielen Dank für Ihre Unterstützung von OpenFocus! Geben Sie Ihren Benutzernamen im Verwendungszweck an, um dauerhaft im Projekt erwähnt zu werden.', 'OpenFocus sponsern und die Entwicklung fördern'),
+            'fr': ('Nous soutenir', 'Merci de soutenir OpenFocus ! Indiquez votre nom d’utilisateur dans la note du transfert pour recevoir une mention permanente dans le projet.', 'Parrainez OpenFocus et aidez le projet à grandir'),
+            'ru': ('Поддержать нас', 'Спасибо за поддержку OpenFocus! Укажите имя пользователя в комментарии к переводу, чтобы получить постоянную благодарность в проекте.', 'Станьте спонсором и помогите развитию OpenFocus'),
+            'ko': ('후원하기', 'OpenFocus를 후원해 주셔서 감사합니다! 송금 메모에 사용자 이름을 적어 주시면 프로젝트에 영구적으로 감사 인사를 남깁니다.', 'OpenFocus의 발전을 후원해 주세요'),
+            'pt': ('Apoie-nos', 'Obrigado por apoiar o OpenFocus! Inclua seu nome de usuário na nota da transferência para receber um agradecimento permanente no projeto.', 'Patrocine o OpenFocus e ajude o projeto a crescer'),
+            'it': ('Sostienici', 'Grazie per sostenere OpenFocus! Inserisci il tuo nome utente nella nota del trasferimento per ricevere un ringraziamento permanente nel progetto.', 'Sponsorizza OpenFocus e aiutalo a crescere'),
+            'nl': ('Steun ons', 'Bedankt voor uw steun aan OpenFocus! Vermeld uw gebruikersnaam in de omschrijving van de overschrijving voor een blijvende vermelding in het project.', 'Sponsor OpenFocus en help het project groeien'),
+            'pl': ('Wesprzyj nas', 'Dziękujemy za wsparcie OpenFocus! Podaj nazwę użytkownika w tytule przelewu, aby otrzymać trwałe podziękowanie w projekcie.', 'Sponsoruj OpenFocus i wspieraj jego rozwój'),
         }
-        for code, (title, message) in support_text.items():
+        for code, (title, message, sponsor) in support_text.items():
             if code in self.translations:
-                self.translations[code].update(support_title=title, support_message=message)
+                self.translations[code].update(support_title=title, support_message=message,
+                                               status_sponsor=sponsor)
         labels = {
             'en': ('Radius:', 'Smoothing:', 'Feather:', 'OpenFocus A does not currently use smoothing.'),
             'zh': ('半径：', '平滑度：', '羽化：', 'OpenFocus A 目前不使用平滑度。'),
