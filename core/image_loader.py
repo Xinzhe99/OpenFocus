@@ -201,6 +201,26 @@ def validate_pil_header(path, image):
         _cmyk_profiles(path, image.info.get('icc_profile', b''))
 
 
+def tiff_palette_bgr(page, indices):
+    """Look up BGR samples at the output depth used by this indexed page."""
+    colors = page.colormap[::-1].T
+    # Some writers store 8-bit values in the TIFF's 16-bit ColorMap slots.
+    if indices.dtype == np.uint8:
+        colors = (colors if colors.max() < 256 else colors >> 8).astype(np.uint8)
+    return np.ascontiguousarray(colors)[indices]
+
+
+def decode_indexed_tiff_page(page):
+    indices = page.asarray(out='memmap' if page.is_memmappable else None, maxworkers=1)
+    return _orient_tiff_pixels(page, tiff_palette_bgr(page, indices))
+
+
+def _orient_tiff_pixels(page, image):
+    tag = page.tags.get('Orientation')
+    transform = _EXIF_TRANSFORMS.get(int(tag.value)) if tag is not None else None
+    return np.ascontiguousarray(transform(image)) if transform is not None else image
+
+
 def validate_tiff_page(path, page):
     """Validate display TIFF metadata only; return whether samples are CMYK.
 
@@ -210,6 +230,13 @@ def validate_tiff_page(path, page):
     conversion is attempted because Pillow/ImageCms would discard precision.
     """
     _validate_depth(path, page.dtype)
+    if int(page.photometric) == 3:
+        cmap = page.tags.get('ColorMap')
+        if (page.samplesperpixel != 1 or not 1 <= page.bitspersample <= 16
+                or cmap is None or cmap.count != 3 * (1 << page.bitspersample)
+                or int(cmap.dtype) != 3):
+            raise UnsupportedColorSpace(f"Invalid indexed TIFF color map or sample layout: {path}")
+        return False
     if int(page.photometric) != 5:
         return False
     import tifffile
@@ -249,6 +276,8 @@ def decode_tiff_page(path, page_index=None, *, preserve_grayscale=False):
         else:
             page = tif.pages[page_index]
         cmyk = validate_tiff_page(path, page)
+        if int(page.photometric) == 3:
+            return decode_indexed_tiff_page(page)
         if cmyk:
             samples = page.asarray()
             _validate_depth(path, samples.dtype)
@@ -257,9 +286,7 @@ def decode_tiff_page(path, page_index=None, *, preserve_grayscale=False):
             profile_tag = page.tags.get('InterColorProfile')
             image = cmyk_to_bgr(PILImage.fromarray(samples, 'CMYK'), path,
                                 profile_tag.value if profile_tag is not None else b'')
-            orientation_tag = page.tags.get('Orientation')
-            transform = _EXIF_TRANSFORMS.get(int(orientation_tag.value) if orientation_tag is not None else 1)
-            return np.ascontiguousarray(transform(image)) if transform is not None else image
+            return _orient_tiff_pixels(page, image)
     data = np.memmap(path, dtype=np.uint8, mode='r')
     success, decoded = cv2.imdecodemulti(data, flags=cv2.IMREAD_UNCHANGED,
                                         range=(page_index, page_index + 1))
@@ -485,6 +512,16 @@ def _exif_bytes_from_image(image) -> bytes:
         return b''
 
 
+def _tiff_page_exif(tif, page):
+    # Read the IFD directly even when Pillow has no decoder for the pixel layout.
+    src = PILImage.Exif()
+    src.endian = tif.byteorder
+    src.bigtiff = tif.is_bigtiff
+    src.load_from_fp(_RawExifReader(tif.filehandle), page.offset)
+    clean = _sanitize_exif(src)
+    return clean.tobytes() if clean is not None else b''
+
+
 def _read_exif_bytes(path: str, page: Optional[int] = None) -> bytes:
     """Read export-safe metadata from one physical page."""
     if not PIL_AVAILABLE:
@@ -493,11 +530,14 @@ def _read_exif_bytes(path: str, page: Optional[int] = None) -> bytes:
         ext = os.path.splitext(path)[1].lower()
         if is_raw_source(path):
             return _read_raw_exif_bytes(path)
-        if ext not in ('.jpg', '.jpeg', '.jpe', '.jfif', '.tif', '.tiff', '.png', '.webp'):
+        if ext in ('.tif', '.tiff'):
+            import tifffile
+            with tifffile.TiffFile(path) as tif:
+                entry = next(tiff_source_pages(tif))[1] if page is None else tif.pages[page]
+                return _tiff_page_exif(tif, entry)
+        if ext not in ('.jpg', '.jpeg', '.jpe', '.jfif', '.png', '.webp'):
             return b''
         with PILImage.open(path) as image:
-            if page is not None and image.format == 'TIFF':
-                image.seek(page)
             return _exif_bytes_from_image(image)
     except Exception:
         return b''
@@ -528,17 +568,15 @@ def _safe_exif_bytes(path, raw):
     return data
 
 
-def _icc_profile_from_image(path, image):
-    """Validate the RGB profile on the currently selected image page."""
+def _display_profile(path, profile, cmyk):
+    """Validate an embedded profile against the output pixel representation."""
     from io import BytesIO
     try:
         from PIL import ImageCms
     except ImportError:
         return b''
     try:
-        profile = (image.tag_v2.get(34675, b'') if image.format == 'TIFF'
-                   else image.info.get('icc_profile', b''))
-        if image.mode == 'CMYK':
+        if cmyk:
             from utils.image_utils import srgb_icc_profile
             _cmyk_profiles(path, profile)
             return srgb_icc_profile()
@@ -554,6 +592,11 @@ def _icc_profile_from_image(path, image):
         return b''
 
 
+def _tiff_page_profile(path, page):
+    tag = page.tags.get('InterColorProfile')
+    return _display_profile(path, tag.value if tag is not None else b'', int(page.photometric) == 5)
+
+
 def _read_icc_profile(path: str, page: Optional[int] = None) -> bytes:
     """Read one physical page, or the common profile of a TIFF container."""
     if not PIL_AVAILABLE:
@@ -562,18 +605,15 @@ def _read_icc_profile(path: str, page: Optional[int] = None) -> bytes:
         from utils.image_utils import srgb_icc_profile
         return srgb_icc_profile()
     try:
+        if os.path.splitext(path)[1].lower() in ('.tif', '.tiff'):
+            import tifffile
+            with tifffile.TiffFile(path) as tif:
+                if page is not None:
+                    return _tiff_page_profile(path, tif.pages[page])
+                return common_profile_values(_tiff_page_profile(path, entry)
+                                             for _, entry in tiff_source_pages(tif))
         with PILImage.open(path) as image:
-            if image.format == 'TIFF' and page is None:
-                import tifffile
-                with tifffile.TiffFile(path) as tif:
-                    pages = tuple(index for index, _ in tiff_source_pages(tif))
-            else:
-                pages = (page if page is not None else 0,)
-            profiles = []
-            for index in pages:
-                image.seek(index)
-                profiles.append(_icc_profile_from_image(path, image))
-            return common_profile_values(profiles)
+            return _display_profile(path, image.info.get('icc_profile', b''), image.mode == 'CMYK')
     except UnsupportedColorSpace:
         raise
     except (OSError, ValueError, TypeError, EOFError):
@@ -586,16 +626,17 @@ def _frame_metadata(path, frames, should_cancel):
         exif = _read_safe_exif(path)
         profile = _read_icc_profile(path)
         return [(exif, profile) for _ in frames]
+    import tifffile
     result = []
     try:
-        with PILImage.open(path) as image:
+        with tifffile.TiffFile(path) as tif:
             for frame in frames:
                 if should_cancel():
                     raise _DecodeCancelled()
                 try:
-                    image.seek(frame.page)
-                    raw = _exif_bytes_from_image(image)
-                    profile = _icc_profile_from_image(path, image)
+                    page = tif.pages[frame.page]
+                    raw = _tiff_page_exif(tif, page)
+                    profile = _tiff_page_profile(path, page)
                 except UnsupportedColorSpace:
                     raise
                 except (OSError, ValueError, TypeError, EOFError):

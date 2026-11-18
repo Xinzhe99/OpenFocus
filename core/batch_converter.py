@@ -90,7 +90,7 @@ def _tiff_requirements(path, page):
     planar = int(page.planarconfig or 1) == 2
     if shape != expected and not (lzw and planar and shape == (samples, height, width)):
         raise ValueError('Unsupported TIFF page layout or color space.')
-    if samples == 1 and page.photometric.name != 'MINISBLACK':
+    if samples == 1 and page.photometric.name not in ('MINISBLACK', 'PALETTE'):
         raise ValueError('Unsupported TIFF page layout or color space.')
     if samples in (3, 4) and page.photometric.name != 'RGB':
         raise ValueError('Unsupported TIFF color space or layout.')
@@ -148,6 +148,8 @@ def _admit(path, page, output_dir, ext=None):
 
 def _decode_tiff(path, page, physical_page, p):
     _tiff_requirements(path, p)
+    if p.photometric.name == 'PALETTE':
+        return image_loader.decode_indexed_tiff_page(p)
     planar_lzw_16 = (p.compression.name == 'LZW' and p.samplesperpixel == 3
                      and int(p.planarconfig or 1) == 2 and p.dtype == np.uint16)
     opencv_page = p.compression.name == 'LZW' and not planar_lzw_16
@@ -233,15 +235,19 @@ def _decode(path, page, tiff_page=None):
 
 
 
-def _write(path, pixels, source, page, ext, cancelled=None, metadata_image=None):
+def _write(path, pixels, source, page, ext, cancelled=None, tiff_page=None):
     if pixels.ndim == 3 and pixels.shape[2] == 4 and ext != '.png':
         if image_loader._has_transparency(pixels):
             raise ValueError('This output format cannot safely preserve transparency; choose PNG.')
         pixels = cv2.cvtColor(pixels, cv2.COLOR_BGRA2BGR)
     if pixels.dtype == np.uint16 and ext not in ('.png', '.tif'):
         pixels = to_display_uint8(pixels)
-    exif = (image_loader._exif_bytes_from_image(metadata_image) if metadata_image is not None
-            else image_loader._read_exif_bytes(source) if page == 0 else b'')
+    if tiff_page is None:
+        exif = image_loader._read_exif_bytes(source) if page == 0 else b''
+        profile = image_loader._read_icc_profile(source)
+    else:
+        exif = image_loader._tiff_page_exif(tiff_page.parent, tiff_page)
+        profile = image_loader._tiff_page_profile(source, tiff_page)
     if not exif and page == 0 and Path(source).suffix.lower() in ('.heic', '.heif'):
         try:
             with Image.open(source) as image:
@@ -249,19 +255,10 @@ def _write(path, pixels, source, page, ext, cancelled=None, metadata_image=None)
         except (OSError, ValueError):
             pass
     safe = export_exif(exif) if exif else None
-    is_raw = metadata_image is None and (Path(source).suffix.lower() in image_loader.RAW_FORMATS or image_loader._is_dng_tiff(source))
-    if safe and is_raw:
+    if safe and tiff_page is None and image_loader.is_raw_source(source):
         # LibRaw develops into sRGB regardless of the camera's JPEG setting.
         safe.get_ifd(0x8769).pop(40961, None)
     exif = safe.tobytes() if safe else b''
-    if metadata_image is not None:
-        profile = image_loader._icc_profile_from_image(source, metadata_image)
-    elif Path(source).suffix.lower() in ('.tif', '.tiff') and not is_raw:
-        with tifffile.TiffFile(source) as tif:
-            physical_page, _ = next(islice(image_loader.tiff_source_pages(tif), page, None))
-        profile = image_loader._read_icc_profile(source, page=physical_page)
-    else:
-        profile = image_loader._read_icc_profile(source)
     params = []
     if ext == '.jpg':
         params = [cv2.IMWRITE_JPEG_QUALITY, 95]
@@ -273,7 +270,7 @@ def _write(path, pixels, source, page, ext, cancelled=None, metadata_image=None)
 
 
 def convert_one(source, output_dir, ext, page=0, pages=1, cancelled=lambda: False, *,
-                _admitted=False, _tiff_page=None, _metadata_image=None):
+                _admitted=False, _tiff_page=None):
     """Write one frame, reserving a unique name without touching existing files."""
     if (_tiff_page is None and Path(source).suffix.lower() in ('.tif', '.tiff')
             and not image_loader._is_dng_tiff(source)):
@@ -281,11 +278,10 @@ def convert_one(source, output_dir, ext, page=0, pages=1, cancelled=lambda: Fals
             _admit(source, page, output_dir, ext)
         if cancelled():
             raise InterruptedError()
-        with tifffile.TiffFile(source) as tif, Image.open(source) as metadata:
+        with tifffile.TiffFile(source) as tif:
             entry = next(islice(image_loader.tiff_source_pages(tif), page, None))
-            metadata.seek(entry[0])
             return convert_one(source, output_dir, ext, page, pages, cancelled,
-                               _admitted=True, _tiff_page=entry, _metadata_image=metadata)
+                               _admitted=True, _tiff_page=entry)
     with log_operation('converter.page', source=os.fspath(source), page=page + 1,
                        pages=pages, format=ext, output_dir=os.fspath(output_dir)) as operation:
         from utils.export_paths import publish_unique
@@ -307,7 +303,7 @@ def convert_one(source, output_dir, ext, page=0, pages=1, cancelled=lambda: Fals
                     from utils.linear_dng import convert_raw_to_dng
                     convert_raw_to_dng(part, source, should_cancel=cancelled)
                 else:
-                    _write(part, pixels, source, page, ext, cancelled, _metadata_image)
+                    _write(part, pixels, source, page, ext, cancelled, _tiff_page[1] if _tiff_page else None)
             destination = publish_unique(os.path.join(output_dir, stem + ext), write_staged,
                                          start=1, should_cancel=cancelled)
             log_action('converter.output', source=os.fspath(source), page=page + 1,
@@ -359,7 +355,6 @@ def _convert_source(index, source, directory, ext, count, cancelled, item):
                         and not image_loader._is_dng_tiff(source))
                 if tiff:
                     tif = stack.enter_context(tifffile.TiffFile(source))
-                    metadata = stack.enter_context(Image.open(source))
                     entries = iter(image_loader.tiff_source_pages(tif))
                 for page in range(count):
                     if cancelled():
@@ -370,14 +365,10 @@ def _convert_source(index, source, directory, ext, count, cancelled, item):
                         entry = next(entries)
                         if cancelled():
                             break
-                        metadata.seek(entry[0])
                     emit(page + 1, 'running')
                     try:
-                        if tiff:
-                            output = convert_one(source, directory, ext, page, count, cancelled,
-                                                 _admitted=True, _tiff_page=entry, _metadata_image=metadata)
-                        else:
-                            output = convert_one(source, directory, ext, page, count, cancelled, _admitted=True)
+                        output = convert_one(source, directory, ext, page, count, cancelled,
+                                             _admitted=True, _tiff_page=entry)
                         outputs.append(output)
                         emit(page + 1, 'running', output=output)
                     except (InterruptedError, RegistrationCancelled):
