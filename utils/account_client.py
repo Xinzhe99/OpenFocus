@@ -27,6 +27,7 @@ import urllib.request
 import webbrowser
 
 from constants import app_display_version
+from utils import _account_callback_page
 from utils.app_paths import user_data_dir
 from utils.report_client import ReportError, _file_lock
 
@@ -390,22 +391,19 @@ class _CallbackHandler(http.server.BaseHTTPRequestHandler):
             if expected_state is not None:
                 allowed += ("not_signed_in",)
             self.server.error = errors[0] if not codes and len(errors) == 1 and errors[0] in allowed else "provider_error"
-            if self.server.error == "not_signed_in":
-                message = ("浏览器当前没有可用的账号会话。您可以关闭此标签页并返回 OpenFocus 继续。"
-                           if getattr(self.server, "language", None) == "zh" else
-                           "The browser has no current account session. You can close this tab and continue in OpenFocus.")
-                body = message.encode("utf-8")
-            else:
-                body = b"Sign-in could not be completed. Return to OpenFocus."
+            outcome = "not_signed_in" if self.server.error == "not_signed_in" else "error"
         elif len(codes) == 1 and codes[0] and len(codes[0]) <= 4096:
             self.server.code = codes[0]
-            body = b"Sign-in received. You can close this window."
+            outcome = "received"
         else:
             self.send_error(400)
             return
+        body = _account_callback_page.render(outcome, getattr(self.server, "language", None))
         self.send_response(200)
-        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Content-Security-Policy", "default-src 'none'; img-src data:; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -583,6 +581,7 @@ class AccountClient:
         with server:
             server.code = None
             server.error = None
+            server.language = language
             server.timeout = 0.2
             redirect = "http://127.0.0.1:%d/callback" % server.server_port
             self._check_login(generation, cancel)
