@@ -14,25 +14,24 @@ fit. See [GPU support](GPU_SUPPORT.md) for provider and validation limitations.
 
 ## Diagnosing a slow render
 
-Two opt-in diagnostics answer "where did the time go?" and "why did it choose
-that?". Both are off by default, are preferences of the installation (never
-saved in projects or templates), and do not change output pixels.
+Local logs record the plan used by each render. Optional profiling measures
+time and memory use per stage.
 
 | | Render profile | Detailed logging |
 |---|---|---|
 | Answers | How long each stage took, and what it cost in memory | Which plan, tile size, directory and thread count were chosen, and why |
-| GUI | **Settings → Advanced Settings → Diagnostics → Profile rendering performance**, then **Performance report** | **… → Diagnostics → Detailed logging**, then **Open Logs Folder** |
+| GUI | Available through the local control channel | **Help → Open Logs Folder** |
 | CLI | `--profile-performance [FILE]` | `--log-level debug` |
-| Agent control | `option.set name=profile_performance`; the report is in `render.result` | `option.set name=debug_logging` |
+| Agent control | `option.set name=profile_performance` enables profiling for `render.result` | `option.set name=debug_logging` overrides the detail for this session |
 | Result | A report: text summary and JSON | `DEBUG` lines in the session log |
 
 ### Render profile
 
 The next render collects a report in the process that renders (the isolated
 render process for the desktop application). The report returns with the result,
-including a partial report when the render is cancelled or fails. **Performance
-report** shows the summary and **Save as JSON…** exports it; reports are kept for
-the session only. Each profiled render also logs one compact `render.performance`
+including a partial report when the render is cancelled or fails. The local
+control channel exposes the report in `render.result` for the current session.
+Each profiled render also logs one compact `render.performance`
 event (without tile coordinates), so a feedback export contains it.
 
 On the command line, `--profile-performance [FILE]` applies to a single,
@@ -167,11 +166,10 @@ by its file name.
 
 ### Detailed logging
 
-Detailed logging raises the session log to `DEBUG`. The GUI switch takes effect
-at once, without a restart, and the isolated render process follows it;
-`--log-level` does the same for one CLI run and prints the log path to stderr;
-`OPENFOCUS_LOG_LEVEL=DEBUG` selects it before launch. A `log_level.changed`
-event marks where the detail starts and stops.
+Each desktop session and its isolated render process write detailed (`DEBUG`)
+local logs by default. Open them from **Help → Open Logs Folder**.
+`--log-level` overrides the level for one CLI run and prints the log path to
+stderr. `OPENFOCUS_LOG_LEVEL` selects a level before launch.
 
 | Event | Records |
 |---|---|

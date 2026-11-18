@@ -37,6 +37,16 @@ class TranslationManager(QObject):
         self.translations = {"en": dict(EN), "zh": dict(ZH)}
 
         self._load_language_packs()
+        manual_titles = {
+            'en': 'User Manual', 'zh': '用户手册', 'ja': 'ユーザーマニュアル',
+            'es': 'Manual de usuario', 'de': 'Benutzerhandbuch', 'fr': "Manuel d'utilisation",
+            'ru': 'Руководство пользователя', 'ko': '사용자 설명서', 'pt': 'Manual do usuário',
+            'it': 'Manuale utente', 'nl': 'Gebruikershandleiding', 'pl': 'Podręcznik użytkownika',
+        }
+        for code, title in manual_titles.items():
+            if code in self.translations:
+                self.translations[code]['menu_github_manual'] = f'{title} (GitHub)'
+
         support_text = {
             'en': ('Support Us', 'Thank you for supporting OpenFocus! Include your username in the transfer note to receive permanent acknowledgment in the project.'),
             'zh': ('支持我们', '感谢您支持 OpenFocus！请在转账备注中填写您的用户名，项目将永久鸣谢您。'),
