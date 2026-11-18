@@ -246,7 +246,7 @@ def _write(path, pixels, source, page, ext, cancelled=None, tiff_page=None):
         exif = image_loader._read_exif_bytes(source) if page == 0 else b''
         profile = image_loader._read_icc_profile(source)
     else:
-        exif = image_loader._tiff_page_exif(tiff_page.parent, tiff_page)
+        exif = image_loader._tiff_page_exif(tiff_page.parent, tiff_page, source)
         profile = image_loader._tiff_page_profile(source, tiff_page)
     if not exif and page == 0 and Path(source).suffix.lower() in ('.heic', '.heif'):
         try:
