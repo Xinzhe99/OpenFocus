@@ -137,7 +137,7 @@ def _edit_fraction(editors, fraction, direction):
 
 
 def test_openfocus_registration_panel_is_hidden_but_retains_values(algorithm_host):
-    from core.algorithms import registration_defaults
+    from core.algorithms import desktop_registration_parameters
 
     host = algorithm_host
     host.set_registration_parameters('openfocus', {'rotation': 6, 'reference_frame': 3})
@@ -151,7 +151,7 @@ def test_openfocus_registration_panel_is_hidden_but_retains_values(algorithm_hos
     host.reset_parameter_memories()
     host.set_alignment_method('openfocus')
     assert host.registration_parameter_panel.isHidden()
-    assert host.registration_parameter_panel.values() == registration_defaults('openfocus')
+    assert host.registration_parameter_panel.values() == desktop_registration_parameters('openfocus')
 
 
 def test_new_parameters_edited_in_main_and_batch_change_actual_pixels(

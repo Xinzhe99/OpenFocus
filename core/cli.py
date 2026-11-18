@@ -223,7 +223,7 @@ def build_parser() -> argparse.ArgumentParser:
                              "(single, non-grouped run only)")
     parser.add_argument("--log-level", default=None, type=str.upper, metavar="LEVEL",
                         choices=("DEBUG", "INFO", "WARNING", "ERROR"),
-                        help="Detail of this run's log file: debug, info (default), warning "
+                        help="Detail of this run's log file: debug (default), info, warning "
                              "or error. Overrides OPENFOCUS_LOG_LEVEL; the log path is "
                              "printed to stderr")
     parser.add_argument("--config", default=None, metavar="FILE",

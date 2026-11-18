@@ -43,20 +43,19 @@ def test_frame_details_records_each_distinct_geometry_without_pixels():
     ]
 
 
-def test_repeated_setup_preserves_records_and_debug_selection(log_folder):
+def test_repeated_setup_preserves_detailed_session_records(log_folder):
     logs.log_session_start()
+    logger = logs.get_logger(__name__)
+    logger.debug("before repeated setup")
     logs.setup_logging()
     logs.log_session_start()
     logs.log_action("unicode_action", path="试验/a b=c\nsecond line")
-    logger = logs.get_logger(__name__)
-    logger.debug("hidden debug entry")
-    logs.setup_logging(level="DEBUG")
-    logger.debug("visible debug entry")
+    logger.debug("after repeated setup")
     text = logs.session_log_excerpt()
     assert text.count("event=session.started") == 1
     assert text.count("event=unicode_action") == 1
-    assert "hidden debug entry" not in text
-    assert "visible debug entry" in text
+    assert text.count("before repeated setup") == 1
+    assert text.count("after repeated setup") == 1
     action = next(line for line in text.splitlines() if "event=unicode_action" in line)
     assert json.loads(action.split("event=unicode_action ", 1)[1])["path"] == "试验/a b=c\nsecond line"
 

@@ -37,7 +37,7 @@ from PyQt6.QtWidgets import (
 )
 
 from core.algorithms import (alignment_steps, depth_algorithms, get_fusion, registration_parameter_specs,
-    registration_algorithms, resolve_fusion_parameters, resolve_registration_parameters)
+    registration_algorithms, resolve_fusion_parameters, desktop_registration_parameters)
 from ui.algorithm_parameters import AlgorithmParameterPanel
 from ui.algorithm_combo import apply_method_availability, selected_item_enabled
 from core.experimental import (alignment_is_experimental, experimental_enabled,
@@ -1393,7 +1393,7 @@ class DepthMapDialog(QDialog):
         if method not in self._registration_drafts:
             getter = getattr(self.window_main, 'registration_parameters_for', None)
             self._registration_drafts[method] = (getter(method) if callable(getter)
-                else resolve_registration_parameters(method))
+                else desktop_registration_parameters(method))
         specs = registration_parameter_specs(method)
         self.registration_parameter_panel.set_parameters(specs, self._registration_drafts[method])
         self.registration_parameter_panel.setVisible(method != 'openfocus' and bool(self.registration_parameter_panel.editors))
