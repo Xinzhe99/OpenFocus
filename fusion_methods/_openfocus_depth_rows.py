@@ -53,21 +53,31 @@ def detail_rows(gray, output, start, stop):
 
 @njit(nogil=True)
 def smooth_detail_rows(detail, output, start, stop):
+    """Mean of the reflected 5x5 neighbourhood, slid along each row.
+
+    The five reflected rows are summed per column once per output row, so
+    rows are reflected once per row and columns only within two of an edge.
+    """
     height, width = detail.shape
+    columns = np.empty(width, np.int64)
     for y in range(start, stop):
+        r0 = _reflect(y - 2, height)
+        r1 = _reflect(y - 1, height)
+        r3 = _reflect(y + 1, height)
+        r4 = _reflect(y + 2, height)
+        for x in range(width):
+            columns[x] = (np.int64(detail[r0, x]) + np.int64(detail[r1, x])
+                          + np.int64(detail[y, x]) + np.int64(detail[r3, x])
+                          + np.int64(detail[r4, x]))
         total = 0
-        for dy in range(-2, 3):
-            sy = _reflect(y + dy, height)
-            for dx in range(-2, 3):
-                total += np.int64(detail[sy, _reflect(dx, width)])
+        for dx in range(-2, 3):
+            total += columns[_reflect(dx, width)]
         for x in range(width):
             output[y, x] = total // 25
             if x + 1 < width:
-                leaving = _reflect(x - 2, width)
-                entering = _reflect(x + 3, width)
-                for dy in range(-2, 3):
-                    sy = _reflect(y + dy, height)
-                    total += np.int64(detail[sy, entering]) - np.int64(detail[sy, leaving])
+                entering = x + 3 if x + 3 < width else _reflect(x + 3, width)
+                leaving = x - 2 if x >= 2 else _reflect(x - 2, width)
+                total += columns[entering] - columns[leaving]
 
 
 @njit(nogil=True)
