@@ -72,7 +72,7 @@ def down2_rows(image, output, start, stop, scale=1):
 
 
 @njit(nogil=True)
-def burt_laplacian_rows(gray, reduced, output, start, stop):
+def burt_laplacian_rows(gray, reduced, output, start, stop, clamp=False):
     """Absolute Burt difference in Q4; quarter-phase weights are exact."""
     height, width = reduced.shape
     for y in range(start, stop):
@@ -89,8 +89,8 @@ def burt_laplacian_rows(gray, reduced, output, start, stop):
             wx1 = 4 - wx0
             top = np.int64(reduced[y0, x0]) * wx0 + np.int64(reduced[y0, x1]) * wx1
             bottom = np.int64(reduced[y1, x0]) * wx0 + np.int64(reduced[y1, x1]) * wx1
-            value = np.int64(gray[y, x]) * 16 - top * wy0 - bottom * wy1
-            output[y, x] = abs(value)
+            value = abs(np.int64(gray[y, x]) * 16 - top * wy0 - bottom * wy1)
+            output[y, x] = min(value, 65535 * 16) if clamp else value
 
 
 @njit(nogil=True)
