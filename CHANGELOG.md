@@ -61,6 +61,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   128-row calls, so row workers no longer wait on each other to start the
   next call. Output pixels are unchanged.
 - Record Windows memory commitment and process usage when neural sessions fail.
+- Blend StackMFF V3 soft-mode colors in smaller row bands on wide images to
+  reduce temporary host memory during color reconstruction.
 - Convert OpenFocus source frames to gray codes in parallel row bands instead
   of on one thread. Output pixels are unchanged.
 - Mark Dust Map and batch flat-field correction as experimental desktop tools.
