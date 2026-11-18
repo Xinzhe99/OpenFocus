@@ -88,13 +88,10 @@ _PERSISTED_FIELDS = {
     "ai_batch_size": ("rendering/ai_batch_size", 2, int),
     "use_gpu": ("rendering/use_gpu", True, "bool"),
     "align_cache_enabled": ("rendering/align_cache_enabled", True, "bool"),
-    "collect_alignment_report": ("rendering/collect_alignment_report", False, "bool"),
-    "profile_performance": ("diagnostics/profile_performance", False, "bool"),
-    "debug_logging": ("diagnostics/debug_logging", False, "bool"),
     "output_name_prefix": ("export/name_prefix", "", "str"),
     "restore_last_stack": ("ui/restore_last_stack", False, "bool"),
     "experimental_features": ("ui/experimental_features", False, "bool"),
-    "auto_error_reports": (REPORTS_AUTO_SEND_KEY, False, "bool"),
+    "auto_error_reports": (REPORTS_AUTO_SEND_KEY, True, "bool"),
     "ui_theme": ("ui/theme", DEFAULT_THEME, "str"),
     "scale_bar_enabled": ("export/scale_bar_enabled", False, "bool"),
     "scale_um_per_px_manual": ("export/scale_um_per_px_manual", 0.0, "float"),
@@ -408,6 +405,9 @@ def load_window_settings(window) -> None:
             setattr(window, attr, _cast(settings.value(key), kind, default))
         else:
             setattr(window, attr, getattr(window, attr, default))
+    if settings.value(REPORTS_CHOICE_KEY) == "unselected":
+        # Old installations saved their then-current default during ordinary saves.
+        window.auto_error_reports = True
 
     # The selectors are built later; apply only valid explicitly saved IDs.
     for key, attr, lookup in ((FUSION_METHOD_KEY, "_preferred_fusion_method", get_fusion),
@@ -448,6 +448,12 @@ def load_window_settings(window) -> None:
     if not isinstance(raw_projects, list):
         raw_projects = [raw_projects]
     window.recent_projects = [str(p) for p in raw_projects][:MAX_RECENT_PROJECTS]
+
+
+def automatic_reports_allowed(settings) -> bool:
+    """The initial checked preference takes effect after the reporting terms are accepted."""
+    return (settings.value(REPORTS_CHOICE_KEY) != "unselected"
+            and settings.value(REPORTS_AUTO_SEND_KEY, False, type=bool))
 
 
 def enable_account_default_reports(window) -> None:
@@ -515,7 +521,8 @@ def restore_default_settings(window) -> None:
     """
     settings = get_settings()
     keys = {key for key, _default, _kind in _PERSISTED_FIELDS.values()}
-    keys.update((REPORTS_CHOICE_KEY, BRIGHTNESS_BY_METHOD_KEY, METHOD_PARAMETERS_KEY,
+    keys.discard(REPORTS_AUTO_SEND_KEY)
+    keys.update((BRIGHTNESS_BY_METHOD_KEY, METHOD_PARAMETERS_KEY,
                  REGISTRATION_PARAMETERS_KEY, SMOOTHING_BY_METHOD_KEY,
                  KERNEL_BY_MODE_KEY, FUSION_METHOD_KEY, ALIGNMENT_METHOD_KEY,
                  DRAG_FORMAT_KEY, CONVERTER_FORMAT_KEY,
@@ -536,11 +543,10 @@ def restore_default_settings(window) -> None:
         for key in keys:
             settings.remove(key)
         for attr, (_key, default, _kind) in _PERSISTED_FIELDS.items():
-            setattr(window, attr, default)
+            if attr != "auto_error_reports":
+                setattr(window, attr, default)
         for name in memories:
             setattr(window, name, {})
-        # Restoring the anonymous default is an explicit choice to turn off reports.
-        settings.setValue(REPORTS_CHOICE_KEY, "chosen")
         save_window_settings(window)
         # The caller resets the visible selectors after this transaction.
         settings.remove(FUSION_METHOD_KEY)
@@ -559,9 +565,6 @@ def restore_default_settings(window) -> None:
             settings.setValue(key, value)
         settings.sync()
         raise
-    if attributes["auto_error_reports"]:
-        from ui.report_retry import discard_automatic_reports
-        discard_automatic_reports()
 
 
 

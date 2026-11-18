@@ -145,7 +145,7 @@ Prawy panel zawiera parametry i listy:
 - **Plik**: otwieranie folderu, wideo i projektu, zapisywanie projektu i szablonów przetwarzania, ostatnie pliki i projekty, zapisywanie wyniku i stosu, czyszczenie stosu, wyjście
 - **Edycja**: cofanie i ponawianie, obrót, odbicie, zmiana rozmiaru, retusz wyniku i retusz plików obrazów
 - **Narzędzia**: łączenie obrazów, przetwarzanie wsadowe, porównanie metod, mapa głębi, mapa pyłu, pasek skali, etykiety
-- **Ustawienia**: ustawienia zaawansowane (rejestracja i diagnostyka wyrównania), akceleracja GPU, motyw, język
+- **Ustawienia**: ustawienia zaawansowane (Ogólne, Fuzja, Rejestracja, Uruchamianie i aktualizacje), akceleracja GPU, motyw, język
 - **Pomoc**: informacje o środowisku, opinia, kontakt, przewodnik szybkiego startu, sprawdzanie aktualizacji, instalacja gotowej aktualizacji i folder logów
 
 **Narzędzia → Połącz obrazy…** otwiera osobny obszar roboczy dla już pofuzjowanych obszarów mikroskopu i panoram fotograficznych; nie zmienia bieżącego stosu. Karta **Asystent projektu** grupuje import, wyrównywanie i punkty kontrolne, **Obrazy źródłowe** zawiera listę, siatkę i ręczne rozmieszczenie, a **Edytor panoramy** zawiera ustawienia szwów, mieszania, ekspozycji/koloru, wyjścia, odwzorowania, aparatu i HDR oraz nakładki podglądu. Użyj **Dodaj pliki…**, **Otwórz folder** lub **Dodaj wyniki…**, aby skopiować wybrane wyniki bieżącej sesji, albo przeciągnij pliki lub foldery na listę bądź obszar roboczy. Import folderu obejmuje tylko obsługiwane pliki bezpośrednio w nim, bez podfolderów. Import zachowuje naturalną kolejność nazw, pomija powtórzone ścieżki i dodaje każdą stronę wielostronicowego TIFF jako osobny obraz. Wybierz obraz i naciśnij Delete lub Backspace, aby usunąć go z obszaru roboczego bez kasowania pliku.
@@ -374,20 +374,17 @@ Rejestracja usuwa przestrzenne przesunięcie klatek w stosie. Jest niezbędna, g
 - Wyszukiwanie ocenia różnice próbkowanych pikseli; przekształcenie używa interpolacji Lanczosa
 - Zakres wyszukiwania przesunięcia wynosi domyślnie 3% rozmiaru klatki i można go zmienić przez `--align-shift-limit`. Wyszukiwanie używa poprzedniej wyrównanej klatki i zaczyna od ruchu skumulowanego; łączne przesunięcie może przekroczyć 3%.
 - Dla geometrii nieodkształcalnej lub ekstremalnej wybierz ECC albo homografię
-- Przy rzeczywistym błędzie szacowania `failure_policy=continue` (domyślnie) zachowuje niewyrównaną klatkę, a `fail` przerywa pracę. Mało tekstury, powtarzalne wzory i zmiany ostrości mogą nadal powodować niedokładne dopasowania.
-- W CLI tę samą politykę wybiera `--align openfocus --align-param 'failure_policy="fail"'` (cytowanie zależne od powłoki). Elementy wsadu stosują wybraną politykę niezależnie. Domyślnie jest `"continue"`.
+- Jeśli rejestracja odrzuci klatkę, aplikacja komputerowa zatrzyma przetwarzanie danego stosu. Przed kolejną próbą sprawdź klatkę wskazaną w komunikacie błędu i podaną przyczynę. Mało tekstury, powtarzalne wzory i zmiany ostrości mogą nadal powodować niedokładne dopasowania.
+- W CLI domyślnie obowiązuje `continue`. Aby zatrzymać stos, użyj `--align openfocus --align-param 'failure_policy="fail"'`.
 - Ustaw **Klatkę odniesienia** jako liczbę od 1 w kolejności uwzględnionych, przetworzonych klatek, aby zakotwiczyć geometrię w tej klatce. Kolejność klatek jest zachowana; wyrównanie jasności używa własnego odniesienia. Każdy stos wsadu musi zawierać ten numer, inaczej element kończy się błędem. Przykład CLI: `--align openfocus --align-param reference_frame=3`. Wybór odniesienia nie poprawia paralaksy ani słabego dopasowania; sprawdź wynik.
 
-Raporty wyrównania wskazują odniesienie i wynik każdej klatki. „Wynik zastępczy” oznacza, że metoda nie mogła ustalić wyrównania lub zależy od wcześniejszego nieudanego oszacowania; podana przyczyna odróżnia słabe oszacowania od ruchu poza limitami, gdy jest to znane. Wartości jakości zależą od metody i nie gwarantują dokładności. Przekształcenia mapują współrzędne źródła na płótno odniesienia etapu rejestracji przed wspólnym przycięciem; metody złożone raportują etapy osobno. Homografia i ECC również przyjmują opcjonalny parametr rejestracji `failure_policy="fail"`, aby zatrzymać się po wykryciu błędu. Domyślnie pozostaje `"continue"`; sprawdzaj wyniki nawet przy udanym wyrównaniu.
-
-Aby zbadać render, włącz **Ustawienia → Ustawienia zaawansowane → Rejestracja → Zbieraj diagnostykę wyrównania** i wyrenderuj ponownie. Powoduje to ponowne obliczenie wyrównania zamiast użycia pamięci podręcznej. Podsumowanie zakończenia wyróżnia wyniki zastępcze; otwórz **Ustawienia → Ustawienia zaawansowane → Rejestracja → Diagnostyka wyrównania**, aby zobaczyć raport dla klatek. Pokazuje dostępne przyczyny niepowodzenia, oceny metody, liczbę dopasowań, klatki odniesienia i przekształcenia. Numery i nazwy odniesień dotyczą oryginalnej listy źródeł, także gdy klatki są wykluczone. Renderowania wsadowe i grupowe nie udostępniają tego raportu.
+W pojedynczym, niegrupowanym przebiegu CLI z rejestracją opcja `--alignment-report FILE` zapisuje raport dla poszczególnych klatek. Raporty wyrównania wskazują odniesienie i wynik każdej klatki. „Wynik zastępczy” oznacza, że metoda nie mogła ustalić wyrównania lub zależy od wcześniejszego nieudanego oszacowania; podana przyczyna odróżnia słabe oszacowania od ruchu poza limitami, gdy jest to znane. Wartości jakości zależą od metody i nie gwarantują dokładności. Przekształcenia mapują współrzędne źródła na płótno odniesienia etapu rejestracji przed wspólnym przycięciem; metody złożone raportują etapy osobno. Homografia i ECC również przyjmują opcjonalny parametr rejestracji `failure_policy="fail"`, aby zatrzymać się po wykryciu błędu. Domyślnie pozostaje `"continue"`; sprawdzaj wyniki nawet przy udanym wyrównaniu.
 
 ### Włączanie rejestracji
 
 1. Na prawym panelu znajdź grupę **Rejestracja**
 2. Wybierz jedną metodę z listy rozwijanej: **Bez wyrównania**, **OpenFocus (szybko)**, **ECC**, **Homografia** lub **Homografia → ECC**
-3. Wybierz **Obsługę odrzuconych klatek** w **Ustawienia → Ustawienia zaawansowane → Rejestracja**; zmiana jest stosowana do metod. Dla OpenFocus (szybko) ustaw także klatkę odniesienia.
-4. **Zbieraj diagnostykę wyrównania** znajduje się teraz w ustawieniach zaawansowanych (patrz wyżej)
+3. Klatkę odniesienia i granice wyszukiwania OpenFocus ustawisz w **Ustawienia → Ustawienia zaawansowane → Rejestracja**.
 
 Domyślnie wybrane jest **ECC**. Jeśli stos jest już wyrównany, na przykład pochodzi ze sztywnego stanowiska, wybierz **Bez wyrównania**: jest szybciej i unika zbędnych przekształceń.
 
@@ -405,8 +402,6 @@ Dodatkowe parametry otwiera **Ustawienia → Ustawienia zaawansowane → Rejestr
 - **Szerokość skalowania rejestracji**: rozdzielczość wstępnego przetwarzania (domyślnie 1024 px)
 - Mniejsze wartości — szybciej, ale dokładność może spaść
 - Większe wartości — wolniej, ale dokładność może wzrosnąć
-- **Pamięć rejestracji**: przechowuje wyniki obok stosu, aby ponowne otwarcie pomijało wyrównanie
-- **Zbieraj diagnostykę wyrównania**: ponownie oblicza wyrównanie na potrzeby raportu dla klatek
 
 ---
 
@@ -651,7 +646,14 @@ Podgląd używa rzeczywistego celu. Przechodź przyciskami Poprzednia/Następna 
 
 ## 11. Ustawienia i konfiguracja
 
-Otwórz **Ustawienia → Ustawienia zaawansowane**, aby zmienić wydajność, rejestrację, czyszczenie matrycy, nazwy wyników, AI StackMFF i ustawienia uruchamiania. Zmiany pozostają szkicem do naciśnięcia **OK**; Anuluj, Esc i zamknięcie okna je odrzucają. Zmniejszenie rozmiaru kafelka natychmiast aktualizuje widoczny limit nakładki do połowy kafelka. Zapisany limit partii AI pozostaje, ale wnioskowanie obecnie wysyła jeden kafelek na wywołanie; szerokość skalowania rejestracji może zmienić dokładność wyrównania. Zbieranie diagnostyki wyrównania to pole wyboru w sekcji Rejestracja.
+**Ustawienia → Ustawienia zaawansowane**
+
+- **Ogólne** — Funkcje eksperymentalne, katalog roboczy i prefiks nazwy pliku wynikowego. W sekcji **Prywatność** automatyczne raporty błędów i statystyki użycia mają osobne pola. Początkowo oba są zaznaczone. Jawnie wyłączona opcja pozostaje wyłączona. Wersje wydaniowe wysyłają raport po sesji, w której wystąpił błąd, jeśli zaakceptowano warunki przy logowaniu lub jawnie włączono raportowanie. Wysłanie raportu o wcześniejszej awarii kodu natywnego wymaga potwierdzenia.
+- **Fuzja** — Wybierz tryb zasobów i ustawienia kafelków. Wybierz **Czyszczenie matrycy**, aby rozwinąć ustawienia.
+- **Rejestracja** — Ustaw szerokość skalowania. Wybierz **OpenFocus (szybko)**, aby rozwinąć ustawienia klatki odniesienia i granic wyszukiwania.
+- **Uruchamianie i aktualizacje** — Przywracanie ostatniego stosu, pytanie o skalę importu i aktualizacje.
+
+Zatwierdź przyciskiem **OK**. Anulowanie, Esc lub zamknięcie okna odrzuca zmiany.
 
 Automatyczne pobieranie aktualizacji działa w bezczynności i nigdy nie instaluje aktualizacji samodzielnie. Ukończone pobieranie pozostaje gotowe, dopóki nie wybierzesz jawnie **Uruchom ponownie i zaktualizuj**. Ponowne uruchomienie chroni aktywne edycje i niezapisaną pracę, a następnie zapisuje dane odzyskiwania przed uruchomieniem zamiennika. Anulowanie pobierania lub przygotowania czeka na bieżącą bezpieczną granicę. Istniejąca kompletna, nowsza przygotowana kompilacja może zostać zainstalowana bez sieci.
 
@@ -661,7 +663,7 @@ Korekcja pola płaskiego zmienia piksele robocze sesji bez nadpisywania plików 
 
 Przetwarzanie wsadowe przyjmuje opcjonalny obraz białego pola w opcjach przetwarzania. Wybierz rozogniskowane odniesienie w oryginalnej rozdzielczości klatek; jest skalowane razem ze stosem wejściowym i stosowane przed rejestracją, z domyślnym rozmiarem pyłu. Nieczytelne odniesienie lub niezgodny rozmiar jawnie powoduje błąd danego stosu. Odniesienie jest wykluczane z folderów wejściowych, także w przetwarzaniu grupowym; do fuzji muszą pozostać co najmniej dwie klatki źródłowe. Korekcji pola płaskiego nie można łączyć z przezroczystym wejściem. Pozostaw pole puste, aby przetwarzać bez korekcji. CLI przyjmuje odniesienie przez `--dust-map WHITE`.
 
-Czyszczenie matrycy jest opcjonalne i działa na oryginalnych klatkach we współrzędnych matrycy przed rejestracją. W aplikacji desktopowej znajduje się w **Ustawienia → Ustawienia zaawansowane → Czyszczenie matrycy**; okno przetwarzania wsadowego ma te same elementy sterujące. Wybierz jawną maskę defektów, aby poprawić znane gorące lub martwe piksele; OpenFocus nie wnioskuje maski z obrazów preparatu. Maska musi być jednokanałowym obrazem 8- lub 16-bitowym o wymiarach źródła: zero oznacza brak wpływu, a 1 lub maksymalna wartość kanału oznacza defekty. Sprawdź jej zasięg przed przetwarzaniem. Maski pokrywające więcej niż 10 % kadru oraz defekty bez niezamaskowanego sąsiada są odrzucane. Przechowuj maskę w oryginalnej rozdzielczości i nie wybieraj jej jako obrazu źródłowego. W GUI przy używaniu maski wczytuj klatki źródłowe w pełnej skali; maska nigdy nie jest skalowana. Czyszczenia matrycy (w tym odszumiania) nie można zastosować do stosu GUI po obrocie, odbiciu, korekcji pola płaskiego lub innej zmianie źródła: wczytaj ponownie oryginalne klatki albo wyłącz czyszczenie. Dotyczy to także przywróconych projektów z taką historią źródeł. Wstępnie wyrównanego przetwarzania ROI nie można łączyć z czyszczeniem matrycy; wyjdź z trybu ROI i wyrenderuj cały stos. Ustawienia czyszczenia należą do bieżącej sesji i zapisanego projektu, a nie do globalnych preferencji aplikacji. Przetwarzanie wsadowe i CLI przetwarzają swoje oryginalne dane osobno, wykonując czyszczenie matrycy przed korekcją pola płaskiego i rejestracją. Maski defektów wymagają plików źródłowych o neutralnej orientacji EXIF. Pliki z orientacją, RAW aparatów i źródła, których orientacji nie można ustalić, są odrzucane, ponieważ ich zdekodowane piksele mogą nie odpowiadać współrzędnym matrycy. Używaj obrazów źródłowych i maski w tej samej znanej orientacji pikseli, z neutralnymi metadanymi orientacji. Samo odszumianie nie wymaga maski defektów.
+Czyszczenie matrycy jest opcjonalne i działa na oryginalnych klatkach we współrzędnych matrycy przed rejestracją. W aplikacji desktopowej znajduje się w **Ustawienia → Ustawienia zaawansowane → Fuzja → Czyszczenie matrycy**; okno przetwarzania wsadowego ma te same elementy sterujące. Wybierz jawną maskę defektów, aby poprawić znane gorące lub martwe piksele; OpenFocus nie wnioskuje maski z obrazów preparatu. Maska musi być jednokanałowym obrazem 8- lub 16-bitowym o wymiarach źródła: zero oznacza brak wpływu, a 1 lub maksymalna wartość kanału oznacza defekty. Sprawdź jej zasięg przed przetwarzaniem. Maski pokrywające więcej niż 10 % kadru oraz defekty bez niezamaskowanego sąsiada są odrzucane. Przechowuj maskę w oryginalnej rozdzielczości i nie wybieraj jej jako obrazu źródłowego. W GUI przy używaniu maski wczytuj klatki źródłowe w pełnej skali; maska nigdy nie jest skalowana. Czyszczenia matrycy (w tym odszumiania) nie można zastosować do stosu GUI po obrocie, odbiciu, korekcji pola płaskiego lub innej zmianie źródła: wczytaj ponownie oryginalne klatki albo wyłącz czyszczenie. Dotyczy to także przywróconych projektów z taką historią źródeł. Wstępnie wyrównanego przetwarzania ROI nie można łączyć z czyszczeniem matrycy; wyjdź z trybu ROI i wyrenderuj cały stos. Ustawienia czyszczenia należą do bieżącej sesji i zapisanego projektu, a nie do globalnych preferencji aplikacji. Przetwarzanie wsadowe i CLI przetwarzają swoje oryginalne dane osobno, wykonując czyszczenie matrycy przed korekcją pola płaskiego i rejestracją. Maski defektów wymagają plików źródłowych o neutralnej orientacji EXIF. Pliki z orientacją, RAW aparatów i źródła, których orientacji nie można ustalić, są odrzucane, ponieważ ich zdekodowane piksele mogą nie odpowiadać współrzędnym matrycy. Używaj obrazów źródłowych i maski w tej samej znanej orientacji pikseli, z neutralnymi metadanymi orientacji. Samo odszumianie nie wymaga maski defektów.
 
 Opcjonalne odszumianie matrycy jest niezależne od maski defektów i domyślnie wyłączone. Obejrzyj wynik w pełnym rozmiarze, aby ocenić, czy jego wygładzanie pasuje do preparatu. Czyszczenie matrycy zachowuje pliki źródłowe i głębię 8 lub 16 bitów; jest oddzielone od korekcji pola płaskiego. CLI przyjmuje `--defect-mask-path MASK` i `--sensor-denoise`; przepisy i Python API przepisów zapisują te opcje. Przepisy zapisują odcisk maski i odrzucają brakującą lub zmienioną maskę. Czyszczenia w CLI nie można łączyć z przezroczystym wejściem. Przetwarzanie grupowe stosuje czyszczenie do oryginalnych klatek, a nie do pośrednich wyników grup.
 
@@ -675,14 +677,19 @@ Każde uruchomienie zapisuje własny rotowany log, więc równoległe zadania GU
 
 ### Ustawienia kafelków (optymalizacja pamięci)
 
-Dla dużych obrazów OpenFocus przetwarza kafelki, aby uniknąć problemów z pamięcią.
+Przetwarzanie kafelkowe jest domyślnie włączone. Komunikat pod polami opisuje działanie wybranej metody. W aplikacji komputerowej OpenFocus A, B i C przetwarzają cały obraz. Tryb samego wyrównania pomija fuzję. Również w tych trybach można ustawić rozmiar kafelka, nakładkę i próg dla kolejnej zgodnej metody. DTCWT wybiera kafelkowanie na podstawie szacowanego zużycia pamięci. Można zmienić rozmiar i nakładkę, a pole progu jest nieaktywne. Metody neuronowe mogą używać kafelków poniżej progu przy dużej liczbie klatek. Wyłączenie kafelkowania dezaktywuje wszystkie trzy pola liczbowe i zachowuje ich wartości.
 
-Otwierane przez **Ustawienia → Ustawienia zaawansowane → Wydajność**:
+Otwierane przez **Ustawienia → Ustawienia zaawansowane → Fuzja**:
 
-- **Fuzja kafelkowa dla dużych obrazów**: włącza przetwarzanie kafelkowe; po wyłączeniu parametry poniżej są ukryte
 - **Rozmiar kafelka (px)**: rozmiar każdego przetwarzanego kafelka (domyślnie 1024 px)
 - **Nakładka kafelków (px)**: nakładka między kafelkami dla bezszwowego mieszania (domyślnie 256 px, nie więcej niż połowa kafelka)
 - **Kafelkuj powyżej (px)**: rozmiar obrazu, powyżej którego włączane są kafelki (domyślnie 2048 px)
+
+Zakresy w pikselach
+
+- Rozmiar kafelka (px) — 64–16384
+- Nakładka kafelków (px) — 0–min(4096, połowa rozmiaru kafelka)
+- Kafelkuj powyżej (px) — 256–131072
 
 **Zalecenia**:
 - Mniejszy kafelek: mniejsze zużycie pamięci, wolniejsze przetwarzanie
@@ -696,8 +703,6 @@ Otwierane przez **Ustawienia → Ustawienia zaawansowane → Rejestracja**:
 - **Szerokość skalowania rejestracji (px)**: rozdzielczość wstępnego przetwarzania rejestracji
   - Domyślnie: 1024 px
   - Mniej — szybciej, więcej — dokładniej
-- **Pamięć rejestracji**: przechowuje wyniki obok stosu, aby ponowne otwarcie pomijało wyrównanie
-- **Zbieraj diagnostykę wyrównania**: ponownie oblicza wyrównanie na potrzeby raportu dla klatek
 
 ### Informacje o wydajności
 
@@ -705,19 +710,9 @@ Zobacz [PERFORMANCE.md](./PERFORMANCE.md): zmierzona przepustowość i zużycie 
 
 Panel stanu pokazuje używaną i całkowitą pamięć fizyczną, gdy system operacyjny udostępnia oba odczyty; w przeciwnym razie pokazuje `N/A`.
 
-### Ustawienia liczby wątków
-
-Sterowanie równoległym przetwarzaniem CPU:
-
-Otwierane przez **Ustawienia → Ustawienia zaawansowane → Wydajność**:
-
-- `0` wybiera automatyczne planowanie i jest domyślne dla nowych ustawień.
-- Wartości dodatnie są górnymi limitami; zapisane limity przetrwają aktualizacje.
-- Możliwości CPU, tryb zasobów i zapas pamięci mogą obniżyć współbieżność. Większa liczba wątków nie zawsze przyspiesza renderowanie.
-
 ### Tryb zasobów
 
-**Ustawienia → Ustawienia zaawansowane → Wydajność → Tryb zasobów** decyduje, jaką część maszyny może wykorzystać renderowanie. Nigdy nie zmienia obrazu po fuzji.
+**Ustawienia → Ustawienia zaawansowane → Fuzja → Tryb zasobów** decyduje, jaką część maszyny może wykorzystać renderowanie. Nigdy nie zmienia obrazu po fuzji.
 
 | Tryb | Zachowanie |
 |---|---|
@@ -737,13 +732,6 @@ OpenFocus B może przyspieszać przetwarzanie głębi i łączenie źródeł na 
 - Odznaczenie wymusza obsługiwane metody fuzji na CPU — przydatne przy problemach ze sterownikami GPU
 - Panel stanu pokazuje `N/A`, gdy akcelerator nie jest używany lub niedostępny, oraz `CPU*`, gdy akcelerator istnieje, ale wybrana metoda działa tylko na CPU
 - Wybór działa przy następnym renderowaniu i jest pamiętany
-
-### Rozmiar partii AI
-
-Otwierany przez **Ustawienia → Ustawienia zaawansowane → AI**:
-
-- Zapisany limit partii domyślnie wynosi 2; bieżąca polityka wykonania ogranicza faktyczne wnioskowanie do jednego kafelka na wywołanie na każdym urządzeniu.
-- Zwiększenie limitu nie włącza niezweryfikowanego przetwarzania wsadowego na GPU ani nie zmniejsza przestrzennego kafelka.
 
 ### Motywy
 
@@ -767,11 +755,11 @@ Zdjęcia iPhone'a wczytują się bezpośrednio. Wymagany jest pakiet `pillow-hei
 
 ### Pamięć rejestracji
 
-OpenFocus zapisuje wyniki rejestracji w pamięci podręcznej użytkownika. Po ponownym otwarciu niezmienionego stosu z tymi samymi ustawieniami OpenFocus używa zapisanego wyniku. Przełącznik znajduje się w **Ustawienia → Ustawienia zaawansowane → Rejestracja → Pamięć rejestracji**. Wszystkie stosy korzystają ze wspólnego limitu 2 GiB. Gdy potrzeba miejsca, usuwane są najdawniej używane wpisy. Starsze foldery `.openfocus_cache` obok stosów źródłowych pozostają na miejscu.
+OpenFocus zapisuje wyniki rejestracji w pamięci podręcznej użytkownika. Po ponownym otwarciu niezmienionego stosu z tymi samymi ustawieniami OpenFocus używa zapisanego wyniku. Wszystkie stosy korzystają ze wspólnego limitu 2 GiB. Gdy potrzeba miejsca, usuwane są najdawniej używane wpisy. Starsze foldery `.openfocus_cache` obok stosów źródłowych pozostają na miejscu.
 
 ### Zapamiętywane ustawienia
 
-Wszystko poniższe automatycznie przetrwa restart aplikacji: liczba wątków, tryb zasobów, parametry kafelków, szerokość skalowania rejestracji, rozmiar partii fuzji AI (StackMFF V3), przełącznik akceleracji GPU, przełączniki pamięci rejestracji i zbierania diagnostyki wyrównania, motyw, język interfejsu, rozmiar okna i układ paneli, format eksportu przez przeciąganie, opcje jasności, wygładzania i promienia dla każdej metody oraz ostatnio otwarte stosy. Okna ustawień zapisują się w chwili potwierdzenia; wszystko jest też zapisywane przy zamykaniu aplikacji. Preferencje są przechowywane dla użytkownika w `OpenFocus/OpenFocus.ini` (format INI QSettings).
+Wszystko poniższe automatycznie przetrwa restart aplikacji: tryb zasobów, parametry kafelków, szerokość skalowania rejestracji, przełącznik akceleracji GPU, motyw, język interfejsu, rozmiar okna i układ paneli, format eksportu przez przeciąganie, opcje jasności, wygładzania i promienia dla każdej metody oraz ostatnio otwarte stosy. Okna ustawień zapisują się w chwili potwierdzenia; wszystko jest też zapisywane przy zamykaniu aplikacji. Preferencje są przechowywane dla użytkownika w `OpenFocus/OpenFocus.ini` (format INI QSettings).
 
 ### Język interfejsu
 
@@ -828,7 +816,7 @@ Okno pokazuje postęp w czasie rzeczywistym. Przetwarzanie można anulować w do
 3. Wybierz format i miejsce
 4. Kliknij Zapisz
 
-W **Ustawienia → Ustawienia zaawansowane → Nazwy wyników** opcjonalny prefiks nazwy pomaga identyfikować nowe wyniki. Przykład aktualizuje się podczas wpisywania; dozwolone jest do 40 liter, cyfr, podkreśleń lub łączników. Pozostaw puste, aby zachować oryginalne nazewnictwo. Potwierdź **OK**, aby zapamiętać prefiks, albo anuluj, aby odrzucić zmianę. Prefiks staje się częścią nowych nazw na liście wyników i sugerowanych nazw eksportu; istniejące wyniki zachowują swoje nazwy. Nazwę nadal można zmienić w oknie zapisu. Ustawienie nie zmienia nazw plików źródłowych ani nazw wyjściowych wsadu.
+W **Ustawienia → Ustawienia zaawansowane → Ogólne → Nazwy wyników** opcjonalny prefiks nazwy pomaga identyfikować nowe wyniki. Przykład aktualizuje się podczas wpisywania; dozwolone jest do 40 liter, cyfr, podkreśleń lub łączników. Pozostaw puste, aby zachować oryginalne nazewnictwo. Potwierdź **OK**, aby zapamiętać prefiks, albo anuluj, aby odrzucić zmianę. Prefiks staje się częścią nowych nazw na liście wyników i sugerowanych nazw eksportu; istniejące wyniki zachowują swoje nazwy. Nazwę nadal można zmienić w oknie zapisu. Ustawienie nie zmienia nazw plików źródłowych ani nazw wyjściowych wsadu.
 
 ### Udostępnianie wyniku
 
@@ -1092,7 +1080,6 @@ Kody wyjścia: `0` — sukces, `1` — błąd przetwarzania, `2` — błąd uży
 - Upewnij się, że obrazy są prawidłowo wyrównane przed fuzją
 - Wypróbuj inną metodę fuzji
 - Zwiększ rozmiar jądra dla gładszego wyniku
-- Sprawdź **Ustawienia → Ustawienia zaawansowane → Rejestracja → Diagnostyka wyrównania**, włączając zbieranie w **Ustawienia → Ustawienia zaawansowane → Rejestracja**
 
 #### AI niedostępne
 
@@ -1103,7 +1090,7 @@ Kody wyjścia: `0` — sukces, `1` — błąd przetwarzania, `2` — błąd uży
 
 #### Błędy braku pamięci
 
-- Włącz przetwarzanie kafelkowe w **Ustawienia → Ustawienia zaawansowane → Wydajność**
+- Włącz przetwarzanie kafelkowe w **Ustawienia → Ustawienia zaawansowane → Fuzja**
 - Zmniejsz rozmiar kafelka
 - Używaj mniejszych jąder
 - Zmniejsz rozdzielczość obrazów
@@ -1111,14 +1098,12 @@ Kody wyjścia: `0` — sukces, `1` — błąd przetwarzania, `2` — błąd uży
 
 #### Rejestracja nie udaje się
 
-- Użyj **OpenFocus (szybko)** dla ograniczonego ruchu sztywnego albo włącz **Zatrzymaj przy odrzuconej klatce**, aby zakończyć się błędem wcześniej, zamiast akceptować niewyrównane klatki
+- Jeśli rejestracja odrzuci klatkę, aplikacja komputerowa zatrzyma przetwarzanie danego stosu. Przed kolejną próbą sprawdź klatkę wskazaną w komunikacie błędu i podaną przyczynę.
 - Zmniejsz szerokość skalowania w **Ustawienia → Ustawienia zaawansowane → Rejestracja**
 - Upewnij się, że obrazy mają wystarczający kontrast i charakterystyczne punkty
-- Włącz **Zbieraj diagnostykę wyrównania**, wyrenderuj ponownie i otwórz **Ustawienia → Ustawienia zaawansowane → Rejestracja → Diagnostyka wyrównania**, aby zobaczyć problematyczne klatki
 
 #### Wolne przetwarzanie
 
-- Pozostaw wątki w trybie automatycznym (`0`): dostępna moc CPU, tryb zasobów i zapas pamięci już ograniczają współbieżność
 - Do nienadzorowanego przetwarzania wsadowego wybierz tryb zasobów „Maksymalny” albo użyj filtra sterowanego / GFG-FGF zamiast metody AI
 - Zmniejsz rozdzielczość obrazów lub używaj **Szybkiego podglądu**, gdy dobierasz parametry
 
