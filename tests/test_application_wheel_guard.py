@@ -101,7 +101,6 @@ def _exercise_wheel_delivery():
     combo.hidePopup()
 
     settings = AdvancedSettingsDialog(QWidget())
-    settings.resize(480, 200)
     settings.show()
     app.processEvents()
     settings.registration_options_disclosure.setChecked(True)
@@ -113,10 +112,12 @@ def _exercise_wheel_delivery():
         (2, reference, reference.lineEdit(), reference.value),
     ):
         settings.tabs.setCurrentIndex(page)
+        settings.resize(480, 200)
         settings.tabs.tabBar().setFocus()
         app.processEvents()
         settings_scroll = settings.tabs.currentWidget()
         settings_bar = settings_scroll.verticalScrollBar()
+        assert settings_bar.maximum() > 0
         settings_scroll.ensureWidgetVisible(editor)
         before = settings_bar.value(), value()
         wheel(target, 120 if before[0] else -120)
