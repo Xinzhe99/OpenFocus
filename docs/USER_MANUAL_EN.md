@@ -1570,7 +1570,7 @@ unchanged; choosing smaller tiles yourself can change output pixels.
 
 OpenFocus B can use an OpenCL GPU for depth resampling, filtering, activity and selection, guided smoothing and source merging when a compatible GPU driver and compiler are available. Full GPU depth processing requires sufficient host and verified device memory; bounded GPU activity and merging can still run when full depth processing is not admitted. Unavailable devices and device failures fall back to CPU. StackMFF V1/V2/V3 use ONNX Runtime; DirectML on Windows and CoreML on macOS may accelerate inference. Installed runtimes or available providers alone do not prove GPU execution. See [GPU support](GPU_SUPPORT.md) for platform requirements.
 
-With GPU acceleration enabled, OpenFocus C can use a compatible OpenCL GPU for full-image pyramid fusion. Insufficient memory, an unavailable device or a device failure can cause CPU fallback. C's depth-map export uses the CPU. OpenFocus A and alignment use the CPU.
+With GPU acceleration enabled, OpenFocus A and OpenFocus C can use a compatible OpenCL GPU for full-image fusion. Insufficient memory, an unavailable device or a device failure can cause CPU fallback. C's depth-map export and alignment use the CPU.
 
 
 - Toggle via **Settings → GPU Acceleration**

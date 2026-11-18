@@ -1,4 +1,4 @@
-"""OpenFocus B/C device selection and deterministic CPU/OpenCL parity."""
+"""OpenFocus A/B/C device selection and deterministic CPU/OpenCL parity."""
 import numpy as np
 import pytest
 
