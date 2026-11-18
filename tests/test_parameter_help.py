@@ -39,6 +39,7 @@ def test_advanced_registration_help_preserves_the_draft(qapp, monkeypatch):
     owner = QWidget()
     settings = AdvancedSettingsDialog(owner)
     settings.show()
+    settings.tabs.setCurrentIndex(2)
     settings.spin_reg_width.setValue(1600)
     button = next(button for button in settings.findChildren(QPushButton)
                   if button.property('parameterHelp') == 'registration_width')
@@ -47,6 +48,7 @@ def test_advanced_registration_help_preserves_the_draft(qapp, monkeypatch):
         assert title == trans.t('advanced_reg_width')
         assert trans.t('parameter_help_registration_width') in text
         assert settings.spin_reg_width.value() == 1600
+        assert settings.tabs.currentWidget().isAncestorOf(button)
         assert settings.isVisible()
     finally:
         settings.reject()

@@ -242,63 +242,106 @@ def test_settings_preserve_supported_tile_and_registration_ranges(settings_windo
     dialog.deleteLater()
 
 
-def test_tile_controls_and_diagnostics_are_drafts(settings_window):
+def test_settings_pages_expose_translated_controls_and_privacy_defaults(settings_window):
+    from PyQt6.QtWidgets import QTabWidget
     from dialogs.advanced_settings import AdvancedSettingsDialog
+    from locales import trans
 
     dialog = AdvancedSettingsDialog(settings_window)
-    dialog.chk_tile.setChecked(False)
-    assert dialog.spin_block.isHidden()
-    assert dialog.spin_overlap.isHidden()
-    assert dialog.spin_threshold.isHidden()
-    dialog.chk_tile.setChecked(True)
-    assert not dialog.spin_block.isHidden()
-    dialog.chk_collect_alignment_report.setChecked(True)
-    dialog.reject()
-    assert not getattr(settings_window, 'collect_alignment_report', False)
-    dialog.deleteLater()
-
-    dialog = AdvancedSettingsDialog(settings_window)
-    dialog.chk_collect_alignment_report.setChecked(True)
-    dialog._apply()
-    assert settings_window.collect_alignment_report is True
-    assert settings_window.saved
-    dialog.deleteLater()
-
-def test_alignment_report_opens_from_settings_without_applying_draft(settings_window, qapp):
-    from PyQt6.QtCore import QTimer
-    from PyQt6.QtWidgets import QApplication, QPlainTextEdit
-    from controllers.render_manager import RenderManager
-    from dialogs.advanced_settings import AdvancedSettingsDialog
-
-    settings_window.collect_alignment_report = False
-    settings_window.render_manager = RenderManager(settings_window)
-    settings_window.render_manager.alignment_diagnostics = (
-        [{'frame_index': 0, 'method': 'ecc', 'status': 'aligned'}],
-        ['source.tif'], [0])
-    settings = AdvancedSettingsDialog(settings_window)
-    settings.show()
-    settings.chk_collect_alignment_report.setChecked(True)
-    shown = []
-
-    def close_report():
-        report = QApplication.activeModalWidget()
-        text = report.findChild(QPlainTextEdit) if report is not None else None
-        shown.append((report.parentWidget() is settings if report else False,
-                      text.toPlainText() if text else None))
-        if report is not None:
-            report.reject()
-
+    tabs = dialog.findChild(QTabWidget)
+    pages = (
+        ('advanced_tab_general', [dialog.chk_experimental_features, dialog.chk_auto_error_reports,
+                                  dialog.chk_usage, dialog.storage_directory, dialog.output_prefix]),
+        ('group_fusion', [dialog.chk_tile, dialog.spin_block, dialog.spin_overlap, dialog.spin_threshold,
+                          dialog.combo_resources, dialog.sensor_cleanup_disclosure, dialog.tile_status]),
+        ('advanced_tab_registration', [dialog.spin_reg_width, dialog.registration_options_disclosure]),
+        ('advanced_tab_other', [dialog.chk_restore, dialog.chk_ask_scale,
+                                dialog.chk_auto_update, dialog.chk_include_beta]),
+    )
+    dialog.show()
     try:
-        QTimer.singleShot(0, close_report)
-        settings.btn_alignment_report.click()
-        assert shown and shown[0][0] and 'source.tif' in shown[0][1]
-        assert settings.chk_collect_alignment_report.isChecked()
-        assert settings_window.collect_alignment_report is False
-        assert not settings_window.saved
+        assert tabs.count() == len(pages) and tabs.currentIndex() == 0
+        assert tabs.property('controlId') == 'advanced_settings_tabs'
+        assert dialog.chk_usage.isChecked() and dialog.chk_auto_error_reports.isChecked()
+        assert dialog.chk_usage.text() == trans.t('usage_enabled')
+        assert dialog.chk_auto_error_reports.text() == trans.t('report_auto_setting')
+        for index, (key, controls) in enumerate(pages):
+            assert tabs.tabText(index) == trans.t(key)
+            tabs.setCurrentIndex(index)
+            assert all(control.isVisible() for control in controls)
+            assert all(tabs.currentWidget().isAncestorOf(control) for control in controls)
+        assert dialog.sensor_cleanup.isHidden() and dialog.openfocus_registration_panel.isHidden()
+        keys = {key for key, _ in pages} | {'advanced_privacy', 'advanced_working_storage',
+                                              'advanced_tile_memory_status'}
+        for code in trans.PACK_ORDER:
+            assert all(trans.translations[code].get(key) for key in keys)
     finally:
-        settings.reject()
-        settings.deleteLater()
-        qapp.processEvents()
+        dialog.reject()
+        dialog.deleteLater()
+
+
+def test_collapsing_optional_settings_preserves_edits(settings_window):
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtTest import QTest
+    from dialogs.advanced_settings import AdvancedSettingsDialog
+
+    dialog = AdvancedSettingsDialog(settings_window)
+    dialog.show()
+    dialog.tabs.setCurrentIndex(1)
+    toggle = dialog.sensor_cleanup_disclosure
+    toggle.setFocus()
+    QTest.keyClick(toggle, Qt.Key.Key_Space)
+    assert toggle.isChecked() and dialog.sensor_cleanup.isVisible()
+    dialog.sensor_cleanup.denoise.setChecked(True)
+    QTest.keyClick(toggle, Qt.Key.Key_Space)
+    assert not toggle.isChecked() and dialog.sensor_cleanup.isHidden()
+    dialog.tabs.setCurrentIndex(2)
+    dialog.registration_options_disclosure.click()
+    editor = dialog.openfocus_registration_panel.editors['reference_frame']
+    assert editor.isVisible()
+    editor.setValue(3)
+    dialog.registration_options_disclosure.click()
+    dialog._apply()
+    assert dialog.result() == QDialog.DialogCode.Accepted
+    assert settings_window.sensor_denoise
+    assert settings_window._registration_parameters_by_method['openfocus']['reference_frame'] == 3
+    dialog.deleteLater()
+
+
+def test_invalid_collapsed_sensor_control_is_revealed(settings_window, tmp_path):
+    from dialogs.advanced_settings import AdvancedSettingsDialog
+
+    dialog = AdvancedSettingsDialog(settings_window)
+    dialog.show()
+    dialog.sensor_cleanup.path.setText(str(tmp_path / 'missing-mask.png'))
+    dialog.tabs.setCurrentIndex(3)
+    dialog._apply()
+    assert dialog.isVisible() and dialog.status.text()
+    assert dialog.sensor_cleanup_disclosure.isChecked() and dialog.sensor_cleanup.path.isVisible()
+    assert dialog.focusWidget() is dialog.sensor_cleanup.path
+    assert not settings_window.saved
+    dialog.reject()
+    dialog.deleteLater()
+
+
+def test_hidden_preferences_are_untouched_on_apply(settings_window):
+    from dialogs.advanced_settings import AdvancedSettingsDialog
+
+    previous = dict(collect_alignment_report=True, align_cache_enabled=False, profile_performance=True,
+                    thread_count=300, ai_batch_size=7)
+    for name, value in previous.items():
+        setattr(settings_window, name, value)
+    dialog = AdvancedSettingsDialog(settings_window)
+    removed = ('chk_collect_alignment_report', 'btn_alignment_report', 'chk_align_cache',
+               'btn_clear_align_cache', 'combo_align_failure', 'chk_profile_performance',
+               'btn_performance_report', 'chk_debug_logging', 'btn_open_logs', 'spin_threads',
+               'spin_ai_batch')
+    assert not any(hasattr(dialog, name) for name in removed)
+    dialog.output_prefix.setText('series')
+    dialog._apply()
+    assert dialog.result() == QDialog.DialogCode.Accepted
+    assert all(getattr(settings_window, name) == value for name, value in previous.items())
+    dialog.deleteLater()
 
 
 def test_disabled_tiling_ignores_invalid_draft_and_preserves_settings(settings_window):
@@ -423,36 +466,19 @@ def test_settings_failure_does_not_partially_commit(settings_window):
     assert "disk full" in dialog.status.text()
     dialog.deleteLater()
 
-def test_registration_failure_policy_is_shared_and_persisted(settings_window, tmp_path, monkeypatch):
-    from PyQt6.QtCore import QSettings
-    from core.algorithms import resolve_registration_parameters
+def test_accepting_an_unrelated_change_preserves_tile_requests(settings_window):
     from dialogs.advanced_settings import AdvancedSettingsDialog
-    from utils import settings_store
 
-    store = QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat)
-    monkeypatch.setattr(settings_store, "get_settings", lambda: store)
-    window = settings_window
-    window._registration_parameters_by_method = {"openfocus": {"reference_frame": 4}}
-    window.current_alignment_method = lambda: "openfocus"
-    window.registration_parameters_for = lambda method: resolve_registration_parameters(
-        method, window._registration_parameters_by_method.get(method))
-    window.persist_settings = lambda: settings_store.save_parameter_memories(window)
-
-    dialog = AdvancedSettingsDialog(window)
-    dialog.combo_align_failure.setCurrentIndex(dialog.combo_align_failure.findData("fail"))
-    dialog.reject()
-    assert window.registration_parameters_for("openfocus")["failure_policy"] == "continue"
-
-    dialog = AdvancedSettingsDialog(window)
-    dialog.combo_align_failure.setCurrentIndex(dialog.combo_align_failure.findData("fail"))
+    settings_window.tile_block_size = 256
+    settings_window.tile_overlap = 256  # Effective cap for this block is 128 px.
+    dialog = AdvancedSettingsDialog(settings_window)
+    assert dialog.spin_overlap.value() == 128
+    dialog.chk_restore.setChecked(True)
     dialog._apply()
-    restored = SimpleNamespace()
-    settings_store.load_parameter_memories(restored)
-    for method in ("homography", "ecc", "openfocus", "both"):
-        parameters = resolve_registration_parameters(
-            method, restored._registration_parameters_by_method.get(method))
-        assert parameters["failure_policy"] == "fail"
-    assert restored._registration_parameters_by_method["openfocus"]["reference_frame"] == 4
+    assert dialog.result() == QDialog.DialogCode.Accepted
+    assert settings_window.tile_overlap == 256
+    assert settings_window.tile_block_size == 256
+    dialog.deleteLater()
 
 
 def test_openfocus_advanced_draft_accept_and_persistence(settings_window, tmp_path, monkeypatch):
@@ -465,7 +491,7 @@ def test_openfocus_advanced_draft_accept_and_persistence(settings_window, tmp_pa
     monkeypatch.setattr(settings_store, 'get_settings', lambda: store)
     window = settings_window
     window._registration_parameters_by_method = {
-        'openfocus': {'max_shift_ratio': .12, 'reference_frame': 4},
+        'openfocus': {'max_shift_ratio': .12, 'reference_frame': 4, 'failure_policy': 'fail'},
         'ecc': {'failure_policy': 'continue'},
     }
     window.current_alignment_method = lambda: 'ecc'
@@ -488,7 +514,6 @@ def test_openfocus_advanced_draft_accept_and_persistence(settings_window, tmp_pa
     for key, value in {'max_shift_ratio': .2, 'rotation': 8,
                        'magnification': 5, 'reference_frame': 2}.items():
         editors[key].setValue(value)
-    dialog.combo_align_failure.setCurrentIndex(dialog.combo_align_failure.findData('fail'))
     dialog._apply()
     assert dialog.result() == QDialog.DialogCode.Accepted
     restored = SimpleNamespace()
@@ -496,7 +521,7 @@ def test_openfocus_advanced_draft_accept_and_persistence(settings_window, tmp_pa
     assert restored._registration_parameters_by_method['openfocus'] == {
         'max_shift_ratio': .2, 'rotation': 8., 'magnification': 5.,
         'reference_frame': 2, 'failure_policy': 'fail'}
-    assert restored._registration_parameters_by_method['ecc']['failure_policy'] == 'fail'
+    assert restored._registration_parameters_by_method['ecc']['failure_policy'] == 'continue'
 
 
 def test_openfocus_advanced_invalid_and_save_failure_roll_back(settings_window):
@@ -514,11 +539,12 @@ def test_openfocus_advanced_invalid_and_save_failure_roll_back(settings_window):
     editor.lineEdit().setText('')
     dialog._apply()
     assert dialog.result() != QDialog.DialogCode.Accepted
+    assert dialog.tabs.currentWidget().isAncestorOf(editor)
+    assert dialog.registration_options_disclosure.isChecked()
     assert window._registration_parameters_by_method == original
     assert not window.saved
 
     editor.setValue(4)
-    dialog.combo_align_failure.setCurrentIndex(dialog.combo_align_failure.findData('fail'))
     def fail():
         raise OSError('disk full')
     window.persist_settings = fail
@@ -528,35 +554,33 @@ def test_openfocus_advanced_invalid_and_save_failure_roll_back(settings_window):
     assert 'disk full' in dialog.status.text()
 
 
-def test_advanced_settings_preserve_high_saved_thread_limit(settings_window):
+def test_dtcwt_uses_memory_instead_of_the_size_threshold(settings_window):
     from dialogs.advanced_settings import AdvancedSettingsDialog
+    from core.algorithms import get_fusion
+    from locales import trans
 
-    settings_window.thread_count = 300
+    settings_window.current_fusion_method = lambda: 'dtcwt'
     dialog = AdvancedSettingsDialog(settings_window)
-    dialog._apply()
-    assert settings_window.thread_count == 300
+    assert not dialog.spin_threshold.isEnabled()
+    assert dialog.spin_block.isEnabled() and dialog.spin_overlap.isEnabled()
+    assert dialog.tile_status.text() == trans.t('advanced_tile_memory_status').format(
+        method=get_fusion('dtcwt').display_name)
+    dialog.reject()
+    dialog.deleteLater()
 
 
 
 def test_settings_invalid_text_prevents_any_commit(settings_window):
     from dialogs.advanced_settings import AdvancedSettingsDialog
     dialog = AdvancedSettingsDialog(settings_window)
-    dialog.spin_threads.lineEdit().setText("-1")
+    dialog.tabs.setCurrentIndex(3)
+    dialog.spin_block.lineEdit().clear()
     dialog.chk_auto_update.setChecked(False)
     dialog._apply()
-    assert settings_window.thread_count == 4
+    assert dialog.tabs.currentWidget().isAncestorOf(dialog.spin_block)
+    assert dialog.status.text()
     assert settings_window.update_manager.auto_download
     assert not settings_window.saved
-    dialog.deleteLater()
-
-
-def test_automatic_thread_limit_commits(settings_window):
-    from dialogs.advanced_settings import AdvancedSettingsDialog
-    dialog = AdvancedSettingsDialog(settings_window)
-    dialog.spin_threads.setValue(0)
-    dialog._apply()
-    assert settings_window.thread_count == 0
-    assert settings_window.saved
     dialog.deleteLater()
 
 
@@ -573,8 +597,10 @@ def test_output_prefix_preview_validation_and_cancel(settings_window):
     dialog = AdvancedSettingsDialog(settings_window)
     dialog.output_prefix.setText("../source")
     dialog.spin_block.setValue(512)
+    dialog.tabs.setCurrentIndex(1)
     dialog._apply()
     assert dialog.result() != QDialog.DialogCode.Accepted
+    assert dialog.tabs.currentWidget().isAncestorOf(dialog.output_prefix)
     assert settings_window.tile_block_size == 1024
     assert settings_window.output_name_prefix == "old"
     assert not settings_window.saved
@@ -1134,14 +1160,15 @@ def test_account_report_default_survives_incidental_saves(qapp, tmp_path, monkey
     monkeypatch.setattr(store, 'get_settings', lambda: settings)
     window = SimpleNamespace()
     store.load_window_settings(window)
-    assert not window.auto_error_reports
+    assert window.auto_error_reports and not store.automatic_reports_allowed(settings)
     store.save_window_settings(window)
     restored = SimpleNamespace()
     store.load_window_settings(restored)
-    assert not restored.auto_error_reports
+    assert restored.auto_error_reports and not store.automatic_reports_allowed(settings)
     store.enable_account_default_reports(restored)
     assert restored.auto_error_reports
     assert settings.value(store.REPORTS_AUTO_SEND_KEY, type=bool)
+    assert store.automatic_reports_allowed(settings)
     store.save_window_settings(restored)
     again = SimpleNamespace()
     store.load_window_settings(again)
@@ -1189,11 +1216,11 @@ def test_advanced_reporting_choice_and_reset_remain_off_on_sign_in(
     store.enable_account_default_reports(restored)
     assert not restored.auto_error_reports
 
-    settings_window.auto_error_reports = True
     store.restore_default_settings(settings_window)
-    assert discarded == [True, True]
+    assert discarded == [True]
     store.enable_account_default_reports(settings_window)
     assert not settings_window.auto_error_reports
+    assert not store.automatic_reports_allowed(settings)
 
 
 def test_unchanged_advanced_reporting_is_not_a_choice(settings_window, tmp_path, monkeypatch):
@@ -1257,7 +1284,7 @@ def test_restore_confirmation_rejection_never_writes(qapp, tmp_path, monkeypatch
         window.deleteLater()
 
 
-@pytest.mark.parametrize('method', ['openfocus_a', 'openfocus_b', 'openfocus_c'])
+@pytest.mark.parametrize('method', ['none', 'openfocus_a', 'openfocus_b', 'openfocus_c'])
 def test_openfocus_desktop_tiling_status_stays_whole_frame(settings_window, method):
     from core.algorithms import get_fusion
     from core.multi_focus_fusion import _DEFAULT_TILE_THRESHOLD
@@ -1268,22 +1295,25 @@ def test_openfocus_desktop_tiling_status_stays_whole_frame(settings_window, meth
     dialog = AdvancedSettingsDialog(settings_window)
     try:
         assert dialog.chk_tile.isChecked()
-        assert not dialog.spin_threshold.isHidden()
-        assert dialog.spin_block.isHidden() and dialog.spin_overlap.isHidden()
-        assert dialog.tile_note.isHidden()
-        assert dialog.tile_status.text() == trans.t('advanced_tile_full_frame_status').format(
-            method=get_fusion(method).display_name)
+        controls = (dialog.spin_threshold, dialog.spin_block, dialog.spin_overlap)
+        assert all(not control.isHidden() and control.isEnabled() for control in controls)
+        expected = (trans.t('advanced_tile_alignment_only') if method == 'none' else
+                    trans.t('advanced_tile_full_frame_status').format(method=get_fusion(method).display_name))
+        assert dialog.tile_status.text() == expected
         full_frame_status = dialog.tile_status.text()
         dialog.spin_threshold.setValue(_DEFAULT_TILE_THRESHOLD + 256)
-        assert dialog.spin_block.isHidden() and dialog.spin_overlap.isHidden()
-        assert dialog.tile_note.isHidden()
+        dialog.spin_block.setValue(768)
+        dialog.spin_overlap.setValue(192)
+        assert all(control.isEnabled() for control in controls)
         assert dialog.tile_status.text() == full_frame_status
         dialog.chk_tile.setChecked(False)
-        assert dialog.spin_threshold.isHidden() and dialog.spin_block.isHidden()
-        assert dialog.tile_note.isHidden()
+        assert all(not control.isEnabled() for control in controls)
         assert dialog.tile_status.text() == full_frame_status
-        dialog.reject()
-        assert settings_window.tile_threshold == _DEFAULT_TILE_THRESHOLD
+        dialog.chk_tile.setChecked(True)
+        dialog._apply()
+        assert dialog.result() == QDialog.DialogCode.Accepted
+        assert settings_window.tile_threshold == _DEFAULT_TILE_THRESHOLD + 256
+        assert (settings_window.tile_block_size, settings_window.tile_overlap) == (768, 192)
     finally:
         dialog.deleteLater()
 
@@ -1319,61 +1349,3 @@ def test_enabling_sharpening_reveals_risk_in_small_render_dialog(qapp):
         window.deleteLater()
 
 
-def test_performance_profiling_is_a_persisted_diagnostic_draft(settings_window):
-    from dialogs.advanced_settings import AdvancedSettingsDialog
-    from utils.project_file import TEMPLATE_SETTINGS
-
-    dialog = AdvancedSettingsDialog(settings_window)
-    assert not dialog.chk_profile_performance.isChecked()
-    assert dialog.chk_profile_performance.property('controlId') == 'chk_profile_performance'
-    dialog.chk_profile_performance.setChecked(True)
-    dialog.reject()
-    assert not getattr(settings_window, 'profile_performance', False)
-    dialog.deleteLater()
-
-    dialog = AdvancedSettingsDialog(settings_window)
-    dialog.chk_profile_performance.setChecked(True)
-    dialog._apply()
-    assert settings_window.profile_performance is True
-    assert settings_window.saved
-    dialog.deleteLater()
-    # A machine diagnostic, never a processing setting carried by templates.
-    assert 'profile_performance' not in TEMPLATE_SETTINGS
-
-
-def test_performance_report_viewer_and_json_export(settings_window, qapp, tmp_path):
-    import json
-    from PyQt6.QtCore import QTimer
-    from PyQt6.QtWidgets import QApplication, QPlainTextEdit
-    from controllers.render_manager import RenderManager
-    from dialogs.advanced_settings import AdvancedSettingsDialog
-
-    manager = settings_window.render_manager = RenderManager(settings_window)
-    manager.worker = type('Finished', (), {'performance_report': {
-        'schema_version': 1, 'outcome': 'completed', 'wall_ms': 12.0,
-        'stages': {'render': {'count': 1, 'total_ms': 12.0, 'self_ms': 12.0,
-                              'mean_ms': 12.0, 'min_ms': 12.0, 'max_ms': 12.0,
-                              'parent': None, 'pct_of_parent': None}},
-        'threads': {'requested': 2}}})()
-    manager._capture_performance_report()
-    assert manager.performance_report['threads']['requested'] == 2
-
-    settings = AdvancedSettingsDialog(settings_window)
-    settings.show()
-    shown = []
-
-    def close_report():
-        report = QApplication.activeModalWidget()
-        text = report.findChild(QPlainTextEdit) if report is not None else None
-        shown.append(text.toPlainText() if text else None)
-        if report is not None:
-            report.reject()
-
-    try:
-        QTimer.singleShot(0, close_report)
-        settings.btn_performance_report.click()
-        assert shown and 'Outcome: completed' in shown[0]
-    finally:
-        settings.reject()
-    path = manager.save_performance_report(str(tmp_path / 'report.json'))
-    assert json.loads(open(path, encoding='utf-8').read())['threads']['requested'] == 2

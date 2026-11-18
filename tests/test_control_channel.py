@@ -569,6 +569,111 @@ def test_ui_actions_tree_find_set_click_and_screenshot(server, stack_frames, tmp
     assert call(server, "stack.frames", token=token)["result"]["count"] == 0
 
 
+def test_settings_tab_inventory_and_navigation(server):
+    assert call(server, "dialog.open", name="settings")["result"]["opened"]
+    try:
+        root = call(server, "dialog.list")["result"]["dialogs"][0]["root"]
+
+        def inventory():
+            matches = call(server, "ui.find", window=root)["result"]["matches"]
+            return {node["control_id"]: node for node in matches if node["control_id"]}
+
+        controls = inventory()
+        tabs = controls["advanced_settings_tabs"]
+        assert tabs["class"] == "QTabWidget" and tabs["value"] == 0
+        assert len(tabs["tabs"]) == 4
+        assert all(tab["text"] and tab["visible"] and tab["enabled"] for tab in tabs["tabs"])
+        assert {"combo_align_failure", "chk_align_cache", "btn_clear_align_cache",
+                "chk_collect_alignment_report", "btn_alignment_report", "chk_profile_performance",
+                "btn_performance_report", "chk_debug_logging", "btn_open_logs",
+                "spin_ai_batch", "spin_threads"}.isdisjoint(controls)
+
+        page_controls = ("chk_experimental_features", "sensor_cleanup_disclosure",
+                         "registration_options_disclosure", "chk_include_beta")
+        for index in (1, 2, 3, 0):
+            reply = call(server, "ui.set", path=tabs["path"], value=index)
+            assert reply["result"]["value"] == index
+            controls = inventory()
+            assert controls["advanced_settings_tabs"]["value"] == index
+            assert [i for i, name in enumerate(page_controls) if controls[name]["visible"]] == [index]
+
+        for invalid in (-1, 4, 1.5, True):
+            reply = call(server, "ui.set", path=tabs["path"], value=invalid)
+            assert reply["error"]["code"] == "invalid_argument"
+        assert inventory()["advanced_settings_tabs"]["value"] == 0
+    finally:
+        call(server, "dialog.reject")
+
+
+@pytest.mark.parametrize("index,disclosure,panel", [
+    (1, "sensor_cleanup_disclosure", {"class": "SensorCleanupControls"}),
+    (2, "registration_options_disclosure", {"control_id": "openfocus_registration_panel"}),
+])
+def test_settings_disclosures_via_control(server, index, disclosure, panel):
+    assert call(server, "dialog.open", name="settings")["ok"]
+    try:
+        root = call(server, "dialog.list")["result"]["dialogs"][0]["root"]
+
+        def find(**selector):
+            node, = call(server, "ui.find", window=root, **selector)["result"]["matches"]
+            return node
+
+        tabs = find(control_id="advanced_settings_tabs")
+        assert call(server, "ui.set", path=tabs["path"], value=index)["ok"]
+        button = find(control_id=disclosure)
+        assert button["class"] == "QToolButton" and button["visible"] and button["enabled"]
+        assert button["checkable"] and not button["checked"]
+        assert not find(**panel)["visible"]
+        assert call(server, "ui.click", path=button["path"])["result"]["clicked"]
+        assert find(control_id=disclosure)["checked"] and find(**panel)["visible"]
+        assert call(server, "ui.focus", path=button["path"])["result"]["focused"]
+        assert call(server, "ui.key", key="Space", path=button["path"])["ok"]
+        assert not find(control_id=disclosure)["checked"] and not find(**panel)["visible"]
+    finally:
+        call(server, "dialog.reject")
+
+
+def test_settings_save_tile_geometry_for_other_methods(server):
+    from ui.control_surface import path_for, window_roots
+
+    assert call(server, "method.set", id="openfocus_b")["ok"]
+    assert call(server, "option.set", name="tile_enabled", value=True)["ok"]
+    assert call(server, "dialog.open", name="settings")["ok"]
+    try:
+        dialog = server._dialogs["settings"]
+        roots = window_roots(server.window)
+        assert call(server, "ui.set", path=path_for(roots, dialog.tabs), value=1)["ok"]
+        for editor, value in ((dialog.spin_block, 768), (dialog.spin_overlap, 96),
+                              (dialog.spin_threshold, 1536)):
+            assert editor.isVisible() and editor.isEnabled()
+            assert call(server, "ui.set", path=path_for(roots, editor), value=value)["result"]["value"] == value
+        assert call(server, "dialog.accept")["result"]["accepted"]
+    finally:
+        if "settings" in server._dialogs:
+            call(server, "dialog.reject")
+    assert call(server, "method.set", id="dct")["ok"]
+    options = call(server, "app.state")["result"]["options"]
+    assert (options["tile_block_size"], options["tile_overlap"], options["tile_threshold"]) == (768, 96, 1536)
+
+
+def test_tab_inventory_and_selection_respect_unavailable_pages(qapp):
+    from PyQt6.QtWidgets import QTabWidget, QWidget
+    from ui.control_surface import set_widget_value, widget_tree
+
+    tabs = QTabWidget()
+    for name in ("Start", "Disabled", "Hidden"):
+        tabs.addTab(QWidget(), name)
+    tabs.setTabEnabled(1, False)
+    tabs.setTabVisible(2, False)
+    pages = widget_tree(tabs, max_depth=0)["tabs"]
+    assert [page["text"] for page in pages] == ["Start", "Disabled", "Hidden"]
+    assert not pages[1]["enabled"] and not pages[2]["visible"]
+    for index in (1, 2):
+        with pytest.raises(ValueError, match="unavailable"):
+            set_widget_value(tabs, index)
+        assert tabs.currentIndex() == 0
+
+
 def test_dialog_lifecycle_and_batch_hook(server):
     token = server.token
     opened = call(server, "dialog.open", token=token, name="depth")["result"]
@@ -1706,6 +1811,7 @@ def test_option_set_keeps_checkboxes_in_sync(server, control_window, monkeypatch
 def test_diagnostic_options_are_reachable_and_take_effect_at_once(server, control_window):
     from utils import logging_setup as logs
     assert call(server, "app.state")["result"]["options"]["profile_performance"] is False
+    initial_detail = logs.debug_enabled()
     try:
         call(server, "option.set", name="profile_performance", value=True)
         call(server, "option.set", name="debug_logging", value=True)
@@ -1719,9 +1825,9 @@ def test_diagnostic_options_are_reachable_and_take_effect_at_once(server, contro
         control_window.render_manager.performance_report = {"outcome": "completed"}
         assert call(server, "render.result")["result"]["performance"] == {"outcome": "completed"}
     finally:
-        call(server, "option.set", name="debug_logging", value=False)
+        call(server, "option.set", name="debug_logging", value=initial_detail)
         call(server, "option.set", name="profile_performance", value=False)
-    assert not logs.debug_enabled()
+    assert logs.debug_enabled() is initial_detail
 
 
 def test_output_delete_clears_the_result_and_protects_retouch(server, stack_frames):
