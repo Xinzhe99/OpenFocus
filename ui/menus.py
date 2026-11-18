@@ -1,7 +1,7 @@
 import cv2
 
-from PyQt6.QtCore import QEvent, QObject
-from PyQt6.QtGui import QAction, QActionGroup
+from PyQt6.QtCore import QEvent, QObject, QUrl
+from PyQt6.QtGui import QAction, QActionGroup, QDesktopServices
 from PyQt6.QtWidgets import QMainWindow, QToolTip
 from locales import trans
 from core.experimental import experimental_enabled
@@ -36,6 +36,13 @@ def update_experimental_actions(window: QMainWindow) -> None:
 def _show_support_dialog(window):
     from dialogs.about import SupportUsDialog
     SupportUsDialog(window).exec()
+
+
+def _open_github_manual() -> None:
+    # Community language packs may have no published manual.
+    language = trans.current_lang if trans.current_lang in trans.PACK_ORDER else 'en'
+    QDesktopServices.openUrl(QUrl(
+        f'https://github.com/Xinzhe99/OpenFocus/blob/main/docs/USER_MANUAL_{language.upper()}.md'))
 
 
 def setup_menus(window: QMainWindow) -> None:
@@ -562,6 +569,11 @@ def setup_menus(window: QMainWindow) -> None:
     quickstart_action.triggered.connect(window.show_quick_start)
     help_menu.addAction(quickstart_action)
     window.ui_objs['menu_quick_start'] = quickstart_action
+
+    manual_action = QAction(trans.t('menu_github_manual'), window)
+    manual_action.triggered.connect(_open_github_manual)
+    help_menu.addAction(manual_action)
+    window.ui_objs['menu_github_manual'] = manual_action
 
     update_action = QAction(trans.t('menu_check_updates'), window)
     update_action.triggered.connect(window.check_for_updates)
