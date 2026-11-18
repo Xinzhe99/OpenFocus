@@ -22,6 +22,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Record render dispatch and stack-load admission milestones in local logs to
   help diagnose stalled work.
 - Record Windows memory commitment and process usage when neural sessions fail.
+- Convert OpenFocus source frames to gray codes in parallel row bands instead
+  of on one thread. Output pixels are unchanged.
 - Mark Dust Map and batch flat-field correction as experimental desktop tools.
 - Default desktop updates and public downloads to stable releases. Users can
   opt in to beta updates through Advanced Settings or the welcome dialog.
