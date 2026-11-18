@@ -82,7 +82,8 @@ Strona i skrypty instalacyjne oferują także nowsze wersje beta, obecnie [wydan
 
 1. **Windows (instalator lub wersja przenośna)**: kliknij dwukrotnie skrót lub `OpenFocus.exe`
 2. **macOS**: przeciągnij `OpenFocus.app` do Programów i uruchom; kompilacje są przeznaczone dla Apple Silicon
-3. **Kod źródłowy Pythona**: zainstaluj zależności poleceniem `pip install -r requirements.txt`, a następnie uruchom `python main.py` w aktywowanym środowisku
+3. **Linux (x86-64)**: rozpakuj archiwum aplikacji i uruchom `OpenFocus/OpenFocus` w rozpakowanym katalogu
+4. **Kod źródłowy Pythona**: zainstaluj zależności poleceniem `pip install -r requirements.txt`, a następnie uruchom `python main.py` w aktywowanym środowisku
 
 Instalacja z terminala:
 

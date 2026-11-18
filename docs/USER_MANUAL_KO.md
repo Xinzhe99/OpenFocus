@@ -90,10 +90,10 @@ OpenFocus는 연구자, 엔지니어, 이미지 처리 전문가를 위해 만�
 
 1. **Windows(실행 파일)**: OpenFocus 바로 가기나 실행 파일을 더블클릭합니다
 2. **macOS**: DMG의 `OpenFocus.app`을 Applications로 옮긴 뒤 더블클릭합니다. 공증되지 않은 버전은 오른쪽 클릭 → "열기"를 선택합니다
-3. **Linux**: 데스크톱 빌드는 없습니다. pip 패키지를 설치하고 `openfocus` 명령을 사용하세요
+3. **Linux(x86-64)**: 데스크톱 압축 파일을 푼 뒤 압축을 푼 폴더의 `OpenFocus/OpenFocus`를 실행합니다
 4. **Python 소스**: 활성화된 conda 환경에서 `python main.py`를 실행합니다
 
-최신 Windows 및 macOS 버전은 [OpenFocus 공식 사이트](https://openfocus.top/#download)에서 받으세요.
+최신 Windows, macOS 및 Linux 데스크톱 버전은 [OpenFocus 공식 사이트](https://openfocus.top/#download)에서 받으세요. Linux 버전은 v1.77.0부터 제공됩니다.
 같은 파일과 이전 버전은 [GitHub Releases](https://github.com/Xinzhe99/OpenFocus/releases)에도
 있습니다. 터미널에서도 설치할 수 있습니다.
 공식 사이트와 설치 스크립트는 안정 버전보다 새로운 베타 버전도 제공합니다(현재 [v1.77.0-beta.7 사전 출시 버전](https://github.com/Xinzhe99/OpenFocus/releases/tag/v1.77.0-beta.7)). 데스크톱 자동 업데이트도 더 새로운 베타 버전을 제공하며 PyPI의 Linux CLI는 안정 버전을 유지합니다.

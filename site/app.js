@@ -135,6 +135,13 @@
       const data = await res.json();
       if (!data || !data.tag) return;
       applyReleaseTag(data.tag);
+      const linuxStatus = $('#linux-status');
+      const linuxDownload = $('#linux-download');
+      if (linuxStatus && linuxDownload && data.assets && typeof data.assets === 'object') {
+        const available = !!data.assets['linux-desktop'];
+        linuxStatus.textContent = available ? linuxStatus.dataset.available : linuxStatus.dataset.unavailable;
+        linuxDownload.hidden = !available;
+      }
       document.querySelectorAll('a[data-kind]').forEach((a) => {
         const asset = data.assets && data.assets[a.dataset.kind];
         if (!asset || !asset.url) return;

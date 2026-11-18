@@ -101,11 +101,11 @@ In **Save As**, ordinary TIFF saves the result as a single image; layered TIFF i
 
 ### Downloading and Starting the Application
 
-The [project website](https://openfocus.top/#download) and its installation
-scripts offer the newest Windows or macOS build, including a beta when newer
-than stable (currently [v1.77.0-beta.7 prerelease](https://github.com/Xinzhe99/OpenFocus/releases/tag/v1.77.0-beta.7)). Downloads are also available on
-[GitHub Releases](https://github.com/Xinzhe99/OpenFocus/releases). Desktop automatic updates also offer newer beta
-releases. The Linux CLI installed from PyPI remains stable.
+The [project website](https://openfocus.top/#download) offers Windows, macOS
+and, starting with v1.77.0, Linux x86-64 desktop builds. Downloads and older
+versions are also available on [GitHub Releases](https://github.com/Xinzhe99/OpenFocus/releases).
+Desktop updates use the stable channel unless beta updates are enabled. On
+Linux, download and extract a new desktop build to update it manually.
 `pip install openfocus` installs only the headless command-line interface (the
 wheel deliberately does not depend on PyQt6); use a desktop build or a source
 checkout for the GUI.
@@ -114,7 +114,9 @@ After installation, launch OpenFocus by:
 
 1. **Windows**: Double-click the OpenFocus shortcut or executable file
 2. **macOS**: Open `OpenFocus.app` from Applications
-3. **Python Source**: Run `pip install -r requirements.txt`, then
+3. **Linux (x86-64)**: Download and extract the desktop archive, then run
+   `OpenFocus/OpenFocus` from the extracted directory
+4. **Python Source**: Run `pip install -r requirements.txt`, then
    `python main.py` in your activated environment
 
 The first launch opens the welcome dialog, where you can choose the theme and

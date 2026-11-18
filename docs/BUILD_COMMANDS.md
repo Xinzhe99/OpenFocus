@@ -1,6 +1,6 @@
 # Build commands
 
-The authoritative release build commands are in [release.yml](../.github/workflows/release.yml). They install `requirements.txt`, check the ONNX Runtime CPU provider and the three ONNX checkpoints, then build the Windows and macOS applications with PyInstaller. Consult the platform-specific job for its exact options, assets and signing steps.
+The authoritative release build commands are in [release.yml](../.github/workflows/release.yml). They install `requirements.txt`, check the ONNX Runtime CPU provider and the three ONNX checkpoints, then build Windows, macOS and Linux desktop applications with PyInstaller. Consult the platform-specific job for its exact options, assets and signing steps.
 
 The release publisher waits for a newly created GitHub draft to become visible
 before uploading; an unexpected or missing draft still stops publication.
@@ -11,12 +11,58 @@ OpenFocus B uses PyOpenCL for depth processing and source merging. Desktop relea
 collect the native extension, package resources, loader libraries and license
 metadata using `hooks/hook-pyopencl.py`; retain `--hidden-import pyopencl` and
 `--additional-hooks-dir hooks` in local frozen builds. The workflow checks for
-the bundled extension. The published Linux CLI wheel declares PyOpenCL as a
-dependency; Linux desktop bundles are not published. A suitable vendor OpenCL
-GPU driver is required on the target machine; see [GPU support](GPU_SUPPORT.md)
-for platform limitations. Package presence alone does not verify GPU execution.
+the bundled extension. The Linux desktop bundle includes PyOpenCL; the separate
+headless PyPI CLI declares it as a dependency. A suitable vendor OpenCL GPU
+driver is required on the target machine; see [GPU support](GPU_SUPPORT.md).
+Package presence alone does not verify GPU execution.
 
-Stable desktop builds and GPU variants share [runtime_resources.json](../packaging/runtime_resources.json), collected by the PyInstaller hook. It lists runtime icons and SVGs, the support dialog's Alipay and PayPal images, the six demo frames, the twelve user manuals and linked documentation, licenses, and three ONNX models. Update the manifest when runtime resources change; keep paths relative to the bundle root. The release jobs verify bundled resource hashes against the source and upload packaging reports for the Windows and macOS builds. No package-size savings are claimed without old and new builds measured in the same environment.
+Stable desktop builds and GPU variants share [runtime_resources.json](../packaging/runtime_resources.json), collected by the PyInstaller hook. It lists runtime icons and SVGs, the support dialog's Alipay and PayPal images, the six demo frames, the twelve user manuals and linked documentation, licenses, and three ONNX models. Update the manifest when runtime resources change; keep paths relative to the bundle root. The release jobs verify bundled resource hashes against the source and upload packaging reports for all three desktop builds.
+
+## Linux desktop package
+
+The x86-64 bundle is built on Ubuntu 22.04 (glibc 2.35); it targets modern
+glibc-based distributions including Arch and Omarchy, and needs a graphical
+X11 or Wayland session. It does not use AppImage or FUSE. The system must
+provide the Qt platform's graphics and desktop libraries: GL/EGL, glib, D-Bus,
+XKB and the XCB libraries for X11; Wayland also needs its system client
+libraries and a compositor. On Ubuntu, the X11 build dependencies are listed
+in the Linux job. Some minimal systems may need additional system libraries.
+Older glibc releases, musl-based distributions and other CPU architectures are
+not supported by this build. Wayland can also use XWayland with
+`QT_QPA_PLATFORM=xcb` when native integration is unavailable.
+
+Extract into a new directory and launch (replace the example version with the
+downloaded tag):
+
+```sh
+mkdir openfocus-v1.77.0
+tar -xzf OpenFocus-v1.77.0-linux-x86_64.tar.gz -C openfocus-v1.77.0
+cd openfocus-v1.77.0
+./OpenFocus/OpenFocus
+```
+
+The bundle uses the normal user settings location. To add a menu entry, keep
+the extracted directory in its intended location and run
+`python3 OpenFocus/install_linux_desktop.py`. Python 3 is needed only for this
+optional integration. It creates `openfocus.desktop` under
+`$XDG_DATA_HOME/applications` (or `~/.local/share/applications`) without
+overwriting an existing entry. Remove that file to uninstall the entry; after
+moving the bundle, remove the old entry and run the helper again. The entry
+starts the GUI and does not register file associations. The independent PyPI
+`openfocus` command is a headless CLI, not this desktop application.
+
+The Linux release job extracts the archive and runs the frozen CLI and GUI
+smoke with Xvfb/X11 and a headless Weston Wayland compositor. It checks bundled
+models and resources, the X11 and Wayland plugins, and PyOpenCL. To repeat the
+X11 smoke after a local build with the build Python environment and Xvfb installed:
+
+```sh
+QT_QPA_PLATFORM=xcb xvfb-run -a python tools/frozen_cli_smoke.py --executable dist/OpenFocus/OpenFocus --resources dist/OpenFocus/_internal
+python -m pytest tests/test_linux_desktop_integration.py
+```
+
+The headless Weston smoke is not a test on an Omarchy/Hyprland desktop or a
+GPU-driver compatibility test; validate those separately on target hardware.
 
 The macOS job uses `macos-latest`, matching the test matrix. A manual branch
 dispatch produces preview artifacts; it does not publish a GitHub release or

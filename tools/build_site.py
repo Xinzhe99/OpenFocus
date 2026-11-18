@@ -166,7 +166,7 @@ def context_for(locale: dict) -> dict:
             "cli_link": CLI_LINKS[locale["code"]],
             "dl_windows": RELEASE["windows_setup"],
             "dl_macos": RELEASE["macos_dmg"],
-            "dl_linux": RELEASE["pypi"],
+            "dl_linux": "#download",
             "chips": render_chips(locale["hero"]["chips"]),
             "features": render_features(locale["why"]["features"]),
             "workflow_bullets": render_bullets(locale["workflow"]["bullets"]),
