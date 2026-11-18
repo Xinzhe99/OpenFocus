@@ -593,7 +593,6 @@ class SourceManager(QObject):
     def _finish_load_worker(self, worker) -> None:
         if self._load_worker is worker:
             self._load_worker = None
-            self.window.statusBar().clearMessage()
             for name in ("_load_cancel_button", "_load_status_label", "_load_progress_bar"):
                 widget = getattr(self, name, None)
                 if widget is not None:
@@ -676,11 +675,11 @@ class SourceManager(QObject):
             self._load_progress_bar.setMaximumWidth(140)
             self._load_progress_bar.setFormat("%p%")
             self._load_progress_bar.setRange(0, 0)
-            window.statusBar().addPermanentWidget(self._load_status_label)
-            window.statusBar().addPermanentWidget(self._load_progress_bar)
+            window.statusBar().add_activity(self._load_status_label)
+            window.statusBar().add_activity(self._load_progress_bar)
             button = QPushButton(trans.t("btn_cancel_generic"))
             button.clicked.connect(self.cancel_load)
-            window.statusBar().addPermanentWidget(button)
+            window.statusBar().add_activity(button)
             self._load_cancel_button = button
         self._load_progress_bar.setRange(0, 0)
         self._load_progress_bar.setValue(0)
@@ -689,7 +688,6 @@ class SourceManager(QObject):
         self._load_status_label.setText(trans.t("msg_loading_stack"))
         self._load_status_label.show()
         self._load_progress_bar.show()
-        window.statusBar().showMessage(trans.t("msg_loading_stack"))
 
     def _on_load_progress(self, done: int, total: int) -> None:
         worker = self.sender()
@@ -704,10 +702,7 @@ class SourceManager(QObject):
         else:
             self._load_progress_bar.setRange(0, 0)
             text = f"{text} ({done})"
-        if getattr(getattr(self.window, "render_manager", None), "_render_after_load", False):
-            text = f"{text} · {trans.t('msg_render_queued_short')}"
         self._load_status_label.setText(text)
-        self.window.statusBar().showMessage(text)
 
     def cancel_load(self) -> None:
         worker = getattr(self, "_load_worker", None)
@@ -715,7 +710,6 @@ class SourceManager(QObject):
             worker.request_cancel()
             self._load_cancel_button.setEnabled(False)
             self._load_status_label.setText(trans.t("depth_cancelling"))
-            self.window.statusBar().showMessage(trans.t("depth_cancelling"))
 
     def restore_last_stack(self) -> None:
         """Re-load the most recently opened stack (skip the downsample dialog,
