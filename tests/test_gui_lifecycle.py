@@ -154,9 +154,11 @@ runpy.run_path(sys.argv[0], run_name="__main__")
 
     try:
         access = launch_gui(env=env, process_factory=start)
-        frames = wait_for("stack.frames", lambda state: state.get("load", {}).get("finished"),
-                          timeout=20, discovery=access)
-        assert frames["names"] == [source.name] and not frames["load"]["error"]
+        # Generation zero describes the idle desktop before the restore starts.
+        frames = wait_for("stack.frames", lambda state: state["load"]["id"] > 0
+                          and state["load"]["finished"], timeout=20, discovery=access)
+        assert frames["load"]["error"] is None, frames["load"]
+        assert frames["names"] == [source.name]
         assert not marker.exists()
         dialogs = require_ok(request("dialog.list", discovery=access))["dialogs"]
         assert not [dialog for dialog in dialogs if dialog["class"] == "QMessageBox"]
