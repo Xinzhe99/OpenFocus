@@ -1653,34 +1653,21 @@ class FolderImportDialog(QDialog):
         self.folder_path = folder_path
         self.parent_window = parent
         self.setWindowTitle(trans.t('import_folder_title'))
-        self.resize(500, 200)
-
-
         layout = QVBoxLayout(self)
 
-        folder_name = os.path.basename(folder_path)
-        folder_display = QLabel(trans.t('import_folder_display').format(folder_name))
-        
-        layout.addWidget(folder_display)
-
-        path_label = QLabel(folder_path)
-        path_label.setObjectName("mutedLabel")
-        layout.addWidget(path_label)
-
-        layout.addSpacing(20)
-
-        option_label = QLabel(trans.t('import_choice_label'))
-        
-        layout.addWidget(option_label)
+        layout.addWidget(QLabel(trans.t('import_choice_label')))
+        path = QLineEdit(folder_path)
+        path.setReadOnly(True)
+        path.setAccessibleName(trans.t('import_folder_display').format(os.path.basename(folder_path)))
+        layout.addWidget(path)
 
         self.rb_single = QRadioButton(trans.t('import_option_single'))
         self.rb_single.setChecked(True)
+        self.rb_single.setFocus()
         layout.addWidget(self.rb_single)
 
         self.rb_batch = QRadioButton(trans.t('import_option_batch'))
         layout.addWidget(self.rb_batch)
-
-        layout.addStretch()
 
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
