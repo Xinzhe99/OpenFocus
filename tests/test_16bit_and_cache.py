@@ -358,14 +358,19 @@ class TestAlignCacheIsNotOnTheGuiThread:
         names = sorted(os.listdir(folder))
         request = {'folder': str(folder), 'filenames': names,
                    'align_options': ('homography',), 'downscale_width': 1024}
+        # Recreate the previous desktop's permissive cache entry, then load it
+        # through today's worker with an old project's saved parameters.
+        old = self._worker(tmp_path, frames, {**request, 'mode': 'save'})
+        old.registration_parameters['failure_policy'] = 'continue'
+        old._save_cached_alignment(frames)
+        restored = self._worker(tmp_path, frames, {**request, 'mode': 'load'},
+                                {'failure_policy': 'continue'})
+        assert restored._load_cached_alignment() is None
         saver = self._worker(tmp_path, frames, {**request, 'mode': 'save'})
         saver._save_cached_alignment(frames)
 
         same = self._worker(tmp_path, frames, {**request, 'mode': 'load'})
         assert same._load_cached_alignment() is not None
-        changed_policy = self._worker(tmp_path, frames, {**request, 'mode': 'load'},
-                                      {'failure_policy': 'fail'})
-        assert changed_policy._load_cached_alignment() is None
         changed_frames = [frame.copy() for frame in frames]
         changed_frames[0][0, 0, 0] = 1
         changed_pixels = self._worker(tmp_path, changed_frames, {**request, 'mode': 'load'})

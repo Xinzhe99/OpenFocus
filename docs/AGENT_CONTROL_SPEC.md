@@ -152,10 +152,12 @@ downscale width at least 64. Invalid values leave the option unchanged.
 `thread_count`, `use_gpu`, `tile_enabled`, `tile_block_size`, `tile_overlap`,
 `tile_threshold`, `preview`, `ai_batch_size`, `resource_preference`,
 `reg_downscale_width`, `profile_performance`, `debug_logging`, `storage_directory`.
-The diagnostics options take a JSON boolean (anything else is
-`invalid_argument`): `profile_performance` profiles the following renders, and
-`debug_logging` switches detailed (`DEBUG`) logging at once, for the window and
-its render process. `storage_directory` accepts a writable directory path,
+`thread_count`, `ai_batch_size`, `profile_performance` and `debug_logging` are
+typed control options outside the Advanced Settings dialog. The two diagnostics
+options require JSON booleans and apply to the current session.
+`profile_performance` profiles subsequent renders. `debug_logging` selects
+`DEBUG` (the default) or `INFO` for the window and its render process.
+`storage_directory` accepts a writable directory path,
 normalized to an absolute path, or `null`/`""` for the system default; it is
 validated like the Advanced Settings field (`invalid_argument` when it cannot
 be written), persisted and applied to the next render. `app.state` reports it.
@@ -288,6 +290,32 @@ Dialog controls carry `controlId` values such as `method_combo`,
 accept path, so an accepted batch dialog starts its batch exactly like the
 menu action.
 
+`dialog.open --name settings` opens Advanced Settings on General. Find the
+`advanced_settings_tabs` control and pass its path and a zero-based index to
+`ui.set`. The order is stable across languages.
+
+| Index | Page | Controls |
+|---|---|---|
+| 0 | General | Experimental features, separate error and usage reporting preferences, working storage directory, output name prefix |
+| 1 | Fusion | Resource mode, saved tile dimensions and threshold, current method’s tiling status, sensor cleanup for desktop renders (collapsed) |
+| 2 | Registration | Downscale width, OpenFocus reference and search limits (collapsed) |
+| 3 | Startup & updates | Restore last stack, load scale, automatic update downloads, beta updates |
+
+On Fusion, enable external tiling to edit the saved block size and overlap for
+methods that use them. The status describes the **current** method. OpenFocus
+A/B/C use full-image desktop fusion, alignment-only skips fusion, and DT-CWT
+uses its own memory decision and disables the threshold field.
+
+The checkable `QToolButton` controls `sensor_cleanup_disclosure` (Fusion) and
+`registration_options_disclosure` (Registration) start collapsed. Find the
+button on its tab, then `ui.click` its path or send `ui.key` with `key="Space"`
+to it. A fresh `ui.find` reports `checked:true` and `visible:true` on the button
+and `visible:true` on its revealed controls. Activate the button again to collapse.
+
+Switching tabs keeps the settings draft open. Use `dialog.accept` to save or
+`dialog.reject` to discard it. Session logs are accessible through the Help menu
+action `menu_open_logs`.
+
 ### UI surface (any capability)
 
 | Command | Args | Result |
@@ -330,6 +358,11 @@ stable for the current menu. `ui.trigger` resolves both kinds.
 Duplicate sibling identifiers are disambiguated with an occurrence suffix, so
 the source and result panels are `panelRoot[0]` and `panelRoot[1]`. Always
 copy a path from `ui.find`/`ui.tree`; never guess a bare duplicate name.
+
+For `QTabWidget`, `value` is the current zero-based index. The `tabs` array
+lists `{text, enabled, visible}` in index order, using the active GUI language.
+`ui.set` on the tab widget selects a visible, enabled tab by index. An invalid
+or unavailable index returns `invalid_argument` and leaves the selection intact.
 
 `ui.tree`/`ui.find` nodes include `geometry` and `global_origin`. Use these
 to aim `ui.mouse` at a canvas: coordinates in `ui.mouse` are relative to the

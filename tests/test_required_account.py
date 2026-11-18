@@ -78,6 +78,21 @@ def test_persisted_session_allows_offline_startup_even_after_expiry(qapp, tmp_pa
         _destroy_main_window(qapp, window)
 
 
+def test_restored_session_applies_accepted_reporting_terms_offline(qapp, tmp_path, monkeypatch):
+    from utils.settings_store import automatic_reports_allowed, get_settings
+
+    TokenStore(path=tmp_path / 'account-session').save({
+        **_SESSION, 'terms': {'accepted_at': 1, 'version': '2026-11-11'},
+    })
+    window = _new_main_window(qapp, tmp_path, monkeypatch)
+    try:
+        _wait(lambda: window._account_load_job is None)
+        assert automatic_reports_allowed(get_settings())
+        assert get_settings().value('reports/auto_send_choice') == 'account_default'
+    finally:
+        _destroy_main_window(qapp, window)
+
+
 def test_sign_out_requires_login_again(qapp, tmp_path, monkeypatch):
     TokenStore(path=tmp_path / 'account-session').save(_SESSION)
     window = _new_main_window(qapp, tmp_path, monkeypatch)

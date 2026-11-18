@@ -47,7 +47,7 @@ def align_frames(images, alignment, shared, should_cancel, reverse_registration=
         return None
     if reverse_registration:
         frames.reverse()
-    from core.algorithms import alignment_steps
+    from core.algorithms import alignment_steps, desktop_registration_parameters
     defer_warps = all(step in ('openfocus', 'homography', 'ecc') for step in alignment_steps(alignment))
     if alignment != 'none' and not defer_warps:
         from core.workers import _processing_space
@@ -56,7 +56,8 @@ def align_frames(images, alignment, shared, should_cancel, reverse_registration=
     if alignment != "none":
         settings = {"method": alignment, "brightness_reference": shared.get(
             "brightness_reference", "last" if shared.get("exposure_match", False) else "first"),
-            "use_gpu": False, "parameters": shared.get('registration_parameters'),
+            "use_gpu": False,
+            "parameters": desktop_registration_parameters(alignment, shared.get('registration_parameters')),
             "defer_warps": defer_warps}
         if shared.get('reg_downscale_width') is not None:
             settings['downscale_width'] = shared['reg_downscale_width']
