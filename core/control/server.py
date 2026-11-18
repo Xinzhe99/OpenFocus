@@ -29,7 +29,7 @@ from core.control.protocol import (
 )
 from core.algorithms import (
     fusion_algorithms, get_fusion, get_registration, registration_algorithms,
-    resolve_fusion_parameters, resolve_registration_parameters,
+    resolve_fusion_parameters, desktop_registration_parameters,
 )
 from locales import trans
 from utils.logging_setup import get_logger
@@ -931,8 +931,10 @@ class ControlServer(QObject):
             return
         current = (window.fusion_parameters_for(method) if fusion
                    else window.registration_parameters_for(method))
-        resolver = resolve_fusion_parameters if fusion else resolve_registration_parameters
-        resolver(method, {**current, **values})
+        resolver = resolve_fusion_parameters if fusion else desktop_registration_parameters
+        resolved = resolver(method, {**current, **values})
+        if not fusion and 'failure_policy' in values and values['failure_policy'] != resolved['failure_policy']:
+            raise ValueError('Desktop registration requires failure_policy="fail"')
 
     def _cmd_option_set(self, args):
         name = _string(args, "name")

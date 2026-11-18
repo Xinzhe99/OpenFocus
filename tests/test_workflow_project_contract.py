@@ -204,6 +204,20 @@ def test_project_roundtrips_per_method_parameters(tmp_path):
     assert restored.registration_parameters_for("openfocus") == {"max_shift_ratio": .12, "rotation": 0., "magnification": 5., "failure_policy": "fail", "reference_frame": 2}
 
 
+def test_project_with_permissive_alignment_reopens_strictly(tmp_path):
+    from main import OpenFocus
+    paths = _make_stack(str(tmp_path / 'source'), 2)
+    state = project_file._collect_state(_window(paths, str(tmp_path)))
+    state['settings']['registration_parameters']['openfocus'].update(
+        failure_policy='continue', reference_frame=2)
+    restored = _window(paths, str(tmp_path))
+    restored.registration_parameters_for = OpenFocus.registration_parameters_for.__get__(restored)
+    project_file._apply_after_load(restored, state)
+    parameters = restored.registration_parameters_for('openfocus')
+    assert parameters['failure_policy'] == 'fail' and parameters['reference_frame'] == 2
+    assert project_file._collect_state(restored)['settings']['registration_parameters']['openfocus'] == parameters
+
+
 def test_project_does_not_rebind_missing_absolute_source_to_same_basename(tmp_path):
     paths = _make_stack(str(tmp_path), 1)
     state = {"sources": [str(tmp_path / "missing" / "f0.png")]}

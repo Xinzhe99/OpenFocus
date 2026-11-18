@@ -2229,6 +2229,13 @@ def test_method_parameter_validation_precedes_selector(server, control_window, m
     assert call(server, command, id='none', parameters={})['ok']
 
 
+def test_align_set_rejects_continue_before_changing_method(server, control_window):
+    control_window.set_alignment_method('none')
+    response = call(server, 'align.set', id='openfocus', parameters={'failure_policy': 'continue'})
+    assert response['error']['code'] == 'invalid_argument'
+    assert control_window.current_alignment_method() == 'none'
+
+
 def test_stack_include_rejects_all_indices_before_mutation(server, control_window):
     from PyQt6.QtCore import Qt
     from PyQt6.QtWidgets import QListWidgetItem
