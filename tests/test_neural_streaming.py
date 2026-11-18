@@ -47,6 +47,78 @@ def test_streamed_v1_color_keeps_nearest_frame_chroma():
                                   expected)
 
 
+@pytest.mark.parametrize('shape,origin,dtypes,gains', [
+    ((99, 97, 3), (0, 0), (np.uint8, np.uint8), None),  # strided interior
+    ((99, 97, 4), (64, 64), (np.uint16, np.uint8), None),  # reflected edges
+    ((13, 17, 1), (0, 0), (np.uint8, np.uint16), (1.17, 0.83)),  # edge fill
+    ((64, 64), (0, 0), (np.float32, np.float32), None),
+])
+def test_v2_tile_planes_match_packed_crop_staging(shape, origin, dtypes, gains):
+    from fusion_methods.stackmff_v2_tiled import _Source, _stage_tile_planes
+
+    rng = np.random.default_rng(519)
+    frames = []
+    for dtype in dtypes:
+        if dtype == np.float32:
+            frame = rng.uniform(0, 255, shape).astype(dtype)
+        else:
+            frame = rng.integers(0, np.iinfo(dtype).max, shape, dtype=dtype)
+        frames.append(frame)
+    source = _Source(frames, None, gains, None)
+    region = (*origin, 64, 64)
+    crops = [neural_common.working_frame(source.get(i, region), source.mixed_16).copy()
+             for i in range(len(frames))]
+    expected = neural_common.stage_planes(crops, neural_common.ATTENTION_PAD_ALIGN)
+    actual = _stage_tile_planes(source, region, None)
+    assert actual.dtype == np.float32
+    np.testing.assert_array_equal(actual, expected)
+
+
+@pytest.mark.parametrize('cancel_after', [None, 2, 4])
+def test_v2_tile_planes_release_crop_before_next_read(monkeypatch, cancel_after):
+    import weakref
+    from core.registration import RegistrationCancelled
+    from fusion_methods.stackmff_v2_tiled import _stage_tile_planes
+
+    class LazySource:
+        items = range(4)
+        mixed_16 = False
+        previous = None
+        staged = 0
+
+        def get(self, index, region):
+            assert index == self.staged
+            assert self.previous is None or self.previous() is None
+            # Directory sources normalize by the decoded crop's dtype.
+            dtype = np.uint16 if index % 2 else np.uint8
+            crop = np.full((64, 64, 3), index + 1, dtype=dtype)
+            self.previous = weakref.ref(crop)
+            return crop
+
+    source = LazySource()
+    convert = neural_common.luma_plane
+
+    def track_plane(frame):
+        source.staged += 1
+        return convert(frame)
+
+    monkeypatch.setattr(neural_common, 'luma_plane', track_plane)
+    if cancel_after is not None:
+        with pytest.raises(RegistrationCancelled):
+            _stage_tile_planes(source, (0, 0, 64, 64), lambda: source.staged == cancel_after)
+        assert source.staged == cancel_after
+        assert source.previous() is None
+        return
+    actual = _stage_tile_planes(source, (0, 0, 64, 64), None)
+    assert source.previous() is None
+    assert source.staged == len(source.items)
+    crops = [np.full((64, 64, 3), i + 1, dtype=np.uint16 if i % 2 else np.uint8)
+             for i in source.items]
+    expected = neural_common.stage_planes([
+        neural_common.working_frame(crop, crop.dtype == np.uint16) for crop in crops], 64)
+    np.testing.assert_array_equal(actual, expected)
+
+
 def test_v2_single_padded_tile_matches_whole_frame_depth():
     pytest.importorskip('onnxruntime')
     from fusion_methods.stackmff_v2 import infer
