@@ -26,19 +26,27 @@ are independent of account sign-in and diagnostic reporting.
   Turning the setting off deletes the local ID and send timestamp and stops
   future reports; enabling it again creates a new ID. Closing the application
   also cancels future reports. A request already in flight may still complete.
-- **Account** — desktop use requires an account. Sign in online once on each
-  device; the saved local session permits offline use until sign-out or removal.
-  A device that has never signed in cannot enter while offline. Email, GitHub or
+- **Account** — desktop use requires an account. Sign in online once in each
+  profile. Its saved session permits offline use until sign-out or removal.
+  A profile that has never signed in cannot enter while offline. Email, GitHub or
   Google sign-in uses your browser and `account.openfocus.top`. The account service
   receives the verified email and identity needed for sign-in. You can sign out
   or delete your account. Authentication credentials are stored locally and are not included in
   diagnostic reports. Signing out also requests server session revocation. If
   local credential removal fails, the account dialog reports incomplete cleanup
   and offers a retry; signing out in memory does not erase credentials on disk.
-  The service also receives a random ID saved for this profile and a device
-  label based on the computer name when exchanging a sign-in code, to manage
-  the three-device limit. Account requests include the app version, operating
-  system, and a random ID and start time for the current app run.
+  When exchanging a sign-in code for a session, the service receives a random
+  device ID to manage the three-device limit. The computer name is a display
+  label. On Windows, installed, portable, source and recognized preview builds
+  run by the same user on the same PC share the ID in
+  `%LOCALAPPDATA%\OpenFocus\account-device`. On the first sign-in after an
+  upgrade, OpenFocus looks for an existing ID in the active profile, the normal
+  roaming profile and recognized preview profiles. It prefers an ID from a
+  profile with a saved session. Each profile keeps its own credentials, so
+  signing out of one leaves the others signed in. Custom data directories and
+  explicit session paths keep profile-local IDs, as do macOS and Linux builds.
+  Account requests include the app version, operating system, and a random ID
+  and start time for the current app run.
 - **Error reports** — you can review and send a sanitized report while signed in or
   anonymously. **Automatically send error reports** is checked by default in
   **Settings → Advanced Settings → General**. The default takes effect after
