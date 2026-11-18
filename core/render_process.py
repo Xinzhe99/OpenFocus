@@ -22,7 +22,7 @@ from core.resource_policy import heavy_job, make_process_budget, process_budget
 from core.registration import RegistrationCancelled
 from core.workers import RenderWorker, _render_error_category
 from locales import trans
-from utils.logging_setup import debug_enabled, get_logger, log_action
+from utils.logging_setup import get_logger, log_action
 
 logger = get_logger(__name__)
 _CANCEL_GRACE_SECONDS = 3.0
@@ -142,7 +142,7 @@ def _restore_algorithms(fusions, registrations):
 
 def _render_child(connection, cancel_event, request, budget, directory, language):
     """Top-level spawn target; image computation never runs in the GUI process."""
-    from utils.logging_setup import set_debug_logging, setup_logging
+    from utils.logging_setup import set_log_level, setup_logging
     from utils.diagnostics import install_exception_hooks
     setup_logging()
     install_exception_hooks()
@@ -156,9 +156,7 @@ def _render_child(connection, cancel_event, request, budget, directory, language
         storage.restore_storage_directory(directory)
         with process_budget(budget), storage.observe_temp_files(relay.temporary_file):
             inputs = FrameDecoder(should_cancel=cancel_event.is_set).decode(request)
-            if inputs.get('detailed_logging'):
-                # Record the same detail as the window that started this render.
-                set_debug_logging(True)
+            set_log_level(inputs['log_level'])
             _restore_algorithms(inputs['fusions'], inputs['registrations'])
             worker = _ChildRenderWorker(cancel_event, *inputs['args'], **inputs['kwargs'])
             results, errors = [], []
@@ -341,7 +339,7 @@ class RenderProcessWorker(RenderWorker):
             encoder = FrameEncoder(self._check_current)
             request = encoder.encode({'args': self._render_args, 'kwargs': self._render_kwargs,
                 'fusions': fusion_algorithms(), 'registrations': registration_algorithms(),
-                'detailed_logging': debug_enabled()})
+                'log_level': logger.getEffectiveLevel()})
             if source_revision is not None:
                 request = wrap_source_request(request, source_revision)
             log_action('render_dispatch.request_encoded')

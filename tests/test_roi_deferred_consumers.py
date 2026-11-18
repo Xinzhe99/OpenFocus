@@ -32,9 +32,12 @@ def _aligned(qapp, dtype, linear):
          (-0.1013, 0.2415, 0.5509)),
         (1024 / 1853, 1.0, 1024 / 1667), 'Canon', 'Canon EOS R6') if linear else None)
     originals, sources, threads = [], [], []
+    texture = np.random.default_rng(41).integers(0, np.iinfo(dtype).max // 4,
+                                                 (128, 160, 1), dtype=dtype)
     for index in range(2):
         values = [7000 + index * 2000, 11000 + index * 2000, 14000 + index * 2000] if dtype == np.uint16 else [40 + index * 20, 70 + index * 20, 100 + index * 20]
         image = np.full((256, 320, 3), values, dtype)
+        image[64:192, 80:240] += texture
         if linear:
             image = image.view(_LinearPixels)
             image.linear_metadata = metadata
@@ -68,10 +71,15 @@ def test_roi_worker_matches_selected_registration(qapp, method):
 
     rng = np.random.default_rng(25)
     first = rng.integers(20, 230, (160, 192, 3), dtype=np.uint8)
+    # Distinct landmarks survive downsampling and the subpixel translation.
+    for i in range(64):
+        point = tuple(map(int, rng.integers((8, 8), (184, 152))))
+        shade = 12 if i % 2 else 240
+        cv2.circle(first, point, int(rng.integers(3, 9)), (shade,) * 3, -1)
     second = cv2.warpAffine(first, np.float32([[1, 0, 2.5], [0, 1, -1.5]]),
                             (192, 160), borderMode=cv2.BORDER_REPLICATE)
     frames = [first, second]
-    parameters = {'failure_policy': 'continue'}
+    parameters = {'failure_policy': 'fail'}
     direct = ImageRegistration(method=method, parameters=parameters,
                                downscale_width=128, brightness_reference='last',
                                defer_warps=True).process(frames, thread_count=1)
