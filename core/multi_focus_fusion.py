@@ -2054,7 +2054,7 @@ class MultiFocusFusion:
             from fusion_methods import neural_runtime
             kind = neural_runtime.cached_device() if self.use_gpu else 'CPU'
             device_name = self._actual_device or neural_runtime.display_name(kind or 'N/A')
-        elif self.algorithm in ('openfocus_b', 'openfocus_c'):
+        elif self.algorithm in ('openfocus_a', 'openfocus_b', 'openfocus_c'):
             device_name = self._actual_device or 'CPU'
         else:
             device_name = 'CPU'

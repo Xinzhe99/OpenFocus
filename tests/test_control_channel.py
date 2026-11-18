@@ -1100,7 +1100,7 @@ def test_gpu_action_allows_retry_when_memory_becomes_readable(qapp, tmp_path, mo
         _destroy_main_window(qapp, window)
 
 
-@pytest.mark.parametrize('method', ['openfocus_b', 'openfocus_c', 'stackmff', 'stackmffv3'])
+@pytest.mark.parametrize('method', ['openfocus_a', 'openfocus_b', 'openfocus_c', 'stackmff', 'stackmffv3'])
 def test_device_label_separates_available_adapter_and_completed_job(
         qapp, tmp_path, monkeypatch, method):
     from core import multi_focus_fusion as mff
