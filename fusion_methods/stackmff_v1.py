@@ -47,9 +47,13 @@ def _fuse_tile(frames, model_path, use_gpu, should_cancel=None,
     from fusion_methods import neural_runtime
     probs = neural_runtime.probabilities(planes, model, device, plan.native_threads,
                                          INFER_SIGMA, should_cancel)
-    h, w = frames[0].shape[:2]
-    luma = np.clip((probs * planes).sum(axis=1)[0], 0, 1)[:h, :w] * 255.0
-    del probs, planes
+    # The staged planes belong to this tile and inference has finished reading them.
+    np.multiply(probs, planes, out=planes)
+    del probs
+    luma = planes.sum(axis=1)[0]
+    del planes
+    np.clip(luma, 0, 1, out=luma)
+    luma *= 255.0
     fused = common.tensor_to_bgr(luma, frames, should_cancel)
     if out_dtype is np.uint8:
         np.clip(np.round(fused), 0, 255, out=fused)
