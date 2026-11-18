@@ -58,6 +58,8 @@ token. A stale file (process gone) is reported as `not_running`; `--launch`
 starts a new GUI first. The file is removed on a clean quit.
 
 The socket is per-user local IPC (Windows named pipe, Unix-domain socket).
+On Unix, discovery records the absolute path of the default socket so that a
+client with a different temporary directory can connect.
 Requests without the token are rejected with `unauthorized`. The discovery
 file is created with owner-only permissions from the first byte (a restricted
 ACL on Windows, mode `0600` elsewhere). On Windows the server also compares
