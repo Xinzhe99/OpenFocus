@@ -127,13 +127,14 @@
     });
   };
 
-  // Keep version labels and download cards on the latest GitHub release.
+  // Keep version labels and download cards on the current stable release.
   (async () => {
     try {
       const res = await fetch('/api/latest', { headers: { accept: 'application/json' } });
       if (!res.ok) return;
       const data = await res.json();
-      if (!data || !data.tag) return;
+      if (!data || typeof data.tag !== 'string' || !/^v\d+(?:\.\d+)*$/.test(data.tag) ||
+          data.tag.split('.').some((part) => /^0*999999999$/.test(part)) || data.actual_tag) return;
       applyReleaseTag(data.tag);
       const linuxStatus = $('#linux-status');
       const linuxDownload = $('#linux-download');
@@ -141,6 +142,12 @@
         const available = !!data.assets['linux-desktop'];
         linuxStatus.textContent = available ? linuxStatus.dataset.available : linuxStatus.dataset.unavailable;
         linuxDownload.hidden = !available;
+        if (available) {
+          const directory = `openfocus-${data.tag}`;
+          const archive = `OpenFocus-${data.tag}-linux-x86_64.tar.gz`;
+          $('#linux-command').textContent = `mkdir ${directory} &&\ntar -xzf ${archive} -C ${directory} &&\ncd ${directory} &&\n./OpenFocus/OpenFocus`;
+          $('#linux-install').hidden = false;
+        }
       }
       document.querySelectorAll('a[data-kind]').forEach((a) => {
         const asset = data.assets && data.assets[a.dataset.kind];
