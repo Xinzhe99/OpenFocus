@@ -160,7 +160,7 @@ def context_for(locale: dict) -> dict:
             "origin": ORIGIN,
             "skip": locale["skip"],
             "repo": REPO,
-            "releases": f"{REPO}/releases",
+            "stable_release": RELEASE["page"],
             "manual": MANUAL[locale["code"]],
             "bench_link": BENCH_LINK,
             "cli_link": CLI_LINKS[locale["code"]],
@@ -240,8 +240,10 @@ def build_assets() -> list[Path]:
               ASSETS / "method-comparison.webp", 1200)
     save_webp(ROOT / "assets/readme/retouch_poster.jpg", ASSETS / "retouch.webp", 1200)
     shutil.copyfile(ROOT / "assets/benchmark.png", ASSETS / "benchmark.png")
+    wechat_qr = DIST / "wechat-group.png"
+    shutil.copyfile(ROOT / "assets/readme/wechat-group.png", wechat_qr)
     made += [ASSETS / "ui.webp", ASSETS / "method-comparison.webp",
-             ASSETS / "retouch.webp", ASSETS / "benchmark.png"]
+             ASSETS / "retouch.webp", ASSETS / "benchmark.png", wechat_qr]
 
     og = cover(Image.open(ROOT / "assets/ui.png").convert("RGB"), 1200, 630)
     og.save(ASSETS / "og.jpg", "JPEG", quality=86, optimize=True, progressive=True)
@@ -337,6 +339,9 @@ def main() -> int:
         "/install.ps1\n"
         "  Content-Type: text/plain; charset=utf-8\n"
         "  Cache-Control: public, max-age=300\n"
+        "\n"
+        "/wechat-group.png\n"
+        "  Cache-Control: public, max-age=300, must-revalidate\n"
         "\n"
         "/assets/*\n"
         "  Cache-Control: public, max-age=86400\n",

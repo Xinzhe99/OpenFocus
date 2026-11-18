@@ -281,6 +281,9 @@ pre .flag { color: var(--accent); }
 .linux-desktop .btn[hidden] { display: none; }
 .linux-desktop pre { margin-top: 12px; }
 
+.community-qr { display: block; width: fit-content; max-width: 100%; margin-top: 14px; }
+.community-qr img { display: block; max-width: 100%; height: auto; background: white; }
+
 /* footer */
 footer {
   margin-top: 96px; padding: 26px 0 40px;

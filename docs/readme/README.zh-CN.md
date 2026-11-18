@@ -300,7 +300,7 @@ openfocus -i ./stack_folder -o ./result/fused.tif --auto-background auto --save-
     <th align="center">微信公众号</th>
   </tr>
   <tr>
-    <td align="center" valign="top"><img src="../../assets/readme/wechat-group.jpg" alt="OpenFocus 微信交流群二维码" width="260"></td>
+    <td align="center" valign="top"><img src="../../assets/readme/wechat-group.png" alt="OpenFocus 微信交流群二维码" width="260"></td>
     <td align="center" valign="top"><img src="../../assets/readme/wechat-official-account.jpg" alt="OpenFocus 微信公众号二维码" width="260"></td>
   </tr>
 </table>

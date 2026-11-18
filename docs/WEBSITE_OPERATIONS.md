@@ -314,10 +314,15 @@ template resolves `{{dotted.key}}` placeholders; missing keys fail the build.
   registries in `core/algorithms.py`; check before changing them.
 - Media is copied from `assets/` (app screenshot, README posters, benchmark
   chart) — do not duplicate binaries under `site/`.
-- The website inserts the selected desktop version from `/api/latest` when
-  JavaScript is available. Static pages do not claim a version that might be
-  newer than the available download. Linux CLI installation through PyPI stays on the stable
-  package channel.
+- To rotate the WeChat group invite, replace `assets/readme/wechat-group.png`
+  and redeploy the website. The build serves the original PNG at
+  `/wechat-group.png` with a five-minute cache lifetime. The README uses the
+  same source image, and Contact Us in the desktop app loads the website copy
+  with a bundled fallback for offline use.
+- The website inserts the current stable desktop version from `/api/latest`
+  when JavaScript is available. It shows the Linux x86-64 desktop download and
+  version-specific extraction commands when that release includes the archive.
+  The Linux CLI follows the separate PyPI release channel.
 - The English and Chinese slogans are intentionally different: the English
   line is "Every pixel, its sharpest frame."; the Chinese line is
   "每一像素，皆取自最清晰的一帧。"
@@ -344,8 +349,8 @@ available. The Linux path installs the stable CLI from PyPI and does not use the
   `~/.local/bin/openfocus` when that path is free or already a symlink; an
   existing regular file is left untouched and the direct venv path is printed.
   It never runs `pip --user` or `pip --break-system-packages`; if pipx and
-  `venv` are both unavailable it stops with actionable instructions. There is
-  no Linux GUI build.
+  `venv` are both unavailable it stops with actionable instructions. Install
+  the Linux desktop app from its stable release archive when available.
 - Windows/MSYS: prints the PowerShell command.
 - `--dry-run` prints the plan without downloading or installing anything.
 

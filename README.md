@@ -321,7 +321,7 @@ Questions, ideas or feedback? Join our [Discord community](https://discord.gg/af
     <th align="center">Official account</th>
   </tr>
   <tr>
-    <td align="center" valign="top"><img src="assets/readme/wechat-group.jpg" alt="QR code for the OpenFocus WeChat group" width="260"></td>
+    <td align="center" valign="top"><img src="assets/readme/wechat-group.png" alt="QR code for the OpenFocus WeChat group" width="260"></td>
     <td align="center" valign="top"><img src="assets/readme/wechat-official-account.jpg" alt="QR code for the OpenFocus WeChat official account" width="260"></td>
   </tr>
 </table>
