@@ -131,7 +131,7 @@ A barra de menus superior dá acesso a todas as funções:
 - **Arquivo**: operações de importação e exportação, projetos, modelos de processamento e lista de arquivos recentes
 - **Editar**: transformações de imagem, retoque e rótulos
 - **Ferramentas**: união de imagens, processamento em lote, comparação de métodos, mapa de profundidade, correção de campo plano, barra de escala e rótulos
-- **Configurações**: configurações avançadas (desempenho, registro e diagnósticos de alinhamento, limpeza do sensor, nomes de saída, IA e inicialização), aceleração por GPU, tema e idioma
+- **Configurações**: configurações avançadas (Geral, Fusão, Registro, Início e atualizações), aceleração por GPU, tema e idioma
 - **Ajuda**: informações do ambiente, contato, verificação de atualizações e pasta de logs
 
 **Ferramentas → Unir imagens…** abre um espaço de trabalho separado para regiões de microscópio já fundidas e panoramas de câmera; ele não altera a pilha atual. A aba **Assistente de projeto** reúne importação, alinhamento e pontos de controle; **Imagens de origem** contém a lista, a grade e a colocação manual; **Editor de panorama** contém ajustes de emendas, mesclagem, exposição/cor, saída, projeção, câmera e HDR, além das sobreposições da prévia. Use **Adicionar arquivos…**, **Abrir pasta** ou **Adicionar resultados…** para copiar resultados escolhidos da sessão atual, ou arraste arquivos ou pastas para a lista ou a tela. A importação de pasta inclui apenas os arquivos compatíveis diretamente dentro dela, sem subpastas. As importações seguem a ordem natural do nome, ignoram caminhos duplicados e adicionam cada página de um TIFF multipágina como imagem separada. Selecione uma imagem e pressione Delete ou Backspace para removê-la do espaço de trabalho sem apagar o arquivo.
@@ -159,7 +159,7 @@ O **Editor de panorama** controla a mesclagem real. Em **Encontrar emendas ideai
 3. Uma janela de escala de carregamento aparece: escolha a escala (100% = resolução total)
 4. Clique em OK para carregar as imagens
 
-Marque **Não perguntar novamente** nessa janela para sempre carregar na escala escolhida sem aviso; **Configurações → Configurações avançadas → Perguntar escala de carregamento na importação** reativa o aviso. Uma pilha já carregada ainda pode ser reduzida depois com **Editar → Redimensionar**.
+Marque **Não perguntar novamente** nessa janela para sempre carregar na escala escolhida sem aviso; **Configurações → Configurações avançadas → Início e atualizações → Perguntar escala de carregamento na importação** reativa o aviso. Uma pilha já carregada ainda pode ser reduzida depois com **Editar → Redimensionar**.
 
 O software executa automaticamente:
 
@@ -356,20 +356,17 @@ O registro corrige o desalinhamento espacial entre os quadros da pilha. É essen
 - Busca transformações de similaridade limitadas usando diferenças de imagem amostradas e aplica warp com interpolação Lanczos
 - O domínio de busca do deslocamento é, por padrão, 3% do tamanho do quadro e pode ser alterado com `--align-shift-limit`. A busca usa o quadro anterior alinhado e parte do movimento acumulado; o deslocamento total pode superar 3%.
 - Para geometria não rígida ou extrema, escolha ECC ou homografia
-- Em um erro real de estimativa, `failure_policy=continue` (padrão) mantém o quadro sem alinhamento; `fail` interrompe o processamento. Pouca textura, padrões repetidos e mudanças de foco ainda podem causar correspondências imprecisas.
-- Na CLI, selecione a mesma política com `--align openfocus --align-param 'failure_policy="fail"'` (use as aspas adequadas ao shell). Itens de lote usam a política selecionada de forma independente. O padrão é `"continue"`.
+- Se o registro rejeitar um quadro, o aplicativo de desktop interrompe a pilha afetada. Consulte o quadro e o motivo na mensagem de erro e examine a imagem de origem antes de tentar novamente. Pouca textura, padrões repetidos e mudanças de foco ainda podem causar correspondências imprecisas.
+- A CLI usa `continue` por padrão. Use `--align openfocus --align-param 'failure_policy="fail"'` para interromper a pilha quando um quadro for rejeitado.
 - Defina **Quadro de referência** como um número baseado em 1 na ordem da pilha incluída e processada para ancorar a geometria nesse quadro. A ordem é preservada; a equalização de brilho usa sua própria referência. Cada pilha de lote deve conter esse número, ou o item falha. Exemplo de CLI: `--align openfocus --align-param reference_frame=3`. Escolher uma referência não corrige paralaxe nem uma correspondência ruim; inspecione o resultado.
 
-Os relatórios de alinhamento identificam a referência e o resultado de cada quadro. Um fallback significa que o método não conseguiu estabelecer o alinhamento ou depende de uma estimativa anterior falha; o motivo informado distingue estimativas fracas e movimento fora dos limites quando conhecido. Os valores de qualidade são específicos de cada método, não uma garantia de precisão. As transformações mapeiam coordenadas de origem para a tela de referência da etapa de registro antes do corte comum; métodos compostos relatam suas etapas separadamente. Homografia e ECC também aceitam o parâmetro opcional `failure_policy="fail"` para parar quando seus algoritmos detectam falha. O padrão continua `"continue"`; inspecione os resultados mesmo quando o alinhamento for bem-sucedido.
-
-Para inspecionar uma renderização, ative **Configurações → Configurações avançadas → Registro → Coletar diagnósticos de alinhamento** e renderize novamente. Isso recalcula o alinhamento em vez de reutilizar imagens em cache. O status de conclusão destaca fallbacks; abra **Configurações → Configurações avançadas → Registro → Diagnósticos de alinhamento** para o relatório por quadro. Ele mostra os motivos de falha disponíveis, pontuações específicas do método, contagens de correspondência, quadros referenciados e transformações. Números e nomes de referência remetem à lista de origem original, inclusive quando quadros são excluídos. Renderizações em lote e agrupadas não fornecem esse relatório.
+Em uma execução individual da CLI com registro e sem grupos, `--alignment-report FILE` salva um relatório por quadro. Os relatórios de alinhamento identificam a referência e o resultado de cada quadro. Um fallback significa que o método não conseguiu estabelecer o alinhamento ou depende de uma estimativa anterior falha; o motivo informado distingue estimativas fracas e movimento fora dos limites quando conhecido. Os valores de qualidade são específicos de cada método, não uma garantia de precisão. As transformações mapeiam coordenadas de origem para a tela de referência da etapa de registro antes do corte comum; métodos compostos relatam suas etapas separadamente. Homografia e ECC também aceitam o parâmetro opcional `failure_policy="fail"` para parar quando seus algoritmos detectam falha. O padrão continua `"continue"`; inspecione os resultados mesmo quando o alinhamento for bem-sucedido.
 
 ### Ativar o registro
 
 1. No painel direito, localize o grupo **Registro**
 2. Escolha um método na lista: **Sem alinhamento**, **OpenFocus (rápido)**, **Alinhar (ECC)**, **Alinhar (homografia)** ou **Homografia → ECC** (encadeado)
-3. Para OpenFocus (rápido), escolha um quadro de referência. Em **Configurações → Configurações avançadas → Registro**, escolha **Tratamento de quadros rejeitados**; ao alterá-lo, a escolha é aplicada aos métodos de registro
-4. **Coletar diagnósticos de alinhamento** agora fica em Configurações avançadas (veja acima)
+3. Ajuste o quadro de referência e os limites de busca do OpenFocus em **Configurações → Configurações avançadas → Registro**.
 
 ### Quando usar registro
 
@@ -385,7 +382,6 @@ As configurações adicionais ficam em **Configurações → Configurações ava
 - **Largura de redução**: resolução de pré-processamento para registro (1024 px por padrão)
 - Valores menores = processamento mais rápido, possivelmente menos preciso
 - Valores maiores = processamento mais lento, possivelmente mais preciso
-- **Coletar diagnósticos de alinhamento** e **Cache de registro** ficam na mesma seção
 
 ---
 
@@ -634,7 +630,14 @@ A prévia usa o destino real. Navegue com Anterior/Próximo ou digite o número 
 
 ## 11. Configurações
 
-Abra **Configurações → Configurações avançadas** para preferências de desempenho, registro, limpeza do sensor, nomes de saída, IA StackMFF e inicialização. As mudanças permanecem rascunhos até **OK**; Cancelar, Esc e fechar as descartam. Reduzir o tamanho do bloco atualiza imediatamente o limite visível de sobreposição para metade de um bloco. O limite de lote salvo da seção de IA é mantido, mas a inferência atualmente envia um bloco por chamada; a largura de registro pode mudar a precisão do alinhamento. A coleta de diagnósticos de alinhamento é uma caixa da seção Registro.
+**Configurações → Configurações avançadas**
+
+- **Geral** — Recursos experimentais, diretório de trabalho e prefixo do nome de saída. Em **Privacidade**, os relatórios automáticos de erros e as estatísticas de uso têm caixas independentes. Ambas começam marcadas. Cada opção desativada explicitamente permanece desativada. As versões de distribuição enviam um relatório após uma sessão com erro se você aceitou os termos ao entrar na conta ou ativou o envio explicitamente. Uma falha nativa anterior exige confirmação.
+- **Fusão** — Escolha o modo de recursos e as configurações de blocos. Selecione **Limpeza do sensor** para expandir os controles.
+- **Registro** — Defina a largura de redução. Selecione **OpenFocus (rápido)** para expandir as opções de quadro de referência e limites de busca.
+- **Início e atualizações** — Restauração da última pilha, solicitação da escala ao importar e atualizações.
+
+Confirme com **OK** para salvar. Cancelar, Esc ou fechar a janela descarta as alterações.
 
 Downloads automáticos de atualização rodam quando o aplicativo está ocioso e nunca instalam sozinhos. Um download concluído permanece pronto até você escolher explicitamente **Reiniciar e atualizar**. A reinicialização protege edições ativas e trabalho não salvo, depois grava os dados de recuperação antes de iniciar a substituição. Cancelar um download ou preparação aguarda o limite seguro atual. Uma compilação preparada completa e mais recente pode ser instalada offline.
 
@@ -658,13 +661,19 @@ Cada inicialização grava seu próprio log rotativo, então trabalhos GUI/CLI c
 
 ### Configurações de blocos (otimização de memória)
 
-Para imagens grandes, o OpenFocus usa processamento em blocos para evitar problemas de memória.
+O processamento em blocos vem ativado. A mensagem abaixo dos campos descreve como o método selecionado processa a imagem. No aplicativo de desktop, o OpenFocus A, B e C processam a imagem inteira. O modo de apenas alinhamento pula a fusão. Mesmo nesses modos, você pode ajustar o tamanho, a sobreposição e o limite para o próximo método compatível. O DTCWT decide com base na memória estimada. Você pode ajustar o tamanho e a sobreposição, e o campo de limite fica desativado. Os métodos neurais podem usar blocos abaixo do limite em pilhas profundas. Desativar os blocos desabilita os três campos numéricos e preserva seus valores.
 
-Acesso: **Configurações → Configurações avançadas → Desempenho**:
+Acesso: **Configurações → Configurações avançadas → Fusão**:
 
 - **Tamanho do bloco**: tamanho de cada bloco de processamento (1024 px por padrão)
 - **Sobreposição de blocos**: sobreposição entre blocos para uma mistura sem emendas (256 px por padrão)
 - **Limite de blocos**: tamanho de imagem acima do qual os blocos são usados (2048 px por padrão)
+
+Limites em pixels
+
+- Tamanho do bloco — 64–16384
+- Sobreposição de blocos — 0–min(4096, metade do bloco)
+- Limite de blocos — 256–131072
 
 **Recomendações**:
 
@@ -679,7 +688,6 @@ Acesso: **Configurações → Configurações avançadas → Registro**:
 - **Largura de redução**: resolução de pré-processamento para registro
   - Padrão: 1024 px
   - Menor para velocidade, maior para precisão
-- **Coletar diagnósticos de alinhamento**: recalcula o alinhamento na próxima renderização e habilita **Configurações → Configurações avançadas → Registro → Diagnósticos de alinhamento**
 
 ### Referência de desempenho
 
@@ -687,19 +695,9 @@ Veja [PERFORMANCE.md](./PERFORMANCE.md) para taxa de transferência e memória m
 
 O painel de status mostra memória física usada e total quando o sistema operacional fornece as duas leituras; caso contrário, mostra `N/D`.
 
-### Configurações do número de threads
-
-Controle o processamento paralelo da CPU:
-
-Acesso: **Configurações → Configurações avançadas → Desempenho**:
-
-- `0` seleciona o agendamento automático e é o padrão para novas configurações.
-- Valores positivos são limites superiores; limites salvos sobrevivem a atualizações.
-- Capacidade de CPU, modo de recursos e margem de memória podem reduzir a concorrência. Mais threads não tornam necessariamente uma renderização mais rápida.
-
 ### Modo de recursos
 
-**Configurações → Configurações avançadas → Desempenho → Modo de recursos** decide quanto da máquina uma renderização pode usar. Ele nunca altera a imagem fundida.
+**Configurações → Configurações avançadas → Fusão → Modo de recursos** decide quanto da máquina uma renderização pode usar. Ele nunca altera a imagem fundida.
 
 | Modo | Comportamento |
 |---|---|
@@ -719,13 +717,6 @@ OpenFocus B pode acelerar o processamento de profundidade e a mesclagem de fonte
 - Desmarcar força os métodos de fusão compatíveis na CPU — útil quando drivers de GPU dão problema
 - O painel de status mostra `N/D` quando nenhum acelerador é usado ou está disponível, e `CPU*` quando existe um acelerador mas o método selecionado é somente CPU
 - A escolha se aplica à próxima renderização e é lembrada
-
-### Tamanho do lote de IA
-
-Acesso: **Configurações → Configurações avançadas → IA**:
-
-- O limite de lote salvo é 2 por padrão; a política de execução atual limita a inferência real a um bloco por chamada em todos os dispositivos.
-- Aumentar esse limite não ativa lotes de GPU não validados nem reduz o tamanho espacial dos blocos.
 
 ### Temas
 
@@ -749,11 +740,11 @@ Fotos de iPhone carregam diretamente. Requer `pillow-heif`, que `pip install ope
 
 ### Cache de registro
 
-O OpenFocus salva os resultados de registro no cache do usuário. Ao reabrir uma pilha inalterada com as mesmas configurações, o OpenFocus reutiliza o resultado salvo. A opção fica em **Configurações → Configurações avançadas → Registro → Cache de registro**. Todas as pilhas compartilham um limite de 2 GiB. Quando é necessário liberar espaço, as entradas usadas há mais tempo são removidas. As pastas antigas `.openfocus_cache` ao lado das pilhas de origem são preservadas.
+O OpenFocus salva os resultados de registro no cache do usuário. Ao reabrir uma pilha inalterada com as mesmas configurações, o OpenFocus reutiliza o resultado salvo. Todas as pilhas compartilham um limite de 2 GiB. Quando é necessário liberar espaço, as entradas usadas há mais tempo são removidas. As pastas antigas `.openfocus_cache` ao lado das pilhas de origem são preservadas.
 
 ### Configurações persistidas
 
-Tudo o que segue sobrevive automaticamente ao reinício: número de threads, modo de recursos, parâmetros de blocos, largura de redução do registro, tamanho de lote da fusão por IA (StackMFF V3), aceleração por GPU, cache de registro e opções de diagnósticos de alinhamento, idioma da interface, tamanho da janela e layout dos painéis, formato de exportação por arrastar, opções de brilho por método, valores de suavização e raio, e pilhas abertas recentemente. As janelas de configurações salvam no momento em que você confirma; tudo também é salvo ao fechar. As preferências são armazenadas por usuário em `OpenFocus/OpenFocus.ini` (formato INI do QSettings).
+Tudo o que segue sobrevive automaticamente ao reinício: modo de recursos, parâmetros de blocos, largura de redução do registro, aceleração por GPU, idioma da interface, tamanho da janela e layout dos painéis, formato de exportação por arrastar, opções de brilho por método, valores de suavização e raio, e pilhas abertas recentemente. As janelas de configurações salvam no momento em que você confirma; tudo também é salvo ao fechar. As preferências são armazenadas por usuário em `OpenFocus/OpenFocus.ini` (formato INI do QSettings).
 
 ### Idioma da interface
 
@@ -808,7 +799,7 @@ A janela de lote mostra o progresso em tempo real. Você pode cancelar o process
 3. Escolha formato e local
 4. Clique em Salvar
 
-Em **Configurações → Configurações avançadas → Nomes de saída**, um prefixo de nome de arquivo opcional ajuda a identificar resultados recém-renderizados. O exemplo é atualizado enquanto você digita; use até 40 letras, números, sublinhados ou hífens. Deixe vazio para a nomenclatura original. Confirme com **OK** para lembrar, ou cancele para descartar a mudança. O prefixo passa a fazer parte dos novos nomes da lista de saídas e de seus nomes de exportação sugeridos; resultados existentes mantêm seus nomes. Você ainda pode editar um nome na janela de salvamento. Essa preferência não renomeia arquivos de origem nem muda nomes de saída de lotes.
+Em **Configurações → Configurações avançadas → Geral → Nomes de saída**, um prefixo de nome de arquivo opcional ajuda a identificar resultados recém-renderizados. O exemplo é atualizado enquanto você digita; use até 40 letras, números, sublinhados ou hífens. Deixe vazio para a nomenclatura original. Confirme com **OK** para lembrar, ou cancele para descartar a mudança. O prefixo passa a fazer parte dos novos nomes da lista de saídas e de seus nomes de exportação sugeridos; resultados existentes mantêm seus nomes. Você ainda pode editar um nome na janela de salvamento. Essa preferência não renomeia arquivos de origem nem muda nomes de saída de lotes.
 
 ### Compartilhar um resultado
 
@@ -1054,21 +1045,19 @@ Códigos de saída: `0` sucesso, `1` erro de processamento, `2` erro de uso. Exe
 
 #### Erros de falta de memória
 
-- Ative o processamento em blocos em **Configurações → Configurações avançadas → Desempenho**
+- Ative o processamento em blocos em **Configurações → Configurações avançadas → Fusão**
 - Reduza o tamanho do bloco
 - Use kernels menores
 - Redimensione as imagens
 
 #### Falha no registro
 
-- Use **OpenFocus (rápido)** para movimento rígido limitado, ou ative **Parar em quadro rejeitado** para falhar cedo em vez de aceitar quadros não alinhados
+- Se o registro rejeitar um quadro, o aplicativo de desktop interrompe a pilha afetada. Consulte o quadro e o motivo na mensagem de erro e examine a imagem de origem antes de tentar novamente.
 - Reduza a largura de redução em **Configurações → Configurações avançadas → Registro**
 - Garanta que as imagens tenham contraste e características suficientes
-- Ative **Coletar diagnósticos de alinhamento**, renderize novamente e leia **Configurações → Configurações avançadas → Registro → Diagnósticos de alinhamento** para os quadros com falha
 
 #### Processamento lento
 
-- Deixe os threads em automático (`0`); capacidade de CPU, modo de recursos e margem de memória já limitam a concorrência
 - Use o modo de recursos Máximo para um lote não assistido, ou filtro guiado / GFG-FGF em vez de um método de IA
 - Reduza a resolução das imagens ou use **Prévia rápida** durante o ajuste
 

@@ -64,8 +64,8 @@ def working_frame(frame, normalize_stack):
     return result
 
 
-def _plane(frame):
-    """One 0-255 luma plane as float32, independent of source bit depth."""
+def luma_plane(frame):
+    """Return one 0-1 float32 luma plane from a grayscale or BGR frame."""
     if frame.ndim == 2:
         gray = frame
     elif frame.shape[2] == 1:
@@ -94,7 +94,7 @@ def stage_planes(frames, align, should_cancel=None):
         if ph or pw:
             padding = ((0, ph), (0, pw)) + ((0, 0),) * (frame.ndim - 2)
             frame = np.pad(frame, padding, mode=mode)
-        batch[0, index] = _plane(frame)
+        batch[0, index] = luma_plane(frame)
     cancel(should_cancel)
     return batch
 
