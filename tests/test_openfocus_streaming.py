@@ -675,10 +675,10 @@ def test_large_tiff_b_snapshots_real_ecc_warps_before_whole_depth(tmp_path, monk
     monkeypatch.setattr(source_frames, 'SOURCE_CACHE', source_frames.FrameCache(0))
     monkeypatch.setattr(multi_focus_fusion, 'memory_budget_bytes', lambda: 512 * 1024 ** 2)
     original_cost = source_frames.frame_resolution_bytes
-    def expensive(frame):
+    def expensive(frame, *, metadata_only=False):
         if isinstance(frame, source_frames.ProcessedFrame) and not isinstance(frame.source, np.ndarray):
             return 129 * 1024 ** 2
-        return original_cost(frame)
+        return original_cost(frame, metadata_only=metadata_only)
     monkeypatch.setattr(source_frames, 'frame_resolution_bytes', expensive)
     original_warp = registration.PerspectiveWarp.__call__
     calls = Counter()
