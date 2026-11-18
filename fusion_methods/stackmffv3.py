@@ -96,12 +96,16 @@ def _blend_tile(probs, frames, mode, should_cancel=None, focus_callback=None):
         expected = create_transient_frame((height, width), np.float32)
         expected[...] = 0
     from core.source_frames import resolve_frame
+    band_rows = 256
+    if selected_indices is None:
+        # Aim for at most 256 KiB per float32 color temporary, with at least one row.
+        band_rows = min(band_rows, max(1, (64 * 1024) // (width * channels)))
     for index, frame in enumerate(frames):
         _cancel(should_cancel)
         image = resolve_frame(frame)
-        for row in range(0, height, 256):
+        for row in range(0, height, band_rows):
             _cancel(should_cancel)
-            stop = min(row + 256, height)
+            stop = min(row + band_rows, height)
             source = common.working_frame(image[row:stop], normalize_stack)
             if source.ndim == 2:
                 source = source[:, :, None]
