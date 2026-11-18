@@ -27,7 +27,6 @@ import urllib.request
 import webbrowser
 
 from constants import app_display_version
-from utils import _account_callback_page
 from utils.app_paths import user_data_dir
 from utils.report_client import ReportError, _file_lock
 
@@ -398,7 +397,9 @@ class _CallbackHandler(http.server.BaseHTTPRequestHandler):
         else:
             self.send_error(400)
             return
-        body = _account_callback_page.render(outcome, getattr(self.server, "language", None))
+        from utils._account_callback_page import render
+
+        body = render(outcome, getattr(self.server, "language", None))
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
