@@ -127,6 +127,111 @@ def test_openfocus_a_device_failure_falls_back_with_monotonic_progress(monkeypat
     np.testing.assert_array_equal(actual, expected)
 
 
+@pytest.mark.parametrize('maximum_mib,unified,reason', [
+    (640, False, None),
+    (500, False, 'host memory budget'),
+    (640, True, 'device budget'),
+])
+def test_openfocus_a_admits_one_scaled_ecc_source_under_job_cap(
+        tmp_path, monkeypatch, maximum_mib, unified, reason):
+    from types import SimpleNamespace
+    from core import resource_policy, source_frames
+    from fusion_methods import _openfocus_gpu
+    from fusion_methods._openfocus_gpu_a import GpuA
+
+    # Test admission alone, with the reported stack geometry and a cold source
+    # cache. No pixels or OpenCL allocations are needed to reach the decision.
+    path = tmp_path / 'stack.tif'
+    path.touch()
+    stamp = source_frames._fingerprint(path)
+    shape = (1366, 2048, 3)
+    frames = [process_frame(source_frames.SourceFrame(
+        str(path), page, shape, np.dtype(np.uint8), None, stamp, scale=.25,
+        native_shape=(5464, 8192, 3)),
+        lambda _: pytest.fail('Admission must not resolve source pixels')) for page in range(92)]
+    monkeypatch.setattr(source_frames, 'SOURCE_CACHE', source_frames.FrameCache())
+    mib = 1024 ** 2
+    monkeypatch.setattr(resource_policy, 'probe_memory', lambda: resource_policy.ResourceSnapshot(
+        available_ram=8 * 1024 * mib, total_ram=16 * 1024 * mib))
+    monkeypatch.setattr(_openfocus_gpu, '_free_vram', lambda device: (8 * 1024 * mib,) * 2)
+
+    class AllocationReached(Exception):
+        pass
+
+    def allocate(*args):
+        raise AllocationReached
+
+    gpu = GpuA.__new__(GpuA)
+    gpu.cl = SimpleNamespace(Buffer=allocate)
+    gpu.ctx = None
+    gpu.mf = SimpleNamespace(READ_WRITE=1)
+    gpu.device = SimpleNamespace(global_mem_size=8 * 1024 * mib,
+                                 max_mem_alloc_size=2 * 1024 * mib,
+                                 host_unified_memory=unified)
+    envelope = resource_policy.ProcessBudget(384 * mib, maximum_mib * mib, 192 * mib)
+    with resource_policy.process_budget(envelope):
+        if reason is None:
+            with pytest.raises(AllocationReached):
+                gpu._fuse_locked(frames, None, 8, None, None)
+        else:
+            with pytest.raises(_openfocus_gpu.GpuError, match=reason):
+                gpu._fuse_locked(frames, None, 8, None, None)
+
+
+@pytest.mark.parametrize('disk_reuse', [False, True])
+def test_openfocus_a_gpu_lazy_ecc_matches_cpu_without_source_cache_growth(
+        tmp_path, monkeypatch, disk_reuse):
+    from contextlib import nullcontext
+    import cv2
+    from core import frame_resolution_cache, frame_storage, registration, resource_policy, source_frames
+    from fusion_methods import _openfocus_gpu
+
+    if not _openfocus_gpu.gpu_available():
+        pytest.skip('No OpenCL GPU is available')
+    monkeypatch.setattr(_openfocus_gpu, '_free_vram',
+                        lambda device: (int(device.global_mem_size),) * 2)
+    cache = source_frames.FrameCache()
+    monkeypatch.setattr(source_frames, 'SOURCE_CACHE', cache)
+    eager, lazy = [], []
+    for index, pixels in enumerate(_stack(np.uint8, 3)):
+        path = tmp_path / f'ecc-{index}.png'
+        ok, encoded = cv2.imencode('.png', pixels)
+        assert ok
+        encoded.tofile(str(path))
+        source = source_frames.scan_source(str(path), header_only=True)[0]
+        identity = registration._perspective_source(source, pixels, None)
+        matrix = np.float32([[1, 0, index * .6], [0, 1, -.35 * index], [0, 0, 1]])
+        warp = registration.PerspectiveWarp(identity, tuple(matrix.ravel()), matrix.dtype.str,
+                                            (pixels.shape[1], pixels.shape[0]))
+        eager.append(warp(pixels))
+        lazy.append(process_frame(source, warp))
+
+    options = dict(algorithm='openfocus_a', exposure_match=True, base_frame='none', sort_mode='off')
+    expected = MultiFocusFusion(use_gpu=False, **options).fuse(eager, thread_count=1)
+    disk = (frame_resolution_cache.ResolutionCache(3 * sum(frame.nbytes for frame in lazy))
+            if disk_reuse else None)
+    use_cache = frame_resolution_cache.active(disk) if disk is not None else nullcontext()
+    gpu = MultiFocusFusion(use_gpu=True, **options)
+    ram_usage = []
+    mib = 1024 ** 2
+    envelope = resource_policy.ProcessBudget(64 * mib, 96 * mib, 2 * mib)
+    try:
+        with frame_storage.scratch_directory(explicit_directory=str(tmp_path)), use_cache, \
+                resource_policy.process_budget(envelope):
+            actual = gpu.fuse(lazy, thread_count=1,
+                              progress_callback=lambda *_: ram_usage.append(cache.bytes))
+            if disk is not None:
+                assert all(disk.get(frame) is not None for frame in lazy)
+        assert gpu.get_info()['device'].startswith('OpenCL: ')
+        # With disk disabled only the exposure reference was decoded before
+        # Method A began its streaming upload.
+        assert ram_usage and set(ram_usage) == {0 if disk_reuse else lazy[0].source.nbytes}
+        np.testing.assert_array_equal(actual, expected)
+    finally:
+        if disk is not None:
+            disk.close()
+
+
 def test_openfocus_a_unknown_gpu_memory_falls_back(monkeypatch):
     from fusion_methods import _openfocus_gpu
     if not _openfocus_gpu.gpu_available():
