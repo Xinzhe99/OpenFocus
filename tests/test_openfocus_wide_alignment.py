@@ -374,7 +374,7 @@ def test_alignment_cache_separates_estimator_versions(cached_plan, monkeypatch):
 @pytest.mark.parametrize('change', ['corruption', 'checksum', 'shape', 'order', 'parameters', 'file', 'calibration'])
 def test_plan_cache_rejects_corrupt_or_changed_request(cached_plan, change):
     folder, names, sources, plan, identity = cached_plan
-    manifests = list((Path(folder) / '.openfocus_cache' / 'plans').glob('*/meta.json'))
+    manifests = list((Path(align_cache.cache_dir()) / 'plans').glob('*/meta.json'))
     assert len(manifests) == 1
     if change == 'corruption':
         manifests[0].write_text('{broken', encoding='utf-8')

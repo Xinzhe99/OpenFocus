@@ -81,9 +81,7 @@ class RenderManager:
         self._compare_queue: List[str] = []
         self._compare_total = 0
         self._compare_current: Optional[str] = None
-        # Methods a comparison run skipped, with the reason: one method that
-        # cannot run (StackMFF V2 needs ~115 GB on a 20 MP stack) must not
-        # cancel every method after it.
+        # An unaffordable method must not cancel the comparison queue.
         self._compare_failures: List[tuple] = []
         self._compare_token = object()
         self._compare_context = None
@@ -634,6 +632,89 @@ class RenderManager:
         if callable(persist):
             persist()
         return None
+
+    def _memory_summary(self, estimate):
+        return trans.t('render_memory_summary').format(
+            method=self.algo_display_name(estimate.algorithm), frames=estimate.frames,
+            width=estimate.width, height=estimate.height)
+
+    def _memory_details(self, estimate):
+        from core.frame_storage import readable_bytes
+        from core.resource_policy import ram_ceiling, vram_budget
+        from fusion_methods.neural_runtime import display_name
+
+        snapshot = estimate.snapshot
+        unknown = trans.t('render_memory_unknown')
+        lines = [self._memory_summary(estimate)]
+        lines.append(trans.t('render_memory_ram').format(
+            available=readable_bytes(snapshot.available_ram) if snapshot.ram_known else unknown,
+            budget=readable_bytes(ram_ceiling(snapshot)) if snapshot.ram_known else unknown))
+        if snapshot.commit_headroom is not None:
+            lines.append(trans.t('render_memory_commit').format(
+                size=readable_bytes(snapshot.commit_headroom)))
+        for key, amount in (('source', estimate.source_ram),
+                            ('registration', estimate.registration_ram),
+                            ('fusion', estimate.fusion_ram)):
+            if amount:
+                lines.append(trans.t('render_memory_' + key).format(size=readable_bytes(amount)))
+        if estimate.tile:
+            lines.append(trans.t('render_memory_tile').format(
+                tile=estimate.tile, whole=readable_bytes(estimate.whole_ram)))
+        if estimate.vram_required:
+            lines.append(trans.t('render_memory_vram').format(
+                device=display_name(estimate.accelerator),
+                available=readable_bytes(snapshot.free_vram) if snapshot.total_vram else unknown,
+                budget=readable_bytes(vram_budget(snapshot)) if snapshot.total_vram else unknown,
+                required=readable_bytes(estimate.vram_required)))
+        if estimate.gpu_fallback:
+            lines.append(trans.t('render_memory_fallback_plan').format(
+                device=display_name(estimate.accelerator)))
+        elif estimate.device is not None:
+            lines.append(trans.t('render_memory_device').format(device=display_name(estimate.device)))
+        lines.append(trans.t('render_memory_snapshot'))
+        return '\n'.join(lines)
+
+    def _memory_guidance(self, estimate):
+        text = trans.t('render_memory_guidance')
+        if estimate and estimate.tiling_supported:
+            text += '\n' + trans.t('render_memory_tiling_guidance')
+        if estimate and estimate.gpu_fallback:
+            text += '\n' + trans.t('render_memory_gpu_guidance')
+        return text
+
+    def _confirm_memory(self, estimate):
+        from utils import style_message_box
+
+        box = style_message_box(QMessageBox(self.window))
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle(trans.t('render_memory_title'))
+        box.setText(trans.t('render_memory_warning' if estimate.ram_short
+                            else 'render_memory_fallback_warning'))
+        box.setInformativeText(self._memory_details(estimate) + '\n\n' + self._memory_guidance(estimate))
+        proceed = box.addButton(trans.t('btn_render'), QMessageBox.ButtonRole.AcceptRole)
+        cancel = box.addButton(trans.t('btn_cancel_generic'), QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(cancel)
+        box.exec()
+        return box.clickedButton() is proceed
+
+    def _estimate_memory(self, frames, method, parameters, roi_rect, register):
+        from core.render_preflight import estimate_render_memory
+        from utils.logging_setup import get_logger
+
+        roi = (tuple(int(value) for value in
+                     (roi_rect.x(), roi_rect.y(), roi_rect.width(), roi_rect.height()))
+               if roi_rect is not None else None)
+        window = self.window
+        try:
+            return estimate_render_memory(
+                frames, method, parameters, preview=self._preview_mode, roi=roi, register=register,
+                use_gpu=getattr(window, 'use_gpu', True),
+                tile_enabled=getattr(window, 'tile_enabled', None),
+                tile_block=getattr(window, 'tile_block_size', None),
+                tile_threshold=getattr(window, 'tile_threshold', None))
+        except Exception:
+            get_logger(__name__).info('render memory estimate unavailable', exc_info=True)
+            return None
 
     def _compare_button(self):
         return getattr(self.window, "btn_compare_all", None)
@@ -1333,6 +1414,22 @@ class RenderManager:
                 window.raw_images is source_ref
                 and getattr(window, "source_revision", 0) == revision)
 
+        method = force_algorithm or fusion_method
+        fusion_parameters = window.fusion_parameters_for(method)
+        # Reusable aligned descriptors are what the fusion stage actually reads.
+        estimate_frames = effective_aligned_images if effective_is_aligned else source_images
+        memory_estimate = self._estimate_memory(
+            estimate_frames, method, fusion_parameters, roi_rect,
+            register=bool(requested_steps and effective_alignment != 'none'
+                          and (not effective_is_aligned or collect_report)))
+        if (memory_estimate and (memory_estimate.ram_short or memory_estimate.gpu_fallback)
+                and interactive and not confirmed and force_algorithm is None
+                and not self._confirm_memory(memory_estimate)):
+            self._start_status = 'cancelled'
+            self._preview_mode = False
+            self._restore_ui_controls()
+            return
+
         if compare_token is not self._compare_token:
             self._start_status = "cancelled"
             self.last_state = "cancelled"
@@ -1376,6 +1473,7 @@ class RenderManager:
             "roi_mode": roi_mode,
             "roi_base_index": roi_base_index,
             "algorithm": force_algorithm or fusion_method,
+            "memory_estimate": memory_estimate,
             "aligned": bool(effective_is_aligned),
             "filenames": list(stack_filenames),
             "included": list(included_idx),
@@ -1454,7 +1552,7 @@ class RenderManager:
             effective_last_alignment_options,
             algorithm=(force_algorithm or fusion_method) if need_fusion else None,
             alignment=effective_alignment,
-            fusion_parameters=window.fusion_parameters_for(force_algorithm or fusion_method),
+            fusion_parameters=fusion_parameters,
             registration_parameters=registration_parameters if effective_alignment != "none" else {},
             need_fusion=need_fusion,
             tile_enabled=getattr(window, "tile_enabled", None),
@@ -1496,6 +1594,13 @@ class RenderManager:
         self.worker.stage_signal.connect(self.on_render_stage)
         window.statusBar().clearMessage()  # stale "loading…" etc.
         self._render_progress_stage = 'waiting'
+        if memory_estimate:
+            summary = self._memory_summary(memory_estimate)
+            if memory_estimate.gpu_fallback:
+                from fusion_methods.neural_runtime import display_name
+                summary += ' · ' + trans.t('render_memory_fallback_plan').format(
+                    device=display_name(memory_estimate.accelerator))
+            window.statusBar().showMessage(summary, 8000)
         self._show_progress_bar(trans.t('render_stage_waiting'))
         self.worker.start()
 
@@ -1876,6 +1981,11 @@ class RenderManager:
                 info_lines.append(trans.t("info_fusion_method").format(method_name))
                 info_lines.append(trans.t("info_fusion_time").format(fusion_time))
                 info_lines.append(trans.t("info_proc_unit").format(device_name))
+                estimate = (context or {}).get('memory_estimate')
+                if estimate and estimate.accelerator and device_name == 'CPU':
+                    from fusion_methods.neural_runtime import display_name
+                    info_lines.append(trans.t('render_memory_fallback_actual').format(
+                        device=display_name(estimate.accelerator)))
 
             info_lines.append(trans.t("info_total_time").format(total_time))
             if self.alignment_diagnostics[0]:
@@ -1958,6 +2068,7 @@ class RenderManager:
             icc_profile=ctx.get("icc_profile", b""),
             source_exif=((ctx.get("frame_exif") or (b"",))[0]),
             frame_exif=ctx.get("frame_exif"), frame_icc_profiles=ctx.get("frame_icc_profiles"),
+            rendered_depth=getattr(self.worker, 'rendered_depth', None),
             linear_dng_metadata=ctx.get("linear_dng_metadata"), source_paths=ctx.get("source_paths"))
 
     def _context_ready(self, worker, result, error):
@@ -2078,6 +2189,8 @@ class RenderManager:
             bar.setRange(0, 0)  # indeterminate until a stage reports counts
             label.setText(text)
             label.show()
+            estimate = (self._render_context or {}).get('memory_estimate')
+            label.setToolTip(self._memory_details(estimate) if estimate else '')
             bar.show()
             self.window.statusBar().setVisible(True)
         except Exception:
@@ -2182,6 +2295,12 @@ class RenderManager:
             list(context.get('filenames', [])), list(context.get('included', [])),
         )
         self._capture_performance_report()
+        if (not error_message.startswith('CANCELLED') and
+                getattr(self.worker, 'failure_category', None) in ('resource_limit', 'memory')):
+            estimate = context.get('memory_estimate')
+            if estimate:
+                error_message += '\n\n' + self._memory_details(estimate)
+            error_message += '\n\n' + self._memory_guidance(estimate)
         # Every exit path clears the draft flag: a failed or cancelled render
         # must not leave the controller in preview mode.
         self._preview_mode = False

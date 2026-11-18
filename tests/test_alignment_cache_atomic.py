@@ -1,8 +1,10 @@
 """Cache identities and atomic generations survive cancellation and I/O errors."""
 import json
+import multiprocessing
 import os
 from pathlib import Path
 from threading import Event
+from types import SimpleNamespace
 
 import cv2
 import numpy as np
@@ -10,6 +12,7 @@ import pytest
 
 from core.registration import RegistrationCancelled
 from utils import align_cache
+from utils.align_cache import cache_dir as platform_cache_dir
 
 
 @pytest.fixture
@@ -80,7 +83,7 @@ def test_cancelled_encoding_preserves_previous_complete_generation(stack, monkey
     assert loaded is not None
     for expected, actual in zip(previous, loaded):
         np.testing.assert_array_equal(actual, expected)
-    assert not list(Path(stack[0]).rglob('.pending-*'))
+    assert not list(Path(align_cache.cache_dir()).glob('.pending-*'))
 
 
 def test_failed_manifest_replace_preserves_previous_generation(stack, monkeypatch):
@@ -118,16 +121,20 @@ def test_cancelled_decode_never_returns_a_partial_stack(stack, monkeypatch):
     assert len(reads) == 1
 
 
+def _aligned_size(manifest):
+    return json.loads(manifest.read_text(encoding='utf-8'))['encoded_bytes'] + manifest.stat().st_size
+
+
 def test_byte_limit_evicts_oldest_cache_and_preserves_unrelated_files(stack):
     _save(stack, identity={'revision': 1})
-    root = Path(align_cache.cache_dir(stack[0]))
+    root = Path(align_cache.cache_dir())
     unrelated = root / 'user-notes'
     unrelated.mkdir()
     (unrelated / 'keep.txt').write_text('unrelated', encoding='utf-8')
     manifest = next(root.glob('*/meta.json'))
-    encoded_bytes = json.loads(manifest.read_text(encoding='utf-8'))['encoded_bytes']
+    size = _aligned_size(manifest)
     os.utime(manifest, (1, 1))
-    _save(stack, identity={'revision': 2}, max_cache_bytes=encoded_bytes + 1)
+    _save(stack, identity={'revision': 2}, max_cache_bytes=size + 1)
     assert _load(stack, identity={'revision': 1}) is None
     assert _load(stack, identity={'revision': 2}) is not None
     assert (unrelated / 'keep.txt').read_text(encoding='utf-8') == 'unrelated'
@@ -137,14 +144,14 @@ def test_previous_cache_version_is_evicted_after_alignment_change(stack, monkeyp
     current_version = align_cache.CACHE_FORMAT_VERSION
     monkeypatch.setattr(align_cache, 'CACHE_FORMAT_VERSION', 3)
     _save(stack, identity={'revision': 1})
-    root = Path(align_cache.cache_dir(stack[0]))
+    root = Path(align_cache.cache_dir())
     old_manifest = next(root.glob('*/meta.json'))
-    encoded_bytes = json.loads(old_manifest.read_text(encoding='utf-8'))['encoded_bytes']
+    size = _aligned_size(old_manifest)
     os.utime(old_manifest, (1, 1))
 
     monkeypatch.setattr(align_cache, 'CACHE_FORMAT_VERSION', current_version)
     assert _load(stack, identity={'revision': 1}) is None
-    _save(stack, identity={'revision': 2}, max_cache_bytes=encoded_bytes + 1)
+    _save(stack, identity={'revision': 2}, max_cache_bytes=size + 1)
     assert not old_manifest.exists()
     assert _load(stack, identity={'revision': 2}) is not None
 
@@ -201,7 +208,7 @@ def _load_plan(stack, revision):
 def _plan_path(stack, revision):
     folder, names, images, _ = stack
     signature = align_cache._plan_signature(folder, names, images, {'revision': revision})
-    return Path(align_cache.cache_dir(folder)) / 'plans' / signature / 'meta.json'
+    return Path(align_cache.cache_dir()) / 'plans' / signature / 'meta.json'
 
 
 def test_plan_lru_budget_and_reestimated_pixels(plan_stack):
@@ -236,7 +243,7 @@ def test_shared_budget_evicts_other_kind_even_with_same_signature(plan_stack, mo
     monkeypatch.setattr(align_cache, '_plan_signature', lambda *args: signature)
     if last_kind == 'plan':
         _save(stack, identity={'revision': 1})
-        old = Path(align_cache.cache_dir(folder)) / signature / 'meta.json'
+        old = Path(align_cache.cache_dir()) / signature / 'meta.json'
         os.utime(old, (1, 1))
         _save_plan(plan_stack, 1)
         new = _plan_path(plan_stack, 1)
@@ -248,8 +255,8 @@ def test_shared_budget_evicts_other_kind_even_with_same_signature(plan_stack, mo
         old = _plan_path(plan_stack, 1)
         os.utime(old, (1, 1))
         _save(stack, identity={'revision': 1})
-        new = Path(align_cache.cache_dir(folder)) / signature / 'meta.json'
-        budget = json.loads(new.read_text(encoding='utf-8'))['encoded_bytes']
+        new = Path(align_cache.cache_dir()) / signature / 'meta.json'
+        budget = _aligned_size(new)
         _save(stack, identity={'revision': 1}, max_cache_bytes=budget)
         assert not old.exists() and _load(stack, identity={'revision': 1}) is not None
 
@@ -284,7 +291,7 @@ def test_failed_plan_publication_preserves_previous(plan_stack, monkeypatch, fai
         _save_plan(plan_stack, 1, **kwargs)
     assert _plan_path(plan_stack, 1).read_bytes() == previous
     assert _load_plan(plan_stack, 1) == plan_stack[3]
-    assert not list(Path(plan_stack[0]).rglob('.plan-*'))
+    assert not list(Path(align_cache.cache_dir()).glob('.pending-*'))
 
 
 def test_prune_preserves_unowned_plan_entries_and_symlinks(plan_stack, tmp_path):
@@ -368,8 +375,8 @@ def test_prune_skips_plan_manifest_symlink(plan_stack, tmp_path):
 
 
 def test_prune_skips_symlinked_plans_root(stack, tmp_path):
-    root = Path(align_cache.cache_dir(stack[0]))
-    root.mkdir()
+    root = Path(align_cache.cache_dir())
+    root.mkdir(parents=True)
     outside = tmp_path / 'external-plans'
     directory = outside / ('d' * 32)
     directory.mkdir(parents=True)
@@ -383,7 +390,121 @@ def test_prune_skips_symlinked_plans_root(stack, tmp_path):
         pytest.skip('Symlink creation unavailable')
     _save(stack, identity={'revision': 1})
     aligned = next(root.glob('*/meta.json'))
-    budget = json.loads(aligned.read_text(encoding='utf-8'))['encoded_bytes']
+    budget = _aligned_size(aligned)
     os.utime(manifest, (1, 1))
     _save(stack, identity={'revision': 1}, max_cache_bytes=budget)
     assert manifest.exists() and (root / 'plans').is_symlink()
+
+
+@pytest.mark.parametrize('platform, variable, parts', [
+    ('win32', 'LOCALAPPDATA', ('local',)),
+    ('darwin', None, ('Library', 'Caches')),
+    ('linux', 'XDG_CACHE_HOME', ('local',)),
+    ('linux', None, ('.cache',)),
+])
+def test_cache_dir_uses_platform_cache_root(tmp_path, monkeypatch, platform, variable, parts):
+    monkeypatch.delenv('OPENFOCUS_DATA_DIR', raising=False)
+    monkeypatch.delenv('XDG_CACHE_HOME', raising=False)
+    monkeypatch.setattr(align_cache, 'sys', SimpleNamespace(platform=platform))
+    monkeypatch.setattr(Path, 'home', classmethod(lambda cls: tmp_path))
+    if variable:
+        monkeypatch.setenv(variable, str(tmp_path / 'local'))
+    expected = tmp_path.joinpath(*parts, 'OpenFocus', 'alignment-cache')
+    assert Path(platform_cache_dir()) == expected
+    assert not expected.exists()
+
+
+def test_explicit_data_root_isolates_alignment_cache(tmp_path, monkeypatch):
+    monkeypatch.setenv('OPENFOCUS_DATA_DIR', str(tmp_path))
+    assert Path(platform_cache_dir()) == tmp_path / 'alignment-cache'
+
+
+def test_global_budget_and_identity_across_two_stacks(plan_stack, tmp_path):
+    folder, names, images, plan = plan_stack
+    first = Path(folder)
+    second = tmp_path / 'another-stack'
+    second.mkdir()
+    for name in names:
+        path = first / name
+        info = path.stat()
+        copy = second / name
+        copy.write_bytes(path.read_bytes())
+        os.utime(copy, ns=(info.st_atime_ns, info.st_mtime_ns))
+        assert copy.stat().st_mtime_ns == info.st_mtime_ns
+
+    stack = (str(second), names, images)
+    other_plan = (*stack, plan)
+    assert _plan_path(plan_stack, 1) != _plan_path(other_plan, 1)
+    _save_plan(plan_stack, 1)
+    assert _load_plan(plan_stack, 1) == plan
+    assert _load_plan(other_plan, 1) is None
+    _save(plan_stack[:3], identity={'revision': 1})
+    assert _load(stack, identity={'revision': 1}) is None
+    alias_stack = (os.path.relpath(first, tmp_path), names, images)
+    with pytest.MonkeyPatch.context() as cwd:
+        cwd.chdir(tmp_path)
+        assert _load(alias_stack, identity={'revision': 1}) is not None
+
+    _save(stack, identity={'revision': 1})
+    root = Path(align_cache.cache_dir())
+    other_signature = align_cache._signature(str(second), names, ('openfocus',), 1024,
+                                              identity={'revision': 1})
+    budget = _aligned_size(root / other_signature / 'meta.json')
+    _save(stack, identity={'revision': 1}, max_cache_bytes=budget)
+    assert _load_plan(plan_stack, 1) is None
+    assert _load(plan_stack[:3], identity={'revision': 1}) is None
+    for actual, expected in zip(_load(stack, identity={'revision': 1}), images):
+        np.testing.assert_array_equal(actual, expected)
+    assert {path.name for path in first.iterdir()} == set(names)
+    assert {path.name for path in second.iterdir()} == set(names)
+
+
+def test_clear_preserves_legacy_and_unknown_paths(plan_stack):
+    folder = Path(plan_stack[0])
+    legacy = folder / '.openfocus_cache'
+    legacy.mkdir()
+    (legacy / 'keep.txt').write_text('legacy', encoding='utf-8')
+    _save(plan_stack[:3])
+    _save_plan(plan_stack, 1)
+    root = Path(align_cache.cache_dir())
+    unrelated = root / 'notes'
+    unrelated.mkdir()
+    (unrelated / 'keep.txt').write_text('user file', encoding='utf-8')
+    pending = root / '.pending-12345678' / 'generation-12345678'
+    pending.mkdir(parents=True)
+    (pending / 'aligned_0000.png').write_bytes(b'abandoned staging')
+    (pending / 'tmp12345678.png').write_bytes(b'interrupted PNG encoding')
+
+    assert align_cache.clear_alignment_cache() == 2
+    assert _load(plan_stack[:3]) is None
+    assert _load_plan(plan_stack, 1) is None
+    assert not pending.parent.exists()
+    assert (legacy / 'keep.txt').read_text(encoding='utf-8') == 'legacy'
+    assert (unrelated / 'keep.txt').read_text(encoding='utf-8') == 'user file'
+
+
+def _hold_process_cache_lock(root, acquired, release):
+    with align_cache._cache_access(root, None, create=True):
+        acquired.set()
+        release.wait(15)
+
+
+def test_clear_reports_busy_while_another_process_owns_the_cache(stack):
+    _save(stack)
+    ctx = multiprocessing.get_context('spawn')
+    acquired, release = ctx.Event(), ctx.Event()
+    peer = ctx.Process(target=_hold_process_cache_lock,
+                       args=(align_cache.cache_dir(), acquired, release))
+    peer.start()
+    try:
+        assert acquired.wait(15)
+        assert align_cache.clear_alignment_cache() is None
+    finally:
+        release.set()
+        peer.join(15)
+        if peer.is_alive():
+            peer.kill()
+            peer.join()
+    assert peer.exitcode == 0
+    assert _load(stack) is not None
+    assert align_cache.clear_alignment_cache() == 1

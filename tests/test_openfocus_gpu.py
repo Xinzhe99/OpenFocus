@@ -13,6 +13,31 @@ def _stack(dtype, channels):
     return [rng.integers(0, maximum + 1, shape, dtype=dtype) for _ in range(3)]
 
 
+def test_opencl_status_uses_the_same_selected_adapter_as_render_jobs(monkeypatch):
+    import sys
+    from types import SimpleNamespace
+    from core import multi_focus_fusion as mff
+    from fusion_methods import _openfocus_gpu
+
+    devices = [SimpleNamespace(type=4, available=True, compiler_available=False,
+                               name='GPU without a compiler'),
+               SimpleNamespace(type=4, available=True, compiler_available=True,
+                               name=' Intel Arc A380 ')]
+    platform = SimpleNamespace(get_devices=lambda device_type: devices)
+    cl = SimpleNamespace(get_platforms=lambda: [platform],
+                         device_type=SimpleNamespace(GPU=4), Error=RuntimeError)
+    monkeypatch.setitem(sys.modules, 'pyopencl', cl)
+    monkeypatch.setattr(mff, '_OPENFOCUS_GPU_NAME', None)
+    assert mff.openfocus_gpu_available() is None
+    assert mff.ensure_openfocus_gpu_available() is True
+    name = _openfocus_gpu.opencl_device_name(_openfocus_gpu._device(cl))
+    gpu = SimpleNamespace(used=True, failed=True, device_name=name)
+    assert mff.openfocus_gpu_name() == gpu.device_name == 'OpenCL: Intel Arc A380'
+    assert mff.short_render_device_name(_openfocus_gpu.device_status(gpu)) == 'CPU + Intel Arc A380'
+    assert _openfocus_gpu.opencl_device_name(SimpleNamespace()) == 'OpenCL'
+    assert mff.short_render_device_name('OpenCL') == 'OpenCL'
+
+
 @pytest.mark.parametrize('dtype', [np.uint8, np.uint16])
 @pytest.mark.parametrize('channels', [1, 3])
 @pytest.mark.parametrize('resize', [None, (51, 49)])

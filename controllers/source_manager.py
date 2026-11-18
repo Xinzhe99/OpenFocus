@@ -4,7 +4,7 @@ from typing import Any
 import cv2
 import os
 from PyQt6.QtCore import QObject, QPoint, QThread, Qt
-from PyQt6.QtGui import QAction, QIcon, QDragEnterEvent, QDropEvent
+from PyQt6.QtGui import QIcon, QDragEnterEvent, QDropEvent
 from utils.file_dialogs import FileDialog
 from PyQt6.QtWidgets import QListWidgetItem, QMenu, QMessageBox, QDialog
 
@@ -1293,15 +1293,32 @@ class SourceManager(QObject):
     # ------------------------------------------------------------------
     # Context menu & deletions
     # ------------------------------------------------------------------
+    def _selected_source_rows(self) -> set[int]:
+        window = self.window
+        count = len(window.raw_images)
+        return {row for item in window.file_list.selectedItems()
+                if 0 <= (row := window.file_list.row(item)) < count}
+
     def show_source_context_menu(self, position: QPoint) -> None:
         window = self.window
+        rows = self._selected_source_rows()
+        if not rows:
+            return
+        excluded = getattr(window, "excluded_frames", set())
         menu = QMenu(window.file_list)
 
-        delete_action = QAction(trans.t("action_delete"), window)
-        delete_action.triggered.connect(self.delete_selected_source_images)
-        menu.addAction(delete_action)
+        include_action = menu.addAction(trans.t("source_include_selected"))
+        include_action.setEnabled(not rows.isdisjoint(excluded))
+        include_action.triggered.connect(lambda: self._set_frame_participation(
+            self._selected_source_rows(), included=True))
+        exclude_action = menu.addAction(trans.t("source_exclude_selected"))
+        exclude_action.setEnabled(not rows.issubset(excluded))
+        exclude_action.triggered.connect(lambda: self._set_frame_participation(
+            self._selected_source_rows(), included=False))
+        menu.addSeparator()
+        menu.addAction(trans.t("action_delete"), self.delete_selected_source_images)
 
-        menu.exec(window.file_list.mapToGlobal(position))
+        menu.exec(window.file_list.viewport().mapToGlobal(position))
 
     def delete_source_image(self, item: QListWidgetItem) -> None:
         window = self.window
@@ -1332,17 +1349,13 @@ class SourceManager(QObject):
 
     def delete_selected_source_images(self) -> None:
         window = self.window
-        selected_items = window.file_list.selectedItems()
-        if not selected_items:
+        rows = sorted(self._selected_source_rows())
+        if not rows:
             return
 
         raw = window.raw_images
         revision = getattr(window, "source_revision", 0)
         frames = tuple(raw)
-        rows = sorted({window.file_list.row(item) for item in selected_items
-                       if 0 <= window.file_list.row(item) < len(frames)})
-        if not rows:
-            return
 
         confirm = QMessageBox(window)
         from utils.ui_utils import style_message_box
@@ -1440,25 +1453,21 @@ class SourceManager(QObject):
         row = window.file_list.row(item)
         if row < 0 or row >= len(window.raw_images):
             return
-        excluded = getattr(window, "excluded_frames", None)
-        if excluded is None:
-            excluded = set()
-            window.excluded_frames = excluded
-        should_exclude = item.checkState() != Qt.CheckState.Checked
-        if (row in excluded) == should_exclude:
+        self._set_frame_participation({row}, included=item.checkState() == Qt.CheckState.Checked)
+
+    def _set_frame_participation(self, rows: set[int], *, included: bool) -> None:
+        if not rows:
+            return
+        window = self.window
+        excluded = getattr(window, "excluded_frames", set())
+        if (rows.isdisjoint(excluded) if included else rows.issubset(excluded)):
             return
         window.push_undo()
-        was_blocked = window.file_list.blockSignals(True)
-        try:
-            if item.checkState() == Qt.CheckState.Checked:
-                excluded.discard(row)
-            else:
-                excluded.add(row)
-            font = item.font()
-            font.setStrikeOut(item.checkState() == Qt.CheckState.Unchecked)
-            item.setFont(font)
-        finally:
-            window.file_list.blockSignals(was_blocked)
+        if included:
+            excluded.difference_update(rows)
+        else:
+            excluded.update(rows)
+        window.excluded_frames = excluded
         self.processing_selection_changed()
 
     def processing_selection_changed(self) -> None:
@@ -1504,6 +1513,11 @@ class SourceManager(QObject):
         if new_order == list(range(n)):
             return
 
+        selected_rows = self._selected_source_rows()
+        kept = getattr(window, "current_display_index", 0)
+        kept = kept if isinstance(kept, int) and 0 <= kept < n else 0
+        new_pos = new_order.index(kept)
+
         window.push_undo()
 
         def _reorder(seq):
@@ -1521,17 +1535,14 @@ class SourceManager(QObject):
             window.image_icc_profiles = _reorder(window.image_icc_profiles)
         excluded = getattr(window, "excluded_frames", None)
         if excluded:
-            # old index i ends up at position new_order.index(i)
-            window.excluded_frames = {
-                new_order.index(i) for i in excluded if i in new_order}
+            window.excluded_frames = {row for row, old in enumerate(new_order) if old in excluded}
 
         # The remapped exclusion set survives cache invalidation.
         window.transform_manager.invalidate_processing_results(
             clear_output_view=False, preserve_outputs=True)
-        kept = getattr(window, "current_display_index", 0)
-        kept = kept if isinstance(kept, int) and 0 <= kept < n else 0
-        new_pos = new_order.index(kept) if kept in new_order else 0
-        window.transform_manager.reload_image_stack(initial_index=new_pos)
+        if window.transform_manager.reload_image_stack(initial_index=new_pos):
+            for row in range(n):
+                window.file_list.item(row).setSelected(row in selected_rows)
 
     # === Icon Drag-and-Drop Support Methods ===
     # These methods handle files dropped on app icon/taskbar/dock

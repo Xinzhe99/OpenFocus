@@ -113,3 +113,45 @@ def test_main_window_close_persists_layout(qapp, tmp_path, monkeypatch):
         restored.close()
         restored.deleteLater()
         qapp.processEvents()
+
+
+def test_first_launch_shows_render_controls_and_restores_custom_right_splitter(
+        qapp, tmp_path, monkeypatch):
+    from PyQt6.QtCore import QPoint
+    from main import OpenFocus
+    from tests.test_control_channel import _destroy_main_window, _new_main_window
+    from utils import settings_store
+
+    monkeypatch.setattr(OpenFocus, '_probe_stackmff_availability_async', lambda self: None)
+    monkeypatch.setattr(OpenFocus, '_probe_device_kind_async', lambda self: None)
+    window = _new_main_window(qapp, tmp_path, monkeypatch, use_gpu=False)
+    try:
+        parts = window.right_panel_components
+        viewport = parts.config_scroll.viewport()
+        for button in (parts.btn_render, parts.btn_render_settings, parts.btn_reset,
+                       parts.btn_compare, parts.btn_method_help, parts.btn_reg_help):
+            corner = button.mapTo(viewport, QPoint(0, button.height() - 1))
+            assert 0 <= corner.y() < viewport.height()
+        first_run = parts.splitter.sizes()
+        assert first_run[0] > max(first_run[1:]) > 0
+
+        parts.splitter.setSizes([first_run[0] // 2, first_run[1], first_run[2]])
+        saved = parts.splitter.sizes()
+        assert saved[0] < first_run[0]
+        settings_store.save_window_layout(window)
+    finally:
+        _destroy_main_window(qapp, window)
+
+    # A restored divider should keep the same proportions even if the actual
+    # client height differs slightly after Qt lays out the window.
+    settings_store.get_settings().remove(settings_store.WINDOW_GEOMETRY_KEY)
+    restored = OpenFocus()
+    try:
+        restored.show()
+        qapp.processEvents()
+        sizes = restored.right_splitter.sizes()
+        assert sizes[0] < first_run[0]
+        assert [value / sum(sizes) for value in sizes] == pytest.approx(
+            [value / sum(saved) for value in saved], abs=0.01)
+    finally:
+        _destroy_main_window(qapp, restored)

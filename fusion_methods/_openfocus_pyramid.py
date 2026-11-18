@@ -123,12 +123,15 @@ def _last_weight(weight, start, stop):
 
 
 @njit(nogil=True)
-def _merge_rows(detail, weight, accumulator, best, first, start, stop):
+def _merge_rows(detail, weight, accumulator, best, first, start, stop,
+                winner=None, index=0):
     for y in range(start, stop):
         for x in range(weight.shape[1]):
             w = weight[y, x]
             if first or w > best[y, x]:
                 best[y, x] = w
+                if winner is not None:
+                    winner[y, x] = index
                 for c in range(detail.shape[2]):
                     accumulator[y, x, c] = detail[y, x, c]
 
@@ -182,7 +185,8 @@ def _up(source, shape, cancel):
     return output
 
 
-def fuse_pyramid(frames, shape, img_resize, smoothing, should_cancel, progress_callback=None):
+def fuse_pyramid(frames, shape, img_resize, smoothing, should_cancel, progress_callback=None,
+                 focus_callback=None):
     """Fuse ordered sources in mapped, cancellable pyramid passes."""
     from fusion_methods.openfocus_ab import _check_cancel
     from fusion_methods.openfocus_bc import _source_codes
@@ -203,6 +207,7 @@ def fuse_pyramid(frames, shape, img_resize, smoothing, should_cancel, progress_c
         levels.append(next_level)
     accumulators = [create_frame((h, w, channels), np.float32) for h, w in levels]
     maxima = [create_frame((h, w), np.uint16) for h, w in levels]
+    winner = create_frame(shape[:2], np.uint16) if focus_callback is not None else None
     total = len(frames) + 1
     if progress_callback is not None:
         progress_callback(0, total)
@@ -236,7 +241,9 @@ def fuse_pyramid(frames, shape, img_resize, smoothing, should_cancel, progress_c
             if parameter > 0:
                 radius = np.float32(np.float32(max(height, width)) * parameter / np.float32(100))
                 weights = _filter(weights, radius, cancel)
-            _rows(height, lambda a, b: _merge_rows(detail, weights, accumulators[level], maxima[level], index == 0, a, b), cancel)
+            level_winner = winner if level == 0 else None
+            _rows(height, lambda a, b: _merge_rows(detail, weights, accumulators[level],
+                  maxima[level], index == 0, a, b, level_winner, index), cancel)
             gaussian[level] = None
             del detail, weights
         if progress_callback is not None:
@@ -256,4 +263,8 @@ def fuse_pyramid(frames, shape, img_resize, smoothing, should_cancel, progress_c
     if progress_callback is not None:
         progress_callback(total, total)
     cancel()
+    if focus_callback is not None:
+        # Each pyramid level makes its own selection. Export the actual
+        # finest-level detail winner, not a claim about the collapsed color.
+        focus_callback(winner, len(frames) - 1)
     return output[:, :, 0] if is_gray else output

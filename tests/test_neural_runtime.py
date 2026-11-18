@@ -274,7 +274,7 @@ def test_unknown_vram_does_not_erase_verified_provider_capability(monkeypatch, t
         ExecutionMode=SimpleNamespace(ORT_SEQUENTIAL=0)))
     monkeypatch.setattr(neural_runtime, '_DEVICE', None)
     monkeypatch.setattr(neural_runtime, '_DIRECTML_ADAPTER_INDEX', 0)
-    monkeypatch.setattr(neural_runtime, '_DIRECTML_ADAPTER_NAME', '')
+    monkeypatch.setattr(neural_runtime, '_ADAPTER_NAME', '')
     for name in ('_AVAILABLE_PROVIDERS', '_HARDWARE_ADAPTERS', '_PROBE_ERRORS'):
         monkeypatch.setattr(neural_runtime, name, ())
     monkeypatch.setattr(resource_policy, 'directml_adapters', lambda: hardware)
@@ -294,15 +294,13 @@ def test_unknown_vram_does_not_erase_verified_provider_capability(monkeypatch, t
     assert diagnostics['unadmitted'] == 'DIRECTML'
     assert neural_runtime.unadmitted_accelerator() == 'DIRECTML'
     assert neural_runtime.admitted_kind('DIRECTML') == 'CPU'
-    assert neural_runtime.execution_status(
-        True, True, 'model.onnx', neural_runtime.admitted_kind('DIRECTML')) == ('CPU', 'selected')
 
 
 def test_fusion_info_does_not_borrow_another_jobs_actual_device(monkeypatch):
     from core.multi_focus_fusion import MultiFocusFusion
     monkeypatch.setattr(neural_runtime, 'resolve_device', lambda use_gpu: 'DIRECTML')
     monkeypatch.setattr(neural_runtime, '_DEVICE', 'DIRECTML')
-    monkeypatch.setattr(neural_runtime, '_DIRECTML_ADAPTER_NAME', '')
+    monkeypatch.setattr(neural_runtime, '_ADAPTER_NAME', '')
     first = MultiFocusFusion('stackmff', use_gpu=True)
     first._actual_device = 'CPU'
     second = MultiFocusFusion('stackmffv3', use_gpu=True)
@@ -418,7 +416,7 @@ def test_registered_provider_and_discrete_adapter_failure_do_not_hide_usable_igp
         ExecutionMode=SimpleNamespace(ORT_SEQUENTIAL=0)))
     monkeypatch.setattr(neural_runtime, '_DEVICE', None)
     monkeypatch.setattr(neural_runtime, '_DIRECTML_ADAPTER_INDEX', 0)
-    monkeypatch.setattr(neural_runtime, '_DIRECTML_ADAPTER_NAME', '')
+    monkeypatch.setattr(neural_runtime, '_ADAPTER_NAME', '')
     for name in ('_AVAILABLE_PROVIDERS', '_HARDWARE_ADAPTERS', '_PROBE_ERRORS'):
         monkeypatch.setattr(neural_runtime, name, ())
     monkeypatch.setattr(resource_policy, 'directml_adapters', lambda: [
@@ -429,7 +427,8 @@ def test_registered_provider_and_discrete_adapter_failure_do_not_hide_usable_igp
     assert tried == [('CUDAExecutionProvider', 0), ('DmlExecutionProvider', 0),
                      ('DmlExecutionProvider', 1)]
     assert selected == [1]
-    assert 'Intel UHD' in neural_runtime.display_name('DIRECTML')
+    assert neural_runtime.display_name('DIRECTML') == 'DirectML (Intel UHD integrated adapter)'
+    assert neural_runtime.device_diagnostics()['adapter'] == 'Intel UHD integrated adapter'
     assert len(neural_runtime.device_diagnostics()['probe_errors']) == 2
     assert not list(tmp_path.glob('probe-*.json'))
 
@@ -509,22 +508,38 @@ def test_failed_inference_removes_its_profile(monkeypatch, tmp_path):
     assert not profile.exists()
 
 
-@pytest.mark.parametrize('neural,use_gpu,checkpoint,capability,actual,actual_model,expected', [
-    (False, True, 'v3.onnx', 'DIRECTML', 'DIRECTML', 'v3.onnx', ('CPU', 'selected')),
-    (True, False, 'v3.onnx', 'DIRECTML', 'DIRECTML', 'v3.onnx', ('CPU', 'selected')),
-    (True, True, 'v3.onnx', None, None, None, (None, 'pending')),
-    (True, True, 'v3.onnx', 'DIRECTML', None, None, ('DIRECTML', 'ready')),
-    (True, True, 'v3.onnx', 'N/A', None, None, ('CPU', 'selected')),
-    (True, True, 'v3.onnx', 'DIRECTML', 'CPU', 'v3.onnx', ('CPU', 'actual')),
-    (True, True, 'v1.onnx', 'DIRECTML', 'CPU', 'v3.onnx', ('DIRECTML', 'ready')),
-    (True, True, 'v3.pth', 'DIRECTML', 'DIRECTML', 'v3.onnx', ('DIRECTML', 'actual')),
-    (True, True, 'v3.onnx', 'CUDA', 'DIRECTML', 'v3.onnx', ('CUDA', 'ready')),
-])
-def test_execution_status_separates_capability_preference_and_actual_model(
-        monkeypatch, neural, use_gpu, checkpoint, capability, actual, actual_model, expected):
-    monkeypatch.setattr(neural_runtime, '_ACTUAL_DEVICE', actual)
-    monkeypatch.setattr(neural_runtime, '_ACTUAL_CHECKPOINT', actual_model)
-    assert neural_runtime.execution_status(neural, use_gpu, checkpoint, capability) == expected
+@pytest.mark.parametrize('kind', ['CUDA', 'ROCM'])
+def test_driver_adapter_name_uses_the_configured_provider_ordinal(monkeypatch, kind):
+    import ctypes
+
+    def cuda_device(device, index):
+        assert index == 2
+        device._obj.value = 19
+        return 0
+
+    def read_name(name, size, device):
+        assert size == len(name)
+        assert device == (19 if kind == 'CUDA' else 2)
+        name.value = b' GPU model '
+        return 0
+
+    driver = SimpleNamespace(cuInit=lambda _: 0, cuDeviceGet=cuda_device,
+                             cuDeviceGetName=read_name, hipInit=lambda _: 0,
+                             hipDeviceGetName=read_name)
+    monkeypatch.setattr(ctypes, 'CDLL', lambda _: driver)
+    assert neural_runtime._driver_adapter_name(kind, 2) == 'GPU model'
+
+
+def test_device_report_retains_successful_gpu_work_after_cpu_fallback(monkeypatch):
+    monkeypatch.setattr(neural_runtime, '_DEVICE', 'CUDA')
+    monkeypatch.setattr(neural_runtime, '_ADAPTER_NAME', 'GPU model')
+    monkeypatch.setattr(neural_runtime, '_JOB_ACCELERATOR', 'CUDA')
+    monkeypatch.setattr(neural_runtime, '_ACTUAL_DEVICE', 'CPU')
+    assert neural_runtime.actual_device_report() == 'CPU + CUDA (GPU model)'
+    monkeypatch.setattr(neural_runtime, '_ACTUAL_CHECKPOINT', None)
+    monkeypatch.setattr(neural_runtime, '_FALLBACK_CPU', True)
+    neural_runtime.start_inference_job()
+    assert neural_runtime.actual_device_report() == 'CPU'
 
 
 @pytest.mark.parametrize('known', [True, False])

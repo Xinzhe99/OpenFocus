@@ -4,6 +4,7 @@ from collections import OrderedDict
 import json
 import hashlib
 import os
+import sys
 import tempfile
 import uuid
 import threading
@@ -23,9 +24,10 @@ _PROVIDER = {'CPU': 'CPUExecutionProvider', 'DIRECTML': 'DmlExecutionProvider',
              'OPENVINO': 'OpenVINOExecutionProvider', 'COREML': 'CoreMLExecutionProvider'}
 _DEVICE = None
 _DIRECTML_ADAPTER_INDEX = 0
-_DIRECTML_ADAPTER_NAME = ''
+_ADAPTER_NAME = ''
 _LOCK = threading.RLock()
 _ACTUAL_DEVICE = None
+_JOB_ACCELERATOR = None
 _FALLBACK_CPU = False
 _ACTUAL_CHECKPOINT = None
 _AVAILABLE_PROVIDERS = ()
@@ -41,7 +43,7 @@ VRAM_GATED_KINDS = ('DIRECTML', 'CUDA', 'ROCM', 'OPENVINO')
 def device_diagnostics():
     """Cached hardware, provider capability and job execution; never probes."""
     return {'hardware': _HARDWARE_ADAPTERS, 'providers': _AVAILABLE_PROVIDERS,
-            'selected': _DEVICE, 'adapter': _DIRECTML_ADAPTER_NAME,
+            'selected': _DEVICE, 'adapter': _ADAPTER_NAME,
             'actual': _ACTUAL_DEVICE, 'checkpoint': _ACTUAL_CHECKPOINT,
             'fallback_cpu': _FALLBACK_CPU, 'probe_errors': _PROBE_ERRORS,
             'unadmitted': _UNADMITTED}
@@ -98,14 +100,22 @@ def _record_admission(kind, snapshot):
 
 def start_inference_job():
     """Reset actual-device reporting and fallback for a new serialized job."""
-    global _ACTUAL_DEVICE, _FALLBACK_CPU, _ACTUAL_CHECKPOINT
-    _ACTUAL_DEVICE = _ACTUAL_CHECKPOINT = None
+    global _ACTUAL_DEVICE, _JOB_ACCELERATOR, _FALLBACK_CPU, _ACTUAL_CHECKPOINT
+    _ACTUAL_DEVICE = _JOB_ACCELERATOR = _ACTUAL_CHECKPOINT = None
     _FALLBACK_CPU = False
 
 
 def actual_device():
     """Device actually used by the current job, or None before inference."""
     return _ACTUAL_DEVICE
+
+
+def actual_device_report():
+    """Name the device used by this job, retaining successful GPU work on fallback."""
+    if _ACTUAL_DEVICE == 'CPU' and _JOB_ACCELERATOR is not None:
+        return 'CPU + ' + display_name(_JOB_ACCELERATOR)
+    return display_name(_ACTUAL_DEVICE or 'CPU')
+
 
 def cached_device():
     """Return the latest verified device, or None before probing."""
@@ -118,11 +128,11 @@ def is_accelerator(kind):
 
 
 def display_name(kind):
-    if kind == 'DIRECTML' and _DIRECTML_ADAPTER_NAME:
-        return f'DirectML ({_DIRECTML_ADAPTER_NAME})'
-    return {'DIRECTML': 'DirectML', 'CUDA': 'CUDA', 'ROCM': 'ROCm',
-            'OPENVINO': 'OpenVINO GPU', 'COREML': 'CoreML', 'CPU': 'CPU',
-            'N/A': 'N/A'}.get(kind, str(kind))
+    provider = {'DIRECTML': 'DirectML', 'CUDA': 'CUDA', 'ROCM': 'ROCm',
+                'OPENVINO': 'OpenVINO GPU', 'COREML': 'CoreML'}.get(kind, str(kind))
+    if kind == _DEVICE and _ADAPTER_NAME:
+        return f'{provider} ({_ADAPTER_NAME})'
+    return provider
 
 
 def gpu_toggle_state(kind, use_gpu, available):
@@ -130,24 +140,32 @@ def gpu_toggle_state(kind, use_gpu, available):
     return enabled, bool(enabled and use_gpu)
 
 
-def execution_status(neural, use_gpu, checkpoint, capability):
-    """Return (device, state) without probing or claiming planned work ran.
+def _driver_adapter_name(kind, index):
+    """Query the driver ordinal configured as the execution provider's device_id."""
+    # OpenVINO's auto-selected GPU and CoreML's compute units are opaque
+    # here. Keep the provider label when we cannot identify its adapter.
+    if kind not in ('CUDA', 'ROCM'):
+        return ''
+    import ctypes
 
-    Capability is the completed background probe; actual placement belongs to
-    the last inference of the selected checkpoint. Explicit CPU and classical
-    methods always describe CPU mode, even after an earlier accelerated job.
-    """
-    if not neural or not use_gpu:
-        return 'CPU', 'selected'
-    checkpoint = os.path.basename(os.path.splitext(checkpoint or '')[0] + '.onnx')
-    if (_ACTUAL_DEVICE is not None and _ACTUAL_CHECKPOINT == checkpoint
-            and (_ACTUAL_DEVICE == 'CPU' or _ACTUAL_DEVICE == capability)):
-        return _ACTUAL_DEVICE, 'actual'
-    if capability is None:
-        return None, 'pending'
-    if is_accelerator(capability):
-        return capability, 'ready'
-    return 'CPU', 'selected'
+    name = ctypes.create_string_buffer(256)
+    try:
+        if kind == 'CUDA':
+            driver = ctypes.CDLL('nvcuda.dll' if sys.platform == 'win32' else 'libcuda.so.1')
+            device = ctypes.c_int()
+            if driver.cuInit(0) or driver.cuDeviceGet(ctypes.byref(device), index):
+                return ''
+            status = driver.cuDeviceGetName(name, len(name), device.value)
+        else:
+            driver = ctypes.CDLL('amdhip64.dll' if sys.platform == 'win32' else 'libamdhip64.so')
+            if driver.hipInit(0):
+                return ''
+            status = driver.hipDeviceGetName(name, len(name), index)
+        if status == 0:
+            return name.value.decode('utf-8', errors='replace').strip()
+    except (OSError, AttributeError, ValueError):
+        _LOG.debug('Could not identify the %s adapter', kind, exc_info=True)
+    return ''
 
 
 class _ProfiledSession:
@@ -195,11 +213,12 @@ class _ProfiledSession:
 def resolve_device(use_gpu):
     if not use_gpu:
         return 'CPU'
-    global _DEVICE, _DIRECTML_ADAPTER_INDEX, _DIRECTML_ADAPTER_NAME
+    global _DEVICE, _DIRECTML_ADAPTER_INDEX, _ADAPTER_NAME
     global _AVAILABLE_PROVIDERS, _HARDWARE_ADAPTERS, _PROBE_ERRORS, _UNADMITTED
     with _LOCK:
         if _DEVICE is None:
             _UNADMITTED = None
+            _ADAPTER_NAME = ''
             import onnxruntime as ort
             from utils.weights import weights_path
             available = ort.get_available_providers()
@@ -239,8 +258,9 @@ def resolve_device(use_gpu):
                         if kind == 'DIRECTML':
                             from core.resource_policy import set_directml_adapter
                             set_directml_adapter(adapter_index)
-                        if kind == 'DIRECTML':
-                            _DIRECTML_ADAPTER_INDEX, _DIRECTML_ADAPTER_NAME = adapter_index, adapter_name
+                            _DIRECTML_ADAPTER_INDEX = adapter_index
+                        _ADAPTER_NAME = (adapter_name.strip() if kind == 'DIRECTML'
+                                         else _driver_adapter_name(kind, adapter_index))
                         if _memory_unreadable(kind):
                             _UNADMITTED = kind
                         device = kind
@@ -254,8 +274,8 @@ def resolve_device(use_gpu):
             _DEVICE = device
             _PROBE_ERRORS = tuple(errors)
             log_action('neural_provider_selected', provider=_PROVIDER[device],
-                       adapter=_DIRECTML_ADAPTER_NAME or None,
-                       adapter_index=_DIRECTML_ADAPTER_INDEX if device == 'DIRECTML' else None,
+                       adapter=_ADAPTER_NAME or None,
+                       adapter_index=adapter_index if is_accelerator(device) else None,
                        fallback=device == 'CPU', probe_errors=errors)
         return _DEVICE
 
@@ -446,7 +466,7 @@ def logits(planes, path, device, threads, should_cancel=None):
         planes = np.pad(planes, ((0, 0), (0, 0), (0, ph), (0, pw)), mode=mode)
     planes = np.ascontiguousarray(planes, dtype=np.float32)
     shape = planes.shape[1:]
-    global _ACTUAL_DEVICE, _FALLBACK_CPU, _ACTUAL_CHECKPOINT
+    global _ACTUAL_DEVICE, _JOB_ACCELERATOR, _FALLBACK_CPU, _ACTUAL_CHECKPOINT
     if _FALLBACK_CPU:
         device = 'CPU'
     cached = None
@@ -548,6 +568,8 @@ def logits(planes, path, device, threads, should_cancel=None):
                 raise
         device = 'CPU'
     _ACTUAL_DEVICE = device
+    if is_accelerator(device):
+        _JOB_ACCELERATOR = device
     _ACTUAL_CHECKPOINT = os.path.basename(os.path.splitext(path)[0] + '.onnx')
     if profile.enabled:
         profile.session_run((_ACTUAL_CHECKPOINT, tuple(int(v) for v in shape), device,

@@ -110,6 +110,13 @@ def _normalized(frame):
     return frame
 
 
+def tiled_output_bytes(height, width, channels, result_count):
+    """Full-canvas accumulators for V2's globally normalized depth."""
+    padded_h = height + (-height) % common.ATTENTION_PAD_ALIGN
+    padded_w = width + (-width) % common.ATTENTION_PAD_ALIGN
+    return padded_h * padded_w * (32 + channels * 8 * result_count)
+
+
 def _plan(source, model_path, use_gpu, tile_size, execution_plan,
           thread_count, resource_preference, result_count):
     from core.resource_policy import ResourceLimitError, plan_neural_tiles
@@ -135,10 +142,7 @@ def _plan(source, model_path, use_gpu, tile_size, execution_plan,
         outer = replace(outer, ram_budget=min(outer.ram_budget, execution_plan.ram_budget),
                         native_threads=min(outer.native_threads, execution_plan.native_threads))
     first = source.get(0)
-    padded_h = h + (-h) % common.ATTENTION_PAD_ALIGN
-    padded_w = w + (-w) % common.ATTENTION_PAD_ALIGN
-    fixed = padded_h * padded_w * (32 + channels * 8 * result_count)
-    fixed += source_resolution + source_cache
+    fixed = tiled_output_bytes(h, w, channels, result_count) + source_resolution + source_cache
     while True:
         crop = first[:block, :block]
         try:
@@ -262,7 +266,8 @@ def tiled_fusion(input_source, img_resize, model_path, use_gpu,
 def _tiled_fusion_under_lease(input_source, img_resize, model_path, use_gpu,
                               should_cancel=None, execution_plan=None, thread_count=None,
                               resource_preference='balanced', tile_size=None, tile_overlap=0,
-                              progress_callback=None, exposure_gains=None, source_all_uint8=None):
+                              progress_callback=None, exposure_gains=None, source_all_uint8=None,
+                              focus_callback=None):
     source = _Source(input_source, img_resize, exposure_gains, should_cancel)
     depth, index = _tiled_depth_under_lease(source, model_path, use_gpu, should_cancel,
                                execution_plan, thread_count, resource_preference,
@@ -285,4 +290,6 @@ def _tiled_fusion_under_lease(input_source, img_resize, model_path, use_gpu,
     if output.dtype != np.uint8:
         np.clip(output, 0, 255, out=output)
     common.cancel(should_cancel)
+    if focus_callback is not None:
+        focus_callback(index, len(source.items) - 1)
     return output[..., 0] if output.ndim == 3 and output.shape[-1] == 1 else output

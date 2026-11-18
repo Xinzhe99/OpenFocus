@@ -3,9 +3,9 @@
 Displays a normalized Laplacian-variance curve over the frame stack so users
 can spot out-of-focus or duplicated frames at a glance and jump to them.
 """
-from typing import List, Optional
+from typing import List
 
-from PyQt6.QtCore import QPointF, QRectF, Qt, pyqtSignal
+from PyQt6.QtCore import QPointF, Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QPainter, QPen, QPolygonF
 from PyQt6.QtWidgets import QWidget
 
@@ -22,6 +22,7 @@ class SharpnessCurveWidget(QWidget):
         self.setMinimumHeight(34)
         self.setMaximumHeight(44)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setMouseTracking(True)
         self.setToolTip("")
         self._tooltip_base = ""
 
@@ -46,14 +47,14 @@ class SharpnessCurveWidget(QWidget):
 
     def _index_from_x(self, x: float) -> int:
         n = len(self._values)
-        if n < 2 or self.width() <= 0:
-            return 0
-        return max(0, min(n - 1, int(round(x / self.width() * (n - 1)))))
+        return max(0, min(n - 1, round((x - 1) / max(1, self.width() - 2) * (n - 1))))
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
-        pos = event.position()
-        self.frame_clicked.emit(self._index_from_x(pos.x()))
-        super().mousePressEvent(event)
+        if event.button() == Qt.MouseButton.LeftButton and len(self._values) >= 2:
+            self.frame_clicked.emit(self._index_from_x(event.position().x()))
+            event.accept()
+        else:
+            super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event) -> None:  # noqa: N802
         n = len(self._values)

@@ -409,7 +409,8 @@ def test_failed_cache_write_keeps_previous_complete_cache(qapp, tmp_path, monkey
     align_cache.save_aligned(str(source), names, frames, ("ecc",), 1024)
     assert align_cache.load_aligned(str(source), names, ("homography",), 1024) is not None
     assert align_cache.load_aligned(str(source), names, ("ecc",), 1024) is None
-    assert not list((source / '.openfocus_cache').glob('.pending-*'))
+    assert not list(Path(align_cache.cache_dir()).glob('.pending-*'))
+    assert not (source / '.openfocus_cache').exists()
 
 
 def test_batch_scale_scope_and_downsample_calibration(qapp):

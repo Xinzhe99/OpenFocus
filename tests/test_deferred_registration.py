@@ -1,4 +1,5 @@
 """Consumer pixels and lifetimes for deferred CPU perspective registration."""
+from pathlib import Path
 from threading import Event
 import sys
 import types
@@ -457,7 +458,7 @@ def test_perspective_cache_roundtrip_keeps_exact_resampling_and_crop(tmp_path, p
     sources, frames, names, identity, plan = perspective_cache
     loaded = align_cache.load_alignment_plan(str(tmp_path), names, sources, identity=identity)
     assert loaded == plan
-    assert not list((tmp_path / align_cache.CACHE_DIR_NAME).rglob('*.png'))
+    assert not list(Path(align_cache.cache_dir()).rglob('*.png'))
     with pytest.raises(FrozenInstanceError):
         loaded.downscale_width = 123
     restored = registration.apply_alignment_plan(sources, loaded, defer_warps=True)
@@ -493,7 +494,7 @@ def test_perspective_cache_rejects_changed_identity_and_corrupt_plan(tmp_path, p
         sources = [source_frames.process_frame(source, lambda pixels: pixels) for source in sources]
         align_cache.save_alignment_plan(str(tmp_path), names, plan, sources, identity=identity)
     else:
-        path = next((tmp_path / align_cache.CACHE_DIR_NAME).rglob('meta.json'))
+        path = next(Path(align_cache.cache_dir()).rglob('meta.json'))
         manifest = json.loads(path.read_text(encoding='utf-8'))
         if change == 'schema':
             manifest['plan']['version'] = -1
@@ -534,7 +535,7 @@ def test_gui_deferred_cache_cold_warm_fuses_identical_pixels(qapp, tmp_path, mon
     warm, actual = render()
     assert warm.alignment_reused and not warm.alignment_computed
     np.testing.assert_array_equal(actual, expected)
-    assert not list((tmp_path / align_cache.CACHE_DIR_NAME).rglob('*.png'))
+    assert not list(Path(align_cache.cache_dir()).rglob('*.png'))
 
 
 @pytest.mark.parametrize('alignment', ['homography', 'ecc', 'both'])

@@ -127,7 +127,7 @@ def openfocus_b_impl(input_source, img_resize=None, kernel_size: int = 17,
                      thread_count: int = None, depth_smoothing: float = 1.44,
                      should_cancel=None, depth_override=None, progress_callback=None,
                      *, feather: int = 0, use_gpu: bool = False,
-                     device_callback=None):
+                     device_callback=None, focus_callback=None):
     """Fuse source codes, optionally accelerating ordered merge on an OpenCL GPU."""
     _validate_feather(feather)
     from core import source_frames
@@ -218,6 +218,8 @@ def openfocus_b_impl(input_source, img_resize=None, kernel_size: int = 17,
             merge_sources(False)
     else:
         merge_sources(False)
+    if focus_callback is not None:
+        focus_callback(depth, (65535 // (count - 1)) * (count - 1))
     del depth
     source_frames.SOURCE_CACHE.clear()
     _check_cancel(should_cancel)
@@ -235,7 +237,7 @@ def openfocus_b_impl(input_source, img_resize=None, kernel_size: int = 17,
 def openfocus_c_impl(input_source, img_resize=None, thread_count: int = None,
                      blend_smoothing: float = 2.4, should_cancel=None,
                      progress_callback=None, use_gpu: bool = False,
-                     device_callback=None):
+                     device_callback=None, focus_callback=None):
     """Fuse source frames using a streaming weighted detail pyramid."""
     from core import source_frames
     from fusion_methods._openfocus_pyramid import fuse_pyramid
@@ -259,7 +261,7 @@ def openfocus_c_impl(input_source, img_resize=None, thread_count: int = None,
                 gpu = GpuC()
                 result = gpu.fuse(frames, shape, img_resize,
                                   smoothing * (5.0 / 3.0),
-                                  should_cancel, progress_callback)
+                                  should_cancel, progress_callback, focus_callback)
                 if device_callback is not None:
                     device_callback(gpu.device_name)
                 return result
@@ -267,7 +269,7 @@ def openfocus_c_impl(input_source, img_resize=None, thread_count: int = None,
                 log_fallback(exc)
                 gpu = None
         result = fuse_pyramid(frames, shape, img_resize, smoothing * (5.0 / 3.0),
-                              should_cancel, progress_callback)
+                              should_cancel, progress_callback, focus_callback)
         if device_callback is not None:
             device_callback('CPU')
         return result

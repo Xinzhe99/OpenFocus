@@ -752,7 +752,7 @@ En Windows, la actualización crea una versión candidata separada y mueve el ma
 
 ### Caché de registro
 
-OpenFocus puede guardar los resultados de registro en una carpeta `.openfocus_cache` junto a la pila de origen. Al reabrir la misma pila (con los archivos sin cambios) se omite por completo la alineación. Actívala o desactívala en **Ajustes → Ajustes avanzados → Registro → Caché de registro**; las entradas obsoletas se sustituyen automáticamente.
+OpenFocus guarda los resultados de registro en la caché del usuario. Al volver a abrir una pila sin cambios con los mismos ajustes, reutiliza el resultado guardado. El interruptor está en **Ajustes → Ajustes avanzados → Registro → Caché de registro**. Todas las pilas comparten un límite de 2 GiB. Cuando se necesita espacio, se eliminan las entradas menos recientes. Las carpetas antiguas `.openfocus_cache` junto a las pilas de origen se conservan.
 
 ### Ajustes persistidos
 

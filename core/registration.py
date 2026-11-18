@@ -1540,14 +1540,14 @@ class ImageRegistration:
             channels = images[0].shape[2] if images[0].ndim == 3 else 1
             # Charge active source resolution and bounded concurrent estimation;
             # deferred output descriptors retain no full-resolution warp stack.
-            gray_bytes = height * width * 4
+            from core.resource_policy import registration_working_set
             from core.source_frames import frame_resolution_bytes
+            fixed, per_worker = registration_working_set(height, width,
+                max(image.size * 16 + frame_resolution_bytes(image) for image in images))
             plan = plan_execution(Workload(
                 algorithm='registration', frames=len(images), height=height,
                 width=width, channels=channels, itemsize=images[0].dtype.itemsize,
-                fixed_bytes=gray_bytes,
-                per_worker_bytes=max(image.size * 16 + frame_resolution_bytes(image)
-                                     for image in images),
+                fixed_bytes=fixed, per_worker_bytes=per_worker,
                 outer_tasks=len(images), parallel_layer='outer'),
                 preference=resource_preference, user_threads=thread_count)
             workers = min(plan.workers, plan.max_in_flight)

@@ -39,6 +39,8 @@ def _render_error_category(exc):
 
 logger = get_logger(__name__)
 
+_RENDER_DEPTH_METHODS = frozenset(('openfocus_b', 'openfocus_c', 'stackmffv2', 'stackmffv3'))
+
 
 def _crop_transparent_for_gui(images, should_cancel=None):
     from core.source_frames import crop_transparent_frames
@@ -530,6 +532,7 @@ class RenderWorker(QThread):
         self.alignment_report_provenance = None
         self.profile_performance = bool(profile_performance)
         self.performance_report = None
+        self.rendered_depth = None
         self._render_error_category = None
 
     def cancel(self):
@@ -828,10 +831,13 @@ class RenderWorker(QThread):
                        roi_base_index=(max(0, min(self.roi_base_index, len(processed_images) - 1))
                                        if self.roi_mode == 'paste' and processed_images else None),
                        alignment_reused=self.alignment_reused, alignment_computed=self.alignment_computed)
+            focus_region = ({'depth_crop': roi_rect_int}
+                            if full_frame_roi and not self.preview and self.algorithm in _RENDER_DEPTH_METHODS
+                            else {})
             with profile.stage('fusion', resources=True):
                 fusion_result, device_name = self._run_fusion(
                     fusion_images, should_cancel=lambda: self.is_cancelled,
-                    progress_callback=self._fusion_progress())
+                    progress_callback=self._fusion_progress(), **focus_region)
             if full_frame_roi:
                 x, y, width, height = roi_rect_int
                 fusion_result = store_frame(fusion_result[y:y + height, x:x + width])
@@ -1104,9 +1110,11 @@ class RenderWorker(QThread):
         tiles.preparation = preparation
         return tiles
 
-    def _run_fusion(self, images, should_cancel=None, progress_callback=None):
+    def _run_fusion(self, images, should_cancel=None, progress_callback=None, depth_crop=None):
         """Run the selected descriptor with its complete parameter mapping."""
         from core.transparency import restore_transparent_canvas
+        self.rendered_depth = None
+        domain_shape = images[0].shape[:2]
         images, transparent = _crop_transparent_for_gui(images, should_cancel)
         from utils.image_utils import quantize_fuse_output
         fusion = MultiFocusFusion(algorithm=self.algorithm,
@@ -1129,9 +1137,30 @@ class RenderWorker(QThread):
         profile = performance_profile.current()
         with profile.stage('prepare_input'):
             images, is_16bit = prepare_fusion_input(images, should_cancel)
+        focus = {}
+        if not self.preview and self.algorithm in _RENDER_DEPTH_METHODS:
+            from core.render_context import store_rendered_focus
+
+            def capture(positions, scale):
+                try:
+                    depth = store_rendered_focus(positions, scale, domain_shape,
+                        crop=depth_crop, transparent=transparent, should_cancel=should_cancel)
+                except (OSError, MemoryError):
+                    logger.warning('could not retain rendered focus positions', exc_info=True)
+                    return
+                if depth is not None:
+                    index, valid_rect = depth
+                    index.flags.writeable = False
+                    self.rendered_depth = {
+                        'index': index, 'valid_rect': valid_rect, 'frame_count': len(images),
+                        'reverse_order': fusion.descriptor.sort_frames and fusion.sort_mode == 'desc',
+                        'parameters': dict(self.fusion_parameters),
+                    }
+
+            focus['focus_callback'] = capture
         with profile.stage('fuse'):
             result = fusion.fuse(images, thread_count=self.thread_count,
-                should_cancel=should_cancel, progress_callback=progress_callback)
+                should_cancel=should_cancel, progress_callback=progress_callback, **focus)
         self.prepared_cache = fusion.prepared_cache
         if self.sharpen_output and result is not None:
             from utils.output_sharpen import sharpen_output

@@ -1003,6 +1003,7 @@ def test_gpu_action_disables_after_backend_probe_fails(qapp, tmp_path, monkeypat
     monkeypatch.setattr(OpenFocus, "_probe_stackmff_availability_async", lambda self: None)
     monkeypatch.setattr(platform_utils, "has_compute_gpu", lambda: True)
     monkeypatch.setattr(mff, "neural_device_kind", lambda: "N/A")
+    monkeypatch.setattr(mff, '_OPENFOCUS_GPU_NAME', '')
     window = _new_main_window(qapp, tmp_path, monkeypatch)
     try:
         window.use_gpu = True
@@ -1031,6 +1032,7 @@ def test_gpu_action_allows_retry_when_memory_becomes_readable(qapp, tmp_path, mo
     monkeypatch.setattr(OpenFocus, "_probe_device_kind_async", lambda self: None)
     monkeypatch.setattr(mff, "neural_device_kind", lambda: "CUDA")
     monkeypatch.setattr(neural_runtime, "_DEVICE", "CUDA")
+    monkeypatch.setattr(neural_runtime, "_ADAPTER_NAME", "")
     monkeypatch.setattr(neural_runtime, "_UNADMITTED", "CUDA")
     monkeypatch.setattr(neural_runtime, "_ACTUAL_DEVICE", None)
     monkeypatch.setattr(neural_runtime, "_ACTUAL_CHECKPOINT", None)
@@ -1057,7 +1059,7 @@ def test_gpu_action_allows_retry_when_memory_becomes_readable(qapp, tmp_path, mo
     monkeypatch.setattr(neural_runtime, "_session", session)
     window = _new_main_window(qapp, tmp_path, monkeypatch, use_gpu=False)
     try:
-        monkeypatch.setattr(window, "_ai_method_selected", lambda: True)
+        window.combo_fusion.setCurrentIndex(window.combo_fusion.findData('stackmff'))
         window._update_dynamic_status()
         assert window.use_gpu is False
         settings = settings_store._settings_singleton
@@ -1094,6 +1096,55 @@ def test_gpu_action_allows_retry_when_memory_becomes_readable(qapp, tmp_path, mo
         action.trigger()
         assert not window.use_gpu and not action.isChecked()
         assert settings.value("rendering/use_gpu", type=bool) is False
+    finally:
+        _destroy_main_window(qapp, window)
+
+
+@pytest.mark.parametrize('method', ['openfocus_b', 'openfocus_c', 'stackmff', 'stackmffv3'])
+def test_device_label_separates_available_adapter_and_completed_job(
+        qapp, tmp_path, monkeypatch, method):
+    from core import multi_focus_fusion as mff
+    from fusion_methods import neural_runtime
+    from locales import trans
+    from main import OpenFocus
+
+    monkeypatch.setattr(OpenFocus, '_probe_stackmff_availability_async', lambda self: None)
+    monkeypatch.setattr(mff, '_OPENFOCUS_GPU_NAME', 'OpenCL: A380')
+    monkeypatch.setattr(neural_runtime, '_DEVICE', 'DIRECTML')
+    monkeypatch.setattr(neural_runtime, '_ADAPTER_NAME', 'A380')
+    monkeypatch.setattr(neural_runtime, '_UNADMITTED', None)
+    # Neural inference elsewhere in the process does not describe this desktop job.
+    monkeypatch.setattr(neural_runtime, '_ACTUAL_DEVICE', 'CPU')
+    window = _new_main_window(qapp, tmp_path, monkeypatch, use_gpu=True)
+    try:
+        window.combo_fusion.setCurrentIndex(window.combo_fusion.findData(method))
+        status = window.lbl_status_gpu
+        manager = window.render_manager
+        window._update_dynamic_status()
+        ready = 'DirectML (A380)' if method.startswith('stackmff') else 'OpenCL: A380'
+        assert status.toolTip().splitlines()[0] == trans.t('neural_provider_ready').format(ready)
+        assert status.text() == trans.t('status_gpu').format('A380')
+
+        manager.last_state = 'done'
+        manager.last_result = {'method': 'guided_filter', 'device': 'CPU'}
+        window._update_dynamic_status()
+        assert status.text() == trans.t('status_gpu').format('A380')
+
+        manager.last_result = {'method': method, 'device': 'CPU'}
+        window._update_dynamic_status()
+        assert status.text() == trans.t('status_gpu').format('CPU')
+        assert status.toolTip().splitlines()[0] == trans.t('info_proc_unit').format('CPU')
+
+        model = 'NVIDIA GeForce RTX 4060 Laptop GPU'
+        actual = f'DirectML ({model})' if method.startswith('stackmff') else f'OpenCL: {model}'
+        manager.last_result['device'] = actual
+        window._update_dynamic_status()
+        assert status.text() == trans.t('status_gpu').format('RTX 4060 Laptop GPU')
+        assert status.toolTip().splitlines()[0] == trans.t('info_proc_unit').format(actual)
+
+        window.use_gpu = False
+        window._update_dynamic_status()
+        assert status.text() == trans.t('status_gpu').format('CPU')
     finally:
         _destroy_main_window(qapp, window)
 
