@@ -1446,7 +1446,7 @@ class OpenFocus(QMainWindow):
         """Resolve the accelerator only when the selected method uses it."""
         try:
             code = self.combo_fusion.currentData()
-            if code in ('openfocus_b', 'openfocus_c') or (code != 'none' and get_fusion(code).neural):
+            if code in ('openfocus_a', 'openfocus_b', 'openfocus_c') or (code != 'none' and get_fusion(code).neural):
                 self._probe_device_kind_async()
         except Exception:
             pass
