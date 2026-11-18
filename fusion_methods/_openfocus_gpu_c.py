@@ -27,6 +27,13 @@ __kernel void c_norm(__global const ushort* src, __global float* dst,
     dst[i]=(float)src[i]*factor;
 }
 
+__kernel void c_norm_u8(__global const uchar* src, __global float* dst,
+                        const float factor, const int n)
+{
+    int i=get_global_id(0); if(i>=n)return;
+    dst[i]=(float)src[i]*factor;
+}
+
 __kernel void c_down_h(__global const float* s, __global float* d,
                        const int W, const int H, const int OW, const int C)
 {
@@ -203,7 +210,7 @@ class GpuC:
             prog = cl.Program(self.ctx, _FILTER_K + _C_K).build(
                 options=['-cl-fp32-correctly-rounded-divide-sqrt'])
             self.k = {n: cl.Kernel(prog, n) for n in (
-                'c_norm', 'c_down_h', 'c_down_v', 'c_up_h', 'c_up_v',
+                'c_norm', 'c_norm_u8', 'c_down_h', 'c_down_v', 'c_up_h', 'c_up_v',
                 'c_detail_w', 'c_last_w', 'c_merge', 'c_collapse',
                 'c_merge_focus',
                 'c_out_u8', 'c_out_f32', 'c_transpose', 'filt4')}
@@ -302,6 +309,11 @@ class GpuC:
             except self.cl.Error as exc:
                 raise GpuError('OpenCL GPU C execution failed') from exc
         finally:
+            for cache in ('_planes', '_weights', '_filt'):
+                bufs = getattr(self, cache, None)
+                if bufs is not None:
+                    bufs.clear()
+            self.k = self.q = self.ctx = None
             _device_lock.release()
 
     def _fuse_locked(self, frames, shape, img_resize, smoothing,
@@ -330,7 +342,8 @@ class GpuC:
         snapshot = resource_policy.probe_resources()
         host_budget = min(int(memory_budget_bytes()),
                           int(resource_policy.frame_ram_budget(snapshot)))
-        staging = (height * width * channels * (2 + (1 if is_u8 else 4))
+        in_bytes = 1 if (img_resize is None and is_u8) else 2
+        staging = (height * width * channels * (in_bytes + (1 if is_u8 else 4))
                    + max((frame_resolution_bytes(frame) for frame in frames), default=0)
                    + source_cache_growth_bytes(frames) + 16 * 1024 * 1024)
         if staging > host_budget:
@@ -368,13 +381,14 @@ class GpuC:
             pixels, scale = _source_codes(frame, img_resize, should_cancel)
             if tuple(pixels.shape) != tuple(shape):
                 raise ValueError('OpenFocus C requires frames with matching shapes')
-            codes = np.ascontiguousarray(pixels, dtype=np.uint16)
+            pix_u8 = pixels.dtype == np.uint8
+            codes = np.ascontiguousarray(pixels, dtype=np.uint8 if pix_u8 else np.uint16)
             factor = np.float32(scale / (65280.0 if is_u8 else 65535.0))
             n = height * width * channels
             base = self._plane(('g0', height, width, channels), height, width, channels)
             src = self.cl.Buffer(self.ctx, self.mf.READ_ONLY | self.mf.COPY_HOST_PTR,
                                  codes.nbytes, codes)
-            self._run(self.k['c_norm'], (n,), src, base,
+            self._run(self.k['c_norm_u8' if pix_u8 else 'c_norm'], (n,), src, base,
                       np.float32(factor), np.int32(n))
 
             gaussian = [base]
@@ -419,6 +433,7 @@ class GpuC:
                               np.int32(index == 0), *dimensions)
             # Bound queued frame uploads to one source, even for very deep stacks.
             self.q.finish()
+            del src, codes, pixels
             if progress_callback is not None:
                 progress_callback(index + 1, total)
 

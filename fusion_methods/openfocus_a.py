@@ -95,7 +95,6 @@ def _hard_response(gray, radius, should_cancel, check_cancel):
     height, width = gray.shape
     levels = int(np.floor(np.log2(max(1, radius)))) + 3
     response = create_frame((height, width), np.int32)
-    response[...] = 0
     for level in range(levels):
         check_cancel(should_cancel)
         reduced = create_frame(((gray.shape[0] + 1) // 2,
@@ -104,17 +103,23 @@ def _hard_response(gray, radius, should_cancel, check_cancel):
             check_cancel(should_cancel)
             down2_rows(gray, reduced, start, stop)
         run_bands(reduced.shape[0], 128, reduce_rows)
-        laplacian = create_frame(gray.shape, np.int32)
-        def laplacian_rows(start, stop):
-            check_cancel(should_cancel)
-            burt_laplacian_rows(gray, reduced, laplacian, start, stop)
-        run_bands(gray.shape[0], 128, laplacian_rows)
-        def accumulate_rows(start, stop):
-            check_cancel(should_cancel)
-            burt_accumulate_rows(laplacian, response, level, start, stop)
-        run_bands(height, 128, accumulate_rows)
+        if level == 0:
+            def laplacian0_rows(start, stop):
+                check_cancel(should_cancel)
+                burt_laplacian_rows(gray, reduced, response, start, stop, True)
+            run_bands(height, 128, laplacian0_rows)
+        else:
+            laplacian = create_frame(gray.shape, np.int32)
+            def laplacian_rows(start, stop):
+                check_cancel(should_cancel)
+                burt_laplacian_rows(gray, reduced, laplacian, start, stop, False)
+            run_bands(gray.shape[0], 128, laplacian_rows)
+            def accumulate_rows(start, stop):
+                check_cancel(should_cancel)
+                burt_accumulate_rows(laplacian, response, level, start, stop)
+            run_bands(height, 128, accumulate_rows)
+            del laplacian
         gray = reduced
-        del laplacian
     return response
 
 
