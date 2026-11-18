@@ -78,13 +78,17 @@ def frame_gray_codes(source, img_resize, should_cancel, *, depth_color=False):
     frame = resolve_frame(source)
     _check_cancel(should_cancel)
     if img_resize is None and frame.dtype in (np.uint8, np.uint16):
+        from fusion_methods._openfocus_execution import run_bands
         from fusion_methods._openfocus_kernels import gray_rows
 
         gray = create_frame(frame.shape[:2], np.uint16)
         scale = 256 if frame.dtype == np.uint8 else 1
-        for start in range(0, gray.shape[0], 128):
+
+        # Rows are independent; a row-parallel job shares them among workers.
+        def rows(start, stop):
             _check_cancel(should_cancel)
-            gray_rows(frame, gray, start, min(gray.shape[0], start + 128), scale, depth_color)
+            gray_rows(frame, gray, start, stop, scale, depth_color)
+        run_bands(gray.shape[0], 128, rows)
         return gray
     return gray_codes(frame_codes(frame, img_resize, should_cancel), should_cancel,
                       u8=frame.dtype == np.uint8, depth_color=depth_color)

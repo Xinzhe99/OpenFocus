@@ -43,6 +43,16 @@ def current():
         return _active[-1] if _active else None
 
 
+def within_retention_limit(frames, limit_bytes=None):
+    """Whether a stack is small enough for retain_aligned_frames to keep.
+
+    A render may skip storing aligned frames that nothing else reads again
+    when this is false: they could never be retained.
+    """
+    limit = RETAINED_FRAME_LIMIT_BYTES if limit_bytes is None else limit_bytes
+    return sum(frame.nbytes for frame in frames) <= limit
+
+
 def retain_aligned_frames(frames, should_cancel=None, *, limit_bytes=None):
     """Keep only existing mapped alignment results for a bounded GUI stack.
 
@@ -53,8 +63,7 @@ def retain_aligned_frames(frames, should_cancel=None, *, limit_bytes=None):
     from core.source_frames import ProcessedFrame, RetainedFrame, without_retained_pixels
     from core.frame_storage import is_mapped_frame
 
-    limit = RETAINED_FRAME_LIMIT_BYTES if limit_bytes is None else limit_bytes
-    if sum(frame.nbytes for frame in frames) > limit:
+    if not within_retention_limit(frames, limit_bytes):
         return frames
     scope = current()
     # An unplanned scope stored nothing; do not plan it just to miss.
