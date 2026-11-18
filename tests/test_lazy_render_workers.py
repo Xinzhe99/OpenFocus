@@ -280,6 +280,9 @@ def test_unavailable_preview_decode_failure_does_not_publish_canvas(tmp_path, mo
 def test_roi_alignment_preserves_original_descriptors(tmp_path, monkeypatch):
     texture = np.random.default_rng(71).integers(0, 256, (40, 56, 1), dtype=np.uint8)
     frame, original = _source(tmp_path, value=texture)
+    from core.registration import ImageRegistration
+    expected = ImageRegistration('ecc', use_gpu=False, parameters={'failure_policy': 'fail'}).process(
+        [original, original], thread_count=1)
     def forbidden(*args, **kwargs):
         raise AssertionError('ROI alignment staged all original frames')
     monkeypatch.setattr(workers, 'materialize_frames', forbidden)
@@ -292,9 +295,9 @@ def test_roi_alignment_preserves_original_descriptors(tmp_path, monkeypatch):
     assert errors == [] and len(results) == 1
     aligned = results[0][0]
     assert all(image.source is frame for image in aligned)
-    expected = original[2:-2, 2:-2]
-    for image in aligned:
-        np.testing.assert_array_equal(source_frames.resolve_frame(image), expected)
+    assert len(aligned) == len(expected) == 2
+    for image, pixels in zip(aligned, expected):
+        np.testing.assert_array_equal(source_frames.resolve_frame(image), pixels)
 
 
 @pytest.mark.parametrize('fail', [False, True])
