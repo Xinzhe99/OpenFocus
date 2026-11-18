@@ -16,13 +16,30 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Changed
 - Include allowlisted error categories, render stages, and memory admission
   figures in sanitized reports, without adding exception messages or paths.
+- Apply exposure matching in OpenFocus fusion through a per-frame lookup table
+  of every 8- or 16-bit code, computed by the existing per-sample arithmetic
+  and applied in parallel row bands, instead of float strips on one thread.
+  Output pixels are unchanged.
 - Require an account to enter the desktop application; a saved sign-in can be
   used offline. Signing out returns to the sign-in screen.
+- Smooth OpenFocus B detail scores with per-row column sums, reflecting rows
+  once per row and columns only at the edges. Output pixels are unchanged.
 - Expose the active render stage through the local control channel.
+- Stop writing aligned frames to the render's frame cache when only their
+  exposure-matched frames are read again and the stack is too large for the
+  desktop to retain aligned pixels, halving that scratch traffic for large
+  OpenFocus stacks. Output pixels are unchanged.
 - Record render dispatch and stack-load admission milestones in local logs to
   help diagnose stalled work.
+- Advance OpenFocus depth IIR filters in 2048-row native calls instead of
+  128-row calls, so row workers no longer wait on each other to start the
+  next call. Output pixels are unchanged.
 - Record Windows memory commitment and process usage when neural sessions fail.
+- Convert OpenFocus source frames to gray codes in parallel row bands instead
+  of on one thread. Output pixels are unchanged.
 - Mark Dust Map and batch flat-field correction as experimental desktop tools.
+- Find the sources an OpenFocus B depth map uses in one compiled pass instead
+  of NumPy slices. Output pixels are unchanged.
 - Default desktop updates and public downloads to stable releases. Users can
   opt in to beta updates through Advanced Settings or the welcome dialog.
 - Prepare ECC source frames concurrently within the alignment stage's CPU and

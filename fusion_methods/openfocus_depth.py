@@ -51,6 +51,13 @@ def _snap_lut(feather=0):
                      for k in range(1025)], dtype=np.int64)
 
 
+# Rows advanced per native call in one 64-column strip. Each call takes the
+# GIL for dispatch and a cancel check; 128-row calls (about 8k samples) made
+# that the bottleneck with several workers. A 2048-row call still lasts only
+# a fraction of a millisecond, so cancellation stays prompt.
+_AXIS_BLOCK_ROWS = 2048
+
+
 def _axis(src, guide, main, low, count, axis, cancel, allocate):
     from fusion_methods._depth_kernel import axis_block
     cancel = cancellation_check(cancel)
@@ -81,17 +88,17 @@ def _axis(src, guide, main, low, count, axis, cancel, allocate):
         if guide is None:
             initial *= t + q
         acc = (initial & 0xffffffff).astype(np.uint32)
-        for start in range(0, h, 128):
+        for start in range(0, h, _AXIS_BLOCK_ROWS):
             cancel()
             axis_block(src, guide, first_pixels, out_pixels, acc, q, t, tm, tl,
-                       start, min(h, start + 128), left, right, False)
+                       start, min(h, start + _AXIS_BLOCK_ROWS), left, right, False)
         acc = first_pixels[-1, :right - left].astype(np.uint32) << 4
         if guide is None:
             acc *= t + q
-        for stop in range(h, 0, -128):
+        for stop in range(h, 0, -_AXIS_BLOCK_ROWS):
             cancel()
             axis_block(src, guide, first_pixels, out_pixels, acc, q, t, tm, tl,
-                       max(0, stop - 128), stop, left, right, True)
+                       max(0, stop - _AXIS_BLOCK_ROWS), stop, left, right, True)
     run_bands(w, 64, columns,
               scratch_bytes=h * min(w, 64) * (2 if guide is None else 4)
               + count * min(w, 64) * 8 + min(w, 64) * 32,

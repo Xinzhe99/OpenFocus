@@ -712,6 +712,9 @@ class ProcessedFrame:
     dtype: np.dtype
     should_cancel: object = None
     scratch_bytes: int = 0
+    # False when this frame's own cached result is the only later reader of
+    # its processed source: the source is then looked up but never stored.
+    store_source: bool = True
 
     @property
     def ndim(self):
@@ -738,12 +741,16 @@ class ProcessedFrame:
     def preview_is_available(self):
         return True
 
-    def full_resolution(self, *, should_cancel=None, cache_result=True):
+    def full_resolution(self, *, should_cancel=None, cache_result=True, store_result=True):
         """Resolve the processed pixels.
 
         ``cache_result=False`` neither looks up nor stores this frame in the
         render's resolution cache; its source still resolves through it. For
         a descriptor that is discarded after one use.
+
+        ``store_result=False`` still returns a cached copy, but stores neither
+        this frame nor its processed sources: for an intermediate whose only
+        later reader is a cached consumer.
         """
         from core.registration import RegistrationCancelled
         def cancelled():
@@ -764,7 +771,11 @@ class ProcessedFrame:
                     return hit
             from core.resource_policy import require_memory
             require_memory(frame_resolution_bytes(self))
-            image = resolve_frame(self.source, should_cancel=cancelled)
+            if isinstance(self.source, ProcessedFrame):
+                image = self.source.full_resolution(
+                    should_cancel=cancelled, store_result=store_result and self.store_source)
+            else:
+                image = resolve_frame(self.source, should_cancel=cancelled)
             if cancelled():
                 raise RegistrationCancelled()
             image = self.processor(image)
@@ -772,7 +783,7 @@ class ProcessedFrame:
                 raise RegistrationCancelled()
             if image.shape != self.shape or image.dtype != self.dtype:
                 raise ValueError('Processed frame does not match its declared shape/dtype')
-            if cache is not None:
+            if cache is not None and store_result:
                 stored = cache.put(self, image, should_cancel=cancelled)
                 if stored is not None:
                     _check_resolution_cancel(cancelled)
@@ -801,7 +812,7 @@ class RetainedFrame(ProcessedFrame):
     """
     pixels: object = None
 
-    def full_resolution(self, *, should_cancel=None, cache_result=True):
+    def full_resolution(self, *, should_cancel=None, cache_result=True, store_result=True):
         from core.registration import RegistrationCancelled
         if ((should_cancel is not None and should_cancel()) or
                 (self.should_cancel is not None and self.should_cancel())):
@@ -831,13 +842,18 @@ def without_retained_pixels(frame):
 
 
 def process_frame(frame, processor, *, shape=None, dtype=None, should_cancel=None,
-                  scratch_bytes=None):
-    """Describe processing and its additional peak workspace without decoding."""
+                  scratch_bytes=None, store_source=True):
+    """Describe processing and its additional peak workspace without decoding.
+
+    ``store_source=False`` keeps a processed source out of the render's cache
+    when this frame's cached result is that source's only later reader.
+    """
     shape = tuple(frame.shape if shape is None else shape)
     dtype = np.dtype(frame.dtype if dtype is None else dtype)
     scratch = (math.prod(shape) * dtype.itemsize * 2 if scratch_bytes is None
                else max(0, int(scratch_bytes)))
-    return ProcessedFrame(frame, processor, shape, dtype, should_cancel, scratch)
+    return ProcessedFrame(frame, processor, shape, dtype, should_cancel, scratch,
+                          store_source)
 
 
 def _crop_pixels(image, *, x, y, width, height, channels):
@@ -916,11 +932,90 @@ def exposure_frames(frames, gains, should_cancel=None):
             for frame, gain in zip(frames, gains)]
 
 
+def _matched_strip(strip, gain):
+    """Exposure-matched copy of one strip, in the strip's own dtype."""
+    from utils.image_utils import apply_exposure_gain, normalize_fuse_input, quantize_fuse_output
+    if strip.dtype == np.uint16:
+        # Match normalized float32 exposure before restoring native codes.
+        normalized, _ = normalize_fuse_input([strip])
+        adjusted = apply_exposure_gain(normalized[0], gain)
+        del normalized
+        return quantize_fuse_output(adjusted, True)
+    return apply_exposure_gain(strip, gain)
+
+
+# Integer frames this many times larger than their lookup table use the table.
+_EXPOSURE_TABLE_MIN_RATIO = 4
+
+
+def _exposure_table_entries(shape, dtype):
+    """Size of an integer frame's exposure table: one entry per code and channel."""
+    return (np.iinfo(dtype).max + 1) * (shape[2] if len(shape) == 3 else 1)
+
+
+def _uses_exposure_table(shape, dtype):
+    """Whether matching maps a frame through a code table rather than strips."""
+    dtype = np.dtype(dtype)
+    if dtype not in (np.uint8, np.uint16) or len(shape) not in (2, 3):
+        return False
+    return (math.prod(shape)
+            >= _EXPOSURE_TABLE_MIN_RATIO * _exposure_table_entries(shape, dtype))
+
+
+def _exposure_table(gain, dtype, shape):
+    """Matched value of every integer code, per channel: (codes, channels).
+
+    Matching is element-wise: a sample's result depends only on its code, its
+    channel (alpha is not gained) and the frame's gain. The table is computed by
+    _matched_strip itself over a ramp of every code, so mapping a frame through
+    it gives exactly the strip-by-strip result.
+    """
+    codes = np.arange(np.iinfo(dtype).max + 1, dtype=dtype)
+    if len(shape) == 2:
+        ramp = codes[None, :]
+    else:
+        ramp = np.repeat(codes[None, :, None], shape[2], axis=2)
+    return np.ascontiguousarray(np.asarray(_matched_strip(ramp, gain))[0]
+                                .reshape(codes.size, -1))
+
+
+def _match_through_table(image, gain, output, should_cancel):
+    """Fill output with the matched frame, in row bands a row job shares."""
+    from core.registration import RegistrationCancelled
+    from fusion_methods._openfocus_execution import run_bands
+    from fusion_methods._openfocus_kernels import table_rows
+    table = _exposure_table(gain, image.dtype, image.shape)
+    if (image.ndim == 3 and image.flags.c_contiguous and output.flags.c_contiguous
+            and (table == table[:, :1]).all()):
+        # Without alpha every channel maps alike. The frame is then one plane
+        # of samples behind a single column, which about halves a worker's time.
+        table = np.ascontiguousarray(table[:, :1])
+        image = image.reshape(image.shape[0], -1)
+        output = output.reshape(output.shape[0], -1)
+
+    def rows(start, stop):
+        if should_cancel is not None and should_cancel():
+            raise RegistrationCancelled()
+        table_rows(image, table, output, start, stop)
+    run_bands(image.shape[0], 128, rows)
+
+
+def _exposure_workspace_bytes(frame):
+    """Peak matcher workspace besides the output: one strip, or the code table."""
+    dtype = np.dtype(frame.dtype)
+    strip = (min(frame.shape[0], 128) * math.prod(frame.shape[1:])
+             * (12 if dtype == np.uint16 else 4 + dtype.itemsize))
+    if not _uses_exposure_table(frame.shape, dtype):
+        return strip
+    # The mean still reads one strip. Building a table runs the strip path over
+    # a ramp of every code: the ramp, two float32 copies, the quantized codes
+    # and the table itself.
+    return max(strip, _exposure_table_entries(frame.shape, dtype) * 16)
+
+
 def match_exposure_frames(frames, should_cancel=None, *, reference_index=-1):
     """Resolve the selected target mean once and retain one gain per source."""
-    from utils.image_utils import (
-        _exposure_mean, apply_exposure_gain, normalize_fuse_input, quantize_fuse_output,
-    )
+    from utils.image_utils import _exposure_mean
     from core.frame_storage import create_transient_frame
     reference = frames[reference_index]
     target = _exposure_mean(resolve_frame(reference), should_cancel, normalize_uint16=True)
@@ -935,28 +1030,26 @@ def match_exposure_frames(frames, should_cancel=None, *, reference_index=-1):
             if gain == 1.0:
                 return image
             output = create_transient_frame(image.shape, image.dtype)
+            if _uses_exposure_table(image.shape, image.dtype):
+                _match_through_table(image, gain, output, should_cancel)
+                return output
             for y in range(0, image.shape[0], 128):
                 if should_cancel is not None and should_cancel():
                     raise RegistrationCancelled()
-                strip = image[y:y + 128]
-                if image.dtype == np.uint16:
-                    # Match normalized float32 exposure before restoring native codes.
-                    normalized, _ = normalize_fuse_input([strip])
-                    adjusted = apply_exposure_gain(normalized[0], gain)
-                    del normalized
-                    output[y:y + 128] = quantize_fuse_output(adjusted, True)
-                    del adjusted
-                else:
-                    output[y:y + 128] = apply_exposure_gain(strip, gain)
+                output[y:y + 128] = _matched_strip(image[y:y + 128], gain)
             return output
         return match
 
+    # A matched frame is cached for every later reader in the render, so its
+    # processed (for example aligned) source is needed again only when the GUI
+    # may retain aligned pixels afterwards. Larger stacks are never retained.
+    from core.frame_resolution_cache import within_retention_limit
+    store_sources = within_retention_limit(frames)
     # Native u16 restoration peaks at three float32 strips; outputs stay bounded.
     return [process_frame(frame, matcher(1.0 if frame is reference else None),
+                          store_source=store_sources,
                           should_cancel=should_cancel,
-                          scratch_bytes=frame.nbytes + min(frame.shape[0], 128)
-                          * math.prod(frame.shape[1:])
-                          * (12 if frame.dtype == np.uint16 else 4 + frame.dtype.itemsize))
+                          scratch_bytes=frame.nbytes + _exposure_workspace_bytes(frame))
             for frame in frames]
 
 

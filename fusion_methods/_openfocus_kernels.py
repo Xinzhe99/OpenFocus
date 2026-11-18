@@ -33,6 +33,23 @@ def gray_rows(image, output, start, stop, scale, depth_color=False):
 
 
 @njit(nogil=True)
+def table_rows(image, table, output, start, stop):
+    """Map every sample through its channel's column of an integer table.
+
+    A two-dimensional image is one plane of samples that all use column 0.
+    """
+    if image.ndim == 2:
+        for y in range(start, stop):
+            for x in range(image.shape[1]):
+                output[y, x] = table[image[y, x], 0]
+    else:
+        for y in range(start, stop):
+            for x in range(image.shape[1]):
+                for channel in range(image.shape[2]):
+                    output[y, x, channel] = table[image[y, x, channel], channel]
+
+
+@njit(nogil=True)
 def down2_rows(image, output, start, stop, scale=1):
     height, width = image.shape[:2]
     for y in range(start, stop):
@@ -251,3 +268,18 @@ def merge_rows(accumulator, image, depth, index, step, start, stop,
                              + value * weight) >> 10)
 
 
+@njit(nogil=True)
+def active_source_rows(depth, step, active, start, stop):
+    """Mark every source that a depth code in these rows gives merge weight.
+
+    A code selects source code // step (clipped to the stack), and also the
+    next source when it falls between two sources.
+    """
+    last = active.shape[0] - 1
+    for y in range(start, stop):
+        for x in range(depth.shape[1]):
+            code = np.int64(depth[y, x])
+            lower = min(max(code // step, 0), last)
+            active[lower] = True
+            if code % step != 0:
+                active[min(lower + 1, last)] = True
