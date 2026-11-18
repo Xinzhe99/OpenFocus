@@ -225,7 +225,7 @@ from constants import (
 )
 from core.algorithms import (
     fusion_algorithms, registration_algorithms, get_fusion, get_registration,
-    fusion_defaults, resolve_fusion_parameters, resolve_registration_parameters,
+    fusion_defaults, resolve_fusion_parameters, desktop_registration_parameters,
     registration_parameter_specs,
 )
 
@@ -446,7 +446,7 @@ class OpenFocus(QMainWindow):
         self.thread_count = 0
         # 资源偏好：只影响并发/预算，不改变任何融合结果
         self.resource_preference = "balanced"
-        # StackMFF V3 批量大小设置，默认2（可在 Settings 中修改）
+        # StackMFF V3 resource hint for project and automation inputs.
         self.ai_batch_size = AI_BATCH_SIZE
         # GPU 加速开关（Settings 菜单可切换，QSettings 持久化）
         self.use_gpu = True
@@ -458,6 +458,7 @@ class OpenFocus(QMainWindow):
         # Explicit choices and restored projects take priority over method defaults.
         self._alignment_choice_explicit = False
         self._applying_alignment_default = False
+        self.profile_performance = False
         # 恢复持久化设置与最近文件（语言需在菜单构建前应用）
         load_window_settings(self)
         saved_alignment = getattr(self, '_preferred_alignment_method', None)
@@ -470,9 +471,6 @@ class OpenFocus(QMainWindow):
         storage_warning = _restore_storage_directory(self)
         from core import scratch_registry
         scratch_registry.sweep_in_background([self.storage_directory] if self.storage_directory else [])
-        if self.debug_logging:
-            from utils.logging_setup import set_debug_logging
-            set_debug_logging(True)
         self.recent_files = getattr(self, 'recent_files', [])
         self.recent_projects = getattr(self, 'recent_projects', [])
         self._undo_stack = []
@@ -1121,7 +1119,7 @@ class OpenFocus(QMainWindow):
         """Restore arbitrary registered parameters in one persisted operation."""
         fusion = {method: resolve_fusion_parameters(method, values)
                   for method, values in saved["fusion_parameters"].items()}
-        registration = {method: resolve_registration_parameters(method, values)
+        registration = {method: desktop_registration_parameters(method, values)
                         for method, values in saved["registration_parameters"].items()}
         with self._restore_scope():
             self._fusion_parameters_by_method = fusion
@@ -2660,7 +2658,7 @@ class OpenFocus(QMainWindow):
             return False, str(exc)
 
     def show_advanced_settings_dialog(self) -> None:
-        """One page for tiling, registration, AI and the convenience toggles."""
+        """Open the categorized application preferences."""
         from dialogs.advanced_settings import AdvancedSettingsDialog
         AdvancedSettingsDialog(self).exec()
 
@@ -2705,8 +2703,6 @@ class OpenFocus(QMainWindow):
             with self._restore_scope():
                 restore_default_settings(self)
                 configure_storage_directory(self.storage_directory)
-                from utils.logging_setup import set_debug_logging
-                set_debug_logging(self.debug_logging)
                 self.drag_export_format = '.jpg'
                 self.chk_quick_preview.setChecked(False)
                 self.reset_to_default()
@@ -3122,7 +3118,7 @@ class OpenFocus(QMainWindow):
         if method == "none":
             return {}
         values = getattr(self, "_registration_parameters_by_method", {}).get(method, {})
-        return resolve_registration_parameters(method, values)
+        return desktop_registration_parameters(method, values)
 
     def set_registration_parameters(self, method: str, values: dict) -> None:
         if method == "none":
@@ -3131,7 +3127,7 @@ class OpenFocus(QMainWindow):
             return
         previous = self.registration_parameters_for(method)
         memory = self.__dict__.setdefault("_registration_parameters_by_method", {})
-        memory[method] = resolve_registration_parameters(
+        memory[method] = desktop_registration_parameters(
             method, {**memory.get(method, {}), **values})
         if (method == self.current_alignment_method()
                 and self.registration_parameter_panel.values() != memory[method]):
@@ -3574,6 +3570,15 @@ class OpenFocus(QMainWindow):
         self._account_load_job = None
         if error is None and getattr(self, '_account_client', None) is None:
             self._account_client = client
+            if client.is_signed_in() and not getattr(self, '_shutting_down', False):
+                from dialogs.account import enable_disclosed_reports
+                from utils.report_client import ReportError
+                try:
+                    enable_disclosed_reports(self, client.accepted_terms_version())
+                except (OSError, ReportError) as exc:
+                    from utils.logging_setup import get_logger
+                    get_logger(__name__).warning('Could not restore automatic reporting: %s', type(exc).__name__)
+                    self.statusBar().showMessage(trans.t('report_cleanup_failed'), 5000)
         if not getattr(self, '_shutting_down', False):
             self.account_session_loaded.emit(getattr(self, '_account_client', None), error)
             self._refresh_account_action()
@@ -4041,10 +4046,15 @@ class OpenFocus(QMainWindow):
             pass
 
     def show_contact_info(self):
-        """显示联系信息"""
-        # 创建联系信息对话框
-        dialog = ContactInfoDialog(self)
-        dialog.exec()
+        """Open Contact Us without interrupting work in the main window."""
+        dialog = next((item for item in self.findChildren(ContactInfoDialog)
+                       if item.isVisible()), None)
+        if dialog is None:
+            dialog = ContactInfoDialog(self)
+            dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+            dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
     
     def show_batch_processing_dialog(self, preload_folder_paths: list[str] = None, scale_factor: float = 1.0):
         """显示批处理设置对话框
@@ -4510,11 +4520,6 @@ class OpenFocus(QMainWindow):
     def set_ask_load_scale(self, enabled: bool) -> None:
         """Toggle the loading-scale prompt shown before every import."""
         self.ask_load_scale = bool(enabled)
-        self.persist_settings()
-
-    def set_align_cache_enabled(self, enabled: bool) -> None:
-        """Toggle the on-disk registration cache (Settings menu)."""
-        self.align_cache_enabled = bool(enabled)
         self.persist_settings()
 
     def add_recent_file(self, path: str) -> None:

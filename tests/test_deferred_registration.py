@@ -130,23 +130,16 @@ def test_reverse_roi_registration_keeps_source_indices(qapp, monkeypatch):
     assert [int(image[0, 0]) for image in published[0]] == [0, 1, 2]
 
 
-def test_reverse_registration_failure_names_original_frame(qapp, monkeypatch):
+def test_reverse_registration_failure_names_original_frame(qapp):
     from core import workers
-    from core.openfocus_alignment import AlignmentEstimationError
-    frames = [np.full((8, 8), i, np.uint8) for i in range(3)]
-    class Registration:
-        def __init__(self, **kwargs):
-            pass
-        def process(self, images, **kwargs):
-            error = AlignmentEstimationError('OpenFocus alignment failed at frame 1: failure')
-            error.frame_index = 0
-            raise error
-    monkeypatch.setattr(workers, 'ImageRegistration', Registration)
+    from core.registration_errors import RejectedAlignmentFrame
+    frames = [np.full((1, 8), value, np.uint16) for value in (1000, 2000, 3000)]
     worker = workers.RenderWorker(frames, algorithm='openfocus_b', alignment='openfocus',
-                                  sort_mode='desc', thread_count=1)
+                                  sort_mode='desc', thread_count=1, use_gpu=False,
+                                  registration_parameters={'reference_frame': 2})
     published = []
     worker.finished_signal.connect(lambda *args: published.append(args))
-    with pytest.raises(AlignmentEstimationError, match='frame 3') as raised:
+    with pytest.raises(RejectedAlignmentFrame, match='frame 3') as raised:
         worker._run_admitted()
     assert raised.value.frame_index == 2
     assert not published

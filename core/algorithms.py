@@ -380,6 +380,15 @@ def resolve_registration_parameters(id, values=None):
     return _resolve(registration_parameter_specs(id), values)
 
 
+def desktop_registration_parameters(method, values=None):
+    """Resolve desktop job and cache parameters, including older saved settings."""
+    specs = registration_parameter_specs(method)
+    parameters = _resolve(specs, values)
+    if _ALIGN_FAILURE in specs:
+        parameters['failure_policy'] = 'fail'
+    return parameters
+
+
 def registration_defaults(id):
     return resolve_registration_parameters(id)
 

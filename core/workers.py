@@ -25,7 +25,8 @@ from constants import (
     DEFAULT_THREAD_COUNT
 )
 from core.algorithms import (get_fusion, alignment_steps, resolve_fusion_parameters,
-                             resolve_registration_parameters)
+                             desktop_registration_parameters)
+from core.registration_errors import RejectedAlignmentFrame
 from core.resource_policy import cpu_facts, log_render_resources
 
 
@@ -368,17 +369,11 @@ def _ordered_openfocus_registration(alignment, algorithm, sort_mode):
 def _registration_process(registration, images, reverse, **kwargs):
     if not reverse:
         return registration.process(images, **kwargs)
-    from core.openfocus_alignment import AlignmentEstimationError
+    # Report positions in the input stack even when estimation ran in reverse.
     try:
         return registration.process(images, **kwargs)
-    except AlignmentEstimationError as error:
-        index = getattr(error, 'frame_index', None)
-        if index is not None:
-            source_index = len(images) - 1 - index
-            old = f'OpenFocus alignment failed at frame {index + 1}:'
-            new = f'OpenFocus alignment failed at frame {source_index + 1}:'
-            error.args = (str(error).replace(old, new, 1),)
-            error.frame_index = source_index
+    except RejectedAlignmentFrame as error:
+        error.frame_index = len(images) - 1 - error.frame_index
         raise
 
 
@@ -398,7 +393,7 @@ class ROIAlignmentWorker(QThread):
         self._cancelled = False
         self.resource_preference = resource_preference
         self.alignment = alignment
-        self.registration_parameters = dict(registration_parameters or {})
+        self.registration_parameters = desktop_registration_parameters(alignment, registration_parameters)
         self.exposure_match = bool(exposure_match)
         self.reverse_registration = bool(reverse_registration)
         try:
@@ -486,7 +481,7 @@ class RenderWorker(QThread):
             self.fusion_parameters = resolve_fusion_parameters(algorithm, fusion_parameters)
         self.algorithm = algorithm
         self.alignment = alignment_steps(alignment)
-        self.registration_parameters = resolve_registration_parameters(alignment, registration_parameters)
+        self.registration_parameters = desktop_registration_parameters(alignment, registration_parameters)
         self.raw_images = raw_images
         self.aligned_images = [] if aligned_images is None else aligned_images
         self.is_images_aligned = bool(is_images_aligned)
@@ -798,11 +793,6 @@ class RenderWorker(QThread):
                                 alignment_report.reset(token)
                                 if self._reverse_registration:
                                     for entry in self.alignment_report:
-                                        index = entry.get('frame_index')
-                                        if index is not None and 'reason' in entry:
-                                            old = f'OpenFocus alignment failed at frame {index + 1}:'
-                                            new = f'OpenFocus alignment failed at frame {len(self.raw_images) - index}:'
-                                            entry['reason'] = entry['reason'].replace(old, new, 1)
                                         for key in ('frame_index', 'reference_index'):
                                             if entry.get(key) is not None:
                                                 entry[key] = len(self.raw_images) - 1 - entry[key]
@@ -1045,9 +1035,15 @@ class RenderWorker(QThread):
             downscale_width=self.reg_downscale_width,
             brightness_reference='last' if self.exposure_match else 'first',
             use_gpu=False, defer_warps=self._defer_warps)
-        images = _registration_process(registration, images, self._reverse_registration,
-            thread_count=self.thread_count, resource_preference=self.resource_preference,
-            should_cancel=should_cancel)
+        try:
+            images = _registration_process(registration, images, self._reverse_registration,
+                thread_count=self.thread_count, resource_preference=self.resource_preference,
+                should_cancel=should_cancel)
+        except RejectedAlignmentFrame as error:
+            if self.alignment_report is None:
+                self.alignment_report = [{'method': error.method.lower(), 'status': 'failed',
+                    'frame_index': error.frame_index, 'reason': error.reason}]
+            raise
         self._alignment_plan = registration.alignment_plan if self._defer_warps else None
         return images, time.time() - started
 
@@ -1371,8 +1367,10 @@ class BatchWorker(QThread):
         self.use_gpu = bool(use_gpu)
         self.runtime_settings = dict(self.processing_settings.get('runtime_settings') or {})
         self.runtime_settings.update(runtime_settings or {})
-        self.registration_parameters = dict(registration_parameters if registration_parameters is not None
-            else self.processing_settings.get('registration_parameters') or {})
+        self.registration_parameters = desktop_registration_parameters(
+            self.processing_settings.get('alignment', self.processing_settings.get('reg_methods', ())),
+            registration_parameters if registration_parameters is not None
+            else self.processing_settings.get('registration_parameters'))
         self.exposure_match = bool(self.runtime_settings.get('exposure_match', exposure_match))
 
         from core.image_loader import ImageStackLoader
@@ -1524,6 +1522,8 @@ class BatchWorker(QThread):
                             folder_operation.fail()
                             task['status'] = 'partial' if task['artifacts'] else 'failed'
                             task['error'] = str(exc)
+                            if isinstance(exc, RejectedAlignmentFrame) and exc.source_name:
+                                task['error'] += f'\n{exc.source_name}'
                     self.progress_updated.emit(index + 1, total, trans_batch_progress(index + 1, total, name))
                 counts = _count_task_states(self.task_results, total)
                 if counts['failed'] or counts['partial']:
@@ -1813,6 +1813,10 @@ class BatchWorker(QThread):
                     raise OSError(f'No files were written for {stack_name}')
                 if written != len(saved):
                     raise PartialWriteError(f'{written}/{len(saved)} files were written for {stack_name}')
+            except RejectedAlignmentFrame as error:
+                name = export_names[error.frame_index]
+                error.source_name = os.path.basename(name) if name else None
+                raise
             except RegistrationCancelled:
                 operation.cancel()
                 raise

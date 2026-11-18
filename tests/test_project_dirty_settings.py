@@ -69,7 +69,7 @@ class _Host:
         self._restore_depth = 0
         self.titles = []
         self.combo_fusion = _Combo(["stackmffv3", "dct", "openfocus_b"])
-        self.combo_align = _Combo(["none", "ecc"])
+        self.combo_align = _Combo(["none", "ecc", "openfocus"])
         self._fusion_parameters_by_method = {}
         self._registration_parameters_by_method = {}
         self._brightness_by_method = {}
@@ -107,10 +107,7 @@ class _Host:
         return resolve_fusion_parameters(
             method, self._fusion_parameters_by_method.get(method), depth=depth)
 
-    def registration_parameters_for(self, method):
-        from core.algorithms import resolve_registration_parameters
-        return resolve_registration_parameters(
-            method, self._registration_parameters_by_method.get(method))
+    registration_parameters_for = main.OpenFocus.registration_parameters_for
 
     def refresh_algorithm_parameters(self):
         pass
@@ -148,8 +145,8 @@ def test_each_project_setting_marks_the_project_dirty():
         lambda: host.set_brightness_option("exposure_match", "dct", False),
         lambda: host.set_reverse_order(True),
         lambda: host.set_sharpen_output(True),
-        lambda: host.set_alignment_method("ecc"),
-        lambda: host.set_registration_parameters("ecc", {"failure_policy": "fail"}),
+        lambda: host.set_alignment_method("openfocus"),
+        lambda: host.set_registration_parameters("openfocus", {"reference_frame": 2}),
     ]
     for index, step in enumerate(steps):
         host._project_dirty = False
