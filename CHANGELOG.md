@@ -23,8 +23,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   falls back to CPU when the device budget or build fails.
 - Show estimated RAM and GPU memory in Render Settings, including expected CPU
   fallback when the selected neural render does not fit the device budget.
-- Open the selected render's retained focus positions for export in Depth Map for
-  OpenFocus B/C and StackMFF V2/V3.
+- Reuse the selected OpenFocus B/C or StackMFF V2/V3 render’s saved depth when
+  opening Depth Map, pressing Compute with matching settings, or switching back
+  to its measure. Show the 2D preview before building a requested 3D surface.
 - Show the current WeChat group invite in Contact Us, with a bundled QR code for offline use.
 - Keep progress, cancel controls, and timed notices on the left of the desktop
   status bar and a sponsor invitation that opens Contact Us on the right.
