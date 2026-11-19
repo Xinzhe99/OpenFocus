@@ -2,7 +2,7 @@
 import os
 import errno
 import operator
-import shutil
+from shutil import disk_usage
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 import struct
@@ -282,7 +282,7 @@ def _admit(path, page, output_dir, ext=None):
         raise MemoryError(trans.t('converter_memory_unknown'))
     if estimate > available // 2:
         raise MemoryError(trans.t('converter_memory_error'))
-    if shutil.disk_usage(output_dir).free < disk:
+    if disk_usage(output_dir).free < disk:
         raise OSError(trans.t('converter_space_error'))
 
 
@@ -649,7 +649,7 @@ def convert_batch(sources, directory, ext, cancelled, item, progress, *, output_
                                     free_ram = (min(plan.ram_budget - used_ram, ceiling - used_ram)
                                                 if active or ram <= plan.ram_budget else ceiling)
                                     try:
-                                        free_disk = shutil.disk_usage(dest).free - used_disk.get(volume, 0)
+                                        free_disk = disk_usage(dest).free - used_disk.get(volume, 0)
                                     except OSError as exc:
                                         if custom_dir:
                                             raise

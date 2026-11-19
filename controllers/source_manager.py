@@ -1541,6 +1541,12 @@ class SourceManager(QObject):
     def processing_selection_changed(self) -> None:
         window = self.window
         window.source_revision = getattr(window, "source_revision", 0) + 1
+        # Prepared fusion inputs belong to the old selection. Dropping the
+        # manager's reference leaves any in-flight reader's snapshots alive.
+        clear_prepared = getattr(getattr(window, 'render_manager', None),
+                                 'clear_prepared_cache', None)
+        if callable(clear_prepared):
+            clear_prepared()
         # The last completed alignment still belongs to its original ordered
         # selection. Restore it if those same frames are checked again.
         key = getattr(window, 'alignment_request_key', None)
