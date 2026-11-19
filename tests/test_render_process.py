@@ -653,10 +653,9 @@ def test_spawned_tiled_fusion_publishes_frozen_tooltip_details(qapp, tmp_path, s
     context = build_render_context(frames, image, algorithm='guided_filter',
                                    parameters=parameters, fusion_details=details)
     panel = SimpleNamespace(output_list=QListWidget(), output_label=QLabel(),
-        fusion_results=[], fusion_result=image,
-        export_manager=SimpleNamespace(generate_default_filename=lambda: 'result'))
+        fusion_results=[], fusion_result=image)
     manager = OutputManager(panel)
-    manager.update_output_list_for_fusion(context=context)
+    manager.update_output_list_for_fusion('result', context=context)
     parameters['kernel_size'] = 31
     manager._refresh_output_tooltip(0)
     tooltip = panel.output_list.item(0).toolTip()

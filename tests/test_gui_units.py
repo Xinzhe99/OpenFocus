@@ -204,7 +204,7 @@ class _StubOutputManager:
         return True
 
 
-    def update_output_list_for_fusion(self):
+    def update_output_list_for_fusion(self, label, **metadata):
         pass
 
     def update_output_count(self):
@@ -1208,15 +1208,9 @@ def test_new_output_is_the_only_selected_item(qapp):
     w.fusion_results = []
     w.fusion_result = None
 
-    class E:
-        @staticmethod
-        def generate_default_filename():
-            return "out"
-
-    w.export_manager = E()
     mgr = OutputManager(w)
-    mgr.update_output_list_for_fusion()
-    mgr.update_output_list_for_fusion()
+    mgr.update_output_list_for_fusion("first")
+    mgr.update_output_list_for_fusion("second")
     assert len(w.output_list.selectedItems()) == 1
     assert w.output_list.currentRow() == 0
 
@@ -1268,17 +1262,11 @@ def test_output_history_is_capped(qapp):
     w.fusion_results = []
     w.fusion_result = None
 
-    class E:
-        @staticmethod
-        def generate_default_filename():
-            return "out"
-
-    w.export_manager = E()
     mgr = OutputManager(w)
     mgr.MAX_HISTORY = 3
     for i in range(6):
         w.fusion_result = np.full((4, 4, 3), i, np.uint8)
-        mgr.update_output_list_for_fusion()
+        mgr.update_output_list_for_fusion(f"output {i}")
 
     assert len(w.fusion_results) == 3
     assert w.output_list.count() == 3
@@ -1326,12 +1314,6 @@ def test_keyboard_output_navigation_shows_the_selected_result(qapp):
     w.wipe_active = False
     w.refresh_annotation_views = lambda: None
 
-    class E:
-        @staticmethod
-        def generate_default_filename():
-            return "out"
-
-    w.export_manager = E()
     mgr = OutputManager(w)
     w.output_manager = mgr
 
@@ -1343,7 +1325,7 @@ def test_keyboard_output_navigation_shows_the_selected_result(qapp):
     w.output_list.currentRowChanged.connect(mgr.display_current_output_row)
     for value in (10, 20, 30):
         w.fusion_result = np.full((4, 4, 3), value, np.uint8)
-        mgr.update_output_list_for_fusion()
+        mgr.update_output_list_for_fusion(f"output {value}")
     w.output_list.setCurrentRow(0)
     shown.clear()
     w.output_list.setFocus()

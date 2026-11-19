@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 
-from PyQt6.QtCore import Qt, QSize, pyqtSignal
+from PyQt6.QtCore import QEvent, Qt, QSize, pyqtSignal
 from PyQt6.QtGui import QKeySequence, QShortcut, QFont
 from PyQt6.QtWidgets import (
     QAbstractItemView,
@@ -20,6 +20,7 @@ from PyQt6.QtWidgets import (
     QSplitter,
     QStyle,
     QStyleOptionButton,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -310,6 +311,49 @@ class _DeviceStatusLabel(QLabel):
             self._full_text, Qt.TextElideMode.ElideLeft, max(0, available)))
 
 
+class _ConfigurationContents(QWidget):
+    layoutChanged = pyqtSignal()
+
+    def event(self, event):
+        handled = super().event(event)
+        if event.type() == QEvent.Type.LayoutRequest:
+            self.layoutChanged.emit()
+        return handled
+
+
+class _WorkspaceParameterPanel(AlgorithmParameterPanel):
+    def __init__(self, layout, control_id, *, hidden_parameters=()):
+        super().__init__(layout.parentWidget(), hidden_parameters=hidden_parameters)
+        self.disclosure = QToolButton(self.parentWidget())
+        self.disclosure.setProperty('controlId', control_id)
+        self.disclosure.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.disclosure.setCheckable(True)
+        self.disclosure.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.disclosure.hide()
+        self.hide()
+        layout.addWidget(self.disclosure, alignment=Qt.AlignmentFlag.AlignLeft)
+        layout.addWidget(self)
+        self.disclosure.toggled.connect(self._show_parameters)
+
+    def set_parameters(self, specs, values=None, *, inline=True):
+        super().set_parameters(specs, values)
+        title = trans.t('batch_section_params')
+        self.disclosure.setText(title)
+        group = self.parentWidget()
+        self.disclosure.setAccessibleName(f'{group.title()} · {title}')
+        available = inline and bool(self.editors)
+        self.disclosure.setVisible(available)
+        if not available and self.disclosure.isChecked():
+            self.disclosure.setChecked(False)
+        else:
+            self._show_parameters(self.disclosure.isChecked())
+
+    def _show_parameters(self, expanded):
+        self.disclosure.setArrowType(
+            Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow)
+        self.setVisible(expanded and not self.disclosure.isHidden())
+
+
 @dataclass
 class RightPanelComponents:
     widget: QFrame
@@ -328,8 +372,8 @@ class RightPanelComponents:
     chk_exposure_match: QCheckBox
     chk_sharpen_output: QCheckBox
     chk_reverse_order: QCheckBox
-    fusion_parameter_panel: AlgorithmParameterPanel
-    registration_parameter_panel: AlgorithmParameterPanel
+    fusion_parameter_panel: _WorkspaceParameterPanel
+    registration_parameter_panel: _WorkspaceParameterPanel
 
     # Groups
     method_group: QGroupBox
@@ -346,19 +390,34 @@ class RightPanelComponents:
     lbl_status_gpu: QLabel
     lbl_status_memory: QLabel
 
-    def set_initial_sizes(self) -> None:
-        # Use the first laid-out height so the splitter preserves the space
-        # needed by the styled controls when sizing both lists.
+    def fit_configuration(self, *, restored: bool | None = None) -> None:
+        if not self.widget.isVisible():
+            return
         config = self.config_scroll.widget()
         config.layout().activate()
-        config_height = config.sizeHint().height()
-        available = sum(self.splitter.sizes())
+        preferred = config.sizeHint().height()
+        if restored is None and preferred == self.config_scroll.maximumHeight():
+            return
+
+        sizes = self.splitter.sizes()
+        self.config_scroll.setMaximumHeight(preferred)
+        if restored and sizes[0] <= preferred:
+            return
+
         source_min = self.splitter.widget(1).minimumSizeHint().height()
         output_min = self.splitter.widget(2).minimumSizeHint().height()
-        extra = max(0, available - config_height - source_min - output_min)
-        source_extra = 3 * extra // 5
-        self.splitter.setSizes([config_height, source_min + source_extra,
-                                output_min + extra - source_extra])
+        available = max(0, sum(sizes) - source_min - output_min)
+        config_height = min(preferred, available)
+        extra = available - config_height
+        # Reclaim unused config space without resetting the user's list split.
+        source_extra = max(0, sizes[1] - source_min)
+        output_extra = max(0, sizes[2] - output_min)
+        if restored is False or not (source_extra or output_extra):
+            source_share = 3 * extra // 5
+        else:
+            source_share = extra * source_extra // (source_extra + output_extra)
+        self.splitter.setSizes([config_height, source_min + source_share,
+                                output_min + extra - source_share])
 
 
 
@@ -382,7 +441,7 @@ def create_right_panel() -> RightPanelComponents:
     right_layout.addWidget(right_splitter)
 
     # Configuration group ----------------------------------
-    config_widget = QWidget()
+    config_widget = _ConfigurationContents()
     config_layout = QVBoxLayout(config_widget)
     config_layout.setContentsMargins(10, 10, 10, 10)
 
@@ -409,8 +468,7 @@ def create_right_panel() -> RightPanelComponents:
     method_help_layout.addWidget(btn_method_help)
     method_layout.addLayout(method_help_layout)
 
-    fusion_parameter_panel = AlgorithmParameterPanel(parent=method_group)
-    method_layout.addWidget(fusion_parameter_panel)
+    fusion_parameter_panel = _WorkspaceParameterPanel(method_layout, 'fusion_parameters_toggle')
 
     registration_group = QGroupBox(trans.t('group_registration'))
     registration_layout = QVBoxLayout(registration_group)
@@ -432,9 +490,8 @@ def create_right_panel() -> RightPanelComponents:
     btn_reg_help.setObjectName("helpButton")
     reg_help_layout.addWidget(btn_reg_help)
     registration_layout.addLayout(reg_help_layout)
-    registration_parameter_panel = AlgorithmParameterPanel(
-        parent=registration_group, hidden_parameters=('failure_policy',))
-    registration_layout.addWidget(registration_parameter_panel)
+    registration_parameter_panel = _WorkspaceParameterPanel(
+        registration_layout, 'registration_parameters_toggle', hidden_parameters=('failure_policy',))
 
     # 融合/对齐并排时面板宽 375px，两个下拉各只剩 ~114px —— 比
     # "Alignment only (no fusion)" 需要的 ~190px 窄得多，文字被截成
@@ -589,7 +646,7 @@ def create_right_panel() -> RightPanelComponents:
         if _widget is not None:
             _widget.setProperty("controlId", _control)
 
-    return RightPanelComponents(
+    components = RightPanelComponents(
         widget=right_panel,
         splitter=right_splitter,
         config_scroll=config_scroll,
@@ -621,6 +678,8 @@ def create_right_panel() -> RightPanelComponents:
         lbl_status_gpu=lbl_status_gpu,
         lbl_status_memory=lbl_status_memory,
     )
+    config_widget.layoutChanged.connect(components.fit_configuration)
+    return components
 
 
 def bind_right_panel(window, components: RightPanelComponents) -> None:

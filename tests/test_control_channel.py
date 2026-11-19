@@ -522,6 +522,35 @@ def test_stack_method_render_export_and_project(server, stack_frames, tmp_path):
     assert json.loads(project.read_text(encoding='utf-8'))['settings']['stack_reverse_order'] is True
 
 
+def test_render_all_names_outputs_after_the_method_used(server, stack_frames, monkeypatch):
+    import re
+
+    from controllers import render_manager
+    from locales import trans
+
+    methods = ('openfocus_a', 'openfocus_b')
+    monkeypatch.setattr(render_manager, 'fusion_algorithms',
+                        lambda: tuple(get_fusion(method) for method in methods))
+    window = server.window
+    window.output_name_prefix = 'Trial'
+    window.set_fusion_method('openfocus_b')
+    assert call(server, 'stack.load', folder=str(stack_frames))['result']['loading']
+    assert wait_until(lambda: call(server, 'stack.frames')['result']['count'] == 3,
+                      timeout=20)
+
+    window.btn_compare_all.click()
+    assert wait_until(lambda: window.btn_render.isEnabled(), timeout=30)
+    outputs = call(server, 'output.list')['result']['records']
+    assert len(outputs) == 2
+    for output, method, tag in zip(outputs, reversed(methods), ('OpenFocusB', 'OpenFocusA')):
+        label = trans.t(get_fusion(method).label_key)
+        assert re.fullmatch(rf'Trial_OpenFocus_\d{{8}}_\d{{6}}_{tag}_NoAlign — {re.escape(label)}',
+                            output['label'])
+        call(server, 'output.select', index=output['index'])
+        _, filename = window.export_manager.selected_output()
+        assert re.fullmatch(rf'Trial_OpenFocus_\d{{8}}_\d{{6}}_{tag}_NoAlign_.+', filename)
+
+
 def test_ui_actions_tree_find_set_click_and_screenshot(server, stack_frames, tmp_path):
     token = server.token
     actions = call(server, "ui.actions", token=token)["result"]["actions"]

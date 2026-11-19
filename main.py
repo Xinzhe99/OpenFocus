@@ -585,7 +585,7 @@ class OpenFocus(QMainWindow):
         trans.languageChanged.connect(self.update_ui_text)
 
         # Restore geometry and splitter positions before the first show.
-        self._size_right_splitter_on_show = not restore_window_layout(self)
+        self._right_splitter_restored = restore_window_layout(self)
 
         # Optionally re-load the last opened stack a moment after launch
         if getattr(self, "restore_last_stack", False):
@@ -608,9 +608,9 @@ class OpenFocus(QMainWindow):
 
     def showEvent(self, event):  # noqa: N802
         super().showEvent(event)
-        if self._size_right_splitter_on_show:
-            self._size_right_splitter_on_show = False
-            self.right_panel_components.set_initial_sizes()
+        if self._right_splitter_restored is not None:
+            self.right_panel_components.fit_configuration(restored=self._right_splitter_restored)
+            self._right_splitter_restored = None
 
     def _show_storage_fallback(self, path, error, fallback):
         if not getattr(self, '_shutting_down', False):
@@ -3185,8 +3185,7 @@ class OpenFocus(QMainWindow):
         method = self.current_alignment_method()
         specs = () if method == "none" else registration_parameter_specs(method)
         self.registration_parameter_panel.set_parameters(
-            specs, self.registration_parameters_for(method))
-        self.registration_parameter_panel.setVisible(method != "openfocus")
+            specs, self.registration_parameters_for(method), inline=method != 'openfocus')
         manager = getattr(self, 'render_manager', None)
         if manager is not None and getattr(self, 'btn_render', None) is not None:
             manager.refresh_action_labels()

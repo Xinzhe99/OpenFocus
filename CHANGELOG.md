@@ -77,6 +77,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the Alipay and PayPal codes in Support Us from the OpenFocus service.
 - Show the GPU and available engines in AI Acceleration Components. Keep
   installation controls reachable when the window is narrow.
+- Default to the SJTU PyTorch mirror when the Windows region is China mainland. Use the official source directly in other regions.
+- Collapse workspace algorithm parameters by default. Open them as needed and reclaim space for the source and output lists on collapse.
 - Make all fusion methods selectable without experimental opt-in when their
   dependencies are installed.
 - Group render settings by workflow, brightness and color, and output. Adjust fusion sharpening from 0% to 200% in desktop renders, batch jobs, and the CLI. The 100% default preserves the previous sharpening amount.
@@ -153,6 +155,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   transforms, cropping and output pixels are unchanged.
 
 ### Fixed
+- Name each Render All result and its suggested export file after the fusion method that produced it.
 - Keep the workspace responsive when opening or closing Support Us while its
   network requests are pending.
 - Keep Labels, Scale Bar and Watermark previews editable during fusion. At
