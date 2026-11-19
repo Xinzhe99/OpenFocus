@@ -55,6 +55,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   opening Depth Map, pressing Compute with matching settings, or switching back
   to its measure. Show the 2D preview before building a requested 3D surface.
 - Show the current WeChat group invite in Contact Us, with a bundled QR code for offline use.
+- Add the Discord invite and the WeChat Official Account QR code to both website languages.
 - Keep progress, cancel controls, and timed notices on the left of the desktop
   status bar and a sponsor invitation that opens Contact Us on the right.
 - Open the user manual on GitHub in the current interface language from Help.

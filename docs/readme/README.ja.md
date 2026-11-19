@@ -265,7 +265,7 @@ openfocus -i ./stack_folder -o ./result/fused.png
 <a id="community"></a>
 ## コミュニティとサポート
 
-質問やご意見は [Discord コミュニティ](https://discord.gg/afzmwgPt)へ。できるだけ早く返信しますが、北京時間（UTC+8）を使っているため、時差によって返信が遅れる場合があります。
+質問やご意見は [Discord コミュニティ](https://discord.gg/Jamr2SR5)へ。できるだけ早く返信しますが、北京時間（UTC+8）を使っているため、時差によって返信が遅れる場合があります。
 
 - **ドキュメント** — [ユーザーマニュアル](../USER_MANUAL_JA.md)（12 言語） · [変更履歴](../../CHANGELOG.md) · [パフォーマンス](../../docs/PERFORMANCE.md) · [融合手法](../../docs/FUSION_METHODS.md)
 - **公式サイト** — [openfocus.top](https://openfocus.top/)（ダウンロード、インストールスクリプト、ミラー）

@@ -24,6 +24,8 @@ Contact Us dialog use that URL. It has a five-minute cache lifetime so the
 invite can be rotated by replacing the PNG and redeploying. Desktop packages
 also include that PNG for offline use and label it as the bundled copy when
 the live request fails.
+The community section also links to OpenFocus on Discord and serves the
+original WeChat Official Account image at `/wechat-official-account.jpg`.
 
 Set the public Worker origin so canonical URLs, Open Graph tags, the sitemap
 and no-JavaScript download links point at the correct deployment:

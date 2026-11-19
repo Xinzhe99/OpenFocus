@@ -18,6 +18,7 @@ class Elements(HTMLParser):
 
 
 def test_localized_pages_keep_linux_download_safe_without_javascript():
+    from constants import DISCORD_INVITE_URL
     from tools import build_site
 
     template = (build_site.SITE / 'template.html').read_text(encoding='utf-8')
@@ -39,9 +40,13 @@ def test_localized_pages_keep_linux_download_safe_without_javascript():
         assert 'pip install openfocus' in page
         assert locale['download']['linux_unknown'] in page
         assert locale['download']['script_label'] in page
-        qr = next(attrs for tag, attrs in elements.items if tag == 'img' and attrs['src'] == '/wechat-group.png')
-        assert qr['alt'] == locale['community']['qr_alt']
-        assert ('a', {'class': 'community-qr', 'href': '/wechat-group.png'}) in elements.items
+        for path, alt in (('/wechat-group.png', 'qr_alt'),
+                          ('/wechat-official-account.jpg', 'official_qr_alt')):
+            qr = next(attrs for tag, attrs in elements.items if tag == 'img' and attrs.get('src') == path)
+            assert qr['alt'] == locale['community'][alt]
+            assert any(tag == 'a' and attrs.get('href') == path for tag, attrs in elements.items)
+        assert any(tag == 'a' and attrs.get('href') == DISCORD_INVITE_URL
+                   for tag, attrs in elements.items)
         assert any(tag == 'a' and attrs.get('href') == build_site.RELEASE['page'] for tag, attrs in elements.items)
         assert locale['footer']['license_details'] in page
 

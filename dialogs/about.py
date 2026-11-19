@@ -19,6 +19,7 @@ from PyQt6.QtWidgets import (
     QTextEdit,
     QPushButton,
 )
+from constants import DISCORD_INVITE_URL
 from locales import trans
 from utils import get_monospace_font_family, resource_path
 from ui.styles import PRIMARY_BLUE
@@ -317,7 +318,7 @@ class ContactInfoDialog(QDialog):
     <p>{trans.t('contact_email')}: xiexinzhe@zju.edu.cn</p>
     <p>{trans.t('contact_institution')}: {trans.t('contact_zju')}</p>
     <p>{trans.t('contact_github')}: <a href="https://github.com/Xinzhe99/OpenFocus">https://github.com/Xinzhe99/OpenFocus</a></p>
-    <p>Discord: <a href="https://discord.gg/afzmwgPt">https://discord.gg/afzmwgPt</a></p>
+    <p>Discord: <a href="{DISCORD_INVITE_URL}">{DISCORD_INVITE_URL}</a></p>
     <p>{trans.t('contact_welcome')}</p>"""
         
         super().__init__(parent)

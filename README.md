@@ -306,7 +306,7 @@ See the [CLI manual](./docs/USER_MANUAL_EN.md#14-command-line-interface).
 <a id="community"></a>
 ## Community & Support
 
-Questions, ideas or feedback? Join our [Discord community](https://discord.gg/afzmwgPt). We reply as soon as we can; we're based in Beijing (UTC+8), so time differences may affect response times.
+Questions, ideas or feedback? Join our [Discord community](https://discord.gg/Jamr2SR5). We reply as soon as we can; we're based in Beijing (UTC+8), so time differences may affect response times.
 
 - **Docs** — [User Manual](./docs/USER_MANUAL_EN.md) (twelve languages) · [Changelog](./CHANGELOG.md) · [Performance](./docs/PERFORMANCE.md) · [Fusion methods](./docs/FUSION_METHODS.md)
 - [Privacy policy](./docs/PRIVACY.md)
