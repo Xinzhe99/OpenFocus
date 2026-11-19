@@ -100,21 +100,22 @@ class DepthSurface(QWidget):
 
     # ------------------------------------------------------------ painting
     def paintEvent(self, event):  # noqa: N802 (Qt casing)
-        from ui.styles import CURRENT_THEME, tokens
+        from ui.styles import tokens
 
-        t = tokens(CURRENT_THEME)
+        theme = tokens()
+        background = theme['inspectionCanvas']
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
-        p.fillRect(self.rect(), QColor(t["surfaceSunken"]))
+        p.fillRect(self.rect(), QColor(background))
         if self._height is None:
-            p.setPen(QColor(t["textMuted"]))
+            p.setPen(QColor(theme['canvasText']))
             from locales import trans
             p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter,
                        trans.t("depth_no_map_yet"))
             p.end()
             return
 
-        image = self._render_cached()
+        image = self._render_cached(background, theme['accent'])
         if image is not None and not image.isNull():
             p.drawImage(self.rect(), image)
         p.end()
@@ -126,15 +127,15 @@ class DepthSurface(QWidget):
         self._cache = None
         self.update()
 
-    def _camera_key(self):
+    def _camera_key(self, background, accent):
         # Quantise the camera so a drag reuses frames instead of rebuilding
         # geometry for every pixel of mouse movement.
         return (round(self._yaw, 1), round(self._pitch, 1),
                 round(self._zoom, 3), self.width(), self.height(),
                 round(self._relief, 4), bool(self._invert), id(self._texture),
-                self._mesh_step, self._dragging)
+                self._mesh_step, self._dragging, background, accent)
 
-    def _render_cached(self):
+    def _render_cached(self, background, accent):
         """Rasterise the surface, reusing the last frame when nothing changed.
 
         The previous implementation built a QPolygonF per quad and called
@@ -142,7 +143,7 @@ class DepthSurface(QWidget):
         dragging was unusable. Everything below is vectorised, the rasteriser
         is OpenCV's, and a coarse mesh is used while the camera is moving.
         """
-        key = self._camera_key()
+        key = self._camera_key(background, accent)
         cached = getattr(self, "_cache", None)
         if cached is not None and cached[0] == key:
             return cached[1]
@@ -150,14 +151,14 @@ class DepthSurface(QWidget):
         # Keep the selected resolution at rest; use fewer samples while the
         # camera moves, then restore that same selection on release.
         step = max(20, self._mesh_step // 2) if self._dragging else self._mesh_step
-        image = self._rasterise(mesh_step=step)
+        image = self._rasterise(background, accent, mesh_step=step)
         # Remember only settled frames; a drag would otherwise evict the cache
         # constantly with throwaway images.
         if not self._dragging:
             self._cache = (key, image)
         return image
 
-    def _rasterise(self, mesh_step: int = None):
+    def _rasterise(self, background, accent, mesh_step: int = None):
         """Forward-map every texture pixel onto the canvas, per pixel.
 
         A quad mesh can only carry one colour per cell, so the picture came out
@@ -201,8 +202,7 @@ class DepthSurface(QWidget):
                 tex = to_display_uint8(tex)
             colours = tex.reshape(-1, 3)[:, ::-1].astype(np.uint8)  # BGR->RGB
         else:
-            from ui.styles import CURRENT_THEME, tokens
-            base = QColor(tokens(CURRENT_THEME)["accent"])
+            base = QColor(accent)
             colours = np.tile(np.array([base.red(), base.green(), base.blue()],
                                        np.uint8), (target_h * target_w, 1))
 
@@ -252,10 +252,9 @@ class DepthSurface(QWidget):
         shaded = np.clip(colours.astype(np.float32) * shade[:, None],
                          0, 255).astype(np.uint8)
 
-        from ui.styles import CURRENT_THEME, tokens
-        sunken = QColor(tokens(CURRENT_THEME)["surfaceSunken"])
+        surround = QColor(background)
         canvas = np.empty((h, w, 3), np.uint8)
-        canvas[:, :] = (sunken.red(), sunken.green(), sunken.blue())
+        canvas[:, :] = (surround.red(), surround.green(), surround.blue())
 
         # Far to near so the nearest sample wins at each pixel. A counting
         # sort over 64 depth bands is O(N): np.argsort on 1.4 M samples alone

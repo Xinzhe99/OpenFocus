@@ -666,6 +666,7 @@ ZH = {
     "msg_update_needs_elevation": "安装目录需要管理员权限才能写入。请改为在发布页下载安装包更新。",
     "theme_dark": "深色",
     "theme_light": "浅色",
+    "theme_gray": "中性灰",
     "menu_quick_start": "快速上手指南",
     "menu_check_updates": "检查更新",
     "menu_open_logs": "打开日志文件夹",

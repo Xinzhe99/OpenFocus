@@ -327,7 +327,7 @@ class ScaleBarDialog(QDialog):
         # ---- fixed bottom actions ---------------------------------------
         self._error = QLabel("")
         self._error.setWordWrap(True)
-        self._error.setStyleSheet("color:#c0392b;")
+        self._error.setObjectName("errorLabel")
         root.addWidget(self._error)
 
         row = QHBoxLayout()

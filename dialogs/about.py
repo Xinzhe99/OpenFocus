@@ -21,7 +21,7 @@ from PyQt6.QtWidgets import (
 )
 from locales import trans
 from utils import get_monospace_font_family, resource_path
-from ui.styles import PRIMARY_BLUE
+from ui.styles import tokens
 
 
 class _EnvironmentProbe(threading.Thread):
@@ -308,12 +308,7 @@ class ContactInfoDialog(QDialog):
     _WECHAT_MAX_BYTES = 512 * 1024
 
     def __init__(self, parent=None):
-        # Link colour must follow the theme: a hard-coded white link was
-        # invisible on the white dialog (the GitHub URL simply vanished).
-        link = "#0969da" if getattr(parent, "ui_theme", "dark") == "light" \
-            else "#6cb6ff"
         contact_text = f"""
-        <style>a {{ color: {link}; }}</style>
         <h3>{trans.t('contact_info_title')}</h3>
         
     <p>{trans.t('contact_email')}: xiexinzhe@zju.edu.cn</p>
@@ -331,9 +326,8 @@ class ContactInfoDialog(QDialog):
         from PyQt6.QtWidgets import QTextBrowser
         from PyQt6.QtGui import QTextOption
 
-        # 创建可滚动的文本浏览器
+        self._contact_html = contact_text
         self.text_browser = QTextBrowser()
-        self.text_browser.setHtml(contact_text)
         self.text_browser.setOpenExternalLinks(True)
         self.text_browser.setWordWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
         layout.addWidget(self.text_browser)
@@ -350,11 +344,11 @@ class ContactInfoDialog(QDialog):
         self._wechat_status.setWordWrap(True)
         layout.addWidget(self._wechat_status)
 
-        group_link = QLabel(f'<a style="color: {link};" href="{self._WECHAT_URL}">'
-                            f'{trans.t("contact_wechat_group")}</a>')
-        group_link.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        group_link.setOpenExternalLinks(True)
-        layout.addWidget(group_link)
+        self._wechat_link = QLabel()
+        self._wechat_link.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._wechat_link.setOpenExternalLinks(True)
+        layout.addWidget(self._wechat_link)
+        self.apply_theme(getattr(parent, 'ui_theme', None))
 
         bundled = QPixmap(resource_path('assets', 'readme', 'wechat-group.png'))
         if bundled.isNull():
@@ -381,6 +375,15 @@ class ContactInfoDialog(QDialog):
                 parent.x() + parent.width() // 2 - self.width() // 2,
                 parent.y() + parent.height() // 2 - self.height() // 2,
             )
+
+    def apply_theme(self, theme: str | None) -> None:
+        link = tokens(theme)['link']
+        scrollbar = self.text_browser.verticalScrollBar()
+        scroll_position = scrollbar.value()
+        self.text_browser.setHtml(f'<style>a {{ color: {link}; }}</style>{self._contact_html}')
+        scrollbar.setValue(scroll_position)
+        self._wechat_link.setText(f'<a style="color: {link};" href="{self._WECHAT_URL}">'
+                                  f'{trans.t("contact_wechat_group")}</a>')
 
     def _show_wechat_qr(self, original):
         ratio = self.devicePixelRatioF()

@@ -723,7 +723,7 @@ OpenFocus B puede acelerar el procesamiento de profundidad y la combinación de 
 
 ### Temas
 
-Hay dos temas de interfaz disponibles: **Claro (predeterminado)** y **Oscuro**. Cambia en **Ajustes → Tema**; la elección se aplica al instante (la barra de título de Windows también cambia) y se recuerda. En el primer arranque, el usuario elige un tema en el diálogo de bienvenida; una elección guardada siempre prevalece.
+Puedes elegir entre **Claro (predeterminado)**, **Oscuro** y **Gris neutro**. Gris neutro usa un fondo gris medio para ver, comparar y retocar imágenes. Cambia en **Ajustes → Tema**; la elección se aplica al instante (la barra de título de Windows también cambia) y se recuerda. En el primer arranque, el usuario elige un tema en el diálogo de bienvenida; una elección guardada siempre prevalece.
 
 ### Modo portable
 

@@ -28,6 +28,7 @@ from PyQt6.QtWidgets import (
 )
 
 from locales import trans
+from ui.styles import tokens
 from utils.design_tokens import SPACE
 from utils.image_utils import thumbnail_bgr, to_display_uint8
 from utils.path_identity import same_path
@@ -976,7 +977,7 @@ class _RetouchCanvas(QWidget):
     # ------------------------------------------------------------ paint
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
-        painter.fillRect(self.rect(), QColor(22, 22, 22))
+        painter.fillRect(self.rect(), QColor(tokens()['retouchCanvas']))
         qimage, width, height, ox, oy = self.dlg.canvas_image(self.role)
         if qimage is not None and width > 0 and height > 0:
             rect = self.image_rect(width, height, ox, oy)
@@ -1012,10 +1013,15 @@ class _RetouchCanvas(QWidget):
         diameter = max(2.0, self.dlg.doc.diameter * self.dlg.view.scale)
         valid = self.dlg.cursor_source_valid()
         color = QColor(255, 88, 88, 240) if not valid else QColor(255, 255, 255, 235)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        outline = QPen(QColor(0, 0, 0, 220), 3.4)
+        outline.setCosmetic(True)
+        painter.setPen(outline)
+        painter.drawEllipse(center, diameter / 2.0, diameter / 2.0)
         pen = QPen(color, 1.4)
         pen.setCosmetic(True)
         painter.setPen(pen)
-        painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawEllipse(center, diameter / 2.0, diameter / 2.0)
         inner = diameter * float(np.clip(self.dlg.doc.hardness, 0.0, 1.0))
         if inner > 1.0:
@@ -2599,7 +2605,7 @@ class RetouchDialog(QDialog):
             label.setVisible(False)
             return
         label.setText(trans.t(key))
-        label.setStyleSheet("color:#c0392b;" if state == "failed" else "")
+        label.setStyleSheet(f"color: {tokens()['danger']};" if state == "failed" else "")
         label.setVisible(True)
 
     def _start_sharpness_worker(self) -> None:

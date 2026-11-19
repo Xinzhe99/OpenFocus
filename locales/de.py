@@ -637,6 +637,7 @@ PACK = {
     "msg_update_needs_elevation": "Der Installationsordner ist ohne Administratorrechte nicht beschreibbar. Bitte über den Installer von der Releases-Seite aktualisieren.",
     "theme_dark": "Dunkel",
     "theme_light": "Hell",
+    "theme_gray": "Neutralgrau",
     "menu_quick_start": "Schnellstartanleitung",
     "menu_check_updates": "Nach Updates suchen",
     "menu_open_logs": "Log-Ordner öffnen",

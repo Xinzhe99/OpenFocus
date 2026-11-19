@@ -3,14 +3,14 @@
 Before this module the stylesheet was 648 lines of hand-written QSS with the
 colours pasted in, plus a `_to_light()` regex that rewrote the dark sheet by
 string substitution. Both are gone: `build_stylesheet(theme)` renders every
-rule from `utils.design_tokens`, so light and dark are the same design with
-different values, and a new widget cannot drift off-palette.
+rules from `utils.design_tokens`, so the themes share the same design
+with different values, and a new widget cannot drift off-palette.
 
 Public API (kept compatible with the old module so call sites do not churn):
     PRIMARY_BLUE, CURRENT_THEME, CURRENT_MESSAGE_BOX_STYLE
     get_theme_style(theme), get_app_light_style(), set_current_theme(theme)
     MESSAGE_BOX_STYLE, PROGRESS_DIALOG_STYLE, WHITE_COMBOBOX_STYLE
-    SOURCE_LIST_STYLE, OUTPUT_LIST_STYLE, HELP_BUTTON_STYLE(+_DARK/_LIGHT)
+    SOURCE_LIST_STYLE, OUTPUT_LIST_STYLE, HELP_BUTTON_STYLE
     HOVER_HIGHLIGHT_BUTTON_STYLE, DIALOG_CONTROL_DARK_QSS, arrow_qss()
     help_button_style(theme)
 """
@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from typing import Dict
 
-from utils.design_tokens import FONT, RADIUS, SPACE, WEIGHT, palette
+from utils.design_tokens import FONT, PALETTES, RADIUS, SPACE, WEIGHT, palette
 
 
 def _asset_url(name: str) -> str:
@@ -31,8 +31,10 @@ def _asset_url(name: str) -> str:
 
 
 _CHECK_SVG = _asset_url("check_white.svg")
+_CHECK_GRAY = _asset_url("check_gray.svg")
 _RADIO_DOT_LIGHT = _asset_url("radio_dot_blue.svg")
 _RADIO_DOT_DARK = _asset_url("radio_dot_dark.svg")
+_RADIO_DOT_GRAY = _asset_url("radio_dot_gray.svg")
 _ARROW_DOWN_LIGHT = _asset_url("arrow_down_light.svg")
 _ARROW_DOWN_DARK = _asset_url("arrow_down_dark.svg")
 # Right-pointing glyph for QMenu submenu indicators. Qt draws its own
@@ -56,13 +58,12 @@ def arrow_qss(theme: str = "dark", button_bg: str = None,
               button_hover: str = None, border: str = None) -> str:
     """Arrows for QComboBox / QSpinBox.
 
-    `theme` selects the glyph colour: 'dark' (dark widgets, light arrows) or
-    'light'. Colours default to the current palette.
+    Use light glyphs on dark controls. Colours default to the theme palette.
     """
     t = palette(theme)
-    down = _ARROW_DOWN_LIGHT if theme == "dark" else _ARROW_DOWN_DARK
-    minus = _MINUS_DARK if theme == "dark" else _MINUS_LIGHT
-    plus = _PLUS_DARK if theme == "dark" else _PLUS_LIGHT
+    down = _ARROW_DOWN_DARK if theme == "light" else _ARROW_DOWN_LIGHT
+    minus = _MINUS_LIGHT if theme == "light" else _MINUS_DARK
+    plus = _PLUS_LIGHT if theme == "light" else _PLUS_DARK
     bg = button_bg or t["surfaceHover"]
     hover = button_hover or t["surfaceActive"]
     r = RADIUS
@@ -133,9 +134,12 @@ def build_stylesheet(theme: str = "dark") -> str:
     r = _shadow_radius()
     s = SPACE
     f = FONT
-    check = _CHECK_SVG
-    dot = _RADIO_DOT_DARK if theme == "dark" else _RADIO_DOT_LIGHT
-    arrow_right = _ARROW_RIGHT_LIGHT if theme == "dark" else _ARROW_RIGHT_DARK
+    if theme == "gray":
+        check, dot = _CHECK_GRAY, _RADIO_DOT_GRAY
+    else:
+        check = _CHECK_SVG
+        dot = _RADIO_DOT_LIGHT if theme == "light" else _RADIO_DOT_DARK
+    arrow_right = _ARROW_RIGHT_DARK if theme == "light" else _ARROW_RIGHT_LIGHT
 
 
     return f"""
@@ -272,7 +276,7 @@ QPushButton#helpButton:hover {{
 }}
 
 /* Stepper +- buttons: an explicit surface so the glyph and the glyph's box
-   read the same way on both themes. Inheriting the base button left them as
+   read the same way across themes. Inheriting the base button left them as
    white chips with a visible frame in light mode and as bare glyphs in dark
    mode, which made the same dialog look like two different designs. */
 QPushButton#stepButton {{
@@ -582,6 +586,13 @@ QLabel#retouchZoom {{
     font-weight: {WEIGHT['semibold']};
 }}
 QLabel#mutedLabel {{ color: {t['textMuted']}; font-size: {f['caption']}pt; }}
+QLabel#errorLabel {{ color: {t['danger']}; }}
+QLabel#labelPreview {{ background-color: {t['canvas']}; color: {t['canvasText']}; }}
+QLabel#depthPreview {{
+    background-color: {t['inspectionCanvas']};
+    border: 1px solid {t['border']};
+    color: {t['canvasText']};
+}}
 
 QFrame#card {{
     background-color: {t['surface']};
@@ -669,8 +680,8 @@ LIGHT_APP_STYLE = LIGHT_STYLE
 
 
 def get_theme_style(theme: str = "dark") -> str:
-    """Full stylesheet for 'dark' (default) or 'light'."""
-    return build_stylesheet("light" if theme == "light" else "dark")
+    """Full application stylesheet for the named theme."""
+    return build_stylesheet(theme)
 
 
 def get_app_light_style() -> str:
@@ -708,7 +719,7 @@ QMessageBox QPushButton:default:hover {{ background-color: {t['accentHover']}; }
 """
 
 
-def _add_label_dialog_qss(theme: str) -> str:
+def get_add_label_dialog_style(theme: str) -> str:
     """Style for the "add label" dialog (controllers/label_manager.py).
 
     The dialog is built inline rather than as a dialogs/ module, and it was the
@@ -727,7 +738,6 @@ QDialog {{
     font-family: {_UI_FONT};
     font-size: {f['body']}pt;
 }}
-QDialog QLabel {{ color: {t['text']}; }}
 QDialog QLineEdit, QDialog QComboBox {{
     background-color: {t['controlBg']};
     color: {t['text']};
@@ -765,17 +775,7 @@ QDialog QCheckBox {{ color: {t['text']}; spacing: {s['sm']}px; }}
 """
 
 
-ADD_LABEL_DIALOG_STYLE = _add_label_dialog_qss("dark")
-ADD_LABEL_DIALOG_STYLE_LIGHT = _add_label_dialog_qss("light")
-
-
-def get_add_label_dialog_style(theme: str) -> str:
-    return (ADD_LABEL_DIALOG_STYLE_LIGHT if theme == "light"
-            else ADD_LABEL_DIALOG_STYLE)
-
-
 MESSAGE_BOX_STYLE_DARK = _message_box_qss("dark")
-MESSAGE_BOX_STYLE_LIGHT = _message_box_qss("light")
 
 
 def _progress_qss(theme: str) -> str:
@@ -808,7 +808,6 @@ QProgressBar::chunk {{ background-color: {t['accent']}; border-radius: {r['xs']}
 
 
 PROGRESS_DIALOG_STYLE_DARK = _progress_qss("dark")
-PROGRESS_DIALOG_STYLE_LIGHT = _progress_qss("light")
 
 
 def _combo_qss(theme: str) -> str:
@@ -867,59 +866,34 @@ SOURCE_LIST_STYLE = _list_qss("dark")
 OUTPUT_LIST_STYLE = SOURCE_LIST_STYLE
 
 
-HELP_BUTTON_STYLE_DARK = f"""
+def _help_button_qss(theme: str) -> str:
+    t = palette(theme)
+    return f"""
 QPushButton#helpButton {{
-    background-color: {palette('dark')['surfaceHover']};
-    color: {palette('dark')['textMuted']};
-    /* controlBorder, not border: the inline chip is not covered by the
-       generated sheet, so it kept the 1.2:1 dark 'border' token and read as
-       a black square instead of a round "?" chip. */
-    border: 1px solid {palette('dark')['controlBorder']};
+    background-color: {t['surfaceHover']};
+    color: {t['textMuted']};
+    border: 1px solid {t['controlBorder']};
     border-radius: {RADIUS['pill']}px;
     font-size: {FONT['caption']}pt;
     font-weight: {WEIGHT['semibold']};
     padding: 0;
-    /* An inline stylesheet replaces the sheet's #helpButton rule wholesale,
-       so the square geometry has to be restated here or the chip collapses
-       to the text width and renders as a rounded rectangle. */
     min-width: 26px; max-width: 26px;
     min-height: 26px; max-height: 26px;
 }}
 QPushButton#helpButton:hover {{
-    background-color: {palette('dark')['accentSoft']};
-    color: {palette('dark')['accentSoftText']};
+    background-color: {t['accentSoft']};
+    color: {t['accentSoftText']};
 }}
 """
 
-HELP_BUTTON_STYLE_LIGHT = f"""
-QPushButton#helpButton {{
-    background-color: {palette('light')['surfaceHover']};
-    color: {palette('light')['textMuted']};
-    border: 1px solid {palette('light')['controlBorder']};
-    border-radius: {RADIUS['pill']}px;
-    font-size: {FONT['caption']}pt;
-    font-weight: {WEIGHT['semibold']};
-    padding: 0;
-    /* An inline stylesheet replaces the sheet's #helpButton rule wholesale,
-       so the square geometry has to be restated here or the chip collapses
-       to the text width and renders as a rounded rectangle. */
-    min-width: 26px; max-width: 26px;
-    min-height: 26px; max-height: 26px;
-}}
-QPushButton#helpButton:hover {{
-    background-color: {palette('light')['accentSoft']};
-    color: {palette('light')['accentSoftText']};
-}}
-"""
-
+_HELP_BUTTON_STYLES = {theme: _help_button_qss(theme) for theme in PALETTES}
+HELP_BUTTON_STYLE_DARK = _HELP_BUTTON_STYLES["dark"]
 HELP_BUTTON_STYLE = HELP_BUTTON_STYLE_DARK
 
 
 def help_button_style(theme: str = None) -> str:
     """Inline style for the small round "?" button, for the active theme."""
-    if theme is None:
-        theme = globals().get("CURRENT_THEME", "dark")
-    return HELP_BUTTON_STYLE_LIGHT if theme == "light" else HELP_BUTTON_STYLE_DARK
+    return _HELP_BUTTON_STYLES.get(theme or CURRENT_THEME, HELP_BUTTON_STYLE_DARK)
 
 
 HOVER_HIGHLIGHT_BUTTON_STYLE = f"""
@@ -968,13 +942,11 @@ CURRENT_MESSAGE_BOX_STYLE = MESSAGE_BOX_STYLE_DARK
 
 
 def get_message_box_style(theme: str) -> str:
-    return (MESSAGE_BOX_STYLE_LIGHT if theme == "light"
-            else MESSAGE_BOX_STYLE_DARK)
+    return _message_box_qss(theme)
 
 
 def get_progress_dialog_style(theme: str) -> str:
-    return (PROGRESS_DIALOG_STYLE_LIGHT if theme == "light"
-            else PROGRESS_DIALOG_STYLE_DARK)
+    return _progress_qss(theme)
 
 
 MESSAGE_BOX_STYLE = MESSAGE_BOX_STYLE_DARK
@@ -989,7 +961,7 @@ def set_current_theme(theme: str) -> None:
     global MESSAGE_BOX_STYLE, PROGRESS_DIALOG_STYLE
     global WARNING_MESSAGE_BOX_STYLE, ERROR_MESSAGE_BOX_STYLE
     global SUCCESS_MESSAGE_BOX_STYLE
-    CURRENT_THEME = "light" if theme == "light" else "dark"
+    CURRENT_THEME = theme if theme in PALETTES else "dark"
     CURRENT_MESSAGE_BOX_STYLE = get_message_box_style(CURRENT_THEME)
     MESSAGE_BOX_STYLE = CURRENT_MESSAGE_BOX_STYLE
     PROGRESS_DIALOG_STYLE = get_progress_dialog_style(CURRENT_THEME)

@@ -5,6 +5,7 @@ from PyQt6.QtGui import QAction, QActionGroup, QDesktopServices
 from PyQt6.QtWidgets import QMainWindow, QToolTip
 from locales import trans
 from core.experimental import experimental_enabled
+from utils.design_tokens import PALETTES
 
 
 class _LockedExperimentalHint(QObject):
@@ -492,8 +493,8 @@ def setup_menus(window: QMainWindow) -> None:
     theme_menu = settings_menu.addMenu(trans.t('menu_theme'))
     theme_group_theme = QActionGroup(window)
     theme_group_theme.setExclusive(True)
-    for theme_code, trans_key in (("light", 'theme_light'),
-                                  ("dark", 'theme_dark')):
+    for theme_code in PALETTES:
+        trans_key = f'theme_{theme_code}'
         act = QAction(trans.t(trans_key), window)
         act.setCheckable(True)
         act.setChecked(getattr(window, 'ui_theme', 'light') == theme_code)
@@ -503,7 +504,7 @@ def setup_menus(window: QMainWindow) -> None:
             lambda _checked, code=theme_code: window.apply_theme(code))
         theme_group_theme.addAction(act)
         theme_menu.addAction(act)
-        window.ui_objs[f'theme_{theme_code}'] = act
+        window.ui_objs[trans_key] = act
     window.ui_objs['menu_theme'] = theme_menu
     window.ui_objs['menu_theme'].setProperty("trans_key", 'menu_theme')
 
