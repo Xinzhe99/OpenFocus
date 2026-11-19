@@ -1235,21 +1235,23 @@ frame from the same stack. The subject stays exactly as stacked. The background
 is derived from a frame and the stacked result; processing may reconstruct,
 adjust, and blend its pixels.
 
+Background replacement works best for isolated macro or microscope subjects against broad bokeh or a clean, solid color. Examples include insects, fungi, flower stamens, and specimens on slides. If detail fills the frame continuously from near to far, keep the original stack and touch up local background flaws with the **Source Brush**.
+
 1. Open the result in the retouch workspace and click **Auto background…**.
-2. Choose the background:
+2. Under **Background source**, choose a frame selection mode:
    - **Automatic** (recommended) uses the soft background, unless the stack
      recorded much of the background in focus. Then it uses the sharp one.
    - **Soft background** uses the frame where the background is blurriest.
    - **Sharp background** uses the frame focused farthest away.
-3. Leave **Clean edge halos** on to remove halos along the subject's edges. It
+3. Under **Subject edges**, leave **Clean edge halos** on to remove halos along the subject's edges. It
    never goes beyond what the frames recorded. Turn it off to keep the stack's
    own edge look.
 4. Tick **Keep soft parts attached to the subject** when parts of the subject
    sit just outside the depth of field, such as the knob at the end of a spine.
    It can also keep background objects next to the subject as stacked, so check
    the result.
-5. Click **Replace background**. A 20-megapixel stack of 15 frames takes about
-   a minute and needs about 3.5 GB of free memory. **Cancel** stops it.
+5. Click **Replace background** to see the current processing stage. A 20-megapixel stack of 15 frames takes about
+   a minute and needs about 3.5 GB of free memory. **Cancel** stops the operation and keeps your current edits.
 
 The change is one undoable step, and strokes you painted on the subject before
 are kept. Use the **Restore Brush** to bring back stacked pixels wherever you
