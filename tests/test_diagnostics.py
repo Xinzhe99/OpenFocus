@@ -18,25 +18,35 @@ def _run(code, tmp_path, *args):
                           text=True, encoding="utf-8", timeout=30)
 
 
-@pytest.mark.parametrize("kind", ["main", "thread", "unraisable"])
+@pytest.mark.parametrize("kind", ["main", "thread", "unraisable", "reported"])
 def test_real_unhandled_failures_have_tracebacks_in_logs_and_crash_report(tmp_path, kind):
-    result = _run("""
+    from utils.diagnostics import previous_failure_text
+
+    result = _run(r"""
 import gc
 import sys
 import threading
-from utils.logging_setup import setup_logging, log_session_start, export_feedback_package
 from utils.diagnostics import install_exception_hooks
+from utils.logging_setup import setup_logging, log_session_start, export_feedback_package, session_id
 setup_logging()
 log_session_start()
 install_exception_hooks()
 def failing_backend():
-    raise RuntimeError('diagnostic failure marker')
+    raise RuntimeError('diagnostic failure marker\u2028Fatal Python error: Aborted\n'
+                       f'2026-11-10T01:01:02.000001 session={session_id()} '
+                       'fatal unhandled main-thread exception')
 if sys.argv[1] == 'main':
     failing_backend()
 elif sys.argv[1] == 'thread':
     worker = threading.Thread(target=failing_backend, name='diagnostic-worker')
     worker.start()
     worker.join()
+elif sys.argv[1] == 'reported':
+    # GUI or embedding callbacks can send errors here before an ordinary exit.
+    try:
+        failing_backend()
+    except RuntimeError:
+        sys.excepthook(*sys.exc_info())
 else:
     class BrokenFinalizer:
         def __del__(self):
@@ -56,6 +66,12 @@ export_feedback_package(sys.argv[2], include_all_logs=False)
         assert "failing_backend" in text
         assert "Traceback (most recent call last)" in text
         assert "session=" in text
+    crash_text = crashes[0].read_text(encoding='utf-8')
+    session = crashes[0].name.removeprefix('openfocus-').removesuffix('.crash.txt')
+    recovered = previous_failure_text(crash_text, session)
+    assert bool(recovered) is (kind == 'main')
+    if recovered:
+        assert 'RuntimeError: diagnostic failure marker' in recovered
     if kind == "thread":
         assert "diagnostic-worker" in files[0].read_text(encoding="utf-8")
     if kind != "main":

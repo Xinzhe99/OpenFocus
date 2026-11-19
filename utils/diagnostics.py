@@ -11,6 +11,7 @@ from importlib import metadata
 import os
 from pathlib import Path
 import platform
+import re
 import sys
 import stat
 import tempfile
@@ -32,6 +33,11 @@ _owns_faulthandler = False
 # faulthandler had already enabled on stderr; shutdown hands it back.
 _restore_stderr_faulthandler = False
 _atexit_registered = False
+_NATIVE_HEADERS = ('Fatal Python error:', 'Windows fatal exception:')
+_FATAL_PYTHON = 'fatal unhandled main-thread exception'
+_CRASH_RECORD = re.compile(
+    r'[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{6})? '
+    r'session=([^ ]+) (.+)')
 
 
 def crash_log_path():
@@ -126,16 +132,41 @@ def system_facts() -> dict:
     return facts
 
 
-def _report(kind, exc_info):
+def previous_failure_text(text, session):
+    """Select the last fatal record, keeping later nonfatal tracebacks out of it."""
+    lines = text.splitlines(keepends=True)
+    start = end = None
+    for index, line in enumerate(lines):
+        if line.startswith(_NATIVE_HEADERS):
+            start, end = index, None
+        else:
+            header = _CRASH_RECORD.fullmatch(line.rstrip('\r\n'))
+            if header is None or header[1] != session:
+                continue
+            if header[2] == _FATAL_PYTHON:
+                start, end = index, None
+            elif start is not None and end is None:
+                end = index
+    return ''.join(lines[start:end]) if start is not None else ''
+
+
+def _report(kind, exc_info, *, fatal=False):
     from utils.logging_setup import mark_session_error
     mark_session_error()
-    _logger.critical("%s", kind, exc_info=exc_info)
+    extra = {'report_previous_crash': True} if fatal else None
+    _logger.critical("%s", kind, exc_info=exc_info, extra=extra)
     with _lock:
         if _crash_stream is not None:
             try:
+                header = _FATAL_PYTHON if fatal else ' '.join(kind.splitlines())
                 _crash_stream.write(
-                    f"\n{datetime.datetime.now().isoformat()} session={session_id()} {kind}\n")
-                traceback.print_exception(*exc_info, file=_crash_stream)
+                    f"\n{datetime.datetime.now().isoformat()} session={session_id()} {header}\n")
+                for block in traceback.format_exception(*exc_info):
+                    for line in block.splitlines(keepends=True):
+                        # Multiline exception messages may resemble a crash record.
+                        if line.startswith(_NATIVE_HEADERS) or _CRASH_RECORD.fullmatch(line.rstrip('\r\n')):
+                            _crash_stream.write(' ')
+                        _crash_stream.write(line)
                 _crash_stream.flush()
             except (OSError, ValueError):
                 pass  # File logging remains the other diagnostic sink.
@@ -165,7 +196,11 @@ class _ExceptionHooks:
 
     def main_exception(self, exc_type, value, tb):
         if self.active and not issubclass(exc_type, (KeyboardInterrupt, SystemExit)):
-            _report("unhandled exception", (exc_type, value, tb))
+            # The interpreter invokes this hook after unwinding the top-level
+            # frame. A direct call or GUI callback can report a surviving process.
+            fatal = (threading.current_thread() is threading.main_thread()
+                     and sys._getframe().f_back is None)
+            _report("unhandled exception", (exc_type, value, tb), fatal=fatal)
         self.previous[0](exc_type, value, tb)
 
     def thread_exception(self, args):

@@ -7,6 +7,7 @@ import signal
 import sys
 import threading
 import time
+import traceback
 from hashlib import sha256
 from pathlib import Path
 
@@ -18,11 +19,14 @@ from core.algorithms import (fusion_algorithms, registration_algorithms,
                              register_fusion, register_registration)
 from core.frame_transport import (FrameDecoder, FrameEncoder, LEGACY_SOURCE_REQUEST_ERROR,
                                   unwrap_source_request, wrap_source_request)
-from core.resource_policy import heavy_job, make_process_budget, process_budget
+from core.resource_policy import (ResourceLimitError, _ADMISSION_BYTES_LIMIT,
+                                  _ADMISSION_BYTE_FIELDS, heavy_job,
+                                  make_process_budget, process_budget)
 from core.registration import RegistrationCancelled
 from core.workers import RenderWorker, _render_error_category
 from locales import trans
 from utils.logging_setup import get_logger, log_action
+from utils.report_bundle import _MAX_FRAMES, safe_exception
 
 logger = get_logger(__name__)
 _CANCEL_GRACE_SECONDS = 3.0
@@ -32,6 +36,7 @@ _SUCCESS_STATE_FIELDS = (*_ERROR_STATE_FIELDS, 'prepared_cache', 'rendered_depth
 _RENDER_STAGES = ('prepare', 'align', 'fuse', 'finish')
 _ERROR_CATEGORIES = ('resource_limit', 'memory', 'os', 'value', 'runtime', 'other')
 _ERROR_ORIGINS = ('child_worker', 'child_setup_or_transfer')
+_CHILD_EXIT_ORIGIN = 'child_exit'
 _RENDER_SOURCE_FILES = tuple(Path(__file__).with_name(f'{name}.py') for name in (
     'render_process', 'frame_transport', 'source_frames', 'frame_storage',
     'frame_resolution_cache', 'workers', 'registration', 'resource_policy',
@@ -71,10 +76,77 @@ def _exit_reason(code):
     return f'exit code {code}'
 
 
+def _bounded_exit_code(code):
+    if type(code) is not int or code < -(2**31):
+        return None
+    if os.name == 'nt':
+        return code & 0xffffffff if code < 2**32 else None
+    return code if code < 2**31 else None
+
+
+def _capture_error_details(exc):
+    details = {}
+    if isinstance(exc, ResourceLimitError):
+        admission = _validated_admission(exc.admission)
+        if admission is not None:
+            details['admission'] = admission
+    try:
+        frames = ((frame.f_code.co_filename, line, frame.f_code.co_name)
+                  for frame, line in traceback.walk_tb(exc.__traceback__))
+        error = safe_exception(type(exc).__name__, frames)
+        if error['stack_lines']:
+            details['error'] = error
+    except Exception:
+        # Optional diagnostics must not replace the original error signal.
+        pass
+    return details
+
+
+def _validated_error(error):
+    if type(error) is not dict:
+        return None
+    kind, lines, stack = error.get('kind'), error.get('stack_lines'), error.get('stack', [])
+    if (type(kind) is not str or len(kind) > 64 or type(lines) is not list
+            or not 0 < len(lines) <= _MAX_FRAMES
+            or any(type(line) is not int or not 0 < line < 10**9 for line in lines)
+            or type(stack) is not list or len(stack) > len(lines)):
+        return None
+    frames = []
+    remaining_lines = iter(lines)
+    for frame in stack:
+        if type(frame) is not dict:
+            return None
+        file, line, function = frame.get('file'), frame.get('line'), frame.get('function')
+        if (type(file) is not str or len(file) > 64 or type(function) is not str
+                or len(function) > 64 or type(line) is not int or line not in remaining_lines):
+            return None
+        frames.append((file, line, function))
+    safe = safe_exception(kind, frames)
+    if safe['kind'] != kind or safe.get('stack', []) != stack:
+        return None
+    safe['stack_lines'] = list(lines)
+    return safe
+
+
+def _validated_admission(admission):
+    if type(admission) is not dict:
+        return None
+    status = admission.get('resource_status')
+    if type(status) is not str or status not in ('unknown', 'insufficient'):
+        return None
+    safe = {'resource_status': status}
+    for name in _ADMISSION_BYTE_FIELDS:
+        value = admission.get(name)
+        if type(value) is int and 0 <= value <= _ADMISSION_BYTES_LIMIT:
+            safe[name] = value
+    return safe
+
+
 class _ChildRenderWorker(RenderWorker):
     def __init__(self, cancel_event, *args, **kwargs):
         self._cancel_event = cancel_event
         self._local_cancelled = False
+        self._error_details = None
         super().__init__(*args, **kwargs)
 
     @property
@@ -84,6 +156,10 @@ class _ChildRenderWorker(RenderWorker):
     @is_cancelled.setter
     def is_cancelled(self, value):
         self._local_cancelled = bool(value)
+
+    def _record_render_error(self, exc):
+        super()._record_render_error(exc)
+        self._error_details = _capture_error_details(exc)
 
 
 class _Relay:
@@ -171,7 +247,11 @@ def _render_child(connection, cancel_event, request, budget, directory, language
                 encoder = FrameEncoder()
                 metadata = ((worker._render_error_category, 'child_worker', relay.last_stage)
                             if worker._render_error_category is not None else None)
-                relay.send(('error', errors[-1], encoder.encode(state), metadata))
+                message = ('error', errors[-1], encoder.encode(state), metadata)
+                # Keep the metadata triple readable by older source-run parents.
+                if metadata is not None and worker._error_details:
+                    message += (worker._error_details,)
+                relay.send(message)
                 return
             if not results:
                 raise RuntimeError('Render worker produced neither a result nor an error')
@@ -194,7 +274,8 @@ def _render_child(connection, cancel_event, request, budget, directory, language
     except Exception as exc:
         logger.exception('isolated render failed')
         relay.send(('error', str(exc), None,
-                    (_render_error_category(exc), 'child_setup_or_transfer', relay.last_stage)))
+                    (_render_error_category(exc), 'child_setup_or_transfer', relay.last_stage),
+                    _capture_error_details(exc)))
     finally:
         connection.close()
 
@@ -225,6 +306,7 @@ class _RenderExchange:
         self.decoder = None
         self.error = None
         self.error_metadata = None
+        self.last_stage = 'prepare'
 
     def restore_state(self, state, fields=_SUCCESS_STATE_FIELDS):
         for name in fields:
@@ -243,15 +325,31 @@ class _RenderExchange:
         elif kind == 'progress':
             self.worker.progress_signal.emit(*message[1:])
         elif kind == 'stage':
+            stage = message[1]
+            self.last_stage = stage if type(stage) is str and stage in _RENDER_STAGES else 'unknown'
             self.worker.stage_signal.emit(message[1])
         elif kind == 'error':
+            self.error_metadata = None
             self.error = message[1]
-            if len(message) > 3 and message[3] is not None:
-                category, origin, stage = message[3]
-                self.error_metadata = (
-                    category if category in _ERROR_CATEGORIES else 'other',
-                    origin if origin in _ERROR_ORIGINS else 'child_setup_or_transfer',
-                    stage if stage in _RENDER_STAGES else 'unknown')
+            metadata = message[3] if len(message) > 3 else None
+            if type(metadata) is tuple and len(metadata) == 3:
+                category, origin, stage = metadata
+                self.error_metadata = {
+                    'error_category': (category if type(category) is str and category in _ERROR_CATEGORIES
+                                       else 'other'),
+                    'error_origin': (origin if type(origin) is str and origin in _ERROR_ORIGINS
+                                     else 'child_setup_or_transfer'),
+                    'render_stage': (stage if type(stage) is str and stage in _RENDER_STAGES
+                                     else 'unknown'),
+                }
+                details = message[4] if len(message) > 4 else None
+                if type(details) is dict:
+                    error = _validated_error(details.get('error'))
+                    if error is not None:
+                        self.error_metadata['error'] = error
+                    admission = _validated_admission(details.get('admission'))
+                    if admission is not None:
+                        self.error_metadata['admission'] = admission
             if message[2] is not None:
                 self.restore_state(FrameDecoder().decode(message[2]), _ERROR_STATE_FIELDS)
         elif kind == 'completed':
@@ -280,6 +378,7 @@ class RenderProcessWorker(RenderWorker):
         self._cancel_event = None
         self.child_pid = None
         self.failure_category = None
+        self._child_error_evidence = None
 
     def cancel(self):
         super().cancel()
@@ -294,6 +393,7 @@ class RenderProcessWorker(RenderWorker):
 
     def run(self):
         self.failure_category = None
+        self._child_error_evidence = None
         result = None
         error = None
         try:
@@ -308,9 +408,23 @@ class RenderProcessWorker(RenderWorker):
         except RegistrationCancelled:
             error = 'CANCELLED: render cancelled'
         except Exception as exc:
-            if self.failure_category is None and isinstance(exc, MemoryError):
-                self.failure_category = _render_error_category(exc)
-            logger.exception('could not complete isolated render')
+            evidence = self._child_error_evidence
+            if evidence is not None:
+                if not self.is_cancelled:
+                    self.failure_category = evidence['error_category']
+                    try:
+                        log_action('render_child_error', **evidence)
+                    except Exception:
+                        pass
+                    logger.exception('could not complete isolated render', extra={
+                        'report_child_evidence': evidence,
+                        'report_workload': {'method': self.algorithm, 'registration': self.alignment,
+                                            'frame_count': len(self.raw_images), 'preview': self.preview},
+                    })
+            else:
+                if isinstance(exc, MemoryError):
+                    self.failure_category = _render_error_category(exc)
+                logger.exception('could not complete isolated render')
             error = str(exc)
         if self.is_cancelled:
             self.failure_category = None
@@ -320,6 +434,7 @@ class RenderProcessWorker(RenderWorker):
             self.error_signal.emit(error)
         elif result is not None:
             self.finished_signal.emit(*result)
+        self._child_error_evidence = None
 
     def _run_process(self):
         source_revision = None
@@ -384,17 +499,16 @@ class RenderProcessWorker(RenderWorker):
             if self.is_cancelled:
                 raise RegistrationCancelled()
             if process.exitcode != 0 or (exchange.packet is None and exchange.error is None):
+                evidence = dict(exchange.error_metadata or {'error_category': 'runtime'})
+                evidence.update(error_origin=_CHILD_EXIT_ORIGIN, render_stage=exchange.last_stage)
+                exit_code = _bounded_exit_code(process.exitcode)
+                if exit_code is not None:
+                    evidence['exit_code'] = exit_code
+                self._child_error_evidence = evidence
                 raise RuntimeError(trans.t('render_worker_crashed').format(
                     reason=_exit_reason(process.exitcode)))
             if exchange.error is not None:
-                if exchange.error_metadata is not None:
-                    category, origin, stage = exchange.error_metadata
-                    self.failure_category = category
-                    try:
-                        log_action('render_child_error', error_category=category,
-                                   error_origin=origin, render_stage=stage)
-                    except Exception:
-                        pass
+                self._child_error_evidence = exchange.error_metadata
                 if source_revision is not None and exchange.error == LEGACY_SOURCE_REQUEST_ERROR:
                     raise RuntimeError(trans.t('render_source_changed'))
                 raise RuntimeError(exchange.error)

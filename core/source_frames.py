@@ -641,9 +641,11 @@ class SourceFrame:
 
     def _decode(self, key, cache, should_cancel=None):
         from core.image_loader import decode_image
+        from core.registration import RegistrationCancelled
         from utils.logging_setup import log_operation
         from utils.performance_profile import current as current_profile
-        with log_operation('source_decode', path=self.path, page=self.page, scale=self.scale), \
+        with log_operation('source_decode', path=self.path, page=self.page, scale=self.scale,
+                           cancel_on=(RegistrationCancelled,)), \
                 current_profile().stage('source_decode'):
             scaled_raw = False
             if self.linear_metadata is not None:
