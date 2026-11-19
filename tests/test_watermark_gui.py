@@ -461,7 +461,7 @@ def test_switching_preview_to_an_output_loads_its_own_style(qapp):
     assert dialog.text_edit.text() == "OUTPUT B"
 
 
-@pytest.mark.parametrize("theme", ["light", "dark"])
+@pytest.mark.parametrize("theme", ["light", "dark", "gray"])
 @pytest.mark.parametrize("font_delta", [0, 2])
 def test_numeric_controls_reserve_suffix_width(qapp, theme, font_delta):
     from PyQt6.QtGui import QFont

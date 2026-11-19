@@ -773,7 +773,7 @@ class LabelManager:
         # ---- bottom: fixed actions --------------------------------------
         self._dialog_error = QLabel()
         self._dialog_error.setWordWrap(True)
-        self._dialog_error.setObjectName("labelError")
+        self._dialog_error.setObjectName("errorLabel")
         self._dialog_error.hide()
         root.addWidget(self._dialog_error)
 

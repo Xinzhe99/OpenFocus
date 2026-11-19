@@ -203,8 +203,8 @@ class BatchProcessingDialog(QDialog):
         self._folder_list_placeholder.setAlignment(
             Qt.AlignmentFlag.AlignCenter)
         self._folder_list_placeholder.setWordWrap(True)
-        self._folder_list_placeholder.setStyleSheet(
-            "color: #888888; background: transparent; padding: 12px;")
+        self._folder_list_placeholder.setObjectName("mutedLabel")
+        self._folder_list_placeholder.setContentsMargins(12, 12, 12, 12)
         folder_layout.addWidget(self.folder_list)
         folder_layout.addWidget(self._folder_list_placeholder)
         self._update_folder_placeholder()

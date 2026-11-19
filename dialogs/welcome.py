@@ -13,7 +13,7 @@ from PyQt6.QtWidgets import (
 )
 
 from locales import trans
-from utils.design_tokens import FONT, SPACE
+from utils.design_tokens import FONT, PALETTES, SPACE
 from utils.settings_store import DEFAULT_THEME
 
 
@@ -54,7 +54,7 @@ class WelcomeDialog(QDialog):
         theme_row = QHBoxLayout()
         theme_label = QLabel(trans.t('welcome_choose_theme'))
         theme = QComboBox()
-        for code in ('light', 'dark', 'system'):
+        for code in (*PALETTES, 'system'):
             theme.addItem(trans.t(f'theme_{code}'), code)
         current = getattr(main_window, 'theme_mode', DEFAULT_THEME)
         theme.setCurrentIndex(theme.findData(current))

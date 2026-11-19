@@ -4,6 +4,7 @@ from PyQt6.QtCore import QEvent, QObject, QUrl
 from PyQt6.QtGui import QAction, QActionGroup, QDesktopServices
 from PyQt6.QtWidgets import QMainWindow, QToolTip
 from locales import trans
+from utils.design_tokens import PALETTES
 
 
 class _UnavailableToolHint(QObject):
@@ -487,7 +488,7 @@ def setup_menus(window: QMainWindow) -> None:
     theme_menu = settings_menu.addMenu(trans.t('menu_theme'))
     theme_group_theme = QActionGroup(window)
     theme_group_theme.setExclusive(True)
-    for theme_code in ('light', 'dark', 'system'):
+    for theme_code in (*PALETTES, 'system'):
         trans_key = f'theme_{theme_code}'
         act = QAction(trans.t(trans_key), window)
         act.setCheckable(True)
@@ -498,7 +499,7 @@ def setup_menus(window: QMainWindow) -> None:
             lambda _checked, code=theme_code: window.apply_theme(code))
         theme_group_theme.addAction(act)
         theme_menu.addAction(act)
-        window.ui_objs[f'theme_{theme_code}'] = act
+        window.ui_objs[trans_key] = act
     window.ui_objs['menu_theme'] = theme_menu
     window.ui_objs['menu_theme'].setProperty("trans_key", 'menu_theme')
 

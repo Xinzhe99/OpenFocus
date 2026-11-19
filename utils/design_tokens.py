@@ -43,12 +43,13 @@ _LIGHT: Dict[str, str] = {
     "accentPressed":   "#1E40AF",
     "accentSoft":      "#EFF6FF",
     "accentSoftText":  "#1D4ED8",
+    "link":            "#0969DA",
     # semantic
     "success":         "#059669",
     "successSoft":     "#ECFDF5",
     "warning":         "#B45309",
     "warningSoft":     "#FFFBEB",
-    "danger":          "#DC2626",
+    "danger":          "#C0392B",
     "dangerSoft":      "#FEF2F2",
     # controls
     "controlBg":       "#FFFFFF",
@@ -59,6 +60,11 @@ _LIGHT: Dict[str, str] = {
     "controlDisabled": "#F3F4F6",
     # canvas behind images
     "canvas":          "#EDEFF2",
+    "canvasText":      "#545C68",
+    "wipeCanvas":      "#FFFFFF",
+    "retouchCanvas":   "#161616",
+    "inspectionCanvas": "#F9FAFB",
+    "curveLine":       "#2563EB",
     # overlay / shadow
     "shadow":          "rgba(17, 24, 39, 0.08)",
     "shadowStrong":    "rgba(17, 24, 39, 0.16)",
@@ -83,6 +89,7 @@ _DARK: Dict[str, str] = {
     "accentPressed":   "#3B7AEB",
     "accentSoft":      "#16243D",
     "accentSoftText":  "#8CB8FF",
+    "link":            "#6CB6FF",
     "success":         "#34D399",
     "successSoft":     "#0F2A22",
     "warning":         "#FBBF24",
@@ -95,12 +102,58 @@ _DARK: Dict[str, str] = {
     "controlBorder":   "#5C6775",
     "controlDisabled": "#1A1E25",
     "canvas":          "#0B0D10",
+    "canvasText":      "#AEB7C3",
+    "wipeCanvas":      "#181818",
+    "retouchCanvas":   "#161616",
+    "inspectionCanvas": "#12161B",
+    "curveLine":       "#4DA3FF",
     "shadow":          "rgba(0, 0, 0, 0.45)",
     "shadowStrong":    "rgba(0, 0, 0, 0.65)",
     "scrim":           "rgba(0, 0, 0, 0.55)",
 }
 
-PALETTES: Dict[str, Dict[str, str]] = {"light": _LIGHT, "dark": _DARK}
+_GRAY_CANVAS = "#606060"
+
+_GRAY: Dict[str, str] = {
+    "bg":              "#323232",
+    "surface":         "#3B3B3B",
+    "surfaceSunken":   "#363636",
+    "surfaceHover":    "#464646",
+    "surfaceActive":   "#515151",
+    "border":          "#555555",
+    "borderStrong":    "#8D8D8D",
+    "borderFocus":     "#97C9C3",
+    "text":            "#F1F1F1",
+    "textMuted":       "#C4C4C4",
+    "textFaint":       "#AFAFAF",
+    "textOnAccent":    "#182825",
+    "accent":          "#97C9C3",
+    "accentHover":     "#ABD7D1",
+    "accentPressed":   "#83B4AE",
+    "accentSoft":      "#424A49",
+    "accentSoftText":  "#BDE0DB",
+    "link":            "#B2D8D3",
+    "success":         "#8ED3B3",
+    "successSoft":     "#2E443B",
+    "warning":         "#F2CB7E",
+    "warningSoft":     "#4B3D29",
+    "danger":          "#FF9C9C",
+    "dangerSoft":      "#4D3335",
+    "controlBg":       "#3F3F3F",
+    "controlBorder":   "#8D8D8D",
+    "controlDisabled": "#343434",
+    "canvas":          _GRAY_CANVAS,
+    "canvasText":      "#E2E2E2",
+    "wipeCanvas":      _GRAY_CANVAS,
+    "retouchCanvas":   _GRAY_CANVAS,
+    "inspectionCanvas": _GRAY_CANVAS,
+    "curveLine":       "#C4C4C4",
+    "shadow":          "rgba(0, 0, 0, 0.30)",
+    "shadowStrong":    "rgba(0, 0, 0, 0.52)",
+    "scrim":           "rgba(0, 0, 0, 0.55)",
+}
+
+PALETTES: Dict[str, Dict[str, str]] = {"light": _LIGHT, "dark": _DARK, "gray": _GRAY}
 
 # --------------------------------------------------------------------------
 # Geometry and type
@@ -185,8 +238,8 @@ ICONS = {
 
 
 def palette(theme: str = "dark") -> Dict[str, str]:
-    """Semantic colour table for 'dark' (default) or 'light'."""
-    return PALETTES["light" if theme == "light" else "dark"]
+    """Semantic colours for the named theme, with dark as the fallback."""
+    return PALETTES.get(theme, _DARK)
 
 
 def color(name: str, theme: str = "dark") -> str:

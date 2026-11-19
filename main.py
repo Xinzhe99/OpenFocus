@@ -551,9 +551,7 @@ class OpenFocus(QMainWindow):
         self.current_display_index = -1
         self.current_folder_path = ""
 
-        # 主题应用必须在 init_ui 之后：light 模式要剥离控件的内联暗样式，
-        # UI 未建时剥离是空操作，之后创建的控件会带着暗色内联样式覆盖
-        # 应用级亮色 QSS（白底白字，整个右侧面板不可读）
+        # Apply the saved theme once the widgets and menu actions exist.
         with self._restore_scope():
             self.init_ui()
             self.apply_experimental_features()
@@ -3997,15 +3995,6 @@ class OpenFocus(QMainWindow):
         ui_font = get_ui_font_family()
         mono_font = get_monospace_font_family()
 
-        # Drop stylesheets captured by the previous (light) implementation.
-        for wdg, _ss in getattr(self, "_inline_styles_saved", None) or []:
-            try:
-                wdg.setStyleSheet("")
-            except RuntimeError:
-                pass
-        self._inline_styles_saved = None
-        self.setStyleSheet("")
-
         app = QApplication.instance()
         if app is not None:
             app.setStyleSheet("")
@@ -4014,8 +4003,7 @@ class OpenFocus(QMainWindow):
             app.setStyleSheet(_apply_font_family(get_theme_style(theme, font_size=points),
                                                  ui_font, mono_font))
 
-        # Re-colour themed inline widgets that the light pass above strips:
-        # the update banner must survive that sweep with a readable palette.
+        # Refresh widget-specific styles that build on the application sheet.
         banner = getattr(self, "update_banner", None)
         if banner is not None:
             banner.apply_theme(theme)
@@ -4028,6 +4016,9 @@ class OpenFocus(QMainWindow):
             except RuntimeError:
                 pass
         self._refresh_status_sponsor()
+        from dialogs._community_layout import apply_community_theme
+        for dialog in self.findChildren(ContactInfoDialog):
+            apply_community_theme(dialog)
         # Inline "?" button styles are captured at creation; re-apply them for
         # the new theme or the dark chip stays dark on the light panel.
         from ui.styles import help_button_style
@@ -4037,9 +4028,7 @@ class OpenFocus(QMainWindow):
                     widget.setStyleSheet(help_button_style(theme))
             except RuntimeError:
                 pass
-        # Numeric steppers paint their -/+ buttons from inline sheets built at
-        # creation, so without this they keep the old theme's colours (a black
-        # stepper on the light panel).
+        # Refresh the numeric steppers' inherited styles on the new palette.
         from widgets.stepper import StepperSpinBox
         for widget in self.findChildren(StepperSpinBox):
             try:

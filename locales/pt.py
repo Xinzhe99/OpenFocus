@@ -638,6 +638,7 @@ PACK = {
     "msg_update_needs_elevation": "A pasta de instalação não é gravável sem direitos de administrador. Atualize pelo instalador da página de lançamentos.",
     "theme_dark": "Escuro",
     "theme_light": "Claro",
+    "theme_gray": "Cinza neutro",
     "menu_quick_start": "Guia de início rápido",
     "menu_check_updates": "Verificar atualizações",
     "menu_open_logs": "Abrir pasta de logs",

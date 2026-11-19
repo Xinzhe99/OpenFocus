@@ -289,13 +289,13 @@ class WipeCompareWidget(QWidget):
 
     def paintEvent(self, event) -> None:  # noqa: N802
         painter = QPainter(self)
-        from ui import styles as _styles
-        canvas = "#ffffff" if getattr(_styles, "CURRENT_THEME", "dark") == "light" else "#181818"
-        painter.setBackground(QColor(canvas))
-        painter.eraseRect(self.rect())
+        from ui.styles import tokens
+
+        theme = tokens()
+        painter.fillRect(self.rect(), QColor(theme['wipeCanvas']))
 
         if self._left_pixmap is None and self._right_pixmap is None:
-            painter.setPen(QColor("#666"))
+            painter.setPen(QColor(theme['canvasText']))
             painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self._notice or self._left_title)
             return
 
@@ -353,8 +353,7 @@ class WipeCompareWidget(QWidget):
     def _draw_title_chip(self, painter: QPainter, text: str, left: bool) -> None:
         if not text:
             return
-        # Match the app-wide UI font (set by apply_dark_theme) so the chips
-        # render CJK text exactly like the rest of the interface
+        # Match the application font, including its CJK fallback.
         painter.setFont(QApplication.instance().font())
         metrics = painter.fontMetrics()
         text_w = metrics.horizontalAdvance(text) + 16

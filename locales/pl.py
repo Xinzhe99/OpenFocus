@@ -638,6 +638,7 @@ PACK = {
     "msg_update_needs_elevation": "Folder instalacji nie jest zapisywalny bez uprawnień administratora. Zaktualizuj przez instalator ze strony Releases.",
     "theme_dark": "Ciemny",
     "theme_light": "Jasny",
+    "theme_gray": "Neutralna szarość",
     "menu_quick_start": "Przewodnik szybkiego startu",
     "menu_check_updates": "Sprawdź aktualizacje",
     "menu_open_logs": "Otwórz folder logów",
