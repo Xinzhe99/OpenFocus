@@ -20,7 +20,7 @@ def _until(qapp, predicate):
 
 
 @pytest.fixture
-def algorithm_host(qapp, extension):
+def algorithm_host(qapp, extension, monkeypatch):
     from main import OpenFocus
     from ui.right_panel import create_right_panel
 
@@ -48,6 +48,7 @@ def algorithm_host(qapp, extension):
     host.exposure_match = False
     host.source_revision = 0
     host.ui_theme = "light"
+    monkeypatch.setattr('ui.algorithm_combo._package_available', lambda name: True)
     host.persist_settings = lambda: None
     for name in ("current_fusion_method", "current_alignment_method",
                  "set_fusion_method", "set_alignment_method", "fusion_parameters_for",
@@ -292,10 +293,16 @@ def test_exposure_defaults_on_preserves_choice_and_reset(algorithm_host):
 
     host = algorithm_host
     host._brightness_by_method.clear()
-    for method in ["none", *(spec.id for spec in fusion_algorithms())]:
-        host.set_fusion_method(method)
-        assert host.chk_exposure_match.isChecked() == (method != "none")
+    host.set_fusion_method("openfocus_b")
+    host.set_fusion_method("none")
+    assert host.chk_exposure_match.isChecked()
+    host.chk_exposure_match.setChecked(False)
+    for spec in fusion_algorithms():
+        host.set_fusion_method(spec.id)
+        assert host.chk_exposure_match.isChecked()
         assert not host.chk_base_correct.isChecked()
+    host.set_fusion_method("none")
+    assert not host.chk_exposure_match.isChecked()
 
     host.set_fusion_method("openfocus_a")
     host.chk_exposure_match.setChecked(False)
@@ -320,7 +327,7 @@ def test_exposure_defaults_on_preserves_choice_and_reset(algorithm_host):
     assert host._brightness_by_method == {}
     for method in ["none", *(spec.id for spec in fusion_algorithms())]:
         host.set_fusion_method(method)
-        assert host.chk_exposure_match.isChecked() == (method != "none")
+        assert host.chk_exposure_match.isChecked()
         assert not host.chk_base_correct.isChecked()
 
 

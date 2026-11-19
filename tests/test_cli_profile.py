@@ -42,7 +42,7 @@ def _cli_stack(tmp_path):
     return stack
 
 
-_TILES = ('--method', 'stackmffv3', '--cpu', '--threads', '1', '--tile-size', '64',
+_TILES = ('--experimental', '--method', 'stackmffv3', '--cpu', '--threads', '1', '--tile-size', '64',
           '--tile-overlap', '16', '--tile-threshold', '32')
 
 

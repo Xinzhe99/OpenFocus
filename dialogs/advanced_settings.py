@@ -11,7 +11,7 @@ from constants import (
     TILE_BLOCK_MAX, TILE_BLOCK_MIN, TILE_OVERLAP_MAX, TILE_THRESHOLD_MAX,
     TILE_THRESHOLD_MIN,
 )
-from core.algorithms import (get_fusion, get_registration, registration_parameter_specs,
+from core.algorithms import (FUSION_DEFAULT, get_fusion, get_registration, registration_parameter_specs,
                              resolve_registration_parameters)
 from core.multi_focus_fusion import _DEFAULT_TILE_THRESHOLD
 from core.frame_storage import configure_storage_directory, restore_storage_directory
@@ -228,7 +228,7 @@ class AdvancedSettingsDialog(QDialog):
         }
         self.tile_status = _note(page_lay, '')
         self.tile_status.setProperty('controlId', 'effective_tiling_status')
-        method = getattr(w, 'current_fusion_method', lambda: 'stackmffv3')()
+        method = getattr(w, 'current_fusion_method', lambda: FUSION_DEFAULT)()
         spec = None if method == 'none' else get_fusion(method)
         supported = (spec is not None and spec.external_tiling_supported and
                      method not in ('openfocus_a', 'openfocus_b', 'openfocus_c'))

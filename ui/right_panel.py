@@ -32,7 +32,7 @@ from ui.styles import (
     SOURCE_LIST_STYLE,
 )
 from locales import trans
-from core.algorithms import fusion_algorithms, registration_algorithms, get_fusion
+from core.algorithms import FUSION_DEFAULT, fusion_algorithms, registration_algorithms, get_fusion
 from ui.algorithm_parameters import AlgorithmParameterPanel
 
 # Widest text column that fits a 375 px panel. This is an upper bound: the
@@ -253,7 +253,6 @@ def alignment_items():
     return tuple((spec.id, spec.label_key, spec.hint_key)
                  for spec in registration_algorithms())
 
-FUSION_DEFAULT = "openfocus_b"
 ALIGN_DEFAULT = "ecc"
 
 def refresh_experimental_selectors(window):

@@ -341,7 +341,7 @@ def test_cli_render_survives_a_failing_sweep(tmp_path, monkeypatch):
     for i in range(3):
         cv2.imwrite(str(stack / f"f{i}.png"), np.full((24, 24, 3), 40 * i, np.uint8))
     out = tmp_path / "out.png"
-    assert run_cli(["-i", str(stack), "-o", str(out), "-m", "guided_filter", "-a", "none"]) == 0
+    assert run_cli(["-i", str(stack), "-o", str(out), "--experimental", "-m", "guided_filter", "-a", "none"]) == 0
     assert out.exists()
 
 

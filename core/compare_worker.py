@@ -8,7 +8,7 @@ allowed to finish when cancelled; their output is never published afterwards.
 
 from copy import deepcopy
 from dataclasses import replace
-from threading import Event
+from threading import Event, Semaphore
 
 import numpy as np
 from PyQt6.QtCore import QThread, pyqtSignal
@@ -114,6 +114,9 @@ class AlignmentWorker(_CancellableWorker):
                     self.failed.emit(str(exc) or type(exc).__name__)
 
 
+_DISPLAY_TURN = Semaphore(1)
+
+
 class DisplayWorker(_CancellableWorker):
     """Develop and resize one candidate without allocating a full Qt pixmap."""
     ready = pyqtSignal(object, object, bool)
@@ -129,7 +132,14 @@ class DisplayWorker(_CancellableWorker):
         import cv2
         from core.resource_policy import require_memory
         try:
-            with heavy_job(self._should_cancel):
+            # Already-rendered pixels need only one display working set at a
+            # time. They must stay interactive while fusion owns admission.
+            while not self._should_cancel():
+                if _DISPLAY_TURN.acquire(timeout=.05):
+                    break
+            else:
+                return
+            try:
                 x, y, w, h = self.bounds
                 if self.full:
                     region = self.bounds
@@ -157,6 +167,8 @@ class DisplayWorker(_CancellableWorker):
                     pixels = cv2.resize(pixels, size, interpolation=cv2.INTER_AREA)
                 if not self._should_cancel():
                     self.ready.emit(pixels, region, self.full)
+            finally:
+                _DISPLAY_TURN.release()
         except Exception as exc:
             if not self._should_cancel():
                 self.failed.emit(str(exc) or type(exc).__name__)

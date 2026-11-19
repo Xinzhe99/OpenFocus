@@ -22,7 +22,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/Windows-10%2F11-0078D7?logo=windows&logoColor=white" alt="Windows 10/11">
   <img src="https://img.shields.io/badge/macOS-Apple%20Silicon-000000?logo=apple&logoColor=white" alt="macOS Apple Silicon">
-  <img src="https://img.shields.io/badge/Linux-CLI-FCC624?logo=linux&logoColor=black" alt="Linux CLI">
+  <img src="https://img.shields.io/badge/Linux-x86--64-FCC624?logo=linux&logoColor=black" alt="Linux x86-64 para desktop e CLI">
   <a href="https://pypi.org/project/openfocus/"><img src="https://img.shields.io/badge/PyPI-openfocus-3775A9?logo=pypi&logoColor=white" alt="PyPI"></a>
 </p>
 
@@ -55,7 +55,7 @@
 ## 📢 Novidades
 
 > [!NOTE]
-> **[v1.77.0-beta.7, versão preliminar](https://github.com/Xinzhe99/OpenFocus/releases/tag/v1.77.0-beta.7)** — Aceleração por GPU para dispositivos OpenCL compatíveis no OpenFocus B, com alternativa em CPU; comparação por deslizamento corrigida; fundo automático e retoque. Detalhes no [registro de alterações](../../CHANGELOG.md).
+> **[v2.0.0 está disponível como versão estável](https://github.com/Xinzhe99/OpenFocus/releases/tag/v2.0.0)** — Inclui um arquivo portátil do aplicativo de desktop para Linux x86_64. Consulte o [registro de alterações](../../CHANGELOG.md).
 
 As versões anteriores estão no [registro de alterações](../../CHANGELOG.md).
 
@@ -72,7 +72,7 @@ Não é obrigatório, mas é muito apreciado.
 <tr>
 <td width="46%" valign="middle">
 
-### Fusão por IA: StackMFF V3
+### Fusão por IA: StackMFF V3 (experimental)
 
 O StackMFF V3 usa IA para combinar as partes nítidas dos quadros de uma pilha.
 
@@ -107,6 +107,8 @@ Arraste o divisor para comparar um quadro de origem com o resultado fundido.
 ### Comparação de métodos
 
 Compare os métodos lado a lado e reutilize o resultado ou as configurações escolhidas.
+
+OpenFocus A, OpenFocus B e OpenFocus C são os únicos métodos de fusão estáveis. Os demais métodos são experimentais. Para usá-los no aplicativo de desktop, selecione **Configurações → Configurações avançadas… → Ativar recursos experimentais**. Na CLI sem interface gráfica, use `--experimental`.
 
 </td>
 <td width="54%">
@@ -219,11 +221,13 @@ Um agente pode controlar o aplicativo por um canal local protegido por token.
 <a id="install"></a>
 ## ⬇️ Instalação
 
-O [site do OpenFocus](https://openfocus.top/#download) e seus scripts de instalação oferecem para Windows e macOS a versão mais recente, incluindo uma beta mais nova (atualmente v1.77.0-beta.7). Os downloads também estão no [GitHub Releases](https://github.com/Xinzhe99/OpenFocus/releases). As atualizações automáticas do desktop também oferecem betas mais novas; a CLI Linux do PyPI permanece estável.
+A [página de downloads do OpenFocus](https://openfocus.top/#download) oferece a versão estável mais recente do aplicativo de desktop para Windows, macOS e Linux x86_64. Extraia o arquivo para Linux e execute `OpenFocus/OpenFocus`. No Linux, instale manualmente as atualizações do aplicativo pela mesma página.
+
+As atualizações do aplicativo de desktop usam o canal estável por padrão. Para receber versões preliminares, ative **Receber atualizações beta** nas configurações avançadas ou na janela de boas-vindas. As versões anteriores e preliminares estão no [GitHub Releases](https://github.com/Xinzhe99/OpenFocus/releases).
 
 Consulte o [manual](../USER_MANUAL_PT.md) para instalação e solução de problemas.
 
-No macOS com Apple Silicon ou no Linux, instale pelo terminal; no Linux, instala-se a CLI sem interface e, no macOS, o aplicativo fica em `~/Applications`:
+No macOS com Apple Silicon, o comando abaixo instala o aplicativo em `~/Applications`. No Linux, o comando instala a CLI sem interface gráfica.
 
 ```bash
 curl -fsSL https://openfocus.top/install.sh | sh -s -- --dry-run # opcional: prévia
@@ -253,7 +257,7 @@ O aplicativo de desktop inicia automaticamente um canal local de agente protegid
 
 ### 💻 Uso pela linha de comando
 
-Você também pode instalar a CLI no Windows, macOS e Linux — o mesmo pipeline, sem a pilha gráfica:
+Instale a CLI sem interface gráfica separadamente com `pip` no Windows, macOS ou Linux. Ela oferece o mesmo fluxo de processamento sem a interface gráfica.
 
 ```bash
 pip install openfocus

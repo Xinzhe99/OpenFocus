@@ -14,8 +14,8 @@ from core.render_process import RenderProcessWorker
 from dialogs import ROIRenderOptionsDialog  # Import the new dialog
 from locales import trans
 from core.algorithms import fusion_algorithms, get_fusion, get_registration, alignment_steps
-from core.experimental import processing_is_locked
-from ui.algorithm_combo import fusion_unavailable_reason
+from core.experimental import alignment_is_locked
+from ui.algorithm_combo import desktop_fusion_lock_reason, fusion_lock_reason
 
 
 
@@ -623,7 +623,7 @@ class RenderManager:
     def _compare_button(self):
         return getattr(self.window, "btn_compare_all", None)
 
-    def _set_compare_button(self, mode: str) -> None:
+    def _set_compare_button(self, mode: str, reason: str = '') -> None:
         """Paint the Compare-all button for the state it is actually in.
 
         While a comparison runs it is the cancel affordance, so it must not
@@ -646,13 +646,21 @@ class RenderManager:
             button.setText(trans.t('btn_compare_all'))
             button.setToolTip(
                 f"{trans.t('btn_compare_all')}\n"
-                f"{trans.t('btn_compare_all_hint')}")
+                f"{reason or trans.t('btn_compare_all_hint')}")
         else:
             button.setEnabled(True)
             button.setText(trans.t('btn_compare_all'))
             button.setToolTip(
                 f"{trans.t('btn_compare_all')}\n"
                 f"{trans.t('btn_compare_all_hint')}")
+
+    def _alignment_lock_reason(self):
+        method = getattr(self.window, 'current_alignment_method', lambda: 'none')()
+        return trans.t('experimental_locked_hint') if alignment_is_locked(self.window, method) else ''
+
+    def _render_lock_reason(self, force_algorithm=None):
+        method = force_algorithm or getattr(self.window, 'current_fusion_method', lambda: 'none')()
+        return desktop_fusion_lock_reason(self.window, method) or self._alignment_lock_reason()
 
     def refresh_action_labels(self) -> None:
         """Re-apply render/compare captions after a language or state change.
@@ -687,11 +695,12 @@ class RenderManager:
             self._set_compare_button("disabled")
         else:
             if render is not None:
-                locked = processing_is_locked(window)
-                render.setEnabled(not locked)
-                render.setToolTip(trans.t('experimental_locked_hint') if locked else '')
+                reason = self._render_lock_reason()
+                render.setEnabled(not reason)
+                render.setToolTip(reason)
                 render.setText(trans.t('btn_render'))
-            self._set_compare_button('disabled' if processing_is_locked(window) else 'idle')
+            reason = self._alignment_lock_reason()
+            self._set_compare_button('disabled' if reason else 'idle', reason)
 
     def _stop_compare_timer(self) -> None:
         timer = getattr(self, "_compare_chain_timer", None)
@@ -837,12 +846,13 @@ class RenderManager:
             show_warning_box(window, trans.t("msg_no_images_title"), trans.t("msg_render_need_images_text"))
             return
 
-        if processing_is_locked(window):
-            show_warning_box(window, trans.t('experimental_label'), trans.t('experimental_locked_hint'))
+        reason = self._alignment_lock_reason()
+        if reason:
+            show_warning_box(window, trans.t('experimental_label'), reason)
             return
         ai_available = is_ai_fusion_available()
         methods = [spec.id for spec in fusion_algorithms()
-                   if not fusion_unavailable_reason(spec, ai_available)]
+                   if not fusion_lock_reason(spec, window, ai_available)]
 
         self._compare_queue = list(methods)
         self._compare_total = len(methods)
@@ -957,13 +967,14 @@ class RenderManager:
                 getattr(window, "source_manager", None), "_load_worker", None) is not None else "cancelled"
             window.statusBar().showMessage(trans.t("msg_render_queue_cancelled"), 5000)
             return
-        if processing_is_locked(window):
+        reason = self._render_lock_reason(force_algorithm)
+        if reason:
             self._start_status = 'unavailable'
+            self._abort_compare_run()
             if interactive:
-                show_warning_box(window, trans.t('experimental_label'),
-                                 trans.t('experimental_locked_hint'))
+                show_warning_box(window, trans.t('msg_error'), reason)
                 return
-            raise ValueError(trans.t('experimental_locked_hint'))
+            raise ValueError(reason)
         # Frames are still loading (a render clicked right after opening a
         # stack used to say "load at least 2 images"): queue the render and
         # start it when the load finishes.  A second click cancels the queue.

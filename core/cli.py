@@ -2,7 +2,7 @@
 
 Lets batch users and CI pipelines run registration + fusion without the GUI:
 
-    openfocus --input ./stack_folder --output ./out.png --method stackmffv3
+    openfocus --input ./stack_folder --output ./out.png --method openfocus_b
     openfocus --input ./stackA ./stackB --output-dir ./results   (batch)
 
 Exit codes: 0 success, 1 processing error, 2 usage error.
@@ -34,7 +34,7 @@ from utils.output_sharpen import (DEFAULT_SHARPEN_STRENGTH, MAX_SHARPEN_STRENGTH
 from core.resource_policy import heavy_job, require_memory
 from core.frame_storage import scratch_directory
 
-from core.algorithms import (fusion_algorithms, registration_algorithms, get_fusion,
+from core.algorithms import (FUSION_DEFAULT, fusion_algorithms, registration_algorithms, get_fusion,
                              get_registration, resolve_fusion_parameters,
                              resolve_registration_parameters, alignment_steps)
 from constants import app_display_version
@@ -87,9 +87,9 @@ def build_parser() -> argparse.ArgumentParser:
         epilog=(
             "examples:\n"
             "  openfocus --input ./stack --output ./result/fused.png\n"
-            "  openfocus --input ./stack --output ./result/fused.png --method dtcwt --align ecc --threads 8\n"
-            "  openfocus --input ./stackA ./stackB --output-dir ./results -m stackmffv3\n"
-            "  openfocus --input img1.jpg img2.jpg img3.jpg --output fused.png --method gfgfgf\n"
+            "  openfocus --input ./stack --output ./result/fused.png --method openfocus_c --align ecc --threads 8\n"
+            "  openfocus --input ./stackA ./stackB --output-dir ./results --experimental -m stackmffv3\n"
+            "  openfocus --input img1.jpg img2.jpg img3.jpg --output fused.png --method openfocus_a\n"
             "  openfocus --input ./stack --output fused.tif --align ecc --auto-background\n"
             "\nTransparent input: PNG frames must share one rectangular, constant-opacity\n"
             "region and bit depth. Output must be PNG; alignment, dust correction,\n"
@@ -116,10 +116,12 @@ def build_parser() -> argparse.ArgumentParser:
                              "Pillow-readable inputs only; no RAW, alpha, multipage or depth maps.")
     parser.add_argument("--group-overlap", type=int, default=0, metavar="FRAMES",
                         help="Frames shared by consecutive groups (default 0; at most group size minus 2).")
-    parser.add_argument("--method", "-m", default="stackmffv3",
+    parser.add_argument("--method", "-m", default=FUSION_DEFAULT,
                         choices=[spec.id for spec in fusion_algorithms()],
-                        help="Fusion method (default: stackmffv3); use `openfocus describe` "
+                        help=f"Fusion method (default: {FUSION_DEFAULT}); use `openfocus describe` "
                              "for available methods and their parameters")
+    parser.add_argument("--experimental", action="store_true",
+                        help="Allow experimental fusion methods when their dependencies are installed")
     parser.add_argument("--align", "-a", default="none",
                         choices=[spec.id for spec in registration_algorithms()],
                         help="Registration applied before fusion (default: none); openfocus = "
@@ -358,6 +360,13 @@ def _resolve_algorithm_arguments(args):
     if getattr(args, "depth_map", None) and spec.depth is None:
         raise ValueError(f"--depth-map is not available for method '{args.method}'")
     return args
+
+
+def _require_fusion_opt_in(args):
+    spec = get_fusion(args.method)
+    if spec.experimental and not args.experimental:
+        raise ValueError(f"{spec.display_name} ({spec.id}) is experimental. "
+                         "Pass --experimental to use it or choose OpenFocus A, B, or C.")
 
 
 def _list_folder_images(folder: str, loader) -> List[str]:
@@ -1210,6 +1219,7 @@ def _folder_run_args(args, folder: str, name: str):
     if not override:
         return args, None
     merged = argparse.Namespace(**{**vars(args), **override})
+    _require_fusion_opt_in(merged)
     _validate_execution_args(merged)
     _resolve_algorithm_arguments(merged)
     return merged, override
@@ -1722,6 +1732,8 @@ def _run_recipe_command(argv: List[str]) -> int:
     run = commands.add_parser("run", help="run a recipe")
     run.add_argument("file", help="recipe JSON file")
     run.add_argument("--dry-run", action="store_true")
+    run.add_argument("--experimental", action="store_true",
+                     help="Allow the experimental fusion method saved in the recipe")
     if argv and argv[0] == "create":
         args, processing = parser.parse_known_args(argv)
         try:
@@ -1735,7 +1747,7 @@ def _run_recipe_command(argv: List[str]) -> int:
             return EXIT_USAGE
     args = parser.parse_args(argv)
     try:
-        return run_recipe(args.file, dry_run=args.dry_run)
+        return run_recipe(args.file, dry_run=args.dry_run, experimental=args.experimental)
     except (ValueError, OSError, TypeError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_USAGE
@@ -2049,6 +2061,7 @@ def _run_cli_parsed(args) -> int:
             return EXIT_USAGE
 
     try:
+        _require_fusion_opt_in(args)
         _validate_execution_args(args)
         _resolve_algorithm_arguments(args)
         for folder, override in args._folder_overrides.items():
@@ -2065,6 +2078,7 @@ def _run_cli_parsed(args) -> int:
                 raise ValueError(f"Unknown override keys for {folder}: {sorted(unknown)}")
             try:
                 merged = argparse.Namespace(**{**vars(args), **override})
+                _require_fusion_opt_in(merged)
                 _validate_execution_args(merged)
                 _resolve_algorithm_arguments(merged)
             except (TypeError, ValueError) as exc:
@@ -2372,6 +2386,7 @@ def describe_payload() -> dict:
             "id": spec.id,
             "label": spec.display_name,
             "category": spec.category,
+            "experimental": spec.experimental,
             "neural": spec.neural,
             "order_sensitive": spec.order_sensitive,
             "depth_map": spec.depth is not None,
@@ -2404,6 +2419,8 @@ def describe_payload() -> dict:
         "registrations": [spec.id for spec in registration_algorithms()],
         "control": {"schema": CONTROL_SCHEMA, "commands": list(COMMANDS)},
         "cli": {
+            "default_method": FUSION_DEFAULT,
+            "experimental_opt_in": "--experimental",
             "batch": ["--output-dir", "--resume", "--config"],
             "machine": ["--json", "--json-progress", "--alignment-report", "--dry-run"],
             "review": ["--suggest-duplicates"],

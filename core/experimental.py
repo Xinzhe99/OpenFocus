@@ -11,9 +11,5 @@ def experimental_enabled(window):
     return bool(getattr(window, 'experimental_features', False))
 
 
-def processing_is_locked(window):
-    """Whether the selected registration requires the desktop opt-in."""
-    if experimental_enabled(window):
-        return False
-    alignment = getattr(window, 'current_alignment_method', lambda: 'none')()
-    return alignment_is_experimental(alignment)
+def alignment_is_locked(window, method):
+    return not experimental_enabled(window) and alignment_is_experimental(method)

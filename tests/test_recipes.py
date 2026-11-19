@@ -44,9 +44,9 @@ def test_capture_relocate_and_execute(tmp_path):
     moved = tmp_path / "moved"
     shutil.move(str(original), str(moved))
     path = moved / "recipe.json"
-    assert run_recipe(path, dry_run=True) == 0
+    assert run_recipe(path, dry_run=True, experimental=True) == 0
     assert not (moved / "result.png").exists()
-    assert run_recipe(path) == 0
+    assert run_recipe(path, experimental=True) == 0
     assert cv2.imread(str(moved / "result.png")) is not None
 
 
@@ -54,8 +54,12 @@ def test_command_create_and_batch_dry_run(tmp_path):
     _stack(tmp_path / "stack")
     recipe = tmp_path / "recipe.json"
     assert run_cli(["recipe", "create", str(recipe), "-i", str(tmp_path / "stack"),
-                    "-d", str(tmp_path / "results"), "-m", "dct"]) == 0
-    assert run_cli(["recipe", "run", str(recipe), "--dry-run"]) == 0
+                    "-d", str(tmp_path / "results"), "-m", "dct", "--experimental"]) == 0
+    options = load_recipe(recipe)['options']
+    assert options['method'] == 'dct'
+    assert 'experimental' not in options
+    assert run_cli(["recipe", "run", str(recipe), "--dry-run"]) == 2
+    assert run_cli(["recipe", "run", str(recipe), "--dry-run", "--experimental"]) == 0
     assert not (tmp_path / "results").exists()
 
 
@@ -130,7 +134,7 @@ def test_legacy_project_capture_uses_new_inputs_and_preserves_settings(tmp_path)
     assert data["options"]["tile_enabled"] is False
     assert data["project_settings"]["tile_overlap"] == 128
     assert str(tmp_path / "old") not in recipe.read_text(encoding="utf-8")
-    assert run_recipe(recipe, dry_run=True) == 0
+    assert run_recipe(recipe, dry_run=True, experimental=True) == 0
 
 
 def test_recipe_preserves_grouping_and_output_sharpening(tmp_path, monkeypatch):
@@ -154,7 +158,7 @@ def test_recipe_preserves_grouping_and_output_sharpening(tmp_path, monkeypatch):
     assert data["options"]["group_size"] == 2
     assert data["options"]["sharpen_output"] is True
     assert data["options"]["sharpen_strength"] == 175
-    assert run_recipe(path) == 0
+    assert run_recipe(path, experimental=True) == 0
     assert cv2.imread(str(tmp_path / "out.png")) is not None
     assert strengths == [175]
 
@@ -241,11 +245,11 @@ def test_recipe_rerun_excludes_reference(tmp_path, monkeypatch, grouped):
             counts.append(len(images))
             return np.zeros((64, 64, 3), np.uint8)
         monkeypatch.setattr(cli, '_fuse_stack', fuse)
-    assert run_recipe(recipe) == 0
-    assert run_recipe(recipe) == 0
+    assert run_recipe(recipe, experimental=True) == 0
+    assert run_recipe(recipe, experimental=True) == 0
     assert counts == ([['0.png', '1.png']] * 2 if grouped else [2, 2])
     (folder / '1.png').unlink()
-    assert run_recipe(recipe, dry_run=True) != 0
+    assert run_recipe(recipe, dry_run=True, experimental=True) != 0
 
 
 def test_recipe_rejects_output_inside_input_folder(tmp_path):
@@ -291,11 +295,11 @@ def test_sensor_recipe_excludes_mask_and_checks_fingerprint(tmp_path, monkeypatc
             seen.append(len(images))
             return np.zeros((64, 64, 3), np.uint8)
         monkeypatch.setattr(cli, '_fuse_stack', fuse)
-    assert run_recipe(recipe) == 0
+    assert run_recipe(recipe, experimental=True) == 0
     assert seen == ([['0.png', '1.png']] if grouped else [2])
     assert cv2.imwrite(str(mask), np.ones((64, 64), np.uint8))
     with pytest.raises(ValueError, match='fingerprint'):
-        run_recipe(recipe, dry_run=True)
+        run_recipe(recipe, dry_run=True, experimental=True)
 
 
 def test_sensor_recipe_defaults_are_disabled(tmp_path):

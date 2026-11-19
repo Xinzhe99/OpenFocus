@@ -755,7 +755,7 @@ def test_cli_auto_background_writes_result_stacked_and_maps(scene, tmp_path):
     _write_stack(tmp_path / "stack", frames)
     out = tmp_path / "out" / "result.png"
     summary = tmp_path / "summary.json"
-    rc = run_cli(["-i", str(tmp_path / "stack"), "-o", str(out), "--method", "guided_filter",
+    rc = run_cli(["-i", str(tmp_path / "stack"), "-o", str(out), "--experimental", "--method", "guided_filter",
                   "--cpu", "--threads", "2", "--auto-background", "soft", "--save-stacked",
                   "--missing-data-map", "--json", str(summary)])
     assert rc == 0
@@ -891,7 +891,7 @@ def test_cli_rejects_an_output_that_would_overwrite_an_input_frame(scene, tmp_pa
     frame = tmp_path / "stack" / "frame_01.png"
     before = frame.read_bytes()
     assert run_cli(["-i", str(tmp_path / "stack"), "-o", str(frame),
-                    "--method", "guided_filter", "--cpu", "--threads", "2"]) == EXIT_USAGE
+                    "--experimental", "--method", "guided_filter", "--cpu", "--threads", "2"]) == EXIT_USAGE
     assert "overwrite an input image" in capsys.readouterr().err
     assert frame.read_bytes() == before
 
@@ -905,7 +905,7 @@ def test_cli_rejects_a_json_summary_that_would_overwrite_an_input_frame(scene, t
     frame = tmp_path / "stack" / "frame_02.png"
     before = frame.read_bytes()
     assert run_cli(["-i", str(tmp_path / "stack"), "-o", str(tmp_path / "out.png"),
-                    "--json", str(frame), "--method", "guided_filter",
+                    "--json", str(frame), "--experimental", "--method", "guided_filter",
                     "--cpu", "--threads", "2"]) == EXIT_USAGE
     assert "overwrite an input image" in capsys.readouterr().err
     assert frame.read_bytes() == before
@@ -983,7 +983,7 @@ def test_batch_rejects_a_summary_that_would_overwrite_an_input_frame(
     before = frame.read_bytes()
     out = tmp_path / "out"
     assert run_cli(["-i", str(tmp_path / "stack"), "-d", str(out),
-                    "--json", str(frame), "--method", "guided_filter",
+                    "--json", str(frame), "--experimental", "--method", "guided_filter",
                     "--cpu", "--threads", "2"]) == EXIT_USAGE
     assert "overwrite an input image" in capsys.readouterr().err
     assert frame.read_bytes() == before
@@ -1002,7 +1002,7 @@ def test_batch_rejects_a_result_that_would_overwrite_an_input_frame(
     assert cv2.imwrite(str(folder / "stack.png"), frames[0])
     before = {path.name: path.read_bytes() for path in folder.iterdir()}
     assert run_cli(["-i", str(folder), "-d", str(folder),
-                    "--method", "guided_filter", "--cpu", "--threads", "2"]) == EXIT_USAGE
+                    "--experimental", "--method", "guided_filter", "--cpu", "--threads", "2"]) == EXIT_USAGE
     assert "overwrite an input image" in capsys.readouterr().err
     assert {path.name: path.read_bytes() for path in folder.iterdir()} == before
 

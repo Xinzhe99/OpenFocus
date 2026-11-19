@@ -237,19 +237,19 @@ def test_cli_runs_both_and_rejects_depth_for_v1(tmp_path):
 
     for method in ("stackmff", "stackmffv2"):
         output = tmp_path / f"{method}.png"
-        result = run(["-i", str(source), "-o", str(output), "-m", method,
+        result = run(["-i", str(source), "-o", str(output), "--experimental", "-m", method,
                       "--cpu", "--threads", "1", "--no-exposure-match"])
         assert result.returncode == 0, result.stderr
         assert cv2.imread(str(output), cv2.IMREAD_UNCHANGED) is not None
 
     depth = tmp_path / "v1_depth.png"
-    rejected = run(["-i", str(source), "-o", str(depth), "-m", "stackmff",
+    rejected = run(["-i", str(source), "-o", str(depth), "--experimental", "-m", "stackmff",
                     "--depth-map"])
     assert rejected.returncode == 2
     assert "not available" in rejected.stderr
     assert not depth.exists()
 
     accepted = run(["-i", str(source), "-o", str(tmp_path / "v2.png"),
-                    "-m", "stackmffv2", "--depth-map", "--cpu", "--threads", "1"])
+                    "--experimental", "-m", "stackmffv2", "--depth-map", "--cpu", "--threads", "1"])
     assert accepted.returncode == 0, accepted.stderr
     assert (tmp_path / "v2_depth.png").is_file()

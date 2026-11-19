@@ -1,7 +1,8 @@
 """Interactive comparison using one aligned stack and one inspection region."""
 import os
+from collections.abc import Mapping
 
-from PyQt6.QtCore import QEvent, QPointF, QSize, QSignalBlocker, Qt, QTimer
+from PyQt6.QtCore import QEvent, QSize, QSignalBlocker, Qt, QTimer
 from PyQt6.QtGui import QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QFrame, QGridLayout,
@@ -18,11 +19,12 @@ from utils.frame_pixels import BoundedPreviewWorker
 from utils.image_utils import cv2_to_pixmap
 from utils.output_sharpen import DEFAULT_SHARPEN_STRENGTH
 from utils.settings_store import get_settings
-from core.algorithms import (alignment_steps, fusion_algorithms, get_fusion,
+from core.algorithms import (FUSION_DEFAULT, alignment_steps, fusion_algorithms, get_fusion,
     registration_parameter_specs, registration_algorithms, resolve_fusion_parameters,
     desktop_registration_parameters)
 from ui.algorithm_parameters import AlgorithmParameterPanel
-from ui.algorithm_combo import apply_method_availability, selected_item_enabled
+from ui.algorithm_combo import (apply_method_availability, fusion_label, fusion_lock_reason,
+                                selected_item_enabled)
 from core.experimental import alignment_is_experimental, experimental_enabled
 from widgets.compare_canvas import (
     DEFAULT_DETAIL_SIZE, DetailCanvas, SourceCanvas,
@@ -33,6 +35,15 @@ from widgets.stepper import StepperSpinBox
 
 def _method_label(method):
     return trans.t(get_fusion(method).label_key)
+
+
+def _contains(bounds, region):
+    if region is None:
+        return False
+    bx, by, bw, bh = bounds
+    x, y, width, height = region
+    return (width > 0 and height > 0 and x >= bx and y >= by
+            and x + width <= bx + bw and y + height <= by + bh)
 
 
 class _ActionFlowPanel(FlowPanel):
@@ -99,13 +110,11 @@ class CompareDialog(QDialog):
         self._source_preview_workers = {}
         self._display_workers = {}
         self._source_preview_generation = 0
-        self._reference_source_size = None
         self._reference_worker = None
         self._viewport_tiles = ()
         self._viewport_next = 0
         self._viewport_request = None
         self._viewport_serial = 0
-        self._reference_region = None
         self._worker_kind = None
         self._active_revision = -1
         self._active_keys = {}
@@ -170,22 +179,24 @@ class CompareDialog(QDialog):
         self._layout_timer.timeout.connect(self._refresh_layout)
         self._build_ui()
         self._update_source_summary()
-        self._show_frame(0)
         method = (window_main.current_fusion_method()
-                  if hasattr(window_main, "current_fusion_method")
-                  else fusion_algorithms()[0].id)
+                  if hasattr(window_main, 'current_fusion_method') else FUSION_DEFAULT)
         if method == 'none':
             method = self._first_available_method()
-        get_fusion(method)
-        box = self._checks.get(method)
-        if box is not None and box.isEnabled():
+        box = self._checks[method]
+        if box.isEnabled():
+            self._reuse_workspace_outputs()
+        self._show_frame(0)
+        if self._selected_methods():
+            self._methods_changed(True)
+            self._preview_timer.stop()
+            self._set_idle()
+        elif box.isEnabled():
             box.setChecked(True)
-        if not self._selected_methods():
-            # Only when the inherited method is unavailable: keep the empty
-            # parameter strip and disabled Run button honest.
+        else:
             self.param_scroll.setVisible(False)
             self.btn_run.setEnabled(False)
-            self.status_label.setText(box.property("unavailableReason") if box is not None else "")
+            self.status_label.setText(box.property('unavailableReason'))
         for _control in ("btn_run", "btn_adopt_params", "btn_adopt_output",
                          "btn_retry", "btn_verify", "align_combo",
                          "mode_combo", "view_combo", "registration_parameter_panel"):
@@ -196,21 +207,21 @@ class CompareDialog(QDialog):
             _box.setProperty("controlId", f"method_{_method}")
 
     def _first_available_method(self) -> str:
-        return next((name for name, box in self._checks.items()
-                     if box.isEnabled()), fusion_algorithms()[0].id)
+        if self._checks[FUSION_DEFAULT].isEnabled():
+            return FUSION_DEFAULT
+        return next((name for name, box in self._checks.items() if box.isEnabled()), FUSION_DEFAULT)
 
     def _apply_method_availability(self) -> None:
-        """Disable methods whose optional backend is unavailable."""
+        """Keep locked methods visible with their opt-in and dependency guidance."""
         from core.multi_focus_fusion import is_ai_fusion_available
-        from ui.algorithm_combo import fusion_unavailable_reason
 
         available = bool(is_ai_fusion_available())
         for spec in fusion_algorithms():
             box = self._checks.get(spec.id)
             if box is None:
                 continue
-            reason = fusion_unavailable_reason(spec, available)
-            box.setText(trans.t(spec.label_key))
+            reason = fusion_lock_reason(spec, self.window_main, available)
+            box.setText(fusion_label(spec))
             box.setEnabled(not reason)
             box.setProperty("unavailableReason", reason)
             hint = trans.t(spec.hint_key) if spec.hint_key else ""
@@ -350,8 +361,8 @@ class CompareDialog(QDialog):
         view_label = QLabel(trans.t("compare_view"))
         view_row.addWidget(view_label)
         self.view_combo = QComboBox()
-        self.view_combo.addItem(trans.t("compare_view_detail"), "detail")
         self.view_combo.addItem(trans.t("compare_view_full"), "full")
+        self.view_combo.addItem(trans.t("compare_view_detail"), "detail")
         self.view_combo.setToolTip(trans.t("compare_view_hint"))
         self.view_combo.currentIndexChanged.connect(self._view_changed)
         view_label.setBuddy(self.view_combo)
@@ -649,9 +660,6 @@ class CompareDialog(QDialog):
         self._cancel_source_previews()
         if self._closing or not self._frames:
             return
-        region = self.ref_canvas.region()
-        if region is not None:
-            self._reference_region = (self._reference_source_size, region)
         self._ref_index = max(0, min(index, len(self._frames) - 1))
         frame = self._frames[self._ref_index]
         self.ref_canvas.setToolTip("")
@@ -663,7 +671,9 @@ class CompareDialog(QDialog):
             self._set_reference_image(frame, display_image(frame), getattr(frame, 'preview_is_display', False))
         else:
             with QSignalBlocker(self.ref_canvas):
-                self.ref_canvas.set_pixmap(None)
+                # Geometry is known before the reference pixels arrive.
+                # Keep ready candidates inspectable while loading the frame.
+                self.ref_canvas.set_pixmap(None, source_size=(frame.shape[1], frame.shape[0]))
             request = self._source_preview_generation
             if isinstance(frame, SourceFrame):
                 worker = SourcePreviewWorker(self._frames, request, [self._ref_index], selected_display=True)
@@ -705,10 +715,6 @@ class CompareDialog(QDialog):
         with QSignalBlocker(self.ref_canvas):
             self.ref_canvas.set_pixmap(cv2_to_pixmap(image) if image is not None else None,
                                        source_size=size, preview_only=isinstance(frame, (SourceFrame, ProcessedFrame)))
-            if self._reference_region is not None and self._reference_region[0] == size:
-                x, y, width, height = self._reference_region[1]
-                self.ref_canvas.set_region_centre(QPointF(x + width / 2, y + height / 2))
-        self._reference_source_size = size
         self._refresh_reference_viewport()
 
     def _source_preview_ready(self, request, index, identity, _thumbnail):
@@ -841,98 +847,155 @@ class CompareDialog(QDialog):
         self._refresh_panes()
 
     def _region_changed(self, _region):
-        # A full render and stack registration do not depend on the selection.
-        if (self.mode_combo.currentData()
-                and self._worker_kind != "alignment"):
-            self._request_changed()
-        else:
-            self._refresh_panes()
-
-    def _reuse_workspace_outputs(self, methods, region):
-        if not self._workspace_outputs:
+        if self._closing:
             return
-        registration = self.align_combo.currentData()
+        self._refresh_panes()
+        if not self.mode_combo.currentData() or self._worker_kind == 'alignment':
+            return
+        self._update_adopt_actions()
+        methods = self._selected_methods()
+        if len(self._raw_frames) >= 2 and any(not self._result_is_current(m) for m in methods):
+            self._auto_enabled = True
+            # Let the running request finish and take the latest geometry at
+            # the next start. Restarting on each mouse event starves the preview.
+            if not self._preview_timer.isActive():
+                self._preview_timer.start()
+
+    def _reuse_workspace_outputs(self, methods=None):
+        if (not self._workspace_outputs or len(self._raw_frames) < 2
+                or not selected_item_enabled(self.align_combo)
+                or (not experimental_enabled(self.window_main)
+                    and alignment_is_experimental(self.align_combo.currentData()))):
+            return
+        opening = methods is None
+        pending = ({m for m, box in self._checks.items() if box.isEnabled()} if opening
+                   else {m for m in methods if not self._result_is_current(m)})
+        had_alignment = self._aligned_frames is not None
+        alignment = self.align_combo.currentData()
         roi = bool(self.mode_combo.currentData())
-        for method in methods:
-            if self._result_is_current(method):
+        records = self._workspace_outputs
+        if alignment != 'none' and not had_alignment:
+            # Prefer a complete registration grid before considering a result
+            # whose fusion may have trimmed the edges of its aligned frames.
+            records = sorted(records, key=lambda record: record.context.algorithm == 'dct')
+        for record in records:
+            context = record.context
+            method = context.algorithm
+            if method not in pending:
                 continue
-            for record in self._workspace_outputs:
-                context = record.context
-                if context.algorithm != method or not context.matches_registration(
-                        registration, self._shared['registration_parameters'],
-                        self._shared['reg_downscale_width'], self._reverse_registration):
-                    continue
-                if context.parameters.get('defect_mask_path') or context.parameters.get('sensor_denoise'):
-                    continue
-                if (get_fusion(method).sort_frames and
-                        context.parameters.get('sort_mode', 'asc') != self._shared['sort_mode']):
-                    continue
-                if len(context.frames) != len(self._raw_frames):
-                    continue
-
-                image = record.image
-                height, width = image.shape[:2]
-                if (width, height) != (context.width, context.height):
-                    continue
-                x = y = 0
-                if context.roi_rect is not None:
-                    if not roi:
-                        continue
-                    x, y, rw, rh = context.roi_rect
-                    if context.roi_mode == 'paste':
-                        image = image[y:y + rh, x:x + rw]
-                        height, width = image.shape[:2]
-                        if (width, height) != (rw, rh):
-                            continue
-                grid_h, grid_w = self._frames[0].shape[:2]
-                if (context.roi_rect is None and (width, height) != (grid_w, grid_h)
-                        and method != 'dct'):
-                    continue
-                if x + width > grid_w or y + height > grid_h:
-                    continue
-                if region is not None:
-                    rx, ry, rw, rh = region
-                    if rx < x or ry < y or rx + rw > x + width or ry + rh > y + height:
-                        continue
-
-                specs = get_fusion(method).parameters
-                saved = context.parameters.get('fusion_parameters', context.parameters)
-                if not all(spec.key in saved for spec in specs):
-                    continue
-                parameters = resolve_fusion_parameters(method, {spec.key: saved[spec.key] for spec in specs})
-                if method in self._edited_parameters and self._method_params[method] != parameters:
-                    continue
-                if self._method_params[method] != parameters:
-                    self._method_params[method] = parameters
-                    self._parameter_panels[method].set_parameters(specs, parameters)
-                self._results[method] = {
-                    'key': self._result_key(method), 'image': image, 'bounds': (x, y, width, height),
-                    'full': not roi, 'display': None, 'record': record,
-                }
-                self._errors.pop(method, None)
-                # Use the archived aligned reference when it spans the source grid.
-                if (self._aligned_frames is None and registration != 'none' and
-                        context.roi_rect is None and (width, height) == (grid_w, grid_h)):
-                    self._aligned_frames = [frame.image for frame in context.frames]
-                    self._frames = self._aligned_frames
-                    self._show_frame(self._ref_index)
+            reverse = (self._registration_is_reversed([method]) if opening and not self._results
+                       else self._reverse_registration)
+            if not context.matches_registration(alignment, self._shared['registration_parameters'],
+                                                self._shared['reg_downscale_width'], reverse):
+                continue
+            if context.parameters.get('defect_mask_path') or context.parameters.get('sensor_denoise'):
+                continue
+            spec = get_fusion(method)
+            if (spec.sort_frames and
+                    context.parameters.get('sort_mode', 'asc') != self._shared['sort_mode']):
+                continue
+            if (len(context.frames) != len(self._raw_frames)
+                    or any(frame.aligned != (alignment != 'none') for frame in context.frames)):
+                continue
+            candidate = self._workspace_geometry(record, roi)
+            if candidate is None:
+                continue
+            image, bounds, aligned_grid = candidate
+            saved = context.parameters.get('fusion_parameters', context.parameters)
+            if not isinstance(saved, Mapping) or not all(p.key in saved for p in spec.parameters):
+                continue
+            try:
+                params = resolve_fusion_parameters(method, {p.key: saved[p.key] for p in spec.parameters})
+            except ValueError:
+                continue
+            if method in self._edited_parameters and self._method_params[method] != params:
+                continue
+            if opening:
+                self._reverse_registration = reverse
+                with QSignalBlocker(self._checks[method]):
+                    self._checks[method].setChecked(True)
+            if self._method_params[method] != params:
+                self._method_params[method] = params
+                self._parameter_panels[method].set_parameters(spec.parameters, params)
+            previous = self._results.get(method)
+            self._results[method] = {
+                'key': self._result_key(method), 'image': image, 'bounds': bounds,
+                'full': not roi, 'record': record,
+                'display': (previous.get('display') if previous and previous.get('record') is record
+                            else None),
+            }
+            self._errors.pop(method, None)
+            pending.remove(method)
+            if aligned_grid:
+                self._aligned_frames = [frame.image for frame in context.frames]
+                self._frames = self._aligned_frames
+            if not pending:
                 break
+        if not opening and not had_alignment and self._aligned_frames is not None:
+            self._show_frame(self._ref_index)
+
+    def _workspace_geometry(self, record, roi):
+        context = record.context
+        image = record.image
+        height, width = image.shape[:2]
+        if (width, height) != (context.width, context.height) or image.dtype != context.dtype:
+            return None
+        x = y = 0
+        frame_offset = (0, 0)
+        aligned = self.align_combo.currentData() != 'none'
+        grid_h, grid_w = self._frames[0].shape[:2]
+        grid_unknown = aligned and self._aligned_frames is None
+        if context.roi_rect is not None:
+            if not roi or grid_unknown or context.roi_mode not in ('crop', 'paste'):
+                return None
+            x, y, rw, rh = context.roi_rect
+            if not _contains((0, 0, grid_w, grid_h), context.roi_rect):
+                return None
+            if context.roi_mode == 'paste':
+                if (width, height) != (grid_w, grid_h):
+                    return None
+                frame_offset = (x, y)
+                image = image[y:y + rh, x:x + rw]
+                height, width = image.shape[:2]
+            if not _contains(context.roi_rect, (x, y, width, height)):
+                return None
+        elif (not grid_unknown and (width, height) != (grid_w, grid_h)
+              and context.algorithm != 'dct'):
+            return None
+        if any((frame.offset_x, frame.offset_y) != frame_offset
+               or frame.image.shape[:2] != (height, width) for frame in context.frames):
+            return None
+        bounds = (x, y, width, height)
+        if not _contains((0, 0, grid_w, grid_h), bounds):
+            return None
+        if roi and not _contains(bounds, self.ref_canvas.region()):
+            return None
+        # Registration crops to common coverage. DCT can also trim after
+        # registration; use it as a reference only if its input was intact.
+        if grid_unknown and context.algorithm == 'dct' and (width, height) != (grid_w, grid_h):
+            details = context.fusion_details
+            if details is None or details.input_size != (width, height):
+                return None
+        return image, bounds, grid_unknown
 
     def _result_key(self, method):
         roi = bool(self.mode_combo.currentData())
         strength = self._shared['sharpen_strength'] if self._shared['sharpen_output'] else 0
         return (self._epoch, roi, tuple(sorted(self._method_params[method].items())),
-                self.ref_canvas.region() if roi else None, strength)
+                strength, self.ref_canvas.region() if roi else None)
 
     def _refresh_panes(self):
         region = self.ref_canvas.region()
         for method in self._selected_methods():
             canvas = self._canvases[method]
-            if self._result_is_current(method):
-                record = self._results[method].get('record')
+            key = self._result_key(method)
+            entry = self._results.get(method)
+            current = entry is not None and entry['key'] == key
+            if current:
+                record = entry.get('record')
                 status = (trans.t('compare_workspace_result').format(name=record.label)
                           if record is not None else trans.t('compare_state_current'))
-            elif self._errors.get(method, (None,))[0] == self._result_key(method):
+            elif self._errors.get(method, (None,))[0] == key:
                 status = trans.t("msg_error") + ": " + self._errors[method][1]
             elif self._worker is not None and self._active_revision != self._revision:
                 status = trans.t("compare_stopping")
@@ -949,51 +1012,54 @@ class CompareDialog(QDialog):
             self._card_status[method].setText(status)
             self._card_status[method].setToolTip(status)
             canvas.set_region(region)
-            result = self._results.get(method)
-            key = self._result_key(method)
-            if result is not None and result['key'] == key:
-                self._request_display(method, result, region)
-                cache = result.get('display')
-                if cache is not None:
-                    canvas.set_result(cache[1], cache[2], full=cache[3])
-                else:
-                    canvas.set_result(None, None)
-                canvas.set_view_mode(self.view_combo.currentData())
-                canvas.set_status(result.get('display_error', ''))
+            canvas.set_view_mode(self.view_combo.currentData())
+            same_fusion = entry is not None and entry['key'][:-1] == key[:-1]
+            pending = False
+            display_error = ''
+            if current:
+                pending, display_error = self._request_display(method, entry, region)
+            elif same_fusion:
+                pending = True  # Prior ROI pixels while new coverage is rendered.
+            else:
+                worker = self._display_workers.get(method)
+                if worker is not None:
+                    worker.cancel()
+            cache = entry.get('display') if same_fusion else None
+            if cache is not None:
+                canvas.set_result(cache[1], cache[2], full=cache[3], pending=pending)
             else:
                 canvas.set_result(None, None)
-                error = self._errors.get(method)
-                if error is not None and error[0] == key:
-                    canvas.set_status(error[1])
-                else:
-                    canvas.set_status(trans.t("render_stage_fuse") if self._auto_enabled
-                                      else trans.t("compare_no_image"))
+            if current:
+                canvas.set_status(display_error or (trans.t('native_detail_loading') if pending else ''))
+            else:
+                canvas.set_status(status)
 
     def _request_display(self, method, entry, region):
         canvas = self._canvases[method]
         full = self.view_combo.currentData() == 'full' and entry['full']
-        dpr = float(canvas.devicePixelRatioF())
-        size = max(1, int(round(max(canvas.width(), canvas.height()) * dpr)))
-        display_key = (entry['key'], full, None if full else region, size, dpr)
+        if not full and not _contains(entry['bounds'], region):
+            return False, ''
+        size = max(1, round(canvas.width() * canvas.devicePixelRatioF()))
+        display_key = (entry['key'], full, None if full else region, size)
+        entry['display_target'] = display_key
         cached = entry.get('display')
         if cached is not None and cached[0] == display_key:
-            return
+            return False, ''
         if entry.get('display_error_key') == display_key:
-            return
-        entry['display'] = None
-        entry['display_error'] = ''
+            return False, entry['display_error']
         worker = self._display_workers.get(method)
         if worker is not None:
-            if worker.display_key != display_key:
+            # A size or crop change alone leaves the in-flight sample usable
+            # as a temporary display. Read the latest geometry when it retires.
+            if worker.entry is not entry:
                 worker.cancel()
-            return
-        if not full and region is None:
-            return
+            return True, ''
         retained = sum(cache['display'][1].width() * cache['display'][1].height() * 4
                        for cache in self._results.values() if cache.get('display'))
         retained += max(0, len(self._selected_methods()) - 1) * size * size * 4
         worker = DisplayWorker(entry['image'], entry['bounds'], region, full, size,
                                self._calibration.get('linear_dng_metadata'), retained)
+        worker.entry = entry
         worker.display_key = display_key
         self._display_workers[method] = worker
         worker.ready.connect(lambda pixels, bounds, whole, m=method, w=worker:
@@ -1002,23 +1068,29 @@ class CompareDialog(QDialog):
                               self._display_failed(m, w, message))
         worker.finished.connect(lambda m=method, w=worker: self._display_finished(m, w))
         worker.start()
+        return True, ''
 
     def _display_ready(self, method, worker, pixels, bounds, whole):
-        entry = self._results.get(method)
-        if (self._closing or self._display_workers.get(method) is not worker or
-                entry is None or entry['key'] != worker.display_key[0] or worker._should_cancel()):
+        if not self._current_display(method, worker):
             return
+        cached = worker.entry.get('display')
+        if cached is not None and cached[0] == worker.entry.get('display_target'):
+            return  # Geometry returned to the pixels already on screen.
         pixmap = cv2_to_pixmap(pixels)
         if pixmap.isNull():
             self._display_failed(method, worker, trans.t('msg_proc_error'))
             return
-        entry['display'] = (worker.display_key, pixmap, tuple(bounds), whole)
+        worker.entry['display'] = (worker.display_key, pixmap, tuple(bounds), whole)
+
+    def _current_display(self, method, worker):
+        return (not self._closing and self._display_workers.get(method) is worker
+                and self._results.get(method) is worker.entry and not worker._should_cancel()
+                and worker.entry['key'][:-1] == self._result_key(method)[:-1])
 
     def _display_failed(self, method, worker, message):
-        entry = self._results.get(method)
-        if entry is not None and entry['key'] == worker.display_key[0]:
-            entry['display_error_key'] = worker.display_key
-            entry['display_error'] = message
+        if self._current_display(method, worker):
+            worker.entry['display_error_key'] = worker.display_key
+            worker.entry['display_error'] = message
 
     def _display_finished(self, method, worker):
         if self._display_workers.get(method) is not worker:
@@ -1074,6 +1146,7 @@ class CompareDialog(QDialog):
             self._set_idle()
             self.status_label.setText(trans.t('experimental_locked_hint'))
             return
+        self._apply_method_availability()
         for method in self._selected_methods():
             if not self._checks[method].isEnabled():
                 self._set_idle()
@@ -1083,10 +1156,10 @@ class CompareDialog(QDialog):
         if not methods or len(self._raw_frames) < 2:
             self._set_idle()
             return
+        self._reuse_workspace_outputs(methods)
         region = self.ref_canvas.region()
-        if region is None:
+        if region is None and self.mode_combo.currentData():
             return
-        self._reuse_workspace_outputs(methods, region)
         pending = []
         for method in methods:
             key = self._result_key(method)
@@ -1311,8 +1384,10 @@ class CompareDialog(QDialog):
         is_full = (not key[1] and x == 0 and y == 0
                    and (height, width) == self._aligned_frames[0].shape[:2]
                    and (height, width) == image.shape[:2])
+        previous = self._results.get(method)
+        same_fusion = previous is not None and previous['key'][:-1] == key[:-1]
         entry = {'key': key, 'image': image, 'bounds': tuple(bounds),
-                 'full': is_full, 'display': None,
+                 'full': is_full, 'display': previous.get('display') if same_fusion else None,
                  'fusion_details': self._worker.fusion_details.get(method)}
         self._results[method] = entry
         if is_full:

@@ -8,12 +8,13 @@ from html import escape
 from unicodedata import category
 from urllib.parse import urlencode, urlsplit
 
-from PyQt6.QtCore import QTimer, Qt, QUrl
-from PyQt6.QtGui import QFont
+from PyQt6.QtCore import QRectF, QTimer, Qt, QUrl
+from PyQt6.QtGui import QColor, QFont, QImage, QPainter, QPixmap
 from PyQt6.QtWidgets import (
     QDialog,
     QVBoxLayout,
-    QHBoxLayout,
+    QGridLayout,
+    QLabel,
     QSizePolicy,
     QTextEdit,
 )
@@ -288,27 +289,67 @@ def _published_link(value, *hosts):
     return value
 
 
+def _discord_qr_pixmap(invite, size, ratio):
+    import cv2
+    from PyQt6.QtSvg import QSvgRenderer
+    from utils import resource_path
+
+    params = cv2.QRCodeEncoder_Params()
+    params.correction_level = cv2.QRCodeEncoder_CORRECT_LEVEL_H
+    try:
+        encoded = cv2.QRCodeEncoder_create(params).encode(invite)
+    except cv2.error:
+        return None
+
+    # Replace OpenCV's two-module border with a four-module white quiet zone.
+    modules = cv2.copyMakeBorder(encoded[2:-2, 2:-2], 4, 4, 4, 4,
+                                 cv2.BORDER_CONSTANT, value=255)
+    scale = int(size * ratio) // modules.shape[0]
+    if not scale:
+        return None
+    side = modules.shape[0] * scale
+    pixels = cv2.resize(modules, (side, side), interpolation=cv2.INTER_NEAREST)
+    pixmap = QPixmap.fromImage(QImage(pixels.data, side, side, pixels.strides[0],
+                                      QImage.Format.Format_Grayscale8))
+
+    mark = QSvgRenderer(resource_path('assets', 'discord.svg'))
+    if not mark.isValid():
+        return None
+    # Cover only the five center modules and keep the official 4:3 proportions.
+    center = side / 2
+    inset = center - 2.5 * scale
+    painter = QPainter(pixmap)
+    painter.fillRect(QRectF(inset, inset, 5 * scale, 5 * scale), QColor('#5865F2'))
+    mark.render(painter, QRectF(center - 2 * scale, center - 1.5 * scale,
+                                4 * scale, 3 * scale))
+    painter.end()
+    pixmap.setDevicePixelRatio(ratio)
+    return pixmap
+
+
 class ContactInfoDialog(QDialog):
-    """Show contact links and current WeChat codes from the account service."""
+    """Show the current contact links and community codes from the account service."""
 
     _CONTACT_INFO_URL = f'{BASE_URL}/v1/contact-info'
     _MAX_CONTACT_INFO_BYTES = 32 * 1024
+    _DISCORD_QR_SIZE = 152
 
     def __init__(self, parent=None):
         from ._community_layout import add_published_qr, community_body, community_card, community_label
 
         super().__init__(parent)
-        self._contact_cards = QHBoxLayout()
+        self._contact_cards = QGridLayout()
+        self._contact_columns = 0
         title = trans.t('dialog_contact_title')
         self.setWindowTitle(title)
-        body = community_body(self, title, trans.t('contact_welcome'), width=820, height=410)
+        body = community_body(self, title, trans.t('contact_welcome'), width=820, height=470)
 
         self._contact_cards.setSpacing(body.spacing())
         body.addLayout(self._contact_cards)
         body.addStretch()
 
         contact_card, contact = community_card()
-        self._contact_cards.addWidget(contact_card, 3)
+        self._cards = [contact_card]
         contact.addWidget(community_label(trans.t('contact_info_title'), 'section'))
         self._contact_status = community_label(trans.t('contact_details_loading'), 'muted')
         contact.addWidget(self._contact_status)
@@ -317,14 +358,33 @@ class ContactInfoDialog(QDialog):
         contact.addLayout(self._contact_details)
         contact.addStretch()
 
+        discord_card, self._discord = community_card()
+        self._cards.append(discord_card)
+        self._discord_heading = community_label(trans.t('contact_discord_title'), 'section')
+        self._discord_heading.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._discord.addWidget(self._discord_heading)
+        self._discord_qr = QLabel()
+        self._discord_qr.setObjectName('discord-invite')
+        self._discord_qr.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._discord_qr.setStyleSheet('background: white;')
+        self._discord_qr.setFixedSize(self._DISCORD_QR_SIZE, self._DISCORD_QR_SIZE)
+        self._discord_qr.hide()
+        self._discord.addWidget(self._discord_qr, alignment=Qt.AlignmentFlag.AlignHCenter)
+        self._discord_status = community_label('', 'muted')
+        self._discord_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._discord.addWidget(self._discord_status)
+        self._discord.addStretch()
+        self._discord_link = None
+
         self._requests = CommunityDownloads(self)
         self._contact_request = 0
         for slot, label in (('wechat-group', 'contact_wechat_title'),
                             ('wechat-official-account', 'contact_wechat_official')):
             card, column = community_card()
-            self._contact_cards.addWidget(card, 2)
-            add_published_qr(self, column, self._requests, trans.t(label), slot, 192)
+            self._cards.append(card)
+            add_published_qr(self, column, self._requests, trans.t(label), slot, 144)
             column.addStretch()
+        self._arrange_contact_cards(self.width())
 
         # 居中显示
         if parent:
@@ -343,6 +403,17 @@ class ContactInfoDialog(QDialog):
             widget.deleteLater()
         self._contact_status.setText(trans.t('contact_details_loading'))
         self._contact_status.show()
+        self._discord_heading.setText(trans.t('contact_discord_title'))
+        self._discord_qr.setAccessibleName(self._discord_heading.text())
+        self._discord_qr.clear()
+        self._discord_qr.hide()
+        if self._discord_link is not None:
+            self._discord.removeWidget(self._discord_link)
+            self._discord_link.hide()
+            self._discord_link.deleteLater()
+            self._discord_link = None
+        self._discord_status.setText(trans.t('contact_discord_loading'))
+        self._discord_status.show()
         self._contact_request += 1
         request = self._contact_request
         query = urlencode({'lang': trans.current_lang})
@@ -363,6 +434,7 @@ class ContactInfoDialog(QDialog):
                 pass
         if not isinstance(payload, dict):
             self._contact_status.setText(trans.t('contact_details_unavailable'))
+            self._discord_status.setText(trans.t('contact_discord_unavailable'))
             return
 
         emails = list(_published_emails(payload.get('emails')))
@@ -382,16 +454,37 @@ class ContactInfoDialog(QDialog):
             self._add_detail(label, institution)
 
         github = _published_link(payload.get('github_url'), 'github.com')
+        discord = _published_link(payload.get('discord_url'), 'discord.gg', 'discord.com')
+        if github or discord:
+            self._contact_details.addWidget(community_label(trans.t('contact_community_links'), 'section'))
         if github:
             self._contact_details.addWidget(community_link(self, trans.t('contact_github'), github))
-        discord = _published_link(payload.get('discord_url'), 'discord.gg', 'discord.com')
         if discord:
             self._contact_details.addWidget(community_link(self, 'Discord', discord))
 
+        self._show_discord_invite(discord)
         if self._contact_details.count():
             self._contact_status.hide()
         else:
             self._contact_status.setText(trans.t('contact_details_empty'))
+
+    def _show_discord_invite(self, invite):
+        from ._community_layout import community_link
+
+        if not invite:
+            self._discord_status.setText(trans.t('contact_discord_unpublished'))
+            return
+        self._discord_link = community_link(self, trans.t('contact_discord_join'), invite)
+        self._discord_link.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._discord.insertWidget(self._discord.count() - 1, self._discord_link)
+        self._discord_link.show()
+        pixmap = _discord_qr_pixmap(invite, self._DISCORD_QR_SIZE, self._discord_qr.devicePixelRatioF())
+        if pixmap is None:
+            self._discord_status.setText(trans.t('contact_discord_qr_unavailable'))
+            return
+        self._discord_qr.setPixmap(pixmap)
+        self._discord_qr.show()
+        self._discord_status.hide()
 
     def _add_detail(self, label, value):
         # Long addresses and institution names must not set the cards' minimum width.
@@ -403,6 +496,17 @@ class ContactInfoDialog(QDialog):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        direction = (QHBoxLayout.Direction.LeftToRight if event.size().width() >= 760
-                     else QHBoxLayout.Direction.TopToBottom)
-        self._contact_cards.setDirection(direction)
+        self._arrange_contact_cards(event.size().width())
+
+    def _arrange_contact_cards(self, width):
+        columns = 4 if width >= 820 else 2 if width >= 500 else 1
+        if self._contact_columns == columns:
+            return
+        self._contact_columns = columns
+        for card in self._cards:
+            self._contact_cards.removeWidget(card)
+        for index, card in enumerate(self._cards):
+            row, column = divmod(index, columns)
+            self._contact_cards.addWidget(card, row, column)
+        for column in range(len(self._cards)):
+            self._contact_cards.setColumnStretch(column, int(column < columns))
