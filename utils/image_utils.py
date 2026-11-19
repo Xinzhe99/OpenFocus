@@ -463,9 +463,9 @@ def _write_encoded_jpeg(handle, encoded, exif, profile, should_cancel):
 def _write_opencv_jpeg(handle, image, params, exif, profile, should_cancel):
     """Admit the complete native codec working set for advanced OpenCV flags.
 
-    OpenCV can express sampling and independent luma/chroma quality settings
-    that Pillow cannot preserve. This path retains those parameters verbatim;
-    it is whole-image encoding and can only cancel before/after the native call.
+    OpenCV can express settings such as restart intervals and independent
+    luma/chroma quality that the mapped encoder does not implement. Keep them
+    verbatim. Cancellation is possible before and after the native call.
     """
     from core.resource_policy import require_memory
     pixels = image.shape[0] * image.shape[1]
@@ -751,7 +751,7 @@ def _tiff_uses_bigtiff(page_specs, exif, profile, params, should_cancel):
 
 
 def _write_streamed_tiff(path, image, should_cancel=None, exif=None, icc_profile=b'',
-                         params=None, allow_transparency=False, page_specs=None):
+                         params=None, allow_transparency=False, page_specs=None, raise_on_error=False):
     """Atomically write pages, using classic TIFF when a complete bound fits."""
     import struct
     import tempfile
@@ -815,7 +815,7 @@ def _write_streamed_tiff(path, image, should_cancel=None, exif=None, icc_profile
         os.replace(temporary, path)
         return True
     except (OSError, ValueError, cv2.error):
-        if reading_page:
+        if reading_page or raise_on_error:
             raise
         return False
     finally:
@@ -899,13 +899,22 @@ def _write_streamed_jpeg(handle, image, params, exif, profile, should_cancel):
                                     frame_region)
     from core.resource_policy import require_memory
     options = dict(zip(params[::2], params[1::2]))
-    supported = {cv2.IMWRITE_JPEG_QUALITY, cv2.IMWRITE_JPEG_PROGRESSIVE,
-                 cv2.IMWRITE_JPEG_OPTIMIZE}
-    if options.keys() - supported:
-        return _write_opencv_jpeg(handle, image, params, exif, profile, should_cancel)
-    rows = _image_write_rows(image)
     progressive = bool(options.get(cv2.IMWRITE_JPEG_PROGRESSIVE, 0))
     optimize = bool(options.get(cv2.IMWRITE_JPEG_OPTIMIZE, 0))
+    subsampling = 2
+    sampling_flag = getattr(cv2, 'IMWRITE_JPEG_SAMPLING_FACTOR', None)
+    if sampling_flag in options and not (progressive or optimize):
+        # Baseline libjpeg can encode these sampling factors scanline by
+        # scanline. All other OpenCV options still take their admitted path.
+        sampling = options.pop(sampling_flag)
+        subsampling = {cv2.IMWRITE_JPEG_SAMPLING_FACTOR_444: 0,
+                       cv2.IMWRITE_JPEG_SAMPLING_FACTOR_422: 1,
+                       cv2.IMWRITE_JPEG_SAMPLING_FACTOR_420: 2}.get(sampling)
+    supported = {cv2.IMWRITE_JPEG_QUALITY, cv2.IMWRITE_JPEG_PROGRESSIVE,
+                 cv2.IMWRITE_JPEG_OPTIMIZE}
+    if subsampling is None or options.keys() - supported:
+        return _write_opencv_jpeg(handle, image, params, exif, profile, should_cancel)
+    rows = _image_write_rows(image)
     gray = image.ndim == 2
     size = image.shape[0] * image.shape[1] * (1 if gray else 4)
     exif_bytes = exif.tobytes() if exif else b''
@@ -946,7 +955,7 @@ def _write_streamed_jpeg(handle, image, params, exif, profile, should_cancel):
                 try:
                     _encode_mapped_jpeg(mapped, CancellableOutput(),
                                         dict(quality=options.get(cv2.IMWRITE_JPEG_QUALITY, 95),
-                                             subsampling=2, exif=exif_bytes,
+                                             subsampling=subsampling, exif=exif_bytes,
                                              icc_profile=profile or None,
                                              progressive=progressive, optimize=optimize))
                 finally:
@@ -957,13 +966,15 @@ def imwrite_auto(path: str, image: Optional[np.ndarray] = None, params: Optional
                  exif: Optional[bytes] = None, icc_profile: bytes = b"",
                  linear_dng_metadata=None, should_cancel=None,
                  linear_dng_px_size_um=None, *, stream_tiff=False,
-                 pages: Optional[Iterable[np.ndarray]] = None, page_specs=None) -> bool:
+                 pages: Optional[Iterable[np.ndarray]] = None, page_specs=None, raise_on_error=False) -> bool:
     """Atomically save pixels; large TIFF/PNG/baseline JPEG select bounded codecs.
 
     ``pages`` accepts a lazy TIFF page iterator instead of ``image``. Known lists
     or optional ``page_specs`` (shape/dtype pairs bounding each output page) keep
     small stacks classic; unknown streams select BigTIFF upfront. ``stream_tiff``
     forces the bounded writer for a small TIFF; metadata also uses that writer.
+    ``raise_on_error`` propagates codec and filesystem exceptions to callers
+    that report the reason for an individual export failure.
     """
     import tempfile
 
@@ -979,7 +990,7 @@ def imwrite_auto(path: str, image: Optional[np.ndarray] = None, params: Optional
         if image is not None or ext not in ('.tif', '.tiff'):
             raise ValueError('TIFF pages require a TIFF destination and no single image')
         return _write_streamed_tiff(path, pages, should_cancel, meta, icc_profile, params,
-                                    page_specs=page_specs)
+                                    page_specs=page_specs, raise_on_error=raise_on_error)
     if not isinstance(image, np.ndarray):
         raise ValueError('A single image must be a NumPy array')
     if ext == '.dng':
@@ -992,6 +1003,8 @@ def imwrite_auto(path: str, image: Optional[np.ndarray] = None, params: Optional
                                      px_size_um=linear_dng_px_size_um)
             return True
         except OSError:
+            if raise_on_error:
+                raise
             return False
     if ext != '.png' and not stream_tiff and image.ndim == 3 and image.shape[2] == 4:
         from core.image_loader import _has_transparency
@@ -1010,7 +1023,7 @@ def imwrite_auto(path: str, image: Optional[np.ndarray] = None, params: Optional
             uncompressed = meta is not None or profile or stream_tiff or image.dtype == np.float32
             options = get_imwrite_params('.tif') if uncompressed else [cv2.IMWRITE_TIFF_COMPRESSION, 5]
         return _write_streamed_tiff(path, image, should_cancel, meta, profile, options,
-                                    allow_transparency=True)
+                                    allow_transparency=True, raise_on_error=raise_on_error)
     advanced_jpeg = (ext in jpeg_exts and bool(params)
                      and any(flag != cv2.IMWRITE_JPEG_QUALITY for flag in params[::2]))
     part = None
@@ -1057,6 +1070,8 @@ def imwrite_auto(path: str, image: Optional[np.ndarray] = None, params: Optional
     except ImageWriteError:
         raise
     except (OSError, ValueError, cv2.error):
+        if raise_on_error:
+            raise
         return False
     finally:
         if part and os.path.exists(part):

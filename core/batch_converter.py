@@ -240,7 +240,7 @@ def _write(path, pixels, source, page, ext, cancelled=None, tiff_page=None):
         if image_loader._has_transparency(pixels):
             raise ValueError('This output format cannot safely preserve transparency; choose PNG.')
         pixels = cv2.cvtColor(pixels, cv2.COLOR_BGRA2BGR)
-    if pixels.dtype == np.uint16 and ext not in ('.png', '.tif'):
+    if pixels.dtype == np.uint16 and ext not in ('.jpg', '.png', '.tif'):
         pixels = to_display_uint8(pixels)
     if tiff_page is None:
         exif = image_loader._read_exif_bytes(source) if page == 0 else b''
@@ -265,7 +265,7 @@ def _write(path, pixels, source, page, ext, cancelled=None, tiff_page=None):
         if hasattr(cv2, 'IMWRITE_JPEG_SAMPLING_FACTOR_444'):
             params += [cv2.IMWRITE_JPEG_SAMPLING_FACTOR, cv2.IMWRITE_JPEG_SAMPLING_FACTOR_444]
     if not imwrite_auto(path, pixels, params=params, exif=exif, icc_profile=profile,
-                        stream_tiff=ext == '.tif', should_cancel=cancelled):
+                        stream_tiff=ext == '.tif', should_cancel=cancelled, raise_on_error=True):
         raise OSError('Image encoding or writing failed.')
 
 

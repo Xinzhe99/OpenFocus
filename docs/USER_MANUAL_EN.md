@@ -1751,6 +1751,10 @@ Each job runs native codecs with one thread. Cancellation stops new admissions
 and checks between pages, decode/write stages and DNG strips; native codec calls
 finish cooperatively. Completed files remain available and incomplete temporary
 files are removed. Output-name reservation is atomic across concurrent jobs.
+The converter writes color JPEGs at quality 95 with full chroma resolution
+using a temporary disk buffer. If a file fails, its row shows the codec or
+filesystem error. After freeing the indicated memory or disk space, you can
+convert just the affected files.
 
 For ordinary image output, camera RAW is developed with LibRaw using camera white balance and without automatic brightening. Available RAW support depends on the installed LibRaw version. Multipage TIFF is exported as separately numbered images. JPEG is lossy, and JPEG, BMP and WebP reduce 16-bit pixels to 8-bit; PNG and TIFF retain 16-bit pixels. Transparent images require PNG. LZW TIFF pages with alpha, unsupported TIFF color layouts and sample types are reported as errors. Existing files and inputs are never replaced: name conflicts receive numbered suffixes. Every image still requires enough free memory and disk space for its decoder and encoder. Safe camera EXIF and compatible RGB profiles are retained where supported; some formats or pages cannot carry all metadata.
 
@@ -1847,9 +1851,9 @@ four bytes per pixel of JPEG scratch space in addition to the destination file.
 Its mapped pages remain subject to the operating system's memory management.
 Advanced progressive or optimized JPEG requests require additional image-sized
 codec memory and are admitted only when the resource budget can cover it.
-Other OpenCV JPEG parameters, including restart intervals, sampling factors and
-independent luminance/chrominance quality, retain their requested settings through
-the original codec after admission for its complete image-sized working set.
+Baseline JPEG supports 4:4:4, 4:2:2 and 4:2:0 chroma sampling in row bands.
+Other sampling modes, restart intervals and separate luminance/chrominance
+quality settings use OpenCV after admission for its whole-image working set.
 Cancellation of that native codec call takes effect at its boundaries; an existing
 destination remains intact. BMP, WebP and other legacy encoders also require
 image-sized memory buffers.
