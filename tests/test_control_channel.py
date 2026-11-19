@@ -481,21 +481,31 @@ finally:
         log.close()
 
 
+def _load_stack_for_render(server, folder):
+    reply = call(server, "stack.load", folder=str(folder))
+    assert reply["ok"], reply
+    started = reply["result"]
+    assert started["loading"] is True
+
+    deadline = time.monotonic() + 30
+    frames = call(server, "stack.frames")["result"]
+    while not frames["load"]["finished"] and time.monotonic() < deadline:
+        QTest.qWait(20)
+        frames = call(server, "stack.frames")["result"]
+    load = frames["load"]
+    assert load["id"] == started["load_id"] and load["finished"], load
+    assert load["error"] is None, load
+    return frames
+
+
 def test_stack_method_render_export_and_project(server, stack_frames, tmp_path):
     token = server.token
-    assert call(server, "stack.load", token=token,
-                folder=str(stack_frames))["result"]["loading"] is True
-    deadline = time.monotonic() + 30
-    while time.monotonic() < deadline:
-        frames = call(server, "stack.frames", token=token)["result"]
-        if frames["count"] == 3:
-            break
-        QTest.qWait(20)
+    frames = _load_stack_for_render(server, stack_frames)
     assert frames["count"] == 3 and frames["dtype"] == "uint16"
 
     assert call(server, "method.set", token=token, id="openfocus_a")["result"]["id"] == "openfocus_a"
-    started = call(server, "render.start", token=token)["result"]
-    assert started["started"] is True
+    reply = call(server, "render.start", token=token)
+    assert reply["ok"] and reply["result"]["started"], reply
     deadline = time.monotonic() + 60
     while time.monotonic() < deadline:
         state = call(server, "render.state", token=token)["result"]
@@ -534,9 +544,7 @@ def test_render_all_names_outputs_after_the_method_used(server, stack_frames, mo
     window = server.window
     window.output_name_prefix = 'Trial'
     window.set_fusion_method('openfocus_b')
-    assert call(server, 'stack.load', folder=str(stack_frames))['result']['loading']
-    assert wait_until(lambda: call(server, 'stack.frames')['result']['count'] == 3,
-                      timeout=20)
+    assert _load_stack_for_render(server, stack_frames)['count'] == 3
 
     window.btn_compare_all.click()
     assert wait_until(lambda: window.btn_render.isEnabled(), timeout=30)
@@ -569,12 +577,7 @@ def test_ui_actions_tree_find_set_click_and_screenshot(server, stack_frames, tmp
     tree = call(server, "ui.tree", token=token, window="main")["result"]
     assert tree["children"]
 
-    call(server, "stack.load", token=token, folder=str(stack_frames))
-    deadline = time.monotonic() + 30
-    while time.monotonic() < deadline:
-        if call(server, "stack.frames", token=token)["result"]["count"] == 3:
-            break
-        QTest.qWait(20)
+    assert _load_stack_for_render(server, stack_frames)["count"] == 3
     button = call(server, "ui.find", token=token, object_name="btn_render")["result"]["matches"]
     assert button, "btn_render must be addressable"
     assert "clicked" in call(server, "ui.click", token=token,
