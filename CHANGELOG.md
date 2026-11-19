@@ -8,7 +8,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
-- Add a Neutral Gray desktop theme with a mid-gray canvas for inspecting images, comparing source and result, and retouching.
+- Add a Neutral Gray desktop theme with a mid-gray canvas for the workspace, image comparisons, retouching, depth previews, and the label, watermark and scale bar editors.
 - Offer a hardware-matched TensorRT and PyTorch CUDA pack for StackMFF on supported Windows NVIDIA systems. Install it from Setup or Settings, including after a desktop upgrade. Neural renders try supported engines within the memory budget and report the actual execution device and fallback reasons.
 - Offer a PyTorch download mirror and installation from verified local archives. Show byte counts during download and unpacking, then show GPU verification separately.
 - Show the Windows taskbar and notification area icons while the initial sign-in window is open. Clicking the notification area icon brings the current dialog or workspace forward.

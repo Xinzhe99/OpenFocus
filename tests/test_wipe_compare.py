@@ -96,7 +96,7 @@ def test_wipe_uses_selected_output_sources_after_stack_and_rotation_changes(qapp
     assert host.wipe_widget._right_pixmap.width() == 80
 
 
-@pytest.mark.parametrize('theme', ['light', 'dark'])
+@pytest.mark.parametrize('theme', ['light', 'dark', 'gray'])
 def test_wipe_cropped_source_uses_result_coordinates(qapp, monkeypatch, theme):
     from ui import styles
     monkeypatch.setattr(styles, 'CURRENT_THEME', theme)

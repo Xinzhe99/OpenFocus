@@ -715,7 +715,7 @@ class LabelManager:
         # ---- bottom: fixed actions --------------------------------------
         self._dialog_error = QLabel("")
         self._dialog_error.setWordWrap(True)
-        self._dialog_error.setStyleSheet("color:#c0392b;")
+        self._dialog_error.setObjectName("errorLabel")
         root.addWidget(self._dialog_error)
 
         buttons = QDialogButtonBox(

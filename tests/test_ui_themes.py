@@ -49,7 +49,7 @@ def test_contact_link_colour_follows_the_theme(qapp, theme_environment, invite_s
     parent = QWidget()
     colours = []
     try:
-        for theme in ("light", "dark"):
+        for theme in ("light", "dark", "gray"):
             qapp.setStyleSheet(get_theme_style(theme))
             parent.ui_theme = theme
             dialog = ContactInfoDialog(parent)
@@ -77,7 +77,8 @@ def test_contact_link_colour_follows_the_theme(qapp, theme_environment, invite_s
                 dialog.close()
                 dialog.deleteLater()
                 qapp.processEvents()
-        assert colours[0] != colours[1]
+        assert all(first != second for index, first in enumerate(colours)
+                   for second in colours[index + 1:])
     finally:
         parent.close()
         parent.deleteLater()
@@ -283,6 +284,28 @@ def test_dustmap_preview_follows_the_theme(qapp, theme_environment):
     finally:
         parent.close()
         parent.deleteLater()
+        qapp.processEvents()
+
+
+def test_depth_surface_uses_the_new_theme_without_moving_camera(qapp, theme_environment):
+    import numpy as np
+    from PyQt6.QtGui import QColor
+    from ui.styles import get_theme_style, set_current_theme
+    from widgets.depth_surface import DepthSurface
+
+    surface = DepthSurface()
+    surface.resize(390, 260)
+    surface.set_surface(np.full((120, 160), 0.5, np.float32))
+    try:
+        for theme, surround in (("light", "#F9FAFB"), ("gray", "#606060"),
+                                ("dark", "#12161B")):
+            set_current_theme(theme)
+            qapp.setStyleSheet(get_theme_style(theme))
+            image = surface.grab().toImage()
+            assert image.pixelColor(4, 4) == QColor(surround)
+            assert image.pixelColor(image.rect().center()) != QColor(surround)
+    finally:
+        surface.deleteLater()
         qapp.processEvents()
 
 
