@@ -560,7 +560,7 @@ jobs:
           the manifest verifies both the zip and setup files.
 
           ### Linux x86-64 (desktop portable)
-          1. Create a new directory, then extract the archive into it: `mkdir openfocus-v1.77.0 && tar -xzf OpenFocus-v1.77.0-linux-x86_64.tar.gz -C openfocus-v1.77.0` (replace the version with the downloaded tag).
+          1. Extract `OpenFocus-*-linux-x86_64.tar.gz` into a new directory.
           2. Change into that directory and run `./OpenFocus/OpenFocus`.
           3. Optionally run `python3 OpenFocus/install_linux_desktop.py` to add a per-user application-menu entry. The helper refuses to overwrite an existing entry.
 

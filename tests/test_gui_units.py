@@ -692,6 +692,19 @@ def test_cancelled_render_clears_preview_mode(qapp, monkeypatch):
     assert w.status.messages[-1] == trans.t("msg_render_cancelled")
 
 
+def test_render_all_queues_only_stable_methods_without_opt_in(qapp, monkeypatch):
+    frames = [np.zeros((30, 40, 3), dtype=np.uint8) for _ in range(3)]
+    window = _render_window(frames)
+    window.experimental_features = False
+    window.set_alignment_method('ecc')
+    manager, _ = _patched_render_manager(monkeypatch, window, ai_available=True)
+    started = []
+    monkeypatch.setattr(manager, 'start_render', lambda *, force_algorithm: started.append(force_algorithm))
+    manager.start_compare_all()
+    assert started == ['openfocus_a']
+    assert manager._compare_queue == ['openfocus_b', 'openfocus_c']
+
+
 def test_compare_all_second_click_cancels_the_run(qapp, monkeypatch):
     """The compare button stayed enabled while btn_render (the only cancel
     affordance) was disabled, so a compare-all could not be stopped."""

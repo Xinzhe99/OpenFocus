@@ -63,7 +63,7 @@ def test_cli_profiles_a_classical_method(tmp_path):
     report = tmp_path / 'reports' / 'profile.json'       # the folder is created
     result = subprocess.run(
         [sys.executable, os.path.join(PROJECT_ROOT, 'main.py'), '--input', str(stack),
-         '--output', str(tmp_path / 'out.png'), '--method', 'guided_filter', '--threads', '1',
+         '--output', str(tmp_path / 'out.png'), '--experimental', '--method', 'guided_filter', '--threads', '1',
          '--tile-size', '64', '--tile-overlap', '16', '--tile-threshold', '32',
          '--align', 'ecc', '--profile-performance', str(report)],
         capture_output=True, text=True, cwd=PROJECT_ROOT, timeout=300)
@@ -92,7 +92,7 @@ def test_cli_diagnostics_need_no_gui_packages(tmp_path):
         assert imwrite_auto(str(stack / f'f{index}.png'), image)
     report = tmp_path / 'profile.json'
     argv = ['--input', str(stack), '--output', str(tmp_path / 'out.png'),
-            '--method', 'guided_filter', '--threads', '1', '--log-level', 'debug',
+            '--experimental', '--method', 'guided_filter', '--threads', '1', '--log-level', 'debug',
             '--profile-performance', str(report)]
     code = ("import sys; sys.modules['PyQt6'] = None\n"
             "from core.cli import run_cli\n"
@@ -122,7 +122,7 @@ def test_cli_refuses_a_profile_file_that_is_an_input_or_another_output(tmp_path,
     destination = {'frame': stack / 'f1.png', 'output': output,
                    'depth': tmp_path / 'out_depth.png'}[target]
     before = (stack / 'f1.png').read_bytes()
-    code = run_cli(['--input', str(stack), '--output', str(output), '--method', 'dct',
+    code = run_cli(['--input', str(stack), '--output', str(output), '--experimental', '--method', 'dct',
                     '--threads', '1', '--depth-map', '--profile-performance', str(destination)])
     assert code == EXIT_USAGE
     message = capsys.readouterr().err

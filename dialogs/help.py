@@ -93,13 +93,13 @@ class RenderMethodHelpDialog(HelpDialog):
     """Fusion methods, grouped in the same order as the method selector."""
 
     def __init__(self, parent=None):
-        from ui.algorithm_combo import CATEGORY_KEYS, CATEGORY_ORDER
+        from ui.algorithm_combo import CATEGORY_KEYS, CATEGORY_ORDER, fusion_label
 
         specs = fusion_algorithms()
         sections = [(None, [(trans.t('radio_no_fusion'),
                              trans.t('radio_no_fusion_hint'))])]
         for category in CATEGORY_ORDER:
-            methods = [(trans.t(spec.label_key),
+            methods = [(fusion_label(spec),
                         trans.t(spec.hint_key) if spec.hint_key else '')
                        for spec in specs if spec.category == category]
             if methods:

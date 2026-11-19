@@ -78,7 +78,7 @@ def contact_replies(invite_server):
 
 def test_contact_links_are_accessible_and_follow_the_theme(qapp, theme_environment, contact_replies):
     import json
-    from PyQt6.QtCore import Qt
+    from PyQt6.QtCore import QPoint, QRect, Qt
     from PyQt6.QtGui import QPalette, QTextDocument
     from PyQt6.QtTest import QTest
     from PyQt6.QtWidgets import QLabel, QScrollArea, QTextBrowser, QWidget
@@ -89,6 +89,7 @@ def test_contact_links_are_accessible_and_follow_the_theme(qapp, theme_environme
     from ui.styles import get_theme_style
 
     reply, _ = contact_replies
+    trans.set_language('en')
     emails = ('first+reply@example.org', 'second@example.org', 'third@example.org')
     institution = 'Research <Lab> & Partners'
     github_url = 'https://github.com/openfocus-test/project?view=issues&state=open'
@@ -124,10 +125,21 @@ def test_contact_links_are_accessible_and_follow_the_theme(qapp, theme_environme
                     **{address: f'mailto:{address}' for address in emails},
                     trans.t('contact_github'): github_url,
                     'Discord': discord_url,
+                    trans.t('contact_discord_join'): discord_url,
                     f'{QR_BASE_URL}/wechat-group': f'{QR_BASE_URL}/wechat-group',
                     f'{QR_BASE_URL}/wechat-official-account': f'{QR_BASE_URL}/wechat-official-account',
                 }
                 assert links.keys() == expected.keys()
+                contact_card = links[emails[0]].parentWidget()
+                discord_card = links[trans.t('contact_discord_join')].parentWidget()
+                heading = next(label for label in contact_card.findChildren(QLabel, 'communitySection')
+                               if label.text() == trans.t('contact_community_links'))
+                assert heading.isVisible()
+                assert heading.y() < links[trans.t('contact_github')].y() < links['Discord'].y()
+                viewport = dialog.findChild(QScrollArea).viewport()
+                for label in (dialog.findChild(QLabel, 'communityTitle'),
+                              links[trans.t('contact_discord_join')]):
+                    assert viewport.rect().contains(QRect(label.mapTo(viewport, QPoint()), label.size()))
                 theme_colours = {}
                 for name, url in expected.items():
                     link = links[name]
@@ -157,13 +169,17 @@ def test_contact_links_are_accessible_and_follow_the_theme(qapp, theme_environme
                     assert activated == [href]
                 colours.append(theme_colours)
 
-                contact_card = links[emails[0]].parentWidget()
                 wechat_card = dialog.findChild(QLabel, 'wechat-group').parentWidget()
-                assert wechat_card.x() > contact_card.x()
+                assert contact_card.x() < discord_card.x() < wechat_card.x()
+                dialog.resize(560, 480)
+                qapp.processEvents()
+                assert discord_card.x() > contact_card.x() and discord_card.y() == contact_card.y()
+                assert wechat_card.x() == contact_card.x() and wechat_card.y() > contact_card.y()
                 dialog.resize(440, 480)
                 qapp.processEvents()
                 assert wechat_card.x() == contact_card.x()
-                assert wechat_card.y() > contact_card.y()
+                assert discord_card.x() == contact_card.x()
+                assert contact_card.y() < discord_card.y() < wechat_card.y()
             finally:
                 dialog.close()
                 dialog.deleteLater()
@@ -215,6 +231,8 @@ def test_contact_refreshes_and_omits_missing_or_unsafe_details(qapp, theme_envir
         )).encode('utf-8')
         request_contact()
         assert wait_until(lambda: trans.t('contact_email') in visible_text())
+        assert trans.t('contact_discord_unpublished') in visible_text()
+        assert trans.t('contact_community_links') not in visible_text()
         assert trans.t('contact_institution') not in visible_text()
         assert 'First institution' not in visible_text()
         links = [label.property('communityUrl') for label in visible_labels()
@@ -228,6 +246,7 @@ def test_contact_refreshes_and_omits_missing_or_unsafe_details(qapp, theme_envir
         reply['body'] = b'{"emails": [], "institution": "", "github_url": "", "discord_url": ""}'
         request_contact()
         assert wait_until(lambda: trans.t('contact_details_empty') in visible_text())
+        assert trans.t('contact_discord_unpublished') in visible_text()
         assert trans.t('contact_email') not in visible_text()
         assert trans.t('contact_institution') not in visible_text()
         dialog.close()
@@ -235,7 +254,67 @@ def test_contact_refreshes_and_omits_missing_or_unsafe_details(qapp, theme_envir
         reply['body'] = b'{"institution":"' + b'x' * (32 * 1024) + b'"}'
         request_contact()
         assert wait_until(lambda: trans.t('contact_details_unavailable') in visible_text())
+        assert trans.t('contact_discord_unavailable') in visible_text()
         assert paths == [b'/v1/contact-info?lang=en'] + [b'/v1/contact-info?lang=zh'] * 3
+    finally:
+        dialog.close()
+        dialog.deleteLater()
+        qapp.processEvents()
+
+
+def test_discord_qr_decodes_the_current_published_invite(qapp, theme_environment, contact_replies):
+    import json
+
+    import cv2
+    import numpy as np
+    from PyQt6.QtGui import QImage
+    from PyQt6.QtWidgets import QLabel
+    from dialogs.about import ContactInfoDialog
+    from locales import trans
+    from tests.test_control_channel import wait_until
+
+    reply, paths = contact_replies
+    trans.set_language('en')
+    dialog = ContactInfoDialog()
+    qr = dialog.findChild(QLabel, 'discord-invite')
+    card = qr.parentWidget()
+    status = card.findChild(QLabel, 'communityMuted')
+
+    def open_with_invite(invite):
+        reply['body'] = json.dumps({'discord_url': invite}).encode('utf-8')
+        dialog.show()
+        assert qr.isHidden() and qr.pixmap().isNull()
+        assert status.isVisible() and status.text() == trans.t('contact_discord_loading')
+        assert not any(link.isVisible() for link in card.findChildren(QLabel, 'communityLink'))
+
+    try:
+        for invite in ('https://discord.gg/OpenFocus1', 'https://discord.gg/Next?x=1&y=2'):
+            open_with_invite(invite)
+            assert wait_until(qr.isVisible)
+            assert not status.isVisible()
+            links = [link for link in card.findChildren(QLabel, 'communityLink') if link.isVisible()]
+            assert len(links) == 1 and links[0].property('communityUrl') == invite
+
+            # Decode Qt's painted widget at its actual device pixel ratio.
+            image = qr.grab().toImage().convertToFormat(QImage.Format.Format_RGB888)
+            bits = image.constBits()
+            bits.setsize(image.sizeInBytes())
+            rows = np.frombuffer(bits, dtype=np.uint8).reshape(image.height(), image.bytesPerLine())
+            pixels = rows[:, :image.width() * 3].reshape(image.height(), image.width(), 3)
+            assert cv2.QRCodeDetector().detectAndDecode(pixels)[0] == invite
+            badge_y, badge_x = np.nonzero(np.all(pixels == [88, 101, 242], axis=2))
+            assert badge_x.size and badge_y.size
+            assert abs(badge_x.min() + badge_x.max() + 1 - image.width()) <= 2
+            assert abs(badge_y.min() + badge_y.max() + 1 - image.height()) <= 2
+            badge = pixels[badge_y.min():badge_y.max() + 1, badge_x.min():badge_x.max() + 1]
+            assert np.any(np.all(badge == 255, axis=2))
+            dialog.close()
+
+        open_with_invite('')
+        assert wait_until(lambda: status.text() == trans.t('contact_discord_unpublished'))
+        assert qr.isHidden() and qr.pixmap().isNull()
+        assert not any(link.isVisible() for link in card.findChildren(QLabel, 'communityLink'))
+        assert paths == [b'/v1/contact-info?lang=en'] * 3
     finally:
         dialog.close()
         dialog.deleteLater()

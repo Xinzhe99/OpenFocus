@@ -22,7 +22,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/Windows-10%2F11-0078D7?logo=windows&logoColor=white" alt="Windows 10/11">
   <img src="https://img.shields.io/badge/macOS-Apple%20Silicon-000000?logo=apple&logoColor=white" alt="macOS Apple Silicon">
-  <img src="https://img.shields.io/badge/Linux-CLI-FCC624?logo=linux&logoColor=black" alt="Linux CLI">
+  <img src="https://img.shields.io/badge/Linux-x86--64-FCC624?logo=linux&logoColor=black" alt="Linux x86-64 pour le bureau et la CLI">
   <a href="https://pypi.org/project/openfocus/"><img src="https://img.shields.io/badge/PyPI-openfocus-3775A9?logo=pypi&logoColor=white" alt="PyPI"></a>
 </p>
 
@@ -55,7 +55,7 @@
 ## 📢 Actualités
 
 > [!NOTE]
-> **[v1.77.0-beta.7, version préliminaire](https://github.com/Xinzhe99/OpenFocus/releases/tag/v1.77.0-beta.7)** — Accélération GPU pour les appareils OpenCL compatibles dans OpenFocus B, avec repli sur le CPU ; comparaison par balayage corrigée ; arrière-plan automatique et retouche. Détails dans le [journal des modifications](../../CHANGELOG.md).
+> **[v2.0.0 est disponible en version stable](https://github.com/Xinzhe99/OpenFocus/releases/tag/v2.0.0)** — Cette version inclut une archive portable de l’application de bureau pour Linux x86_64. Consultez le [journal des modifications](../../CHANGELOG.md).
 
 Les versions précédentes figurent dans le [journal des modifications](../../CHANGELOG.md).
 
@@ -72,7 +72,7 @@ Ce n'est pas obligatoire, mais vivement apprécié.
 <tr>
 <td width="46%" valign="middle">
 
-### Fusion IA : StackMFF V3
+### Fusion IA : StackMFF V3 (méthode expérimentale)
 
 StackMFF V3 utilise l'IA pour combiner les parties nettes des images d'une pile.
 
@@ -107,6 +107,8 @@ Faites glisser le séparateur pour comparer une image source au résultat fusion
 ### Comparaison de méthodes
 
 Comparez les méthodes côte à côte et réutilisez le résultat ou les paramètres de votre choix.
+
+OpenFocus A, OpenFocus B et OpenFocus C sont les seules méthodes de fusion stables. Les autres méthodes sont expérimentales. Pour les utiliser dans l’application de bureau, sélectionnez **Paramètres → Paramètres avancés… → Activer les fonctions expérimentales**. Dans la CLI sans interface graphique, utilisez `--experimental`.
 
 </td>
 <td width="54%">
@@ -219,11 +221,13 @@ Un agent peut piloter l'application via un canal local protégé par jeton.
 <a id="install"></a>
 ## ⬇️ Installation
 
-Le [site web d'OpenFocus](https://openfocus.top/#download) et ses scripts d’installation proposent pour Windows et macOS la version la plus récente, y compris une bêta plus récente (actuellement v1.77.0-beta.7). Les téléchargements sont aussi disponibles sur [GitHub Releases](https://github.com/Xinzhe99/OpenFocus/releases). Les mises à jour automatiques du bureau proposent aussi les bêtas plus récentes ; la CLI Linux de PyPI reste stable.
+La [page de téléchargement d’OpenFocus](https://openfocus.top/#download) propose la dernière version stable de l’application de bureau pour Windows, macOS et Linux x86_64. Extrayez l’archive Linux, puis lancez `OpenFocus/OpenFocus`. Sous Linux, installez manuellement les mises à jour de l’application à partir de cette page.
+
+Les mises à jour de l’application de bureau utilisent le canal stable par défaut. Pour recevoir les versions préliminaires, activez **Recevoir les mises à jour bêta** dans les paramètres avancés ou la boîte de dialogue de bienvenue. Retrouvez les versions précédentes et préliminaires sur [GitHub Releases](https://github.com/Xinzhe99/OpenFocus/releases).
 
 Consultez le [manuel](../USER_MANUAL_FR.md) pour l'installation et le dépannage.
 
-Sous macOS Apple Silicon ou Linux, installez depuis le terminal ; sous Linux, seule la CLI sans interface est installée et, sous macOS, l'application est placée dans `~/Applications` :
+Sur Mac avec une puce Apple Silicon, la commande suivante installe l’application dans `~/Applications`. Sous Linux, elle installe la CLI sans interface graphique.
 
 ```bash
 curl -fsSL https://openfocus.top/install.sh | sh -s -- --dry-run # facultatif : aperçu
@@ -253,7 +257,7 @@ L'application de bureau démarre automatiquement un canal d'agent local protég�
 
 ### 💻 Utilisation en ligne de commande
 
-Vous pouvez aussi installer la CLI sous Windows, macOS et Linux — le même pipeline, sans la pile graphique :
+Installez séparément la CLI avec `pip` sous Windows, macOS ou Linux. Elle offre le même traitement sans interface graphique.
 
 ```bash
 pip install openfocus

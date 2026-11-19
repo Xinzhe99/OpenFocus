@@ -28,7 +28,7 @@ OpenFocus is een professionele desktoptoepassing voor multifocus-beeldfusie, bed
 ### Belangrijkste functies
 
 - **Multifocus-beeldfusie**: meerdere afbeeldingen met verschillende scherpstelpunten combineren tot één volledig scherp beeld
-- **Tien fusiemethoden**: Guided Filter, DCT, DTCWT, GFG-FGF, StackMFF, StackMFF V2, StackMFF V3 en OpenFocus A, B en C; daarnaast een modus met alleen uitlijning
+- **Beeldfusie** met de stabiele methoden OpenFocus A, B en C, de experimentele methoden Guided Filter, DCT, DTCWT, GFG-FGF en StackMFF V1/V2/V3, en een modus met alleen uitlijning
 - **Beeldregistratie**: verschoven beeldreeksen uitlijnen met ECC, homografie, homografie met daaropvolgende ECC-verfijning of de snelle OpenFocus-uitlijning
 - **Automatische achtergrond**: een onrustige gestapelde achtergrond vervangen door één echt frame, en zien waar geen frame de scène scherp zag
 - **Bronvaste retouche**: pixels schilderen vanuit de frames die het resultaat echt hebben gemaakt, met bron- en herstelpenseel, belichtingspenseel en ongedaan maken per streek
@@ -57,7 +57,7 @@ Transparante PNG-stapels kunnen in de desktopapp, in batchverwerking en op de op
 
 Laad op volledige grootte, kies geen uitlijning, schakel Snel voorbeeld en ROI uit, render en sla op als PNG. Batchverwerking vereist een fusiemethode en PNG-uitvoer zonder een uitgelijnde stapel op te slaan. Uitlijning, formaatwijziging of verkleining, flat-fieldcorrectie, dieptekaarten, methodenvergelijking, retoucheren en schaalbalken zijn niet beschikbaar voor transparante gegevens; labels kunnen niet in een export worden ingebrand. Een fusiemethode die de afmetingen van de rechthoek wijzigt, wordt geweigerd. Afwijkende of zachte maskers, verschillende maskers per frame, transparante TIFF-invoer en niet-PNG-uitvoer, inclusief GIF en meerbladige TIFF, zijn niet mogelijk. De CLI weigert bovendien sensorreiniging en dieptekaarten voor transparante invoer.
 
-Het CLI-equivalent is bijvoorbeeld `python main.py --input ./png-stack --output ./result.png --method guided_filter --align none`.
+Het CLI-equivalent is bijvoorbeeld `python main.py --input ./png-stack --output ./result.png --method guided_filter --align none --experimental`.
 
 ### Ondersteunde uitvoerformaten
 
@@ -75,7 +75,7 @@ Bij **Opslaan als** bewaart gewone TIFF het resultaat als één afbeelding; TIFF
 
 ### Installatie
 
-Download de nieuwste Windows-, macOS- of Linux-x86-64-desktopbuild van de [OpenFocus-website](https://openfocus.top/#download). De Linux-desktopbuild is beschikbaar vanaf v1.77.0; oudere versies staan ook op [GitHub Releases](https://github.com/Xinzhe99/OpenFocus/releases).
+Download de nieuwste Windows-, macOS- of Linux-x86-64-desktopbuild van de [OpenFocus-website](https://openfocus.top/#download). De Linux-desktopbuild is beschikbaar vanaf v2.0.0. Oudere versies staan ook op [GitHub Releases](https://github.com/Xinzhe99/OpenFocus/releases).
 De website biedt standaard stabiele desktopversies. Op Windows en macOS kunt u bèta-updates inschakelen; op Linux werkt u bij door een nieuw desktoparchief te downloaden. De PyPI-CLI wordt afzonderlijk uitgebracht.
 
 | Platform | Bestand | Type |
@@ -121,7 +121,7 @@ De eerste start opent het welkomstvenster, waar je het thema kiest en de meegele
 ### Snelstartprocedure
 
 1. Importeer je beeldreeks (Bestand → Map openen of slepen en neerzetten)
-2. Stel de fusie-instellingen in op het rechterpaneel
+2. Stel de fusie-instellingen in op het rechterpaneel. **OpenFocus B** is de standaardmethode.
 3. De registratie start met **ECC**; kies **Geen uitlijning** als de frames al zijn uitgelijnd
 4. Pas de kernelgrootte of methodespecifieke parameters aan als dat nodig is
 5. *(optioneel)* Open **Renderinstellingen** en vink **Snel voorbeeld** aan om de parameters eerst op een verkleind concept te testen
@@ -424,7 +424,7 @@ Meer instellingen via **Instellingen → Geavanceerde instellingen… → Regist
 
 ## 8. Fusiemethoden
 
-OpenFocus biedt tien fusiealgorithmen plus een modus met alleen uitlijning. Een fris profiel start met **StackMFF V3** en **ECC**; de volgende secties beschrijven elke optie. Elke methode heeft eigen eigenschappen voor verschillende beeldtypen.
+**OpenFocus A, B en C** zijn de stabiele fusiemethoden. Een nieuw desktopprofiel start met **OpenFocus B** en **ECC**. Voor de andere fusiemethoden en experimentele registratiemethoden kies je **Instellingen → Geavanceerde instellingen → Algemeen** en vink je **Experimentele functies inschakelen** aan. Voeg op de CLI bij elke uitvoering met een experimentele fusiemethode `--experimental` toe.
 
 ### Guided Filter
 
@@ -894,7 +894,7 @@ openfocus describe                      # JSON: methoden, parameters, mogelijkhe
 openfocus gui [--control] [--socket NAAM] [paden…]   # desktopapp starten
 openfocus ctl <command> [flags]          # een draaiend venster besturen (zie AGENT_CONTROL_SPEC.md)
 openfocus recipe create FILE --input … --output … [verwerkingsopties]
-openfocus recipe run FILE [--dry-run]    # een opgeslagen headless recept afspelen
+openfocus recipe run FILE [--dry-run] [--experimental]  # een opgeslagen headless recept afspelen
 openfocus retouch replay CHECKPOINT --base BASE --sources … --output RESULT
 ```
 
@@ -903,20 +903,20 @@ openfocus retouch replay CHECKPOINT --base BASE --sources … --output RESULT
 Vanuit een Python-omgeving (of naast het gepakte uitvoerbare bestand):
 
 ```bash
-# Een map fuseren met de standaard AI-methode
+# Een map fuseren met de standaardmethode (OpenFocus B)
 python main.py --input ./stack_folder --output ./result/fused.png
 
 # DTCWT met ECC-registratie, 8 threads
-python main.py -i ./stack_folder -o ./result/fused.png -m dtcwt -a ecc -t 8
+python main.py -i ./stack_folder -o ./result/fused.png -m dtcwt -a ecc -t 8 --experimental
 
 # StackMFF V3 geforceerd op CPU, met aangepaste tegelgrootte
-python main.py -i ./stack_folder -o ./result/fused.png -m stackmffv3 --cpu --tile-size 512
+python main.py -i ./stack_folder -o ./result/fused.png -m stackmffv3 --cpu --tile-size 512 --experimental
 
 # Expliciete bestandslijst; videobestanden worden ook als invoer geaccepteerd
-python main.py -i img1.jpg img2.jpg img3.jpg -o fused.png -m gfgfgf
+python main.py -i img1.jpg img2.jpg img3.jpg -o fused.png -m gfgfgf --experimental
 
 # Eén meerbladige TIFF-Z-stapel met een uit metadata gekalibreerde schaalbalk
-python main.py -i ./zstack.tif -o fused.png -m dtcwt --scale-bar
+python main.py -i ./zstack.tif -o fused.png -m dtcwt --scale-bar --experimental
 
 # Aangrenzende vergelijkbare frames bekijken zonder te fuseren of de invoer te wijzigen
 python main.py -i ./stack_folder --suggest-duplicates
@@ -931,7 +931,8 @@ Voeg voor één rendering bijvoorbeeld `--align openfocus --alignment-report ali
 | `--input, -i` | Beeldmap of -mappen, videobestand, een of meer beeldbestanden of een meerbladige TIFF |
 | `--output, -o` | Pad van het uitvoerbeeld (de extensie bepaalt het formaat) |
 | `--output-dir, -d` | Batchmodus: elke invoermap fuseren en per stapel `<map>.png` schrijven |
-| `--method, -m` | `stackmffv3` (standaard), `openfocus_a`, `openfocus_b`, `openfocus_c`, `guided_filter`, `dct`, `dtcwt`, `gfgfgf`, `stackmff`, `stackmffv2` |
+| `--method, -m` | Stabiele methoden zijn `openfocus_a`, `openfocus_b` (standaard) en `openfocus_c`. Experimentele methoden zijn `guided_filter`, `dct`, `dtcwt`, `gfgfgf`, `stackmff`, `stackmffv2` en `stackmffv3` |
+| `--experimental` | Experimentele fusiemethoden toestaan voor deze CLI-uitvoering |
 | `--align, -a` | `none` (standaard), `homography`, `ecc`, `both`, `openfocus` |
 | `--param KEY=JSON_VALUE` | Fusieparameter; herhaal voor meerdere sleutels; overschrijft oudere flags |
 | `--align-param KEY=JSON_VALUE` | Registratieparameter; herhaal voor meerdere sleutels |
@@ -970,7 +971,7 @@ Voeg voor één rendering bijvoorbeeld `--align openfocus --alignment-report ali
 | `--resume` | Sla een map alleen over als alle nu gevraagde resultaten niet-lege gewone bestanden zijn; inhoud en parameters worden niet gecontroleerd |
 | `--json FILE` | Een machineleesbare resultaatsamenvatting naar FILE schrijven |
 | `--json-progress` | Eén JSON-voortgangsobject per stap naar stdout schrijven (NDJSON); proza gaat naar stderr |
-| `--config FILE` | Batchmodus: JSON-bestand met overschrijvingen per map, bijvoorbeeld `{"stackA": {"method": "dct", "kernel": 9}}` |
+| `--config FILE` | Batchmodus: JSON-bestand met overschrijvingen per map, bijvoorbeeld `{"stackA": {"method": "dct", "kernel": 9}}`. Voeg voor dit voorbeeld bij de uitvoering `--experimental` toe. |
 | `--suggest-duplicates` | Bijna identieke aangrenzende frames voor handmatige controle melden; fuseert of sluit ze niet uit |
 
 Er is geen `--method none`-waarde: de CLI fuseert altijd. Gebruik de desktopapp voor uitvoer met alleen uitlijning.
@@ -980,10 +981,12 @@ Er is geen `--method none`-waarde: de CLI fuseert altijd. Gebruik de desktopapp 
 Recepten leggen headless verwerkingsinstellingen vast voor hergebruik en verplaatsing:
 
 ```bash
-openfocus recipe create workflow.json -i ./stack_folder -o ./result/fused.png -m dct --cpu
+openfocus recipe create workflow.json -i ./stack_folder -o ./result/fused.png -m openfocus_b --cpu
 openfocus recipe run workflow.json --dry-run
 openfocus recipe run workflow.json
 ```
+
+Het recept bewaart de gekozen fusiemethode. Geef `--experimental` mee aan elke `openfocus recipe run` die een experimentele fusiemethode gebruikt, ook bij een proefrun met `--dry-run`.
 
 Het JSON-formaat van versie 1 bevat `version`, een `input`-array, ofwel `output` of `output_dir`, en een `options`-object. Paden zijn relatief ten opzichte van het receptbestand; verplaats het recept samen met zijn invoerbestanden. Bij het maken worden de CLI-instellingen en opgeloste algoritmeparameters vastgelegd. Onbekende velden, ongeldige waarden en niet-ondersteunde versies worden geweigerd. Een proefrun controleert de invoer zonder resultaatbestanden te schrijven. Bestaande projectbestanden blijven ongewijzigd.
 
@@ -1004,7 +1007,7 @@ Dezelfde headless API is beschikbaar zonder PyQt te importeren:
 ```python
 from core.recipes import capture_project_recipe, capture_recipe, load_recipe, save_recipe, run_recipe
 
-capture_recipe("workflow.json", ["-i", "stack_folder", "-o", "result/fused.png", "-m", "dct"])
+capture_recipe("workflow.json", ["-i", "stack_folder", "-o", "result/fused.png", "-m", "openfocus_b"])
 capture_project_recipe("from-project.json", "session.ofproj",
                        ["-i", "new_stack", "-o", "result/fused.png"])
 recipe = load_recipe("workflow.json")  # gevalideerd dictionary met relatieve paden

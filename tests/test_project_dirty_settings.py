@@ -125,6 +125,7 @@ def _bind(host, *names):
 
 def _host():
     host = _Host()
+    host.experimental_features = True
     return _bind(
         host,
         "_update_project_title", "_mark_project_dirty", "_clear_project_dirty",

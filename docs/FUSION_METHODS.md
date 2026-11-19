@@ -1,7 +1,8 @@
 # OpenFocus fusion methods
 
-OpenFocus offers several focus-stacking methods. The A, B and C methods use
-these approaches:
+OpenFocus A, B and C are the stable focus-stacking methods. Other methods
+require **Enable experimental features** in Advanced Settings or
+`--experimental` in the command-line interface. A, B and C use these approaches:
 
 | Method | Approach | Main controls |
 |---|---|---|

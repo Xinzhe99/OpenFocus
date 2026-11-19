@@ -37,7 +37,7 @@ def native_stack(tmp_path):
 
 def _args(paths, output):
     return ["--native-raw", "--input", *(str(p) for p in paths),
-            "--output", str(output), "--method", "guided_filter", "--cpu",
+            "--output", str(output), "--experimental", "--method", "guided_filter", "--cpu",
             "--threads", "1", "--no-exposure-match"]
 
 
@@ -96,7 +96,7 @@ def test_native_batch_produces_dng_and_tiff(native_stack, tmp_path):
     folder, _, _, _ = native_stack
     output = tmp_path / "results"
     common = ["--native-raw", "--input", str(folder), "--output-dir", str(output),
-              "--method", "guided_filter", "--cpu", "--threads", "1",
+              "--experimental", "--method", "guided_filter", "--cpu", "--threads", "1",
               "--no-exposure-match"]
     assert run_cli(common) == 0
     assert (output / f"{folder.name}.dng").exists()

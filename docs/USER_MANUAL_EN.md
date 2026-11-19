@@ -85,7 +85,7 @@ input and non-PNG output, including GIF and multi-page TIFF, are unsupported.
 The CLI rejects sensor cleanup and depth maps for transparent input as well.
 
 For example, the CLI equivalent is `python main.py --input ./png-stack
---output ./result.png --method guided_filter --align none`.
+--output ./result.png --method guided_filter --align none --experimental`.
 
 ### Supported Output Formats
 
@@ -101,9 +101,9 @@ In **Save As**, ordinary TIFF saves the result as a single image; layered TIFF i
 
 ### Downloading and Starting the Application
 
-The [project website](https://openfocus.top/#download) offers Windows, macOS
-and, starting with v1.77.0, Linux x86-64 desktop builds. Downloads and older
-versions are also available on [GitHub Releases](https://github.com/Xinzhe99/OpenFocus/releases).
+The [project website](https://openfocus.top/#download) offers Windows x64,
+macOS Apple Silicon and Linux x86-64 desktop builds. Previous versions are
+available on [GitHub Releases](https://github.com/Xinzhe99/OpenFocus/releases).
 Desktop updates use the stable channel unless beta updates are enabled. On
 Linux, download and extract a new desktop build to update it manually.
 `pip install openfocus` installs only the headless command-line interface (the
@@ -200,7 +200,7 @@ The top menu bar provides access to all functions:
 - **Edit**: Undo/redo, reset the current stack, image transformations and retouching
 - **Tools**: Image stitching, batch processing and conversion, method comparison, depth map, flat-field correction, scale bar, watermark and labels
 - **Settings** offers Advanced Settings, GPU acceleration, theme, font size, and language.
-- **Help**: Report a Problem, Contact Us, Support Us, and check for updates. Contact Us loads the published contact details and WeChat QR codes. Support Us loads the current Alipay and PayPal codes. Reopen either dialog to fetch updates.
+- **Help**: Report a Problem, Contact Us, Support Us, and check for updates. Contact Us shows the published contact details, GitHub and Discord links, and QR codes for Discord and WeChat. Support Us loads the current Alipay and PayPal codes. Reopen either dialog to fetch updates.
 - **Extensions (In development)** is visible and disabled.
 
 **Tools → Stitch Images… (In development)** is currently unavailable. The following describes the workspace under development.
@@ -868,9 +868,10 @@ Access additional settings via **Settings → Advanced Settings → Registration
 
 ## 8. Image Fusion Methods
 
-OpenFocus offers ten fusion algorithms (plus an alignment-only mode). A fresh
-desktop profile uses **OpenFocus B** with **ECC** registration; both are marked
-as recommended. Existing user selections are preserved. CLI defaults are separate.
+OpenFocus A, B and C are the stable fusion methods. To use the other fusion
+methods, enable **Experimental features** in Advanced Settings or pass
+`--experimental` in the CLI. A fresh desktop profile uses **OpenFocus B** with
+**ECC** registration. Existing method selections are preserved.
 
 ### Guided Filter
 
@@ -1066,7 +1067,11 @@ the selected area with surrounding context; **Full-image fusion** checks the
 whole-image result and lets you inspect another area without rendering again.
 ROI results can differ from full-image results because exposure statistics and
 some algorithms depend on the image extent.
-Full-image fusion is selected by default.
+The comparison opens in full-image mode and shows the whole result. It selects
+methods with compatible workspace results and uses their saved settings and
+aligned image coordinates. Switch to detail view to inspect a crop. Moving the
+inspection square or changing the preview size updates existing results while
+other methods fuse.
 
 Use **Preview size (px)** above the right panes to choose a square size from
 160 to 960 pixels, by dragging the slider or entering a number. All methods
@@ -1347,10 +1352,10 @@ needs to be decoded, the Fit image stays visible while the decode waits.
 
 ## 11. Settings and Configuration
 
-All fusion methods are selectable when their dependencies are installed.
 **Enable experimental features** in **Settings → Advanced Settings → General**
-unlocks experimental registration methods. The installation remembers this
-preference. Restoring default settings turns it off.
+unlocks experimental fusion and registration methods when their dependencies
+are available. The installation remembers this preference. Restoring default
+settings turns it off.
 
 **Settings → Theme → Follow system** updates the interface when the operating system changes between light and dark. **Settings → Font size** offers Small (9 pt), Medium (10 pt), and Large (13 pt). **Custom…** previews 8–18 pt alongside the default before applying the size.
 
@@ -1905,7 +1910,7 @@ openfocus describe                      # JSON: methods, parameters, capabilitie
 openfocus gui [--control] [--socket NAME] [paths…]   # start the desktop app
 openfocus ctl <command> [flags]          # drive a running window (see AGENT_CONTROL_SPEC.md)
 openfocus recipe create FILE --input … --output … [processing flags]
-openfocus recipe run FILE [--dry-run]    # replay a saved headless recipe
+openfocus recipe run FILE [--dry-run] [--experimental]
 openfocus retouch replay CHECKPOINT --base BASE --sources … --output RESULT
 ```
 
@@ -1918,20 +1923,20 @@ The agent-facing workflow is documented in
 From a Python environment (or next to the packaged executable):
 
 ```bash
-# Fuse a folder with the default method (StackMFF V3)
+# Fuse a folder with the default method (OpenFocus B)
 python main.py --input ./stack_folder --output ./result/fused.png
 
 # DTCWT with ECC registration, 8 threads
-python main.py -i ./stack_folder -o ./result/fused.png -m dtcwt -a ecc -t 8
+python main.py -i ./stack_folder -o ./result/fused.png -m dtcwt -a ecc -t 8 --experimental
 
 # StackMFF V3 forced to CPU with a custom tile size
-python main.py -i ./stack_folder -o ./result/fused.png -m stackmffv3 --cpu --tile-size 512
+python main.py -i ./stack_folder -o ./result/fused.png -m stackmffv3 --cpu --tile-size 512 --experimental
 
 # Explicit file list; video files are also accepted as input
-python main.py -i img1.jpg img2.jpg img3.jpg -o fused.png -m gfgfgf
+python main.py -i img1.jpg img2.jpg img3.jpg -o fused.png -m gfgfgf --experimental
 
 # Single multi-page TIFF Z-stack with a metadata-calibrated scale bar
-python main.py -i ./zstack.tif -o fused.png -m dtcwt --scale-bar
+python main.py -i ./zstack.tif -o fused.png -m dtcwt --scale-bar --experimental
 
 # Unattended: align, stack, replace the background, and keep the stacked
 # result and the missing-data map for review
@@ -1968,7 +1973,8 @@ an input or another output. Batch, grouped and dry-run modes reject this option.
 | `--output-dir, -d` | Batch mode: fuse every input folder, writing `<folder>.png` per stack |
 | `--resume` | Batch mode: skip a folder only when every currently requested output is a nonempty regular file |
 | `--config FILE` | Batch mode: JSON per-folder overrides, e.g. `{"stackA": {"method": "dct"}}` |
-| `--method, -m` | `stackmffv3` (default), `stackmffv2`, `stackmff`, `openfocus_a`, `openfocus_b`, `openfocus_c`, `guided_filter`, `dct`, `dtcwt`, `gfgfgf` |
+| `--method, -m` | Stable: `openfocus_a`, `openfocus_b` (default), `openfocus_c`. Experimental: `guided_filter`, `dct`, `dtcwt`, `gfgfgf`, `stackmff`, `stackmffv2`, `stackmffv3` |
+| `--experimental` | Enable experimental fusion methods for this CLI invocation |
 | `--param KEY=JSON_VALUE` | Set any fusion parameter; repeatable and overrides legacy flags |
 | `--align, -a` | `none` (default), `homography`, `ecc`, `both`, `openfocus` |
 | `--align-param KEY=JSON_VALUE` | Set any registration parameter; repeatable |
@@ -2037,10 +2043,13 @@ replay it:
 
 ```bash
 openfocus recipe create line.json --input ./stack --output ./out/fused.tif \
-  --method dtcwt --align ecc --threads 8
+  --method openfocus_b --align ecc --threads 8
 openfocus recipe run line.json
 openfocus recipe run line.json --dry-run
 ```
+
+Pass `--experimental` each time you run a recipe that selects an experimental
+fusion method. The recipe stores the chosen method.
 
 `recipe create --project project.ofproj --input ./stack --output ./out/fused.tif`
 captures a project's processing settings against explicitly chosen inputs; the

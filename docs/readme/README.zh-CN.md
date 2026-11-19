@@ -55,7 +55,7 @@
 ## 📢 最新动态
 
 > [!NOTE]
-> **[v1.77.0-beta.7 预发布版](https://github.com/Xinzhe99/OpenFocus/releases/tag/v1.77.0-beta.7)** — OpenFocus B 为兼容的 OpenCL 设备提供 GPU 加速，并可回退到 CPU；修复了滑动对比，提供自动背景和修图功能。详情见[更新日志](../../CHANGELOG.md)。
+> **OpenFocus 2.0.0 正式版**提供 Linux 桌面版、在兼容设备上加速 OpenFocus A/B/C，并支持原始像素检查和复用已有融合结果的对比窗口。[下载](https://openfocus.top/#download) · [更新日志](../../CHANGELOG.md#200)
 
 更早的版本见 [更新日志](../../CHANGELOG.md)。
 
@@ -216,6 +216,9 @@ StackMFF V3 使用 AI 合并各帧的清晰部分，生成景深合成图像。
 - **十二种界面语言**——按系统区域自动检测，可通过 `locales/<code>.py` 添加语言。
 - **内存管理**——按 RAM 预算限制帧或分块并发，使用磁盘中间存储，并仅在选用 AI 方法时加载模型。
 
+OpenFocus A、B、C 为稳定融合方法。使用其他融合方法时，请在高级设置中启用
+**实验性功能**，或在无界面 CLI 中加上 `--experimental`。
+
 StackMFF V1/V2/V3 使用 ONNX Runtime；Windows 可使用 DirectML，macOS 可使用
 CoreML，无法使用相应执行提供程序时回退到 CPU。设备被识别并不代表模型已在
 GPU 上执行，以界面中的实际执行状态为准。详见[GPU 支持](../GPU_SUPPORT.md)。
@@ -227,7 +230,7 @@ JPEG/RAW 显示预览优先读取可用的内嵌图像；正式处理和原始�
 <a id="install"></a>
 ## ⬇️ 安装
 
-[OpenFocus 官网](https://openfocus.top/#download)及其安装脚本为 Windows 和 macOS 提供最新版本，包括比稳定版更新的测试版（目前为 v1.77.0-beta.7）。也可从 [GitHub Releases](https://github.com/Xinzhe99/OpenFocus/releases) 下载。桌面应用自动更新也提供更新的测试版；PyPI 上的 Linux CLI 仍使用稳定版。
+官网提供 Windows x64、macOS Apple Silicon 和 Linux x86-64 桌面稳定版。Linux 版解压后运行 `OpenFocus/OpenFocus`，也可在官网下载新版并手动更新。桌面默认接收稳定版更新，在高级设置或欢迎页可选择接收较新的测试版。[官网下载](https://openfocus.top/#download) · [历史版本](https://github.com/Xinzhe99/OpenFocus/releases)
 
 安装和故障排除请参阅[用户手册](../USER_MANUAL_ZH.md)。
 

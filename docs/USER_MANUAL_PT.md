@@ -28,7 +28,7 @@ O OpenFocus é um aplicativo desktop profissional de fusão de imagens multifoco
 ### Principais recursos
 
 - **Fusão de imagens multifoco**: combina várias imagens com pontos de foco diferentes em uma única imagem totalmente focada
-- **Dez algoritmos de fusão**: filtro guiado, DCT, DTCWT, GFG-FGF, StackMFF V1/V2/V3, OpenFocus A/B/C, além do modo somente alinhamento
+- **Dez algoritmos de fusão**. OpenFocus A/B/C são estáveis. O filtro guiado, DCT, DTCWT, GFG-FGF e StackMFF V1/V2/V3 são experimentais. Também há um modo somente alinhamento.
 - **Registro de imagens**: alinha sequências desalinhadas com OpenFocus (rápido), ECC, homografia ou a cadeia homografia → ECC
 - **Fundo automático**: substituir um fundo empilhado irregular por um fotograma real e ver onde nenhum fotograma captou a cena com nitidez
 - **Visualização de comparação cortina**: verifica o alinhamento e compara resultados com um divisor A/B
@@ -56,7 +56,7 @@ Pilhas PNG transparentes podem ser fundidas no aplicativo desktop, no processame
 
 Carregue em tamanho real, escolha nenhum alinhamento, desative a prévia rápida e a ROI, então renderize e salve como PNG. O modo em lote exige um método de fusão e saída PNG sem salvar uma pilha alinhada. Alinhamento, redimensionamento ou redução, correção de campo plano, mapas de profundidade, comparação de métodos, retoque e barras de escala não são suportados para dados transparentes, e rótulos não podem ser gravados em uma exportação. Um método de fusão que altera as dimensões do retângulo é rejeitado. Máscaras variáveis ou com bordas suavizadas, máscaras diferentes entre quadros, entrada TIFF transparente e saída não PNG, incluindo GIF e TIFF multipágina, não são suportadas. A CLI também rejeita a limpeza do sensor e os mapas de profundidade para entrada transparente.
 
-Por exemplo, o equivalente na CLI é `python main.py --input ./png-stack --output ./result.png --method guided_filter --align none`.
+Por exemplo, o equivalente na CLI é `python main.py --input ./png-stack --output ./result.png --method guided_filter --align none --experimental`.
 
 ### Formatos de saída compatíveis
 
@@ -74,7 +74,7 @@ Em **Salvar como**, TIFF comum salva o resultado como uma única imagem; TIFF em
 ### Iniciar o aplicativo
 
 A forma preferida de instalar uma compilação empacotada é o site do projeto, **https://openfocus.top**: ele aponta para o instalador do Windows, a compilação do macOS e o pacote do Linux, com scripts de instalação para terminal. Prefira-o a recompilar: esses artefatos são a saída exata do pipeline de lançamento. `pip install openfocus` instala apenas a interface de linha de comando headless (a wheel não depende de PyQt6 de propósito); use uma compilação desktop ou uma cópia do código-fonte para a GUI.
-O site oferece versões desktop estáveis por padrão. No Windows e no macOS, você pode ativar atualizações beta; no Linux, atualize baixando um novo arquivo desktop. A CLI do PyPI é distribuída separadamente.
+O site oferece versões desktop estáveis por padrão. O aplicativo desktop para Linux x86-64 está disponível a partir da versão 2.0.0. No Windows e no macOS, você pode ativar atualizações beta. No Linux, atualize baixando um novo arquivo desktop. A CLI do PyPI é distribuída separadamente.
 
 As versões atuais para Windows não são assinadas digitalmente. Antes de executar o arquivo baixado, compare o hash SHA-256 dele com o valor indicado no manifesto da versão.
 
@@ -122,7 +122,7 @@ O painel direito reúne todas as opções de configuração, de cima para baixo:
 
 1. **Configurações de fusão**: seleção do algoritmo e de seus parâmetros
 2. **Configurações de registro**: ativação ou desativação dos métodos de alinhamento
-3. **Botões de ação**: Iniciar renderização e as ações secundárias Redefinir, Configurações de renderização e renderizar todos os métodos. A janela de configurações reúne prévia rápida, ordem dos quadros, igualação de exposição, remoção de deriva de brilho e nitidez da saída
+3. Os **botões de ação** servem para iniciar a renderização, redefinir as opções, abrir as configurações de renderização ou renderizar com todos os métodos disponíveis. A janela de configurações reúne prévia rápida, ordem dos quadros, igualação de exposição, remoção de deriva de brilho e nitidez da saída
 4. **Lista de imagens de origem**: todas as imagens carregadas com seus nomes de arquivo
 5. **Lista de saídas**: os resultados gerados
 
@@ -367,7 +367,7 @@ Em uma execução individual da CLI com registro e sem grupos, `--alignment-repo
 ### Ativar o registro
 
 1. No painel direito, localize o grupo **Registro**
-2. Escolha um método na lista: **Sem alinhamento**, **OpenFocus (rápido)**, **Alinhar (ECC)**, **Alinhar (homografia)** ou **Homografia → ECC** (encadeado)
+2. Escolha **Sem alinhamento** ou **Alinhar (ECC)**. Com os recursos experimentais ativados, também é possível escolher **OpenFocus (rápido)**, **Alinhar (homografia)** ou **Homografia → ECC** (encadeado)
 3. Ajuste o quadro de referência e os limites de busca do OpenFocus em **Configurações → Configurações avançadas → Registro**.
 
 ### Quando usar registro
@@ -389,7 +389,7 @@ As configurações adicionais ficam em **Configurações → Configurações ava
 
 ## 8. Métodos de fusão de imagens
 
-O OpenFocus oferece dez algoritmos de fusão (além de um modo somente alinhamento). Um perfil novo começa em **StackMFF V3** com registro **ECC**; as listas abaixo descrevem todas as opções. Cada um tem características distintas adequadas a diferentes tipos de imagem.
+Um novo perfil no aplicativo desktop usa **OpenFocus B** com registro **ECC**. Os métodos de fusão estáveis são OpenFocus A, B e C. Para usar os demais métodos de fusão no aplicativo desktop, marque **Ativar recursos experimentais** em **Configurações → Configurações avançadas → Geral** e confirme. Na CLI, adicione `--experimental` a cada comando que use um método de fusão experimental.
 
 ### Filtro guiado
 
@@ -438,8 +438,6 @@ O OpenFocus oferece dez algoritmos de fusão (além de um modo somente alinhamen
 
 ### StackMFF V3 (aprendizado profundo)
 
-É o método pré-selecionado em uma nova instalação.
-
 - **Algoritmo**: classificação de origem pixel a pixel (ONNX Runtime). A rede prediz, para cada pixel, de qual imagem de entrada ele vem, e então mistura as imagens por essas probabilidades ou escolhe uma imagem
 - **Modo de saída de IA** (painel direito, apenas para este método):
   - **Mistura suave (ponderada)** — padrão; cada pixel é uma mistura das imagens ponderada por probabilidade. Transições suaves, sem emendas duras; corresponde à configuração relatada no artigo
@@ -463,7 +461,7 @@ CLI: `--method openfocus_b --param radius=8 --param smoothing=4 --param feather=
 
 Na interface, a igualação de exposição fica ativada por padrão em A/B/C e usa o primeiro quadro processado; nos demais métodos fica desativada por padrão e usa o último. As escolhas salvas explicitamente são preservadas; quando A/B/C está ativado, usa-se o primeiro. A correção de deriva de brilho permanece desativada por padrão. Redefinir restaura os padrões de cada método. Na CLI fica ativada por padrão para todos os métodos; `--no-exposure-match` desativa.
 
-Ao selecionar A/B/C, usa-se o alinhamento OpenFocus, salvo se um alinhamento tiver sido escolhido explicitamente ou um projeto restaurado. Os padrões são deslocamento 0,03 e ampliação 5%.
+O registro padrão para A/B/C continua sendo ECC mesmo com os recursos experimentais ativados. Para usar o alinhamento OpenFocus, selecione-o explicitamente. Seus valores padrão são deslocamento de 0,03 e ampliação de 5%.
 
 **Nitidez da saída fundida** aplica uma máscara de nitidez suave após a fusão, antes de o resultado ser convertido para sua profundidade de saída. Fica desativada por padrão e pode ser ativada em **Configurações de renderização** ou nas opções do lote; o sinalizador equivalente da CLI é `--sharpen-output`. Afeta a imagem fundida, não os quadros registrados nem os mapas de profundidade. Pode tornar as bordas mais distintas, mas amplificar ruído e halos. É salva com o projeto e lembrada entre sessões.
 
@@ -495,6 +493,8 @@ Selecione **Somente alinhamento (sem fusão)** para registrar a pilha e adiciona
 
 Abra **Ferramentas → Comparação de métodos** para ajustar vários métodos independentemente. Nome, rótulos de parâmetros e controles de cada método permanecem juntos quando a janela estreita. As mudanças atualizam a prévia automaticamente. **Prévia ROI (rápida)** funde a área selecionada com o contexto ao redor; **Fusão de imagem inteira** verifica o resultado da imagem toda e permite inspecionar outra área sem renderizar novamente. Resultados ROI podem diferir dos de imagem inteira porque estatísticas de exposição e alguns algoritmos dependem da extensão da imagem.
 A **fusão de imagem inteira** é selecionada por padrão.
+
+Para incluir os métodos experimentais na comparação, ative os recursos experimentais.
 
 Uma dica visível explica como selecionar ou desmarcar um resultado: clique nele ou use `Tab` para colocá-lo em foco e pressione `Enter` ou `Espaço`.
 
@@ -851,7 +851,7 @@ openfocus describe                      # JSON: métodos, parâmetros, capacidad
 openfocus gui [--control] [--socket NAME] [paths…]   # inicia o aplicativo desktop
 openfocus ctl <command> [flags]          # controla uma janela em execução (ver AGENT_CONTROL_SPEC.md)
 openfocus recipe create FILE --input … --output … [processing flags]
-openfocus recipe run FILE [--dry-run]    # reproduz uma receita headless salva
+openfocus recipe run FILE [--dry-run] [--experimental]
 openfocus retouch replay CHECKPOINT --base BASE --sources … --output RESULT
 ```
 
@@ -860,20 +860,20 @@ openfocus retouch replay CHECKPOINT --base BASE --sources … --output RESULT
 De um ambiente Python (ou ao lado do executável empacotado):
 
 ```bash
-# Funde uma pasta com o método de IA padrão
+# Funde uma pasta com o método padrão (OpenFocus B)
 python main.py --input ./stack_folder --output ./result/fused.png
 
 # DTCWT com registro ECC, 8 threads
-python main.py -i ./stack_folder -o ./result/fused.png -m dtcwt -a ecc -t 8
+python main.py -i ./stack_folder -o ./result/fused.png -m dtcwt -a ecc -t 8 --experimental
 
 # StackMFF V3 forçado na CPU com um tamanho de bloco personalizado
-python main.py -i ./stack_folder -o ./result/fused.png -m stackmffv3 --cpu --tile-size 512
+python main.py -i ./stack_folder -o ./result/fused.png -m stackmffv3 --cpu --tile-size 512 --experimental
 
 # Lista explícita de arquivos; arquivos de vídeo também são aceitos como entrada
-python main.py -i img1.jpg img2.jpg img3.jpg -o fused.png -m gfgfgf
+python main.py -i img1.jpg img2.jpg img3.jpg -o fused.png -m gfgfgf --experimental
 
 # Uma única pilha Z TIFF multipágina com barra de escala calibrada por metadados
-python main.py -i ./zstack.tif -o fused.png -m dtcwt --scale-bar
+python main.py -i ./zstack.tif -o fused.png -m dtcwt --scale-bar --experimental
 
 # Inspeciona quadros adjacentes semelhantes sem fundir nem alterar a entrada
 python main.py -i ./stack_folder --suggest-duplicates
@@ -891,7 +891,8 @@ Por exemplo, adicione `--align openfocus --alignment-report alignment.json` a um
 | `--output-dir, -d` | Modo lote: funde cada pasta de entrada gravando `<pasta>.png` por pilha |
 | `--resume` | Ignora a pasta somente quando todos os resultados solicitados são arquivos comuns não vazios; não verifica conteúdo ou parâmetros |
 | `--config FILE` | Modo lote: substituições JSON por pasta, p. ex. `{"stackA": {"method": "dct"}}` |
-| `--method, -m` | `stackmffv3` (padrão), `stackmffv2`, `stackmff`, `openfocus_a`, `openfocus_b`, `openfocus_c`, `guided_filter`, `dct`, `dtcwt`, `gfgfgf` |
+| `--method, -m` | Métodos estáveis (`openfocus_a`, `openfocus_b` por padrão, `openfocus_c`) e experimentais (`guided_filter`, `dct`, `dtcwt`, `gfgfgf`, `stackmff`, `stackmffv2`, `stackmffv3`) |
+| `--experimental` | Permite usar métodos de fusão experimentais nesta execução, inclusive se forem escolhidos com `--config` |
 | `--param KEY=JSON_VALUE` | Define qualquer parâmetro de fusão; repetível e prevalece sobre opções legadas |
 | `--align, -a` | `none` (padrão), `homography`, `ecc`, `both`, `openfocus` |
 | `--align-param KEY=JSON_VALUE` | Define qualquer parâmetro de registro; repetível |
@@ -938,10 +939,12 @@ Uma receita é um arquivo JSON portátil de opções de processamento da CLI com
 
 ```bash
 openfocus recipe create line.json --input ./stack --output ./out/fused.tif \
-  --method dtcwt --align ecc --threads 8
+  --method openfocus_b --align ecc --threads 8
 openfocus recipe run line.json
 openfocus recipe run line.json --dry-run
 ```
+
+Se a receita usar um método de fusão experimental, adicione `--experimental` a cada execução, inclusive em um teste com `--dry-run`. A receita armazena o método escolhido.
 
 `recipe create --project project.ofproj --input ./stack --output ./out/fused.tif` captura as configurações de processamento de um projeto com entradas escolhidas explicitamente; as origens do projeto podem ter sido movidas. Receitas rejeitam controles transitórios como `--dry-run`, `--resume`, `--json` e `--config`, e exigem que a saída fique fora de todas as pastas de entrada (e seja diferente de uma entrada selecionada explicitamente). Uma máscara de defeitos é armazenada por caminho relativo com uma impressão digital SHA-256, então uma máscara ausente ou alterada faz a execução falhar. Edições de origem do projeto (rotação, inversão, campo plano) não podem ser capturadas; exporte primeiro a pilha corrigida.
 
@@ -1001,7 +1004,7 @@ Códigos de saída: `0` sucesso, `1` erro de processamento, `2` erro de uso. Exe
 | `Ctrl+W` | Limpar pilha |
 | `Ctrl+Q` | Sair |
 | `Ctrl+R` | Iniciar renderização |
-| `Ctrl+Shift+R` | Comparar todos os métodos |
+| `Ctrl+Shift+R` | Comparar os métodos disponíveis |
 | `Ctrl+T` | Retocar resultado |
 | `Ctrl+M` | Mapa de profundidade |
 | `Ctrl+E` | Alternar comparação cortina |
