@@ -1007,12 +1007,14 @@ saved choices remain in use. **Reset** clears remembered choices and restores
 the method defaults. The CLI defaults exposure matching on and accepts
 `--no-exposure-match` to disable it.
 
-**Sharpen fused output** applies a mild unsharp mask after fusion, before the
-result is converted to its output bit depth. It is off by default and can be
-enabled in the main fusion options or batch options; the equivalent CLI flag is
-`--sharpen-output`. This affects the fused image, not registered frames or
-depth maps. It can make edges more distinct, but may amplify noise and halos.
-It is saved with the project and remembered between sessions.
+**Render settings → Output → Sharpen fused output** applies an unsharp mask
+after fusion and before conversion to the output bit depth. Sharpening is off
+by default. When enabled, a slider and percentage field adjust the strength
+from 0% to 200%. At 0% the result is unchanged. At 100% the strength matches
+earlier releases. Higher values may amplify noise and halos. The project and
+desktop preferences remember the strength independently of the on/off switch.
+Batch processing also offers both controls. The CLI equivalents are
+`--sharpen-output` and `--sharpen-strength PERCENT`.
 
 ### Alignment only (no fusion)
 
@@ -1976,7 +1978,8 @@ an input or another output. Batch, grouped and dry-run modes reject this option.
 | `--base-frame` | Optional post-fusion step: match the output's low frequencies to the `last`/`first` frame (`none` default) |
 | `--sort` | Frame order for `openfocus_a/b/c`: `asc` (default, file order), `desc` (reverse a far-to-near sweep), `off` |
 | `--frame-order` | Folder input: `auto` (default) orders frames near to far by EXIF focus steps when every frame has them (OM SYSTEM focus bracketing starts mid-depth), otherwise by name; `name` always sorts by filename. Explicit file lists keep their order |
-| `--sharpen-output` | Apply mild unsharp masking to the fused output (off by default) |
+| `--sharpen-output` | Enable sharpening of the fused output (off by default) |
+| `--sharpen-strength PERCENT` | Set integer strength from 0 to 200 (default 100). Applies with `--sharpen-output`; 0 leaves the result unchanged. |
 | `--dust-map WHITE` | Flat-field (dust map) correction from a defocused white-field shot |
 | `--defect-mask-path MASK` | Sensor-coordinate defect mask repaired before registration |
 | `--sensor-denoise` | Conservative sensor denoising before registration |

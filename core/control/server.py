@@ -33,6 +33,7 @@ from core.algorithms import (
 )
 from locales import trans
 from utils.logging_setup import get_logger
+from utils.output_sharpen import DEFAULT_SHARPEN_STRENGTH
 
 _log = get_logger(__name__)
 MAX_MOUSE_STEPS = 1024
@@ -740,6 +741,8 @@ class ControlServer(QObject):
                 "base_correct": bool(window.chk_base_correct.isChecked()),
                 "exposure_match": bool(window.chk_exposure_match.isChecked()),
                 "reverse_order": bool(getattr(window, "stack_reverse_order", False)),
+                "sharpen_output": bool(getattr(window, "sharpen_output", False)),
+                "sharpen_strength": getattr(window, "sharpen_strength", DEFAULT_SHARPEN_STRENGTH),
                 "preview": bool(window.chk_quick_preview.isChecked()),
                 "thread_count": int(getattr(window, "thread_count", 0)),
                 "use_gpu": bool(getattr(window, "use_gpu", False)),
@@ -914,7 +917,8 @@ class ControlServer(QObject):
         name = _string(args, "name")
         window = self.window
         boolean_options = {"base_correct", "exposure_match", "reverse_order", "use_gpu",
-                           "tile_enabled", "preview", "profile_performance", "debug_logging"}
+                           "sharpen_output", "tile_enabled", "preview", "profile_performance",
+                           "debug_logging"}
         integer_options = {"thread_count": 0, "tile_block_size": 64, "tile_overlap": 0,
                            "tile_threshold": 1, "ai_batch_size": 1, "reg_downscale_width": 64}
         if "value" not in args:
@@ -923,6 +927,9 @@ class ControlServer(QObject):
             value = _boolean(args, "value", required=True)
         elif name in integer_options:
             value = _integer(args, "value", required=True, minimum=integer_options[name])
+        elif name == "sharpen_strength":
+            window.set_sharpen_strength(args["value"])
+            return {"name": name, "value": window.sharpen_strength}
         elif name == "resource_preference":
             value = _string(args, "value", choices=("balanced", "responsive", "maximum"))
         elif name == "storage_directory":
@@ -949,6 +956,9 @@ class ControlServer(QObject):
                 checkbox.setChecked(value)
                 checkbox.blockSignals(blocked)
             value = window.stack_reverse_order
+        elif name == "sharpen_output":
+            window.chk_sharpen_output.setChecked(value)
+            return {"name": name, "value": window.sharpen_output}
         elif name == "use_gpu":
             window.set_use_gpu(value)
             value = window.use_gpu

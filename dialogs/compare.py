@@ -15,6 +15,7 @@ from core.source_frames import PREVIEW_EDGE, ProcessedFrame, SourceFrame, displa
 from locales import trans
 from utils.frame_pixels import BoundedPreviewWorker
 from utils.image_utils import cv2_to_pixmap
+from utils.output_sharpen import DEFAULT_SHARPEN_STRENGTH
 from utils.settings_store import get_settings
 from core.algorithms import (alignment_steps, fusion_algorithms, get_fusion,
     registration_parameter_specs, registration_algorithms, resolve_fusion_parameters,
@@ -242,6 +243,7 @@ class CompareDialog(QDialog):
             "reg_downscale_width": int(getattr(window, "reg_downscale_width", 1024)),
             "exposure_match": bool(getattr(window, "exposure_match", False)),
             "sharpen_output": bool(getattr(window, "sharpen_output", False)),
+            "sharpen_strength": getattr(window, "sharpen_strength", DEFAULT_SHARPEN_STRENGTH),
             "sort_mode": "desc" if getattr(window, "stack_reverse_order", False) else "asc",
         }
         for key in ("tile_block_size", "tile_overlap", "tile_threshold"):
@@ -852,8 +854,9 @@ class CompareDialog(QDialog):
 
     def _result_key(self, method):
         roi = bool(self.mode_combo.currentData())
+        strength = self._shared['sharpen_strength'] if self._shared['sharpen_output'] else 0
         return (self._epoch, roi, tuple(sorted(self._method_params[method].items())),
-                self.ref_canvas.region() if roi else None)
+                self.ref_canvas.region() if roi else None, strength)
 
     def _refresh_panes(self):
         region = self.ref_canvas.region()
