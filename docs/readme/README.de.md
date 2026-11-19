@@ -266,7 +266,7 @@ Siehe das [CLI-Handbuch](../USER_MANUAL_DE.md#14-kommandozeilenschnittstelle).
 <a id="community"></a>
 ## Community & Support
 
-Fragen, Ideen oder Feedback? Besuchen Sie unsere [Discord-Community](https://discord.gg/afzmwgPt). Wir antworten so schnell wie möglich; wir nutzen die Pekinger Zeit (UTC+8), daher kann es durch die Zeitverschiebung zu Verzögerungen kommen.
+Fragen, Ideen oder Feedback? Besuchen Sie unsere [Discord-Community](https://discord.gg/Jamr2SR5). Wir antworten so schnell wie möglich; wir nutzen die Pekinger Zeit (UTC+8), daher kann es durch die Zeitverschiebung zu Verzögerungen kommen.
 
 - **Dokumentation** — [Benutzerhandbuch](../USER_MANUAL_DE.md) (zwölf Sprachen) · [Änderungsprotokoll](../../CHANGELOG.md) · [Leistung](../PERFORMANCE.md) · [Fusionsverfahren](../FUSION_METHODS.md)
 - **Zitation** — [CITATION.cff](../../CITATION.cff); jede Version wird auf Zenodo archiviert ([DOI](https://doi.org/10.5281/zenodo.23050823))

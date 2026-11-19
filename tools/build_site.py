@@ -32,6 +32,7 @@ ASSETS = DIST / "assets"
 
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(SITE))
+from constants import DISCORD_INVITE_URL  # noqa: E402
 from site_content import LOCALES, ORIGIN, RELEASE, REPO, MANUAL  # noqa: E402
 
 BENCH_LINK = f"{REPO}/blob/main/tools/synthetic_benchmark.py"
@@ -164,6 +165,7 @@ def context_for(locale: dict) -> dict:
             "manual": MANUAL[locale["code"]],
             "bench_link": BENCH_LINK,
             "cli_link": CLI_LINKS[locale["code"]],
+            "community_discord_url": DISCORD_INVITE_URL,
             "dl_windows": RELEASE["windows_setup"],
             "dl_macos": RELEASE["macos_dmg"],
             "dl_linux": "#download",
@@ -242,8 +244,10 @@ def build_assets() -> list[Path]:
     shutil.copyfile(ROOT / "assets/benchmark.png", ASSETS / "benchmark.png")
     wechat_qr = DIST / "wechat-group.png"
     shutil.copyfile(ROOT / "assets/readme/wechat-group.png", wechat_qr)
+    wechat_official_qr = DIST / "wechat-official-account.jpg"
+    shutil.copyfile(ROOT / "assets/readme/wechat-official-account.jpg", wechat_official_qr)
     made += [ASSETS / "ui.webp", ASSETS / "method-comparison.webp",
-             ASSETS / "retouch.webp", ASSETS / "benchmark.png", wechat_qr]
+             ASSETS / "retouch.webp", ASSETS / "benchmark.png", wechat_qr, wechat_official_qr]
 
     og = cover(Image.open(ROOT / "assets/ui.png").convert("RGB"), 1200, 630)
     og.save(ASSETS / "og.jpg", "JPEG", quality=86, optimize=True, progressive=True)
@@ -341,6 +345,9 @@ def main() -> int:
         "  Cache-Control: public, max-age=300\n"
         "\n"
         "/wechat-group.png\n"
+        "  Cache-Control: public, max-age=300, must-revalidate\n"
+        "\n"
+        "/wechat-official-account.jpg\n"
         "  Cache-Control: public, max-age=300, must-revalidate\n"
         "\n"
         "/assets/*\n"
