@@ -80,6 +80,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   transforms, cropping and output pixels are unchanged.
 
 ### Fixed
+- Report project restore completion after the desktop has applied the frames and settings, including after an update restart.
 - Stop desktop renders and affected batch stacks when registration rejects a frame.
   The error identifies the frame and the reason. Older projects use the same behavior.
 - Include the Qt XCB shape dependency in Linux desktop builds and use the
