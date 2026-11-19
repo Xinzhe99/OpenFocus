@@ -21,6 +21,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   output — to device kernels. Verified bit-exact against the CPU path
   (92-frame 2048x1366 stack: ndiff=0, ~3.8x faster on RTX 4060 Laptop);
   falls back to CPU when the device budget or build fails.
+- Accelerate large fractional image reductions during ECC registration on supported Windows OpenCL GPUs. The CPU solver and Lanczos warp produce the same alignment, and the job log records completed GPU resizes.
 - Show estimated RAM and GPU memory in Render Settings, including expected CPU
   fallback when the selected neural render does not fit the device budget.
 - Open the selected render's retained focus positions for export in Depth Map for

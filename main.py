@@ -3744,6 +3744,7 @@ class OpenFocus(QMainWindow):
                 alignment=alignment_method,
                 registration_parameters=self.registration_parameters_for(alignment_method),
                 exposure_match=self.brightness_option_for('exposure_match'),
+                use_gpu=self.use_gpu,
                 reverse_registration=alignment_key[-1] == 'reverse-registration-v1',
             )
             self.roi_alignment_worker.finished_signal.connect(self._on_roi_alignment_finished)
