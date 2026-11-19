@@ -109,6 +109,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   separate when both targets are selected.
 - Close finished batch progress dialogs before showing their summaries, and
   report retouch source loading as busy to the local control channel.
+- Show the selected captured source immediately in Retouch Result when its preview
+  is available. Scrubbing coalesces full-resolution loads and keeps brush settings
+  available while the selected source pixels and validity mask are prepared.
 - Report a stack load as finished only after the desktop releases its loader,
   so control clients can render as soon as their load completes.
 - Handle Windows lock contention when opening the report queue and depth cache.
