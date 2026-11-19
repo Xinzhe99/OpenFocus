@@ -586,6 +586,13 @@ QLabel#retouchZoom {{
     font-weight: {WEIGHT['semibold']};
 }}
 QLabel#mutedLabel {{ color: {t['textMuted']}; font-size: {f['caption']}pt; }}
+QLabel#errorLabel {{ color: {t['danger']}; }}
+QLabel#labelPreview {{ background-color: {t['canvas']}; color: {t['canvasText']}; }}
+QLabel#depthPreview {{
+    background-color: {t['inspectionCanvas']};
+    border: 1px solid {t['border']};
+    color: {t['canvasText']};
+}}
 
 QFrame#card {{
     background-color: {t['surface']};
@@ -731,7 +738,6 @@ QDialog {{
     font-family: {_UI_FONT};
     font-size: {f['body']}pt;
 }}
-QDialog QLabel {{ color: {t['text']}; }}
 QDialog QLineEdit, QDialog QComboBox {{
     background-color: {t['controlBg']};
     color: {t['text']};

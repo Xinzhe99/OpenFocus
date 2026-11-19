@@ -21,7 +21,7 @@ class _Canvas(QWidget):
         from ui.styles import tokens
 
         theme = tokens()
-        painter.fillRect(self.rect(), QColor(theme['compareCanvas']))
+        painter.fillRect(self.rect(), QColor(theme['inspectionCanvas']))
         painter.setPen(QColor(theme["border"]))
         painter.drawRect(self.rect().adjusted(0, 0, -1, -1))
         return theme
