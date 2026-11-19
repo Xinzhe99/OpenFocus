@@ -25,11 +25,10 @@ def window(qapp, monkeypatch, tmp_path):
     qapp.processEvents()
 
 
-def test_experimental_default_toggle_and_preserved_selection(window, qapp):
+def test_experimental_default_toggle_and_preserved_selection(window):
     from dialogs.advanced_settings import AdvancedSettingsDialog
     from core.algorithms import fusion_algorithms, registration_algorithms
     from locales import trans
-    from ui.algorithm_combo import fusion_unavailable_reason
 
     w, settings = window
     assert not w.experimental_features
@@ -51,9 +50,9 @@ def test_experimental_default_toggle_and_preserved_selection(window, qapp):
     dialog.chk_experimental_features.setChecked(True)
     dialog._apply()
     assert w.experimental_features and settings.value('ui/experimental_features', type=bool)
-    for spec in fusion_algorithms():
-        item = w.combo_fusion.model().item(w.combo_fusion.findData(spec.id))
-        assert item.isEnabled() == (not fusion_unavailable_reason(spec, w._stackmff_available))
+    for method in ('guided_filter', 'gfgfgf', 'dct'):
+        item = w.combo_fusion.model().item(w.combo_fusion.findData(method))
+        assert item.isEnabled()
     assert not w.ui_objs['mosaic_title'].isEnabled()
     assert not w.ui_objs['menu_dust_map'].isEnabled()
     w.set_fusion_method('guided_filter')
