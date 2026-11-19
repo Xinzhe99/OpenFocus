@@ -73,7 +73,7 @@ def main() -> None:
         arguments = (
             "-i", str(source), "-o", str(output),
             "--method", method["id"], "--cpu", "--threads", "1",
-            "--no-exposure-match", "--base-frame", "none")
+            "--no-exposure-match", "--base-frame", "none", "--experimental")
         call(*arguments)
 
         def check_pixels() -> None:
@@ -87,7 +87,7 @@ def main() -> None:
         recipe = root / "处理配方.json"
         call("recipe", "create", str(recipe), *arguments)
         output.unlink()
-        call("recipe", "run", str(recipe))
+        call("recipe", "run", str(recipe), "--experimental")
         check_pixels()
         print(json.dumps({
             "version": installed_version,

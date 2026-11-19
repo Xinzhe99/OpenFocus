@@ -22,7 +22,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/Windows-10%2F11-0078D7?logo=windows&logoColor=white" alt="Windows 10/11">
   <img src="https://img.shields.io/badge/macOS-Apple%20Silicon-000000?logo=apple&logoColor=white" alt="macOS Apple Silicon">
-  <img src="https://img.shields.io/badge/Linux-CLI-FCC624?logo=linux&logoColor=black" alt="Linux CLI">
+  <img src="https://img.shields.io/badge/Linux-x86--64-FCC624?logo=linux&logoColor=black" alt="Linux x86-64 데스크톱 및 CLI">
   <a href="https://pypi.org/project/openfocus/"><img src="https://img.shields.io/badge/PyPI-openfocus-3775A9?logo=pypi&logoColor=white" alt="PyPI"></a>
 </p>
 
@@ -55,7 +55,7 @@
 ## 📢 소식
 
 > [!NOTE]
-> **[v1.77.0-beta.7 사전 릴리스](https://github.com/Xinzhe99/OpenFocus/releases/tag/v1.77.0-beta.7)** — OpenFocus B에서 호환되는 OpenCL 장치의 GPU 가속과 CPU 대체 실행, 수정된 와이프 비교, 자동 배경 및 리터치를 제공합니다. 자세한 내용은 [변경 기록](../../CHANGELOG.md)을 참고하세요.
+> **[v2.0.0 안정 버전이 출시되었습니다](https://github.com/Xinzhe99/OpenFocus/releases/tag/v2.0.0)** — Linux x86_64용 휴대용 데스크톱 앱 아카이브를 제공합니다. 자세한 내용은 [변경 기록](../../CHANGELOG.md)을 참고하세요.
 
 이전 릴리스는 [변경 기록](../../CHANGELOG.md)에서 확인할 수 있습니다.
 
@@ -72,7 +72,7 @@
 <tr>
 <td width="46%" valign="middle">
 
-### AI 합성: StackMFF V3
+### AI 합성: StackMFF V3 (실험적)
 
 StackMFF V3는 AI로 각 프레임의 선명한 부분을 합쳐 초점이 맞는 이미지를 만듭니다.
 
@@ -107,6 +107,8 @@ StackMFF V3는 AI로 각 프레임의 선명한 부분을 합쳐 초점이 맞�
 ### 방식 비교
 
 합성 방식을 나란히 비교하고 선택한 결과를 출력으로 채택하거나 설정을 메인 창에 적용합니다.
+
+안정 합성 방식은 OpenFocus A, OpenFocus B, OpenFocus C뿐입니다. 다른 방식은 실험적입니다. 데스크톱 앱에서 실험적 방식을 사용하려면 **설정 → 고급 설정… → 실험적 기능 활성화**를 선택하세요. 헤드리스 CLI에서는 `--experimental`을 지정하세요.
 
 </td>
 <td width="54%">
@@ -219,11 +221,13 @@ TIFF 메타데이터 또는 직접 입력으로 보정한 스케일 바를 이�
 <a id="install"></a>
 ## ⬇️ 설치
 
-[OpenFocus 공식 사이트](https://openfocus.top/#download)와 설치 스크립트는 Windows와 macOS용으로 안정 버전보다 새로운 베타 버전도 제공합니다(현재 v1.77.0-beta.7). [GitHub Releases](https://github.com/Xinzhe99/OpenFocus/releases)에서도 다운로드할 수 있습니다. 데스크톱 자동 업데이트도 더 새로운 베타 버전을 제공하며 PyPI의 Linux CLI는 안정 버전을 유지합니다.
+[OpenFocus 다운로드 페이지](https://openfocus.top/#download)에서 Windows, macOS, Linux x86_64용 최신 안정 버전의 데스크톱 앱을 받을 수 있습니다. Linux에서는 아카이브를 풀고 `OpenFocus/OpenFocus`를 실행하세요. Linux 데스크톱 앱은 같은 페이지에서 새 버전을 받아 수동으로 업데이트합니다.
+
+데스크톱 업데이트는 기본적으로 안정 버전만 제공합니다. 사전 릴리스를 받으려면 고급 설정이나 시작 대화상자에서 **베타 업데이트 받기**를 켜세요. 이전 버전과 사전 릴리스는 [GitHub Releases](https://github.com/Xinzhe99/OpenFocus/releases)에서 받을 수 있습니다.
 
 설치와 문제 해결은 [사용자 설명서](../USER_MANUAL_KO.md)를 참고하세요.
 
-터미널에서도 설치할 수 있습니다. Linux에는 헤드리스 CLI가 설치되며 macOS에는 Apple Silicon이 필요합니다. DMG는 `/Applications`에, 터미널 설치는 `~/Applications`에 설치됩니다.
+macOS 데스크톱 앱에는 Apple Silicon이 필요합니다. DMG로 설치하면 `/Applications`에, 아래 명령으로 설치하면 `~/Applications`에 설치됩니다. Linux에서 아래 명령을 실행하면 헤드리스 CLI가 설치됩니다.
 
 ```bash
 curl -fsSL https://openfocus.top/install.sh | sh -s -- --dry-run
@@ -253,7 +257,7 @@ curl.exe -fL https://openfocus.top/download/latest/windows-setup -o OpenFocus-se
 
 ### 💻 명령줄
 
-Windows, macOS, Linux에서 CLI를 설치할 수도 있습니다. 같은 파이프라인을 GUI 없이 실행합니다.
+Windows, macOS, Linux에서 `pip`로 헤드리스 CLI를 별도로 설치할 수 있습니다. 같은 파이프라인을 GUI 없이 실행합니다.
 
 ```bash
 pip install openfocus

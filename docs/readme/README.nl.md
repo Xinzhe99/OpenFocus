@@ -22,7 +22,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/Windows-10%2F11-0078D7?logo=windows&logoColor=white" alt="Windows 10/11">
   <img src="https://img.shields.io/badge/macOS-Apple%20Silicon-000000?logo=apple&logoColor=white" alt="macOS Apple Silicon">
-  <img src="https://img.shields.io/badge/Linux-CLI-FCC624?logo=linux&logoColor=black" alt="Linux CLI">
+  <img src="https://img.shields.io/badge/Linux-x86--64-FCC624?logo=linux&logoColor=black" alt="Linux x86-64 voor desktop en CLI">
   <a href="https://pypi.org/project/openfocus/"><img src="https://img.shields.io/badge/PyPI-openfocus-3775A9?logo=pypi&logoColor=white" alt="PyPI"></a>
 </p>
 
@@ -55,7 +55,7 @@
 ## 📢 News
 
 > [!NOTE]
-> **[v1.77.0-beta.7 voorlopige release](https://github.com/Xinzhe99/OpenFocus/releases/tag/v1.77.0-beta.7)** — GPU-versnelling voor compatibele OpenCL-apparaten in OpenFocus B met terugval op de CPU, een gecorrigeerde veegvergelijking, automatische achtergrond en retouche. Zie het [wijzigingslogboek](../../CHANGELOG.md) voor details.
+> **[v2.0.0 is beschikbaar als stabiele versie](https://github.com/Xinzhe99/OpenFocus/releases/tag/v2.0.0)** — Deze versie bevat een draagbaar archief van de desktopapp voor Linux x86_64. Zie het [wijzigingslogboek](../../CHANGELOG.md).
 
 Oudere versies staan in het [wijzigingslogboek](../../CHANGELOG.md).
 
@@ -72,7 +72,7 @@ Dit is niet verplicht, maar wel zeer gewaardeerd.
 <tr>
 <td width="46%" valign="middle">
 
-### AI-fusie: StackMFF V3
+### AI-fusie: StackMFF V3 (experimenteel)
 
 StackMFF V3 combineert met AI de scherpe delen van de bronframes.
 
@@ -107,6 +107,8 @@ Vergelijk een bronframe en het fusieresultaat met een versleepbare scheiding.
 ### Methodenvergelijking
 
 Vergelijk methoden naast elkaar en neem het resultaat of de instellingen over.
+
+OpenFocus A, OpenFocus B en OpenFocus C zijn de enige stabiele fusiemethoden. De overige methoden zijn experimenteel. Kies in de desktopapp **Instellingen → Geavanceerde instellingen… → Experimentele functies inschakelen** om ze te gebruiken. Gebruik voor de headless CLI `--experimental`.
 
 </td>
 <td width="54%">
@@ -220,11 +222,13 @@ Bestuur de desktopapp via een tokenbeveiligd lokaal agentkanaal.
 <a id="install"></a>
 ## ⬇️ Installatie
 
-De [OpenFocus-website](https://openfocus.top/#download) en installatiescripts bieden voor Windows en macOS de nieuwste versie, inclusief een nieuwere bèta (momenteel v1.77.0-beta.7). Downloads staan ook op [GitHub Releases](https://github.com/Xinzhe99/OpenFocus/releases). Automatische desktopupdates bieden ook nieuwere bèta’s; de Linux-CLI van PyPI blijft stabiel.
+Op de [downloadpagina van OpenFocus](https://openfocus.top/#download) vind je de nieuwste stabiele desktopversie voor Windows, macOS en Linux x86_64. Pak het Linux-archief uit en start `OpenFocus/OpenFocus`. Installeer updates voor de Linux-desktopapp handmatig via dezelfde pagina.
+
+Desktopupdates volgen standaard het stabiele kanaal. Schakel **Bèta-updates ontvangen** in bij de geavanceerde instellingen of in het welkomstvenster om voorversies te ontvangen. Eerdere versies en voorversies staan op [GitHub Releases](https://github.com/Xinzhe99/OpenFocus/releases).
 
 Zie de [handleiding](../USER_MANUAL_NL.md) voor installatie en probleemoplossing.
 
-Op Linux installeert de terminalopdracht de headless CLI; macOS vereist Apple Silicon. De DMG-app komt in `/Applications`, de terminalinstallatie in `~/Applications`.
+Op macOS is Apple Silicon vereist. De DMG installeert de app in `/Applications`. De onderstaande terminalopdracht installeert op macOS de app in `~/Applications` en op Linux de headless CLI.
 
 ```bash
 curl -fsSL https://openfocus.top/install.sh | sh -s -- --dry-run
@@ -254,7 +258,7 @@ De desktopapp start automatisch een tokenbeveiligd lokaal agentkanaal. Gebruik `
 
 ### 💻 Opdrachtregel
 
-Of installeer de CLI op Windows, macOS en Linux — dezelfde pijplijn, zonder GUI-stack:
+Installeer de afzonderlijke headless CLI met `pip` op Windows, macOS of Linux. Die gebruikt dezelfde verwerking zonder grafische interface.
 
 ```bash
 pip install openfocus

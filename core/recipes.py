@@ -65,7 +65,7 @@ def _upgrade_recipe(recipe):
     recipe = json.loads(json.dumps(recipe, allow_nan=False))
     options = recipe.get('options', {})
     if isinstance(options, dict):
-        method = options.get('method', 'stackmffv3')
+        method = options.get('method')
         defaults = {
             'openfocus_a': {'kernel_size': 17, 'blend_smoothing': 2.0},
             'openfocus_b': {'kernel_size': 17, 'depth_smoothing': 1.44},
@@ -282,7 +282,7 @@ def save_recipe(path, recipe):
     atomic_json_write(path, recipe)
 
 
-def run_recipe(path, *, dry_run=False):
+def run_recipe(path, *, dry_run=False, experimental=False):
     """Execute a saved recipe using the CLI pipeline; return its exit code.
 
     A dry run checks the input stack and writes no result files.
@@ -290,6 +290,8 @@ def run_recipe(path, *, dry_run=False):
     from core.cli import run_cli
     recipe = load_recipe(path)
     argv = validate_recipe(recipe, path)
+    if experimental:
+        argv.append("--experimental")
     options = recipe.get("options", {})
     if options.get("defect_mask_path"):
         mask = _relative(options["defect_mask_path"], os.path.dirname(os.path.abspath(os.fspath(path))))

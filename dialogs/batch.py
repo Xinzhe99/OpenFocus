@@ -37,7 +37,6 @@ from core.algorithms import (alignment_steps, fusion_algorithms, get_fusion,
     desktop_registration_parameters)
 from ui.algorithm_parameters import AlgorithmParameterPanel
 from ui.algorithm_combo import apply_method_availability, selected_item_enabled
-from core.experimental import alignment_is_experimental, experimental_enabled
 from locales import trans
 from utils.output_sharpen import DEFAULT_SHARPEN_STRENGTH, MAX_SHARPEN_STRENGTH
 from widgets.stepper import StepperSpinBox
@@ -1239,6 +1238,13 @@ class BatchProcessingDialog(QDialog):
         apply_method_availability(self.align_combo, registration_algorithms(), self.parent_window,
                                   alignment=True)
 
+    def _method_lock_reason(self):
+        self._apply_fusion_availability()
+        for combo in (self.fusion_combo, self.align_combo):
+            if not selected_item_enabled(combo):
+                return combo.currentData(Qt.ItemDataRole.ToolTipRole) or trans.t('msg_error')
+        return ''
+
     def _remember_fusion_parameters(self, values):
         self._fusion_drafts[self._editing_method] = dict(values)
 
@@ -1402,12 +1408,9 @@ class BatchProcessingDialog(QDialog):
 
     def get_processing_settings(self):
         """获取处理设置"""
-        for combo in (self.fusion_combo, self.align_combo):
-            if not selected_item_enabled(combo):
-                raise ValueError(combo.currentData(Qt.ItemDataRole.ToolTipRole) or '')
-        if (not experimental_enabled(self.parent_window)
-                and alignment_is_experimental(self.align_combo.currentData())):
-            raise ValueError(trans.t('experimental_locked_hint'))
+        reason = self._method_lock_reason()
+        if reason:
+            raise ValueError(reason)
         format_str = self.format_combo.currentText().lower()
         
         fusion_method = self.fusion_combo.currentData() or "none"
@@ -1520,16 +1523,9 @@ class BatchProcessingDialog(QDialog):
     def start_batch_processing(self):
         """开始批处理"""
         from PyQt6.QtWidgets import QMessageBox
-        if (not selected_item_enabled(self.fusion_combo)
-                or not selected_item_enabled(self.align_combo)
-                or (not experimental_enabled(self.parent_window)
-                    and alignment_is_experimental(self.align_combo.currentData()))):
-            for combo in (self.fusion_combo, self.align_combo):
-                if not selected_item_enabled(combo):
-                    QMessageBox.warning(self, trans.t('msg_error'),
-                                        combo.currentData(Qt.ItemDataRole.ToolTipRole))
-                    return
-            QMessageBox.warning(self, trans.t('msg_error'), trans.t('experimental_locked_hint'))
+        reason = self._method_lock_reason()
+        if reason:
+            QMessageBox.warning(self, trans.t('msg_error'), reason)
             return
         sensor_error = self.sensor_cleanup.validate()
         if sensor_error:

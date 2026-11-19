@@ -230,7 +230,7 @@ for index in range(2):
 def interrupt(*args, **kwargs):
     raise KeyboardInterrupt()
 cli._load_images = interrupt
-assert cli.run_cli(['-i', str(source), '-o', str(source / 'out.png'), '-m', 'dct']) == 1
+assert cli.run_cli(['-i', str(source), '-o', str(source / 'out.png'), '--experimental', '-m', 'dct']) == 1
 assert not (source / 'out.png').exists()
 """, tmp_path, tmp_path)
     assert result.returncode == 0, result.stderr

@@ -2118,14 +2118,26 @@ def test_output_export_routes_aligned_records(server, control_window, monkeypatc
     assert captured["destination"] == str(tmp_path)
 
 
-def test_control_channel_exposes_fusion_with_experimental_alignment_locked(server, control_window):
+def test_control_channel_guards_experimental_fusion_and_alignment(server, control_window):
     from core.algorithms import fusion_algorithms
     from locales import trans
 
+    assert call(server, 'method.set', id='guided_filter')['result']['id'] == 'guided_filter'
     control_window.experimental_features = False
     control_window.apply_experimental_features()
+    locked_render = call(server, 'render.start')
+    assert locked_render['error']['code'] == 'invalid_argument'
+    assert trans.t('experimental_locked_hint') in locked_render['error']['message']
+    assert control_window.current_fusion_method() == 'guided_filter'
     for spec in fusion_algorithms():
-        assert call(server, 'method.set', id=spec.id)['result']['id'] == spec.id
+        before = control_window.current_fusion_method()
+        reply = call(server, 'method.set', id=spec.id)
+        if spec.experimental:
+            assert reply['error']['code'] == 'invalid_argument'
+            assert trans.t('experimental_locked_hint') in reply['error']['message']
+            assert control_window.current_fusion_method() == before
+        else:
+            assert reply['result']['id'] == spec.id
     response = call(server, 'align.set', id='openfocus')
     assert response['error']['code'] == 'invalid_argument'
     assert response['error']['message'] == trans.t('experimental_locked_hint')
