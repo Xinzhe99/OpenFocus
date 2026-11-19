@@ -1367,7 +1367,7 @@ def test_single_page_admission_uses_localized_resource_errors(tmp_path, monkeypa
         converter._admit('source', 0, str(tmp_path), '.jpg')
     assert str(error.value) == converter.trans.t('converter_memory_error')
     monkeypatch.setattr(converter, 'available_memory_bytes', lambda: 1000)
-    monkeypatch.setattr(converter.shutil, 'disk_usage', lambda *a: SimpleNamespace(free=99))
+    monkeypatch.setattr(converter, 'disk_usage', lambda *a: SimpleNamespace(free=99))
     with pytest.raises(OSError) as error:
         converter._admit('source', 0, str(tmp_path), '.jpg')
     assert str(error.value) == converter.trans.t('converter_space_error')
@@ -1383,7 +1383,7 @@ def test_scheduler_failure_preserves_committed_output(tmp_path, monkeypatch):
     monkeypatch.setattr(converter.resource_policy, 'plan_execution', lambda *a, **k:
                         SimpleNamespace(workers=1, native_threads=1, max_in_flight=1,
                                         ram_budget=1024**3, describe=lambda: 'test'))
-    disk_usage = converter.shutil.disk_usage
+    disk_usage = converter.disk_usage
     calls = []
 
     def fail_second_probe(path):
@@ -1392,18 +1392,20 @@ def test_scheduler_failure_preserves_committed_output(tmp_path, monkeypatch):
             raise OSError('output volume disconnected')
         return disk_usage(path)
 
-    monkeypatch.setattr(converter.shutil, 'disk_usage', fail_second_probe)
+    monkeypatch.setattr(converter, 'disk_usage', fail_second_probe)
     events, progress = [], []
     result = converter.convert_batch([str(p) for p in sources], str(output_dir), '.jpg',
                                      lambda: False, events.append, progress.append)
     _assert_batch(result, success=1, not_started=1)
+    assert calls == [str(output_dir), str(output_dir)]
     assert not result['user_cancelled']
     assert 'output volume disconnected' in result['scheduler_error']
     assert result['items'][1]['stop_reason'] == 'scheduler_error'
+    assert result['items'][1]['outputs'] == []
     assert len(result['items'][0]['outputs']) == 1
     with Image.open(result['items'][0]['outputs'][0]) as output:
         assert output.size == (8, 8)
-    assert progress[-1] == 2
+    assert progress == [1, 2]
 
 
 def test_last_page_committed_before_cancel_is_success(tmp_path, monkeypatch):
@@ -1511,7 +1513,7 @@ def test_scheduler_failure_drains_active_items_and_preserves_partial_output(tmp_
                         SimpleNamespace(workers=2, native_threads=1, max_in_flight=3,
                                         ram_budget=1024**3, describe=lambda: 'test'))
     monkeypatch.setattr(converter, '_estimate_source', lambda *a: (2, 1, 1))
-    disk_usage = converter.shutil.disk_usage
+    disk_usage = converter.disk_usage
     calls = []
 
     def fail_third_probe(path):
@@ -1533,7 +1535,7 @@ def test_scheduler_failure_drains_active_items_and_preserves_partial_output(tmp_
         return dict(index=index, source=source, status='partial' if outputs else 'cancelled',
                     outputs=outputs, errors=[], stop_reason='user_cancel')
 
-    monkeypatch.setattr(converter.shutil, 'disk_usage', fail_third_probe)
+    monkeypatch.setattr(converter, 'disk_usage', fail_third_probe)
     monkeypatch.setattr(converter, '_convert_source', active)
     progress = []
     result = converter.convert_batch(['first', 'second', 'third'], str(tmp_path), '.png',
