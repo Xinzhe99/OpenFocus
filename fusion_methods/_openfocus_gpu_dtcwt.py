@@ -12,10 +12,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from threading import Lock
 
-import cv2
 import numpy as np
 
-from fusion_methods.dct import _ensure_color_image
 from fusion_methods.openfocus_ab import _check_cancel
 from utils.image_utils import fuse_output_dtype
 
@@ -108,16 +106,15 @@ __kernel void dtcwt_extract_luma_u8(
     int sy = y < orig_h ? y : orig_h - 1;
     int sx = x < orig_w ? x : orig_w - 1;
     size_t pos = (size_t)sy * (size_t)orig_w + (size_t)sx;
-    const float inv = 1.0f / 255.0f;
     float luma;
     if (C == 1) {
-        float v = (float)src[pos] * inv;
+        float v = (float)src[pos] / 255.0f;
         luma = 0.299f * v + 0.587f * v + 0.114f * v;
     } else {
         size_t base = pos * (size_t)C;
-        float b = (float)src[base] * inv;
-        float g = (float)src[base + 1] * inv;
-        float r = (float)src[base + 2] * inv;
+        float b = (float)src[base] / 255.0f;
+        float g = (float)src[base + 1] / 255.0f;
+        float r = (float)src[base + 2] / 255.0f;
         luma = 0.299f * r + 0.587f * g + 0.114f * b;
     }
     dst[(size_t)y * (size_t)c0 + (size_t)x] = luma;
@@ -139,16 +136,15 @@ __kernel void dtcwt_extract_luma_u16(
     int sx = x < orig_w ? x : orig_w - 1;
     size_t pos = (size_t)sy * (size_t)orig_w + (size_t)sx;
     const float to_f32 = 255.0f / 65535.0f;
-    const float inv = 1.0f / 255.0f;
     float luma;
     if (C == 1) {
-        float v = ((float)src[pos] * to_f32) * inv;
+        float v = ((float)src[pos] * to_f32) / 255.0f;
         luma = 0.299f * v + 0.587f * v + 0.114f * v;
     } else {
         size_t base = pos * (size_t)C;
-        float b = ((float)src[base] * to_f32) * inv;
-        float g = ((float)src[base + 1] * to_f32) * inv;
-        float r = ((float)src[base + 2] * to_f32) * inv;
+        float b = ((float)src[base] * to_f32) / 255.0f;
+        float g = ((float)src[base + 1] * to_f32) / 255.0f;
+        float r = ((float)src[base + 2] * to_f32) / 255.0f;
         luma = 0.299f * r + 0.587f * g + 0.114f * b;
     }
     dst[(size_t)y * (size_t)c0 + (size_t)x] = luma;
@@ -169,16 +165,15 @@ __kernel void dtcwt_extract_luma_f32(
     int sy = y < orig_h ? y : orig_h - 1;
     int sx = x < orig_w ? x : orig_w - 1;
     size_t pos = (size_t)sy * (size_t)orig_w + (size_t)sx;
-    const float inv = 1.0f / 255.0f;
     float luma;
     if (C == 1) {
-        float v = src[pos] * inv;
+        float v = src[pos] / 255.0f;
         luma = 0.299f * v + 0.587f * v + 0.114f * v;
     } else {
         size_t base = pos * (size_t)C;
-        float b = src[base] * inv;
-        float g = src[base + 1] * inv;
-        float r = src[base + 2] * inv;
+        float b = src[base] / 255.0f;
+        float g = src[base + 1] / 255.0f;
+        float r = src[base + 2] / 255.0f;
         luma = 0.299f * r + 0.587f * g + 0.114f * b;
     }
     dst[(size_t)y * (size_t)c0 + (size_t)x] = luma;
@@ -200,7 +195,7 @@ __kernel void dtcwt_extract_chan_u8(
     int sy = y < orig_h ? y : orig_h - 1;
     int sx = x < orig_w ? x : orig_w - 1;
     size_t pos = (size_t)sy * (size_t)orig_w + (size_t)sx;
-    float v = (float)src[pos * (size_t)C + (size_t)src_ch] * (1.0f / 255.0f);
+    float v = (float)src[pos * (size_t)C + (size_t)src_ch] / 255.0f;
     dst[(size_t)y * (size_t)c0 + (size_t)x] = v;
 }
 
@@ -221,7 +216,7 @@ __kernel void dtcwt_extract_chan_u16(
     int sx = x < orig_w ? x : orig_w - 1;
     size_t pos = (size_t)sy * (size_t)orig_w + (size_t)sx;
     const float to_f32 = 255.0f / 65535.0f;
-    float v = ((float)src[pos * (size_t)C + (size_t)src_ch] * to_f32) * (1.0f / 255.0f);
+    float v = ((float)src[pos * (size_t)C + (size_t)src_ch] * to_f32) / 255.0f;
     dst[(size_t)y * (size_t)c0 + (size_t)x] = v;
 }
 
@@ -241,7 +236,7 @@ __kernel void dtcwt_extract_chan_f32(
     int sy = y < orig_h ? y : orig_h - 1;
     int sx = x < orig_w ? x : orig_w - 1;
     size_t pos = (size_t)sy * (size_t)orig_w + (size_t)sx;
-    float v = src[pos * (size_t)C + (size_t)src_ch] * (1.0f / 255.0f);
+    float v = src[pos * (size_t)C + (size_t)src_ch] / 255.0f;
     dst[(size_t)y * (size_t)c0 + (size_t)x] = v;
 }
 
@@ -272,9 +267,10 @@ __kernel void dtcwt_colfilter_v_pair(
     float s6 = src[(size_t)yp3 * (size_t)c + (size_t)x];
 
     size_t pos = (size_t)y * (size_t)c + (size_t)x;
-    lo[pos] = s1 * c_h0o[0] + s2 * c_h0o[1] + s3 * c_h0o[2] + s4 * c_h0o[3] + s5 * c_h0o[4];
-    hi[pos] = (s0 * c_h1o[0] + s1 * c_h1o[1] + s2 * c_h1o[2] + s3 * c_h1o[3]
-               + s4 * c_h1o[4] + s5 * c_h1o[5] + s6 * c_h1o[6]);
+    // NumPy's column convolution adds the taps in this order.
+    lo[pos] = s5 * c_h0o[0] + s4 * c_h0o[1] + s3 * c_h0o[2] + s2 * c_h0o[3] + s1 * c_h0o[4];
+    hi[pos] = (s6 * c_h1o[0] + s5 * c_h1o[1] + s4 * c_h1o[2] + s3 * c_h1o[3]
+               + s2 * c_h1o[4] + s1 * c_h1o[5] + s0 * c_h1o[6]);
 }
 
 __kernel void dtcwt_colfilter_h5(
@@ -291,18 +287,18 @@ __kernel void dtcwt_colfilter_h5(
     size_t row = (size_t)y * (size_t)c;
     if (x >= 2 && x < c - 2) {
         dst[row + (size_t)x] = (
-            src[row + (size_t)(x - 2)] * h[0]
-            + src[row + (size_t)(x - 1)] * h[1]
+            src[row + (size_t)(x + 2)] * h[0]
+            + src[row + (size_t)(x + 1)] * h[1]
             + src[row + (size_t)x]       * h[2]
-            + src[row + (size_t)(x + 1)] * h[3]
-            + src[row + (size_t)(x + 2)] * h[4]);
+            + src[row + (size_t)(x - 1)] * h[3]
+            + src[row + (size_t)(x - 2)] * h[4]);
     } else {
         dst[row + (size_t)x] = (
-            src[row + (size_t)reflect_idx(x - 2, c)] * h[0]
-            + src[row + (size_t)reflect_idx(x - 1, c)] * h[1]
+            src[row + (size_t)reflect_idx(x + 2, c)] * h[0]
+            + src[row + (size_t)reflect_idx(x + 1, c)] * h[1]
             + src[row + (size_t)x]                     * h[2]
-            + src[row + (size_t)reflect_idx(x + 1, c)] * h[3]
-            + src[row + (size_t)reflect_idx(x + 2, c)] * h[4]);
+            + src[row + (size_t)reflect_idx(x - 1, c)] * h[3]
+            + src[row + (size_t)reflect_idx(x - 2, c)] * h[4]);
     }
 }
 
@@ -320,22 +316,22 @@ __kernel void dtcwt_colfilter_h7(
     size_t row = (size_t)y * (size_t)c;
     if (x >= 3 && x < c - 3) {
         dst[row + (size_t)x] = (
-            src[row + (size_t)(x - 3)] * h[0]
-            + src[row + (size_t)(x - 2)] * h[1]
-            + src[row + (size_t)(x - 1)] * h[2]
+            src[row + (size_t)(x + 3)] * h[0]
+            + src[row + (size_t)(x + 2)] * h[1]
+            + src[row + (size_t)(x + 1)] * h[2]
             + src[row + (size_t)x]       * h[3]
-            + src[row + (size_t)(x + 1)] * h[4]
-            + src[row + (size_t)(x + 2)] * h[5]
-            + src[row + (size_t)(x + 3)] * h[6]);
+            + src[row + (size_t)(x - 1)] * h[4]
+            + src[row + (size_t)(x - 2)] * h[5]
+            + src[row + (size_t)(x - 3)] * h[6]);
     } else {
         dst[row + (size_t)x] = (
-            src[row + (size_t)reflect_idx(x - 3, c)] * h[0]
-            + src[row + (size_t)reflect_idx(x - 2, c)] * h[1]
-            + src[row + (size_t)reflect_idx(x - 1, c)] * h[2]
+            src[row + (size_t)reflect_idx(x + 3, c)] * h[0]
+            + src[row + (size_t)reflect_idx(x + 2, c)] * h[1]
+            + src[row + (size_t)reflect_idx(x + 1, c)] * h[2]
             + src[row + (size_t)x]                     * h[3]
-            + src[row + (size_t)reflect_idx(x + 1, c)] * h[4]
-            + src[row + (size_t)reflect_idx(x + 2, c)] * h[5]
-            + src[row + (size_t)reflect_idx(x + 3, c)] * h[6]);
+            + src[row + (size_t)reflect_idx(x - 1, c)] * h[4]
+            + src[row + (size_t)reflect_idx(x - 2, c)] * h[5]
+            + src[row + (size_t)reflect_idx(x - 3, c)] * h[6]);
     }
 }
 
@@ -469,20 +465,23 @@ __kernel void dtcwt_coldfilt_v_pair(
     s_o[8] = src[(size_t)reflect_idx(base -  5, r) * (size_t)c + (size_t)x];
     s_o[9] = src[(size_t)reflect_idx(base -  7, r) * (size_t)c + (size_t)x];
 
-    float v_lo0 = 0.0f, v_lo1 = 0.0f, v_hi1 = 0.0f, v_hi0 = 0.0f;
-    for (int t = 0; t < 10; ++t) {
-        v_lo0 += s_e[t] * c_h0b[t];
-        v_lo1 += s_o[t] * c_h0a[t];
-        v_hi1 += s_e[t] * c_h1b[t];
-        v_hi0 += s_o[t] * c_h1a[t];
+    // Upstream sums the even and odd taps separately before adding them.
+    float4 even = (float4)(0.0f), odd = (float4)(0.0f);
+    for (int t = 0; t < 10; t += 2) {
+        even += (float4)(s_e[t] * c_h0b[t], s_o[t] * c_h0a[t],
+                         s_o[t] * c_h1a[t], s_e[t] * c_h1b[t]);
+        int u = t + 1;
+        odd += (float4)(s_e[u] * c_h0b[u], s_o[u] * c_h0a[u],
+                        s_o[u] * c_h1a[u], s_e[u] * c_h1b[u]);
     }
+    float4 v = even + odd;
 
     size_t row0 = (size_t)(2 * j) * (size_t)c + (size_t)x;
     size_t row1 = (size_t)(2 * j + 1) * (size_t)c + (size_t)x;
-    lo[row0] = v_lo0;
-    lo[row1] = v_lo1;
-    hi[row0] = v_hi0;
-    hi[row1] = v_hi1;
+    lo[row0] = v.x;
+    lo[row1] = v.y;
+    hi[row0] = v.z;
+    hi[row1] = v.w;
 }
 
 __kernel void dtcwt_coldfilt_h(
@@ -504,34 +503,20 @@ __kernel void dtcwt_coldfilt_h(
     size_t dst_row = (size_t)y * (size_t)dst_c;
     int base = 4 * j;
 
-    float acc_a = (
-        src[src_row + (size_t)reflect_idx(base + 10, c)] * ha[0]
-        + src[src_row + (size_t)reflect_idx(base +  8, c)] * ha[1]
-        + src[src_row + (size_t)reflect_idx(base +  6, c)] * ha[2]
-        + src[src_row + (size_t)reflect_idx(base +  4, c)] * ha[3]
-        + src[src_row + (size_t)reflect_idx(base +  2, c)] * ha[4]
-        + src[src_row + (size_t)reflect_idx(base     , c)] * ha[5]
-        + src[src_row + (size_t)reflect_idx(base -  2, c)] * ha[6]
-        + src[src_row + (size_t)reflect_idx(base -  4, c)] * ha[7]
-        + src[src_row + (size_t)reflect_idx(base -  6, c)] * ha[8]
-        + src[src_row + (size_t)reflect_idx(base -  8, c)] * ha[9]);
-
-    float acc_b = (
-        src[src_row + (size_t)reflect_idx(base + 11, c)] * hb[0]
-        + src[src_row + (size_t)reflect_idx(base +  9, c)] * hb[1]
-        + src[src_row + (size_t)reflect_idx(base +  7, c)] * hb[2]
-        + src[src_row + (size_t)reflect_idx(base +  5, c)] * hb[3]
-        + src[src_row + (size_t)reflect_idx(base +  3, c)] * hb[4]
-        + src[src_row + (size_t)reflect_idx(base +  1, c)] * hb[5]
-        + src[src_row + (size_t)reflect_idx(base -  1, c)] * hb[6]
-        + src[src_row + (size_t)reflect_idx(base -  3, c)] * hb[7]
-        + src[src_row + (size_t)reflect_idx(base -  5, c)] * hb[8]
-        + src[src_row + (size_t)reflect_idx(base -  7, c)] * hb[9]);
+    float2 even = (float2)(0.0f), odd = (float2)(0.0f);
+    for (int t = 0; t < 10; t += 2) {
+        int i = base + 10 - 2 * t;
+        even += (float2)(src[src_row + (size_t)reflect_idx(i, c)] * ha[t],
+                         src[src_row + (size_t)reflect_idx(i + 1, c)] * hb[t]);
+        odd += (float2)(src[src_row + (size_t)reflect_idx(i - 2, c)] * ha[t + 1],
+                        src[src_row + (size_t)reflect_idx(i - 1, c)] * hb[t + 1]);
+    }
+    float2 v = even + odd;
 
     int c1 = pos_sign ? (2 * j) : (2 * j + 1);
     int c2 = pos_sign ? (2 * j + 1) : (2 * j);
-    dst[dst_row + (size_t)c1] = acc_a;
-    dst[dst_row + (size_t)c2] = acc_b;
+    dst[dst_row + (size_t)c1] = v.x;
+    dst[dst_row + (size_t)c2] = v.y;
 }
 
 __kernel void dtcwt_q2c_pair(
@@ -548,12 +533,13 @@ __kernel void dtcwt_q2c_pair(
     int qw = w2 << 1;
     size_t row0 = (size_t)(2 * y) * (size_t)qw + (size_t)(2 * x);
     size_t row1 = row0 + (size_t)qw;
-    float a = quad[row0];
-    float b = quad[row0 + 1];
-    float c = quad[row1];
-    float d = quad[row1 + 1];
-    float2 z0 = (float2)((a - d) * INV_SQRT2, (b + c) * INV_SQRT2);
-    float2 z1 = (float2)((a + d) * INV_SQRT2, (b - c) * INV_SQRT2);
+    // Scale each component before combining it, as in dtcwt's q2c.
+    float a = quad[row0] * INV_SQRT2;
+    float b = quad[row0 + 1] * INV_SQRT2;
+    float c = quad[row1] * INV_SQRT2;
+    float d = quad[row1 + 1] * INV_SQRT2;
+    float2 z0 = (float2)(a - d, b + c);
+    float2 z1 = (float2)(a + d, b - c);
     size_t plane = (size_t)h2 * (size_t)w2;
     size_t pos = (size_t)y * (size_t)w2 + (size_t)x;
     hp[(size_t)c0 * plane + pos] = z0;
@@ -845,7 +831,7 @@ __kernel void dtcwt_consistent_argmax_3x3(
 
 __kernel void dtcwt_mark_active(
     __global const int* decision,
-    __global uchar* active_flags,
+    volatile __global uint* active_flags,
     const int n_pixels,
     const int lvl,
     const int n_levels)
@@ -853,7 +839,9 @@ __kernel void dtcwt_mark_active(
     int gid = get_global_id(0);
     if (gid >= n_pixels) return;
     int f = decision[gid];
-    active_flags[f * n_levels + lvl] = (uchar)1;
+    // Mark each run once to avoid contending on an atomic for every pixel.
+    if (gid > 0 && decision[gid - 1] == f) return;
+    atomic_or(&active_flags[(size_t)f * (size_t)n_levels + (size_t)lvl], 1u);
 }
 
 __kernel void dtcwt_select_hp(
@@ -1038,26 +1026,18 @@ _cache_lock = Lock()
 _PROGRAM_CACHE = None
 
 
-def _device_cache_key(device):
-    return (
-        str(getattr(device, 'name', '')),
-        str(getattr(device, 'vendor', '')),
-        str(getattr(device, 'driver_version', '')),
-        int(getattr(device, 'global_mem_size', 0)),
-    )
-
-
 def _get_or_build_program(cl, device):
     global _PROGRAM_CACHE
-    key = _device_cache_key(device)
+    key = device.int_ptr
     with _cache_lock:
         if _PROGRAM_CACHE is not None and _PROGRAM_CACHE[0] == key:
             return _PROGRAM_CACHE[1:]
         ctx = cl.Context(devices=[device])
         queue = cl.CommandQueue(ctx, device=device)
-        program = cl.Program(ctx, _DTCWT_K).build(
-            options=['-cl-fp32-correctly-rounded-divide-sqrt']
-        )
+        # OpenCL 1.2 makes correctly rounded FP32 divide/sqrt optional.
+        rounded = cl.device_fp_config.CORRECTLY_ROUNDED_DIVIDE_SQRT
+        options = ['-cl-fp32-correctly-rounded-divide-sqrt'] if device.single_fp_config & rounded else []
+        program = cl.Program(ctx, _DTCWT_K).build(options=options)
         kernels = {name: cl.Kernel(program, name) for name in _KERNEL_NAMES}
         _PROGRAM_CACHE = (key, ctx, queue, kernels)
         return ctx, queue, kernels
@@ -1123,27 +1103,14 @@ def _upload_kind(dtype):
     return 'f32'
 
 
-def _source_staging_bytes(frame, shape):
+def _source_staging_bytes(frame):
     from core.source_frames import frame_has_mapped_pixels, frame_resolution_bytes
 
     resolution = frame_resolution_bytes(frame)
     if frame_has_mapped_pixels(frame):
         resolution = max(resolution, frame.nbytes)
-    if tuple(frame.shape[:2]) != tuple(shape[:2]):
-        return resolution + frame.nbytes * 4 + int(shape[0]) * int(shape[1]) * 12
     packed = 0 if isinstance(frame, np.ndarray) and frame.flags.c_contiguous else frame.nbytes
-    itemsize = min(4, np.dtype(frame.dtype).itemsize)
-    upload = frame.size * itemsize
-    return resolution + packed + upload
-
-
-def _frame_upload_bytes(frame, shape):
-    if tuple(frame.shape[:2]) != tuple(shape[:2]):
-        itemsize = min(4, np.dtype(frame.dtype).itemsize)
-        return int(shape[0]) * int(shape[1]) * 3 * itemsize
-    channels = frame.shape[2] if frame.ndim == 3 else 1
-    itemsize = 4 if frame.dtype == np.float64 else frame.dtype.itemsize
-    return int(shape[0]) * int(shape[1]) * channels * itemsize
+    return resolution + packed + frame.nbytes
 
 
 class GpuDtcwt:
@@ -1153,18 +1120,18 @@ class GpuDtcwt:
         from fusion_methods._openfocus_gpu import GpuError, _device, opencl_device_name
         try:
             import pyopencl as cl
+        except (ImportError, OSError) as exc:
+            raise GpuError('OpenCL loader unavailable') from exc
+        try:
             device = _device(cl)
             if device is None:
                 raise GpuError('No available OpenCL GPU')
-            self.cl = cl
-            self.device = device
             self.device_name = opencl_device_name(device)
-            self.mf = cl.mem_flags
-            self.ctx, self.q, self.k = _get_or_build_program(cl, device)
-        except GpuError:
-            raise
-        except Exception as exc:
-            raise GpuError('OpenCL GPU DTCWT initialization failed') from exc
+        except cl.Error as exc:
+            raise GpuError('OpenCL GPU discovery failed') from exc
+        self.cl = cl
+        self.device = device
+        self.mf = cl.mem_flags
 
     def _run(self, kernel, gsize, *args):
         g = gsize if isinstance(gsize, tuple) else (gsize,)
@@ -1185,22 +1152,36 @@ class GpuDtcwt:
         while not _device_lock.acquire(timeout=0.1):
             _check_cancel(should_cancel)
         try:
-            if getattr(self, 'ctx', None) is None and hasattr(self, 'device'):
-                self.ctx, self.q, self.k = _get_or_build_program(self.cl, self.device)
+            _check_cancel(should_cancel)
+            self.q = None
             try:
                 return self._fuse_locked(
                     images, nlevels, should_cancel,
                     progress if progress_callback is not None else None)
             except CallbackFailure as exc:
+                self._drain_queue()
                 raise exc.__cause__
             except (self.cl.Error, MemoryError) as exc:
                 _invalidate_program_cache()
+                self._drain_queue()
                 raise GpuError('OpenCL GPU DTCWT execution failed') from exc
+            except BaseException:
+                self._drain_queue()
+                raise
         finally:
             self.k = None
             self.q = None
             self.ctx = None
             _device_lock.release()
+
+    def _drain_queue(self):
+        # Keep the device lease until pending kernels finish. A cleanup
+        # error must not replace the original cancellation or device error.
+        if self.q is not None:
+            try:
+                self.q.finish()
+            except self.cl.Error:
+                _invalidate_program_cache()
 
     def _forward_plane(self, plane_buf, specs: list[_LevelSpec], max_lvl: int,
                        hp_bufs: list, scratch: dict):
@@ -1394,9 +1375,12 @@ class GpuDtcwt:
         src_bytes = 0
         for frame in images:
             _check_cancel(should_cancel)
-            source_peak = max(source_peak, _source_staging_bytes(frame, shape))
-            src_bytes = max(src_bytes, _frame_upload_bytes(frame, shape))
-        staging = max(source_peak, out_bytes * 2) + 16 * 1024 * 1024
+            if frame.shape[:2] != shape[:2] or frame.dtype not in (np.uint8, np.uint16, np.float32):
+                raise GpuError('GPU DTCWT requires matching dimensions and uint8, uint16, or float32 samples')
+            source_peak = max(source_peak, _source_staging_bytes(frame))
+            src_bytes = max(src_bytes, frame.nbytes)
+        active_bytes = count * nlevels * np.dtype(np.uint32).itemsize
+        staging = max(source_peak, out_bytes * 2) + active_bytes + 16 * 1024 * 1024
         if staging > host_budget:
             raise GpuError(
                 f'DTCWT GPU staging exceeds the host memory budget '
@@ -1407,10 +1391,9 @@ class GpuDtcwt:
         hp_level_bytes = [sp.hp_h * sp.hp_w * 6 * 8 for sp in specs]  # float2 * 6
         pyr_bytes = sum(hp_level_bytes)
         dec_bytes = sum(sp.hp_h * sp.hp_w * 4 for sp in specs)  # best_act / decision
-        max_quad_bytes = max(r0 * c0 * 4, lp_n * 4)
-        pad_max_h = max(sp.pad_h for sp in specs)
-        pad_max_w = max(sp.pad_w for sp in specs)
-        lolo_max_bytes = max(r0 * c0 * 4, (pad_max_h >> 1) * pad_max_w * 4)
+        quad_bytes = r0 * c0 * 4
+        pad_bytes = max(sp.pad_h * sp.pad_w * 4 for sp in specs)
+        lo_bytes = max(quad_bytes, pad_bytes // 2)
 
         # Shared fixed scratch across passes
         scratch_bytes = (
@@ -1418,10 +1401,10 @@ class GpuDtcwt:
             + out_bytes
             + 2 * dec_bytes          # best_act + best_idx -> decision
             + pyr_bytes              # tmp hp_bufs[0..N-1]
-            + 8 * max_quad_bytes     # plane, lo, hi, lolo_a, lolo_b, qtmp0/q_lh, q_hl, q_hh
+            + 6 * quad_bytes         # plane, lolo_a/b, qtmp0/q_lh, q_hl/q_hh
+            + 2 * lo_bytes + pad_bytes
             + 3 * lp_n * 4           # lp_tmp_h, lp_weight, w_sum
-            + max(pad_max_h * pad_max_w * 4, 2 * lolo_max_bytes)
-            + 16 * 1024 * 1024
+            + active_bytes + 16 * 1024 * 1024
         )
         per_ch_accum_bytes = pyr_bytes + lp_n * 4
         need_3ch = scratch_bytes + 3 * per_ch_accum_bytes
@@ -1438,7 +1421,7 @@ class GpuDtcwt:
             limit = min(limit, resource_policy.vram_budget(snapshot))
 
         single = int(self.device.max_mem_alloc_size)
-        largest = max(src_bytes, out_bytes, max(hp_level_bytes), pad_max_h * pad_max_w * 4)
+        largest = max(src_bytes, out_bytes, max(hp_level_bytes), pad_bytes, active_bytes)
         if largest > single:
             raise GpuError('DTCWT GPU buffer exceeds max_mem_alloc_size')
 
@@ -1449,10 +1432,11 @@ class GpuDtcwt:
         else:
             raise GpuError('DTCWT GPU workspace exceeds the device budget')
 
-        total_steps = count * 2
+        total_steps = 2 * count + 1  # final inverse transform and readback
         if progress_callback is not None:
             progress_callback(0, total_steps)
         _check_cancel(should_cancel)
+        self.ctx, self.q, self.k = _get_or_build_program(self.cl, self.device)
 
         def prepare_upload(index):
             _check_cancel(should_cancel)
@@ -1465,16 +1449,6 @@ class GpuDtcwt:
                 mn, mx = float(np.min(raw)), float(np.max(raw))
                 if mn < -255.0 or mx > 255.0:
                     raise GpuError('Unbounded floating-point frame uses CPU fallback')
-            if raw.shape[:2] != (orig_h, orig_w):
-                image = _ensure_color_image(np.ascontiguousarray(raw))
-                del raw
-                # Like the CPU path, resize native integer samples before normalization.
-                if image.dtype == np.float64:
-                    image = image.astype(np.float32)
-                host_src = np.ascontiguousarray(
-                    cv2.resize(image, (orig_w, orig_h), interpolation=cv2.INTER_LINEAR))
-                del image
-                return host_src, 3, _upload_kind(host_src.dtype)
             if raw.ndim == 2:
                 channels = 1
             elif raw.ndim == 3 and raw.shape[2] == 1:
@@ -1483,24 +1457,17 @@ class GpuDtcwt:
                 channels = int(raw.shape[2])
             else:
                 raise ValueError(f'Unsupported image shape: {raw.shape}')
-            dtype = np.float32 if raw.dtype == np.float64 else raw.dtype
-            if dtype not in (np.uint8, np.uint16, np.float32):
-                raise GpuError(f'Unsupported GPU pixel dtype: {raw.dtype}')
-            host_src = np.ascontiguousarray(raw, dtype=dtype)
-            del raw
-            return host_src, channels, _upload_kind(dtype)
+            return np.ascontiguousarray(raw), channels, _upload_kind(raw.dtype)
 
         src_buf = self.cl.Buffer(self.ctx, self.mf.READ_ONLY, max(1, src_bytes))
         plane_buf = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, max(1, r0 * c0 * 4))
-        quad_bytes = r0 * c0 * 4
-        lo_bytes = max(quad_bytes, pad_max_w * (pad_max_h >> 1) * 4)
         scratch = {
             'lo': self.cl.Buffer(self.ctx, self.mf.READ_WRITE, max(1, lo_bytes)),
             'hi': self.cl.Buffer(self.ctx, self.mf.READ_WRITE, max(1, lo_bytes)),
             'lolo_a': self.cl.Buffer(self.ctx, self.mf.READ_WRITE, max(1, quad_bytes)),
             'lolo_b': self.cl.Buffer(self.ctx, self.mf.READ_WRITE, max(1, quad_bytes)),
             'qtmp0': self.cl.Buffer(self.ctx, self.mf.READ_WRITE, max(1, quad_bytes)),
-            'pad': self.cl.Buffer(self.ctx, self.mf.READ_WRITE, max(1, pad_max_h * pad_max_w * 4)),
+            'pad': self.cl.Buffer(self.ctx, self.mf.READ_WRITE, pad_bytes),
         }
         tmp_hp = [
             self.cl.Buffer(self.ctx, self.mf.READ_WRITE, max(1, b))
@@ -1519,7 +1486,7 @@ class GpuDtcwt:
         for index in range(count):
             _check_cancel(should_cancel)
             h_src, ch, kind = prepare_upload(index)
-            self.cl.enqueue_copy(self.q, src_buf, h_src, is_blocking=False)
+            self.cl.enqueue_copy(self.q, src_buf, h_src, is_blocking=True)
             del h_src
             self._run(
                 self.k[f'dtcwt_extract_luma_{kind}'], (c0, r0),
@@ -1547,8 +1514,8 @@ class GpuDtcwt:
 
         # Consistency 3x3 nearest-mode filter on decision maps (reusing best_act mem)
         decisions = best_act  # rename buffer handles: overwrite float best_act with int decision
-        active_buf = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, max(1, count * nlevels))
-        self.cl.enqueue_fill_buffer(self.q, active_buf, np.uint8(0), 0, count * nlevels)
+        active_buf = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, active_bytes)
+        self.cl.enqueue_fill_buffer(self.q, active_buf, np.uint32(0), 0, active_bytes)
         for lvl, sp in enumerate(specs):
             _check_cancel(should_cancel)
             self._run(
@@ -1563,7 +1530,7 @@ class GpuDtcwt:
             )
         del best_idx
 
-        active_flags = np.empty((count, nlevels), dtype=np.uint8)
+        active_flags = np.empty((count, nlevels), dtype=np.uint32)
         self.cl.enqueue_copy(self.q, active_flags, active_buf, is_blocking=True)
         del active_buf
         _check_cancel(should_cancel)
@@ -1639,7 +1606,7 @@ class GpuDtcwt:
                     run_max_lvl = m_lvl
 
                 h_src, ch, kind = prepare_upload(index)
-                self.cl.enqueue_copy(self.q, src_buf, h_src, is_blocking=False)
+                self.cl.enqueue_copy(self.q, src_buf, h_src, is_blocking=True)
                 del h_src
 
                 # Only extract hp levels where this frame has winning coefficients
@@ -1719,7 +1686,7 @@ class GpuDtcwt:
                         run_max_lvl = m_lvl
 
                     h_src, ch, kind = prepare_upload(index)
-                    self.cl.enqueue_copy(self.q, src_buf, h_src, is_blocking=False)
+                    self.cl.enqueue_copy(self.q, src_buf, h_src, is_blocking=True)
                     del h_src
 
                     hp_targets = [

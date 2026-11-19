@@ -50,19 +50,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   exact, `max_diff=1` on real/synthetic scenes) with up to 19.1x–61.3x warm
   speedup vs baseline CPU (t=1) / 5.7x–36.6x vs optimized CPU (t=1) on
   RTX 4060 Laptop.
-- Add an opt-in OpenCL GPU path and compiled CPU Numba kernels for DTCWT
-  fusion (`use_gpu=True`), porting luminance/channel extraction, odd-size
-  even-extension, `near_sym_a` level-0 and `qshift_a` deeper-level complex
-  wavelet forward/inverse transforms, 3x3 reflect max-activity streaming argmax,
-  O(1) 3x3 nearest-mode consistency filtering, active-frame/level skipping,
-  O(1)-VRAM bilinear+Gaussian low-pass weighting, and output packing to pure
-  OpenCL 1.2 FP32 kernels with automatic CPU fallback. CPU optimization is
-  bit-exact (`ndiff=0`, up to 3.5x–9.7x faster across `12x`/`24x` 2048x1366
-  dense stacks); GPU achieves `max_diff=1` across all tested real and synthetic
-  scenes (`PSNR=39.30` / `SSIM=0.9966` vs baseline `39.29` / `0.9966` on
-  `tools/synthetic_benchmark.py`, `>=96.85%`–`99.9988%` exact) and
-  15.2x–136.8x warm GPU speedup vs baseline CPU (t=1) on 1024x768 / 2048x1366
-  stacks on RTX 4060 Laptop.
+- Add opt-in OpenCL acceleration for DTCWT fusion (`use_gpu=True`), with
+  single-frame uploads, host and device memory checks, and automatic CPU
+  fallback. The CPU path uses compiled 3×3 majority voting while retaining
+  the upstream wavelet transform and its established output.
 - Add an opt-in OpenCL GPU path for OpenFocus C pyramid fusion
   (`use_gpu=True`), porting the full weighted-pyramid chain — normalize,
   Gaussian down/up, detail+weight, IIR weight filter, merge, collapse and

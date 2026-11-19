@@ -42,17 +42,6 @@ except ImportError:
     convolve = None
 
 
-_ORIG_DTCWT_FORWARD = dtcwt.Transform2d.forward if dtcwt is not None else None
-
-
-def _use_fast_transform() -> bool:
-    """Use compiled kernels unless callers monkeypatched dtcwt.Transform2d.forward."""
-    return (
-        dtcwt is not None
-        and getattr(dtcwt.Transform2d, 'forward', None) is _ORIG_DTCWT_FORWARD
-    )
-
-
 class _MonotonicProgress:
     """Wrap progress_callback so percentage and step counts never regress on fallback."""
 
@@ -248,28 +237,10 @@ def _dtcwt_impl(input_source, img_resize, N, use_gpu, thread_count=None,
         img_resize = None
         if not input_source:
             raise ValueError('Fusion requires a non-empty image stack')
-        if use_gpu and _use_fast_transform() and dtcwt is not None:
-            if len(input_source) < 2:
-                raise ValueError("At least two images are required for fusion.")
-            from fusion_methods._openfocus_gpu import GpuError, log_fallback
-            from fusion_methods._openfocus_gpu_dtcwt import GpuDtcwt
-            from core.source_frames import SOURCE_CACHE
-            try:
-                gpu = GpuDtcwt()
-                try:
-                    result = gpu.fuse(
-                        input_source,
-                        N,
-                        should_cancel=should_cancel,
-                        progress_callback=progress,
-                    )
-                finally:
-                    SOURCE_CACHE.clear()
-                if device_callback is not None:
-                    device_callback(gpu.device_name)
+        if use_gpu and dtcwt is not None:
+            result = _try_gpu(input_source, N, should_cancel, progress, device_callback)
+            if result is not None:
                 return result
-            except GpuError as exc:
-                log_fallback(exc)
         height, width = input_source[0].shape[:2]
         frames = len(input_source)
         fixed, per_worker = estimate_working_set(height, width, N, frames)
@@ -297,6 +268,28 @@ def _check_cancelled(should_cancel):
         raise RegistrationCancelled()
 
 
+def _try_gpu(images, nlevels, should_cancel, progress, device_callback):
+    from core.source_frames import SOURCE_CACHE
+    from fusion_methods._openfocus_gpu import GpuError, log_fallback
+    from fusion_methods._openfocus_gpu_dtcwt import GpuDtcwt
+
+    if len(images) < 2:
+        raise ValueError('At least two images are required for fusion.')
+    _check_cancelled(should_cancel)
+    try:
+        gpu = GpuDtcwt()
+        try:
+            result = gpu.fuse(images, nlevels, should_cancel, progress)
+        finally:
+            SOURCE_CACHE.clear()
+    except GpuError as exc:
+        _check_cancelled(should_cancel)
+        log_fallback(exc)
+        return None
+    _check_cancelled(should_cancel)
+    if device_callback is not None:
+        device_callback(gpu.device_name)
+    return result
 
 
 def _dtcwt_impl_planned(input_source, img_resize, N, thread_count,
@@ -328,26 +321,10 @@ def _dtcwt_impl_planned(input_source, img_resize, N, thread_count,
     if len(images) < 2:
         raise ValueError("At least two images are required for fusion.")
 
-    if use_gpu and _use_fast_transform():
-        from fusion_methods._openfocus_gpu import GpuError, log_fallback
-        from fusion_methods._openfocus_gpu_dtcwt import GpuDtcwt
-        from core.source_frames import SOURCE_CACHE
-        try:
-            gpu = GpuDtcwt()
-            try:
-                result = gpu.fuse(
-                    images,
-                    N,
-                    should_cancel=should_cancel,
-                    progress_callback=progress,
-                )
-            finally:
-                SOURCE_CACHE.clear()
-            if device_callback is not None:
-                device_callback(gpu.device_name)
+    if use_gpu:
+        result = _try_gpu(images, N, should_cancel, progress, device_callback)
+        if result is not None:
             return result
-        except GpuError as exc:
-            log_fallback(exc)
 
     out_dtype = fuse_output_dtype(images)
     h, w = images[0].shape[:2]
@@ -366,206 +343,18 @@ def _dtcwt_impl_planned(input_source, img_resize, N, thread_count,
     activity_workers = max(1, min(_DTCWT_ACTIVITY_WORKERS, _DTCWT_MAX_WORKERS, cap))
     channel_workers = max(1, min(_DTCWT_MAX_WORKERS, cap, n_frames))
 
-    total_steps = n_frames * 2
+    from core.source_frames import resolve_frame
+
+    total_steps = 2 * n_frames + 1  # final inverse transform and packing
     if progress is not None:
         progress(0, total_steps)
 
-    fast_mode = _use_fast_transform() and N >= 1 and h >= 4 and w >= 4
-    if fast_mode:
-        from core.source_frames import resolve_frame
-        from fusion_methods._dtcwt_kernels import (
-            FastTransform2d,
-            accum_lowpass,
-            activity_max3x3_update,
-            consistent_argmax_3x3,
-            extract_luma,
-            pack_channel_f32,
-            pack_channel_u8,
-            select_highpass_level,
-        )
-        from fusion_methods._openfocus_gpu_dtcwt import _plan_levels
-
-        specs = _plan_levels(h, w, N)
-        all_finite = True
-
-        def prepare_luma(index):
-            nonlocal all_finite
-            _check_cancel()
-            raw = resolve_frame(images[index], should_cancel=should_cancel)
-            if raw.dtype.kind == 'f' and not np.isfinite(raw).all():
-                all_finite = False
-            luma = np.empty((h, w), dtype=np.float32)
-            extract_luma(raw, luma)
-            return luma
-
-        best_activity = [None] * N
-        frame_indices = [None] * N
-        transform = FastTransform2d()
-        pyramids = _iter_forward(
-            transform,
-            range(n_frames),
-            N,
-            workers=activity_workers,
-            should_cancel=should_cancel,
-            transform_factory=FastTransform2d,
-            prepare=prepare_luma,
-        )
-        try:
-            for i, pyr in enumerate(pyramids):
-                for level in range(N):
-                    _check_cancel()
-                    hp = pyr.highpasses[level]
-                    if best_activity[level] is None:
-                        best_activity[level] = create_frame(hp.shape[:2], np.float32)
-                        frame_indices[level] = create_frame(hp.shape[:2], np.int32)
-                    activity_max3x3_update(
-                        hp,
-                        np.asarray(best_activity[level]).view(np.ndarray),
-                        np.asarray(frame_indices[level]).view(np.ndarray),
-                        i,
-                        i == 0,
-                    )
-                del pyr
-                if progress is not None:
-                    progress(i + 1, total_steps)
-        finally:
-            pyramids.close()
-        del best_activity
-
-        decisions = []
-        active_sets = []
-        for level in range(N):
-            _check_cancel()
-            dec = create_frame(frame_indices[level].shape, np.int32)
-            consistent_argmax_3x3(
-                np.asarray(frame_indices[level]).view(np.ndarray),
-                np.asarray(dec).view(np.ndarray),
-            )
-            active_sets.append(set(int(v) for v in np.unique(dec)))
-            decisions.append(dec)
-            frame_indices[level] = None
-        del frame_indices
-
-        coarse_idx = decisions[-1]
-        coarse_active = active_sets[-1]
-        max_lvl_for_frame = [
-            max((lvl for lvl in range(N) if i in active_sets[lvl]), default=-1)
-            for i in range(n_frames)
-        ]
-        active_jobs = []
-        for i in range(n_frames):
-            if not all_finite or i in coarse_active:
-                active_jobs.append((i, N))
-            elif max_lvl_for_frame[i] >= 0:
-                active_jobs.append((i, max_lvl_for_frame[i] + 1))
-
-        lp_shape = (specs[-1].lolo_h, specs[-1].lolo_w)
-        lp_weights = [None] * n_frames
-        total_weight = create_frame(lp_shape, np.float32)
-        total_weight[...] = 0
-        coarse_arr = np.asarray(coarse_idx).view(np.ndarray)
-        for k in range(n_frames):
-            _check_cancel()
-            if all_finite and k not in coarse_active:
-                continue
-            m = cv2.resize(
-                (coarse_arr == k).astype(np.float32),
-                (lp_shape[1], lp_shape[0]),
-                interpolation=cv2.INTER_LINEAR,
-            )
-            weight = store_frame(cv2.GaussianBlur(m, (0, 0), 1.5))
-            lp_weights[k] = weight
-            total_weight += weight
-        np.maximum(total_weight, 1e-6, out=total_weight)
-        for k, weight in enumerate(lp_weights):
-            if weight is not None:
-                _check_cancel()
-                np.divide(weight, total_weight, out=weight)
-        del total_weight
-
-        class _VariableChannelTransform:
-            def __init__(self):
-                self._inner = FastTransform2d()
-
-            def forward(self, plane_and_levels, nlevels=4):
-                plane, req_levels = plane_and_levels
-                return self._inner.forward(plane, nlevels=req_levels)
-
-        fused_img = create_frame((h, w, 3), out_dtype)
-        fused_arr = np.asarray(fused_img).view(np.ndarray)
-        n_act = max(1, len(active_jobs))
-
-        for c in range(3):
-            fused_high = [
-                np.zeros((sp.hp_h, sp.hp_w, 6), dtype=np.complex64)
-                for sp in specs
-            ]
-            lp = np.zeros(lp_shape, dtype=np.float32)
-            _check_cancel()
-
-            def prepare_channel_job(job, _channel=c):
-                index, req_levels = job
-                _check_cancel()
-                image = resolve_frame(images[index], should_cancel=should_cancel)
-                plane = (image if image.ndim == 2 else
-                         (image[:, :, 0] if image.ndim == 3 and image.shape[2] == 1 else
-                          _ensure_color_image(image)[:, :, 2 - _channel]))
-                if plane.dtype == np.uint16:
-                    plane = plane.astype(np.float32) * (255.0 / 65535.0)
-                return np.asarray(plane, dtype=np.float32) / np.float32(255.0), req_levels
-
-            channel_pyramids = _iter_forward(
-                _VariableChannelTransform(),
-                active_jobs,
-                N,
-                workers=min(channel_workers, n_act),
-                should_cancel=should_cancel,
-                transform_factory=_VariableChannelTransform,
-                prepare=prepare_channel_job,
-            )
-            try:
-                for act_idx, ((i, req_n), pyr) in enumerate(zip(active_jobs, channel_pyramids)):
-                    _check_cancel()
-                    for level in range(req_n):
-                        _check_cancel()
-                        if all_finite and i not in active_sets[level]:
-                            continue
-                        select_highpass_level(
-                            pyr.highpasses[level],
-                            np.asarray(decisions[level]).view(np.ndarray),
-                            fused_high[level],
-                            i,
-                        )
-                    if lp_weights[i] is not None:
-                        accum_lowpass(
-                            pyr.lowpass,
-                            np.asarray(lp_weights[i]).view(np.ndarray),
-                            lp,
-                        )
-                    del pyr
-                    if progress is not None:
-                        step = n_frames + ((c * n_act + act_idx + 1) * n_frames) // (3 * n_act)
-                        progress(step, total_steps)
-            finally:
-                channel_pyramids.close()
-            _check_cancel()
-            rec = transform.inverse(dtcwt.Pyramid(lp, tuple(fused_high)))
-            if out_dtype == np.uint8:
-                pack_channel_u8(rec, fused_arr, 2 - c, h, w)
-            else:
-                pack_channel_f32(rec, fused_arr, 2 - c, h, w)
-            del fused_high, lp, rec
-
-        if progress is not None:
-            progress(total_steps, total_steps)
-        if device_callback is not None:
-            device_callback('CPU')
-        _check_cancel()
-        return fused_img
-
     def prepare_frame(index):
         _check_cancel()
-        image = _ensure_color_image(images[index])
+        image = resolve_frame(images[index], should_cancel=should_cancel)
+        if image.ndim == 3 and image.shape[2] == 1:
+            image = image[:, :, 0]
+        image = _ensure_color_image(image)
         if image.dtype == np.uint16:
             image = image.astype(np.float32) * (255.0 / 65535.0)
         return cv2.cvtColor(image, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
@@ -608,42 +397,23 @@ def _dtcwt_impl_planned(input_source, img_resize, N, thread_count,
         pyramids.close()
     del best_activity
 
-    def _consistent_argmax(idx, count):
-        """3x3 majority consistency check on the index map.
+    # This exact integer vote is independent of stack length. Keep upstream
+    # floating-point transforms and accumulation order for CPU parity.
+    from fusion_methods._dtcwt_kernels import consistent_vote
 
-        One decision per pixel and level, shared by all six orientations and
-        all three channels: deciding each orientation/channel separately (the
-        previous pairwise rule) mixed frames inside one pixel — colour fringes
-        and ghosted edges.
-
-        The per-frame vote maps are consumed one at a time: only the best
-        count and its label stay alive, which is the same argmax result as
-        stacking all N vote maps (strict ``>`` keeps the first-label tie) at
-        one map instead of N.
-        """
-        best_count = None
-        best_label = None
-        kernel = np.ones((3, 3), np.float32)
-        for i in range(count):
-            _check_cancel()
-            votes = convolve((idx == i).astype(np.float32), kernel,
-                             mode='nearest')
-            if best_count is None:
-                best_count = store_frame(votes)
-                best_label = create_frame(idx.shape, np.int32)
-                best_label[...] = i
-                continue
-            win = votes > best_count
-            if win.any():
-                best_count[win] = votes[win]
-                best_label[win] = i
-            del win, votes
-        return best_label
+    vote = consistent_vote()
 
     decisions = []
     for level in range(N):
         _check_cancel()
-        decisions.append(_consistent_argmax(frame_indices[level], n_frames))
+        labels = np.asarray(frame_indices[level])
+        decision = create_frame(labels.shape, np.int32)
+        output = np.asarray(decision)
+        for start in range(0, labels.shape[0], 128):
+            _check_cancel()
+            vote(labels, output, start, min(start + 128, labels.shape[0]))
+        del labels, output
+        decisions.append(decision)
         frame_indices[level] = None
     del frame_indices
 
@@ -671,12 +441,15 @@ def _dtcwt_impl_planned(input_source, img_resize, N, thread_count,
 
         def prepare_channel(index, _channel=c):
             _check_cancel()
-            from core.source_frames import resolve_frame
-            image = resolve_frame(images[index])
+            image = resolve_frame(images[index], should_cancel=should_cancel)
             # BGR->RGB is a channel permutation. Select the plane before
             # float conversion so a view cannot pin a full RGB float frame.
-            plane = (image if image.ndim == 2 else
-                     _ensure_color_image(image)[:, :, 2 - _channel])
+            if image.ndim == 2:
+                plane = image
+            elif image.ndim == 3 and image.shape[2] in (1, 3, 4):
+                plane = image[:, :, 0 if image.shape[2] == 1 else 2 - _channel]
+            else:
+                raise ValueError(f'Unsupported image shape: {image.shape}')
             if plane.dtype == np.uint16:
                 plane = plane.astype(np.float32) * (255.0 / 65535.0)
             return plane.astype(np.float32) / 255.0
