@@ -195,7 +195,7 @@ The top menu bar provides access to all functions:
 - **Edit**: Undo/redo, reset the current stack, image transformations and retouching
 - **Tools**: Image stitching, batch processing and conversion, method comparison, depth map, flat-field correction, scale bar, watermark and labels
 - **Settings** offers Advanced Settings, GPU acceleration, theme, font size, and language.
-- **Help**: Report a Problem, Contact Us, Support Us, and check for updates. Contact Us loads the current WeChat group and Official Account QR codes. Support Us loads the current Alipay and PayPal codes. Reopen either dialog to check for a new code.
+- **Help**: Report a Problem, Contact Us, Support Us, and check for updates. Contact Us loads the published contact details and WeChat QR codes. Support Us loads the current Alipay and PayPal codes. Reopen either dialog to fetch updates.
 - **Extensions (In development)** is visible and disabled.
 
 **Tools → Stitch Images… (In development)** is currently unavailable. The following describes the workspace under development.
@@ -449,6 +449,9 @@ text. The CLI supports it via `--scale-bar` (auto calibration) and
 
 When the selected target has no usable metadata, the dialog starts in manual
 calibration mode and waits for a valid pixel size.
+
+The automatic caption size follows the target image resolution. The dialog
+shows the calculated size in image pixels. Enter a size to set it manually.
 
 The preview draws at the target's native pixel geometry before fitting it to
 the viewport. Fit, 100%, pan and frame navigation change only the view. Apply
@@ -1319,6 +1322,8 @@ number. **Fit** uses a bounded thumbnail; **100%** displays the original region
 at one source pixel per device pixel, and can show loading or an error. Drag to
 pan. Position and font size use image pixels. Existing large coordinates and
 sizes are preserved when editing; an invalid position is reported for correction.
+New labels start with a size based on the previewed target image. The chosen
+size is saved with the label when you apply it.
 A fallback font or an unsuccessful draw is reported. Labels preserve the
 original bit depth when exported as PNG or TIFF.
 

@@ -71,7 +71,7 @@ class WelcomeDialog(QDialog):
         self.chk_include_beta = QCheckBox(trans.t('action_include_beta'))
         self.chk_include_beta.setProperty('controlId', 'chk_include_beta')
         self.chk_include_beta.setChecked(bool(getattr(manager, 'include_beta', False)))
-        self.chk_include_beta.setToolTip(trans.t('action_include_beta_hint'))
+        self.chk_include_beta.setToolTip(trans.t('action_include_beta_with_hint'))
         self.chk_include_beta.setEnabled(manager is not None)
         if manager is not None:
             self.chk_include_beta.toggled.connect(manager.set_include_beta)

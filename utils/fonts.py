@@ -33,6 +33,11 @@ _font_cache: Dict[tuple, Tuple[Optional[object], str]] = {}
 _family_index: Optional[Dict[str, dict]] = None
 
 
+def default_annotation_font_size(width: int, height: int) -> int:
+    """Pick a readable annotation size in working image pixels."""
+    return max(10, round(min(width, height) / 30))
+
+
 def _font_dirs() -> List[str]:
     """Font roots, recursively scanned once until the global file budget."""
     dirs: List[str] = []

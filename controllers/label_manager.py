@@ -51,6 +51,7 @@ from utils import (
     show_warning_box,
 )
 from utils.design_tokens import FONT, RADIUS, SPACE, palette
+from utils.fonts import default_annotation_font_size
 from utils.label_model import Label, LabelSet, normalize_target
 from utils.validators import LabelConfig, parse_label_range
 from locales import trans
@@ -602,7 +603,6 @@ class LabelManager:
         look_form = _group('label_group_look')
         self.font_size_spin = StepperSpinBox(
             minimum=-9007199254740991, maximum=9007199254740991, decimals=0, step=1)
-        self.font_size_spin.setValue(80)
         look_form.addRow(trans.t('label_font_size'), self.font_size_spin)
 
         self.font_family_combo = _compact_combo(QFontComboBox())
@@ -797,7 +797,8 @@ class LabelManager:
 
         for widget in (self.format_edit, self.range_edit):
             widget.textChanged.connect(self._refresh_preview)
-        for spin in (self.font_size_spin, self.starting_value_spin,
+        self.font_size_spin.valueChanged.connect(self._font_size_edited)
+        for spin in (self.starting_value_spin,
                      self.interval_spin, self.x_location_spin,
                      self.y_location_spin):
             spin.valueChanged.connect(self._refresh_preview)
@@ -879,6 +880,7 @@ class LabelManager:
                            if self._collect_frames(candidate)["images"]), "input")
         label.config.target = target
         label.config.target_stack = 0 if label.target == "input" else 1
+        self._new_label_anchors[label.label_id] = (label.config.x_location, label.config.y_location)
         self._draft.add(label)
         self._reload_dialog_list(select_id=label.label_id)
         self.format_edit.setFocus()
@@ -889,6 +891,7 @@ class LabelManager:
         if item is None:
             return
         label_id = item.data(Qt.ItemDataRole.UserRole)
+        self._new_label_anchors.pop(label_id, None)
         self._editing_id = ""
         self._draft.remove(label_id)
         self._reload_dialog_list()
@@ -1036,6 +1039,10 @@ class LabelManager:
 
     def _on_font_family_changed(self, *_args) -> None:
         self._font_family_binding = None
+        self._refresh_preview()
+
+    def _font_size_edited(self, *_args) -> None:
+        self._new_label_anchors.pop(self._editing_id, None)
         self._refresh_preview()
 
     @staticmethod
@@ -1271,16 +1278,41 @@ class LabelManager:
         if indices:
             self._preview_index.setValue(indices[0] + 1)
 
+    def _size_new_label(self, shape) -> None:
+        anchors = self._new_label_anchors.get(self._editing_id)
+        if anchors is None:
+            return
+        height, width = shape[:2]
+        size = default_annotation_font_size(width, height)
+        if self.font_size_spin.value() != size:
+            with QSignalBlocker(self.font_size_spin):
+                self.font_size_spin.setValue(size)
+        # Follow the target size only for coordinates still at their defaults.
+        suggested = (min(20, width // 6), min(height, max(80, size + 8)))
+        positions = []
+        for spin, previous, value in zip((self.x_location_spin, self.y_location_spin),
+                                         anchors, suggested):
+            if spin.value() != previous:
+                positions.append(None)
+                continue
+            if value != previous:
+                with QSignalBlocker(spin):
+                    spin.setValue(value)
+            positions.append(value)
+        self._new_label_anchors[self._editing_id] = tuple(positions)
+
     def _refresh_preview(self, *_args) -> None:
         if self.preview is None or self._loading_editor or not self._editing_id:
             return
-        self._save_editor_to_draft()
-        config = self._dialog_config()
         images = self._dialog_frames.get("images", [])
         metadata = self._dialog_frames.get("metadata") or []
         index = self._preview_frame_index()
         frame = images[index] if 0 <= index < len(images) else None
         frame_metadata = metadata[index] if 0 <= index < len(metadata) else None
+        if frame is not None:
+            self._size_new_label(frame.shape)
+        self._save_editor_to_draft()
+        config = self._dialog_config()
         indices = self._applicable_indices(config, len(images))
         preview_config = dict(config)
         preview_config["range"] = "" if index in indices else str(index + 2)
@@ -1463,6 +1495,7 @@ class LabelManager:
             release()
         self._loading_editor = False
         self._editing_id = ""
+        self._new_label_anchors = {}
         self._dialog_frames = {}
         self._dialog_target = ""
         self._range_mode = None

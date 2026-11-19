@@ -64,7 +64,6 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   fallback when the selected neural render does not fit the device budget.
 - Reuse saved OpenFocus B/C and StackMFF V2/V3 depth across compatible workspace results. Switching measures updates the map and the saved parameters automatically. Show the 2D preview before building a requested 3D surface.
 - Show existing compatible fusion results in Method Comparison with their original settings. ROI mode displays the requested crop of the stored image.
-- Show the current WeChat group invite in Contact Us, with a bundled QR code for offline use.
 - Add the Discord invite and the WeChat Official Account QR code to both website languages.
 - Keep progress, cancel controls, and timed notices on the left of the desktop
   status bar and a sponsor invitation that opens Contact Us on the right.
@@ -79,14 +78,16 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   installation controls reachable when the window is narrow.
 - Default to the SJTU PyTorch mirror when the Windows region is China mainland. Use the official source directly in other regions.
 - Collapse workspace algorithm parameters by default. Open them as needed and reclaim space for the source and output lists on collapse.
+- Keep the stable-release note on the beta updates checkbox in Advanced Settings.
 - Make all fusion methods selectable without experimental opt-in when their
   dependencies are installed.
 - Group render settings by workflow, brightness and color, and output. Adjust fusion sharpening from 0% to 200% in desktop renders, batch jobs, and the CLI. The 100% default preserves the previous sharpening amount.
 - Keep the batch queue visible beside Method, Output and Options tabs. Group depth-map source, appearance and export controls beside the preview.
 - Reorganize Labels, Watermark and Scale Bar around live previews and fixed Apply and Cancel controls. Drag a label in Fit view to set its position.
+- Choose the default font size for new labels and automatic scale bar captions from the target image resolution.
 - Open workspaces at their intended size when the screen has room. Use scrollable panes on smaller displays and restore the side-by-side divider position when space returns.
 - Mark Image Stitching and Dust Map as in development. Batch and command-line flat-field correction are currently unavailable.
-- Organize Contact Us into contact and WeChat cards. Open any of the three published email addresses in the default mail app.
+- Load the published email addresses, institution name and website links each time Contact Us opens.
 - Move frame review and cancellation to the source frame context menu. With the list focused, Ctrl+Shift+I includes all frames, Ctrl+Shift+X excludes all frames and Ctrl+Shift+F starts or cancels review. On macOS use Command. The cancellation notice clears after five seconds.
 - Edit OpenFocus A/B/C smoothing in whole levels, one per click. Fractional values
   from existing projects and recipes keep their original precision until edited.
