@@ -94,7 +94,7 @@ def main() -> None:
         # vote even on CI runners without a GPU driver.
         dtcwt_output = root / "dtcwt.tif"
         call("-i", str(source), "-o", str(dtcwt_output), "--method", "dtcwt",
-             "--cpu", "--threads", "1", "--no-exposure-match", "--base-frame", "none")
+             "--cpu", "--threads", "1", "--no-exposure-match", "--base-frame", "none", "--experimental")
         dtcwt_pixels = cv2.imdecode(
             np.fromfile(str(dtcwt_output), np.uint8), cv2.IMREAD_UNCHANGED)
         if dtcwt_pixels is None or dtcwt_pixels.dtype != np.uint16 or dtcwt_pixels.shape != pixels.shape:
