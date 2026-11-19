@@ -402,7 +402,7 @@ def test_saved_ecc_grid_and_crop_stay_live_during_another_fusion(qapp, monkeypat
     host = QWidget()
     host.raw_images = make_two_focus_stack((160, 560))
     host.source_revision = 12
-    host.current_fusion_method = lambda: 'openfocus_a'
+    host.current_fusion_method = lambda: 'dct'
     host.current_alignment_method = lambda: 'ecc'
     host.registration_parameters_for = lambda _: {'failure_policy': 'fail'}
     host.brightness_option_for = lambda *_: False
@@ -414,18 +414,21 @@ def test_saved_ecc_grid_and_crop_stay_live_during_another_fusion(qapp, monkeypat
     image[:, 180:360, 1] = 200
     image[:, 360:, 1] = 240
 
-    def add_record(method, label, radius=None, aligned_flag=True):
+    def add_record(method, label, radius=None, aligned_flag=True, **options):
         params = resolve_fusion_parameters(method, {'radius': radius} if radius is not None else {})
         context = build_render_context(aligned, image, algorithm=method, aligned=aligned_flag,
             source_revision=host.source_revision, alignment_options=('ecc',),
             parameters={'fusion_parameters': params, 'reg_downscale_width': 1024,
-                        'registration_parameters': {'failure_policy': 'fail'}})
+                        'registration_parameters': {'failure_policy': 'fail'}, **options})
         record = OutputRecord.create(image, label, context=context)
         QListWidgetItem(label, host.output_list).setData(OUTPUT_RECORD_ROLE, record)
         return record
 
     add_record('openfocus_b', 'Unaligned', 15, aligned_flag=False)
-    saved_b = add_record('openfocus_b', 'Newest B', 11)
+    add_record('openfocus_b', 'Different exposure', 15, exposure_match=True)
+    add_record('openfocus_b', 'Different base', 15, base_frame='first')
+    add_record('openfocus_b', 'Sharpened', 15, sharpen_output=True, sharpen_strength=80)
+    saved_b = add_record('openfocus_b', 'Newest B', 11, sharpen_output=True, sharpen_strength=0)
     add_record('openfocus_c', 'Saved C')
     add_record('openfocus_b', 'Older B', 9)
     fusion_entered, release_fusion = Event(), Event()

@@ -184,8 +184,7 @@ class CompareDialog(QDialog):
         if method == 'none':
             method = self._first_available_method()
         box = self._checks[method]
-        if box.isEnabled():
-            self._reuse_workspace_outputs()
+        self._reuse_workspace_outputs()
         self._show_frame(0)
         if self._selected_methods():
             self._methods_changed(True)
@@ -873,6 +872,7 @@ class CompareDialog(QDialog):
         had_alignment = self._aligned_frames is not None
         alignment = self.align_combo.currentData()
         roi = bool(self.mode_combo.currentData())
+        strength = self._shared['sharpen_strength'] if self._shared['sharpen_output'] else 0
         records = self._workspace_outputs
         if alignment != 'none' and not had_alignment:
             # Prefer a complete registration grid before considering a result
@@ -882,6 +882,14 @@ class CompareDialog(QDialog):
             context = record.context
             method = context.algorithm
             if method not in pending:
+                continue
+            options = context.parameters
+            brightness = self._shared['method_options'][method]
+            saved_strength = (options.get('sharpen_strength', DEFAULT_SHARPEN_STRENGTH)
+                              if options.get('sharpen_output') else 0)
+            if (bool(options.get('exposure_match')) != brightness['exposure_match']
+                    or options.get('base_frame', 'none') != brightness['base_frame']
+                    or saved_strength != strength):
                 continue
             reverse = (self._registration_is_reversed([method]) if opening and not self._results
                        else self._reverse_registration)

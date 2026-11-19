@@ -171,6 +171,8 @@ This stable release includes the features introduced in the 1.77.0 beta series.
 - Show embedded TIFF thumbnails stored after the main image in the batch converter, including their display orientation.
 - Keep existing Method Comparison previews visible and update their crop or
   size during another method's fusion.
+- Match exposure, base correction, and effective sharpening when reusing
+  workspace results in Method Comparison.
 - Name each Render All result and its suggested export file after the fusion method that produced it.
 - Keep the workspace responsive when opening or closing Support Us while its
   network requests are pending.
