@@ -195,7 +195,8 @@ The top menu bar provides access to all functions:
 - **Edit**: Undo/redo, reset the current stack, image transformations and retouching
 - **Tools**: Image stitching, batch processing and conversion, method comparison, depth map, flat-field correction, scale bar, watermark and labels
 - **Settings** offers Advanced Settings, GPU acceleration, theme, font size, and language.
-- **Help**: Report a Problem (diagnostics and logs), contact information and the Discord community, Support Us, and update check. Support Us displays Alipay and PayPal codes; include your username in the transfer note for permanent project acknowledgment.
+- **Help**: Report a Problem, Contact Us, Support Us, and check for updates. Contact Us loads the current WeChat group and Official Account QR codes. Support Us loads the current Alipay and PayPal codes. Reopen either dialog to check for a new code.
+- **Extensions (In development)** is visible and disabled.
 
 **Tools → Stitch Images… (In development)** is currently unavailable. The following describes the workspace under development.
 

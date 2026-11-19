@@ -1,34 +1,17 @@
 """Payment codes and the published OpenFocus sponsor roster."""
 import json
 
-from PyQt6.QtCore import QSize, QTimer, Qt, QUrl
-from PyQt6.QtGui import QPainter, QPixmap
-from PyQt6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
-from PyQt6.QtWidgets import QDialog, QHBoxLayout, QListView, QListWidget, QWidget
+from PyQt6.QtCore import QSize, Qt
+from PyQt6.QtWidgets import QDialog, QHBoxLayout, QListView, QListWidget
 
-from dialogs._community_layout import community_body, community_card, community_label
+from dialogs._community_download import CommunityDownloads
+from dialogs._community_layout import add_published_qr, community_body, community_card, community_label
 from locales import trans
-from utils import resource_path
 from utils.account_client import BASE_URL
 
 
-class _PaymentCode(QWidget):
-    """Draw the actual square at the same size with a four-module quiet zone."""
-
-    def __init__(self, title, filename, bounds):
-        super().__init__()
-        self._code = QPixmap(resource_path('assets', 'readme', filename)).copy(*bounds)
-        self.setFixedSize(228, 228)
-        self.setAccessibleName(f'{title} · QR')
-
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.fillRect(self.rect(), Qt.GlobalColor.white)
-        painter.drawPixmap(self.rect().adjusted(24, 24, -24, -24), self._code)
-
-
 class SupportUsDialog(QDialog):
-    """Keep payment available independently of the anonymous roster request."""
+    """Display current payment codes and the roster using independent requests."""
 
     _SPONSORS_URL = f'{BASE_URL}/v1/sponsors'
     _MAX_ROSTER_BYTES = 135 * 1024
@@ -36,22 +19,16 @@ class SupportUsDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle(trans.t('support_title'))
-        self.setMinimumWidth(570)
+        requests = CommunityDownloads(self)
         body = community_body(self, trans.t('support_heading'), trans.t('support_message'),
                               width=610, height=552)
-        codes = QHBoxLayout()
-        codes.setSpacing(12)
-        # Source pixels of the two module grids, excluding the different margins
-        # baked into the images. Paint a fresh white scan margin around each.
-        for title, filename, bounds in (
-            (trans.t('support_alipay'), 'alipay-coffee.jpg', (30, 33, 534, 534)),
-            ('PayPal', 'paypal-coffee.png', (64, 64, 528, 528)),
-        ):
+        self._codes = QHBoxLayout()
+        self._codes.setSpacing(body.spacing())
+        for title, slot in ((trans.t('support_alipay'), 'alipay'), ('PayPal', 'paypal')):
             card, column = community_card()
-            column.addWidget(community_label(title, 'section'), alignment=Qt.AlignmentFlag.AlignHCenter)
-            column.addWidget(_PaymentCode(title, filename, bounds), alignment=Qt.AlignmentFlag.AlignHCenter)
-            codes.addWidget(card, 1)
-        body.addLayout(codes)
+            add_published_qr(self, column, requests, title, slot, 228)
+            self._codes.addWidget(card, 1)
+        body.addLayout(self._codes)
 
         card, section = community_card()
         heading = trans.t('support_acknowledgments')
@@ -71,46 +48,25 @@ class SupportUsDialog(QDialog):
         body.addWidget(card)
         body.addStretch()
 
-        # Use a separate network manager with cookies and redirects disabled.
-        # Neither the GUI account session nor the device identifier is needed.
-        self._network = QNetworkAccessManager(self)
-        request = QNetworkRequest(QUrl(self._SPONSORS_URL))
-        attribute = QNetworkRequest.Attribute
-        request.setAttribute(attribute.CookieLoadControlAttribute, QNetworkRequest.LoadControl.Manual)
-        request.setAttribute(attribute.CookieSaveControlAttribute, QNetworkRequest.LoadControl.Manual)
-        request.setAttribute(attribute.RedirectPolicyAttribute, QNetworkRequest.RedirectPolicy.ManualRedirectPolicy)
-        request.setRawHeader(b'Accept', b'application/json')
-        reply = self._reply = self._network.get(request)
-        reply.setReadBufferSize(self._MAX_ROSTER_BYTES + 1)
-        reply.readyRead.connect(self._check_roster_size)
-        reply.finished.connect(self._roster_finished)
-        self._deadline = QTimer(self)
-        self._deadline.setSingleShot(True)
-        self._deadline.timeout.connect(reply.abort)
-        self._deadline.start(5000)
+        requests.get(self._SPONSORS_URL, 'application/json', self._MAX_ROSTER_BYTES, self._roster_finished)
 
-    def _check_roster_size(self):
-        if self._reply is not None and self._reply.bytesAvailable() > self._MAX_ROSTER_BYTES:
-            self._reply.abort()
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        direction = (QHBoxLayout.Direction.LeftToRight if event.size().width() >= 590
+                     else QHBoxLayout.Direction.TopToBottom)
+        self._codes.setDirection(direction)
 
-    def _roster_finished(self):
-        reply, self._reply = self._reply, None
-        self._deadline.stop()
-        if reply is None:
-            return
+    def _roster_finished(self, _status, data):
         names = None
-        if (reply.error() == QNetworkReply.NetworkError.NoError
-                and reply.attribute(QNetworkRequest.Attribute.HttpStatusCodeAttribute) == 200
-                and reply.bytesAvailable() <= self._MAX_ROSTER_BYTES):
+        if data is not None:
             try:
-                payload = json.loads(bytes(reply.readAll()))
+                payload = json.loads(data)
                 roster = payload.get('sponsors') if isinstance(payload, dict) else None
                 if (isinstance(roster, list) and len(roster) <= 250
                         and all(isinstance(name, str) and 1 <= len(name) <= 64 for name in roster)):
                     names = roster
             except (ValueError, RecursionError):
                 pass
-        reply.deleteLater()
         if not names:
             self._status.setText(trans.t('support_roster_offline' if names is None else 'support_roster_empty'))
             return
@@ -121,10 +77,3 @@ class SupportUsDialog(QDialog):
         self._names.setFixedHeight(36 if len(names) <= 3 else 108)
         self._names.show()
 
-    def done(self, result):
-        self._deadline.stop()
-        reply, self._reply = self._reply, None
-        if reply is not None:
-            reply.abort()
-            reply.deleteLater()
-        super().done(result)

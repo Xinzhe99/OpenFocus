@@ -3995,7 +3995,7 @@ class OpenFocus(QMainWindow):
                 pass
         self._refresh_status_sponsor()
         from dialogs._community_layout import apply_community_theme
-        for dialog in self.findChildren(ContactInfoDialog):
+        for dialog in self.findChildren(QDialog, 'communityDialog'):
             apply_community_theme(dialog)
         # Inline "?" button styles are captured at creation; re-apply them for
         # the new theme or the dark chip stays dark on the light panel.
@@ -4042,14 +4042,8 @@ class OpenFocus(QMainWindow):
 
     def show_contact_info(self):
         """Open Contact Us without interrupting work in the main window."""
-        dialog = next((item for item in self.findChildren(ContactInfoDialog)
-                       if item.isVisible()), None)
-        if dialog is None:
-            dialog = ContactInfoDialog(self)
-            dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
-            dialog.show()
-        dialog.raise_()
-        dialog.activateWindow()
+        from dialogs._community_layout import show_community_dialog
+        show_community_dialog(self, ContactInfoDialog)
     
     def show_batch_processing_dialog(self, preload_folder_paths: list[str] = None, scale_factor: float = 1.0):
         """显示批处理设置对话框

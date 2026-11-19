@@ -72,6 +72,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Show the current public sponsor acknowledgments in Support Us, with equal-size Alipay and PayPal payment codes.
 
 ### Changed
+- Display a disabled Extensions (In development) entry after Help.
+- Load the current WeChat group and Official Account codes in Contact Us and
+  the Alipay and PayPal codes in Support Us from the OpenFocus service.
+- Show the GPU and available engines in AI Acceleration Components. Keep
+  installation controls reachable when the window is narrow.
 - Make all fusion methods selectable without experimental opt-in when their
   dependencies are installed.
 - Group render settings by workflow, brightness and color, and output. Adjust fusion sharpening from 0% to 200% in desktop renders, batch jobs, and the CLI. The 100% default preserves the previous sharpening amount.
@@ -148,6 +153,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   transforms, cropping and output pixels are unchanged.
 
 ### Fixed
+- Keep the workspace responsive when opening or closing Support Us while its
+  network requests are pending.
 - Keep Labels, Scale Bar and Watermark previews editable during fusion. At
   100%, use available original pixels and keep the Fit image visible while
   any required decode waits.
