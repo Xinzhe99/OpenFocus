@@ -1383,7 +1383,7 @@ class BatchWorker(QThread):
         self.split_method = split_method
         self.split_param = split_param
         self.single_folder_images_with_times = single_folder_images_with_times or []
-        # GPU preference applies to OpenFocus A/B/C, Guided Filter and supported neural methods.
+        # GPU preference applies to OpenFocus A/B/C, Guided Filter, GFG-FGF and supported neural methods.
         self.use_gpu = bool(use_gpu)
         self.runtime_settings = dict(self.processing_settings.get('runtime_settings') or {})
         self.runtime_settings.update(runtime_settings or {})

@@ -991,7 +991,7 @@ Windows에서는 별도의 후보 버전을 준비하고 전환할 때 포터블
 
 StackMFF V1/V2/V3는 ONNX Runtime을 사용합니다. Windows의 DirectML과 macOS의 CoreML이 추론을 가속할 수 있으며, 그렇지 않으면 CPU를 사용합니다. 공급자의 존재만으로 GPU 실행이 증명되지는 않습니다. 다른 GPU 지원은 검증이 필요합니다.
 
-OpenFocus B는 호환 OpenCL GPU로 깊이 처리와 원본 병합을 가속할 수 있습니다. 메모리 예산에 따라 제한된 GPU 단계를 사용하거나 CPU로 전환합니다. GPU 가속을 켜면 OpenFocus A, OpenFocus C, 가이드 필터는 호환 OpenCL GPU에서 전체 이미지 합성을 수행할 수 있습니다. 메모리가 부족하거나 장치 또는 드라이버에 문제가 있으면 CPU로 전환합니다. C의 깊이 맵 내보내기와 정렬은 CPU를 사용합니다. [GPU 지원](GPU_SUPPORT.md)을 참고하세요.
+OpenFocus B는 호환 OpenCL GPU로 깊이 처리와 원본 병합을 가속할 수 있습니다. 메모리 예산에 따라 제한된 GPU 단계를 사용하거나 CPU로 전환합니다. GPU 가속을 켜면 OpenFocus A, OpenFocus C, 가이드 필터 및 GFG-FGF는 호환 OpenCL GPU에서 전체 이미지 합성을 수행할 수 있습니다. 메모리가 부족하거나 장치 또는 드라이버에 문제가 있으면 CPU로 전환합니다. C의 깊이 맵 내보내기와 정렬은 CPU를 사용합니다. [GPU 지원](GPU_SUPPORT.md)을 참고하세요.
 
 - **설정 → GPU 가속**에서 전환합니다
 - 선택을 해제하면 지원되는 합성 방식이 CPU로 강제됩니다. GPU 드라이버가 문제를 일으킬 때
