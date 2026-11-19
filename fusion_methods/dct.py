@@ -63,6 +63,16 @@ def _normalize_image_stack(images: Sequence[np.ndarray], check_cancel=None) -> T
         
     return normalized, (target_h, target_w)
 
+def _load_kernels():
+    """Load cached Numba kernels when the startup compiler budget allows."""
+    from core.resource_policy import ResourceLimitError
+    try:
+        from fusion_methods import _dct_kernels
+        return _dct_kernels
+    except (ImportError, ResourceLimitError):
+        return None
+
+
 def dct_focus_stack_fusion(
     source: Union[str, ArraySource],
     output_path: str = None,
@@ -70,17 +80,19 @@ def dct_focus_stack_fusion(
     kernel_size: int = 7,
     thread_count: int = None,
     should_cancel=None,
+    progress_callback=None,
+    use_gpu: bool = False,
+    device_callback=None,
 ) -> np.ndarray:
     """
-    高度优化的 DCT/方差 图像融合算法。
-    
-    优化说明:
+    高度优化的 DCT/方差 图像融合算法 (支持 Numba CPU 并行与 OpenCL GPU 加速/CPU 回退)。
+
     利用 Parseval 定理，DCT 域的高频能量(方差)等价于空间域的像素方差。
-    通过 cv2.resize(INTER_AREA) 快速计算块均值和平方均值，替代了原本极其缓慢的
-    逐块 DCT 循环。
     """
-    
-    # This backend is serial, hence never exceeds the caller's thread cap.
+    from collections import deque
+    import concurrent.futures
+    from core.frame_storage import capture_scratch, run_with_scratch
+
     def check_cancel():
         if should_cancel is not None and should_cancel():
             from core.registration import RegistrationCancelled
@@ -102,116 +114,215 @@ def dct_focus_stack_fusion(
     if len(images) < 2:
         raise ValueError("需要至少 2 张图像进行融合。")
 
+    if progress_callback is not None:
+        callback = progress_callback
+        reported = -1
+
+        def progress_callback(index, total):
+            nonlocal reported
+            if index > reported:
+                callback(index, total)
+                reported = index
+
+    if use_gpu:
+        from core.source_frames import SOURCE_CACHE
+        from fusion_methods._openfocus_gpu import GpuError, log_fallback
+        from fusion_methods._openfocus_gpu_dct import GpuDct
+
+        try:
+            gpu = GpuDct()
+            result = gpu.fuse(
+                images, block_size, kernel_size,
+                should_cancel=should_cancel,
+                progress_callback=progress_callback,
+            )
+            if device_callback is not None:
+                device_callback(gpu.device_name)
+            if output_path:
+                from utils.image_utils import imwrite_auto
+                imwrite_auto(output_path, result)
+            return result
+        except GpuError as exc:
+            log_fallback(exc)
+        finally:
+            SOURCE_CACHE.clear()
+
     # 归一化并获取尺寸
-    normalized_images, (h, w) = _normalize_image_stack(images, check_cancel=check_cancel)
+    normalized_images, (orig_h, orig_w) = _normalize_image_stack(images, check_cancel=check_cancel)
 
-    # Keep the output size identical to the input. The block grid used to
-    # trim up to block_size-1 rows/cols off the bottom/right, so a 700x900
-    # stack produced 696x896 while the tiled path returned full size —
-    # geometry changed with the tiling switch. Pad with edge replication and
-    # crop the fused result back instead.
-    orig_h, orig_w = h, w
-    pad_h = ((h + block_size - 1) // block_size) * block_size
-    pad_w = ((w + block_size - 1) // block_size) * block_size
-    pad_rows, pad_cols = pad_h - h, pad_w - w
-    h, w = pad_h, pad_w
-
-    def padded_frame(index):
-        check_cancel()
-        from core.source_frames import resolve_frame
-        image = resolve_frame(normalized_images[index])
-        if image.dtype == np.uint16:
-            image = image.astype(np.float32) * (255.0 / 65535.0)
-        if pad_rows or pad_cols:
-            image = cv2.copyMakeBorder(image, 0, pad_rows, 0, pad_cols,
-                                       cv2.BORDER_REPLICATE)
-        return image
-
-    # 计算对齐后的尺寸 (必须是 block_size 的整数倍)
-    h_trim = (h // block_size) * block_size
-    w_trim = (w // block_size) * block_size
-    map_h = h_trim // block_size
-    map_w = w_trim // block_size
+    pad_h = ((orig_h + block_size - 1) // block_size) * block_size
+    pad_w = ((orig_w + block_size - 1) // block_size) * block_size
+    pad_rows, pad_cols = pad_h - orig_h, pad_w - orig_w
+    map_h = pad_h // block_size
+    map_w = pad_w // block_size
 
     if map_h == 0 or map_w == 0:
         raise ValueError("Block size is too large for image size.")
 
-    # --- 2. 快速计算方差图 (核心优化) ---
-    # 预分配空间
+    kernels = _load_kernels()
+    scratch = capture_scratch()
+    count = len(normalized_images)
+    total_steps = count * 2
+    if progress_callback is not None:
+        progress_callback(0, total_steps)
+
+    if thread_count is None:
+        max_workers = min(8, max(1, os.cpu_count() or 1), count)
+    else:
+        try:
+            max_workers = max(1, min(int(thread_count), count))
+        except (TypeError, ValueError):
+            max_workers = 1
+
+    # --- 2. 快速计算方差图 ---
     max_variance_map = np.full((map_h, map_w), -1.0, dtype=np.float32)
-    # 赢家索引图统一用 int32：帧数可以超过 255，不能为了迁就 cv2.medianBlur
-    # 而存成 uint8
     best_index_map = np.zeros((map_h, map_w), dtype=np.int32)
 
-    for idx in range(len(normalized_images)):
-        bgr_img = padded_frame(idx)
-        # 裁剪边缘以匹配 block 分块
-        img_trim = bgr_img[:h_trim, :w_trim]
-        
-        # 转灰度并转 float32 以防止平方溢出
-        gray = cv2.cvtColor(img_trim, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    def frame_variance(index):
+        check_cancel()
+        from core.source_frames import resolve_frame, without_source_cache_growth
+        with without_source_cache_growth():
+            image = resolve_frame(normalized_images[index], should_cancel=should_cancel)
+        check_cancel()
+        if image.dtype == np.uint16:
+            image = image.astype(np.float32) * (255.0 / 65535.0)
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        del image
 
-        # 2. 计算 (E[X])^2 (均值的平方)
-        mean_val = cv2.resize(gray, (map_w, map_h), interpolation=cv2.INTER_AREA)
+        if kernels is not None:
+            var_map = np.empty((map_h, map_w), dtype=np.float32)
+            if gray.dtype == np.uint8:
+                kernels.block_variance_u8(gray, orig_h, orig_w, block_size, var_map)
+            else:
+                gray_f32 = gray if gray.dtype == np.float32 else gray.astype(np.float32)
+                kernels.block_variance_f32(gray_f32, orig_h, orig_w, block_size, var_map)
+            del gray
+            return var_map
+
+        if pad_rows or pad_cols:
+            gray = cv2.copyMakeBorder(gray, 0, pad_rows, 0, pad_cols, cv2.BORDER_REPLICATE)
+        gray_f32 = gray.astype(np.float32)
+        del gray
+        mean_val = cv2.resize(gray_f32, (map_w, map_h), interpolation=cv2.INTER_AREA)
         np.square(mean_val, out=mean_val)
+        np.square(gray_f32, out=gray_f32)
+        mean_sq = cv2.resize(gray_f32, (map_w, map_h), interpolation=cv2.INTER_AREA)
+        del gray_f32
+        mean_sq -= mean_val
+        del mean_val
+        return mean_sq
 
-        # 1. 计算 E[X^2] (平方的均值)
-        # cv2.resize 使用 INTER_AREA 实际上就是在做块平均，速度极快
-        # Squaring in place reuses the one float frame buffer instead of
-        # allocating a second full-size temporary per frame.
-        np.square(gray, out=gray)
-        mean_sq = cv2.resize(gray, (map_w, map_h), interpolation=cv2.INTER_AREA)
+    def reduce_variance(idx, var_map):
+        if kernels is not None:
+            kernels.argmax_update_blocks(var_map, max_variance_map, best_index_map, idx)
+        else:
+            mask = var_map > max_variance_map
+            max_variance_map[mask] = var_map[mask]
+            best_index_map[mask] = idx
 
-        # 3. 方差 Var(X) = E[X^2] - (E[X])^2
-        # 这在数学上严格等价于 DCT 交流分量的能量和
-        var_map = mean_sq
-        var_map -= mean_val
-        
-        # 更新最大方差图
-        mask = var_map > max_variance_map
-        max_variance_map[mask] = var_map[mask]
-        best_index_map[mask] = idx
-        del gray, mean_sq, mean_val, var_map, mask
+    if max_workers == 1:
+        for idx in range(count):
+            var_map = frame_variance(idx)
+            check_cancel()
+            reduce_variance(idx, var_map)
+            del var_map
+            if progress_callback is not None:
+                progress_callback(idx + 1, total_steps)
+    else:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
+            window = deque()
+            next_submit = 0
+            try:
+                while next_submit < count or window:
+                    check_cancel()
+                    while next_submit < count and len(window) < max_workers:
+                        window.append((
+                            next_submit,
+                            pool.submit(run_with_scratch, scratch, frame_variance, next_submit),
+                        ))
+                        next_submit += 1
+                    for _, pending in window:
+                        if pending.done() and pending.exception() is not None:
+                            pending.result()
+                    idx, fut = window[0]
+                    if not fut.done():
+                        concurrent.futures.wait((fut,), timeout=0.05)
+                        continue
+                    window.popleft()
+                    var_map = fut.result()
+                    del fut
+                    check_cancel()
+                    reduce_variance(idx, var_map)
+                    del var_map
+                    if progress_callback is not None:
+                        progress_callback(idx + 1, total_steps)
+            finally:
+                for _, fut in window:
+                    fut.cancel()
+                window.clear()
+
+    del max_variance_map
 
     # --- 3. 一致性验证 (中值滤波) ---
     check_cancel()
-    # cv2.medianBlur 在 ksize > 5 时只接受 CV_8U，帧数 >= 256 的索引图会直接报错。
-    # mode="nearest" 与 cv2.medianBlur 的补边行为逐像素一致，8-bit 结果保持不变。
     filtered_map = median_filter(best_index_map, size=kernel_size, mode="nearest")
+    del best_index_map
     check_cancel()
     filtered_map = median_filter(filtered_map, size=kernel_size, mode="nearest")
-
-    # 索引图本身就是整数，无需再转换
     final_index_map = filtered_map.astype(np.int32, copy=False)
+    del filtered_map
 
     # --- 4. 快速重建 ---
-    # 输出位深跟随输入：16-bit 栈在这里被压成 uint8 会丢掉调用方要保留的深度
-    fused_image = create_frame((h_trim, w_trim, 3), fuse_output_dtype(normalized_images))
+    out_dtype = fuse_output_dtype(normalized_images)
+    fused_image = create_frame((orig_h, orig_w, 3), out_dtype)
     fused_image[...] = 0
 
-    # 仅遍历用到的源图像索引进行填充
-    unique_indices = np.unique(final_index_map)
-    
-    for idx in unique_indices:
-        source_layer = padded_frame(idx)[:h_trim, :w_trim]
-        # Nearest expansion of an integer block grid is exact replication.
-        # Bound masks and selected colour pixels to a strip instead of making
-        # a full-resolution mask and a potentially full-frame indexed copy.
-        block_rows = max(1, 128 // block_size)
-        for start in range(0, map_h, block_rows):
-            check_cancel()
-            stop = min(map_h, start + block_rows)
-            rows = slice(start * block_size, stop * block_size)
-            mask = np.repeat(np.repeat(final_index_map[start:stop] == idx,
-                                       block_size, axis=0), block_size, axis=1)
-            np.copyto(fused_image[rows], source_layer[rows],
-                      where=mask[:, :, None], casting='unsafe')
-        del source_layer, mask
+    unique_indices = set(int(v) for v in np.unique(final_index_map))
+
+    from core.source_frames import resolve_frame, without_source_cache_growth
+    for idx in range(count):
+        if idx not in unique_indices:
+            if progress_callback is not None:
+                progress_callback(count + idx + 1, total_steps)
+            continue
+        check_cancel()
+        with without_source_cache_growth():
+            source_layer = resolve_frame(normalized_images[idx], should_cancel=should_cancel)
+        check_cancel()
+        if kernels is not None and source_layer.ndim == 3 and source_layer.shape[2] >= 3:
+            if out_dtype == np.uint8 and source_layer.dtype == np.uint8:
+                kernels.copy_selected_blocks_u8(
+                    source_layer, final_index_map, fused_image, orig_h, orig_w, block_size, idx)
+            elif source_layer.dtype == np.uint16:
+                kernels.copy_selected_blocks_u16(
+                    source_layer, final_index_map, fused_image, orig_h, orig_w, block_size, idx)
+            else:
+                kernels.copy_selected_blocks_f32(
+                    source_layer, final_index_map, fused_image, orig_h, orig_w, block_size, idx)
+        else:
+            if source_layer.dtype == np.uint16:
+                source_layer = source_layer.astype(np.float32) * (255.0 / 65535.0)
+            block_rows = max(1, 128 // block_size)
+            for start in range(0, map_h, block_rows):
+                check_cancel()
+                stop = min(map_h, start + block_rows)
+                y0 = start * block_size
+                y1 = min(orig_h, stop * block_size)
+                rows = slice(y0, y1)
+                mask_full = np.repeat(
+                    np.repeat(final_index_map[start:stop] == idx, block_size, axis=0),
+                    block_size, axis=1,
+                )[:y1 - y0, :orig_w]
+                np.copyto(fused_image[rows], source_layer[rows],
+                          where=mask_full[:, :, None], casting='unsafe')
+            del mask_full
+        del source_layer
+        if progress_callback is not None:
+            progress_callback(count + idx + 1, total_steps)
 
     check_cancel()
-    if (orig_h, orig_w) != (h_trim, w_trim):
-        # drop the replicated padding so the result matches the source stack
-        fused_image = fused_image[:orig_h, :orig_w]
+    if device_callback is not None:
+        device_callback('CPU')
 
     if output_path:
         from utils.image_utils import imwrite_auto

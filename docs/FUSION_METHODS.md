@@ -84,10 +84,10 @@ depth processing requires sufficient host and verified device memory; otherwise
 bounded GPU activity and merging can still run. A compatible GPU driver and
 compiler are required. Unavailable devices and device failures fall back to CPU.
 See [GPU support](GPU_SUPPORT.md).
-With GPU acceleration enabled, OpenFocus A, OpenFocus C, Guided Filter and GFG-FGF
-can run full-image fusion on a compatible OpenCL GPU. Insufficient memory, an
-unavailable device or a device failure can cause CPU fallback. C's and GFG-FGF's
-depth-map exports run on the CPU.
+With GPU acceleration enabled, OpenFocus A, OpenFocus C, Guided Filter,
+GFG-FGF and DCT can run full-image fusion on a compatible OpenCL GPU.
+Insufficient memory, an unavailable device or a device failure can cause CPU
+fallback. OpenFocus C, GFG-FGF and DCT export depth maps on the CPU.
 
 
 StackMFF V1 and V2 use retrained single-scale attention networks, each with
