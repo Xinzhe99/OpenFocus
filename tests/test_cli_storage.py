@@ -79,7 +79,7 @@ def test_cli_keeps_the_existing_scratch_error_and_exit_code(monkeypatch, tmp_pat
     scratch.mkdir()
     monkeypatch.setattr(frame_storage, '_space', _fake_space({str(scratch): 4 * GIB}))
     code = _cli(monkeypatch, tmp_path, '--input', str(stack), '--output', str(tmp_path / 'o.png'),
-                '--method', 'dct', '--temp-dir', str(scratch))
+                '--method', 'dct', '--cpu', '--temp-dir', str(scratch))
     captured = capsys.readouterr()
     assert code == 1
     assert 'Temporary storage' in captured.err or str(scratch) in captured.err
