@@ -110,6 +110,8 @@ Linux, download and extract a new desktop build to update it manually.
 wheel deliberately does not depend on PyQt6); use a desktop build or a source
 checkout for the GUI.
 
+Current Windows builds are unsigned. Before running the download, compare its SHA-256 hash with the value in the release manifest.
+
 After installation, launch OpenFocus by:
 
 1. **Windows**: Double-click the OpenFocus shortcut or executable file
@@ -2223,10 +2225,10 @@ On macOS, use `Command` in place of `Ctrl` for these source list shortcuts.
 
 #### Windows SmartScreen Warning on First Launch
 
-Windows code-signing status varies by release; see the release notes. Signing
-is not guaranteed. Download the build from **https://openfocus.top** rather
-than a third-party mirror. If SmartScreen warns, click **More info → Run
-anyway**. The first launch after unzipping may take 30–60 seconds.
+Windows builds are unsigned, so SmartScreen may show a warning. Download from
+**https://openfocus.top** or the project’s GitHub Releases page. You can verify
+the download against the SHA-256 hash in the release manifest. The first launch
+after unzipping may take 30–60 seconds.
 
 #### macOS Says the App "Cannot Be Opened" or "Is Damaged"
 

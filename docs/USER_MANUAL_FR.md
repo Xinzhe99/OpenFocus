@@ -76,6 +76,8 @@ Dans **Enregistrer sous**, le TIFF ordinaire enregistre le résultat comme une s
 La façon préférée d'installer une version packagée est le site du projet, **https://openfocus.top** : il pointe vers l'installateur Windows, la version macOS et le paquet Linux, avec des scripts d'installation pour le terminal. Préférez-le à une recompilation : ces artefacts sont la sortie exacte du pipeline de publication. `pip install openfocus` installe uniquement l'interface en ligne de commande headless (le paquet wheel ne dépend volontairement pas de PyQt6) ; utilisez une version de bureau ou une copie du code source pour l'interface graphique.
 Le site propose par défaut les versions stables de bureau. Sous Windows et macOS, vous pouvez activer les mises à jour bêta ; sous Linux, mettez à jour en téléchargeant une nouvelle archive de bureau. La CLI PyPI est distribuée séparément.
 
+Les versions actuelles pour Windows ne sont pas signées. Avant de lancer le fichier téléchargé, comparez son empreinte SHA-256 à celle indiquée dans le manifeste de la version.
+
 Pour installer depuis un terminal, prévisualisez d'abord la commande puis exécutez-la sans `--dry-run` : sous macOS ou Linux, `curl -fsSL https://openfocus.top/install.sh | sh -s -- --dry-run` puis `curl -fsSL https://openfocus.top/install.sh | sh` (la CLI est installée sous Linux) ; sous Windows, `irm https://openfocus.top/install.ps1 | iex` dans PowerShell.
 
 Après l'installation, lancez OpenFocus de l'une des façons suivantes :
@@ -1074,7 +1076,7 @@ Codes de sortie : `0` succès, `1` erreur de traitement, `2` erreur d'utilisatio
 
 #### Avertissement Windows SmartScreen au premier lancement
 
-La signature des binaires Windows dépend de la release concernée (voir les notes de version) ; la signature n'est pas garantie. Téléchargez-les depuis **https://openfocus.top** plutôt que depuis un miroir tiers. Si SmartScreen vous avertit, cliquez sur **Informations complémentaires → Exécuter quand même**. Le premier lancement après décompression peut prendre 30 à 60 secondes.
+Les versions actuelles pour Windows ne sont pas signées. Téléchargez le fichier depuis le site officiel d’OpenFocus (**https://openfocus.top**). Avant de lancer le fichier téléchargé, comparez son empreinte SHA-256 à celle indiquée dans le manifeste de la version. Si SmartScreen vous avertit, cliquez sur **Informations complémentaires → Exécuter quand même**. Le premier lancement après décompression peut prendre 30 à 60 secondes.
 
 #### macOS indique que l'application « ne peut pas être ouverte » ou « est endommagée »
 
