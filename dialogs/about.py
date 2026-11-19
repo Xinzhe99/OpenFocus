@@ -1,24 +1,20 @@
 # dialogs/about.py
 """About and contact information dialogs."""
 
-from http.client import HTTPException
 import threading
-import time
-from urllib.parse import urljoin, urlsplit
-from urllib.request import HTTPErrorProcessor, build_opener
 
 from PyQt6.QtCore import QTimer, Qt
-from PyQt6.QtGui import QFont, QPixmap
+from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
     QDialog,
     QVBoxLayout,
     QHBoxLayout,
-    QLabel,
     QTextEdit,
 )
 from constants import DISCORD_INVITE_URL
+from dialogs._community_download import CommunityDownloads
 from locales import trans
-from utils import get_monospace_font_family, resource_path
+from utils import get_monospace_font_family
 
 
 class _EnvironmentProbe(threading.Thread):
@@ -238,80 +234,18 @@ class EnvironmentInfoDialog(QDialog):
         return "\n".join(summary + [""] + info_lines)
 
 
-class _InviteResponses(HTTPErrorProcessor):
-    # Inspect redirects before urllib follows them or drains their bodies.
-    def http_response(self, request, response):
-        return response
-
-    https_response = http_response
-
-
-def _origin(url):
-    parts = urlsplit(url)
-    port = parts.port if parts.port is not None else (443 if parts.scheme == 'https' else 80)
-    return parts.scheme, parts.hostname, port
-
-
-class _WechatInviteDownload(threading.Thread):
-    """Own the network connection entirely off the GUI thread, including close."""
-
-    def __init__(self, url, timeout_ms, max_bytes):
-        super().__init__(name='wechat-invite-download', daemon=True)
-        self.url = url
-        self.deadline = time.monotonic() + timeout_ms / 1000
-        self.max_bytes = max_bytes
-        self.cancelled = threading.Event()
-        self.png = None
-
-    def run(self):
-        try:
-            opener = build_opener(_InviteResponses())
-            url = self.url
-            for _ in range(11):  # Initial request plus at most ten redirects.
-                remaining = self.deadline - time.monotonic()
-                if self.cancelled.is_set() or remaining <= 0:
-                    return
-                with opener.open(url, timeout=remaining) as reply:
-                    if reply.status == 200:
-                        self._read_png(reply)
-                        return
-                    location = reply.headers.get('Location')
-                    if reply.status not in (301, 302, 303, 307, 308) or not location:
-                        return
-                    url = urljoin(url, location)
-                    if _origin(url) != _origin(self.url):
-                        return
-        except (OSError, HTTPException, ValueError):
-            pass  # The dialog already displays the offline invite.
-
-    def _read_png(self, reply):
-        data = bytearray()
-        while not self.cancelled.is_set() and time.monotonic() < self.deadline:
-            chunk = reply.read1(self.max_bytes + 1 - len(data))
-            if not chunk:
-                if not reply.length and time.monotonic() < self.deadline:
-                    self.png = bytes(data)
-                return
-            data.extend(chunk)
-            if len(data) > self.max_bytes:
-                return
-
-
 class ContactInfoDialog(QDialog):
-    """Show contact links and refresh the WeChat invite from the website."""
-
-    _WECHAT_URL = "https://openfocus.top/wechat-group.png"
-    _WECHAT_TIMEOUT_MS = 4000
-    _WECHAT_MAX_BYTES = 512 * 1024
+    """Show contact links and current WeChat codes from the account service."""
 
     def __init__(self, parent=None):
-        from ._community_layout import community_body, community_card, community_label, community_link
+        from ._community_layout import (add_published_qr, community_body, community_card,
+                                        community_label, community_link)
 
         super().__init__(parent)
         self._contact_cards = QHBoxLayout()
         title = trans.t('dialog_contact_title')
         self.setWindowTitle(title)
-        body = community_body(self, title, trans.t('contact_welcome'), width=700, height=480)
+        body = community_body(self, title, trans.t('contact_welcome'), width=820, height=410)
 
         self._contact_cards.setSpacing(body.spacing())
         body.addLayout(self._contact_cards)
@@ -331,42 +265,13 @@ class ContactInfoDialog(QDialog):
         contact.addWidget(community_link(self, 'Discord', DISCORD_INVITE_URL))
         contact.addStretch()
 
-        wechat_card, wechat = community_card()
-        self._contact_cards.addWidget(wechat_card, 2)
-        wechat_title = trans.t('contact_wechat_title')
-        heading = community_label(wechat_title, 'section')
-        heading.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        wechat.addWidget(heading)
-
-        self._wechat_qr = QLabel()
-        self._wechat_qr.setAccessibleName(wechat_title)
-        self._wechat_qr.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._wechat_qr.setFixedSize(192, 192)
-        self._wechat_qr.setStyleSheet('background: white;')
-        wechat.addWidget(self._wechat_qr, alignment=Qt.AlignmentFlag.AlignHCenter)
-
-        self._wechat_status = community_label(trans.t('contact_wechat_loading'), 'muted')
-        self._wechat_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        wechat.addWidget(self._wechat_status)
-
-        group_link = community_link(self, trans.t('contact_wechat_group'), self._WECHAT_URL)
-        group_link.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        wechat.addWidget(group_link)
-        wechat.addStretch()
-
-        bundled = QPixmap(resource_path('assets', 'readme', 'wechat-group.png'))
-        if bundled.isNull():
-            self._wechat_qr.hide()
-        else:
-            self._show_wechat_qr(bundled)
-
-        self._wechat_refresh = _WechatInviteDownload(
-            self._WECHAT_URL, self._WECHAT_TIMEOUT_MS, self._WECHAT_MAX_BYTES)
-        self.destroyed.connect(self._wechat_refresh.cancelled.set)
-        self._wechat_timer = QTimer(self)
-        self._wechat_timer.timeout.connect(self._poll_wechat_invite)
-        self._wechat_refresh.start()
-        self._wechat_timer.start(50)
+        requests = CommunityDownloads(self)
+        for slot, label in (('wechat-group', 'contact_wechat_title'),
+                            ('wechat-official-account', 'contact_wechat_official')):
+            card, column = community_card()
+            self._contact_cards.addWidget(card, 2)
+            add_published_qr(self, column, requests, trans.t(label), slot, 192)
+            column.addStretch()
 
         # 居中显示
         if parent:
@@ -377,44 +282,6 @@ class ContactInfoDialog(QDialog):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        direction = (QHBoxLayout.Direction.LeftToRight if event.size().width() >= 600
+        direction = (QHBoxLayout.Direction.LeftToRight if event.size().width() >= 760
                      else QHBoxLayout.Direction.TopToBottom)
         self._contact_cards.setDirection(direction)
-
-    def _show_wechat_qr(self, original):
-        ratio = self.devicePixelRatioF()
-        pixmap = original.scaled(
-            round(self._wechat_qr.width() * ratio), round(self._wechat_qr.height() * ratio),
-            Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.FastTransformation,
-        )
-        pixmap.setDevicePixelRatio(ratio)
-        self._wechat_qr.setPixmap(pixmap)
-        self._wechat_qr.show()
-
-    def _poll_wechat_invite(self):
-        refresh = self._wechat_refresh
-        pending = refresh.is_alive()
-        if pending and time.monotonic() < refresh.deadline:
-            return
-        self._wechat_timer.stop()
-        self._wechat_refresh = None
-        image = QPixmap()
-        if pending:
-            refresh.cancelled.set()
-        elif refresh.png:
-            image.loadFromData(refresh.png, 'PNG')
-        if image.isNull():
-            has_fallback = not self._wechat_qr.isHidden()
-            key = 'contact_wechat_bundled' if has_fallback else 'contact_wechat_unavailable'
-            self._wechat_status.setText(trans.t(key))
-        else:
-            self._show_wechat_qr(image)
-            self._wechat_status.hide()
-
-    def done(self, result):
-        self._wechat_timer.stop()
-        if self._wechat_refresh is not None:
-            self._wechat_refresh.cancelled.set()
-            self._wechat_refresh = None
-        super().done(result)
-

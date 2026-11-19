@@ -28,13 +28,15 @@ def theme_environment(qapp):
 @pytest.fixture
 def invite_server(qapp, monkeypatch):
     from PyQt6.QtNetwork import QHostAddress, QTcpServer
-    from dialogs.about import ContactInfoDialog
+    from dialogs import _community_download
+    from dialogs.support import SupportUsDialog
 
     server = QTcpServer()
     assert server.listen(QHostAddress(QHostAddress.SpecialAddress.LocalHost))
     monkeypatch.setenv('no_proxy', '127.0.0.1')
-    monkeypatch.setattr(ContactInfoDialog, '_WECHAT_URL',
-                        f'http://127.0.0.1:{server.serverPort()}/wechat-group.png')
+    origin = f'http://127.0.0.1:{server.serverPort()}'
+    monkeypatch.setattr(_community_download, 'QR_BASE_URL', f'{origin}/v1/qr')
+    monkeypatch.setattr(SupportUsDialog, '_SPONSORS_URL', f'{origin}/v1/sponsors')
     yield server
     server.close()
     server.deleteLater()
@@ -47,6 +49,7 @@ def test_contact_links_are_accessible_and_follow_the_theme(qapp, theme_environme
     from PyQt6.QtWidgets import QLabel, QScrollArea, QTextBrowser, QWidget
     from constants import DISCORD_INVITE_URL
     from dialogs.about import ContactInfoDialog
+    from dialogs._community_download import QR_BASE_URL
     from locales import trans
     from ui.styles import get_theme_style
 
@@ -67,7 +70,8 @@ def test_contact_links_are_accessible_and_follow_the_theme(qapp, theme_environme
                            for label in dialog.findChildren(QLabel))
 
                 links = {
-                    label.accessibleName(): label
+                    (label.property('communityUrl') if label.property('communityUrl').startswith(QR_BASE_URL)
+                     else label.accessibleName()): label
                     for label in dialog.findChildren(QLabel, 'communityLink')
                 }
                 expected = {
@@ -76,7 +80,8 @@ def test_contact_links_are_accessible_and_follow_the_theme(qapp, theme_environme
                     'xiexinzhe123@gmail.com': 'mailto:xiexinzhe123@gmail.com',
                     trans.t('contact_github'): None,
                     'Discord': DISCORD_INVITE_URL,
-                    trans.t('contact_wechat_group'): ContactInfoDialog._WECHAT_URL,
+                    f'{QR_BASE_URL}/wechat-group': f'{QR_BASE_URL}/wechat-group',
+                    f'{QR_BASE_URL}/wechat-official-account': f'{QR_BASE_URL}/wechat-official-account',
                 }
                 assert links.keys() == expected.keys()
                 theme_colours = {}
@@ -112,7 +117,7 @@ def test_contact_links_are_accessible_and_follow_the_theme(qapp, theme_environme
                 colours.append(theme_colours)
 
                 contact_card = links['xiexinzhe@zju.edu.cn'].parentWidget()
-                wechat_card = dialog._wechat_qr.parentWidget()
+                wechat_card = dialog.findChild(QLabel, 'wechat-group').parentWidget()
                 assert wechat_card.x() > contact_card.x()
                 dialog.resize(440, 480)
                 qapp.processEvents()
@@ -130,31 +135,31 @@ def test_contact_links_are_accessible_and_follow_the_theme(qapp, theme_environme
         qapp.processEvents()
 
 
-@pytest.mark.parametrize('response', ['png', 'invalid', 'oversized', 'timeout',
-                                      'redirect', 'cross_origin', 'no_bundle'])
-def test_contact_wechat_invite_refresh(qapp, monkeypatch, invite_server, response):
-    from pathlib import Path
+@pytest.mark.parametrize('response', ['png', 'invalid', 'oversized', 'timeout', 'redirect',
+                                      'unpublished', 'wrong_type', 'oversized_pixels'])
+def test_contact_uses_only_current_published_qr(qapp, monkeypatch, invite_server, response):
+    from io import BytesIO
 
-    from PyQt6.QtNetwork import QHostAddress, QTcpServer
+    from PIL import Image
+    from PyQt6.QtWidgets import QLabel
 
-    from dialogs import about
+    from dialogs import _community_download
     from dialogs.about import ContactInfoDialog
-    from tests.test_control_channel import wait_until
     from locales import trans
-    from utils import resource_path
+    from tests.test_control_channel import wait_until
 
-    data = Path(resource_path('assets', 'readme', 'wechat-group.png')).read_bytes()
+    def png(color):
+        dimensions = (1025, 16) if response == 'oversized_pixels' else (16, 16)
+        with BytesIO() as stream:
+            Image.new('RGB', dimensions, color).save(stream, 'PNG')
+            return stream.getvalue()
+
+    data = png('red')
     if response == 'oversized':
-        # Valid PNG followed by padding. Invalid image data alone would test decoding.
-        data = data.ljust(ContactInfoDialog._WECHAT_MAX_BYTES + 1, b'\0')
-    elif response in ('invalid', 'no_bundle'):
+        data = data.ljust(_community_download.QR_MAX_BYTES + 1, b'\0')
+    elif response == 'invalid':
         data = b'invalid PNG'
-    if response == 'no_bundle':
-        monkeypatch.setattr(about, 'resource_path', lambda *parts: '')
-
-    other_origin = QTcpServer()
-    if response == 'cross_origin':
-        assert other_origin.listen(QHostAddress(QHostAddress.SpecialAddress.LocalHost))
+    paths = []
 
     def accept_connection():
         socket = invite_server.nextPendingConnection()
@@ -164,14 +169,16 @@ def test_contact_wechat_invite_refresh(qapp, monkeypatch, invite_server, respons
         def write_response():
             if not socket.canReadLine():
                 return
-            request = bytes(socket.readLine())
+            request = bytes(socket.readLine()).split()
+            paths.append(request[1])
             socket.readAll()
-            if response in ('redirect', 'cross_origin') and b' /wechat-group.png ' in request:
-                location = ('/current.png' if response == 'redirect' else
-                            f'http://127.0.0.1:{other_origin.serverPort()}/current.png')
-                socket.write(f'HTTP/1.1 302 Found\r\nLocation: {location}\r\n\r\n'.encode('ascii'))
+            if response == 'redirect' and request[1] != b'/redirected.png':
+                socket.write(b'HTTP/1.1 302 Found\r\nLocation: /redirected.png\r\nContent-Length: 0\r\n\r\n')
+            elif response == 'unpublished':
+                socket.write(b'HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n')
             else:
-                headers = (f'HTTP/1.1 200 OK\r\nContent-Type: image/png\r\n'
+                mime = 'text/html' if response == 'wrong_type' else 'image/png'
+                headers = (f'HTTP/1.1 200 OK\r\nContent-Type: {mime}\r\n'
                            f'Content-Length: {len(data)}\r\nConnection: close\r\n\r\n')
                 socket.write(headers.encode('ascii') + data)
             socket.disconnectFromHost()
@@ -182,56 +189,66 @@ def test_contact_wechat_invite_refresh(qapp, monkeypatch, invite_server, respons
 
     invite_server.newConnection.connect(accept_connection)
     if response == 'timeout':
-        monkeypatch.setattr(ContactInfoDialog, '_WECHAT_TIMEOUT_MS', 100)
-    dialog = ContactInfoDialog()
-    try:
-        assert dialog._wechat_status.text() == trans.t('contact_wechat_loading')
-        if response != 'no_bundle':
-            assert dialog._wechat_qr.width() == dialog._wechat_qr.height() == 192
-            bundled = dialog._wechat_qr.pixmap().cacheKey()
-        assert wait_until(lambda: dialog._wechat_refresh is None)
-        if response == 'no_bundle':
-            assert dialog._wechat_qr.isHidden()
-            assert dialog._wechat_status.text() == trans.t('contact_wechat_unavailable')
-            return
-        if response == 'cross_origin':
-            assert not other_origin.hasPendingConnections()
-        assert not dialog._wechat_qr.pixmap().isNull()
-        if response in ('png', 'redirect'):
-            assert dialog._wechat_status.isHidden()
-        else:
-            assert dialog._wechat_qr.pixmap().cacheKey() == bundled
-            assert dialog._wechat_status.text() == trans.t('contact_wechat_bundled')
-    finally:
-        dialog.close()
-        dialog.deleteLater()
+        monkeypatch.setattr(_community_download.CommunityDownloads, 'timeout_seconds', 0.2)
+
+    def check_dialog(color=None):
+        dialog = ContactInfoDialog()
+        dialog.show()
+        try:
+            qr = dialog.findChild(QLabel, 'wechat-group')
+            status = qr.parentWidget().findChild(QLabel, 'communityMuted')
+            assert qr.isHidden() and status.text() == trans.t('community_qr_loading')
+            assert wait_until(lambda: status.isHidden() or status.text() != trans.t('community_qr_loading'))
+            if color:
+                assert qr.isVisible() and status.isHidden()
+                assert qr.pixmap().toImage().pixelColor(0, 0).name() == color
+            else:
+                assert qr.isHidden()
+                expected = 'community_qr_unpublished' if response == 'unpublished' else 'community_qr_unavailable'
+                assert status.text() == trans.t(expected)
+        finally:
+            dialog.close()
+            dialog.deleteLater()
+            qapp.processEvents()
+
+    if response == 'png':
+        check_dialog('#ff0000')
+        data = png('blue')
+        check_dialog('#0000ff')
+    else:
+        check_dialog()
+    assert b'/redirected.png' not in paths
 
 
-def test_contact_menu_allows_main_window_input_while_refreshing(
-        qapp, tmp_path, monkeypatch, theme_environment, invite_server):
+@pytest.mark.parametrize('entry', ['action_contact', 'support_title'])
+def test_community_dialogs_leave_main_window_responsive_during_pending_requests(
+        qapp, tmp_path, monkeypatch, theme_environment, invite_server, entry):
     from PyQt6 import sip
     from PyQt6.QtCore import QTimer, Qt
     from PyQt6.QtNetwork import QAbstractSocket
     from PyQt6.QtTest import QTest
+    from dialogs._community_download import CommunityDownloads
     from dialogs.about import ContactInfoDialog
+    from dialogs.support import SupportUsDialog
     from tests.test_control_channel import _new_main_window, _destroy_main_window, wait_until
     from utils.design_tokens import palette
     from PyQt6.QtWidgets import QLabel
 
-    monkeypatch.setattr(ContactInfoDialog, '_WECHAT_TIMEOUT_MS', 30_000)
+    monkeypatch.setattr(CommunityDownloads, 'timeout_seconds', 10)
     window = _new_main_window(qapp, tmp_path, monkeypatch)
-    contact_action = window.ui_objs['action_contact']
+    action = window.ui_objs[entry]
+    dialog_type = ContactInfoDialog if entry == 'action_contact' else SupportUsDialog
 
-    def dismiss_modal_contact():
+    def dismiss_modal():
         dialog = qapp.activeModalWidget()
-        if isinstance(dialog, ContactInfoDialog):
+        if isinstance(dialog, dialog_type):
             dialog.reject()
 
     def open_from_menu():
         # A regression to exec() must fail the assertion instead of hanging the test.
-        QTimer.singleShot(0, dismiss_modal_contact)
-        contact_action.trigger()
-        dialogs = [d for d in window.findChildren(ContactInfoDialog) if d.isVisible()]
+        QTimer.singleShot(0, dismiss_modal)
+        action.trigger()
+        dialogs = [d for d in window.findChildren(dialog_type) if d.isVisible()]
         assert len(dialogs) == 1 and qapp.activeModalWidget() is None
         return dialogs[0]
 
@@ -239,9 +256,12 @@ def test_contact_menu_allows_main_window_input_while_refreshing(
         for theme in ('gray', 'light'):
             dialog = open_from_menu()
             assert open_from_menu() is dialog
-            assert wait_until(invite_server.hasPendingConnections)
-            socket = invite_server.nextPendingConnection()
-            assert wait_until(socket.canReadLine)
+            sockets = []
+            for _ in range(2 if entry == 'action_contact' else 3):
+                assert wait_until(invite_server.hasPendingConnections)
+                socket = invite_server.nextPendingConnection()
+                assert wait_until(socket.canReadLine)
+                sockets.append(socket)
 
             combo = window.combo_align
             before = window.current_alignment_method()
@@ -257,10 +277,10 @@ def test_contact_menu_allows_main_window_input_while_refreshing(
 
             dialog.close()
             assert wait_until(lambda: sip.isdeleted(dialog))
-            # Let the outstanding header read finish. The closed dialog's worker
-            # must disconnect even though the server never sends the PNG body.
-            socket.write(b'HTTP/1.1 200 OK\r\nContent-Length: 1024\r\n\r\n')
-            assert wait_until(lambda: socket.state() == QAbstractSocket.SocketState.UnconnectedState)
+            for socket in sockets:
+                # Completing the headers after close must neither read a body nor touch the UI.
+                socket.write(b'HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: 1024\r\n\r\n')
+                assert wait_until(lambda: socket.state() == QAbstractSocket.SocketState.UnconnectedState)
     finally:
         _destroy_main_window(qapp, window)
 

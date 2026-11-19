@@ -1,9 +1,11 @@
 """Shared layout for the project’s contact and support dialogs."""
 from html import escape
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import QByteArray, QBuffer, QIODevice, Qt
+from PyQt6.QtGui import QImageReader, QPixmap
 from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QScrollArea, QVBoxLayout, QWidget
 
+from dialogs import _community_download as downloads
 from locales import trans
 from ui import styles
 from utils.design_tokens import FONT, RADIUS, SPACE, WEIGHT, palette
@@ -120,3 +122,60 @@ def _color_link(label, color):
     url = escape(label.property('communityUrl'), quote=True)
     title = escape(label.accessibleName())
     label.setText(f'<a style="color: {color};" href="{url}">{title}</a>')
+
+
+def show_community_dialog(parent, dialog_type):
+    dialog = next((item for item in parent.findChildren(dialog_type) if item.isVisible()), None)
+    if dialog is None:
+        dialog = dialog_type(parent)
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        dialog.show()
+    dialog.raise_()
+    dialog.activateWindow()
+
+
+def add_published_qr(dialog, column, requests, title, slot, size):
+    """Display the currently published PNG with its original quiet zone."""
+    heading = community_label(title, 'section')
+    heading.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    column.addWidget(heading)
+
+    qr = QLabel()
+    qr.setObjectName(slot)
+    qr.setAccessibleName(title)
+    qr.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    qr.setStyleSheet('background: white;')
+    qr.setFixedSize(size, size)
+    qr.hide()
+    column.addWidget(qr, alignment=Qt.AlignmentFlag.AlignHCenter)
+
+    status = community_label(trans.t('community_qr_loading'), 'muted')
+    status.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    column.addWidget(status)
+    url = f'{downloads.QR_BASE_URL}/{slot}'
+    link = community_link(dialog, trans.t('community_qr_link'), url)
+    link.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    column.addWidget(link)
+
+    def display(code, data):
+        if data:
+            encoded = QByteArray(data)
+            buffer = QBuffer(encoded)
+            buffer.open(QIODevice.OpenModeFlag.ReadOnly)
+            reader = QImageReader(buffer, b'png')
+            dimensions = reader.size()
+            if (1 <= dimensions.width() <= downloads.QR_MAX_DIMENSION
+                    and 1 <= dimensions.height() <= downloads.QR_MAX_DIMENSION):
+                image = reader.read()
+                if not image.isNull():
+                    ratio = qr.devicePixelRatioF()
+                    pixels = round(size * ratio)
+                    pixmap = QPixmap.fromImage(image.scaled(pixels, pixels, Qt.AspectRatioMode.KeepAspectRatio))
+                    pixmap.setDevicePixelRatio(ratio)
+                    qr.setPixmap(pixmap)
+                    qr.show()
+                    status.hide()
+                    return
+        status.setText(trans.t('community_qr_unpublished' if code == 404 else 'community_qr_unavailable'))
+
+    requests.get(url, 'image/png', downloads.QR_MAX_BYTES, display)

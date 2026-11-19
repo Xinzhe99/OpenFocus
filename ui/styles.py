@@ -180,6 +180,7 @@ QMenuBar::item {{
 }}
 QMenuBar::item:selected {{ background-color: {t['surfaceHover']}; }}
 QMenuBar::item:pressed {{ background-color: {t['surfaceActive']}; }}
+QMenuBar::item:disabled {{ color: {t['textFaint']}; background-color: transparent; }}
 
 /* Menus need an explicit opaque fill on BOTH the frame and every item.
    The base rule `QWidget {{ background: transparent; }}` applies to QMenu
@@ -587,6 +588,7 @@ QLabel#retouchZoom {{
 }}
 QLabel#mutedLabel {{ color: {t['textMuted']}; font-size: {f['caption']}pt; }}
 QLabel#errorLabel {{ color: {t['danger']}; }}
+QLabel#acceleratorStatus {{ color: {t['text']}; font-size: {f['title']}pt; font-weight: {WEIGHT['semibold']}; }}
 QLabel#labelPreview {{ background-color: {t['canvas']}; color: {t['canvasText']}; }}
 QLabel#depthPreview {{
     background-color: {t['inspectionCanvas']};

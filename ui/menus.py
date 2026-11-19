@@ -2,7 +2,7 @@ import cv2
 
 from PyQt6.QtCore import QEvent, QObject, QUrl
 from PyQt6.QtGui import QAction, QActionGroup, QDesktopServices
-from PyQt6.QtWidgets import QMainWindow, QToolTip
+from PyQt6.QtWidgets import QMainWindow, QMenu, QToolTip
 from locales import trans
 from utils.design_tokens import PALETTES
 
@@ -33,8 +33,9 @@ def update_development_actions(window: QMainWindow) -> None:
 
 
 def _show_support_dialog(window):
+    from dialogs._community_layout import show_community_dialog
     from dialogs.support import SupportUsDialog
-    SupportUsDialog(window).exec()
+    show_community_dialog(window, SupportUsDialog)
 
 
 def _open_github_manual() -> None:
@@ -599,3 +600,12 @@ def setup_menus(window: QMainWindow) -> None:
     install_action.setVisible(False)
     help_menu.addAction(install_action)
     window.ui_objs['action_install_update'] = install_action
+
+    extensions_menu = QMenu(trans.t('menu_extensions'), menubar)
+    extensions_menu.setEnabled(False)
+    # Qt's native macOS menu bar hides empty menus.
+    unavailable_action = extensions_menu.addAction(trans.t('development_unavailable_hint'))
+    unavailable_action.setEnabled(False)
+    menubar.addMenu(extensions_menu)
+    window.ui_objs['menu_extensions'] = extensions_menu
+    window.ui_objs['development_unavailable_hint'] = unavailable_action
