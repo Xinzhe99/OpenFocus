@@ -1,8 +1,7 @@
 """Write the PyInstaller Windows version resource for the current release.
 
 The release pipeline passes the result to ``pyinstaller --version-file`` so the
-executable carries ProductName/ProductVersion metadata. SignPath's artifact
-configuration enforces those values before it signs the binary.
+executable carries ProductName/ProductVersion metadata in Windows file properties.
 """
 import sys
 from pathlib import Path

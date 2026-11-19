@@ -237,11 +237,9 @@ def _en() -> dict:
             "eyebrow": "Download",
             "title": "Install OpenFocus",
             "sub": (
-                "Windows code signing, when available, is provided free by "
-                "SignPath.io with a SignPath Foundation certificate. Check each "
-                "release's notes for its signing status. If SmartScreen appears, "
-                "choose More info → Run anyway; "
-                "the first start can take 30–60 seconds. On macOS, run xattr -cr, "
+                "Windows builds are unsigned and may trigger a SmartScreen warning. "
+                "Verify your download using the SHA-256 hash in the release manifest. "
+                "The first start can take 30–60 seconds. On macOS, run xattr -cr, "
                 "or allow the app in System Settings → Privacy & Security → "
                 "Open Anyway."
             ),
@@ -319,7 +317,6 @@ def _en() -> dict:
                 ("GitHub", REPO),
                 ("Docs", MANUAL["en"]),
                 ("Changelog", f"{REPO}/blob/main/CHANGELOG.md"),
-                ("Code signing policy", f"{REPO}/blob/main/docs/CODE_SIGNING_POLICY.md"),
                 ("Community", "#community"),
                 ("Privacy", "#privacy"),
                 ("Terms of Service", "https://account.openfocus.top/terms?lang=en"),
@@ -516,7 +513,7 @@ def _zh() -> dict:
         "download": {
             "eyebrow": "下载",
             "title": "安装 OpenFocus",
-            "sub": "Windows 代码签名启用后，由 SignPath.io 免费提供签名服务、SignPath Foundation 签发证书；请查看各版本说明中的签名状态。若被 SmartScreen 拦截，请点“更多信息 → 仍要运行”；首次启动可能需要 30–60 秒。macOS 请执行 xattr -cr，或在“系统设置 → 隐私与安全性”中点“仍要打开”。",
+            "sub": "Windows 版本未签名，首次启动时可能出现 SmartScreen 提示。可用发布清单中的 SHA-256 校验下载文件。首次启动可能需要 30–60 秒。macOS 请执行 xattr -cr，或在“系统设置 → 隐私与安全性”中点“仍要打开”。",
             "cards": [
                 {
                     "os": "Windows 10/11 · x64",
@@ -591,7 +588,6 @@ def _zh() -> dict:
                 ("GitHub", REPO),
                 ("文档", MANUAL["zh"]),
                 ("更新日志", f"{REPO}/blob/main/CHANGELOG.md"),
-                ("代码签名政策", f"{REPO}/blob/main/docs/CODE_SIGNING_POLICY.md"),
                 ("用户社区", "#community"),
                 ("隐私", "#privacy"),
                 ("服务条款", "https://account.openfocus.top/terms?lang=zh"),

@@ -98,7 +98,7 @@ curl -fsSL https://openfocus.top/install.sh | sh
 irm https://openfocus.top/install.ps1 | iex
 ```
 
-Skrypt `install.sh` instaluje kompilację macOS w `~/Applications`, a w systemie Linux — headless CLI. Podpis kompilacji Windows zależy od konkretnego wydania (zobacz informacje o wydaniu); podpis nie jest gwarantowany. W systemie Windows przy ostrzeżeniu SmartScreen wybierz „Więcej informacji → Uruchom mimo to”. Kompilacje macOS nie są notaryzowane: po instalacji z DMG (do Programów) w razie potrzeby wykonaj `xattr -cr /Applications/OpenFocus.app`, po instalacji z terminala (do `~/Applications`) — `xattr -cr ~/Applications/OpenFocus.app`, albo kliknij aplikację prawym przyciskiem i wybierz „Otwórz”.
+Skrypt `install.sh` instaluje kompilację macOS w `~/Applications`, a w systemie Linux — headless CLI. Obecne wersje dla systemu Windows nie są podpisane cyfrowo. Przed uruchomieniem porównaj sumę SHA-256 pobranego pliku z wartością w manifeście wydania. W systemie Windows przy ostrzeżeniu SmartScreen wybierz „Więcej informacji → Uruchom mimo to”. Kompilacje macOS nie są notaryzowane: po instalacji z DMG (do Programów) w razie potrzeby wykonaj `xattr -cr /Applications/OpenFocus.app`, po instalacji z terminala (do `~/Applications`) — `xattr -cr ~/Applications/OpenFocus.app`, albo kliknij aplikację prawym przyciskiem i wybierz „Otwórz”.
 
 Przy pierwszym uruchomieniu otwiera się okno powitalne, w którym można wybrać motyw i wczytać stos demonstracyjny. Domyślnie używany jest jasny motyw; ciemny wybiera się w oknie powitalnym lub później w **Ustawienia → Motyw**. Wybór jest pamiętany.
 
@@ -1109,7 +1109,7 @@ Kody wyjścia: `0` — sukces, `1` — błąd przetwarzania, `2` — błąd uży
 
 #### Ostrzeżenie Windows SmartScreen przy pierwszym uruchomieniu
 
-Podpis kompilacji Windows zależy od konkretnego wydania (zobacz informacje o wydaniu); podpis nie jest gwarantowany. Pobieraj je z **https://openfocus.top**, a nie z lustra strony trzeciej. Jeśli SmartScreen ostrzega, kliknij **Więcej informacji → Uruchom mimo to**. Pierwsze uruchomienie po rozpakowaniu może potrwać 30–60 sekund.
+Obecne wersje dla systemu Windows nie są podpisane cyfrowo. Pobierz plik z oficjalnej strony OpenFocus (**https://openfocus.top**). Przed uruchomieniem porównaj sumę SHA-256 pobranego pliku z wartością w manifeście wydania. Jeśli SmartScreen ostrzega, kliknij **Więcej informacji → Uruchom mimo to**. Pierwsze uruchomienie po rozpakowaniu może potrwać 30–60 sekund.
 
 #### macOS zgłasza, że aplikacji „nie można otworzyć” lub że „jest uszkodzona”
 
