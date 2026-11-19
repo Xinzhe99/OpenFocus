@@ -1,6 +1,13 @@
 """German language pack for OpenFocus."""
 
 PACK = {
+    "ai_pack_title": "KI-Beschleunigungskomponenten",
+    "ai_pack_offer": "Für {device} empfohlen: TensorRT und PyTorch CUDA für StackMFF.",
+    "ai_pack_check": "GPU und installierte Komponenten werden geprüft…",
+    "ai_pack_base": "OpenFocus verwendet auf diesem Gerät die mitgelieferten Inferenz-Engines.",
+    "ai_pack_driver": "Dieser NVIDIA-Treiber benötigt ein Update auf CUDA 12.4 oder neuer.",
+    "ai_pack_ready": "Die Komponenten für {device} sind installiert und stehen beim nächsten Rendern mit GPU bereit.",
+    "ai_pack_details": "Download: {size}. Für die Installation sind {disk} freier Speicher nötig. OpenFocus installiert die Komponenten in einer eigenen Umgebung. TensorRT erstellt beim ersten Rendern eine Engine. Dies kann länger dauern.",
     "account_title": "OpenFocus-Konto",
     "account_heading": "Bei OpenFocus anmelden",
     "account_subtitle": "Melden Sie sich auf diesem Gerät einmal online an. Mit der gespeicherten Sitzung können Sie OpenFocus offline nutzen, bis Sie sich abmelden oder sie entfernen.",

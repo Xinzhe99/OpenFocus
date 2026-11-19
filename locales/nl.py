@@ -1,6 +1,13 @@
 """Dutch language pack for OpenFocus."""
 
 PACK = {
+    "ai_pack_title": "Onderdelen voor AI-versnelling",
+    "ai_pack_offer": "TensorRT en PyTorch CUDA worden aanbevolen voor StackMFF op {device}.",
+    "ai_pack_check": "GPU en geïnstalleerde onderdelen controleren…",
+    "ai_pack_base": "OpenFocus gebruikt op dit apparaat de meegeleverde inferentie-engines.",
+    "ai_pack_driver": "Werk het NVIDIA-stuurprogramma bij voor ondersteuning van CUDA 12.4 of hoger.",
+    "ai_pack_ready": "De onderdelen voor {device} zijn geïnstalleerd en beschikbaar bij de volgende GPU-fusie.",
+    "ai_pack_details": "Downloadgrootte {size}. Houd {disk} vrij voor de installatie in de eigen omgeving van OpenFocus. De eerste fusie kan langer duren omdat TensorRT de engine bouwt.",
     "account_title": "OpenFocus-account",
     "account_heading": "Aanmelden bij OpenFocus",
     "account_subtitle": "Meld je eenmaal online aan op dit apparaat. Met de opgeslagen sessie kun je OpenFocus offline gebruiken totdat je je afmeldt of de sessie verwijdert.",

@@ -38,8 +38,8 @@ VALID_MODES = ("soft", "hard")
 
 
 def _resolve_device(use_gpu):
-    from fusion_methods.neural_runtime import resolve_device
-    return resolve_device(use_gpu)
+    from fusion_methods.neural_runtime import resolve_job_device
+    return resolve_job_device(use_gpu)
 
 
 def normalize_mode(mode):
@@ -177,13 +177,7 @@ def _stackmffv3_batch_impl(tiles_list, model_path, use_gpu, mode='soft',
     A supplied plan means the caller owns the heavy-job lease, including when
     dispatching to a child thread. Actual inference allocations are rechecked.
     """
-    from core.resource_policy import heavy_job
-
-    lease = heavy_job(should_cancel) if execution_plan is None else nullcontext()
-    with lease:
-        if execution_plan is None:
-            from fusion_methods.neural_runtime import start_inference_job
-            start_inference_job()
+    with common.neural_lease(execution_plan, should_cancel):
         _cancel(should_cancel)
         if not tiles_list:
             return []
@@ -261,13 +255,7 @@ def model_probabilities(frames, model_path, use_gpu, sigma=0.0,
                         should_cancel=None, thread_count=None,
                         resource_preference='balanced', execution_plan=None):
     """Per-pixel [N,H,W] probabilities, using fusion's single replicated pad."""
-    from core.resource_policy import heavy_job
-
-    lease = heavy_job(should_cancel) if execution_plan is None else nullcontext()
-    with lease:
-        if execution_plan is None:
-            from fusion_methods.neural_runtime import start_inference_job
-            start_inference_job()
+    with common.neural_lease(execution_plan, should_cancel):
         _cancel(should_cancel)
         _validate_tiles([frames])
         model, device, plan = _prepare_inference(

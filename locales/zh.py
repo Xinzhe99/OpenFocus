@@ -5,6 +5,13 @@ fall back to this table.
 """
 
 ZH = {
+    "ai_pack_title": "AI 推理加速组件",
+    "ai_pack_offer": "为 {device} 推荐 TensorRT 和 PyTorch CUDA，可加速 StackMFF 融合。",
+    "ai_pack_check": "正在检测显卡和已安装的组件…",
+    "ai_pack_base": "OpenFocus 将使用内置推理引擎在此设备上运行。",
+    "ai_pack_driver": "请更新 NVIDIA 驱动，使其支持 CUDA 12.4 或更高版本。",
+    "ai_pack_ready": "已为 {device} 安装加速组件。下次启用 GPU 融合时即可使用。",
+    "ai_pack_details": "下载量 {size}，安装时需预留 {disk}。组件安装在 OpenFocus 的独立环境中。首次使用 TensorRT 需要编译引擎，耗时可能较长。",
     "account_title": "OpenFocus 账号",
     "account_heading": "登录 OpenFocus 账号",
     "account_subtitle": "请先在此设备联网登录一次。保存的会话可让你离线使用 OpenFocus，直到退出登录或移除会话。",
