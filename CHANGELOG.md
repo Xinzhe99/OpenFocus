@@ -88,6 +88,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   stack loads can continue.
 - Bound Windows memory admission by reported commit headroom as well as
   available physical RAM, avoiding plans above the reported commit limit.
+- Stream baseline 4:4:4 JPEGs in Batch Image Converter, including 16-bit
+  sources. Failed source rows now retain the codec or filesystem error.
 - Include the immediate Windows job object's per-process commit limit in
   admission when that limit is present.
 - Keep OpenFocus A on the GPU when a streamed source and the fusion workspace fit
