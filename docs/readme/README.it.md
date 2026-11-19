@@ -265,7 +265,7 @@ Consulta il [manuale della CLI](../USER_MANUAL_IT.md#14-interfaccia-a-riga-di-co
 <a id="community"></a>
 ## Community e supporto
 
-Domande, idee o suggerimenti? Unisciti alla nostra [comunità Discord](https://discord.gg/afzmwgPt). Rispondiamo appena possibile; usiamo l'ora di Pechino (UTC+8), quindi il fuso orario può influire sui tempi di risposta.
+Domande, idee o suggerimenti? Unisciti alla nostra [comunità Discord](https://discord.gg/Jamr2SR5). Rispondiamo appena possibile; usiamo l'ora di Pechino (UTC+8), quindi il fuso orario può influire sui tempi di risposta.
 
 - **Documentazione** — [Manuale](../USER_MANUAL_IT.md) (dodici lingue) · [Registro modifiche](../../CHANGELOG.md) · [Prestazioni](../PERFORMANCE.md) · [Metodi di fusione](../FUSION_METHODS.md)
 - **Citazione** — [CITATION.cff](../../CITATION.cff); ogni versione è archiviata su Zenodo ([DOI](https://doi.org/10.5281/zenodo.23050823))

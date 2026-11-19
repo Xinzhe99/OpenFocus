@@ -1,4 +1,5 @@
 APP_VERSION = "1.77.0"
+DISCORD_INVITE_URL = "https://discord.gg/Jamr2SR5"
 
 
 def app_display_version():
