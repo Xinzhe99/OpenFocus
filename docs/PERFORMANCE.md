@@ -1,9 +1,6 @@
 # OpenFocus Performance & Large-Stack Reference
 
-Throughput tables marked historical describe earlier PyTorch-based revisions.
-They are not measurements or a specification of the current ONNX Runtime
-implementation and must not establish current GPU support, throughput, memory
-use or image quality. The current execution changes are described separately.
+Tables marked historical describe earlier PyTorch-based revisions.
 
 Current neural inference chooses a spatial tile size using available resources
 and keeps all focal frames in each tile. V2 tiled results approximate whole-image
@@ -11,6 +8,28 @@ inference. Imported frames and alignment scratch can be disk-backed, but decodin
 model workspaces and full-size outputs still require available RAM and temporary
 data requires free disk space. A stack can be rejected if its working set cannot
 fit. See [GPU support](GPU_SUPPORT.md) for provider and validation limitations.
+
+## StackMFF on an RTX 4060 Laptop GPU
+
+The Windows desktop render worker fused 29 registered 4096 × 3072 photographs
+with identical input pixels for each backend. The common crop was 4055 × 3043.
+Each render used the Balanced resource mode and 88 tiles. V1 and V3 ran both
+512 × 512 and 384 × 384 inference on every tile. V2 ran 512 × 512 once per tile.
+
+| Model | DirectML | PyTorch CUDA | TensorRT | Channels equal to DirectML with TensorRT | Largest difference (8-bit codes) |
+|---|---:|---:|---:|---:|---:|
+| V1 | 149.2 s | 132.5 s | 134.9 s | 99.9977% | 18 |
+| V2 | 96.1 s | 78.3 s | 67.0 s | 99.9990% | 5 |
+| V3 | 199.1 s | 115.1 s | 111.8 s | 99.9993% | 1 |
+
+Each time is one complete fusion stage with a reused alignment and previously
+compiled TensorRT plans. The job reports confirmed GPU execution throughout.
+The engines were ONNX Runtime DirectML 1.23.0, PyTorch 2.5.1+cu124 and TensorRT
+10.4.0. A first TensorRT inference with compilation and validation took 33–41 s
+per new model and input shape on this machine, after worker startup. Once warm,
+the median TensorRT time for one 29-frame 512 × 512 tile was 234–240 ms across
+the three models, including the round trip to the worker. FP32 engines can
+produce different final channel values, as the image comparison above shows.
 
 ## Diagnosing a slow render
 
