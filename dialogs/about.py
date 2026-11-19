@@ -14,10 +14,7 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QHBoxLayout,
     QLabel,
-    QScrollArea,
-    QWidget,
     QTextEdit,
-    QPushButton,
 )
 from constants import DISCORD_INVITE_URL
 from locales import trans
@@ -309,53 +306,54 @@ class ContactInfoDialog(QDialog):
     _WECHAT_MAX_BYTES = 512 * 1024
 
     def __init__(self, parent=None):
-        # Link colour must follow the theme: a hard-coded white link was
-        # invisible on the white dialog (the GitHub URL simply vanished).
-        link = "#0969da" if getattr(parent, "ui_theme", "dark") == "light" \
-            else "#6cb6ff"
-        contact_text = f"""
-        <style>a {{ color: {link}; }}</style>
-        <h3>{trans.t('contact_info_title')}</h3>
-        
-    <p>{trans.t('contact_email')}: xiexinzhe@zju.edu.cn</p>
-    <p>{trans.t('contact_institution')}: {trans.t('contact_zju')}</p>
-    <p>{trans.t('contact_github')}: <a href="https://github.com/Xinzhe99/OpenFocus">https://github.com/Xinzhe99/OpenFocus</a></p>
-    <p>Discord: <a href="{DISCORD_INVITE_URL}">{DISCORD_INVITE_URL}</a></p>
-    <p>{trans.t('contact_welcome')}</p>"""
-        
+        from ._community_layout import community_body, community_card, community_label, community_link
+
         super().__init__(parent)
-        self.setWindowTitle(trans.t('dialog_contact_title'))
-        self.resize(500, 620)
+        self._contact_cards = QHBoxLayout()
+        title = trans.t('dialog_contact_title')
+        self.setWindowTitle(title)
+        body = community_body(self, title, trans.t('contact_welcome'), width=700, height=480)
 
-        layout = QVBoxLayout(self)
+        self._contact_cards.setSpacing(body.spacing())
+        body.addLayout(self._contact_cards)
+        body.addStretch()
 
-        from PyQt6.QtWidgets import QTextBrowser
-        from PyQt6.QtGui import QTextOption
+        contact_card, contact = community_card()
+        self._contact_cards.addWidget(contact_card, 3)
+        contact.addWidget(community_label(trans.t('contact_info_title'), 'section'))
+        contact.addWidget(community_label(trans.t('contact_email'), 'muted'))
+        for address in ('xiexinzhe@zju.edu.cn', 'xiexinzheyyy@163.com', 'xiexinzhe123@gmail.com'):
+            contact.addWidget(community_link(self, address, f'mailto:{address}'))
+        contact.addSpacing(8)
+        contact.addWidget(community_label(trans.t('contact_institution'), 'muted'))
+        contact.addWidget(community_label(trans.t('contact_zju')))
+        contact.addSpacing(8)
+        contact.addWidget(community_link(self, trans.t('contact_github'), 'https://github.com/Xinzhe99/OpenFocus'))
+        contact.addWidget(community_link(self, 'Discord', DISCORD_INVITE_URL))
+        contact.addStretch()
 
-        # 创建可滚动的文本浏览器
-        self.text_browser = QTextBrowser()
-        self.text_browser.setHtml(contact_text)
-        self.text_browser.setOpenExternalLinks(True)
-        self.text_browser.setWordWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
-        layout.addWidget(self.text_browser)
+        wechat_card, wechat = community_card()
+        self._contact_cards.addWidget(wechat_card, 2)
+        wechat_title = trans.t('contact_wechat_title')
+        heading = community_label(wechat_title, 'section')
+        heading.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        wechat.addWidget(heading)
 
         self._wechat_qr = QLabel()
-        self._wechat_qr.setAccessibleName(trans.t('contact_wechat_group'))
+        self._wechat_qr.setAccessibleName(wechat_title)
         self._wechat_qr.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._wechat_qr.setFixedSize(320, 324)
+        self._wechat_qr.setFixedSize(192, 192)
         self._wechat_qr.setStyleSheet('background: white;')
-        layout.addWidget(self._wechat_qr, alignment=Qt.AlignmentFlag.AlignHCenter)
+        wechat.addWidget(self._wechat_qr, alignment=Qt.AlignmentFlag.AlignHCenter)
 
-        self._wechat_status = QLabel(trans.t('contact_wechat_loading'))
+        self._wechat_status = community_label(trans.t('contact_wechat_loading'), 'muted')
         self._wechat_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._wechat_status.setWordWrap(True)
-        layout.addWidget(self._wechat_status)
+        wechat.addWidget(self._wechat_status)
 
-        group_link = QLabel(f'<a style="color: {link};" href="{self._WECHAT_URL}">'
-                            f'{trans.t("contact_wechat_group")}</a>')
+        group_link = community_link(self, trans.t('contact_wechat_group'), self._WECHAT_URL)
         group_link.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        group_link.setOpenExternalLinks(True)
-        layout.addWidget(group_link)
+        wechat.addWidget(group_link)
+        wechat.addStretch()
 
         bundled = QPixmap(resource_path('assets', 'readme', 'wechat-group.png'))
         if bundled.isNull():
@@ -371,17 +369,18 @@ class ContactInfoDialog(QDialog):
         self._wechat_refresh.start()
         self._wechat_timer.start(50)
 
-        # 关闭按钮
-        close_btn = QPushButton(trans.t('btn_close'))
-        close_btn.clicked.connect(self.accept)
-        layout.addWidget(close_btn)
-
         # 居中显示
         if parent:
             self.move(
                 parent.x() + parent.width() // 2 - self.width() // 2,
                 parent.y() + parent.height() // 2 - self.height() // 2,
             )
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        direction = (QHBoxLayout.Direction.LeftToRight if event.size().width() >= 600
+                     else QHBoxLayout.Direction.TopToBottom)
+        self._contact_cards.setDirection(direction)
 
     def _show_wechat_qr(self, original):
         ratio = self.devicePixelRatioF()
@@ -420,55 +419,3 @@ class ContactInfoDialog(QDialog):
             self._wechat_refresh = None
         super().done(result)
 
-
-class _SupportCode(QLabel):
-    """Scale the original payment image for the available logical size."""
-
-    def __init__(self, filename):
-        super().__init__()
-        self._original = QPixmap(resource_path('assets', 'readme', filename))
-        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.setMinimumSize(130, 160)
-        self.setStyleSheet('background: white;')
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        ratio = self.devicePixelRatioF()
-        pixmap = self._original.scaled(
-            round(self.width() * ratio), round(self.height() * ratio),
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation)
-        pixmap.setDevicePixelRatio(ratio)
-        self.setPixmap(pixmap)
-
-
-class SupportUsDialog(QDialog):
-    """Display the project's payment codes and acknowledgment information."""
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle(trans.t('support_title'))
-        self.resize(640, 600)
-        layout = QVBoxLayout(self)
-        scroll = QScrollArea(self)
-        scroll.setWidgetResizable(True)
-        content = QWidget()
-        body = QVBoxLayout(content)
-        message = QLabel(trans.t('support_message'))
-        message.setWordWrap(True)
-        body.addWidget(message)
-        codes = QHBoxLayout()
-        for title, filename in (('Alipay', 'alipay-coffee.jpg'),
-                                ('PayPal', 'paypal-coffee.png')):
-            column = QVBoxLayout()
-            label = QLabel(title)
-            label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            column.addWidget(label)
-            column.addWidget(_SupportCode(filename), 1)
-            codes.addLayout(column, 1)
-        body.addLayout(codes, 1)
-        scroll.setWidget(content)
-        layout.addWidget(scroll, 1)
-        close_btn = QPushButton(trans.t('btn_close'))
-        close_btn.clicked.connect(self.accept)
-        layout.addWidget(close_btn)

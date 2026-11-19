@@ -510,6 +510,7 @@ class OpenFocus(QMainWindow):
         self.profile_performance = False
         # 恢复持久化设置与最近文件（语言需在菜单构建前应用）
         load_window_settings(self)
+        self.ui_theme = self._resolved_theme()
         saved_alignment = getattr(self, '_preferred_alignment_method', None)
         self._alignment_choice_explicit = bool(saved_alignment is not None and (
             experimental_enabled(self) or not alignment_is_experimental(saved_alignment)))
@@ -556,7 +557,8 @@ class OpenFocus(QMainWindow):
         with self._restore_scope():
             self.init_ui()
             self.apply_experimental_features()
-            self.apply_dark_theme()
+            self.apply_theme(self.theme_mode)
+        QApplication.instance().styleHints().colorSchemeChanged.connect(self._system_theme_changed)
         self._start_account_load()
         from ui.activity import install_activity_logging
         install_activity_logging(self)
@@ -1580,8 +1582,6 @@ class OpenFocus(QMainWindow):
 
     def apply_experimental_features(self) -> None:
         """Refresh desktop gates while preserving the selected project settings."""
-        from ui.menus import update_experimental_actions
-        update_experimental_actions(self)
         if getattr(self, 'combo_fusion', None) is not None and getattr(self, 'combo_align', None) is not None:
             self.refresh_method_availability()
         manager = getattr(self, 'render_manager', None)
@@ -1713,7 +1713,7 @@ class OpenFocus(QMainWindow):
             trans.languageChanged.disconnect(refresh_labels)
 
     def _build_update_indicator(self) -> None:
-        """Build the update indicator and sponsor contact link."""
+        """Build the update indicator and the right-hand sponsor link."""
         from PyQt6.QtWidgets import QHBoxLayout, QLabel, QProgressBar, QPushButton, QWidget
         from ui.status_bar import SponsorLink
 
@@ -1736,31 +1736,16 @@ class OpenFocus(QMainWindow):
         bar.add_activity(container)
         container.hide()
         self.lbl_status_sponsor = SponsorLink(bar)
-        self.lbl_status_sponsor.setObjectName('statusSponsor')
-        self.lbl_status_sponsor.setContentsMargins(0, 0, 6, 0)
-        self.lbl_status_sponsor.setTextFormat(Qt.TextFormat.RichText)
-        self.lbl_status_sponsor.setTextInteractionFlags(
-            Qt.TextInteractionFlag.LinksAccessibleByMouse
-            | Qt.TextInteractionFlag.LinksAccessibleByKeyboard)
-        self.lbl_status_sponsor.linkActivated.connect(self.show_contact_info)
         self._refresh_status_sponsor()
-        bar.addPermanentWidget(self.lbl_status_sponsor)
+        bar.add_sponsor(self.lbl_status_sponsor)
         bar.setVisible(True)
         self._update_indicator = container
         self.source_manager.refresh_review_text()
 
     def _refresh_status_sponsor(self) -> None:
-        from html import escape
-        from utils.design_tokens import palette
-
         label = getattr(self, 'lbl_status_sponsor', None)
-        if label is None:
-            return
-        text = trans.t('status_sponsor')
-        color = palette(self.ui_theme)['textMuted']
-        label.setText(
-            f'<a href="contact" style="color: {color}; text-decoration: none">{escape(text)}</a>')
-        label.setAccessibleName(text)
+        if label is not None:
+            label.refresh(self.ui_theme)
 
     def _set_review_status(self, text: str) -> None:
         self.statusBar().set_review_status(text)
@@ -2280,20 +2265,13 @@ class OpenFocus(QMainWindow):
             show_warning_box(self, trans.t('msg_error'), str(exc))
 
     def _update_project_title(self) -> None:
-        """Window title: project name plus an unsaved-changes marker.
-
-        Every other editor marks a modified document; without it the user had
-        no way to tell whether the current state was saved, and closing threw
-        the state away silently.
-        """
-        import os as _os
-        name = (_os.path.basename(self.project_path)
-                if getattr(self, "project_path", None) else None)
-        mark = "*" if getattr(self, "_project_dirty", False) else ""
-        if name:
-            self.setWindowTitle(f"OpenFocus — {name}{mark}")
+        """Show the modification marker on named projects only."""
+        path = getattr(self, "project_path", None)
+        if path:
+            mark = "*" if getattr(self, "_project_dirty", False) else ""
+            self.setWindowTitle(f"OpenFocus — {os.path.basename(path)}{mark}")
         else:
-            self.setWindowTitle(f"OpenFocus{mark}" if mark else "OpenFocus")
+            self.setWindowTitle("OpenFocus")
 
     def _mark_project_dirty(self) -> None:
         if not getattr(self, "_project_dirty", False):
@@ -2567,14 +2545,6 @@ class OpenFocus(QMainWindow):
         if getattr(self, "wipe_active", False):
             self._update_wipe_images()
 
-    def show_mosaic_dialog(self) -> None:
-        """Open the independent planar microscope mosaic workspace."""
-        if not experimental_enabled(self):
-            show_warning_box(self, trans.t('experimental_label'),
-                             trans.t('experimental_locked_hint'))
-            return
-        from dialogs.mosaic import MosaicDialog
-        MosaicDialog(self).exec()
 
     def show_scale_bar_dialog(self) -> None:
         """Configure the exported-image scale bar with a live preview."""
@@ -2764,7 +2734,7 @@ class OpenFocus(QMainWindow):
                 self.drag_export_format = '.jpg'
                 self.chk_quick_preview.setChecked(False)
                 self.reset_to_default()
-                self.apply_theme(self.ui_theme)
+                self.apply_theme(self.theme_mode)
                 self.set_use_gpu(self.use_gpu)
             self.persist_settings()
         except Exception as exc:
@@ -2788,18 +2758,6 @@ class OpenFocus(QMainWindow):
         from dialogs.compare import CompareDialog
         CompareDialog(self).exec()
 
-    def show_dust_map_dialog(self) -> None:
-        """Flat-field (dust map) correction from a defocused white shot."""
-        if not experimental_enabled(self):
-            show_warning_box(self, trans.t('experimental_label'),
-                             trans.t('experimental_locked_hint'))
-            return
-        if any(image.ndim == 3 and image.shape[2] == 4 for image in self.raw_images):
-            show_warning_box(self, trans.t('msg_warning'),
-                             trans.t('transparent_desktop_unsupported').format(path=''))
-            return
-        from dialogs.dustmap import DustMapDialog
-        DustMapDialog(self).exec()
 
     def apply_flat_field_to_stack(self, gain, remove_index=None, prepared=None, reference=None) -> bool:
         """Commit corrected source/base frames and optional removal together."""
@@ -3996,26 +3954,46 @@ class OpenFocus(QMainWindow):
             # 取消ROI按钮的选中状态，这会触发toggle_roi_mode(False)
             self.btn_preview_roi.setChecked(False)
 
-    def apply_dark_theme(self):
-        """Apply the persisted theme at startup (light on a fresh install)."""
-        from utils.settings_store import DEFAULT_THEME
-        self.apply_theme(getattr(self, "ui_theme", DEFAULT_THEME))
+    def _system_theme_changed(self, scheme):
+        if self.theme_mode == 'system' and not getattr(self, '_shutting_down', False):
+            system_theme = 'dark' if scheme == Qt.ColorScheme.Dark else 'light'
+            if system_theme != self.ui_theme:
+                self._apply_appearance(system_theme)
 
-    def apply_theme(self, theme: str) -> None:
-        """Apply the 'dark' or 'light' theme immediately and persist it.
+    def _resolved_theme(self):
+        if self.theme_mode != 'system':
+            return self.theme_mode
+        scheme = QApplication.instance().styleHints().colorScheme()
+        return 'dark' if scheme == Qt.ColorScheme.Dark else 'light'
 
-        Both themes are generated from the same design tokens, so this is a
-        single code path: clear any per-widget leftovers, install the
-        generated sheet on the application, then let widgets that paint by
-        hand (image panels, banner, help buttons) refresh their own palette.
+    def apply_theme(self, mode: str) -> None:
+        """Apply the preferred theme and keep the choice across restarts."""
+        self.theme_mode = mode
+        self._apply_appearance(self._resolved_theme())
+        self.persist_settings()
 
-        The old implementation stripped every inline stylesheet in light mode
-        and relied on a hand-written light sheet, which is why light mode kept
-        losing the panels' own styling.
-        """
+    def set_ui_font_size(self, mode):
+        if mode == 'custom':
+            from dialogs.font_size import FontSizeDialog
+            dialog = FontSizeDialog(self.custom_font_size, self)
+            try:
+                if dialog.exec() != QDialog.DialogCode.Accepted:
+                    self._sync_appearance_actions()
+                    return
+                dialog.size_spin.interpretText()
+                self.custom_font_size = int(dialog.size_spin.value())
+            finally:
+                dialog.deleteLater()
+        self.font_size_mode = mode
+        self._apply_appearance(self.ui_theme)
+        self.persist_settings()
+
+    def _apply_appearance(self, theme):
         from ui.styles import get_theme_style, set_current_theme
-        theme = "light" if theme == "light" else "dark"
+        from utils.design_tokens import UI_FONT_PRESETS
+        points = UI_FONT_PRESETS.get(self.font_size_mode, self.custom_font_size)
         self.ui_theme = theme
+        set_current_theme(theme, font_size=points)
         ui_font = get_ui_font_family()
         mono_font = get_monospace_font_family()
 
@@ -4032,7 +4010,8 @@ class OpenFocus(QMainWindow):
         if app is not None:
             app.setStyleSheet("")
             app.setPalette(app.style().standardPalette())
-            app.setStyleSheet(_apply_font_family(get_theme_style(theme),
+            app.setFont(QFont(ui_font, points))
+            app.setStyleSheet(_apply_font_family(get_theme_style(theme, font_size=points),
                                                  ui_font, mono_font))
 
         # Re-colour themed inline widgets that the light pass above strips:
@@ -4048,12 +4027,6 @@ class OpenFocus(QMainWindow):
                 apply_panel_theme(panel, theme)
             except RuntimeError:
                 pass
-        # The active theme must be recorded BEFORE any inline style is
-        # recomputed and before dialogs are constructed: help_button_style()
-        # with no argument reads CURRENT_THEME, so refreshing the "?" chips
-        # first re-applied the OLD theme's colours (the dark chip survived the
-        # switch to light). Dialogs opened later read the same global.
-        set_current_theme(theme)
         self._refresh_status_sponsor()
         # Inline "?" button styles are captured at creation; re-apply them for
         # the new theme or the dark chip stays dark on the light panel.
@@ -4075,11 +4048,14 @@ class OpenFocus(QMainWindow):
                 pass
 
         self._enable_dark_title_bar(dark=(theme != "light"))
-        if hasattr(self, "ui_objs") and "menu_theme" in self.ui_objs:
-            for act in self.ui_objs["menu_theme"].actions():
-                # Sync by data property, not display text: the text changes
-                # with the language and mis-matched after a switch.
-                act.setChecked(act.data() == theme)
+        self._sync_appearance_actions()
+
+    def _sync_appearance_actions(self):
+        for key, mode in (('menu_theme', self.theme_mode), ('menu_ui_font', self.font_size_mode)):
+            menu = self.ui_objs.get(key)
+            if menu is not None:
+                for action in menu.actions():
+                    action.setChecked(action.data() == mode)
 
     def _enable_dark_title_bar(self, dark: bool = True):
         """Windows: paint the native title bar dark/light to match the theme."""
@@ -4727,6 +4703,8 @@ class OpenFocus(QMainWindow):
                     obj.setTitle(text)
                 elif isinstance(obj, QAction):
                     obj.setText(text)
+        from ui.menus import update_development_actions
+        update_development_actions(self)
         self._refresh_account_action()
         
         # Update Right Panel

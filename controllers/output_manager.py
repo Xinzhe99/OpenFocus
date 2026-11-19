@@ -233,6 +233,19 @@ class LinearDngExportWorker(QThread):
 
 
 
+def workspace_fusions(window):
+    """Yield history entries with intact fusion provenance, newest first."""
+    get_record = getattr(getattr(window, 'output_manager', None), 'record_for_row', None)
+    output_list = getattr(window, 'output_list', None)
+    if not callable(get_record) or output_list is None:
+        return
+    for row in range(output_list.count()):
+        record = get_record(row)
+        if (record is not None and record.kind in ('fusion', 'compare')
+                and record.context is not None and record.image is not None):
+            yield record
+
+
 @dataclass
 class OutputRecord:
     """Stable identity for one entry in the output history.

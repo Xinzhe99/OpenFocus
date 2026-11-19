@@ -46,8 +46,8 @@ def test_experimental_default_toggle_and_preserved_selection(window, qapp):
     dialog.chk_experimental_features.setChecked(True)
     dialog._apply()
     assert w.experimental_features and settings.value('ui/experimental_features', type=bool)
-    assert w.ui_objs['mosaic_title'].isEnabled()
-    assert w.ui_objs['menu_dust_map'].isEnabled()
+    assert not w.ui_objs['mosaic_title'].isEnabled()
+    assert not w.ui_objs['menu_dust_map'].isEnabled()
     w.set_fusion_method('guided_filter')
     assert w.current_fusion_method() == 'guided_filter'
 
@@ -112,32 +112,24 @@ def test_clicking_locked_tool_shows_guidance(window, qapp, key):
     QToolTip.hideText()
     QTest.mouseClick(menu, Qt.MouseButton.LeftButton,
                      pos=menu.actionGeometry(action).center())
-    assert QToolTip.text() == trans.t('experimental_locked_hint')
+    assert QToolTip.text() == trans.t('development_unavailable_hint')
     menu.hide()
 
 
-def test_batch_flat_field_requires_experimental_opt_in(window):
+def test_batch_flat_field_stays_unavailable_with_experimental_opt_in(window):
     from dialogs.batch import BatchProcessingDialog
     from locales import trans
+    from PyQt6.QtWidgets import QLabel
 
     w, _settings = window
-    dialog = BatchProcessingDialog(w)
-    try:
-        assert not dialog.flat_field_group.isEnabled()
-        dialog.flat_field_path.setText('reference.png')
-        with pytest.raises(ValueError, match=trans.t('experimental_locked_hint')):
-            dialog.get_processing_settings()
-    finally:
-        dialog.close()
-        dialog.deleteLater()
-
     w.experimental_features = True
     w.apply_experimental_features()
     dialog = BatchProcessingDialog(w)
     try:
-        assert dialog.flat_field_group.isEnabled()
-        dialog.flat_field_path.setText('reference.png')
-        assert dialog.get_processing_settings()['flat_field_path'] == 'reference.png'
+        label = dialog.flat_field_group.findChild(QLabel)
+        assert trans.t('development_label') in label.text()
+        assert not label.isEnabled()
+        assert not dialog.get_processing_settings().get('flat_field_path')
     finally:
         dialog.close()
         dialog.deleteLater()

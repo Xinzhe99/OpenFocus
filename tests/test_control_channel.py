@@ -1836,14 +1836,14 @@ def test_stack_include_uses_the_checkbox_path(server, control_window):
     control_window.image_filenames = []
 
 
-def test_dust_dialog_requires_experimental_opt_in(server, control_window):
-    control_window.experimental_features = False
-    response = call(server, 'dialog.open', name='dust')
-    assert response['error']['code'] == 'invalid_argument'
+@pytest.mark.parametrize('name', ['dust', 'mosaic'])
+def test_development_tools_stay_unavailable_through_control(server, control_window, name):
+    from locales import trans
 
     control_window.experimental_features = True
-    assert call(server, 'dialog.open', name='dust')['result']['opened']
-    call(server, 'dialog.reject')
+    response = call(server, 'dialog.open', name=name)
+    assert response['error']['code'] == 'invalid_argument'
+    assert response['error']['message'] == trans.t('development_unavailable_hint')
 
 
 def test_dialog_open_reuses_the_managed_instance(server):

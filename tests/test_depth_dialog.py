@@ -132,6 +132,52 @@ def _output_context(frames, output, method="dct", **kwargs):
         source_indices=[2 + i * 3 for i in range(len(frames))], **kwargs)
 
 
+def test_switch_depth_measure_reuses_compatible_workspace_output(depth_dialog, qapp, monkeypatch):
+    from PyQt6.QtWidgets import QListWidgetItem
+    from controllers.output_manager import OutputRecord, OUTPUT_RECORD_ROLE
+    from core import depth_map
+    from core.algorithms import resolve_fusion_parameters
+    from dialogs.depthmap import DepthMapDialog
+
+    frames = _synthetic_thirds(48, 64)
+    image = frames[0].copy()
+    existing, window = depth_dialog('openfocus_b', frames, image,
+        _output_context(frames, image, 'openfocus_b', source_revision=3))
+    existing.reject()
+
+    params = resolve_fusion_parameters('openfocus_c', {'smoothing': 7})
+    for revision in (2, 3):
+        index = np.full(image.shape[:2], revision / 4, dtype=np.float32)
+        context = _output_context(frames, image, 'openfocus_c', source_revision=revision,
+            rendered_depth={'method': 'openfocus_c', 'frame_count': len(frames),
+                            'roi_rect': None, 'index': index, 'valid_rect': (0, 0, 64, 48),
+                            'reverse_order': False, 'parameters': params})
+        record = OutputRecord.create(image, f'Saved C {revision}', context=context)
+        item = QListWidgetItem(record.label, window.output_list)
+        item.setData(OUTPUT_RECORD_ROLE, record)
+    computed = []
+    def compute(images, method, **kwargs):
+        computed.append(method)
+        return _ramp(images, method)
+    monkeypatch.setattr(depth_map, 'compute_focus_index', compute)
+    dialog = DepthMapDialog(window)
+    try:
+        dialog.show()
+        _select(dialog.method_combo, 'openfocus_c')
+        _wait(qapp, dialog._has_current_map)
+        assert computed == []
+        np.testing.assert_array_equal(dialog._index01, index)
+        assert dialog.fusion_parameter_panel.editors['smoothing'].value() == 7
+        assert 'Saved C 3' in dialog.lbl_source.text()
+        dialog.fusion_parameter_panel.editors['smoothing'].setValue(9)
+        assert not dialog._has_current_map() and not computed
+        _click_and_finish(qapp, dialog)
+        assert computed == ['openfocus_c']
+        assert not dialog._map_rendered
+    finally:
+        dialog.reject()
+
+
 @pytest.mark.parametrize("method", ["dct", "gfgfgf", "openfocus_b", "openfocus_c", "dtcwt", "stackmffv3"])
 def test_depth_open_and_switch_require_explicit_compute(depth_dialog, qapp, monkeypatch, method):
     """DM-A01: no constructor, source, alignment, method or display auto-start."""
@@ -1392,6 +1438,7 @@ def test_depth_dependent_controls_are_progressively_disclosed(depth_dialog, qapp
     frames = _synthetic_thirds(48, 64)
     output = frames[0].copy()
     dialog, _ = depth_dialog("dct", frames, output, _output_context(frames, output))
+    dialog._side_controls.setCurrentIndex(1)
 
     # Calibration off: the whole panel (origin/step/unit/direction, capture
     # confirmation and physical export) is out of the layout. Relief lives on
@@ -1399,7 +1446,7 @@ def test_depth_dependent_controls_are_progressively_disclosed(depth_dialog, qapp
     assert dialog.physical_panel.isHidden()
     assert not dialog.z_start.isVisibleTo(dialog)
     assert not dialog.z_mapping.isVisibleTo(dialog)
-    assert not dialog.btn_save_physical.isVisibleTo(dialog)
+    assert dialog.btn_save_physical.isHidden()
     assert not dialog.relief_row.isHidden()
 
     dialog.z_start.setValue(2.5)
@@ -1412,7 +1459,9 @@ def test_depth_dependent_controls_are_progressively_disclosed(depth_dialog, qapp
     assert not dialog.physical_panel.isHidden()
     assert dialog.z_start.isVisibleTo(dialog)
     assert dialog.z_mapping.isVisibleTo(dialog)
+    dialog._side_controls.setCurrentIndex(2)
     assert dialog.btn_save_physical.isVisibleTo(dialog)
+    dialog._side_controls.setCurrentIndex(1)
     # Calibrated Z already sets the surface height, so relief is not exposed.
     assert dialog.relief_row.isHidden()
     assert not dialog.relief_spin.isEnabled()

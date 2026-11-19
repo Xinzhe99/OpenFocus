@@ -16,8 +16,9 @@ import numpy as np
 
 from PyQt6.QtCore import QEvent, QPointF, QRectF, Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QImage, QPainter, QPen, QPixmap
-from PyQt6.QtWidgets import QLabel, QSizePolicy
+from PyQt6.QtWidgets import QLabel, QSizePolicy, QStyle
 
+from locales import trans
 from utils.validators import LabelAdder, build_label_text
 from utils.frame_pixels import preview_pixels as display_image, preview_label_config
 
@@ -48,11 +49,12 @@ class _DraftLabels:
 class LabelPreview(QLabel):
     """A scaled preview of a source frame carrying one label."""
     status_changed = pyqtSignal()
-
+    position_changed = pyqtSignal(float, float)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setMouseTracking(True)
         self.setMinimumSize(280, 190)
         self.setSizePolicy(QSizePolicy.Policy.Ignored,
                            QSizePolicy.Policy.Ignored)
@@ -75,6 +77,7 @@ class LabelPreview(QLabel):
         self._rendered = QPixmap()
         self._pan = (0, 0)
         self._drag_start = None
+        self._placement_drag = None
         self._source = None
         self._source_shape = None
         self._source_key = None
@@ -106,6 +109,8 @@ class LabelPreview(QLabel):
         same = (frame is self._source and self._source_key is not None
                 and self._source_key[:2] == (shape, dtype)
                 and self._same_metadata(self._source_key[2], linear_dng_metadata))
+        if not same or self._index != index or self._target != target:
+            self.cancel_drag()
         self._source = frame
         self._source_shape = shape
         self._labels = labels
@@ -129,6 +134,7 @@ class LabelPreview(QLabel):
                     self._status = "error"
                     self._native_error = str(exc)
                     self.clear()
+                    self.status_changed.emit()
                 return
             if generation != self._generation or self._closed:
                 return
@@ -183,9 +189,11 @@ class LabelPreview(QLabel):
 
     def set_zoom_mode(self, mode):
         """At 100%, one source pixel occupies one device pixel."""
+        self.cancel_drag()
         self._zoom_mode = mode
         self._pan = (0, 0)
         self._show_rendered()
+        self._update_cursor()
 
     def _cancel_native(self):
         self._native_batch += 1
@@ -200,6 +208,7 @@ class LabelPreview(QLabel):
     def close_preview(self):
         """Cancel outstanding work without waiting for the decoder on Qt."""
         self._closed = True
+        self.cancel_drag()
         self._generation += 1
         self._cancel_native()
         self._source = self._frame = None
@@ -330,23 +339,90 @@ class LabelPreview(QLabel):
             Qt.TransformationMode.SmoothTransformation))
         self.status_changed.emit()
 
+    def placement_available(self):
+        return (self._zoom_mode == 'fit' and self._frame is not None
+                and not self._status and self._adder.last_bounds is not None)
+
+    def _fit_geometry(self, position):
+        """Find the displayed pixmap and the label hit in logical pixels."""
+        if not self.placement_available():
+            return None
+        pixmap = self.pixmap()
+        if pixmap.isNull():
+            return None
+        image_rect = QRectF(QStyle.alignedRect(
+            self.layoutDirection(), self.alignment(),
+            pixmap.deviceIndependentSize().toSize(), self.contentsRect()))
+        if not image_rect.contains(position):
+            return None
+
+        sx = image_rect.width() / self._rendered.width()
+        sy = image_rect.height() / self._rendered.height()
+        x, y, width, height = self._adder.last_bounds
+        hit = QRectF(image_rect.x() + x * sx, image_rect.y() + y * sy,
+                     width * sx, height * sy).adjusted(-5, -5, 5, 5)
+        return image_rect if hit.contains(position) else None
+
+    def _update_cursor(self, position=None):
+        if self._placement_drag is not None or (position is not None
+                and self._fit_geometry(position) is not None):
+            self.setCursor(Qt.CursorShape.SizeAllCursor)
+        elif self._zoom_mode == 'actual' and self._frame is not None:
+            self.setCursor(Qt.CursorShape.ClosedHandCursor if self._drag_start is not None
+                           else Qt.CursorShape.OpenHandCursor)
+        else:
+            self.unsetCursor()
+
+    def cancel_drag(self):
+        self._drag_start = self._placement_drag = None
+        self.unsetCursor()
+
     def mousePressEvent(self, event):
-        if event.button() == Qt.MouseButton.LeftButton and self._zoom_mode == "actual":
-            self._drag_start = event.position()
+        if event.button() == Qt.MouseButton.LeftButton:
+            position = event.position()
+            if self._zoom_mode == 'actual' and self._frame is not None:
+                self._drag_start = position
+            elif (image_rect := self._fit_geometry(position)) is not None:
+                config = self._adder.config
+                self._placement_drag = (position, image_rect, config.x_location, config.y_location)
+            if self._drag_start is not None or self._placement_drag is not None:
+                self._update_cursor(position)
+                event.accept()
+                return
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
+        position = event.position()
+        if self._placement_drag is not None:
+            start, image_rect, x, y = self._placement_drag
+            source_h, source_w = self._source_shape[:2]
+            # Keep the point grabbed on the image, including when the pointer
+            # leaves the canvas. Preserve the offset from the label anchor.
+            px = max(image_rect.left(), min(position.x(), image_rect.right() - 1))
+            py = max(image_rect.top(), min(position.y(), image_rect.bottom() - 1))
+            x = round(x + (px - start.x()) * source_w / image_rect.width())
+            y = round(y + (py - start.y()) * source_h / image_rect.height())
+            config = self._adder.config
+            if (x, y) != (config.x_location, config.y_location):
+                self.position_changed.emit(x, y)
+            event.accept()
+            return
         if self._drag_start is not None:
-            delta = event.position() - self._drag_start
+            delta = position - self._drag_start
             dpr = self.devicePixelRatioF()
             self._pan = (self._pan[0] - delta.x() * dpr,
                          self._pan[1] - delta.y() * dpr)
-            self._drag_start = event.position()
+            self._drag_start = position
             self._show_rendered()
+            event.accept()
+            return
+        self._update_cursor(position)
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
-        self._drag_start = None
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.cancel_drag()
+            self._update_cursor(event.position())
         super().mouseReleaseEvent(event)
 
     # ------------------------------------------------------------------ data
@@ -373,7 +449,7 @@ class LabelPreview(QLabel):
     def native_status(self):
         """Describe asynchronous native viewport work for the dialog."""
         if self._native_loading:
-            return "Loading 100% preview…"
+            return trans.t('label_preview_native_loading')
         return self._native_error
 
     # ------------------------------------------------------------------ draw

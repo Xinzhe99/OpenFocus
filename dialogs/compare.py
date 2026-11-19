@@ -9,6 +9,7 @@ from PyQt6.QtWidgets import (
     QSlider, QSplitter, QToolTip, QVBoxLayout, QWidget,
 )
 
+from controllers.output_manager import workspace_fusions
 from core.compare_worker import AlignmentWorker, PreviewWorker, DisplayWorker
 from core.source_previews import DISPLAY_REGION_MAX_SIDE, SourcePreviewWorker, SourceRegionWorker
 from core.source_frames import PREVIEW_EDGE, ProcessedFrame, SourceFrame, display_image, preview_ready
@@ -125,6 +126,8 @@ class CompareDialog(QDialog):
         self._publishing = False
         self._cancel_requested = False
         self._method_params = {}
+        self._edited_parameters = set()
+        self._parameter_panels = {}
         self._param_rows = {}
         self.param_widgets = {}
         self._canvases = {}
@@ -137,6 +140,8 @@ class CompareDialog(QDialog):
         self._ref_index = 0
         self._shared = self._collect_shared_settings()
         self._source_revision = int(getattr(window_main, "source_revision", 0))
+        self._workspace_outputs = [record for record in workspace_fusions(window_main)
+            if record.context.matches_stack(self._source_revision, self._source_indices)]
         manager = getattr(window_main, "label_manager", None)
         frame_ids = manager.frame_ids("input") if manager is not None else []
         self._frame_ids = [frame_ids[i] for i in self._source_indices] if frame_ids else None
@@ -447,7 +452,7 @@ class CompareDialog(QDialog):
         size_row.addWidget(self.preview_size_slider, 1)
         self.preview_size_spin = StepperSpinBox(
             minimum=160, maximum=960, step=20, value=self._detail_size)
-        self.preview_size_spin.setFixedWidth(110)
+        self.preview_size_spin.setMinimumWidth(110)
         self.preview_size_spin.setAccessibleName(size_label.text())
         self.preview_size_spin.lineEdit().setAccessibleName(size_label.text())
         size_label.setBuddy(self.preview_size_spin.lineEdit())
@@ -553,6 +558,7 @@ class CompareDialog(QDialog):
             row.addWidget(title)
             panel = AlgorithmParameterPanel(group)
             panel.set_parameters(specs, params)
+            self._parameter_panels[method] = panel
             panel.valuesChanged.connect(lambda values, m=method: self._params_changed(m, values))
             row.addWidget(panel)
             self.param_widgets[method] = panel.editors
@@ -588,6 +594,7 @@ class CompareDialog(QDialog):
         if self._method_params[method] == values:
             return
         self._method_params[method] = dict(values)
+        self._edited_parameters.add(method)
         self._results.pop(method, None)
         self._stale_methods.add(method)
         self._full_results.pop(method, None)
@@ -852,6 +859,76 @@ class CompareDialog(QDialog):
         else:
             self._refresh_panes()
 
+    def _reuse_workspace_outputs(self, methods, region):
+        if not self._workspace_outputs:
+            return
+        registration = self.align_combo.currentData()
+        roi = bool(self.mode_combo.currentData())
+        for method in methods:
+            if self._result_is_current(method):
+                continue
+            for record in self._workspace_outputs:
+                context = record.context
+                if context.algorithm != method or not context.matches_registration(
+                        registration, self._shared['registration_parameters'],
+                        self._shared['reg_downscale_width'], self._reverse_registration):
+                    continue
+                if context.parameters.get('defect_mask_path') or context.parameters.get('sensor_denoise'):
+                    continue
+                if (get_fusion(method).sort_frames and
+                        context.parameters.get('sort_mode', 'asc') != self._shared['sort_mode']):
+                    continue
+                if len(context.frames) != len(self._raw_frames):
+                    continue
+
+                image = record.image
+                height, width = image.shape[:2]
+                if (width, height) != (context.width, context.height):
+                    continue
+                x = y = 0
+                if context.roi_rect is not None:
+                    if not roi:
+                        continue
+                    x, y, rw, rh = context.roi_rect
+                    if context.roi_mode == 'paste':
+                        image = image[y:y + rh, x:x + rw]
+                        height, width = image.shape[:2]
+                        if (width, height) != (rw, rh):
+                            continue
+                grid_h, grid_w = self._frames[0].shape[:2]
+                if (context.roi_rect is None and (width, height) != (grid_w, grid_h)
+                        and method != 'dct'):
+                    continue
+                if x + width > grid_w or y + height > grid_h:
+                    continue
+                if region is not None:
+                    rx, ry, rw, rh = region
+                    if rx < x or ry < y or rx + rw > x + width or ry + rh > y + height:
+                        continue
+
+                specs = get_fusion(method).parameters
+                saved = context.parameters.get('fusion_parameters', context.parameters)
+                if not all(spec.key in saved for spec in specs):
+                    continue
+                parameters = resolve_fusion_parameters(method, {spec.key: saved[spec.key] for spec in specs})
+                if method in self._edited_parameters and self._method_params[method] != parameters:
+                    continue
+                if self._method_params[method] != parameters:
+                    self._method_params[method] = parameters
+                    self._parameter_panels[method].set_parameters(specs, parameters)
+                self._results[method] = {
+                    'key': self._result_key(method), 'image': image, 'bounds': (x, y, width, height),
+                    'full': not roi, 'display': None, 'record': record,
+                }
+                self._errors.pop(method, None)
+                # Use the archived aligned reference when it spans the source grid.
+                if (self._aligned_frames is None and registration != 'none' and
+                        context.roi_rect is None and (width, height) == (grid_w, grid_h)):
+                    self._aligned_frames = [frame.image for frame in context.frames]
+                    self._frames = self._aligned_frames
+                    self._show_frame(self._ref_index)
+                break
+
     def _result_key(self, method):
         roi = bool(self.mode_combo.currentData())
         strength = self._shared['sharpen_strength'] if self._shared['sharpen_output'] else 0
@@ -863,7 +940,9 @@ class CompareDialog(QDialog):
         for method in self._selected_methods():
             canvas = self._canvases[method]
             if self._result_is_current(method):
-                status = trans.t("compare_state_current")
+                record = self._results[method].get('record')
+                status = (trans.t('compare_workspace_result').format(name=record.label)
+                          if record is not None else trans.t('compare_state_current'))
             elif self._errors.get(method, (None,))[0] == self._result_key(method):
                 status = trans.t("msg_error") + ": " + self._errors[method][1]
             elif self._worker is not None and self._active_revision != self._revision:
@@ -1016,6 +1095,19 @@ class CompareDialog(QDialog):
         if not methods or len(self._raw_frames) < 2:
             self._set_idle()
             return
+        region = self.ref_canvas.region()
+        if region is None:
+            return
+        self._reuse_workspace_outputs(methods, region)
+        pending = []
+        for method in methods:
+            key = self._result_key(method)
+            if not self._result_is_current(method) and self._errors.get(method, (None,))[0] != key:
+                pending.append(method)
+        if not pending:
+            self._refresh_panes()
+            self._set_idle()
+            return
         if self._aligned_frames is None:
             alignment = self.align_combo.currentData()
             if alignment == "none":
@@ -1030,20 +1122,6 @@ class CompareDialog(QDialog):
                 self.progress.setRange(0, 0)
                 self._launch_worker(worker, "alignment")
                 return
-        region = self.ref_canvas.region()
-        if region is None:
-            return
-        pending = []
-        for method in methods:
-            key = self._result_key(method)
-            cached = self._results.get(method)
-            failed = self._errors.get(method)
-            if (cached is None or cached['key'] != key) and (failed is None or failed[0] != key):
-                pending.append(method)
-        if not pending:
-            self._refresh_panes()
-            self._set_idle()
-            return
         self._active_keys = {method: self._result_key(method) for method in pending}
         worker = PreviewWorker(self._aligned_frames, pending, self._method_params,
                                self._shared, region, bool(self.mode_combo.currentData()), self)
@@ -1157,6 +1235,8 @@ class CompareDialog(QDialog):
             return
         window = self.window_main
         params = dict(self._method_params.get(method, {}))
+        record = self._results[method].get('record')
+        options = record.context.parameters if record is not None else self._shared['method_options'][method]
         previous = window._capture_parameter_state()
         try:
             with window._restore_scope():
@@ -1171,9 +1251,9 @@ class CompareDialog(QDialog):
                     self.registration_parameter_panel.values())
                 if hasattr(window, 'set_brightness_option'):
                     window.set_brightness_option('exposure_match', method,
-                        self._shared['method_options'][method]['exposure_match'])
+                        options.get('exposure_match', False))
                     window.set_brightness_option('base_correct', method,
-                        self._shared['method_options'][method]['base_frame'] != 'none')
+                        options.get('base_frame', 'none') != 'none')
             window.persist_settings()
             if hasattr(window, "push_parameter_undo"):
                 window.push_parameter_undo(previous)
@@ -1449,6 +1529,7 @@ class CompareDialog(QDialog):
         self._aligned_frames = None
         self._frames = []
         self._raw_frames = []
+        self._workspace_outputs.clear()
         self._calibration = {}
         super().done(self._close_code)
         self.deleteLater()

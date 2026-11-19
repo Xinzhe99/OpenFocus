@@ -765,17 +765,17 @@ def test_split_preview_tracks_current_reference_paths(qapp, tmp_path):
     parent.current_alignment_method = lambda: 'none'
     dialog = BatchProcessingDialog(parent)
     try:
-        paths = [str(tmp_path / name) for name in ('a.png', 'b.png', 'c.png', 'flat.png')]
+        paths = [str(tmp_path / name) for name in ('a.png', 'b.png', 'c.png', 'mask.png')]
         dialog.single_folder_images_with_times = [(path, None, float(i), os.path.basename(path))
                                                   for i, path in enumerate(paths)]
         dialog.split_method_combo.setCurrentIndex(0)
         dialog.param_spinbox.setValue(2)
-        dialog.flat_field_path.setText(paths[3])
+        dialog.sensor_cleanup.path.setText(paths[3])
         assert [[entry[0] for entry in stack] for stack in dialog.single_folder_stacks] == [paths[:2], paths[2:3]]
         assert [[entry[0] for entry in stack] for stack in dialog.get_processing_settings()['frozen_stacks']] == [paths[:2], paths[2:3]]
-        dialog.flat_field_path.setText(paths[0])
+        dialog.sensor_cleanup.path.setText(paths[0])
         assert [[entry[0] for entry in stack] for stack in dialog.single_folder_stacks] == [paths[1:3], paths[3:]]
-        dialog.flat_field_path.clear()
+        dialog.sensor_cleanup.path.clear()
         assert [[entry[0] for entry in stack] for stack in dialog.single_folder_stacks] == [paths[:2], paths[2:]]
     finally:
         dialog.close()

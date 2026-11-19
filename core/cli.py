@@ -148,10 +148,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--sort", default="asc", choices=["asc", "desc", "off"],
                         help="Frame order for openfocus_a/b/c: 'asc' keeps file order "
                              "(default), 'desc' reverses it, 'off' leaves it unchanged")
-    parser.add_argument("--dust-map", default=None, metavar="WHITE",
-                        help="Flat-field (dust map) correction: path to a defocused shot of a blank/white "
-                             "area; removes static dust specks and vignetting from every frame before "
-                             "registration")
+    parser.add_argument("--dust-map", default=None, metavar="WHITE", help=argparse.SUPPRESS)
     parser.add_argument("--defect-mask-path", default=None, metavar="MASK",
                         help="Sensor-coordinate defect mask; nonzero pixels are repaired before registration")
     parser.add_argument("--sensor-denoise", action="store_true",
@@ -263,6 +260,9 @@ def _validate_execution_args(args):
     """Validate execution options shared by CLI, batch overrides and recipes."""
     import math
 
+    if args.dust_map:
+        raise ValueError('--dust-map is in development and is currently unavailable')
+
     for name, minimum, optional in (
             ('threads', 0, False), ('batch_size', 1, False),
             ('downscale', 1, True), ('tile_size', 64, True),
@@ -301,7 +301,7 @@ def _validate_execution_args(args):
         raise ValueError('tile_overlap must be smaller than tile_size')
     if args.native_batch_format and (not args.native_raw or not args.output_dir):
         raise ValueError('native_batch_format requires native_raw and output_dir')
-    if args.native_raw and (args.suggest_duplicates or args.group_size or args.dust_map or
+    if args.native_raw and (args.suggest_duplicates or args.group_size or
                             args.defect_mask_path or args.sensor_denoise or args.depth_map):
         raise ValueError('native_raw cannot be combined with grouped fusion, references or depth maps')
     if args.native_raw and (args.scale_bar or args.scale_um is not None) and (
@@ -1904,9 +1904,9 @@ def _run_cli_parsed(args) -> int:
         print("error: --native-batch-format requires --native-raw and --output-dir", file=sys.stderr)
         return EXIT_USAGE
     if args.native_raw:
-        if (args.suggest_duplicates or args.group_size or args.dust_map or
+        if (args.suggest_duplicates or args.group_size or
                 args.defect_mask_path or args.sensor_denoise or args.depth_map):
-            print("error: --native-raw cannot be combined with duplicate review, grouped fusion, dust correction, sensor cleanup or depth maps", file=sys.stderr)
+            print("error: --native-raw cannot be combined with duplicate review, grouped fusion, sensor cleanup or depth maps", file=sys.stderr)
             return EXIT_USAGE
         if (args.scale_bar or args.scale_um is not None) and (
                 (args.output_dir and (args.native_batch_format or "dng") == "dng") or
@@ -2408,13 +2408,14 @@ def describe_payload() -> dict:
             "machine": ["--json", "--json-progress", "--alignment-report", "--dry-run"],
             "review": ["--suggest-duplicates"],
             "grouped": ["--group-size", "--group-overlap"],
-            "cleanup": ["--dust-map", "--defect-mask-path", "--sensor-denoise"],
+            "cleanup": ["--defect-mask-path", "--sensor-denoise"],
             "export": ["--scale-bar", "--scale-um", "--depth-map", "--depth-colormap"],
             "background": ["--auto-background", "--background-mode", "--keep-soft-parts",
                            "--save-stacked", "--missing-data-map"],
             "order": ["--sort"],
             "subcommands": sorted(SUBCOMMANDS),
             "options": sorted(option for action in build_parser()._actions
+                              if action.help != argparse.SUPPRESS
                               for option in action.option_strings if option.startswith("--")),
             "control": ["gui", "ctl <command>", "describe", "version"],
         },

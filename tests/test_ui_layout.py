@@ -486,7 +486,7 @@ def test_first_run_theme_is_light():
     from utils.settings_store import DEFAULT_THEME, _PERSISTED_FIELDS
 
     assert DEFAULT_THEME == "light"
-    assert _PERSISTED_FIELDS["ui_theme"][1] == "light"
+    assert _PERSISTED_FIELDS['theme_mode'][1] == 'light'
 
 
 def test_batch_dialog_offers_real_method_choices(qapp):
