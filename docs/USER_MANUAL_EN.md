@@ -140,6 +140,11 @@ online again. To use an existing browser account, choose the browser sign-in
 button on the account screen. Browser and desktop sessions are separate, so
 signing out here does not sign out the browser.
 
+Windows builds run by the same Windows user share one account device slot,
+including source builds with a separate settings directory. To release a slot
+occupied by an older registration, remove that entry in the account center.
+Removing a registration also signs out any session using it.
+
 For email sign-in, open the link on your phone or computer and confirm it;
 the waiting desktop app signs in automatically. If the account service has
 not yet been updated for cross-device sign-in, the app instead asks you to
