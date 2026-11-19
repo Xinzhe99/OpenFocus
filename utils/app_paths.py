@@ -53,21 +53,11 @@ def _windows_roaming_data_dir() -> Path:
     return Path(os.environ.get("APPDATA") or Path.home() / "AppData" / "Roaming") / "OpenFocus"
 
 
-def shared_account_device_dir(profile: Path) -> Path | None:
-    """Return the Windows per-user device root for normal installs and previews."""
+def shared_account_device_dir() -> Path | None:
+    """Return the per-user Windows device root, independent of the session profile."""
     if sys.platform != "win32":
         return None
     local = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local")
-    if os.environ.get("OPENFOCUS_DATA_DIR"):
-        # Preview launchers only redirect their profile data. Other overrides
-        # select isolated credentials and an isolated device identity.
-        preview_root = local / _WINDOWS_PREVIEW_DIR
-        try:
-            parts = Path(os.path.abspath(profile)).relative_to(os.path.abspath(preview_root)).parts
-        except ValueError:
-            return None
-        if len(parts) != 2 or parts[1].casefold() != "profile":
-            return None
     return local / "OpenFocus"
 
 
