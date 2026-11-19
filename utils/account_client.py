@@ -187,6 +187,8 @@ def _dpapi(data, decrypt=False):
 class TokenStore:
     """Persist a session with DPAPI, macOS Keychain, or a private Linux file.
 
+    Default Windows stores share a device identity across session profiles.
+
     An explicit path selects file storage (DPAPI-protected on Windows); useful
     for isolated profiles and tests. File creation uses owner-only permissions.
     """
@@ -196,7 +198,7 @@ class TokenStore:
         if path is None:
             root = user_data_dir()
             path = root / _SESSION_FILENAME
-            self._shared_device_dir = shared_account_device_dir(root)
+            self._shared_device_dir = shared_account_device_dir()
             profile = os.path.normcase(os.path.realpath(os.fspath(root)))
             self._keychain_account = "session-" + hashlib.sha256(os.fsencode(profile)).hexdigest()
         self.path = Path(path)
