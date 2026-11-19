@@ -184,6 +184,7 @@ from utils import (
     resource_path,
 )
 from utils.image_utils import cv2_to_pixmap
+from utils.output_sharpen import DEFAULT_SHARPEN_STRENGTH, validate_sharpen_strength
 from utils.settings_store import (
     load_window_settings,
     save_window_settings,
@@ -1347,6 +1348,7 @@ class OpenFocus(QMainWindow):
             self.chk_base_correct.setChecked(False)
             self.chk_reverse_order.setChecked(False)
             self.chk_sharpen_output.setChecked(False)
+            self.sharpen_strength = DEFAULT_SHARPEN_STRENGTH
             self.defect_mask_path = ""
             self.sensor_denoise = False
 
@@ -2017,6 +2019,14 @@ class OpenFocus(QMainWindow):
         enabled = bool(enabled)
         changed = self.sharpen_output != enabled
         self.sharpen_output = enabled
+        if changed:
+            self._mark_project_setting_changed()
+        self.persist_settings()
+
+    def set_sharpen_strength(self, value: int) -> None:
+        value = validate_sharpen_strength(value)
+        changed = self.sharpen_strength != value
+        self.sharpen_strength = value
         if changed:
             self._mark_project_setting_changed()
         self.persist_settings()

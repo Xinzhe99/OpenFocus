@@ -7,6 +7,7 @@ from PyQt6.QtWidgets import QApplication, QDialog, QMessageBox
 
 from utils import show_message_box, show_warning_box
 from utils.image_utils import cv2_to_pixmap
+from utils.output_sharpen import DEFAULT_SHARPEN_STRENGTH
 from core.multi_focus_fusion import is_ai_fusion_available
 from core.render_context import build_render_context
 from core.render_process import RenderProcessWorker
@@ -314,6 +315,7 @@ class RenderManager:
                 get_fusion(method).external_tiling_default
                 or values['tile_threshold'] != _DEFAULT_TILE_THRESHOLD))
         values["sharpen_output"] = bool(getattr(window, "sharpen_output", False))
+        values["sharpen_strength"] = getattr(window, "sharpen_strength", DEFAULT_SHARPEN_STRENGTH)
         values["defect_mask_path"] = getattr(window, "defect_mask_path", "")
         values["sensor_denoise"] = bool(getattr(window, "sensor_denoise", False))
         values["base_frame"] = _base_frame(method, values["base_correct"])
@@ -1410,9 +1412,12 @@ class RenderManager:
             source_scale_factor=getattr(window, "current_scale_factor", 1.0))
 
         from utils.logging_setup import log_action
+        processing = self._render_context["parameters"]
         log_action("render_start", method=force_algorithm or fusion_method,
                    align=alignment_method, preview=self._preview_mode,
-                   frames=len(stack_images), loaded_frames=len(window.raw_images or []))
+                   frames=len(stack_images), loaded_frames=len(window.raw_images or []),
+                   sharpen_output=processing["sharpen_output"],
+                   sharpen_strength=processing["sharpen_strength"])
         self.last_error = None
         self.last_result = None
         self._control_progress = None
@@ -1472,7 +1477,8 @@ class RenderManager:
             sort_mode="desc" if getattr(window, "stack_reverse_order", False)
                 else "asc",
             exposure_match=_brightness(window, "exposure_match", force_algorithm or fusion_method),
-            sharpen_output=bool(getattr(window, "sharpen_output", False)),
+            sharpen_output=processing["sharpen_output"],
+            sharpen_strength=processing["sharpen_strength"],
             defect_mask_path=getattr(window, "defect_mask_path", ""),
             sensor_denoise=bool(getattr(window, "sensor_denoise", False)),
             source_paths=source_paths,
@@ -1627,6 +1633,7 @@ class RenderManager:
                             source_indices=ctx.get("included"),
                             frame_ids=ctx.get("frame_ids"),
                             source_revision=ctx.get("source_revision", 0),
+                            parameters=ctx.get("parameters"),
                             linear_dng_metadata=ctx.get("linear_dng_metadata"),
                             source_exif=((ctx.get("frame_exif") or (b"",))[0]),
                             frame_exif=ctx.get("frame_exif"),

@@ -19,7 +19,8 @@ def clean_settings(tmp_path, monkeypatch):
 
 
 def test_settings_round_trip(qapp, clean_settings):
-    from utils.settings_store import load_window_settings, save_window_settings, add_recent_file
+    from utils.settings_store import (add_recent_file, load_window_settings,
+                                      reset_settings_singleton, save_window_settings)
 
     class FakeWindow:
         thread_count = 4
@@ -36,17 +37,20 @@ def test_settings_round_trip(qapp, clean_settings):
     load_window_settings(w)  # defaults on empty store
     assert w.thread_count == 4 and w.use_gpu is True
     assert w.sharpen_output is False
+    assert w.sharpen_strength == 100
     assert w.output_name_prefix == ""
 
     w.thread_count = 11
     w.use_gpu = False
     w.tile_block_size = 640
     w.sharpen_output = True
+    w.sharpen_strength = 0
     w.output_name_prefix = "sample_12"
     demo = r"C:\stacks\demo"
     add_recent_file(w, demo)
     add_recent_file(w, demo)  # dedupe
     save_window_settings(w)
+    reset_settings_singleton()
 
     w2 = FakeWindow()
     load_window_settings(w2)
@@ -54,9 +58,21 @@ def test_settings_round_trip(qapp, clean_settings):
     assert w2.use_gpu is False
     assert w2.tile_block_size == 640
     assert w2.sharpen_output is True
+    assert w2.sharpen_strength == 0
     assert w2.output_name_prefix == "sample_12"
     # add_recent_file stores the abspath (form differs across platforms)
     assert w2.recent_files == [os.path.abspath(demo)]
+
+
+@pytest.mark.parametrize('raw', ['201', '75.5', True])
+def test_invalid_sharpen_strength_preference_uses_default(qapp, clean_settings, raw):
+    from types import SimpleNamespace
+    from utils.settings_store import get_settings, load_window_settings
+
+    get_settings().setValue('fusion/sharpen_strength', raw)
+    window = SimpleNamespace()
+    load_window_settings(window)
+    assert window.sharpen_strength == 100
 
 
 @pytest.mark.parametrize("saved_threads", [None, 4, 11, 0])
@@ -523,6 +539,22 @@ def test_quick_preview_render_does_not_publish_its_draft(qapp, monkeypatch):
     assert w.is_images_aligned is False
     assert saved == []
     assert rm._preview_mode is False
+
+
+def test_render_request_captures_sharpening_settings(qapp, monkeypatch):
+    frames = [np.zeros((30, 40, 3), np.uint8) for _ in range(2)]
+    window = _render_window(frames)
+    window.sharpen_output = True
+    window.sharpen_strength = 150
+    manager, _ = _patched_render_manager(monkeypatch, window)
+    assert manager.start_render() == 'started'
+    assert manager.worker.kwargs['sharpen_output'] is True
+    assert manager.worker.kwargs['sharpen_strength'] == 150
+    context = manager._render_context
+    assert context['parameters']['sharpen_strength'] == 150
+    window.sharpen_strength = 65
+    assert manager._stack_changed_since(context)
+    manager.on_render_error('CANCELLED: test')
 
 
 def test_reused_alignment_preview_displays_and_owns_draft(qapp, monkeypatch):
