@@ -18,10 +18,10 @@ class _Canvas(QWidget):
 
     def _background(self, painter):
         # Importing widgets must not initialize the application's UI package.
-        from ui.styles import CURRENT_THEME, tokens
+        from ui.styles import tokens
 
-        theme = tokens(CURRENT_THEME)
-        painter.fillRect(self.rect(), QColor(theme["surfaceSunken"]))
+        theme = tokens()
+        painter.fillRect(self.rect(), QColor(theme['compareCanvas']))
         painter.setPen(QColor(theme["border"]))
         painter.drawRect(self.rect().adjusted(0, 0, -1, -1))
         return theme
@@ -40,7 +40,7 @@ class _Canvas(QWidget):
         painter.drawText(bar, Qt.AlignmentFlag.AlignCenter, title)
 
     def _empty(self, painter, theme, status=""):
-        painter.setPen(QColor(theme["textMuted"]))
+        painter.setPen(QColor(theme['canvasText']))
         painter.drawText(self.rect().adjusted(12, 36, -12, -12),
                          Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap,
                          status or trans.t("compare_no_image"))

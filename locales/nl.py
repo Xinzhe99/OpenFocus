@@ -637,6 +637,7 @@ PACK = {
     "msg_update_needs_elevation": "De installatiemap is niet schrijfbaar zonder beheerdersrechten. Werk bij via de installer van de Releases-pagina.",
     "theme_dark": "Donker",
     "theme_light": "Licht",
+    "theme_gray": "Neutraal grijs",
     "menu_quick_start": "Snelstartgids",
     "menu_check_updates": "Controleren op updates",
     "menu_open_logs": "Logmap openen",

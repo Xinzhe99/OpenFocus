@@ -85,7 +85,7 @@ class UpdateBanner(QWidget):
         its own pass so the correct palette is always the last word.
         """
         from utils.design_tokens import palette
-        self._theme = "light" if theme == "light" else "dark"
+        self._theme = theme
         p = palette(self._theme)
         self.setStyleSheet(
             f"QWidget#updateBanner {{ background-color: {p['accentSoft']};"

@@ -37,7 +37,7 @@ QLabel#panelTitle {{
 }}
 QLabel#panelCanvas, QLabel#panelCanvasHint {{
     background-color: {t['canvas']};
-    color: {t['textFaint']};
+    color: {t['canvasText']};
 }}
 QWidget#panelTitleBar {{
     background-color: {t['surface']};

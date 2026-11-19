@@ -764,7 +764,7 @@ OpenFocus B kan diepteverwerking en bronfusie versnellen op een geschikte OpenCL
 
 ### Thema's
 
-Er zijn twee interfacethema's: **Licht (standaard)** en **Donker**. Wissel via **Instellingen → Thema**; de keuze wordt onmiddellijk toegepast (de Windows-titelbalk volgt) en onthouden. Bij de eerste start kies je een thema in het welkomstvenster; een opgeslagen keuze heeft voorrang.
+Kies uit **Licht (standaard)**, **Donker** en **Neutraal grijs**. Neutraal grijs gebruikt een middengrijze achtergrond om beelden te bekijken, te vergelijken en te retoucheren. Wissel via **Instellingen → Thema**; de keuze wordt onmiddellijk toegepast (de Windows-titelbalk volgt) en onthouden. Bij de eerste start kies je een thema in het welkomstvenster; een opgeslagen keuze heeft voorrang.
 
 ### Draagbare modus
 
