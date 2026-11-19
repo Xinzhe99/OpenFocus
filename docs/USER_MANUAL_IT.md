@@ -76,6 +76,8 @@ In **Salva con nome**, il TIFF normale salva il risultato come immagine singola;
 Il modo preferito per installare una build pacchettizzata è il sito del progetto, **https://openfocus.top**: collega l'installer Windows, la build macOS e il pacchetto Linux, con script di installazione per il terminale. Preferiscilo alla ricompilazione: quegli artefatti sono l'output esatto della pipeline di rilascio. `pip install openfocus` installa solo l'interfaccia a riga di comando headless (la wheel non dipende deliberatamente da PyQt6); usa una build desktop o una copia del codice sorgente per la GUI.
 Il sito offre per impostazione predefinita le versioni desktop stabili. Su Windows e macOS puoi attivare gli aggiornamenti beta; su Linux aggiorna scaricando un nuovo archivio desktop. La CLI di PyPI è distribuita separatamente.
 
+Le versioni attuali per Windows non sono firmate. Prima di avviare il file scaricato, confronta il suo hash SHA-256 con quello indicato nel manifesto della versione.
+
 Per installare da terminale, visualizza prima l'anteprima del comando e poi eseguilo senza `--dry-run`: su macOS o Linux, `curl -fsSL https://openfocus.top/install.sh | sh -s -- --dry-run` e poi `curl -fsSL https://openfocus.top/install.sh | sh` (su Linux installa la CLI); su Windows, `irm https://openfocus.top/install.ps1 | iex` da PowerShell.
 
 Dopo l'installazione, avvia OpenFocus in uno dei seguenti modi:
@@ -1066,7 +1068,7 @@ Codici di uscita: `0` successo, `1` errore di elaborazione, `2` errore d'uso. `p
 
 #### Avviso di Windows SmartScreen al primo avvio
 
-La firma dei binari Windows dipende dalla release specifica (vedi le note di rilascio); la firma non è garantita. Scaricali da **https://openfocus.top** invece che da un mirror di terze parti. Se SmartScreen avvisa, fai clic su **Ulteriori informazioni → Esegui comunque**. Il primo avvio dopo la decompressione può richiedere 30–60 secondi.
+Le versioni attuali per Windows non sono firmate. Scarica il file dal sito ufficiale di OpenFocus (**https://openfocus.top**). Prima di avviare il file scaricato, confronta il suo hash SHA-256 con quello indicato nel manifesto della versione. Se SmartScreen avvisa, fai clic su **Ulteriori informazioni → Esegui comunque**. Il primo avvio dopo la decompressione può richiedere 30–60 secondi.
 
 #### macOS segnala che l'app «non può essere aperta» o «è danneggiata»
 

@@ -86,7 +86,7 @@ Die Website bietet standardmäßig stabile Desktopversionen. Unter Windows und m
 | macOS Apple Silicon (M1–M4) | `OpenFocus-*-macos-arm64.zip` | Portabel (entpacken) |
 | Linux x86-64 | `OpenFocus-*-linux-x86_64.tar.gz` | Portabel (entpacken und `OpenFocus/OpenFocus` starten) |
 
-Ob die Windows-Builds signiert sind, hängt vom jeweiligen Release ab (siehe Release-Notes); eine Signatur ist nicht garantiert. Beim ersten Start kann daher eine Sicherheitsabfrage erscheinen: unter **Windows** SmartScreen → „Weitere Informationen“ → „Trotzdem ausführen“ (der erste Start kann 30–60 s dauern). Die macOS-Builds sind nicht notarisiert; nach der DMG-Installation (in „Programme“) führen Sie bei Bedarf `xattr -cr /Applications/OpenFocus.app` aus, nach der Terminal-Installation (nach `~/Applications`) `xattr -cr ~/Applications/OpenFocus.app`, oder Sie klicken mit der rechten Maustaste auf die App und wählen **Öffnen**.
+Die aktuellen Windows-Builds sind nicht signiert. Vergleichen Sie vor dem Start den SHA-256-Hash der heruntergeladenen Datei mit dem Wert im Release-Manifest. Beim ersten Start kann daher eine Sicherheitsabfrage erscheinen: unter **Windows** SmartScreen → „Weitere Informationen“ → „Trotzdem ausführen“ (der erste Start kann 30–60 s dauern). Die macOS-Builds sind nicht notarisiert; nach der DMG-Installation (in „Programme“) führen Sie bei Bedarf `xattr -cr /Applications/OpenFocus.app` aus, nach der Terminal-Installation (nach `~/Applications`) `xattr -cr ~/Applications/OpenFocus.app`, oder Sie klicken mit der rechten Maustaste auf die App und wählen **Öffnen**.
 
 Für die Installation im Terminal zuerst den Befehl für macOS oder Linux mit `--dry-run` prüfen und anschließend ohne diese Option ausführen. Unter Linux installiert das die Headless-CLI; macOS-Builds erfordern Apple Silicon und werden nach `~/Applications` installiert.
 
@@ -1113,7 +1113,7 @@ Exit-Codes: `0` Erfolg, `1` Verarbeitungsfehler, `2` Nutzungsfehler. Der Aufruf 
 
 #### Windows-SmartScreen-Warnung beim ersten Start
 
-Ob die Windows-Binärdateien signiert sind, hängt vom jeweiligen Release ab (siehe Release-Notes); eine Signatur ist nicht garantiert. Laden Sie sie von **https://openfocus.top** statt von einem Drittanbieter-Spiegel. Falls SmartScreen warnt, klicken Sie auf **Weitere Informationen → Trotzdem ausführen**. Der erste Start nach dem Entpacken kann 30–60 Sekunden dauern.
+Die aktuellen Windows-Builds sind nicht signiert. Laden Sie die Dateien von der offiziellen OpenFocus-Website herunter (**https://openfocus.top**). Vergleichen Sie vor dem Start den SHA-256-Hash der heruntergeladenen Datei mit dem Wert im Release-Manifest. Falls SmartScreen warnt, klicken Sie auf **Weitere Informationen → Trotzdem ausführen**. Der erste Start nach dem Entpacken kann 30–60 Sekunden dauern.
 
 #### macOS meldet, die App „kann nicht geöffnet werden“ oder „ist beschädigt“
 
