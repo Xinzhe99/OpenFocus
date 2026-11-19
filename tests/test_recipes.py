@@ -223,10 +223,10 @@ def test_recipe_rerun_excludes_reference(tmp_path, monkeypatch, grouped):
     folder = tmp_path / 'stack'
     _stack(folder)
     white = folder / 'white.png'
-    assert cv2.imwrite(str(white), np.full((64, 64, 3), 200, np.uint8))
+    assert cv2.imwrite(str(white), np.zeros((64, 64), np.uint8))
     output = tmp_path / 'result.png'
     recipe = tmp_path / 'recipe.json'
-    args = ['-i', str(folder), '-o', str(output), '-m', 'dct', '--dust-map', str(white)]
+    args = ['-i', str(folder), '-o', str(output), '-m', 'dct', '--defect-mask-path', str(white)]
     if grouped:
         args += ['--group-size', '2']
     capture_recipe(recipe, args)
@@ -415,7 +415,7 @@ def test_recipe_rejects_unsaved_execution_controls(tmp_path, extra):
     assert not path.exists()
 
 
-@pytest.mark.parametrize("selection", ["file", "folder", "dust", "mask"])
+@pytest.mark.parametrize("selection", ["file", "folder", "mask"])
 @pytest.mark.parametrize("alias", [False, True])
 def test_recipe_creation_never_overwrites_sources(tmp_path, selection, alias):
     folder = tmp_path / "stack"
@@ -430,9 +430,9 @@ def test_recipe_creation_never_overwrites_sources(tmp_path, selection, alias):
             pytest.skip("hard links unavailable")
     original = source.read_bytes()
     inputs = [str(folder)] if selection == "folder" else [str(source)]
-    if selection in ("dust", "mask"):
+    if selection == "mask":
         inputs = [str(folder / "1.png")]
-    flags = {"dust": ["--dust-map", str(source)], "mask": ["--defect-mask-path", str(source)]}
+    flags = {"mask": ["--defect-mask-path", str(source)]}
     with pytest.raises(ValueError, match="destination"):
         capture_recipe(destination, ["-i", *inputs, "-o", str(tmp_path / "out.png"),
                                      "-m", "dct", *flags.get(selection, [])])

@@ -170,19 +170,17 @@ def test_alignment_report_rejects_batch(tmp_path):
     assert not out.exists()
 
 
-@pytest.mark.parametrize('target', ['frame', 'output', 'depth', 'summary', 'dust'])
+@pytest.mark.parametrize('target', ['frame', 'output', 'depth', 'summary'])
 def test_alignment_report_never_overwrites_other_paths(tmp_path, target):
     folder, _, _ = _make_stacks(tmp_path)
     frame = os.path.join(folder, 'f0.png')
     output = str(tmp_path / 'out.png')
     depth = str(tmp_path / 'out_depth.png')
     summary = str(tmp_path / 'summary.json')
-    paths = {'frame': frame, 'output': output, 'depth': depth, 'summary': summary, 'dust': frame}
+    paths = {'frame': frame, 'output': output, 'depth': depth, 'summary': summary}
     before = open(frame, 'rb').read()
     args = ['-i', folder, '-o', output, '--align', 'openfocus', '--depth-map', '--json', summary,
             '--alignment-report', paths[target]]
-    if target == 'dust':
-        args += ['--dust-map', frame]
     assert _run_cli(args) != 0
     assert open(frame, 'rb').read() == before
     assert not os.path.exists(output)
@@ -910,16 +908,14 @@ def test_summary_refuses_frame_aliases_before_writing(tmp_path, alias):
     assert not (tmp_path / 'out.png').exists()
 
 
-@pytest.mark.parametrize('target', ['dust', 'defect', 'output', 'depth', 'profile'])
+@pytest.mark.parametrize('target', ['defect', 'output', 'depth', 'profile'])
 def test_summary_refuses_references_and_outputs(tmp_path, target):
     folder, _, _ = _make_stacks(tmp_path)
     output = tmp_path / 'out.png'
     reference = tmp_path / 'reference.png'
     reference.write_bytes(b'reference')
     options = []
-    if target == 'dust':
-        summary, options = reference, ['--dust-map', str(reference)]
-    elif target == 'defect':
+    if target == 'defect':
         summary, options = reference, ['--defect-mask-path', str(reference)]
     elif target == 'output':
         summary = output
@@ -934,6 +930,14 @@ def test_summary_refuses_references_and_outputs(tmp_path, target):
                     '--json', str(summary), *options]) == 2
     assert summary.read_bytes() == before
     assert reference.read_bytes() == b'reference'
+
+
+def test_dust_map_option_reports_development_status(tmp_path, capsys):
+    folder, _, _ = _make_stacks(tmp_path)
+    output = tmp_path / 'out.png'
+    assert run_cli(['-i', folder, '-o', str(output), '--dust-map', 'reference.png']) == 2
+    assert '--dust-map is in development' in capsys.readouterr().err
+    assert not output.exists()
 
 
 def test_batch_summary_refuses_config_and_unavailable_inputs(tmp_path, monkeypatch):

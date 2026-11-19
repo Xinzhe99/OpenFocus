@@ -17,6 +17,7 @@ from core.algorithms import (fusion_algorithms, get_fusion, get_registration,
                              resolve_registration_parameters)
 from locales import trans
 from utils import app_paths
+from utils.design_tokens import UI_FONT_PRESETS, UI_FONT_RANGE
 from utils.output_sharpen import DEFAULT_SHARPEN_STRENGTH, validate_sharpen_strength
 from utils.validators import normalize_kernel_size
 
@@ -93,7 +94,9 @@ _PERSISTED_FIELDS = {
     "restore_last_stack": ("ui/restore_last_stack", False, "bool"),
     "experimental_features": ("ui/experimental_features", False, "bool"),
     "auto_error_reports": (REPORTS_AUTO_SEND_KEY, True, "bool"),
-    "ui_theme": ("ui/theme", DEFAULT_THEME, "str"),
+    "theme_mode": ("ui/theme", DEFAULT_THEME, "str"),
+    "font_size_mode": ("ui/font_size_mode", "medium", "str"),
+    "custom_font_size": ("ui/custom_font_size", UI_FONT_PRESETS['medium'], int),
     "scale_bar_enabled": ("export/scale_bar_enabled", False, "bool"),
     "scale_um_per_px_manual": ("export/scale_um_per_px_manual", 0.0, "float"),
     "scale_bar_position": ("export/scale_bar_position", "bottom-right", "str"),
@@ -405,13 +408,17 @@ def load_window_settings(window) -> None:
     if settings.contains("export/watermark_text"):
         settings.remove("export/watermark_text")
         settings.sync()
-    if getattr(window, "ui_theme", None) not in ("dark", "light"):
-        window.ui_theme = DEFAULT_THEME
     for attr, (key, default, kind) in _PERSISTED_FIELDS.items():
         if settings.contains(key):
             setattr(window, attr, _cast(settings.value(key), kind, default))
         else:
             setattr(window, attr, getattr(window, attr, default))
+    if window.theme_mode not in ('light', 'dark', 'system'):
+        window.theme_mode = DEFAULT_THEME
+    if window.font_size_mode not in (*UI_FONT_PRESETS, 'custom'):
+        window.font_size_mode = 'medium'
+    minimum, maximum = UI_FONT_RANGE
+    window.custom_font_size = max(minimum, min(maximum, window.custom_font_size))
     if settings.value(REPORTS_CHOICE_KEY) == "unselected":
         # Old installations saved their then-current default during ordinary saves.
         window.auto_error_reports = True

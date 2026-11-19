@@ -14,9 +14,10 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QFont
+from PyQt6.QtCore import QSignalBlocker, Qt
+from PyQt6.QtGui import QFont, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
+    QButtonGroup,
     QCheckBox,
     QColorDialog,
     QComboBox,
@@ -24,6 +25,7 @@ from PyQt6.QtWidgets import (
     QDialogButtonBox,
     QFormLayout,
     QFontComboBox,
+    QFrame,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -32,7 +34,9 @@ from PyQt6.QtWidgets import (
     QListWidgetItem,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QSpinBox,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -46,11 +50,14 @@ from utils import (
     show_success_box,
     show_warning_box,
 )
+from utils.design_tokens import FONT, RADIUS, SPACE, palette
 from utils.label_model import Label, LabelSet, normalize_target
 from utils.validators import LabelConfig, parse_label_range
-from utils.ui_utils import size_dialog_to_content
 from locales import trans
 from widgets.stepper import StepperSpinBox, hide_spin_buttons
+from widgets.workspace import WorkspaceSplitter
+
+
 
 
 class LabelManager:
@@ -237,6 +244,19 @@ class LabelManager:
         widget = getattr(self.window, "output_list", None)
         if manager is not None and widget is not None:
             return manager.record_for_item(widget.currentItem())
+        return None
+
+    def _output_record(self, output_id):
+        record = self._selected_output()
+        if not output_id or (record is not None and record.output_id == output_id):
+            return record
+        manager = getattr(self.window, "output_manager", None)
+        widget = getattr(self.window, "output_list", None)
+        if manager is not None and widget is not None:
+            for row in range(widget.count()):
+                record = manager.record_for_row(row)
+                if record is not None and record.output_id == output_id:
+                    return record
         return None
 
     def frame_ids(self, target: str) -> list[str]:
@@ -440,84 +460,113 @@ class LabelManager:
         dialog.setWindowTitle(trans.t('label_manage_title'))
 
         from ui.styles import CURRENT_THEME
-        dialog.setStyleSheet(get_add_label_dialog_style(CURRENT_THEME))
+        theme = palette(CURRENT_THEME)
+        dialog.setStyleSheet(get_add_label_dialog_style(CURRENT_THEME) + f"""
+            QFrame#labelPreviewCanvas {{
+                background: {theme['canvas']};
+                border: 1px solid {theme['border']};
+                border-radius: {RADIUS['sm']}px;
+            }}
+            QLabel#mutedLabel {{ color: {theme['textMuted']}; }}
+            QLabel#labelError {{ color: {theme['danger']}; }}
+            QPushButton:checked {{
+                background: {theme['accentSoft']}; color: {theme['accentSoftText']};
+            }}
+            QPushButton#primaryButton:enabled {{
+                background: {theme['accent']}; color: {theme['textOnAccent']};
+            }}
+            QPushButton#primaryButton:enabled:hover {{ background: {theme['accentHover']}; }}
+            QPushButton:focus {{ border-color: {theme['borderFocus']}; }}
+            QPushButton:disabled {{
+                background: {theme['controlDisabled']}; color: {theme['textFaint']};
+            }}
+        """)
 
         root = QVBoxLayout(dialog)
-        root.setContentsMargins(14, 12, 14, 10)
-        root.setSpacing(8)
+        root.setContentsMargins(SPACE['md'], SPACE['md'], SPACE['md'], SPACE['sm'])
+        root.setSpacing(SPACE['sm'])
+        workspace = WorkspaceSplitter()
+        root.addWidget(workspace, 1)
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        def _heading(key):
+            label = QLabel(trans.t(key))
+            font = label.font()
+            font.setPointSize(FONT['subtitle'])
+            font.setBold(True)
+            label.setFont(font)
+            label.setWordWrap(True)
+            return label
+
+        def _preview_caption(muted=True):
+            label = QLabel()
+            if muted:
+                label.setObjectName("mutedLabel")
+            label.setTextFormat(Qt.TextFormat.PlainText)
+            label.setWordWrap(True)
+            label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+            label.setMaximumHeight(2 * label.fontMetrics().lineSpacing())
+            return label
+
+        # On short displays the panes scroll independently of the actions.
+        editor = QScrollArea()
+        editor.setWidgetResizable(True)
+        editor.setFrameShape(QScrollArea.Shape.NoFrame)
+        editor.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        editor.setMinimumSize(200, 96)
         content = QWidget()
-        content_col = QVBoxLayout(content)
-        content_col.setContentsMargins(0, 0, 0, 0)
-        content_col.setSpacing(8)
-        scroll.setWidget(content)
-        root.addWidget(scroll, 1)
+        editor_col = QVBoxLayout(content)
+        editor_col.setContentsMargins(0, 0, SPACE['xs'], 0)
+        editor_col.setSpacing(SPACE['sm'])
+        editor.setWidget(content)
+        workspace.addWidget(editor)
 
-        header = QLabel(self._header_text())
-        header.setObjectName("mutedLabel")
-        header.setWordWrap(True)
-        content_col.addWidget(header)
-
-        body = QHBoxLayout()
-        body.setSpacing(12)
-        content_col.addLayout(body, 1)
-
-        # ---- left: caption list ------------------------------------------
-        left = QVBoxLayout()
-        left.setSpacing(6)
-        list_title = QLabel(trans.t('label_list'))
-        font = list_title.font()
-        font.setBold(True)
-        list_title.setFont(font)
-        left.addWidget(list_title)
-
+        list_title = _heading('label_list')
+        editor_col.addWidget(list_title)
         self._dialog_list = QListWidget()
-        # A fixed, modest width keeps the middle form readable at the 820 px
-        # minimum: a QListWidget's size hint (256 px) otherwise took 36 px
-        # more than the form could spare. Summaries elide instead of adding a
-        # second horizontal scrollbar inside the list.
-        self._dialog_list.setFixedWidth(220)
-        self._dialog_list.setHorizontalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        left.addWidget(self._dialog_list, 1)
+        self._dialog_list.setAccessibleName(list_title.text())
+        self._dialog_list.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self._dialog_list.setFixedHeight(4 * self._dialog_list.fontMetrics().lineSpacing() + SPACE['sm'])
+        self._dialog_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        editor_col.addWidget(self._dialog_list)
 
         list_buttons = QHBoxLayout()
         add_button = QPushButton(trans.t('label_add'))
         add_button.clicked.connect(self._dialog_add_label)
-        delete_button = QPushButton(trans.t('label_delete'))
-        delete_button.clicked.connect(self._dialog_delete_label)
+        self._delete_button = QPushButton(trans.t('label_delete'))
+        self._delete_button.clicked.connect(self._dialog_delete_label)
+        self._delete_button.setEnabled(False)
+        delete_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Delete), self._dialog_list)
+        delete_shortcut.setContext(Qt.ShortcutContext.WidgetShortcut)
+        delete_shortcut.activated.connect(self._dialog_delete_label)
         list_buttons.addWidget(add_button)
-        list_buttons.addWidget(delete_button)
-        left.addLayout(list_buttons)
-        body.addLayout(left, 0)
+        list_buttons.addWidget(self._delete_button)
+        list_buttons.addStretch()
+        editor_col.addLayout(list_buttons)
 
-        # ---- middle: form ------------------------------------------------
-        middle = QVBoxLayout()
-        middle.setSpacing(6)
-        form_host = QWidget()
-        form_col = QVBoxLayout(form_host)
-        self._form_host = form_host
-        form_col.setContentsMargins(0, 0, 6, 0)
-        form_col.setSpacing(10)
+        self._form_host = QWidget()
+        form_col = QVBoxLayout(self._form_host)
+        form_col.setContentsMargins(0, 0, 0, 0)
+        form_col.setSpacing(SPACE['sm'])
+        editor_col.addWidget(self._form_host)
 
-        def _group(title_key):
+        def _group(title_key, column=form_col):
             box = QGroupBox(trans.t(title_key))
             lay = QFormLayout(box)
-            lay.setFormAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-            lay.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
-            lay.setHorizontalSpacing(12)
-            lay.setVerticalSpacing(8)
+            lay.setHorizontalSpacing(SPACE['md'])
+            lay.setVerticalSpacing(SPACE['sm'])
             lay.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
-            lay.setFieldGrowthPolicy(
-                QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
-            form_col.addWidget(box)
+            lay.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+            column.addWidget(box)
             return lay
 
+        def _compact_combo(combo):
+            combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+            combo.setMinimumContentsLength(10)
+            combo.currentTextChanged.connect(combo.setToolTip)
+            return combo
+
         target_form = _group('label_group_target')
-        self.target_stack_combo = QComboBox()
+        self.target_stack_combo = _compact_combo(QComboBox())
         self.target_stack_combo.addItem(trans.t('label_target_input'), "input")
         self.target_stack_combo.addItem(trans.t('label_target_registered'),
                                         "registered")
@@ -529,54 +578,28 @@ class LabelManager:
             item.setToolTip(trans.t('label_preview_no_target'))
         target_form.addRow(trans.t('label_target_stack'),
                            self.target_stack_combo)
-        self._output_scope = QComboBox()
+        self._output_scope = _compact_combo(QComboBox())
         self._output_scope.addItem(trans.t('label_outputs_all'), "")
         selected = self._selected_output()
         if selected is not None:
             self._output_scope.addItem(selected.label, selected.output_id)
         target_form.addRow(trans.t('label_target_output'), self._output_scope)
-        self._range_mode = QComboBox()
-        self._range_mode.addItem(trans.t('label_range_all_placeholder'), "all")
-        self._range_mode.addItem(trans.t('label_range_current'), "current")
-        self._range_mode.addItem(trans.t('label_range_custom'), "custom")
-        # The longest translated mode string used to set the whole column's
-        # minimum width. Keep the minimum below the colour buttons' so the
-        # row can wrap (and then show the full text) instead of forcing a
-        # horizontal scrollbar at the minimum window width.
-        self._range_mode.setMinimumWidth(280)
-        target_form.addRow(trans.t('label_range'), self._range_mode)
-
-        self.range_edit = QLineEdit("")
-        self.range_edit.setPlaceholderText(trans.t('label_range_all_placeholder'))
-        self.range_edit.setToolTip(trans.t('label_range_hint'))
-        # The mode combo above is the row called "Range"; repeating that
-        # caption for the custom edit made the form read as two Range rows.
-        target_form.addRow(trans.t('label_range_custom'), self.range_edit)
         self._range_status = QLabel("")
         self._range_status.setObjectName("mutedLabel")
         self._range_status.setWordWrap(True)
-        target_form.addRow("", self._range_status)
+        target_form.addRow(self._range_status)
         self._target_form = target_form
 
         text_form = _group('label_group_text')
         self.format_edit = QLineEdit("{value}")
         self.format_edit.setProperty("controlId", "label_format_edit")
         self.format_edit.setToolTip(trans.t('label_format_hint'))
-        text_form.addRow(trans.t('label_group_text'), self.format_edit)
+        self.format_edit.setPlaceholderText(trans.t('label_editor_text'))
+        text_form.addRow(trans.t('label_editor_text'), self.format_edit)
         insert_button = QPushButton(trans.t('label_insert_value'))
-        insert_button.clicked.connect(
-            lambda: self.format_edit.insert("{value}"))
-        text_form.addRow("", insert_button)
-
-        self.starting_value_spin = StepperSpinBox(
-            minimum=0, maximum=9999, decimals=0, step=1)
-        self.starting_value_spin.setValue(1)
-        text_form.addRow(trans.t('label_start_val'),
-                         self.starting_value_spin)
-        self.interval_spin = StepperSpinBox(
-            minimum=1, maximum=9999, decimals=0, step=1)
-        self.interval_spin.setValue(1)
-        text_form.addRow(trans.t('label_interval'), self.interval_spin)
+        insert_button.setToolTip(trans.t('label_format_hint'))
+        insert_button.clicked.connect(self._insert_frame_number)
+        text_form.addRow(insert_button)
 
         look_form = _group('label_group_look')
         self.font_size_spin = StepperSpinBox(
@@ -584,42 +607,17 @@ class LabelManager:
         self.font_size_spin.setValue(80)
         look_form.addRow(trans.t('label_font_size'), self.font_size_spin)
 
-        self.font_family_combo = QFontComboBox()
+        self.font_family_combo = _compact_combo(QFontComboBox())
         self.font_family_combo.setEditable(True)
         self.font_family_combo.setCurrentFont(QFont("Arial"))
         look_form.addRow(trans.t('label_font_family'),
                          self.font_family_combo)
 
-        position = QHBoxLayout()
-        position.setContentsMargins(0, 0, 0, 0)
-        self.x_location_spin = StepperSpinBox(
-            minimum=-9007199254740991, maximum=9007199254740991, decimals=0, step=1)
-        self.x_location_spin.setValue(20)
-        self.y_location_spin = StepperSpinBox(
-            minimum=-9007199254740991, maximum=9007199254740991, decimals=0, step=1)
-        self.y_location_spin.setValue(80)
-        for spin in (self.x_location_spin, self.y_location_spin):
-            spin.setToolTip(trans.t('label_position_hint'))
-        position.addWidget(QLabel("X"))
-        position.addWidget(self.x_location_spin)
-        position.addSpacing(8)
-        position.addWidget(QLabel("Y"))
-        position.addWidget(self.y_location_spin)
-        position.addStretch()
-        look_form.addRow(trans.t('label_position'), position)
-
         self.transparent_bg_checkbox = QCheckBox(
             trans.t('label_transparent_bg'))
         self.transparent_bg_checkbox.setChecked(True)
-        look_form.addRow("", self.transparent_bg_checkbox)
+        look_form.addRow(self.transparent_bg_checkbox)
 
-        # Stacked, not side by side: at the minimum window width the two
-        # translated captions ("Choose Background Color" + "Choose Font
-        # Color") together were wider than the whole form column, which was
-        # the main reason the middle pane clipped.
-        colors = QVBoxLayout()
-        colors.setContentsMargins(0, 0, 0, 0)
-        colors.setSpacing(4)
         self.bg_color_button = QPushButton(trans.t('label_choose_bg'))
         self.bg_color_value = (0, 0, 0)
         self._set_color_button_style(self.bg_color_button, 0, 0, 0)
@@ -629,24 +627,94 @@ class LabelManager:
         self.font_color_value = (255, 255, 255)
         self._set_color_button_style(self.font_color_button, 255, 255, 255)
         self.font_color_button.clicked.connect(self.choose_font_color)
-        colors.addWidget(self.bg_color_button)
-        colors.addWidget(self.font_color_button)
-        look_form.addRow(trans.t('label_colors'), colors)
+        look_form.insertRow(2, self.font_color_button)
+        look_form.addRow(self.bg_color_button)
         self.transparent_bg_checkbox.toggled.connect(
             self._sync_background_color_control)
 
-        form_col.addStretch()
-        middle.addWidget(form_host, 1)
-        body.addLayout(middle, 2)
+        more = QToolButton()
+        more.setText(trans.t('label_more_options'))
+        more.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        more.setCheckable(True)
+        more.setArrowType(Qt.ArrowType.RightArrow)
+        form_col.addWidget(more, alignment=Qt.AlignmentFlag.AlignLeading)
 
-        # ---- right: preview ---------------------------------------------
-        right = QVBoxLayout()
-        right.setSpacing(6)
-        preview_title = QLabel(trans.t('label_preview'))
-        bold = preview_title.font()
-        bold.setBold(True)
-        preview_title.setFont(bold)
-        right.addWidget(preview_title)
+        self._details = QWidget()
+        detail_col = QVBoxLayout(self._details)
+        detail_col.setContentsMargins(0, 0, 0, 0)
+        detail_col.setSpacing(SPACE['sm'])
+        form_col.addWidget(self._details)
+        self._details.hide()
+        self._details_toggle = more
+        more.toggled.connect(self._details.setVisible)
+        more.toggled.connect(lambda opened: more.setArrowType(
+            Qt.ArrowType.DownArrow if opened else Qt.ArrowType.RightArrow))
+
+        self._range_form = _group('label_range', detail_col)
+        self._range_mode = _compact_combo(QComboBox())
+        self._range_mode.addItem(trans.t('label_all_frames'), "all")
+        self._range_mode.addItem(trans.t('label_range_current'), "current")
+        self._range_mode.addItem(trans.t('label_range_custom'), "custom")
+        self._range_mode.setAccessibleName(trans.t('label_range'))
+        self._range_form.addRow(self._range_mode)
+        self.range_edit = QLineEdit()
+        self.range_edit.setPlaceholderText(trans.t('label_range_all_placeholder'))
+        self.range_edit.setToolTip(trans.t('label_range_hint'))
+        self._range_form.addRow(trans.t('label_range_custom'), self.range_edit)
+
+        numbering_form = QFormLayout()
+        numbering_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        detail_col.insertLayout(0, numbering_form)
+        self.starting_value_spin = StepperSpinBox(minimum=0, maximum=9999, value=1)
+        numbering_form.addRow(trans.t('label_start_val'), self.starting_value_spin)
+        self.interval_spin = StepperSpinBox(minimum=1, maximum=9999, value=1)
+        numbering_form.addRow(trans.t('label_interval'), self.interval_spin)
+
+        position_form = _group('label_position', detail_col)
+        self.x_location_spin = StepperSpinBox(
+            minimum=-9007199254740991, maximum=9007199254740991, value=20)
+        self.y_location_spin = StepperSpinBox(
+            minimum=-9007199254740991, maximum=9007199254740991, value=80)
+        position_form.addRow(trans.t('label_x'), self.x_location_spin)
+        position_form.addRow(trans.t('label_y'), self.y_location_spin)
+        for spin in (self.x_location_spin, self.y_location_spin):
+            spin.setToolTip(trans.t('label_position_hint'))
+
+        header = QLabel(self._header_text())
+        header.setObjectName("mutedLabel")
+        header.setWordWrap(True)
+        editor_col.addWidget(header)
+        editor_col.addStretch()
+
+        preview_scroll = QScrollArea()
+        preview_scroll.setWidgetResizable(True)
+        preview_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        preview_host = QWidget()
+        preview_col = QVBoxLayout(preview_host)
+        preview_col.setContentsMargins(0, 0, SPACE['xs'], 0)
+        preview_col.setSpacing(SPACE['xs'])
+        preview_scroll.setWidget(preview_host)
+        workspace.addWidget(preview_scroll)
+        preview_col.addWidget(_heading('label_preview'))
+        self._preview_target = _preview_caption(muted=False)
+        preview_col.addWidget(self._preview_target)
+
+        self._preview_hint = QLabel(trans.t('label_preview_drag'))
+        self._preview_hint.setObjectName("mutedLabel")
+        self._preview_hint.setWordWrap(True)
+        preview_col.addWidget(self._preview_hint)
+
+        from widgets.label_preview import LabelPreview
+        canvas = QFrame()
+        canvas.setObjectName("labelPreviewCanvas")
+        canvas_layout = QVBoxLayout(canvas)
+        canvas_layout.setContentsMargins(0, 0, 0, 0)
+        self.preview = LabelPreview()
+        self.preview.setMinimumSize(164, 116)
+        self.preview.setAccessibleName(trans.t('label_preview'))
+        self.preview.position_changed.connect(self._move_preview_label)
+        canvas_layout.addWidget(self.preview)
+        preview_col.addWidget(canvas, 1)
 
         nav = QHBoxLayout()
         self._preview_prev = QPushButton("<")
@@ -663,7 +731,7 @@ class LabelManager:
         self._preview_index.setRange(1, 9999)
         hide_spin_buttons(self._preview_index)
         self._preview_index.setKeyboardTracking(False)
-        self._preview_index.setAccessibleName(trans.t('label_preview'))
+        self._preview_index.setAccessibleName(trans.t('label_preview_frame'))
         self._preview_index.setValue(1)
         self._preview_index.valueChanged.connect(
             lambda _v: self._refresh_preview())
@@ -673,49 +741,40 @@ class LabelManager:
         nav.addWidget(self._preview_total)
         nav.addWidget(self._preview_next)
         nav.addStretch()
-        right.addLayout(nav)
+        preview_col.addLayout(nav)
 
-        from widgets.label_preview import LabelPreview
-        self.preview = LabelPreview()
-        # The widget's own 280 px minimum made the preview column force the
-        # form below its layout width at the 820 px minimum dialog size. The
-        # preview scales its frame, so 180 px stays usable and leaves the
-        # form column the space it needs.
-        self.preview.setMinimumWidth(180)
-        right.addWidget(self.preview, 1)
         preview_tools = QHBoxLayout()
         fit = QPushButton(trans.t('label_fit'))
-        fit.clicked.connect(lambda: self.preview.set_zoom_mode("fit"))
-        actual = QPushButton("100%")
-        actual.setToolTip("100%: one source pixel per device pixel")
-        actual.clicked.connect(lambda: self.preview.set_zoom_mode("actual"))
-        preview_tools.addWidget(fit)
-        preview_tools.addWidget(actual)
-        right.addLayout(preview_tools)
+        actual = QPushButton(trans.t('retouch_zoom_100'))
+        actual.setToolTip(trans.t('label_preview_100_hint'))
+        self._zoom_buttons = QButtonGroup(dialog)
+        for mode_id, button in enumerate((fit, actual)):
+            button.setCheckable(True)
+            self._zoom_buttons.addButton(button, mode_id)
+            preview_tools.addWidget(button)
+        fit.setChecked(True)
+        fit.clicked.connect(lambda: self._set_preview_zoom('fit'))
+        actual.clicked.connect(lambda: self._set_preview_zoom('actual'))
+        preview_tools.addStretch()
+        preview_col.addLayout(preview_tools)
         self._first_applicable = QPushButton(trans.t('label_first_applicable'))
         self._first_applicable.clicked.connect(self._show_first_applicable)
+        self._first_applicable.hide()
+        preview_col.addWidget(self._first_applicable, alignment=Qt.AlignmentFlag.AlignLeading)
 
-        self.preview_status = QLabel("")
-        self.preview_status.setWordWrap(True)
-        self.preview_status.setObjectName("mutedLabel")
-        self.preview.status_changed.connect(
-            lambda: self.preview_status.setText(self.preview.native_status()))
-        right.addWidget(self.preview_status)
-        body.addLayout(right, 1)
+        self.preview_status = _preview_caption()
+        preview_col.addWidget(self.preview_status)
 
-        # Keep the long preview action out of both side columns: in several
-        # translations its caption is wider than a column can be at the
-        # 820 px minimum, and a clipped action is still unusable. A
-        # left-aligned row under the body always has the full width.
-        first_row = QHBoxLayout()
-        first_row.addWidget(self._first_applicable)
-        first_row.addStretch()
-        content_col.addLayout(first_row)
+        self._native_preview_status = _preview_caption()
+        self._native_preview_status.hide()
+        self.preview.status_changed.connect(self._update_native_preview_status)
+        preview_col.addWidget(self._native_preview_status)
 
         # ---- bottom: fixed actions --------------------------------------
-        self._dialog_error = QLabel("")
+        self._dialog_error = QLabel()
         self._dialog_error.setWordWrap(True)
-        self._dialog_error.setStyleSheet("color:#c0392b;")
+        self._dialog_error.setObjectName("labelError")
+        self._dialog_error.hide()
         root.addWidget(self._dialog_error)
 
         buttons = QDialogButtonBox(
@@ -726,15 +785,16 @@ class LabelManager:
         self._ok_button.setText(trans.t('label_apply_close'))
         buttons.button(QDialogButtonBox.StandardButton.Cancel).setText(
             trans.t('btn_cancel'))
+        self._ok_button.setObjectName("primaryButton")
+        self._ok_button.setDefault(True)
+        for button in dialog.findChildren(QPushButton):
+            button.setAutoDefault(button is self._ok_button)
         buttons.accepted.connect(lambda: dialog.accept() if self._commit_dialog() else None)
         buttons.rejected.connect(dialog.reject)
         root.addWidget(buttons)
 
         # ---- working copy and wiring ------------------------------------
         self._draft = self._labels.copy()
-        self._editing_id: str = ""
-        self._dialog_frames: dict = {}
-        self._dialog_target = "registered"
 
         for widget in (self.format_edit, self.range_edit):
             widget.textChanged.connect(self._refresh_preview)
@@ -756,15 +816,13 @@ class LabelManager:
             self._dialog_list.setCurrentRow(0)
         else:
             self._dialog_add_label()
-        # The preview frame count belongs to the selected target; without this
-        # initial refresh the dialog showed "/ 0" until the target changed.
-        self._on_target_changed()
-        self._sync_background_color_control()
-        size_dialog_to_content(dialog, scroll)
+        (self.format_edit if self._editing_id else add_button).setFocus()
+        workspace.fit_dialog(1080, 720)
 
         dialog.exec()
         self.preview.close_preview()
         self._clear_dialog_state()
+        dialog.deleteLater()
 
     # ---- dialog helpers ---------------------------------------------------
     def _header_text(self) -> str:
@@ -790,9 +848,7 @@ class LabelManager:
         for label in self._draft:
             summary = self._label_summary(label)
             item = QListWidgetItem(summary)
-            # The column is deliberately narrow to leave the form room at the
-            # 820 px minimum; the tooltip keeps the elided target/range text
-            # available without a horizontal scrollbar inside the list.
+            # Keep the entire summary available when the list elides it.
             item.setToolTip(summary)
             item.setData(Qt.ItemDataRole.UserRole, label.label_id)
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
@@ -812,7 +868,7 @@ class LabelManager:
             "registered": trans.t('label_target_registered'),
             "output": trans.t('label_target_output'),
         }.get(label.target, label.target)
-        scope = label.config.range or trans.t('label_range_all_placeholder')
+        scope = label.config.range or trans.t('label_all_frames')
         return f"{text}  ·  {target}  ·  {scope}"
 
     def _dialog_add_label(self) -> None:
@@ -825,7 +881,8 @@ class LabelManager:
         label.config.target_stack = 0 if label.target == "input" else 1
         self._draft.add(label)
         self._reload_dialog_list(select_id=label.label_id)
-        self._dialog_list.setCurrentRow(self._dialog_list.count() - 1)
+        self.format_edit.setFocus()
+        self.format_edit.selectAll()
 
     def _dialog_delete_label(self) -> None:
         item = self._dialog_list.currentItem()
@@ -838,11 +895,59 @@ class LabelManager:
         if self._dialog_list.count():
             self._dialog_list.setCurrentRow(0)
         else:
-            self._form_host.setEnabled(False)
-            self.preview.set_frame(None)
-            self._dialog_error.clear()
-            self.preview_status.clear()
+            self._show_no_label()
+            self._set_dialog_error("")
             self._ok_button.setEnabled(True)
+
+    def _show_no_label(self) -> None:
+        self._form_host.setEnabled(False)
+        self._delete_button.setEnabled(self._dialog_list.currentItem() is not None)
+        self.preview.set_preview(None, {"enabled": False}, 0)
+        self._set_preview_caption(self._preview_target, "")
+        self._set_preview_caption(self.preview_status, "")
+        self._preview_total.setText("/ 0")
+        self._preview_index.setEnabled(False)
+        self._preview_prev.setEnabled(False)
+        self._preview_next.setEnabled(False)
+        for button in self._zoom_buttons.buttons():
+            button.setEnabled(False)
+        self._preview_hint.hide()
+        self._first_applicable.hide()
+        self._range_status.clear()
+
+    def _insert_frame_number(self) -> None:
+        self.format_edit.insert("{value}")
+        self.format_edit.setFocus()
+
+    def _move_preview_label(self, x: float, y: float) -> None:
+        if not self._editing_id or self._loading_editor:
+            return
+        with QSignalBlocker(self.x_location_spin), QSignalBlocker(self.y_location_spin):
+            self.x_location_spin.setValue(x)
+            self.y_location_spin.setValue(y)
+        self._refresh_preview()
+
+    def _set_preview_zoom(self, mode: str) -> None:
+        self.preview.set_zoom_mode(mode)
+        self._update_preview_hint()
+
+    def _update_preview_hint(self) -> None:
+        key = 'label_preview_pan' if self._zoom_buttons.checkedId() == 1 else 'label_preview_drag'
+        self._preview_hint.setText(trans.t(key))
+        self._preview_hint.setVisible(self._preview_index.isEnabled())
+
+    def _update_native_preview_status(self) -> None:
+        self._set_preview_caption(self._native_preview_status, self.preview.native_status())
+
+    @staticmethod
+    def _set_preview_caption(widget, text: str) -> None:
+        widget.setText(text)
+        widget.setToolTip(text)
+        widget.setVisible(bool(text))
+
+    def _set_dialog_error(self, error: str) -> None:
+        self._dialog_error.setText(error)
+        self._dialog_error.setVisible(bool(error))
 
     def _load_selected_label(self, row: int) -> None:
         if row < 0 or self._dialog_list is None:
@@ -853,6 +958,8 @@ class LabelManager:
         label = self._draft.get(item.data(Qt.ItemDataRole.UserRole))
         if label is None:
             return
+        self.preview.cancel_drag()
+        self._delete_button.setEnabled(True)
         self._editing_id = label.label_id
         self._loading_editor = True
         self._form_host.setEnabled(True)
@@ -867,8 +974,8 @@ class LabelManager:
         if not representable:
             self._editing_id = ''
             self._loading_editor = False
-            self._form_host.setEnabled(False)
-            self._dialog_error.setText('Label coordinates or font size cannot be represented.')
+            self._show_no_label()
+            self._set_dialog_error('Label coordinates or font size cannot be represented.')
             self._ok_button.setEnabled(False)
             return
         widgets = (self.target_stack_combo, self.format_edit,
@@ -893,7 +1000,10 @@ class LabelManager:
                                              parse_label_range(config.range).all_frames else 2)
             scope_index = self._output_scope.findData(config.output_id)
             if scope_index < 0:
-                self._output_scope.addItem(trans.t('label_target_missing'), config.output_id)
+                record = self._output_record(config.output_id)
+                self._output_scope.addItem(
+                    record.label if record is not None else trans.t('label_target_missing'),
+                    config.output_id)
                 scope_index = self._output_scope.count() - 1
             self._output_scope.setCurrentIndex(scope_index)
             self._range_binding = (config.target, self.range_edit.text(),
@@ -918,6 +1028,9 @@ class LabelManager:
             for widget in widgets:
                 widget.blockSignals(False)
             self._loading_editor = False
+        for combo in (self.target_stack_combo, self._output_scope, self._range_mode,
+                      self.font_family_combo):
+            combo.setToolTip(combo.currentText())
         self._on_target_changed()
         self._sync_background_color_control()
 
@@ -952,18 +1065,25 @@ class LabelManager:
         self._dialog_frames = self._collect_frames(self._dialog_target)
         total = len(self._dialog_frames["images"])
         self._preview_total.setText(f"/ {total}")
-        self._preview_index.setMaximum(max(1, total))
-        if previous_target != self._dialog_target:
-            current = (getattr(self.window, "current_display_index", 0)
-                       if self._dialog_target == "input" else
-                       getattr(self.window, "current_result_index", 0)
-                       if self._dialog_target == "registered" else 0)
-            self._preview_index.setValue(max(1, min(total, current + 1)))
-        self._preview_prev.setEnabled(total > 1)
-        self._preview_next.setEnabled(total > 1)
+        with QSignalBlocker(self._preview_index):
+            self._preview_index.setMaximum(max(1, total))
+            if previous_target != self._dialog_target:
+                current = (getattr(self.window, "current_display_index", 0)
+                           if self._dialog_target == "input" else
+                           getattr(self.window, "current_result_index", 0)
+                           if self._dialog_target == "registered" else 0)
+                self._preview_index.setValue(max(1, min(total, current + 1)))
+        self._preview_index.setEnabled(total > 0)
+        for button in self._zoom_buttons.buttons():
+            button.setEnabled(total > 0)
+        context = self.target_stack_combo.currentText()
+        if self._dialog_target == "output" and self._dialog_frames["names"]:
+            context = f"{context}  ·  {self._dialog_frames['names'][0]}"
+        self._set_preview_caption(self._preview_target, context)
+        self._update_preview_hint()
         self._target_form.setRowVisible(
             self._output_scope, self._dialog_target == "output")
-        self._target_form.setRowVisible(
+        self._range_form.setRowVisible(
             self.range_edit, self._range_mode.currentData() == "custom")
         self.range_edit.setEnabled(self._range_mode.currentData() == "custom")
         self._refresh_preview()
@@ -994,20 +1114,10 @@ class LabelManager:
                 return {"images": images, "names": names,
                         "metadata": [metadata] * len(images)}
             return {"images": [], "names": names, "metadata": []}
-        record = self._selected_output()
         wanted = output_id
         if wanted is None:
             wanted = self._output_scope.currentData() if self._output_scope is not None else ""
-        if wanted and (record is None or record.output_id != wanted):
-            manager = getattr(window, "output_manager", None)
-            widget = getattr(window, "output_list", None)
-            record = None
-            if manager is not None and widget is not None:
-                for row in range(widget.count()):
-                    candidate = manager.record_for_row(row)
-                    if candidate is not None and candidate.output_id == wanted:
-                        record = candidate
-                        break
+        record = self._output_record(wanted)
         if record is not None and record.image is not None:
             # The record owns its pixels. Never fall back to the current stack
             # metadata here: an older output may have different calibration or
@@ -1086,7 +1196,7 @@ class LabelManager:
         mode = self._range_mode.currentData()
         self._range_binding = None
         self.range_edit.setEnabled(mode == "custom")
-        self._target_form.setRowVisible(self.range_edit, mode == "custom")
+        self._range_form.setRowVisible(self.range_edit, mode == "custom")
         if mode == "all":
             self.range_edit.setText("")
         elif mode == "current":
@@ -1219,6 +1329,8 @@ class LabelManager:
                 or self._editing_id != editing_id):
             return
         error = self._range_error(config) if label.enabled else ""
+        if error:
+            self._details_toggle.setChecked(True)
         if not error and label.enabled:
             if frame is None:
                 error = trans.t('label_preview_no_target')
@@ -1228,22 +1340,24 @@ class LabelManager:
                 error = self._draw_error_message(self.preview.draw_error())
         self._range_status.setText(trans.t('label_range_matches').format(
             n=len(indices), total=len(images)))
-        self._dialog_error.setText(error)
+        self._set_dialog_error(error)
         self._ok_button.setEnabled(not error)
         self._preview_prev.setEnabled(index > 0)
         self._preview_next.setEnabled(index + 1 < len(images))
         self._first_applicable.setVisible(bool(indices) and index not in indices)
         if error:
-            self.preview_status.setText(error)
+            status = ""
+        elif not label.enabled:
+            status = trans.t('label_preview_disabled')
         elif index not in indices:
-            self.preview_status.setText(trans.t('label_preview_outside_range'))
+            status = trans.t('label_preview_outside_range')
         elif self.preview.substituted_font:
-            self.preview_status.setText(trans.t('label_font_substituted').format(
-                name=self.preview.substituted_font))
+            status = trans.t('label_font_substituted').format(name=self.preview.substituted_font)
         else:
-            self.preview_status.setText(trans.t('label_preview_hint').format(
+            status = trans.t('label_preview_hint').format(
                 n=build_label_text(config["format"], "",
-                                   config["starting_value"] + index * config["interval"])))
+                                   config["starting_value"] + index * config["interval"]))
+        self._set_preview_caption(self.preview_status, status)
 
     def _replace_labels(self, draft) -> bool:
         if draft.to_dict() == self._labels.to_dict():
@@ -1272,7 +1386,7 @@ class LabelManager:
             error = self._configuration_error(vars(label.config), label.enabled)
             if error:
                 self._reload_dialog_list(label.label_id)
-                self._dialog_error.setText(error)
+                self._set_dialog_error(error)
                 return False
         return self._replace_labels(self._draft)
 
@@ -1359,9 +1473,8 @@ class LabelManager:
         brightness = (red * 299 + green * 587 + blue * 114) / 1000
         text_color = "black" if brightness > 150 else "white"
         button.setStyleSheet(
-            f"background-color: rgb({red}, {green}, {blue}); "
-            f"color: {text_color}; border: 1px solid #555; "
-            f"padding: 6px 8px; border-radius: 4px;")
+            f"QPushButton:enabled {{ background-color: rgb({red}, {green}, {blue}); "
+            f"color: {text_color}; }}")
         button.setToolTip(f"RGB ({red}, {green}, {blue})")
 
     def _clear_dialog_state(self) -> None:
@@ -1373,6 +1486,8 @@ class LabelManager:
             release()
         self._loading_editor = False
         self._editing_id = ""
+        self._dialog_frames = {}
+        self._dialog_target = ""
         self._range_mode = None
         self._output_scope = None
         self._range_binding = None
@@ -1393,7 +1508,17 @@ class LabelManager:
         self.font_color_value = (255, 255, 255)
         self.preview: Optional["object"] = None
         self.preview_status: Optional[QLabel] = None
-        self._refresh_label_preview = None
+        self._preview_target = None
+        self._preview_hint = None
+        self._native_preview_status = None
+        self._zoom_buttons = None
+        self._first_applicable = None
+        self._delete_button = None
+        self._details_toggle = None
+        self._details = None
+        self._form_host = None
+        self._target_form = None
+        self._range_form = None
         self._dialog_list = None
         self._dialog_error = None
         self._range_status = None

@@ -1,7 +1,9 @@
 """Exercise the real worker transport without requiring a GPU or pack install."""
 import gc
+import subprocess
 import sys
 from pathlib import Path
+from threading import Event
 
 import numpy as np
 import pytest
@@ -53,7 +55,7 @@ def test_worker_maps_independent_input_and_releases_output(worker_command, tmp_p
             assert not path.exists()
     finally:
         worker.close()
-    assert worker.process.poll() is not None
+    assert worker.process.poll() == 0
 
 
 @pytest.mark.parametrize('mode', ['exit', 'timeout', 'cancel'])
@@ -70,6 +72,29 @@ def test_worker_failure_reaps_child(worker_command, tmp_path, mode):
         assert worker.process.poll() is not None
     finally:
         worker.close()
+
+
+def test_slow_termination_keeps_completed_logits(worker_command, tmp_path, monkeypatch):
+    worker = inference_client.Worker(worker_command, None)
+    planes = np.zeros((1, 2, 4, 4), np.float32)
+    waited = Event()
+    wait = worker.process.wait
+
+    def wait_after_timeout(timeout=None):
+        if timeout is not None:
+            raise subprocess.TimeoutExpired(worker.process.args, timeout)
+        try:
+            return wait()
+        finally:
+            waited.set()
+
+    try:
+        result = worker.run('TORCH_CUDA', str(tmp_path / 'model.onnx'), planes, tmp_path, None)
+        monkeypatch.setattr(worker.process, 'wait', wait_after_timeout)
+    finally:
+        worker.close()
+    assert waited.wait(5) and worker.process.poll() is not None
+    np.testing.assert_array_equal(result, planes + 2)
 
 
 def test_native_failure_only_memoizes_current_shape(monkeypatch, tmp_path):

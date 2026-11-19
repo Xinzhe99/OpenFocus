@@ -19,6 +19,7 @@ from __future__ import annotations
 from typing import Dict
 
 from utils.design_tokens import FONT, RADIUS, SPACE, WEIGHT, palette
+from utils.design_tokens import ui_font_sizes
 
 
 def _asset_url(name: str) -> str:
@@ -127,12 +128,12 @@ def _shadow_radius() -> Dict[str, int]:
     return RADIUS
 
 
-def build_stylesheet(theme: str = "dark") -> str:
-    """Render the full application stylesheet for `theme`."""
+def build_stylesheet(theme: str = 'dark', *, font_size=FONT['body']) -> str:
+    """Render the full application stylesheet for the chosen theme and text size."""
     t = palette(theme)
     r = _shadow_radius()
     s = SPACE
-    f = FONT
+    f = ui_font_sizes(font_size)
     check = _CHECK_SVG
     dot = _RADIO_DOT_DARK if theme == "dark" else _RADIO_DOT_LIGHT
     arrow_right = _ARROW_RIGHT_LIGHT if theme == "dark" else _ARROW_RIGHT_DARK
@@ -668,20 +669,19 @@ LIGHT_STYLE = build_stylesheet("light")
 LIGHT_APP_STYLE = LIGHT_STYLE
 
 
-def get_theme_style(theme: str = "dark") -> str:
-    """Full stylesheet for 'dark' (default) or 'light'."""
-    return build_stylesheet("light" if theme == "light" else "dark")
+def get_theme_style(theme: str = 'dark', *, font_size=FONT['body']) -> str:
+    return build_stylesheet('light' if theme == 'light' else 'dark', font_size=font_size)
 
 
 def get_app_light_style() -> str:
     return LIGHT_APP_STYLE
 
 
-def _message_box_qss(theme: str) -> str:
+def _message_box_qss(theme: str, font_size=FONT['body']) -> str:
     t = palette(theme)
     r = RADIUS
     s = SPACE
-    f = FONT
+    f = ui_font_sizes(font_size)
     return f"""
 QMessageBox {{
     background-color: {t['surface']};
@@ -708,7 +708,7 @@ QMessageBox QPushButton:default:hover {{ background-color: {t['accentHover']}; }
 """
 
 
-def _add_label_dialog_qss(theme: str) -> str:
+def _add_label_dialog_qss(theme: str, font_size=FONT['body']) -> str:
     """Style for the "add label" dialog (controllers/label_manager.py).
 
     The dialog is built inline rather than as a dialogs/ module, and it was the
@@ -719,7 +719,7 @@ def _add_label_dialog_qss(theme: str) -> str:
     t = palette(theme)
     r = RADIUS
     s = SPACE
-    f = FONT
+    f = ui_font_sizes(font_size)
     return f"""
 QDialog {{
     background-color: {t['surface']};
@@ -770,6 +770,8 @@ ADD_LABEL_DIALOG_STYLE_LIGHT = _add_label_dialog_qss("light")
 
 
 def get_add_label_dialog_style(theme: str) -> str:
+    if CURRENT_FONT_SIZE != FONT['body']:
+        return _add_label_dialog_qss(theme, CURRENT_FONT_SIZE)
     return (ADD_LABEL_DIALOG_STYLE_LIGHT if theme == "light"
             else ADD_LABEL_DIALOG_STYLE)
 
@@ -964,10 +966,13 @@ PRIMARY_BLUE = palette("light")["accent"]
 # Current theme state (read by widgets that paint by hand)
 # --------------------------------------------------------------------------
 CURRENT_THEME = "dark"
+CURRENT_FONT_SIZE = FONT['body']
 CURRENT_MESSAGE_BOX_STYLE = MESSAGE_BOX_STYLE_DARK
 
 
 def get_message_box_style(theme: str) -> str:
+    if CURRENT_FONT_SIZE != FONT['body']:
+        return _message_box_qss(theme, CURRENT_FONT_SIZE)
     return (MESSAGE_BOX_STYLE_LIGHT if theme == "light"
             else MESSAGE_BOX_STYLE_DARK)
 
@@ -984,12 +989,13 @@ ERROR_MESSAGE_BOX_STYLE = MESSAGE_BOX_STYLE_DARK
 SUCCESS_MESSAGE_BOX_STYLE = MESSAGE_BOX_STYLE_DARK
 
 
-def set_current_theme(theme: str) -> None:
-    global CURRENT_THEME, CURRENT_MESSAGE_BOX_STYLE
+def set_current_theme(theme: str, *, font_size=FONT['body']) -> None:
+    global CURRENT_THEME, CURRENT_FONT_SIZE, CURRENT_MESSAGE_BOX_STYLE
     global MESSAGE_BOX_STYLE, PROGRESS_DIALOG_STYLE
     global WARNING_MESSAGE_BOX_STYLE, ERROR_MESSAGE_BOX_STYLE
     global SUCCESS_MESSAGE_BOX_STYLE
     CURRENT_THEME = "light" if theme == "light" else "dark"
+    CURRENT_FONT_SIZE = font_size
     CURRENT_MESSAGE_BOX_STYLE = get_message_box_style(CURRENT_THEME)
     MESSAGE_BOX_STYLE = CURRENT_MESSAGE_BOX_STYLE
     PROGRESS_DIALOG_STYLE = get_progress_dialog_style(CURRENT_THEME)

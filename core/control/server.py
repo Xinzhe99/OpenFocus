@@ -1416,12 +1416,8 @@ class ControlServer(QObject):
         elif name == "scalebar":
             from dialogs.scalebar import ScaleBarDialog
             dialog = ScaleBarDialog(window)
-        elif name == "dust":
-            from core.experimental import experimental_enabled
-            if not experimental_enabled(window):
-                raise ControlError('invalid_argument', trans.t('experimental_locked_hint'))
-            from dialogs.dustmap import DustMapDialog
-            dialog = DustMapDialog(window)
+        elif name in ('dust', 'mosaic'):
+            raise ControlError('invalid_argument', trans.t('development_unavailable_hint'))
         elif name == "retouch":
             dialog = self._retouch_dialog()
         elif name == "welcome":

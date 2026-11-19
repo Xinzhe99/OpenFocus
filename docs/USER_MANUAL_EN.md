@@ -194,11 +194,11 @@ The top menu bar provides access to all functions:
 - **File**: import/export operations, projects, processing templates and the recent-files list
 - **Edit**: Undo/redo, reset the current stack, image transformations and retouching
 - **Tools**: Image stitching, batch processing and conversion, method comparison, depth map, flat-field correction, scale bar, watermark and labels
-- **Settings**: Advanced Settings (General, Fusion, Registration, Startup & updates), GPU acceleration, theme and language
+- **Settings** offers Advanced Settings, GPU acceleration, theme, font size, and language.
 - **Help**: Report a Problem (diagnostics and logs), contact information and the Discord community, Support Us, and update check. Support Us displays Alipay and PayPal codes; include your username in the transfer note for permanent project acknowledgment.
 
-**Tools → Stitch Images…** opens a separate workspace for already-fused
-microscope regions and camera panoramas; it does not modify the current stack.
+**Tools → Stitch Images… (In development)** is currently unavailable. The following describes the workspace under development.
+
 The **Project assistant** tab gathers import, alignment and control points;
 **Source images** holds the list, grid and manual placement; **Panorama editor**
 holds seam, blend, exposure/color, output, projection, camera and HDR settings
@@ -381,9 +381,9 @@ File → Open Project rebuilds the recorded frames before replacing the current
 stack. If sources moved, choose the new source root and confirm the complete
 old/new path mapping. Save the project again to retain the relocated references.
 
-A project behaves like a document: the title bar shows its name with a `*` while
-there are unsaved changes, and closing the app or opening another project asks
-before discarding them. Source images are referenced, not copied.
+The title bar shows a named project's file name with a `*` while it has unsaved
+changes. An unnamed workspace displays **OpenFocus**. Closing the app or opening
+another project still asks before discarding unsaved edits. Source images are referenced, not copied.
 
 ### Processing Templates
 
@@ -1333,12 +1333,9 @@ export an image to write the annotations to a file.
 **Enable experimental features** in **Settings → Advanced Settings → General** is off by
 default and is remembered for this installation. With it off, desktop fusion
 offers OpenFocus A/B/C and No fusion; registration offers ECC and No alignment.
-Other fusion and registration methods and image stitching remain visible as
-experimental but cannot be used. Enable the option and click **OK** to unlock
-them; required dependencies may still limit availability. The experimental
-features are under development and may have performance, quality or availability
-limitations. Projects and templates do not override this preference. Restoring
-default settings turns it off again.
+Enable the option and click **OK** to unlock other fusion and registration methods. Availability depends on their required dependencies. Projects and templates preserve the installation preference. Restoring default settings turns it off.
+
+**Settings → Theme → Follow system** updates the interface when the operating system changes between light and dark. **Settings → Font size** offers Small (9 pt), Medium (10 pt), and Large (13 pt). **Custom…** previews 8–18 pt alongside the default before applying the size.
 
 **Settings → Advanced Settings**
 
@@ -1373,19 +1370,7 @@ Automatic update downloads run while idle and never install automatically. A com
 
 On Windows, the updater builds a separate candidate and moves the portable marker and `OpenFocusData` during the switch. If the switch fails it restores the old installation; if rollback cannot finish, the backup is kept and the app does not restart automatically. A permission prompt may appear once. Cancelling extraction discards incomplete staging and is checked between 256 KiB reads and writes; a blocked disk or network operation can delay it.
 
-The Dust Map tool and batch flat-field option are experimental. Enable
-**Experimental features** in Advanced Settings to use them.
-
-Flat-field correction changes session working pixels without overwriting source files. Select the white reference and a preview frame, then generate the preview again after changing source or scale. Reference and working/base images must share a coordinate domain and size. Applying prepares both stacks before committing; optional reference-frame removal belongs to the same undo step. Export corrected source images when you need to preserve these pixels outside the session.
-
-Batch processing accepts an optional white-field image in its processing options.
-Choose a defocused reference at the original frame resolution; it is scaled with
-the input stack and applied before registration, using the default dust size.
-An unreadable reference or a size mismatch fails the affected stack visibly.
-The reference is excluded from folder inputs, including grouped processing;
-at least two source frames must remain for fusion. Flat-field correction cannot
-be combined with transparent input. Leave the field empty to process without
-correction. The CLI also accepts the reference with `--dust-map WHITE`.
+**Dust Map (In development)** and white-field correction in Batch Processing and the command line are currently unavailable.
 
 Sensor cleanup is optional and runs on the original sensor-coordinate frames
 before registration. In the desktop application it lives in **Settings →
@@ -1405,7 +1390,7 @@ restored projects with such source histories. Pre-aligned ROI processing cannot
 be combined with sensor cleanup; leave ROI mode and render the full stack.
 Cleanup settings belong to the current session and saved project, not global
 application preferences. Batch and CLI process their original inputs separately,
-with sensor cleanup before flat-field correction and registration.
+with sensor cleanup before registration.
 Defect masks require source files with neutral EXIF orientation. Oriented files,
 camera RAW files, and sources whose orientation cannot be established are
 rejected because their decoded pixels may no longer match sensor coordinates.
@@ -1434,15 +1419,7 @@ carry the sensor-denoise flag but not a defect-mask path; recipes store the mask
 path and its fingerprint. Opening the project itself still
 requires its sources and any recorded flat-field reference.
 
-When a flat-field file reference is applied in **Tools → Dust Map
-(Flat-field)** at the stack's base scale, a saved
-project records its absolute path, content hash and dust size, and reapplies it
-once to the original sources on open. Keep the reference file unchanged and in
-place: a missing or changed reference prevents the project from opening. A
-reference selected from the stack, or correction at a different working/base
-scale, still requires exporting the corrected source stack before saving a
-project. If the working scale changes after correction, restore it to the
-correction scale before saving or export the corrected stack.
+Projects saved with a base-scale file-based flat-field reference still replay that correction on open. Keep the reference file unchanged and in place for project restoration.
 
 **Help → Report a Problem** opens on **Feedback Channels**, with links to the account center and GitHub.
 Under **Diagnostics**, **Session log** shows the local log and **Environment Info** shows the system and dependency report.
@@ -1644,11 +1621,11 @@ Process multiple folders automatically:
      dialog (or on the folder list) to queue them all at once; dropping
      switches to multi-folder mode and the thumbnails appear as they decode
    - **Remove Folders**: Remove selected folders from the list
-3. Configure output settings:
+3. Review the fusion and registration choices in **Method**. Grouping and sensor cleanup are in **Options**.
+4. Set the file format and destination in **Output**:
    - **Save to Subfolder**: Creates results in each input folder
    - **Save to Same Folder**: Saves alongside input while preserving existing files
    - **Custom Folder**: Specify output location
-4. Review current fusion/registration settings
 5. Click **Start Batch** to begin
 
 The batch dialog shows real-time progress. You can cancel processing at any time.
@@ -1658,7 +1635,7 @@ The batch dialog shows real-time progress. You can cancel processing at any time
 - Starts from a snapshot of the main window settings; batch controls override it.
 - Each folder or split group is processed independently through the same pipeline.
 - **Grouped fusion** is an optional way to process long stacks in multiple-folder
-  mode. Tick **Process large stacks in groups**; the **Group size** and
+  mode. In **Options**, tick **Process large stacks in groups**. The **Group size** and
   **Overlap** controls appear only while it is on. Group size must be at least 2
   and overlap between 0 and the group size minus 2. The desktop overlap starts
   at 1 and is limited to the allowed range when the size changes. Groups
@@ -1684,8 +1661,7 @@ The batch dialog shows real-time progress. You can cancel processing at any time
   line, an example is `python main.py --input stack --output fused.png --group-size 8 --group-overlap 1`.
   Grouped CLI input must be a folder and cannot be combined with `--depth-map`.
   A different stack-wide OpenFocus alignment reference cannot be combined with
-  grouping. A flat-field reference is applied to original frames before
-  registration; output sharpening is applied once after the final group.
+  grouping. Output sharpening is applied once after the final group.
 - **What lands where, by mode.** With **align only**, the selected destination
   receives one `<stack>_aligned` folder per stack and the output panel lists
   that folder. With **fusion + save aligned**, the fused image is written as
@@ -1980,7 +1956,6 @@ an input or another output. Batch, grouped and dry-run modes reject this option.
 | `--frame-order` | Folder input: `auto` (default) orders frames near to far by EXIF focus steps when every frame has them (OM SYSTEM focus bracketing starts mid-depth), otherwise by name; `name` always sorts by filename. Explicit file lists keep their order |
 | `--sharpen-output` | Enable sharpening of the fused output (off by default) |
 | `--sharpen-strength PERCENT` | Set integer strength from 0 to 200 (default 100). Applies with `--sharpen-output`; 0 leaves the result unchanged. |
-| `--dust-map WHITE` | Flat-field (dust map) correction from a defocused white-field shot |
 | `--defect-mask-path MASK` | Sensor-coordinate defect mask repaired before registration |
 | `--sensor-denoise` | Conservative sensor denoising before registration |
 | `--kernel, -k` | Odd kernel size for methods that declare `kernel_size`; OpenFocus A/B use `--param radius=...` |

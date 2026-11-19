@@ -12,6 +12,10 @@ import numpy as np
 
 from core.inference_process import spawn
 from fusion_methods.neural_common import cancel
+from utils.logging_setup import get_logger
+
+_LOG = get_logger(__name__)
+_SHUTDOWN_TIMEOUT = 3
 
 
 class WorkerError(RuntimeError):
@@ -31,6 +35,7 @@ class Worker:
                              stderr=subprocess.DEVNULL)
         self.replies = queue.Queue()
         self.requests = queue.Queue()
+        self._closed = False
         self.reader = threading.Thread(target=self._read, daemon=True, name='neural-worker-replies')
         try:
             self.reader.start()
@@ -41,7 +46,7 @@ class Worker:
             self.backends = tuple(k for k in engines if k in ('TORCH_CUDA', 'TENSORRT'))
             self.device = str(reply.get('device') or '')
         except BaseException:
-            self.close()
+            self.close(force=True)
             raise
 
     def _read(self):
@@ -61,6 +66,8 @@ class Worker:
         except (ValueError, OSError):
             pass
         finally:
+            self.process.stdin.close()
+            self.process.stdout.close()
             self.replies.put(None)
 
     def _receive(self, timeout, should_cancel):
@@ -107,26 +114,39 @@ class Worker:
                 raise WorkerError(str(reply['error'])[:512])
             raise WorkerLost('Invalid accelerator inference response')
         except (OSError, WorkerLost) as exc:
-            self.close()
+            self.close(force=True)
             raise WorkerLost(str(exc)) from None
         except WorkerError:
             raise
         except BaseException:
             # The worker may still be accessing the mapping on cancellation.
-            self.close()
+            self.close(force=True)
             raise
 
-    def close(self):
+    def close(self, *, force=False):
+        if self._closed:
+            return
+        self._closed = True
         process = self.process
+        # The I/O thread closes stdin on this sentinel. An idle worker exits
+        # normally, allowing its native engine to release GPU resources.
         self.requests.put(None)
-        if process.poll() is None:
-            process.kill()
         try:
-            process.wait(timeout=3)
+            if not force:
+                try:
+                    process.wait(timeout=_SHUTDOWN_TIMEOUT)
+                    return
+                except subprocess.TimeoutExpired:
+                    _LOG.warning('Accelerator worker %s did not exit on EOF', process.pid)
+            if process.poll() is None:
+                process.kill()
+            process.wait(timeout=_SHUTDOWN_TIMEOUT)
+        except (OSError, subprocess.TimeoutExpired):
+            # Win32 termination can outlast the wait while GPU I/O unwinds.
+            # Keep the process owned until it exits without discarding results.
+            _LOG.warning('Accelerator worker %s is still terminating', process.pid, exc_info=True)
+            threading.Thread(target=process.wait, daemon=True, name='neural-worker-reaper').start()
         finally:
-            # The I/O thread owns both pipes until it exits.
-            if self.reader.is_alive():
-                self.reader.join(timeout=1)
-            if not self.reader.is_alive():
+            if self.reader.ident is None:
                 process.stdin.close()
                 process.stdout.close()

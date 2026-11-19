@@ -54,9 +54,9 @@ class WelcomeDialog(QDialog):
         theme_row = QHBoxLayout()
         theme_label = QLabel(trans.t('welcome_choose_theme'))
         theme = QComboBox()
-        for code in ('light', 'dark'):
+        for code in ('light', 'dark', 'system'):
             theme.addItem(trans.t(f'theme_{code}'), code)
-        current = getattr(main_window, 'ui_theme', DEFAULT_THEME)
+        current = getattr(main_window, 'theme_mode', DEFAULT_THEME)
         theme.setCurrentIndex(theme.findData(current))
         theme.setEnabled(main_window is not None)
         if main_window is not None:

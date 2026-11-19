@@ -40,44 +40,89 @@ def invite_server(qapp, monkeypatch):
     server.deleteLater()
 
 
-def test_contact_link_colour_follows_the_theme(qapp, theme_environment, invite_server):
-    from PyQt6.QtGui import QPalette
-    from PyQt6.QtWidgets import QWidget
+def test_contact_links_are_accessible_and_follow_the_theme(qapp, theme_environment, invite_server):
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtGui import QPalette, QTextDocument
+    from PyQt6.QtTest import QTest
+    from PyQt6.QtWidgets import QLabel, QScrollArea, QTextBrowser, QWidget
+    from constants import DISCORD_INVITE_URL
     from dialogs.about import ContactInfoDialog
+    from locales import trans
     from ui.styles import get_theme_style
 
     parent = QWidget()
     colours = []
     try:
-        for theme in ("light", "dark"):
+        for theme in ('light', 'dark'):
             qapp.setStyleSheet(get_theme_style(theme))
             parent.ui_theme = theme
             dialog = ContactInfoDialog(parent)
             try:
                 dialog.show()
+                dialog.activateWindow()
                 qapp.processEvents()
-                dialog.ensurePolished()
-                browser = dialog.text_browser
-                background = browser.palette().color(QPalette.ColorRole.Base)
-                document = browser.document()
-                block = document.begin()
-                anchors = []
-                while block.isValid():
-                    iterator = block.begin()
-                    while not iterator.atEnd():
-                        fragment = iterator.fragment()
-                        if fragment.isValid() and fragment.charFormat().isAnchor():
-                            anchors.append(fragment.charFormat().foreground().color())
-                        iterator += 1
-                    block = block.next()
-                assert anchors
-                assert all(color.isValid() and color != background for color in anchors)
-                colours.append(anchors)
+                assert not dialog.findChildren(QTextBrowser)
+                assert len(dialog.findChildren(QScrollArea)) == 1
+                assert any(label.text() == trans.t('contact_zju')
+                           for label in dialog.findChildren(QLabel))
+
+                links = {
+                    label.accessibleName(): label
+                    for label in dialog.findChildren(QLabel, 'communityLink')
+                }
+                expected = {
+                    'xiexinzhe@zju.edu.cn': 'mailto:xiexinzhe@zju.edu.cn',
+                    'xiexinzheyyy@163.com': 'mailto:xiexinzheyyy@163.com',
+                    'xiexinzhe123@gmail.com': 'mailto:xiexinzhe123@gmail.com',
+                    trans.t('contact_github'): None,
+                    'Discord': DISCORD_INVITE_URL,
+                    trans.t('contact_wechat_group'): ContactInfoDialog._WECHAT_URL,
+                }
+                assert links.keys() == expected.keys()
+                theme_colours = {}
+                for name, url in expected.items():
+                    link = links[name]
+                    assert link.isVisible()
+                    assert link.openExternalLinks()
+                    assert link.focusPolicy() & Qt.FocusPolicy.TabFocus
+                    assert link.textInteractionFlags() & Qt.TextInteractionFlag.LinksAccessibleByKeyboard
+
+                    document = QTextDocument()
+                    document.setHtml(link.text())
+                    anchor = document.begin().begin().fragment().charFormat()
+                    assert anchor.isAnchor()
+                    href = anchor.anchorHref()
+                    if url is None:
+                        assert href.startswith('https://github.com/') and href.endswith('/OpenFocus')
+                    else:
+                        assert href == url
+                    color = anchor.foreground().color()
+                    background = link.parentWidget().palette().color(QPalette.ColorRole.Window)
+                    assert color.isValid() and color != background
+                    theme_colours[name] = color
+
+                    # Observe the real keyboard activation without launching an external app.
+                    link.setOpenExternalLinks(False)
+                    activated = []
+                    link.linkActivated.connect(activated.append)
+                    link.setFocus(Qt.FocusReason.TabFocusReason)
+                    QTest.keyClick(link, Qt.Key.Key_Tab)
+                    QTest.keyClick(link, Qt.Key.Key_Return)
+                    assert activated == [href]
+                colours.append(theme_colours)
+
+                contact_card = links['xiexinzhe@zju.edu.cn'].parentWidget()
+                wechat_card = dialog._wechat_qr.parentWidget()
+                assert wechat_card.x() > contact_card.x()
+                dialog.resize(440, 480)
+                qapp.processEvents()
+                assert wechat_card.x() == contact_card.x()
+                assert wechat_card.y() > contact_card.y()
             finally:
                 dialog.close()
                 dialog.deleteLater()
                 qapp.processEvents()
-        assert colours[0] != colours[1]
+        assert all(colours[0][name] != colours[1][name] for name in colours[0])
     finally:
         parent.close()
         parent.deleteLater()
@@ -141,6 +186,7 @@ def test_contact_wechat_invite_refresh(qapp, monkeypatch, invite_server, respons
     try:
         assert dialog._wechat_status.text() == trans.t('contact_wechat_loading')
         if response != 'no_bundle':
+            assert dialog._wechat_qr.width() == dialog._wechat_qr.height() == 192
             bundled = dialog._wechat_qr.pixmap().cacheKey()
         assert wait_until(lambda: dialog._wechat_refresh is None)
         if response == 'no_bundle':
@@ -213,42 +259,73 @@ def test_contact_menu_allows_main_window_input_while_refreshing(
         _destroy_main_window(qapp, window)
 
 
-def test_status_sponsor_opens_contact_by_keyboard_and_mouse(
-        qapp, tmp_path, monkeypatch, theme_environment, invite_server):
+def test_status_sponsor_opens_published_link_without_displacing_messages(
+        qapp, tmp_path, monkeypatch, theme_environment):
+    import json
     from PyQt6.QtCore import Qt
+    from PyQt6.QtGui import QDesktopServices, QTextDocument
+    from PyQt6.QtNetwork import QHostAddress, QTcpServer
     from PyQt6.QtTest import QTest
-    from dialogs.about import ContactInfoDialog
     from locales import trans
     from tests.test_control_channel import _new_main_window, _destroy_main_window, wait_until
+    from ui.status_bar import SponsorLink
 
+    server = QTcpServer()
+    assert server.listen(QHostAddress(QHostAddress.SpecialAddress.LocalHost))
+    monkeypatch.setenv('no_proxy', '127.0.0.1')
+    monkeypatch.setattr(SponsorLink, '_endpoint',
+                        f'http://127.0.0.1:{server.serverPort()}/v1/sponsor-placement')
+    destination = 'https://example.org/sponsor'
+    payload = json.dumps({'text': 'OpenFocus <Studio>', 'url': destination}).encode()
+    response = (b'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n'
+                + f'Content-Length: {len(payload)}\r\nConnection: close\r\n\r\n'.encode()
+                + payload)
+
+    def accept():
+        socket = server.nextPendingConnection()
+        socket.disconnected.connect(socket.deleteLater)
+        received = bytearray()
+
+        def answer():
+            received.extend(bytes(socket.readAll()))
+            if b'\r\n\r\n' in received:
+                socket.write(response)
+                socket.disconnectFromHost()
+
+        socket.readyRead.connect(answer)
+        if socket.bytesAvailable():
+            answer()
+
+    server.newConnection.connect(accept)
+    opened = []
+    monkeypatch.setattr(QDesktopServices, 'openUrl', lambda url: opened.append(url.toString()))
     window = _new_main_window(qapp, tmp_path, monkeypatch)
     try:
+        window.resize(1240, window.height())
         label = window.lbl_status_sponsor
-        trans.set_language('en')
-        english = label.accessibleName()
         trans.set_language('zh')
-        assert label.accessibleName() == '欢迎成为 OpenFocus 的赞助商，帮助 OpenFocus 发展'
-        assert label.accessibleName() != english
-        assert label.accessibleName() in label.text()
+        assert wait_until(lambda: label.accessibleName() == 'OpenFocus <Studio>')
         bar = window.statusBar()
         bar.showMessage('Background notice', 5000)
         qapp.processEvents()
-        assert label.isVisible()
-        assert label.mapTo(bar, label.rect().topRight()).x() >= bar.width() - 15
-        assert label.focusPolicy() in (Qt.FocusPolicy.TabFocus, Qt.FocusPolicy.StrongFocus,
-                                       Qt.FocusPolicy.WheelFocus)
-        for keyboard in (True, False):
-            if keyboard:
-                label.setFocus(Qt.FocusReason.TabFocusReason)
-                QTest.keyClick(label, Qt.Key.Key_Return)
-            else:
-                QTest.mouseClick(label, Qt.MouseButton.LeftButton, pos=label.contentsRect().center())
-            dialog = window.findChild(ContactInfoDialog)
-            assert dialog is not None and dialog.isVisible()
-            dialog.close()
-            assert wait_until(lambda: window.findChild(ContactInfoDialog) is None)
+        doc = QTextDocument()
+        doc.setHtml(label.text())
+        assert doc.toPlainText().startswith(trans.t('status_credit'))
+        assert doc.toPlainText().endswith('OpenFocus <Studio>')
+        assert label.isVisible() and label.mapTo(bar, label.rect().topRight()).x() >= bar.width() - 15
+        assert bar._message_label.text() == 'Background notice'
+        assert bar._message_label.mapTo(bar, bar._message_label.rect().topRight()).x() < label.x()
+        label.setFocus(Qt.FocusReason.TabFocusReason)
+        QTest.keyClick(label, Qt.Key.Key_Return)
+        pos = label.contentsRect().center()
+        pos.setX(label.contentsRect().right() - 15)
+        QTest.mouseMove(label, pos)
+        QTest.mouseClick(label, Qt.MouseButton.LeftButton, pos=pos)
+        assert opened == [destination, destination]
     finally:
         _destroy_main_window(qapp, window)
+        server.close()
+        server.deleteLater()
 
 
 def test_dustmap_preview_follows_the_theme(qapp, theme_environment):

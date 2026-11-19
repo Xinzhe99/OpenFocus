@@ -8,6 +8,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- Add Follow System to the theme menu and offer small, medium, large and custom interface font sizes. The custom editor previews the proposed size beside the default.
 - Offer a hardware-matched TensorRT and PyTorch CUDA pack for StackMFF on supported Windows NVIDIA systems. Install it from Setup or Settings, including after a desktop upgrade. Neural renders try supported engines within the memory budget and report the actual execution device and fallback reasons.
 - Offer a PyTorch download mirror and installation from verified local archives. Show byte counts during download and unpacking, then show GPU verification separately.
 - Show the Windows taskbar and notification area icons while the initial sign-in window is open. Clicking the notification area icon brings the current dialog or workspace forward.
@@ -58,17 +59,22 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Accelerate large fractional image reductions during ECC registration on supported Windows OpenCL GPUs. The CPU solver and Lanczos warp produce the same alignment, and the job log records completed GPU resizes.
 - Show estimated RAM and GPU memory in Render Settings, including expected CPU
   fallback when the selected neural render does not fit the device budget.
-- Reuse the selected OpenFocus B/C or StackMFF V2/V3 render’s saved depth when
-  opening Depth Map, pressing Compute with matching settings, or switching back
-  to its measure. Show the 2D preview before building a requested 3D surface.
+- Reuse saved OpenFocus B/C and StackMFF V2/V3 depth across compatible workspace results. Switching measures updates the map and the saved parameters automatically. Show the 2D preview before building a requested 3D surface.
+- Show existing compatible fusion results in Method Comparison with their original settings. ROI mode displays the requested crop of the stored image.
 - Show the current WeChat group invite in Contact Us, with a bundled QR code for offline use.
 - Add the Discord invite and the WeChat Official Account QR code to both website languages.
 - Keep progress, cancel controls, and timed notices on the left of the desktop
   status bar and a sponsor invitation that opens Contact Us on the right.
 - Open the user manual on GitHub in the current interface language from Help.
+- Show the current public sponsor acknowledgments in Support Us, with equal-size Alipay and PayPal payment codes.
 
 ### Changed
 - Group render settings by workflow, brightness and color, and output. Adjust fusion sharpening from 0% to 200% in desktop renders, batch jobs, and the CLI. The 100% default preserves the previous sharpening amount.
+- Keep the batch queue visible beside Method, Output and Options tabs. Group depth-map source, appearance and export controls beside the preview.
+- Reorganize Labels, Watermark and Scale Bar around live previews and fixed Apply and Cancel controls. Drag a label in Fit view to set its position.
+- Open workspaces at their intended size when the screen has room. Use scrollable panes on smaller displays and restore the side-by-side divider position when space returns.
+- Mark Image Stitching and Dust Map as in development. Batch and command-line flat-field correction are currently unavailable.
+- Organize Contact Us into contact and WeChat cards. Open any of the three published email addresses in the default mail app.
 - Move frame review and cancellation to the source frame context menu. With the list focused, Ctrl+Shift+I includes all frames, Ctrl+Shift+X excludes all frames and Ctrl+Shift+F starts or cancels review. On macOS use Command. The cancellation notice clears after five seconds.
 - Edit OpenFocus A/B/C smoothing in whole levels, one per click. Fractional values
   from existing projects and recipes keep their original precision until edited.
@@ -138,6 +144,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 - Show the matching download icon on the Linux desktop button on the website.
+- Let StackMFF accelerator workers exit normally after inference. A slow GPU shutdown no longer discards completed output.
 - Keep TIFFs with tiny embedded thumbnails visible in Scale Bar. Draw the bar on the thumbnail and show its caption at readable zoom levels.
 - Reuse the last alignment across fusion methods when the original frame selection and registration settings are restored.
 - Report project restore completion after the desktop has applied the frames and settings, including after an update restart.

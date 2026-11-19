@@ -155,3 +155,48 @@ def test_first_launch_shows_render_controls_and_restores_custom_right_splitter(
             [value / sum(saved) for value in saved], abs=0.01)
     finally:
         _destroy_main_window(qapp, restored)
+
+
+def test_workspace_keeps_its_normal_size_and_restores_pane_proportions(qapp):
+    from types import SimpleNamespace
+
+    from PyQt6.QtCore import QRect, Qt
+    from PyQt6.QtWidgets import QDialog, QScrollArea, QVBoxLayout, QWidget
+    from widgets.workspace import WorkspaceSplitter
+
+    class Dialog(QDialog):
+        def screen(self):
+            return SimpleNamespace(availableGeometry=lambda: QRect(0, 0, 1280, 800))
+
+    dialog = Dialog()
+    splitter = WorkspaceSplitter()
+    QVBoxLayout(dialog).addWidget(splitter)
+    for width in (345, 375):
+        pane = QScrollArea()
+        content = QWidget()
+        content.setMinimumWidth(width)
+        pane.setWidget(content)
+        pane.setWidgetResizable(True)
+        splitter.addWidget(pane)
+    splitter.fit_dialog(700, 540)
+    try:
+        dialog.show()
+        qapp.processEvents()
+        assert (dialog.width(), dialog.height()) == (700, 540)
+        assert splitter.orientation() == Qt.Orientation.Horizontal
+        splitter.setSizes([230, 450])
+        left, right = splitter.sizes()
+        fraction = left / (left + right)
+        dialog.resize(540, 500)
+        qapp.processEvents()
+        assert splitter.orientation() == Qt.Orientation.Vertical
+        assert all(size > 0 for size in splitter.sizes())
+        dialog.resize(700, 540)
+        qapp.processEvents()
+        assert splitter.orientation() == Qt.Orientation.Horizontal
+        left, right = splitter.sizes()
+        assert left / (left + right) == pytest.approx(fraction, abs=.03)
+    finally:
+        dialog.close()
+        dialog.deleteLater()
+        qapp.processEvents()

@@ -238,7 +238,9 @@ class TestSettingsCast:
         # 清掉单例以启用新路径
         monkeypatch.setattr(ss, "_settings_singleton", None)
         s = ss.get_settings()
-        s.setValue("ui/theme", "light")
+        s.setValue('ui/theme', 'system')
+        s.setValue('ui/font_size_mode', 'custom')
+        s.setValue('ui/custom_font_size', 14)
         s.sync()
 
         class W:
@@ -246,7 +248,7 @@ class TestSettingsCast:
 
         w = W()
         ss.load_window_settings(w)
-        assert w.ui_theme == "light"
+        assert (w.theme_mode, w.font_size_mode, w.custom_font_size) == ('system', 'custom', 14)
         monkeypatch.setattr(ss, "_settings_singleton", None)
 
 
