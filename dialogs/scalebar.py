@@ -209,7 +209,8 @@ class ScaleBarDialog(QDialog):
         if manager is not None and outputs is not None:
             for index in range(outputs.count()):
                 record = manager.record_for_row(index)
-                if record is not None and record.kind != "aligned":
+                if (record is not None and record.kind != "aligned"
+                        and getattr(record, "image", None) is not None):
                     suffix = (" · " + trans.t("scalebar_baked_marker")
                               if getattr(record, "annotations_baked", False) else "")
                     self.output_combo.addItem(record.label + suffix, record)
@@ -481,7 +482,7 @@ class ScaleBarDialog(QDialog):
             return self.output_combo.currentData()
         return None
 
-    def _preview_metadata(self):
+    def _preview_metadata(self, frame):
         """Linear calibration for the preview pixels, owned by their source.
 
         An output record must use its own metadata (or its render context),
@@ -500,19 +501,8 @@ class ScaleBarDialog(QDialog):
             return metadata
         if self.target_combo.currentData() == "output":
             return None
-        frame = self._preview_image()
         metadata = getattr(frame, "linear_metadata", None)
         return metadata if metadata is not None else getattr(self.parent(), "linear_dng_metadata", None)
-
-    @staticmethod
-    def _develop_preview(image, metadata):
-        """Develop camera-linear uint16 pixels once; ordinary images pass through."""
-        if (metadata is not None and image is not None
-                and image.dtype == np.uint16 and image.ndim == 3
-                and image.shape[2] == 3):
-            from utils.linear_dng import develop_linear
-            return develop_linear(image, metadata)
-        return image
 
     def _draft_values(self):
         values = self._draw_config()
@@ -637,13 +627,13 @@ class ScaleBarDialog(QDialog):
         self._ok_button.setEnabled(False)
         self._preview_timer.start()
 
-    def _start_pixels(self, image, key):
+    def _start_pixels(self, image, metadata, key):
         self._pixel_key = key
         if self._pixel_worker is not None:
             if self._pixel_worker.key != key:
                 self._pixel_worker.requestInterruption()
             return
-        worker = BoundedPreviewWorker(image, self._preview_metadata(), key)
+        worker = BoundedPreviewWorker(image, metadata, key)
         self._pixel_worker = worker
         def finished():
             self._pixel_worker = None
@@ -656,7 +646,7 @@ class ScaleBarDialog(QDialog):
             if self._closing:
                 self._finish_close()
             else:
-                self._schedule_preview()
+                self._refresh_preview()
         worker.finished.connect(finished)
         worker.start()
 
@@ -685,7 +675,7 @@ class ScaleBarDialog(QDialog):
         baked = bool(record is not None and getattr(record, "annotations_baked", False))
         cfg = None if baked else self._draw_config()
         worker = SourceRegionWorker(image, key, scale_cfg=cfg,
-                                    metadata=self._preview_metadata(), develop=not baked)
+                                    metadata=self._preview_metadata(image), develop=not baked)
         self._region_worker = worker
         def ready(source_key, completed, pixels, rect):
             if (not self._closing and pixels is not None
@@ -695,7 +685,6 @@ class ScaleBarDialog(QDialog):
         def failed(source_key, message):
             if (not self._closing and source_key == self.preview_lbl._source_key
                     and source_key[2] == self._preview_revision):
-                self._ok_button.setEnabled(False)
                 self._error.setText(message)
         def finished():
             self._region_worker = None
@@ -747,6 +736,9 @@ class ScaleBarDialog(QDialog):
             super().closeEvent(event)
 
     def _refresh_preview(self, *_args):
+        if self._closing:
+            return
+        self._preview_timer.stop()
         image = self._preview_image()
         px_um = self.effective_px_um()
         has_stack = (image is not None and self._target_record() is None
@@ -760,17 +752,28 @@ class ScaleBarDialog(QDialog):
         self.preview_meta.clear()
         self._ok_button.setEnabled(False)
         if image is None:
-            self.preview_lbl.clear()
+            self._pixel_key = None
+            if self._pixel_worker is not None:
+                self._pixel_worker.requestInterruption()
+            self.preview_lbl.set_display_pixmap(None)
             self._error.setText(trans.t("label_preview_no_target"))
             return
+        self._error.clear()
         height, width = image.shape[:2]
+        metadata = self._preview_metadata(image)
         key = (self.target_combo.currentData(), id(image),
-               getattr(self._target_record(), "output_id", None), id(self._preview_metadata()))
+               getattr(self._target_record(), "output_id", None), id(metadata))
         if self._preview_cache is None or self._preview_cache[0] != key:
-            self._start_pixels(image, key)
+            label = self.preview_lbl
+            held = label._magnifier_active
+            label.set_display_pixmap(None)
+            label._magnifier_active = held
+            label.setText(trans.t("native_detail_loading"))
+            self._start_pixels(image, metadata, key)
             return
         _, display, error = self._preview_cache
         if error is not None:
+            self.preview_lbl.set_display_pixmap(None)
             self._error.setText(error)
             return
         if len(image.shape) == 3 and image.shape[2] == 4:

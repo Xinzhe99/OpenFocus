@@ -8,6 +8,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- Show the actual whole-input or tiled processing mode, tile geometry, and
+  fusion settings for each result in the output list.
 - Add Follow System to the theme menu and offer small, medium, large and custom interface font sizes. The custom editor previews the proposed size beside the default.
 - Add a Neutral Gray desktop theme with a mid-gray canvas for the workspace, image comparisons, retouching, depth previews, and the label, watermark and scale bar editors.
 - Offer a hardware-matched TensorRT and PyTorch CUDA pack for StackMFF on supported Windows NVIDIA systems. Install it from Setup or Settings, including after a desktop upgrade. Neural renders try supported engines within the memory budget and report the actual execution device and fallback reasons.
@@ -70,6 +72,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Show the current public sponsor acknowledgments in Support Us, with equal-size Alipay and PayPal payment codes.
 
 ### Changed
+- Make all fusion methods selectable without experimental opt-in when their
+  dependencies are installed.
 - Group render settings by workflow, brightness and color, and output. Adjust fusion sharpening from 0% to 200% in desktop renders, batch jobs, and the CLI. The 100% default preserves the previous sharpening amount.
 - Keep the batch queue visible beside Method, Output and Options tabs. Group depth-map source, appearance and export controls beside the preview.
 - Reorganize Labels, Watermark and Scale Bar around live previews and fixed Apply and Cancel controls. Drag a label in Fit view to set its position.
@@ -144,6 +148,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   transforms, cropping and output pixels are unchanged.
 
 ### Fixed
+- Keep Labels, Scale Bar and Watermark previews editable during fusion. At
+  100%, use available original pixels and keep the Fit image visible while
+  any required decode waits.
+- Reuse matching registered frames in Alignment only without starting a
+  render worker. Carry the current exposure matching choice into the mode
+  unless it already has an explicit choice.
 - Show the matching download icon on the Linux desktop button on the website.
 - Let StackMFF accelerator workers exit normally after inference. A slow GPU shutdown no longer discards completed output.
 - Keep TIFFs with tiny embedded thumbnails visible in Scale Bar. Draw the bar on the thumbnail and show its caption at readable zoom levels.

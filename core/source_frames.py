@@ -616,6 +616,17 @@ class SourceFrame:
         if _fingerprint(self.path) != self.fingerprint:
             raise OSError(f'Source changed since it was opened; reopen the stack: {self.path}')
 
+    def _source_cache_key(self):
+        # Native gray and display BGR layouts retain independent cached buffers.
+        return (self.path, self.page, self.fingerprint, self.scale,
+                tuple(tuple(sorted(op.items())) for op in self.transforms),
+                self.linear_metadata, tuple(self.shape))
+
+    def cached_pixels(self):
+        """Borrow decoded working pixels if present, without starting a decode."""
+        self.validate_source()
+        return SOURCE_CACHE.get(self._source_cache_key())
+
     def full_resolution(self, *, should_cancel=None):
         _check_resolution_cancel(should_cancel)
         self.validate_source()
@@ -626,10 +637,7 @@ class SourceFrame:
             if hit is not None:
                 _check_resolution_cancel(should_cancel)
                 return hit
-        # Native gray and display BGR layouts retain independent cached buffers.
-        key = (self.path, self.page, self.fingerprint, self.scale,
-               tuple(tuple(sorted(op.items())) for op in self.transforms),
-               self.linear_metadata, tuple(self.shape))
+        key = self._source_cache_key()
         cached = SOURCE_CACHE.get(key)
         if cached is not None:
             _check_resolution_cancel(should_cancel)

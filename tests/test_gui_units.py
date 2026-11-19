@@ -696,6 +696,9 @@ def test_compare_all_second_click_cancels_the_run(qapp, monkeypatch):
     """The compare button stayed enabled while btn_render (the only cancel
     affordance) was disabled, so a compare-all could not be stopped."""
     from ui.status_bar import WorkspaceStatusBar
+    from ui import algorithm_combo
+
+    monkeypatch.setattr(algorithm_combo, '_package_available', lambda name: name != 'dtcwt')
     frames = [np.zeros((30, 40, 3), dtype=np.uint8) for _ in range(3)]
     w = _render_window(frames)
     w.status = WorkspaceStatusBar()
@@ -703,9 +706,7 @@ def test_compare_all_second_click_cancels_the_run(qapp, monkeypatch):
 
     rm.start_compare_all()
     assert rm._compare_mode is True
-    # The queue follows the dropdown order: AI, OpenFocus A/B/C, then the
-    # classical methods. AI is filtered out here (ai_available=False).
-    assert len(rm._compare_queue) == 6
+    assert rm._compare_queue == ['openfocus_b', 'guided_filter', 'gfgfgf', 'openfocus_c', 'dct']
     assert rm._compare_current == "openfocus_a"
     assert not w.btn_render.isEnabled()
     assert not w.combo_align.isEnabled()

@@ -70,8 +70,6 @@ class LabelManager:
         # editing a caption cannot keep serving an old drawing.
         self._revision = 0
         self._draw_errors = {}
-        self._preview_refresh_active = False
-        self._preview_refresh_pending = False
         self._clear_dialog_state()
 
     # ------------------------------------------------------------------
@@ -768,6 +766,7 @@ class LabelManager:
         self._native_preview_status = _preview_caption()
         self._native_preview_status.hide()
         self.preview.status_changed.connect(self._update_native_preview_status)
+        self.preview.fit_changed.connect(self._preview_fit_changed)
         preview_col.addWidget(self._native_preview_status)
 
         # ---- bottom: fixed actions --------------------------------------
@@ -876,7 +875,8 @@ class LabelManager:
         label = Label(LabelConfig())
         target = self._current_target()
         if not self._collect_frames(target)["images"]:
-            target = "input" if self._collect_frames("input")["images"] else "output"
+            target = next((candidate for candidate in ("input", "registered", "output")
+                           if self._collect_frames(candidate)["images"]), "input")
         label.config.target = target
         label.config.target_stack = 0 if label.target == "input" else 1
         self._draft.add(label)
@@ -1096,7 +1096,8 @@ class LabelManager:
             images = list(getattr(window, "raw_images", None) or [])
             metadata = getattr(window, "linear_dng_metadata", None)
             return {"images": images, "names": names,
-                    "metadata": [metadata] * len(images)}
+                    "metadata": [getattr(image, "linear_metadata", None) or metadata
+                                 for image in images]}
         if target == "registered":
             images = list(getattr(window, "registration_results", None) or [])
             names = list(getattr(window, "registration_filenames", None) or names)
@@ -1273,39 +1274,6 @@ class LabelManager:
     def _refresh_preview(self, *_args) -> None:
         if self.preview is None or self._loading_editor or not self._editing_id:
             return
-        if self._preview_refresh_active:
-            self._preview_refresh_pending = True
-            return
-        self._preview_refresh_active = True
-        try:
-            while self.preview is not None and self._editing_id and not self._loading_editor:
-                self._preview_refresh_pending = False
-                draft = self._draft
-                preview = self.preview
-                editing_id = self._editing_id
-                state = self._preview_refresh_state()
-                self._refresh_preview_once()
-                if (not self._preview_refresh_pending or self.preview is not preview
-                        or self._draft is not draft or self._editing_id != editing_id
-                        or self._loading_editor or self._preview_refresh_state() == state):
-                    break
-        finally:
-            self._preview_refresh_active = False
-            self._preview_refresh_pending = False
-
-    def _preview_refresh_state(self):
-        """Inputs whose change requires another pass after a nested event loop."""
-        images = self._dialog_frames.get('images', [])
-        index = self._preview_frame_index()
-        frame = images[index] if 0 <= index < len(images) else None
-        label = self._draft.get(self._editing_id)
-        return (self._editing_id, index, id(frame), self._dialog_config(),
-                label.enabled if label is not None else False)
-
-    def _refresh_preview_once(self) -> None:
-        preview = self.preview
-        draft = self._draft
-        editing_id = self._editing_id
         self._save_editor_to_draft()
         config = self._dialog_config()
         images = self._dialog_frames.get("images", [])
@@ -1325,14 +1293,23 @@ class LabelManager:
         self.preview.set_preview(frame, preview_config, index,
                                  linear_dng_metadata=frame_metadata,
                                  labels=preview_labels, target=config['target'])
-        if (self.preview is not preview or self._draft is not draft
-                or self._editing_id != editing_id):
+        self._update_preview_feedback(config, label, index, indices, images)
+
+    def _preview_fit_changed(self) -> None:
+        if self.preview is None or self._loading_editor or not self._editing_id:
             return
+        label = self._draft.get(self._editing_id)
+        config = self._dialog_config()
+        images = self._dialog_frames.get("images", [])
+        self._update_preview_feedback(config, label, self._preview_frame_index(),
+                                      self._applicable_indices(config, len(images)), images)
+
+    def _update_preview_feedback(self, config, label, index, indices, images) -> None:
         error = self._range_error(config) if label.enabled else ""
         if error:
             self._details_toggle.setChecked(True)
         if not error and label.enabled:
-            if frame is None:
+            if not 0 <= index < len(images):
                 error = trans.t('label_preview_no_target')
             elif not build_label_text(config["format"], "", 1):
                 error = trans.t('label_preview_empty')

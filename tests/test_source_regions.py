@@ -270,46 +270,78 @@ def test_region_memory_rejection_preserves_original_pixels(monkeypatch):
     np.testing.assert_array_equal(image, before)
 
 
-def test_active_region_waits_for_render_and_coalesces_queued_view(qapp):
+@pytest.mark.parametrize('warm_kind', ['retained', 'decoded'])
+def test_cold_region_waits_for_render_but_cached_regions_continue(qapp, tmp_path, monkeypatch, warm_kind):
     from PyQt6.QtCore import Qt
     from core.resource_policy import heavy_job
+    from core import source_frames
+    import cv2
+
     image = np.arange(80 * 100, dtype=np.uint16).reshape(80, 100)
-    worker = SourceRegionWorker(image, 'lease')
-    received, held, release = threading.Event(), threading.Event(), threading.Event()
+    source = object()
+    decoded = threading.Event()
+    resolve_frame = source_frames.resolve_frame
+
+    def resolve(frame, **kwargs):
+        if frame is source:
+            decoded.set()
+            return image
+        return resolve_frame(frame, **kwargs)
+
+    monkeypatch.setattr(source_frames, 'resolve_frame', resolve)
+    cold = SourceRegionWorker(source, 'cold')
+    if warm_kind == 'retained':
+        warm_frame = source_frames.RetainedFrame(source, None, image.shape, image.dtype, pixels=image)
+        expected = image
+    else:
+        path = tmp_path / 'cached.png'
+        assert cv2.imwrite(str(path), image)
+        warm_frame = source_frames.scan_source(str(path), header_only=True)[0]
+        expected = resolve_frame(warm_frame)
+        assert warm_frame.cached_pixels() is expected
+    warm = SourceRegionWorker(warm_frame, 'warm')
+    cold_ready, warm_ready, held, release = (threading.Event() for _ in range(4))
     results = []
-    def receive(_key, request, pixels, _rect):
-        results.append((request, pixels, held.is_set()))
-        received.set()
-    worker.ready.connect(receive, Qt.ConnectionType.DirectConnection)
-    worker.submit(('view', 1, (0, 0, 20, 20), (20, 20)))
-    worker.start()
-    owner = None
+
+    def receive(key, request, pixels, _rect):
+        results.append((request, pixels))
+        (warm_ready if key == 'warm' else cold_ready).set()
+
+    cold.ready.connect(receive, Qt.ConnectionType.DirectConnection)
+    warm.ready.connect(receive, Qt.ConnectionType.DirectConnection)
+
+    def render():
+        with heavy_job():
+            held.set()
+            release.wait()
+
+    owner = threading.Thread(target=render)
+    owner.start()
     try:
-        assert received.wait(2)
-        received.clear()
-        def render():
-            with heavy_job():
-                held.set()
-                release.wait(3)
-                held.clear()
-        owner = threading.Thread(target=render)
-        owner.start()
         assert held.wait(2)
-        worker.submit(('view', 2, (10, 10, 20, 20), (20, 20)))
-        assert not received.wait(.1)
-        latest = ('view', 3, (30, 30, 20, 20), (20, 20))
-        worker.submit(latest)
+        cold.submit(('view', 1, (0, 0, 20, 20), (20, 20)))
+        cold.start()
+        assert not decoded.wait(.1)
+        cold_latest = ('view', 2, (10, 10, 20, 20), (20, 20))
+        cold.submit(cold_latest)
+        warm_request = ('view', 3, (30, 30, 20, 20), (20, 20))
+        warm.submit(warm_request)
+        warm.start()
+        assert warm_ready.wait(2)
+        assert not decoded.is_set()
+        assert results[-1][0] == warm_request
+        np.testing.assert_array_equal(results[-1][1], to_display_uint8(expected[30:50, 30:50]))
         release.set()
-        assert received.wait(2)
-        assert results[-1][0] == latest
-        np.testing.assert_array_equal(results[-1][1], to_display_uint8(image[30:50, 30:50]))
-        assert not any(result[2] for result in results)
+        assert cold_ready.wait(2)
+        assert decoded.is_set()
+        assert results[-1][0] == cold_latest
+        np.testing.assert_array_equal(results[-1][1], to_display_uint8(image[10:30, 10:30]))
     finally:
         release.set()
-        worker.request_cancel()
-        assert worker.wait(2000)
-        if owner is not None:
-            owner.join(2)
+        cold.request_cancel()
+        warm.request_cancel()
+        assert cold.wait(2000) and warm.wait(2000)
+        owner.join(2)
 
 
 def test_previews_publish_each_completed_thumbnail_without_waiting_for_batch(qapp, monkeypatch):

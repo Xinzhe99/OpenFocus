@@ -461,13 +461,9 @@ class WatermarkDialog(QDialog):
         # Prefer the current source frame, then a result, then registered
         # frames.  Switching the preview never changes the apply scope.
         order = ("source", "output", "registered")
-        if not outputs:
-            order = tuple(code for code in order if code != "output")
-        if not getattr(window, "raw_images", ()):
-            order = tuple(code for code in order if code != "source")
-        if not registration:
-            order = tuple(code for code in order if code != "registered")
-        chosen = order[0] if order else "source"
+        available = {"source": bool(getattr(window, "raw_images", ())),
+                     "registered": bool(registration), "output": bool(outputs)}
+        chosen = next((code for code in order if available[code]), "source")
         index = self.preview_target_combo.findData(chosen)
         self.preview_target_combo.setCurrentIndex(max(0, index))
         if chosen == "output" and self.output_combo.currentIndex() < 0:
@@ -735,7 +731,7 @@ class WatermarkDialog(QDialog):
             self._pixel_key = None
             if self._pixel_worker is not None:
                 self._pixel_worker.requestInterruption()
-            self.preview_lbl.clear()
+            self.preview_lbl.set_display_pixmap(None)
             self._error.setText(trans.t("watermark_preview_no_target"))
             return
         key, image, metadata, name, frame_label = target

@@ -101,7 +101,8 @@ def stackmffv2_impl(input_source, img_resize, model_path, use_gpu,
                     should_cancel=None, progress_callback=None,
                     thread_count=None, resource_preference='balanced',
                     execution_plan=None, tile_size=None, tile_overlap=0,
-                    exposure_gains=None, source_all_uint8=None, focus_callback=None, **kwargs):
+                    exposure_gains=None, source_all_uint8=None, focus_callback=None,
+                    tile_grid_callback=None, **kwargs):
     """Whole-stack fusion; the caller may already hold the heavy-job lease."""
     with common.neural_lease(execution_plan, should_cancel):
         common.cancel(should_cancel)
@@ -110,7 +111,8 @@ def stackmffv2_impl(input_source, img_resize, model_path, use_gpu,
             return _tiled_fusion_under_lease(
                 input_source, img_resize, model_path, use_gpu, should_cancel,
                 execution_plan, thread_count, resource_preference, tile_size,
-                tile_overlap, progress_callback, exposure_gains, source_all_uint8, focus_callback)
+                tile_overlap, progress_callback, exposure_gains, source_all_uint8,
+                focus_callback, tile_grid_callback)
         frames = common.read_stack(input_source, img_resize, should_cancel,
                                    execution_plan, preserve_grayscale=False)
         if len(frames) < 2:

@@ -191,6 +191,17 @@ def _alignment_valid_mask(image: np.ndarray, *, should_cancel=None) -> Optional[
 
 
 @dataclass(frozen=True)
+class FusionDetails:
+    """Parameters and spatial domain of a completed fusion dispatch."""
+
+    algorithm: str
+    input_size: Tuple[int, int]  # width, height before model padding or output cropping
+    parameters: tuple
+    options: tuple
+    tile_grid: Optional[Tuple[int, int, int]] = None  # block size, configured overlap, passes
+
+
+@dataclass(frozen=True)
 class RenderedDepth:
     index: np.ndarray
     valid_rect: Tuple[int, int, int, int]
@@ -284,6 +295,7 @@ class RenderContext:
     linear_dng_metadata: object = None
     source_paths: Tuple[str, ...] = ()
     rendered_depth: Optional[RenderedDepth] = None
+    fusion_details: Optional[FusionDetails] = None
 
     @property
     def alignment(self) -> str:
@@ -391,6 +403,7 @@ def build_render_context(
     linear_dng_metadata=None,
     source_paths: Optional[Sequence[str]] = None,
     rendered_depth: Optional[dict] = None,
+    fusion_details: Optional[FusionDetails] = None,
     should_cancel=None,
 ) -> Optional[RenderContext]:
     """Build the provenance context for one completed fusion.
@@ -516,4 +529,5 @@ def build_render_context(
         linear_dng_metadata=linear_dng_metadata,
         source_paths=paths,
         rendered_depth=depth,
+        fusion_details=fusion_details,
     )

@@ -1,6 +1,7 @@
 from typing import Optional
 
 from functools import partial
+from dataclasses import replace
 from PyQt6.QtCore import QThread, pyqtSignal
 import time
 import os
@@ -533,6 +534,8 @@ class RenderWorker(QThread):
         self.profile_performance = bool(profile_performance)
         self.performance_report = None
         self.rendered_depth = None
+        self.fusion_details = None
+        self._pending_fusion_details = None
         self._render_error_category = None
 
     def cancel(self):
@@ -544,6 +547,8 @@ class RenderWorker(QThread):
 
     def run(self):
         self._render_error_category = None
+        self.fusion_details = None
+        self._pending_fusion_details = None
         with log_operation("render", method=self.algorithm, parameters=self.fusion_parameters,
                            registration=self.alignment, registration_parameters=self.registration_parameters,
                            reg_downscale_width=self.reg_downscale_width, thread_count=self.thread_count,
@@ -588,6 +593,7 @@ class RenderWorker(QThread):
                     log_render_resources('end')
                     if profile.enabled:
                         self._finish_performance_report(profile, operation)
+                    self._pending_fusion_details = None
 
     def _finish_performance_report(self, profile, operation):
         """Keep the report and log its compact form; never affects the render."""
@@ -903,6 +909,7 @@ class RenderWorker(QThread):
             processed_images = retain_aligned_frames(
                 processed_images, should_cancel=lambda: self.is_cancelled,
                 limit_bytes=max(0, RETAINED_FRAME_LIMIT_BYTES - prepared_bytes))
+        self.fusion_details = self._pending_fusion_details if fusion_result is not None else None
         self.finished_signal.emit(
             processed_images,
             fusion_result,
@@ -1190,7 +1197,18 @@ class RenderWorker(QThread):
         device = fusion.get_info()['device'] if (get_fusion(self.algorithm).neural or self.algorithm in OPENCL_FUSION_ALGORITHMS) else 'CPU'
         with profile.stage('finalize_output'):
             result = quantize_fuse_output(result, is_16bit)
-            return store_frame(restore_transparent_canvas(result, transparent)), device
+            result = store_frame(restore_transparent_canvas(result, transparent))
+        details = fusion.fusion_details
+        if details is not None:
+            options = details.options + (
+                ('sharpen_output', self.sharpen_output),
+                ('sensor_denoise', self.sensor_denoise),
+                ('defect_mask', bool(self.defect_mask_path)),
+            )
+            if self.sharpen_output:
+                options += (('sharpen_strength', self.sharpen_strength),)
+            self._pending_fusion_details = replace(details, options=options)
+        return result, device
 
     def _apply_roi_pasting(self, fusion_result, base_image, roi_rect_int):
         """将融合结果粘贴回基准图像"""
