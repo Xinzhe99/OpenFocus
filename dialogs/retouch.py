@@ -28,6 +28,7 @@ from PyQt6.QtWidgets import (
 )
 
 from locales import trans
+from utils.design_tokens import SPACE
 from utils.image_utils import thumbnail_bgr, to_display_uint8
 from utils.path_identity import same_path
 from utils.platform_utils import configure_native_worker_stack
@@ -626,15 +627,16 @@ class _ToneDialog(QDialog):
 
 
 class _AutoBackgroundWorker(QThread):
-    progressed = pyqtSignal(float)
+    progressed = pyqtSignal(float, str)
 
-    def __init__(self, doc, preset, clean, keep_soft_parts=False):
+    def __init__(self, doc, preset, clean, keep_soft_parts, use_gpu):
         super().__init__()
         configure_native_worker_stack(self)
         self.doc = doc
         self.preset = preset
         self.clean = clean
         self.keep_soft_parts = keep_soft_parts
+        self.use_gpu = use_gpu
         self.status = ""
         self.error = ""
 
@@ -642,8 +644,7 @@ class _AutoBackgroundWorker(QThread):
         try:
             self.status = self.doc.auto_background(
                 self.preset, self.clean, self.isInterruptionRequested,
-                lambda fraction, _message: self.progressed.emit(float(fraction)),
-                keep_soft_parts=self.keep_soft_parts)
+                self.progressed.emit, keep_soft_parts=self.keep_soft_parts, use_gpu=self.use_gpu)
         except MemoryError as exc:
             self.error = str(exc) or trans.t("retouch_auto_bg_failed")
         except Exception as exc:
@@ -657,6 +658,25 @@ class _AutoBackgroundDialog(QDialog):
     """Choose the background preset, then replace the background as one
     history entry (core.background_fill via RetouchDocument)."""
 
+    _STAGES = {
+        "waiting for processing": "retouch_auto_bg_waiting",
+        "preparing source frames": "render_stage_prepare",
+        "checking aligned frames": "retouch_auto_bg_checking",
+        "analysing focus": "stack_review_working",
+        "finding the subject's outline": "retouch_auto_bg_outline",
+        "protecting smooth subject": "retouch_auto_bg_outline",
+        "refining the outline": "retouch_auto_bg_outline",
+        "matching the background frame": "retouch_auto_bg_matching",
+        "rebuilding the background beside the subject": "retouch_auto_bg_matching",
+        "matching the stack's shading": "retouch_auto_bg_matching",
+        "mapping missing data": "retouch_auto_bg_mapping",
+        "classifying unseen subject": "retouch_auto_bg_mapping",
+        "cleaning edge flaws": "retouch_auto_bg_cleaning",
+        "compositing": "retouch_auto_bg_applying",
+        "done": "retouch_auto_bg_applying",
+        "saving the retouch": "retouch_auto_bg_applying",
+    }
+
     def __init__(self, doc, parent=None):
         super().__init__(parent)
         from utils.settings_store import get_settings
@@ -665,14 +685,42 @@ class _AutoBackgroundDialog(QDialog):
         self.setWindowTitle(trans.t("retouch_auto_bg"))
         self.setModal(True)
         layout = QVBoxLayout(self)
+        margin = SPACE["lg"]
+        layout.setContentsMargins(margin, margin, margin, margin)
+        layout.setSpacing(SPACE["md"])
         self.options_scroll = QScrollArea()
         self.options_scroll.setWidgetResizable(True)
         self.options_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.options_scroll.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         options = QWidget()
         option_layout = QVBoxLayout(options)
         option_layout.setContentsMargins(0, 0, 0, 0)
-        self.options_scroll.setWidget(options)
-        layout.addWidget(self.options_scroll, 1)
+        option_layout.setSpacing(SPACE["sm"])
+
+        def section(title):
+            card = QFrame()
+            card.setObjectName("card")
+            card.setAccessibleName(title)
+            inner = QVBoxLayout(card)
+            inset = SPACE["md"]
+            inner.setContentsMargins(inset, inset, inset, inset)
+            inner.setSpacing(SPACE["sm"])
+            heading = QLabel(title)
+            font = heading.font()
+            font.setBold(True)
+            heading.setFont(font)
+            inner.addWidget(heading)
+            option_layout.addWidget(card)
+            return inner
+
+        guide_layout = section(trans.t("retouch_auto_bg_when"))
+        for key in ("retouch_auto_bg_suitable", "retouch_auto_bg_manual"):
+            advice = QLabel(trans.t(key))
+            advice.setWordWrap(True)
+            guide_layout.addWidget(advice)
+
+        source_layout = section(trans.t("retouch_auto_bg_source"))
+        edge_layout = section(trans.t("retouch_auto_bg_edges"))
         settings = get_settings()
         self.rb_auto = QRadioButton(trans.t("retouch_auto_bg_auto_short"))
         self.rb_soft = QRadioButton(trans.t("retouch_auto_bg_soft"))
@@ -687,7 +735,7 @@ class _AutoBackgroundDialog(QDialog):
             if button is self.rb_auto:
                 hint = trans.t("retouch_auto_bg_auto") + "\n\n" + hint
             button.setToolTip(hint)
-            _add_wrapped_option(option_layout, button)
+            source_layout.addWidget(button)
         mode = str(settings.value("retouch/auto_bg_mode", "auto"))
         {"soft": self.rb_soft, "sharp": self.rb_sharp}.get(mode, self.rb_auto).setChecked(True)
         self.chk_clean = QCheckBox(trans.t("retouch_auto_bg_clean"))
@@ -695,61 +743,68 @@ class _AutoBackgroundDialog(QDialog):
         self.chk_clean.setToolTip(trans.t("retouch_auto_bg_clean_hint"))
         self.chk_clean.setChecked(str(settings.value("retouch/auto_bg_clean", "true")).lower()
                                   not in ("false", "0"))
-        _add_wrapped_option(option_layout, self.chk_clean)
+        edge_layout.addWidget(self.chk_clean)
         self.chk_soft_parts = QCheckBox(trans.t("retouch_auto_bg_soft_parts"))
         self.chk_soft_parts.setProperty("controlId", "auto_background_keep_soft")
         self.chk_soft_parts.setToolTip(trans.t("retouch_auto_bg_soft_parts_hint"))
         self.chk_soft_parts.setChecked(str(settings.value("retouch/auto_bg_soft_parts", "false")).lower()
                                        in ("true", "1"))
-        _add_wrapped_option(option_layout, self.chk_soft_parts)
-        option_layout.addStretch(1)
-        # The theme draws a thin bar; text inside it was clipped, so the
-        # percentage sits beside it instead.
-        self.progress = QProgressBar()
-        self.progress.setRange(0, 1000)
-        self.progress.setTextVisible(False)
-        self.lbl_progress = QLabel("")
-        self.lbl_progress.setMinimumWidth(self.lbl_progress.fontMetrics().horizontalAdvance("100%") + 4)
+        edge_layout.addWidget(self.chk_soft_parts)
+        option_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        self.options_scroll.setWidget(options)
+        layout.addWidget(self.options_scroll, 1)
+        self.progress_box = QFrame()
+        self.progress_box.setObjectName("card")
+        working = QVBoxLayout(self.progress_box)
+        working.setContentsMargins(margin, margin, margin, margin)
+        working.setSpacing(SPACE["sm"])
+        progress_heading = QHBoxLayout()
+        self.stage_label = QLabel()
+        self.stage_label.setWordWrap(True)
+        stage_font = self.stage_label.font()
+        stage_font.setBold(True)
+        self.stage_label.setFont(stage_font)
+        progress_heading.addWidget(self.stage_label, 1)
+        self.lbl_progress = QLabel()
+        self.lbl_progress.setMinimumWidth(self.lbl_progress.fontMetrics().horizontalAdvance("100%") + SPACE["xs"])
         self.lbl_progress.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        progress_row = QHBoxLayout()
-        progress_row.addWidget(self.progress, 1)
-        progress_row.addWidget(self.lbl_progress)
-        self.progress_box = QWidget()
-        self.progress_box.setLayout(progress_row)
-        progress_row.setContentsMargins(0, 0, 0, 0)
-        self.progress_box.setVisible(False)
+        progress_heading.addWidget(self.lbl_progress)
+        working.addLayout(progress_heading)
+        self.progress = QProgressBar()
+        self.progress.setTextVisible(False)
+        self.progress.setFixedHeight(SPACE["sm"])
+        working.addWidget(self.progress)
+        self.selection_label = QLabel()
+        self.selection_label.setWordWrap(True)
+        working.addWidget(self.selection_label)
+        self.progress_box.hide()
         layout.addWidget(self.progress_box)
         buttons = QHBoxLayout()
         self.run_button = QPushButton(trans.t("retouch_auto_bg_run"))
         self.run_button.setProperty("controlId", "auto_background_run")
         self.run_button.setObjectName("primaryButton")
+        self.run_button.setDefault(True)
         hint = trans.t("retouch_auto_bg_hint")
         if getattr(doc, "stacked_image", None) is not None:
             hint += "\n" + trans.t("retouch_auto_bg_from_stacked")
         self.run_button.setToolTip(hint)
         self.run_button.clicked.connect(self._run)
-        self.cancel_button = QPushButton(trans.t("btn_cancel"))
+        self.cancel_button = QPushButton(trans.t("dialog_close"))
+        self.cancel_button.setAutoDefault(False)
         self.cancel_button.setProperty("controlId", "auto_background_cancel")
         self.cancel_button.clicked.connect(self.reject)
         buttons.addStretch(1)
-        buttons.addWidget(self.run_button)
         buttons.addWidget(self.cancel_button)
+        buttons.addWidget(self.run_button)
         layout.addLayout(buttons)
         self.status = ""
         self.preset = ""
+        self._fit_options()
+        group.checkedButton().setFocus()
+
+    def _fit_options(self):
         from utils.ui_utils import size_dialog_to_content
-        size_dialog_to_content(self, self.options_scroll, preferred_width=480)
-        # Wrapped labels report an inflated unconstrained height; size them at
-        # the selected width so the dialog does not fill the entire screen.
-        margins = layout.contentsMargins()
-        content_width = max(1, self.width() - margins.left() - margins.right()
-                            - 2 * self.options_scroll.frameWidth())
-        content_height = option_layout.totalHeightForWidth(content_width)
-        fixed_height = (margins.top() + margins.bottom() + layout.spacing()
-                        + buttons.sizeHint().height())
-        # Reserve space for the progress row before it becomes visible.
-        progress_height = self.progress_box.sizeHint().height() + layout.spacing()
-        self.resize(self.width(), min(self.height(), max(240, content_height + fixed_height + progress_height)))
+        size_dialog_to_content(self, self.options_scroll, preferred_width=500)
 
     def _run(self):
         if self.worker is not None:
@@ -763,21 +818,40 @@ class _AutoBackgroundDialog(QDialog):
         settings.setValue("retouch/auto_bg_clean", "true" if clean else "false")
         soft_parts = self.chk_soft_parts.isChecked()
         settings.setValue("retouch/auto_bg_soft_parts", "true" if soft_parts else "false")
-        for widget in (self.rb_auto, self.rb_soft, self.rb_sharp, self.chk_clean,
-                       self.chk_soft_parts, self.run_button):
-            widget.setEnabled(False)
-        self._show_progress(0.0)
-        self.progress_box.setVisible(True)
         self.preset = preset
-        self.worker = _AutoBackgroundWorker(self.doc, preset, clean, soft_parts)
+        selected = [self.rb_auto.group().checkedButton().text()]
+        selected.extend(box.text() for box in (self.chk_clean, self.chk_soft_parts)
+                        if box.isChecked())
+        self.selection_label.setText(" · ".join(selected))
+        self.options_scroll.hide()
+        self.run_button.hide()
+        self.progress_box.show()
+        self.cancel_button.setText(trans.t("btn_cancel"))
+        self.cancel_button.setFocus()
+        self._show_progress(0.0, "preparing source frames")
+        self.resize(self.width(), self.layout().totalHeightForWidth(self.width()))
+        window = getattr(self.parentWidget(), "window_main", None)
+        use_gpu = (window.use_gpu if hasattr(window, "use_gpu")
+                   else settings.value("rendering/use_gpu", True, type=bool))
+        self.worker = _AutoBackgroundWorker(self.doc, preset, clean, soft_parts, use_gpu)
         self.worker.progressed.connect(self._show_progress)
         self.worker.finished.connect(self._finished)
         self.worker.start()
 
-
-    def _show_progress(self, fraction):
-        self.progress.setValue(int(fraction * 1000))
-        self.lbl_progress.setText(f"{int(round(fraction * 100))}%")
+    def _show_progress(self, fraction, message):
+        # Ignore progress already queued when Cancel or the title-bar close was pressed.
+        if not self.cancel_button.isEnabled():
+            return
+        stage = trans.t(self._STAGES.get(message, "retouch_auto_bg_applying"))
+        self.stage_label.setText(stage)
+        self.progress.setAccessibleName(stage)
+        if fraction <= 0 or message == "waiting for processing":
+            self.progress.setRange(0, 0)
+            self.lbl_progress.clear()
+        else:
+            self.progress.setRange(0, 1000)
+            self.progress.setValue(round(fraction * 1000))
+            self.lbl_progress.setText(f"{int(fraction * 100)}%" if fraction >= 0.01 else "<1%")
 
     def _finished(self):
         worker = self.worker
@@ -785,14 +859,17 @@ class _AutoBackgroundDialog(QDialog):
         self.status = worker.status
         worker.deleteLater()
         if worker.error:
-            QMessageBox.critical(self, trans.t("msg_error"),
-                                 trans.t("retouch_auto_bg_failed") + "\n\n" + worker.error)
-            for widget in (self.rb_auto, self.rb_soft, self.rb_sharp, self.chk_clean,
-                           self.chk_soft_parts, self.run_button):
-                widget.setEnabled(True)
-            self.progress_box.setVisible(False)
+            self.progress_box.hide()
+            self.options_scroll.show()
+            self.run_button.setText(trans.t("btn_retry"))
+            self.run_button.show()
             self.cancel_button.setEnabled(True)
-            self.cancel_button.setText(trans.t("btn_cancel"))
+            self.cancel_button.setText(trans.t("dialog_close"))
+            self._fit_options()
+            self.run_button.setFocus()
+            failure = trans.t("retouch_auto_bg_failed")
+            detail = failure if worker.error == failure else f"{failure}\n\n{worker.error}"
+            QMessageBox.critical(self, trans.t("msg_error"), detail)
         elif worker.status in ("committed", "empty"):
             self.accept()
         elif worker.status in ("unsupported", "oversize", "record_limit"):
@@ -807,8 +884,11 @@ class _AutoBackgroundDialog(QDialog):
     def reject(self):
         if self.worker is not None:
             self.worker.requestInterruption()
+            self.stage_label.setText(trans.t("depth_cancelling"))
+            self.progress.setAccessibleName(self.stage_label.text())
+            self.progress.setRange(0, 0)
+            self.lbl_progress.clear()
             self.cancel_button.setEnabled(False)
-            self.cancel_button.setText(trans.t("compare_stopping"))
         else:
             super().reject()
 

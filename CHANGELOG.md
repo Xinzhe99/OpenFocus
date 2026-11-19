@@ -31,6 +31,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Open the user manual on GitHub in the current interface language from Help.
 
 ### Changed
+- Retouch’s Auto background dialog explains when to replace the background and when to use the Source Brush. It groups source and edge options, reports progress through preparation and replacement, and supports cancellation and retry.
+- Speed up Auto background’s registration mask checks and edge cleaning. Large stacks can use an OpenCL GPU for focus statistics with an exact CPU fallback.
 - Include allowlisted error categories, render stages, and memory admission
   figures in sanitized reports, without adding exception messages or paths.
 - Use each indexed TIFF page's color map for previews, full-resolution fusion and conversion.

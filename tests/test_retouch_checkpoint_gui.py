@@ -4,6 +4,7 @@ import os
 import numpy as np
 import pytest
 
+from locales import trans
 from tests.test_retouch import _dialog
 
 
@@ -365,6 +366,63 @@ def test_background_worker_close_cancels_without_closing_or_mutating_workspace(q
         dlg.close()
 
 
+def test_background_progress_uses_worker_stage_and_cancels_from_visible_button(qapp):
+    from types import SimpleNamespace
+    from threading import Event
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtTest import QTest
+    from dialogs.retouch import _AutoBackgroundDialog
+
+    advance = Event()
+    release = Event()
+
+    def compute(_preset, _clean, cancelled, progress, **_kwargs):
+        progress(0, "waiting for processing")
+        if not advance.wait(5):
+            return "cancelled"
+        progress(0.25, "finding the subject's outline")
+        release.wait(5)
+        progress(0.5, "cleaning edge flaws")
+        return "cancelled" if cancelled() else "empty"
+
+    dialog = _AutoBackgroundDialog(SimpleNamespace(auto_background=compute))
+    try:
+        dialog.show()
+        assert dialog.options_scroll.isVisible() and dialog.progress_box.isHidden()
+        assert dialog.cancel_button.text() == trans.t("dialog_close")
+        QTest.mouseClick(dialog.run_button, Qt.MouseButton.LeftButton)
+        for _ in range(100):
+            if dialog.stage_label.text() == trans.t("retouch_auto_bg_waiting"):
+                break
+            QTest.qWait(10)
+        assert dialog.stage_label.text() == trans.t("retouch_auto_bg_waiting")
+        assert dialog.progress.isVisible() and dialog.options_scroll.isHidden()
+        assert dialog.progress.maximum() == 0 and not dialog.lbl_progress.text()
+        advance.set()
+        for _ in range(100):
+            if dialog.lbl_progress.text():
+                break
+            QTest.qWait(10)
+        assert dialog.stage_label.text() == trans.t("retouch_auto_bg_outline")
+        assert dialog.lbl_progress.text() == "25%"
+        assert dialog.cancel_button.text() == trans.t("btn_cancel")
+        QTest.mouseClick(dialog.cancel_button, Qt.MouseButton.LeftButton)
+        assert dialog.isVisible() and not dialog.cancel_button.isEnabled()
+        release.set()
+        assert dialog.worker.wait(5000)
+        qapp.processEvents()
+        assert dialog.stage_label.text() == trans.t("depth_cancelling")
+        assert dialog.status == "cancelled" and not dialog.isVisible()
+    finally:
+        advance.set()
+        release.set()
+        if dialog.worker is not None:
+            dialog.reject()
+            assert dialog.worker.wait(5000)
+            qapp.processEvents()
+        dialog.close()
+
+
 def test_background_worker_error_can_retry_without_losing_the_dialog(qapp, monkeypatch):
     from types import SimpleNamespace
     from PyQt6.QtCore import QTimer
@@ -382,10 +440,12 @@ def test_background_worker_error_can_retry_without_losing_the_dialog(qapp, monke
     errors = []
     def show_error(*args):
         errors.append(args[-1])
-        QTimer.singleShot(0, dialog._run)
+        assert dialog.run_button.isVisible() and dialog.run_button.text() == trans.t("btn_retry")
+        assert dialog.options_scroll.isVisible() and dialog.progress_box.isHidden()
+        QTimer.singleShot(0, dialog.run_button.click)
     monkeypatch.setattr(QMessageBox, "critical", show_error)
     try:
-        QTimer.singleShot(0, dialog._run)
+        QTimer.singleShot(0, dialog.run_button.click)
         assert dialog.exec() == QDialog.DialogCode.Accepted
         assert len(attempts) == 2 and len(errors) == 1
         assert errors[0].strip() and dialog.status == "empty"
