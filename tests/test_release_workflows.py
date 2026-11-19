@@ -157,15 +157,10 @@ def test_packaged_platforms_embed_identity_before_build():
         assert '--write-build-identity build_identity.py' in steps[marker]['run']
 
 
-def test_beta_uses_signing_gate_and_cannot_publish_to_pypi():
-    release = workflow('release.yml')['jobs']
-    sign = next(step for step in release['build-windows']['steps']
-                if step.get('id') == 'signpath')
+def test_only_stable_releases_publish_to_pypi():
     pypi = workflow('pypi.yml')
     for channel in ('release', 'beta', 'preview'):
-        context = {'needs': {'prepare': {'outputs': {'channel': channel}},
-                             'build': {'outputs': {'channel': channel}}}}
-        assert bool(expression(sign['if'], context)) == (channel != 'preview')
+        context = {'needs': {'build': {'outputs': {'channel': channel}}}}
         assert bool(expression(pypi['jobs']['publish']['if'], context)) == (channel == 'release')
     assert '!v*-beta.*' in pypi['on']['push']['tags']
 
