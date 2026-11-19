@@ -307,14 +307,10 @@ class AdvancedSettingsDialog(QDialog):
         self.chk_auto_update.setChecked(bool(getattr(manager, 'auto_download', True)))
         other.addRow(self.chk_auto_update)
         self.chk_auto_update.setToolTip(trans.t("action_auto_download_hint"))
-        self.chk_include_beta = QCheckBox(trans.t('action_include_beta'))
+        self.chk_include_beta = QCheckBox(trans.t('action_include_beta_with_hint'))
         self.chk_include_beta.setProperty("controlId", "chk_include_beta")
         self.chk_include_beta.setChecked(bool(getattr(manager, 'include_beta', False)))
-        self.chk_include_beta.setToolTip(trans.t("action_include_beta_hint"))
         other.addRow(self.chk_include_beta)
-        beta_hint = QLabel(trans.t("action_include_beta_hint"))
-        beta_hint.setWordWrap(True)
-        other.addRow(beta_hint)
 
     def _browse_storage_directory(self):
         path = FileDialog.getExistingDirectory(

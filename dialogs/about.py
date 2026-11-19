@@ -1,20 +1,26 @@
 # dialogs/about.py
 """About and contact information dialogs."""
 
+import json
+import re
 import threading
+from html import escape
+from unicodedata import category
+from urllib.parse import urlencode, urlsplit
 
-from PyQt6.QtCore import QTimer, Qt
+from PyQt6.QtCore import QTimer, Qt, QUrl
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
     QDialog,
     QVBoxLayout,
     QHBoxLayout,
+    QSizePolicy,
     QTextEdit,
 )
-from constants import DISCORD_INVITE_URL
 from dialogs._community_download import CommunityDownloads
 from locales import trans
 from utils import get_monospace_font_family
+from utils.account_client import BASE_URL
 
 
 class _EnvironmentProbe(threading.Thread):
@@ -234,12 +240,61 @@ class EnvironmentInfoDialog(QDialog):
         return "\n".join(summary + [""] + info_lines)
 
 
+_EMAIL_LOCAL = re.compile(r'[A-Za-z0-9_+-]+(?:\.[A-Za-z0-9_+-]+)*')
+_DOMAIN_LABEL = r'[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?'
+_EMAIL_DOMAIN = re.compile(rf'{_DOMAIN_LABEL}(?:\.{_DOMAIN_LABEL})+')
+_CONTROL_CATEGORIES = {'Cc', 'Cf', 'Cs'}
+
+
+def _published_emails(value):
+    if not isinstance(value, list) or len(value) > 8:
+        return
+    seen = set()
+    for address in value:
+        if not isinstance(address, str) or len(address) > 254:
+            continue
+        local, _, domain = address.partition('@')
+        if len(local) > 64 or not _EMAIL_LOCAL.fullmatch(local) or not _EMAIL_DOMAIN.fullmatch(domain):
+            continue
+        key = address.lower()
+        if key not in seen:
+            seen.add(key)
+            yield address
+
+
+def _published_link(value, *hosts):
+    if not isinstance(value, str) or not value:
+        return ''
+    if any(char.isspace() or char in '\\<>"`{}|^' or category(char) in _CONTROL_CATEGORIES
+           for char in value):
+        return ''
+    try:
+        parsed = urlsplit(value)
+    except ValueError:
+        return ''
+    authority = parsed.netloc.lower().removesuffix(':443')
+    if parsed.scheme != 'https' or not parsed.netloc.isascii() or authority not in hosts:
+        return ''
+    url = QUrl(value, QUrl.ParsingMode.StrictMode)
+    if not url.isValid():
+        return ''
+    normalized = url.adjusted(QUrl.UrlFormattingOption.NormalizePathSegments)
+    path = normalized.path(QUrl.ComponentFormattingOption.FullyEncoded)
+    if not path or path == '/':
+        return ''
+    if authority == 'discord.com' and not re.fullmatch(r'/invite/[^/]+', path):
+        return ''
+    return value
+
+
 class ContactInfoDialog(QDialog):
     """Show contact links and current WeChat codes from the account service."""
 
+    _CONTACT_INFO_URL = f'{BASE_URL}/v1/contact-info'
+    _MAX_CONTACT_INFO_BYTES = 32 * 1024
+
     def __init__(self, parent=None):
-        from ._community_layout import (add_published_qr, community_body, community_card,
-                                        community_label, community_link)
+        from ._community_layout import add_published_qr, community_body, community_card, community_label
 
         super().__init__(parent)
         self._contact_cards = QHBoxLayout()
@@ -254,23 +309,20 @@ class ContactInfoDialog(QDialog):
         contact_card, contact = community_card()
         self._contact_cards.addWidget(contact_card, 3)
         contact.addWidget(community_label(trans.t('contact_info_title'), 'section'))
-        contact.addWidget(community_label(trans.t('contact_email'), 'muted'))
-        for address in ('xiexinzhe@zju.edu.cn', 'xiexinzheyyy@163.com', 'xiexinzhe123@gmail.com'):
-            contact.addWidget(community_link(self, address, f'mailto:{address}'))
-        contact.addSpacing(8)
-        contact.addWidget(community_label(trans.t('contact_institution'), 'muted'))
-        contact.addWidget(community_label(trans.t('contact_zju')))
-        contact.addSpacing(8)
-        contact.addWidget(community_link(self, trans.t('contact_github'), 'https://github.com/Xinzhe99/OpenFocus'))
-        contact.addWidget(community_link(self, 'Discord', DISCORD_INVITE_URL))
+        self._contact_status = community_label(trans.t('contact_details_loading'), 'muted')
+        contact.addWidget(self._contact_status)
+        self._contact_details = QVBoxLayout()
+        self._contact_details.setSpacing(contact.spacing())
+        contact.addLayout(self._contact_details)
         contact.addStretch()
 
-        requests = CommunityDownloads(self)
+        self._requests = CommunityDownloads(self)
+        self._contact_request = 0
         for slot, label in (('wechat-group', 'contact_wechat_title'),
                             ('wechat-official-account', 'contact_wechat_official')):
             card, column = community_card()
             self._contact_cards.addWidget(card, 2)
-            add_published_qr(self, column, requests, trans.t(label), slot, 192)
+            add_published_qr(self, column, self._requests, trans.t(label), slot, 192)
             column.addStretch()
 
         # 居中显示
@@ -279,6 +331,74 @@ class ContactInfoDialog(QDialog):
                 parent.x() + parent.width() // 2 - self.width() // 2,
                 parent.y() + parent.height() // 2 - self.height() // 2,
             )
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if event.spontaneous():
+            return
+        while self._contact_details.count():
+            widget = self._contact_details.takeAt(0).widget()
+            widget.hide()
+            widget.deleteLater()
+        self._contact_status.setText(trans.t('contact_details_loading'))
+        self._contact_status.show()
+        self._contact_request += 1
+        request = self._contact_request
+        query = urlencode({'lang': trans.current_lang})
+        self._requests.get(f'{self._CONTACT_INFO_URL}?{query}', 'application/json',
+                           self._MAX_CONTACT_INFO_BYTES,
+                           lambda status, data: self._contact_finished(request, status, data))
+
+    def _contact_finished(self, request, status, data):
+        from ._community_layout import community_label, community_link
+
+        if request != self._contact_request:
+            return
+        payload = None
+        if status == 200 and data is not None:
+            try:
+                payload = json.loads(data.decode('utf-8'))
+            except (ValueError, RecursionError):
+                pass
+        if not isinstance(payload, dict):
+            self._contact_status.setText(trans.t('contact_details_unavailable'))
+            return
+
+        emails = list(_published_emails(payload.get('emails')))
+        if emails:
+            self._contact_details.addWidget(community_label(trans.t('contact_email'), 'muted'))
+            for address in emails:
+                link = community_link(self, address, f'mailto:{address}')
+                self._add_detail(link, address)
+
+        institution = payload.get('institution')
+        if (isinstance(institution, str) and 1 <= len(institution) <= 120 and institution.strip()
+                and not any(category(char) in _CONTROL_CATEGORIES or char in '\u2028\u2029'
+                            for char in institution)):
+            self._contact_details.addWidget(community_label(trans.t('contact_institution'), 'muted'))
+            label = community_label(institution)
+            label.setObjectName('contactInstitution')
+            self._add_detail(label, institution)
+
+        github = _published_link(payload.get('github_url'), 'github.com')
+        if github:
+            self._contact_details.addWidget(community_link(self, trans.t('contact_github'), github))
+        discord = _published_link(payload.get('discord_url'), 'discord.gg', 'discord.com')
+        if discord:
+            self._contact_details.addWidget(community_link(self, 'Discord', discord))
+
+        if self._contact_details.count():
+            self._contact_status.hide()
+        else:
+            self._contact_status.setText(trans.t('contact_details_empty'))
+
+    def _add_detail(self, label, value):
+        # Long addresses and institution names must not set the cards' minimum width.
+        policy = label.sizePolicy()
+        policy.setHorizontalPolicy(QSizePolicy.Policy.Ignored)
+        label.setSizePolicy(policy)
+        label.setToolTip(f'<qt>{escape(value)}</qt>')
+        self._contact_details.addWidget(label)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)

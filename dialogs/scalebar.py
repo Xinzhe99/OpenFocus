@@ -173,6 +173,7 @@ class ScaleBarDialog(QDialog):
             minimum=0, maximum=400, decimals=0, step=2)
         self.size_spin.setValue(
             float(getattr(window, "scale_bar_font_size", 0.0) or 0.0))
+        self.size_spin.setSpecialValueText(trans.t("scalebar_align_auto"))
         self.size_spin.setMinimumWidth(96)
         self.size_spin.setToolTip(trans.t("scalebar_font_auto"))
         text_form.addRow(trans.t("scalebar_font_size"), self.size_spin)
@@ -750,6 +751,8 @@ class ScaleBarDialog(QDialog):
         self.effective_lbl.setText(self._effective_text())
         self.font_note.clear()
         self.preview_meta.clear()
+        auto_text = trans.t("scalebar_align_auto")
+        self.size_spin.setSpecialValueText(auto_text)
         self._ok_button.setEnabled(False)
         if image is None:
             self._pixel_key = None
@@ -832,6 +835,8 @@ class ScaleBarDialog(QDialog):
             valid = not error
             self._ok_button.setEnabled(valid)
             self._error.setText(error)
+            if self.size_spin.value() == 0 and info["font_size_px"] is not None:
+                self.size_spin.setSpecialValueText(f"{auto_text} ({info['font_size_px']} px)")
             if info["substituted_font"]:
                 self.font_note.setText(trans.t("label_font_substituted").format(name=info["substituted_font"]))
             if valid:

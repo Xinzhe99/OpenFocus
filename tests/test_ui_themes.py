@@ -29,6 +29,7 @@ def theme_environment(qapp):
 def invite_server(qapp, monkeypatch):
     from PyQt6.QtNetwork import QHostAddress, QTcpServer
     from dialogs import _community_download
+    from dialogs.about import ContactInfoDialog
     from dialogs.support import SupportUsDialog
 
     server = QTcpServer()
@@ -36,22 +37,64 @@ def invite_server(qapp, monkeypatch):
     monkeypatch.setenv('no_proxy', '127.0.0.1')
     origin = f'http://127.0.0.1:{server.serverPort()}'
     monkeypatch.setattr(_community_download, 'QR_BASE_URL', f'{origin}/v1/qr')
+    monkeypatch.setattr(ContactInfoDialog, '_CONTACT_INFO_URL', f'{origin}/v1/contact-info')
     monkeypatch.setattr(SupportUsDialog, '_SPONSORS_URL', f'{origin}/v1/sponsors')
     yield server
     server.close()
     server.deleteLater()
 
 
-def test_contact_links_are_accessible_and_follow_the_theme(qapp, theme_environment, invite_server):
+@pytest.fixture
+def contact_replies(invite_server):
+    reply = {'body': b'{}'}
+    paths = []
+
+    def accept_connection():
+        socket = invite_server.nextPendingConnection()
+
+        def write_response():
+            if not socket.canReadLine():
+                return
+            path = bytes(socket.readLine()).split()[1]
+            socket.readAll()
+            if path.startswith(b'/v1/contact-info?'):
+                paths.append(path)
+                body = reply['body']
+                headers = (f'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n'
+                           f'Content-Length: {len(body)}\r\nConnection: close\r\n\r\n')
+                socket.write(headers.encode('ascii') + body)
+            else:
+                socket.write(b'HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n')
+            socket.disconnectFromHost()
+
+        socket.readyRead.connect(write_response)
+        if socket.bytesAvailable():
+            write_response()
+
+    invite_server.newConnection.connect(accept_connection)
+    yield reply, paths
+    invite_server.newConnection.disconnect(accept_connection)
+
+
+def test_contact_links_are_accessible_and_follow_the_theme(qapp, theme_environment, contact_replies):
+    import json
     from PyQt6.QtCore import Qt
     from PyQt6.QtGui import QPalette, QTextDocument
     from PyQt6.QtTest import QTest
     from PyQt6.QtWidgets import QLabel, QScrollArea, QTextBrowser, QWidget
-    from constants import DISCORD_INVITE_URL
     from dialogs.about import ContactInfoDialog
     from dialogs._community_download import QR_BASE_URL
     from locales import trans
+    from tests.test_control_channel import wait_until
     from ui.styles import get_theme_style
+
+    reply, _ = contact_replies
+    emails = ('first+reply@example.org', 'second@example.org', 'third@example.org')
+    institution = 'Research <Lab> & Partners'
+    github_url = 'https://github.com/openfocus-test/project?view=issues&state=open'
+    discord_url = 'https://discord.gg/openfocus-test'
+    reply['body'] = json.dumps(dict(emails=emails, institution=institution, github_url=github_url,
+                                   discord_url=discord_url)).encode('utf-8')
 
     parent = QWidget()
     colours = []
@@ -66,8 +109,11 @@ def test_contact_links_are_accessible_and_follow_the_theme(qapp, theme_environme
                 qapp.processEvents()
                 assert not dialog.findChildren(QTextBrowser)
                 assert len(dialog.findChildren(QScrollArea)) == 1
-                assert any(label.text() == trans.t('contact_zju')
-                           for label in dialog.findChildren(QLabel))
+                assert wait_until(lambda: any(label.isVisible()
+                                              for label in dialog.findChildren(QLabel, 'contactInstitution')))
+                institution_label = dialog.findChild(QLabel, 'contactInstitution')
+                assert institution_label.textFormat() == Qt.TextFormat.PlainText
+                assert institution_label.text() == institution
 
                 links = {
                     (label.property('communityUrl') if label.property('communityUrl').startswith(QR_BASE_URL)
@@ -75,11 +121,9 @@ def test_contact_links_are_accessible_and_follow_the_theme(qapp, theme_environme
                     for label in dialog.findChildren(QLabel, 'communityLink')
                 }
                 expected = {
-                    'xiexinzhe@zju.edu.cn': 'mailto:xiexinzhe@zju.edu.cn',
-                    'xiexinzheyyy@163.com': 'mailto:xiexinzheyyy@163.com',
-                    'xiexinzhe123@gmail.com': 'mailto:xiexinzhe123@gmail.com',
-                    trans.t('contact_github'): None,
-                    'Discord': DISCORD_INVITE_URL,
+                    **{address: f'mailto:{address}' for address in emails},
+                    trans.t('contact_github'): github_url,
+                    'Discord': discord_url,
                     f'{QR_BASE_URL}/wechat-group': f'{QR_BASE_URL}/wechat-group',
                     f'{QR_BASE_URL}/wechat-official-account': f'{QR_BASE_URL}/wechat-official-account',
                 }
@@ -97,10 +141,7 @@ def test_contact_links_are_accessible_and_follow_the_theme(qapp, theme_environme
                     anchor = document.begin().begin().fragment().charFormat()
                     assert anchor.isAnchor()
                     href = anchor.anchorHref()
-                    if url is None:
-                        assert href.startswith('https://github.com/') and href.endswith('/OpenFocus')
-                    else:
-                        assert href == url
+                    assert href == url
                     color = anchor.foreground().color()
                     background = link.parentWidget().palette().color(QPalette.ColorRole.Window)
                     assert color.isValid() and color != background
@@ -116,7 +157,7 @@ def test_contact_links_are_accessible_and_follow_the_theme(qapp, theme_environme
                     assert activated == [href]
                 colours.append(theme_colours)
 
-                contact_card = links['xiexinzhe@zju.edu.cn'].parentWidget()
+                contact_card = links[emails[0]].parentWidget()
                 wechat_card = dialog.findChild(QLabel, 'wechat-group').parentWidget()
                 assert wechat_card.x() > contact_card.x()
                 dialog.resize(440, 480)
@@ -132,6 +173,72 @@ def test_contact_links_are_accessible_and_follow_the_theme(qapp, theme_environme
     finally:
         parent.close()
         parent.deleteLater()
+        qapp.processEvents()
+
+
+def test_contact_refreshes_and_omits_missing_or_unsafe_details(qapp, theme_environment, contact_replies):
+    import json
+    from PyQt6.QtWidgets import QLabel
+    from dialogs.about import ContactInfoDialog
+    from locales import trans
+    from tests.test_control_channel import wait_until
+
+    reply, paths = contact_replies
+    trans.set_language('en')
+    first_address = 'first@example.org'
+    reply['body'] = json.dumps(dict(emails=[first_address], institution='First institution')).encode('utf-8')
+    dialog = ContactInfoDialog()
+
+    def visible_labels():
+        return [label for label in dialog.findChildren(QLabel) if label.isVisible()]
+
+    def visible_text():
+        return {label.text() for label in visible_labels()}
+
+    def request_contact():
+        dialog.show()
+        assert trans.t('contact_details_loading') in visible_text()
+
+    try:
+        request_contact()
+        assert wait_until(lambda: 'First institution' in visible_text())
+        assert trans.t('contact_institution') in visible_text()
+        assert trans.t('contact_email') in visible_text()
+        dialog.close()
+
+        trans.set_language('zh')
+        long_address = ('a' * 64 + '@' + 'b' * 63 + '.' + 'c' * 63 + '.example.org')
+        reply['body'] = json.dumps(dict(
+            emails=[long_address, 'bad@example.org?subject=unwanted'],
+            github_url='https://github.com@example.org/project',
+            discord_url='https://discord.com/channels/not-an-invite',
+        )).encode('utf-8')
+        request_contact()
+        assert wait_until(lambda: trans.t('contact_email') in visible_text())
+        assert trans.t('contact_institution') not in visible_text()
+        assert 'First institution' not in visible_text()
+        links = [label.property('communityUrl') for label in visible_labels()
+                 if label.objectName() == 'communityLink']
+        assert [url for url in links if '/v1/qr/' not in url] == [f'mailto:{long_address}']
+        dialog.resize(440, 480)
+        qapp.processEvents()
+        assert dialog.width() == 440
+        dialog.close()
+
+        reply['body'] = b'{"emails": [], "institution": "", "github_url": "", "discord_url": ""}'
+        request_contact()
+        assert wait_until(lambda: trans.t('contact_details_empty') in visible_text())
+        assert trans.t('contact_email') not in visible_text()
+        assert trans.t('contact_institution') not in visible_text()
+        dialog.close()
+
+        reply['body'] = b'{"institution":"' + b'x' * (32 * 1024) + b'"}'
+        request_contact()
+        assert wait_until(lambda: trans.t('contact_details_unavailable') in visible_text())
+        assert paths == [b'/v1/contact-info?lang=en'] + [b'/v1/contact-info?lang=zh'] * 3
+    finally:
+        dialog.close()
+        dialog.deleteLater()
         qapp.processEvents()
 
 
@@ -170,8 +277,12 @@ def test_contact_uses_only_current_published_qr(qapp, monkeypatch, invite_server
             if not socket.canReadLine():
                 return
             request = bytes(socket.readLine()).split()
-            paths.append(request[1])
             socket.readAll()
+            if request[1].startswith(b'/v1/contact-info?'):
+                socket.write(b'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}')
+                socket.disconnectFromHost()
+                return
+            paths.append(request[1])
             if response == 'redirect' and request[1] != b'/redirected.png':
                 socket.write(b'HTTP/1.1 302 Found\r\nLocation: /redirected.png\r\nContent-Length: 0\r\n\r\n')
             elif response == 'unpublished':
@@ -257,11 +368,13 @@ def test_community_dialogs_leave_main_window_responsive_during_pending_requests(
             dialog = open_from_menu()
             assert open_from_menu() is dialog
             sockets = []
-            for _ in range(2 if entry == 'action_contact' else 3):
+            for _ in range(3):
                 assert wait_until(invite_server.hasPendingConnections)
                 socket = invite_server.nextPendingConnection()
                 assert wait_until(socket.canReadLine)
-                sockets.append(socket)
+                path = bytes(socket.readLine()).split()[1]
+                mime = b'image/png' if path.startswith(b'/v1/qr/') else b'application/json'
+                sockets.append((socket, mime))
 
             combo = window.combo_align
             before = window.current_alignment_method()
@@ -277,9 +390,9 @@ def test_community_dialogs_leave_main_window_responsive_during_pending_requests(
 
             dialog.close()
             assert wait_until(lambda: sip.isdeleted(dialog))
-            for socket in sockets:
+            for socket, mime in sockets:
                 # Completing the headers after close must neither read a body nor touch the UI.
-                socket.write(b'HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: 1024\r\n\r\n')
+                socket.write(b'HTTP/1.1 200 OK\r\nContent-Type: ' + mime + b'\r\nContent-Length: 1024\r\n\r\n')
                 assert wait_until(lambda: socket.state() == QAbstractSocket.SocketState.UnconnectedState)
     finally:
         _destroy_main_window(qapp, window)
