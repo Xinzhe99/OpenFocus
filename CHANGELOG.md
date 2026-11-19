@@ -128,6 +128,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   transforms, cropping and output pixels are unchanged.
 
 ### Fixed
+- Show the matching download icon on the Linux desktop button on the website.
 - Keep TIFFs with tiny embedded thumbnails visible in Scale Bar. Draw the bar on the thumbnail and show its caption at readable zoom levels.
 - Reuse the last alignment across fusion methods when the original frame selection and registration settings are restored.
 - Report project restore completion after the desktop has applied the frames and settings, including after an update restart.
