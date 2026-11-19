@@ -733,7 +733,7 @@ OpenFocus B może przyspieszać przetwarzanie głębi i łączenie źródeł na 
 
 ### Motywy
 
-Dostępne są dwa motywy interfejsu: **Jasny (domyślnie)** i **Ciemny**. Przełączanie — **Ustawienia → Motyw**; wybór stosuje się natychmiast (pasek tytułu Windows też się zmienia) i jest pamiętany. Przy pierwszym uruchomieniu motyw wybiera się w oknie powitalnym; zapisany wybór zawsze wygrywa.
+Dostępne są motywy **Jasny (domyślnie)**, **Ciemny** i **Neutralna szarość**. Neutralna szarość używa średnioszarego tła do oglądania, porównywania i retuszu obrazów. Przełączanie — **Ustawienia → Motyw**; wybór stosuje się natychmiast (pasek tytułu Windows też się zmienia) i jest pamiętany. Przy pierwszym uruchomieniu motyw wybiera się w oknie powitalnym; zapisany wybór zawsze wygrywa.
 
 ### Tryb przenośny
 

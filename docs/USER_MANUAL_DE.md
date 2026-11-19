@@ -762,7 +762,7 @@ OpenFocus B kann Tiefenverarbeitung und Quellenzusammenführung mit einer kompat
 
 ### Oberflächendesign
 
-Es stehen zwei Oberflächendesigns zur Verfügung: **Hell (Standard)** und **Dunkel**. Umschalten über **Einstellungen → Design**; die Wahl wird sofort angewendet (die Windows-Titelleiste folgt) und gespeichert. Beim ersten Start wird das Design im Willkommensdialog gewählt; eine gespeicherte Auswahl hat Vorrang.
+Die Oberflächendesigns **Hell (Standard)**, **Dunkel** und **Neutralgrau** stehen zur Verfügung. Neutralgrau verwendet einen mittelgrauen Hintergrund zum Betrachten, Vergleichen und Retuschieren von Bildern. Umschalten über **Einstellungen → Design**; die Wahl wird sofort angewendet (die Windows-Titelleiste folgt) und gespeichert. Beim ersten Start wird das Design im Willkommensdialog gewählt; eine gespeicherte Auswahl hat Vorrang.
 
 ### Portabler Modus
 

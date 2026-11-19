@@ -638,6 +638,7 @@ PACK = {
     "msg_update_needs_elevation": "관리자 권한 없이는 설치 폴더에 쓸 수 없습니다. Releases 페이지의 설치 프로그램으로 업데이트하세요.",
     "theme_dark": "어둡게",
     "theme_light": "밝게",
+    "theme_gray": "중성 회색",
     "menu_quick_start": "빠른 시작 안내",
     "menu_check_updates": "업데이트 확인",
     "menu_open_logs": "로그 폴더 열기",

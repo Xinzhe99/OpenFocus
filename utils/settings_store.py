@@ -17,7 +17,7 @@ from core.algorithms import (fusion_algorithms, get_fusion, get_registration,
                              resolve_registration_parameters)
 from locales import trans
 from utils import app_paths
-from utils.design_tokens import UI_FONT_PRESETS, UI_FONT_RANGE
+from utils.design_tokens import PALETTES, UI_FONT_PRESETS, UI_FONT_RANGE
 from utils.output_sharpen import DEFAULT_SHARPEN_STRENGTH, validate_sharpen_strength
 from utils.validators import normalize_kernel_size
 
@@ -413,7 +413,7 @@ def load_window_settings(window) -> None:
             setattr(window, attr, _cast(settings.value(key), kind, default))
         else:
             setattr(window, attr, getattr(window, attr, default))
-    if window.theme_mode not in ('light', 'dark', 'system'):
+    if window.theme_mode not in PALETTES and window.theme_mode != 'system':
         window.theme_mode = DEFAULT_THEME
     if window.font_size_mode not in (*UI_FONT_PRESETS, 'custom'):
         window.font_size_mode = 'medium'

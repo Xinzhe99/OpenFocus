@@ -808,14 +808,7 @@ class DepthMapDialog(QDialog):
         self.preview_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.preview_lbl.setMinimumSize(180, 130)
         self.preview_lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
-        # Preview placeholder follows the palette instead of a fixed near-black.
-        from ui.styles import CURRENT_THEME
-        from utils.design_tokens import palette
-        _p = palette(CURRENT_THEME)
-        self.preview_lbl.setStyleSheet(
-            f"background: {_p['surfaceSunken']};"
-            f" border: 1px solid {_p['border']};"
-            f" color: {_p['textMuted']};")
+        self.preview_lbl.setObjectName("depthPreview")
         # The 3D surface lives on its own tab: it answers a different question
         # ("what does this relief look like?") than the colourised map, and it
         # used to require exporting an OBJ and opening another program.

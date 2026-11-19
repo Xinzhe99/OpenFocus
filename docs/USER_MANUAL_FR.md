@@ -723,7 +723,7 @@ OpenFocus B peut accélérer le traitement de profondeur et la fusion des source
 
 ### Thèmes
 
-Deux thèmes d'interface sont disponibles : **Clair (par défaut)** et **Sombre**. Changez via **Paramètres → Thème** ; le choix s'applique immédiatement (la barre de titre Windows suit) et est mémorisé. Au premier lancement, l'utilisateur choisit un thème dans la boîte de bienvenue ; un choix enregistré l'emporte toujours.
+Les thèmes **Clair (par défaut)**, **Sombre** et **Gris neutre** sont disponibles. Gris neutre utilise un fond gris moyen pour examiner, comparer et retoucher les images. Changez via **Paramètres → Thème** ; le choix s'applique immédiatement (la barre de titre Windows suit) et est mémorisé. Au premier lancement, l'utilisateur choisit un thème dans la boîte de bienvenue ; un choix enregistré l'emporte toujours.
 
 ### Mode portable
 

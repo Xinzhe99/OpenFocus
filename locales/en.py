@@ -668,6 +668,7 @@ EN = {
     "msg_update_needs_elevation": "The installation folder is not writable without administrator rights. Please update via the installer from the Releases page.",
     "theme_dark": "Dark",
     "theme_light": "Light",
+    "theme_gray": "Neutral Gray",
     "menu_quick_start": "Quick Start Guide",
     "menu_check_updates": "Check for Updates",
     "menu_open_logs": "Open Logs Folder",

@@ -53,7 +53,7 @@ def test_contact_links_are_accessible_and_follow_the_theme(qapp, theme_environme
     parent = QWidget()
     colours = []
     try:
-        for theme in ('light', 'dark'):
+        for theme in ('light', 'dark', 'gray'):
             qapp.setStyleSheet(get_theme_style(theme))
             parent.ui_theme = theme
             dialog = ContactInfoDialog(parent)
@@ -122,7 +122,8 @@ def test_contact_links_are_accessible_and_follow_the_theme(qapp, theme_environme
                 dialog.close()
                 dialog.deleteLater()
                 qapp.processEvents()
-        assert all(colours[0][name] != colours[1][name] for name in colours[0])
+        assert all(len({by_name[name].name() for by_name in colours}) == len(colours)
+                   for name in colours[0])
     finally:
         parent.close()
         parent.deleteLater()
@@ -214,6 +215,8 @@ def test_contact_menu_allows_main_window_input_while_refreshing(
     from PyQt6.QtTest import QTest
     from dialogs.about import ContactInfoDialog
     from tests.test_control_channel import _new_main_window, _destroy_main_window, wait_until
+    from utils.design_tokens import palette
+    from PyQt6.QtWidgets import QLabel
 
     monkeypatch.setattr(ContactInfoDialog, '_WECHAT_TIMEOUT_MS', 30_000)
     window = _new_main_window(qapp, tmp_path, monkeypatch)
@@ -233,7 +236,7 @@ def test_contact_menu_allows_main_window_input_while_refreshing(
         return dialogs[0]
 
     try:
-        for _ in range(2):
+        for theme in ('gray', 'light'):
             dialog = open_from_menu()
             assert open_from_menu() is dialog
             assert wait_until(invite_server.hasPendingConnections)
@@ -248,6 +251,9 @@ def test_contact_menu_allows_main_window_input_while_refreshing(
             QTest.keyClick(combo, key)
             assert window.current_alignment_method() == next_method
             assert dialog.isVisible()
+            window.ui_objs[f'theme_{theme}'].trigger()
+            assert all(palette(theme)['accentSoftText'] in link.text()
+                       for link in dialog.findChildren(QLabel, 'communityLink'))
 
             dialog.close()
             assert wait_until(lambda: sip.isdeleted(dialog))
@@ -360,6 +366,28 @@ def test_dustmap_preview_follows_the_theme(qapp, theme_environment):
     finally:
         parent.close()
         parent.deleteLater()
+        qapp.processEvents()
+
+
+def test_depth_surface_uses_the_new_theme_without_moving_camera(qapp, theme_environment):
+    import numpy as np
+    from PyQt6.QtGui import QColor
+    from ui.styles import get_theme_style, set_current_theme
+    from widgets.depth_surface import DepthSurface
+
+    surface = DepthSurface()
+    surface.resize(390, 260)
+    surface.set_surface(np.full((120, 160), 0.5, np.float32))
+    try:
+        for theme, surround in (("light", "#F9FAFB"), ("gray", "#606060"),
+                                ("dark", "#12161B")):
+            set_current_theme(theme)
+            qapp.setStyleSheet(get_theme_style(theme))
+            image = surface.grab().toImage()
+            assert image.pixelColor(4, 4) == QColor(surround)
+            assert image.pixelColor(image.rect().center()) != QColor(surround)
+    finally:
+        surface.deleteLater()
         qapp.processEvents()
 
 

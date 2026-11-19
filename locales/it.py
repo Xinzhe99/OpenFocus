@@ -638,6 +638,7 @@ PACK = {
     "msg_update_needs_elevation": "La cartella di installazione non è scrivibile senza diritti di amministratore. Aggiorna tramite il programma di installazione dalla pagina Releases.",
     "theme_dark": "Scuro",
     "theme_light": "Chiaro",
+    "theme_gray": "Grigio neutro",
     "menu_quick_start": "Guida rapida",
     "menu_check_updates": "Controlla aggiornamenti",
     "menu_open_logs": "Apri cartella dei log",

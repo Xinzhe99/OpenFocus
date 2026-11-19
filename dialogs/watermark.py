@@ -266,7 +266,7 @@ class WatermarkDialog(QDialog):
         # ---- fixed bottom actions ---------------------------------------
         self._error = QLabel("")
         self._error.setWordWrap(True)
-        self._error.setStyleSheet(f"color: {tokens()['danger']};")
+        self._error.setObjectName("errorLabel")
         root.addWidget(self._error)
 
         buttons = QDialogButtonBox(

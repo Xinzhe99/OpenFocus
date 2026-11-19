@@ -13,9 +13,7 @@ def _colors(dialog):
     return palette(getattr(dialog.parentWidget(), 'ui_theme', styles.CURRENT_THEME))
 
 
-def community_body(dialog, title, intro, *, width, height):
-    dialog.resize(width, height)
-    dialog.setObjectName('communityDialog')
+def apply_community_theme(dialog):
     colors = _colors(dialog)
     dialog.setStyleSheet(f"""
         QDialog#communityDialog, QWidget#communityContent, QScrollArea#communityScroll {{
@@ -49,6 +47,14 @@ def community_body(dialog, title, intro, *, width, height):
             background: {colors['accentSoft']}; color: {colors['accentSoftText']};
         }}
     """)
+    for label in dialog.findChildren(QLabel, 'communityLink'):
+        _color_link(label, colors['accentSoftText'])
+
+
+def community_body(dialog, title, intro, *, width, height):
+    dialog.resize(width, height)
+    dialog.setObjectName('communityDialog')
+    apply_community_theme(dialog)
 
     root = QVBoxLayout(dialog)
     root.setContentsMargins(SPACE['xl'], SPACE['lg'], SPACE['xl'], SPACE['lg'])
@@ -98,12 +104,19 @@ def community_label(text, role=''):
 
 
 def community_link(dialog, text, url):
-    color = _colors(dialog)['accentSoftText']
-    label = QLabel(f'<a style="color: {color};" href="{escape(url, quote=True)}">{escape(text)}</a>')
+    label = QLabel()
+    label.setProperty('communityUrl', url)
     label.setObjectName('communityLink')
     label.setAccessibleName(text)
     label.setTextFormat(Qt.TextFormat.RichText)
     label.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
     label.setOpenExternalLinks(True)
     label.setWordWrap(True)
+    _color_link(label, _colors(dialog)['accentSoftText'])
     return label
+
+
+def _color_link(label, color):
+    url = escape(label.property('communityUrl'), quote=True)
+    title = escape(label.accessibleName())
+    label.setText(f'<a style="color: {color};" href="{url}">{title}</a>')

@@ -19,7 +19,6 @@ from PyQt6.QtWidgets import (
 from constants import DISCORD_INVITE_URL
 from locales import trans
 from utils import get_monospace_font_family, resource_path
-from ui.styles import PRIMARY_BLUE
 
 
 class _EnvironmentProbe(threading.Thread):
