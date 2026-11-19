@@ -283,7 +283,7 @@ def _source_staging_bytes(frame, shape):
 
 def _frame_upload_bytes(frame, shape):
     if tuple(frame.shape[:2]) != tuple(shape[:2]):
-        itemsize = 1 if frame.dtype == np.uint8 else 4
+        itemsize = min(4, np.dtype(frame.dtype).itemsize)
         return int(shape[0]) * int(shape[1]) * 3 * itemsize
     channels = frame.shape[2] if frame.ndim == 3 else 1
     itemsize = 4 if frame.dtype == np.float64 else frame.dtype.itemsize
@@ -429,9 +429,8 @@ class GpuDct:
             if raw.shape[:2] != (orig_h, orig_w):
                 image = _ensure_color_image(np.ascontiguousarray(raw))
                 del raw
-                if image.dtype == np.uint16:
-                    image = image.astype(np.float32) * (255.0 / 65535.0)
-                elif image.dtype == np.float64:
+                # Like the CPU path, resize native integer samples before normalization.
+                if image.dtype == np.float64:
                     image = image.astype(np.float32)
                 host_src = np.ascontiguousarray(
                     cv2.resize(image, (orig_w, orig_h), interpolation=cv2.INTER_LINEAR))

@@ -199,6 +199,24 @@ def test_dct_gpu_flat_deep_tiny_mismatched_and_tiled(monkeypatch, tmp_path):
     np.testing.assert_array_equal(actual_tiled, expected_tiled)
 
 
+def test_dct_gpu_resizes_native_16bit_samples_before_normalizing(monkeypatch):
+    from fusion_methods import _openfocus_gpu
+
+    if not _openfocus_gpu.gpu_available():
+        pytest.skip('No OpenCL GPU is available')
+    monkeypatch.setattr(_openfocus_gpu, '_free_vram',
+                        lambda device: (int(device.global_mem_size),) * 2)
+    rng = np.random.default_rng(131)
+    frames = [np.full((65, 67, 3), 32768, np.uint16),
+              rng.integers(0, 65536, (32, 35, 3), dtype=np.uint16)]
+    expected = dct.dct_focus_stack_fusion(frames, kernel_size=1, thread_count=1)
+    used = []
+    actual = dct.dct_focus_stack_fusion(frames, kernel_size=1, use_gpu=True,
+                                       device_callback=used.append)
+    assert used[0].startswith('OpenCL: ')
+    np.testing.assert_array_equal(actual, expected)
+
+
 def test_dct_cpu_toggle_never_constructs_gpu_backend(monkeypatch):
     from fusion_methods import _openfocus_gpu_dct
 
