@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "description": "GPU build variants for the Windows desktop distribution. The stable CUDA build stays on the four-asset release channel; additional accelerator builds are independent previews because one PyTorch environment can only contain one accelerator runtime.",
+  "description": "Historical full-package GPU build definitions. The 1.77 stable Windows desktop ships ONNX Runtime DirectML and CPU. Its optional NVIDIA worker is provisioned from core/accelerator_win64.json. The ROCm and XPU definitions are preview recipes, not published managed packs.",
   "github_asset_limit_bytes": 2147483648,
   "variants": [
     {
@@ -29,7 +29,7 @@
           "sm_86"
         ]
       },
-      "notes": "Built by .github/workflows/release.yml as one of the four stable assets. CI compiles/loads the CUDA runtime and asserts sm_86 without a GPU; drawing the model on an RTX 3090 remains a real-hardware validation step."
+      "notes": "Historical CUDA build reference for the stable Windows asset name. release.yml now builds the DirectML desktop. Compatible NVIDIA devices can install the separate per-user inference pack."
     },
     {
       "name": "rocm",

@@ -8,6 +8,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- Offer a hardware-matched TensorRT and PyTorch CUDA pack for StackMFF on supported Windows NVIDIA systems. Install it from Setup or Settings, including after a desktop upgrade. Neural renders try supported engines within the memory budget and report the actual execution device and fallback reasons.
+- Offer a PyTorch download mirror and installation from verified local archives. Show byte counts during download and unpacking, then show GPU verification separately.
+- Show the Windows taskbar and notification area icons while the initial sign-in window is open. Clicking the notification area icon brings the current dialog or workspace forward.
 - Batch Image Converter now defaults to a sibling `_converted` folder and previews the destination for the selected file. Choose a source-relative or custom folder, cap the long edge at 2K/4K/8K, or shrink by percentage. DNG keeps sensor dimensions. Unchanged same-format images are counted as skipped. Right-click queue rows to remove the selection.
 - Add an opt-in OpenCL GPU path for OpenFocus A fusion (`use_gpu=True`),
   porting the Burt-pyramid focus response, winner-take-all selection with
@@ -17,6 +20,16 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Laptop); falls back to CPU when the device budget or build fails.
 - Prepare Linux x86-64 desktop release archives and website downloads, alongside
   the separate headless CLI distributed through PyPI.
+- Add an opt-in OpenCL GPU path and compiled CPU kernels for Guided Filter fusion
+  (`use_gpu=True`), porting saliency (channel sum, Laplacian, Gaussian, online
+  argmax), base/detail decomposition, two-scale guided-filter weight refinement
+  (`r=45` base and local-memory mean-shifted `r=7` detail), and weighted
+  reconstruction to pure OpenCL 1.2 FP32 kernels with single-frame streaming
+  and automatic CPU fallback. CPU optimization is bit-exact (`ndiff=0`,
+  3.2x–5.3x faster on single thread); GPU achieves `max_diff=1` (`>=99.96%` exact
+  on real/synthetic scenes, identical PSNR 39.54 / SSIM 0.9968 on
+  `tools/synthetic_benchmark.py`) and up to 18.8x–35.6x warm speedup vs
+  baseline CPU (t=1) / 4.4x–11.1x vs optimized CPU (t=1) on RTX 4060 Laptop.
 - Add an opt-in OpenCL GPU path for OpenFocus C pyramid fusion
   (`use_gpu=True`), porting the full weighted-pyramid chain — normalize,
   Gaussian down/up, detail+weight, IIR weight filter, merge, collapse and
@@ -47,6 +60,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   next launch alongside native crashes.
 - Use each indexed TIFF page's color map for previews, full-resolution fusion and conversion.
   Preserve 16-bit palette colors, orientation and embedded RGB profiles.
+- Read original working-image pixels in the loupe, Method Compare, Wipe, watermark and scalebar previews.
+  Method Compare's 100% view maps one image pixel to one physical display pixel, including on high-DPI screens.
 - Apply exposure matching in OpenFocus fusion through a per-frame lookup table
   of every 8- or 16-bit code, computed by the existing per-sample arithmetic
   and applied in parallel row bands, instead of float strips on one thread.
@@ -101,6 +116,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   transforms, cropping and output pixels are unchanged.
 
 ### Fixed
+- Keep TIFFs with tiny embedded thumbnails visible in Scale Bar. Draw the bar on the thumbnail and show its caption at readable zoom levels.
 - Reuse the last alignment across fusion methods when the original frame selection and registration settings are restored.
 - Report project restore completion after the desktop has applied the frames and settings, including after an update restart.
 - Stop desktop renders and affected batch stacks when registration rejects a frame.

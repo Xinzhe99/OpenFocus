@@ -4,9 +4,10 @@ Both images share the same zoom/pan transform, so misalignments across the
 divider are directly visible. Wheel zooms around the cursor, dragging pans,
 dragging the divider (or the handle) changes the split position.
 """
+import math
 from typing import Optional
 
-from PyQt6.QtCore import QPointF, QRect, QRectF, Qt
+from PyQt6.QtCore import QObject, QPointF, QRect, QRectF, Qt
 from PyQt6.QtGui import QColor, QPainter, QPen, QPixmap
 from PyQt6.QtWidgets import QApplication, QWidget
 
@@ -14,6 +15,107 @@ DIVIDER_HIT_RADIUS = 10
 ZOOM_STEP = 1.15
 ZOOM_MIN = 0.05
 ZOOM_MAX = 20.0
+
+
+_LIVE_REGION_WORKERS = set()
+
+
+class _WipeRegions(QObject):
+    """Selected side's native viewport. Retire its decoder before replacing it."""
+
+    def __init__(self, widget):
+        super().__init__(widget)
+        self.source = self.worker = self.viewport = self.request = None
+        self.generation = self.serial = 0
+        self.pending = []
+        self.tiles = []
+        self.error = ''
+
+    def set_source(self, source):
+        if self.source is not source:
+            self.release()
+            self.source = source
+
+    def release(self):
+        self.generation += 1
+        self.viewport = self.request = None
+        self.pending.clear()
+        self.tiles.clear()
+        self.error = ''
+        if self.worker is not None and not self.worker.cancelled:
+            self.worker.request_cancel()
+
+    def show_region(self, rect, physical_size):
+        from core.source_previews import DISPLAY_REGION_MAX_SIDE, SourceRegionWorker
+        viewport = (rect, physical_size)
+        if self.error:
+            return
+        if self.viewport != viewport:
+            self.viewport = viewport
+            self.request = None
+            self.tiles.clear()
+            self.pending.clear()
+            # Each tile keeps native sampling at 100%, even on an oversized
+            # monitor. Only one tile per side is outstanding at a time.
+            x, y, w, h = rect
+            pw, ph = physical_size
+            edge = DISPLAY_REGION_MAX_SIDE - 2
+            for row in range(0, ph, edge):
+                for col in range(0, pw, edge):
+                    tw, th = min(edge, pw - col), min(edge, ph - row)
+                    crop = (x + col * w / pw, y + row * h / ph, tw * w / pw, th * h / ph)
+                    self.pending.append((crop, (tw, th)))
+            self.pending.reverse()
+        if self.worker is None:
+            frame, options = self.source
+            worker = self.worker = SourceRegionWorker(frame, self.generation, **options)
+            _LIVE_REGION_WORKERS.add(worker)
+            worker.ready.connect(self._ready)
+            worker.failed.connect(self._failed)
+            worker.finished.connect(self._finished)
+            worker.finished.connect(lambda: _LIVE_REGION_WORKERS.discard(worker))
+            worker.finished.connect(worker.deleteLater)
+            self.destroyed.connect(worker.request_cancel)
+            self._submit()
+            worker.start()
+        elif not self.worker.cancelled:
+            self._submit()
+
+    def _submit(self):
+        if self.request is None and self.pending:
+            rect, size = self.pending.pop()
+            self.serial += 1
+            self.request = ('viewport', self.serial, rect, size)
+            self.worker.submit(self.request)
+
+    def _ready(self, key, request, pixels, sampled):
+        if key != self.generation or request != self.request:
+            return
+        from utils.image_utils import cv2_to_pixmap
+        pixmap = cv2_to_pixmap(pixels) if pixels is not None else QPixmap()
+        if pixmap.isNull():
+            self._failed(key, '')
+            return
+        self.tiles.append((pixmap, sampled, request[2]))
+        self.request = None
+        self._submit()
+        self.parent().update()
+
+    def _failed(self, key, message):
+        if key != self.generation:
+            return
+        from locales import trans
+        title = trans.t('msg_display_error_title')
+        self.error = f'{title}: {message}' if message else title
+        self.request = None
+        self.pending.clear()
+        self.tiles.clear()
+        self.worker.request_cancel()
+        self.parent().update()
+
+    def _finished(self):
+        self.worker = None
+        self.parent().update()
 
 
 class WipeCompareWidget(QWidget):
@@ -34,6 +136,8 @@ class WipeCompareWidget(QWidget):
         self._pan = QPointF(0, 0)
         self._drag_mode: str = ""  # "", "divider", "pan"
         self._last_pos = QPointF(0, 0)
+        self._left_regions = _WipeRegions(self)
+        self._right_regions = _WipeRegions(self)
         self.setMouseTracking(True)
 
     # --- public API ---
@@ -41,7 +145,9 @@ class WipeCompareWidget(QWidget):
     def set_images(self, left: Optional[QPixmap], right: Optional[QPixmap],
                    left_title: str = "", right_title: str = "", *,
                    left_offset=(0, 0), left_size=None, right_size=None,
-                   independent=False, notice="") -> None:
+                   independent=False, notice="", left_native=None, right_native=None) -> None:
+        self._left_regions.set_source(left_native)
+        self._right_regions.set_source(right_native)
         self._left_pixmap = left
         self._right_pixmap = right
         self._left_title = left_title
@@ -56,6 +162,8 @@ class WipeCompareWidget(QWidget):
     def set_comparison_enabled(self, enabled: bool) -> None:
         """Switch between the adjusted image and the draggable comparison."""
         self._comparison_enabled = bool(enabled)
+        if not enabled:
+            self._left_regions.release()
         self._drag_mode = ""
         self.update()
 
@@ -68,6 +176,7 @@ class WipeCompareWidget(QWidget):
         return self._left_pixmap is not None and self._right_pixmap is not None
 
     def clear(self) -> None:
+        self.cancel_regions()
         self._left_pixmap = None
         self._right_pixmap = None
         self._left_title = ""
@@ -76,6 +185,18 @@ class WipeCompareWidget(QWidget):
         self._independent = False
         self._drag_mode = ""
         self.reset_view()
+
+    def cancel_regions(self):
+        """Invalidate detail and report whether shutdown must await a decoder."""
+        sides = (self._left_regions, self._right_regions)
+        for side in sides:
+            side.set_source(None)
+        return any(side.worker is not None and side.worker.isRunning() for side in sides)
+
+    def hideEvent(self, event):
+        for side in (self._left_regions, self._right_regions):
+            side.release()
+        super().hideEvent(event)
 
     def reset_view(self) -> None:
         self._zoom = 1.0
@@ -107,9 +228,10 @@ class WipeCompareWidget(QWidget):
         if pixmap is None or pixmap.isNull() or clip_rect.width() <= 0:
             return QRectF()
         if self._independent:
-            scale = max(0.0001, min(max(1, clip_rect.width() - 20) / pixmap.width(),
-                                    max(1, clip_rect.height() - 20) / pixmap.height()) * self._zoom)
-            width, height = pixmap.width() * scale, pixmap.height() * scale
+            width, height = size or (pixmap.width(), pixmap.height())
+            scale = max(0.0001, min(max(1, clip_rect.width() - 20) / width,
+                                    max(1, clip_rect.height() - 20) / height) * self._zoom)
+            width, height = width * scale, height * scale
             return QRectF(clip_rect.x() + (clip_rect.width() - width) / 2 + self._pan.x(),
                           (clip_rect.height() - height) / 2 + self._pan.y(), width, height)
         target = self._target_rect()
@@ -135,6 +257,34 @@ class WipeCompareWidget(QWidget):
     def _divider_x(self) -> float:
         return self._divider_ratio * self.width()
 
+    def _draw_detail(self, painter, side, pixmap, image_rect, size, clip):
+        if side.source is None:
+            return
+        visible = image_rect.intersected(QRectF(clip))
+        dpr = self.devicePixelRatioF()
+        if (visible.isEmpty() or not self.isVisible() or
+                (image_rect.width() * dpr <= pixmap.width() + .5 and
+                 image_rect.height() * dpr <= pixmap.height() + .5)):
+            if side.viewport is not None:
+                side.release()
+            return
+        sx, sy = image_rect.width() / size[0], image_rect.height() / size[1]
+        rect = ((visible.x() - image_rect.x()) / sx, (visible.y() - image_rect.y()) / sy,
+                visible.width() / sx, visible.height() / sy)
+        side.show_region(rect, (math.ceil(visible.width() * dpr), math.ceil(visible.height() * dpr)))
+        def target(region):
+            x, y, w, h = region
+            return QRectF(image_rect.x() + x * sx, image_rect.y() + y * sy, w * sx, h * sy)
+        for tile, sampled, requested in side.tiles:
+            painter.save()
+            # At native size or above, preserve individual source samples even
+            # when the pan offset falls between physical device pixels.
+            painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform,
+                                  target(sampled).width() * dpr + .01 < tile.width())
+            painter.setClipRect(target(requested), Qt.ClipOperation.IntersectClip)
+            painter.drawPixmap(target(sampled), tile, QRectF(tile.rect()))
+            painter.restore()
+
     # --- painting ---
 
     def paintEvent(self, event) -> None:  # noqa: N802
@@ -150,14 +300,25 @@ class WipeCompareWidget(QWidget):
             return
 
         divider_x = self._divider_x()
-        for pixmap, offset, size, clip_rect in self._regions():
+        sides = ((self._left_regions, self._right_regions) if self._comparison_enabled
+                 else (self._right_regions,))
+        statuses = []
+        for side, (pixmap, offset, size, clip_rect) in zip(sides, self._regions()):
             image_rect = self._image_rect(pixmap, offset, size, clip_rect)
             if image_rect.isEmpty():
+                if side.viewport is not None:
+                    side.release()
                 continue
             painter.save()
             painter.setClipRect(clip_rect)
             painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
             painter.drawPixmap(image_rect, pixmap, QRectF(pixmap.rect()))
+            self._draw_detail(painter, side, pixmap, image_rect, size, clip_rect)
+            if side.error or side.pending or side.request:
+                from locales import trans
+                prefix = 'A' if side is self._left_regions else 'B'
+                message = side.error or trans.t('native_detail_loading')
+                statuses.append(f'{prefix}: {message}')
             painter.restore()
 
         if self._comparison_enabled and self.has_images():
@@ -177,16 +338,17 @@ class WipeCompareWidget(QWidget):
                 painter.drawLine(tip, QPointF(divider_x + direction * 3, handle_y + 3))
             self._draw_title_chip(painter, self._left_title, left=True)
         self._draw_title_chip(painter, self._right_title, left=False)
-        if self._notice:
+        notice = '\n'.join(filter(None, [self._notice, *statuses]))
+        if notice:
             flags = Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap
             width = max(1, self.width() - 32)
             measured = painter.fontMetrics().boundingRect(
-                QRect(0, 0, width, 10000), int(flags), self._notice)
+                QRect(0, 0, width, 10000), int(flags), notice)
             height = min(self.height(), measured.height() + 12)
             box = QRect(8, max(0, self.height() - height - 8), max(0, self.width() - 16), height)
             painter.fillRect(box, QColor(0, 0, 0, 190))
             painter.setPen(QColor("#ffffff"))
-            painter.drawText(box.adjusted(8, 2, -8, -2), flags, self._notice)
+            painter.drawText(box.adjusted(8, 2, -8, -2), flags, notice)
 
     def _draw_title_chip(self, painter: QPainter, text: str, left: bool) -> None:
         if not text:
@@ -215,7 +377,14 @@ class WipeCompareWidget(QWidget):
         if delta == 0:
             return
         factor = ZOOM_STEP if delta > 0 else 1.0 / ZOOM_STEP
-        new_zoom = max(ZOOM_MIN, min(ZOOM_MAX, self._zoom * factor))
+        before = self._image_rect(*region) if self._independent else self._target_rect()
+        size = region[2] if self._independent else (self._right_size or self._left_size)
+        limit = ZOOM_MAX
+        if size and before.width() > 0:
+            # A tall TIFF fitted into a short panel can start below 5%.
+            # Always allow the selected image to reach one physical pixel per sample.
+            limit = max(limit, self._zoom * size[0] / (before.width() * self.devicePixelRatioF()))
+        new_zoom = max(ZOOM_MIN, min(limit, self._zoom * factor))
 
         # Zoom around the mouse cursor: keep the image point under it fixed.
         #
@@ -226,7 +395,6 @@ class WipeCompareWidget(QWidget):
         # cursor (measured up to 13% of the image width of drift otherwise
         # when zooming out).
         mouse = QPointF(event.position())
-        before = self._image_rect(*region) if self._independent else self._target_rect()
         if before.width() > 0 and before.height() > 0:
             fx = (mouse.x() - before.x()) / before.width()
             fy = (mouse.y() - before.y()) / before.height()
@@ -247,7 +415,7 @@ class WipeCompareWidget(QWidget):
         if event.button() == Qt.MouseButton.LeftButton:
             if self._comparison_enabled and abs(pos.x() - self._divider_x()) <= DIVIDER_HIT_RADIUS:
                 self._drag_mode = "divider"
-            elif self.has_images():
+            elif self._left_pixmap is not None or self._right_pixmap is not None:
                 self._drag_mode = "pan"
                 self._last_pos = pos
         super().mousePressEvent(event)

@@ -13,9 +13,9 @@ from typing import List, Optional
 from urllib.parse import unquote
 
 from PyQt6 import sip
-from PyQt6.QtWidgets import QApplication, QAbstractSpinBox, QComboBox, QWidget
+from PyQt6.QtWidgets import QApplication, QAbstractSpinBox, QComboBox, QSystemTrayIcon, QWidget
 from PyQt6.QtGui import QFileOpenEvent, QWheelEvent
-from PyQt6.QtCore import QEvent, QPointF, QTimer, QUrl
+from PyQt6.QtCore import QEvent, QPointF, QTimer, Qt, QUrl
 
 
 class PlatformFileHandler:
@@ -198,6 +198,31 @@ class OpenFocusApplication(QApplication):
             pending = self._pending.copy()
             self._pending.clear()
             QTimer.singleShot(100, lambda: self.queue_import(pending))
+
+    def show_tray_icon(self):
+        """Expose the Windows notification icon throughout the desktop session."""
+        if sys.platform != 'win32' or not QSystemTrayIcon.isSystemTrayAvailable():
+            return
+        icon = self.main_window.windowIcon()
+        if icon.isNull():
+            return
+        tray = QSystemTrayIcon(icon, self)
+        tray.setToolTip('OpenFocus')
+        tray.activated.connect(self._activate_from_tray)
+        self.aboutToQuit.connect(tray.hide)
+        tray.show()
+
+    def _activate_from_tray(self, reason):
+        if reason not in (QSystemTrayIcon.ActivationReason.Trigger,
+                          QSystemTrayIcon.ActivationReason.DoubleClick):
+            return
+        window = self.activeModalWidget() or self.main_window
+        if window is None or sip.isdeleted(window) or not window.isVisible():
+            return
+        if window.isMinimized():
+            window.setWindowState(window.windowState() & ~Qt.WindowState.WindowMinimized)
+        window.raise_()
+        window.activateWindow()
 
     def event(self, event) -> bool:
         if event.type() == QFileOpenEvent.Type:

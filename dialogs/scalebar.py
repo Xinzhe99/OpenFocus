@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Optional
 import math
-from PyQt6.QtCore import QSignalBlocker, QThread, QTimer, Qt
+from PyQt6.QtCore import QSignalBlocker, QTimer, Qt
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
     QCheckBox,
@@ -34,6 +34,7 @@ import numpy as np
 
 from locales import trans
 from utils import scalebar
+from utils.frame_pixels import BoundedPreviewWorker
 from widgets.stepper import StepperSpinBox, hide_spin_buttons
 from utils.image_utils import cv2_to_pixmap, to_display_uint8
 from utils.ui_utils import size_dialog_to_content
@@ -41,40 +42,6 @@ from widgets.magnifier_label import MagnifierLabel
 
 CALIBRATION_METADATA = "metadata"
 CALIBRATION_MANUAL = "manual"
-
-class _PreviewWorker(QThread):
-    """Resolve and develop one bounded preview without touching Qt widgets."""
-    def __init__(self, frame, metadata, key):
-        super().__init__()
-        from utils.platform_utils import configure_native_worker_stack
-        configure_native_worker_stack(self)
-        self.frame, self.metadata, self.key = frame, metadata, key
-        self.pixels = None
-        self.error = None
-
-    def run(self):
-        try:
-            from core.resource_policy import heavy_job
-            from core.source_previews import render_source_region
-            from core.source_frames import ensure_preview
-            with heavy_job(self.isInterruptionRequested):
-                pixels = ensure_preview(self.frame, should_cancel=self.isInterruptionRequested)
-                if self.isInterruptionRequested():
-                    return
-                height, width = pixels.shape[:2]
-                scale = min(1.0, 1200.0 / max(width, height))
-                metadata = (self.metadata if not getattr(self.frame, "preview_is_display", False)
-                            and pixels.dtype == np.uint16 and pixels.ndim == 3
-                            and pixels.shape[2] == 3 else None)
-                self.pixels, _ = render_source_region(
-                    pixels, (0, 0, width, height),
-                    (max(1, round(width * scale) - 2), max(1, round(height * scale) - 2)), metadata)
-        except Exception as exc:
-            self.error = str(exc)
-        finally:
-            self.frame = None
-            self.metadata = None
-
 
 class ScaleBarDialog(QDialog):
     """Draft editor for calibration, placement, style and target."""
@@ -96,6 +63,7 @@ class ScaleBarDialog(QDialog):
         self._region_worker = None
         self._region_pending = {}
         self._preview_revision = 0
+        self._actual_view = False
         self._closing = False
         self._accept_pending = False
         self._displayed_record = None
@@ -343,7 +311,7 @@ class ScaleBarDialog(QDialog):
         navigation.addWidget(self.frame_index)
         navigation.addWidget(self.next_button)
         fit = QPushButton(trans.t("retouch_fit_short").replace(" (F)", "").replace("（F）", ""))
-        fit.clicked.connect(self.preview_lbl.reset_view)
+        fit.clicked.connect(self._fit_size)
         actual = QPushButton(trans.t("retouch_zoom_100"))
         actual.clicked.connect(self._actual_size)
         navigation.addWidget(fit)
@@ -605,7 +573,7 @@ class ScaleBarDialog(QDialog):
         self.frame_index.blockSignals(False)
         self.detect_lbl.setText(trans.t("scalebar_detected").format(value=f"{self._detected:g}")
                                 if self._detected else trans.t("scalebar_no_metadata"))
-        self.preview_lbl.reset_view()
+        self._fit_size()
         self._refresh_preview()
 
     def _preview_image(self):
@@ -671,7 +639,7 @@ class ScaleBarDialog(QDialog):
             if self._pixel_worker.key != key:
                 self._pixel_worker.requestInterruption()
             return
-        worker = _PreviewWorker(image, self._preview_metadata(), key)
+        worker = BoundedPreviewWorker(image, self._preview_metadata(), key)
         self._pixel_worker = worker
         def finished():
             self._pixel_worker = None
@@ -696,7 +664,7 @@ class ScaleBarDialog(QDialog):
     def _request_region(self, key, request):
         if self._closing or key != self.preview_lbl._source_key:
             return
-        if request[0] == "view" and self.preview_lbl._zoom_factor <= 1.0:
+        if request[0] == "view" and self.preview_lbl._zoom_factor == 1 and not self._actual_view:
             return
         worker = self._region_worker
         if worker is not None:
@@ -870,15 +838,18 @@ class ScaleBarDialog(QDialog):
         self.preview_lbl.set_display_pixmap(pixmap, source_size=(width, height),
             source_key=(self.target_combo.currentData(), id(native_image), self._preview_revision))
 
+    def _fit_size(self):
+        self._actual_view = False
+        self.preview_lbl.reset_view()
+
     def _actual_size(self):
-        pixmap = self.preview_lbl._base_pixmap
-        if pixmap is None:
+        label = self.preview_lbl
+        if label._source_size.isEmpty():
             return
-        source = self.preview_lbl._source_size
-        fit = min(self.preview_lbl.width() / source.width(),
-                  self.preview_lbl.height() / source.height())
-        self.preview_lbl._zoom_factor = 1.0 / max(fit * self.preview_lbl.devicePixelRatioF(), 1e-9)
-        self.preview_lbl.refresh_display()
+        self._actual_view = True
+        label._region_requests.pop("view", None)
+        label._zoom_factor = 1.0 / (label._fit_scale() * label.devicePixelRatioF())
+        label.refresh_display()
 
     # ------------------------------------------------------------------
     # Commit

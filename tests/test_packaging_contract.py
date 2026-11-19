@@ -59,7 +59,8 @@ def test_the_ai_stack_is_a_base_dependency():
 
 def test_dynamic_onnx_checkpoints_are_packaged():
     data = tomllib.loads(PYPROJECT.read_text(encoding="utf-8"))["tool"]["setuptools"]["package-data"]
-    assert "*.onnx" in data["weights"]
+    assert {'*.onnx', '*.pth'} <= set(data['weights'])
+    assert 'accelerator_win64.json' in data['core']
     for name in ("stackmff_final.onnx", "stackmff_v2_final.onnx", "stackmff_v3_final.onnx"):
         assert (ROOT / "weights" / name).is_file()
 
@@ -119,6 +120,11 @@ def test_frozen_resource_manifest_covers_runtime_files():
           ('DE', 'EN', 'ES', 'FR', 'IT', 'JA', 'KO', 'NL', 'PL', 'PT', 'RU', 'ZH')),
         *(f'weights/{model}.onnx' for model in
           ('stackmff_final', 'stackmff_v2_final', 'stackmff_v3_final')),
+        *(f'weights/{model}.pth' for model in
+          ('stackmff_final', 'stackmff_v2_final', 'stackmff_v3_final')),
+        'core/inference_worker.py', 'core/inference_tensorrt.py', 'core/accelerator_win64.json',
+        'core/__init__.py', 'core/models/__init__.py', 'core/models/stackmff_v3/model_io.py',
+        *(f'core/models/stackmff_v{version}/network.py' for version in (1, 2, 3)),
     }
     assert expected <= included
     assert {path.relative_to(ROOT).as_posix() for path in (ROOT / 'assets').glob('*.svg')} <= included
