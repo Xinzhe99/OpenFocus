@@ -30,6 +30,18 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   on real/synthetic scenes, identical PSNR 39.54 / SSIM 0.9968 on
   `tools/synthetic_benchmark.py`) and up to 18.8x–35.6x warm speedup vs
   baseline CPU (t=1) / 4.4x–11.1x vs optimized CPU (t=1) on RTX 4060 Laptop.
+- Add an opt-in OpenCL GPU path and compiled CPU Numba kernels for GFG-FGF
+  fusion (`use_gpu=True`), porting dominant channel selection, Scharr frame
+  focus scoring, Gaussian-like four-neighbourhood gradient with mean-difference
+  focus mapping, fast guided-filter refinement (`s=4, r=5, eps=0.3`),
+  Sobel-tie-broken streaming selection, and weighted reconstruction to pure
+  OpenCL 1.2 FP32 kernels with single-frame streaming and automatic CPU
+  fallback. CPU optimization is bit-exact (`ndiff=0`, 3.7x–8.4x faster on
+  single thread for 640x360 / 1024x768 stacks); GPU preserves `PSNR=40.85,
+  SSIM=0.9970, ghost%=1.31` on `tools/synthetic_benchmark.py` (`99.23%`–`99.91%`
+  exact, `max_diff=1` on real/synthetic scenes) with up to 19.1x–61.3x warm
+  speedup vs baseline CPU (t=1) / 5.7x–36.6x vs optimized CPU (t=1) on
+  RTX 4060 Laptop.
 - Add an opt-in OpenCL GPU path for OpenFocus C pyramid fusion
   (`use_gpu=True`), porting the full weighted-pyramid chain — normalize,
   Gaussian down/up, detail+weight, IIR weight filter, merge, collapse and
