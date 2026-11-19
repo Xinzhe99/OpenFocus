@@ -1,5 +1,7 @@
 """Consumer-visible guarantees of crash-isolated GUI rendering."""
 import gc
+import json
+import logging
 import os
 from pathlib import Path
 import time
@@ -17,6 +19,7 @@ def _crash_child(connection, cancel_event, request, budget, directory, language)
     from core.render_process import _Relay
     storage.restore_storage_directory(directory)
     relay = _Relay(connection, cancel_event)
+    relay.stage('fuse')
     with storage.observe_temp_files(relay.temporary_file), storage.scratch_directory():
         frame = storage.create_frame((8, 9), np.uint16)
         frame[0] = 1001
@@ -29,10 +32,26 @@ def _abort_child(connection, cancel_event, request, budget, directory, language)
         ctypes.windll.kernel32.SetErrorMode(3)
     os.abort()
 
+
+def _silent_child(connection, cancel_event, request, budget, directory, language):
+    connection.send(('stage', 'align'))
+    connection.close()
+
+
 def _diagnostic_error_child(connection, cancel_event, request, budget, directory, language):
     connection.send(('error', 'user-visible private detail', None,
                      ('value', 'child_setup_or_transfer', 'unknown')))
     connection.close()
+
+
+def _runtime_error_child(connection, cancel_event, request, budget, directory, language):
+    from core import render_process
+
+    def fail_render(self):
+        raise RuntimeError('fixture private detail synthetic/source.tif')
+
+    render_process._ChildRenderWorker._run_admitted_body = fail_render
+    render_process._render_child(connection, cancel_event, request, budget, directory, language)
 
 
 def _diagnostic_cancel_child(connection, cancel_event, request, budget, directory, language):
@@ -62,7 +81,7 @@ def _render_with_prepared_cache(connection, cancel_event, request, budget, direc
     """Run the real child pipeline with a mapped cache produced after fusion."""
     from core import frame_storage, render_process, workers
     from core.multi_focus_fusion import MultiFocusFusion
-    from core.resource_policy import ResourceLimitError
+    from core.resource_policy import ResourceSnapshot, require_memory
     from utils import output_sharpen
 
     fuse = MultiFocusFusion.fuse
@@ -84,13 +103,18 @@ def _render_with_prepared_cache(connection, cancel_event, request, budget, direc
         self.alignment_report_provenance = {'probe': 'child'}
 
     def fail_sharpen(*args, **kwargs):
-        raise ResourceLimitError('injected sharpen memory failure')
+        snapshot = ResourceSnapshot(available_ram=8 * 1024**3, total_ram=16 * 1024**3,
+                                    commit_headroom=9 * 1024**2,
+                                    process_commit_headroom=5 * 1024**2)
+        require_memory(6 * 1024**2, snapshot, user_limit=3 * 1024**2)
 
     MultiFocusFusion.fuse = fuse_with_cache
     render_process._ChildRenderWorker.run = run_with_diagnostics
     if failure == 'sharpen':
         output_sharpen.sharpen_output = fail_sharpen
-    render_process._render_child(connection, cancel_event, request, budget, directory, language)
+    # The memory rejection fixture controls the complete admission snapshot.
+    render_process._render_child(connection, cancel_event, request,
+                                 None if failure == 'sharpen' else budget, directory, language)
 
 
 def _sharpen_failure_child(*args):
@@ -172,7 +196,6 @@ def test_isolated_render_reports_preparation_after_admission(qapp, monkeypatch):
 
 
 def test_spawn_failure_reports_pending_dispatch_and_releases_worker(qapp, scratch, monkeypatch, caplog):
-    import logging
     from threading import Event
     from types import SimpleNamespace
     from core import render_process
@@ -340,9 +363,12 @@ def test_source_child_rejects_legacy_gui_before_decoding(monkeypatch):
     with receiver, sender:
         render_process._render_child(sender, Event(), request, None, None, 'zh')
         assert receiver.poll()
-        assert receiver.recv() == (
+        kind, message, state, metadata, details = receiver.recv()
+        assert (kind, message, state, metadata) == (
             'error', render_process.trans.t('render_source_changed'), None,
             ('runtime', 'child_setup_or_transfer', 'prepare'))
+        assert details['error']['kind'] == 'RuntimeError'
+        assert details['error']['stack'][0]['function'] == '_render_child'
         assert '重启 OpenFocus' in render_process.trans.t('render_source_changed')
 
 
@@ -384,8 +410,12 @@ def test_child_setup_failure_and_cancellation_packets(monkeypatch, frozen):
     monkeypatch.setattr(render_process, 'FrameDecoder', Decoder)
     connection = Connection()
     render_process._render_child(connection, Event(), ValueError('private path'), None, None, 'en')
-    assert connection.messages == [('error', 'private path', None,
-                                    ('value', 'child_setup_or_transfer', 'prepare'))]
+    (kind, message, state, metadata, details), = connection.messages
+    assert (kind, message, state, metadata) == (
+        'error', 'private path', None, ('value', 'child_setup_or_transfer', 'prepare'))
+    assert details['error']['kind'] == 'ValueError'
+    assert details['error']['stack'][0]['function'] == '_render_child'
+    assert 'private path' not in repr(details)
     connection = Connection()
     render_process._render_child(connection, Event(), RegistrationCancelled(), None, None, 'en')
     assert connection.messages == [('error', 'CANCELLED: render cancelled', None, None)]
@@ -409,6 +439,60 @@ def test_child_error_event_and_user_message(qapp, scratch, monkeypatch, target, 
     assert not results and errors == [expected_error]
     assert events == ([] if expected_event is None else [('render_child_error', expected_event)])
     assert worker.failure_category == (expected_event['error_category'] if expected_event else None)
+
+
+def _child_evidence(caplog):
+    # Pytest can observe the same record on both the application and root logger.
+    records = dict.fromkeys(caplog.records)
+    events = [record for record in records if getattr(record, 'event', None) == 'render_child_error']
+    failures = [record for record in records if hasattr(record, 'report_child_evidence')]
+    event, = events
+    failure, = failures
+    fields = json.loads(event.getMessage().split(' ', 1)[1])
+    assert fields == failure.report_child_evidence
+    assert failure.exc_info[0] is RuntimeError
+    return fields
+
+
+def test_worker_error_reports_original_stack_through_ipc(qapp, scratch, monkeypatch, caplog):
+    from core import render_process
+
+    caplog.set_level(logging.INFO, logger='openfocus')
+    monkeypatch.setattr(logging.getLogger('openfocus'), 'propagate', True)
+    monkeypatch.setattr(render_process, '_render_child', _runtime_error_child)
+    worker = render_process.RenderProcessWorker([], algorithm=None, need_fusion=False)
+    results, errors = _start(worker)
+    _wait(worker, qapp)
+
+    assert not results and errors == ['fixture private detail synthetic/source.tif']
+    fields = _child_evidence(caplog)
+    assert fields['error_category'] == 'runtime'
+    assert fields['error_origin'] == 'child_worker'
+    assert fields['render_stage'] == 'prepare'
+    assert fields['error']['kind'] == 'RuntimeError'
+    assert [(frame['file'], frame['function']) for frame in fields['error']['stack']] == [
+        ('workers.py', 'run'), ('workers.py', '_run_admitted')]
+    assert all(type(line) is int and line > 0 for line in fields['error']['stack_lines'])
+    assert 'synthetic/source.tif' not in json.dumps(fields)
+
+
+def test_exchange_filters_malformed_child_details():
+    from core.render_process import _RenderExchange
+
+    exchange = _RenderExchange(None)
+    exchange.receive(('error', 'fixture UI message', None, ('resource_limit', 'child_worker', 'finish'), {
+        'error': {'kind': 'RuntimeError', 'stack_lines': [4], 'stack': [
+            {'file': 'synthetic/workers.py', 'line': 4, 'function': 'run'}]},
+        'admission': {'resource_status': 'insufficient', 'required_bytes': 8,
+                      'ram_ceiling': True, 'available_ram_bytes': 10**16,
+                      'available_commit_bytes': -1, 'message': 'fixture private detail'},
+        'exit_code': 12,
+    }), None)
+    assert exchange.error == 'fixture UI message'
+    assert exchange.error_metadata == {
+        'error_category': 'resource_limit', 'error_origin': 'child_worker', 'render_stage': 'finish',
+        'admission': {'resource_status': 'insufficient', 'required_bytes': 8},
+    }
 
 
 @pytest.mark.parametrize('target', [_legacy_source_child, _changed_source_child])
@@ -441,18 +525,17 @@ def test_relay_sanitizes_unknown_stage(monkeypatch):
 
 
 @pytest.mark.parametrize('target, message, category', [
-    (_sharpen_failure_child, 'injected sharpen memory failure', 'resource_limit'),
+    (_sharpen_failure_child, 'Insufficient memory: need 6 MB', 'resource_limit'),
     (_store_failure_child, 'injected output store failure', 'os'),
 ])
 def test_failed_render_preserves_parent_cache_and_cleans_child_scratch(
-        qapp, tmp_path, scratch, monkeypatch, target, message, category):
+        qapp, tmp_path, scratch, monkeypatch, caplog, target, message, category):
     from core import frame_storage, render_process
 
     parent_cache = [frame_storage.store_frame(
         np.full((8, 9), 137, np.uint16), prefer_ram=False)]
     parent_path = Path(frame_storage.describe_frame(parent_cache[0])['path'])
     opened, cleaned, directories, warnings = [], set(), set(), []
-    events = []
     open_frame = frame_storage.open_frame
     cleanup = render_process._cleanup_files
     warning = render_process.logger.warning
@@ -472,8 +555,8 @@ def test_failed_render_preserves_parent_cache_and_cleans_child_scratch(
 
     monkeypatch.setattr(frame_storage, 'open_frame', record_open)
     monkeypatch.setattr(render_process, '_cleanup_files', record_cleanup)
-    monkeypatch.setattr(render_process, 'log_action', lambda event, **fields:
-                        events.append((event, fields)) if event == 'render_child_error' else None)
+    caplog.set_level(logging.INFO, logger='openfocus')
+    monkeypatch.setattr(logging.getLogger('openfocus'), 'propagate', True)
     monkeypatch.setattr(render_process.logger, 'warning', record_warning)
     frames = _sources(tmp_path)
     with monkeypatch.context() as patch:
@@ -487,11 +570,19 @@ def test_failed_render_preserves_parent_cache_and_cleans_child_scratch(
         _wait(worker, qapp)
 
     assert not results and len(errors) == 1 and message in errors[0]
-    assert len(events) == 1 and events[0][0] == 'render_child_error'
-    assert events[0][1]['error_category'] == category
-    assert events[0][1]['error_origin'] == 'child_worker'
-    assert events[0][1]['render_stage'] in ('prepare', 'align', 'fuse', 'finish')
-    assert len(events[0][1]) == 3
+    fields = _child_evidence(caplog)
+    assert fields['error_category'] == category
+    assert fields['error_origin'] == 'child_worker'
+    assert fields['render_stage'] in ('prepare', 'align', 'fuse', 'finish')
+    if target is _sharpen_failure_child:
+        assert fields['error']['kind'] == 'ResourceLimitError'
+        assert any(frame['function'] == 'require_memory' for frame in fields['error']['stack'])
+        assert fields['admission'] == {
+            'resource_status': 'insufficient', 'required_bytes': 6 * 1024**2,
+            'ram_ceiling': 3 * 1024**2, 'available_ram_bytes': 8 * 1024**3,
+            'total_ram_bytes': 16 * 1024**3, 'available_commit_bytes': 9 * 1024**2,
+            'process_commit_headroom_bytes': 5 * 1024**2,
+        }
     assert worker.prepared_cache is parent_cache
     assert worker.alignment_report == [{'probe': 'alignment diagnostic'}]
     assert worker.alignment_report_provenance == {'probe': 'child'}
@@ -585,8 +676,11 @@ def test_spawned_render_preserves_uint16_and_lazy_alignment(qapp, tmp_path, scra
 
 @pytest.mark.parametrize('target', [_crash_child, _abort_child])
 def test_native_child_failure_keeps_application_alive_and_allows_retry(
-        qapp, tmp_path, scratch, monkeypatch, target):
+        qapp, tmp_path, scratch, monkeypatch, caplog, target):
     from core import render_process
+
+    caplog.set_level(logging.INFO, logger='openfocus')
+    monkeypatch.setattr(logging.getLogger('openfocus'), 'propagate', True)
     frames = _sources(tmp_path)
     with monkeypatch.context() as patch:
         patch.setattr(render_process, '_render_child', target)
@@ -596,6 +690,14 @@ def test_native_child_failure_keeps_application_alive_and_allows_retry(
         _wait(worker, qapp)
     assert not results
     assert len(errors) == 1
+    fields = _child_evidence(caplog)
+    assert fields['error_origin'] == 'child_exit'
+    assert fields['error_category'] == worker.failure_category == 'runtime'
+    assert 'error' not in fields
+    if target is _crash_child:
+        assert fields['render_stage'] == 'fuse' and fields['exit_code'] == 23
+    else:
+        assert fields['render_stage'] == 'prepare' and fields['exit_code'] != 0
     assert qapp is not None and not qapp.closingDown()
     assert not list(scratch.glob('openfocus-frame-*'))
     retry = render_process.RenderProcessWorker(
@@ -607,9 +709,39 @@ def test_native_child_failure_keeps_application_alive_and_allows_retry(
     assert results[0][1].dtype == np.uint16
 
 
-def test_cancel_during_child_startup_publishes_no_result(qapp, tmp_path, scratch):
+def test_child_exit_without_terminal_packet_still_reports_failure(qapp, scratch, monkeypatch, caplog):
+    from core import render_process
+
+    caplog.set_level(logging.INFO, logger='openfocus')
+    monkeypatch.setattr(logging.getLogger('openfocus'), 'propagate', True)
+    monkeypatch.setattr(render_process, '_render_child', _silent_child)
+    worker = render_process.RenderProcessWorker([], algorithm=None, need_fusion=False)
+    results, errors = _start(worker)
+    _wait(worker, qapp)
+
+    assert not results and len(errors) == 1
+    assert _child_evidence(caplog) == {'error_category': 'runtime', 'error_origin': 'child_exit',
+                                      'render_stage': 'align', 'exit_code': 0}
+
+
+@pytest.mark.parametrize('platform, code, expected', [
+    ('nt', -1073741819, 0xC0000005), ('nt', 0xFFFFFFFF, 0xFFFFFFFF), ('nt', 2**32, None),
+    ('posix', -6, -6), ('posix', 2**31, None), ('posix', True, None),
+])
+def test_exit_evidence_bounds(platform, code, expected, monkeypatch):
+    from types import SimpleNamespace
+    from core import render_process
+
+    monkeypatch.setattr(render_process, 'os', SimpleNamespace(name=platform))
+    assert render_process._bounded_exit_code(code) == expected
+
+
+def test_cancel_during_child_startup_publishes_no_result(qapp, tmp_path, scratch, monkeypatch, caplog):
     from PyQt6.QtCore import QTimer
     from core.render_process import RenderProcessWorker
+
+    caplog.set_level(logging.INFO, logger='openfocus')
+    monkeypatch.setattr(logging.getLogger('openfocus'), 'propagate', True)
     worker = RenderProcessWorker(_sources(tmp_path), algorithm='openfocus_a',
                                  thread_count=1, use_gpu=False)
     results, errors = _start(worker)
@@ -625,6 +757,8 @@ def test_cancel_during_child_startup_publishes_no_result(qapp, tmp_path, scratch
     timer.stop()
     assert not results
     assert len(errors) == 1 and errors[0].startswith('CANCELLED:')
+    assert all(getattr(record, 'event', None) != 'render_child_error' for record in caplog.records)
+    assert all(not hasattr(record, 'report_child_evidence') for record in caplog.records)
     assert not list(scratch.glob('openfocus-frame-*'))
 
 

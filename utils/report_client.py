@@ -272,7 +272,8 @@ class ReportClient:
         with self._state_lock(cancel, deadline):
             if isinstance(metadata, dict) and metadata.get("source") == "auto" and not _permitted(_profile_key(self._path.parent), permission):
                 return "dropped"
-            self._enqueue(metadata, bundle, owner_id)
+            if self._enqueue(metadata, bundle, owner_id) is None:
+                return "dropped"
         return "queued"
 
     def submit(self, metadata, bundle, bearer_token=None, *, owner_id=None, permission=None,
@@ -289,7 +290,9 @@ class ReportClient:
         with self._state_lock(cancel, deadline):
             if isinstance(metadata, dict) and metadata.get("source") == "auto" and not _permitted(_profile_key(self._path.parent), permission):
                 return "dropped"
-            _, entry = self._enqueue(metadata, bundle, owner_id)
+            entry = self._enqueue(metadata, bundle, owner_id)
+            if entry is None:
+                return "dropped"
         if owner_id is not None:
             try:
                 token = token_resolver() if token_resolver is not None else None
@@ -325,12 +328,19 @@ class ReportClient:
         if len(encoded_metadata) + 60 > MAX_METADATA_BYTES:
             raise ReportError("Report metadata is too large")
         state = self._load()
+        pending = state['pending']
+        if len(pending) >= MAX_PENDING:
+            auto_index = next((i for i, item in enumerate(pending)
+                               if item.get('metadata', {}).get('source') == 'auto'), None)
+            if auto_index is None and metadata.get('source') == 'auto':
+                return None
+            del pending[auto_index if auto_index is not None else 0]
         entry = {"id": str(uuid.uuid4()), "metadata": metadata,
                  "bundle": base64.b64encode(bundle).decode("ascii"),
                  "attempts": 0, "next_attempt": 0, "owner_id": owner_id}
-        state["pending"] = (state["pending"] + [entry])[-MAX_PENDING:]
+        pending.append(entry)
         self._save(state)
-        return state, entry
+        return entry
 
     def retry_pending(self, bearer_token=None, *, owner_id=None, include_auto=True,
                       include_anonymous_auto=True, permission=None, cancel=None, deadline=None):

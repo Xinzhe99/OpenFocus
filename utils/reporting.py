@@ -14,11 +14,11 @@ def build_channel():
 def report_metadata(bundle, *, source, locale, severity='error'):
     return {
         'fingerprint': bundle.fingerprint,
-        'app_version': app_display_version(),
+        'app_version': getattr(bundle, 'app_version', None) or app_display_version(),
         'platform': bundle.platform,
         'severity': severity,
         'source': source,
-        'build_channel': build_channel(),
+        'build_channel': getattr(bundle, 'build_channel', None) or build_channel(),
         'locale': 'zh' if locale == 'zh' else 'en',
         'subject': bundle.subject,
         'summary': bundle.summary,

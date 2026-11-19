@@ -41,8 +41,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Retouch’s Auto background dialog explains when to replace the background and when to use the Source Brush. It groups source and edge options, reports progress through preparation and replacement, and supports cancellation and retry.
 - Speed up Auto background’s registration mask checks and edge cleaning. Large stacks can use an OpenCL GPU for focus statistics with an exact CPU fallback.
 - Publish unsigned Windows builds with SHA-256 hashes for the installer and portable archive.
-- Include allowlisted error categories, render stages, and memory admission
-  figures in sanitized reports, without adding exception messages or paths.
+- Save consented error reports as failures occur so the next launch can retry
+  pending uploads. Preserve the original render error, stage and memory
+  measurements when available. Offer uncaught Python exits for review on the
+  next launch alongside native crashes.
 - Use each indexed TIFF page's color map for previews, full-resolution fusion and conversion.
   Preserve 16-bit palette colors, orientation and embedded RGB profiles.
 - Apply exposure matching in OpenFocus fusion through a per-frame lookup table
