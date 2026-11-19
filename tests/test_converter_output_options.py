@@ -177,10 +177,12 @@ def test_disk_preflight_uses_each_sources_destination(tmp_path, monkeypatch):
     def disk_usage(path):
         probes.append(Path(path))
         return SimpleNamespace(free=0 if Path(path) == destinations[0] else 10**12)
-    monkeypatch.setattr(converter.shutil, 'disk_usage', disk_usage)
+    monkeypatch.setattr(converter, 'disk_usage', disk_usage)
     result, _ = batch(sources, None, '.jpg', output_mode='sibling')
     assert [r['status'] for r in result['items']] == ['failed', 'success']
-    assert all(dest in probes for dest in destinations)
+    assert result['counts'] == dict(success=1, failed=1, partial=0, cancelled=0, not_started=0)
+    assert result['items'][0]['errors'] == [converter.trans.t('converter_space_error')]
+    assert probes == destinations
     assert result['items'][1]['outputs'] == [str(destinations[1] / '图.jpg')]
 
 

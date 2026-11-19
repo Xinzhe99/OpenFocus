@@ -1053,6 +1053,7 @@ def test_depth_preview_detail_preserves_model_data(depth_dialog, monkeypatch, qa
     dialog, _ = depth_dialog(frames=_synthetic_thirds(120, 160))
     _click_and_finish(qapp, dialog)
     dialog.tabs.setCurrentIndex(1)
+    _wait(qapp, lambda: dialog._visual_ready_revision == dialog._visual_revision)
     index = dialog._index01.copy()
     height = dialog._mesh_height.copy()
     texture = dialog._mesh_texture.copy()
