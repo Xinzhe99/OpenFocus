@@ -89,6 +89,17 @@ def main() -> None:
         output.unlink()
         call("recipe", "run", str(recipe))
         check_pixels()
+
+        # Exercise the installed upstream filters and the compiled integer
+        # vote even on CI runners without a GPU driver.
+        dtcwt_output = root / "dtcwt.tif"
+        call("-i", str(source), "-o", str(dtcwt_output), "--method", "dtcwt",
+             "--cpu", "--threads", "1", "--no-exposure-match", "--base-frame", "none")
+        dtcwt_pixels = cv2.imdecode(
+            np.fromfile(str(dtcwt_output), np.uint8), cv2.IMREAD_UNCHANGED)
+        if dtcwt_pixels is None or dtcwt_pixels.dtype != np.uint16 or dtcwt_pixels.shape != pixels.shape:
+            raise RuntimeError("Installed DTCWT did not preserve the shape and uint16 output")
+        np.testing.assert_array_equal(dtcwt_pixels, pixels)
         print(json.dumps({
             "version": installed_version,
             "gui_or_torch_installed": False,
@@ -97,6 +108,7 @@ def main() -> None:
             "shape": list(pixels.shape),
             "pixel_sha256": hashlib.sha256(pixels.tobytes()).hexdigest(),
             "recipe_replay_exact": True,
+            "dtcwt_cpu_exact": True,
         }, indent=2))
 
 

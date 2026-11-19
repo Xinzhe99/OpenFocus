@@ -991,7 +991,7 @@ class OpenFocus(QMainWindow):
                 detail,
                 hardware,
                 'ONNX Runtime: ' + ', '.join(diagnostics['providers']),
-                'OpenFocus A/B/C, Guided Filter, GFG-FGF & DCT: '
+                'OpenFocus A/B/C, Guided Filter, GFG-FGF, DCT & DTCWT: '
                 + (opencl_name if opencl else 'CPU' if opencl is False else '…'),
                 trans.t('env_gpu_accel') + ': ' + neural_runtime.display_name(capability)
                 if neural_runtime.is_accelerator(capability)

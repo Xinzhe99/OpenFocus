@@ -50,6 +50,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   exact, `max_diff=1` on real/synthetic scenes) with up to 19.1x–61.3x warm
   speedup vs baseline CPU (t=1) / 5.7x–36.6x vs optimized CPU (t=1) on
   RTX 4060 Laptop.
+- Add opt-in OpenCL acceleration for DTCWT fusion (`use_gpu=True`), with
+  single-frame uploads, host and device memory checks, and automatic CPU
+  fallback. The CPU path uses compiled 3×3 majority voting while retaining
+  the upstream wavelet transform and its established output.
 - Add an opt-in OpenCL GPU path for OpenFocus C pyramid fusion
   (`use_gpu=True`), porting the full weighted-pyramid chain — normalize,
   Gaussian down/up, detail+weight, IIR weight filter, merge, collapse and
