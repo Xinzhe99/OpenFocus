@@ -102,7 +102,8 @@ def _render_with_prepared_cache(connection, cancel_event, request, budget, direc
         self.alignment_report = [{'probe': 'alignment diagnostic'}]
         self.alignment_report_provenance = {'probe': 'child'}
 
-    def fail_sharpen(*args, **kwargs):
+    def fail_sharpen(image, should_cancel=None, *, strength):
+        assert strength == 175
         snapshot = ResourceSnapshot(available_ram=8 * 1024**3, total_ram=16 * 1024**3,
                                     commit_headroom=9 * 1024**2,
                                     process_commit_headroom=5 * 1024**2)
@@ -565,6 +566,7 @@ def test_failed_render_preserves_parent_cache_and_cleans_child_scratch(
             frames, algorithm='guided_filter', thread_count=1, use_gpu=False,
             tile_enabled=False, exposure_match=False, prepared_cache=parent_cache,
             retain_preparation=True, sharpen_output=(target is _sharpen_failure_child),
+            sharpen_strength=175,
             collect_alignment_report=True, profile_performance=True)
         results, errors = _start(worker)
         _wait(worker, qapp)

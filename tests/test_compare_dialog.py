@@ -63,6 +63,21 @@ def _finished(dialog):
     return (dialog._worker is None and not dialog._source_preview_workers and not dialog._display_workers
             and not dialog._preview_timer.isActive())
 
+
+def test_comparison_result_key_tracks_effective_sharpen_strength(dialog):
+    method = 'openfocus_a'
+    unsharpened = dialog._result_key(method)
+    dialog._shared['sharpen_strength'] = 160
+    assert dialog._result_key(method) == unsharpened
+    dialog._shared['sharpen_output'] = True
+    sharpened = dialog._result_key(method)
+    assert sharpened != unsharpened
+    dialog._shared['sharpen_strength'] = 100
+    assert dialog._result_key(method) != sharpened
+    dialog._shared['sharpen_strength'] = 0
+    assert dialog._result_key(method) == unsharpened
+
+
 def test_parameter_cards_stack_headers_and_wrap(dialog, qapp):
     for check in dialog._checks.values():
         check.setChecked(False)

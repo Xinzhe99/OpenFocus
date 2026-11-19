@@ -14,6 +14,7 @@ from core.source_frames import materialize_frames, processing_preview, resolve_f
 from core.resource_policy import ResourceLimitError, heavy_job, require_memory
 from utils import resource_path
 from utils.image_utils import prepare_fusion_input, to_display_uint8
+from utils.output_sharpen import DEFAULT_SHARPEN_STRENGTH, validate_sharpen_strength
 from copy import deepcopy
 from utils.export_paths import create_stack_directory, frame_export_name
 from utils.logging_setup import frame_details, get_logger, log_action, log_operation
@@ -467,7 +468,8 @@ class RenderWorker(QThread):
                  roi_rect=None, roi_mode='crop', roi_base_index=0, use_gpu=True,
                  base_frame='none', sort_mode='asc', exposure_match=False,
                  disk_cache=None, resource_preference='balanced', preview=False,
-                 sharpen_output=False, defect_mask_path='', sensor_denoise=False,
+                 sharpen_output=False, sharpen_strength=DEFAULT_SHARPEN_STRENGTH,
+                 defect_mask_path='', sensor_denoise=False,
                  load_scale_factor=1.0, source_paths=None,
                  collect_alignment_report=False, prepared_cache=None,
                  retain_preparation=False, profile_performance=False,
@@ -506,6 +508,7 @@ class RenderWorker(QThread):
         self._reverse_registration = _ordered_openfocus_registration(self.alignment, algorithm, sort_mode)
         self.exposure_match = bool(exposure_match)
         self.sharpen_output = bool(sharpen_output)
+        self.sharpen_strength = validate_sharpen_strength(sharpen_strength)
         self.defect_mask_path = defect_mask_path or ''
         self.sensor_denoise = bool(sensor_denoise)
         self.load_scale_factor = float(load_scale_factor)
@@ -551,7 +554,8 @@ class RenderWorker(QThread):
                            tile_overlap=self.tile_overlap, tile_threshold=self.tile_threshold,
                            ai_batch_size=self.ai_batch_size, base_frame=self.base_frame,
                            sort_mode=self.sort_mode, exposure_match=self.exposure_match,
-                           sharpen_output=self.sharpen_output, sensor_denoise=self.sensor_denoise,
+                           sharpen_output=self.sharpen_output, sharpen_strength=self.sharpen_strength,
+                           sensor_denoise=self.sensor_denoise,
                            defect_mask=bool(self.defect_mask_path), load_scale_factor=self.load_scale_factor,
                            registration_brightness_reference='last' if self.exposure_match else 'first',
                            reverse_registration=self._reverse_registration,
@@ -1145,6 +1149,7 @@ class RenderWorker(QThread):
             resource_preference=self.resource_preference)
         log_effective_fusion(fusion, images, origin='render', thread_count=self.thread_count,
                               sharpen_output=self.sharpen_output,
+                              sharpen_strength=self.sharpen_strength,
                               registration=self.alignment, registration_parameters=self.registration_parameters,
                               registration_brightness_reference='last' if self.exposure_match else 'first',
                               reverse_registration=self._reverse_registration)
@@ -1181,7 +1186,7 @@ class RenderWorker(QThread):
         if self.sharpen_output and result is not None:
             from utils.output_sharpen import sharpen_output
             with profile.stage('sharpen'):
-                result = sharpen_output(result, should_cancel)
+                result = sharpen_output(result, should_cancel, strength=self.sharpen_strength)
         device = fusion.get_info()['device'] if (get_fusion(self.algorithm).neural or self.algorithm in OPENCL_FUSION_ALGORITHMS) else 'CPU'
         with profile.stage('finalize_output'):
             result = quantize_fuse_output(result, is_16bit)
@@ -1392,6 +1397,8 @@ class BatchWorker(QThread):
             registration_parameters if registration_parameters is not None
             else self.processing_settings.get('registration_parameters'))
         self.exposure_match = bool(self.runtime_settings.get('exposure_match', exposure_match))
+        self.sharpen_strength = validate_sharpen_strength(
+            self.runtime_settings.get('sharpen_strength', DEFAULT_SHARPEN_STRENGTH))
 
         from core.image_loader import ImageStackLoader
         self.image_loader = ImageStackLoader()
@@ -1786,6 +1793,7 @@ class BatchWorker(QThread):
                         reverse_registration=(_ordered_openfocus_registration(alignment, method,
                             runtime.get('sort_mode', 'asc')) if steps else False),
                         sharpen_output=bool(runtime.get('sharpen_output', False)),
+                        sharpen_strength=self.sharpen_strength,
                         sensor_denoise=denoise, defect_mask=bool(mask_path), flat_field=bool(reference),
                         load_scale_factor=float(self.processing_settings.get('load_scale_factor', 1.0)))
                     fusion_input, is_16bit = prepare_fusion_input(color_frames, lambda: self.is_cancelled)
@@ -1794,7 +1802,8 @@ class BatchWorker(QThread):
                     result = self._fuse_one_stack(fusion, fusion_method, fusion_input, fusion_params)
                     if runtime.get('sharpen_output', False) and result is not None:
                         from utils.output_sharpen import sharpen_output
-                        result = sharpen_output(result, lambda: self.is_cancelled)
+                        result = sharpen_output(result, lambda: self.is_cancelled,
+                                                strength=self.sharpen_strength)
                     result = quantize_fuse_output(result, is_16bit)
                     result = restore_transparent_canvas(result, transparent)
                 else:
@@ -1988,6 +1997,7 @@ class BatchWorker(QThread):
                 registration_brightness_reference='last' if self.exposure_match else 'first',
                 source_order_reversed=(runtime.get('sort_mode', 'asc') == 'desc' and get_fusion(method).sort_frames),
                 sharpen_output=bool(runtime.get('sharpen_output', False)),
+                sharpen_strength=self.sharpen_strength,
                 sensor_denoise=denoise, defect_mask=bool(mask_path), flat_field=bool(reference),
                 load_scale_factor=float(settings.get('load_scale_factor', 1.0)))
             fusion_input, is_16bit = prepare_fusion_input(images)
@@ -2004,10 +2014,11 @@ class BatchWorker(QThread):
             scale_factor=float(settings.get('load_scale_factor', 1.0)), thread_count=self.thread_count,
             resource_preference=self.resource_preference, should_cancel=lambda: self.is_cancelled,
             progress=progress, preprocess=preprocess)
-        if runtime.get('sharpen_output', False):
+        if runtime.get('sharpen_output', False) and self.sharpen_strength:
             from utils.output_sharpen import sharpen_output
             frames, is_16bit = normalize_fuse_input([result])
-            result = quantize_fuse_output(sharpen_output(frames[0], lambda: self.is_cancelled), is_16bit)
+            result = quantize_fuse_output(sharpen_output(
+                frames[0], lambda: self.is_cancelled, strength=self.sharpen_strength), is_16bit)
         output_format = settings.get('format', 'png').lstrip('.').lower()
         name = os.path.basename(os.path.normpath(folder_path))
         output = os.path.join(self._get_output_path_for_single_folder(folder_path), f'{name}.{output_format}')

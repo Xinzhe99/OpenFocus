@@ -758,9 +758,11 @@ OpenFocus A/B/C 匹配处理顺序的首帧，其他算法匹配末帧。「消�
 已保存的明确选择继续生效；**重置**清除记忆并恢复各算法默认值。
 命令行默认开启曝光匹配，可用 `--no-exposure-match` 关闭。
 
-**锐化融合结果**默认关闭，可在主界面或批处理选项启用；融合后进行轻度锐化，
-不会锐化已配准源帧。它可能放大噪点和光晕，请检查结果。CLI 使用
-`--sharpen-output`，工程会保存该设置。
+打开**渲染设置 → 输出 → 锐化融合结果**，即可在融合后、量化前锐化图像。
+该选项默认关闭。开启后，可通过滑块或数值框将强度设为 0% 至 200%。
+0% 保留原图，100% 对应旧版本的锐化效果。提高强度可能放大噪点和光晕。
+工程和偏好分别保存开关和强度，批处理也有这两项。命令行使用 `--sharpen-output`
+开启锐化并用 `--sharpen-strength PERCENT` 指定强度。
 
 ### 仅对齐（不融合）
 
@@ -1529,7 +1531,8 @@ openfocus retouch replay edits.ofretouch --base fused.png --sources frame1.png f
 | `--suggest-duplicates` | 输出相邻相似帧的 JSON 建议，供人工复查；不融合、不排除；不能与输出、进度、dry-run 或传感器清理选项同用 |
 | `--exposure-match` | 融合前匹配平均亮度：OpenFocus A/B/C 使用处理序首帧，其他算法使用末帧（默认开启，`--no-exposure-match` 关闭）；增益在分块前计算。 |
 | `--base-frame` | 可选的后融合步骤：把输出低频对齐到 `last`/`first` 帧（默认 `none`） |
-| `--sharpen-output` | 融合后、量化前做轻度锐化；默认关闭 |
+| `--sharpen-output` | 开启融合后、量化前的结果锐化，默认关闭 |
+| `--sharpen-strength PERCENT` | 整数强度 0 至 200（默认 100），与 `--sharpen-output` 同用。0 保留原图。 |
 | `--sort` | `openfocus_a/b/c` 的帧序：`asc`（默认，文件序）、`desc`（反转远→近扫描）、`off` |
 | `--frame-order` | 文件夹输入：`auto`（默认）在所有帧都有 EXIF 对焦步数时按由近到远排序（OM SYSTEM 焦点包围从中间深度开始），否则按文件名；`name` 始终按文件名。显式列出的文件保持原顺序 |
 | `--dust-map WHITE` | 用失焦白场照片做平场（尘点图）校正 |

@@ -108,6 +108,7 @@ def test_fusion_report_keeps_reproduction_settings_without_private_text():
         'origin': 'render', 'thread_count': 4, 'exposure_reference_index': 1,
         'fusion_order': [0, 1], 'registration': ['ecc'],
         'settings': {'algorithm': 'stackmffv3', 'exposure_match': True,
+                     'sharpen_output': True, 'sharpen_strength': 160,
                      'sort_mode': 'asc', 'base_frame': 'none', 'tile_enabled': True,
                      'tile_block_size': 1024, 'fusion_parameters': {'mode': 'soft', 'path': '/private/photo.jpg'}},
         'sources': [{'index': 0, 'shape': [10, 20, 3], 'dtype': 'uint8', 'path': '/private/photo.jpg'},
@@ -120,12 +121,16 @@ def test_fusion_report_keeps_reproduction_settings_without_private_text():
                                   'points': [[1, 2], [3, 4]], 'path': '/private/photo.jpg'})
     events = _contents(report_bundle.build_report_bundle(log_text=text, crash_text='', facts={}))['events.json']
     assert events[0]['parameters']['settings']['exposure_match'] is True
+    assert events[0]['parameters']['settings']['sharpen_output'] is True
+    assert events[0]['parameters']['settings']['sharpen_strength'] == 160
     assert events[0]['parameters']['settings']['fusion_parameters'] == {'mode': 'soft'}
     assert events[0]['parameters']['fusion_order'] == [0, 1]
     assert events[0]['parameters']['sources'][1]['shape'] == [10, 20, 3]
     assert events[1]['parameters']['control'] == 'OpenFocus.ui_objs.action_save'
     assert events[2]['parameters']['points'] == [[1, 2], [3, 4]]
     assert '/private/photo.jpg' not in repr(events)
+    assert report_bundle._numeric_fields({'sharpen_strength': 201}) == {}
+    assert report_bundle._numeric_fields({'sharpen_strength': True}) == {}
 
 
 def test_report_discloses_omitted_history(monkeypatch):

@@ -38,6 +38,7 @@ from ui.algorithm_combo import apply_method_availability, selected_item_enabled
 from core.experimental import (alignment_is_experimental, experimental_enabled,
                                fusion_is_experimental)
 from locales import trans
+from utils.output_sharpen import DEFAULT_SHARPEN_STRENGTH, MAX_SHARPEN_STRENGTH
 from utils.ui_utils import size_dialog_to_content
 from widgets.stepper import StepperSpinBox
 
@@ -499,6 +500,21 @@ class BatchProcessingDialog(QDialog):
         self.chk_sharpen_output = QCheckBox(trans.t('chk_sharpen_output'))
         self.chk_sharpen_output.setToolTip(trans.t('chk_sharpen_output_hint'))
         options_layout.addWidget(self.chk_sharpen_output)
+        self.sharpen_strength_spin = QSpinBox()
+        self.sharpen_strength_spin.setRange(0, MAX_SHARPEN_STRENGTH)
+        self.sharpen_strength_spin.setValue(DEFAULT_SHARPEN_STRENGTH)
+        self.sharpen_strength_spin.setSuffix('%')
+        self.sharpen_strength_spin.setKeyboardTracking(False)
+        strength_label = QLabel(trans.t('render_sharpen_strength'))
+        strength_label.setBuddy(self.sharpen_strength_spin)
+        self.sharpen_strength_row = QWidget()
+        strength_row = QHBoxLayout(self.sharpen_strength_row)
+        strength_row.setContentsMargins(20, 0, 0, 0)
+        strength_row.addWidget(strength_label)
+        strength_row.addWidget(self.sharpen_strength_spin)
+        strength_row.addStretch()
+        options_layout.addWidget(self.sharpen_strength_row)
+        self.chk_sharpen_output.toggled.connect(self._sync_sharpen_strength)
 
         self.flat_field_group = QWidget()
         flat_row = QHBoxLayout(self.flat_field_group)
@@ -592,6 +608,7 @@ class BatchProcessingDialog(QDialog):
                          "rb_custom_folder", "custom_folder_path",
                          "fusion_combo", "align_combo", "chk_reverse_order",
                          "chk_exposure_match", "chk_base_correct", "chk_grouping",
+                         "chk_sharpen_output", "sharpen_strength_spin",
                          "group_size_spin", "group_overlap_spin", "btn_start"):
             _widget = getattr(self, _control, None)
             if _widget is not None:
@@ -1225,6 +1242,8 @@ class BatchProcessingDialog(QDialog):
         self.align_combo.setCurrentIndex(self.align_combo.findData(alignment))
         self.chk_reverse_order.setChecked(bool(getattr(window, 'stack_reverse_order', False)))
         self.chk_sharpen_output.setChecked(bool(getattr(window, 'sharpen_output', False)))
+        self.sharpen_strength_spin.setValue(
+            getattr(window, 'sharpen_strength', DEFAULT_SHARPEN_STRENGTH))
         getter = getattr(window, 'brightness_option_for', None)
         if callable(getter):
             method = self.fusion_combo.currentData()
@@ -1362,6 +1381,7 @@ class BatchProcessingDialog(QDialog):
             box.setEnabled(not fusion_off)
             box.setToolTip(fusion_only_hint if fusion_off
                            else trans.t(hint_key))
+        self._sync_sharpen_strength()
         locked = bool(spec is not None and spec.order_sensitive)
         self.chk_reverse_order.setEnabled(not fusion_off and not locked)
         if fusion_off:
@@ -1372,6 +1392,10 @@ class BatchProcessingDialog(QDialog):
         else:
             self.chk_reverse_order.setToolTip(
                 trans.t('chk_reverse_order_hint'))
+
+    def _sync_sharpen_strength(self) -> None:
+        self.sharpen_strength_row.setEnabled(
+            self.chk_sharpen_output.isEnabled() and self.chk_sharpen_output.isChecked())
 
     def _sync_method_controls(self) -> None:
         method = self.fusion_combo.currentData()
@@ -1415,6 +1439,7 @@ class BatchProcessingDialog(QDialog):
                                  else 'last') if self.chk_base_correct.isChecked() else 'none'
         runtime['exposure_match'] = self.chk_exposure_match.isChecked()
         runtime['sharpen_output'] = self.chk_sharpen_output.isChecked()
+        runtime['sharpen_strength'] = self.sharpen_strength_spin.value()
         runtime['sort_mode'] = 'desc' if self.chk_reverse_order.isChecked() else 'asc'
 
         align_method = self.align_combo.currentData() or "none"
