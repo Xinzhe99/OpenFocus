@@ -665,7 +665,7 @@ def test_render_worker_keeps_openfocus_whole_with_shared_tile_settings(qapp, mon
     assert actual.shape == frames[0].shape and device == 'CPU'
 
 
-@pytest.mark.parametrize('method', ['openfocus_a', 'openfocus_c', 'guided_filter'])
+@pytest.mark.parametrize('method', ['openfocus_a', 'openfocus_c', 'guided_filter', 'gfgfgf'])
 def test_render_worker_reports_openfocus_c_actual_device(qapp, monkeypatch, method):
     from fusion_methods import _openfocus_gpu
     if not _openfocus_gpu.gpu_available():
