@@ -318,8 +318,8 @@ to it. A fresh `ui.find` reports `checked:true` and `visible:true` on the button
 and `visible:true` on its revealed controls. Activate the button again to collapse.
 
 Switching tabs keeps the settings draft open. Use `dialog.accept` to save or
-`dialog.reject` to discard it. Session logs are accessible through the Help menu
-action `menu_open_logs`.
+`dialog.reject` to discard it. Open `dialog.open` with `name="feedback"` to
+access the **Open Logs Folder** button next to **Close**.
 
 ### UI surface (any capability)
 

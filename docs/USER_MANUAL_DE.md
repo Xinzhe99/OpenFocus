@@ -164,7 +164,7 @@ Die Menüleiste am oberen Rand bietet Zugriff auf alle Funktionen:
 - **Bearbeiten**: Bildtransformationen, Retusche und Bearbeitung einzelner Bilddateien
 - **Werkzeuge**: Bilder zusammenfügen, Stapelverarbeitung, Methodenvergleich, Tiefenkarte, Staubkarte (Flat-Field), Maßstabsbalken und Beschriftungen
 - **Einstellungen**: Erweiterte Einstellungen (Allgemein, Fusion, Registrierung, Start und Updates), GPU-Beschleunigung, Design und Sprache
-- **Hilfe**: Schnellstart, Umgebungsinformationen, Feedback, Kontakt, Log-Ordner und Update-Prüfung
+- **Hilfe**: Schnellstart, Feedback senden (Diagnose und Protokolle), Kontakt und Update-Prüfung
 
 **Werkzeuge → Bilder zusammenfügen…** öffnet einen separaten Arbeitsbereich für bereits fusionierte Mikroskopbereiche und Kamerapanoramen; der aktuelle Stapel bleibt unverändert. Die Registerkarte **Projektassistent** bündelt Import, Ausrichtung und Kontrollpunkte, **Quellbilder** enthält Liste, Raster und manuelle Platzierung, **Panoramaeditor** enthält Naht-, Überblendungs-, Belichtungs-/Farb-, Ausgabe-, Projektions-, Kamera- und HDR-Einstellungen sowie Vorschau-Überlagerungen. Mit **Dateien hinzufügen…**, **Ordner öffnen** oder **Ergebnisse hinzufügen…** kopieren Sie ausgewählte Ergebnisse der aktuellen Sitzung, oder Sie ziehen Dateien bzw. Ordner auf Liste oder Leinwand. Der Ordnerimport umfasst nur unterstützte Dateien direkt im Ordner, keine Unterordner. Importe folgen der natürlichen Dateinamenreihenfolge, ignorieren doppelte Pfade und fügen jede Seite mehrseitiger TIFFs als eigenes Bild hinzu. Ein ausgewähltes Bild lässt sich mit Entf oder Rücktaste aus dem Arbeitsbereich entfernen, ohne die Datei zu löschen.
 
@@ -549,7 +549,7 @@ Das Abstimmen von Parametern auf großen Stapeln ist in voller Auflösung langsa
 
 ### Drehen
 
-1. Auf **Bearbeiten → Drehen** gehen
+1. Auf **Bearbeiten → Drehen und Spiegeln** gehen
 2. Drehungsart wählen:
    - **90° im Uhrzeigersinn**: alle Bilder um 90 Grad nach rechts drehen
    - **90° gegen den Uhrzeigersinn**: alle Bilder um 90 Grad nach links drehen
@@ -557,7 +557,7 @@ Das Abstimmen von Parametern auf großen Stapeln ist in voller Auflösung langsa
 
 ### Spiegeln
 
-1. Auf **Bearbeiten → Spiegeln** gehen
+1. Auf **Bearbeiten → Drehen und Spiegeln** gehen
 2. Spiegelungsart wählen:
    - **Horizontal spiegeln**: von links nach rechts spiegeln
    - **Vertikal spiegeln**: von oben nach unten spiegeln
@@ -577,7 +577,7 @@ Transformationen wirken auf den gesamten Bildstapel und erhalten die Ausrichtung
 
 ## 10. Retusche, Beschriftungen und Anmerkungen
 
-### Ergebnis retuschieren (Bearbeiten → Ergebnis retuschieren…, `Ctrl+T`)
+### Ergebnis retuschieren (Bearbeiten → Ergebnis retuschieren → Ausgabe in diesem Arbeitsbereich…, `Ctrl+T`)
 
 Die Fusion kann örtliche Fehler hinterlassen – einen Halo an einer kontrastreichen Kante, ein Härchen aus dem falschen Bild, Rauschen in einer gleichmäßigen Fläche. Der Retusche-Arbeitsbereich kopiert Pixel aus genau den Bildern, aus denen das gewählte Ergebnis erzeugt wurde:
 
@@ -596,7 +596,7 @@ Für eine lokale Tonwertkorrektur **Belichtungspinsel** wählen, den Betrag in H
 
 Die Herkunft wird mit der Ausgabe gespeichert: ausgerichtete Bilder, ROI-Zuschnitt-/Einfügeversätze, DCT-Kantenbeschneidung und Bittiefe werden beim Rendern des Ergebnisses aufgezeichnet. Stapeldateien, ältere Ergebnisse und reine Ausrichtungsordner haben keine aufgezeichnete Quelle und werden daher als nicht verfügbar aufgeführt, statt aus dem aktuellen Stapel geraten zu werden. Nicht angewendete Striche und der Rückgängig-Verlauf gelten nur für die Sitzung; das Speichern eines Projekts legt sie nicht ab.
 
-Für eine vorhandene Bilddatei **Bearbeiten → Bilddateien retuschieren…** wählen und dann das Ergebnis sowie ein oder mehrere Quellbilder auswählen. Die Quellen müssen bereits auf dasselbe Pixelraster ausgerichtet sein; gleiche Abmessungen allein belegen keine Ausrichtung. Einseitige PNG-, TIFF-, JPEG- und BMP-Bilder mit übereinstimmenden aufrechten Abmessungen, Kanälen und 8- oder 16-Bit-Tiefe werden akzeptiert; die EXIF-Ausrichtung wird beim Laden angewendet. Alpha- und mehrseitige Bilder werden nicht unterstützt. Die ausgewählten Bilder sind vom Benutzer bereitgestellt und keine aufgezeichnete Rendering-Herkunft. **Übernehmen** erzeugt eine separate, nicht exportierte Ausgabe; speichern Sie sie aus der Ausgabeliste. Die gewählten Dateien sind während dieser Sitzung vor Überschreiben geschützt, einschließlich Tiefenkarten- und 3D-Modell-Exporten. Wie bei anderen Ergebnissen speichern Projektdateien diese Pixel oder den Pinselverlauf nicht.
+Für eine vorhandene Bilddatei **Bearbeiten → Ergebnis retuschieren → Fusionsergebnis aus Datei…** wählen und dann das Ergebnis sowie ein oder mehrere Quellbilder auswählen. Die Quellen müssen bereits auf dasselbe Pixelraster ausgerichtet sein; gleiche Abmessungen allein belegen keine Ausrichtung. Einseitige PNG-, TIFF-, JPEG- und BMP-Bilder mit übereinstimmenden aufrechten Abmessungen, Kanälen und 8- oder 16-Bit-Tiefe werden akzeptiert; die EXIF-Ausrichtung wird beim Laden angewendet. Alpha- und mehrseitige Bilder werden nicht unterstützt. Die ausgewählten Bilder sind vom Benutzer bereitgestellt und keine aufgezeichnete Rendering-Herkunft. **Übernehmen** erzeugt eine separate, nicht exportierte Ausgabe; speichern Sie sie aus der Ausgabeliste. Die gewählten Dateien sind während dieser Sitzung vor Überschreiben geschützt, einschließlich Tiefenkarten- und 3D-Modell-Exporten. Wie bei anderen Ergebnissen speichern Projektdateien diese Pixel oder den Pinselverlauf nicht.
 
 ### Hintergrund ersetzen (Automatischer Hintergrund)
 
@@ -697,9 +697,9 @@ Rezepte verlangen einen Ausgabeort außerhalb jedes Eingabeordners und lehnen ei
 
 Wird eine Dateireferenz in den Werkzeugen auf der Basisskalierung des Stapels angewendet, zeichnet ein gespeichertes Projekt ihren absoluten Pfad, ihren Inhaltshash und ihre Staubgröße auf und wendet sie beim Öffnen einmal auf die Originalquellen an. Die Referenzdatei unverändert und an ihrem Ort belassen: Eine fehlende oder geänderte Referenz verhindert das Öffnen des Projekts. Eine aus dem Stapel gewählte Referenz oder eine Korrektur auf einer anderen Arbeits-/Basisskalierung erfordert weiterhin den Export des korrigierten Quellstapels vor dem Speichern eines Projekts. Ändert sich die Arbeitsskalierung nach der Korrektur, vor dem Speichern auf die Korrekturskalierung zurückkehren oder den korrigierten Stapel exportieren.
 
-**Hilfe → Feedback senden…** öffnet lokale Protokolle. Kopieren kopiert das sichtbare Sitzungsprotokoll; das Feedback-ZIP enthält Sitzungs- und vollständige Anwendungsprotokolle sowie Umgebungsinformationen. Prüfen Sie das Paket, bevor Sie es selbst einreichen. Das Öffnen von GitHub öffnet nur den Tracker. Ein abgebrochener Export lässt Dateien unverändert; bei einem Fehler bleibt die vorherige Zieldatei erhalten und der fehlgeschlagene Pfad wird angezeigt.
+**Hilfe → Feedback senden** öffnet den Reiter **Feedbackkanäle** mit Zugängen zur Kontozentrale und zu GitHub. Unter **Diagnose** finden Sie **Sitzungsprotokoll** und **Umgebungsinformationen**. **Log-Ordner öffnen** steht unten neben „Schließen“. Kopieren kopiert das sichtbare Sitzungsprotokoll; das Feedback-ZIP enthält Sitzungs- und vollständige Anwendungsprotokolle sowie Umgebungsinformationen. Prüfen Sie das Paket, bevor Sie es selbst einreichen. Das Öffnen von GitHub öffnet nur den Tracker. Ein abgebrochener Export lässt Dateien unverändert; bei einem Fehler bleibt die vorherige Zieldatei erhalten und der fehlgeschlagene Pfad wird angezeigt.
 
-Jeder Start schreibt sein eigenes rotierendes Protokoll, sodass gleichzeitige GUI-/CLI-Aufträge getrennte Aufzeichnungen behalten. Aufgaben-IDs verknüpfen Parameter, Laufzeit und Ergebnisse (abgeschlossen/abgebrochen/fehlgeschlagen); unerwartete Fehler enthalten einen vollständigen Traceback. Das Feedback-ZIP enthält außerdem den aktuellen Absturzbericht und Abhängigkeitsversionen. Über **Hilfe → Log-Ordner öffnen** oder den auf der Feedback-Seite angezeigten Pfad finden Sie die Dateien. Protokolle rotieren bei 1 MB mit drei Sicherungen pro Prozess; inaktive Sitzungsprotokolle, die älter als 14 Tage sind, werden entfernt. Für ausführliche Support-Protokolle vor dem Start `OPENFOCUS_LOG_LEVEL=DEBUG` setzen; `OPENFOCUS_LOG_DIR` wählt optional einen anderen Protokollordner.
+Jeder Start schreibt sein eigenes rotierendes Protokoll, sodass gleichzeitige GUI-/CLI-Aufträge getrennte Aufzeichnungen behalten. Aufgaben-IDs verknüpfen Parameter, Laufzeit und Ergebnisse (abgeschlossen/abgebrochen/fehlgeschlagen); unerwartete Fehler enthalten einen vollständigen Traceback. Das Feedback-ZIP enthält außerdem den aktuellen Absturzbericht und Abhängigkeitsversionen. Über **Hilfe → Feedback senden → Log-Ordner öffnen** oder den auf der Feedback-Seite angezeigten Pfad finden Sie die Dateien. Protokolle rotieren bei 1 MB mit drei Sicherungen pro Prozess; inaktive Sitzungsprotokolle, die älter als 14 Tage sind, werden entfernt. Für ausführliche Support-Protokolle vor dem Start `OPENFOCUS_LOG_LEVEL=DEBUG` setzen; `OPENFOCUS_LOG_DIR` wählt optional einen anderen Protokollordner.
 
 ### Kachel-Einstellungen (Speicheroptimierung)
 
@@ -1091,7 +1091,7 @@ Exit-Codes: `0` Erfolg, `1` Verarbeitungsfehler, `2` Nutzungsfehler. Der Aufruf 
 
 - Aktivieren und bestätigen Sie experimentelle Funktionen in den erweiterten Einstellungen; KI-Methoden sind sonst in der Desktop-App gesperrt. Laufzeit und Modell sind separate Voraussetzungen.
 - Prüfen Sie ONNX Runtime und das mitgelieferte Modell.
-- Über **Hilfe → Umgebungsinformationen** prüfen
+- Über **Hilfe → Feedback senden → Diagnose → Umgebungsinformationen** prüfen
 
 #### Fehler wegen zu wenig Arbeitsspeicher
 
@@ -1129,9 +1129,9 @@ oder mit der rechten Maustaste auf die App klicken und **Öffnen** wählen. Die 
 
 ### Hilfe erhalten
 
-1. **Umgebungsinformationen**: Über **Hilfe → Umgebungsinformationen** die Installation prüfen
+1. **Umgebungsinformationen**: Über **Hilfe → Feedback senden → Diagnose → Umgebungsinformationen** die Installation prüfen
 2. **Kontakt zum Support**: Über **Hilfe → Kontakt** Supportinformationen aufrufen
-3. **Feedback senden**: Über **Hilfe → Feedback senden…** Protokolle kopieren oder ein Paket zur manuellen Einreichung exportieren
+3. **Feedback senden**: Über **Hilfe → Feedback senden → Diagnose** Protokolle kopieren oder ein Paket zur manuellen Einreichung exportieren
 
 ---
 
