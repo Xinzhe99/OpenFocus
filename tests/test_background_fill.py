@@ -220,7 +220,7 @@ def test_progress_is_monotonic(scene):
     frames, fused, _ = scene
     seen = []
     replace_background(frames, fused, progress=lambda f, msg: seen.append(f))
-    assert seen == sorted(seen) and seen[0] == 0.0 and seen[-1] <= 1.0
+    assert seen == sorted(seen) and seen[0] == 0.0 and seen[-1] == 1.0
 
 
 @pytest.mark.parametrize("bad", ["one_frame", "size_mismatch", "preset", "frame_index"])
@@ -252,7 +252,11 @@ def _document(scene):
 def test_retouch_auto_background_is_one_undo_step(scene):
     doc = _document(scene)
     assert doc.auto_background_supported()
-    assert doc.auto_background("soft", True) == "committed"
+    events = []
+    assert doc.auto_background('soft', True, progress=lambda value, stage: events.append((value, stage))) == 'committed'
+    assert events[-1] == (1., 'done')
+    assert [value for value, _ in events] == sorted(value for value, _ in events)
+    assert any(value > 0 and stage == 'preparing source frames' for value, stage in events)
     edited = doc.working.copy()
     assert doc.background_fill is not None
     assert doc.undo()
@@ -261,6 +265,21 @@ def test_retouch_auto_background_is_one_undo_step(scene):
     assert doc.redo()
     assert np.array_equal(doc.working, edited)
     assert not doc.can_redo
+
+
+def test_cancel_during_source_checks_keeps_previous_edit(scene):
+    doc = _document(scene)
+    doc.set_tool('exposure')
+    assert doc.begin_stroke(40, 40) and doc.end_stroke() == 'committed'
+    edited = doc.working.copy()
+    stages = []
+    outcome = doc.auto_background(
+        'soft', cancelled=lambda: 'checking aligned frames' in stages,
+        progress=lambda _, stage: stages.append(stage))
+    assert outcome == 'cancelled' and 'analysing focus' not in stages
+    np.testing.assert_array_equal(doc.working, edited)
+    assert doc.background_fill is None and doc.undo()
+    np.testing.assert_array_equal(doc.working, doc.base)
 
 
 def test_retouch_strokes_on_the_subject_survive(scene):

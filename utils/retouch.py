@@ -548,41 +548,6 @@ class TileHistory:
             self.evicted = True
 
 
-def compute_auto_background(image, frames, preset="auto", clean=True,
-                            cancelled=None, progress=None, keep_soft_parts=False,
-                            stacked=None):
-    """Run `core.background_fill.replace_background` on a retouch image.
-
-    With `stacked` (the stacked result `image` was retouched from), the
-    background is analysed from `stacked` and laid onto `image`, so edits
-    on the subject survive and an earlier replacement is not analysed
-    again.  Admits the working set with the resource policy and serializes
-    with other heavy jobs.  Returns a `BackgroundFillResult`."""
-    from core.background_fill import replace_background, background_working_set_bytes
-    from core.resource_policy import heavy_job, require_memory
-    h, w = image.shape[:2]
-    # Alignment masks are built sequentially: retain at most one byte/pixel
-    # per aligned frame, plus the connected-component construction scratch.
-    aligned = [frame for frame in frames if frame.aligned]
-    mask_bytes = sum(frame.image.shape[0] * frame.image.shape[1] for frame in aligned)
-    mask_scratch = max((frame.image.shape[0] * frame.image.shape[1] * 16
-                        for frame in aligned), default=0)
-    required = background_working_set_bytes(h, w, len(frames)) + mask_bytes + mask_scratch
-    with heavy_job(cancelled):
-        require_memory(required)
-        from core.source_frames import ProcessedFrame, SourceFrame as LazySourceFrame, materialize_frames
-        if any(isinstance(frame.image, (LazySourceFrame, ProcessedFrame)) for frame in frames):
-            images = materialize_frames([frame.image for frame in frames], should_cancel=cancelled)
-            frames = [dataclasses.replace(frame, image=pixels)
-                      for frame, pixels in zip(frames, images)]
-        valid_masks = [frame.valid_mask() for frame in frames]
-        result = replace_background([frame.image for frame in frames],
-                                    image if stacked is None else stacked, preset=preset,
-                                    valid_masks=valid_masks,
-                                    composite_onto=None if stacked is None else image,
-                                    clean=clean, keep_soft_parts=keep_soft_parts,
-                                    progress=progress, cancelled=cancelled)
-    return result
 
 
 class RetouchDocument:
@@ -772,9 +737,12 @@ class RetouchDocument:
             frame = dataclasses.replace(frame, image=image)
         return frame
 
-    def resolve_all_sources(self, cancelled=None):
-        for index in range(len(self.frames)):
+    def resolve_all_sources(self, cancelled=None, progress=None):
+        total = len(self.frames)
+        for index in range(total):
             self.frames[index] = self.resolve_source(index, cancelled)
+            if progress is not None:
+                progress((index + 1) / total)
         self.context = dataclasses.replace(self.context, frames=tuple(self.frames))
 
     def result(self) -> np.ndarray:
@@ -835,8 +803,51 @@ class RetouchDocument:
             and frame.image.shape[:2] == (self.height, self.width)
             for frame in self.frames)
 
+    def _compute_background(self, stacked, preset, clean, keep_soft_parts,
+                            cancelled, progress, use_gpu):
+        from core.background_fill import background_working_set_bytes, replace_background
+        from core.resource_policy import heavy_job, require_memory
+
+        count = len(self.frames)
+        pixels = self.width * self.height
+        aligned = sum(frame.aligned for frame in self.frames)
+        required = background_working_set_bytes(self.height, self.width, count)
+        if aligned:
+            required += pixels * (aligned + 16)  # Retained masks and one labelling workspace.
+
+        if progress is not None:
+            progress(0., 'waiting for processing')
+        with heavy_job(cancelled):
+            require_memory(required)
+            if progress is not None:
+                progress(0., 'preparing source frames')
+            self.resolve_all_sources(cancelled, progress=None if progress is None else
+                                     lambda fraction: progress(0.12 * fraction, 'preparing source frames'))
+            masks = []
+            for index, frame in enumerate(self.frames):
+                if cancelled is not None and cancelled():
+                    from core.background_fill import BackgroundFillCancelled
+                    raise BackgroundFillCancelled()
+                mask = (self._mask_cache[index] if index in self._mask_cache else
+                        frame.valid_mask(should_cancel=cancelled))
+                masks.append(mask)
+                if progress is not None:
+                    progress(0.12 + 0.10 * (index + 1) / count, 'checking aligned frames')
+
+            def analyse(fraction, message):
+                if message != 'done':
+                    progress(0.22 + 0.74 * fraction, message)
+
+            return replace_background(
+                [frame.image for frame in self.frames], stacked, preset=preset,
+                valid_masks=masks, clean=clean, keep_soft_parts=keep_soft_parts,
+                composite_onto=None if stacked is self.base and not self.is_dirty else self.working,
+                cancelled=cancelled, progress=analyse if progress is not None else None,
+                use_gpu=use_gpu)
+
     def auto_background(self, preset: str = "auto", clean: bool = True,
-                        cancelled=None, progress=None, keep_soft_parts: bool = False) -> str:
+                        cancelled=None, progress=None, keep_soft_parts: bool = False,
+                        *, use_gpu: bool = False) -> str:
         """Replace the background of the current result with one source
         frame (see core.background_fill) as one history transaction.
 
@@ -860,14 +871,12 @@ class RetouchDocument:
         if stacked is None or stacked.shape != self.working.shape:
             stacked = self.base
         try:
-            self.resolve_all_sources(cancelled)
-            result = compute_auto_background(self.working, self.frames, preset, clean,
-                                             cancelled=cancelled, progress=progress,
-                                             keep_soft_parts=keep_soft_parts,
-                                             stacked=(None if stacked is self.base and not self.is_dirty
-                                                      else stacked))
+            result = self._compute_background(stacked, preset, clean, keep_soft_parts,
+                                              cancelled, progress, use_gpu)
         except (BackgroundFillCancelled, RegistrationCancelled):
             return "cancelled"
+        if progress is not None:
+            progress(0.96, 'saving the retouch')
         image = result.image
         map_bytes = sum(layer.nbytes for _, layer, _ in result.missing.layers())
         changed = not np.array_equal(image, self.working)
@@ -899,6 +908,8 @@ class RetouchDocument:
                         return "oversize"
                     self.history.remember_tile(key)
                     tile[...] = new
+                if progress is not None and sl[1].stop == self.width:
+                    progress(0.96 + 0.03 * sl[0].stop / self.height, 'saving the retouch')
             if cancelled is not None and cancelled():
                 self.history.abort()
                 return "cancelled"
@@ -910,6 +921,8 @@ class RetouchDocument:
             fill = dataclasses.replace(result, image=None)
             status = self._commit_stroke_operation(operation, cancelled=cancelled, fill=fill)
             published = status in ("committed", "empty")
+            if published and progress is not None:
+                progress(1., 'done')
             return status
         except _HistoryCapacityError:
             self.history.abort()
