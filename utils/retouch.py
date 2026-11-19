@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from collections import OrderedDict
 import dataclasses
+from math import isqrt, prod
 import threading
 from typing import Optional, Tuple
 
@@ -21,30 +22,87 @@ import numpy as np
 from core.render_context import RenderContext, SourceFrame
 
 
+_NAVIGATION_PREVIEW_BYTES = 64 * 1024 * 1024
+_STRIP_EDGE = 64
+
+
+def _preview_source(image):
+    from core.source_frames import ProcessedFrame
+    while isinstance(image, ProcessedFrame):
+        image = image.source
+    return image
+
+
+def _navigation_edge(frames):
+    from core.source_frames import PREVIEW_EDGE, SourceFrame as LazySourceFrame
+
+    # The capture can have a different layout from the native frame (e.g. a
+    # three-channel display thumbnail for a grayscale source). Allow for both.
+    bytes_per_pixel = 0
+    for frame in frames:
+        image = frame.image
+        source = _preview_source(image)
+        capture = source.preview if isinstance(source, LazySourceFrame) else source
+        if capture is not None:
+            bytes_per_pixel += max(prod(image.shape[2:]), prod(capture.shape[2:]))  # display uint8
+    return min(PREVIEW_EDGE, isqrt(_NAVIGATION_PREVIEW_BYTES // max(1, bytes_per_pixel)))
+
+
+def _strip_fallback(image):
+    """Keep a source-identifying strip icon even for unsupported transforms."""
+    from core.source_frames import SourceFrame as LazySourceFrame, _small, display_image
+    source = _preview_source(image)
+    is_display = bool(getattr(source, 'preview_is_display', False))
+    if isinstance(source, LazySourceFrame):
+        if source.preview is None:
+            return None, is_display
+        source = display_image(source)
+    if source is None or not source.size:
+        return None, is_display
+    return _small(source, _STRIP_EDGE), is_display
+
+
+def _display_capture(pixels, is_display, metadata):
+    from utils.image_utils import to_display_uint8
+    if not is_display and metadata is not None:
+        from utils.linear_dng import develop_linear
+        pixels = develop_linear(pixels, metadata)
+    return to_display_uint8(pixels)
+
+
 def prepare_retouch_document(base_image, context):
-    """Prepare the result and available thumbnails without decoding the stack."""
-    from core.source_frames import (ProcessedFrame, SourceFrame as LazySourceFrame,
-                                    display_image, resolve_frame)
+    """Prepare strip icons and frame-local navigation pixels on the pixel worker."""
+    from core.aligned_previews import registered_preview
+    from core.source_frames import _small, resolve_frame
 
     document = RetouchDocument(resolve_frame(base_image), context)
     document.source_previews = []
-    document.source_previews_are_display = []
+    document.source_navigation_previews = []
+    edge = _navigation_edge(document.frames)
+    remaining = _NAVIGATION_PREVIEW_BYTES
     for frame in document.frames:
-        image = frame.image
-        while isinstance(image, ProcessedFrame):
-            image = image.source
-        is_display = False
-        if isinstance(image, LazySourceFrame):
-            is_display = image.preview_is_display
-            image = None if image.preview is None else display_image(image)
-        if image is not None and image.size:
-            h, w = image.shape[:2]
-            scale = min(1.0, 64 / max(h, w))
-            image = cv2.resize(image, (max(1, round(w * scale)),
-                                       max(1, round(h * scale))),
-                               interpolation=cv2.INTER_AREA)
-        document.source_previews.append(image)
-        document.source_previews_are_display.append(is_display)
+        preview = registered_preview(frame.image, captured_only=True, edge=max(edge, _STRIP_EDGE))
+        navigation = None
+        if preview is None:
+            strip, is_display = _strip_fallback(frame.image)
+            if strip is not None:
+                strip = _display_capture(strip, is_display, context.linear_dng_metadata)
+        else:
+            image, is_display = preview
+            image = _display_capture(image, is_display, context.linear_dng_metadata)
+            source = _preview_source(frame.image)
+            if isinstance(source, np.ndarray) and np.shares_memory(image, source):
+                # Small array-backed frames are already within the edge limit.
+                # Own the capture even when the input is a view of a larger array.
+                image = image.copy()
+            strip = _small(image, _STRIP_EDGE)
+            if edge:
+                candidate = _small(image, edge)
+                if candidate.nbytes <= remaining:
+                    navigation = candidate
+                    remaining -= candidate.nbytes
+        document.source_previews.append(strip)
+        document.source_navigation_previews.append(navigation)
     return document
 
 TILE = 128  # undo granularity (pixels)
@@ -702,9 +760,38 @@ class RetouchDocument:
     def active_frame(self) -> SourceFrame:
         return self.frames[self.frame_index]
 
+    def prepared_source(self, index):
+        """Return recently prepared brush pixels and mask together, if resident."""
+        frame = self.frames[index]
+        if frame.aligned and index not in self._mask_cache:
+            return None
+        with self._source_lock:
+            pixels = self._source_cache.get(index)
+        if pixels is None:
+            if not isinstance(frame.image, np.ndarray):
+                return None
+            pixels = frame.image
+        return pixels, self._mask_cache.get(index)
+
+    def retain_prepared_source(self, index, pixels, valid):
+        """Publish a completed selection without replacing its lazy descriptor."""
+        if pixels is not self.frames[index].image:
+            with self._source_lock:
+                self._remember_pixels(index, pixels)
+        if self.frames[index].aligned:
+            self._remember_mask(index, valid)
+
+    def _remember_pixels(self, index, pixels):
+        from constants import FRAME_RAM_BUDGET_BYTES
+        self._source_cache[index] = pixels
+        self._source_cache.move_to_end(index)
+        while len(self._source_cache) > 1 and (
+                len(self._source_cache) > 2 or
+                sum(frame.nbytes for frame in self._source_cache.values()) > FRAME_RAM_BUDGET_BYTES):
+            self._source_cache.popitem(last=False)
+
     def source_pixels(self, index: int):
         """Resolve the selected captured frame, keeping at most two lazy frames."""
-        from constants import FRAME_RAM_BUDGET_BYTES
         from core.source_frames import ProcessedFrame, SourceFrame as LazySourceFrame, resolve_frame
         image = self.frames[index].image
         if not isinstance(image, (LazySourceFrame, ProcessedFrame)):
@@ -717,11 +804,7 @@ class RetouchDocument:
             from core.image_loader import _has_transparency, UnsupportedTransparency
             if _has_transparency(pixels):
                 raise UnsupportedTransparency("Retouching transparent images is unsupported")
-            self._source_cache[index] = pixels
-            while len(self._source_cache) > 1 and (
-                    len(self._source_cache) > 2 or
-                    sum(frame.nbytes for frame in self._source_cache.values()) > FRAME_RAM_BUDGET_BYTES):
-                self._source_cache.popitem(last=False)
+            self._remember_pixels(index, pixels)
             return pixels
 
     @property
@@ -956,10 +1039,14 @@ class RetouchDocument:
             self._mask_cache.move_to_end(index)
             return self._mask_cache[index]
         mask = dataclasses.replace(frame, image=self.source_pixels(index)).valid_mask()
+        self._remember_mask(index, mask)
+        return mask
+
+    def _remember_mask(self, index, mask):
         self._mask_cache[index] = mask
+        self._mask_cache.move_to_end(index)
         while len(self._mask_cache) > 2:
             self._mask_cache.popitem(last=False)
-        return mask
 
     def source_valid_at(self, x: float, y: float) -> bool:
         if not (0 <= x < self.width and 0 <= y < self.height):
