@@ -1242,7 +1242,7 @@ def test_windows_portable_adopts_legacy_device_and_old_release_session_can_refre
 
 
 def test_windows_trial_sign_in_reuses_installed_device(monkeypatch, tmp_path, windows_account_dirs):
-    local, roaming = windows_account_dirs
+    _, roaming = windows_account_dirs
     installed = account.AccountClient()
     registered = installed._device_fields()
     installed.store.save(session("installed-session"))
