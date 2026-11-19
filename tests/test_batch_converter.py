@@ -113,6 +113,33 @@ def test_cancelled_conversion_removes_reserved_and_temporary_outputs(tmp_path, m
     assert sorted(p.name for p in tmp_path.iterdir()) == ['image.png']
 
 
+def test_jpeg_writer_failure_reaches_source_row(tmp_path, monkeypatch):
+    import errno
+    from utils import image_utils
+
+    source = tmp_path / 'frame.tif'
+    tifffile.imwrite(source, np.full((16, 24, 3), 40000, np.uint16), photometric='rgb')
+    destination = tmp_path / 'outputs'
+    destination.mkdir()
+    existing = destination / 'frame.jpg'
+    existing.write_bytes(b'previous export')
+
+    def disk_full(*args):
+        raise OSError(errno.ENOSPC, 'JPEG scratch disk full')
+
+    monkeypatch.setattr(image_utils, '_encode_mapped_jpeg', disk_full)
+    events = []
+    result = converter.convert_batch([str(source)], str(destination), '.jpg', lambda: False,
+                                     events.append, lambda _: None)
+    _assert_batch(result, failed=1)
+    error, = result['items'][0]['errors']
+    assert 'JPEG scratch disk full' in error and converter.trans.t('converter_space_error') in error
+    assert events[-1]['error'] == error
+    assert result['items'][0]['outputs'] == []
+    assert list(destination.iterdir()) == [existing]
+    assert existing.read_bytes() == b'previous export'
+
+
 def test_insufficient_memory_and_existing_file(tmp_path, monkeypatch):
     source = tmp_path / 'image.png'
     Image.new('RGB', (4, 4)).save(source)
