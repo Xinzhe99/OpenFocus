@@ -1,6 +1,13 @@
 """Italian language pack for OpenFocus."""
 
 PACK = {
+    "ai_pack_title": "Componenti di accelerazione IA",
+    "ai_pack_offer": "TensorRT e PyTorch CUDA sono consigliati per StackMFF su {device}.",
+    "ai_pack_check": "Verifica della GPU e dei componenti installati…",
+    "ai_pack_base": "OpenFocus utilizzerà i motori di inferenza inclusi su questo dispositivo.",
+    "ai_pack_driver": "Aggiorna il driver NVIDIA per supportare CUDA 12.4 o versioni successive.",
+    "ai_pack_ready": "I componenti per {device} sono installati e disponibili per la prossima fusione con GPU.",
+    "ai_pack_details": "Download di {size}. Sono necessari {disk} liberi per installare i componenti nell’ambiente di OpenFocus. La prima fusione può richiedere più tempo mentre TensorRT compila il motore.",
     "account_title": "Account OpenFocus",
     "account_heading": "Accedi a OpenFocus",
     "account_subtitle": "Accedi online una volta su questo dispositivo. La sessione salvata consente di usare OpenFocus offline fino alla disconnessione o alla sua rimozione.",

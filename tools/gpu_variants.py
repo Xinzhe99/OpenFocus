@@ -1,8 +1,7 @@
-"""Build and verify the independent Windows GPU variants.
+"""Build and verify historical full-package Windows GPU variants.
 
-CUDA, ROCm and XPU wheels all own the ``torch`` package, so each accelerator
-is built in its own Python environment and shipped as a separate preview.
-Commands used by .github/workflows/gpu-variants.yml:
+The stable Windows release uses the DirectML desktop and an optional isolated
+inference worker. These commands apply to the separate preview build recipes:
     validate, matrix, install <name>, verify <name>, build <name>,
     mark <name> <bundle>, verify-bundle <name> <bundle>,
     package <name> <bundle> <out-dir>, check-asset <path>
@@ -134,7 +133,7 @@ def validate(data: dict) -> list:
             errors.append(f"{name}: unknown channel {channel!r}")
 
     if not any(item.get("channel") == "stable" for item in variants(data)):
-        errors.append("manifest has no stable CUDA reference entry")
+        errors.append("manifest has no historical stable asset reference")
     return errors
 
 

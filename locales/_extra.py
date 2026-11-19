@@ -12,6 +12,13 @@ This file is generated wholesale; edit values in place, not by patching.
 
 EXTRA_TRANSLATIONS = {
     "ja": {
+        "ai_pack_title": "AI 推論高速化コンポーネント",
+        "ai_pack_offer": "{device} で StackMFF を高速化するには TensorRT と PyTorch CUDA をお勧めします。",
+        "ai_pack_check": "GPU とインストール済みコンポーネントを確認しています…",
+        "ai_pack_base": "このデバイスでは OpenFocus に同梱の推論エンジンを使用します。",
+        "ai_pack_driver": "CUDA 12.4 以降に対応する NVIDIA ドライバーに更新してください。",
+        "ai_pack_ready": "{device} 用のコンポーネントをインストールしました。次回の GPU 合成から使用できます。",
+        "ai_pack_details": "ダウンロードは {size} です。インストールには {disk} の空き容量が必要です。OpenFocus 専用の環境にインストールします。初回は TensorRT がエンジンを構築するため、時間がかかる場合があります。",
         "account_title": "OpenFocus アカウント",
         "account_heading": "OpenFocus にサインイン",
         "account_subtitle": "このデバイスで一度オンラインでサインインしてください。保存されたセッションにより、サインアウトまたはセッションを削除するまでオフラインで OpenFocus を使えます。",
@@ -1610,6 +1617,13 @@ EXTRA_TRANSLATIONS = {
         "image_write_tiff_too_large": "TIFF が 4 GiB を超えています。BigTIFF を使用してください。",
     },
     "es": {
+        "ai_pack_title": "Componentes de aceleración de IA",
+        "ai_pack_offer": "Se recomiendan TensorRT y PyTorch CUDA para StackMFF en {device}.",
+        "ai_pack_check": "Comprobando la GPU y los componentes instalados…",
+        "ai_pack_base": "OpenFocus usará sus motores de inferencia integrados en este dispositivo.",
+        "ai_pack_driver": "Actualiza el controlador NVIDIA para que admita CUDA 12.4 o posterior.",
+        "ai_pack_ready": "Los componentes para {device} están instalados y disponibles para la próxima fusión con GPU.",
+        "ai_pack_details": "Descarga de {size}. Se necesitan {disk} libres para instalar los componentes en el entorno propio de OpenFocus. La primera fusión puede tardar más mientras TensorRT compila el motor.",
         "account_title": "Cuenta de OpenFocus",
         "account_heading": "Inicia sesión en OpenFocus",
         "account_subtitle": "Inicia sesión en línea una vez en este dispositivo. La sesión guardada permite usar OpenFocus sin conexión hasta que cierres sesión o la elimines.",

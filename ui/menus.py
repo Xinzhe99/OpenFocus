@@ -474,6 +474,11 @@ def setup_menus(window: QMainWindow) -> None:
     gpu_action.triggered.connect(window.set_use_gpu)
     settings_menu.addAction(gpu_action)
     window.ui_objs['action_gpu_accel'] = gpu_action
+    pack_action = QAction(trans.t('ai_pack_title'), window)
+    pack_action.setProperty('trans_key', 'ai_pack_title')
+    pack_action.triggered.connect(lambda: window.accelerator_banner.open_settings())
+    settings_menu.addAction(pack_action)
+    window.ui_objs['action_ai_pack'] = pack_action
     # Resolve the backend in the background when the user opens Settings.
     # Device probing must never delay menu construction.
     if (_opencl is None or (_gpu_kind is None and _runtime_installed)) and hasattr(
