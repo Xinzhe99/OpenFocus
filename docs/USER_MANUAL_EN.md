@@ -151,10 +151,10 @@ again to retry. The previous desktop sign-in attempt is canceled.
 ### Quick Start Workflow
 
 1. Import your image sequence (File → Open Folder or drag-and-drop)
-2. Configure fusion settings in the right panel
+2. Choose a fusion method in the right panel
 3. Registration starts on **ECC**; choose **No alignment** if the frames are
    already aligned
-4. Adjust kernel size if needed
+4. Open **Parameters** for the selected method if you need to adjust its settings
 5. *(optional)* Open **Render settings** and check **Quick preview** to test parameters on a downscaled draft first
 6. Click "Start Render" to begin processing
 7. Export your results
@@ -180,8 +180,8 @@ You can resize the panels by dragging the splitter handle between them.
 
 The right panel contains all configuration options organized vertically:
 
-1. **Fusion Settings**: Select fusion algorithm and kernel size
-2. **Registration Settings**: Enable/disable alignment methods
+1. **Fusion Settings**: Choose a fusion method and open **Parameters** to adjust its settings.
+2. **Registration Settings**: Choose an alignment method and open **Parameters** when available. Parameter editors start collapsed, leaving more space for the source and output lists.
 3. **Action Buttons**: Start Render, plus reset, **Render settings**, and render all methods. The render settings dialog contains quick preview, frame order, exposure matching, brightness drift removal, and output sharpening
    These options are unchecked for new desktop settings and after reset. Saved choices are preserved.
 4. **Source Images List**: Shows all loaded images with filenames

@@ -443,3 +443,46 @@ def test_batch_dialog_has_an_empty_state(qapp, tmp_path):
         dialog.close()
         dialog.deleteLater()
         qapp.processEvents()
+
+
+@pytest.mark.parametrize(('region', 'language', 'prefer_mirror'), [
+    ('CN', 'en', True), ('US', 'zh', False), ('TW', 'zh', False), ('', 'zh', False),
+])
+def test_accelerator_download_mirror_follows_region(qapp, monkeypatch, region, language, prefer_mirror):
+    from PyQt6.QtWidgets import QCheckBox, QWidget
+    from core.inference_pack import PackStatus
+    from locales import trans
+    from ui import accelerator_setup
+
+    monkeypatch.setattr(accelerator_setup, '_windows_region', lambda: region)
+    monkeypatch.setattr(trans, 'current_lang', language)
+    window = QWidget()
+    banner = accelerator_setup.AcceleratorBanner(window)
+    banner.status = PackStatus(True, 'NVIDIA GPU', '', 100, False, ('TORCH_CUDA',), 'test', 200)
+    installs = []
+    monkeypatch.setattr(banner, '_start', lambda *args: installs.append(args))
+    try:
+        window.show()
+        banner.open_settings()
+        qapp.processEvents()
+        dialog = banner.dialog
+        assert dialog.install_button.isVisible()
+        checkboxes = dialog.findChildren(QCheckBox)
+        if prefer_mirror:
+            mirror, = checkboxes
+            assert mirror.isVisible() and mirror.isChecked()
+        else:
+            assert not checkboxes
+        dialog.install_button.click()
+        assert installs[-1] == (True, None, prefer_mirror)
+        if prefer_mirror:
+            mirror.click()
+            banner.retranslate()
+            dialog.install_button.click()
+            assert installs[-1] == (True, None, False)
+    finally:
+        if banner.dialog is not None:
+            banner.dialog.close()
+        window.close()
+        window.deleteLater()
+        qapp.processEvents()

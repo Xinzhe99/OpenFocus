@@ -1726,20 +1726,16 @@ class RenderManager:
                         logging.getLogger("openfocus").exception(
                             "could not record render provenance; "
                             "the output will not be retouchable")
+                    method = (context or {}).get("algorithm")
+                    label = window.export_manager.generate_default_filename(fusion_method=method)
+                    if compare and method:
+                        label = f"{label} — {self.algo_display_name(method)}"
                     window.output_manager.update_output_list_for_fusion(
+                        label,
                         context=new_context,
                         fusion_details=getattr(self.worker, 'fusion_details', None),
                         linear_dng_metadata=(context or {}).get("linear_dng_metadata"),
                         source_paths=(context or {}).get("source_paths", ()))
-
-                # Tag the newest output entry with the method that made it
-                method = getattr(self, '_compare_current', None) if compare else None
-                if method and window.output_list.count() > 0:
-                    item = window.output_list.item(0)
-                    if item is not None:
-                        item.setText(
-                            f"{item.text()} — {self.algo_display_name(method)}")
-                        window.output_manager.update_record_label(0, item.text())
 
                 # New output: refresh the wipe B-side history, keep selection
                 if getattr(window, "wipe_active", False):

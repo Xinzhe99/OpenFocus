@@ -1,5 +1,6 @@
 """Offer a hardware-matched inference pack without blocking desktop startup."""
 from pathlib import Path
+import sys
 
 from PyQt6.QtCore import QLocale, QThread, Qt, pyqtSignal
 from PyQt6.QtWidgets import (QDialog, QFrame, QHBoxLayout, QLabel, QProgressBar,
@@ -61,6 +62,20 @@ def _plain_label(parent):
     return label
 
 
+def _windows_region() -> str:
+    """Read Windows' Country or region setting independently of app language."""
+    if sys.platform != 'win32':
+        return ''
+
+    import ctypes
+    try:
+        get_region = ctypes.windll.kernel32.GetUserDefaultGeoName
+    except AttributeError:
+        return ''
+    region = ctypes.create_unicode_buffer(16)
+    return region.value if get_region(region, len(region)) else ''
+
+
 class _PackDialog(QDialog):
     def __init__(self, banner):
         super().__init__(banner.window())
@@ -106,8 +121,12 @@ class _PackDialog(QDialog):
         body.addWidget(self.feedback)
         body.addWidget(self.progress)
 
-        self.mirror = ElidingCheckBox(parent=page)
-        self.mirror.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.mirror = None
+        if _windows_region() == 'CN':
+            self.mirror = ElidingCheckBox(parent=page)
+            self.mirror.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+            self.mirror.setChecked(True)
+            body.addWidget(self.mirror)
         self.install_button = ElidingButton(parent=page)
         self.install_button.setObjectName('primaryButton')
         self.install_button.setAutoDefault(False)
@@ -115,7 +134,6 @@ class _PackDialog(QDialog):
         self.local_button = ElidingButton(parent=page)
         self.local_button.setAutoDefault(False)
         self.local_button.clicked.connect(self._pick_archives)
-        body.addWidget(self.mirror)
         body.addWidget(self.install_button)
         body.addWidget(self.local_button)
         self._scroll.setWidget(page)
@@ -137,6 +155,8 @@ class _PackDialog(QDialog):
         self.resize(self.width(), min(self.height(), body_height + footer))
 
     def _fit_mirror(self):
+        if self.mirror is None:
+            return
         style = self.mirror.style()
         chrome = (style.pixelMetric(QStyle.PixelMetric.PM_IndicatorWidth, None, self.mirror)
                   + style.pixelMetric(QStyle.PixelMetric.PM_CheckBoxLabelSpacing, None, self.mirror)
@@ -148,7 +168,8 @@ class _PackDialog(QDialog):
         self._fit_mirror()
 
     def _download(self):
-        self.banner.request_install(prefer_mirror=self.mirror.isChecked())
+        self.banner.request_install(
+            prefer_mirror=self.mirror is not None and self.mirror.isChecked())
 
     def _pick_archives(self):
         folder = FileDialog.getExistingDirectory(self, trans.t('ai_pack_archive_folder'))
@@ -300,9 +321,10 @@ class AcceleratorBanner(QWidget):
         dialog.install_button.setVisible(can_install)
         dialog.local_button.setText(trans.t('ai_pack_install_local'))
         dialog.local_button.setVisible(can_install)
-        dialog.mirror.setText(trans.t('ai_pack_mirror'))
-        dialog.mirror.setVisible(can_install)
-        dialog._fit_mirror()
+        if dialog.mirror is not None:
+            dialog.mirror.setText(trans.t('ai_pack_mirror'))
+            dialog.mirror.setVisible(can_install)
+            dialog._fit_mirror()
         dialog.progress.setVisible(self.job is not None)
         dialog.error.setText(self.error)
         dialog.error.setVisible(bool(self.error))

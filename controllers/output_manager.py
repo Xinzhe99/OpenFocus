@@ -545,10 +545,6 @@ class OutputManager:
         return None
 
 
-    def update_record_label(self, row: int, label: str) -> None:
-        record = self.record_for_row(row)
-        if record is not None:
-            record.label = label
 
     def mark_exported(self, row: Optional[int] = None,
                       path: str = "") -> None:
@@ -753,17 +749,16 @@ class OutputManager:
                 break
             self._remove_row(row)
 
-    def update_output_list_for_fusion(self, context=None, linear_dng_metadata=None,
-                                      source_paths=(), fusion_details=None) -> None:
+    def update_output_list_for_fusion(self, label: str, *, context=None,
+                                      linear_dng_metadata=None, source_paths=(),
+                                      fusion_details=None) -> None:
         window = self.window
-
-        fusion_filename = window.export_manager.generate_default_filename()
 
         image = None
         record = None
         if window.fusion_result is not None:
             image = window.fusion_result
-            record = OutputRecord.create(image, fusion_filename,
+            record = OutputRecord.create(image, label,
                                          context=context, kind="fusion", fusion_details=fusion_details)
             # Freeze the load lineage with the result so later rotate/flip/
             # resize/exclusion keep it in this stack's watermark scope.
@@ -772,7 +767,7 @@ class OutputManager:
                 record.linear_dng_metadata = deepcopy(linear_dng_metadata)
             if source_paths:
                 record.source_paths = tuple(source_paths)
-        self._insert_output(image, fusion_filename, record)
+        self._insert_output(image, label, record)
 
     def add_batch_outputs(self, paths, watermark_baked: bool = False) -> int:
         """Append finished batch files to the output list.

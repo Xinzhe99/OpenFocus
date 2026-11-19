@@ -119,7 +119,7 @@ def test_first_launch_shows_render_controls_and_restores_custom_right_splitter(
         qapp, tmp_path, monkeypatch):
     from PyQt6.QtCore import QPoint
     from main import OpenFocus
-    from tests.test_control_channel import _destroy_main_window, _new_main_window
+    from tests.test_control_channel import _destroy_main_window, _new_main_window, wait_until
     from utils import settings_store
 
     monkeypatch.setattr(OpenFocus, '_probe_stackmff_availability_async', lambda self: None)
@@ -129,11 +129,35 @@ def test_first_launch_shows_render_controls_and_restores_custom_right_splitter(
         parts = window.right_panel_components
         viewport = parts.config_scroll.viewport()
         for button in (parts.btn_render, parts.btn_render_settings, parts.btn_reset,
-                       parts.btn_compare, parts.btn_method_help, parts.btn_reg_help):
+                       parts.btn_compare, parts.btn_method_help, parts.btn_reg_help,
+                       parts.fusion_parameter_panel.disclosure):
             corner = button.mapTo(viewport, QPoint(0, button.height() - 1))
             assert 0 <= corner.y() < viewport.height()
         first_run = parts.splitter.sizes()
-        assert first_run[0] > max(first_run[1:]) > 0
+        fusion = parts.fusion_parameter_panel
+        assert not fusion.isVisible()
+        fusion.disclosure.click()
+        assert wait_until(lambda: parts.splitter.sizes()[0] > first_run[0])
+        assert fusion.isVisible()
+        expanded = parts.splitter.sizes()
+        assert all(0 < expanded[i] < first_run[i] for i in (1, 2))
+        radius = fusion.editors['radius']
+        radius.stepUp()
+        edited = radius.value()
+        assert window.fusion_parameters_for('openfocus_b')['radius'] == edited
+        fusion.disclosure.click()
+        assert wait_until(lambda: parts.splitter.sizes()[0] < expanded[0])
+        assert not fusion.isVisible()
+        collapsed = parts.splitter.sizes()
+        assert all(collapsed[i] > expanded[i] for i in (1, 2))
+        fusion.disclosure.click()
+        assert fusion.editors['radius'].value() == edited
+        fusion.disclosure.click()
+        window.set_fusion_method('none')
+        assert fusion.disclosure.isHidden()
+        window.set_fusion_method('openfocus_b')
+        assert fusion.disclosure.isVisible() and not fusion.isVisible()
+        assert fusion.editors['radius'].value() == edited
 
         parts.splitter.setSizes([first_run[0] // 2, first_run[1], first_run[2]])
         saved = parts.splitter.sizes()
