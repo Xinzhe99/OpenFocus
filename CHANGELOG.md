@@ -76,6 +76,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   opt in to beta updates through Advanced Settings or the welcome dialog.
 - Download and verify supported desktop updates while the app is idle. Keep
   release notes with the staged version and apply it from Restart and Update.
+- Place Japanese last in the desktop language menu.
 - Store registration results in the user cache with a shared 2 GiB budget and
   a Clear Registration Cache action in Advanced Settings.
 - Prepare ECC source frames concurrently within the alignment stage's CPU and
