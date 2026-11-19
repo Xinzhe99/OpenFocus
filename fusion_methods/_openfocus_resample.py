@@ -153,9 +153,69 @@ def half_gray_axes(height, width):
 
 
 @njit(nogil=True, fastmath=False)
+def _store_code(out, x, accumulator):
+    """Store a float32 sum as its rounded, clamped 16-bit code."""
+    rounded = np.float32(accumulator + np.float32(0.5))
+    if rounded <= np.float32(0.0):
+        out[x] = 0
+    elif rounded >= np.float32(65535.0):
+        out[x] = 65535
+    else:
+        out[x] = int(rounded)
+
+
+@njit(nogil=True, fastmath=False)
+def _repeats(indices, weights, counts, column, reference):
+    """Whether a column uses every tap slot with the reference column's weights,
+    on consecutive source columns two further right per output column."""
+    taps = indices.shape[1]
+    base = indices[reference, 0] + 2 * (column - reference)
+    if counts[column] != taps or base < 0:
+        return False
+    for tap in range(taps):
+        if (weights[column, tap] != weights[reference, tap]
+                or indices[column, tap] != base + tap):
+            return False
+    return True
+
+
+@njit(nogil=True, fastmath=False)
+def _repeated_columns(indices, weights, counts):
+    """Find the first run [first, last) of columns that repeat one another.
+
+    A half-size plan repeats every column away from its edges. The run is read
+    from the plan itself, so any other plan keeps the per-pixel pass.
+    """
+    width, taps = indices.shape
+    if taps < 2 or taps % 2:
+        return 0, 0
+    first = 0
+    while first < width and not _repeats(indices, weights, counts, first, first):
+        first += 1
+    last = first
+    while last < width and _repeats(indices, weights, counts, last, first):
+        last += 1
+    return first, last
+
+
+@njit(nogil=True, fastmath=False)
+def _resample_columns(row, out, indices, weights, counts, first, last):
+    """Give columns [first, last) their taps in order along one scratch row."""
+    # Slices restart the column index at zero: the same loop from a nonzero
+    # start compiles to slower code.
+    out, indices = out[first:last], indices[first:last]
+    weights, counts = weights[first:last], counts[first:last]
+    for x in range(out.shape[0]):
+        accumulator = np.float32(0.0)
+        for tap in range(counts[x]):
+            accumulator = _fma_f32(weights[x, tap], row[indices[x, tap]], accumulator)
+        _store_code(out, x, accumulator)
+
+
+@njit(nogil=True, fastmath=False)
 def _resample_rows(source, output, vertical_indices, vertical_weights,
                    vertical_counts, horizontal_indices, horizontal_weights,
-                   horizontal_counts, start, stop, scratch):
+                   horizontal_counts, start, stop, scratch, sums):
     # One vertical tap at a time across a whole scratch row, so the column
     # loop vectorises. Every pixel still starts at zero and takes its taps in
     # order, the same FMA sequence as a per-pixel loop.
@@ -168,20 +228,34 @@ def _resample_rows(source, output, vertical_indices, vertical_weights,
             line = source[vertical_indices[y, tap]]
             for x in range(source.shape[1]):
                 row[x] = _fma_f32(weight, np.float32(line[x]), row[x])
+    # Columns that repeat one another take two horizontal taps at a time
+    # across the row, each sweep reading whole source pairs, so that loop
+    # vectorises as well. Their sums start at zero and take the taps in order,
+    # the same FMA sequence the other columns get one pixel at a time.
+    width = output.shape[1]
+    first, last = _repeated_columns(horizontal_indices, horizontal_weights,
+                                    horizontal_counts)
+    last = min(last, first + sums.shape[0])
     for y in range(start, stop):
-        local_y = y - start
-        for x in range(output.shape[1]):
-            accumulator = np.float32(0.0)
-            for tap in range(horizontal_counts[x]):
-                value = scratch[local_y, horizontal_indices[x, tap]]
-                accumulator = _fma_f32(horizontal_weights[x, tap], value, accumulator)
-            rounded = np.float32(accumulator + np.float32(0.5))
-            if rounded <= np.float32(0.0):
-                output[y, x] = 0
-            elif rounded >= np.float32(65535.0):
-                output[y, x] = 65535
-            else:
-                output[y, x] = int(rounded)
+        row = scratch[y - start]
+        out = output[y]
+        _resample_columns(row, out, horizontal_indices, horizontal_weights,
+                          horizontal_counts, 0, first)
+        _resample_columns(row, out, horizontal_indices, horizontal_weights,
+                          horizontal_counts, last, width)
+        if last > first:
+            repeated = out[first:last]
+            for x in range(last - first):
+                sums[x] = np.float32(0.0)
+            for tap in range(0, horizontal_indices.shape[1], 2):
+                even = horizontal_weights[first, tap]
+                odd = horizontal_weights[first, tap + 1]
+                line = row[horizontal_indices[first, tap]:]
+                for x in range(last - first):
+                    sums[x] = _fma_f32(odd, line[2 * x + 1],
+                                       _fma_f32(even, line[2 * x], sums[x]))
+            for x in range(last - first):
+                _store_code(repeated, x, sums[x])
 
 
 def _resample(source, axes, should_cancel):
@@ -194,7 +268,8 @@ def _resample(source, axes, should_cancel):
     if not _resample_rows.signatures:
         require_memory(DEPTH_KERNEL_STARTUP_BYTES)
     output = create_transient_frame((height, width), np.uint16)
-    scratch_shape = (min(_BAND_ROWS, height), source.shape[1])
+    # One row beyond the band holds the horizontal sums of repeated columns.
+    scratch_shape = (min(_BAND_ROWS, height) + 1, source.shape[1])
 
     def workspace():
         return create_transient_frame(scratch_shape, np.float32)
@@ -203,7 +278,7 @@ def _resample(source, axes, should_cancel):
         check()
         _resample_rows(source, output, vertical.indices, vertical.weights,
                        vertical.counts, horizontal.indices, horizontal.weights,
-                       horizontal.counts, start, stop, scratch)
+                       horizontal.counts, start, stop, scratch, scratch[-1])
         check()
 
     run_bands(height, _BAND_ROWS, rows,

@@ -1,4 +1,4 @@
-"""The resample row kernel equals its previous per-pixel definition exactly."""
+"""The resample row kernel equals its per-pixel definition exactly."""
 import threading
 
 import numpy as np
@@ -6,15 +6,16 @@ import pytest
 
 from core import resource_policy, source_frames
 from fusion_methods import _openfocus_resample as resample
-from fusion_methods._openfocus_resample import _axis_plan, _fma_f32, half_gray_axes
+from fusion_methods._openfocus_resample import (
+    _axis_plan, _fma_f32, _repeated_columns, half_gray_axes)
 from numba import njit
 
 
 @njit(nogil=True, fastmath=False)
-def _previous_resample_rows(source, output, vertical_indices, vertical_weights,
-                            vertical_counts, horizontal_indices, horizontal_weights,
-                            horizontal_counts, start, stop, scratch):
-    """The kernel before the vertical pass moved its tap loop outside the columns."""
+def _per_pixel_resample_rows(source, output, vertical_indices, vertical_weights,
+                             vertical_counts, horizontal_indices, horizontal_weights,
+                             horizontal_counts, start, stop, scratch):
+    """The defining kernel: every pixel takes its taps one at a time, in order."""
     for y in range(start, stop):
         local_y = y - start
         for x in range(source.shape[1]):
@@ -39,17 +40,23 @@ def _previous_resample_rows(source, output, vertical_indices, vertical_weights,
                 output[y, x] = int(rounded)
 
 
+def _per_pixel(*arguments):
+    """The per-pixel kernel needs no row for horizontal sums."""
+    return _per_pixel_resample_rows(*arguments[:-1])
+
+
 def _run(kernel, source, axes, bands):
     vertical, horizontal = axes
     output = np.full((vertical.indices.shape[0], horizontal.indices.shape[0]), 7,
                      dtype=np.uint16)
     scratches = []
     for start, stop in bands:
-        scratch = np.full((stop - start, source.shape[1]), np.nan, dtype=np.float32)
+        # As in _resample, one row beyond the band holds horizontal sums.
+        scratch = np.full((stop - start + 1, source.shape[1]), np.nan, dtype=np.float32)
         kernel(source, output, vertical.indices, vertical.weights, vertical.counts,
                horizontal.indices, horizontal.weights, horizontal.counts,
-               start, stop, scratch)
-        scratches.append(scratch)
+               start, stop, scratch, scratch[-1])
+        scratches.append(scratch[:-1])
     return output, np.concatenate(scratches)
 
 
@@ -68,28 +75,64 @@ def _sources(shape):
     }
 
 
+def _altered(plan, change):
+    """A copy of a plan with one column near the middle changed."""
+    indices, weights, counts = plan.indices.copy(), plan.weights.copy(), plan.counts.copy()
+    change(indices, weights, counts, indices.shape[0] // 2)
+    return plan._replace(indices=indices, weights=weights, counts=counts)
+
+
+def _next_weight(indices, weights, counts, column):
+    weights[column, 3] = np.nextafter(weights[column, 3], np.float32(2))
+
+
+def _swap_taps(indices, weights, counts, column):
+    indices[column, 2], indices[column, 3] = indices[column, 3], indices[column, 2]
+
+
+def _drop_tap(indices, weights, counts, column):
+    counts[column] = max(1, counts[column] - 1)
+
+
+def _shift_left(indices, weights, counts, column):
+    indices[column:] = np.maximum(indices[column:] - 1, 0)
+
+
 def _plans(shape):
-    return {
-        'half': half_gray_axes(*shape),
+    vertical, horizontal = half_gray_axes(*shape)
+    plans = {
+        'half': (vertical, horizontal),
         'expand x2': (_axis_plan(shape[0], 2 * shape[0], linear=True),
                       _axis_plan(shape[1], 2 * shape[1], linear=True)),
         'expand odd': (_axis_plan(shape[0], 2 * shape[0] + 1, linear=True),
                        _axis_plan(shape[1], 3 * shape[1] - 1, linear=True)),
         'same size': (_axis_plan(shape[0], shape[0], linear=True),
                       _axis_plan(shape[1], shape[1], linear=True)),
+        # Two linear taps per column, two source columns apart: columns repeat.
+        'linear half': (_axis_plan(shape[0], max(1, shape[0] // 2), linear=True),
+                        _axis_plan(shape[1], max(1, shape[1] // 2), linear=True)),
+        # Seven tap slots: an odd number is never paired.
+        'seven taps': (vertical, horizontal._replace(
+            indices=np.ascontiguousarray(horizontal.indices[:, :7]),
+            weights=np.ascontiguousarray(horizontal.weights[:, :7]),
+            counts=np.minimum(horizontal.counts, 7))),
     }
+    # Half plans whose run of repeating columns is broken in the middle.
+    for change in (_next_weight, _swap_taps, _drop_tap, _shift_left):
+        plans[change.__name__] = (vertical, _altered(horizontal, change))
+    return plans
 
 
 @pytest.mark.parametrize('shape', [(1, 1), (1, 6), (6, 1), (2, 2), (3, 7), (7, 3),
                                    (9, 13), (64, 33), (131, 257)])
-def test_resample_rows_match_previous_kernel(shape):
+def test_resample_rows_match_per_pixel_kernel(shape):
     for plan_name, axes in _plans(shape).items():
         height = axes[0].indices.shape[0]
         cuts = sorted({1, height // 3, height // 2 + 1} & set(range(1, height)))
         edges = [0, *cuts, height]
         for bands in ([(0, height)], list(zip(edges[:-1], edges[1:]))):
             for source_name, source in _sources(shape).items():
-                expected, expected_scratch = _run(_previous_resample_rows, source, axes, bands)
+                expected, expected_scratch = _run(_per_pixel, source, axes, bands)
                 output, scratch = _run(resample._resample_rows, source, axes, bands)
                 np.testing.assert_array_equal(
                     output, expected, err_msg=f'{plan_name} {source_name} {bands}')
@@ -97,6 +140,25 @@ def test_resample_rows_match_previous_kernel(shape):
                 np.testing.assert_array_equal(
                     scratch.view(np.uint32), expected_scratch.view(np.uint32),
                     err_msg=f'{plan_name} {source_name} {bands}')
+
+
+@pytest.mark.parametrize('length, run', [(3912, (2, 1954)), (3913, (2, 1955)),
+                                         (16, (2, 6))])
+def test_half_plan_columns_repeat_between_the_edges(length, run):
+    plan = _axis_plan(length, length // 2)
+    assert _repeated_columns(plan.indices, plan.weights, plan.counts) == run
+    # The run is every column that has all eight taps, and only those.
+    full = np.flatnonzero(plan.counts == plan.indices.shape[1])
+    assert run == (full[0], full[-1] + 1) and full.size == run[1] - run[0]
+
+
+@pytest.mark.parametrize('source, target, linear', [
+    (1956, 3912, True), (1956, 3913, True), (300, 300, True), (1, 1, True),
+    (7, 3, False), (1, 1, False)])
+def test_other_plans_have_no_repeating_run(source, target, linear):
+    plan = _axis_plan(source, target, linear=linear)
+    first, last = _repeated_columns(plan.indices, plan.weights, plan.counts)
+    assert last - first <= 1
 
 
 @pytest.fixture
@@ -113,7 +175,7 @@ def resources(monkeypatch):
 
 
 @pytest.mark.parametrize('dtype', [np.uint8, np.uint16])
-def test_b_fusion_matches_previous_resample_kernel(resources, monkeypatch, dtype):
+def test_b_fusion_matches_per_pixel_resample_kernel(resources, monkeypatch, dtype):
     from fusion_methods.openfocus_bc import openfocus_b_impl
 
     rng = np.random.default_rng(1118)
@@ -123,12 +185,12 @@ def test_b_fusion_matches_previous_resample_kernel(resources, monkeypatch, dtype
     result = openfocus_b_impl(frames, thread_count=4)
     calls = []
 
-    def previous(*args):
+    def per_pixel(*args):
         calls.append(threading.get_ident())
-        return _previous_resample_rows(*args)
+        return _per_pixel(*args)
     # _resample reads the dispatcher's signatures to admit compiler memory.
-    previous.signatures = _previous_resample_rows.signatures
-    monkeypatch.setattr(resample, '_resample_rows', previous)
+    per_pixel.signatures = _per_pixel_resample_rows.signatures
+    monkeypatch.setattr(resample, '_resample_rows', per_pixel)
     expected = openfocus_b_impl(frames, thread_count=4)
     np.testing.assert_array_equal(result, expected)
     # Three half-gray reductions and one depth expansion, in bands on workers.
