@@ -132,7 +132,7 @@ La barra de menús superior da acceso a todas las funciones:
 - **Editar**: transformaciones de imagen, retoque y etiquetas
 - **Herramientas**: unión de imágenes, procesamiento por lotes, comparación de métodos, mapa de profundidad, corrección de campo plano, barra de escala y etiquetas
 - **Ajustes**: ajustes avanzados (General, Fusión, Registro, Arranque y actualizaciones), aceleración por GPU, tema e idioma
-- **Ayuda**: información del entorno, contacto, búsqueda de actualizaciones y carpeta de registros
+- **Ayuda**: Enviar comentarios (diagnóstico y registros), contacto y búsqueda de actualizaciones
 
 **Herramientas → Unir imágenes…** abre un espacio de trabajo independiente para regiones de microscopio ya fusionadas y panoramas de cámara; no modifica la pila actual. La pestaña **Asistente de proyecto** reúne importación, alineación y puntos de control; **Imágenes de origen** contiene la lista, la cuadrícula y la colocación manual; **Editor de panoramas** contiene los ajustes de costuras, mezcla, exposición/color, salida, proyección, cámara y HDR, además de las superposiciones de vista previa. Use **Añadir archivos…**, **Abrir carpeta** o **Añadir resultados…** para copiar resultados elegidos de la sesión actual, o arrastre archivos o carpetas a la lista o al lienzo. La carpeta solo importa los archivos compatibles directamente dentro de ella, no subcarpetas. Las importaciones usan el orden natural del nombre, ignoran rutas duplicadas y añaden cada página de un TIFF multipágina como imagen independiente. Seleccione una imagen y pulse Suprimir o Retroceso para quitarla del espacio de trabajo sin borrar el archivo.
 
@@ -512,7 +512,7 @@ Ajustar parámetros en pilas grandes es lento a resolución completa. Abre **Aju
 
 ### Rotación
 
-1. Ve a **Editar → Rotar**
+1. Ve a **Editar → Rotar y voltear**
 2. Elige el tipo de rotación:
    - **90° horario**: gira todas las imágenes 90 grados a la derecha
    - **90° antihorario**: gira todas las imágenes 90 grados a la izquierda
@@ -520,7 +520,7 @@ Ajustar parámetros en pilas grandes es lento a resolución completa. Abre **Aju
 
 ### Volteo
 
-1. Ve a **Editar → Voltear**
+1. Ve a **Editar → Rotar y voltear**
 2. Elige el tipo de volteo:
    - **Volteo horizontal**: refleja de izquierda a derecha
    - **Volteo vertical**: refleja de arriba abajo
@@ -540,7 +540,7 @@ Las transformaciones se aplican a toda la pila de imágenes, manteniendo la alin
 
 ## 10. Retoque, etiquetas y anotaciones
 
-### Retocar el resultado (Editar → Retocar resultado…, `Ctrl+T`)
+### Retocar el resultado (Editar → Retocar resultado → Salida de este espacio de trabajo…, `Ctrl+T`)
 
 La fusión puede dejar todavía algún defecto local: un halo alrededor de un borde de alto contraste, una cerda tomada del fotograma equivocado, ruido en una zona plana. El espacio de trabajo copia píxeles de los fotogramas exactos que produjeron el resultado seleccionado:
 
@@ -559,7 +559,7 @@ Para una corrección tonal local, selecciona **Pincel de exposición**, ajusta s
 
 La procedencia viaja con la salida: los fotogramas alineados, los desplazamientos de recorte y pegado del ROI, el recorte de bordes de DCT y la profundidad de bits se registran cuando se renderiza el resultado. Los archivos de lote, los resultados heredados y las entradas de carpeta de solo alineación no tienen origen registrado, así que se listan como no disponibles en lugar de suponerlos a partir de la pila actual. Los trazos no aplicados y el historial de deshacer son solo de sesión; guardar un proyecto no los almacena.
 
-Para un archivo de imagen existente, elige **Editar → Retocar archivos de imagen…** y después selecciona el resultado y una o varias imágenes de origen. Las fuentes ya deben estar alineadas con el resultado en la misma cuadrícula de píxeles; que las dimensiones coincidan no demuestra la alineación. Se aceptan imágenes PNG, TIFF, JPEG y BMP de una sola página con dimensiones verticales, canales y profundidad de 8 o 16 bits coincidentes; la orientación EXIF se aplica al cargar. No se admiten imágenes con alfa ni multipágina. Los fotogramas seleccionados los aporta el usuario, no son procedencia registrada del renderizado. Aplicar crea una salida separada sin exportar; guárdala desde la lista de salida. Los archivos elegidos se protegen contra sobrescritura durante esta sesión, incluidas las exportaciones de mapas de profundidad y mallas 3D. Como en otros resultados, los archivos de proyecto no almacenan estos píxeles ni el historial de pincel.
+Para un archivo de imagen existente, elige **Editar → Retocar resultado → Resultado fusionado desde un archivo…** y después selecciona el resultado y una o varias imágenes de origen. Las fuentes ya deben estar alineadas con el resultado en la misma cuadrícula de píxeles; que las dimensiones coincidan no demuestra la alineación. Se aceptan imágenes PNG, TIFF, JPEG y BMP de una sola página con dimensiones verticales, canales y profundidad de 8 o 16 bits coincidentes; la orientación EXIF se aplica al cargar. No se admiten imágenes con alfa ni multipágina. Los fotogramas seleccionados los aporta el usuario, no son procedencia registrada del renderizado. Aplicar crea una salida separada sin exportar; guárdala desde la lista de salida. Los archivos elegidos se protegen contra sobrescritura durante esta sesión, incluidas las exportaciones de mapas de profundidad y mallas 3D. Como en otros resultados, los archivos de proyecto no almacenan estos píxeles ni el historial de pincel.
 
 ### Sustituir el fondo (Fondo automático)
 
@@ -656,9 +656,9 @@ Las recetas exigen que su ubicación de salida esté fuera de todas las carpetas
 
 Cuando una referencia de archivo se aplica en Herramientas a la escala base de la pila, un proyecto guardado registra su ruta absoluta, el hash de contenido y el tamaño de polvo, y la reaplica una vez a las fuentes originales al abrir. Mantén el archivo de referencia sin cambios y en su sitio: una referencia ausente o modificada impide abrir el proyecto. Una referencia seleccionada de la pila, o una corrección a otra escala de trabajo/base, todavía exige exportar la pila de origen corregida antes de guardar un proyecto. Si la escala de trabajo cambia después de la corrección, restáurala a la escala de corrección antes de guardar o exporta la pila corregida.
 
-**Ayuda → Enviar comentarios** abre los registros locales. Copiar copia el registro visible de la sesión; el ZIP de comentarios contiene los registros de sesión y de la aplicación completa, además de información del entorno. Revisa el paquete antes de enviarlo tú mismo. Abrir GitHub solo abre el rastreador. Cancelar una exportación deja los archivos intactos; un error conserva el archivo de destino anterior y muestra la ruta fallida.
+**Ayuda → Enviar comentarios** abre la pestaña **Canales de comentarios**, con acceso al centro de cuentas y a GitHub. En **Diagnóstico** encontrarás **Registro de la sesión** e **Información del entorno**. El botón **Abrir carpeta de registros** está abajo, junto a Cerrar. Copiar copia el registro visible de la sesión; el ZIP de comentarios contiene los registros de sesión y de la aplicación completa, además de información del entorno. Revisa el paquete antes de enviarlo tú mismo. Abrir GitHub solo abre el rastreador. Cancelar una exportación deja los archivos intactos; un error conserva el archivo de destino anterior y muestra la ruta fallida.
 
-Cada inicio escribe su propio registro rotativo, de modo que los trabajos concurrentes de interfaz y CLI mantienen registros separados. Los ID de tarea vinculan parámetros, tiempo transcurrido y resultados completados/cancelados/fallidos; los errores inesperados incluyen una traza completa. El ZIP de comentarios también incluye el informe de fallos actual y las versiones de las dependencias. Usa **Ayuda → Abrir carpeta de registros** o la ruta mostrada en la página de comentarios para encontrar los archivos. Los registros rotan a 1 MB con tres copias de seguridad por proceso; los registros de sesiones inactivas de más de 14 días se eliminan. Para registros de soporte detallados, define `OPENFOCUS_LOG_LEVEL=DEBUG` antes de iniciar; `OPENFOCUS_LOG_DIR` permite elegir otra carpeta de registros.
+Cada inicio escribe su propio registro rotativo, de modo que los trabajos concurrentes de interfaz y CLI mantienen registros separados. Los ID de tarea vinculan parámetros, tiempo transcurrido y resultados completados/cancelados/fallidos; los errores inesperados incluyen una traza completa. El ZIP de comentarios también incluye el informe de fallos actual y las versiones de las dependencias. Usa **Ayuda → Enviar comentarios → Abrir carpeta de registros** o la ruta mostrada en la página de comentarios para encontrar los archivos. Los registros rotan a 1 MB con tres copias de seguridad por proceso; los registros de sesiones inactivas de más de 14 días se eliminan. Para registros de soporte detallados, define `OPENFOCUS_LOG_LEVEL=DEBUG` antes de iniciar; `OPENFOCUS_LOG_DIR` permite elegir otra carpeta de registros.
 
 ### Ajustes de mosaicos (optimización de memoria)
 
@@ -1044,7 +1044,7 @@ Códigos de salida: `0` éxito, `1` error de procesamiento, `2` error de uso. Ej
 
 - Activa y confirma las funciones experimentales en Ajustes avanzados; los métodos de IA del escritorio están bloqueados sin esta opción. El entorno y el modelo son requisitos independientes.
 - Comprueba ONNX Runtime y el modelo incluido.
-- Compruébalo en **Ayuda → Información del entorno**
+- Compruébalo en **Ayuda → Enviar comentarios → Diagnóstico → Información del entorno**
 
 #### Errores de memoria insuficiente
 
@@ -1082,7 +1082,7 @@ o haz clic derecho en la aplicación y elige **Abrir**. Las compilaciones public
 
 ### Obtener ayuda
 
-1. **Información del entorno**: ve a **Ayuda → Información del entorno** para comprobar tu instalación
+1. **Información del entorno**: ve a **Ayuda → Enviar comentarios → Diagnóstico → Información del entorno** para comprobar tu instalación
 2. **Contactar con soporte**: ve a **Ayuda → Contacto** para obtener información de soporte
 
 ---

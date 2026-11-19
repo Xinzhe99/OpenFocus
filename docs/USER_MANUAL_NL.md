@@ -164,7 +164,7 @@ De menubalk bovenaan biedt toegang tot alle functies:
 - **Bewerken**: beeldtransformaties, retoucheren en het bewerken van losse beeldbestanden
 - **Extra**: afbeeldingen samenvoegen, batchverwerking, methodenvergelijking, dieptekaart, stofkaart (flat-field), schaalbalk en labels
 - **Instellingen**: geavanceerde instellingen (Algemeen, Fusie, Registratie, Opstarten en updates), GPU-versnelling, thema en taal
-- **Help**: snelstartgids, omgevingsinfo, feedback, contact, logmap en updatecontrole
+- **Help**: snelstartgids, Feedback versturen (diagnostiek en logboeken), contact en updatecontrole
 
 **Extra → Afbeeldingen samenvoegen…** opent een aparte werkruimte voor al gefuseerde microscoopgebieden en camerapanorama's; de huidige stapel wordt niet gewijzigd. Het tabblad **Projectassistent** bundelt importeren, uitlijnen en controlepunten, **Bronafbeeldingen** bevat de lijst, het raster en handmatige plaatsing, **Panorama-editor** bevat naad-, meng-, belichtings-/kleur-, uitvoer-, projectie-, camera- en HDR-instellingen plus voorbeeldoverlays. Gebruik **Bestanden toevoegen…**, **Map openen** of **Resultaten toevoegen…** om gekozen resultaten van de huidige sessie te kopiëren, of sleep bestanden of mappen naar de lijst of het canvas. Mapimport bevat alleen ondersteunde bestanden direct in de map, geen submappen. Import volgt de natuurlijke bestandsnaamvolgorde, negeert dubbele paden en voegt elke pagina van een meerdelige TIFF als afzonderlijke afbeelding toe. Selecteer een afbeelding en druk op Delete of Backspace om deze uit de werkruimte te verwijderen zonder het bestand te wissen.
 
@@ -549,7 +549,7 @@ Parameters afstellen op grote stapels is traag op volledige resolutie. Open **Re
 
 ### Draaien
 
-1. Ga naar **Bewerken → Draaien**
+1. Ga naar **Bewerken → Draaien en spiegelen**
 2. Kies het draaitype:
    - **90° rechtsom**: alle afbeeldingen 90 graden naar rechts draaien
    - **90° linksom**: alle afbeeldingen 90 graden naar links draaien
@@ -557,7 +557,7 @@ Parameters afstellen op grote stapels is traag op volledige resolutie. Open **Re
 
 ### Spiegelen
 
-1. Ga naar **Bewerken → Spiegelen**
+1. Ga naar **Bewerken → Draaien en spiegelen**
 2. Kies het spiegelingstype:
    - **Horizontaal spiegelen**: van links naar rechts spiegelen
    - **Verticaal spiegelen**: van boven naar beneden spiegelen
@@ -577,7 +577,7 @@ Transformaties worden op de hele beeldstapel toegepast en behouden de uitlijning
 
 ## 10. Retoucheren, labels en annotaties
 
-### Het resultaat retoucheren (Bewerken → Resultaat retoucheren…, `Ctrl+T`)
+### Het resultaat retoucheren (Bewerken → Resultaat retoucheren → Uitvoer in deze werkruimte…, `Ctrl+T`)
 
 Fusie kan nog steeds een lokaal defect achterlaten — een halo rond een contrastrijke rand, een haartje uit het verkeerde frame, ruis in een vlak gebied. De werkruimte kopieert pixels uit precies de frames die het geselecteerde resultaat hebben geproduceerd:
 
@@ -596,7 +596,7 @@ Voor een lokale toonaanpassing kies je **Belichtingspenseel**, stel je het bedra
 
 Herkomst wordt met de uitvoer opgeslagen: de uitgelijnde frames, ROI-bijsnijdings-/plakoffsets, DCT-randtrimming en bitdiepte worden vastgelegd wanneer het resultaat wordt gerenderd. Batchbestanden, oudere resultaten en items uit alleen-uitlijnen hebben geen vastgelegde bron en worden daarom als niet beschikbaar vermeld in plaats van uit de huidige stapel te worden geraden. Niet-toegepaste streken en de ongedaan-maakgeschiedenis gelden alleen voor de sessie; een project opslaan bewaart ze niet.
 
-Voor een bestaand afbeeldingsbestand kies je **Bewerken → Afbeeldingsbestanden retoucheren…** en selecteer je het resultaat en een of meer bronafbeeldingen. De bronnen moeten al op hetzelfde pixelraster als het resultaat zijn uitgelijnd; gelijke afmetingen alleen bewijzen geen uitlijning. Enkelbladige PNG-, TIFF-, JPEG- en BMP-afbeeldingen met overeenkomende rechtopstaande afmetingen, kanalen en 8- of 16-bitdiepte worden geaccepteerd; EXIF-oriëntatie wordt bij het laden toegepast. Alpha- en meerbladige afbeeldingen worden niet ondersteund. De geselecteerde frames zijn door de gebruiker aangeleverd, geen vastgelegde renderherkomst. **Toepassen** maakt een aparte, niet-geëxporteerde uitvoer; sla die op vanuit de uitvoerlijst. De gekozen bestanden zijn tijdens deze sessie beschermd tegen overschrijven, inclusief export van dieptekaarten en 3D-meshes. Zoals bij andere resultaten bewaren projectbestanden deze pixels of penseelgeschiedenis niet.
+Voor een bestaand afbeeldingsbestand kies je **Bewerken → Resultaat retoucheren → Fusieresultaat uit bestand…** en selecteer je het resultaat en een of meer bronafbeeldingen. De bronnen moeten al op hetzelfde pixelraster als het resultaat zijn uitgelijnd; gelijke afmetingen alleen bewijzen geen uitlijning. Enkelbladige PNG-, TIFF-, JPEG- en BMP-afbeeldingen met overeenkomende rechtopstaande afmetingen, kanalen en 8- of 16-bitdiepte worden geaccepteerd; EXIF-oriëntatie wordt bij het laden toegepast. Alpha- en meerbladige afbeeldingen worden niet ondersteund. De geselecteerde frames zijn door de gebruiker aangeleverd, geen vastgelegde renderherkomst. **Toepassen** maakt een aparte, niet-geëxporteerde uitvoer; sla die op vanuit de uitvoerlijst. De gekozen bestanden zijn tijdens deze sessie beschermd tegen overschrijven, inclusief export van dieptekaarten en 3D-meshes. Zoals bij andere resultaten bewaren projectbestanden deze pixels of penseelgeschiedenis niet.
 
 ### De achtergrond vervangen (Automatische achtergrond)
 
@@ -697,9 +697,9 @@ Recepten vereisen een uitvoerlocatie buiten elke invoermap en weigeren een uitdr
 
 Wanneer een bestandsreferentie in Extra op de basisschaal van de stapel wordt toegepast, legt een opgeslagen project het absolute pad, de inhoudshash en de stofgrootte vast en past die bij openen één keer toe op de oorspronkelijke bronnen. Houd het referentiebestand ongewijzigd en op zijn plaats: een ontbrekende of gewijzigde referentie verhindert het openen van het project. Een referentie die uit de stapel is gekozen, of correctie op een andere werk-/basisschaal, vereist nog steeds export van de gecorrigeerde bronstapel voordat een project wordt opgeslagen. Verandert de werkschaal na correctie, zet die dan vóór opslaan terug naar de correctieschaal of exporteer de gecorrigeerde stapel.
 
-**Help → Feedback versturen…** opent lokale logboeken. Kopiëren kopieert het zichtbare sessielogboek; de feedback-ZIP bevat sessie- en volledige applicatielogboeken en omgevingsinformatie. Controleer het pakket voordat je het zelf indient. GitHub openen opent alleen de tracker. Annuleren van een export laat bestanden ongewijzigd; bij een fout blijft het vorige doelbestand behouden en wordt het mislukte pad getoond.
+**Help → Feedback versturen** opent het tabblad **Feedbackkanalen**, met toegang tot het accountcentrum en GitHub. Onder **Diagnostiek** vind je **Sessielogboek** en **Omgevingsinfo**. De knop **Logmap openen** staat onderaan naast Sluiten. Kopiëren kopieert het zichtbare sessielogboek; de feedback-ZIP bevat sessie- en volledige applicatielogboeken en omgevingsinformatie. Controleer het pakket voordat je het zelf indient. GitHub openen opent alleen de tracker. Annuleren van een export laat bestanden ongewijzigd; bij een fout blijft het vorige doelbestand behouden en wordt het mislukte pad getoond.
 
-Elke start schrijft zijn eigen roterende logboek, zodat gelijktijdige GUI-/CLI-taken gescheiden registraties houden. Taak-ID's koppelen parameters, verstreken tijd en uitkomsten (voltooid/geannuleerd/mislukt); onverwachte fouten bevatten een volledige traceback. De feedback-ZIP bevat ook het huidige crashrapport en afhankelijkheidsversies. Gebruik **Help → Logmap openen** of het pad op de feedbackpagina om de bestanden te vinden. Logboeken roteren bij 1 MB met drie back-ups per proces; inactieve sessielogboeken ouder dan 14 dagen worden verwijderd. Stel voor uitgebreide supportlogboeken `OPENFOCUS_LOG_LEVEL=DEBUG` in vóór de start; `OPENFOCUS_LOG_DIR` kiest optioneel een andere logmap.
+Elke start schrijft zijn eigen roterende logboek, zodat gelijktijdige GUI-/CLI-taken gescheiden registraties houden. Taak-ID's koppelen parameters, verstreken tijd en uitkomsten (voltooid/geannuleerd/mislukt); onverwachte fouten bevatten een volledige traceback. De feedback-ZIP bevat ook het huidige crashrapport en afhankelijkheidsversies. Gebruik **Help → Feedback versturen → Logmap openen** of het pad op de feedbackpagina om de bestanden te vinden. Logboeken roteren bij 1 MB met drie back-ups per proces; inactieve sessielogboeken ouder dan 14 dagen worden verwijderd. Stel voor uitgebreide supportlogboeken `OPENFOCUS_LOG_LEVEL=DEBUG` in vóór de start; `OPENFOCUS_LOG_DIR` kiest optioneel een andere logmap.
 
 ### Tegelinstellingen (geheugenoptimalisatie)
 
@@ -1091,7 +1091,7 @@ Exitcodes: `0` succes, `1` verwerkingsfout, `2` gebruiksfout. `python main.py --
 
 - Schakel experimentele functies in de geavanceerde instellingen in en bevestig; AI-methoden zijn op de desktop anders uitgeschakeld. Runtime en model zijn afzonderlijke vereisten.
 - Controleer ONNX Runtime en het meegeleverde model.
-- Controleer via **Help → Omgevingsinfo**
+- Controleer via **Help → Feedback versturen → Diagnostiek → Omgevingsinfo**
 
 #### Fouten door te weinig geheugen
 
@@ -1129,9 +1129,9 @@ of klik met rechts op de app en kies **Open**. De vrijgegeven macOS-builds zijn 
 
 ### Hulp krijgen
 
-1. **Omgevingsinfo**: controleer je installatie via **Help → Omgevingsinfo**
+1. **Omgevingsinfo**: controleer je installatie via **Help → Feedback versturen → Diagnostiek → Omgevingsinfo**
 2. **Contact opnemen**: ga naar **Help → Contact opnemen** voor supportinformatie
-3. **Feedback versturen**: via **Help → Feedback versturen…** kopieer je logboeken of exporteer je een pakket om handmatig in te dienen
+3. **Feedback versturen**: via **Help → Feedback versturen → Diagnostiek** kopieer je logboeken of exporteer je een pakket om handmatig in te dienen
 
 ---
 

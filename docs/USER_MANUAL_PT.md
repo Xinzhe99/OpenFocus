@@ -132,7 +132,7 @@ A barra de menus superior dá acesso a todas as funções:
 - **Editar**: transformações de imagem, retoque e rótulos
 - **Ferramentas**: união de imagens, processamento em lote, comparação de métodos, mapa de profundidade, correção de campo plano, barra de escala e rótulos
 - **Configurações**: configurações avançadas (Geral, Fusão, Registro, Início e atualizações), aceleração por GPU, tema e idioma
-- **Ajuda**: informações do ambiente, contato, verificação de atualizações e pasta de logs
+- **Ajuda**: Enviar comentários (diagnóstico e logs), contato e verificação de atualizações
 
 **Ferramentas → Unir imagens…** abre um espaço de trabalho separado para regiões de microscópio já fundidas e panoramas de câmera; ele não altera a pilha atual. A aba **Assistente de projeto** reúne importação, alinhamento e pontos de controle; **Imagens de origem** contém a lista, a grade e a colocação manual; **Editor de panorama** contém ajustes de emendas, mesclagem, exposição/cor, saída, projeção, câmera e HDR, além das sobreposições da prévia. Use **Adicionar arquivos…**, **Abrir pasta** ou **Adicionar resultados…** para copiar resultados escolhidos da sessão atual, ou arraste arquivos ou pastas para a lista ou a tela. A importação de pasta inclui apenas os arquivos compatíveis diretamente dentro dela, sem subpastas. As importações seguem a ordem natural do nome, ignoram caminhos duplicados e adicionam cada página de um TIFF multipágina como imagem separada. Selecione uma imagem e pressione Delete ou Backspace para removê-la do espaço de trabalho sem apagar o arquivo.
 
@@ -512,7 +512,7 @@ Ajustar parâmetros em pilhas grandes é lento em resolução total. Abra **Conf
 
 ### Rotação
 
-1. Vá em **Editar → Girar**
+1. Vá em **Editar → Girar e inverter**
 2. Escolha o tipo de rotação:
    - **90° horário**: gira todas as imagens 90 graus para a direita
    - **90° anti-horário**: gira todas as imagens 90 graus para a esquerda
@@ -520,7 +520,7 @@ Ajustar parâmetros em pilhas grandes é lento em resolução total. Abra **Conf
 
 ### Inversão
 
-1. Vá em **Editar → Inverter**
+1. Vá em **Editar → Girar e inverter**
 2. Escolha o tipo de inversão:
    - **Inversão horizontal**: espelha da esquerda para a direita
    - **Inversão vertical**: espelha de cima para baixo
@@ -540,7 +540,7 @@ As transformações se aplicam a toda a pilha de imagens, mantendo o alinhamento
 
 ## 10. Retoque, rótulos e anotações
 
-### Retocar o resultado (Editar → Retocar resultado…, `Ctrl+T`)
+### Retocar o resultado (Editar → Retocar resultado → Saída neste espaço de trabalho…, `Ctrl+T`)
 
 A fusão ainda pode deixar um defeito local — um halo ao redor de uma borda de alto contraste, uma cerda vinda do quadro errado, ruído em uma área plana. O espaço de trabalho copia pixels dos quadros exatos que produziram o resultado selecionado:
 
@@ -559,7 +559,7 @@ Para uma correção tonal local, selecione **Pincel de exposição**, ajuste sua
 
 A proveniência viaja com a saída: os quadros alinhados, os deslocamentos de corte/colagem da ROI, o corte de bordas DCT e a profundidade de bits são registrados quando o resultado é renderizado. Arquivos de lote, resultados legados e entradas de pasta de somente alinhamento não têm origem registrada, então são listados como indisponíveis em vez de serem deduzidos da pilha atual. Traços não aplicados e histórico de desfazer são apenas da sessão; salvar um projeto não os armazena.
 
-Para um arquivo de imagem existente, escolha **Editar → Retocar arquivos de imagem…**, depois selecione o resultado e uma ou mais imagens de origem. As origens já devem estar alinhadas ao resultado na mesma grade de pixels; dimensões iguais não provam alinhamento. São aceitas imagens PNG, TIFF, JPEG e BMP de página única com dimensões verticais, canais e profundidade de 8 ou 16 bits correspondentes; a orientação EXIF é aplicada ao carregar. Imagens com alfa e multipágina não são suportadas. Os quadros selecionados são fornecidos pelo usuário, não são proveniência registrada de renderização. Aplicar cria uma saída separada não exportada; salve-a na lista de saídas. Os arquivos escolhidos são protegidos contra sobrescrita durante esta sessão, incluindo exportações de mapas de profundidade e malhas 3D. Como em outros resultados, arquivos de projeto não armazenam esses pixels nem o histórico do pincel.
+Para um arquivo de imagem existente, escolha **Editar → Retocar resultado → Resultado da fusão de um arquivo…**, depois selecione o resultado e uma ou mais imagens de origem. As origens já devem estar alinhadas ao resultado na mesma grade de pixels; dimensões iguais não provam alinhamento. São aceitas imagens PNG, TIFF, JPEG e BMP de página única com dimensões verticais, canais e profundidade de 8 ou 16 bits correspondentes; a orientação EXIF é aplicada ao carregar. Imagens com alfa e multipágina não são suportadas. Os quadros selecionados são fornecidos pelo usuário, não são proveniência registrada de renderização. Aplicar cria uma saída separada não exportada; salve-a na lista de saídas. Os arquivos escolhidos são protegidos contra sobrescrita durante esta sessão, incluindo exportações de mapas de profundidade e malhas 3D. Como em outros resultados, arquivos de projeto não armazenam esses pixels nem o histórico do pincel.
 
 ### Substituir o fundo (Fundo automático)
 
@@ -655,9 +655,9 @@ Receitas exigem que sua localização de saída esteja fora de todas as pastas d
 
 Quando uma referência de arquivo é aplicada em Ferramentas na escala base da pilha, um projeto salvo registra seu caminho absoluto, hash de conteúdo e tamanho de poeira, e a reaplica uma vez às origens originais ao abrir. Mantenha o arquivo de referência inalterado e no lugar: uma referência ausente ou alterada impede a abertura do projeto. Uma referência selecionada da pilha, ou correção em outra escala de trabalho/base, ainda exige exportar a pilha de origem corrigida antes de salvar um projeto. Se a escala de trabalho mudar após a correção, restaure-a para a escala de correção antes de salvar ou exporte a pilha corrigida.
 
-**Ajuda → Enviar comentários** abre os logs locais. Copiar copia o log visível da sessão; o ZIP de comentários contém os logs de sessão e do aplicativo completo, além de informações do ambiente. Revise o pacote antes de enviá-lo você mesmo. Abrir o GitHub apenas abre o rastreador. Cancelar uma exportação deixa os arquivos inalterados; um erro mantém o arquivo de destino anterior e mostra o caminho que falhou.
+**Ajuda → Enviar comentários** abre a aba **Canais de feedback**, com acesso à central da conta e ao GitHub. Em **Diagnóstico**, você encontra **Log da sessão** e **Informações do ambiente**. O botão **Abrir pasta de logs** fica embaixo, ao lado de Fechar. Copiar copia o log visível da sessão; o ZIP de comentários contém os logs de sessão e do aplicativo completo, além de informações do ambiente. Revise o pacote antes de enviá-lo você mesmo. Abrir o GitHub apenas abre o rastreador. Cancelar uma exportação deixa os arquivos inalterados; um erro mantém o arquivo de destino anterior e mostra o caminho que falhou.
 
-Cada inicialização grava seu próprio log rotativo, então trabalhos GUI/CLI concorrentes mantêm registros separados. IDs de tarefa ligam parâmetros, tempo decorrido e resultados concluídos/cancelados/falhos; erros inesperados incluem um traceback completo. O ZIP de comentários também inclui o relatório de falha atual e as versões das dependências. Use **Ajuda → Abrir pasta de logs** ou o caminho mostrado na página de comentários para encontrar os arquivos. Os logs rotacionam em 1 MB com três backups por processo; logs de sessões inativas com mais de 14 dias são removidos. Para logs de suporte detalhados, defina `OPENFOCUS_LOG_LEVEL=DEBUG` antes de iniciar; `OPENFOCUS_LOG_DIR` opcionalmente seleciona outra pasta de logs.
+Cada inicialização grava seu próprio log rotativo, então trabalhos GUI/CLI concorrentes mantêm registros separados. IDs de tarefa ligam parâmetros, tempo decorrido e resultados concluídos/cancelados/falhos; erros inesperados incluem um traceback completo. O ZIP de comentários também inclui o relatório de falha atual e as versões das dependências. Use **Ajuda → Enviar comentários → Abrir pasta de logs** ou o caminho mostrado na página de comentários para encontrar os arquivos. Os logs rotacionam em 1 MB com três backups por processo; logs de sessões inativas com mais de 14 dias são removidos. Para logs de suporte detalhados, defina `OPENFOCUS_LOG_LEVEL=DEBUG` antes de iniciar; `OPENFOCUS_LOG_DIR` opcionalmente seleciona outra pasta de logs.
 
 ### Configurações de blocos (otimização de memória)
 
@@ -1041,7 +1041,7 @@ Códigos de saída: `0` sucesso, `1` erro de processamento, `2` erro de uso. Exe
 
 - Ative e confirme os recursos experimentais nas configurações avançadas; sem isso os métodos de IA no desktop ficam desativados. Runtime e modelo são requisitos separados.
 - Verifique o ONNX Runtime e o modelo incluído.
-- Verifique em **Ajuda → Informações do ambiente**
+- Verifique em **Ajuda → Enviar comentários → Diagnóstico → Informações do ambiente**
 
 #### Erros de falta de memória
 
@@ -1079,7 +1079,7 @@ ou clique com o botão direito no aplicativo e escolha **Abrir**. As compilaçõ
 
 ### Obtendo ajuda
 
-1. **Informações do ambiente**: vá em **Ajuda → Informações do ambiente** para verificar sua instalação
+1. **Informações do ambiente**: vá em **Ajuda → Enviar comentários → Diagnóstico → Informações do ambiente** para verificar sua instalação
 2. **Contatar suporte**: vá em **Ajuda → Fale conosco** para informações de suporte
 
 ---

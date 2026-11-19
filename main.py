@@ -159,7 +159,6 @@ import cv2
 from ui.styles import GLOBAL_DARK_STYLE
 from locales import trans
 from dialogs import (
-    EnvironmentInfoDialog,
     ContactInfoDialog,
     BatchProcessingDialog,
     TileSettingsDialog,
@@ -2822,13 +2821,6 @@ class OpenFocus(QMainWindow):
         from dialogs.welcome import WelcomeDialog
         WelcomeDialog(self, main_window=self).exec()
 
-    def open_logs_folder(self) -> None:
-        """Open the folder that contains the application log files."""
-        from PyQt6.QtGui import QDesktopServices
-        from utils.logging_setup import logs_dir
-        QDesktopServices.openUrl(QUrl.fromLocalFile(str(logs_dir())))
-
-
     def get_or_create_source_pixmap(self, index: int):
         """Return a bounded display pixmap without resolving original pixels."""
         if 0 <= index < len(self.stack_images):
@@ -3623,11 +3615,6 @@ class OpenFocus(QMainWindow):
         from dialogs.feedback import FeedbackDialog
         FeedbackDialog(self).exec()
 
-    def show_environment_info(self):
-        """显示环境信息对话框"""
-        dialog = EnvironmentInfoDialog(self)
-        dialog.exec()
-    
     def display_fusion_result(self):
         """显示融合结果到右侧预览区"""
         self.output_manager.show_fusion_result()
