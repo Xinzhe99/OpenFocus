@@ -27,7 +27,7 @@ _DEFAULT_TILE_BLOCK_SIZE = 1024
 _DEFAULT_TILE_OVERLAP = 256
 _DEFAULT_TILE_THRESHOLD = 2048
 _DEFAULT_AI_BATCH_SIZE = 2
-OPENCL_FUSION_ALGORITHMS = ('openfocus_a', 'openfocus_b', 'openfocus_c', 'guided_filter', 'gfgfgf', 'dct')
+OPENCL_FUSION_ALGORITHMS = ('openfocus_a', 'openfocus_b', 'openfocus_c', 'guided_filter', 'gfgfgf', 'dct', 'dtcwt')
 
 
 def set_tile_mode(enabled: bool):
@@ -621,7 +621,7 @@ class MultiFocusFusion:
                 "see the user manual for the upstream NumPy constraint."
             )
 
-        if self.use_gpu:
+        if self.use_gpu and self.algorithm not in OPENCL_FUSION_ALGORITHMS:
             print("Note: DTCWT fusion supports CPU only; switching to CPU mode.")
             self.use_gpu = False
 
@@ -1151,6 +1151,13 @@ class MultiFocusFusion:
         Returns:
             融合后的图像
         """
+        import inspect
+        extra = {}
+        params = inspect.signature(_dtcwt_impl).parameters
+        if 'progress_callback' in params:
+            extra['progress_callback'] = kwargs.get('progress_callback')
+        if 'device_callback' in params:
+            extra['device_callback'] = self._record_openfocus_device
         return _dtcwt_impl(
             input_source,
             img_resize,
@@ -1159,6 +1166,7 @@ class MultiFocusFusion:
             thread_count=kwargs.get('thread_count', None),
             should_cancel=kwargs.get('should_cancel', None),
             execution_plan=kwargs.get('execution_plan'),
+            **extra,
         )
     
     def _fuse_stackmffv3(self,

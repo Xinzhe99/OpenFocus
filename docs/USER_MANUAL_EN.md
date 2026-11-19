@@ -1528,7 +1528,7 @@ OpenFocus B can use an OpenCL GPU for depth resampling, filtering, activity and 
 
 For StackMFF V1/V2/V3, open **Settings → AI acceleration components** to check the GPU and install the optional Windows NVIDIA pack. OpenFocus tries TensorRT, PyTorch CUDA, an accelerated ONNX Runtime provider, and CPU as applicable. Windows includes DirectML and macOS can use CoreML. The first TensorRT run for a model and tile shape includes compilation. Feedback diagnostics report the engine that ran the model and the reasons for fallback. See [GPU support](GPU_SUPPORT.md).
 
-With GPU acceleration enabled, OpenFocus A, OpenFocus C, Guided Filter, GFG-FGF and DCT can use a compatible OpenCL GPU for full-image fusion. Insufficient memory, an unavailable device or a device failure can cause CPU fallback. C's depth-map export uses the CPU. ECC alignment can use a supported GPU to shrink large images before the CPU estimates the transforms.
+With GPU acceleration enabled, OpenFocus A, OpenFocus C, Guided Filter, GFG-FGF, DCT and DTCWT can use a compatible OpenCL GPU for full-image fusion. Insufficient memory, an unavailable device or a device failure can cause CPU fallback. C's depth-map export uses the CPU. ECC alignment can use a supported GPU to shrink large images before the CPU estimates the transforms.
 
 
 - Toggle via **Settings → GPU Acceleration**

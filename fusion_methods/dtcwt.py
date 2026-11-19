@@ -42,6 +42,40 @@ except ImportError:
     convolve = None
 
 
+_ORIG_DTCWT_FORWARD = dtcwt.Transform2d.forward if dtcwt is not None else None
+
+
+def _use_fast_transform() -> bool:
+    """Use compiled kernels unless callers monkeypatched dtcwt.Transform2d.forward."""
+    return (
+        dtcwt is not None
+        and getattr(dtcwt.Transform2d, 'forward', None) is _ORIG_DTCWT_FORWARD
+    )
+
+
+class _MonotonicProgress:
+    """Wrap progress_callback so percentage and step counts never regress on fallback."""
+
+    def __init__(self, callback):
+        self._cb = callback
+        self._best_frac = -1.0
+        self._best_done = 0
+
+    def __call__(self, done, total):
+        if self._cb is None:
+            return
+        total = max(1, int(total))
+        done = max(0, min(int(done), total))
+        frac = float(done) / float(total)
+        if frac < self._best_frac:
+            return
+        if done < self._best_done:
+            done = self._best_done
+        self._best_frac = frac
+        self._best_done = done
+        self._cb(done, total)
+
+
 # Activity transforms are the only parallel layer. Each worker owns its
 # transform and pyramid; channel reconstruction remains serial.
 _DTCWT_MAX_WORKERS = min(4, max(1, (os.cpu_count() or 4) - 1))
@@ -176,26 +210,35 @@ def _iter_forward(transform, planes, nlevels, workers=None, should_cancel=None,
 
 
 def _dtcwt_impl(input_source, img_resize, N, use_gpu, thread_count=None,
-                should_cancel=None, execution_plan=None):
+                should_cancel=None, execution_plan=None,
+                progress_callback=None, device_callback=None):
     """
-    DTCWT fusion implementation (Optimized CPU version).
+    DTCWT fusion implementation (OpenCL GPU when enabled/admitted, CPU fallback).
 
     Args:
         input_source: List of images or path to image directory.
         img_resize: Tuple (width, height) or None.
         N: Number of wavelet decomposition levels.
-        use_gpu: Ignored in this optimized NumPy version (CPU is used).
+        use_gpu: Whether to attempt OpenCL GPU acceleration before CPU fallback.
         thread_count: Upper bound on concurrent frame transforms.
         should_cancel: Cooperative cancellation callback.
         execution_plan: The resource plan its owner already admitted. Tiled
             callers pass a serial child plan; without one this function takes
             its own lease and plans from the explicit working-set estimate.
+        progress_callback: Optional ``(current, total)`` progress reporter.
+        device_callback: Optional callback receiving selected device string.
     """
+    progress = (
+        progress_callback
+        if isinstance(progress_callback, _MonotonicProgress)
+        else (_MonotonicProgress(progress_callback) if progress_callback is not None else None)
+    )
     if execution_plan is not None:
         # The owner holds the lease; a pool thread must not re-acquire it.
         return _dtcwt_impl_planned(
             input_source, img_resize, N, thread_count, should_cancel,
-            execution_plan)
+            execution_plan, use_gpu=use_gpu, progress_callback=progress,
+            device_callback=device_callback)
 
     from core import resource_policy as policy
 
@@ -205,6 +248,28 @@ def _dtcwt_impl(input_source, img_resize, N, use_gpu, thread_count=None,
         img_resize = None
         if not input_source:
             raise ValueError('Fusion requires a non-empty image stack')
+        if use_gpu and _use_fast_transform() and dtcwt is not None:
+            if len(input_source) < 2:
+                raise ValueError("At least two images are required for fusion.")
+            from fusion_methods._openfocus_gpu import GpuError, log_fallback
+            from fusion_methods._openfocus_gpu_dtcwt import GpuDtcwt
+            from core.source_frames import SOURCE_CACHE
+            try:
+                gpu = GpuDtcwt()
+                try:
+                    result = gpu.fuse(
+                        input_source,
+                        N,
+                        should_cancel=should_cancel,
+                        progress_callback=progress,
+                    )
+                finally:
+                    SOURCE_CACHE.clear()
+                if device_callback is not None:
+                    device_callback(gpu.device_name)
+                return result
+            except GpuError as exc:
+                log_fallback(exc)
         height, width = input_source[0].shape[:2]
         frames = len(input_source)
         fixed, per_worker = estimate_working_set(height, width, N, frames)
@@ -222,7 +287,8 @@ def _dtcwt_impl(input_source, img_resize, N, use_gpu, thread_count=None,
             print(f"Info: resource plan: {reason}")
         _check_cancelled(should_cancel)
         return _dtcwt_impl_planned(
-            input_source, img_resize, N, thread_count, should_cancel, plan)
+            input_source, img_resize, N, thread_count, should_cancel, plan,
+            use_gpu=False, progress_callback=progress, device_callback=device_callback)
 
 
 def _check_cancelled(should_cancel):
@@ -234,7 +300,9 @@ def _check_cancelled(should_cancel):
 
 
 def _dtcwt_impl_planned(input_source, img_resize, N, thread_count,
-                        should_cancel, execution_plan):
+                        should_cancel, execution_plan,
+                        use_gpu=False, progress_callback=None,
+                        device_callback=None):
     if dtcwt is None or maximum_filter is None or convolve is None:
         raise RuntimeError(
             "DTCWT fusion requires dtcwt, scipy and six. On Python 3.13+ "
@@ -247,25 +315,43 @@ def _dtcwt_impl_planned(input_source, img_resize, N, thread_count,
             from core.registration import RegistrationCancelled
             raise RegistrationCancelled()
 
+    progress = (
+        progress_callback
+        if isinstance(progress_callback, _MonotonicProgress)
+        else (_MonotonicProgress(progress_callback) if progress_callback is not None else None)
+    )
+
     _check_cancel()
     # 1. Load and preprocess one frame at a time.
     images = _load_images(input_source, img_resize, should_cancel=should_cancel)
-    
+
     if len(images) < 2:
         raise ValueError("At least two images are required for fusion.")
 
+    if use_gpu and _use_fast_transform():
+        from fusion_methods._openfocus_gpu import GpuError, log_fallback
+        from fusion_methods._openfocus_gpu_dtcwt import GpuDtcwt
+        from core.source_frames import SOURCE_CACHE
+        try:
+            gpu = GpuDtcwt()
+            try:
+                result = gpu.fuse(
+                    images,
+                    N,
+                    should_cancel=should_cancel,
+                    progress_callback=progress,
+                )
+            finally:
+                SOURCE_CACHE.clear()
+            if device_callback is not None:
+                device_callback(gpu.device_name)
+            return result
+        except GpuError as exc:
+            log_fallback(exc)
+
     out_dtype = fuse_output_dtype(images)
-
-    def prepare_frame(index):
-        _check_cancel()
-        image = _ensure_color_image(images[index])
-        if image.dtype == np.uint16:
-            image = image.astype(np.float32) * (255.0 / 65535.0)
-        return cv2.cvtColor(image, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
-
     h, w = images[0].shape[:2]
     n_frames = len(images)
-    transform = dtcwt.Transform2d()
 
     # Respect the caller's concurrency cap instead of the module default: a
     # tiled render already runs one transform per worker, so the activity
@@ -280,6 +366,211 @@ def _dtcwt_impl_planned(input_source, img_resize, N, thread_count,
     activity_workers = max(1, min(_DTCWT_ACTIVITY_WORKERS, _DTCWT_MAX_WORKERS, cap))
     channel_workers = max(1, min(_DTCWT_MAX_WORKERS, cap, n_frames))
 
+    total_steps = n_frames * 2
+    if progress is not None:
+        progress(0, total_steps)
+
+    fast_mode = _use_fast_transform() and N >= 1 and h >= 4 and w >= 4
+    if fast_mode:
+        from core.source_frames import resolve_frame
+        from fusion_methods._dtcwt_kernels import (
+            FastTransform2d,
+            accum_lowpass,
+            activity_max3x3_update,
+            consistent_argmax_3x3,
+            extract_luma,
+            pack_channel_f32,
+            pack_channel_u8,
+            select_highpass_level,
+        )
+        from fusion_methods._openfocus_gpu_dtcwt import _plan_levels
+
+        specs = _plan_levels(h, w, N)
+        all_finite = True
+
+        def prepare_luma(index):
+            nonlocal all_finite
+            _check_cancel()
+            raw = resolve_frame(images[index], should_cancel=should_cancel)
+            if raw.dtype.kind == 'f' and not np.isfinite(raw).all():
+                all_finite = False
+            luma = np.empty((h, w), dtype=np.float32)
+            extract_luma(raw, luma)
+            return luma
+
+        best_activity = [None] * N
+        frame_indices = [None] * N
+        transform = FastTransform2d()
+        pyramids = _iter_forward(
+            transform,
+            range(n_frames),
+            N,
+            workers=activity_workers,
+            should_cancel=should_cancel,
+            transform_factory=FastTransform2d,
+            prepare=prepare_luma,
+        )
+        try:
+            for i, pyr in enumerate(pyramids):
+                for level in range(N):
+                    _check_cancel()
+                    hp = pyr.highpasses[level]
+                    if best_activity[level] is None:
+                        best_activity[level] = create_frame(hp.shape[:2], np.float32)
+                        frame_indices[level] = create_frame(hp.shape[:2], np.int32)
+                    activity_max3x3_update(
+                        hp,
+                        np.asarray(best_activity[level]).view(np.ndarray),
+                        np.asarray(frame_indices[level]).view(np.ndarray),
+                        i,
+                        i == 0,
+                    )
+                del pyr
+                if progress is not None:
+                    progress(i + 1, total_steps)
+        finally:
+            pyramids.close()
+        del best_activity
+
+        decisions = []
+        active_sets = []
+        for level in range(N):
+            _check_cancel()
+            dec = create_frame(frame_indices[level].shape, np.int32)
+            consistent_argmax_3x3(
+                np.asarray(frame_indices[level]).view(np.ndarray),
+                np.asarray(dec).view(np.ndarray),
+            )
+            active_sets.append(set(int(v) for v in np.unique(dec)))
+            decisions.append(dec)
+            frame_indices[level] = None
+        del frame_indices
+
+        coarse_idx = decisions[-1]
+        coarse_active = active_sets[-1]
+        max_lvl_for_frame = [
+            max((lvl for lvl in range(N) if i in active_sets[lvl]), default=-1)
+            for i in range(n_frames)
+        ]
+        active_jobs = []
+        for i in range(n_frames):
+            if not all_finite or i in coarse_active:
+                active_jobs.append((i, N))
+            elif max_lvl_for_frame[i] >= 0:
+                active_jobs.append((i, max_lvl_for_frame[i] + 1))
+
+        lp_shape = (specs[-1].lolo_h, specs[-1].lolo_w)
+        lp_weights = [None] * n_frames
+        total_weight = create_frame(lp_shape, np.float32)
+        total_weight[...] = 0
+        coarse_arr = np.asarray(coarse_idx).view(np.ndarray)
+        for k in range(n_frames):
+            _check_cancel()
+            if all_finite and k not in coarse_active:
+                continue
+            m = cv2.resize(
+                (coarse_arr == k).astype(np.float32),
+                (lp_shape[1], lp_shape[0]),
+                interpolation=cv2.INTER_LINEAR,
+            )
+            weight = store_frame(cv2.GaussianBlur(m, (0, 0), 1.5))
+            lp_weights[k] = weight
+            total_weight += weight
+        np.maximum(total_weight, 1e-6, out=total_weight)
+        for k, weight in enumerate(lp_weights):
+            if weight is not None:
+                _check_cancel()
+                np.divide(weight, total_weight, out=weight)
+        del total_weight
+
+        class _VariableChannelTransform:
+            def __init__(self):
+                self._inner = FastTransform2d()
+
+            def forward(self, plane_and_levels, nlevels=4):
+                plane, req_levels = plane_and_levels
+                return self._inner.forward(plane, nlevels=req_levels)
+
+        fused_img = create_frame((h, w, 3), out_dtype)
+        fused_arr = np.asarray(fused_img).view(np.ndarray)
+        n_act = max(1, len(active_jobs))
+
+        for c in range(3):
+            fused_high = [
+                np.zeros((sp.hp_h, sp.hp_w, 6), dtype=np.complex64)
+                for sp in specs
+            ]
+            lp = np.zeros(lp_shape, dtype=np.float32)
+            _check_cancel()
+
+            def prepare_channel_job(job, _channel=c):
+                index, req_levels = job
+                _check_cancel()
+                image = resolve_frame(images[index], should_cancel=should_cancel)
+                plane = (image if image.ndim == 2 else
+                         (image[:, :, 0] if image.ndim == 3 and image.shape[2] == 1 else
+                          _ensure_color_image(image)[:, :, 2 - _channel]))
+                if plane.dtype == np.uint16:
+                    plane = plane.astype(np.float32) * (255.0 / 65535.0)
+                return np.asarray(plane, dtype=np.float32) / np.float32(255.0), req_levels
+
+            channel_pyramids = _iter_forward(
+                _VariableChannelTransform(),
+                active_jobs,
+                N,
+                workers=min(channel_workers, n_act),
+                should_cancel=should_cancel,
+                transform_factory=_VariableChannelTransform,
+                prepare=prepare_channel_job,
+            )
+            try:
+                for act_idx, ((i, req_n), pyr) in enumerate(zip(active_jobs, channel_pyramids)):
+                    _check_cancel()
+                    for level in range(req_n):
+                        _check_cancel()
+                        if all_finite and i not in active_sets[level]:
+                            continue
+                        select_highpass_level(
+                            pyr.highpasses[level],
+                            np.asarray(decisions[level]).view(np.ndarray),
+                            fused_high[level],
+                            i,
+                        )
+                    if lp_weights[i] is not None:
+                        accum_lowpass(
+                            pyr.lowpass,
+                            np.asarray(lp_weights[i]).view(np.ndarray),
+                            lp,
+                        )
+                    del pyr
+                    if progress is not None:
+                        step = n_frames + ((c * n_act + act_idx + 1) * n_frames) // (3 * n_act)
+                        progress(step, total_steps)
+            finally:
+                channel_pyramids.close()
+            _check_cancel()
+            rec = transform.inverse(dtcwt.Pyramid(lp, tuple(fused_high)))
+            if out_dtype == np.uint8:
+                pack_channel_u8(rec, fused_arr, 2 - c, h, w)
+            else:
+                pack_channel_f32(rec, fused_arr, 2 - c, h, w)
+            del fused_high, lp, rec
+
+        if progress is not None:
+            progress(total_steps, total_steps)
+        if device_callback is not None:
+            device_callback('CPU')
+        _check_cancel()
+        return fused_img
+
+    def prepare_frame(index):
+        _check_cancel()
+        image = _ensure_color_image(images[index])
+        if image.dtype == np.uint16:
+            image = image.astype(np.float32) * (255.0 / 65535.0)
+        return cv2.cvtColor(image, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+
+    transform = dtcwt.Transform2d()
 
     # 2. Activity per frame and level from the luminance transform. Only the
     # (real, |coeff| summed over the 6 orientations) activity maps are kept —
@@ -311,6 +602,8 @@ def _dtcwt_impl_planned(input_source, img_resize, N, thread_count,
                     del win
                 del activity
             del pyr
+            if progress is not None:
+                progress(i + 1, total_steps)
     finally:
         pyramids.close()
     del best_activity
@@ -424,6 +717,9 @@ def _dtcwt_impl_planned(input_source, img_resize, N, thread_count,
                     del sel
                 lp += lp_weights[i] * pyr.lowpass
                 del pyr
+                if progress is not None:
+                    step = n_frames + ((c * n_frames + i + 1) * n_frames) // (3 * n_frames)
+                    progress(step, total_steps)
         finally:
             channel_pyramids.close()
         _check_cancel()
@@ -435,8 +731,12 @@ def _dtcwt_impl_planned(input_source, img_resize, N, thread_count,
             fused_img[rows, :, 2 - c] = np.clip(rec[rows, :w] * 255.0, 0, 255)
         del fused_high, lp, rec
 
+    if progress is not None:
+        progress(total_steps, total_steps)
+    if device_callback is not None:
+        device_callback('CPU')
     _check_cancel()
-    
+
     return fused_img
 
 
