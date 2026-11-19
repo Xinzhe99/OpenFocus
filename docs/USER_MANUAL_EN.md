@@ -690,20 +690,21 @@ To remove all loaded images, go to **File → Clear Stack** or press `Ctrl+W`.
   follows
 - **Keyboard**: There is no global previous/next-frame shortcut; focus the
   source list first
+- Each frame’s checkbox controls its participation in the render. Right-click a frame to include or exclude the highlighted rows. With the list focused, `Ctrl+Shift+I` checks every frame and `Ctrl+Shift+X` unchecks every frame. `Ctrl+A` highlights all rows. On macOS, use `Command` in place of `Ctrl`. Hover over the source count to see the shortcuts.
 
 ### Reviewing similar frames
 
-Click **Review frames** in the source header, immediately left of **Select all**, to find adjacent frames
-whose pixels are nearly identical. The button changes to **Cancel review**
-while analysis runs. Each suggested row names its reference frame and difference;
-inspect both before using the source checkbox to exclude a frame from fusion.
+Right-click any source frame and choose **Review frames** to find nearly identical adjacent frames throughout the stack.
+While analysis runs, the same menu offers **Cancel review**. With the list focused, `Ctrl+Shift+F` (`Command+Shift+F` on macOS) also starts or cancels review.
+Each suggested row names its reference frame and difference. Inspect both frames
+before using the source checkbox to exclude a frame from fusion.
 Suggestions never change checkboxes or delete files. This conservative
 comparison can miss similar frames; changes confined to a small focused region
 are not averaged away. Results are discarded if the stack changes.
 Suggestions are shown only when both the suggested frame and its reference
 are included; changing a checkbox updates the displayed suggestions.
 
-Clearing the stack removes review status and disables the review button.
+Clearing the stack removes review status. Load at least two frames to start another review.
 
 ### Zooming and Panning
 
@@ -2145,9 +2146,14 @@ Exit codes: `0` success, `1` processing error, `2` usage error. Running
 | Shortcut | Action |
 |----------|--------|
 | `Up` / `Down` (source list focused) | Previous / next frame |
+| `Ctrl+A` (source list focused) | Highlight all rows |
+| `Ctrl+Shift+I` / `Ctrl+Shift+X` (source list focused) | Check / uncheck every frame for rendering |
+| `Ctrl+Shift+F` (source list focused) | Start / cancel review of the entire stack |
 | `Mouse Wheel` | Zoom the view; while holding the left button, change magnifier zoom |
 | `Ctrl + Wheel` while holding the left button | Resize the magnifier |
 | `Middle-click` | Fit the image to the window |
+
+On macOS, use `Command` in place of `Ctrl` for these source list shortcuts.
 
 ### General
 

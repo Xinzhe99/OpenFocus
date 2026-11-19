@@ -3,8 +3,8 @@ from typing import Any
 
 import cv2
 import os
-from PyQt6.QtCore import QObject, QPoint, QThread, Qt
-from PyQt6.QtGui import QIcon, QDragEnterEvent, QDropEvent
+from PyQt6.QtCore import QItemSelectionModel, QObject, QPoint, QThread, QTimer, Qt
+from PyQt6.QtGui import QAction, QIcon, QKeySequence, QDragEnterEvent, QDropEvent
 from utils.file_dialogs import FileDialog
 from PyQt6.QtWidgets import QListWidgetItem, QMenu, QMessageBox, QDialog
 
@@ -56,9 +56,14 @@ class SourceManager(QObject):
         super().__init__()
         self.window = window
         self._review_worker = None
+        self._review_action = None
         self._review_frames = ()
         self._review_results = []
         self._review_status_key = None
+        self._review_notice_timer = QTimer(self)
+        self._review_notice_timer.setSingleShot(True)
+        self._review_notice_timer.setInterval(5000)
+        self._review_notice_timer.timeout.connect(self._expire_review_notice)
         self._stack_baseline = None
         window.linear_dng_metadata = None
         self._review_error = ""
@@ -192,6 +197,7 @@ class SourceManager(QObject):
             self._review_status_key = "stack_review_stale"
         elif worker._cancelled:
             self._review_status_key = "stack_review_cancelled"
+            self._review_notice_timer.start()
         elif worker.error is not None:
             self._review_error = worker.error
             self._review_status_key = "stack_review_error"
@@ -206,23 +212,61 @@ class SourceManager(QObject):
         worker.deleteLater()
         self.decorate_source_items()
 
+    def _expire_review_notice(self):
+        if self._review_status_key == 'stack_review_cancelled':
+            self._review_status_key = None
+            self.refresh_review_text()
+
     def _visible_review_results(self):
         excluded = getattr(self.window, "excluded_frames", set())
         return [entry for entry in self._review_results
                 if entry["index"] not in excluded
                 and entry["reference_index"] not in excluded]
 
-    def refresh_review_text(self):
-        panel = getattr(self.window, "right_panel_components", None)
-        if panel is None:
-            return
+    def bind_source_actions(self, view):
+        # Qt maps Ctrl in portable key sequences to Command on macOS. Keep
+        # Ctrl+A for ordinary multi-row selection, independently of inclusion.
+        def add_action(keys, callback):
+            action = QAction(view)
+            action.setShortcut(QKeySequence(keys))
+            action.setShortcutContext(Qt.ShortcutContext.WidgetShortcut)
+            action.setAutoRepeat(False)
+            action.setShortcutVisibleInContextMenu(True)
+            action.triggered.connect(callback)
+            view.addAction(action)
+            return action
+
+        def set_all(included):
+            rows = set(range(len(self.window.raw_images)))
+            self._set_frame_participation(rows, included=included)
+
+        self._review_action = add_action('Ctrl+Shift+F', self.toggle_stack_review)
+        self._include_all_action = add_action('Ctrl+Shift+I', lambda: set_all(True))
+        self._exclude_all_action = add_action('Ctrl+Shift+X', lambda: set_all(False))
+        self._refresh_source_actions()
+
+    def _refresh_source_actions(self):
         busy = self._review_worker is not None
-        panel.btn_review_stack.setText(trans.t(
-            "stack_review_cancel" if busy else "stack_review_button"))
-        panel.btn_review_stack.setToolTip(trans.t(
-            "stack_review_cancel" if busy else "stack_review_button")
-            + "\n" + trans.t("stack_review_hint"))
-        panel.btn_review_stack.setEnabled(busy or len(self.window.raw_images) >= 2)
+        total = len(self.window.raw_images)
+        excluded = len(self.window.excluded_frames)
+        self._review_action.setText(trans.t('stack_review_cancel' if busy else 'stack_review_action'))
+        self._review_action.setToolTip(trans.t('stack_review_hint'))
+        self._review_action.setEnabled(busy or total >= 2)
+        self._include_all_action.setText(trans.t('source_include_all'))
+        self._include_all_action.setEnabled(excluded > 0)
+        self._exclude_all_action.setText(trans.t('source_exclude_all'))
+        self._exclude_all_action.setEnabled(excluded < total)
+        actions = (self._include_all_action, self._exclude_all_action, self._review_action)
+        hint = '\n'.join(
+            f'{action.shortcut().toString(QKeySequence.SequenceFormat.NativeText)}  {action.text()}'
+            for action in actions)
+        self.window.source_images_label.setToolTip(hint)
+        self.window.file_list.setToolTip(hint)
+        self.window.file_list.setAccessibleDescription(hint)
+
+    def refresh_review_text(self):
+        if self._review_action is not None:
+            self._refresh_source_actions()
         status_key = self._review_status_key
         visible = self._visible_review_results()
         if status_key in ("stack_review_found", "stack_review_none"):
@@ -1295,11 +1339,20 @@ class SourceManager(QObject):
 
     def show_source_context_menu(self, position: QPoint) -> None:
         window = self.window
+        view = window.file_list
+        target = view.itemAt(position)
+        if target is None:
+            return
+        if not target.isSelected():
+            view.setCurrentItem(target, QItemSelectionModel.SelectionFlag.ClearAndSelect)
         rows = self._selected_source_rows()
         if not rows:
             return
         excluded = getattr(window, "excluded_frames", set())
-        menu = QMenu(window.file_list)
+        menu = QMenu(view)
+        menu.setToolTipsVisible(True)
+        menu.addAction(self._review_action)
+        menu.addSeparator()
 
         include_action = menu.addAction(trans.t("source_include_selected"))
         include_action.setEnabled(not rows.isdisjoint(excluded))
@@ -1312,7 +1365,8 @@ class SourceManager(QObject):
         menu.addSeparator()
         menu.addAction(trans.t("action_delete"), self.delete_selected_source_images)
 
-        menu.exec(window.file_list.viewport().mapToGlobal(position))
+        menu.exec(view.viewport().mapToGlobal(position))
+        menu.deleteLater()
 
     def delete_source_image(self, item: QListWidgetItem) -> None:
         window = self.window
