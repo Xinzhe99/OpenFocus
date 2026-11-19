@@ -1539,7 +1539,9 @@ With GPU acceleration enabled, OpenFocus A, OpenFocus C, Guided Filter, GFG-FGF 
 
 ### Themes
 
-Two interface themes are available: **Light (default)** and **Dark**. Switch via
+Choose **Light (default)**, **Dark**, or **Neutral Gray**. Neutral Gray uses a
+mid-gray canvas for viewing, comparing and retouching images and for previewing
+depth maps, labels, watermarks and scale bars. Switch via
 **Settings → Theme**; the choice is applied immediately (the Windows title
 bar follows) and remembered. First-launch users choose a theme in the
 welcome dialog; a saved choice always wins.

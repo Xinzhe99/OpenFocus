@@ -17,6 +17,7 @@ from core.algorithms import (fusion_algorithms, get_fusion, get_registration,
                              resolve_registration_parameters)
 from locales import trans
 from utils import app_paths
+from utils.design_tokens import PALETTES
 from utils.validators import normalize_kernel_size
 
 ORGANIZATION = "OpenFocus"
@@ -398,13 +399,13 @@ def load_window_settings(window) -> None:
     if settings.contains("export/watermark_text"):
         settings.remove("export/watermark_text")
         settings.sync()
-    if getattr(window, "ui_theme", None) not in ("dark", "light"):
-        window.ui_theme = DEFAULT_THEME
     for attr, (key, default, kind) in _PERSISTED_FIELDS.items():
         if settings.contains(key):
             setattr(window, attr, _cast(settings.value(key), kind, default))
         else:
             setattr(window, attr, getattr(window, attr, default))
+    if window.ui_theme not in PALETTES:
+        window.ui_theme = DEFAULT_THEME
     if settings.value(REPORTS_CHOICE_KEY) == "unselected":
         # Old installations saved their then-current default during ordinary saves.
         window.auto_error_reports = True

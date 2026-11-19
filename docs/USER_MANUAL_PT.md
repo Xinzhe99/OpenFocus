@@ -722,7 +722,7 @@ OpenFocus B pode acelerar o processamento de profundidade e a mesclagem de fonte
 
 ### Temas
 
-Dois temas de interface estão disponíveis: **Claro (padrão)** e **Escuro**. Troque em **Configurações → Tema**; a escolha é aplicada imediatamente (a barra de título do Windows acompanha) e lembrada. Na primeira execução, o usuário escolhe um tema na janela de boas-vindas; uma escolha salva sempre prevalece.
+Escolha entre **Claro (padrão)**, **Escuro** e **Cinza neutro**. Cinza neutro usa um fundo cinza médio para visualizar, comparar e retocar imagens. Troque em **Configurações → Tema**; a escolha é aplicada imediatamente (a barra de título do Windows acompanha) e lembrada. Na primeira execução, o usuário escolhe um tema na janela de boas-vindas; uma escolha salva sempre prevalece.
 
 ### Modo portátil
 

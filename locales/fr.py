@@ -637,6 +637,7 @@ PACK = {
     "msg_update_needs_elevation": "Le dossier d'installation n'est pas accessible en écriture sans droits administrateur. Veuillez mettre à jour via l'installateur de la page Releases.",
     "theme_dark": "Sombre",
     "theme_light": "Clair",
+    "theme_gray": "Gris neutre",
     "menu_quick_start": "Guide de démarrage rapide",
     "menu_check_updates": "Rechercher des mises à jour",
     "menu_open_logs": "Ouvrir le dossier des journaux",
