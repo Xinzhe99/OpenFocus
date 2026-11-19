@@ -658,7 +658,8 @@ def test_unavailable_font_survives_other_edits_until_changed(manager, monkeypatc
         manager.format_edit.setText('edited')
         assert manager._draft.get(label.label_id).config.font_family == label.config.font_family
         combo = manager.font_family_combo
-        family = 'Arial' if combo.currentFont().family() != 'Arial' else 'Times New Roman'
+        # Qt may display a fallback while currentFont() retains the missing family.
+        family = 'Times New Roman' if combo.currentText() == 'Arial' else 'Arial'
         combo.setEditText(family)
         assert combo.currentFont().family() == family
         manager._ok_button.click()
