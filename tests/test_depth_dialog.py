@@ -267,7 +267,13 @@ def test_openfocus_depth_smoothing_edit_changes_measurement(
         depth_dialog, qapp, method, control):
     """B and C expose their fusion smoothing to the depth dialog; editing it
     must reach the shared estimator and soften the decision boundary."""
-    dialog, _ = depth_dialog(method, _openfocus_transition_frames())
+    from core.depth_map import compute_focus_index
+
+    frames = _openfocus_transition_frames()
+    # Compile both the guided filter and the estimator's row kernels before
+    # the first click starts the bounded wait for the Qt worker to publish.
+    compute_focus_index(frames, method, {control: 0}, thread_count=1)
+    dialog, _ = depth_dialog(method, frames)
     editor = dialog.fusion_parameter_panel.editors[control]
     editor.setValue(0)
     _click_and_finish(qapp, dialog)
@@ -302,14 +308,16 @@ def test_depth_parameter_drafts_are_local_and_not_overridden(depth_dialog, monke
     _select(dialog.method_combo, "openfocus_b")
     editors = dialog.fusion_parameter_panel.editors
     assert editors['radius'].value() == 7
-    assert editors['smoothing'].value() == pytest.approx(2.0 / .24)
+    assert editors['smoothing'].text() == '8'
     editors['radius'].setValue(1)
+    assert dialog._parameters_for('openfocus_b')['smoothing'] == drafts['openfocus_b']['smoothing']
     editors['smoothing'].setValue(6.0)
     _select(dialog.method_combo, "openfocus_c")
     editors = dialog.fusion_parameter_panel.editors
     # C exposes only its fusion smoothing to the depth map.
     assert set(editors) == {'smoothing'}
-    assert editors['smoothing'].value() == pytest.approx(4.0 / .6)
+    assert editors['smoothing'].text() == '7'
+    assert dialog._parameters_for('openfocus_c')['smoothing'] == drafts['openfocus_c']['smoothing']
     editors['smoothing'].setValue(5.0)
     _select(dialog.method_combo, "openfocus_b")
     editors = dialog.fusion_parameter_panel.editors
