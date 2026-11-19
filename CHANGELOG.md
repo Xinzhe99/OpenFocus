@@ -1,6 +1,7 @@
 # Changelog
 - Open Linux desktop menu entries from bundle paths that contain percent signs.
 - Show embedded TIFF thumbnails stored after the main image in the batch converter, including their display orientation.
+- Keep TIFFs with tiny embedded thumbnails visible in Scale Bar. Draw the bar on the thumbnail and show its caption at readable zoom levels.
 
 All notable changes to OpenFocus are documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
