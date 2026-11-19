@@ -51,10 +51,11 @@ are independent of account sign-in and diagnostic reporting.
   anonymously. **Automatically send error reports** is checked by default in
   **Settings → Advanced Settings → General**. The default takes effect after
   signing in with the reporting terms. Your saved choice also applies after
-  restarting or resetting other settings. A session with an error may send an
-  automatic report. The app offers a previous native crash for review
-  and requires a separate confirmation. Automatic reports are skipped for
-  development runs; report metadata includes the build channel.
+  restarting or resetting other settings. When enabled, the app stores a
+  sanitized report when it logs an error and attempts delivery in the background.
+  At startup the app can offer a previous native crash or an uncaught Python
+  exit for review. Sending either requires confirmation. Automatic reports are
+  skipped for development runs. Report metadata includes the build channel.
   Reports can include a separate random
   report installation ID,
   software and system versions, selected hardware details, image counts and
@@ -67,15 +68,16 @@ are independent of account sign-in and diagnostic reporting.
   Render-child errors may include a fixed error category, origin and last
   reported render stage; that stage does not establish where the error occurred.
   Rejected memory admissions may include a fixed unknown or insufficient status
-  and bounded required, available, total and ceiling byte counts when known.
+  and bounded required, available, total and ceiling byte counts. On Windows,
+  reports can also include system and process commit headroom when measured.
   An unavailable memory measurement is omitted, not reported as zero. A Python
   traceback may include the timestamp from its immediately preceding error log
   header when available. Arbitrary error messages and source code are excluded.
   Reports retain at most the most recent 2,000 recognized events from a bounded
   log tail and indicate detected omissions; older rotated logs may already be gone.
-  Failed reports can be stored locally for bounded retries, with at most three
-  pending reports and three attempts. Account-linked queued reports are retried
-  only with the same account. Turning automatic reporting off revokes permission
+  Up to three reports can await delivery on disk, with priority for manual
+  reports and up to three delivery attempts per entry. Account-linked reports
+  are retried only with the same account. Turning automatic reporting off revokes permission
   for requests that have not yet been authorized to start and removes queued
   automatic reports. A request already authorized to start may still complete;
   previously received reports are not immediately deleted. Manually submitted

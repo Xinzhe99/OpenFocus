@@ -20,6 +20,7 @@ from utils import diagnostics, logging_setup
 
 MAX_BUNDLE_BYTES = 2 * 1024 * 1024
 _MAX_LOG_BYTES = 2 * 1024 * 1024
+_LIVE_LOG_BYTES = 256 * 1024
 _MAX_EVENTS = 2000
 _MAX_FRAMES = 12
 _EVENTS = frozenset('''session.started startup shutdown.started shutdown.completed ui.action ui.gesture
@@ -32,7 +33,10 @@ registration_warp registration_plan registration_stage render_resources executio
 neural_tile_plan heavy_job.waited source_decode source_previews stack_load stack_load.decoded roi_alignment
 render batch_import batch_image_write batch batch_folder batch_stack gif_save
 settings.applied depth_map neural_provider_probe neural_provider_selected neural_session
-ort_operator_trace render_child_error resource_admission'''.split())
+ort_operator_trace render_child_error resource_admission diagnostic_failure
+render.state render_dispatch render_dispatch.worker_started render_dispatch.admitted
+render_dispatch.ipc_ready render_dispatch.request_encoded render_dispatch.spawn_started
+render_dispatch.spawn_completed'''.split())
 _NUMBERS = frozenset('''elapsed_ms seconds frame_count frames loaded_frames file_count
 folder_count count workers preview_threads thread_count native_threads page pages files
 success total index column stack_index scale scale_factor reg_downscale_width duration_sec
@@ -71,10 +75,12 @@ _ENUMS = {
     'roi_mode': frozenset(('crop', 'paste')),
     'action': frozenset(('press', 'move', 'release', 'scroll')),
     'error_category': frozenset(('resource_limit', 'memory', 'os', 'value', 'runtime', 'other')),
-    'error_origin': frozenset(('child_worker', 'child_setup_or_transfer')),
+    'error_origin': frozenset(('child_worker', 'child_setup_or_transfer', 'child_exit')),
     'render_stage': frozenset(('prepare', 'align', 'fuse', 'finish', 'unknown')),
     'resource_status': frozenset(('unknown', 'insufficient')),
 }
+_ADMISSION_BYTES = ('required_bytes', 'available_ram_bytes', 'total_ram_bytes', 'ram_ceiling',
+                    'available_commit_bytes', 'process_commit_headroom_bytes')
 _GPU_MODEL = re.compile(r'^(?:NVIDIA (?:GeForce (?:RTX|GTX) [1-9][0-9]{2,3}(?: Ti| SUPER| Laptop GPU)?|RTX [1-9][0-9]{3}(?: Ada Generation)?)|AMD Radeon (?:RX [1-9][0-9]{3}(?: XT| XTX)?|Graphics)|Intel (?:Arc A[0-9]{3}M?|Iris Xe Graphics|UHD Graphics [0-9]{3,4}))$')
 _STACK_FUNCTIONS = {
     'workers.py': frozenset(('run', '_run_admitted')),
@@ -83,12 +89,16 @@ _STACK_FUNCTIONS = {
     'image_loader.py': frozenset(('load_from_filepaths', 'load_from_folder', 'load_from_video', 'load_linear_raw_stack')),
     'render_process.py': frozenset(('run', '_run_process', '_render_child')),
     'resource_policy.py': frozenset(('require_memory', 'plan_execution')),
-    'source_frames.py': frozenset(('resolve', 'decode')),
+    'source_frames.py': frozenset(('resolve', 'decode', 'full_resolution', '_decode', 'resolve_frame')),
+    'batch_converter.py': frozenset(('convert_one', 'convert_batch', '_decode', '_decode_tiff')),
+    'stackmffv3.py': frozenset(('fuse', '_blend_tile')),
     'depth_map.py': frozenset(('compute_focus_index',)),
     'cli.py': frozenset(('_run_with_logging', 'main')),
 }
 _EVENT_LINE = re.compile(r'^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d,\d{3})\s+\w+\s+.*?\bevent=([^\s]+)\s+(\{.*\})\s*$')
 _ERROR_HEADER = re.compile(r'^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d,\d{3})\s+(?:ERROR|CRITICAL)\s+pid=\d+\s+thread=\S+\s+session=\S+\s+operation=\S+\s+\S+.*$')
+_OPERATION_ID = re.compile(r'^[0-9a-f]{12}$')
+_EVENT_OPERATION = re.compile(r'\bsession=\S+ operation=([0-9a-f]{12}) ')
 _FRAME = re.compile(r'^\s*File "([^"\n]+)", line (\d+), in ([^\s]+)\s*$')
 _NATIVE_FRAME = re.compile(r'^\s*File "([^"\n]+)", line (\d+) in ([^\s]+)\s*$')
 
@@ -123,6 +133,7 @@ def _native_error(text):
                     frames.append((basename, int(number), function))
     return kind, list(reversed(frames))
 _EXCEPTION = re.compile(r'^((?:core\.resource_policy\.)?[A-Za-z_][A-Za-z_0-9]*)(?::.*)?$')
+_QUALIFIED_EXCEPTION = re.compile(r'^(?:[A-Za-z_][\w]*\.)+([A-Za-z_][A-Za-z_0-9]*):.*$', re.ASCII)
 _VERSION = re.compile(r'^\d{1,6}(?:\.\d{1,6}){0,3}(?:(?:a|b|rc|\.post|\.dev)\d{1,6})?$')
 
 
@@ -136,6 +147,8 @@ class ReportBundle:
     log_excerpt: str
     platform: str
     occurred_at: int
+    app_version: str | None = None
+    build_channel: str | None = None
 
 
 def _platform():
@@ -209,6 +222,63 @@ def _numeric_fields(fields, depth=0):
     return result
 
 
+def safe_exception(kind, frames):
+    """Keep bounded line numbers and allowlisted application locations."""
+    frames = list(frames)[-_MAX_FRAMES:]
+    error = {'kind': _exception_name(kind) or 'Error',
+             'stack_lines': [line for _, line, _ in frames if type(line) is int and 0 < line < 10**9]}
+    stack = []
+    for filename, line, function in frames:
+        if not isinstance(filename, str) or not isinstance(function, str) or type(line) is not int:
+            continue
+        basename = re.split(r'[/\\]', filename)[-1]
+        if 0 < line < 10**9 and function in _STACK_FUNCTIONS.get(basename, ()):
+            stack.append({'file': basename, 'line': line, 'function': function})
+    if stack:
+        error['stack'] = stack
+    return error
+
+
+def _safe_admission(fields):
+    if not isinstance(fields, dict):
+        return {}
+    values = {key: fields[key] for key in _ADMISSION_BYTES
+              if type(fields.get(key)) is int and 0 <= fields[key] <= 10**15}
+    if fields.get('resource_status') in ('unknown', 'insufficient'):
+        values['resource_status'] = fields['resource_status']
+    return values
+
+
+def _safe_child_failure(fields):
+    if not isinstance(fields, dict):
+        return {}
+    evidence = {key: value for key in ('error_category', 'error_origin', 'render_stage')
+                if isinstance(value := fields.get(key), str) and value in _ENUMS[key]}
+    if type(code := fields.get('exit_code')) is int and -(2**31) <= code < 2**32:
+        evidence['exit_code'] = code
+    raw_error = fields.get('error')
+    if isinstance(raw_error, dict) and isinstance(raw_error.get('kind'), str):
+        stack = raw_error.get('stack')
+        frames = ((frame.get('file'), frame.get('line'), frame.get('function'))
+                  for frame in stack[-_MAX_FRAMES:] if isinstance(frame, dict)) if isinstance(stack, list) else ()
+        error = safe_exception(raw_error['kind'], frames)
+        if isinstance(lines := raw_error.get('stack_lines'), list):
+            error['stack_lines'] = [x for x in lines[-_MAX_FRAMES:] if type(x) is int and 0 < x < 10**9]
+        evidence['error'] = error
+    if admission := _safe_admission(fields.get('admission')):
+        evidence['admission'] = admission
+    return evidence
+
+
+def _known_event(name):
+    base, separator, outcome = name.rpartition('.')
+    return name in _EVENTS or (separator and base in _EVENTS and outcome in ('started', 'completed', 'cancelled', 'failed'))
+
+
+def _timestamp(stamp):
+    return datetime.datetime.strptime(stamp, '%Y-%m-%d %H:%M:%S,%f').isoformat(timespec='milliseconds')
+
+
 def _events_and_error(text):
     events = []
     omitted = 0
@@ -227,27 +297,27 @@ def _events_and_error(text):
             timestamp, name, payload = match.groups()
             if name.endswith('.failed'):
                 has_error = True
-            base, separator, outcome = name.rpartition('.')
-            known = name in _EVENTS or (separator and base in _EVENTS and outcome in ('started', 'completed', 'cancelled', 'failed'))
-            if not known:
+            if not _known_event(name):
                 continue
             try:
                 parsed = json.loads(payload)
-                stamp = datetime.datetime.strptime(timestamp, '%Y-%m-%d %H:%M:%S,%f')
+                stamp = _timestamp(timestamp)
             except (ValueError, TypeError):
                 continue
-            if outcome == 'failed':
-                has_error = True
-            parameters = _numeric_fields(parsed)
+            if not isinstance(parsed, dict):
+                continue
             if name == 'render_child_error':
-                parameters = {key: value for key, value in parameters.items()
-                              if key in ('error_category', 'error_origin', 'render_stage')}
+                parameters = _safe_child_failure(parsed)
             elif name == 'resource_admission':
-                parameters = {key: value for key, value in parameters.items()
-                              if key in ('resource_status', 'required_bytes', 'available_ram_bytes',
-                                         'ram_ceiling', 'total_ram_bytes')
-                              and (key == 'resource_status' or type(value) is int and 0 <= value <= 10**15)}
-            events.append({'timestamp': stamp.isoformat(timespec='milliseconds'), 'event': name, 'parameters': parameters})
+                parameters = _safe_admission(parsed)
+            else:
+                parameters = _numeric_fields(parsed)
+            event = {'timestamp': stamp, 'event': name, 'parameters': parameters}
+            if operation := _EVENT_OPERATION.search(line, 0, match.start(2)):
+                event['operation_id'] = operation.group(1)
+            if isinstance(parent := parsed.get('parent_operation_id'), str) and _OPERATION_ID.fullmatch(parent):
+                event['parent_operation_id'] = parent
+            events.append(event)
             if len(events) > _MAX_EVENTS:
                 del events[0]
                 omitted += 1
@@ -259,8 +329,7 @@ def _events_and_error(text):
             header = _ERROR_HEADER.match(preceding_line)
             if header:
                 try:
-                    traceback_timestamp = datetime.datetime.strptime(
-                        header.group(1), '%Y-%m-%d %H:%M:%S,%f').isoformat(timespec='milliseconds')
+                    traceback_timestamp = _timestamp(header.group(1))
                 except ValueError:
                     pass
             continue
@@ -270,7 +339,7 @@ def _events_and_error(text):
                 frames.append((frame.group(1), int(frame.group(2)), frame.group(3)))
                 frames = frames[-_MAX_FRAMES:]
                 continue
-            match = _EXCEPTION.match(line)
+            match = _EXCEPTION.fullmatch(line) or _QUALIFIED_EXCEPTION.fullmatch(line)
             if match:
                 error_name = match.group(1)
                 error_message = line.partition(':')[2].strip()
@@ -353,14 +422,101 @@ def session_has_error(log_text=None, crash_text=None):
     return bool(live_error or crash_text.strip() or _events_and_error(log_text)[1])
 
 
-def build_report_bundle(*, log_text=None, crash_text=None, facts=None, exc=None):
+def _json_text(value):
+    return json.dumps(value, ensure_ascii=True, separators=(',', ':'), allow_nan=False)
+
+
+def _excerpt(events):
+    entries = []
+    remaining = 7998
+    for event in reversed(events[-25:]):
+        encoded = _json_text(event)
+        cost = len(encoded) + bool(entries)
+        if cost <= remaining:
+            entries.append(encoded)
+            remaining -= cost
+    return '[' + ','.join(reversed(entries)) + ']'
+
+
+def _pack_report(events, error, capture, facts, platform, signature, has_error, occurred_at,
+                 app_version=None, build_channel=None):
+    kind = error['kind']
+    display_kind = f"{kind} ({error['native_kind']})" if 'native_kind' in error else kind
+    summary = f"{display_kind}; {len(error['stack_lines'])} stack frames"
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, 'w', compression=zipfile.ZIP_DEFLATED) as archive:
+        for name, value in (('system.json', facts), ('events.json', events),
+                            ('error.json', error), ('capture.json', capture)):
+            archive.writestr(name, _json_text(value))
+    data = output.getvalue()
+    if len(data) > MAX_BUNDLE_BYTES:
+        raise ValueError('report bundle exceeds 2 MiB')
+    return ReportBundle(data, signature, has_error, f'{kind}: diagnostic report', summary,
+                        _excerpt(events), platform, occurred_at, app_version, build_channel)
+
+
+def snapshot_failure(record, facts):
+    """Capture this error with its bounded lead-up, while it is still in the log."""
+    stamp = datetime.datetime.fromtimestamp(record.created).isoformat(timespec='milliseconds')
+    frames = []
+    kind, message = 'Error', ''
+    if record.exc_info and record.exc_info[0] is not None:
+        exc_type, exc, tb = record.exc_info
+        kind, message = exc_type.__name__, str(exc) if exc is not None else ''
+        frames = [(f.f_code.co_filename, line, f.f_code.co_name) for f, line in traceback.walk_tb(tb)]
+    if not frames:
+        frames = [(record.pathname, record.lineno, record.funcName)]
+    platform = _platform()
+    child = _safe_child_failure(getattr(record, 'report_child_evidence', None))
+    error = child.get('error', safe_exception(kind, frames))
+    parameters = dict(child)
+    if admission := _safe_admission(getattr(record.exc_info[1], 'admission', None) if record.exc_info else None):
+        parameters.setdefault('admission', admission)
+    if child:
+        child_frames = [(f['file'], f['line'], f['function']) for f in error.get('stack', ())]
+        # The child signature uses its own code, including the exit code when no stack survived.
+        category = ':'.join(str(child[k]) for k in ('error_origin', 'error_category', 'exit_code') if k in child)
+        fingerprint_kind = f"{error['kind']}:{category}"
+        signature = _fingerprint(fingerprint_kind, platform, child_frames or frames, '' if child_frames else message)
+    else:
+        signature = _fingerprint(kind, platform, frames, message)
+    operation = getattr(record, 'event', None)
+    if isinstance(operation, str) and operation.endswith('.failed') and _known_event(operation):
+        parameters['failed_event'] = operation
+    error['timestamp'] = stamp
+    workload = _numeric_fields(getattr(record, 'report_workload', None))
+    parameters.update(workload)
+    parameters['error'] = error
+    log_text = logging_setup.session_log_excerpt(_LIVE_LOG_BYTES)
+    events, _, _, _, _, omitted, _ = _events_and_error(log_text)
+    events = [event for event in events if event['timestamp'] <= stamp]
+    failure = {'timestamp': stamp, 'event': 'diagnostic_failure', 'parameters': parameters}
+    operation_id = getattr(record, 'operation_id', None)
+    if isinstance(operation_id, str) and _OPERATION_ID.fullmatch(operation_id):
+        failure['operation_id'] = operation_id
+    if len(events) >= _MAX_EVENTS:
+        del events[0]
+        omitted += 1
+    events.append(failure)
+    capture = {'events_omitted': omitted, 'log_tail_trimmed': log_text.startswith('...(older lines trimmed;')}
+    return _pack_report(events, error, capture, _safe_facts(facts, platform), platform,
+                        signature, True, int(record.created))
+
+
+def build_report_bundle(*, log_text=None, crash_text=None, facts=None, exc=None,
+                        app_version=None, build_channel=None):
     """Build a bounded zip and safe metadata; raises ValueError if too large."""
     live_error = log_text is None and logging_setup.session_had_error()
     if log_text is None:
         log_text = logging_setup.session_log_excerpt(_MAX_LOG_BYTES)
     if crash_text is None:
         crash_text = _read_crash()
-    if facts is None:
+    if app_version is not None:
+        # Only the version and channel in metadata describe the previous run.
+        facts = {}
+        if build_channel in ('release', 'development'):
+            facts['frozen'] = build_channel == 'release'
+    elif facts is None:
         facts = diagnostics.system_facts()
     platform = _platform()
     events, event_error, kind, message, frames, omitted, error_timestamp = _events_and_error(log_text)
@@ -380,34 +536,17 @@ def build_report_bundle(*, log_text=None, crash_text=None, facts=None, exc=None)
         error_timestamp = crash_timestamp
     fingerprint_kind = f'native:{native_kind}' if native_kind is not None else kind or 'crash'
     fingerprint = _fingerprint(fingerprint_kind, platform, frames, message)
-    safe_kind = ('Crash' if native_kind is not None else
-                 _exception_name(kind or '') or ('Error' if kind or (live_error and not crash_text.strip()) else 'Crash'))
-    safe_frames = [line for _, line, _ in frames[-_MAX_FRAMES:] if 0 < line < 10**9]
-    subject = f'{safe_kind}: diagnostic report'
-    summary = f'{safe_kind}; {len(safe_frames)} stack frames'
+    error = safe_exception(kind or '', frames)
     if native_kind is not None:
-        summary = f'{safe_kind} ({native_kind}); {len(safe_frames)} stack frames'
-    error = {'kind': safe_kind, 'stack_lines': safe_frames}
+        error.update(kind='Crash', native_kind=native_kind)
+    elif kind is None and not (live_error and not crash_text.strip()):
+        error['kind'] = 'Crash'
     if error_timestamp is not None:
         error['timestamp'] = error_timestamp
-    if native_kind is not None:
-        error['native_kind'] = native_kind
-    stack = []
-    for filename, line, func in frames[-_MAX_FRAMES:]:
-        basename = re.split(r'[/\\]', filename)[-1]
-        if 0 < line < 10**9 and func in _STACK_FUNCTIONS.get(basename, ()):
-            stack.append({'file': basename, 'line': line, 'function': func})
-    if stack:
-        error['stack'] = stack
     capture = {'events_omitted': omitted,
                'log_tail_trimmed': log_text.startswith('...(older lines trimmed;')}
-    excerpt = json.dumps(events[-25:], ensure_ascii=True, separators=(',', ':'))[-8000:]
-    output = io.BytesIO()
-    with zipfile.ZipFile(output, 'w', compression=zipfile.ZIP_DEFLATED) as archive:
-        for name, value in (('system.json', _safe_facts(facts, platform)), ('events.json', events),
-                            ('error.json', error), ('capture.json', capture)):
-            archive.writestr(name, json.dumps(value, ensure_ascii=True, separators=(',', ':'), allow_nan=False))
-    data = output.getvalue()
-    if len(data) > MAX_BUNDLE_BYTES:
-        raise ValueError('report bundle exceeds 2 MiB')
-    return ReportBundle(data, fingerprint, bool(live_error or event_error or crash_error or crash_text.strip() or exc is not None), subject, summary, excerpt, platform, int(datetime.datetime.now().timestamp()))
+    occurred_at = (datetime.datetime.fromisoformat(error_timestamp).timestamp()
+                   if error_timestamp else datetime.datetime.now().timestamp())
+    return _pack_report(events, error, capture, _safe_facts(facts, platform), platform, fingerprint,
+                        bool(live_error or event_error or crash_error or crash_text.strip() or exc is not None),
+                        int(occurred_at), app_version, build_channel)

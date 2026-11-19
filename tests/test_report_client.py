@@ -103,6 +103,17 @@ def test_queue_cap_and_attempt_limit(tmp_path):
     assert client._opener.creations == 10
 
 
+def test_automatic_errors_do_not_evict_manual_reports(tmp_path):
+    client = ReportClient(tmp_path)
+    for name in ('first', 'second', 'third'):
+        client.enqueue({'source': 'manual', 'subject': name}, b'manual')
+    assert client.enqueue({'source': 'auto', 'subject': 'background'}, b'auto') == 'dropped'
+    client._opener = Server()
+    assert client.retry_pending() == 3
+    assert [json.loads(request.data)['subject'] for request, _ in client._opener.requests
+            if request.method == 'POST'] == ['first', 'second', 'third']
+
+
 def test_bounds_private_storage_and_sanitized_errors(tmp_path):
     client = ReportClient(tmp_path / "private", timeout=100)
     with pytest.raises(ReportError, match="2 MiB"):
@@ -325,28 +336,72 @@ def test_account_default_send_rejects_signed_out_session(tmp_path, monkeypatch):
     assert client.pending_count == 0
 
 
+def test_logged_failure_queues_sanitized_evidence_without_replacing_exception(qapp, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from PyQt6.QtCore import QSettings
+    from core.registration import RegistrationCancelled
+    from core.resource_policy import ResourceLimitError
+    from ui import report_retry
+    from utils import logging_setup
+    from utils.settings_store import REPORTS_AUTO_SEND_KEY, REPORTS_CHOICE_KEY
+
+    settings = QSettings(str(tmp_path / 'settings.ini'), QSettings.Format.IniFormat)
+    settings.setValue(REPORTS_AUTO_SEND_KEY, True)
+    settings.setValue(REPORTS_CHOICE_KEY, 'explicit')
+    settings.sync()
+    monkeypatch.setattr(report_retry, 'user_data_dir', lambda: tmp_path)
+    monkeypatch.setattr(report_retry.diagnostics, 'system_facts', lambda: {})
+    trigger = SimpleNamespace(window=lambda: None, queued=SimpleNamespace(emit=lambda: None))
+    handler = report_retry._FailureReports(trigger, settings)
+    monkeypatch.setattr(logging_setup, 'session_log_excerpt', lambda _limit: '')
+    logger = logging_setup.get_logger()
+    logger.addHandler(handler)
+    try:
+        with pytest.raises(RegistrationCancelled):
+            with logging_setup.log_operation('source_decode', cancel_on=(RegistrationCancelled,)):
+                raise RegistrationCancelled()
+        client = ReportClient(tmp_path / 'reports')
+        assert client.pending_count == 0
+        with pytest.raises(ResourceLimitError, match='private photo path'):
+            with logging_setup.log_operation('render'):
+                raise ResourceLimitError('private photo path', admission={'required_bytes': 1024})
+    finally:
+        logger.removeHandler(handler)
+        handler.close()
+    client._opener = Server()
+    assert client.retry_pending() == 1
+    metadata = json.loads(client._opener.requests[0][0].data)
+    assert 'private photo path' not in repr(metadata)
+    event, = json.loads(metadata['log_excerpt'])
+    assert event['parameters']['error']['kind'] == 'ResourceLimitError'
+    assert event['parameters']['admission']['required_bytes'] == 1024
+
+
 @pytest.mark.parametrize('signed_in,account_only,expected', [
     (False, True, False), (True, True, True), (False, False, True),
 ])
-def test_shutdown_uses_persisted_session_for_default_scope(
+def test_shutdown_delivers_already_queued_errors_under_original_scope(
         qapp, tmp_path, monkeypatch, signed_in, account_only, expected):
     from types import SimpleNamespace
     from ui import shutdown_reports
+    from utils import reporting
 
-    account = SimpleNamespace(is_signed_in=lambda: signed_in)
+    client = ReportClient(tmp_path / 'reports')
+    client._opener = Server()
+    owner = 'user-a' if signed_in else None
+    client.enqueue({'source': 'auto'}, b'zip', owner_id=owner)
+    account = SimpleNamespace(is_signed_in=lambda: signed_in,
+                              current_user=lambda: {'id': owner} if owner else None,
+                              token=lambda **kwargs: 'test-token')
     monkeypatch.setattr(shutdown_reports, 'AccountClient', lambda: account)
     monkeypatch.setattr(shutdown_reports, 'user_data_dir', lambda: tmp_path)
-    monkeypatch.setattr(shutdown_reports, 'session_has_error', lambda: True)
-    monkeypatch.setattr(shutdown_reports, 'build_report_bundle',
-                        lambda: SimpleNamespace(has_error=True))
-    sent = []
-    monkeypatch.setattr(shutdown_reports, 'send_bundle',
-                        lambda *args, **kwargs: sent.append(kwargs))
-    shutdown_reports._ShutdownReport(None, 'en', True, account_only)._run()
-    assert bool(sent) is expected
-    if sent:
-        assert sent[0]['account'] is account
-        assert sent[0]['require_account'] is account_only
+    monkeypatch.setattr(reporting, 'ReportClient', lambda _path: client)
+    shutdown_reports._ShutdownReport(None, True, account_only)._run()
+    assert bool(client._opener.requests) == expected
+    assert client.pending_count == (0 if expected else 1)
+    if expected:
+        post = client._opener.requests[0][0]
+        assert post.get_header('Authorization') == ('Bearer test-token' if owner else None)
 
 
 def test_source_run_automatic_reports_are_skipped(monkeypatch):
