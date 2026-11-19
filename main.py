@@ -549,13 +549,11 @@ class OpenFocus(QMainWindow):
         self.current_display_index = -1
         self.current_folder_path = ""
 
-        # 主题应用必须在 init_ui 之后：light 模式要剥离控件的内联暗样式，
-        # UI 未建时剥离是空操作，之后创建的控件会带着暗色内联样式覆盖
-        # 应用级亮色 QSS（白底白字，整个右侧面板不可读）
+        # Apply the saved theme once the widgets and menu actions exist.
         with self._restore_scope():
             self.init_ui()
             self.apply_experimental_features()
-            self.apply_dark_theme()
+            self.apply_theme(self.ui_theme)
         self._start_account_load()
         from ui.activity import install_activity_logging
         install_activity_logging(self)
@@ -3986,37 +3984,18 @@ class OpenFocus(QMainWindow):
             # 取消ROI按钮的选中状态，这会触发toggle_roi_mode(False)
             self.btn_preview_roi.setChecked(False)
 
-    def apply_dark_theme(self):
-        """Apply the persisted theme at startup (light on a fresh install)."""
-        from utils.settings_store import DEFAULT_THEME
-        self.apply_theme(getattr(self, "ui_theme", DEFAULT_THEME))
-
     def apply_theme(self, theme: str) -> None:
-        """Apply the 'dark' or 'light' theme immediately and persist it.
-
-        Both themes are generated from the same design tokens, so this is a
-        single code path: clear any per-widget leftovers, install the
-        generated sheet on the application, then let widgets that paint by
-        hand (image panels, banner, help buttons) refresh their own palette.
-
-        The old implementation stripped every inline stylesheet in light mode
-        and relied on a hand-written light sheet, which is why light mode kept
-        losing the panels' own styling.
-        """
+        """Apply the selected theme to the application and save the preference."""
         from ui.styles import get_theme_style, set_current_theme
-        theme = "light" if theme == "light" else "dark"
+        from utils.design_tokens import PALETTES
+        from utils.settings_store import DEFAULT_THEME
+
+        theme = theme if theme in PALETTES else DEFAULT_THEME
         self.ui_theme = theme
+        # Style changes may repaint custom canvases or re-style dialogs.
+        set_current_theme(theme)
         ui_font = get_ui_font_family()
         mono_font = get_monospace_font_family()
-
-        # Drop stylesheets captured by the previous (light) implementation.
-        for wdg, _ss in getattr(self, "_inline_styles_saved", None) or []:
-            try:
-                wdg.setStyleSheet("")
-            except RuntimeError:
-                pass
-        self._inline_styles_saved = None
-        self.setStyleSheet("")
 
         app = QApplication.instance()
         if app is not None:
@@ -4025,8 +4004,7 @@ class OpenFocus(QMainWindow):
             app.setStyleSheet(_apply_font_family(get_theme_style(theme),
                                                  ui_font, mono_font))
 
-        # Re-colour themed inline widgets that the light pass above strips:
-        # the update banner must survive that sweep with a readable palette.
+        # Refresh widget-specific styles that build on the application sheet.
         banner = getattr(self, "update_banner", None)
         if banner is not None:
             banner.apply_theme(theme)
@@ -4038,13 +4016,9 @@ class OpenFocus(QMainWindow):
                 apply_panel_theme(panel, theme)
             except RuntimeError:
                 pass
-        # The active theme must be recorded BEFORE any inline style is
-        # recomputed and before dialogs are constructed: help_button_style()
-        # with no argument reads CURRENT_THEME, so refreshing the "?" chips
-        # first re-applied the OLD theme's colours (the dark chip survived the
-        # switch to light). Dialogs opened later read the same global.
-        set_current_theme(theme)
         self._refresh_status_sponsor()
+        for dialog in self.findChildren(ContactInfoDialog):
+            dialog.apply_theme(theme)
         # Inline "?" button styles are captured at creation; re-apply them for
         # the new theme or the dark chip stays dark on the light panel.
         from ui.styles import help_button_style
@@ -4054,9 +4028,7 @@ class OpenFocus(QMainWindow):
                     widget.setStyleSheet(help_button_style(theme))
             except RuntimeError:
                 pass
-        # Numeric steppers paint their -/+ buttons from inline sheets built at
-        # creation, so without this they keep the old theme's colours (a black
-        # stepper on the light panel).
+        # Refresh the numeric steppers' inherited styles on the new palette.
         from widgets.stepper import StepperSpinBox
         for widget in self.findChildren(StepperSpinBox):
             try:
@@ -4070,6 +4042,7 @@ class OpenFocus(QMainWindow):
                 # Sync by data property, not display text: the text changes
                 # with the language and mis-matched after a switch.
                 act.setChecked(act.data() == theme)
+        self.persist_settings()
 
     def _enable_dark_title_bar(self, dark: bool = True):
         """Windows: paint the native title bar dark/light to match the theme."""
