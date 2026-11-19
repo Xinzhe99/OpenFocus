@@ -208,3 +208,37 @@ def test_unrecognized_six_by_six_cfa_fails_even_with_rgb_counts(tmp_path, monkey
     monkeypatch.setattr(linear_dng, '_camera_identity', lambda *a: ('Nikon', 'Nikon Synthetic'))
     with pytest.raises(ValueError, match='arrangement'):
         linear_dng._cfa_metadata(sensor, tmp_path / 'sensor.nef')
+
+
+def test_native_raf_mosaic_budget_uses_sensor_bounds_before_unpack(tmp_path, monkeypatch):
+    from core import batch_converter
+
+    class HeaderOnly:
+        sizes = SimpleNamespace(raw_width=11808, raw_height=8754)
+
+        def open_file(self, path):
+            assert path == str(source)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+    source = tmp_path / '传感器.RAF'
+    header = bytearray(92)
+    header[:16] = b'FUJIFILMCCD-RAW '
+    header[28:35] = b'GFX100S'
+    source.write_bytes(header)
+    monkeypatch.setattr(rawpy, 'RawPy', HeaderOnly)
+    ram, disk = batch_converter.estimate_job(source, ext='.dng')
+    sensor_bytes = 11808 * 8754 * 2
+    assert sensor_bytes * 2 <= ram < 768 * 1024**2
+    assert sensor_bytes < disk < sensor_bytes + 8 * 1024**2
+    monkeypatch.setattr(batch_converter, 'available_memory_bytes', lambda: 2 * ram - 1)
+    with pytest.raises(MemoryError):
+        batch_converter._admit(source, 0, tmp_path, '.dng')
+
+    # A renamed non-Fujifilm sensor may require the full LinearRaw path.
+    source.write_bytes(b'other camera container')
+    assert batch_converter.estimate_job(source, ext='.dng') == batch_converter.estimate_job(source)

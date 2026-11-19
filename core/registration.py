@@ -964,7 +964,10 @@ def _align_openfocus_impl(input_source, output_path=None, img_filenames=None, *,
 
 # ========== ECC对齐算法实现（高精度） ==========
 
-def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscale_width=1000, thread_count: int = 4, should_cancel=None, use_gpu: bool = False, failure_policy='continue', *, defer_warps=False, plan_callback=None):
+def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscale_width=1000,
+                    thread_count: int = 4, should_cancel=None, use_gpu: bool = False,
+                    failure_policy='continue', *, defer_warps=False, plan_callback=None,
+                    accelerate_ecc=False):
     """
     基于 ECC (增强相关系数) 的高精度图像栈对齐算法
     适用于：显微摄影、微距摄影中伴随呼吸效应的图像栈
@@ -978,6 +981,11 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
 
     if len(images) < 2:
         return images
+
+    area_gpu = None
+    if accelerate_ecc:
+        from core._ecc_area_gpu import ExactAreaGpu
+        area_gpu = ExactAreaGpu()
 
     # --- 2. 初始化 ---
     h_orig, w_orig = images[0].shape[:2]
@@ -1007,15 +1015,26 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
 
     # 预处理函数：转灰度 + 降采样 + 高斯模糊 + 归一化
     def preprocess(source):
-        from core.source_frames import resolve_frame
+        from core.source_frames import resolve_frame, source_area_resizer
         # Replace each intermediate so a deferred full-size decode can be
         # released as soon as resize or color conversion no longer needs it.
-        pixels = resolve_frame(source, should_cancel=should_cancel)
+        with source_area_resizer(area_gpu):
+            pixels = resolve_frame(source, should_cancel=should_cancel)
         identity = _perspective_source(source, pixels, should_cancel)
         w = pixels.shape[1]
         scale = downscale_width / float(w) if w > downscale_width else 1.0
         if scale < 1.0:
-            pixels = cv2.resize(pixels, (0, 0), fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+            resized = None
+            if area_gpu is not None:
+                # OpenCV keeps fx/fy when it rounds the destination height.
+                # An explicit size is equivalent only if it gives the same scale.
+                height = pixels.shape[0]
+                target_height = round(height * scale)
+                if target_height > 0 and target_height / height == scale:
+                    resized = area_gpu.resize(pixels, (downscale_width, target_height))
+            pixels = (resized if resized is not None else
+                      cv2.resize(pixels, (0, 0), fx=scale, fy=scale, interpolation=cv2.INTER_AREA))
+            del resized
 
         if pixels.ndim != 2:
             if pixels.shape[2] == 1:
@@ -1134,6 +1153,10 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
             images, prepare_frame, estimate_pair, max_workers, should_cancel,
             on_prepared=remember_scale)
         source_identities.extend(prepared_identities)
+
+    if area_gpu is not None:
+        log_action('registration_ecc_resize', device=area_gpu.device_name or 'CPU',
+                   gpu_resizes=area_gpu.frames_resized, frames=len(images))
 
     trajectory_failed = False
     for idx, (warp_matrix, cc) in enumerate(pair_transforms, start=1):
@@ -1401,7 +1424,7 @@ class ImageRegistration:
     
     def __init__(self, method='homography', downscale_width=1024,
                  max_shift_ratio=None, brightness_reference='first',
-                 use_gpu=False, parameters=None, *, defer_warps=False):
+                 use_gpu=False, parameters=None, *, defer_warps=False, accelerate_ecc=False):
         from core.algorithms import (alignment_steps, registration_parameter_specs,
                                      resolve_registration_parameters)
         self.method = method
@@ -1416,6 +1439,9 @@ class ImageRegistration:
         self.downscale_width = int(downscale_width) if downscale_width is not None else 1024
         self.brightness_reference = brightness_reference if brightness_reference in ('first', 'last') else 'first'
         self.use_gpu = bool(use_gpu)
+        # use_gpu explicitly selects the CuPy warp. The application switch
+        # only admits exact resize work and keeps the Lanczos warp contract.
+        self.accelerate_ecc = bool(accelerate_ecc)
         self.defer_warps = bool(defer_warps)
         self.alignment_plan = None
         self._perspective_stages = []
@@ -1624,7 +1650,7 @@ class ImageRegistration:
             return _align_ecc_impl(input_source, output_path, downscale_width=self.downscale_width,
                 thread_count=thread_count, should_cancel=should_cancel, use_gpu=self.use_gpu,
                 failure_policy=failure_policy, defer_warps=self.defer_warps,
-                plan_callback=self._perspective_stages.append)
+                plan_callback=self._perspective_stages.append, accelerate_ecc=self.accelerate_ecc)
         except RejectedAlignmentFrame as error:
             # Pair estimation may run on a pool thread. Record it in the caller's report.
             _report_alignment(error.frame_index, 'ecc', 'failed', reason=error.reason,

@@ -195,7 +195,7 @@ The top menu bar provides access to all functions:
 - **Edit**: Undo/redo, reset the current stack, image transformations and retouching
 - **Tools**: Image stitching, batch processing and conversion, method comparison, depth map, flat-field correction, scale bar, watermark and labels
 - **Settings**: Advanced Settings (General, Fusion, Registration, Startup & updates), GPU acceleration, theme and language
-- **Help**: Environment info, contact information and the Discord community, Support Us, update check, and the log folder. Support Us displays Alipay and PayPal codes; include your username in the transfer note for permanent project acknowledgment.
+- **Help**: Report a Problem (diagnostics and logs), contact information and the Discord community, Support Us, and update check. Support Us displays Alipay and PayPal codes; include your username in the transfer note for permanent project acknowledgment.
 
 **Tools → Stitch Images…** opens a separate workspace for already-fused
 microscope regions and camera panoramas; it does not modify the current stack.
@@ -514,11 +514,14 @@ current stack. The source and texture stay bound to that snapshot.
 Depth maps are unavailable for transparent PNG stacks, in the GUI and the CLI.
 
 Selected outputs from OpenFocus B/C and StackMFF V2/V3 can retain their focus
-positions. When the selected output has a retained map and the method and parameters
-match, the dialog opens it for export. OpenFocus C uses the winning frame in its
-finest detail layer. Press **Compute** to run a separate estimate. Other outputs,
-the current stack, and changed methods or parameters need an explicit **Compute**
-click. StackMFF V1 has no depth map. The parameter editor
+positions. The source summary names the saved measure. Opening the dialog,
+pressing **Compute** with the recorded settings, or returning to those settings
+shows the saved positions in their original frame order and ROI. The 2D preview
+uses the saved plane and alignment validity. Opening the 3D tab or exporting a
+model builds the surface and texture on demand. OpenFocus C records the winning
+frame in its finest detail layer. For an output without saved positions, the
+current stack, or another measure or parameter value, press **Compute** for a
+separate estimate. StackMFF V1 has no depth map. The parameter editor
 appears directly below the measure selector: DCT median kernel and GFG initial kernel
 use odd values 1–51 (default 7). OpenFocus B uses Radius, Smoothing and Feather;
 OpenFocus C's depth export uses Smoothing without a radius. DTCWT decomposition levels
@@ -692,20 +695,21 @@ To remove all loaded images, go to **File → Clear Stack** or press `Ctrl+W`.
   follows
 - **Keyboard**: There is no global previous/next-frame shortcut; focus the
   source list first
+- Each frame’s checkbox controls its participation in the render. Right-click a frame to include or exclude the highlighted rows. With the list focused, `Ctrl+Shift+I` checks every frame and `Ctrl+Shift+X` unchecks every frame. `Ctrl+A` highlights all rows. On macOS, use `Command` in place of `Ctrl`. Hover over the source count to see the shortcuts.
 
 ### Reviewing similar frames
 
-Click **Review frames** in the source header, immediately left of **Select all**, to find adjacent frames
-whose pixels are nearly identical. The button changes to **Cancel review**
-while analysis runs. Each suggested row names its reference frame and difference;
-inspect both before using the source checkbox to exclude a frame from fusion.
+Right-click any source frame and choose **Review frames** to find nearly identical adjacent frames throughout the stack.
+While analysis runs, the same menu offers **Cancel review**. With the list focused, `Ctrl+Shift+F` (`Command+Shift+F` on macOS) also starts or cancels review.
+Each suggested row names its reference frame and difference. Inspect both frames
+before using the source checkbox to exclude a frame from fusion.
 Suggestions never change checkboxes or delete files. This conservative
 comparison can miss similar frames; changes confined to a small focused region
 are not averaged away. Results are discarded if the stack changes.
 Suggestions are shown only when both the suggested frame and its reference
 are included; changing a checkbox updates the displayed suggestions.
 
-Clearing the stack removes review status and disables the review button.
+Clearing the stack removes review status. Load at least two frames to start another review.
 
 ### Zooming and Panning
 
@@ -978,9 +982,12 @@ Each neural tile uses every frame. Source frames and alignment scratch can be di
 - **OpenFocus B**: blends neighboring frames guided by a smoothed depth map.
 - **OpenFocus C**: combines source detail across a multilevel weighted pyramid.
 - **Parameters**: A and B expose Radius and Smoothing; B also exposes Feather.
-  The defaults are R8/S4 for A, R8/S4/F3 for B and S4 for C. A's Smoothing
-  control currently has no effect, unlike the reference method. B smooths its
-  depth map; C smooths its multilevel fusion weights. C has no Radius control.
+  The defaults are R8/S4 for A, R8/S4/F3 for B and S4 for C. A currently ignores
+  Smoothing. B smooths its depth map and C smooths its multilevel fusion weights.
+  C has no Radius control.
+- **Smoothing levels**: The desktop controls move one whole level per click. If
+  a saved level is fractional, the field shows the nearest integer and its tooltip
+  gives the exact value. Rendering and saving use that value until you edit Smoothing.
 
 ECC remains the default registration method for A/B/C even when experimental
 features are enabled. OpenFocus alignment is used when explicitly selected;
@@ -1089,7 +1096,7 @@ pollutes the full-resolution alignment cache.
 
 ### Rotation
 
-1. Go to **Edit → Rotate**
+1. Go to **Edit → Rotate and Flip**
 2. Choose rotation type:
    - **90° Clockwise**: Rotate all images 90 degrees right
    - **90° Counter-Clockwise**: Rotate all images 90 degrees left
@@ -1097,7 +1104,7 @@ pollutes the full-resolution alignment cache.
 
 ### Flipping
 
-1. Go to **Edit → Flip**
+1. Go to **Edit → Rotate and Flip**
 2. Choose flip type:
    - **Horizontal Flip**: Mirror left-to-right
    - **Vertical Flip**: Mirror top-to-bottom
@@ -1118,7 +1125,7 @@ Transformations are applied to the entire image stack, maintaining alignment bet
 
 ## 10. Retouching, Labels and Annotations
 
-### Retouching the Result (Edit → Retouch Result…, `Ctrl+T`)
+### Retouching the Result (Edit → Retouch Result → Output in This Workspace…, `Ctrl+T`)
 
 Fusion can still leave a local defect — a halo around a high-contrast edge,
 a bristle taken from the wrong frame, noise in a flat area. The workspace
@@ -1209,7 +1216,7 @@ recorded source, so they are listed as unavailable instead of being guessed
 from the current stack. Unapplied strokes and undo history are session-only;
 saving a project does not store them.
 
-For an existing image file, choose **Edit → Retouch Image Files…**, then select
+For an existing image file, choose **Edit → Retouch Result → Fused Result from File…**, then select
 the result and one or more source images. The sources must already be aligned
 to the result on the same pixel grid; matching dimensions alone cannot prove
 alignment. Single-page PNG, TIFF, JPEG and BMP images with matching upright
@@ -1230,21 +1237,23 @@ frame from the same stack. The subject stays exactly as stacked. The background
 is derived from a frame and the stacked result; processing may reconstruct,
 adjust, and blend its pixels.
 
+Background replacement works best for isolated macro or microscope subjects against broad bokeh or a clean, solid color. Examples include insects, fungi, flower stamens, and specimens on slides. If detail fills the frame continuously from near to far, keep the original stack and touch up local background flaws with the **Source Brush**.
+
 1. Open the result in the retouch workspace and click **Auto background…**.
-2. Choose the background:
+2. Under **Background source**, choose a frame selection mode:
    - **Automatic** (recommended) uses the soft background, unless the stack
      recorded much of the background in focus. Then it uses the sharp one.
    - **Soft background** uses the frame where the background is blurriest.
    - **Sharp background** uses the frame focused farthest away.
-3. Leave **Clean edge halos** on to remove halos along the subject's edges. It
+3. Under **Subject edges**, leave **Clean edge halos** on to remove halos along the subject's edges. It
    never goes beyond what the frames recorded. Turn it off to keep the stack's
    own edge look.
 4. Tick **Keep soft parts attached to the subject** when parts of the subject
    sit just outside the depth of field, such as the knob at the end of a spine.
    It can also keep background objects next to the subject as stacked, so check
    the result.
-5. Click **Replace background**. A 20-megapixel stack of 15 frames takes about
-   a minute and needs about 3.5 GB of free memory. **Cancel** stops it.
+5. Click **Replace background** to see the current processing stage. A 20-megapixel stack of 15 frames takes about
+   a minute and needs about 3.5 GB of free memory. **Cancel** stops the operation and keeps your current edits.
 
 The change is one undoable step, and strokes you painted on the subject before
 are kept. Use the **Restore Brush** to bring back stacked pixels wherever you
@@ -1433,11 +1442,11 @@ scale, still requires exporting the corrected source stack before saving a
 project. If the working scale changes after correction, restore it to the
 correction scale before saving or export the corrected stack.
 
-**Help → Send feedback** opens local logs. Copy copies the visible session log;
+**Help → Report a Problem** opens on **Feedback Channels**, with links to the account center and GitHub.
+Under **Diagnostics**, **Session log** shows the local log and **Environment Info** shows the system and dependency report.
+**Open Logs Folder** is at the bottom next to Close. Copy copies the visible session log;
 the local feedback ZIP can contain file paths, so review it before sharing.
 Signed-in users can open their account center in the browser to submit feedback.
-The Environment Info control shows the same system and dependency report as
-**Help → Environment Info**.
 **Review error report** shows the sanitized diagnostics that will be sent;
 nothing is uploaded until you choose **Send to OpenFocus**. Automatic reports
 are sent only after a session with an error when enabled. A previous native
@@ -1447,7 +1456,7 @@ user file names or paths. See [Privacy Policy](PRIVACY.md) for details.
 Each launch writes its own rotating log, so concurrent GUI/CLI jobs keep separate
 records. Task IDs link parameters, elapsed time and completed/cancelled/failed
 outcomes; unexpected errors include a full traceback. The feedback ZIP also
-includes the current crash report and dependency versions. Use **Help → Open Logs
+includes the current crash report and dependency versions. Use **Help → Report a Problem → Open Logs
 Folder** or the path shown on the feedback page to find the files. Logs rotate at
 1 MB with three backups per process; inactive session logs older than 14 days are
 removed. For detailed support logs, set `OPENFOCUS_LOG_LEVEL=DEBUG` before
@@ -1494,7 +1503,7 @@ system can provide both readings; otherwise it shows `N/A`.
 
 ### Diagnosing a slow render
 
-For a single, non-grouped CLI render, add `--profile-performance FILE` to save the stage timings. Use `--log-level debug` for detailed logging during that run. Find the desktop logs under **Help → Open Logs Folder**. [Performance guide](./PERFORMANCE.md#diagnosing-a-slow-render)
+For a single, non-grouped CLI render, add `--profile-performance FILE` to save the stage timings. Use `--log-level debug` for detailed logging during that run. Find the desktop logs under **Help → Report a Problem → Open Logs Folder**. [Performance guide](./PERFORMANCE.md#diagnosing-a-slow-render)
 
 ### Resource Mode
 
@@ -1517,7 +1526,7 @@ unchanged; choosing smaller tiles yourself can change output pixels.
 
 OpenFocus B can use an OpenCL GPU for depth resampling, filtering, activity and selection, guided smoothing and source merging when a compatible GPU driver and compiler are available. Full GPU depth processing requires sufficient host and verified device memory; bounded GPU activity and merging can still run when full depth processing is not admitted. Unavailable devices and device failures fall back to CPU. StackMFF V1/V2/V3 use ONNX Runtime; DirectML on Windows and CoreML on macOS may accelerate inference. Installed runtimes or available providers alone do not prove GPU execution. See [GPU support](GPU_SUPPORT.md) for platform requirements.
 
-With GPU acceleration enabled, OpenFocus A and OpenFocus C can use a compatible OpenCL GPU for full-image fusion. Insufficient memory, an unavailable device or a device failure can cause CPU fallback. C's depth-map export and alignment use the CPU.
+With GPU acceleration enabled, OpenFocus A and OpenFocus C can use a compatible OpenCL GPU for full-image fusion. Insufficient memory, an unavailable device or a device failure can cause CPU fallback. C's depth-map export uses the CPU. ECC alignment can use a supported GPU to shrink large images before the CPU estimates the transforms.
 
 
 - Toggle via **Settings → GPU Acceleration**
@@ -1691,21 +1700,23 @@ The batch dialog shows real-time progress. You can cancel processing at any time
 
 ### Batch image conversion
 
-Open **Tools → Batch Image Converter** independently of the current stack. Add files or all supported images in a folder, choose or enter an output folder and a format, then select **Convert**. The converter starts with PNG (lossless and 16-bit) and restores the last format you explicitly chose; an example filename below the selector shows the actual extension. This tool converts individual files and is separate from fusion Batch processing, which has its own output format. Missing output folders are created when conversion starts. The list shows output paths and errors per source; the summary reports successful and failed sources. Cancel stops between operations; already completed files remain available. Closing during conversion requests cancellation and closes the window when processing stops.
+Open **Tools → Batch Image Converter** and add images. By default, files in `Photos` are written to a sibling folder named `Photos_converted`. Edit the suffix, choose a named subfolder of each source folder, use the source folder itself, or browse to a single destination. The example shows the path for a selected file or the first queued file. Existing files keep their names and new outputs receive a number when necessary.
+
+Choose a format and output size, then select **Convert**. The initial format is lossless PNG. The dialog remembers your last format. Keep the original size, cap the long edge at 2048, 4096 or 8192 pixels, or enter a percentage. Each image keeps its aspect ratio and smaller images stay at their native resolution. DNG keeps the sensor dimensions. Switching back to a raster format restores your size choice.
+
+An image already in the target format is skipped unless it actually needs shrinking. For example, JPEG → JPEG at original size leaves the file untouched. If every file already matches at original size, choose another format or reduce the size to enable **Convert**. Skipped rows have their own count in the summary. Double-click a completed row for output paths or errors. Cancel or close to stop after the current operation. Completed files remain available.
 
 Drag local image files or folders onto the queue or dialog to add them. Folder
 imports include direct children only. Files are naturally sorted and deduplicated;
-the import summary reports added and skipped entries. Convert becomes available
-when the queue contains images and the output path names an existing directory
-or a new directory. Quoted paths and environment variables are supported.
-The selected format's relevant limitations appear below the format selector;
-hover over the selector for the full conversion guidance.
+the import summary reports added and skipped entries. Custom paths support
+quotes and environment variables. Missing output folders are created when
+needed. The selected format’s limits appear below the controls.
 
-The fixed 96×72 thumbnail sits to the left of each row. Select multiple rows and
-press **Delete** or **Backspace**, or choose **Remove**. These keys edit text
-normally when the output field has focus. Import and removal remain disabled
-until conversion or cancellation actually finishes. Thumbnails run in a separate,
-bounded queue and
+The fixed 96×72 thumbnail sits to the left of each row. Right-click a selected
+row and choose **Remove from queue** to remove the selection. Right-click an
+unselected row to act on it alone. **Delete** and **Backspace** remove selected
+rows while the list has focus. Queue edits are available again once conversion
+or cancellation finishes. Thumbnails run in a separate, bounded queue and
 use JPEG decoder scaling or small raster pages. Large RAW files use bounded
 embedded JPEG ranges from TIFF-based RAW or RAF containers; a format without a
 safe preview, including some CR3 files, shows a placeholder instead of unpacking
@@ -1720,9 +1731,8 @@ Supported three-color Bayer and X-Trans sensors retain the exact active CFA
 samples, their black levels, white level, as-shot white balance, D65 camera
 matrix, crop and orientation. Masked optical borders are omitted; active pixels
 are neither resized nor developed. Samples use a 16-bit TIFF container while
-retaining the original 12/14/16-bit white level. Existing DNG files are copied
-byte-for-byte, preserving their profiles, processing opcodes and proprietary
-metadata. Non-CFA three-color sensors use **LinearRaw**, containing camera-linear
+retaining the original 12/14/16-bit white level. Existing DNG inputs are skipped.
+Non-CFA three-color sensors use **LinearRaw**, containing camera-linear
 RGB rather than a sensor mosaic. Ordinary JPEG/PNG/TIFF inputs cannot become
 camera RAW by choosing DNG and are reported as errors.
 
@@ -1753,6 +1763,10 @@ Each job runs native codecs with one thread. Cancellation stops new admissions
 and checks between pages, decode/write stages and DNG strips; native codec calls
 finish cooperatively. Completed files remain available and incomplete temporary
 files are removed. Output-name reservation is atomic across concurrent jobs.
+The converter writes color JPEGs at quality 95 with full chroma resolution
+using a temporary disk buffer. If a file fails, its row shows the codec or
+filesystem error. After freeing the indicated memory or disk space, you can
+convert just the affected files.
 
 For ordinary image output, camera RAW is developed with LibRaw using camera white balance and without automatic brightening. Available RAW support depends on the installed LibRaw version. Multipage TIFF is exported as separately numbered images. JPEG is lossy, and JPEG, BMP and WebP reduce 16-bit pixels to 8-bit; PNG and TIFF retain 16-bit pixels. Transparent images require PNG. LZW TIFF pages with alpha, unsupported TIFF color layouts and sample types are reported as errors. Existing files and inputs are never replaced: name conflicts receive numbered suffixes. Every image still requires enough free memory and disk space for its decoder and encoder. Safe camera EXIF and compatible RGB profiles are retained where supported; some formats or pages cannot carry all metadata.
 
@@ -1849,9 +1863,9 @@ four bytes per pixel of JPEG scratch space in addition to the destination file.
 Its mapped pages remain subject to the operating system's memory management.
 Advanced progressive or optimized JPEG requests require additional image-sized
 codec memory and are admitted only when the resource budget can cover it.
-Other OpenCV JPEG parameters, including restart intervals, sampling factors and
-independent luminance/chrominance quality, retain their requested settings through
-the original codec after admission for its complete image-sized working set.
+Baseline JPEG supports 4:4:4, 4:2:2 and 4:2:0 chroma sampling in row bands.
+Other sampling modes, restart intervals and separate luminance/chrominance
+quality settings use OpenCV after admission for its whole-image working set.
 Cancellation of that native codec call takes effect at its boundaries; an existing
 destination remains intact. BMP, WebP and other legacy encoders also require
 image-sized memory buffers.
@@ -2147,9 +2161,14 @@ Exit codes: `0` success, `1` processing error, `2` usage error. Running
 | Shortcut | Action |
 |----------|--------|
 | `Up` / `Down` (source list focused) | Previous / next frame |
+| `Ctrl+A` (source list focused) | Highlight all rows |
+| `Ctrl+Shift+I` / `Ctrl+Shift+X` (source list focused) | Check / uncheck every frame for rendering |
+| `Ctrl+Shift+F` (source list focused) | Start / cancel review of the entire stack |
 | `Mouse Wheel` | Zoom the view; while holding the left button, change magnifier zoom |
 | `Ctrl + Wheel` while holding the left button | Resize the magnifier |
 | `Middle-click` | Fit the image to the window |
+
+On macOS, use `Command` in place of `Ctrl` for these source list shortcuts.
 
 ### General
 
@@ -2180,7 +2199,7 @@ Exit codes: `0` success, `1` processing error, `2` usage error. Running
 
 - Enable experimental features in [Settings](#11-settings-and-configuration) and confirm the settings; AI methods are disabled in the desktop until opted in. This is separate from runtime and model availability.
 - Check that ONNX Runtime and the bundled model are installed.
-- Check via **Help → Environment Info**
+- Check via **Help → Report a Problem → Diagnostics → Environment Info**
 
 #### Out of Memory Errors
 
@@ -2232,7 +2251,7 @@ from source.
 
 ### Getting Help
 
-1. **Environment Info**: Go to **Help → Environment Info** to check your installation
+1. **Environment Info**: Go to **Help → Report a Problem → Diagnostics → Environment Info** to check your installation
 2. **Contact Support**: Go to **Help → Contact Us** for support information
 
 ---

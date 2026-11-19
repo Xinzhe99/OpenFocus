@@ -773,8 +773,8 @@ def test_feedback_copy_matches_visible_log_and_export_failure_is_inline(qapp, mo
 
     monkeypatch.setattr(feedback.logging_setup, "export_feedback_package", fail)
     dialog._export_package()
-    assert "disk full" in dialog.log_hint.text()
-    assert "report.zip" in dialog.log_hint.text()
+    assert "disk full" in dialog.diagnostic_status.text()
+    assert "report.zip" in dialog.diagnostic_status.text()
     assert not dialog._export_path
     dialog.deleteLater()
 

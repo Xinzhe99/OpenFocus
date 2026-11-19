@@ -79,12 +79,21 @@ def _source_region(image, x, y, width, height):
         return np.empty((0, 0) + image.shape[2:], dtype=image.dtype)
     preview = display_image(image)
     sx, sy = preview.shape[1] / image.shape[1], preview.shape[0] / image.shape[0]
-    x0, y0 = int(x * sx), int(y * sy)
-    x1 = max(x0 + 1, int(np.ceil((x + width) * sx)))
-    y1 = max(y0 + 1, int(np.ceil((y + height) * sy)))
+    pw, ph = max(1, round(width * sx)), max(1, round(height * sy))
+    if sx == sy == 1:
+        crop = preview[y:y + height, x:x + width]
+    else:
+        # Map reduced pixel centres to the exact captured ROI. Rounding out
+        # its edges and stretching the slice shifts small, off-grid regions.
+        dx, dy = width * sx / pw, height * sy / ph
+        inverse = np.array([[dx, 0., x * sx + (dx - 1.) / 2.],
+                            [0., dy, y * sy + (dy - 1.) / 2.]])
+        crop = cv2.warpAffine(preview, inverse, (pw, ph),
+                              flags=cv2.INTER_LINEAR | cv2.WARP_INVERSE_MAP,
+                              borderMode=cv2.BORDER_REPLICATE)
     values = {item.name: getattr(image, item.name) for item in fields(LazySourceFrame)}
     values.update(shape=(height, width) + image.shape[2:],
-                  preview=store_preview(preview[y0:y1, x0:x1]), source=image, region=(x, y, width, height))
+                  preview=store_preview(crop), source=image, region=(x, y, width, height))
     return _SourceRegion(**values)
 
 
@@ -154,16 +163,19 @@ def _alignment_valid_mask(image: np.ndarray, *, should_cancel=None) -> Optional[
     _check_cancel(should_cancel)
     if image.size == 0:
         return None
-    if image.ndim == 3:
-        zero = np.all(image[..., :3] == 0, axis=2)
+    color = image[..., :3] if image.ndim == 3 else image
+    for edge in (color[0], color[-1], color[:, 0], color[:, -1]):
+        black = edge == 0
+        if (black.all(axis=-1) if color.ndim == 3 else black).any():
+            break
     else:
-        zero = image == 0
-    if not (zero[0].any() or zero[-1].any()
-            or zero[:, 0].any() or zero[:, -1].any()):
         return None
 
-    count, labels = cv2.connectedComponents(zero.astype(np.uint8),
-                                            connectivity=8)
+    if color.ndim == 3 and color.shape[2] == 3 and color.dtype in (np.uint8, np.uint16, np.float32, np.float64):
+        zero = cv2.inRange(color, (0, 0, 0), (0, 0, 0))
+    else:
+        zero = (np.all(color == 0, axis=2) if color.ndim == 3 else color == 0).view(np.uint8)
+    count, labels = cv2.connectedComponents(zero, connectivity=8)
     _check_cancel(should_cancel)
     if count <= 1:
         return None
@@ -184,6 +196,28 @@ class RenderedDepth:
     valid_rect: Tuple[int, int, int, int]
     reverse_order: bool
     parameters: dict
+    valid_mask: Optional[np.ndarray] = None
+
+
+def render_alignment_mask(frames, crop, should_cancel):
+    """Capture the intersection in the index domain while render pixels are available."""
+    mask = None
+    for frame in frames:
+        pixels = resolve_frame(frame, should_cancel=should_cancel)
+        if crop is not None:
+            x, y, w, h = crop
+            pixels = pixels[y:y + h, x:x + w]
+        valid = _alignment_valid_mask(pixels, should_cancel=should_cancel)
+        del pixels
+        if valid is not None:
+            if mask is None:
+                mask = create_frame(valid.shape, np.bool_)
+                mask[:] = valid
+            else:
+                np.logical_and(mask, valid, out=mask)
+    if mask is not None:
+        mask.flags.writeable = False
+    return mask
 
 
 def store_rendered_focus(positions, scale, domain_shape, *, crop=None, transparent=None,
@@ -281,7 +315,7 @@ def _clamp_roi(roi_rect, shape: Tuple[int, int]) -> Optional[Tuple[int, int, int
         return None
     h, w = shape[:2]
     try:
-        rx, ry, rw, rh = (int(round(float(v))) for v in roi_rect)
+        rx, ry, rw, rh = (int(float(v)) for v in roi_rect)
     except (TypeError, ValueError):
         return None
     rx = max(0, min(rx, w))
@@ -413,13 +447,15 @@ def build_render_context(
     frame_icc_profiles = (frame_icc_profiles + (b'',) * len(frames))[:len(frames)]
 
     depth = None
-    if rendered_depth is not None and len(frames) == rendered_depth['frame_count']:
+    if (rendered_depth is not None and len(frames) == rendered_depth['frame_count']
+            and algorithm == rendered_depth['method'] and roi == rendered_depth['roi_rect']):
         index = rendered_depth['index']
         origin = frames[0].offset_x, frames[0].offset_y
         if all(frame.image.shape[:2] == index.shape and
                (frame.offset_x, frame.offset_y) == origin for frame in frames):
             depth = RenderedDepth(index, rendered_depth['valid_rect'],
-                                  rendered_depth['reverse_order'], rendered_depth['parameters'])
+                                  rendered_depth['reverse_order'], rendered_depth['parameters'],
+                                  rendered_depth.get('valid_mask'))
 
     return RenderContext(
         context_id=new_context_id(),

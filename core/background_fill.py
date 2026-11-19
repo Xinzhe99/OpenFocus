@@ -220,7 +220,10 @@ def _median_blur_index(idx: np.ndarray, size: int, *, cancelled=None) -> np.ndar
 
 
 # ---------------------------------------------------------------------- helpers
-def focus_measures(G, sigma=None, *, cancelled=None):
+_GPU_FOCUS_MIN_BYTES = 128 << 20
+
+
+def focus_measures(G, sigma=None, *, cancelled=None, use_gpu=False, progress=None):
     """Per-pixel focus measures from smoothed Laplacian energy E across the stack.
 
     ratio = log10(max E / median E): how much the best frame stands out.
@@ -229,27 +232,63 @@ def focus_measures(G, sigma=None, *, cancelled=None):
     peak  = log10(max E): is there real structure in *any* frame, compared
             with the empty-background noise floor.
     """
-    if cancelled is not None and cancelled():
-        raise BackgroundFillCancelled()
-    sigma = _sigma(6.0) if sigma is None else sigma
-    E = np.empty_like(G)
-    for i in range(len(G)):
+    def check_cancel():
         if cancelled is not None and cancelled():
             raise BackgroundFillCancelled()
-        L = cv2.Laplacian(G[i], cv2.CV_32F, ksize=3)
-        E[i] = cv2.GaussianBlur(L * L, (0, 0), sigma)
-    if cancelled is not None and cancelled():
-        raise BackgroundFillCancelled()
+
+    check_cancel()
+    sigma = _sigma(6.0) if sigma is None else sigma
+    E = np.empty(G.shape, dtype=G.dtype)
+    laplacian = np.empty(G.shape[1:], np.float32)
+    for i in range(len(G)):
+        check_cancel()
+        cv2.Laplacian(G[i], cv2.CV_32F, dst=laplacian, ksize=3)
+        np.square(laplacian, out=laplacian)
+        if E.dtype == np.float32:
+            cv2.GaussianBlur(laplacian, (0, 0), sigma, dst=E[i])
+        else:
+            E[i] = cv2.GaussianBlur(laplacian, (0, 0), sigma)
+        if progress is not None:
+            progress(0.6 * (i + 1) / len(G))
+    del laplacian
+    check_cancel()
+    reduced = None
+    # Small stacks finish on the CPU before OpenCL device discovery pays off.
+    if use_gpu and E.nbytes >= _GPU_FOCUS_MIN_BYTES and E.dtype == np.float32:
+        from ._background_focus_gpu import GpuError, reduce_focus
+        try:
+            reduced = reduce_focus(E, check_cancel)
+        except GpuError as exc:
+            log.warning('Background focus reduction using CPU: %s', exc.__cause__ or exc)
+    if reduced is None:
+        height, width = G.shape[1:]
+        peak = np.empty((height, width), E.dtype)
+        median = np.empty(peak.shape, np.float64 if E.dtype.kind in 'biu' else E.dtype)
+        indices = np.empty((height, width), np.uint8 if len(G) <= 256 else np.uint16)
+        # Argmax and partition both want the frame dimension contiguous. Pack
+        # it once per cache-sized band, before the median changes frame order.
+        rows = max(1, (2 << 20) // (len(G) * width * E.itemsize))
+        for y in range(0, height, rows):
+            check_cancel()
+            band = slice(y, y + rows)
+            values = np.ascontiguousarray(E[:, band].transpose(1, 2, 0))
+            winner = values.argmax(axis=-1)
+            indices[band] = winner
+            peak[band] = np.take_along_axis(values, winner[..., None], axis=-1)[..., 0]
+            median[band] = np.median(values, axis=-1, overwrite_input=True)
+            if progress is not None:
+                progress(0.6 + 0.38 * min(height, y + rows) / height)
+    else:
+        peak, median, indices = reduced
+        if progress is not None:
+            progress(0.98)
+    check_cancel()
     eps = 1e-10
-    peak = E.max(0)
-    # Capture frame order before the destructive median partitions E.
-    index_dtype = np.uint8 if len(G) <= 256 else np.uint16
-    indices = E.argmax(0).astype(index_dtype)
-    if cancelled is not None and cancelled():
-        raise BackgroundFillCancelled()
-    median = np.median(E, 0, overwrite_input=True)
     ratio = np.log10((peak + eps) / (median + eps))
-    return {"ratio": ratio, "peak": np.log10(peak + eps)}, indices
+    measures = {"ratio": ratio, "peak": np.log10(peak + eps)}
+    if progress is not None:
+        progress(1.0)
+    return measures, indices
 
 
 def otsu_threshold(m):
@@ -915,13 +954,14 @@ def lp_background(img, bgmask, sigma, scale=4):
 
 
 def recorded_range(count, load_matched, shape, sigma=None, scale=4,
-                   valid_masks=None, *, cancelled=None):
+                   valid_masks=None, *, cancelled=None, progress=None):
     """Per-pixel min and max (quarter res, low-passed, exposure-matched) over
     every frame: the span of what the camera actually recorded at each spot.
     Near an edge the frame where it is sharp records the darkened view and
     the defocused frames record the glow; the clean background lies between."""
     sigma = _px(6.0) if sigma is None else sigma
     H, W = shape
+    size = (W // scale, H // scale)
     lo = hi = None
     seen = None
     for k in range(count):
@@ -930,28 +970,35 @@ def recorded_range(count, load_matched, shape, sigma=None, scale=4,
         f = load_matched(k)[0]
         mask = None if valid_masks is None else valid_masks[k]
         if mask is None:
-            q = cv2.GaussianBlur(
-                cv2.resize(f, (W // scale, H // scale), interpolation=cv2.INTER_AREA),
-                (0, 0), sigma / scale)
-            usable = np.ones(q.shape[:2], bool)
+            q = cv2.GaussianBlur(cv2.resize(f, size, interpolation=cv2.INTER_AREA),
+                                 (0, 0), sigma / scale)
+            usable = None
         else:
-            m = cv2.resize(mask.astype(np.float32), (W // scale, H // scale),
-                           interpolation=cv2.INTER_AREA)
-            numerator = cv2.GaussianBlur(
-                cv2.resize(f * mask[..., None], (W // scale, H // scale),
-                           interpolation=cv2.INTER_AREA),
-                (0, 0), sigma / scale)
+            m = cv2.resize(mask.astype(np.float32), size, interpolation=cv2.INTER_AREA)
+            valid_pixels = (cv2.copyTo(f, mask.view(np.uint8)) if mask.dtype == np.bool_
+                            else f * mask[..., None])
+            small = cv2.resize(valid_pixels, size, interpolation=cv2.INTER_AREA)
+            del valid_pixels
+            q = cv2.GaussianBlur(small, (0, 0), sigma / scale)
             denominator = cv2.GaussianBlur(m, (0, 0), sigma / scale)
             usable = denominator > 1e-3
-            q = numerator / np.maximum(denominator, 1e-12)[..., None]
+            np.maximum(denominator, 1e-12, out=denominator)
+            q /= denominator[..., None]
         if lo is None:
             lo = np.full_like(q, np.inf)
             hi = np.full_like(q, -np.inf)
             seen = np.zeros(q.shape[:2], bool)
-        lo = np.where(usable[..., None], np.minimum(lo, q), lo)
-        hi = np.where(usable[..., None], np.maximum(hi, q), hi)
-        seen |= usable
+        if usable is None or usable.all():
+            np.minimum(lo, q, out=lo)
+            np.maximum(hi, q, out=hi)
+            seen.fill(True)
+        else:
+            np.minimum(lo, q, out=lo, where=usable[..., None])
+            np.maximum(hi, q, out=hi, where=usable[..., None])
+            seen |= usable
         del f
+        if progress is not None:
+            progress((k + 1) / count)
     lo[~seen] = -np.inf
     hi[~seen] = np.inf
     return lo, hi
@@ -1346,6 +1393,44 @@ def _u16(img: np.ndarray) -> np.ndarray:
     return np.clip(_to16f(img), 0, 65535).astype(np.uint16)
 
 
+def _match_medians(image, sample, count):
+    """Exact channel medians in uint16 intensity units on a nonempty mask."""
+    levels = 256 if image.dtype == np.uint8 else 65536
+    result = np.empty(3, np.float32)
+    channels = 1 if image.ndim == 2 else 3
+    for c in range(channels):
+        # calcHist returns float32 counts. Above its consecutive-integer
+        # limit, or for a tiny sample, partition the selected values instead.
+        if levels <= count <= 1 << 24:
+            hist = cv2.calcHist([image], [c], sample.view(np.uint8), [levels], [0, levels])
+            cumulative = hist.cumsum(dtype=np.int64)
+            middle = cumulative.searchsorted(((count + 1) // 2, count // 2 + 1))
+            result[c] = (middle[0] + middle[1]) * 0.5
+        else:
+            channel = image if image.ndim == 2 else image[..., c]
+            result[c] = np.median(channel[sample], overwrite_input=True)
+    if channels == 1:
+        result[1:] = result[0]
+    if levels == 256:
+        result *= 257
+    return result
+
+
+_U8_LEVELS_16F = (np.arange(256, dtype=np.float32) * 257).reshape(256, 1, 1)
+
+
+def _apply_match_gains(image, gains):
+    if image.ndim == 2:
+        image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+    elif image.shape[2] == 4:
+        image = cv2.cvtColor(image, cv2.COLOR_BGRA2BGR)
+    if image.dtype == np.uint8:
+        # Scale each integer level before multiplying by the gain to retain
+        # the original float32 rounding of (pixel * 257) * gain.
+        return cv2.LUT(image, _U8_LEVELS_16F * gains)
+    return cv2.multiply(image, tuple(map(float, gains)), dtype=cv2.CV_32F)
+
+
 def replace_background(frames: Sequence[np.ndarray], fused: np.ndarray, **kwargs) -> BackgroundFillResult:
     """Replace the background of `fused` with one of `frames`; see
     `_replace_background` for the options.  Every distance is scaled to the
@@ -1367,6 +1452,7 @@ def _replace_background(frames: Sequence[np.ndarray], fused: np.ndarray, *,
                        keep_soft_parts: bool = False,
                        valid_masks: Optional[Sequence[Optional[np.ndarray]]] = None,
                        composite_onto: Optional[np.ndarray] = None,
+                       use_gpu: bool = False,
                        progress: Optional[Callable[[float, str], None]] = None,
                        cancelled: Optional[Callable[[], bool]] = None) -> BackgroundFillResult:
     """Replace the background of `fused` with one of `frames`.
@@ -1420,15 +1506,21 @@ def _replace_background(frames: Sequence[np.ndarray], fused: np.ndarray, *,
             normalized_masks.append(mask)
         valid_masks = tuple(normalized_masks)
 
-    steps = [0]
-    total = 14
+    stage_index = -1
+    stage_name = ''
+    stage_count = 10 + int(bool(clean))
+
+    def advance(fraction):
+        progress((stage_index + fraction) / stage_count, stage_name)
 
     def step(msg: str) -> None:
+        nonlocal stage_index, stage_name
         if cancelled is not None and cancelled():
             raise BackgroundFillCancelled()
+        stage_index += 1
+        stage_name = msg
         if progress is not None:
-            progress(min(steps[0] / total, 1.0), msg)
-        steps[0] += 1
+            advance(0.)
 
     margin, feather, halo_fill = _px(2.0), _px(6.0), _px(32.0)
     min_island = 2e-5
@@ -1442,8 +1534,12 @@ def _replace_background(frames: Sequence[np.ndarray], fused: np.ndarray, *,
         g = cv2.cvtColor(_u16(f).astype(np.float32) / 65535.0, cv2.COLOR_BGR2GRAY)
         G[k] = cv2.resize(g, (W // 2, H // 2), interpolation=cv2.INTER_AREA)
         frame_medians.append(np.median(G[k]))
+        if progress is not None:
+            advance(0.5 * (k + 1) / N)
     del g
-    measures, idx = focus_measures(G, cancelled=cancelled)
+    measures, idx = focus_measures(
+        G, cancelled=cancelled, use_gpu=use_gpu,
+        progress=None if progress is None else lambda f: advance(0.5 + 0.5 * f))
     sub_half, thresh = subject_mask(measures, ["ratio", "peak"], None, min_island)
     fused16 = _u16(fused)
     color_half = cv2.resize(fused16, (G.shape[2], G.shape[1]), interpolation=cv2.INTER_AREA).astype(np.float32) / 65535.0
@@ -1529,20 +1625,40 @@ def _replace_background(frames: Sequence[np.ndarray], fused: np.ndarray, *,
     del lum_f
     if band.sum() < _area(10000):
         band = dist > margin + feather
-    match_target = [np.median(fz[..., c][band]) for c in range(3)]
+    band_count = np.count_nonzero(band)
+    target_pixels = fused if fused.dtype == np.uint8 else fused16
+    band_target = None
+    frame_gains = {}
 
     def load_matched(k):
-        f = _u16(frames[k]).astype(np.float32)
-        sample = band if valid_masks[k] is None else band & valid_masks[k]
-        if sample.sum() < _area(64) and valid_masks[k] is not None:
-            sample = (~sub) & valid_masks[k]
-        if not sample.any():
-            raise BackgroundFillError(f"frame {k + 1} has no valid background pixels")
-        target = match_target if valid_masks[k] is None else [
-            np.median(fz[..., c][sample]) for c in range(3)]
-        g = np.array([target[c] / max(np.median(f[..., c][sample]), 1e-3)
-                      for c in range(3)], np.float32)
-        return f * g, g
+        nonlocal band_target
+        frame = np.asarray(frames[k])
+        if frame.dtype not in (np.uint8, np.uint16):
+            frame = _u16(frame)
+        if k not in frame_gains:
+            mask = valid_masks[k]
+            sample, count = band, band_count
+            if mask is not None:
+                sample = band & mask
+                count = np.count_nonzero(sample)
+                if count < _area(64):
+                    sample = (~sub) & mask
+                    count = np.count_nonzero(sample)
+                elif count == band_count:
+                    sample = band
+            if not count:
+                raise BackgroundFillError(f"frame {k + 1} has no valid background pixels")
+            if sample is band:
+                if band_target is None:
+                    band_target = _match_medians(target_pixels, band, band_count)
+                target = band_target
+            else:
+                target = _match_medians(target_pixels, sample, count)
+            medians = _match_medians(frame, sample, count)
+            frame_gains[k] = np.array([target[c] / max(medians[c], 1e-3)
+                                       for c in range(3)], np.float32)
+        gains = frame_gains[k]
+        return _apply_match_gains(frame, gains), gains
 
     step("matching the background frame")
     bgf, gains = load_matched(k_bg)
@@ -1613,7 +1729,7 @@ def _replace_background(frames: Sequence[np.ndarray], fused: np.ndarray, *,
     if clean:
         step("cleaning edge flaws")
         lo_q, hi_q = recorded_range(N, load_matched, (H, W), valid_masks=valid_masks,
-                                   cancelled=cancelled)
+                                    cancelled=cancelled, progress=advance if progress is not None else None)
         if cancelled is not None and cancelled():
             raise BackgroundFillCancelled()
         bgf, shift = clean_edges(fz, bgf, est, sub, dist, Wmap, lo_q, hi_q, 1.0)

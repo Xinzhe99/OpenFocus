@@ -3,8 +3,8 @@ from typing import Any
 
 import cv2
 import os
-from PyQt6.QtCore import QObject, QPoint, QThread, Qt
-from PyQt6.QtGui import QIcon, QDragEnterEvent, QDropEvent
+from PyQt6.QtCore import QItemSelectionModel, QObject, QPoint, QThread, QTimer, Qt
+from PyQt6.QtGui import QAction, QIcon, QKeySequence, QDragEnterEvent, QDropEvent
 from utils.file_dialogs import FileDialog
 from PyQt6.QtWidgets import QListWidgetItem, QMenu, QMessageBox, QDialog
 
@@ -56,9 +56,14 @@ class SourceManager(QObject):
         super().__init__()
         self.window = window
         self._review_worker = None
+        self._review_action = None
         self._review_frames = ()
         self._review_results = []
         self._review_status_key = None
+        self._review_notice_timer = QTimer(self)
+        self._review_notice_timer.setSingleShot(True)
+        self._review_notice_timer.setInterval(5000)
+        self._review_notice_timer.timeout.connect(self._expire_review_notice)
         self._stack_baseline = None
         window.linear_dng_metadata = None
         self._review_error = ""
@@ -192,6 +197,7 @@ class SourceManager(QObject):
             self._review_status_key = "stack_review_stale"
         elif worker._cancelled:
             self._review_status_key = "stack_review_cancelled"
+            self._review_notice_timer.start()
         elif worker.error is not None:
             self._review_error = worker.error
             self._review_status_key = "stack_review_error"
@@ -206,23 +212,61 @@ class SourceManager(QObject):
         worker.deleteLater()
         self.decorate_source_items()
 
+    def _expire_review_notice(self):
+        if self._review_status_key == 'stack_review_cancelled':
+            self._review_status_key = None
+            self.refresh_review_text()
+
     def _visible_review_results(self):
         excluded = getattr(self.window, "excluded_frames", set())
         return [entry for entry in self._review_results
                 if entry["index"] not in excluded
                 and entry["reference_index"] not in excluded]
 
-    def refresh_review_text(self):
-        panel = getattr(self.window, "right_panel_components", None)
-        if panel is None:
-            return
+    def bind_source_actions(self, view):
+        # Qt maps Ctrl in portable key sequences to Command on macOS. Keep
+        # Ctrl+A for ordinary multi-row selection, independently of inclusion.
+        def add_action(keys, callback):
+            action = QAction(view)
+            action.setShortcut(QKeySequence(keys))
+            action.setShortcutContext(Qt.ShortcutContext.WidgetShortcut)
+            action.setAutoRepeat(False)
+            action.setShortcutVisibleInContextMenu(True)
+            action.triggered.connect(callback)
+            view.addAction(action)
+            return action
+
+        def set_all(included):
+            rows = set(range(len(self.window.raw_images)))
+            self._set_frame_participation(rows, included=included)
+
+        self._review_action = add_action('Ctrl+Shift+F', self.toggle_stack_review)
+        self._include_all_action = add_action('Ctrl+Shift+I', lambda: set_all(True))
+        self._exclude_all_action = add_action('Ctrl+Shift+X', lambda: set_all(False))
+        self._refresh_source_actions()
+
+    def _refresh_source_actions(self):
         busy = self._review_worker is not None
-        panel.btn_review_stack.setText(trans.t(
-            "stack_review_cancel" if busy else "stack_review_button"))
-        panel.btn_review_stack.setToolTip(trans.t(
-            "stack_review_cancel" if busy else "stack_review_button")
-            + "\n" + trans.t("stack_review_hint"))
-        panel.btn_review_stack.setEnabled(busy or len(self.window.raw_images) >= 2)
+        total = len(self.window.raw_images)
+        excluded = len(self.window.excluded_frames)
+        self._review_action.setText(trans.t('stack_review_cancel' if busy else 'stack_review_action'))
+        self._review_action.setToolTip(trans.t('stack_review_hint'))
+        self._review_action.setEnabled(busy or total >= 2)
+        self._include_all_action.setText(trans.t('source_include_all'))
+        self._include_all_action.setEnabled(excluded > 0)
+        self._exclude_all_action.setText(trans.t('source_exclude_all'))
+        self._exclude_all_action.setEnabled(excluded < total)
+        actions = (self._include_all_action, self._exclude_all_action, self._review_action)
+        hint = '\n'.join(
+            f'{action.shortcut().toString(QKeySequence.SequenceFormat.NativeText)}  {action.text()}'
+            for action in actions)
+        self.window.source_images_label.setToolTip(hint)
+        self.window.file_list.setToolTip(hint)
+        self.window.file_list.setAccessibleDescription(hint)
+
+    def refresh_review_text(self):
+        if self._review_action is not None:
+            self._refresh_source_actions()
         status_key = self._review_status_key
         visible = self._visible_review_results()
         if status_key in ("stack_review_found", "stack_review_none"):
@@ -311,7 +355,7 @@ class SourceManager(QObject):
     def _start_load_worker(self, folder=None, video=None, filepaths=None,
                            scale=1.0, append=False, on_success=None,
                            accept_event=None, prepare_options=None, on_error=None,
-                           linear_raw=False) -> None:
+                           linear_raw=False, on_finished=None) -> None:
         """Run the loader on a background thread and apply results on the
         UI thread when it finishes."""
         window = self.window
@@ -321,16 +365,21 @@ class SourceManager(QObject):
             if on_error is not None:
                 on_error(trans.t("msg_load_in_progress"))
             return
+
+        def reject_start(message):
+            if on_error is not None:
+                on_error(message)
+            else:
+                show_warning_box(window, trans.t("msg_load_failed"), message)
+            if on_finished is not None:
+                on_finished(message)
+
         current_metadata = getattr(window, "linear_dng_metadata", None)
         if append and getattr(window, "raw_images", None):
             if current_metadata is not None:
                 linear_raw = True
             elif linear_raw:
-                message = trans.t("linear_raw_mismatch")
-                if on_error is not None:
-                    on_error(message)
-                else:
-                    show_warning_box(window, trans.t("msg_load_failed"), message)
+                reject_start(trans.t("linear_raw_mismatch"))
                 return
         if linear_raw and folder and append:
             from core.image_loader import ImageStackLoader, is_raw_source
@@ -348,20 +397,12 @@ class SourceManager(QObject):
             except OSError:
                 mixed = False  # The worker reports directory errors without changing the stack.
             if mixed:
-                message = trans.t("linear_raw_invalid")
-                if on_error is not None:
-                    on_error(message)
-                else:
-                    show_warning_box(window, trans.t("msg_load_failed"), message)
+                reject_start(trans.t("linear_raw_invalid"))
                 return
         if linear_raw and filepaths:
             from core.image_loader import is_raw_source
             if not all(is_raw_source(path) for path in filepaths):
-                message = trans.t("linear_raw_invalid")
-                if on_error is not None:
-                    on_error(message)
-                else:
-                    show_warning_box(window, trans.t("msg_load_failed"), message)
+                reject_start(trans.t("linear_raw_invalid"))
                 return
         working_scale = scale
         if append and getattr(window, "raw_images", None):
@@ -390,10 +431,15 @@ class SourceManager(QObject):
                     and self._stack_baseline is baseline
                     and getattr(window, "linear_dng_metadata", None) is metadata)
 
+        # A discarded generation never reaches the publication point.
+        result_error = "CANCELLED"
+
         def reject_changed_append():
+            nonlocal result_error
             if append_target_is_current():
                 return False
             message = trans.t("msg_append_target_changed")
+            result_error = message
             if on_error is not None:
                 on_error(message)
             else:
@@ -428,7 +474,18 @@ class SourceManager(QObject):
                     and not getattr(window, "_shutting_down", False)
                     and generation == getattr(self, "_load_generation", -1))
 
+        # Preparing or displaying frames may run a nested Qt event loop. Keep
+        # the loader busy until both its thread and its GUI transaction finish.
+        result_handled = thread_finished = False
+
+        def on_thread_finished():
+            nonlocal thread_finished
+            thread_finished = True
+            if result_handled:
+                self._finish_load_worker(worker)
+
         def on_done(ok: bool, message: str, images, filenames) -> None:
+            nonlocal result_error, result_handled
             accepted = False
             previous_window_state = None
             previous_baseline = None
@@ -436,6 +493,7 @@ class SourceManager(QObject):
                 if not load_is_current():
                     return  # superseded by a newer load request
                 if not ok:
+                    result_error = message or "Load failed"
                     if on_error is not None:
                         on_error(message)
                     elif not message.startswith("CANCELLED") and accept_event is None:
@@ -553,6 +611,7 @@ class SourceManager(QObject):
                 self._show_linear_profile_notice(getattr(window, "linear_dng_metadata", None))
                 worker._load_applied = load_is_current()
             except Exception as exc:  # pylint: disable=broad-except
+                result_error = str(exc) or "Load failed"
                 if not accepted and previous_window_state is not None:
                     for name, value in previous_window_state.items():
                         setattr(window, name, value)
@@ -582,11 +641,16 @@ class SourceManager(QObject):
                     previous_state = getattr(worker, "_previous_loader_state", None)
                     if previous_state is not None:
                         previous_state.clear()
+                if on_finished is not None:
+                    on_finished(None if worker._load_applied else result_error)
+                result_handled = True
+                if thread_finished:
+                    self._finish_load_worker(worker)
 
         worker = self._load_worker
         worker.progress.connect(self._on_load_progress)
         worker.finished_load.connect(on_done)
-        worker.finished.connect(lambda: self._finish_load_worker(worker))
+        worker.finished.connect(on_thread_finished)
         self._show_load_status()
         worker.start()
 
@@ -1295,11 +1359,20 @@ class SourceManager(QObject):
 
     def show_source_context_menu(self, position: QPoint) -> None:
         window = self.window
+        view = window.file_list
+        target = view.itemAt(position)
+        if target is None:
+            return
+        if not target.isSelected():
+            view.setCurrentItem(target, QItemSelectionModel.SelectionFlag.ClearAndSelect)
         rows = self._selected_source_rows()
         if not rows:
             return
         excluded = getattr(window, "excluded_frames", set())
-        menu = QMenu(window.file_list)
+        menu = QMenu(view)
+        menu.setToolTipsVisible(True)
+        menu.addAction(self._review_action)
+        menu.addSeparator()
 
         include_action = menu.addAction(trans.t("source_include_selected"))
         include_action.setEnabled(not rows.isdisjoint(excluded))
@@ -1312,7 +1385,8 @@ class SourceManager(QObject):
         menu.addSeparator()
         menu.addAction(trans.t("action_delete"), self.delete_selected_source_images)
 
-        menu.exec(window.file_list.viewport().mapToGlobal(position))
+        menu.exec(view.viewport().mapToGlobal(position))
+        menu.deleteLater()
 
     def delete_source_image(self, item: QListWidgetItem) -> None:
         window = self.window
@@ -1467,14 +1541,19 @@ class SourceManager(QObject):
     def processing_selection_changed(self) -> None:
         window = self.window
         window.source_revision = getattr(window, "source_revision", 0) + 1
+        # Prepared fusion inputs belong to the old selection. Dropping the
+        # manager's reference leaves any in-flight reader's snapshots alive.
         clear_prepared = getattr(getattr(window, 'render_manager', None),
                                  'clear_prepared_cache', None)
         if callable(clear_prepared):
             clear_prepared()
-        window.aligned_images = []
-        window.is_images_aligned = False
-        window.last_alignment_options = None
-        window.alignment_request_key = None
+        # The last completed alignment still belongs to its original ordered
+        # selection. Restore it if those same frames are checked again.
+        key = getattr(window, 'alignment_request_key', None)
+        if key is None:
+            window.aligned_images = []
+            window.last_alignment_options = None
+        window.is_images_aligned = bool(key and tuple(window.included_indices()) == key[1])
         window.transform_manager.reset_roi_selection()
         self._refresh_source_count()
         self.decorate_source_items()
