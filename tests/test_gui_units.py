@@ -1,6 +1,11 @@
 """Offscreen GUI tests: settings persistence round-trip and the wipe widget."""
 import os
 import tempfile
+    worker.finished_load.emit(False, 'CANCELLED', [], [])
+    assert not bar.isVisible()
+    QTest.mouseClick(manager._load_cancel_button, Qt.MouseButton.LeftButton)
+    video_worker.finished_load.emit(False, 'CANCELLED', [], [])
+    assert not bar.isVisible()
 
 import cv2
 import numpy as np
