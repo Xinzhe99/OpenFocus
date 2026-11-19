@@ -830,6 +830,21 @@ class RenderWorker(QThread):
                 fusion_result, device_name = self._run_fusion(
                     fusion_images, should_cancel=lambda: self.is_cancelled,
                     progress_callback=self._fusion_progress(), **focus_region)
+            if self.rendered_depth is not None and (registration_performed or
+                    (roi_rect_int is not None and self.is_images_aligned)):
+                from core.render_context import render_alignment_mask
+                try:
+                    self.rendered_depth['valid_mask'] = render_alignment_mask(
+                        processed_images, roi_rect_int, lambda: self.is_cancelled)
+                except (MemoryError, OSError):
+                    logger.warning('could not retain aligned focus validity', exc_info=True)
+                    self.rendered_depth = None
+            if self.rendered_depth is not None:
+                self.rendered_depth.update(method=self.algorithm, roi_rect=roi_rect_int)
+                log_action('render.depth_retained', method=self.algorithm, roi=roi_rect_int,
+                           shape=list(self.rendered_depth['index'].shape),
+                           reverse_order=self.rendered_depth['reverse_order'],
+                           parameters=self.rendered_depth['parameters'])
             if full_frame_roi:
                 x, y, width, height = roi_rect_int
                 fusion_result = store_frame(fusion_result[y:y + height, x:x + width])

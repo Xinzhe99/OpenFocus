@@ -512,11 +512,14 @@ current stack. The source and texture stay bound to that snapshot.
 Depth maps are unavailable for transparent PNG stacks, in the GUI and the CLI.
 
 Selected outputs from OpenFocus B/C and StackMFF V2/V3 can retain their focus
-positions. When the selected output has a retained map and the method and parameters
-match, the dialog opens it for export. OpenFocus C uses the winning frame in its
-finest detail layer. Press **Compute** to run a separate estimate. Other outputs,
-the current stack, and changed methods or parameters need an explicit **Compute**
-click. StackMFF V1 has no depth map. The parameter editor
+positions. The source summary names the saved measure. Opening the dialog,
+pressing **Compute** with the recorded settings, or returning to those settings
+shows the saved positions in their original frame order and ROI. The 2D preview
+uses the saved plane and alignment validity. Opening the 3D tab or exporting a
+model builds the surface and texture on demand. OpenFocus C records the winning
+frame in its finest detail layer. For an output without saved positions, the
+current stack, or another measure or parameter value, press **Compute** for a
+separate estimate. StackMFF V1 has no depth map. The parameter editor
 appears directly below the measure selector: DCT median kernel and GFG initial kernel
 use odd values 1–51 (default 7). OpenFocus B uses Radius, Smoothing and Feather;
 OpenFocus C's depth export uses Smoothing without a radius. DTCWT decomposition levels

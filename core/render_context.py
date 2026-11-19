@@ -154,13 +154,17 @@ def _alignment_valid_mask(image: np.ndarray, *, should_cancel=None) -> Optional[
     _check_cancel(should_cancel)
     if image.size == 0:
         return None
+    # Most cropped registrations have no fill. Inspect only the four edges
+    # before allocating a full-frame zero mask and component labels.
+    def has_zero(edge):
+        return (np.all(edge[..., :3] == 0, axis=-1).any() if image.ndim == 3
+                else (edge == 0).any())
+    if not any(has_zero(edge) for edge in (image[0], image[-1], image[:, 0], image[:, -1])):
+        return None
     if image.ndim == 3:
         zero = np.all(image[..., :3] == 0, axis=2)
     else:
         zero = image == 0
-    if not (zero[0].any() or zero[-1].any()
-            or zero[:, 0].any() or zero[:, -1].any()):
-        return None
 
     count, labels = cv2.connectedComponents(zero.astype(np.uint8),
                                             connectivity=8)
@@ -184,6 +188,28 @@ class RenderedDepth:
     valid_rect: Tuple[int, int, int, int]
     reverse_order: bool
     parameters: dict
+    valid_mask: Optional[np.ndarray] = None
+
+
+def render_alignment_mask(frames, crop, should_cancel):
+    """Capture the intersection in the index domain while render pixels are available."""
+    mask = None
+    for frame in frames:
+        pixels = resolve_frame(frame, should_cancel=should_cancel)
+        if crop is not None:
+            x, y, w, h = crop
+            pixels = pixels[y:y + h, x:x + w]
+        valid = _alignment_valid_mask(pixels, should_cancel=should_cancel)
+        del pixels
+        if valid is not None:
+            if mask is None:
+                mask = create_frame(valid.shape, np.bool_)
+                mask[:] = valid
+            else:
+                np.logical_and(mask, valid, out=mask)
+    if mask is not None:
+        mask.flags.writeable = False
+    return mask
 
 
 def store_rendered_focus(positions, scale, domain_shape, *, crop=None, transparent=None,
@@ -281,7 +307,7 @@ def _clamp_roi(roi_rect, shape: Tuple[int, int]) -> Optional[Tuple[int, int, int
         return None
     h, w = shape[:2]
     try:
-        rx, ry, rw, rh = (int(round(float(v))) for v in roi_rect)
+        rx, ry, rw, rh = (int(float(v)) for v in roi_rect)
     except (TypeError, ValueError):
         return None
     rx = max(0, min(rx, w))
@@ -413,13 +439,15 @@ def build_render_context(
     frame_icc_profiles = (frame_icc_profiles + (b'',) * len(frames))[:len(frames)]
 
     depth = None
-    if rendered_depth is not None and len(frames) == rendered_depth['frame_count']:
+    if (rendered_depth is not None and len(frames) == rendered_depth['frame_count']
+            and algorithm == rendered_depth['method'] and roi == rendered_depth['roi_rect']):
         index = rendered_depth['index']
         origin = frames[0].offset_x, frames[0].offset_y
         if all(frame.image.shape[:2] == index.shape and
                (frame.offset_x, frame.offset_y) == origin for frame in frames):
             depth = RenderedDepth(index, rendered_depth['valid_rect'],
-                                  rendered_depth['reverse_order'], rendered_depth['parameters'])
+                                  rendered_depth['reverse_order'], rendered_depth['parameters'],
+                                  rendered_depth.get('valid_mask'))
 
     return RenderContext(
         context_id=new_context_id(),
