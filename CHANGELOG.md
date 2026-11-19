@@ -45,6 +45,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   figures in sanitized reports, without adding exception messages or paths.
 - Use each indexed TIFF page's color map for previews, full-resolution fusion and conversion.
   Preserve 16-bit palette colors, orientation and embedded RGB profiles.
+- Read original working-image pixels in the loupe, Method Compare, Wipe, watermark and scalebar previews.
+  Method Compare's 100% view maps one image pixel to one physical display pixel, including on high-DPI screens.
 - Apply exposure matching in OpenFocus fusion through a per-frame lookup table
   of every 8- or 16-bit code, computed by the existing per-sample arithmetic
   and applied in parallel row bands, instead of float strips on one thread.

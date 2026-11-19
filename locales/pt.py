@@ -1409,6 +1409,7 @@ PACK = {
     "label_position": "Posição",
     "label_colors": "Cores",
     "label_preview": "Prévia",
+    "native_detail_loading": "Carregando os detalhes do original…",
     "label_preview_hint": "Assim ficará o quadro 1: {n!r}",
     "label_preview_empty": "Nada será desenhado: formato e texto personalizado estão vazios.",
     "label_format_hint": "Use {value} para o número do quadro ou digite um texto fixo.",
