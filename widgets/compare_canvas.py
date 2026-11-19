@@ -359,6 +359,7 @@ class DetailCanvas(_Canvas):
         self._pixmap = None
         self._bounds = None
         self._full = False
+        self._pending = False
         self._region = None
         self._status = ""
         # "detail" crops to the inspection rectangle; "full" shows the whole
@@ -389,11 +390,12 @@ class DetailCanvas(_Canvas):
         """Only a display explicitly identified as a complete frame is full."""
         return bool(self._full and self._pixmap is not None and not self._pixmap.isNull())
 
-    def set_result(self, pixmap, bounds, *, full=False):
+    def set_result(self, pixmap, bounds, *, full=False, pending=False):
         """Store pixels and their (x, y, width, height) image-space bounds."""
         self._pixmap = pixmap
         self._bounds = tuple(bounds) if bounds is not None else None
         self._full = bool(full)
+        self._pending = bool(pending)
         self.update()
 
     def set_region(self, region):
@@ -417,7 +419,9 @@ class DetailCanvas(_Canvas):
     def paintEvent(self, event):  # noqa: N802
         painter = QPainter(self)
         theme = self._background(painter)
-        if self._view_mode == "full" and self.can_show_full():
+        covered = self.has_region()
+        fallback = self._pending and self._pixmap is not None and not self._pixmap.isNull()
+        if self.can_show_full() and (self._view_mode == "full" or (fallback and not covered)):
             # Whole computed result, letterboxed to keep its aspect ratio.
             source = QRectF(0, 0, self._pixmap.width(), self._pixmap.height())
             area = QRectF(self.rect())
@@ -429,8 +433,8 @@ class DetailCanvas(_Canvas):
                             area.center().y() - height / 2.0, width, height)
             painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
             painter.drawPixmap(target, self._pixmap, source)
-        elif self.has_region():
-            x, y, width, height = self._region
+        elif covered or fallback:
+            x, y, width, height = self._region if covered else self._bounds
             bx, by, bw, bh = self._bounds
             source = QRectF((x - bx) * self._pixmap.width() / bw,
                             (y - by) * self._pixmap.height() / bh,

@@ -73,7 +73,7 @@ OpenFocus 是一款面向科研人员、工程师和图像处理从业者的专�
 输出或帧的标签不会。渐变透明、不同蒙版、透明 TIFF、GIF 和多页 TIFF 导出均不支持。
 CLI 也会拒绝透明输入的传感器清理与深度图。
 
-命令行示例：`python main.py --input ./png-stack --output ./result.png --method guided_filter --align none`。
+命令行示例：`python main.py --input ./png-stack --output ./result.png --method guided_filter --align none --experimental`。
 
 ### 支持的输出格式
 
@@ -664,9 +664,9 @@ Wipe 模式与 ROI 模式共用结果面板，进入其一自动退出另一个�
 
 ## 8. 图像融合方法
 
-OpenFocus 提供十种融合算法（外加"仅对齐"的配准模式），各自适用于不同类型的图像。
-全新配置默认使用 **OpenFocus B** 融合与 **ECC** 配准，两项均在列表中标记为推荐。
-已有的用户选择仍会保留；命令行有独立的默认值。
+OpenFocus A、B、C 是稳定融合方法。使用其他融合方法时，请在高级设置中启用
+**实验性功能**，或在命令行中加上 `--experimental`。桌面全新配置默认使用
+**OpenFocus B** 融合和 **ECC** 配准，已有的方法选择会保留。
 
 ### 引导滤波
 
@@ -802,7 +802,8 @@ OpenFocus A/B/C 匹配处理顺序的首帧，其他算法匹配末帧。「消�
 **ROI 局部预览（快速）**融合选区及周边区域；**整图融合对照**计算整幅图像，
 随后移动检查区域可直接查看已有结果，无须重新融合。由于曝光统计和部分算法
 依赖图像范围，ROI 预览可能与整图结果不同。
-默认选择**整图融合对照**。
+窗口默认显示整图，并自动勾选工作区里已有兼容结果的方法，沿用保存时的参数与对齐坐标。
+切换到细节视图可查看裁片。即使其他方法仍在融合，移动白框或调整尺寸也会更新已有结果的预览。
 
 右侧预览上方的 **预览窗口大小 (px)** 可通过滑块或数字输入调整，范围为
 160–960 像素。所有方法使用相同尺寸，并按可用宽度自动换行；下次打开会
@@ -1000,8 +1001,8 @@ PNG 导出；实际适用的标签仍不支持。
 
 ## 11. 设置与配置
 
-安装相应依赖后，可直接选择所有融合方法。打开**设置 → 高级设置 → 常规 → 启用实验性功能**
-可使用实验性配准方法。该设置保存在当前安装中，恢复默认设置会将其关闭。
+打开**设置 → 高级设置 → 常规 → 启用实验性功能**后，可在依赖可用时选择实验性融合与
+配准方法。该设置保存在当前安装中，恢复默认设置会将其关闭。
 
 **设置 → 主题 → 跟随系统**会随系统的浅色和深色模式即时切换。**设置 → 字体大小**提供小（9 pt）、中（10 pt）和大（13 pt）。选择**自定义…**可在 8–18 pt 范围内调整，确认前可与默认字号并排对照。
 
@@ -1414,7 +1415,7 @@ openfocus describe                      # JSON：方法、参数、能力与控�
 openfocus gui [--control] [--socket NAME] [路径…]   # 启动桌面应用
 openfocus ctl <command> [flags]          # 操作运行中的窗口（见 AGENT_CONTROL_SPEC.md）
 openfocus recipe create FILE --input … --output … [处理参数]
-openfocus recipe run FILE [--dry-run]    # 重放保存的无头配方
+openfocus recipe run FILE [--dry-run] [--experimental]
 openfocus retouch replay CHECKPOINT --base BASE --sources … --output RESULT
 ```
 
@@ -1429,20 +1430,20 @@ openfocus -i ./stack_folder -o ./result/fused.png
 ```
 
 ```bash
-# 使用默认的 AI 融合处理一个文件夹
+# 使用默认的 OpenFocus B 融合处理一个文件夹
 python main.py --input ./stack_folder --output ./result/fused.png
 
 # DTCWT + ECC 配准，8 线程
-python main.py -i ./stack_folder -o ./result/fused.png -m dtcwt -a ecc -t 8
+python main.py -i ./stack_folder -o ./result/fused.png -m dtcwt -a ecc -t 8 --experimental
 
 # StackMFF V3 强制 CPU + 自定义瓦片尺寸
-python main.py -i ./stack_folder -o ./result/fused.png -m stackmffv3 --cpu --tile-size 512
+python main.py -i ./stack_folder -o ./result/fused.png -m stackmffv3 --cpu --tile-size 512 --experimental
 
 # 显式文件列表；也接受视频文件作为输入
-python main.py -i img1.jpg img2.jpg img3.jpg -o fused.png -m gfgfgf
+python main.py -i img1.jpg img2.jpg img3.jpg -o fused.png -m gfgfgf --experimental
 
 # 单个多页 TIFF Z-Stack + 元数据自动标定的比例尺
-python main.py -i ./zstack.tif -o fused.png -m dtcwt --scale-bar
+python main.py -i ./zstack.tif -o fused.png -m dtcwt --scale-bar --experimental
 
 # 只检查相邻相似帧，不融合也不改变输入
 python main.py -i ./stack_folder --suggest-duplicates
@@ -1466,10 +1467,12 @@ JSON 包含 `method`、`input`、`frame_count` 和 `entries`；`frame_index` 按
 处理配方可保存并复用参数，也便于整体迁移：
 
 ```bash
-openfocus recipe create workflow.json -i ./stack_folder -o ./result/fused.png -m dct --cpu
+openfocus recipe create workflow.json -i ./stack_folder -o ./result/fused.png -m openfocus_b --cpu
 openfocus recipe run workflow.json --dry-run
 openfocus recipe run workflow.json
 ```
+
+配方会保留选择的融合方法。每次运行使用实验性融合方法的配方时，请加上 `--experimental`。
 
 配方 JSON 第 1 版包含 `version`、`input` 数组、`output` 或 `output_dir`，以及 `options`
 对象。路径相对于配方文件；移动配方时请连同输入一起移动。创建会记录 CLI 设置和解析后的
@@ -1522,7 +1525,8 @@ openfocus retouch replay edits.ofretouch --base fused.png --sources frame1.png f
 | `--input, -i` | 图像文件夹、视频文件、一个/多个图像文件，或单个多页 TIFF |
 | `--output, -o` | 单栈输出图像路径（扩展名决定格式）；没有 `--output-dir` 时必需 |
 | `--output-dir, -d` | 批处理模式：逐个处理输入文件夹，每个栈写入 `<文件夹名>.png` |
-| `--method, -m` | `stackmffv3`（默认）、`stackmffv2`、`stackmff`、`openfocus_a/b/c`、`guided_filter`、`dct`、`dtcwt`、`gfgfgf` |
+| `--method, -m` | 稳定：`openfocus_a`、`openfocus_b`（默认）、`openfocus_c`；实验性：`guided_filter`、`dct`、`dtcwt`、`gfgfgf`、`stackmff`、`stackmffv2`、`stackmffv3` |
+| `--experimental` | 在本次命令行运行中启用实验性融合方法 |
 | `--param KEY=JSON_VALUE` | 算法参数，可重复；优先于旧式专用参数 |
 | `--align, -a` | `none`（默认）、`homography`、`ecc`、`openfocus`、`both` |
 | `--align-param KEY=JSON_VALUE` | 配准参数，可重复，例如 `failure_policy="fail"`、`reference_frame=3` |
@@ -1680,7 +1684,7 @@ macOS 15 Sequoia 起，右键点击应用选择 **打开** 不再绕过 Gatekeep
 ### 获取帮助
 
 1. **环境信息**：点击 **帮助 → 反馈问题 → 诊断资料 → 环境信息** 检查安装状态
-2. **联系方式**　点击 **帮助 → 联系我们** 查看服务端发布的邮箱、机构、链接和微信二维码。重新打开窗口即可获取更新。
+2. **联系方式**　点击 **帮助 → 联系我们** 查看已发布的邮箱、机构和社区链接。扫描带 Discord 标志的二维码可加入当前发布的邀请，也可扫描微信二维码。重新打开窗口即可获取更新。
 3. **支持项目**：点击 **帮助 → 支持我们** 查看服务端发布的支付宝和 PayPal 二维码。重新打开对话框即可获取更新。
 
 ---

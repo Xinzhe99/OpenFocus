@@ -22,7 +22,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/Windows-10%2F11-0078D7?logo=windows&logoColor=white" alt="Windows 10/11">
   <img src="https://img.shields.io/badge/macOS-Apple%20Silicon-000000?logo=apple&logoColor=white" alt="macOS Apple Silicon">
-  <img src="https://img.shields.io/badge/Linux-CLI-FCC624?logo=linux&logoColor=black" alt="Linux CLI">
+  <img src="https://img.shields.io/badge/Linux-x86--64-FCC624?logo=linux&logoColor=black" alt="Linux x86-64 — настольное приложение и CLI">
   <a href="https://pypi.org/project/openfocus/"><img src="https://img.shields.io/badge/PyPI-openfocus-3775A9?logo=pypi&logoColor=white" alt="PyPI"></a>
 </p>
 
@@ -55,7 +55,7 @@
 ## 📢 Новости
 
 > [!NOTE]
-> **[v1.77.0-beta.7 — предварительный выпуск](https://github.com/Xinzhe99/OpenFocus/releases/tag/v1.77.0-beta.7)** — Ускорение на GPU для совместимых устройств OpenCL в OpenFocus B с переходом на CPU, исправленное сравнение с помощью шторки, автоматический фон и ретушь. Подробности в [истории изменений](../../CHANGELOG.md).
+> **[Вышла стабильная версия v2.0.0](https://github.com/Xinzhe99/OpenFocus/releases/tag/v2.0.0)** — В выпуск входит архив переносной версии настольного приложения для Linux x86_64. Подробности в [истории изменений](../../CHANGELOG.md).
 
 Предыдущие выпуски — в [истории изменений](../../CHANGELOG.md).
 
@@ -72,7 +72,7 @@
 <tr>
 <td width="46%" valign="middle">
 
-### ИИ-объединение: StackMFF V3
+### ИИ-объединение: StackMFF V3 (экспериментальный метод)
 
 StackMFF V3 использует ИИ для объединения резких участков исходных кадров.
 
@@ -107,6 +107,8 @@ StackMFF V3 использует ИИ для объединения резких
 ### Сравнение методов
 
 Сравнивайте методы рядом и используйте выбранный результат или его настройки.
+
+OpenFocus A, OpenFocus B и OpenFocus C — единственные стабильные методы объединения. Остальные методы экспериментальные. Чтобы использовать их в настольном приложении, выберите **Настройки → Дополнительные настройки… → Включить экспериментальные функции**. В CLI без графического интерфейса используйте `--experimental`.
 
 </td>
 <td width="54%">
@@ -219,11 +221,13 @@ StackMFF V3 использует ИИ для объединения резких
 <a id="install"></a>
 ## ⬇️ Установка
 
-[сайте OpenFocus](https://openfocus.top/#download) и скрипты установки предлагают для Windows и macOS последнюю версию, включая более новую бета-версию (сейчас v1.77.0-beta.7). Загрузки также доступны в [GitHub Releases](https://github.com/Xinzhe99/OpenFocus/releases). Автоматическое обновление приложения также предлагает более новые бета-версии; CLI для Linux из PyPI остаётся стабильным.
+На [странице загрузки OpenFocus](https://openfocus.top/#download) доступна последняя стабильная версия настольного приложения для Windows, macOS и Linux x86_64. Распакуйте архив для Linux и запустите `OpenFocus/OpenFocus`. В Linux устанавливайте обновления настольного приложения вручную с этой же страницы.
+
+По умолчанию настольное приложение получает стабильные обновления. Чтобы получать предварительные выпуски, включите **Получать бета-обновления** в дополнительных настройках или в окне приветствия. Предыдущие версии и предварительные выпуски доступны на странице [GitHub Releases](https://github.com/Xinzhe99/OpenFocus/releases).
 
 Инструкции по установке и устранению неполадок приведены в [руководстве](../USER_MANUAL_RU.md).
 
-В Linux команда терминала устанавливает headless-CLI; для macOS требуется Apple Silicon. Приложение из DMG устанавливается в `/Applications`, а из терминала — в `~/Applications`.
+Для настольного приложения в macOS требуется Apple Silicon. Приложение из DMG устанавливается в `/Applications`, а с помощью команды ниже — в `~/Applications`. В Linux эта команда устанавливает CLI без графического интерфейса.
 
 ```bash
 curl -fsSL https://openfocus.top/install.sh | sh -s -- --dry-run
@@ -257,7 +261,7 @@ curl.exe -fL https://openfocus.top/download/latest/windows-setup -o OpenFocus-se
 
 ### 💻 Использование командной строки
 
-Либо установите CLI в Windows, macOS и Linux — тот же конвейер без графического стека:
+Отдельный пакет CLI можно установить с помощью `pip` в Windows, macOS и Linux. Он обеспечивает тот же процесс обработки без графического интерфейса.
 
 ```bash
 pip install openfocus

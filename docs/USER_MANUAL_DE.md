@@ -28,7 +28,7 @@ OpenFocus ist eine professionelle Desktop-Anwendung zur Multifokus-Bildfusion f�
 ### Hauptfunktionen
 
 - **Multifokus-Bildfusion**: Mehrere Bilder mit unterschiedlichen Fokuspunkten zu einem einzigen vollständig scharfen Bild kombinieren
-- **Zehn Fusionsverfahren**: Guided Filter, DCT, DTCWT, GFG-FGF, StackMFF, StackMFF V2, StackMFF V3 sowie OpenFocus A, B und C; zusätzlich ein reiner Ausrichtungsmodus
+- **Zehn Fusionsverfahren**. OpenFocus A, B und C sind stabil. Guided Filter, DCT, DTCWT, GFG-FGF und StackMFF V1/V2/V3 sind experimentell. Dazu kommt ein reiner Ausrichtungsmodus.
 - **Bildregistrierung**: Fehlausgerichtete Bildsequenzen mit ECC, Homographie, Homographie mit anschließender ECC-Verfeinerung oder der schnellen OpenFocus-Ausrichtung ausrichten
 - **Automatischer Hintergrund**: einen unruhigen gestackten Hintergrund durch ein echtes Einzelbild ersetzen und sehen, wo kein Bild die Szene klar erfasst hat
 - **Quellengebundene Retusche**: Pixel aus den Bildern malen, die das Ergebnis tatsächlich erzeugt haben, mit Quell- und Wiederherstellungspinsel, Belichtungspinsel und Rückgängig pro Strich
@@ -57,7 +57,7 @@ Transparente PNG-Stapel lassen sich in der Desktop-App, in der Stapelverarbeitun
 
 Laden Sie in voller Größe, wählen Sie keine Ausrichtung, deaktivieren Sie Schnellvorschau und ROI, rendern Sie und speichern Sie als PNG. Die Stapelverarbeitung verlangt ein Fusionsverfahren und eine PNG-Ausgabe ohne Export eines ausgerichteten Stapels. Ausrichtung, Größenänderung oder Downsampling, Flachfeldkorrektur, Tiefenkarten, Methodenvergleich, Retusche und Maßstabsbalken sind für transparente Daten nicht verfügbar; Beschriftungen lassen sich nicht in einen Export einbrennen. Ein Fusionsverfahren, das die Abmessungen des Rechtecks ändert, wird abgelehnt. Abweichende oder weich auslaufende Masken, unterschiedliche Masken pro Bild, transparente TIFF-Eingaben und Nicht-PNG-Ausgaben – einschließlich GIF und mehrseitiger TIFF – sind nicht möglich. Die CLI lehnt außerdem Sensorbereinigung und Tiefenkarten für transparente Eingaben ab.
 
-Das CLI-Äquivalent lautet beispielsweise `python main.py --input ./png-stack --output ./result.png --method guided_filter --align none`.
+Das CLI-Äquivalent lautet beispielsweise `python main.py --input ./png-stack --output ./result.png --method guided_filter --align none --experimental`.
 
 ### Unterstützte Ausgabeformate
 
@@ -75,7 +75,7 @@ Unter **Speichern unter** speichert gewöhnliches TIFF das Ergebnis als einzelne
 
 ### Installation
 
-Laden Sie den aktuellen Windows-, macOS- oder Linux-x86-64-Desktop-Build von der [OpenFocus-Website](https://openfocus.top/#download). Der Linux-Desktop-Build ist ab v1.77.0 verfügbar; ältere Versionen stehen auch unter [GitHub Releases](https://github.com/Xinzhe99/OpenFocus/releases) bereit.
+Laden Sie den aktuellen Windows-, macOS- oder Linux-x86-64-Desktop-Build von der [OpenFocus-Website](https://openfocus.top/#download). Der Linux-Desktop-Build ist ab Version 2.0.0 verfügbar. Ältere Versionen stehen auch unter [GitHub Releases](https://github.com/Xinzhe99/OpenFocus/releases) bereit.
 Die Website bietet standardmäßig stabile Desktopversionen. Unter Windows und macOS können Betaversionen für automatische Updates aktiviert werden; unter Linux laden Sie zum Aktualisieren ein neues Desktoparchiv herunter. Die PyPI-CLI wird separat veröffentlicht.
 
 | Plattform | Datei | Typ |
@@ -152,7 +152,7 @@ Der rechte Bereich enthält alle Konfigurationsoptionen, vertikal gegliedert:
 1. **Fusionseinstellungen**: Fusionsverfahren und dessen Parameter wählen
 2. **Registrierungseinstellungen**: Ausrichtungsmethode und zugehörige Parameter wählen
 3. **Rendereinstellungen**: Der Dialog enthält Schnellvorschau, Bildreihenfolge, Belichtungsabgleich, Entfernung der Helligkeitsdrift und Ausgabeschärfung
-4. **Aktionsschaltflächen**: Rendern starten sowie Zurücksetzen, Rendereinstellungen und alle Methoden rendern
+4. **Aktionsschaltflächen**: Rendern starten, zurücksetzen, Rendereinstellungen öffnen oder mit **Alle Methoden rendern…** alle verfügbaren Methoden rendern
 5. **Liste der Quellbilder**: alle geladenen Bilder mit Dateinamen und Auswahlkästchen
 6. **Ausgabeliste**: die erzeugten Ergebnisse
 
@@ -402,7 +402,7 @@ Für einen einzelnen, nicht gruppierten CLI-Lauf mit Registrierung schreibt `--a
 ### Registrierung aktivieren
 
 1. Im rechten Bereich die Gruppe **Registrierung** suchen
-2. Eine Methode im Dropdown wählen: **Keine Ausrichtung**, **OpenFocus (schnell)**, **ECC**, **Homographie** oder **Homographie → ECC**. Ohne gespeicherte Auswahl startet eine neue Sitzung mit ECC; die zuletzt gewählte Methode wird gespeichert.
+2. Wählen Sie **Keine Ausrichtung** oder **ECC**. Mit aktivierten experimentellen Funktionen stehen auch **OpenFocus (schnell)**, **Homographie** und **Homographie → ECC** zur Auswahl. Ohne gespeicherte Auswahl startet eine neue Sitzung mit ECC.
 3. Referenzbild und Suchgrenzen für OpenFocus finden Sie unter **Einstellungen → Erweiterte Einstellungen… → Registrierung**.
 
 ### Wann Registrierung sinnvoll ist
@@ -424,7 +424,7 @@ Weitere Einstellungen über **Einstellungen → Erweiterte Einstellungen… → 
 
 ## 8. Fusionsmethoden
 
-OpenFocus bietet zehn Fusionsalgorithmen plus einen reinen Ausrichtungsmodus. Ein frisches Profil startet mit **StackMFF V3** und **ECC**; die folgenden Abschnitte beschreiben jede Option. Jeder Algorithmus hat eigene Eigenschaften für unterschiedliche Bildtypen.
+Ein neues Desktop-Profil verwendet **OpenFocus B** mit **ECC**-Registrierung. Die stabilen Fusionsverfahren sind OpenFocus A, B und C. Um die übrigen Fusionsverfahren in der Desktop-App zu nutzen, wählen Sie **Einstellungen → Erweiterte Einstellungen… → Allgemein**, setzen Sie das Häkchen bei **Experimentelle Funktionen aktivieren** und bestätigen Sie die Auswahl. Fügen Sie in der CLI bei jedem Aufruf mit einem experimentellen Fusionsverfahren `--experimental` hinzu.
 
 ### Guided Filter
 
@@ -434,7 +434,7 @@ OpenFocus bietet zehn Fusionsalgorithmen plus einen reinen Ausrichtungsmodus. Ei
 - **Parameter**: Kernelgröße (einstellbar von 1–51, nur ungerade Werte)
   - Kleinerer Kernel: mehr lokales Detail, potenziell mehr Rauschen
   - Größerer Kernel: glattere Ergebnisse, bessere Rauschunterdrückung
-- **Hinweis**: Guided Filter ist das klassische Standardverfahren, aber nicht die Voreinstellung. Ohne gespeicherte Auswahl startet eine neue Sitzung mit StackMFF V3.
+- **Hinweis**: Guided Filter ist ein klassisches Fusionsverfahren und wird als experimentell angeboten.
 
 ### DCT (Diskrete Kosinustransformation)
 
@@ -486,8 +486,6 @@ Jede neuronale Kachel verwendet alle Bilder. Quelldaten und Ausrichtungsdaten k�
 
 Ist kein temporäres Verzeichnis angegeben, schätzt OpenFocus den Bedarf anhand bekannter Eingaben und temporärer Daten und berücksichtigt bei Platzmangel beschreibbare feste lokale Laufwerke. Ist das gewählte Verzeichnis nicht verfügbar, wird eine Warnung angezeigt und vorübergehend das System-Temporärverzeichnis verwendet; neue Aufgaben versuchen die gespeicherte Wahl erneut. Bei Platzmangel auf dem gewählten Laufwerk wird nicht automatisch gewechselt. Die Platzprüfung ist eine Momentaufnahme und keine Reservierung. Wählen Sie bei einem Speicherfehler in den erweiterten Einstellungen ein beschreibbares Verzeichnis.
 
-- **Standard**: StackMFF V3.
-
 ### OpenFocus A / B / C
 
 A nutzt eine mehrskalige Fokusantwort (Radius 8, Glättung 4); seine Glättung ist derzeit inaktiv.
@@ -498,7 +496,7 @@ CLI: `--method openfocus_b --param radius=8 --param smoothing=4 --param feather=
 
 In der Oberfläche ist der Belichtungsabgleich für A/B/C standardmäßig an und nutzt das erste verarbeitete Bild; für andere Methoden ist er standardmäßig aus und nutzt das letzte. Explizit gespeicherte Einstellungen bleiben erhalten; bei aktiviertem A/B/C gilt das erste Bild. Die Korrektur der Helligkeitsdrift bleibt standardmäßig aus. Zurücksetzen stellt die Vorgaben jeder Methode wieder her. In der CLI ist der Belichtungsabgleich für alle Methoden standardmäßig an; `--no-exposure-match` schaltet ihn aus.
 
-Bei Auswahl von A/B/C wird die OpenFocus-Ausrichtung verwendet, sofern keine Ausrichtung ausdrücklich gewählt oder ein Projekt wiederhergestellt wurde. Ihre Vorgaben sind Verschiebung 0,03 und Vergrößerung 5 %.
+ECC bleibt bei A/B/C auch mit aktivierten experimentellen Funktionen die Standardregistrierung. Wählen Sie die OpenFocus-Ausrichtung ausdrücklich aus, wenn Sie sie verwenden möchten. Ihre Vorgaben sind eine Verschiebung von 0,03 und eine Vergrößerung von 5 %.
 
 **Fusionsergebnis schärfen** wendet nach der Fusion eine milde Unscharfmaskierung an, bevor das Ergebnis in seine Ausgabebittiefe überführt wird. Sie ist standardmäßig aus und kann in den Haupt-Fusionsoptionen oder den Stapeloptionen aktiviert werden; die entsprechende CLI-Option ist `--sharpen-output`. Sie betrifft das fusionierte Bild, nicht registrierte Bilder oder Tiefenkarten. Kanten können deutlicher werden, Rauschen und Halos aber ebenfalls zunehmen. Die Einstellung wird im Projekt gespeichert und zwischen Sitzungen gemerkt.
 
@@ -530,6 +528,8 @@ Bei Auswahl von A/B/C wird die OpenFocus-Ausrichtung verwendet, sofern keine Aus
 
 **Werkzeuge → Methoden vergleichen…** öffnet einen Dialog, in dem mehrere Verfahren unabhängig eingestellt werden. Name, Parameterbeschriftungen und Bedienelemente jeder Methode bleiben zusammen, wenn das Fenster schmaler wird. Änderungen aktualisieren die Vorschau automatisch. **ROI-Vorschau (schnell)** fusioniert den ausgewählten Bereich mit umgebendem Kontext; **Ganzbild-Fusion** prüft das Ergebnis des gesamten Bildes und erlaubt die Untersuchung eines anderen Bereichs ohne erneutes Rendern. ROI-Ergebnisse können von Ganzbild-Ergebnissen abweichen, weil Belichtungsstatistiken und einige Algorithmen von der Bildausdehnung abhängen.
 Die **Ganzbild-Fusion** ist standardmäßig ausgewählt.
+
+Experimentelle Verfahren stehen im Vergleich nur zur Verfügung, wenn experimentelle Funktionen aktiviert sind.
 
 Ein sichtbarer Hinweis erklärt die Ergebnisauswahl: Ein Ergebnis anklicken oder es mit `Tab` fokussieren und mit `Enter` oder der Leertaste auswählen.
 
@@ -894,7 +894,7 @@ openfocus describe                      # JSON: Methoden, Parameter, Fähigkeite
 openfocus gui [--control] [--socket NAME] [Pfade…]   # Desktop-App starten
 openfocus ctl <command> [flags]          # ein laufendes Fenster steuern (siehe AGENT_CONTROL_SPEC.md)
 openfocus recipe create FILE --input … --output … [Verarbeitungsoptionen]
-openfocus recipe run FILE [--dry-run]    # ein gespeichertes Headless-Rezept wiedergeben
+openfocus recipe run FILE [--dry-run] [--experimental]
 openfocus retouch replay CHECKPOINT --base BASE --sources … --output RESULT
 ```
 
@@ -903,20 +903,20 @@ openfocus retouch replay CHECKPOINT --base BASE --sources … --output RESULT
 Aus einer Python-Umgebung (oder neben der gepackten ausführbaren Datei):
 
 ```bash
-# Einen Ordner mit dem standardmäßigen KI-Verfahren fusionieren
+# Einen Ordner mit dem Standardverfahren (OpenFocus B) fusionieren
 python main.py --input ./stack_folder --output ./result/fused.png
 
 # DTCWT mit ECC-Registrierung, 8 Threads
-python main.py -i ./stack_folder -o ./result/fused.png -m dtcwt -a ecc -t 8
+python main.py -i ./stack_folder -o ./result/fused.png -m dtcwt -a ecc -t 8 --experimental
 
 # StackMFF V3 auf CPU erzwungen, mit eigener Kachelgröße
-python main.py -i ./stack_folder -o ./result/fused.png -m stackmffv3 --cpu --tile-size 512
+python main.py -i ./stack_folder -o ./result/fused.png -m stackmffv3 --cpu --tile-size 512 --experimental
 
 # Explizite Dateiliste; Videodateien werden ebenfalls als Eingabe akzeptiert
-python main.py -i img1.jpg img2.jpg img3.jpg -o fused.png -m gfgfgf
+python main.py -i img1.jpg img2.jpg img3.jpg -o fused.png -m gfgfgf --experimental
 
 # Einzelner mehrseitiger TIFF-Z-Stapel mit metadatenkalibriertem Maßstabsbalken
-python main.py -i ./zstack.tif -o fused.png -m dtcwt --scale-bar
+python main.py -i ./zstack.tif -o fused.png -m dtcwt --scale-bar --experimental
 
 # Benachbarte ähnliche Bilder prüfen, ohne zu fusionieren oder die Eingabe zu ändern
 python main.py -i ./stack_folder --suggest-duplicates
@@ -931,7 +931,8 @@ Für ein einzelnes Rendering lässt sich beispielsweise `--align openfocus --ali
 | `--input, -i` | Bildordner (auch mehrere), Videodatei, eine bzw. mehrere Bilddateien oder eine mehrseitige TIFF |
 | `--output, -o` | Pfad des Ausgabebildes (die Endung bestimmt das Format) |
 | `--output-dir, -d` | Stapelmodus: jeden Eingabeordner fusionieren und pro Stapel `<Ordner>.png` schreiben |
-| `--method, -m` | `stackmffv3` (Standard), `openfocus_a`, `openfocus_b`, `openfocus_c`, `guided_filter`, `dct`, `dtcwt`, `gfgfgf`, `stackmff`, `stackmffv2` |
+| `--method, -m` | Stabile Verfahren (`openfocus_a`, `openfocus_b` als Standard, `openfocus_c`) und experimentelle Verfahren (`guided_filter`, `dct`, `dtcwt`, `gfgfgf`, `stackmff`, `stackmffv2`, `stackmffv3`) |
+| `--experimental` | Erlaubt experimentelle Fusionsverfahren für diesen Aufruf, auch bei der Auswahl über `--config` |
 | `--align, -a` | `none` (Standard), `homography`, `ecc`, `both`, `openfocus` |
 | `--param KEY=JSON_VALUE` | Fusionsparameter; für mehrere Schlüssel wiederholen; überschreibt ältere Flags |
 | `--align-param KEY=JSON_VALUE` | Registrierungsparameter; für mehrere Schlüssel wiederholen |
@@ -980,10 +981,12 @@ Es gibt keinen `--method none`-Wert: Die CLI fusioniert immer. Für reine Ausric
 Rezepte erfassen Einstellungen der Headless-Verarbeitung zur Wiederverwendung und zum Verschieben:
 
 ```bash
-openfocus recipe create workflow.json -i ./stack_folder -o ./result/fused.png -m dct --cpu
+openfocus recipe create workflow.json -i ./stack_folder -o ./result/fused.png -m openfocus_b
 openfocus recipe run workflow.json --dry-run
 openfocus recipe run workflow.json
 ```
+
+Wenn das Rezept ein experimentelles Fusionsverfahren verwendet, geben Sie bei jedem Lauf `--experimental` an, auch beim Probelauf mit `--dry-run`. Das Rezept speichert das gewählte Verfahren.
 
 Das JSON-Format der Version 1 enthält `version`, ein `input`-Array, entweder `output` oder `output_dir` und ein `options`-Objekt. Pfade sind relativ zur Rezeptdatei; verschieben Sie das Rezept zusammen mit seinen Eingabedateien. Das Erstellen übernimmt die CLI-Einstellungen und die aufgelösten Algorithmusparameter. Unbekannte Felder, ungültige Werte und nicht unterstützte Versionen werden abgelehnt. Ein Probelauf prüft die Eingabe, ohne Ergebnisdateien zu schreiben. Bestehende Projektdateien bleiben unverändert.
 
@@ -1049,7 +1052,7 @@ Exit-Codes: `0` Erfolg, `1` Verarbeitungsfehler, `2` Nutzungsfehler. Der Aufruf 
 | `Ctrl+W` | Stack leeren |
 | `Ctrl+Q` | Beenden |
 | `Ctrl+R` | Rendern starten |
-| `Ctrl+Shift+R` | Alle Methoden vergleichen |
+| `Ctrl+Shift+R` | Verfügbare Methoden vergleichen |
 | `Ctrl+T` | Ergebnis retuschieren |
 | `Ctrl+M` | Tiefenkarte |
 | `Ctrl+E` | Wischvergleich umschalten |

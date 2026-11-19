@@ -14,7 +14,7 @@ from utils.image_utils import apply_exposure_gain, normalize_fuse_input
 from utils.logging_setup import log_debug
 from utils.performance_profile import current as _profile
 from utils.sorting import natural_sort_key
-from core.algorithms import get_fusion, resolve_fusion_parameters, resolve_runner
+from core.algorithms import FUSION_DEFAULT, get_fusion, resolve_fusion_parameters, resolve_runner
 from core.frame_storage import (capture_scratch, create_frame, is_mapped_frame,
                                 run_with_scratch, store_frame)
 from core.render_context import FusionDetails
@@ -273,7 +273,7 @@ class MultiFocusFusion:
     def descriptor(self):
         return get_fusion(self.algorithm)
 
-    def __init__(self, algorithm: str = 'guided_filter', use_gpu: bool = False,
+    def __init__(self, algorithm: str = FUSION_DEFAULT, use_gpu: bool = False,
                  tile_enabled: bool = True, tile_block_size: int = 1024,
                  tile_overlap: int = 256, tile_threshold: int = 2048,
                  ai_batch_size: int = 2,
@@ -2103,7 +2103,7 @@ class MultiFocusFusion:
 
 # 便捷函数
 def fuse_images(input_source: Union[str, List[np.ndarray]],
-                algorithm: str = 'guided_filter',
+                algorithm: str = FUSION_DEFAULT,
                 use_gpu: bool = False,
                 img_resize: Optional[Tuple[int, int]] = None,
                 tile_enabled: Optional[bool] = None,

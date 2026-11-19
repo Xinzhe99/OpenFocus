@@ -28,7 +28,7 @@ OpenFocus — профессиональное настольное прилож
 ### Ключевые возможности
 
 - **Многофокусное объединение**: несколько снимков с разными точками фокуса складываются в одно полностью резкое изображение
-- **Десять алгоритмов объединения**: StackMFF V3 (по умолчанию), StackMFF V2, StackMFF, Guided Filter, DCT, DTCWT, GFG-FGF и OpenFocus A/B/C, а также режим только выравнивания
+- **Объединение изображений** включает стабильные методы OpenFocus A/B/C, экспериментальные методы StackMFF V1/V2/V3, Guided Filter, DCT, DTCWT и GFG-FGF, а также режим только выравнивания
 - **Совмещение изображений**: ECC, гомография, гомография → ECC и быстрое выравнивание OpenFocus
 - **Автофон**: замена неровного фона после стекинга одним реальным кадром и показ мест, которые ни один кадр не снял чётко
 - **Сравнение «Шторка»**: проверка совмещения и результата с перетаскиваемым A/B-разделителем
@@ -59,7 +59,7 @@ OpenFocus — профессиональное настольное прилож
 
 Загружайте в полном размере, выбирайте «Без выравнивания», отключите быстрый предпросмотр и ROI, затем рендерите и сохраняйте в PNG. Пакетная обработка требует метод объединения и вывод в PNG без сохранения выровненного стека. Совмещение, изменение размера и уменьшение, коррекция пыли, карты глубины, сравнение, ретушь, подписи и масштабные линейки для прозрачных данных не поддерживаются. Метод, который меняет размеры прямоугольника, отклоняется. Переменные или размытые маски, разные маски кадров, прозрачный TIFF на входе и вывод не в PNG, включая GIF и многостраничный TIFF, не поддерживаются. CLI также отклоняет очистку сенсора и карты глубины для прозрачного входа.
 
-Эквивалент в CLI: `python main.py --input ./png-stack --output ./result.png --method guided_filter --align none`.
+Пример команды CLI `python main.py --input ./png-stack --output ./result.png --method guided_filter --align none --experimental`.
 
 ### Поддерживаемые выходные форматы
 
@@ -78,7 +78,7 @@ OpenFocus — профессиональное настольное прилож
 ### Запуск приложения
 
 Скачайте последнюю сборку на [сайте OpenFocus](https://openfocus.top/#download) или в [GitHub Releases](https://github.com/Xinzhe99/OpenFocus/releases). Предпочтительнее сайт: там опубликованы текущий установщик Windows, сборка macOS и пакет Linux со скриптами установки; эти артефакты — точный результат конвейера выпуска, поэтому предпочитайте их пересборке. `pip install openfocus` устанавливает только headless-CLI (колесо намеренно не зависит от PyQt6); для графического интерфейса используйте готовую сборку или исходный код. После установки запустите OpenFocus одним из способов:
-По умолчанию сайт предлагает стабильные версии приложения. В Windows и macOS можно включить бета-обновления; в Linux обновление выполняется загрузкой нового архива приложения. CLI из PyPI распространяется отдельно.
+По умолчанию сайт предлагает стабильные версии приложения. В Windows и macOS можно включить бета-обновления. Настольное приложение для Linux доступно начиная с версии 2.0.0. Чтобы обновить его, скачайте новый архив приложения. CLI из PyPI распространяется отдельно.
 
 1. **Windows (установщик или портативная версия)**: дважды щёлкните ярлык или `OpenFocus.exe`
 2. **macOS**: перетащите `OpenFocus.app` в «Программы» и запустите его; сборки предназначены для Apple Silicon
@@ -105,9 +105,9 @@ irm https://openfocus.top/install.ps1 | iex
 ### Быстрый старт
 
 1. Импортируйте последовательность изображений (**Файл → Открыть папку** или перетаскивание)
-2. Выберите метод объединения на правой панели; по умолчанию выбран **StackMFF V3**
+2. Выберите метод объединения на правой панели. По умолчанию выбран **OpenFocus B**.
 3. Выберите метод совмещения; по умолчанию выбран **ECC**. Если стек уже выровнен, выберите **Без выравнивания**
-4. При необходимости измените размер ядра или параметры выбранного метода
+4. При необходимости измените параметры выбранного метода
 5. *(необязательно)* Откройте **Настройки рендеринга** и установите флажок **Быстрый предпросмотр**, чтобы сначала подобрать параметры на уменьшенном черновике
 6. Нажмите **Начать рендеринг**
 7. Экспортируйте результат
@@ -407,9 +407,9 @@ RAW-файлы камер проявляются в 16 бит (баланс бе
 
 ## 8. Методы объединения изображений
 
-OpenFocus предлагает десять алгоритмов объединения плюс режим только выравнивания. В новом профиле выбран **StackMFF V3** с совмещением **ECC**; ниже описаны все варианты. У каждого свои особенности, подходящие для разных типов изображений.
+**OpenFocus A, B и C** — стабильные методы объединения. Новый профиль настольного приложения по умолчанию использует **OpenFocus B** с совмещением **ECC**. Чтобы воспользоваться остальными методами объединения или экспериментальными методами совмещения, откройте **Настройки → Дополнительные настройки → Общие** и установите флажок **Включить экспериментальные функции**. В CLI указывайте `--experimental` при каждом запуске с экспериментальным методом объединения.
 
-### StackMFF V3 (по умолчанию, глубокое обучение)
+### StackMFF V3 (глубокое обучение)
 
 - **Алгоритм**: попиксельная классификация источника (ONNX Runtime). Сеть предсказывает для каждого пикселя, из какого входного кадра он взят, а затем либо смешивает кадры по этим вероятностям, либо выбирает один кадр
 - **Режим вывода ИИ** (правая панель, только для этого метода):
@@ -875,7 +875,7 @@ openfocus describe                      # JSON: методы, параметры
 openfocus gui [--control] [--socket NAME] [paths…]   # запустить настольное приложение
 openfocus ctl <command> [flags]          # управлять работающим окном (см. AGENT_CONTROL_SPEC.md)
 openfocus recipe create FILE --input … --output … [processing flags]
-openfocus recipe run FILE [--dry-run]    # воспроизвести сохранённый headless-рецепт
+openfocus recipe run FILE [--dry-run] [--experimental]  # воспроизвести сохранённый headless-рецепт
 openfocus retouch replay CHECKPOINT --base BASE --sources … --output RESULT
 ```
 
@@ -884,20 +884,20 @@ openfocus retouch replay CHECKPOINT --base BASE --sources … --output RESULT
 Из среды Python (или рядом с готовым исполняемым файлом):
 
 ```bash
-# Объединение папки методом по умолчанию (StackMFF V3)
+# Объединение изображений из папки методом по умолчанию (OpenFocus B)
 python main.py --input ./stack_folder --output ./result/fused.png
 
 # DTCWT с совмещением ECC, 8 потоков
-python main.py -i ./stack_folder -o ./result/fused.png -m dtcwt -a ecc -t 8
+python main.py -i ./stack_folder -o ./result/fused.png -m dtcwt -a ecc -t 8 --experimental
 
 # StackMFF V3 принудительно на CPU с пользовательским размером тайла
-python main.py -i ./stack_folder -o ./result/fused.png -m stackmffv3 --cpu --tile-size 512
+python main.py -i ./stack_folder -o ./result/fused.png -m stackmffv3 --cpu --tile-size 512 --experimental
 
 # Явный список файлов; видеофайлы также принимаются на вход
-python main.py -i img1.jpg img2.jpg img3.jpg -o fused.png -m gfgfgf
+python main.py -i img1.jpg img2.jpg img3.jpg -o fused.png -m gfgfgf --experimental
 
 # Один многостраничный Z-стек TIFF с калиброванной по метаданным масштабной линейкой
-python main.py -i ./zstack.tif -o fused.png -m dtcwt --scale-bar
+python main.py -i ./zstack.tif -o fused.png -m dtcwt --scale-bar --experimental
 
 # Проверить соседние похожие кадры без объединения и изменения входа
 python main.py -i ./stack_folder --suggest-duplicates
@@ -914,8 +914,9 @@ python main.py -i ./stack_folder --suggest-duplicates
 | `--output, -o` | Путь к выходному изображению (расширение задаёт формат) |
 | `--output-dir, -d` | Пакетный режим: объединить каждую входную папку, записав `<folder>.png` для каждого стека |
 | `--resume` | Пропускает папку, только если все запрошенные результаты — непустые обычные файлы; содержимое и параметры не проверяются |
-| `--config FILE` | Пакетный режим: JSON с переопределениями для каждой папки, например `{"stackA": {"method": "dct"}}` |
-| `--method, -m` | `stackmffv3` (по умолчанию), `stackmffv2`, `stackmff`, `openfocus_a`, `openfocus_b`, `openfocus_c`, `guided_filter`, `dct`, `dtcwt`, `gfgfgf` |
+| `--config FILE` | Пакетный режим: JSON с переопределениями для каждой папки, например `{"stackA": {"method": "openfocus_a"}}` |
+| `--method, -m` | Стабильные методы — `openfocus_a`, `openfocus_b` (по умолчанию) и `openfocus_c`. Экспериментальные методы — `guided_filter`, `dct`, `dtcwt`, `gfgfgf`, `stackmff`, `stackmffv2` и `stackmffv3` |
+| `--experimental` | Разрешает использовать экспериментальные методы объединения в этом запуске CLI |
 | `--param KEY=JSON_VALUE` | Задать любой параметр объединения; можно повторять, переопределяет устаревшие флаги |
 | `--align, -a` | `none` (по умолчанию), `homography`, `ecc`, `both`, `openfocus` |
 | `--align-param KEY=JSON_VALUE` | Задать любой параметр совмещения; можно повторять |
@@ -962,10 +963,12 @@ python main.py -i ./stack_folder --suggest-duplicates
 
 ```bash
 openfocus recipe create line.json --input ./stack --output ./out/fused.tif \
-  --method dtcwt --align ecc --threads 8
+  --method openfocus_b --align ecc --threads 8
 openfocus recipe run line.json
 openfocus recipe run line.json --dry-run
 ```
+
+Рецепт сохраняет выбранный метод объединения. Для экспериментального метода указывайте `--experimental` при каждом вызове `openfocus recipe run`, включая пробный запуск с `--dry-run`.
 
 `recipe create --project project.ofproj --input ./stack --output ./out/fused.tif` захватывает настройки обработки проекта для явно выбранных входов; источники проекта могут быть перемещены. Рецепты отклоняют временные параметры вроде `--dry-run`, `--resume`, `--json`, `--json-progress` и `--config` и требуют, чтобы выход находился вне каждой входной папки (и отличался от явно выбранного входа). Маска дефектов хранится относительным путём с отпечатком SHA-256, поэтому отсутствующая или изменённая маска приводит к ошибке запуска. Правки источников проекта (поворот, отражение, плоское поле) захватить нельзя; сначала экспортируйте исправленный стек.
 
@@ -994,7 +997,7 @@ openfocus recipe run line.json --dry-run
 ```python
 from core.recipes import capture_project_recipe, capture_recipe, load_recipe, save_recipe, run_recipe
 
-capture_recipe("workflow.json", ["-i", "stack_folder", "-o", "result/fused.png", "-m", "dct"])
+capture_recipe("workflow.json", ["-i", "stack_folder", "-o", "result/fused.png", "-m", "openfocus_b"])
 capture_project_recipe("from-project.json", "session.ofproj",
                        ["-i", "new_stack", "-o", "result/fused.png"])
 recipe = load_recipe("workflow.json")  # проверенный словарь с относительными путями

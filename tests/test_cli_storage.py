@@ -65,7 +65,7 @@ def test_cli_warns_on_stderr_and_never_blocks(monkeypatch, tmp_path, capsys, sta
     stack = _cli_stack(tmp_path)
     _assess_as(monkeypatch, status)
     code = _cli(monkeypatch, tmp_path, '--input', str(stack), '--output', str(tmp_path / 'o.png'),
-                '--method', 'dct', '--json', str(tmp_path / 's.json'))
+                '--experimental', '--method', 'dct', '--json', str(tmp_path / 's.json'))
     captured = capsys.readouterr()
     assert code == 0
     assert 'warning: low temporary storage in /scratch' in captured.err
@@ -79,7 +79,7 @@ def test_cli_keeps_the_existing_scratch_error_and_exit_code(monkeypatch, tmp_pat
     scratch.mkdir()
     monkeypatch.setattr(frame_storage, '_space', _fake_space({str(scratch): 4 * GIB}))
     code = _cli(monkeypatch, tmp_path, '--input', str(stack), '--output', str(tmp_path / 'o.png'),
-                '--method', 'dct', '--cpu', '--temp-dir', str(scratch))
+                '--experimental', '--method', 'dct', '--cpu', '--temp-dir', str(scratch))
     captured = capsys.readouterr()
     assert code == 1
     assert 'Temporary storage' in captured.err or str(scratch) in captured.err
@@ -89,7 +89,7 @@ def test_cli_keeps_the_existing_scratch_error_and_exit_code(monkeypatch, tmp_pat
 def test_cli_temp_dir_must_be_writable(monkeypatch, tmp_path, capsys):
     stack = _cli_stack(tmp_path)
     code = _cli(monkeypatch, tmp_path, '--input', str(stack), '--output', str(tmp_path / 'o.png'),
-                '--method', 'dct', '--temp-dir', str(tmp_path / 'missing'))
+                '--experimental', '--method', 'dct', '--temp-dir', str(tmp_path / 'missing'))
     assert code == 2
     assert '--temp-dir is not a writable directory' in capsys.readouterr().err
     assert frame_storage._storage_directory is None
@@ -108,7 +108,7 @@ def test_cli_assesses_every_page_of_a_multipage_tiff(monkeypatch, tmp_path, caps
         return _assessment('ok')
     monkeypatch.setattr(frame_storage, 'assess_scratch', assess)
     code = _cli(monkeypatch, tmp_path, '--input', str(source), '--output', str(tmp_path / 'o.png'),
-                '--method', 'dct')
+                '--experimental', '--method', 'dct')
     assert code == 0, capsys.readouterr().err
     # The cache working set of all three pages, plus its one-frame staging floor.
     assert estimates == [pages.nbytes + 64 * 1024 ** 2]
@@ -140,7 +140,7 @@ def test_cli_scratch_is_scoped_across_success_and_failure(monkeypatch, tmp_path)
         return original(images, args)
 
     monkeypatch.setattr(cli, '_fuse_stack', fuse)
-    common = ['--input', str(stack), '--method', 'dct']
+    common = ['--input', str(stack), '--experimental', '--method', 'dct']
     assert _cli(monkeypatch, tmp_path, *common, '--output', str(tmp_path / 'a.png'),
                 '--temp-dir', str(first)) == 0
     assert _cli(monkeypatch, tmp_path, *common, '--output', str(tmp_path / 'b.png'),
@@ -192,7 +192,7 @@ def test_batch_preflight_uses_each_folders_sources_and_options(monkeypatch, tmp_
     monkeypatch.setattr(storage_preflight, 'render_storage_estimate', estimate)
     _assess_as(monkeypatch, 'advisory')
     code = _cli(monkeypatch, tmp_path, '-i', *(str(folder) for folder in folders),
-                '-d', str(tmp_path / 'out'), '-m', 'dct', '--config', str(config),
+                '-d', str(tmp_path / 'out'), '--experimental', '-m', 'dct', '--config', str(config),
                 '--temp-dir', str(scratch))
     assert code == 0
     assert len(scratch_paths) == 2
@@ -210,7 +210,7 @@ def test_grouped_batch_skips_whole_stack_storage_estimate(monkeypatch, tmp_path,
     stack = _cli_stack(tmp_path)
     calls = _assess_as(monkeypatch, 'advisory')
     code = _cli(monkeypatch, tmp_path, '-i', str(stack), '-d', str(tmp_path / 'out'),
-                '-m', 'dct', '--cpu', '--group-size', '2')
+                '--experimental', '-m', 'dct', '--cpu', '--group-size', '2')
     assert code == 0, capsys.readouterr().err
     assert calls == []
     assert (tmp_path / 'out' / 'stack.png').is_file()
@@ -244,7 +244,7 @@ def test_cli_preflight_reports_unknown_when_runtime_volume_depends_on_goal(monke
 
     monkeypatch.setattr(frame_storage, '_scratch_candidates', candidates)
     args = cli.build_parser().parse_args(['-i', str(stack), '-o', str(tmp_path / 'out.png'),
-                                         '-m', 'dct'])
+                                         '--experimental', '-m', 'dct'])
     for ordered in (paths, list(reversed(paths))):
         result = cli._warn_low_storage(args, ordered)
         assert result['status'] == 'unknown'
@@ -257,7 +257,7 @@ def test_cli_warns_without_claiming_a_directory_for_multiple_volumes(monkeypatch
     assessment = _assessment('advisory', None)
     monkeypatch.setattr(frame_storage, 'assess_scratch', lambda *args, **kwargs: assessment)
     code = _cli(monkeypatch, tmp_path, '-i', str(stack), '-o', str(tmp_path / 'out.png'),
-                '-m', 'dct')
+                '--experimental', '-m', 'dct')
     assert code == 0
     warning = capsys.readouterr().err
     assert 'low temporary storage across available volumes' in warning
@@ -283,7 +283,7 @@ def test_cli_profiles_with_scoped_scratch(monkeypatch, tmp_path):
 
     monkeypatch.setattr(cli, '_fuse_stack', fuse)
     code = _cli(monkeypatch, tmp_path, '-i', str(stack), '-o', str(tmp_path / 'out.png'),
-                '-m', 'dct', '--temp-dir', str(scratch), '--profile-performance', str(profile))
+                '--experimental', '-m', 'dct', '--temp-dir', str(scratch), '--profile-performance', str(profile))
     assert code == 0
     assert len(placements) == 1 and os.path.dirname(placements[0]) == str(scratch)
     assert json.loads(profile.read_text(encoding='utf-8'))['outcome'] == 'completed'

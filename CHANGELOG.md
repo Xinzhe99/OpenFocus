@@ -1,11 +1,13 @@
 # Changelog
-- Open Linux desktop menu entries from bundle paths that contain percent signs.
-- Show embedded TIFF thumbnails stored after the main image in the batch converter, including their display orientation.
 
 All notable changes to OpenFocus are documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
+
+## [2.0.0]
+
+This stable release includes the features introduced in the 1.77.0 beta series.
 
 ### Added
 - Show the actual whole-input or tiled processing mode, tile geometry, and
@@ -63,8 +65,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Show estimated RAM and GPU memory in Render Settings, including expected CPU
   fallback when the selected neural render does not fit the device budget.
 - Reuse saved OpenFocus B/C and StackMFF V2/V3 depth across compatible workspace results. Switching measures updates the map and the saved parameters automatically. Show the 2D preview before building a requested 3D surface.
-- Show existing compatible fusion results in Method Comparison with their original settings. ROI mode displays the requested crop of the stored image.
+- Open Method Comparison in whole-image view, with compatible workspace fusion
+  results automatically selected and shown using their original settings and
+  aligned coordinates.
 - Add the Discord invite and the WeChat Official Account QR code to both website languages.
+- Group GitHub and Discord under Community links in Contact Us. Scan the branded
+  Discord QR code to open the current invitation published by OpenFocus.
 - Keep progress, cancel controls, and timed notices on the left of the desktop
   status bar and a sponsor invitation that opens Contact Us on the right.
 - Open the user manual on GitHub in the current interface language from Help.
@@ -79,8 +85,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Default to the SJTU PyTorch mirror when the Windows region is China mainland. Use the official source directly in other regions.
 - Collapse workspace algorithm parameters by default. Open them as needed and reclaim space for the source and output lists on collapse.
 - Keep the stable-release note on the beta updates checkbox in Advanced Settings.
-- Make all fusion methods selectable without experimental opt-in when their
-  dependencies are installed.
+- Enable OpenFocus A, B and C by default. The other fusion methods require
+  **Enable experimental features** in Advanced Settings or `--experimental`
+  in the headless CLI. Saved projects and recipes retain their chosen method.
 - Group render settings by workflow, brightness and color, and output. Adjust fusion sharpening from 0% to 200% in desktop renders, batch jobs, and the CLI. The 100% default preserves the previous sharpening amount.
 - Keep the batch queue visible beside Method, Output and Options tabs. Group depth-map source, appearance and export controls beside the preview.
 - Reorganize Labels, Watermark and Scale Bar around live previews and fixed Apply and Cancel controls. Drag a label in Fit view to set its position.
@@ -156,6 +163,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   transforms, cropping and output pixels are unchanged.
 
 ### Fixed
+- Open Linux desktop menu entries from bundle paths that contain percent signs.
+- Show embedded TIFF thumbnails stored after the main image in the batch converter, including their display orientation.
+- Keep existing Method Comparison previews visible and update their crop or
+  size during another method's fusion.
 - Name each Render All result and its suggested export file after the fusion method that produced it.
 - Keep the workspace responsive when opening or closing Support Us while its
   network requests are pending.

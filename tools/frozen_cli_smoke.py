@@ -343,7 +343,7 @@ def _exercise(executable: Path, environment: dict, root: Path,
         ai_output = root / f"{method}.tif"
         command = [str(executable), "-i", str(root / "stack"), "-o", str(ai_output),
                    "--method", method, "--cpu", "--threads", "1",
-                   "--no-exposure-match"]
+                   "--no-exposure-match", "--experimental"]
         if method == "stackmffv2":
             command.append("--depth-map")
         ai = subprocess.run(

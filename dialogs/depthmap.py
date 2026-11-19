@@ -37,7 +37,7 @@ from PyQt6.QtWidgets import (
 )
 
 from controllers.output_manager import workspace_fusions
-from core.algorithms import (alignment_steps, depth_algorithms, get_fusion, registration_parameter_specs,
+from core.algorithms import (FUSION_DEFAULT, alignment_steps, depth_algorithms, get_fusion, registration_parameter_specs,
     registration_algorithms, resolve_fusion_parameters, desktop_registration_parameters)
 from ui.algorithm_parameters import AlgorithmParameterPanel
 from ui.algorithm_combo import apply_method_availability, selected_item_enabled
@@ -781,7 +781,6 @@ class DepthMapDialog(QDialog):
         self._map_source_mode = None
         self._map_source_id = None
         self._overlay_available = False
-        self._ai_fusion_available = True
         self._texture_description = ""
         self._texture_identity = None
         self._method_drafts = {}
@@ -1262,20 +1261,12 @@ class DepthMapDialog(QDialog):
                 'domain': self._domain_metadata(), 'roi_rect': context.roi_rect if context else None,
                 'roi_mode': context.roi_mode if context and context.roi_rect else 'full'}
 
-    def _available_depth_method_id(self):
-        from ui.algorithm_combo import fusion_unavailable_reason
-        for spec in depth_algorithms():
-            if not fusion_unavailable_reason(spec, self._ai_fusion_available):
-                return spec.id
-        return depth_algorithms()[0].id
-
     def _apply_method_availability(self):
         """Keep unavailable methods visible with their explanations."""
         from core.multi_focus_fusion import is_ai_fusion_available
 
-        self._ai_fusion_available = bool(is_ai_fusion_available())
         apply_method_availability(self.method_combo, depth_algorithms(), self.window_main,
-                                  ai_available=self._ai_fusion_available)
+                                  ai_available=bool(is_ai_fusion_available()))
 
     def _current_window_method(self):
         w = self.window_main
@@ -1283,14 +1274,13 @@ class DepthMapDialog(QDialog):
         context = self._source_context()
         if context is not None and context.algorithm in keys:
             return context.algorithm
-        # 当前融合方法有深度侧写就用它；否则（仅对齐 / 加权平均类方法 /
-        # 无方法）回退到一个依赖可用的方法。
+        # Prefer the active fusion method when it has a depth runner.
         helper = getattr(w, "current_fusion_method", None)
         if callable(helper):
             code = helper()
             if code in keys:
                 return code
-        return self._available_depth_method_id()
+        return FUSION_DEFAULT
 
     def _load_custom_schemes(self):
         try:
@@ -1554,6 +1544,7 @@ class DepthMapDialog(QDialog):
                 editor.interpretText()
         if self._load_rendered_depth():
             return
+        self._apply_method_availability()
         uses_alignment = self._source_context() is None
         combos = (self.method_combo, self.align_combo) if uses_alignment else (self.method_combo,)
         for combo in combos:

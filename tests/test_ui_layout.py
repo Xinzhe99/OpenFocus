@@ -155,7 +155,11 @@ def test_main_selector_explains_missing_dtcwt(qapp, monkeypatch):
     index = combo.findData('dtcwt')
     assert not combo.model().item(index).isEnabled()
     assert trans.t('env_dtcwt_unavailable') in combo.itemData(index, Qt.ItemDataRole.ToolTipRole)
+    assert trans.t('experimental_locked_hint') in combo.itemData(index, Qt.ItemDataRole.ToolTipRole)
     monkeypatch.setattr(algorithm_combo, '_package_available', lambda _name: True)
+    main.OpenFocus.refresh_method_availability(host)
+    assert not combo.model().item(index).isEnabled()
+    host.experimental_features = True
     main.OpenFocus.refresh_method_availability(host)
     assert combo.model().item(index).isEnabled()
     assert combo.itemData(index, Qt.ItemDataRole.ToolTipRole) == trans.t('radio_dtcwt_hint')

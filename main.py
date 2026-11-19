@@ -202,6 +202,7 @@ from core.experimental import alignment_is_experimental, experimental_enabled
 from ui.image_panels import create_source_panel, create_result_panel
 from ui.menus import setup_menus
 from ui.right_panel import bind_right_panel, create_right_panel, set_panel_label
+from ui.algorithm_combo import desktop_fusion_lock_reason
 from controllers.render_manager import RenderManager
 from controllers.output_manager import OutputManager
 from controllers.source_manager import SourceManager
@@ -226,7 +227,7 @@ from constants import (
     AI_BATCH_SIZE,
 )
 from core.algorithms import (
-    fusion_algorithms, registration_algorithms, get_fusion, get_registration,
+    FUSION_DEFAULT, fusion_algorithms, registration_algorithms, get_fusion, get_registration,
     fusion_defaults, resolve_fusion_parameters, desktop_registration_parameters,
     registration_parameter_specs,
 )
@@ -1332,7 +1333,7 @@ class OpenFocus(QMainWindow):
 
     def reset_to_default(self):
         """重置到默认状态"""
-        from ui.right_panel import FUSION_DEFAULT, ALIGN_DEFAULT
+        from ui.right_panel import ALIGN_DEFAULT
         with self._restore_scope():
             self.set_fusion_method(FUSION_DEFAULT)
             self.set_alignment_method(ALIGN_DEFAULT)
@@ -1557,14 +1558,14 @@ class OpenFocus(QMainWindow):
         """Keep unavailable entries disabled without changing the request."""
         from ui.right_panel import refresh_experimental_selectors
         refresh_experimental_selectors(self)
+        manager = getattr(self, 'render_manager', None)
+        if manager is not None and getattr(self, 'btn_render', None) is not None:
+            manager.refresh_action_labels()
 
     def apply_experimental_features(self) -> None:
         """Refresh desktop gates while preserving the selected project settings."""
         if getattr(self, 'combo_fusion', None) is not None and getattr(self, 'combo_align', None) is not None:
             self.refresh_method_availability()
-        manager = getattr(self, 'render_manager', None)
-        if manager is not None and getattr(self, 'btn_render', None) is not None:
-            manager.refresh_action_labels()
 
     # --- Update check ---
 
@@ -3050,7 +3051,11 @@ class OpenFocus(QMainWindow):
         return "none" if code == "none" else get_registration(code).id
 
     def set_fusion_method(self, code: str) -> None:
-        if code != "none":
+        if not getattr(self, '_restore_depth', 0):
+            reason = desktop_fusion_lock_reason(self, code)
+            if reason:
+                raise ValueError(reason)
+        elif code != 'none':
             get_fusion(code)
         index = self.combo_fusion.findData(code)
         if index < 0:
@@ -4673,7 +4678,7 @@ class OpenFocus(QMainWindow):
         # Rebuild the grouped method list in the new language; headers and
         # per-method hints are regenerated together, and the selection follows
         # the method id rather than the row index.
-        from ui.right_panel import alignment_items, label_recommended, FUSION_DEFAULT, ALIGN_DEFAULT
+        from ui.right_panel import alignment_items, label_recommended, ALIGN_DEFAULT
         from ui.algorithm_combo import retranslate_fusion_combo
         retranslate_fusion_combo(c.combo_fusion, none_label="radio_no_fusion",
                                  none_hint="radio_no_fusion_hint")

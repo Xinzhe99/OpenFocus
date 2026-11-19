@@ -135,7 +135,7 @@ class TestMultiPageFrames:
         pages = [np.full((16, 16, 3), 30 * i, np.uint8) for i in range(4)]
         cv2.imwritemulti(str(src / "z.tif"), pages)
         out = tmp_path / "out"
-        rc = run_cli(["-i", str(src), "-d", str(out), "-m", "guided_filter"])
+        rc = run_cli(["-i", str(src), "-d", str(out), "--experimental", "-m", "guided_filter"])
         assert rc == 0
         assert list(out.glob("*.png")), "batch produced no output for a Z-stack"
 

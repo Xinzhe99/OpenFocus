@@ -1,4 +1,4 @@
-APP_VERSION = "1.77.0"
+APP_VERSION = "2.0.0"
 DISCORD_INVITE_URL = "https://discord.gg/Jamr2SR5"
 
 
