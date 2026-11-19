@@ -1416,6 +1416,7 @@ PACK = {
     "label_position": "위치",
     "label_colors": "색상",
     "label_preview": "미리보기",
+    "native_detail_loading": "원본 세부 정보 불러오는 중…",
     "label_preview_hint": "1번 프레임은 {n!r} 로 표시됩니다",
     "label_preview_empty": "아무것도 그려지지 않습니다. 형식과 사용자 텍스트가 모두 비어 있습니다.",
     "label_format_hint": "{value} 는 프레임 번호, 또는 고정 텍스트를 입력하세요.",

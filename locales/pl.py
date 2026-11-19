@@ -1416,6 +1416,7 @@ PACK = {
     "label_position": "Pozycja",
     "label_colors": "Kolory",
     "label_preview": "Podgląd",
+    "native_detail_loading": "Wczytywanie szczegółów oryginału…",
     "label_preview_hint": "Tak będzie opisana klatka 1: {n!r}",
     "label_preview_empty": "Nic nie zostanie narysowane: format i tekst własny są puste.",
     "label_format_hint": "Użyj {value} dla numeru klatki lub wpisz stały tekst.",

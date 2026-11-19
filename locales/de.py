@@ -1416,6 +1416,7 @@ PACK = {
     "label_position": "Position",
     "label_colors": "Farben",
     "label_preview": "Vorschau",
+    "native_detail_loading": "Originaldetails werden geladen…",
     "label_preview_hint": "So wird Bild 1 beschriftet: {n!r}",
     "label_preview_empty": "Es wird nichts gezeichnet: Format und eigener Text sind beide leer.",
     "label_format_hint": "{value} für die Bildnummer oder einen festen Text eingeben.",

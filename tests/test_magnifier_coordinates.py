@@ -57,8 +57,7 @@ def assert_color(actual, expected, tolerance=5):
 
 def install_loupe(view, pixmap, key, request=None):
     request = request or view._region_requests['loupe']
-    return view.set_source_region(pixmap, (0, 0, view._source_size.width(), view._source_size.height()),
-                                  source_key=key, request=request)
+    return view.set_source_region(pixmap, request[2], source_key=key, request=request)
 
 
 @pytest.mark.parametrize("dpr", [1.0, 1.25, 2.0])
@@ -146,8 +145,7 @@ def test_lazy_original_pixels_and_stale_completion(view, qapp):
     assert requests[-1][0] == (1, 0)
     assert requests[-1][1][0] == 'loupe'
     before = (view._zoom_factor, QPointF(view._pan_offset), view._map_to_base(pos))
-    # A tiny surrogate full-pixel buffer has a different color than the preview.
-    original = QPixmap(500, 300)
+    original = QPixmap(*view._region_requests['loupe'][3])
     original.fill(QColor("lime"))
     original_request = view._region_requests['loupe']
     assert install_loupe(view, original, (1, 0))
@@ -165,7 +163,7 @@ def test_lazy_original_pixels_and_stale_completion(view, qapp):
     assert target.center() == pos
     assert view._map_from_base(sample.center()).x() == pytest.approx(pos.x())
     assert view._map_from_base(sample.center()).y() == pytest.approx(pos.y())
-    portrait_full = QPixmap(300, 500)
+    portrait_full = QPixmap(*view._region_requests['loupe'][3])
     portrait_full.fill(QColor("yellow"))
     assert install_loupe(view, portrait_full, (1, 1))
     assert_color(pixel(view.grab(), pos), QColor("yellow"))
@@ -265,7 +263,8 @@ def test_pending_native_crop_keeps_useful_pixels_and_bounded_region_memory(view,
     view.set_magnifier_settings(size=120)
     pos = QPointF(250, 180)
     mouse(view, QMouseEvent.Type.MouseButtonPress, pos, Qt.MouseButton.LeftButton)
-    assert_color(pixel(view.grab(), pos), QColor('magenta'))
+    # Embedded pixels are still useful outside the loupe, never as native detail.
+    assert_color(pixel(view.grab(), pos), QColor(24, 24, 24))
     first = view._region_requests['loupe']
     native = QPixmap(120, 120)
     native.fill(QColor('lime'))
@@ -274,11 +273,10 @@ def test_pending_native_crop_keeps_useful_pixels_and_bounded_region_memory(view,
     near = pos + QPointF(1, 1)
     mouse(view, QMouseEvent.Type.MouseMove, near)
     assert_color(pixel(view.grab(), near), QColor('lime'))
-    # The old crop no longer covers this source point. The correct preview
-    # fills it while the native request remains outstanding.
+    # A distant crop cannot reuse the previous native detail or the thumbnail.
     far = QPointF(390, 270)
     mouse(view, QMouseEvent.Type.MouseMove, far)
-    assert_color(pixel(view.grab(), far), QColor('magenta'))
+    assert_color(pixel(view.grab(), far), QColor(24, 24, 24))
     assert not view.set_source_region(native, first[2], source_key='continuous', request=first)
     for step in range(40):
         mouse(view, QMouseEvent.Type.MouseMove, QPointF(250 + step, 180))
