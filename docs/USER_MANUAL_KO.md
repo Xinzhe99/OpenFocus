@@ -28,7 +28,7 @@ OpenFocus는 연구자, 엔지니어, 이미지 처리 전문가를 위해 만�
 ### 주요 기능
 
 - **다초점 이미지 합성**: 초점이 각기 다른 여러 이미지를 하나의 완전히 초점이 맞은 이미지로 결합합니다
-- **열 가지 합성 알고리즘**: StackMFF V1/V2/V3(딥러닝), OpenFocus A/B/C, 가이드 필터, DCT, DTCWT, GFG-FGF, 그리고 정합 전용 모드
+- **합성 알고리즘**은 안정 버전인 OpenFocus A/B/C, 실험적 방식인 StackMFF V1/V2/V3(딥러닝), 가이드 필터, DCT, DTCWT, GFG-FGF를 포함합니다. 정합 전용 모드도 있습니다.
 - **이미지 정합**: OpenFocus(고속), ECC, 호모그래피 중 하나를 선택해 이동·회전·크기·원근 변화를 보정합니다
 - **자동 배경**: 지저분한 스택 배경을 실제 프레임 하나로 바꾸고, 어떤 프레임도 선명하게 보지 못한 곳을 표시
 - **와이프 비교 보기**: A/B 구분선 보기로 정합 상태를 확인하고 결과를 비교합니다
@@ -70,7 +70,7 @@ OpenFocus는 연구자, 엔지니어, 이미지 처리 전문가를 위해 만�
 바를 쓸 수 없습니다. 사각형 크기를 바꾸는 합성 방식은 거부됩니다. 그라디언트나 페더
 마스크, 프레임마다 다른 마스크, 투명 TIFF 입력, GIF와 다중 페이지 TIFF를 포함한 PNG 이외
 출력은 지원하지 않습니다. CLI도 투명 입력의 센서 보정과 깊이 맵을 거부합니다. CLI 예:
-`python main.py --input ./png-stack --output ./result.png --method guided_filter --align none`.
+`python main.py --input ./png-stack --output ./result.png --method guided_filter --align none --experimental`.
 
 ### 지원하는 출력 형식
 
@@ -93,7 +93,7 @@ OpenFocus는 연구자, 엔지니어, 이미지 처리 전문가를 위해 만�
 3. **Linux(x86-64)**: 데스크톱 압축 파일을 푼 뒤 압축을 푼 폴더의 `OpenFocus/OpenFocus`를 실행합니다
 4. **Python 소스**: 활성화된 conda 환경에서 `python main.py`를 실행합니다
 
-최신 Windows, macOS 및 Linux 데스크톱 버전은 [OpenFocus 공식 사이트](https://openfocus.top/#download)에서 받으세요. Linux 버전은 v1.77.0부터 제공됩니다.
+최신 Windows, macOS 및 Linux 데스크톱 버전은 [OpenFocus 공식 사이트](https://openfocus.top/#download)에서 받으세요. Linux 데스크톱 버전은 v2.0.0부터 제공됩니다.
 같은 파일과 이전 버전은 [GitHub Releases](https://github.com/Xinzhe99/OpenFocus/releases)에도
 있습니다. 터미널에서도 설치할 수 있습니다.
 공식 사이트에서는 기본적으로 안정 버전을 제공합니다. Windows와 macOS에서는 베타 자동 업데이트를 선택할 수 있습니다. Linux 데스크톱은 새 압축 파일을 내려받아 수동으로 업데이트합니다. PyPI CLI는 별도로 제공됩니다.
@@ -116,9 +116,9 @@ irm https://openfocus.top/install.ps1 | iex
 ### 빠른 시작 워크플로
 
 1. 이미지 시퀀스를 가져옵니다(파일 → 폴더 열기 또는 끌어다 놓기)
-2. 오른쪽 패널에서 합성 설정을 구성합니다
+2. 오른쪽 패널에서 합성 설정을 구성합니다(기본 합성 방식은 **OpenFocus B**)
 3. **정합** 드롭다운에서 **하나만** 선택합니다(기본값은 ECC)
-4. 필요에 따라 커널 크기를 조정합니다
+4. 필요에 따라 선택한 합성 방식의 매개변수를 조정합니다
 5. *(선택 사항)* **렌더 설정**을 열고 **빠른 미리보기**를 선택해 축소된 초안으로 매개변수를 먼저 시험합니다
 6. **렌더 시작**을 클릭해 처리를 시작합니다
 7. 결과를 내보냅니다
@@ -560,11 +560,10 @@ EXIF Orientation 태그가 있는 카메라 JPEG/TIFF 파일은 가져오기 과
 
 ## 8. 이미지 합성 방식
 
-OpenFocus는 열 가지 합성 알고리즘과 정렬 전용 모드를 제공합니다. 각각 특성이
-달라 다양한 이미지 유형에 맞게 쓸 수 있습니다. 새 프로필은 **StackMFF V3**와
-**ECC** 정합으로 시작합니다. 드롭다운의 첫 항목은 **정합만**이고
-기본 선택은 **AI(StackMFF V3)**입니다. 그 뒤에 StackMFF V2/V1, OpenFocus A/B,
-가이드 필터, GFG-FGF, OpenFocus C, DCT, DTCWT가 이어집니다.
+안정 합성 방식은 **OpenFocus A, B, C**입니다. 새 데스크톱 프로필의 기본값은 **OpenFocus B**와
+**ECC** 정합입니다. 데스크톱에서 다른 합성 방식이나 실험적 정합 방식을 사용하려면
+**설정 → 고급 설정 → 일반**에서 **실험적 기능 활성화**를 선택하세요. CLI에서 실험적 합성 방식을
+쓰려면 실행할 때마다 `--experimental`을 지정하세요.
 
 ### 가이드 필터
 
@@ -1036,12 +1035,7 @@ iPhone 사진을 바로 불러올 수 있습니다. 선택적 `pillow-heif` 패�
 확정하며 선택적인 기준 프레임 제거도 같은 실행 취소 단계에 속합니다. 세션 밖에 픽셀을
 남기려면 보정된 소스 이미지를 내보내세요.
 
-배치 처리에서도 처리 옵션으로 선택적 화이트 필드 이미지를 고를 수 있습니다. 원본 프레임
-해상도의 초점이 나간 기준을 고르면 입력 스택에 맞춰 축소되고 기본 더스트 크기로 정합
-전에 적용됩니다. 읽을 수 없는 기준이나 크기 불일치는 해당 스택을 분명히 실패시킵니다.
-기준은 폴더 입력(그룹 처리 포함)에서 제외되며 합성에는 소스 프레임이 최소 두 개 남아야
-합니다. 비워 두면 보정 없이 처리합니다. CLI에서도 `--dust-map WHITE`로 지정할 수
-있습니다. 플랫 필드 보정은 투명 입력과 함께 쓸 수 없습니다.
+더스트 맵, 배치 플랫 필드 보정, 이미지 이어붙이기는 개발 중이며 현재 사용할 수 없습니다.
 
 센서 보정은 선택 사항이며 정합 전에 원래 센서 좌표 프레임에 실행됩니다. 데스크톱에서는
 **설정 → 고급 설정 → 합성 → 센서 정리**에 있고 배치 대화상자에도 같은 컨트롤이 있습니다.
@@ -1293,7 +1287,7 @@ openfocus describe                      # JSON: 방식, 매개변수, 기능, �
 openfocus gui [--control] [--socket NAME] [경로…]   # 데스크톱 앱 시작
 openfocus ctl <command> [flags]          # 실행 중인 창 제어(AGENT_CONTROL_SPEC.md)
 openfocus recipe create FILE --input … --output … [처리 옵션]
-openfocus recipe run FILE [--dry-run]    # 저장된 헤드리스 레시피 재생
+openfocus recipe run FILE [--dry-run] [--experimental]  # 저장된 헤드리스 레시피 재생
 openfocus retouch replay CHECKPOINT --base BASE --sources … --output RESULT
 ```
 
@@ -1309,20 +1303,20 @@ openfocus -i ./stack_folder -o ./result/fused.png
 ```
 
 ```bash
-# 기본 AI(StackMFF V3)로 폴더 합성
+# 기본 방식(OpenFocus B)으로 폴더 합성
 python main.py --input ./stack_folder --output ./result/fused.png
 
 # DTCWT + ECC 정합, 8스레드
-python main.py -i ./stack_folder -o ./result/fused.png -m dtcwt -a ecc -t 8
+python main.py -i ./stack_folder -o ./result/fused.png -m dtcwt -a ecc -t 8 --experimental
 
 # StackMFF V3를 CPU로 강제하고 사용자 지정 타일 크기 사용
-python main.py -i ./stack_folder -o ./result/fused.png -m stackmffv3 --cpu --tile-size 512
+python main.py -i ./stack_folder -o ./result/fused.png -m stackmffv3 --cpu --tile-size 512 --experimental
 
 # 파일을 명시적으로 나열. 동영상 파일도 입력으로 받습니다
-python main.py -i img1.jpg img2.jpg img3.jpg -o fused.png -m gfgfgf
+python main.py -i img1.jpg img2.jpg img3.jpg -o fused.png -m gfgfgf --experimental
 
 # 메타데이터에서 보정한 스케일 바가 있는 단일 다중 페이지 TIFF Z-스택
-python main.py -i ./zstack.tif -o fused.png -m dtcwt --scale-bar
+python main.py -i ./zstack.tif -o fused.png -m dtcwt --scale-bar --experimental
 
 # 합성하거나 입력을 바꾸지 않고 인접한 유사 프레임만 확인
 python main.py -i ./stack_folder --suggest-duplicates
@@ -1348,10 +1342,13 @@ dry-run에서는 이 옵션을 쓸 수 없습니다.
 처리 레시피는 헤드리스 설정을 저장해 재사용하고 옮길 수 있습니다.
 
 ```bash
-openfocus recipe create workflow.json -i ./stack_folder -o ./result/fused.png -m dct --cpu
+openfocus recipe create workflow.json -i ./stack_folder -o ./result/fused.png -m openfocus_b --cpu
 openfocus recipe run workflow.json --dry-run
 openfocus recipe run workflow.json
 ```
+
+레시피에는 선택한 합성 방식이 저장됩니다. 실험적 합성 방식을 쓰는 레시피는 `--dry-run`으로
+확인할 때도 `openfocus recipe run`을 실행할 때마다 `--experimental`을 지정하세요.
 
 레시피 JSON 버전 1은 `version`, `input` 배열, `output` 또는 `output_dir`, `options`
 객체를 담습니다. 경로는 레시피 파일 기준 상대 경로이므로 옮길 때 입력도 함께 옮기세요.
@@ -1378,7 +1375,7 @@ PyQt를 가져오지 않고도 Python에서 같은 헤드리스 API를 사용할
 ```python
 from core.recipes import capture_project_recipe, capture_recipe, load_recipe, save_recipe, run_recipe
 
-capture_recipe("workflow.json", ["-i", "stack_folder", "-o", "result/fused.png", "-m", "dct"])
+capture_recipe("workflow.json", ["-i", "stack_folder", "-o", "result/fused.png", "-m", "openfocus_b"])
 capture_project_recipe("from-project.json", "session.ofproj",
                        ["-i", "new_stack", "-o", "result/fused.png"])
 recipe = load_recipe("workflow.json")
@@ -1408,7 +1405,8 @@ openfocus retouch replay edits.ofretouch --base fused.png --sources frame1.png f
 | `--input, -i` | 이미지 폴더, 동영상 파일, 하나 이상의 이미지 파일, 또는 다중 페이지 TIFF |
 | `--output, -o` | 단일 스택 출력 경로(확장자가 형식 결정). `--output-dir`이 없으면 필수 |
 | `--output-dir, -d` | 배치 모드: 각 입력 폴더를 처리하고 스택마다 `<folder>.png` 기록 |
-| `--method, -m` | `stackmffv3`(기본값), `stackmffv2`, `stackmff`, `openfocus_a/b/c`, `guided_filter`, `dct`, `dtcwt`, `gfgfgf` |
+| `--method, -m` | 안정 버전은 `openfocus_a`, `openfocus_b`(기본값), `openfocus_c`. 실험적 방식은 `guided_filter`, `dct`, `dtcwt`, `gfgfgf`, `stackmff`, `stackmffv2`, `stackmffv3` |
+| `--experimental` | 이 CLI 실행에서 실험적 합성 방식 사용 허용 |
 | `--param KEY=JSON_VALUE` | 합성 매개변수. 여러 번 지정할 수 있고 기존 전용 플래그보다 우선 |
 | `--align, -a` | `none`(기본값), `homography`, `ecc`, `openfocus`, `both` |
 | `--align-param KEY=JSON_VALUE` | 정합 매개변수. 예: `failure_policy="fail"`, `reference_frame=3` |
@@ -1420,7 +1418,6 @@ openfocus retouch replay edits.ofretouch --base fused.png --sources frame1.png f
 | `--sharpen-output` | 합성 후 양자화 전에 가벼운 언샤프 마스크 적용. 기본값 꺼짐 |
 | `--sort` | `openfocus_a/b/c`의 프레임 순서: `asc`(기본값, 파일 순서), `desc`(원경→근경 스윕 반전), `off` |
 | `--frame-order` | 폴더 입력: `auto`(기본값)는 모든 프레임에 EXIF 초점 단계가 있으면 가까운 곳에서 먼 곳 순으로 정렬합니다(OM SYSTEM 초점 브라케팅은 중간 깊이에서 시작). 없으면 이름순. `name`은 항상 파일 이름순. 직접 나열한 파일은 순서를 유지 |
-| `--dust-map WHITE` | 초점이 나간 화이트 필드 촬영본으로 플랫 필드(더스트 맵) 보정 |
 | `--defect-mask-path MASK` | 센서 좌표 결함 마스크. 0이 아닌 픽셀을 정합 전에 복구 |
 | `--sensor-denoise` | 정합 전에 보수적인 센서 노이즈 제거 적용 |
 | `--kernel, -k` | `kernel_size`를 선언한 방식의 커널 크기. A/B/C 매개변수는 `--param`으로 지정합니다 |
@@ -1449,7 +1446,7 @@ openfocus retouch replay edits.ofretouch --base fused.png --sources frame1.png f
 | `--resume` | 이번에 요청한 결과가 모두 비어 있지 않은 일반 파일일 때만 폴더를 건너뜁니다. 내용이나 매개변수는 검증하지 않습니다 |
 | `--json FILE` | 결과 요약을 JSON으로 저장 |
 | `--json-progress` | 진행률을 JSON 줄(NDJSON)로 출력. 일반 텍스트는 stderr로 |
-| `--config FILE` | 배치 모드: 폴더별 덮어쓰기를 JSON으로 지정(예 `{"stackA": {"method": "dct"}}`) |
+| `--config FILE` | 배치 모드: 폴더별 덮어쓰기를 JSON으로 지정(예 `{"stackA": {"method": "openfocus_a"}}`) |
 
 `--method none`은 없습니다. CLI는 항상 합성을 수행합니다. 정합 전용 출력은
 데스크톱 앱을 사용하세요.

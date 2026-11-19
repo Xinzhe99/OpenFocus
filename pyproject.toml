@@ -50,11 +50,8 @@ dependencies = [
 ]
 dynamic = ["version"]
 
-# Deliberately no optional-dependency groups. Every capability (AI model,
-# HEIC, camera RAW) is in `dependencies` above: the ML method is the default
-# one, so an install that silently lacked it was broken on first launch, and
-# a user could not tell which combination they had. `pip install openfocus`
-# is the single supported install. `[ai]`/`[heic]`/`[raw]` no longer resolve.
+# `pip install openfocus` installs the headless CLI with its scientific and
+# image format dependencies, including the runtime for experimental AI methods.
 
 [project.scripts]
 openfocus = "core.cli:main"

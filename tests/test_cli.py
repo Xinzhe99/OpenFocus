@@ -106,6 +106,38 @@ def test_bad_downscale_exit_code(tmp_path):
     assert r.returncode == 2
 
 
+def test_cli_defaults_to_openfocus_b_and_requires_experimental_opt_in(tmp_path):
+    import json
+
+    stack = tmp_path / 'stack'
+    stack.mkdir()
+    for index in range(2):
+        assert cv2.imwrite(str(stack / f'{index}.png'), np.zeros((8, 8), np.uint8))
+    output = tmp_path / 'out.png'
+    args = ('--input', str(stack), '--output', str(output), '--dry-run')
+    result = run_cli(*args)
+    assert result.returncode == 0, result.stderr
+    assert 'method=openfocus_b' in result.stdout
+    result = run_cli(*args, '--method', 'dct')
+    assert result.returncode == 2
+    assert 'DCT' in result.stderr and '--experimental' in result.stderr
+    result = run_cli(*args, '--method', 'dct', '--experimental')
+    assert result.returncode == 0, result.stderr
+    assert 'method=dct' in result.stdout
+    assert not output.exists()
+
+    config = tmp_path / 'config.json'
+    config.write_text(json.dumps({'stack': {'method': 'dct'}}), encoding='utf-8')
+    batch = ('--input', str(stack), '--output-dir', str(tmp_path / 'out'),
+             '--config', str(config), '--dry-run')
+    result = run_cli(*batch)
+    assert result.returncode == 2
+    assert 'config stack' in result.stderr and '--experimental' in result.stderr
+    result = run_cli(*batch, '--experimental')
+    assert result.returncode == 0, result.stderr
+    assert 'method=dct' in result.stdout
+
+
 def test_full_pipeline_synthetic_stack(tmp_path):
     stack = tmp_path / "stack"
     stack.mkdir()
@@ -118,7 +150,7 @@ def test_full_pipeline_synthetic_stack(tmp_path):
 
     out = tmp_path / "out" / "fused.png"
     r = run_cli("--input", str(stack), "--output", str(out),
-                "--method", "guided_filter", "--align", "ecc", "--threads", "2")
+                "--experimental", "--method", "guided_filter", "--align", "ecc", "--threads", "2")
     assert r.returncode == 0, r.stderr
     assert out.exists() and out.stat().st_size > 0
 
@@ -142,7 +174,7 @@ def test_batch_output_dir(tmp_path):
         _write_stack(d)
 
     r = run_cli("--input", str(stacks / "stackA"), str(stacks / "stackB"),
-                "--output-dir", str(out), "--method", "guided_filter",
+                "--output-dir", str(out), "--experimental", "--method", "guided_filter",
                 "--threads", "2")
     assert r.returncode == 0, r.stderr
     assert sorted(os.listdir(out)) == ["stackA.png", "stackB.png"]
@@ -160,7 +192,7 @@ def test_grouped_cli_preserves_16_bit_and_reports_progress(tmp_path):
                            np.repeat(pattern[..., None], 3, axis=2))
     out = tmp_path / "fused.tif"
     result = run_cli("--input", str(stack), "--output", str(out),
-                     "--method", "guided_filter", "--cpu", "--threads", "1",
+                     "--experimental", "--method", "guided_filter", "--cpu", "--threads", "1",
                      "--no-exposure-match", "--group-size", "3",
                      "--group-overlap", "1", "--json-progress")
     assert result.returncode == 0, result.stderr
@@ -176,7 +208,7 @@ def test_grouped_cli_rejects_depth_and_nonreducing_overlap(tmp_path):
     stack.mkdir()
     output = tmp_path / "fused.png"
     depth = run_cli("--input", str(stack), "--output", str(output),
-                    "--method", "guided_filter", "--group-size", "3", "--depth-map")
+                    "--experimental", "--method", "guided_filter", "--group-size", "3", "--depth-map")
     assert depth.returncode == 2 and "original frame indices" in depth.stderr
     overlap = run_cli("--input", str(stack), "--output", str(output),
                       "--group-size", "3", "--group-overlap", "2")
@@ -189,7 +221,7 @@ def test_grouped_cli_rejects_nonlocal_alignment_reference(tmp_path):
     _write_stack(stack, n=5)
     output = tmp_path / "fused.png"
     result = run_cli("--input", str(stack), "--output", str(output),
-                     "--method", "guided_filter", "--cpu", "--group-size", "3",
+                     "--experimental", "--method", "guided_filter", "--cpu", "--group-size", "3",
                      "--align", "openfocus", "--align-param", "reference_frame=2")
     assert result.returncode != 0
     assert "stack-wide alignment reference" in result.stderr
@@ -203,7 +235,7 @@ def test_grouped_cli_batch_processes_each_folder(tmp_path):
         _write_stack(folder, n=5)
     output = tmp_path / "results"
     result = run_cli("--input", *(str(folder) for folder in folders),
-                     "--output-dir", str(output), "--method", "guided_filter",
+                     "--output-dir", str(output), "--experimental", "--method", "guided_filter",
                      "--cpu", "--threads", "1", "--group-size", "3")
     assert result.returncode == 0, result.stderr
     for name in ("a.png", "b.png"):

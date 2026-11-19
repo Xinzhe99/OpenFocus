@@ -55,7 +55,7 @@
 ## 📢 News
 
 > [!NOTE]
-> **[v1.77.0-beta.7 is available](https://github.com/Xinzhe99/OpenFocus/releases/tag/v1.77.0-beta.7)** — This prerelease adds OpenCL GPU acceleration for OpenFocus B on compatible devices, with CPU fallback. It also fixes wipe comparison and adds auto background and restorable retouch sessions. See the [Changelog](./CHANGELOG.md) for the full update and supported inputs.
+> **OpenFocus 2.0.0** adds a Linux desktop build, GPU acceleration for OpenFocus A/B/C on compatible devices, and original-pixel inspection with reusable method comparisons. [Download](https://openfocus.top/#download) · [Changelog](./CHANGELOG.md#200)
 
 Earlier releases are in the [Changelog](./CHANGELOG.md).
 
@@ -215,6 +215,10 @@ Control the desktop app through a token-protected local channel.
 - **Languages** — twelve UI languages with automatic locale detection.
 - **Memory** — bounded frame/tile work, disk-backed intermediates and neural models loaded only when selected.
 
+OpenFocus A, B and C are the stable fusion methods. To use the other fusion
+methods, enable **Experimental features** in Advanced Settings or pass
+`--experimental` to the headless CLI.
+
 StackMFF V1/V2/V3 run with the bundled ONNX Runtime. Supported Windows x64
 NVIDIA systems can install TensorRT and PyTorch CUDA from **Settings → AI
 acceleration components**. With GPU acceleration enabled, OpenFocus tries the
@@ -238,7 +242,7 @@ space for the selected source, processing workspace and full-size result.
 <a id="install"></a>
 ## ⬇️ Install
 
-The [OpenFocus website](https://openfocus.top/#download) offers the latest stable desktop builds. Starting with v1.77.0, Linux x86-64 users can download a portable desktop archive alongside Windows and macOS builds. Extract it and run `OpenFocus/OpenFocus`; the separate PyPI package provides the headless CLI. Desktop updates use the stable channel by default; enable beta updates in Advanced Settings or the welcome dialog to receive newer prereleases. Linux desktop updates are installed manually from the download page. Older versions and prereleases are available on [GitHub Releases](https://github.com/Xinzhe99/OpenFocus/releases).
+The OpenFocus website offers stable desktop builds for Windows x64, macOS Apple Silicon and Linux x86-64. Extract the Linux archive and run `OpenFocus/OpenFocus`. Desktop updates use the stable channel by default. Enable beta updates in Advanced Settings or the welcome dialog to receive newer prereleases. Linux desktop updates are installed manually from the download page. [Desktop downloads](https://openfocus.top/#download) · [Release history](https://github.com/Xinzhe99/OpenFocus/releases)
 
 On macOS (Apple Silicon) or Linux, install from a terminal. On Linux this
 command installs the headless CLI; on macOS it installs the app in `~/Applications`.
@@ -306,7 +310,7 @@ See the [CLI manual](./docs/USER_MANUAL_EN.md#14-command-line-interface).
 <a id="community"></a>
 ## Community & Support
 
-Questions, ideas or feedback? Join our [Discord community](https://discord.gg/afzmwgPt). We reply as soon as we can; we're based in Beijing (UTC+8), so time differences may affect response times.
+Questions, ideas or feedback? Join our [Discord community](https://discord.gg/Jamr2SR5). We reply as soon as we can; we're based in Beijing (UTC+8), so time differences may affect response times.
 
 - **Docs** — [User Manual](./docs/USER_MANUAL_EN.md) (twelve languages) · [Changelog](./CHANGELOG.md) · [Performance](./docs/PERFORMANCE.md) · [Fusion methods](./docs/FUSION_METHODS.md)
 - [Privacy policy](./docs/PRIVACY.md)

@@ -2,7 +2,7 @@
 
 Lets batch users and CI pipelines run registration + fusion without the GUI:
 
-    openfocus --input ./stack_folder --output ./out.png --method stackmffv3
+    openfocus --input ./stack_folder --output ./out.png --method openfocus_b
     openfocus --input ./stackA ./stackB --output-dir ./results   (batch)
 
 Exit codes: 0 success, 1 processing error, 2 usage error.
@@ -29,10 +29,12 @@ from typing import List, Optional, Tuple
 from utils import performance_profile
 from utils.sorting import natural_sort_key
 from utils.path_identity import file_identity, path_key
+from utils.output_sharpen import (DEFAULT_SHARPEN_STRENGTH, MAX_SHARPEN_STRENGTH,
+                                  validate_sharpen_strength)
 from core.resource_policy import heavy_job, require_memory
 from core.frame_storage import scratch_directory
 
-from core.algorithms import (fusion_algorithms, registration_algorithms, get_fusion,
+from core.algorithms import (FUSION_DEFAULT, fusion_algorithms, registration_algorithms, get_fusion,
                              get_registration, resolve_fusion_parameters,
                              resolve_registration_parameters, alignment_steps)
 from constants import app_display_version
@@ -69,6 +71,14 @@ class _StderrProxy:
         return False
 
 
+def _parse_sharpen_strength(value):
+    try:
+        return validate_sharpen_strength(int(value))
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            f"expected an integer from 0 to {MAX_SHARPEN_STRENGTH}") from exc
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="OpenFocus",
@@ -77,9 +87,9 @@ def build_parser() -> argparse.ArgumentParser:
         epilog=(
             "examples:\n"
             "  openfocus --input ./stack --output ./result/fused.png\n"
-            "  openfocus --input ./stack --output ./result/fused.png --method dtcwt --align ecc --threads 8\n"
-            "  openfocus --input ./stackA ./stackB --output-dir ./results -m stackmffv3\n"
-            "  openfocus --input img1.jpg img2.jpg img3.jpg --output fused.png --method gfgfgf\n"
+            "  openfocus --input ./stack --output ./result/fused.png --method openfocus_c --align ecc --threads 8\n"
+            "  openfocus --input ./stackA ./stackB --output-dir ./results --experimental -m stackmffv3\n"
+            "  openfocus --input img1.jpg img2.jpg img3.jpg --output fused.png --method openfocus_a\n"
             "  openfocus --input ./stack --output fused.tif --align ecc --auto-background\n"
             "\nTransparent input: PNG frames must share one rectangular, constant-opacity\n"
             "region and bit depth. Output must be PNG; alignment, dust correction,\n"
@@ -106,10 +116,12 @@ def build_parser() -> argparse.ArgumentParser:
                              "Pillow-readable inputs only; no RAW, alpha, multipage or depth maps.")
     parser.add_argument("--group-overlap", type=int, default=0, metavar="FRAMES",
                         help="Frames shared by consecutive groups (default 0; at most group size minus 2).")
-    parser.add_argument("--method", "-m", default="stackmffv3",
+    parser.add_argument("--method", "-m", default=FUSION_DEFAULT,
                         choices=[spec.id for spec in fusion_algorithms()],
-                        help="Fusion method (default: stackmffv3); use `openfocus describe` "
+                        help=f"Fusion method (default: {FUSION_DEFAULT}); use `openfocus describe` "
                              "for available methods and their parameters")
+    parser.add_argument("--experimental", action="store_true",
+                        help="Allow experimental fusion methods when their dependencies are installed")
     parser.add_argument("--align", "-a", default="none",
                         choices=[spec.id for spec in registration_algorithms()],
                         help="Registration applied before fusion (default: none); openfocus = "
@@ -130,14 +142,15 @@ def build_parser() -> argparse.ArgumentParser:
                              "processed frame, other methods use the last (default: on; "
                              "--no-exposure-match disables it). Applied before tiling.")
     parser.add_argument("--sharpen-output", action="store_true",
-                        help="Apply mild unsharp masking to the fused output (off by default).")
+                        help="Apply unsharp masking to the fused output (off by default).")
+    parser.add_argument("--sharpen-strength", type=_parse_sharpen_strength,
+                        default=DEFAULT_SHARPEN_STRENGTH, metavar="PERCENT",
+                        help=f"Output sharpening strength (0–{MAX_SHARPEN_STRENGTH} percent, "
+                             "default: %(default)s). Does not enable sharpening on its own.")
     parser.add_argument("--sort", default="asc", choices=["asc", "desc", "off"],
                         help="Frame order for openfocus_a/b/c: 'asc' keeps file order "
                              "(default), 'desc' reverses it, 'off' leaves it unchanged")
-    parser.add_argument("--dust-map", default=None, metavar="WHITE",
-                        help="Flat-field (dust map) correction: path to a defocused shot of a blank/white "
-                             "area; removes static dust specks and vignetting from every frame before "
-                             "registration")
+    parser.add_argument("--dust-map", default=None, metavar="WHITE", help=argparse.SUPPRESS)
     parser.add_argument("--defect-mask-path", default=None, metavar="MASK",
                         help="Sensor-coordinate defect mask; nonzero pixels are repaired before registration")
     parser.add_argument("--sensor-denoise", action="store_true",
@@ -249,6 +262,9 @@ def _validate_execution_args(args):
     """Validate execution options shared by CLI, batch overrides and recipes."""
     import math
 
+    if args.dust_map:
+        raise ValueError('--dust-map is in development and is currently unavailable')
+
     for name, minimum, optional in (
             ('threads', 0, False), ('batch_size', 1, False),
             ('downscale', 1, True), ('tile_size', 64, True),
@@ -263,6 +279,7 @@ def _validate_execution_args(args):
     for name in ('exposure_match', 'sharpen_output', 'cpu', 'keep_soft_parts'):
         if type(getattr(args, name)) is not bool:
             raise ValueError(f"{name} must be boolean")
+    validate_sharpen_strength(getattr(args, 'sharpen_strength', DEFAULT_SHARPEN_STRENGTH))
     actions = {action.dest: action for action in build_parser()._actions}
     for name in ('method', 'align', 'base_frame', 'sort', 'ai_mode',
                  'resource_preference', 'auto_background', 'background_mode'):
@@ -286,7 +303,7 @@ def _validate_execution_args(args):
         raise ValueError('tile_overlap must be smaller than tile_size')
     if args.native_batch_format and (not args.native_raw or not args.output_dir):
         raise ValueError('native_batch_format requires native_raw and output_dir')
-    if args.native_raw and (args.suggest_duplicates or args.group_size or args.dust_map or
+    if args.native_raw and (args.suggest_duplicates or args.group_size or
                             args.defect_mask_path or args.sensor_denoise or args.depth_map):
         raise ValueError('native_raw cannot be combined with grouped fusion, references or depth maps')
     if args.native_raw and (args.scale_bar or args.scale_um is not None) and (
@@ -343,6 +360,13 @@ def _resolve_algorithm_arguments(args):
     if getattr(args, "depth_map", None) and spec.depth is None:
         raise ValueError(f"--depth-map is not available for method '{args.method}'")
     return args
+
+
+def _require_fusion_opt_in(args):
+    spec = get_fusion(args.method)
+    if spec.experimental and not args.experimental:
+        raise ValueError(f"{spec.display_name} ({spec.id}) is experimental. "
+                         "Pass --experimental to use it or choose OpenFocus A, B, or C.")
 
 
 def _list_folder_images(folder: str, loader) -> List[str]:
@@ -799,11 +823,13 @@ def _fuse_stack_admitted_body(images, args):
         fusion_kwargs["tile_threshold"] = args.tile_threshold
     fusion = MultiFocusFusion(**fusion_kwargs)
     from core.fusion_diagnostics import log_effective_fusion
+    sharpen_strength = getattr(args, 'sharpen_strength', DEFAULT_SHARPEN_STRENGTH)
     log_effective_fusion(fusion, images, origin='cli', thread_count=args.threads,
         registration=alignment_steps(args.align), registration_parameters=args._registration_parameters,
         registration_downscale_width=args.downscale,
         registration_brightness_reference='last' if getattr(args, 'exposure_match', True) else 'first',
         reverse_registration=preordered, sharpen_output=bool(getattr(args, 'sharpen_output', False)),
+        sharpen_strength=sharpen_strength,
         sensor_denoise=bool(getattr(args, 'sensor_denoise', False)),
         defect_mask=bool(getattr(args, 'defect_mask_path', None)),
         flat_field=bool(getattr(args, 'dust_map', None)), grouped=bool(getattr(args, '_grouped', False)))
@@ -832,7 +858,7 @@ def _fuse_stack_admitted_body(images, args):
         raise RuntimeError("Fusion returned no result")
     if getattr(args, "sharpen_output", False):
         from utils.output_sharpen import sharpen_output
-        fused = sharpen_output(fused)
+        fused = sharpen_output(fused, should_cancel, strength=sharpen_strength)
     fused = quantize_fuse_output(fused, is_16bit)
     from core.transparency import restore_transparent_canvas
     fused = restore_transparent_canvas(fused, transparent)
@@ -914,11 +940,13 @@ def _fuse_grouped(paths, args):
                           resource_preference=args.resource_preference,
                           should_cancel=getattr(args, "_should_cancel", None),
                           progress=progress, preprocess=preprocess)
-    if args.sharpen_output:
+    sharpen_strength = getattr(args, 'sharpen_strength', DEFAULT_SHARPEN_STRENGTH)
+    if args.sharpen_output and sharpen_strength:
         from utils.image_utils import normalize_fuse_input, quantize_fuse_output
         from utils.output_sharpen import sharpen_output
         frames, is_16bit = normalize_fuse_input([result])
-        result = quantize_fuse_output(sharpen_output(frames[0]), is_16bit)
+        result = quantize_fuse_output(sharpen_output(
+            frames[0], getattr(args, '_should_cancel', None), strength=sharpen_strength), is_16bit)
     return result
 
 
@@ -1191,6 +1219,7 @@ def _folder_run_args(args, folder: str, name: str):
     if not override:
         return args, None
     merged = argparse.Namespace(**{**vars(args), **override})
+    _require_fusion_opt_in(merged)
     _validate_execution_args(merged)
     _resolve_algorithm_arguments(merged)
     return merged, override
@@ -1703,6 +1732,8 @@ def _run_recipe_command(argv: List[str]) -> int:
     run = commands.add_parser("run", help="run a recipe")
     run.add_argument("file", help="recipe JSON file")
     run.add_argument("--dry-run", action="store_true")
+    run.add_argument("--experimental", action="store_true",
+                     help="Allow the experimental fusion method saved in the recipe")
     if argv and argv[0] == "create":
         args, processing = parser.parse_known_args(argv)
         try:
@@ -1716,7 +1747,7 @@ def _run_recipe_command(argv: List[str]) -> int:
             return EXIT_USAGE
     args = parser.parse_args(argv)
     try:
-        return run_recipe(args.file, dry_run=args.dry_run)
+        return run_recipe(args.file, dry_run=args.dry_run, experimental=args.experimental)
     except (ValueError, OSError, TypeError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_USAGE
@@ -1885,9 +1916,9 @@ def _run_cli_parsed(args) -> int:
         print("error: --native-batch-format requires --native-raw and --output-dir", file=sys.stderr)
         return EXIT_USAGE
     if args.native_raw:
-        if (args.suggest_duplicates or args.group_size or args.dust_map or
+        if (args.suggest_duplicates or args.group_size or
                 args.defect_mask_path or args.sensor_denoise or args.depth_map):
-            print("error: --native-raw cannot be combined with duplicate review, grouped fusion, dust correction, sensor cleanup or depth maps", file=sys.stderr)
+            print("error: --native-raw cannot be combined with duplicate review, grouped fusion, sensor cleanup or depth maps", file=sys.stderr)
             return EXIT_USAGE
         if (args.scale_bar or args.scale_um is not None) and (
                 (args.output_dir and (args.native_batch_format or "dng") == "dng") or
@@ -2030,6 +2061,7 @@ def _run_cli_parsed(args) -> int:
             return EXIT_USAGE
 
     try:
+        _require_fusion_opt_in(args)
         _validate_execution_args(args)
         _resolve_algorithm_arguments(args)
         for folder, override in args._folder_overrides.items():
@@ -2037,7 +2069,8 @@ def _run_cli_parsed(args) -> int:
                 raise ValueError(f"Overrides for {folder} must be an object")
             unknown = set(override) - {
                 "method", "align", "kernel",
-                "ai_mode", "base_frame", "sort", "exposure_match", "sharpen_output", "cpu", "threads",
+                "ai_mode", "base_frame", "sort", "exposure_match", "sharpen_output", "sharpen_strength",
+                "cpu", "threads",
                 "batch_size", "downscale", "tile_size", "align_shift_limit",
                 "resource_preference", "fusion_parameters", "registration_parameters",
                 "auto_background", "background_mode", "keep_soft_parts"}
@@ -2045,6 +2078,7 @@ def _run_cli_parsed(args) -> int:
                 raise ValueError(f"Unknown override keys for {folder}: {sorted(unknown)}")
             try:
                 merged = argparse.Namespace(**{**vars(args), **override})
+                _require_fusion_opt_in(merged)
                 _validate_execution_args(merged)
                 _resolve_algorithm_arguments(merged)
             except (TypeError, ValueError) as exc:
@@ -2352,6 +2386,7 @@ def describe_payload() -> dict:
             "id": spec.id,
             "label": spec.display_name,
             "category": spec.category,
+            "experimental": spec.experimental,
             "neural": spec.neural,
             "order_sensitive": spec.order_sensitive,
             "depth_map": spec.depth is not None,
@@ -2384,17 +2419,20 @@ def describe_payload() -> dict:
         "registrations": [spec.id for spec in registration_algorithms()],
         "control": {"schema": CONTROL_SCHEMA, "commands": list(COMMANDS)},
         "cli": {
+            "default_method": FUSION_DEFAULT,
+            "experimental_opt_in": "--experimental",
             "batch": ["--output-dir", "--resume", "--config"],
             "machine": ["--json", "--json-progress", "--alignment-report", "--dry-run"],
             "review": ["--suggest-duplicates"],
             "grouped": ["--group-size", "--group-overlap"],
-            "cleanup": ["--dust-map", "--defect-mask-path", "--sensor-denoise"],
+            "cleanup": ["--defect-mask-path", "--sensor-denoise"],
             "export": ["--scale-bar", "--scale-um", "--depth-map", "--depth-colormap"],
             "background": ["--auto-background", "--background-mode", "--keep-soft-parts",
                            "--save-stacked", "--missing-data-map"],
             "order": ["--sort"],
             "subcommands": sorted(SUBCOMMANDS),
             "options": sorted(option for action in build_parser()._actions
+                              if action.help != argparse.SUPPRESS
                               for option in action.option_strings if option.startswith("--")),
             "control": ["gui", "ctl <command>", "describe", "version"],
         },

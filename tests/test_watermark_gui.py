@@ -895,18 +895,32 @@ def test_watermark_native_tiff_blank_draft_and_baked(qapp, tmp_path, monkeypatch
         host.deleteLater()
 
 
-def test_watermark_native_alpha_uses_canvas_checker_after_draft(qapp):
+def test_watermark_native_alpha_stays_live_during_fusion(qapp):
+    import threading
+    from core.resource_policy import heavy_job
     from dialogs.watermark import WatermarkDialog
     from utils.image_utils import composite_transparent_for_display, pixmap_to_cv2
 
     image = np.full((300, 1400, 4), 70, np.uint8)
     image[:, ::3, 3] = 0
     window = _DialogHost(source=image)
-    dialog = WatermarkDialog(window)
+    held, release = threading.Event(), threading.Event()
+
+    def render():
+        with heavy_job():
+            held.set()
+            release.wait()
+
+    owner = threading.Thread(target=render)
+    owner.start()
+    dialog = None
     try:
+        assert held.wait(2)
+        dialog = WatermarkDialog(window)
         dialog.text_edit.setText("Creator")
         dialog._refresh_preview()
         _wait_watermark(qapp, lambda: dialog.preview_lbl._base_pixmap is not None)
+        assert dialog._ok_button.isEnabled()
         dialog._actual_size()
         _wait_watermark(qapp, lambda: "view" in dialog.preview_lbl._source_regions)
         tile, rect = dialog.preview_lbl._source_regions["view"]
@@ -914,8 +928,11 @@ def test_watermark_native_alpha_uses_canvas_checker_after_draft(qapp):
         expected = composite_transparent_for_display(wm.burn(image, dialog._draft_config()))
         np.testing.assert_array_equal(pixmap_to_cv2(tile), expected[y:y + h, x:x + w])
     finally:
-        dialog.reject()
-        _wait_watermark(qapp, lambda: dialog._region_worker is None and dialog._pixel_worker is None)
+        release.set()
+        owner.join(2)
+        if dialog is not None:
+            dialog.reject()
+            _wait_watermark(qapp, lambda: dialog._region_worker is None and dialog._pixel_worker is None)
         window.deleteLater()
 
 

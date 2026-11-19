@@ -189,6 +189,7 @@ def test_output_sharpening_round_trip(tmp_path):
     paths = _make_stack(src)
     window = _window(paths, src)
     window.sharpen_output = True
+    window.sharpen_strength = 165
     path = str(tmp_path / "session.ofproj")
     ok, error = project_file.save_project(window, path)
     assert ok, error
@@ -197,9 +198,34 @@ def test_output_sharpening_round_trip(tmp_path):
     restored = _window(paths, src)
     project_file._apply_after_load(restored, state)
     assert restored.sharpen_output is True
+    assert restored.sharpen_strength == 165
+    state['settings'].pop('sharpen_strength')
+    path = str(tmp_path / "legacy.ofproj")
+    project_file.atomic_json_write(path, state)
+    ok, error, state = project_file.validate_project(path)
+    assert ok, error
+    project_file._apply_after_load(restored, state)
+    assert restored.sharpen_output is True
+    assert restored.sharpen_strength == 100
+
     state['settings'].pop('sharpen_output')
+    state['settings'].pop('sharpen_strength')
     project_file._apply_after_load(restored, state)
     assert restored.sharpen_output is False
+    assert restored.sharpen_strength == 100
+
+
+@pytest.mark.parametrize('strength', [True, 100.0, '100', -1, 201, None])
+def test_project_and_template_reject_invalid_sharpen_strength(tmp_path, strength):
+    paths = _make_stack(str(tmp_path / 'src'), n=1)
+    state = project_file._collect_state(_window(paths, str(tmp_path / 'src')))
+    state['settings']['sharpen_strength'] = strength
+    path = tmp_path / 'invalid.ofproj'
+    path.write_text(json.dumps(state), encoding='utf-8')
+    ok, error, _ = project_file.validate_project(path)
+    assert not ok and 'sharpen_strength' in error
+    with pytest.raises(ValueError, match='sharpen_strength'):
+        project_file.validate_template_settings({'sharpen_strength': strength})
 
 
 def test_excluded_frames_round_trip(tmp_path):
@@ -256,6 +282,8 @@ def test_template_applies_to_current_stack_without_source_paths(tmp_path):
     source._fusion = "dct"
     source._fusion_parameters_by_method["dct"] = {"kernel_size": 9}
     source.excluded_frames = {0}
+    source.sharpen_output = False
+    source.sharpen_strength = 175
     template = tmp_path / "processing.oftemplate"
     project_file.save_template(source, str(template))
     text = template.read_text(encoding="utf-8")
@@ -268,6 +296,8 @@ def test_template_applies_to_current_stack_without_source_paths(tmp_path):
     project_file.apply_template(target, project_file.load_template(str(template)))
     assert target.current_fusion_method() == "dct"
     assert target.fusion_parameters_for("dct")["kernel_size"] == 9
+    assert target.sharpen_output is False
+    assert target.sharpen_strength == 175
     assert target.image_source_paths == new_paths
     assert target.excluded_frames == {1}
     assert target.source_transforms == [{"operation": "flip", "code": 1}]
@@ -286,11 +316,13 @@ def test_template_restores_registration_defaults_and_automatic_threads(tmp_path)
     target = _window(paths, str(tmp_path / 'stack'))
     target.thread_count = 8
     target.set_registration_parameters('openfocus', {'reference_frame': 2})
+    target.sharpen_strength = 175
     project_file.apply_template(target, {'alignment_method': 'openfocus',
                                          'registration_parameters': {'openfocus': {}},
                                          'thread_count': 0})
     assert target.registration_parameters_for('openfocus')['reference_frame'] == 1
     assert target.thread_count == 0
+    assert target.sharpen_strength == 100
 
 
 def test_project_template_extraction_does_not_require_sources(tmp_path):

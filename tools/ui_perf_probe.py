@@ -144,7 +144,7 @@ def _run_probe(app, args, width, height):
         algorithm="synthetic UI probe fixture", parameters={"synthetic": True})
     if context is None:
         raise RuntimeError("Could not build synthetic result context")
-    win.output_manager.update_output_list_for_fusion(context=context)
+    win.output_manager.update_output_list_for_fusion("Synthetic output", context=context)
     if not win.output_manager.display_specific_fusion_result(win.fusion_result):
         raise RuntimeError("Could not display synthetic result")
     app.processEvents()

@@ -27,6 +27,8 @@ from PyQt6.QtWidgets import (
     QComboBox,
     QLineEdit,
     QRadioButton,
+    QSplitter,
+    QTabWidget,
     QCheckBox,
 )
 from ui.styles import PRIMARY_BLUE, _ARROW_DOWN_DARK
@@ -35,11 +37,11 @@ from core.algorithms import (alignment_steps, fusion_algorithms, get_fusion,
     desktop_registration_parameters)
 from ui.algorithm_parameters import AlgorithmParameterPanel
 from ui.algorithm_combo import apply_method_availability, selected_item_enabled
-from core.experimental import (alignment_is_experimental, experimental_enabled,
-                               fusion_is_experimental)
 from locales import trans
-from utils.ui_utils import size_dialog_to_content
+from utils.output_sharpen import DEFAULT_SHARPEN_STRENGTH, MAX_SHARPEN_STRENGTH
 from widgets.stepper import StepperSpinBox
+from widgets.flow_layout import FlowPanel
+from widgets.workspace import WorkspaceSplitter
 
 
 BATCH_PICK_DIR_KEY = "batch/last_pick_dir"
@@ -122,23 +124,23 @@ class BatchProcessingDialog(QDialog):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
 
-        # Everything except the action buttons scrolls. The button bar must
-        # stay reachable no matter how many groups are shown or how short the
-        # screen is.
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-        content = QWidget()
-        layout = QVBoxLayout(content)
-        scroll.setWidget(content)
-        outer.addWidget(scroll, 1)
+        split = WorkspaceSplitter()
+        outer.addWidget(split, 1)
+
+        sources = QWidget()
+        layout = QVBoxLayout(sources)
+        layout.setContentsMargins(14, 10, 10, 10)
+        source_scroll = self._settings_page(sources)
+        split.addWidget(source_scroll)
+
+        settings_tabs = QTabWidget()
+        split.addWidget(settings_tabs)
+        split.setStretchFactor(0, 1)
+        split.setStretchFactor(1, 1)
 
         import_mode_group = QGroupBox(trans.t('batch_import_mode'))
-        # One row: the two modes are a single either/or choice, and stacking
-        # them wasted a whole line of the dialog for no extra clarity. The
-        # stretch keeps them left-aligned instead of spread across the width.
-        import_mode_layout = QHBoxLayout(import_mode_group)
-        import_mode_layout.setSpacing(18)
+        import_mode_layout = QVBoxLayout(import_mode_group)
+        import_mode_layout.setSpacing(6)
 
         self.rb_multiple_folders = QRadioButton(trans.t('batch_mode_multi'))
         self.rb_multiple_folders.setChecked(True)
@@ -148,7 +150,6 @@ class BatchProcessingDialog(QDialog):
         self.rb_single_folder = QRadioButton(trans.t('batch_mode_single'))
         self.rb_single_folder.toggled.connect(self.on_import_mode_changed)
         import_mode_layout.addWidget(self.rb_single_folder)
-        import_mode_layout.addStretch()
         import_mode_group.setSizePolicy(QSizePolicy.Policy.Preferred,
                                         QSizePolicy.Policy.Maximum)
 
@@ -191,11 +192,6 @@ class BatchProcessingDialog(QDialog):
         # non-accepting one lets Qt bubble them up to the dialog's handler.
         self.folder_list.setAcceptDrops(False)
         self.setAcceptDrops(True)
-        # Height follows the content between three and six rows: a fixed
-        # minimum left a large empty block under two queued stacks (the list
-        # was stretched by the scroll page). _fit_folder_list() reapplies it
-        # whenever the list changes.
-        self.folder_list.setMinimumHeight(self._folder_row_height() * 3 + 10)
         self._folder_list_placeholder = QLabel(trans.t('batch_no_folders'))
         self._folder_list_placeholder.setAlignment(
             Qt.AlignmentFlag.AlignCenter)
@@ -226,7 +222,7 @@ class BatchProcessingDialog(QDialog):
         remove_row.addWidget(self.remove_folder_btn)
         folder_layout.addLayout(remove_row)
         
-        layout.addWidget(self.folder_group)
+        layout.addWidget(self.folder_group, 1)
 
         self.single_folder_group = QGroupBox(trans.t('batch_single_split_settings'))
         self.single_folder_group.setVisible(False)
@@ -274,13 +270,9 @@ class BatchProcessingDialog(QDialog):
         single_folder_layout.addWidget(add_single_folder_btn)
 
         layout.addWidget(self.single_folder_group)
+        layout.addStretch()
         
-        # Output settings: format, quality, destination and the aligned-stack
-        # copy all answer one question ("what gets written where?"), so they
-        # live in ONE group. The aligned-stack checkbox used to float loose at
-        # the bottom of the dialog, outside every group, where it read as a
-        # stray option rather than part of the output.
-        output_group = QGroupBox(trans.t('batch_output_group'))
+        output_group = QWidget()
         output_layout = QVBoxLayout(output_group)
 
         format_row = QHBoxLayout()
@@ -367,18 +359,11 @@ class BatchProcessingDialog(QDialog):
         self.save_aligned_note.hide()
         output_layout.addWidget(self.save_aligned_note)
 
-        layout.addWidget(output_group)
 
-        # Batch settings. These used to be read-only labels showing whatever the
-        # main window happened to be set to, so a batch run could not use a
-        # different method, alignment or exposure policy than the last manual
-        # render. Every control below feeds get_processing_settings().
-        self.options_group = QGroupBox(trans.t('batch_proc_options'))
+        self.options_group = QWidget()
         options_layout = QVBoxLayout(self.options_group)
         options_layout.setSpacing(8)
 
-        # --- Method ------------------------------------------------------
-        options_layout.addWidget(_section_rule(trans.t('batch_section_method')))
 
         method_row = QHBoxLayout()
         method_row.addWidget(QLabel(trans.t('group_fusion')))
@@ -417,6 +402,8 @@ class BatchProcessingDialog(QDialog):
             self, hidden_parameters=('failure_policy',))
         options_layout.addWidget(self.fusion_parameter_panel)
         options_layout.addWidget(self.registration_parameter_panel)
+        advanced = QWidget()
+        advanced_layout = QVBoxLayout(advanced)
         self.fusion_parameter_panel.valuesChanged.connect(self._remember_fusion_parameters)
         self.registration_parameter_panel.valuesChanged.connect(self._remember_registration_parameters)
         params = QGridLayout()
@@ -443,13 +430,11 @@ class BatchProcessingDialog(QDialog):
         params.addLayout(scale_row, 4, 1)
         options_layout.addLayout(params)
 
-        # --- Options -----------------------------------------------------
-        options_layout.addWidget(_section_rule(trans.t('batch_section_options')))
 
         self._grouping_pref = False
         self.chk_grouping = QCheckBox(trans.t('batch_group_enable'))
         self.chk_grouping.setToolTip(trans.t('batch_group_hint'))
-        options_layout.addWidget(self.chk_grouping)
+        advanced_layout.addWidget(self.chk_grouping)
         self.group_controls = QWidget()
         group_row = QHBoxLayout(self.group_controls)
         group_row.setContentsMargins(0, 0, 0, 0)
@@ -472,56 +457,65 @@ class BatchProcessingDialog(QDialog):
             lambda value: setattr(self, '_group_overlap_preference', value))
         group_row.addWidget(self.group_overlap_spin)
         group_row.addStretch()
-        options_layout.addWidget(self.group_controls)
+        advanced_layout.addWidget(self.group_controls)
         self.group_controls.hide()
         self.group_note = QLabel()
         self.group_note.setObjectName("mutedLabel")
         self.group_note.setWordWrap(True)
         self.group_note.hide()
-        options_layout.addWidget(self.group_note)
+        advanced_layout.addWidget(self.group_note)
         self.chk_grouping.toggled.connect(self._grouping_changed)
         self.group_size_spin.valueChanged.connect(self._group_size_changed)
 
+        toggles = FlowPanel(h_spacing=14, v_spacing=6)
+        advanced_layout.addWidget(toggles)
 
         self.chk_reverse_order = QCheckBox(trans.t('chk_reverse_order'))
         self.chk_reverse_order.setToolTip(trans.t('chk_reverse_order_hint'))
-        options_layout.addWidget(self.chk_reverse_order)
+        toggles.add(self.chk_reverse_order)
 
         self.chk_exposure_match = QCheckBox(trans.t('chk_exposure_match'))
         self.chk_exposure_match.setChecked(True)
         self.chk_exposure_match.setToolTip(trans.t('chk_exposure_match_hint'))
-        options_layout.addWidget(self.chk_exposure_match)
+        toggles.add(self.chk_exposure_match)
 
         self.chk_base_correct = QCheckBox(trans.t('chk_base_correct'))
         self.chk_base_correct.setToolTip(trans.t('chk_base_correct_hint'))
-        options_layout.addWidget(self.chk_base_correct)
+        toggles.add(self.chk_base_correct)
 
         self.chk_sharpen_output = QCheckBox(trans.t('chk_sharpen_output'))
         self.chk_sharpen_output.setToolTip(trans.t('chk_sharpen_output_hint'))
-        options_layout.addWidget(self.chk_sharpen_output)
+        toggles.add(self.chk_sharpen_output)
+        self.sharpen_strength_spin = QSpinBox()
+        self.sharpen_strength_spin.setRange(0, MAX_SHARPEN_STRENGTH)
+        self.sharpen_strength_spin.setValue(DEFAULT_SHARPEN_STRENGTH)
+        self.sharpen_strength_spin.setSuffix('%')
+        self.sharpen_strength_spin.setKeyboardTracking(False)
+        strength_label = QLabel(trans.t('render_sharpen_strength'))
+        strength_label.setBuddy(self.sharpen_strength_spin)
+        self.sharpen_strength_row = QWidget()
+        strength_row = QHBoxLayout(self.sharpen_strength_row)
+        strength_row.setContentsMargins(20, 0, 0, 0)
+        strength_row.addWidget(strength_label)
+        strength_row.addWidget(self.sharpen_strength_spin)
+        strength_row.addStretch()
+        advanced_layout.addWidget(self.sharpen_strength_row)
+        self.chk_sharpen_output.toggled.connect(self._sync_sharpen_strength)
 
         self.flat_field_group = QWidget()
         flat_row = QHBoxLayout(self.flat_field_group)
         flat_row.setContentsMargins(0, 0, 0, 0)
-        flat_row.addWidget(QLabel(f"{trans.t('dust_from_file')} ({trans.t('experimental_label')})"))
-        self.flat_field_path = QLineEdit()
-        self.flat_field_path.setPlaceholderText(trans.t('dust_no_file'))
-        self.flat_field_path.setToolTip(trans.t('batch_flat_field_hint'))
-        self.flat_field_path.textChanged.connect(self.update_single_folder_preview)
-        flat_row.addWidget(self.flat_field_path, 1)
-        flat_browse = QPushButton(trans.t('dust_browse'))
-        flat_browse.clicked.connect(self._browse_flat_field)
-        flat_row.addWidget(flat_browse)
-        self.flat_field_group.setEnabled(experimental_enabled(self.parent_window))
-        if not experimental_enabled(self.parent_window):
-            self.flat_field_group.setToolTip(trans.t('experimental_locked_hint'))
-        options_layout.addWidget(self.flat_field_group)
+        flat_label = QLabel(f"{trans.t('dust_from_file')} ({trans.t('development_label')})")
+        flat_label.setToolTip(trans.t('development_unavailable_hint'))
+        flat_row.addWidget(flat_label)
+        self.flat_field_group.setEnabled(False)
+        advanced_layout.addWidget(self.flat_field_group)
 
         from ui.sensor_cleanup import SensorCleanupControls
         self.sensor_cleanup = SensorCleanupControls(
             getattr(self.parent_window, 'defect_mask_path', ''),
             getattr(self.parent_window, 'sensor_denoise', False), show_scope=False)
-        options_layout.addWidget(self.sensor_cleanup)
+        advanced_layout.addWidget(self.sensor_cleanup)
         self.sensor_cleanup.path.textChanged.connect(lambda: self.update_single_folder_preview())
         self.finished.connect(lambda _result: self.sensor_cleanup.stop_inspection())
 
@@ -539,16 +533,9 @@ class BatchProcessingDialog(QDialog):
         self._sync_registration_controls()
         self._sync_method_controls()
 
-        # Order the dialog by workflow: pick inputs -> choose how to process
-        # -> decide where the results go. The processing group used to sit
-        # after every output control, so the thing you configure first was
-        # the last thing on the page.
-        layout.insertWidget(layout.indexOf(output_group),
-                            self.options_group)
-        # Leftover page height collects here. Without a stretch the scroll
-        # page stretched the folder group to fill the viewport, leaving a
-        # large empty band inside it below the queued stacks.
-        layout.addStretch()
+        settings_tabs.addTab(self._settings_page(self.options_group), trans.t('batch_section_method'))
+        settings_tabs.addTab(self._settings_page(output_group), trans.t('batch_output_group'))
+        settings_tabs.addTab(self._settings_page(advanced), trans.t('batch_section_options'))
         # 按钮区域
         button_layout = QHBoxLayout()
         button_layout.addStretch()
@@ -592,38 +579,36 @@ class BatchProcessingDialog(QDialog):
                          "rb_custom_folder", "custom_folder_path",
                          "fusion_combo", "align_combo", "chk_reverse_order",
                          "chk_exposure_match", "chk_base_correct", "chk_grouping",
+                         "chk_sharpen_output", "sharpen_strength_spin",
                          "group_size_spin", "group_overlap_spin", "btn_start"):
             _widget = getattr(self, _control, None)
             if _widget is not None:
                 _widget.setProperty("controlId", _control)
-        size_dialog_to_content(self, scroll, preferred_width=800)
+        split.fit_dialog(960, 620)
+
+    @staticmethod
+    def _settings_page(content):
+        page = QScrollArea()
+        page.setFrameShape(QFrame.Shape.NoFrame)
+        page.setWidgetResizable(True)
+        host = QWidget()
+        layout = QVBoxLayout(host)
+        layout.setContentsMargins(0, 0, 4, 0)
+        layout.addWidget(content)
+        layout.addStretch()
+        page.setWidget(host)
+        return page
+
 
     def _fit_folder_list(self) -> None:
-        """Size the list to its rows (3..6) instead of stretching it."""
-        rows = max(3, min(6, self.folder_list.count()))
-        # setFixedHeight first, then relax the minimum: doing it the other way
-        # round the minimum won and the list never grew past three rows.
-        self.folder_list.setMinimumHeight(self._folder_row_height() * 3 + 10)
-        self.folder_list.setFixedHeight(self._folder_row_height() * rows + 10)
+        """Show up to six complete rows, even for paths that scroll sideways."""
+        queue = self.folder_list
+        rows = min(queue.count(), 6)
+        if rows:
+            item_height = sum(queue.sizeHintForRow(row) for row in range(rows))
+            chrome = 2 * queue.frameWidth() + queue.horizontalScrollBar().sizeHint().height()
+            queue.setFixedHeight(item_height + chrome)
 
-    def _folder_row_height(self) -> int:
-        """Height of one folder row, from a real item when there is one.
-
-        The old estimate (icon + 14) was 74 px against an actual 44 px row, so
-        a three-row list reserved nearly two rows of blank space.
-        """
-        if self.folder_list.count():
-            item = self.folder_list.item(0)
-            if item is not None:
-                hint = item.sizeHint()
-                if hint.height() > 0:
-                    return hint.height()
-        # Fall back to the widget's own row metric before the first item.
-        if self.folder_list.count():
-            vh = self.folder_list.visualItemRect(self.folder_list.item(0)).height()
-            if vh > 0:
-                return vh
-        return self.folder_list.iconSize().height() + 14
 
     def _update_folder_placeholder(self) -> None:
         """Show the empty-state hint only while the list has no rows."""
@@ -1055,11 +1040,6 @@ class BatchProcessingDialog(QDialog):
         self.folder_group.setVisible(is_multiple)
         self.single_folder_group.setVisible(not is_multiple)
         
-        # Do NOT pin the dialog to 800 px: on a shorter screen the fixed
-        # height put the button bar off-screen. The scroll area above the
-        # bar already adapts to the available space.
-        self.setMinimumHeight(min(640, self.height()))
-        
         # 初始化质量滑块显示状态
         self.on_format_changed(self.format_combo.currentText())
         # Single-folder mode cannot use grouping; the state is disabled and
@@ -1091,9 +1071,9 @@ class BatchProcessingDialog(QDialog):
     
     def _effective_single_folder_entries(self):
         from utils.path_identity import same_path
-        references = (self.flat_field_path.text().strip(), self.sensor_cleanup.path.text().strip())
+        mask = self.sensor_cleanup.path.text().strip()
         return [entry for entry in self.single_folder_images_with_times
-                if not any(ref and same_path(entry[0], ref) for ref in references)]
+                if not mask or not same_path(entry[0], mask)]
 
     def update_single_folder_preview(self):
         """更新单文件夹预览"""
@@ -1176,12 +1156,6 @@ class BatchProcessingDialog(QDialog):
             return 'count', int(param_value)
         return 'time_threshold', float(param_value)
     
-    def _browse_flat_field(self):
-        path, _ = FileDialog.getOpenFileName(
-            self, trans.t('dust_browse'), '',
-            trans.t('batch_image_filter'))
-        if path:
-            self.flat_field_path.setText(path)
 
     def browse_output_folder(self):
         """浏览输出文件夹"""
@@ -1225,6 +1199,8 @@ class BatchProcessingDialog(QDialog):
         self.align_combo.setCurrentIndex(self.align_combo.findData(alignment))
         self.chk_reverse_order.setChecked(bool(getattr(window, 'stack_reverse_order', False)))
         self.chk_sharpen_output.setChecked(bool(getattr(window, 'sharpen_output', False)))
+        self.sharpen_strength_spin.setValue(
+            getattr(window, 'sharpen_strength', DEFAULT_SHARPEN_STRENGTH))
         getter = getattr(window, 'brightness_option_for', None)
         if callable(getter):
             method = self.fusion_combo.currentData()
@@ -1239,6 +1215,13 @@ class BatchProcessingDialog(QDialog):
                                   ai_available=bool(is_ai_fusion_available()))
         apply_method_availability(self.align_combo, registration_algorithms(), self.parent_window,
                                   alignment=True)
+
+    def _method_lock_reason(self):
+        self._apply_fusion_availability()
+        for combo in (self.fusion_combo, self.align_combo):
+            if not selected_item_enabled(combo):
+                return combo.currentData(Qt.ItemDataRole.ToolTipRole) or trans.t('msg_error')
+        return ''
 
     def _remember_fusion_parameters(self, values):
         self._fusion_drafts[self._editing_method] = dict(values)
@@ -1362,6 +1345,7 @@ class BatchProcessingDialog(QDialog):
             box.setEnabled(not fusion_off)
             box.setToolTip(fusion_only_hint if fusion_off
                            else trans.t(hint_key))
+        self._sync_sharpen_strength()
         locked = bool(spec is not None and spec.order_sensitive)
         self.chk_reverse_order.setEnabled(not fusion_off and not locked)
         if fusion_off:
@@ -1372,6 +1356,10 @@ class BatchProcessingDialog(QDialog):
         else:
             self.chk_reverse_order.setToolTip(
                 trans.t('chk_reverse_order_hint'))
+
+    def _sync_sharpen_strength(self) -> None:
+        self.sharpen_strength_row.setEnabled(
+            self.chk_sharpen_output.isEnabled() and self.chk_sharpen_output.isChecked())
 
     def _sync_method_controls(self) -> None:
         method = self.fusion_combo.currentData()
@@ -1398,14 +1386,9 @@ class BatchProcessingDialog(QDialog):
 
     def get_processing_settings(self):
         """获取处理设置"""
-        for combo in (self.fusion_combo, self.align_combo):
-            if not selected_item_enabled(combo):
-                raise ValueError(combo.currentData(Qt.ItemDataRole.ToolTipRole) or '')
-        if (not experimental_enabled(self.parent_window)
-                and (fusion_is_experimental(self.fusion_combo.currentData())
-                     or alignment_is_experimental(self.align_combo.currentData())
-                     or bool(self.flat_field_path.text().strip()))):
-            raise ValueError(trans.t('experimental_locked_hint'))
+        reason = self._method_lock_reason()
+        if reason:
+            raise ValueError(reason)
         format_str = self.format_combo.currentText().lower()
         
         fusion_method = self.fusion_combo.currentData() or "none"
@@ -1415,6 +1398,7 @@ class BatchProcessingDialog(QDialog):
                                  else 'last') if self.chk_base_correct.isChecked() else 'none'
         runtime['exposure_match'] = self.chk_exposure_match.isChecked()
         runtime['sharpen_output'] = self.chk_sharpen_output.isChecked()
+        runtime['sharpen_strength'] = self.sharpen_strength_spin.value()
         runtime['sort_mode'] = 'desc' if self.chk_reverse_order.isChecked() else 'asc'
 
         align_method = self.align_combo.currentData() or "none"
@@ -1474,7 +1458,6 @@ class BatchProcessingDialog(QDialog):
             "save_aligned": save_aligned,  # 是否保存对齐后的图像栈
             "scale_bar": scale_cfg,
             "watermark": wm_settings,
-            'flat_field_path': self.flat_field_path.text().strip(),
             'defect_mask_path': self.sensor_cleanup.path.text().strip(),
             'sensor_denoise': self.sensor_cleanup.denoise.isChecked(),
             'load_scale_factor': self.load_scale_factor,
@@ -1518,18 +1501,9 @@ class BatchProcessingDialog(QDialog):
     def start_batch_processing(self):
         """开始批处理"""
         from PyQt6.QtWidgets import QMessageBox
-        if (not selected_item_enabled(self.fusion_combo)
-                or not selected_item_enabled(self.align_combo)
-                or (not experimental_enabled(self.parent_window)
-                    and (fusion_is_experimental(self.fusion_combo.currentData())
-                         or alignment_is_experimental(self.align_combo.currentData())
-                         or bool(self.flat_field_path.text().strip())))):
-            for combo in (self.fusion_combo, self.align_combo):
-                if not selected_item_enabled(combo):
-                    QMessageBox.warning(self, trans.t('msg_error'),
-                                        combo.currentData(Qt.ItemDataRole.ToolTipRole))
-                    return
-            QMessageBox.warning(self, trans.t('msg_error'), trans.t('experimental_locked_hint'))
+        reason = self._method_lock_reason()
+        if reason:
+            QMessageBox.warning(self, trans.t('msg_error'), reason)
             return
         sensor_error = self.sensor_cleanup.validate()
         if sensor_error:

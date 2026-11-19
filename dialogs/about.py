@@ -1,27 +1,27 @@
 # dialogs/about.py
 """About and contact information dialogs."""
 
-from http.client import HTTPException
+import json
+import re
 import threading
-import time
-from urllib.parse import urljoin, urlsplit
-from urllib.request import HTTPErrorProcessor, build_opener
+from html import escape
+from unicodedata import category
+from urllib.parse import urlencode, urlsplit
 
-from PyQt6.QtCore import QTimer, Qt
-from PyQt6.QtGui import QFont, QPixmap
+from PyQt6.QtCore import QRectF, QTimer, Qt, QUrl
+from PyQt6.QtGui import QColor, QFont, QImage, QPainter, QPixmap
 from PyQt6.QtWidgets import (
     QDialog,
     QVBoxLayout,
-    QHBoxLayout,
+    QGridLayout,
     QLabel,
-    QScrollArea,
-    QWidget,
+    QSizePolicy,
     QTextEdit,
-    QPushButton,
 )
+from dialogs._community_download import CommunityDownloads
 from locales import trans
-from utils import get_monospace_font_family, resource_path
-from ui.styles import tokens
+from utils import get_monospace_font_family
+from utils.account_client import BASE_URL
 
 
 class _EnvironmentProbe(threading.Thread):
@@ -242,133 +242,149 @@ class EnvironmentInfoDialog(QDialog):
         return "\n".join(summary + [""] + info_lines)
 
 
-class _InviteResponses(HTTPErrorProcessor):
-    # Inspect redirects before urllib follows them or drains their bodies.
-    def http_response(self, request, response):
-        return response
-
-    https_response = http_response
+_EMAIL_LOCAL = re.compile(r'[A-Za-z0-9_+-]+(?:\.[A-Za-z0-9_+-]+)*')
+_DOMAIN_LABEL = r'[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?'
+_EMAIL_DOMAIN = re.compile(rf'{_DOMAIN_LABEL}(?:\.{_DOMAIN_LABEL})+')
+_CONTROL_CATEGORIES = {'Cc', 'Cf', 'Cs'}
 
 
-def _origin(url):
-    parts = urlsplit(url)
-    port = parts.port if parts.port is not None else (443 if parts.scheme == 'https' else 80)
-    return parts.scheme, parts.hostname, port
+def _published_emails(value):
+    if not isinstance(value, list) or len(value) > 8:
+        return
+    seen = set()
+    for address in value:
+        if not isinstance(address, str) or len(address) > 254:
+            continue
+        local, _, domain = address.partition('@')
+        if len(local) > 64 or not _EMAIL_LOCAL.fullmatch(local) or not _EMAIL_DOMAIN.fullmatch(domain):
+            continue
+        key = address.lower()
+        if key not in seen:
+            seen.add(key)
+            yield address
 
 
-class _WechatInviteDownload(threading.Thread):
-    """Own the network connection entirely off the GUI thread, including close."""
+def _published_link(value, *hosts):
+    if not isinstance(value, str) or not value:
+        return ''
+    if any(char.isspace() or char in '\\<>"`{}|^' or category(char) in _CONTROL_CATEGORIES
+           for char in value):
+        return ''
+    try:
+        parsed = urlsplit(value)
+    except ValueError:
+        return ''
+    authority = parsed.netloc.lower().removesuffix(':443')
+    if parsed.scheme != 'https' or not parsed.netloc.isascii() or authority not in hosts:
+        return ''
+    url = QUrl(value, QUrl.ParsingMode.StrictMode)
+    if not url.isValid():
+        return ''
+    normalized = url.adjusted(QUrl.UrlFormattingOption.NormalizePathSegments)
+    path = normalized.path(QUrl.ComponentFormattingOption.FullyEncoded)
+    if not path or path == '/':
+        return ''
+    if authority == 'discord.com' and not re.fullmatch(r'/invite/[^/]+', path):
+        return ''
+    return value
 
-    def __init__(self, url, timeout_ms, max_bytes):
-        super().__init__(name='wechat-invite-download', daemon=True)
-        self.url = url
-        self.deadline = time.monotonic() + timeout_ms / 1000
-        self.max_bytes = max_bytes
-        self.cancelled = threading.Event()
-        self.png = None
 
-    def run(self):
-        try:
-            opener = build_opener(_InviteResponses())
-            url = self.url
-            for _ in range(11):  # Initial request plus at most ten redirects.
-                remaining = self.deadline - time.monotonic()
-                if self.cancelled.is_set() or remaining <= 0:
-                    return
-                with opener.open(url, timeout=remaining) as reply:
-                    if reply.status == 200:
-                        self._read_png(reply)
-                        return
-                    location = reply.headers.get('Location')
-                    if reply.status not in (301, 302, 303, 307, 308) or not location:
-                        return
-                    url = urljoin(url, location)
-                    if _origin(url) != _origin(self.url):
-                        return
-        except (OSError, HTTPException, ValueError):
-            pass  # The dialog already displays the offline invite.
+def _discord_qr_pixmap(invite, size, ratio):
+    import cv2
+    from PyQt6.QtSvg import QSvgRenderer
+    from utils import resource_path
 
-    def _read_png(self, reply):
-        data = bytearray()
-        while not self.cancelled.is_set() and time.monotonic() < self.deadline:
-            chunk = reply.read1(self.max_bytes + 1 - len(data))
-            if not chunk:
-                if not reply.length and time.monotonic() < self.deadline:
-                    self.png = bytes(data)
-                return
-            data.extend(chunk)
-            if len(data) > self.max_bytes:
-                return
+    params = cv2.QRCodeEncoder_Params()
+    params.correction_level = cv2.QRCodeEncoder_CORRECT_LEVEL_H
+    try:
+        encoded = cv2.QRCodeEncoder_create(params).encode(invite)
+    except cv2.error:
+        return None
+
+    # Replace OpenCV's two-module border with a four-module white quiet zone.
+    modules = cv2.copyMakeBorder(encoded[2:-2, 2:-2], 4, 4, 4, 4,
+                                 cv2.BORDER_CONSTANT, value=255)
+    scale = int(size * ratio) // modules.shape[0]
+    if not scale:
+        return None
+    side = modules.shape[0] * scale
+    pixels = cv2.resize(modules, (side, side), interpolation=cv2.INTER_NEAREST)
+    pixmap = QPixmap.fromImage(QImage(pixels.data, side, side, pixels.strides[0],
+                                      QImage.Format.Format_Grayscale8))
+
+    mark = QSvgRenderer(resource_path('assets', 'discord.svg'))
+    if not mark.isValid():
+        return None
+    # Cover only the five center modules and keep the official 4:3 proportions.
+    center = side / 2
+    inset = center - 2.5 * scale
+    painter = QPainter(pixmap)
+    painter.fillRect(QRectF(inset, inset, 5 * scale, 5 * scale), QColor('#5865F2'))
+    mark.render(painter, QRectF(center - 2 * scale, center - 1.5 * scale,
+                                4 * scale, 3 * scale))
+    painter.end()
+    pixmap.setDevicePixelRatio(ratio)
+    return pixmap
 
 
 class ContactInfoDialog(QDialog):
-    """Show contact links and refresh the WeChat invite from the website."""
+    """Show the current contact links and community codes from the account service."""
 
-    _WECHAT_URL = "https://openfocus.top/wechat-group.png"
-    _WECHAT_TIMEOUT_MS = 4000
-    _WECHAT_MAX_BYTES = 512 * 1024
+    _CONTACT_INFO_URL = f'{BASE_URL}/v1/contact-info'
+    _MAX_CONTACT_INFO_BYTES = 32 * 1024
+    _DISCORD_QR_SIZE = 152
 
     def __init__(self, parent=None):
-        contact_text = f"""
-        <h3>{trans.t('contact_info_title')}</h3>
-        
-    <p>{trans.t('contact_email')}: xiexinzhe@zju.edu.cn</p>
-    <p>{trans.t('contact_institution')}: {trans.t('contact_zju')}</p>
-    <p>{trans.t('contact_github')}: <a href="https://github.com/Xinzhe99/OpenFocus">https://github.com/Xinzhe99/OpenFocus</a></p>
-    <p>Discord: <a href="https://discord.gg/afzmwgPt">https://discord.gg/afzmwgPt</a></p>
-    <p>{trans.t('contact_welcome')}</p>"""
-        
+        from ._community_layout import add_published_qr, community_body, community_card, community_label
+
         super().__init__(parent)
-        self.setWindowTitle(trans.t('dialog_contact_title'))
-        self.resize(500, 620)
+        self._contact_cards = QGridLayout()
+        self._contact_columns = 0
+        title = trans.t('dialog_contact_title')
+        self.setWindowTitle(title)
+        body = community_body(self, title, trans.t('contact_welcome'), width=820, height=470)
 
-        layout = QVBoxLayout(self)
+        self._contact_cards.setSpacing(body.spacing())
+        body.addLayout(self._contact_cards)
+        body.addStretch()
 
-        from PyQt6.QtWidgets import QTextBrowser
-        from PyQt6.QtGui import QTextOption
+        contact_card, contact = community_card()
+        self._cards = [contact_card]
+        contact.addWidget(community_label(trans.t('contact_info_title'), 'section'))
+        self._contact_status = community_label(trans.t('contact_details_loading'), 'muted')
+        contact.addWidget(self._contact_status)
+        self._contact_details = QVBoxLayout()
+        self._contact_details.setSpacing(contact.spacing())
+        contact.addLayout(self._contact_details)
+        contact.addStretch()
 
-        self._contact_html = contact_text
-        self.text_browser = QTextBrowser()
-        self.text_browser.setOpenExternalLinks(True)
-        self.text_browser.setWordWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
-        layout.addWidget(self.text_browser)
+        discord_card, self._discord = community_card()
+        self._cards.append(discord_card)
+        self._discord_heading = community_label(trans.t('contact_discord_title'), 'section')
+        self._discord_heading.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._discord.addWidget(self._discord_heading)
+        self._discord_qr = QLabel()
+        self._discord_qr.setObjectName('discord-invite')
+        self._discord_qr.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._discord_qr.setStyleSheet('background: white;')
+        self._discord_qr.setFixedSize(self._DISCORD_QR_SIZE, self._DISCORD_QR_SIZE)
+        self._discord_qr.hide()
+        self._discord.addWidget(self._discord_qr, alignment=Qt.AlignmentFlag.AlignHCenter)
+        self._discord_status = community_label('', 'muted')
+        self._discord_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._discord.addWidget(self._discord_status)
+        self._discord.addStretch()
+        self._discord_link = None
 
-        self._wechat_qr = QLabel()
-        self._wechat_qr.setAccessibleName(trans.t('contact_wechat_group'))
-        self._wechat_qr.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._wechat_qr.setFixedSize(320, 324)
-        self._wechat_qr.setStyleSheet('background: white;')
-        layout.addWidget(self._wechat_qr, alignment=Qt.AlignmentFlag.AlignHCenter)
-
-        self._wechat_status = QLabel(trans.t('contact_wechat_loading'))
-        self._wechat_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._wechat_status.setWordWrap(True)
-        layout.addWidget(self._wechat_status)
-
-        self._wechat_link = QLabel()
-        self._wechat_link.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._wechat_link.setOpenExternalLinks(True)
-        layout.addWidget(self._wechat_link)
-        self.apply_theme(getattr(parent, 'ui_theme', None))
-
-        bundled = QPixmap(resource_path('assets', 'readme', 'wechat-group.png'))
-        if bundled.isNull():
-            self._wechat_qr.hide()
-        else:
-            self._show_wechat_qr(bundled)
-
-        self._wechat_refresh = _WechatInviteDownload(
-            self._WECHAT_URL, self._WECHAT_TIMEOUT_MS, self._WECHAT_MAX_BYTES)
-        self.destroyed.connect(self._wechat_refresh.cancelled.set)
-        self._wechat_timer = QTimer(self)
-        self._wechat_timer.timeout.connect(self._poll_wechat_invite)
-        self._wechat_refresh.start()
-        self._wechat_timer.start(50)
-
-        # 关闭按钮
-        close_btn = QPushButton(trans.t('btn_close'))
-        close_btn.clicked.connect(self.accept)
-        layout.addWidget(close_btn)
+        self._requests = CommunityDownloads(self)
+        self._contact_request = 0
+        for slot, label in (('wechat-group', 'contact_wechat_title'),
+                            ('wechat-official-account', 'contact_wechat_official')):
+            card, column = community_card()
+            self._cards.append(card)
+            add_published_qr(self, column, self._requests, trans.t(label), slot, 144)
+            column.addStretch()
+        self._arrange_contact_cards(self.width())
 
         # 居中显示
         if parent:
@@ -377,101 +393,120 @@ class ContactInfoDialog(QDialog):
                 parent.y() + parent.height() // 2 - self.height() // 2,
             )
 
-    def apply_theme(self, theme: str | None) -> None:
-        link = tokens(theme)['link']
-        scrollbar = self.text_browser.verticalScrollBar()
-        scroll_position = scrollbar.value()
-        self.text_browser.setHtml(f'<style>a {{ color: {link}; }}</style>{self._contact_html}')
-        scrollbar.setValue(scroll_position)
-        self._wechat_link.setText(f'<a style="color: {link};" href="{self._WECHAT_URL}">'
-                                  f'{trans.t("contact_wechat_group")}</a>')
-
-    def _show_wechat_qr(self, original):
-        ratio = self.devicePixelRatioF()
-        pixmap = original.scaled(
-            round(self._wechat_qr.width() * ratio), round(self._wechat_qr.height() * ratio),
-            Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.FastTransformation,
-        )
-        pixmap.setDevicePixelRatio(ratio)
-        self._wechat_qr.setPixmap(pixmap)
-        self._wechat_qr.show()
-
-    def _poll_wechat_invite(self):
-        refresh = self._wechat_refresh
-        pending = refresh.is_alive()
-        if pending and time.monotonic() < refresh.deadline:
+    def showEvent(self, event):
+        super().showEvent(event)
+        if event.spontaneous():
             return
-        self._wechat_timer.stop()
-        self._wechat_refresh = None
-        image = QPixmap()
-        if pending:
-            refresh.cancelled.set()
-        elif refresh.png:
-            image.loadFromData(refresh.png, 'PNG')
-        if image.isNull():
-            has_fallback = not self._wechat_qr.isHidden()
-            key = 'contact_wechat_bundled' if has_fallback else 'contact_wechat_unavailable'
-            self._wechat_status.setText(trans.t(key))
+        while self._contact_details.count():
+            widget = self._contact_details.takeAt(0).widget()
+            widget.hide()
+            widget.deleteLater()
+        self._contact_status.setText(trans.t('contact_details_loading'))
+        self._contact_status.show()
+        self._discord_heading.setText(trans.t('contact_discord_title'))
+        self._discord_qr.setAccessibleName(self._discord_heading.text())
+        self._discord_qr.clear()
+        self._discord_qr.hide()
+        if self._discord_link is not None:
+            self._discord.removeWidget(self._discord_link)
+            self._discord_link.hide()
+            self._discord_link.deleteLater()
+            self._discord_link = None
+        self._discord_status.setText(trans.t('contact_discord_loading'))
+        self._discord_status.show()
+        self._contact_request += 1
+        request = self._contact_request
+        query = urlencode({'lang': trans.current_lang})
+        self._requests.get(f'{self._CONTACT_INFO_URL}?{query}', 'application/json',
+                           self._MAX_CONTACT_INFO_BYTES,
+                           lambda status, data: self._contact_finished(request, status, data))
+
+    def _contact_finished(self, request, status, data):
+        from ._community_layout import community_label, community_link
+
+        if request != self._contact_request:
+            return
+        payload = None
+        if status == 200 and data is not None:
+            try:
+                payload = json.loads(data.decode('utf-8'))
+            except (ValueError, RecursionError):
+                pass
+        if not isinstance(payload, dict):
+            self._contact_status.setText(trans.t('contact_details_unavailable'))
+            self._discord_status.setText(trans.t('contact_discord_unavailable'))
+            return
+
+        emails = list(_published_emails(payload.get('emails')))
+        if emails:
+            self._contact_details.addWidget(community_label(trans.t('contact_email'), 'muted'))
+            for address in emails:
+                link = community_link(self, address, f'mailto:{address}')
+                self._add_detail(link, address)
+
+        institution = payload.get('institution')
+        if (isinstance(institution, str) and 1 <= len(institution) <= 120 and institution.strip()
+                and not any(category(char) in _CONTROL_CATEGORIES or char in '\u2028\u2029'
+                            for char in institution)):
+            self._contact_details.addWidget(community_label(trans.t('contact_institution'), 'muted'))
+            label = community_label(institution)
+            label.setObjectName('contactInstitution')
+            self._add_detail(label, institution)
+
+        github = _published_link(payload.get('github_url'), 'github.com')
+        discord = _published_link(payload.get('discord_url'), 'discord.gg', 'discord.com')
+        if github or discord:
+            self._contact_details.addWidget(community_label(trans.t('contact_community_links'), 'section'))
+        if github:
+            self._contact_details.addWidget(community_link(self, trans.t('contact_github'), github))
+        if discord:
+            self._contact_details.addWidget(community_link(self, 'Discord', discord))
+
+        self._show_discord_invite(discord)
+        if self._contact_details.count():
+            self._contact_status.hide()
         else:
-            self._show_wechat_qr(image)
-            self._wechat_status.hide()
+            self._contact_status.setText(trans.t('contact_details_empty'))
 
-    def done(self, result):
-        self._wechat_timer.stop()
-        if self._wechat_refresh is not None:
-            self._wechat_refresh.cancelled.set()
-            self._wechat_refresh = None
-        super().done(result)
+    def _show_discord_invite(self, invite):
+        from ._community_layout import community_link
 
+        if not invite:
+            self._discord_status.setText(trans.t('contact_discord_unpublished'))
+            return
+        self._discord_link = community_link(self, trans.t('contact_discord_join'), invite)
+        self._discord_link.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._discord.insertWidget(self._discord.count() - 1, self._discord_link)
+        self._discord_link.show()
+        pixmap = _discord_qr_pixmap(invite, self._DISCORD_QR_SIZE, self._discord_qr.devicePixelRatioF())
+        if pixmap is None:
+            self._discord_status.setText(trans.t('contact_discord_qr_unavailable'))
+            return
+        self._discord_qr.setPixmap(pixmap)
+        self._discord_qr.show()
+        self._discord_status.hide()
 
-class _SupportCode(QLabel):
-    """Scale the original payment image for the available logical size."""
-
-    def __init__(self, filename):
-        super().__init__()
-        self._original = QPixmap(resource_path('assets', 'readme', filename))
-        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.setMinimumSize(130, 160)
-        self.setStyleSheet('background: white;')
+    def _add_detail(self, label, value):
+        # Long addresses and institution names must not set the cards' minimum width.
+        policy = label.sizePolicy()
+        policy.setHorizontalPolicy(QSizePolicy.Policy.Ignored)
+        label.setSizePolicy(policy)
+        label.setToolTip(f'<qt>{escape(value)}</qt>')
+        self._contact_details.addWidget(label)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        ratio = self.devicePixelRatioF()
-        pixmap = self._original.scaled(
-            round(self.width() * ratio), round(self.height() * ratio),
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation)
-        pixmap.setDevicePixelRatio(ratio)
-        self.setPixmap(pixmap)
+        self._arrange_contact_cards(event.size().width())
 
-
-class SupportUsDialog(QDialog):
-    """Display the project's payment codes and acknowledgment information."""
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle(trans.t('support_title'))
-        self.resize(640, 600)
-        layout = QVBoxLayout(self)
-        scroll = QScrollArea(self)
-        scroll.setWidgetResizable(True)
-        content = QWidget()
-        body = QVBoxLayout(content)
-        message = QLabel(trans.t('support_message'))
-        message.setWordWrap(True)
-        body.addWidget(message)
-        codes = QHBoxLayout()
-        for title, filename in (('Alipay', 'alipay-coffee.jpg'),
-                                ('PayPal', 'paypal-coffee.png')):
-            column = QVBoxLayout()
-            label = QLabel(title)
-            label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            column.addWidget(label)
-            column.addWidget(_SupportCode(filename), 1)
-            codes.addLayout(column, 1)
-        body.addLayout(codes, 1)
-        scroll.setWidget(content)
-        layout.addWidget(scroll, 1)
-        close_btn = QPushButton(trans.t('btn_close'))
-        close_btn.clicked.connect(self.accept)
-        layout.addWidget(close_btn)
+    def _arrange_contact_cards(self, width):
+        columns = 4 if width >= 820 else 2 if width >= 500 else 1
+        if self._contact_columns == columns:
+            return
+        self._contact_columns = columns
+        for card in self._cards:
+            self._contact_cards.removeWidget(card)
+        for index, card in enumerate(self._cards):
+            row, column = divmod(index, columns)
+            self._contact_cards.addWidget(card, row, column)
+        for column in range(len(self._cards)):
+            self._contact_cards.setColumnStretch(column, int(column < columns))

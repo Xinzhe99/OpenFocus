@@ -33,6 +33,7 @@ from core.algorithms import (
 )
 from locales import trans
 from utils.logging_setup import get_logger
+from utils.output_sharpen import DEFAULT_SHARPEN_STRENGTH
 
 _log = get_logger(__name__)
 MAX_MOUSE_STEPS = 1024
@@ -686,13 +687,18 @@ class ControlServer(QObject):
         import platform
         import sys
         from importlib.util import find_spec
+        from ui.algorithm_combo import desktop_fusion_lock_reason, fusion_label
 
         methods = []
         for spec in fusion_algorithms():
+            reason = desktop_fusion_lock_reason(self.window, spec.id)
             methods.append({
                 "id": spec.id,
-                "label": trans.t(spec.label_key),
+                "label": fusion_label(spec),
                 "category": spec.category,
+                "experimental": spec.experimental,
+                "available": not reason,
+                "unavailable_reason": reason or None,
                 "neural": spec.neural,
                 "order_sensitive": spec.order_sensitive,
                 "depth_map": spec.depth is not None,
@@ -726,13 +732,14 @@ class ControlServer(QObject):
     def _cmd_app_state(self, args):
         window = self.window
         from utils.logging_setup import debug_enabled
+        from ui.algorithm_combo import desktop_fusion_lock_reason, fusion_label
         method = window.current_fusion_method()
         alignment = window.current_alignment_method()
         return {
             "stack": _stack_info(window),
             "method": {"id": method,
-                       "label": trans.t(get_fusion(method).label_key)
-                       if method != "none" else "none",
+                       "label": fusion_label(get_fusion(method)) if method != "none" else "none",
+                       "unavailable_reason": desktop_fusion_lock_reason(window, method) or None,
                        "parameters": window.fusion_parameters_for(method)},
             "alignment": {"id": alignment,
                           "parameters": window.registration_parameters_for(alignment)},
@@ -740,6 +747,8 @@ class ControlServer(QObject):
                 "base_correct": bool(window.chk_base_correct.isChecked()),
                 "exposure_match": bool(window.chk_exposure_match.isChecked()),
                 "reverse_order": bool(getattr(window, "stack_reverse_order", False)),
+                "sharpen_output": bool(getattr(window, "sharpen_output", False)),
+                "sharpen_strength": getattr(window, "sharpen_strength", DEFAULT_SHARPEN_STRENGTH),
                 "preview": bool(window.chk_quick_preview.isChecked()),
                 "thread_count": int(getattr(window, "thread_count", 0)),
                 "use_gpu": bool(getattr(window, "use_gpu", False)),
@@ -880,15 +889,19 @@ class ControlServer(QObject):
                 "parameters": self.window.registration_parameters_for(method)}
 
     def _validate_method_selection(self, method, args, *, fusion):
-        from core.experimental import (alignment_is_experimental, experimental_enabled,
-                                       fusion_is_experimental)
+        from core.experimental import alignment_is_experimental, experimental_enabled
+        from ui.algorithm_combo import desktop_fusion_lock_reason
         window = self.window
-        experimental = fusion_is_experimental if fusion else alignment_is_experimental
-        if (hasattr(window, 'experimental_features') and not experimental_enabled(window)
-                and experimental(method) and not getattr(window, '_restore_depth', 0)):
+        if (not fusion and hasattr(window, 'experimental_features')
+                and not experimental_enabled(window) and alignment_is_experimental(method)
+                and not getattr(window, '_restore_depth', 0)):
             raise ValueError(trans.t('experimental_locked_hint'))
-        if method != "none":
-            (get_fusion if fusion else get_registration)(method)
+        if fusion:
+            reason = desktop_fusion_lock_reason(window, method)
+            if reason:
+                raise ValueError(reason)
+        elif method != 'none':
+            get_registration(method)
         combo = window.combo_fusion if fusion else window.combo_align
         if combo.findData(method) < 0:
             kind = "Fusion" if fusion else "Registration"
@@ -914,7 +927,8 @@ class ControlServer(QObject):
         name = _string(args, "name")
         window = self.window
         boolean_options = {"base_correct", "exposure_match", "reverse_order", "use_gpu",
-                           "tile_enabled", "preview", "profile_performance", "debug_logging"}
+                           "sharpen_output", "tile_enabled", "preview", "profile_performance",
+                           "debug_logging"}
         integer_options = {"thread_count": 0, "tile_block_size": 64, "tile_overlap": 0,
                            "tile_threshold": 1, "ai_batch_size": 1, "reg_downscale_width": 64}
         if "value" not in args:
@@ -923,6 +937,9 @@ class ControlServer(QObject):
             value = _boolean(args, "value", required=True)
         elif name in integer_options:
             value = _integer(args, "value", required=True, minimum=integer_options[name])
+        elif name == "sharpen_strength":
+            window.set_sharpen_strength(args["value"])
+            return {"name": name, "value": window.sharpen_strength}
         elif name == "resource_preference":
             value = _string(args, "value", choices=("balanced", "responsive", "maximum"))
         elif name == "storage_directory":
@@ -949,6 +966,9 @@ class ControlServer(QObject):
                 checkbox.setChecked(value)
                 checkbox.blockSignals(blocked)
             value = window.stack_reverse_order
+        elif name == "sharpen_output":
+            window.chk_sharpen_output.setChecked(value)
+            return {"name": name, "value": window.sharpen_output}
         elif name == "use_gpu":
             window.set_use_gpu(value)
             value = window.use_gpu
@@ -1406,12 +1426,8 @@ class ControlServer(QObject):
         elif name == "scalebar":
             from dialogs.scalebar import ScaleBarDialog
             dialog = ScaleBarDialog(window)
-        elif name == "dust":
-            from core.experimental import experimental_enabled
-            if not experimental_enabled(window):
-                raise ControlError('invalid_argument', trans.t('experimental_locked_hint'))
-            from dialogs.dustmap import DustMapDialog
-            dialog = DustMapDialog(window)
+        elif name in ('dust', 'mosaic'):
+            raise ControlError('invalid_argument', trans.t('development_unavailable_hint'))
         elif name == "retouch":
             dialog = self._retouch_dialog()
         elif name == "welcome":

@@ -360,6 +360,7 @@ def test_new_method_project_file_roundtrip(tmp_path, extra_methods):
     source = tmp_path / "源图.png"
     source.write_bytes(b"reference")
     saved = project_window([str(source)], str(tmp_path))
+    saved.experimental_features = True
     saved.set_fusion_method("memory_extra")
     saved.set_alignment_method("memory_align")
     saved.set_fusion_parameters("memory_extra", {"gain": 1.75, "selection": "last"})

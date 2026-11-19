@@ -149,13 +149,17 @@ def test_main_selector_explains_missing_dtcwt(qapp, monkeypatch):
     combo = QComboBox()
     algorithm_combo.fill_fusion_combo(combo)
     host = SimpleNamespace(combo_fusion=combo, combo_align=QComboBox(),
-                           _stackmff_available=True, experimental_features=True)
+                           _stackmff_available=True, experimental_features=False)
     monkeypatch.setattr(algorithm_combo, '_package_available', lambda _name: False)
     main.OpenFocus.refresh_method_availability(host)
     index = combo.findData('dtcwt')
     assert not combo.model().item(index).isEnabled()
     assert trans.t('env_dtcwt_unavailable') in combo.itemData(index, Qt.ItemDataRole.ToolTipRole)
+    assert trans.t('experimental_locked_hint') in combo.itemData(index, Qt.ItemDataRole.ToolTipRole)
     monkeypatch.setattr(algorithm_combo, '_package_available', lambda _name: True)
+    main.OpenFocus.refresh_method_availability(host)
+    assert not combo.model().item(index).isEnabled()
+    host.experimental_features = True
     main.OpenFocus.refresh_method_availability(host)
     assert combo.model().item(index).isEnabled()
     assert combo.itemData(index, Qt.ItemDataRole.ToolTipRole) == trans.t('radio_dtcwt_hint')
@@ -211,7 +215,7 @@ def test_alignment_only_disables_fusion_only_options(qapp):
     assert not host.chk_base_correct.isEnabled()
     assert not host.chk_sharpen_output.isEnabled()
     assert not host.chk_reverse_order.isEnabled()
-    assert not host.chk_exposure_match.isEnabled()
+    assert host.chk_exposure_match.isEnabled()
     assert _t.t("radio_no_fusion_hint") in host.chk_base_correct.toolTip()
     assert _t.t("radio_no_fusion_hint") in host.chk_reverse_order.toolTip()
 
@@ -486,7 +490,7 @@ def test_first_run_theme_is_light():
     from utils.settings_store import DEFAULT_THEME, _PERSISTED_FIELDS
 
     assert DEFAULT_THEME == "light"
-    assert _PERSISTED_FIELDS["ui_theme"][1] == "light"
+    assert _PERSISTED_FIELDS['theme_mode'][1] == 'light'
 
 
 def test_batch_dialog_offers_real_method_choices(qapp):
@@ -729,38 +733,27 @@ def test_stepper_mouse_buttons_respect_bounds(qapp):
     spin.deleteLater()
 
 
-def test_batch_groups_follow_the_workflow_order(qapp):
-    """Inputs -> processing -> output, with the aligned-stack option inside
-    the output group.
-
-    The processing group used to be added after every output control, and the
-    "save aligned stack" checkbox floated loose at the bottom outside all
-    groups, so the dialog read as a flat list with no categories.
-    """
-    from PyQt6.QtWidgets import QGroupBox
+def test_batch_queue_stays_visible_when_switching_from_method_to_output(qapp):
+    from PyQt6.QtWidgets import QTabWidget
 
     from dialogs.batch import BatchProcessingDialog
+    from locales import trans
 
     dlg = BatchProcessingDialog(None)
     try:
-        titles = []
-        for g in dlg.findChildren(QGroupBox):
-            titles.append(g.title())
-        assert len(titles) >= 4, titles
-        # The processing group must come before the output group.
-        # Compare positions in the scroll content, not the outer layout.
-        content = dlg.options_group.parentWidget()
-        lay = content.layout()
-        proc = lay.indexOf(dlg.options_group)
-        out_group = dlg.save_aligned_cb.parentWidget()
-        out = lay.indexOf(out_group)
-        assert proc >= 0 and out >= 0, (proc, out)
-        assert proc < out, f"processing must precede output, got {titles}"
+        dlg.show()
+        qapp.processEvents()
+        tabs = dlg.findChild(QTabWidget)
+        assert tabs.tabText(tabs.currentIndex()) == trans.t('batch_section_method')
+        assert dlg.fusion_combo.isVisible() and dlg.path_input.isVisible()
+        assert not dlg.save_aligned_cb.isVisible()
 
-        # The aligned-stack checkbox lives inside the output group.
-        out_group = dlg.save_aligned_cb.parentWidget()
-        assert isinstance(out_group, QGroupBox)
-        assert out_group is not dlg.options_group
+        output = next(i for i in range(tabs.count())
+                      if tabs.tabText(i) == trans.t('batch_output_group'))
+        assert output > tabs.currentIndex()
+        tabs.setCurrentIndex(output)
+        assert dlg.save_aligned_cb.isVisible() and dlg.path_input.isVisible()
+        assert not dlg.fusion_combo.isVisible()
     finally:
         dlg.deleteLater()
 
@@ -953,17 +946,38 @@ def test_folder_picker_keeps_only_qt_places(qapp, tmp_path, monkeypatch):
         dlg.deleteLater()
 
 
-def test_folder_list_shows_at_least_three_rows(qapp):
-    """The queued-stack list must not collapse to a single clipped row."""
+def test_folder_list_fits_three_queued_stacks(qapp, tmp_path):
+    from time import monotonic
+
+    import cv2
+    import numpy as np
+    from PyQt6.QtTest import QTest
+
     from dialogs.batch import BatchProcessingDialog
 
+    folders = [tmp_path / f'stack-{i}' for i in range(3)]
+    ok, pixels = cv2.imencode('.png', np.full((50, 60, 3), 90, np.uint8))
+    assert ok
+    for folder in folders:
+        folder.mkdir()
+        pixels.tofile(folder / 'frame.png')
     dlg = BatchProcessingDialog(None)
     try:
-        needed = dlg._folder_row_height() * 3
-        assert dlg.folder_list.minimumHeight() >= needed, (
-            f"min height {dlg.folder_list.minimumHeight()} < 3 rows "
-            f"({needed}px)")
+        dlg.show()
+        dlg.add_folders_to_list([str(folder) for folder in folders])
+        qapp.processEvents()
+        queue = dlg.folder_list
+        assert queue.isVisible()
+        assert [queue.item(i).text().split('\n')[0] for i in range(3)] == [
+            folder.name for folder in folders]
+        deadline = monotonic() + 5
+        while any(queue.item(i).icon().isNull() for i in range(3)) and monotonic() < deadline:
+            QTest.qWait(10)
+        assert all(not queue.item(i).icon().isNull() for i in range(3))
+        last_row = queue.visualItemRect(queue.item(2))
+        assert 0 <= last_row.top() <= last_row.bottom() <= queue.viewport().rect().bottom()
     finally:
+        dlg.reject()
         dlg.deleteLater()
 
 

@@ -3,7 +3,7 @@ from copy import copy
 
 import numpy as np
 
-from PyQt6.QtCore import QEventLoop, QThread, QTimer, Qt
+from PyQt6.QtCore import QEventLoop, QThread, QTimer, Qt, pyqtSlot
 from PyQt6.QtWidgets import QApplication, QDialog, QLabel, QVBoxLayout, QWidget
 
 from utils.platform_utils import configure_native_worker_stack
@@ -37,44 +37,94 @@ PREVIEW_MAX_SIDE = 1200
 
 
 class BoundedPreviewWorker(QThread):
-    """Resolve and develop one fit preview under the shared memory admission."""
+    """Develop available fit pixels in the bounded preview lane."""
 
-    def __init__(self, frame, metadata, key, *, preserve_alpha=False):
+    def __init__(self, frame, metadata, key, *, preserve_alpha=False, edge=PREVIEW_MAX_SIDE):
         super().__init__()
         configure_native_worker_stack(self)
         self.frame, self.metadata, self.key = frame, metadata, key
         self.preserve_alpha = preserve_alpha
+        self.edge = edge
         self.pixels = None
         self.error = None
 
-    def run(self):
-        from core.resource_policy import heavy_job
-        from core.source_frames import ProcessedFrame, ensure_preview
+    @pyqtSlot()
+    def request_cancel(self):
+        self.requestInterruption()
+
+    def _available(self, cancelled):
+        from core.aligned_previews import registered_preview
+        from core.resource_policy import require_memory
+        from core.source_frames import (ProcessedFrame, RetainedFrame, SourceFrame,
+                                        ensure_preview, resolve_frame, validate_frame_source)
+        from core.source_previews import _PREVIEW_WORKING_BYTES
+
+        frame = self.frame
+        if isinstance(frame, np.ndarray):
+            return frame, False
+        if isinstance(frame, SourceFrame) and (frame.preview is None or not frame.preview_is_available):
+            pixels = frame.cached_pixels()
+            return (pixels, False) if pixels is not None else None
+        require_memory(_PREVIEW_WORKING_BYTES)
+        if isinstance(frame, SourceFrame):
+            return ensure_preview(frame, should_cancel=cancelled), frame.preview_is_display
+        if isinstance(frame, ProcessedFrame):
+            validate_frame_source(frame)
+            registered = registered_preview(frame, cancelled, captured_only=True, edge=self.edge)
+            if registered is not None:
+                return registered
+        if isinstance(frame, RetainedFrame):
+            return resolve_frame(frame, should_cancel=cancelled), False
+        return None
+
+    def _render(self, pixels, is_display):
         from core.source_previews import render_source_region
 
+        if self.isInterruptionRequested():
+            return
+        height, width = pixels.shape[:2]
+        scale = min(1.0, self.edge / max(width, height))
+        metadata = (self.metadata if not is_display
+                    and pixels.dtype == np.uint16 and pixels.ndim == 3
+                    and pixels.shape[2] == 3 else None)
+        self.pixels, _ = render_source_region(
+            pixels, (0, 0, width, height),
+            (max(1, round(width * scale) - 2), max(1, round(height * scale) - 2)),
+            metadata, preserve_alpha=self.preserve_alpha)
+
+    def run(self):
+        from core.aligned_previews import registered_preview
+        from core.resource_policy import ResourceLimitError, heavy_job
+        from core.source_frames import ProcessedFrame, ensure_display_preview
+        from core.source_previews import _acquire_preview_turn, _release_preview_turn
+
+        cancelled = self.isInterruptionRequested
         try:
-            with heavy_job(self.isInterruptionRequested):
-                registered = None
-                if isinstance(self.frame, ProcessedFrame):
-                    from core.aligned_previews import registered_preview
-                    registered = registered_preview(self.frame, self.isInterruptionRequested,
-                                                    edge=PREVIEW_MAX_SIDE)
-                if registered is None:
-                    pixels = ensure_preview(self.frame, should_cancel=self.isInterruptionRequested)
-                    is_display = getattr(self.frame, "preview_is_display", False)
-                else:
-                    pixels, is_display = registered
-                if self.isInterruptionRequested():
+            if not _acquire_preview_turn(cancelled, True):
+                return
+            try:
+                available = self._available(cancelled)
+                if available is not None:
+                    self._render(*available)
                     return
-                height, width = pixels.shape[:2]
-                scale = min(1.0, PREVIEW_MAX_SIDE / max(width, height))
-                metadata = (self.metadata if not is_display
-                            and pixels.dtype == np.uint16 and pixels.ndim == 3
-                            and pixels.shape[2] == 3 else None)
-                self.pixels, _ = render_source_region(
-                    pixels, (0, 0, width, height),
-                    (max(1, round(width * scale) - 2), max(1, round(height * scale) - 2)),
-                    metadata, preserve_alpha=self.preserve_alpha)
+            except ResourceLimitError:
+                # Try again after the current heavy job frees its memory.
+                available = None
+            finally:
+                _release_preview_turn()
+
+            with heavy_job(cancelled):
+                if not _acquire_preview_turn(cancelled, True):
+                    return
+                try:
+                    registered = (registered_preview(self.frame, cancelled, edge=self.edge)
+                                  if isinstance(self.frame, ProcessedFrame) else None)
+                    if registered is None:
+                        pixels = ensure_display_preview(self.frame, should_cancel=cancelled)
+                        registered = pixels, getattr(self.frame, 'preview_is_display', False)
+                    self._render(*registered)
+                finally:
+                    _release_preview_turn()
         except Exception as exc:
             if not self.isInterruptionRequested():
                 self.error = str(exc)

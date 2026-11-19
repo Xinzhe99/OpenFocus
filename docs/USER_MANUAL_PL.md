@@ -28,7 +28,7 @@ OpenFocus to profesjonalna aplikacja desktopowa do wieloogniskowej fuzji obrazó
 ### Najważniejsze funkcje
 
 - **Wieloogniskowa fuzja obrazów**: wiele zdjęć o różnych punktach ostrości łączy się w jeden w pełni ostry obraz
-- **Dziesięć algorytmów fuzji**: StackMFF V3 (domyślnie), StackMFF V2, StackMFF, Guided Filter, DCT, DTCWT, GFG-FGF oraz OpenFocus A/B/C, a także tryb tylko wyrównania
+- **Fuzja obrazów** obejmuje stabilne metody OpenFocus A/B/C, eksperymentalne metody StackMFF V1/V2/V3, Guided Filter, DCT, DTCWT i GFG-FGF oraz tryb tylko wyrównania
 - **Rejestracja obrazów**: ECC, homografia, homografia → ECC i szybkie wyrównanie OpenFocus
 - **Automatyczne tło**: zastąpienie niespokojnego tła ze stacku jedną prawdziwą klatką oraz pokazanie, gdzie żadna klatka nie uchwyciła sceny wyraźnie
 - **Porównanie suwakiem**: kontrola wyrównania i wyniku za pomocą przeciąganego dzielnika A/B
@@ -59,7 +59,7 @@ Stosy przezroczystych PNG można łączyć w aplikacji desktopowej, przetwarzani
 
 Wczytaj w pełnym rozmiarze, wybierz brak wyrównania, wyłącz szybki podgląd i ROI, a następnie wyrenderuj i zapisz jako PNG. Przetwarzanie wsadowe wymaga metody fuzji i wyjścia PNG bez zapisywania wyrównanego stosu. Wyrównanie, zmiana rozmiaru i skalowanie w dół, korekcja pyłu, mapy głębi, porównanie, retusz, etykiety i paski skali nie są obsługiwane dla danych przezroczystych. Metoda, która zmienia wymiary prostokąta, jest odrzucana. Zmienne lub rozmyte maski, różne maski klatek, przezroczysty TIFF na wejściu i wyjście inne niż PNG, w tym GIF i wielostronicowy TIFF, nie są obsługiwane. CLI odrzuca również czyszczenie matrycy i mapy głębi dla przezroczystego wejścia.
 
-Odpowiednik w CLI: `python main.py --input ./png-stack --output ./result.png --method guided_filter --align none`.
+Odpowiednik w CLI to `python main.py --input ./png-stack --output ./result.png --method guided_filter --align none --experimental`.
 
 ### Obsługiwane formaty wyjściowe
 
@@ -78,7 +78,7 @@ W oknie **Zapisz jako** zwykły TIFF zapisuje wynik jako jeden obraz, a TIFF z w
 ### Uruchamianie aplikacji
 
 Pobierz najnowszą kompilację ze [strony OpenFocus](https://openfocus.top/#download) lub z [GitHub Releases](https://github.com/Xinzhe99/OpenFocus/releases). Strona jest preferowana: publikuje bieżący instalator Windows, kompilację macOS i pakiet Linux ze skryptami instalacyjnymi; te artefakty są dokładnym wynikiem potoku wydania, więc wybieraj je zamiast ponownej kompilacji. `pip install openfocus` instaluje tylko headless CLI (koło celowo nie zależy od PyQt6); do interfejsu graficznego użyj gotowej kompilacji albo kodu źródłowego. Po instalacji uruchom OpenFocus na jeden z sposobów:
-Strona domyślnie udostępnia stabilne wersje aplikacji. W systemach Windows i macOS można włączyć aktualizacje beta; w systemie Linux aktualizacja wymaga pobrania nowego archiwum aplikacji. CLI z PyPI jest publikowane osobno.
+Strona domyślnie udostępnia stabilne wersje aplikacji. W systemach Windows i macOS można włączyć aktualizacje beta. Aplikacja desktopowa dla systemu Linux jest dostępna od wersji 2.0.0 i aktualizuje się ją przez pobranie nowego archiwum. CLI z PyPI jest publikowane osobno.
 
 1. **Windows (instalator lub wersja przenośna)**: kliknij dwukrotnie skrót lub `OpenFocus.exe`
 2. **macOS**: przeciągnij `OpenFocus.app` do Programów i uruchom; kompilacje są przeznaczone dla Apple Silicon
@@ -105,9 +105,9 @@ Przy pierwszym uruchomieniu otwiera się okno powitalne, w którym można wybra�
 ### Szybki start
 
 1. Zaimportuj sekwencję obrazów (**Plik → Otwórz folder** lub przeciągnij)
-2. Wybierz metodę fuzji na prawym panelu; domyślnie wybrany jest **StackMFF V3**
+2. Wybierz metodę fuzji na prawym panelu. Domyślnie wybrana jest metoda **OpenFocus B**.
 3. Wybierz metodę rejestracji; domyślnie wybrany jest **ECC**. Jeśli stos jest już wyrównany, wybierz **Bez wyrównania**
-4. W razie potrzeby zmień rozmiar jądra lub parametry wybranej metody
+4. W razie potrzeby zmień parametry wybranej metody
 5. *(opcjonalnie)* Otwórz **Ustawienia renderowania** i zaznacz **Szybki podgląd**, aby najpierw dobrać parametry na zmniejszonym szkicu
 6. Kliknij **Rozpocznij renderowanie**
 7. Wyeksportuj wynik
@@ -407,9 +407,9 @@ Dodatkowe parametry otwiera **Ustawienia → Ustawienia zaawansowane → Rejestr
 
 ## 8. Metody fuzji obrazów
 
-OpenFocus oferuje dziesięć algorytmów fuzji plus tryb tylko wyrównania. W nowym profilu wybrana jest **StackMFF V3** z rejestracją **ECC**; poniżej opisano wszystkie opcje. Każdy ma inne właściwości odpowiednie dla różnych typów obrazów.
+**OpenFocus A, B i C** to stabilne metody fuzji. Nowy profil aplikacji desktopowej domyślnie używa **OpenFocus B** z rejestracją **ECC**. Aby użyć pozostałych metod fuzji lub eksperymentalnych metod rejestracji, przejdź do **Ustawienia → Ustawienia zaawansowane → Ogólne** i zaznacz **Włącz funkcje eksperymentalne**. W CLI dodaj `--experimental` przy każdym uruchomieniu z eksperymentalną metodą fuzji.
 
-### StackMFF V3 (domyślnie, uczenie głębokie)
+### StackMFF V3 (uczenie głębokie)
 
 - **Algorytm**: ONNX Runtime i dołączony model ONNX.
 - **Tryb wyjścia AI** (prawy panel, tylko dla tej metody):
@@ -659,9 +659,7 @@ Automatyczne pobieranie aktualizacji działa w bezczynności i nigdy nie instalu
 
 W Windows aktualizator przygotowuje osobną wersję kandydującą i podczas przełączenia przenosi znacznik wersji przenośnej oraz `OpenFocusData`. W razie błędu przywraca poprzednią instalację; jeśli przywrócenie się nie powiedzie, zachowuje kopię i nie uruchamia aplikacji automatycznie. Może pojawić się jedno żądanie uprawnień. Anulowanie rozpakowywania usuwa nieukończone dane przygotowawcze i jest sprawdzane między odczytami i zapisami po 256 KiB; zablokowana operacja dyskowa lub sieciowa może je opóźnić.
 
-Korekcja pola płaskiego zmienia piksele robocze sesji bez nadpisywania plików źródłowych. Wybierz białe odniesienie i klatkę podglądu, a następnie ponownie zbuduj podgląd po zmianie źródła lub skali. Odniesienie i obrazy robocze/bazowe muszą mieć tę samą dziedzinę współrzędnych i rozmiar. Zastosowanie przygotowuje oba stosy przed zatwierdzeniem; opcjonalne usunięcie klatki odniesienia należy do tego samego kroku cofania. Wyeksportuj poprawione obrazy źródłowe, jeśli chcesz zachować te piksele poza sesją.
-
-Przetwarzanie wsadowe przyjmuje opcjonalny obraz białego pola w opcjach przetwarzania. Wybierz rozogniskowane odniesienie w oryginalnej rozdzielczości klatek; jest skalowane razem ze stosem wejściowym i stosowane przed rejestracją, z domyślnym rozmiarem pyłu. Nieczytelne odniesienie lub niezgodny rozmiar jawnie powoduje błąd danego stosu. Odniesienie jest wykluczane z folderów wejściowych, także w przetwarzaniu grupowym; do fuzji muszą pozostać co najmniej dwie klatki źródłowe. Korekcji pola płaskiego nie można łączyć z przezroczystym wejściem. Pozostaw pole puste, aby przetwarzać bez korekcji. CLI przyjmuje odniesienie przez `--dust-map WHITE`.
+Mapa pyłu, wsadowa korekcja pola płaskiego i łączenie obrazów są w trakcie tworzenia i pozostają niedostępne.
 
 Czyszczenie matrycy jest opcjonalne i działa na oryginalnych klatkach we współrzędnych matrycy przed rejestracją. W aplikacji desktopowej znajduje się w **Ustawienia → Ustawienia zaawansowane → Fuzja → Czyszczenie matrycy**; okno przetwarzania wsadowego ma te same elementy sterujące. Wybierz jawną maskę defektów, aby poprawić znane gorące lub martwe piksele; OpenFocus nie wnioskuje maski z obrazów preparatu. Maska musi być jednokanałowym obrazem 8- lub 16-bitowym o wymiarach źródła: zero oznacza brak wpływu, a 1 lub maksymalna wartość kanału oznacza defekty. Sprawdź jej zasięg przed przetwarzaniem. Maski pokrywające więcej niż 10 % kadru oraz defekty bez niezamaskowanego sąsiada są odrzucane. Przechowuj maskę w oryginalnej rozdzielczości i nie wybieraj jej jako obrazu źródłowego. W GUI przy używaniu maski wczytuj klatki źródłowe w pełnej skali; maska nigdy nie jest skalowana. Czyszczenia matrycy (w tym odszumiania) nie można zastosować do stosu GUI po obrocie, odbiciu, korekcji pola płaskiego lub innej zmianie źródła: wczytaj ponownie oryginalne klatki albo wyłącz czyszczenie. Dotyczy to także przywróconych projektów z taką historią źródeł. Wstępnie wyrównanego przetwarzania ROI nie można łączyć z czyszczeniem matrycy; wyjdź z trybu ROI i wyrenderuj cały stos. Ustawienia czyszczenia należą do bieżącej sesji i zapisanego projektu, a nie do globalnych preferencji aplikacji. Przetwarzanie wsadowe i CLI przetwarzają swoje oryginalne dane osobno, wykonując czyszczenie matrycy przed korekcją pola płaskiego i rejestracją. Maski defektów wymagają plików źródłowych o neutralnej orientacji EXIF. Pliki z orientacją, RAW aparatów i źródła, których orientacji nie można ustalić, są odrzucane, ponieważ ich zdekodowane piksele mogą nie odpowiadać współrzędnym matrycy. Używaj obrazów źródłowych i maski w tej samej znanej orientacji pikseli, z neutralnymi metadanymi orientacji. Samo odszumianie nie wymaga maski defektów.
 
@@ -873,7 +871,7 @@ openfocus describe                      # JSON: metody, parametry, możliwości,
 openfocus gui [--control] [--socket NAME] [paths…]   # uruchom aplikację desktopową
 openfocus ctl <command> [flags]          # steruj działającym oknem (patrz AGENT_CONTROL_SPEC.md)
 openfocus recipe create FILE --input … --output … [processing flags]
-openfocus recipe run FILE [--dry-run]    # odtwórz zapisany przepis headless
+openfocus recipe run FILE [--dry-run] [--experimental]  # odtwórz zapisany przepis headless
 openfocus retouch replay CHECKPOINT --base BASE --sources … --output RESULT
 ```
 
@@ -882,20 +880,20 @@ openfocus retouch replay CHECKPOINT --base BASE --sources … --output RESULT
 Ze środowiska Pythona (lub obok gotowego pliku wykonywalnego):
 
 ```bash
-# Fuzja folderu metodą domyślną (StackMFF V3)
+# Fuzja folderu metodą domyślną (OpenFocus B)
 python main.py --input ./stack_folder --output ./result/fused.png
 
 # DTCWT z rejestracją ECC, 8 wątków
-python main.py -i ./stack_folder -o ./result/fused.png -m dtcwt -a ecc -t 8
+python main.py -i ./stack_folder -o ./result/fused.png -m dtcwt -a ecc -t 8 --experimental
 
 # StackMFF V3 wymuszony na CPU z niestandardowym rozmiarem kafelka
-python main.py -i ./stack_folder -o ./result/fused.png -m stackmffv3 --cpu --tile-size 512
+python main.py -i ./stack_folder -o ./result/fused.png -m stackmffv3 --cpu --tile-size 512 --experimental
 
 # Jawna lista plików; pliki wideo są również akceptowane jako wejście
-python main.py -i img1.jpg img2.jpg img3.jpg -o fused.png -m gfgfgf
+python main.py -i img1.jpg img2.jpg img3.jpg -o fused.png -m gfgfgf --experimental
 
 # Jeden wielostronicowy stos Z TIFF z paskiem skali kalibrowanym z metadanych
-python main.py -i ./zstack.tif -o fused.png -m dtcwt --scale-bar
+python main.py -i ./zstack.tif -o fused.png -m dtcwt --scale-bar --experimental
 
 # Sprawdź sąsiednie podobne klatki bez fuzji i zmiany wejścia
 python main.py -i ./stack_folder --suggest-duplicates
@@ -912,8 +910,9 @@ Na przykład dodaj `--align openfocus --alignment-report alignment.json` do poje
 | `--output, -o` | Ścieżka obrazu wyjściowego (rozszerzenie określa format) |
 | `--output-dir, -d` | Tryb wsadowy: łączy każdy folder wejściowy, zapisując `<folder>.png` dla każdego stosu |
 | `--resume` | Pomija folder tylko wtedy, gdy wszystkie żądane wyniki są niepustymi zwykłymi plikami; nie sprawdza treści ani parametrów |
-| `--config FILE` | Tryb wsadowy: JSON z nadpisaniami dla każdego folderu, np. `{"stackA": {"method": "dct"}}` |
-| `--method, -m` | `stackmffv3` (domyślnie), `stackmffv2`, `stackmff`, `openfocus_a`, `openfocus_b`, `openfocus_c`, `guided_filter`, `dct`, `dtcwt`, `gfgfgf` |
+| `--config FILE` | Tryb wsadowy: JSON z nadpisaniami dla każdego folderu, np. `{"stackA": {"method": "openfocus_a"}}` |
+| `--method, -m` | Stabilne metody to `openfocus_a`, `openfocus_b` (domyślna) i `openfocus_c`. Eksperymentalne metody to `guided_filter`, `dct`, `dtcwt`, `gfgfgf`, `stackmff`, `stackmffv2` i `stackmffv3` |
+| `--experimental` | Zezwala na użycie eksperymentalnych metod fuzji w tym uruchomieniu CLI |
 | `--param KEY=JSON_VALUE` | Ustawia dowolny parametr fuzji; można powtarzać, nadpisuje starsze flagi |
 | `--align, -a` | `none` (domyślnie), `homography`, `ecc`, `both`, `openfocus` |
 | `--align-param KEY=JSON_VALUE` | Ustawia dowolny parametr rejestracji; można powtarzać |
@@ -924,7 +923,6 @@ Na przykład dodaj `--align openfocus --alignment-report alignment.json` do poje
 | `--sort` | Kolejność klatek dla `openfocus_a/b/c`: `asc` (domyślnie, kolejność plików), `desc` (odwrócenie przemiatania od dalekich do bliskich), `off` |
 | `--frame-order` | Folder na wejściu: `auto` (domyślnie) porządkuje klatki od bliskich do dalekich według kroków ostrości z EXIF, gdy mają je wszystkie klatki (bracketing ostrości OM SYSTEM zaczyna się w połowie głębi), w przeciwnym razie według nazwy; `name` zawsze według nazwy pliku. Pliki podane jawnie zachowują swoją kolejność |
 | `--sharpen-output` | Stosuje łagodne wyostrzanie do wyniku fuzji (domyślnie wyłączone) |
-| `--dust-map WHITE` | Korekcja pola płaskiego (mapa pyłu) z rozogniskowanego zdjęcia białego pola |
 | `--defect-mask-path MASK` | Maska defektów we współrzędnych matrycy, naprawiana przed rejestracją |
 | `--sensor-denoise` | Ostrożne odszumianie matrycy przed rejestracją |
 | `--kernel, -k` | Tylko dla metod deklarujących `kernel_size` |
@@ -961,10 +959,12 @@ Przepis to przenośny plik JSON opcji przetwarzania CLI ze ścieżkami względny
 
 ```bash
 openfocus recipe create line.json --input ./stack --output ./out/fused.tif \
-  --method dtcwt --align ecc --threads 8
+  --method openfocus_b --align ecc --threads 8
 openfocus recipe run line.json
 openfocus recipe run line.json --dry-run
 ```
+
+Przepis zapisuje wybraną metodę fuzji. Jeśli jest ona eksperymentalna, dodaj `--experimental` do każdego wywołania `openfocus recipe run`, również podczas próby z `--dry-run`.
 
 `recipe create --project project.ofproj --input ./stack --output ./out/fused.tif` przechwytuje ustawienia przetwarzania projektu dla jawnie wybranych wejść; źródła projektu mogą być przeniesione. Przepisy odrzucają tymczasowe opcje, takie jak `--dry-run`, `--resume`, `--json`, `--json-progress` i `--config`, oraz wymagają, aby wyjście znajdowało się poza każdym folderem wejściowym (i różniło się od jawnie wybranego wejścia). Maska defektów jest przechowywana ścieżką względną z odciskiem SHA-256, więc brakująca lub zmieniona maska powoduje błąd uruchomienia. Edycji źródeł projektu (obrót, odbicie, pole płaskie) nie można przechwycić; najpierw wyeksportuj poprawiony stos.
 
@@ -993,7 +993,7 @@ Ten sam interfejs headless jest dostępny bez importowania PyQt:
 ```python
 from core.recipes import capture_project_recipe, capture_recipe, load_recipe, save_recipe, run_recipe
 
-capture_recipe("workflow.json", ["-i", "stack_folder", "-o", "result/fused.png", "-m", "dct"])
+capture_recipe("workflow.json", ["-i", "stack_folder", "-o", "result/fused.png", "-m", "openfocus_b"])
 capture_project_recipe("from-project.json", "session.ofproj",
                        ["-i", "new_stack", "-o", "result/fused.png"])
 recipe = load_recipe("workflow.json")  # zweryfikowany słownik ze ścieżkami względnymi

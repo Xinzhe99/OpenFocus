@@ -224,13 +224,11 @@ def draw_scale_bar_ex(img: np.ndarray, px_um: float,
                       origin=(0, 0), region_mean=None, render_scale=1.0):
     """Draw the bar and report what actually happened.
 
-    Returns ``(image, info)`` where info may contain ``bar_um``, ``bar_px``,
-    ``too_small`` (no legal length fits) and ``substituted_font`` (the
-    requested family could not draw the label). The preview needs these to
-    avoid showing a success state for a bar that was not drawn as requested.
+    Returns ``(image, info)`` where info includes the bar length, caption size in
+    original image pixels, whether the motif fits, and any font substitution.
     """
-    info = {"bar_um": None, "bar_px": None, "too_small": False,
-            "substituted_font": ""}
+    info = {"bar_um": None, "bar_px": None, "font_size_px": None,
+            "too_small": False, "substituted_font": ""}
     drawn = draw_scale_bar(img, px_um, position, color,
                            font_family=font_family, font_size=font_size,
                            font_bold=font_bold, text_align=text_align,
@@ -301,6 +299,8 @@ def draw_scale_bar(img: np.ndarray, px_um: float,
         return img
     (font, label, font_size, left, top, text_h, stroke_w, stroke, margin,
      thickness, bar_px, bar_x1, bar_x2, bar_y1, bar_y2, text_x, text_y) = layout
+    if _info is not None:
+        _info["font_size_px"] = font_size
     from PIL import Image, ImageDraw
     from utils.fonts import load_font_for_text
     gray = img.ndim == 2
@@ -392,21 +392,15 @@ def _scale_bar_layout(img, px_um, position, font_family, font_size, font_bold,
         _info["bar_um"] = bar_um
         _info["bar_px"] = bar_px
     thickness = min(thickness, max(1, h // 3))
-    # Font size must leave room for the bar + gap + label inside the frame.
-    # A hard floor of 14 px made the label taller than a 60 px frame, so it
-    # landed on the bar; shrink instead (never below 8 px, where a real font
-    # stops being legible and the cv2 fallback takes over).
-    # 0 (the default) keeps the automatic size; anything else is the user's
-    # explicit choice, still capped so it cannot overflow the frame.
-    auto_size = max(8, min(int(round(h * 0.022)),
-                           int((h - 2 * margin - thickness) / 2.6)))
+    from utils.fonts import default_annotation_font_size, load_font_for_text
+
+    # Keep space for the bar, gap and caption on small canvases.
+    caption_room = h - 2 * margin - thickness
     if font_size and float(font_size) > 0:
         font_size = max(6, min(int(round(float(font_size))),
-                               max(8, (h - 2 * margin - thickness) // 2)))
+                               max(8, caption_room // 2)))
     else:
-        font_size = auto_size
-
-    from utils.fonts import load_font_for_text
+        font_size = max(8, min(default_annotation_font_size(w, h), int(caption_room / 2.6)))
     label = format_length(bar_um)
     font, _actual_family, substituted = load_font_for_text(
         font_size, font_family, label, bold=font_bold)

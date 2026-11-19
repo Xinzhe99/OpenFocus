@@ -123,6 +123,7 @@ class TestRecovery:
         rec = recovery_mod
         stack = str(tmp_path / "stack"); os.makedirs(stack)
         w = self._fake_window(stack)
+        w.sharpen_strength = 145
 
         assert rec.pending_recovery() is None      # clean: no lock
         assert rec.write_snapshot(w)              # snapshot saved
@@ -130,6 +131,8 @@ class TestRecovery:
         assert rec.pending_recovery() is not None  # crash leaves lock -> recoverable
         state = rec.pending_recovery()
         assert rec.snapshot_frame_count(state) == 2
+        assert state['settings']['sharpen_strength'] == 145
+        assert state['settings']['sharpen_output'] is False
         rec.mark_clean_exit()                     # normal close
         assert rec.pending_recovery() is None     # lock cleared, snapshot kept
         assert os.path.isfile(rec.session_path())

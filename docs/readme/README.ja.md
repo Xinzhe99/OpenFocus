@@ -22,7 +22,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/Windows-10%2F11-0078D7?logo=windows&logoColor=white" alt="Windows 10/11">
   <img src="https://img.shields.io/badge/macOS-Apple%20Silicon-000000?logo=apple&logoColor=white" alt="macOS Apple Silicon">
-  <img src="https://img.shields.io/badge/Linux-CLI-FCC624?logo=linux&logoColor=black" alt="Linux CLI">
+  <img src="https://img.shields.io/badge/Linux-x86--64-FCC624?logo=linux&logoColor=black" alt="Linux x86-64 のデスクトップ版と CLI">
   <a href="https://pypi.org/project/openfocus/"><img src="https://img.shields.io/badge/PyPI-openfocus-3775A9?logo=pypi&logoColor=white" alt="PyPI"></a>
 </p>
 
@@ -55,7 +55,7 @@
 ## 📢 お知らせ
 
 > [!NOTE]
-> **[v1.77.0-beta.7 プレリリース](https://github.com/Xinzhe99/OpenFocus/releases/tag/v1.77.0-beta.7)** — OpenFocus B で対応する OpenCL デバイスの GPU アクセラレーションと CPU へのフォールバック、修正されたワイプ比較、自動背景とレタッチを提供します。詳細は[変更履歴](../../CHANGELOG.md)をご覧ください。
+> **[v2.0.0 安定版を公開しました](https://github.com/Xinzhe99/OpenFocus/releases/tag/v2.0.0)** — Linux x86_64 向けのポータブルなデスクトップ版アーカイブを提供します。詳細は[変更履歴](../../CHANGELOG.md)をご覧ください。
 
 以前のリリースは [変更履歴](../../CHANGELOG.md) にあります。
 
@@ -72,7 +72,7 @@
 <tr>
 <td width="46%" valign="middle">
 
-### AI 融合：StackMFF V3
+### AI 融合：StackMFF V3（実験的）
 
 StackMFF V3 は AI で各フレームの鮮明な部分を組み合わせ、焦点の合った画像を生成します。
 
@@ -107,6 +107,8 @@ StackMFF V3 は AI で各フレームの鮮明な部分を組み合わせ、焦�
 ### 手法比較
 
 融合手法を並べて比較し、選んだ結果を出力に採用するか、設定をメインウィンドウに適用できます。
+
+安定版の融合手法は OpenFocus A、OpenFocus B、OpenFocus C の 3 つです。それ以外の手法は実験的です。デスクトップ版で実験的な手法を使うには、**設定 → 詳細設定… → 実験的機能を有効にする**を選びます。ヘッドレス CLI では `--experimental` を指定してください。
 
 </td>
 <td width="54%">
@@ -219,11 +221,13 @@ TIFF メタデータまたは手入力で校正したスケールバーを画像
 <a id="install"></a>
 ## ⬇️ インストール
 
-[OpenFocus 公式サイト](https://openfocus.top/#download)とインストールスクリプトは、Windows と macOS 向けに安定版より新しいベータ版も提供します（現在は v1.77.0-beta.7）。[GitHub Releases](https://github.com/Xinzhe99/OpenFocus/releases) からもダウンロードできます。デスクトップの自動更新でも新しいベータ版を提供し、PyPI の Linux CLI は安定版のままです。
+[OpenFocus のダウンロードページ](https://openfocus.top/#download)では、Windows・macOS・Linux x86_64 向けの最新の安定版デスクトップアプリを入手できます。Linux ではアーカイブを展開して `OpenFocus/OpenFocus` を実行してください。Linux のデスクトップ版は同じページから最新版を入手して手動で更新します。
+
+デスクトップ版の更新は既定で安定版のみです。プレリリースを受け取るには、詳細設定またはウェルカムダイアログで**ベータ版の更新を受け取る**を有効にしてください。以前のバージョンとプレリリースは [GitHub Releases](https://github.com/Xinzhe99/OpenFocus/releases) にあります。
 
 インストールとトラブルシューティングは[ユーザーマニュアル](../USER_MANUAL_JA.md)を参照してください。
 
-ターミナルからもインストールできます。Linux にはヘッドレス CLI が入り、macOS は Apple Silicon が必要です。DMG は `/Applications` に、ターミナルからは `~/Applications` にインストールします。
+macOS のデスクトップ版には Apple Silicon が必要です。DMG からは `/Applications` に、次のコマンドからは `~/Applications` にインストールします。Linux で次のコマンドを実行するとヘッドレス CLI が入ります。
 
 ```bash
 curl -fsSL https://openfocus.top/install.sh | sh -s -- --dry-run
@@ -253,7 +257,7 @@ curl.exe -fL https://openfocus.top/download/latest/windows-setup -o OpenFocus-se
 
 ### 💻 コマンドライン
 
-Windows・macOS・Linux では CLI もインストールできます。同じパイプラインを GUI なしで動かせます。
+Windows・macOS・Linux では、ヘッドレス CLI を `pip` で個別にインストールできます。同じパイプラインを GUI なしで動かせます。
 
 ```bash
 pip install openfocus
@@ -265,7 +269,7 @@ openfocus -i ./stack_folder -o ./result/fused.png
 <a id="community"></a>
 ## コミュニティとサポート
 
-質問やご意見は [Discord コミュニティ](https://discord.gg/afzmwgPt)へ。できるだけ早く返信しますが、北京時間（UTC+8）を使っているため、時差によって返信が遅れる場合があります。
+質問やご意見は [Discord コミュニティ](https://discord.gg/Jamr2SR5)へ。できるだけ早く返信しますが、北京時間（UTC+8）を使っているため、時差によって返信が遅れる場合があります。
 
 - **ドキュメント** — [ユーザーマニュアル](../USER_MANUAL_JA.md)（12 言語） · [変更履歴](../../CHANGELOG.md) · [パフォーマンス](../../docs/PERFORMANCE.md) · [融合手法](../../docs/FUSION_METHODS.md)
 - **公式サイト** — [openfocus.top](https://openfocus.top/)（ダウンロード、インストールスクリプト、ミラー）

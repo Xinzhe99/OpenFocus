@@ -54,9 +54,9 @@ class WelcomeDialog(QDialog):
         theme_row = QHBoxLayout()
         theme_label = QLabel(trans.t('welcome_choose_theme'))
         theme = QComboBox()
-        for code in PALETTES:
+        for code in (*PALETTES, 'system'):
             theme.addItem(trans.t(f'theme_{code}'), code)
-        current = getattr(main_window, 'ui_theme', DEFAULT_THEME)
+        current = getattr(main_window, 'theme_mode', DEFAULT_THEME)
         theme.setCurrentIndex(theme.findData(current))
         theme.setEnabled(main_window is not None)
         if main_window is not None:
@@ -71,7 +71,7 @@ class WelcomeDialog(QDialog):
         self.chk_include_beta = QCheckBox(trans.t('action_include_beta'))
         self.chk_include_beta.setProperty('controlId', 'chk_include_beta')
         self.chk_include_beta.setChecked(bool(getattr(manager, 'include_beta', False)))
-        self.chk_include_beta.setToolTip(trans.t('action_include_beta_hint'))
+        self.chk_include_beta.setToolTip(trans.t('action_include_beta_with_hint'))
         self.chk_include_beta.setEnabled(manager is not None)
         if manager is not None:
             self.chk_include_beta.toggled.connect(manager.set_include_beta)

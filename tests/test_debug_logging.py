@@ -163,7 +163,7 @@ def test_cli_log_level_selects_detail_and_names_the_log_file(tmp_path):
     stack.mkdir()
     for index, image in enumerate(_stack()):
         assert imwrite_auto(str(stack / f'f{index}.png'), image)
-    tiles = ('--method', 'guided_filter', '--threads', '1', '--tile-size', '64',
+    tiles = ('--experimental', '--method', 'guided_filter', '--threads', '1', '--tile-size', '64',
              '--tile-overlap', '16', '--tile-threshold', '32')
     env = {'OPENFOCUS_LOG_DIR': str(tmp_path / 'logs'), 'OPENFOCUS_LOG_LEVEL': 'info'}
     plain = _run_cli('--input', str(stack), '--output', str(tmp_path / 'plain.png'), *tiles,

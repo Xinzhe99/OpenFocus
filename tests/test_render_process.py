@@ -102,7 +102,8 @@ def _render_with_prepared_cache(connection, cancel_event, request, budget, direc
         self.alignment_report = [{'probe': 'alignment diagnostic'}]
         self.alignment_report_provenance = {'probe': 'child'}
 
-    def fail_sharpen(*args, **kwargs):
+    def fail_sharpen(image, should_cancel=None, *, strength):
+        assert strength == 175
         snapshot = ResourceSnapshot(available_ram=8 * 1024**3, total_ram=16 * 1024**3,
                                     commit_headroom=9 * 1024**2,
                                     process_commit_headroom=5 * 1024**2)
@@ -565,6 +566,7 @@ def test_failed_render_preserves_parent_cache_and_cleans_child_scratch(
             frames, algorithm='guided_filter', thread_count=1, use_gpu=False,
             tile_enabled=False, exposure_match=False, prepared_cache=parent_cache,
             retain_preparation=True, sharpen_output=(target is _sharpen_failure_child),
+            sharpen_strength=175,
             collect_alignment_report=True, profile_performance=True)
         results, errors = _start(worker)
         _wait(worker, qapp)
@@ -626,13 +628,68 @@ def test_successful_render_adopts_prepared_cache(qapp, tmp_path, scratch, monkey
     assert not path.exists()
 
 
+def test_spawned_tiled_fusion_publishes_frozen_tooltip_details(qapp, tmp_path, scratch, monkeypatch):
+    from types import SimpleNamespace
+    from PyQt6.QtWidgets import QLabel, QListWidget
+    from controllers.output_manager import OutputManager
+    from core.render_context import build_render_context
+    from core.render_process import RenderProcessWorker
+    from locales import trans
+
+    monkeypatch.setattr(trans, 'current_lang', 'en')
+    parameters = {'kernel_size': 9}
+    worker = RenderProcessWorker(_sources(tmp_path), algorithm='guided_filter',
+        fusion_parameters=parameters, tile_enabled=True, tile_threshold=32,
+        tile_block_size=100, tile_overlap=64, thread_count=1, use_gpu=False)
+    results, errors = _start(worker)
+    _wait(worker, qapp)
+    assert not errors and len(results) == 1
+    assert worker.performance_report is None
+    details = worker.fusion_details
+    assert (details.input_size, details.tile_grid) == ((64, 48), (48, 24, 6))
+    assert dict(details.parameters) == {'kernel_size': 9}
+
+    frames, image, *_ = results[0]
+    context = build_render_context(frames, image, algorithm='guided_filter',
+                                   parameters=parameters, fusion_details=details)
+    panel = SimpleNamespace(output_list=QListWidget(), output_label=QLabel(),
+        fusion_results=[], fusion_result=image)
+    manager = OutputManager(panel)
+    manager.update_output_list_for_fusion('result', context=context)
+    parameters['kernel_size'] = 31
+    manager._refresh_output_tooltip(0)
+    tooltip = panel.output_list.item(0).toolTip()
+    assert 'spatial tiles (64 × 48 px input)' in tooltip
+    assert 'Block: 48 × 48 px · Grid overlap setting: 24 px · Tile passes: 6' in tooltip
+    assert f'{trans.t("label_kernel_guided").rstrip(":： ")} 9' in tooltip
+    assert trans.t('retouch_unexported') in tooltip
+
+
+def test_legacy_tooltip_uses_saved_choice_without_guessing_tiling(monkeypatch):
+    from types import SimpleNamespace
+    from controllers.output_manager import OutputRecord, _fusion_tooltip_lines
+    from locales import trans
+
+    monkeypatch.setattr(trans, 'current_lang', 'zh')
+    context = SimpleNamespace(algorithm='stackmffv3', parameters={
+        'fusion_parameters': {'mode': 'hard'}, 'tile_enabled': True,
+        'tile_block_size': 1024, 'defect_mask_path': 'private/location.tif'})
+    record = OutputRecord.create(None, 'archived', context=context)
+    tooltip = '\n'.join(_fusion_tooltip_lines(record))
+    assert trans.t('radio_ai_hard') in tooltip
+    assert trans.t('sensor_mask') in tooltip
+    assert '1024' not in tooltip and 'private' not in tooltip
+    assert trans.t('output_fusion_whole').split('（')[0] not in tooltip
+    assert trans.t('output_fusion_tiled').split('（')[0] not in tooltip
+
+
 @pytest.mark.parametrize('alignment', ['none', 'openfocus'])
 def test_spawned_render_preserves_uint16_and_lazy_alignment(qapp, tmp_path, scratch, alignment):
     from core.render_process import RenderProcessWorker
     from core.source_frames import ProcessedFrame, SourceFrame, resolve_frame
     from core.workers import RenderWorker
     frames = _sources(tmp_path)
-    options = dict(algorithm='openfocus_a', alignment=alignment, tile_enabled=False,
+    options = dict(algorithm='openfocus_a', alignment=alignment, tile_enabled=True, tile_threshold=1,
                    thread_count=1, use_gpu=False, exposure_match=False,
                    collect_alignment_report=True)
     baseline, baseline_errors = [], []
@@ -658,6 +715,9 @@ def test_spawned_render_preserves_uint16_and_lazy_alignment(qapp, tmp_path, scra
         np.testing.assert_array_equal(resolve_frame(frame), resolve_frame(expected))
     assert registered == (alignment != 'none')
     assert worker.alignment_report == reference.alignment_report
+    assert worker.fusion_details == reference.fusion_details
+    assert worker.fusion_details.tile_grid is None
+    assert worker.fusion_details.input_size == tuple(processed[0].shape[1::-1])
     # The map must survive the child's exit, then disappear with its last GUI view.
     root = fused
     while getattr(root, 'base', None) is not None:
@@ -756,6 +816,7 @@ def test_cancel_during_child_startup_publishes_no_result(qapp, tmp_path, scratch
     _wait(worker, qapp)
     timer.stop()
     assert not results
+    assert worker.fusion_details is None
     assert len(errors) == 1 and errors[0].startswith('CANCELLED:')
     assert all(getattr(record, 'event', None) != 'render_child_error' for record in caplog.records)
     assert all(not hasattr(record, 'report_child_evidence') for record in caplog.records)
@@ -793,6 +854,8 @@ def test_heap_input_snapshot_survives_parent_staging_release(qapp, scratch):
 
 
 def test_registered_extension_and_composite_alignment_execute_in_child(qapp, scratch, monkeypatch):
+    from PyQt6.QtCore import QRect
+
     from core import algorithms
     from core.render_process import RenderProcessWorker
     monkeypatch.setattr(algorithms, '_FUSION', dict(algorithms._FUSION))
@@ -816,12 +879,15 @@ def test_registered_extension_and_composite_alignment_execute_in_child(qapp, scr
     images = [np.full((16, 20, 3), value, np.uint8) for value in (20, 100)]
     worker = RenderProcessWorker(images, algorithm='isolated_extension',
         alignment='isolated_composite', registration_parameters={'delta': 7},
-        fusion_parameters={'fraction': .25, 'direction': 'reverse'},
+        fusion_parameters={'fraction': .25, 'direction': 'reverse'}, roi_rect=QRect(4, 3, 5, 6),
         thread_count=1, use_gpu=False, tile_enabled=False, exposure_match=False)
     results, errors = _start(worker)
     _wait(worker, qapp)
     assert not errors
-    np.testing.assert_array_equal(results[0][1], np.full((16, 20, 3), 174, np.uint8))
+    np.testing.assert_array_equal(results[0][1], np.full((6, 5, 3), 174, np.uint8))
+    assert worker.fusion_details.input_size == (20, 16)
+    assert worker.fusion_details.tile_grid is None
+    assert dict(worker.fusion_details.parameters) == {'fraction': .25, 'direction': 'reverse'}
 
 
 def test_fusion_preparation_progress_transitions_to_tile_progress():

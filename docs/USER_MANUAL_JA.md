@@ -31,7 +31,7 @@ OpenFocus は、研究者、エンジニア、画像処理の専門家のため�
 ### 主な機能
 
 - **多焦点画像融合**：ピント位置の異なる複数の画像を 1 枚の全焦点画像に合成します
-- **10 種類の融合アルゴリズム**：StackMFF V1/V2/V3（深層学習）、OpenFocus A/B/C、ガイドフィルタ、DCT、DTCWT、GFG-FGF、および位置合わせ専用モード
+- **融合アルゴリズム**：安定版の OpenFocus A/B/C、実験的な StackMFF V1/V2/V3（深層学習）、ガイドフィルタ、DCT、DTCWT、GFG-FGF に加え、位置合わせ専用モードがあります
 - **画像の位置合わせ**：OpenFocus（高速）、ECC、ホモグラフィから 1 つを選び、ずれ・回転・拡大縮小・遠近の変化を補正します
 - **自動背景**：スタックで乱れた背景を実際の1フレームに置き換え、どのフレームにもきれいに写っていない場所を表示
 - **ワイプ比較ビュー**：A/B の仕切り表示で位置合わせを点検し、結果を比較できます
@@ -75,7 +75,7 @@ OpenFocus は、研究者、エンジニア、画像処理の専門家のため�
 グラデーションやぼかしのあるマスク、フレームごとに異なるマスク、透明 TIFF 入力、GIF や
 マルチページ TIFF を含む PNG 以外の出力は未対応です。CLI も透明入力のセンサー補正と
 深度マップを拒否します。CLI 例：
-`python main.py --input ./png-stack --output ./result.png --method guided_filter --align none`。
+`python main.py --input ./png-stack --output ./result.png --method guided_filter --align none --experimental`。
 
 ### 対応出力形式
 
@@ -98,7 +98,7 @@ OpenFocus は、研究者、エンジニア、画像処理の専門家のため�
 3. **Linux（x86-64）**：デスクトップ版アーカイブを展開し、展開先の `OpenFocus/OpenFocus` を実行します
 4. **Python ソース**：有効化した conda 環境で `python main.py` を実行します
 
-最新の Windows・macOS・Linux デスクトップ版は [OpenFocus 公式サイト](https://openfocus.top/#download) から入手してください。Linux 版は v1.77.0 以降で提供されます。
+最新の Windows・macOS・Linux デスクトップ版は [OpenFocus 公式サイト](https://openfocus.top/#download) から入手してください。Linux のデスクトップ版は v2.0.0 から提供されます。
 同じファイルと旧バージョンは [GitHub Releases](https://github.com/Xinzhe99/OpenFocus/releases)
 にもあります。ターミナルからもインストールできます。
 公式サイトのダウンロードは安定版が既定です。Windows と macOS ではベータ版の自動更新を選択できます。Linux のデスクトップ版は新しいアーカイブをダウンロードして手動で更新します。PyPI の CLI は別途提供されます。
@@ -122,9 +122,9 @@ irm https://openfocus.top/install.ps1 | iex
 ### クイックスタートの流れ
 
 1. 画像シーケンスを読み込みます（ファイル → フォルダを開く、またはドラッグ＆ドロップ）
-2. 右パネルで融合設定を構成します
+2. 右パネルで融合設定を構成します（既定の融合手法は **OpenFocus B**）
 3. **位置合わせ** のドロップダウンから**1 つだけ**選びます（既定は ECC）
-4. 必要ならカーネルサイズを調整します
+4. 必要に応じて、選んだ融合手法のパラメータを調整します
 5. *（任意）* **レンダリング設定**を開き、**クイックプレビュー** にチェックを入れると、縮小した下書きで先にパラメータを試せます
 6. 「**レンダリング開始**」をクリックして処理を開始します
 7. 結果を書き出します
@@ -659,12 +659,10 @@ RAW 入力は sRGB に現像され、カメラのプロファイルは継承し�
 
 ## 8. 画像融合手法
 
-OpenFocus には 10 種類の融合アルゴリズム（および位置合わせ専用モード）があります。
-それぞれ特性が異なり、画像の種類に応じて使い分けられます。新規プロファイルでは
-**StackMFF V3** と **ECC** 位置合わせが既定です。ドロップダウンの先頭は
-**位置合わせのみ** で、既定では **AI（StackMFF V3）** が選ばれています。その後に
-StackMFF V2/V1、OpenFocus A/B、ガイドフィルタ、GFG-FGF、OpenFocus C、DCT、DTCWT が
-続きます。
+安定版の融合手法は **OpenFocus A、B、C** です。デスクトップ版の新規プロファイルでは、
+**OpenFocus B** と **ECC** 位置合わせが既定です。その他の融合手法や実験的な位置合わせ手法を
+デスクトップ版で使うには、**設定 → 詳細設定 → 一般** で **実験的機能を有効にする** をオンにします。
+CLI で実験的な融合手法を使うには、実行するたびに `--experimental` を指定します。
 
 ### ガイドフィルタ
 
@@ -1127,18 +1125,7 @@ iPhone の写真をそのまま読み込めます。オプションの `pillow-h
 
 ### センサー補正とフラットフィールド
 
-フラットフィールド補正はセッションの作業画素を変えますが、ソースファイルは上書き
-しません。白基準画像とプレビュー用フレームを選び、ソースや倍率を変えたらプレビューを
-再生成します。基準画像と作業／ベース画像は同じ座標範囲とサイズである必要があります。
-適用時は両方のスタックを準備してから確定し、任意の基準フレーム削除も同じ undo 手順に
-含まれます。セッション外に画素を残すには、補正後のソース画像を書き出してください。
-
-バッチ処理でも処理オプションで任意の白場画像を選べます。元のフレーム解像度のピント外れ
-の基準を選ぶと、入力スタックに合わせて縮小され、既定のダストサイズで位置合わせ前に
-適用されます。読み取れない基準やサイズ不一致は、そのスタックを明確に失敗させます。
-基準はフォルダ入力（グループ処理を含む）から除外され、融合には少なくとも 2 つの
-ソースフレームが必要です。空欄なら補正なしで処理します。CLI でも `--dust-map WHITE`
-で指定できます。フラットフィールド補正は透明入力と併用できません。
+ダストマップとバッチのフラットフィールド補正、画像合成は開発中のため、現在は使用できません。
 
 センサー補正は任意で、位置合わせ前に元のセンサー座標のフレームへ実行されます。
 デスクトップでは **設定 → 詳細設定 → 融合 → センサーの補正** にあり、バッチダイアログにも
@@ -1403,7 +1390,7 @@ openfocus describe                      # JSON：手法、パラメータ、機�
 openfocus gui [--control] [--socket NAME] [パス…]   # デスクトップアプリを起動
 openfocus ctl <command> [flags]          # 実行中のウィンドウを操作（AGENT_CONTROL_SPEC.md）
 openfocus recipe create FILE --input … --output … [処理オプション]
-openfocus recipe run FILE [--dry-run]    # 保存済みヘッドレスレシピを再生
+openfocus recipe run FILE [--dry-run] [--experimental]  # 保存済みヘッドレスレシピを再生
 openfocus retouch replay CHECKPOINT --base BASE --sources … --output RESULT
 ```
 
@@ -1419,20 +1406,20 @@ openfocus -i ./stack_folder -o ./result/fused.png
 ```
 
 ```bash
-# 既定の AI（StackMFF V3）でフォルダを融合
+# 既定の融合手法（OpenFocus B）でフォルダを融合
 python main.py --input ./stack_folder --output ./result/fused.png
 
 # DTCWT と ECC 位置合わせ、8 スレッド
-python main.py -i ./stack_folder -o ./result/fused.png -m dtcwt -a ecc -t 8
+python main.py -i ./stack_folder -o ./result/fused.png -m dtcwt -a ecc -t 8 --experimental
 
 # StackMFF V3 を CPU に強制し、タイルサイズを指定
-python main.py -i ./stack_folder -o ./result/fused.png -m stackmffv3 --cpu --tile-size 512
+python main.py -i ./stack_folder -o ./result/fused.png -m stackmffv3 --cpu --tile-size 512 --experimental
 
 # ファイルを明示的に列挙。動画ファイルも入力として受け付けます
-python main.py -i img1.jpg img2.jpg img3.jpg -o fused.png -m gfgfgf
+python main.py -i img1.jpg img2.jpg img3.jpg -o fused.png -m gfgfgf --experimental
 
 # メタデータから較正したスケールバー付きのマルチページ TIFF Z スタック
-python main.py -i ./zstack.tif -o fused.png -m dtcwt --scale-bar
+python main.py -i ./zstack.tif -o fused.png -m dtcwt --scale-bar --experimental
 
 # 融合せず、入力も変えずに隣接する類似フレームだけを調べる
 python main.py -i ./stack_folder --suggest-duplicates
@@ -1459,10 +1446,13 @@ dry-run では使えません。
 処理レシピはヘッドレス設定を保存して再利用・移行できます。
 
 ```bash
-openfocus recipe create workflow.json -i ./stack_folder -o ./result/fused.png -m dct --cpu
+openfocus recipe create workflow.json -i ./stack_folder -o ./result/fused.png -m openfocus_b --cpu
 openfocus recipe run workflow.json --dry-run
 openfocus recipe run workflow.json
 ```
+
+レシピには選択した融合手法が保存されます。実験的な融合手法を選んだレシピは、
+`--dry-run` での確認も含め、`openfocus recipe run` を実行するたびに `--experimental` を指定してください。
 
 レシピ JSON のバージョン 1 は `version`、`input` 配列、`output` または `output_dir`、
 `options` オブジェクトを含みます。パスはレシピファイルからの相対パスで、移動するときは
@@ -1491,7 +1481,7 @@ PyQt をインポートせずに、同じヘッドレス API を Python から�
 ```python
 from core.recipes import capture_project_recipe, capture_recipe, load_recipe, save_recipe, run_recipe
 
-capture_recipe("workflow.json", ["-i", "stack_folder", "-o", "result/fused.png", "-m", "dct"])
+capture_recipe("workflow.json", ["-i", "stack_folder", "-o", "result/fused.png", "-m", "openfocus_b"])
 capture_project_recipe("from-project.json", "session.ofproj",
                        ["-i", "new_stack", "-o", "result/fused.png"])
 recipe = load_recipe("workflow.json")
@@ -1522,7 +1512,8 @@ openfocus retouch replay edits.ofretouch --base fused.png --sources frame1.png f
 | `--input, -i` | 画像フォルダ、動画ファイル、1 つ以上の画像ファイル、またはマルチページ TIFF |
 | `--output, -o` | 単一スタックの出力画像パス（拡張子が形式を決定）。`--output-dir` がない場合は必須 |
 | `--output-dir, -d` | バッチモード：各入力フォルダを処理し、スタックごとに `<folder>.png` を書き出す |
-| `--method, -m` | `stackmffv3`（既定）、`stackmffv2`、`stackmff`、`openfocus_a/b/c`、`guided_filter`、`dct`、`dtcwt`、`gfgfgf` |
+| `--method, -m` | 安定版は `openfocus_a`、`openfocus_b`（既定）、`openfocus_c`。実験的な手法は `guided_filter`、`dct`、`dtcwt`、`gfgfgf`、`stackmff`、`stackmffv2`、`stackmffv3` |
+| `--experimental` | この CLI 実行で実験的な融合手法の使用を許可 |
 | `--param KEY=JSON_VALUE` | 融合パラメータ。複数回指定でき、旧式の専用フラグより優先 |
 | `--align, -a` | `none`（既定）、`homography`、`ecc`、`openfocus`、`both` |
 | `--align-param KEY=JSON_VALUE` | 位置合わせパラメータ。例：`failure_policy="fail"`、`reference_frame=3` |
@@ -1534,7 +1525,6 @@ openfocus retouch replay edits.ofretouch --base fused.png --sources frame1.png f
 | `--sharpen-output` | 融合後、量子化前に軽いアンシャープマスクを適用。既定はオフ |
 | `--sort` | `openfocus_a/b/c` のフレーム順：`asc`（既定、ファイル順）、`desc`（遠→近のスイープを反転）、`off` |
 | `--frame-order` | フォルダ入力：`auto`（既定）は全フレームに EXIF のフォーカスステップがあれば近→遠の順に並べます（OM SYSTEM のフォーカスブラケットは中間の深さから始まります）。なければ名前順。`name` は常にファイル名順。明示的に指定したファイルは指定順のまま |
-| `--dust-map WHITE` | ピントを外した白場画像によるフラットフィールド（ダストマップ）補正 |
 | `--defect-mask-path MASK` | センサー座標の欠陥マスク。非ゼロ画素を位置合わせ前に修復 |
 | `--sensor-denoise` | 位置合わせ前に保守的なセンサーノイズ除去を適用 |
 | `--kernel, -k` | `kernel_size` を持つ手法のカーネルサイズ。A/B/C のパラメーターは `--param` で指定 |
@@ -1563,7 +1553,7 @@ openfocus retouch replay edits.ofretouch --base fused.png --sources frame1.png f
 | `--resume` | 今回要求した成果がすべて空でない通常ファイルの場合だけフォルダを省略。内容やパラメータは検証しません |
 | `--json FILE` | 結果概要を JSON で保存 |
 | `--json-progress` | 進捗を JSON 行（NDJSON）で出力。通常の文章は stderr へ |
-| `--config FILE` | バッチモード：フォルダ別上書きを JSON で指定（例 `{"stackA": {"method": "dct"}}`） |
+| `--config FILE` | バッチモード：フォルダ別上書きを JSON で指定（例 `{"stackA": {"method": "openfocus_a"}}`） |
 
 `--method none` はありません。CLI は常に融合を実行します。位置合わせ専用の出力には
 デスクトップアプリを使ってください。

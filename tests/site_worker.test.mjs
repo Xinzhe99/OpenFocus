@@ -739,6 +739,147 @@ test("www canonicalises static paths before they reach the asset binding", async
   assert.deepEqual(env.ASSETS.calls, []);
 });
 
+const FIRST_QR = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAAAAAA6fptVAAAACklEQVR4nGNgAAAAAgABSK+kcQAAAABJRU5ErkJggg==", "base64",
+);
+const REPLACEMENT_QR = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAAAAADRSSBWAAAAC0lEQVR4nGP4/x8AAwAB//wl3FEAAAAASUVORK5CYII=", "base64",
+);
+
+test("WeChat QR routes fetch current PNGs anonymously from fixed account endpoints", async () => {
+  const env = makeEnv();
+  const calls = [];
+  let current = FIRST_QR;
+  globalThis.fetch = async (url, options) => {
+    calls.push(url);
+    assert.equal(options.method, "GET");
+    assert.equal(options.redirect, "manual");
+    assert.equal(options.credentials, "omit");
+    assert.equal(options.cache, "no-store");
+    const headers = new Headers(options.headers);
+    assert.equal(headers.get("accept"), "image/png");
+    for (const header of ["authorization", "cookie", "range", "if-none-match"]) {
+      assert.equal(headers.get(header), null);
+    }
+    return new Response(current, { headers: {
+      "Content-Type": "image/png",
+      ...(current === FIRST_QR ? { "Content-Length": String(current.length) } : {}),
+      "Cache-Control": "public, max-age=3600",
+      "Set-Cookie": "qr_fixture=1",
+      ETag: '"upstream"',
+    } });
+  };
+  const headers = {
+    Authorization: "Bearer incoming",
+    Cookie: "session=incoming",
+    Range: "bytes=0-10",
+    "If-None-Match": '"old"',
+  };
+  const groupUrl = "https://openfocus.top/wechat-group.png?source=https://external.example";
+  const first = await run(groupUrl, { headers, env });
+  assert.equal(first.status, 200);
+  assert.deepEqual(Buffer.from(await first.arrayBuffer()), FIRST_QR);
+  current = REPLACEMENT_QR;
+  const replacement = await run(groupUrl, { env });
+  assert.equal(replacement.status, 200);
+  assert.deepEqual(Buffer.from(await replacement.arrayBuffer()), REPLACEMENT_QR);
+
+  const official = await run("https://openfocus.top/wechat-official-account.jpg", { env });
+  assert.equal(official.status, 200);
+  assert.deepEqual(Buffer.from(await official.arrayBuffer()), REPLACEMENT_QR);
+  const head = await run("https://www.openfocus.top/wechat-official-account.jpg", { method: "HEAD", env });
+  assert.equal(head.status, 200);
+  assert.equal(head.body, null);
+  for (const response of [first, replacement, official, head]) {
+    assert.equal(response.headers.get("content-type"), "image/png");
+    const expectedLength = response === first ? FIRST_QR.length : REPLACEMENT_QR.length;
+    assert.equal(response.headers.get("content-length"), String(expectedLength));
+    assert.equal(response.headers.get("cache-control"), "no-store");
+    assert.equal(response.headers.get("x-content-type-options"), "nosniff");
+    for (const header of ["set-cookie", "etag", "location"]) {
+      assert.equal(response.headers.get(header), null);
+    }
+  }
+  assert.deepEqual(calls, [
+    "https://account.openfocus.top/v1/qr/wechat-group",
+    "https://account.openfocus.top/v1/qr/wechat-group",
+    "https://account.openfocus.top/v1/qr/wechat-official-account",
+    "https://account.openfocus.top/v1/qr/wechat-official-account",
+  ]);
+  assert.deepEqual(env.ASSETS.calls, []);
+});
+
+test("WeChat QR errors distinguish unpublished codes and never use static assets", async () => {
+  const env = makeEnv();
+  const url = "https://openfocus.top/wechat-official-account.jpg";
+  let fetches = 0;
+  let status = 404;
+  globalThis.fetch = async () => {
+    fetches++;
+    if (status === 0) throw new Error("connection failed");
+    return new Response("internal response", { status, headers: {
+      Location: "https://external.example/qr",
+      "Set-Cookie": "qr_fixture=1",
+    } });
+  };
+  const denied = await run(url, { method: "POST", env });
+  assert.equal(denied.status, 405);
+  assert.equal(denied.headers.get("allow"), "GET, HEAD");
+  assert.equal(denied.headers.get("cache-control"), "no-store");
+  assert.equal(fetches, 0);
+
+  for (const [upstream, expected, message] of [
+    [404, 404, "QR code is unpublished"],
+    [302, 502, "QR code service is unavailable"],
+    [503, 502, "QR code service is unavailable"],
+    [0, 502, "QR code service is unavailable"],
+  ]) {
+    status = upstream;
+    const get = await run(url, { env });
+    const head = await run(url, { method: "HEAD", env });
+    for (const response of [get, head]) {
+      assert.equal(response.status, expected);
+      assert.equal(response.headers.get("cache-control"), "no-store");
+      assert.equal(response.headers.get("content-length"), String(message.length));
+      assert.equal(response.headers.get("location"), null);
+      assert.equal(response.headers.get("set-cookie"), null);
+    }
+    assert.equal(await get.text(), message);
+    assert.equal(head.body, null);
+  }
+  assert.deepEqual(env.ASSETS.calls, []);
+});
+
+test("WeChat QR proxy rejects oversized, mislabeled and truncated upstream bodies", async () => {
+  const env = makeEnv();
+  const limit = 512 * 1024;
+  let canceled = false;
+  const wideQr = Buffer.from(FIRST_QR);
+  wideQr.writeUInt32BE(1025, 16);
+  for (const [body, headers] of [
+    [new ReadableStream({
+      start(controller) {
+        controller.enqueue(FIRST_QR);
+        controller.enqueue(new Uint8Array(limit));
+      },
+      cancel() { canceled = true; },
+    }), {}],
+    [FIRST_QR, { "Content-Length": String(limit + 1) }],
+    [FIRST_QR, { "Content-Length": String(FIRST_QR.length + 1) }],
+    [FIRST_QR, { "Content-Type": "image/jpeg" }],
+    [new Uint8Array(FIRST_QR.length), {}],
+    [FIRST_QR.subarray(0, -1), {}],
+    [wideQr, {}],
+  ]) {
+    globalThis.fetch = async () => new Response(body, { headers: { "Content-Type": "image/png", ...headers } });
+    const response = await run("https://openfocus.top/wechat-group.png", { env });
+    assert.equal(response.status, 502);
+    assert.equal(response.headers.get("cache-control"), "no-store");
+  }
+  assert.equal(canceled, true);
+  assert.deepEqual(env.ASSETS.calls, []);
+});
+
 test("Chinese preference redirects / to /zh/ and other static paths pass through", async () => {
   installCache();
   installReleaseFetch();
