@@ -448,6 +448,10 @@ def log_render_resources(phase: str, preference: str = PREFERENCE_BALANCED) -> N
 class ResourceLimitError(MemoryError):
     """The minimum working set cannot safely be admitted."""
 
+    def __init__(self, *args, admission=None):
+        super().__init__(*args)
+        self.admission = admission
+
 
 # One isolated child job owns its process, so every producer thread reads the
 # same envelope from here instead of carrying a per-thread copy.
@@ -500,7 +504,13 @@ def _detected_ram_ceiling(snapshot: ResourceSnapshot) -> int:
     return ceiling
 
 
-def _log_memory_rejection(required_bytes, snapshot, ceiling):
+_ADMISSION_BYTES_LIMIT = 10**15
+_ADMISSION_BYTE_FIELDS = frozenset((
+    'required_bytes', 'available_ram_bytes', 'total_ram_bytes', 'available_commit_bytes',
+    'process_commit_headroom_bytes', 'ram_ceiling'))
+
+
+def _memory_rejection_details(required_bytes, snapshot, ceiling):
     # Diagnostics must never affect the admission decision.
     try:
         details = {'resource_status': 'insufficient' if snapshot.ram_known else 'unknown'}
@@ -515,11 +525,15 @@ def _log_memory_rejection(required_bytes, snapshot, ceiling):
             values['process_commit_headroom_bytes'] = snapshot.process_commit_headroom
         if snapshot.ram_known:
             values['ram_ceiling'] = ceiling
-        details.update({key: min(int(value), 10**15) for key, value in values.items()
-                        if value >= 0})
+        details.update({key: min(int(value), _ADMISSION_BYTES_LIMIT)
+                        for key, value in values.items() if value >= 0})
+    except Exception:
+        return None
+    try:
         log_action('resource_admission', **details)
     except Exception:
         pass
+    return details
 
 
 def require_memory(required_bytes: int, snapshot: Optional[ResourceSnapshot] = None,
@@ -541,16 +555,16 @@ def require_memory(required_bytes: int, snapshot: Optional[ResourceSnapshot] = N
         budget = min(budget, max(0, int(user_limit)))
         ceiling = min(ceiling, max(0, int(user_limit)))
     if not snapshot.ram_known:
-        _log_memory_rejection(required_bytes, snapshot, ceiling)
-        raise ResourceLimitError("Available physical memory could not be determined")
+        raise ResourceLimitError("Available physical memory could not be determined",
+                                 admission=_memory_rejection_details(required_bytes, snapshot, ceiling))
     if budget > 0 and required_bytes <= budget:
         return budget
     if ceiling > 0 and required_bytes <= ceiling:
         return max(1, int(required_bytes))
-    _log_memory_rejection(required_bytes, snapshot, ceiling)
     raise ResourceLimitError(
         f"Insufficient memory: need {memory.mb(required_bytes):.0f} MB "
-        f"of new allocations; at most {memory.mb(ceiling):.0f} MB is available")
+        f"of new allocations; at most {memory.mb(ceiling):.0f} MB is available",
+        admission=_memory_rejection_details(required_bytes, snapshot, ceiling))
 
 
 def make_process_budget(parent_frame_bytes: int = 0,

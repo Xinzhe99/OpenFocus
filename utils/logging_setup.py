@@ -350,12 +350,12 @@ class _Operation:
 
 
 @contextmanager
-def log_operation(name: str, **details):
+def log_operation(name: str, *, cancel_on=(), **details):
     """Correlate nested task logs; record one terminal outcome and elapsed time.
 
     Catching an error inside the scope requires operation.fail() in the except
-    block. Cooperative cancellation requires operation.cancel(). Neither changes
-    processing, signals, or exception propagation.
+    block. Use cancel_on for the operation's cooperative cancellation exceptions.
+    These choices preserve processing, signals and exception propagation.
     """
     operation = _Operation(name)
     parent = _context.get()
@@ -368,7 +368,7 @@ def log_operation(name: str, **details):
         try:
             yield operation
         except BaseException as exc:
-            if isinstance(exc, KeyboardInterrupt):
+            if isinstance(exc, KeyboardInterrupt) or isinstance(exc, cancel_on):
                 operation.cancel()
             elif isinstance(exc, SystemExit):
                 operation.status = "completed" if exc.code in (None, 0) else "failed"
@@ -409,16 +409,20 @@ def all_log_files():
 
 def session_log_excerpt(max_bytes: int = 60_000) -> str:
     """Read a bounded tail across this process's rotations, newest lines last."""
+    _flush()
+    return read_log_tail(session_log_path(), max_bytes)
+
+
+def read_log_tail(path: Path, max_bytes: int) -> str:
+    """Return a bounded, chronological tail for a specific process log."""
     if max_bytes <= 0:
         return ""
-    _flush()
-    current = session_log_path()
     parts = []
     remaining = max_bytes
     trimmed = False
-    for path in (current, *(Path(f"{current}.{i}") for i in range(1, BACKUP_COUNT + 1))):
+    for candidate in (path, *(Path(f"{path}.{i}") for i in range(1, BACKUP_COUNT + 1))):
         try:
-            with path.open("rb") as stream:
+            with candidate.open("rb") as stream:
                 size = stream.seek(0, os.SEEK_END)
                 count = min(size, remaining)
                 if count:

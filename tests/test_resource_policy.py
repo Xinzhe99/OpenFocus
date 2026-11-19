@@ -27,19 +27,34 @@ def test_rejected_admissions_record_safe_snapshot_without_changing_decisions(mon
     snapshot = _snapshot()
     policy.require_memory(1, snapshot)
     assert events == []
-    with pytest.raises(policy.ResourceLimitError, match='Insufficient memory'):
+    with pytest.raises(policy.ResourceLimitError, match='Insufficient memory') as caught:
         policy.require_memory(100 * GiB, snapshot)
     assert events == [('resource_admission', {'resource_status': 'insufficient',
         'required_bytes': 100 * GiB, 'available_ram_bytes': 8 * GiB,
         'total_ram_bytes': 16 * GiB, 'ram_ceiling': policy.ram_ceiling(snapshot)})]
+    assert caught.value.admission == events[0][1]
     events.clear()
-    with pytest.raises(policy.ResourceLimitError, match='could not be determined'):
+    with pytest.raises(policy.ResourceLimitError, match='could not be determined') as caught:
         policy.require_memory(10**16, _snapshot(available_ram=0))
     assert events == [('resource_admission', {'resource_status': 'unknown',
         'required_bytes': 10**15, 'total_ram_bytes': 16 * GiB})]
+    assert caught.value.admission == events[0][1]
     monkeypatch.setattr(policy, 'log_action', lambda *args, **kwargs: 1 / 0)
-    with pytest.raises(policy.ResourceLimitError, match='Insufficient memory'):
+    with pytest.raises(policy.ResourceLimitError, match='Insufficient memory') as caught:
         policy.require_memory(100 * GiB, snapshot)
+    assert caught.value.admission['required_bytes'] == 100 * GiB
+
+
+def test_rejection_reuses_single_probe_and_its_effective_limit(monkeypatch):
+    probes = iter([_snapshot(commit_headroom=0, process_commit_headroom=GiB)])
+    monkeypatch.setattr(policy, 'probe_resources', lambda: next(probes))
+    with pytest.raises(policy.ResourceLimitError) as caught:
+        policy.require_memory(123)
+    assert caught.value.admission == {
+        'resource_status': 'insufficient', 'required_bytes': 123, 'ram_ceiling': 0,
+        'available_ram_bytes': 8 * GiB, 'total_ram_bytes': 16 * GiB,
+        'available_commit_bytes': 0, 'process_commit_headroom_bytes': GiB,
+    }
 
 
 def _workload(**changes):

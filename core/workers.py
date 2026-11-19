@@ -536,6 +536,9 @@ class RenderWorker(QThread):
         """Request cancellation; checked between registration/fusion stages."""
         self.is_cancelled = True
 
+    def _record_render_error(self, exc):
+        self._render_error_category = _render_error_category(exc)
+
     def run(self):
         self._render_error_category = None
         with log_operation("render", method=self.algorithm, parameters=self.fusion_parameters,
@@ -567,14 +570,14 @@ class RenderWorker(QThread):
                             operation.cancel()
                             self.error_signal.emit("CANCELLED: render cancelled")
                         except Exception as e:
-                            self._render_error_category = _render_error_category(e)
+                            self._record_render_error(e)
                             operation.fail()
                             self.error_signal.emit(str(e))
                 except RegistrationCancelled:
                     operation.cancel()
                     self.error_signal.emit("CANCELLED: render cancelled")
                 except Exception as e:
-                    self._render_error_category = _render_error_category(e)
+                    self._record_render_error(e)
                     operation.fail()
                     self.error_signal.emit(str(e))
                 finally:

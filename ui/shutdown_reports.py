@@ -5,12 +5,11 @@ import time
 from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 from PyQt6.QtWidgets import QApplication
 
-from locales import trans
 from utils.account_client import AccountClient
 from utils.app_paths import user_data_dir
-from utils.report_bundle import build_report_bundle, session_has_error
+from utils.logging_setup import get_logger
 from utils.report_client import ReportClient, automatic_snapshot, revoke_automatic
-from utils.reporting import retry_reports, send_bundle
+from utils.reporting import retry_reports
 from utils.settings_store import automatic_reports_allowed, get_settings, REPORTS_CHOICE_KEY
 
 _ACTIVE_JOBS = set()
@@ -19,10 +18,9 @@ _ACTIVE_JOBS = set()
 class _ShutdownReport(QObject):
     finished = pyqtSignal()
 
-    def __init__(self, account, locale, auto_send, account_only=False):
+    def __init__(self, account, auto_send, account_only=False):
         super().__init__()
         self.account = account
-        self.locale = locale
         self.auto_send = auto_send
         self.account_only = account_only
         self.cancel = threading.Event()
@@ -40,17 +38,11 @@ class _ShutdownReport(QObject):
             if not self.auto_send:
                 revoke_automatic(user_data_dir() / 'reports')
                 ReportClient(user_data_dir() / 'reports').discard_automatic(only_if_revoked=True)
-            if enabled and session_has_error():
-                bundle = build_report_bundle()
-                if bundle.has_error:
-                    send_bundle(bundle, source='auto', locale=self.locale, account=account,
-                                require_account=self.account_only, permission=self.permission,
-                                cancel=self.cancel, deadline=self.deadline)
             retry_reports(account, include_auto=enabled, account_only_auto=self.account_only,
                           permission=self.permission, cancel=self.cancel, deadline=self.deadline)
         except Exception:
-            # Never expose request contents or prevent shutdown.
-            pass
+            # Keep the pending reports available for the next startup.
+            get_logger(__name__).warning('Could not deliver queued reports at shutdown')
         finally:
             self.finished.emit()
             _ACTIVE_JOBS.discard(self)
@@ -60,15 +52,14 @@ def start_shutdown_reports(window):
     """Keep only the event loop alive for up to five seconds after UI closure."""
     settings = get_settings()
     enabled = automatic_reports_allowed(settings)
-    if not enabled and not (user_data_dir() / 'reports' / 'reports.json').exists():
+    if not (user_data_dir() / 'reports' / 'reports.json').exists():
         return
     app = QApplication.instance()
     if app is None:
         return
     app.setQuitOnLastWindowClosed(False)
     account_only = settings.value(REPORTS_CHOICE_KEY) == 'account_default'
-    job = _ShutdownReport(getattr(window, '_account_client', None), trans.current_lang,
-                          enabled, account_only)
+    job = _ShutdownReport(getattr(window, '_account_client', None), enabled, account_only)
     timer = QTimer(app)
     timer.setSingleShot(True)
     def expire():

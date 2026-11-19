@@ -38,7 +38,8 @@ class _ReportJob(QObject):
 
 
 class ReportReviewDialog(QDialog):
-    def __init__(self, window_main, parent=None, *, crash_text=None, log_text=None):
+    def __init__(self, window_main, parent=None, *, crash_text=None, log_text=None,
+                 app_version=None, build_channel=None):
         super().__init__(parent or window_main)
         self.window_main = window_main
         self.sent_or_queued = False
@@ -71,7 +72,8 @@ class ReportReviewDialog(QDialog):
         layout.addLayout(buttons)
 
         def prepare():
-            bundle = build_report_bundle(crash_text=crash_text, log_text=log_text)
+            bundle = build_report_bundle(crash_text=crash_text, log_text=log_text,
+                                         app_version=app_version, build_channel=build_channel)
             metadata = report_metadata(bundle, source='manual', locale=self.locale,
                                        severity=self.severity)
             metadata['installation_id'] = ReportClient(user_data_dir() / 'reports').installation_id
