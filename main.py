@@ -896,7 +896,8 @@ class OpenFocus(QMainWindow):
         else:
             self.lbl_status_memory.setText(trans.t('status_ram').format('N/A'))
 
-        from core.multi_focus_fusion import (is_ai_fusion_available,
+        from core.multi_focus_fusion import (OPENCL_FUSION_ALGORITHMS,
+                                             is_ai_fusion_available,
                                              neural_device_kind, openfocus_gpu_available,
                                              openfocus_gpu_name, short_render_device_name)
         from fusion_methods import neural_runtime
@@ -918,7 +919,7 @@ class OpenFocus(QMainWindow):
                 if result and result.get('method') == method:
                     device = result['device']
                     state = 'actual'
-                elif method in ('openfocus_a', 'openfocus_b', 'openfocus_c'):
+                elif method in OPENCL_FUSION_ALGORITHMS:
                     if opencl:
                         device, state = opencl_name, 'ready'
                     elif opencl is None:
@@ -942,7 +943,7 @@ class OpenFocus(QMainWindow):
                 detail,
                 hardware,
                 'ONNX Runtime: ' + ', '.join(diagnostics['providers']),
-                'OpenFocus A/B/C: ' + (opencl_name if opencl else 'CPU' if opencl is False else '…'),
+                'OpenFocus A/B/C & Guided Filter: ' + (opencl_name if opencl else 'CPU' if opencl is False else '…'),
                 trans.t('env_gpu_accel') + ': ' + neural_runtime.display_name(capability)
                 if neural_runtime.is_accelerator(capability)
                 else trans.t('env_gpu_memory_unknown').format(
@@ -1445,8 +1446,9 @@ class OpenFocus(QMainWindow):
     def _maybe_probe_device_kind(self) -> None:
         """Resolve the accelerator only when the selected method uses it."""
         try:
+            from core.multi_focus_fusion import OPENCL_FUSION_ALGORITHMS
             code = self.combo_fusion.currentData()
-            if code in ('openfocus_a', 'openfocus_b', 'openfocus_c') or (code != 'none' and get_fusion(code).neural):
+            if code in OPENCL_FUSION_ALGORITHMS or (code != 'none' and get_fusion(code).neural):
                 self._probe_device_kind_async()
         except Exception:
             pass
