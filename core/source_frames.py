@@ -1564,19 +1564,26 @@ def _tiff_preview(page, should_cancel=None):
     return _orient(cv2.cvtColor(small, cv2.COLOR_RGB2BGR), orientation)
 
 
+def _matching_tiff_previews(page, following):
+    """Reduced images attached as SubIFDs or immediately following this page."""
+    from itertools import chain
+    orientation = _tiff_orientation(page)
+    for candidate in chain(page.pages or (), following):
+        if (candidate.is_reduced and not candidate.is_mask
+                and 0 < candidate.imagewidth <= page.imagewidth
+                and 0 < candidate.imagelength <= page.imagelength
+                and abs(candidate.imagewidth * page.imagelength - candidate.imagelength * page.imagewidth)
+                    <= max(page.imagewidth, page.imagelength)
+                and candidate.samplesperpixel == page.samplesperpixel
+                and candidate.photometric == page.photometric
+                and ('Orientation' not in candidate.tags or _tiff_orientation(candidate) == orientation)):
+            yield candidate
+
+
 def _tiff_embedded_preview(page, candidates, should_cancel):
     """Use a compatible reduced image belonging to this full-resolution IFD."""
     orientation = _tiff_orientation(page)
-    candidates = list(page.pages or ()) + list(candidates)
-    candidates = [p for p in candidates if getattr(p, 'is_reduced', False)
-                  and 0 < p.imagewidth <= page.imagewidth
-                  and 0 < p.imagelength <= page.imagelength
-                  and abs(p.imagewidth * page.imagelength - p.imagelength * page.imagewidth)
-                      <= max(page.imagewidth, page.imagelength)
-                  and p.samplesperpixel == page.samplesperpixel
-                  and p.photometric == page.photometric
-                  and ('Orientation' not in p.tags or _tiff_orientation(p) == orientation)
-                  and int(p.compression) != 5]
+    candidates = [p for p in _matching_tiff_previews(page, candidates) if int(p.compression) != 5]
     candidates.sort(key=lambda p: p.imagewidth * p.imagelength, reverse=True)
     for candidate in candidates:
         _check_preview_cancel(should_cancel)
