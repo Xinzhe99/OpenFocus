@@ -714,7 +714,7 @@ Le planificateur tient compte des cœurs physiques, de l'affinité et des quotas
 
 StackMFF V1/V2/V3 utilisent ONNX Runtime. DirectML sous Windows et CoreML sous macOS peuvent accélérer l’inférence ; sinon le CPU est utilisé. La disponibilité du fournisseur ne prouve pas une exécution sur GPU. La prise en charge d’autres GPU reste à valider.
 
-OpenFocus B peut accélérer le traitement de profondeur et la fusion des sources sur un GPU OpenCL compatible ; selon la mémoire disponible, il peut utiliser des étapes GPU bornées ou revenir au CPU. Lorsque l'accélération GPU est activée, OpenFocus A, OpenFocus C, Filtre guidé, GFG-FGF et DCT peuvent effectuer la fusion pleine image sur un GPU OpenCL compatible ; si la mémoire est insuffisante ou en cas de problème de périphérique ou de pilote, ils reviennent au CPU. L'export de la carte de profondeur de C et le recalage utilisent le CPU. Voir [prise en charge GPU](GPU_SUPPORT.md).
+OpenFocus B peut accélérer le traitement de profondeur et la fusion des sources sur un GPU OpenCL compatible ; selon la mémoire disponible, il peut utiliser des étapes GPU bornées ou revenir au CPU. Lorsque l'accélération GPU est activée, OpenFocus A, OpenFocus C, Filtre guidé, GFG-FGF, DCT et DTCWT peuvent effectuer la fusion pleine image sur un GPU OpenCL compatible ; si la mémoire est insuffisante ou en cas de problème de périphérique ou de pilote, ils reviennent au CPU. L'export de la carte de profondeur de C et le recalage utilisent le CPU. Voir [prise en charge GPU](GPU_SUPPORT.md).
 
 - Basculez via **Paramètres → Accélération GPU**
 - La décocher force les méthodes de fusion compatibles sur le CPU — utile en cas de problème de pilote GPU

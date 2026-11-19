@@ -1127,7 +1127,7 @@ GUI 图像栈做过旋转、翻转、平场校正或其他源修改后，不能�
 
 StackMFF V1/V2/V3 可在兼容的 Windows x64 NVIDIA 显卡上使用 TensorRT 和 PyTorch CUDA。进入 **设置 → AI 推理加速组件** 可查看本机建议、下载量和空间要求，或在升级后安装。启用 GPU 加速后，OpenFocus 依次尝试适用的 TensorRT、PyTorch CUDA、ONNX Runtime 加速提供程序及 CPU。Windows 内置 DirectML，macOS 可使用 CoreML。TensorRT 首次处理新的模型和图块尺寸需要编译，之后可复用。可在「反馈问题」的环境信息中查看实际执行引擎和回退原因。
 
-OpenFocus B 可使用兼容的 OpenCL GPU 加速深度处理和源帧合并；根据内存预算，可使用有界 GPU 阶段或回退到 CPU。启用 GPU 加速后，OpenFocus A、OpenFocus C、引导滤波、GFG-FGF 和 DCT 可使用兼容的 OpenCL GPU 进行全图融合。内存不足或设备、驱动出现问题时会回退到 CPU。C 的深度图导出使用 CPU。ECC 配准可使用受支持的 GPU 缩小大图，再由 CPU 估计变换。平台要求参见 [GPU 支持](GPU_SUPPORT.md)。
+OpenFocus B 可使用兼容的 OpenCL GPU 加速深度处理和源帧合并；根据内存预算，可使用有界 GPU 阶段或回退到 CPU。启用 GPU 加速后，OpenFocus A、OpenFocus C、引导滤波、GFG-FGF、DCT 和 DTCWT 可使用兼容的 OpenCL GPU 进行全图融合。内存不足或设备、驱动出现问题时会回退到 CPU。C 的深度图导出使用 CPU。ECC 配准可使用受支持的 GPU 缩小大图，再由 CPU 估计变换。平台要求参见 [GPU 支持](GPU_SUPPORT.md)。
 
 
 - 通过 **设置 → GPU 加速** 开关切换
