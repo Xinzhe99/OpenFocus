@@ -174,11 +174,11 @@ def _exercise_planar_lzw(executable: Path, environment: dict, root: Path) -> Non
     rows, cols = np.indices((32, 40), dtype=np.uint16)
     pixels = np.stack((rows * 1000 + cols, cols * 1200 + rows,
                        rows * 313 + cols * 719), axis=-1)
-    source = root / "planar-lzw.tif"
+    source_dir = root / 'planar-stack'
+    source_dir.mkdir()
+    source = source_dir / 'planar-lzw.tif'
     tifffile.imwrite(source, np.moveaxis(pixels, -1, 0), photometric="rgb",
                      planarconfig="separate", compression="lzw", metadata=None)
-    destination = root / "converted"
-    destination.mkdir()
     _call(executable, environment, "ui.trigger", "--key", "converter_title")
     deadline = time.monotonic() + 30
     while time.monotonic() < deadline:
@@ -209,13 +209,8 @@ def _exercise_planar_lzw(executable: Path, environment: dict, root: Path) -> Non
     else:
         raise RuntimeError("Packaged converter file picker did not open")
     _call(executable, environment, "dialog.file", "--path", str(source))
-    fields = _call(executable, environment, "ui.find", "--window", converter["root"],
-                   "--class", "QLineEdit").get("matches", [])
-    if len(fields) != 1:
-        raise RuntimeError(f"Packaged converter output field was not found: {fields}")
-    _call(executable, environment, "ui.set", "--path", fields[0]["path"], "--value", str(destination))
     _call(executable, environment, "ui.click", "--path", button("converter_start")["path"])
-    result = destination / "planar-lzw.png"
+    result = root / 'planar-stack_converted' / 'planar-lzw.png'
     deadline = time.monotonic() + 90
     while time.monotonic() < deadline:
         if result.is_file() and button("converter_start").get("enabled"):
