@@ -77,6 +77,17 @@ class FrameCache:
 SOURCE_CACHE = FrameCache()
 PREVIEW_CACHE = FrameCache(64 * 1024 * 1024)
 _retain_decoded_sources = ContextVar('retain_decoded_sources', default=True)
+_area_resizer = ContextVar('source_area_resizer', default=None)
+
+
+@contextmanager
+def source_area_resizer(backend):
+    """Use a job's pixel-exact resizer while resolving its source on this thread."""
+    token = _area_resizer.set(backend)
+    try:
+        yield
+    finally:
+        _area_resizer.reset(token)
 
 
 @contextmanager
@@ -675,8 +686,12 @@ class SourceFrame:
                 image = cv2.cvtColor(image, cv2.COLOR_BGR2BGRA)
                 _check_resolution_cancel(should_cancel)
             if self.linear_metadata is None and self.scale != 1 and not scaled_raw:
-                image = cv2.resize(image, (max(1, int(image.shape[1] * self.scale)),
-                                          max(1, int(image.shape[0] * self.scale))), interpolation=cv2.INTER_AREA)
+                dsize = (max(1, int(image.shape[1] * self.scale)),
+                         max(1, int(image.shape[0] * self.scale)))
+                backend = _area_resizer.get()
+                resized = backend.resize(image, dsize) if backend is not None else None
+                image = resized if resized is not None else cv2.resize(image, dsize, interpolation=cv2.INTER_AREA)
+                del resized
                 _check_resolution_cancel(should_cancel)
             for operation in self.transforms:
                 _check_resolution_cancel(should_cancel)
@@ -897,23 +912,25 @@ def resolve_region(frame, x, y, width, height, *, channels=None, should_cancel=N
     return image
 
 
+def _normalize_frame(image, *, should_cancel):
+    from core.frame_storage import create_transient_frame
+    from core.registration import RegistrationCancelled
+    output = create_transient_frame(image.shape, np.float32)
+    for y in range(0, image.shape[0], 128):
+        if should_cancel is not None and should_cancel():
+            raise RegistrationCancelled()
+        strip = image[y:y + 128].astype(np.float32)
+        if image.dtype == np.uint16:
+            strip *= 255.0 / 65535.0
+        output[y:y + 128] = strip
+    return output
+
+
 def normalize_frames(frames, should_cancel=None):
     """Describe the existing shared float32 domain, preserving uint16 low bits."""
     if not any(frame.dtype == np.uint16 for frame in frames):
         return list(frames)
-
-    def normalize(image):
-        from core.frame_storage import create_transient_frame
-        from core.registration import RegistrationCancelled
-        output = create_transient_frame(image.shape, np.float32)
-        for y in range(0, image.shape[0], 128):
-            if should_cancel is not None and should_cancel():
-                raise RegistrationCancelled()
-            strip = image[y:y + 128].astype(np.float32)
-            if image.dtype == np.uint16:
-                strip *= 255.0 / 65535.0
-            output[y:y + 128] = strip
-        return output
+    normalize = partial(_normalize_frame, should_cancel=should_cancel)
 
     return [frame if frame.dtype == np.float32 else process_frame(
                 frame, normalize, dtype=np.float32, should_cancel=should_cancel,
@@ -921,24 +938,50 @@ def normalize_frames(frames, should_cancel=None):
                 * math.prod(frame.shape[1:]) * 4) for frame in frames]
 
 
+@dataclass(eq=False)
+class _ExposureGain:
+    """One frame's render gain, shared with its reduced preview once measured."""
+    gain: float | None
+    target: float | None
+    should_cancel: object
+
+    def __call__(self, image):
+        from core.frame_storage import create_transient_frame
+        from core.registration import RegistrationCancelled
+        from utils.image_utils import _exposure_mean, apply_exposure_gain
+
+        if self.gain is None:
+            mean = _exposure_mean(image, self.should_cancel, normalize_uint16=True)
+            self.gain = 1.0 if self.target <= 1e-6 or mean <= 1e-6 else self.target / mean
+        if self.gain == 1.0:
+            return image
+        output = create_transient_frame(image.shape, image.dtype)
+        if self.target is not None and _uses_exposure_table(image.shape, image.dtype):
+            _match_through_table(image, self.gain, output, self.should_cancel)
+            return output
+        adjust = _matched_strip if self.target is not None else apply_exposure_gain
+        for y in range(0, image.shape[0], 128):
+            if self.should_cancel is not None and self.should_cancel():
+                raise RegistrationCancelled()
+            output[y:y + 128] = adjust(image[y:y + 128], self.gain)
+        return output
+
+    def preview(self, image, is_display, linear_metadata):
+        if self.gain is None or (self.gain != 1 and is_display and linear_metadata is not None):
+            # A developed thumbnail cannot reproduce a gain applied before development.
+            return None
+        if self.gain == 1:
+            return image
+        from utils.image_utils import apply_exposure_gain
+        adjust = _matched_strip if self.target is not None else apply_exposure_gain
+        return adjust(image, self.gain)
+
+
 def exposure_frames(frames, gains, should_cancel=None):
     """Apply precomputed whole-frame gains inside each admitted source consumer."""
-    from core.frame_storage import create_transient_frame
-    from utils.image_utils import apply_exposure_gain
-    from core.registration import RegistrationCancelled
-
-    def adjusted(gain):
-        def apply(image):
-            output = create_transient_frame(image.shape, image.dtype)
-            for y in range(0, image.shape[0], 128):
-                if should_cancel is not None and should_cancel():
-                    raise RegistrationCancelled()
-                output[y:y + 128] = apply_exposure_gain(image[y:y + 128], gain)
-            return output
-        return apply
 
     return [frame if gain == 1.0 else process_frame(
-                frame, adjusted(gain), should_cancel=should_cancel,
+                frame, _ExposureGain(gain, None, should_cancel), should_cancel=should_cancel,
                 scratch_bytes=frame.nbytes + min(frame.shape[0], 128)
                 * math.prod(frame.shape[1:]) * (4 + frame.dtype.itemsize))
             for frame, gain in zip(frames, gains)]
@@ -1028,29 +1071,8 @@ def _exposure_workspace_bytes(frame):
 def match_exposure_frames(frames, should_cancel=None, *, reference_index=-1):
     """Resolve the selected target mean once and retain one gain per source."""
     from utils.image_utils import _exposure_mean
-    from core.frame_storage import create_transient_frame
     reference = frames[reference_index]
     target = _exposure_mean(resolve_frame(reference), should_cancel, normalize_uint16=True)
-
-    def matcher(gain):
-        def match(image):
-            nonlocal gain
-            from core.registration import RegistrationCancelled
-            if gain is None:
-                mean = _exposure_mean(image, should_cancel, normalize_uint16=True)
-                gain = 1.0 if target <= 1e-6 or mean <= 1e-6 else target / mean
-            if gain == 1.0:
-                return image
-            output = create_transient_frame(image.shape, image.dtype)
-            if _uses_exposure_table(image.shape, image.dtype):
-                _match_through_table(image, gain, output, should_cancel)
-                return output
-            for y in range(0, image.shape[0], 128):
-                if should_cancel is not None and should_cancel():
-                    raise RegistrationCancelled()
-                output[y:y + 128] = _matched_strip(image[y:y + 128], gain)
-            return output
-        return match
 
     # A matched frame is cached for every later reader in the render, so its
     # processed (for example aligned) source is needed again only when the GUI
@@ -1058,7 +1080,7 @@ def match_exposure_frames(frames, should_cancel=None, *, reference_index=-1):
     from core.frame_resolution_cache import within_retention_limit
     store_sources = within_retention_limit(frames)
     # Native u16 restoration peaks at three float32 strips; outputs stay bounded.
-    return [process_frame(frame, matcher(1.0 if frame is reference else None),
+    return [process_frame(frame, _ExposureGain(1.0 if frame is reference else None, target, should_cancel),
                           store_source=store_sources,
                           should_cancel=should_cancel,
                           scratch_bytes=frame.nbytes + _exposure_workspace_bytes(frame))
@@ -1549,19 +1571,26 @@ def _tiff_preview(page, should_cancel=None):
     return _orient(cv2.cvtColor(small, cv2.COLOR_RGB2BGR), orientation)
 
 
+def _matching_tiff_previews(page, following):
+    """Reduced images attached as SubIFDs or immediately following this page."""
+    from itertools import chain
+    orientation = _tiff_orientation(page)
+    for candidate in chain(page.pages or (), following):
+        if (candidate.is_reduced and not candidate.is_mask
+                and 0 < candidate.imagewidth <= page.imagewidth
+                and 0 < candidate.imagelength <= page.imagelength
+                and abs(candidate.imagewidth * page.imagelength - candidate.imagelength * page.imagewidth)
+                    <= max(page.imagewidth, page.imagelength)
+                and candidate.samplesperpixel == page.samplesperpixel
+                and candidate.photometric == page.photometric
+                and ('Orientation' not in candidate.tags or _tiff_orientation(candidate) == orientation)):
+            yield candidate
+
+
 def _tiff_embedded_preview(page, candidates, should_cancel):
     """Use a compatible reduced image belonging to this full-resolution IFD."""
     orientation = _tiff_orientation(page)
-    candidates = list(page.pages or ()) + list(candidates)
-    candidates = [p for p in candidates if getattr(p, 'is_reduced', False)
-                  and 0 < p.imagewidth <= page.imagewidth
-                  and 0 < p.imagelength <= page.imagelength
-                  and abs(p.imagewidth * page.imagelength - p.imagelength * page.imagewidth)
-                      <= max(page.imagewidth, page.imagelength)
-                  and p.samplesperpixel == page.samplesperpixel
-                  and p.photometric == page.photometric
-                  and ('Orientation' not in p.tags or _tiff_orientation(p) == orientation)
-                  and int(p.compression) != 5]
+    candidates = [p for p in _matching_tiff_previews(page, candidates) if int(p.compression) != 5]
     candidates.sort(key=lambda p: p.imagewidth * p.imagelength, reverse=True)
     for candidate in candidates:
         _check_preview_cancel(should_cancel)

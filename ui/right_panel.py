@@ -336,9 +336,6 @@ class RightPanelComponents:
     registration_group: QGroupBox
 
     source_images_label: QLabel
-    btn_select_all: QPushButton
-    btn_select_none: QPushButton
-    btn_review_stack: QPushButton
     file_list: QListWidget
     output_label: QLabel
     output_list: QListWidget
@@ -508,30 +505,7 @@ def create_right_panel() -> RightPanelComponents:
     source_list_layout = QVBoxLayout(source_list_widget)
     source_list_layout.setContentsMargins(10, 10, 10, 10)
     source_images_label = QLabel(trans.t('label_source_images').format(0))
-    # Header row with select-all / clear-all: the per-frame checkboxes decide
-    # which frames join the render, and unticking 20 of them by hand was the
-    # only way to drop a bad tail.
-    source_header = QHBoxLayout()
-    source_header.addWidget(source_images_label)
-    source_header.addStretch()
-    btn_all = QPushButton(trans.t('btn_select_all'))
-    btn_all.setObjectName("secondaryButton")
-    btn_all.setFixedHeight(24)
-    btn_all.setToolTip(trans.t('btn_select_all_hint'))
-    btn_none = QPushButton(trans.t('btn_select_none'))
-    btn_none.setObjectName("secondaryButton")
-    btn_none.setFixedHeight(24)
-    btn_none.setToolTip(trans.t('btn_select_none_hint'))
-    btn_review_stack = ElidingButton(trans.t('stack_review_button'))
-    btn_review_stack.setObjectName("secondaryButton")
-    btn_review_stack.setToolTip(
-        trans.t('stack_review_button') + "\n" + trans.t('stack_review_hint'))
-    btn_review_stack.setEnabled(False)
-    btn_review_stack.setFixedHeight(24)
-    source_header.addWidget(btn_review_stack)
-    source_header.addWidget(btn_all)
-    source_header.addWidget(btn_none)
-    source_list_layout.addLayout(source_header)
+    source_list_layout.addWidget(source_images_label)
 
     file_list = _SourceListWidget()
     file_list.setIconSize(QSize(40, 40))
@@ -639,9 +613,6 @@ def create_right_panel() -> RightPanelComponents:
         registration_group=registration_group,
 
         source_images_label=source_images_label,
-        btn_select_all=btn_all,
-        btn_select_none=btn_none,
-        btn_review_stack=btn_review_stack,
         file_list=file_list,
         output_label=output_label,
         output_list=output_list,
@@ -657,21 +628,6 @@ def bind_right_panel(window, components: RightPanelComponents) -> None:
 
     if hasattr(components.output_list, "set_window"):
         components.output_list.set_window(window)
-
-    def _set_all_source_checks(checked: bool) -> None:
-        excluded = set() if checked else set(range(len(window.raw_images)))
-        if excluded == window.excluded_frames:
-            return
-        window.push_undo()
-        window.excluded_frames = excluded
-        window.source_manager.decorate_source_items()
-        window.source_manager.processing_selection_changed()
-
-    components.btn_select_all.clicked.connect(
-        lambda: _set_all_source_checks(True))
-    components.btn_select_none.clicked.connect(
-        lambda: _set_all_source_checks(False))
-    components.btn_review_stack.clicked.connect(window.source_manager.toggle_stack_review)
 
     components.combo_fusion.currentIndexChanged.connect(
         window.refresh_algorithm_parameters)
@@ -726,6 +682,7 @@ def bind_right_panel(window, components: RightPanelComponents) -> None:
     components.btn_render_settings.clicked.connect(_show_render_settings)
 
 
+    window.source_manager.bind_source_actions(components.file_list)
     components.file_list.customContextMenuRequested.connect(window.source_manager.show_source_context_menu)
     components.file_list.currentRowChanged.connect(window.source_manager.sync_slider_from_list)
     components.file_list.itemChanged.connect(window.source_manager.on_item_changed)

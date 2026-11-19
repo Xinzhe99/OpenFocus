@@ -750,6 +750,7 @@ def test_prepared_cache_invalidation_preserves_inflight_reader(qapp, scratch, ch
         window.destroyed.slot()
     assert manager._prepared_cache is None
     assert manager._prepared_cache_key is None
+    assert manager._prepared_cache_source is None
     assert path.exists()
     np.testing.assert_array_equal(reader[0], np.ones((8, 9), np.uint8))
     reader.clear()

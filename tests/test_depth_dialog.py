@@ -267,7 +267,13 @@ def test_openfocus_depth_smoothing_edit_changes_measurement(
         depth_dialog, qapp, method, control):
     """B and C expose their fusion smoothing to the depth dialog; editing it
     must reach the shared estimator and soften the decision boundary."""
-    dialog, _ = depth_dialog(method, _openfocus_transition_frames())
+    from core.depth_map import compute_focus_index
+
+    frames = _openfocus_transition_frames()
+    # Compile both the guided filter and the estimator's row kernels before
+    # the first click starts the bounded wait for the Qt worker to publish.
+    compute_focus_index(frames, method, {control: 0}, thread_count=1)
+    dialog, _ = depth_dialog(method, frames)
     editor = dialog.fusion_parameter_panel.editors[control]
     editor.setValue(0)
     _click_and_finish(qapp, dialog)
@@ -302,14 +308,16 @@ def test_depth_parameter_drafts_are_local_and_not_overridden(depth_dialog, monke
     _select(dialog.method_combo, "openfocus_b")
     editors = dialog.fusion_parameter_panel.editors
     assert editors['radius'].value() == 7
-    assert editors['smoothing'].value() == pytest.approx(2.0 / .24)
+    assert editors['smoothing'].text() == '8'
     editors['radius'].setValue(1)
+    assert dialog._parameters_for('openfocus_b')['smoothing'] == drafts['openfocus_b']['smoothing']
     editors['smoothing'].setValue(6.0)
     _select(dialog.method_combo, "openfocus_c")
     editors = dialog.fusion_parameter_panel.editors
     # C exposes only its fusion smoothing to the depth map.
     assert set(editors) == {'smoothing'}
-    assert editors['smoothing'].value() == pytest.approx(4.0 / .6)
+    assert editors['smoothing'].text() == '7'
+    assert dialog._parameters_for('openfocus_c')['smoothing'] == drafts['openfocus_c']['smoothing']
     editors['smoothing'].setValue(5.0)
     _select(dialog.method_combo, "openfocus_b")
     editors = dialog.fusion_parameter_panel.editors
@@ -1045,6 +1053,7 @@ def test_depth_preview_detail_preserves_model_data(depth_dialog, monkeypatch, qa
     dialog, _ = depth_dialog(frames=_synthetic_thirds(120, 160))
     _click_and_finish(qapp, dialog)
     dialog.tabs.setCurrentIndex(1)
+    _wait(qapp, lambda: dialog._visual_ready_revision == dialog._visual_revision)
     index = dialog._index01.copy()
     height = dialog._mesh_height.copy()
     texture = dialog._mesh_texture.copy()
@@ -1589,12 +1598,21 @@ def test_depth_visual_discards_obsolete_parameter_request(depth_dialog, monkeypa
 def test_selected_render_exports_roi_depth_without_measuring(depth_dialog, monkeypatch, qapp, tmp_path):
     from PyQt6.QtCore import QRect
     from core import depth_map
+    from core.source_frames import scan_source
     from core.workers import RenderWorker
     import dialogs.depthmap as dm
 
     frames = _synthetic_thirds(48, 64)
     roi = (6, 7, 40, 32)
-    worker = RenderWorker(frames, algorithm='openfocus_b', sort_mode='desc',
+    frames[0][7:11, 6:12] = 0  # registration fill connected to the ROI border
+    folder = tmp_path / 'aligned'
+    folder.mkdir()
+    aligned = []
+    for i, pixels in enumerate(frames):
+        path = folder / f'{i}.png'
+        cv2.imencode('.png', pixels)[1].tofile(path)
+        aligned.extend(scan_source(path))
+    worker = RenderWorker(aligned, is_images_aligned=True, algorithm='openfocus_b', sort_mode='desc',
                           roi_rect=QRect(*roi), roi_mode='paste', thread_count=1, use_gpu=False)
     results = []
     worker.finished_signal.connect(lambda *result: results.append(result))
@@ -1602,7 +1620,9 @@ def test_selected_render_exports_roi_depth_without_measuring(depth_dialog, monke
     processed, output, *_ = results[0]
     parameters = {'fusion_parameters': worker.fusion_parameters, 'sort_mode': 'desc'}
     context = _output_context(processed, output, 'openfocus_b', roi_rect=roi, roi_mode='paste',
-                              parameters=parameters, rendered_depth=worker.rendered_depth)
+                              aligned=True, alignment_options=['ecc'], parameters=parameters,
+                              rendered_depth=worker.rendered_depth)
+    offline = folder.rename(tmp_path / 'offline')
     measurements = []
 
     def measure(images, method, **kwargs):
@@ -1617,6 +1637,15 @@ def test_selected_render_exports_roi_depth_without_measuring(depth_dialog, monke
     assert dialog._map_names == ['historical-2.tif', 'historical-1.tif', 'historical-0.tif']
     assert dialog.btn_save_indices.isEnabled()
     np.testing.assert_array_equal(dialog._index01, context.rendered_depth.index)
+    _wait(qapp, lambda: dialog._visual_ready_revision == dialog._visual_revision)
+    assert not dialog.preview_lbl.pixmap().isNull()
+    dialog.compute_btn.click()
+    assert dialog._worker is None and measurements == []
+    _select(dialog.method_combo, 'dct')
+    assert not dialog.btn_save_indices.isEnabled()
+    _select(dialog.method_combo, 'openfocus_b')
+    _wait(qapp, dialog._has_current_map)
+    assert dialog._map_rendered and measurements == []
 
     path = tmp_path / 'selected-depth.tif'
     monkeypatch.setattr(dm.FileDialog, 'getSaveFileName', lambda *args: (str(path), 'TIFF'))
@@ -1627,12 +1656,17 @@ def test_selected_render_exports_roi_depth_without_measuring(depth_dialog, monke
     x, y, w, h = roi
     expected = np.zeros(frames[0].shape[:2], np.uint16)
     expected[y:y + h, x:x + w] = estimate_indices(context.rendered_depth.index, len(frames))
+    expected[y:y + 4, x:x + 6] = 0
     with Image.open(path) as saved:
         np.testing.assert_array_equal(np.asarray(saved), expected)
         metadata = json.loads(saved.tag_v2[270])
     assert metadata['focus_source'] == 'render'
     assert metadata['domain'] == {'offset': [x, y], 'shape': [h, w]}
+    assert metadata['parameters'] == {**worker.fusion_parameters, 'reverse_order': True}
+    assert metadata['source_indices'] == [8, 5, 2]
+    assert metadata['roi_rect'] == list(roi)
 
+    offline.rename(folder)
     editor = dialog.fusion_parameter_panel.editors['smoothing']
     editor.setValue(editor.value() + 1)
     assert dialog._worker is None and not dialog.btn_save_indices.isEnabled()
