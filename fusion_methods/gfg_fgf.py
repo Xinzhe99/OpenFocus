@@ -12,6 +12,19 @@ from fusion_methods.dct import _ensure_color_image
 from utils.image_utils import fuse_output_dtype
 from core.frame_storage import create_frame, store_frame, capture_scratch, run_with_scratch
 
+_U8_NORM_LUT = np.arange(256, dtype=np.float32) / np.float32(255.0)
+
+
+def _load_kernels():
+    """Load cached Numba kernels when the startup compiler budget allows."""
+    from core.resource_policy import ResourceLimitError
+    try:
+        from fusion_methods import _gfg_kernels
+        return _gfg_kernels
+    except (ImportError, ResourceLimitError):
+        return None
+
+
 # -----------------------------------------------------------------------------
 # 全局辅助与核心算法实现
 # -----------------------------------------------------------------------------
@@ -25,7 +38,7 @@ def _fast_guided_filter_impl(I, p, r, eps, s=4):
     h, w = I.shape[:2]
     h_sub = int(h / s)
     w_sub = int(w / s)
-    
+
     # 避免尺寸过小
     if h_sub < 1 or w_sub < 1:
         I_sub = I
@@ -41,6 +54,15 @@ def _fast_guided_filter_impl(I, p, r, eps, s=4):
         p_sub = cv2.resize(p, (w_sub, h_sub), interpolation=cv2.INTER_AREA)
         r_sub = max(1, int(r / s))
 
+    kernels = _load_kernels()
+    if kernels is not None and I_sub.dtype == np.float32 and p_sub.dtype == np.float32 and I.dtype == np.float32:
+        mean_a, mean_b = kernels.fgf_coeffs_exact(I_sub, p_sub, r_sub, eps)
+        if h_sub < 1 or w_sub < 1:
+            return kernels.fgf_apply_q(mean_a, I, mean_b)
+        mean_a = cv2.resize(mean_a, (w, h), interpolation=cv2.INTER_LINEAR)
+        mean_b = cv2.resize(mean_b, (w, h), interpolation=cv2.INTER_LINEAR)
+        return kernels.fgf_apply_q(mean_a, I, mean_b)
+
     ksize = (2 * r_sub + 1, 2 * r_sub + 1)
 
     # 2. 计算统计量 (Box Filter)
@@ -53,7 +75,7 @@ def _fast_guided_filter_impl(I, p, r, eps, s=4):
     # 3. 计算线性系数 a, b
     var_I = mean_II - mean_I * mean_I
     cov_Ip = mean_Ip - mean_I * mean_p
-    
+
     a = cov_Ip / (var_I + eps)
     b = mean_p - a * mean_I
 
@@ -75,9 +97,11 @@ def _fast_guided_filter_impl(I, p, r, eps, s=4):
 try:
     # 检查是否有 ximgproc 模块
     _cv_guided_filter = cv2.ximgproc.guidedFilter
+    _HAS_XIMGPROC = True
     def _run_guided_filter(guide, src, radius, eps):
         return _cv_guided_filter(guide, src, radius, eps)
 except AttributeError:
+    _HAS_XIMGPROC = False
     # 使用 Python 优化版，默认 s=4 进行加速
     def _run_guided_filter(guide, src, radius, eps):
         return _fast_guided_filter_impl(guide, src, radius, eps, s=4)
@@ -97,6 +121,9 @@ def gfg_gradient(gray):
     P = I ⊗ T；G∥ = (|I(x+1,y)−P| + |I(x−1,y)−P|)/2，G⊥ 同理沿 y；
     G = G∥ + G⊥，低于 T0 的置 0。输入为 [0,1] float32 单通道。
     """
+    kernels = _load_kernels()
+    if kernels is not None and gray.dtype == np.float32:
+        return kernels.gfg_gradient_exact(gray, GFG_THRESHOLD)
     p = cv2.filter2D(gray, cv2.CV_32F, _GFG_TEMPLATE, borderType=cv2.BORDER_REFLECT)
     g = np.zeros_like(p)
     for k in _SHIFT_KERNELS:
@@ -113,6 +140,10 @@ def gfg_focus_map(gray, mean_ksize, gf_radius=5, gf_eps=0.3):
     IR = |I − I∗fm|（粗略聚焦图）；G = GFG(I)；IA 在 G ≥ T0 处取 G（边缘
     高频），其余取 IR；IF = FGF(I, IA)。融合与深度图共用这一实现。
     """
+    kernels = _load_kernels()
+    if kernels is not None and gray.dtype == np.float32 and (mean_ksize <= 1 or mean_ksize % 2 == 1):
+        ia = kernels.gfg_focus_ia_exact(gray, int(mean_ksize), GFG_THRESHOLD)
+        return _run_guided_filter(gray, ia, gf_radius, gf_eps)
     blur = cv2.blur(gray, (mean_ksize, mean_ksize))
     ia = cv2.absdiff(gray, blur)
     g = gfg_gradient(gray)
@@ -125,6 +156,11 @@ def _sobel_energy(fm):
     """论文式 (11)–(13)：G3×3 = |Gx| + |Gy|（Sobel 作用于聚焦信息图）。"""
     gx = cv2.Sobel(fm, cv2.CV_32F, 1, 0, ksize=3)
     gy = cv2.Sobel(fm, cv2.CV_32F, 0, 1, ksize=3)
+    kernels = _load_kernels()
+    if kernels is not None:
+        out = np.empty_like(gx)
+        kernels.sobel_abs_sum(gx, gy, out)
+        return out
     return np.abs(gx) + np.abs(gy)
 
 
@@ -138,13 +174,24 @@ class GfgDecision:
         self.val = self.idx = self.sob = None
 
     def update(self, i, afm):
-        sob = _sobel_energy(afm)
+        gx = cv2.Sobel(afm, cv2.CV_32F, 1, 0, ksize=3)
+        gy = cv2.Sobel(afm, cv2.CV_32F, 0, 1, ksize=3)
+        kernels = _load_kernels()
         if self.val is None:
+            if kernels is not None:
+                sob = np.empty_like(gx)
+                kernels.sobel_abs_sum(gx, gy, sob)
+            else:
+                sob = np.abs(gx) + np.abs(gy)
             self.val = store_frame(afm.astype(np.float32, copy=False))
             self.idx = create_frame(afm.shape, np.int32)
             self.idx[...] = i
             self.sob = store_frame(sob)
             return
+        if kernels is not None and afm.dtype == np.float32:
+            kernels.gfg_decision_update(afm, gx, gy, self.val, self.sob, self.idx, i, self.tie_eps)
+            return
+        sob = np.abs(gx) + np.abs(gy)
         diff = afm - self.val
         win = diff > self.tie_eps
         win |= (np.abs(diff) <= self.tie_eps) & (sob > self.sob)
@@ -162,9 +209,10 @@ def gfg_decision_index(afms, tie_eps=1e-6):
 
 
 def gfgfgf_impl(input_source, img_resize=None, kernel_size=7, thread_count: int = None,
-                min_frame_focus=0.0, should_cancel=None):
+                min_frame_focus=0.0, should_cancel=None, progress_callback=None,
+                use_gpu: bool = False, device_callback=None):
     """
-    GFG-FGF 优化实现版。
+    GFG-FGF 优化实现版（支持 OpenCL GPU 加速与 CPU 回退）。
     """
     def check_cancel():
         if should_cancel is not None and should_cancel():
@@ -181,8 +229,8 @@ def gfgfgf_impl(input_source, img_resize=None, kernel_size=7, thread_count: int 
 
         # 文件夹读取逻辑
         if not os.path.exists(input_source):
-             raise ValueError(f"Path not found: {input_source}")
-             
+            raise ValueError(f"Path not found: {input_source}")
+
         stack_ori, img_paths = _collect_directory_sources(input_source, should_cancel)
         if not img_paths:
             raise ValueError("No images found in folder")
@@ -193,26 +241,71 @@ def gfgfgf_impl(input_source, img_resize=None, kernel_size=7, thread_count: int 
     if not stack_ori:
         raise ValueError("Input stack is empty")
 
-    # Convert channels and resize at cancellable frame boundaries.
-    prepared = []
+    if progress_callback is not None:
+        callback = progress_callback
+        reported = -1
+
+        def progress_callback(index, total):
+            nonlocal reported
+            if index > reported:
+                callback(index, total)
+                reported = index
+
+    if use_gpu:
+        from core.source_frames import SOURCE_CACHE
+        from fusion_methods._openfocus_gpu import GpuError, log_fallback
+        from fusion_methods._openfocus_gpu_gfg import GpuGfg
+
+        try:
+            gpu = GpuGfg()
+            result = gpu.fuse(
+                stack_ori, img_resize, kernel_size, min_frame_focus,
+                should_cancel=should_cancel,
+                progress_callback=progress_callback,
+            )
+            if device_callback is not None:
+                device_callback(gpu.device_name)
+            return result
+        except GpuError as exc:
+            log_fallback(exc)
+        finally:
+            SOURCE_CACHE.clear()
+
+    from core.source_frames import process_frame, resolve_frame, without_source_cache_growth
+
     resize = (img_resize is not None
               and (stack_ori[0].shape[1], stack_ori[0].shape[0]) != img_resize)
-    from core.source_frames import process_frame, resolve_frame
-    def prepare(image):
-        image = _ensure_color_image(image)
-        return cv2.resize(image, img_resize) if resize else image
-    for img in stack_ori:
-        check_cancel()
-        shape = ((img_resize[1], img_resize[0]) if resize else img.shape[:2]) + (3,)
-        prepared.append(process_frame(img, prepare, shape=shape, should_cancel=should_cancel))
-    stack_ori = prepared
-    del prepared
+    if resize:
+        prepared = []
+
+        def prepare(image):
+            image = _ensure_color_image(image)
+            return cv2.resize(image, img_resize)
+
+        for img in stack_ori:
+            check_cancel()
+            shape = (img_resize[1], img_resize[0], 3)
+            prepared.append(process_frame(img, prepare, shape=shape, should_cancel=should_cancel))
+        stack_ori = prepared
+        del prepared
 
     # Retain source frames in their existing representation and convert per pass,
     # rather than retaining a second full float32 color stack.
     num_imgs = len(stack_ori)
+    total_steps = num_imgs * 2
+    if progress_callback is not None:
+        progress_callback(0, total_steps)
+
     h, w = stack_ori[0].shape[:2]
     out_dtype = fuse_output_dtype(stack_ori)
+    kernels = _load_kernels()
+
+    def _resolve_raw(index):
+        check_cancel()
+        with without_source_cache_growth():
+            raw = resolve_frame(stack_ori[index], should_cancel=should_cancel)
+        check_cancel()
+        return raw
 
     def normalized_pixels(img, channel=None, rows=None):
         if rows is not None:
@@ -223,36 +316,55 @@ def gfgfgf_impl(input_source, img_resize=None, kernel_size=7, thread_count: int 
             img = img.astype(np.float32) * (255.0 / 65535.0)
         return img.astype(np.float32) / 255.0
 
-    def normalized_frame(index, channel=None):
-        return normalized_pixels(resolve_frame(stack_ori[index]), channel)
+    def _extract_channel(index, ch):
+        raw = _resolve_raw(index)
+        if kernels is not None and (raw.ndim == 2 or (raw.ndim == 3 and raw.shape[2] in (3, 4))):
+            if raw.shape[:2] != (h, w):
+                raise ValueError("GFG-FGF requires frames with matching shapes")
+            contig = np.ascontiguousarray(raw)
+            del raw
+            if contig.dtype == np.uint8:
+                out = np.empty((h, w), dtype=np.float32)
+                kernels.extract_channel_u8(contig, ch, _U8_NORM_LUT, out)
+                return out
+            if contig.dtype == np.uint16:
+                out = np.empty((h, w), dtype=np.float32)
+                kernels.extract_channel_u16(contig, ch, out)
+                return out
+            if contig.dtype in (np.float32, np.float64):
+                out = np.empty((h, w), dtype=np.float32)
+                f32 = contig if contig.dtype == np.float32 else contig.astype(np.float32)
+                kernels.extract_channel_f32(f32, ch, out)
+                return out
+            raw = contig
+        color = _ensure_color_image(raw)
+        del raw
+        return normalized_pixels(color, ch)
 
-    first = normalized_frame(0)
-    channel_idx = int(np.argmax(first.sum(axis=(0, 1))))
-    del first
-    del img
+    first_raw = _resolve_raw(0)
+    first_bgr = _ensure_color_image(first_raw)
+    del first_raw
+    first_norm = normalized_pixels(first_bgr)
+    del first_bgr
+    channel_idx = int(np.argmax(first_norm.sum(axis=(0, 1))))
+    del first_norm
 
     # -------------------------------------------------------------------------
     # 3. 计算焦点值 (Focus Measure) - 阶段 1
     # -------------------------------------------------------------------------
-    # 定义卷积核 (保持 float32)
     kx = np.array([[-3, -10, -3], [0, 0, 0], [3, 10, 3]], dtype=np.float32)
-    ky = np.array([[-3, 0, 3], [-10, 0, 10], [-3, 0, 3]], dtype=np.float32)
-
+    ky = kx.T.copy()
     focus_vals = np.zeros(num_imgs, dtype=np.float32)
 
     def compute_focus_score(idx):
         check_cancel()
-        gray_img = normalized_frame(idx, channel_idx)
-        # filter2D 内部并行优化较好，但在大量小图时 ThreadPool 仍有优势
+        gray_img = _extract_channel(idx, channel_idx)
+        if kernels is not None:
+            return idx, float(kernels.scharr_focus_score_exact(gray_img))
         gx = cv2.filter2D(gray_img, cv2.CV_32F, kx, borderType=cv2.BORDER_REFLECT)
         gy = cv2.filter2D(gray_img, cv2.CV_32F, ky, borderType=cv2.BORDER_REFLECT)
-        
-        # 忽略边界 1 像素，避免边界伪影
-        # 使用 np.mean 之前先做 slice
         sub_gx = gx[1:-1, 1:-1]
         sub_gy = gy[1:-1, 1:-1]
-        
-        # 向量化计算平方和均值
         score = np.mean(sub_gx**2 + sub_gy**2)
         return idx, score
 
@@ -275,7 +387,8 @@ def gfgfgf_impl(input_source, img_resize=None, kernel_size=7, thread_count: int 
                     focus_vals[i] = val
 
     max_focus = np.max(focus_vals) if num_imgs > 0 else 1.0
-    if max_focus == 0: max_focus = 1.0 # 避免除零
+    if max_focus == 0:
+        max_focus = 1.0
 
     # -------------------------------------------------------------------------
     # 4. 计算初始决策图 (AFMs) - 阶段 2
@@ -287,16 +400,10 @@ def gfgfgf_impl(input_source, img_resize=None, kernel_size=7, thread_count: int 
 
     def compute_afm_map(i):
         check_cancel()
-        # 整帧清晰度过低的帧可选跳过（默认关闭：论文无此步，且会丢掉只有
-        # 一小块物体清晰的帧——tools/synthetic_benchmark.py --scene small）
         if scale > 0 and focus_vals[i] < scale * max_focus:
             return i, None
-        # 论文完整聚焦检测：均值差分粗图 + 类高斯四邻域梯度高频 + FGF
-        # （issue #5：旧实现只有均值差分，缺 GFG 算子）
-        return i, gfg_focus_map(normalized_frame(i, channel_idx), g_msz, g_gsz, g_eps)
+        return i, gfg_focus_map(_extract_channel(i, channel_idx), g_msz, g_gsz, g_eps)
 
-    # 按帧序流式决策（并列判定依赖顺序，且不物化 N×H×W 聚焦图栈）；
-    # 每批 max_workers 帧并行计算聚焦图
     decision = GfgDecision()
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         for start in range(0, num_imgs, max_workers):
@@ -307,6 +414,8 @@ def gfgfgf_impl(input_source, img_resize=None, kernel_size=7, thread_count: int 
                 if res is not None:
                     decision.update(i, res)
                 del res
+                if progress_callback is not None:
+                    progress_callback(i + 1, total_steps)
     if decision.idx is None:  # 全部被跳过：退化为首帧
         decision.update(0, np.zeros((h, w), np.float32))
 
@@ -316,99 +425,149 @@ def gfgfgf_impl(input_source, img_resize=None, kernel_size=7, thread_count: int 
     idm_map = decision.idx
     del decision
 
-    # 累加器
     sum_fdms = create_frame((h, w), np.float32)
     imfu_result = create_frame((h, w, 3), np.float32)
     sum_fdms[...] = 0
     imfu_result[...] = 0
 
-    # 锁用于累加（虽然 Python GIL 存在，但 += numpy array 不是原子的，需注意线程安全）
-    # 但为了性能，我们让每个线程返回结果，主线程累加，或者分配独立的 buffer
-    # 考虑到内存，我们直接串行累加或者分块。
-    # 由于 GuidedFilter 比较耗时，我们还是并行计算 Filter，主线程累加。
-    
+    if kernels is not None:
+        wins = kernels.bincount_i32(idm_map, num_imgs)
+    else:
+        wins = np.bincount(idm_map.ravel(), minlength=num_imgs)
+
+    h_sub = h // 4
+    w_sub = w // 4
+    use_fast_sub_mask = (kernels is not None and not _HAS_XIMGPROC
+                         and h_sub >= 1 and w_sub >= 1 and (h % 4 == 0) and (w % 4 == 0))
+
     def compute_fusion_component(i):
         check_cancel()
-        mask = idm_map == i
-        if not mask.any():
+        if not wins[i]:
             return None
-        maxfm_binary = mask.astype(np.float32)
-        
-        # 再次导向滤波平滑权重
-        # 这里的 maxfm_binary 也是 0-1，guided filter 输出也是 0-1
-        fdm = _run_guided_filter(normalized_frame(i, channel_idx), maxfm_binary, g_gsz, g_eps)
-        
+        guide = _extract_channel(i, channel_idx)
+        if use_fast_sub_mask:
+            I_sub = cv2.resize(guide, (w_sub, h_sub), interpolation=cv2.INTER_AREA)
+            p_sub = kernels.area4_mask_from_idx(idm_map, i, h_sub, w_sub)
+            r_sub = max(1, int(g_gsz / 4))
+            mean_a, mean_b = kernels.fgf_coeffs_exact(I_sub, p_sub, r_sub, g_eps)
+            mean_a = cv2.resize(mean_a, (w, h), interpolation=cv2.INTER_LINEAR)
+            mean_b = cv2.resize(mean_b, (w, h), interpolation=cv2.INTER_LINEAR)
+            fdm = kernels.fgf_apply_q(mean_a, guide, mean_b)
+        else:
+            maxfm_binary = (idm_map == i).astype(np.float32)
+            fdm = _run_guided_filter(guide, maxfm_binary, g_gsz, g_eps)
         return i, fdm
 
-    # 并行计算权重，按帧序号固定顺序流式累加（float 加法不满足结合律，
-    # 固定顺序保证同输入同输出；每批只持有 max_workers 张权重图）
+    def _accumulate_raw(raw, fdm_weight):
+        if kernels is not None and (raw.ndim == 2 or (raw.ndim == 3 and raw.shape[2] in (3, 4))):
+            contig = np.ascontiguousarray(raw)
+            if contig.dtype == np.uint8:
+                kernels.accumulate_gfg_u8(contig, _U8_NORM_LUT, fdm_weight, imfu_result, sum_fdms)
+                return
+            if contig.dtype == np.uint16:
+                kernels.accumulate_gfg_u16(contig, fdm_weight, imfu_result, sum_fdms)
+                return
+            if contig.dtype in (np.float32, np.float64):
+                f32 = contig if contig.dtype == np.float32 else contig.astype(np.float32)
+                kernels.accumulate_gfg_f32(f32, fdm_weight, imfu_result, sum_fdms)
+                return
+        np.add(sum_fdms, fdm_weight, out=sum_fdms)
+        image = _ensure_color_image(raw)
+        for row_s in range(0, h, 128):
+            check_cancel()
+            rows = slice(row_s, min(h, row_s + 128))
+            imfu_result[rows] += normalized_pixels(image, rows=rows) * fdm_weight[rows, :, None]
+
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         for start in range(0, num_imgs, max_workers):
             check_cancel()
-            for res in executor.map(partial(run_with_scratch, scratch, compute_fusion_component),
-                                    range(start, min(num_imgs, start + max_workers))):
+            stop = min(num_imgs, start + max_workers)
+            active = [i for i in range(start, stop) if wins[i]]
+            for res in executor.map(partial(run_with_scratch, scratch, compute_fusion_component), active):
                 check_cancel()
                 if res is None:
                     continue
                 i, fdm_weight = res
-                sum_fdms += fdm_weight
-                image = resolve_frame(stack_ori[i])
-                for start in range(0, h, 128):
-                    check_cancel()
-                    rows = slice(start, min(h, start + 128))
-                    imfu_result[rows] += normalized_pixels(image, rows=rows) * fdm_weight[rows, :, None]
-                del image, res, fdm_weight
+                raw = _resolve_raw(i)
+                _accumulate_raw(raw, fdm_weight)
+                del raw, res, fdm_weight
+            if progress_callback is not None:
+                progress_callback(num_imgs + stop, total_steps)
 
     # -------------------------------------------------------------------------
     # 6. 归一化与输出
     # -------------------------------------------------------------------------
-    # 避免除以零
-    # 创建掩码，只处理权重不为0的区域
-    nonzero_mask = create_frame((h, w), np.bool_)
-    for start in range(0, h, 128):
-        check_cancel()
-        rows = slice(start, min(h, start + 128))
-        nonzero_mask[rows] = sum_fdms[rows] > 1e-6
-    
-    # 原地归一化
-    # 只需对 nonzero 区域处理，其他区域保持 0
-    # 由于 imfu_result 已经是 float32，直接操作
-    
-    
-    # 利用 np.divide 的 where 参数或者 boolean indexing
-    # Boolean indexing 在大数组下可能会产生临时拷贝，但比迭代快
-    # 考虑到内存效率，逐通道处理
-    
     out = create_frame((h, w, 3), out_dtype)
-    
-    for c in range(3):
-        check_cancel()
-        # 提取通道
-        ch_data = imfu_result[:, :, c]
-        # 除法
-        # 使用 np.divide 的 out 参数
-        np.divide(ch_data, sum_fdms, out=ch_data, where=nonzero_mask)
-    if not nonzero_mask.all():
-        for i in np.unique(idm_map[~nonzero_mask]):
-            image = resolve_frame(stack_ori[i])
-            for start in range(0, h, 128):
-                check_cancel()
-                rows = slice(start, min(h, start + 128))
-                sel = (~nonzero_mask[rows]) & (idm_map[rows] == i)
-                np.copyto(imfu_result[rows], normalized_pixels(image, rows=rows),
-                          where=sel[:, :, None])
-            del image
-    for c in range(3):
-        ch_data = imfu_result[:, :, c]
-        # Clip 并写回源位深
-        for start in range(0, h, 128):
+
+    if kernels is not None:
+        has_zero = False
+        for row_s in range(0, h, 128):
             check_cancel()
-            rows = slice(start, min(h, start + 128))
-            np.multiply(ch_data[rows], 255.0, out=ch_data[rows])
-            np.clip(ch_data[rows], 0, 255, out=ch_data[rows])
-            out[rows, :, c] = ch_data[rows]
+            if kernels.normalize_gfg_rows(imfu_result, sum_fdms, row_s, min(h, row_s + 128)):
+                has_zero = True
+        if has_zero:
+            zero_mask = sum_fdms <= 1e-6
+            for i in np.unique(idm_map[zero_mask]):
+                raw = _resolve_raw(int(i))
+                if raw.ndim == 2 or (raw.ndim == 3 and raw.shape[2] in (3, 4)):
+                    contig = np.ascontiguousarray(raw)
+                    for row_s in range(0, h, 128):
+                        check_cancel()
+                        stop_r = min(h, row_s + 128)
+                        if contig.dtype == np.uint8:
+                            kernels.fill_zero_weight_rows_u8(contig, _U8_NORM_LUT, idm_map, sum_fdms, int(i), imfu_result, row_s, stop_r)
+                        elif contig.dtype == np.uint16:
+                            kernels.fill_zero_weight_rows_u16(contig, idm_map, sum_fdms, int(i), imfu_result, row_s, stop_r)
+                        else:
+                            f32 = contig if contig.dtype == np.float32 else contig.astype(np.float32)
+                            kernels.fill_zero_weight_rows_f32(f32, idm_map, sum_fdms, int(i), imfu_result, row_s, stop_r)
+                else:
+                    image = _ensure_color_image(raw)
+                    for row_s in range(0, h, 128):
+                        check_cancel()
+                        rows = slice(row_s, min(h, row_s + 128))
+                        sel = zero_mask[rows] & (idm_map[rows] == i)
+                        np.copyto(imfu_result[rows], normalized_pixels(image, rows=rows),
+                                  where=sel[:, :, None])
+                del raw
+        for row_s in range(0, h, 128):
+            check_cancel()
+            kernels.quantize_gfg_rows(imfu_result, out, row_s, min(h, row_s + 128))
+    else:
+        nonzero_mask = create_frame((h, w), np.bool_)
+        for row_s in range(0, h, 128):
+            check_cancel()
+            rows = slice(row_s, min(h, row_s + 128))
+            nonzero_mask[rows] = sum_fdms[rows] > 1e-6
+
+        for c in range(3):
+            check_cancel()
+            ch_data = imfu_result[:, :, c]
+            np.divide(ch_data, sum_fdms, out=ch_data, where=nonzero_mask)
+        if not nonzero_mask.all():
+            for i in np.unique(idm_map[~nonzero_mask]):
+                image = _ensure_color_image(_resolve_raw(int(i)))
+                for row_s in range(0, h, 128):
+                    check_cancel()
+                    rows = slice(row_s, min(h, row_s + 128))
+                    sel = (~nonzero_mask[rows]) & (idm_map[rows] == i)
+                    np.copyto(imfu_result[rows], normalized_pixels(image, rows=rows),
+                              where=sel[:, :, None])
+                del image
+        for c in range(3):
+            ch_data = imfu_result[:, :, c]
+            for row_s in range(0, h, 128):
+                check_cancel()
+                rows = slice(row_s, min(h, row_s + 128))
+                np.multiply(ch_data[rows], 255.0, out=ch_data[rows])
+                np.clip(ch_data[rows], 0, 255, out=ch_data[rows])
+                out[rows, :, c] = ch_data[rows]
 
     check_cancel()
+    if progress_callback is not None:
+        progress_callback(total_steps, total_steps)
+    if device_callback is not None:
+        device_callback('CPU')
     return out
 
 # -----------------------------------------------------------------------------
