@@ -163,20 +163,19 @@ def _alignment_valid_mask(image: np.ndarray, *, should_cancel=None) -> Optional[
     _check_cancel(should_cancel)
     if image.size == 0:
         return None
-    # Most cropped registrations have no fill. Inspect only the four edges
-    # before allocating a full-frame zero mask and component labels.
-    def has_zero(edge):
-        return (np.all(edge[..., :3] == 0, axis=-1).any() if image.ndim == 3
-                else (edge == 0).any())
-    if not any(has_zero(edge) for edge in (image[0], image[-1], image[:, 0], image[:, -1])):
-        return None
-    if image.ndim == 3:
-        zero = np.all(image[..., :3] == 0, axis=2)
+    color = image[..., :3] if image.ndim == 3 else image
+    for edge in (color[0], color[-1], color[:, 0], color[:, -1]):
+        black = edge == 0
+        if (black.all(axis=-1) if color.ndim == 3 else black).any():
+            break
     else:
-        zero = image == 0
+        return None
 
-    count, labels = cv2.connectedComponents(zero.astype(np.uint8),
-                                            connectivity=8)
+    if color.ndim == 3 and color.shape[2] == 3 and color.dtype in (np.uint8, np.uint16, np.float32, np.float64):
+        zero = cv2.inRange(color, (0, 0, 0), (0, 0, 0))
+    else:
+        zero = (np.all(color == 0, axis=2) if color.ndim == 3 else color == 0).view(np.uint8)
+    count, labels = cv2.connectedComponents(zero, connectivity=8)
     _check_cancel(should_cancel)
     if count <= 1:
         return None
