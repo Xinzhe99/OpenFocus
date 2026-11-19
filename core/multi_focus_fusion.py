@@ -27,6 +27,7 @@ _DEFAULT_TILE_BLOCK_SIZE = 1024
 _DEFAULT_TILE_OVERLAP = 256
 _DEFAULT_TILE_THRESHOLD = 2048
 _DEFAULT_AI_BATCH_SIZE = 2
+OPENCL_FUSION_ALGORITHMS = ('openfocus_a', 'openfocus_b', 'openfocus_c', 'guided_filter')
 
 
 def set_tile_mode(enabled: bool):
@@ -294,6 +295,7 @@ class MultiFocusFusion:
         self.fusion_parameters = resolve_fusion_parameters(algorithm, fusion_parameters)
         self.use_gpu = bool(use_gpu)
         self._actual_device = None
+        self._fallback_reasons = ()
         self._device_lock = threading.Lock()
         # Tile (tiled fusion) related instance-level settings
         # Descriptor policy keeps whole-image methods out of automatic spatial
@@ -622,24 +624,18 @@ class MultiFocusFusion:
 
     def _validate_spatial_environment(self) -> None:
         """验证空间域融合依赖"""
-        if self.use_gpu and self.algorithm not in ('openfocus_a', 'openfocus_b', 'openfocus_c'):
+        if self.use_gpu and self.algorithm not in OPENCL_FUSION_ALGORITHMS:
             print(f"Note: {self.descriptor.display_name} fusion runs on CPU only; switching to CPU mode.")
             self.use_gpu = False
 
     def _validate_ai_environment(self) -> None:
-        """Verify the neural back-end's dependency and device."""
+        """Verify the runtime dependency before the job chooses its device."""
         name = self.descriptor.display_name
         if not is_ai_fusion_available():
             raise RuntimeError(
                 f"{name} fusion requires ONNX Runtime. Install it with: pip install onnxruntime"
             )
 
-        if self.use_gpu:
-            from fusion_methods import neural_runtime
-            kind = neural_runtime.resolve_device(True)
-            if not neural_runtime.is_accelerator(kind):
-                print(f"Warning: No GPU acceleration available. Running {name} on CPU (slower).")
-                self.use_gpu = False
     
     def fuse(self,
              input_source: Union[str, List[np.ndarray]],
@@ -653,14 +649,17 @@ class MultiFocusFusion:
         from core.registration import RegistrationCancelled
         from core.frame_storage import scratch_directory
         from utils.logging_setup import log_operation, log_action, image_result_details
-        with heavy_job(should_cancel), scratch_directory(), log_operation(
+        from contextlib import nullcontext
+        inference = nullcontext()
+        if self.descriptor.neural:
+            from fusion_methods import neural_runtime
+            inference = neural_runtime.inference_job()
+        with heavy_job(should_cancel), inference, scratch_directory(), log_operation(
                 'fusion', method=self.algorithm,
                 checkpoint=kwargs.get('model_path') or self.descriptor.weights,
                 use_gpu=self.use_gpu, tile_enabled=self.tile_enabled) as operation:
             self._actual_device = None
-            if self.descriptor.neural:
-                from fusion_methods import neural_runtime
-                neural_runtime.start_inference_job()
+            self._fallback_reasons = ()
             try:
                 result = self._fuse_under_lease(
                     input_source, img_resize, should_cancel, progress_callback, **kwargs)
@@ -669,6 +668,7 @@ class MultiFocusFusion:
                 raise
             if self.descriptor.neural:
                 self._actual_device = neural_runtime.actual_device_report()
+                self._fallback_reasons = neural_runtime.device_diagnostics()['fallback_reasons']
             log_action('fusion_result', method=self.algorithm,
                        checkpoint=kwargs.get('model_path') or self.descriptor.weights,
                        device=self._actual_device or 'CPU', **image_result_details(result))
@@ -813,8 +813,8 @@ class MultiFocusFusion:
             spec.external_tiling_default or self.tile_threshold != _DEFAULT_TILE_THRESHOLD))
         if allow_spatial_tiles and spec.tile_decider:
             if spec.neural:
-                from fusion_methods.neural_runtime import resolve_device
-                device = resolve_device(self.use_gpu)
+                from fusion_methods.neural_runtime import resolve_job_device
+                device = resolve_job_device(self.use_gpu)
             else:
                 device = 'CPU'
             needs_tiles = resolve_runner(spec.tile_decider)(
@@ -1074,6 +1074,9 @@ class MultiFocusFusion:
             kernel_size=kernel_size,
             thread_count=thread_count,
             should_cancel=kwargs.get('should_cancel'),
+            progress_callback=kwargs.get('progress_callback'),
+            use_gpu=self.use_gpu,
+            device_callback=self._record_openfocus_device,
         )
 
     def _fuse_dct(self,
@@ -1172,10 +1175,8 @@ class MultiFocusFusion:
         Returns:
             融合后的图像
         """
-        if not model_path:
-            model_path = 'weights/stackmff_v3_final.onnx'
-        if not os.path.isabs(model_path):
-            model_path = resource_path(model_path)
+        if not model_path or model_path == 'weights/stackmff_v3_final.onnx':
+            model_path = resource_path('weights', 'stackmff_v3_final.onnx')
 
         return _stackmffv3_impl(
             input_source,
@@ -1242,6 +1243,7 @@ class MultiFocusFusion:
         self._ensure_supported_algorithm(algorithm)
         self.algorithm = algorithm
         self._actual_device = None
+        self._fallback_reasons = ()
         self.fusion_parameters = resolve_fusion_parameters(algorithm)
         self._validate_environment()
 
@@ -1842,10 +1844,10 @@ class MultiFocusFusion:
                      if f.lower().endswith(exts)]
         count = len(imgs) if imgs is not None else len(files)
         from core.resource_policy import plan_neural_tiles
-        from fusion_methods.neural_runtime import resolve_device, estimate_inference_bytes
+        from fusion_methods.neural_runtime import resolve_job_device, estimate_inference_bytes
         from fusion_methods.neural_common import ATTENTION_PAD_ALIGN
         profile = _profile()
-        requested_device = resolve_device(self.use_gpu)
+        requested_device = resolve_job_device(self.use_gpu)
         from core.source_frames import frame_resolution_bytes, source_cache_growth_bytes
         source_resolution = max((frame_resolution_bytes(frame) for frame in imgs), default=0) if imgs is not None else 0
         source_cache = source_cache_growth_bytes(imgs) if imgs is not None else 0
@@ -1877,9 +1879,7 @@ class MultiFocusFusion:
                            block_after_image_clamp=clamped_block,
                            block_after_memory_plan=planned_block, block_effective=block_size,
                            pad_alignment=ATTENTION_PAD_ALIGN)
-        model_path = kwargs.get('model_path') or default_weights
-        if not os.path.isabs(model_path):
-            model_path = weights_path(os.path.basename(model_path))
+        model_path = kwargs.get('model_path') or weights_path(os.path.basename(default_weights))
         if mode_normalizer is not None:
             kwargs['mode'] = mode_normalizer(
                 kwargs.get('mode', self.fusion_parameters.get('mode', 'soft')))
@@ -2054,7 +2054,7 @@ class MultiFocusFusion:
             from fusion_methods import neural_runtime
             kind = neural_runtime.cached_device() if self.use_gpu else 'CPU'
             device_name = self._actual_device or neural_runtime.display_name(kind or 'N/A')
-        elif self.algorithm in ('openfocus_a', 'openfocus_b', 'openfocus_c'):
+        elif self.algorithm in OPENCL_FUSION_ALGORITHMS:
             device_name = self._actual_device or 'CPU'
         else:
             device_name = 'CPU'
@@ -2065,6 +2065,7 @@ class MultiFocusFusion:
         }
         if self.descriptor.neural:
             info['mode'] = self.fusion_parameters.get('mode', 'soft')
+            info['fallback_reasons'] = self._fallback_reasons
         return info
     
     def __repr__(self) -> str:

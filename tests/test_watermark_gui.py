@@ -128,6 +128,16 @@ def _image(shape=(320, 420, 3)):
     return np.full(shape, 140, np.uint8)
 
 
+def _wait_watermark(qapp, predicate):
+    from time import monotonic
+    from PyQt6.QtTest import QTest
+
+    deadline = monotonic() + 10
+    while not predicate():
+        assert monotonic() < deadline, "watermark preview did not finish"
+        QTest.qWait(5)
+
+
 @pytest.mark.parametrize("dtype", [np.uint8, np.uint16])
 @pytest.mark.parametrize("target", ["source", "output"])
 def test_transparent_dialog_preview_matches_export_pixels(qapp, dtype, target):
@@ -406,8 +416,10 @@ def test_ultrawide_target_is_not_rejected_by_a_square_probe(qapp):
     dialog.text_edit.setText("M" * 80)
     dialog.size_spin.setValue(12.0)
     dialog._refresh_preview()
+    _wait_watermark(qapp, lambda: dialog._pixel_worker is None)
     assert dialog._ok_button.isEnabled(), dialog._error.text()
     assert not dialog._error.text()
+    dialog.close()
 
 
 def test_watermark_text_is_never_a_global_preference(qapp):
@@ -751,6 +763,211 @@ def test_drag_out_pixmap_includes_the_watermark(tmp_path, qapp):
     widget.set_window(window)
     image_out = widget._get_output_image_for_row(0)
     assert np.array_equal(image_out, wm.burn(image, cfg))
+
+
+def test_watermark_registered_fit_replays_crop_without_full_decode(qapp, monkeypatch):
+    from core.source_frames import ProcessedFrame, crop_frame
+    from dialogs.watermark import WatermarkDialog
+    from utils.image_utils import pixmap_to_cv2
+
+    image = np.full((150, 220, 3), 35, np.uint8)
+    image[50:80, 110:140] = 210
+    frame = crop_frame(image, 40, 30, 160, 100)
+    def unexpected_decode(*args, **kwargs):
+        raise AssertionError("known registered geometry should use bounded pixels at Fit")
+    monkeypatch.setattr(ProcessedFrame, "full_resolution", unexpected_decode)
+    window = _DialogHost()
+    window.registration_results = [frame]
+    dialog = WatermarkDialog(window)
+    try:
+        _wait_watermark(qapp, lambda: dialog._pixel_worker is None)
+        assert dialog.preview_target_combo.currentData() == "registered"
+        np.testing.assert_array_equal(pixmap_to_cv2(dialog.preview_lbl._base_pixmap),
+                                      image[30:130, 40:200])
+        assert dialog._region_worker is None
+    finally:
+        dialog.reject()
+        _wait_watermark(qapp, lambda: dialog._pixel_worker is None and dialog._region_worker is None)
+        window.deleteLater()
+
+
+def test_watermark_close_drains_inflight_fit(qapp):
+    import threading
+    from core.source_frames import ProcessedFrame
+    from dialogs.watermark import WatermarkDialog
+
+    started, release = threading.Event(), threading.Event()
+    image = _image()
+    def process(pixels):
+        started.set()
+        assert release.wait(10)
+        return pixels.copy()
+    window = _DialogHost(source=ProcessedFrame(image, process, image.shape, image.dtype))
+    dialog = WatermarkDialog(window)
+    dialog.show()
+    try:
+        _wait_watermark(qapp, started.is_set)
+        dialog.accept()
+        assert dialog._pixel_worker is not None and dialog.isVisible()
+        release.set()
+        _wait_watermark(qapp, lambda: dialog._pixel_worker is None)
+        assert dialog.result() == QDialog.DialogCode.Accepted
+        assert not dialog.isVisible()
+    finally:
+        release.set()
+        dialog.reject()
+        _wait_watermark(qapp, lambda: dialog._pixel_worker is None)
+        window.deleteLater()
+
+
+def test_watermark_native_tiff_blank_draft_and_baked(qapp, tmp_path, monkeypatch):
+    import threading
+    import tifffile
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtTest import QTest
+    from core import source_frames
+    from dialogs.watermark import WatermarkDialog
+    from utils.image_utils import pixmap_to_cv2
+
+    grid = (np.indices((900, 1500)).sum(axis=0) % 2 * 140 + 15).astype(np.uint8)
+    source = np.repeat(grid[..., None], 3, axis=2)
+    path = tmp_path / "reduced-ifd.tif"
+    with tifffile.TiffWriter(path) as writer:
+        writer.write(source, photometric="rgb")
+        writer.write(np.full((60, 100, 3), 80, np.uint8), photometric="rgb", subfiletype=1)
+    frame, = source_frames.scan_source(path)
+    baked = np.full_like(source, 32)
+    registered = np.bitwise_not(source)
+    record = _Record(baked, baked=True)
+    host = _DialogHost([record], source=frame)
+    host.registration_results = [source, registered]
+    threads = []
+    full_resolution = source_frames.SourceFrame.full_resolution
+
+    def track_resolution(self, **kwargs):
+        threads.append(threading.get_ident())
+        return full_resolution(self, **kwargs)
+
+    monkeypatch.setattr(source_frames.SourceFrame, "full_resolution", track_resolution)
+    dialog = WatermarkDialog(host)
+    label = dialog.preview_lbl
+    label.setFixedSize(340, 256)
+    dialog.show()
+
+    def assert_native(kind, expected):
+        _wait_watermark(qapp, lambda: kind in label._source_regions)
+        tile, rect = label._source_regions[kind]
+        x, y, w, h = map(round, (rect.x(), rect.y(), rect.width(), rect.height()))
+        np.testing.assert_array_equal(pixmap_to_cv2(tile), expected[y:y + h, x:x + w])
+
+    try:
+        _wait_watermark(qapp, lambda: label._base_pixmap is not None)
+        assert label._base_pixmap.width() == 100
+        assert label._source_size.width() == source.shape[1]
+        assert not threads and dialog._region_worker is None
+        dialog._actual_size()
+        assert label._get_layout_params()[0] * label.devicePixelRatioF() == pytest.approx(1)
+        assert_native("view", source)
+        assert threads and threading.get_ident() not in threads
+        label.set_magnifier_settings(size=128, zoom=1)
+        QTest.mousePress(label, Qt.MouseButton.LeftButton, pos=label.rect().center())
+        assert_native("loupe", source)
+        dialog.text_edit.setText("Creator")
+        dialog._refresh_preview()
+        marked = wm.burn(source, dialog._draft_config())
+        assert np.any(marked != source)
+        assert_native("loupe", marked)
+        dialog.text_edit.clear()
+        dialog._refresh_preview()
+        assert_native("loupe", source)
+
+        dialog.preview_target_combo.setCurrentIndex(dialog.preview_target_combo.findData("registered"))
+        dialog.frame_index.setValue(2)
+        dialog._refresh_preview()
+        assert_native("loupe", registered)
+        dialog.preview_target_combo.setCurrentIndex(dialog.preview_target_combo.findData("output"))
+        dialog.text_edit.setText("Skip this draft")
+        dialog._refresh_preview()
+        assert_native("loupe", baked)
+    finally:
+        dialog.reject()
+        _wait_watermark(qapp, lambda: dialog._pixel_worker is None and dialog._region_worker is None)
+        host.deleteLater()
+
+
+def test_watermark_native_alpha_uses_canvas_checker_after_draft(qapp):
+    from dialogs.watermark import WatermarkDialog
+    from utils.image_utils import composite_transparent_for_display, pixmap_to_cv2
+
+    image = np.full((300, 1400, 4), 70, np.uint8)
+    image[:, ::3, 3] = 0
+    window = _DialogHost(source=image)
+    dialog = WatermarkDialog(window)
+    try:
+        dialog.text_edit.setText("Creator")
+        dialog._refresh_preview()
+        _wait_watermark(qapp, lambda: dialog.preview_lbl._base_pixmap is not None)
+        dialog._actual_size()
+        _wait_watermark(qapp, lambda: "view" in dialog.preview_lbl._source_regions)
+        tile, rect = dialog.preview_lbl._source_regions["view"]
+        x, y, w, h = map(round, (rect.x(), rect.y(), rect.width(), rect.height()))
+        expected = composite_transparent_for_display(wm.burn(image, dialog._draft_config()))
+        np.testing.assert_array_equal(pixmap_to_cv2(tile), expected[y:y + h, x:x + w])
+    finally:
+        dialog.reject()
+        _wait_watermark(qapp, lambda: dialog._region_worker is None and dialog._pixel_worker is None)
+        window.deleteLater()
+
+
+def test_watermark_native_interleaved_selection_and_close(qapp, monkeypatch):
+    import threading
+    from core import source_frames
+    from dialogs.watermark import WatermarkDialog
+    from utils.image_utils import pixmap_to_cv2
+
+    first = np.full((450, 1400, 3), 30, np.uint8)
+    second = np.full_like(first, 210)
+    host = _DialogHost(source=first)
+    host.raw_images.append(second)
+    started, release = threading.Event(), threading.Event()
+    resolve = source_frames.resolve_frame
+
+    def delayed(frame, **kwargs):
+        if frame is first:
+            started.set()
+            assert release.wait(10)
+        return resolve(frame, **kwargs)
+
+    monkeypatch.setattr(source_frames, "resolve_frame", delayed)
+    dialog = WatermarkDialog(host)
+    try:
+        _wait_watermark(qapp, lambda: dialog.preview_lbl._base_pixmap is not None)
+        dialog._actual_size()
+        _wait_watermark(qapp, started.is_set)
+        stale = dialog._region_worker
+        dialog.frame_index.setValue(2)
+        dialog.text_edit.setText("Obsolete")
+        dialog.text_edit.clear()
+        dialog._refresh_preview()
+        assert stale.cancelled and dialog._region_worker is stale
+        assert not dialog.preview_lbl._source_regions
+        release.set()
+        _wait_watermark(qapp, lambda: "view" in dialog.preview_lbl._source_regions)
+        tile, _ = dialog.preview_lbl._source_regions["view"]
+        assert np.all(pixmap_to_cv2(tile) == 210)
+        started.clear()
+        release.clear()
+        dialog.frame_index.setValue(1)
+        dialog._refresh_preview()
+        _wait_watermark(qapp, started.is_set)
+        dialog.close()
+        assert dialog._region_worker.cancelled
+        assert dialog._region_source is None
+    finally:
+        release.set()
+        dialog.reject()
+        _wait_watermark(qapp, lambda: dialog._region_worker is None and dialog._pixel_worker is None)
+        host.deleteLater()
 
 
 def test_source_region_worker_uses_full_canvas_coordinates(qapp):

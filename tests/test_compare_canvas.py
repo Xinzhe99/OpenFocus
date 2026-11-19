@@ -352,3 +352,19 @@ def test_scaled_display_keeps_image_coordinates_and_explicit_full_identity(host)
     assert not canvas.can_show_full()
     canvas.set_result(_pixmap(50, 25), (0, 0, 400, 200), full=True)
     assert canvas.can_show_full()
+
+
+def test_actual_size_partitions_visible_pixels_at_device_density(host, qapp, monkeypatch):
+    canvas = _source(host, qapp, image=(1200, 1000), view=(608, 508))
+    monkeypatch.setattr(canvas, 'devicePixelRatioF', lambda: 2.0)
+    canvas.set_pixmap(_pixmap(200, 150), source_size=(2400, 1800), preview_only=True)
+    canvas.set_region_centre(QPointF(1300, 950))
+    canvas.actual_size()
+    assert canvas._zoom == 0.5
+    assert canvas.region()[2:] == (2 * DEFAULT_DETAIL_SIZE,) * 2
+    tiles = canvas.viewport_tiles(512)
+    assert len(tiles) > 1
+    for (x, y, w, h), size in tiles:
+        assert size == (w, h) and max(size) <= 512
+        assert x >= 0 and y >= 0 and x + w <= 2400 and y + h <= 1800
+    assert sum(w * h for (_, _, w, h), _ in tiles) == (608 * 2) * (508 * 2)

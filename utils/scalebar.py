@@ -319,6 +319,7 @@ def draw_scale_bar(img: np.ndarray, px_um: float,
     else:
         bar_rgb = (255, 255, 255) if color == "white" else (0, 0, 0)
     edge_rgb = (0, 0, 0) if bar_rgb == (255, 255, 255) else (255, 255, 255)
+    draw_caption = True
     if render_scale != 1.0:
         scale = float(render_scale)
         bar_x1, bar_x2 = round((bar_x1 - origin[0]) * scale), round((bar_x2 - origin[0]) * scale)
@@ -327,8 +328,11 @@ def draw_scale_bar(img: np.ndarray, px_um: float,
         bar_x2, bar_y2 = max(bar_x1 + 1, bar_x2), max(bar_y1 + 1, bar_y2)
         stroke = max(1, round(stroke * scale))
         stroke_w = max(1, round(stroke_w * scale))
-        font_size = max(1, round(font_size * scale))
-        if font is not None:
+        font_size = round(font_size * scale)
+        # A smaller caption is unreadable and some outlines cannot be
+        # rasterized at this size. Native-scale drawing still includes it.
+        draw_caption = font_size >= 6
+        if draw_caption and font is not None:
             font, _, _ = load_font_for_text(font_size, font_family, label, bold=font_bold)
             if font is not None:
                 left, top, _, _ = font.getbbox(label)
@@ -345,17 +349,14 @@ def draw_scale_bar(img: np.ndarray, px_um: float,
                     bar_x2 + stroke, bar_y2 + stroke), fill=edge_rgb)
     draw.rectangle((bar_x1, bar_y1, bar_x2 - 1, bar_y2 - 1), fill=bar_rgb)
 
-
-    if font is not None:
+    if draw_caption and font is not None:
         draw.text((text_x - left, text_y - top), label, font=font, fill=bar_rgb,
                   stroke_width=stroke_w, stroke_fill=edge_rgb)
-        out = cv2.cvtColor(np.array(pil), cv2.COLOR_RGB2BGR)
-        return out[:, :, 0] if gray else out
-
     out = cv2.cvtColor(np.array(pil), cv2.COLOR_RGB2BGR)
-    cv2.putText(out, label, (text_x, text_y + text_h),
-                cv2.FONT_HERSHEY_SIMPLEX, font_size / 30.0, bar_rgb,
-                stroke_w, cv2.LINE_AA)
+    if draw_caption and font is None:
+        cv2.putText(out, label, (text_x, text_y + text_h),
+                    cv2.FONT_HERSHEY_SIMPLEX, font_size / 30.0, bar_rgb,
+                    stroke_w, cv2.LINE_AA)
     return out[:, :, 0] if gray else out
 
 

@@ -1137,6 +1137,7 @@ def test_gpu_action_allows_retry_when_memory_becomes_readable(qapp, tmp_path, mo
     monkeypatch.setattr(OpenFocus, "_probe_device_kind_async", lambda self: None)
     monkeypatch.setattr(mff, "neural_device_kind", lambda: "CUDA")
     monkeypatch.setattr(neural_runtime, "_DEVICE", "CUDA")
+    monkeypatch.setattr(neural_runtime, "_AVAILABLE_PROVIDERS", ("CUDAExecutionProvider",))
     monkeypatch.setattr(neural_runtime, "_ADAPTER_NAME", "")
     monkeypatch.setattr(neural_runtime, "_UNADMITTED", "CUDA")
     monkeypatch.setattr(neural_runtime, "_ACTUAL_DEVICE", None)

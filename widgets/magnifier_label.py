@@ -830,6 +830,8 @@ class MagnifierLabel(QLabel):
             source, target = self._magnifier_rects()
             painter.fillRect(target, QColor(24, 24, 24))
             region = QRectF(0, 0, self._source_size.width(), self._source_size.height())
+            required = source.intersected(region)
+            device_scale = target.width() / source.width() * self.devicePixelRatioF()
 
             def draw_region(pixels, domain):
                 clipped = source.intersected(domain)
@@ -846,24 +848,36 @@ class MagnifierLabel(QLabel):
                                       native_scale * self.devicePixelRatioF() < 1)
                 painter.drawPixmap(drawn, pixels, sample)
 
-            # The bounded preview fills newly exposed pixels while the most
-            # recent native crop continues to cover its original coordinates.
-            draw_region(self._base_pixmap, region)
+            complete = self._source_pixmap is not None or required.isEmpty()
             if self._source_pixmap is not None:
                 draw_region(self._source_pixmap, region)
-            elif (cached := self._source_regions.get('loupe')) is not None:
-                draw_region(*cached)
+            else:
+                # Reuse a decoded viewport or earlier crop only at sufficient
+                # sampling density. A camera thumbnail never supplies loupe pixels.
+                density = min(1.0, device_scale)
+                for kind in ('view', 'loupe'):
+                    cached = self._source_regions.get(kind)
+                    if cached is None:
+                        continue
+                    pixels, domain = cached
+                    if (pixels.width() + 0.5 < domain.width() * density
+                            or pixels.height() + 0.5 < domain.height() * density):
+                        continue
+                    draw_region(pixels, domain)
+                    complete = complete or domain.contains(required)
             painter.setPen(QPen(QColor(255, 255, 255, 220), 2))
             painter.drawRect(target)
-            text_bg_rect = QRectF(target.x() + 4, target.y() + 4, 130, 18)
-            painter.fillRect(text_bg_rect, QColor(0, 0, 0, 180))
+            caption = (f"{device_scale * 100:.0f}% ({self._magnifier_zoom:.1f}x)"
+                       if complete else trans.t('native_detail_loading'))
             font = QFont()
             font.setPointSize(9)
             painter.setFont(font)
+            caption_width = min(target.width() - 8, painter.fontMetrics().horizontalAdvance(caption) + 12)
+            text_bg_rect = QRectF(target.x() + 4, target.y() + 4,
+                                  caption_width, painter.fontMetrics().height() + 2)
+            painter.fillRect(text_bg_rect, QColor(0, 0, 0, 180))
             painter.setPen(QColor(255, 255, 255))
-            scale, _, _ = self._get_layout_params()
-            painter.drawText(text_bg_rect, Qt.AlignmentFlag.AlignCenter,
-                             f"{scale * self._magnifier_zoom * self.devicePixelRatioF() * 100:.0f}% ({self._magnifier_zoom:.1f}x)")
+            painter.drawText(text_bg_rect, Qt.AlignmentFlag.AlignCenter, caption)
 
         if self._roi_mode and self._base_pixmap is not None and not self._base_pixmap.isNull():
             overlay_color = QColor(0, 0, 0, 150)

@@ -468,6 +468,7 @@ def test_real_session_placement_is_profiled_once_and_cpu_placement_sticks(
 
     monkeypatch.setattr(neural_runtime, '_session', session)
     monkeypatch.setattr(neural_runtime, '_DEVICE', 'DIRECTML')
+    monkeypatch.setattr(neural_runtime, '_AVAILABLE_PROVIDERS', ('DmlExecutionProvider',))
     monkeypatch.setattr(neural_runtime, '_SESSIONS', OrderedDict())
     monkeypatch.setattr(resource_policy, 'probe_resources', lambda *_: resource_policy.ResourceSnapshot(
         available_ram=8 * 1024 ** 3, total_ram=16 * 1024 ** 3,
@@ -593,6 +594,7 @@ def test_job_probe_keeps_reported_admission_in_step_with_job_placement(monkeypat
     monkeypatch.setattr(neural_runtime, '_SESSIONS', OrderedDict())
     monkeypatch.setattr(resource_policy, 'probe_resources', probe_resources)
     monkeypatch.setattr(resource_policy, 'require_memory', lambda *_: None)
+    monkeypatch.setattr(neural_runtime, '_AVAILABLE_PROVIDERS', ('CUDAExecutionProvider',))
     # Provider selection saw the opposite of what this job's probe sees.
     monkeypatch.setattr(neural_runtime, '_UNADMITTED', 'CUDA' if probe == 'known' else None)
     neural_runtime.start_inference_job()
@@ -873,6 +875,7 @@ def test_direct_v2_tiled_jobs_retry_accelerator_after_sticky_fallback(monkeypatc
             return [inputs['input'].copy()]
     monkeypatch.setattr(tiled, '_plan', lambda *args: (64, 'model', 'COREML', SimpleNamespace(native_threads=1)))
     monkeypatch.setattr(neural_runtime, '_session', lambda _p, _s, device, _t: Session(device))
+    monkeypatch.setattr(neural_runtime, '_AVAILABLE_PROVIDERS', ('CoreMLExecutionProvider',))
     monkeypatch.setattr(resource_policy, 'require_memory', lambda *_: None)
     frames = [np.zeros((128, 128, 3), np.uint8), np.full((128, 128, 3), 100, np.uint8)]
     try:
