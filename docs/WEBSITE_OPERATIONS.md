@@ -74,9 +74,9 @@ flowchart LR
 ```
 
 With `run_worker_first: true` in `site/wrangler.jsonc`, every request reaches
-the Worker. It handles `/`, the website and desktop update APIs and download
-routes, and `www` canonicalisation; other requests go to the static binding.
-Every page and asset request therefore counts as a Worker invocation.
+the Worker. It handles `/`, the website and desktop update APIs, download
+routes, the WeChat QR paths and `www` canonicalisation. Other requests go to
+the static binding. Every page and asset request counts as a Worker invocation.
 
 - `/` — chooses a valid `?lang=en` or `?lang=zh` first, then the `lang`
   cookie, then the highest-priority supported `Accept-Language` entry; English
@@ -264,7 +264,7 @@ python tools/build_site.py
 # With the production origin (canonical, sitemap, OG, installer commands)
 SITE_ORIGIN=https://openfocus.top python tools/build_site.py
 
-# Local preview (static only: no Worker language redirect or /api)
+# Local preview (static only, omits Worker redirects, QR routes and APIs)
 python -m http.server 8788 --directory site/dist
 
 # Deploy Worker + assets with the account-specific analytics binding
@@ -314,11 +314,13 @@ template resolves `{{dotted.key}}` placeholders; missing keys fail the build.
   registries in `core/algorithms.py`; check before changing them.
 - Media is copied from `assets/` (app screenshot, README posters, benchmark
   chart) — do not duplicate binaries under `site/`.
-- To rotate the WeChat group invite, replace `assets/readme/wechat-group.png`
-  and redeploy the website. The build serves the original PNG at
-  `/wechat-group.png` with a five-minute cache lifetime. The README uses the
-  same source image, and Contact Us in the desktop app loads the website copy
-  with a bundled fallback for offline use.
+- Publish or rotate the WeChat group and Official Account QR codes through the
+  account service admin console. The site Worker fetches the current public
+  PNG from `https://account.openfocus.top/v1/qr/wechat-group` or
+  `https://account.openfocus.top/v1/qr/wechat-official-account` for the existing
+  `/wechat-group.png` and `/wechat-official-account.jpg` URLs. Both URLs support
+  GET and HEAD and return `Cache-Control: no-store`. Unpublished codes return
+  `404`, and account service failures return `502`.
 - The website inserts the current stable desktop version from `/api/latest`
   when JavaScript is available. It shows the Linux x86-64 desktop download and
   version-specific extraction commands when that release includes the archive.

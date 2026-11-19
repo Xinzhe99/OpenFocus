@@ -23,11 +23,8 @@ def test_site_worker_contract():
     assert completed.returncode == 0, completed.stdout + completed.stderr
 
 
-def test_built_installer_runs_shell_syntax_check_after_crlf_checkout(tmp_path, monkeypatch):
-    shell = shutil.which("sh")
-    if shell is None:
-        pytest.skip("A POSIX shell is needed to validate the installer")
-
+@pytest.fixture
+def built_site(tmp_path, monkeypatch):
     from tools import build_site
 
     original_root = Path(__file__).resolve().parent.parent
@@ -39,18 +36,37 @@ def test_built_installer_runs_shell_syntax_check_after_crlf_checkout(tmp_path, m
     installer = (original_root / "site" / "install.sh").read_text(encoding="utf-8")
     (site / "install.sh").write_bytes(installer.replace("\n", "\r\n").encode("utf-8"))
     for name in ("OpenFocus.png", "ui.png", "benchmark.png",
-                 "readme/method-comparison_poster.jpg", "readme/retouch_poster.jpg",
-                 "readme/wechat-group.png"):
+                 "readme/method-comparison_poster.jpg", "readme/retouch_poster.jpg"):
         target = root / "assets" / name
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(original_root / "assets" / name, target)
 
+    dist = site / "dist"
+    dist.mkdir()
+    qr_files = ("wechat-group.png", "wechat-official-account.jpg")
+    for name in qr_files:
+        (dist / name).write_bytes(b"stale")
+
     monkeypatch.setattr(build_site, "ROOT", root)
     monkeypatch.setattr(build_site, "SITE", site)
-    monkeypatch.setattr(build_site, "DIST", site / "dist")
-    monkeypatch.setattr(build_site, "ASSETS", site / "dist" / "assets")
+    monkeypatch.setattr(build_site, "DIST", dist)
+    monkeypatch.setattr(build_site, "ASSETS", dist / "assets")
     assert build_site.main() == 0
-    result = subprocess.run([shell, "-n", str(site / "dist" / "install.sh")],
+    return dist
+
+
+def test_built_site_drops_legacy_qr_files(built_site):
+    headers = (built_site / "_headers").read_text(encoding="utf-8")
+    for name in ("wechat-group.png", "wechat-official-account.jpg"):
+        assert not (built_site / name).exists()
+        assert f"/{name}\n" not in headers
+
+
+def test_built_installer_runs_shell_syntax_check_after_crlf_checkout(built_site):
+    shell = shutil.which("sh")
+    if shell is None:
+        pytest.skip("A POSIX shell is needed to validate the installer")
+    result = subprocess.run([shell, "-n", str(built_site / "install.sh")],
                             capture_output=True, text=True, encoding="utf-8")
     assert result.returncode == 0, result.stderr
 

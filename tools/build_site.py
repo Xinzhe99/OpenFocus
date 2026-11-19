@@ -242,12 +242,8 @@ def build_assets() -> list[Path]:
               ASSETS / "method-comparison.webp", 1200)
     save_webp(ROOT / "assets/readme/retouch_poster.jpg", ASSETS / "retouch.webp", 1200)
     shutil.copyfile(ROOT / "assets/benchmark.png", ASSETS / "benchmark.png")
-    wechat_qr = DIST / "wechat-group.png"
-    shutil.copyfile(ROOT / "assets/readme/wechat-group.png", wechat_qr)
-    wechat_official_qr = DIST / "wechat-official-account.jpg"
-    shutil.copyfile(ROOT / "assets/readme/wechat-official-account.jpg", wechat_official_qr)
     made += [ASSETS / "ui.webp", ASSETS / "method-comparison.webp",
-             ASSETS / "retouch.webp", ASSETS / "benchmark.png", wechat_qr, wechat_official_qr]
+             ASSETS / "retouch.webp", ASSETS / "benchmark.png"]
 
     og = cover(Image.open(ROOT / "assets/ui.png").convert("RGB"), 1200, 630)
     og.save(ASSETS / "og.jpg", "JPEG", quality=86, optimize=True, progressive=True)
@@ -343,12 +339,6 @@ def main() -> int:
         "/install.ps1\n"
         "  Content-Type: text/plain; charset=utf-8\n"
         "  Cache-Control: public, max-age=300\n"
-        "\n"
-        "/wechat-group.png\n"
-        "  Cache-Control: public, max-age=300, must-revalidate\n"
-        "\n"
-        "/wechat-official-account.jpg\n"
-        "  Cache-Control: public, max-age=300, must-revalidate\n"
         "\n"
         "/assets/*\n"
         "  Cache-Control: public, max-age=86400\n",
