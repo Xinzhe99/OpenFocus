@@ -77,6 +77,17 @@ class FrameCache:
 SOURCE_CACHE = FrameCache()
 PREVIEW_CACHE = FrameCache(64 * 1024 * 1024)
 _retain_decoded_sources = ContextVar('retain_decoded_sources', default=True)
+_area_resizer = ContextVar('source_area_resizer', default=None)
+
+
+@contextmanager
+def source_area_resizer(backend):
+    """Use a job's pixel-exact resizer while resolving its source on this thread."""
+    token = _area_resizer.set(backend)
+    try:
+        yield
+    finally:
+        _area_resizer.reset(token)
 
 
 @contextmanager
@@ -675,8 +686,12 @@ class SourceFrame:
                 image = cv2.cvtColor(image, cv2.COLOR_BGR2BGRA)
                 _check_resolution_cancel(should_cancel)
             if self.linear_metadata is None and self.scale != 1 and not scaled_raw:
-                image = cv2.resize(image, (max(1, int(image.shape[1] * self.scale)),
-                                          max(1, int(image.shape[0] * self.scale))), interpolation=cv2.INTER_AREA)
+                dsize = (max(1, int(image.shape[1] * self.scale)),
+                         max(1, int(image.shape[0] * self.scale)))
+                backend = _area_resizer.get()
+                resized = backend.resize(image, dsize) if backend is not None else None
+                image = resized if resized is not None else cv2.resize(image, dsize, interpolation=cv2.INTER_AREA)
+                del resized
                 _check_resolution_cancel(should_cancel)
             for operation in self.transforms:
                 _check_resolution_cancel(should_cancel)

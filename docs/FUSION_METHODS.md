@@ -79,8 +79,7 @@ compiler are required. Unavailable devices and device failures fall back to CPU.
 See [GPU support](GPU_SUPPORT.md).
 With GPU acceleration enabled, OpenFocus A and OpenFocus C can run full-image
 fusion on a compatible OpenCL GPU; insufficient memory, an unavailable device or a
-device failure can cause CPU fallback. C's depth-map export and application
-alignment use the CPU.
+device failure can cause CPU fallback. C's depth-map export runs on the CPU.
 
 
 StackMFF V1 and V2 use retrained single-scale attention networks, each with

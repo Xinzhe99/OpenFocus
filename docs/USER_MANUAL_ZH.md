@@ -1119,7 +1119,7 @@ GUI 图像栈做过旋转、翻转、平场校正或其他源修改后，不能�
 
 StackMFF V1/V2/V3 使用 ONNX Runtime。Windows 的 DirectML 和 macOS 的 CoreML 可能加速推理，否则使用 CPU。仅凭提供程序可用不能证明实际使用了 GPU。其他 GPU 的支持仍需验证。
 
-OpenFocus B 可使用兼容的 OpenCL GPU 加速深度处理和源帧合并；根据内存预算，可使用有界 GPU 阶段或回退到 CPU。启用 GPU 加速后，OpenFocus A 和 OpenFocus C 可使用兼容的 OpenCL GPU 进行全图融合；内存不足或设备、驱动出现问题时会回退到 CPU。C 的深度图导出和配准使用 CPU。平台要求参见 [GPU 支持](GPU_SUPPORT.md)。
+OpenFocus B 可使用兼容的 OpenCL GPU 加速深度处理和源帧合并；根据内存预算，可使用有界 GPU 阶段或回退到 CPU。启用 GPU 加速后，OpenFocus A 和 OpenFocus C 可使用兼容的 OpenCL GPU 进行全图融合。内存不足或设备、驱动出现问题时会回退到 CPU。C 的深度图导出使用 CPU。ECC 配准可使用受支持的 GPU 缩小大图，再由 CPU 估计变换。平台要求参见 [GPU 支持](GPU_SUPPORT.md)。
 
 
 - 通过 **设置 → GPU 加速** 开关切换

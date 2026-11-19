@@ -385,7 +385,8 @@ class ROIAlignmentWorker(QThread):
 
     def __init__(self, raw_images, reg_downscale_width=None, thread_count: int = DEFAULT_THREAD_COUNT,
                  resource_preference="balanced", alignment="ecc",
-                 registration_parameters=None, exposure_match=False, reverse_registration=False):
+                 registration_parameters=None, exposure_match=False, reverse_registration=False,
+                 use_gpu=True):
         super().__init__()
         configure_native_worker_stack(self)
         self.raw_images = raw_images
@@ -396,6 +397,7 @@ class ROIAlignmentWorker(QThread):
         self.registration_parameters = desktop_registration_parameters(alignment, registration_parameters)
         self.exposure_match = bool(exposure_match)
         self.reverse_registration = bool(reverse_registration)
+        self.use_gpu = bool(use_gpu)
         try:
             self.thread_count = max(0, int(thread_count))
         except (TypeError, ValueError):
@@ -432,7 +434,7 @@ class ROIAlignmentWorker(QThread):
             method=self.alignment, parameters=self.registration_parameters,
             downscale_width=self.reg_downscale_width,
             brightness_reference='last' if self.exposure_match else 'first',
-            use_gpu=False, defer_warps=True)
+            accelerate_ecc=self.use_gpu, defer_warps=True)
 
         inputs = list(reversed(self.raw_images)) if self.reverse_registration else self.raw_images
         aligned_images = _registration_process(
@@ -1034,7 +1036,7 @@ class RenderWorker(QThread):
             parameters=self.registration_parameters,
             downscale_width=self.reg_downscale_width,
             brightness_reference='last' if self.exposure_match else 'first',
-            use_gpu=False, defer_warps=self._defer_warps)
+            accelerate_ecc=self.use_gpu, defer_warps=self._defer_warps)
         try:
             images = _registration_process(registration, images, self._reverse_registration,
                 thread_count=self.thread_count, resource_preference=self.resource_preference,
@@ -1707,7 +1709,7 @@ class BatchWorker(QThread):
                         parameters=self.registration_parameters,
                         downscale_width=registration_width,
                         brightness_reference='last' if self.exposure_match else 'first',
-                        use_gpu=False, defer_warps=lazy_fusion)
+                        accelerate_ecc=self.use_gpu, defer_warps=lazy_fusion)
                     reverse_registration = _ordered_openfocus_registration(
                         alignment, method, self.runtime_settings.get('sort_mode', 'asc'))
                     registration_inputs = (list(reversed(aligned_images))
@@ -1957,7 +1959,7 @@ class BatchWorker(QThread):
                 registration_width = self._registration_width(images)
                 registration = ImageRegistration(method=alignment, parameters=self.registration_parameters,
                     downscale_width=registration_width,
-                    brightness_reference='last' if self.exposure_match else 'first', use_gpu=False,
+                    brightness_reference='last' if self.exposure_match else 'first', accelerate_ecc=self.use_gpu,
                     defer_warps=get_fusion(method).streaming_sources)
                 images = registration.process(images, thread_count=self.thread_count,
                     resource_preference=self.resource_preference, should_cancel=lambda: self.is_cancelled)

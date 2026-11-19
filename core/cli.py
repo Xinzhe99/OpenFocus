@@ -774,7 +774,7 @@ def _fuse_stack_admitted_body(images, args):
             parameters=args._registration_parameters,
             brightness_reference=("last" if getattr(args, "exposure_match", True)
                                   else "first"),
-            use_gpu=False, defer_warps=defer_warps)
+            accelerate_ecc=not args.cpu, defer_warps=defer_warps)
         with performance_profile.current().stage('registration', resources=True):
             images = reg.process(images, output_path=None, thread_count=args.threads,
                                  resource_preference=getattr(args, "resource_preference", "balanced"),
