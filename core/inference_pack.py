@@ -164,7 +164,7 @@ def _remove_retired(root, keep):
         shutil.rmtree(path, ignore_errors=True)
 
 
-def _blocks(artifact, local, cancelled):
+def _blocks(artifact, local, cancelled, prefer_mirror):
     if local is not None:
         with local.open('rb') as source:
             while chunk := source.read(_BLOCK):
@@ -173,14 +173,19 @@ def _blocks(artifact, local, cancelled):
 
     size = artifact['size']
     received = 0
-    for attempt in range(4):
+    official = artifact['url']
+    mirrors = tuple(artifact.get('mirrors', ())) if prefer_mirror else ()
+    urls = (*mirrors, official, official, official, official)
+    for attempt, url in enumerate(urls):
         _check(cancelled)
         headers = {'Range': f'bytes={received}-'} if received else {}
-        request = Request(artifact['url'], headers=headers)
+        request = Request(url, headers=headers)
         try:
             with urlopen(request, timeout=20) as source:
                 if received and (source.status != 206 or source.headers.get('Content-Range') !=
                                  f'bytes {received}-{size - 1}/{size}'):
+                    if url != official:
+                        continue
                     raise ValueError('The download server did not honor the requested byte range.')
                 # read1 returns available bytes, including on a slow connection.
                 while chunk := source.read1(_BLOCK):
@@ -191,11 +196,12 @@ def _blocks(artifact, local, cancelled):
                 raise EOFError('The download ended before its pinned byte count.')
         except (OSError, HTTPException, EOFError) as exc:
             _check(cancelled)
-            if attempt == 3 or isinstance(exc, HTTPError) and exc.code < 500:
+            if (attempt == len(urls) - 1
+                    or url == official and isinstance(exc, HTTPError) and exc.code < 500):
                 raise
 
 
-def _fetch(artifact, archive, local, cancelled, report):
+def _fetch(artifact, archive, local, cancelled, report, *, prefer_mirror=False):
     expected = artifact['size']
     if shutil.disk_usage(archive.parent).free < expected:
         raise OSError(f'Insufficient disk space for {archive.name} ({expected:,} bytes).')
@@ -203,7 +209,7 @@ def _fetch(artifact, archive, local, cancelled, report):
     count = 0
     last_update = 0.0
     with archive.open('xb') as dest:
-        for chunk in _blocks(artifact, local, cancelled):
+        for chunk in _blocks(artifact, local, cancelled, prefer_mirror):
             _check(cancelled)
             count += len(chunk)
             if count > expected:
@@ -219,7 +225,7 @@ def _fetch(artifact, archive, local, cancelled, report):
     report(count)
 
 
-def _extract(archive, runtime, cancelled):
+def _extract(archive, runtime, cancelled, report):
     wheel = archive.suffix == '.whl'
     site = runtime / 'Lib' / 'site-packages'
     with zipfile.ZipFile(archive) as source:
@@ -227,6 +233,9 @@ def _extract(archive, runtime, cancelled):
         required = sum(item.file_size for item in members)
         if shutil.disk_usage(runtime).free < required:
             raise OSError(f'Insufficient disk space to unpack {archive.name} ({required:,} bytes).')
+        written = 0
+        last_update = time.monotonic()
+        report(0, required)
         for item in members:
             _check(cancelled)
             if item.is_dir():
@@ -246,6 +255,12 @@ def _extract(archive, runtime, cancelled):
                 while chunk := inp.read(_BLOCK):
                     _check(cancelled)
                     out.write(chunk)
+                    written += len(chunk)
+                    now = time.monotonic()
+                    if now - last_update >= 0.15:
+                        report(written, required)
+                        last_update = now
+        report(written, required)
 
 
 def _probe(runtime, backends, cancelled):
@@ -281,11 +296,17 @@ def _probe(runtime, backends, cancelled):
                            f'{line.decode("utf-8", errors="replace").strip()} {detail}')
 
 
-def install_pack(*, progress=None, cancelled=None, artifact_dir: Path | None = None) -> PackStatus:
-    """Install or repair. Progress receives (verified/received bytes, total, phase).
+def install_pack(*, progress=None, cancelled=None, artifact_dir: Path | None = None,
+                 prefer_mirror=False) -> PackStatus:
+    """Install or repair, reporting progress as (phase, name, done, total).
+
+    Download and local verification counts are cumulative archive bytes.
+    Unpack counts are per archive's uncompressed bytes. GPU verification has
+    no known total.
 
     ``artifact_dir`` optionally supplies original archives for an offline install.
     Every local archive undergoes the same size and digest checks as a download.
+    ``prefer_mirror`` tries a listed mirror first, with the same digest check.
     Cancellation and errors preserve the previously active generation.
     """
     status = pack_status()
@@ -303,22 +324,27 @@ def install_pack(*, progress=None, cancelled=None, artifact_dir: Path | None = N
         runtime = root / f'gen-{uuid.uuid4().hex}'
         runtime.mkdir(mode=0o700)
         complete = 0
+        transfer_phase = 'download' if artifact_dir is None else 'local'
 
-        def notify(count, phase):
+        def notify(phase, name='', done=0, total=0):
             if progress is not None:
-                progress(complete + count, status.download_bytes, phase)
+                progress(phase, name, done, total)
 
         try:
             for artifact in _manifest()['artifacts']:
                 _check(cancelled)
                 name = unquote(urlsplit(artifact['url']).path.rsplit('/', 1)[1])
                 archive = runtime / name
-                notify(0, name)
+                def transfer_progress(count):
+                    notify(transfer_phase, name, complete + count, status.download_bytes)
+
+                transfer_progress(0)
                 local = Path(artifact_dir) / name if artifact_dir is not None else None
-                _fetch(artifact, archive, local, cancelled, lambda count: notify(count, name))
+                _fetch(artifact, archive, local, cancelled, transfer_progress,
+                       prefer_mirror=prefer_mirror)
                 complete += artifact['size']
-                notify(0, f'Unpacking {name}')
-                _extract(archive, runtime, cancelled)
+                _extract(archive, runtime, cancelled,
+                         lambda done, total: notify('unpack', name, done, total))
                 archive.unlink()
             # Preserve the desktop's app-local C++ runtime for a portable PC
             # without a system-wide redistributable, including after upgrades.
@@ -327,7 +353,7 @@ def install_pack(*, progress=None, cancelled=None, artifact_dir: Path | None = N
                     for library in _CORE.parent.glob(pattern):
                         shutil.copyfile(library, runtime / library.name)
             (runtime / 'python310._pth').write_text('python310.zip\n.\nLib/site-packages\n', encoding='ascii')
-            notify(0, 'Checking GPU worker')
+            notify('probe')
             _probe(runtime, status.backends, cancelled)
             pointer = runtime / 'activation.json'
             pointer.write_text(json.dumps({'version': status.version, 'generation': runtime.name}), encoding='utf-8')

@@ -261,11 +261,22 @@ def test_existing_lazy_preview_never_resolves_full_source(qapp, monkeypatch):
     host.deleteLater()
 
 @pytest.mark.parametrize("dpr", [1.0, 2.0])
-def test_native_actual_on_small_source_keeps_idle_fit_bounded(qapp, tmp_path, dpr):
+def test_native_actual_on_small_source_keeps_idle_fit_bounded(qapp, tmp_path, monkeypatch, dpr):
     import tifffile
     from core.source_frames import scan_source
     from dialogs.scalebar import ScaleBarDialog
+    from utils import fonts
     from utils.image_utils import pixmap_to_cv2
+
+    load_font = fonts.load_font_for_text
+
+    def load_legible_font(size, *args, **kwargs):
+        # Some system font outlines raise a raster error at thumbnail size.
+        if size < 6:
+            raise OSError('raster overflow')
+        return load_font(size, *args, **kwargs)
+
+    monkeypatch.setattr(fonts, 'load_font_for_text', load_legible_font)
 
     # The 100% zoom factor is at or below Fit, including exact equality at DPR 1.
     image = np.full((240, 400, 3), 90, np.uint8)
@@ -283,6 +294,7 @@ def test_native_actual_on_small_source_keeps_idle_fit_bounded(qapp, tmp_path, dp
         label.devicePixelRatioF = lambda: dpr
         _preview_scale(qapp, dialog)
         assert dialog._region_worker is None
+        assert label._base_pixmap is not None, dialog._error.text()
         assert label._base_pixmap.width() == 40
         dialog._actual_size()
         assert label._zoom_factor == pytest.approx(1 / dpr)

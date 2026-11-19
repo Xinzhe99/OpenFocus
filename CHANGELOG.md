@@ -1,7 +1,6 @@
 # Changelog
 - Open Linux desktop menu entries from bundle paths that contain percent signs.
 - Show embedded TIFF thumbnails stored after the main image in the batch converter, including their display orientation.
-- Keep TIFFs with tiny embedded thumbnails visible in Scale Bar. Draw the bar on the thumbnail and show its caption at readable zoom levels.
 
 All notable changes to OpenFocus are documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
@@ -10,6 +9,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 - Offer a hardware-matched TensorRT and PyTorch CUDA pack for StackMFF on supported Windows NVIDIA systems. Install it from Setup or Settings, including after a desktop upgrade. Neural renders try supported engines within the memory budget and report the actual execution device and fallback reasons.
+- Offer a PyTorch download mirror and installation from verified local archives. Show byte counts during download and unpacking, then show GPU verification separately.
+- Show the Windows taskbar and notification area icons while the initial sign-in window is open. Clicking the notification area icon brings the current dialog or workspace forward.
 - Batch Image Converter now defaults to a sibling `_converted` folder and previews the destination for the selected file. Choose a source-relative or custom folder, cap the long edge at 2K/4K/8K, or shrink by percentage. DNG keeps sensor dimensions. Unchanged same-format images are counted as skipped. Right-click queue rows to remove the selection.
 - Add an opt-in OpenCL GPU path for OpenFocus A fusion (`use_gpu=True`),
   porting the Burt-pyramid focus response, winner-take-all selection with
@@ -113,6 +114,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   transforms, cropping and output pixels are unchanged.
 
 ### Fixed
+- Keep TIFFs with tiny embedded thumbnails visible in Scale Bar. Draw the bar on the thumbnail and show its caption at readable zoom levels.
 - Reuse the last alignment across fusion methods when the original frame selection and registration settings are restored.
 - Report project restore completion after the desktop has applied the frames and settings, including after an update restart.
 - Stop desktop renders and affected batch stacks when registration rejects a frame.

@@ -4936,6 +4936,7 @@ if __name__ == "__main__":
 
     window = OpenFocus()
     app.set_main_window(window)
+    app.show_tray_icon()
     _log.info("main window ready")
 
     # An existing local session is sufficient offline; a new profile must sign in.
