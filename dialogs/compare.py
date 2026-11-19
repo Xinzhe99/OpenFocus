@@ -9,21 +9,21 @@ from PyQt6.QtWidgets import (
     QSlider, QSplitter, QToolTip, QVBoxLayout, QWidget,
 )
 
+from controllers.output_manager import workspace_fusions
 from core.compare_worker import AlignmentWorker, PreviewWorker, DisplayWorker
 from core.source_previews import DISPLAY_REGION_MAX_SIDE, SourcePreviewWorker, SourceRegionWorker
 from core.source_frames import PREVIEW_EDGE, ProcessedFrame, SourceFrame, display_image, preview_ready
 from locales import trans
 from utils.frame_pixels import BoundedPreviewWorker
 from utils.image_utils import cv2_to_pixmap
+from utils.output_sharpen import DEFAULT_SHARPEN_STRENGTH
 from utils.settings_store import get_settings
 from core.algorithms import (alignment_steps, fusion_algorithms, get_fusion,
     registration_parameter_specs, registration_algorithms, resolve_fusion_parameters,
     desktop_registration_parameters)
 from ui.algorithm_parameters import AlgorithmParameterPanel
-from ui.algorithm_combo import (apply_method_availability, experimental_method_label,
-                                selected_item_enabled)
-from core.experimental import (alignment_is_experimental, experimental_enabled,
-                               fusion_is_experimental)
+from ui.algorithm_combo import apply_method_availability, selected_item_enabled
+from core.experimental import alignment_is_experimental, experimental_enabled
 from widgets.compare_canvas import (
     DEFAULT_DETAIL_SIZE, DetailCanvas, SourceCanvas,
 )
@@ -48,9 +48,9 @@ class _ActionFlowPanel(FlowPanel):
 class _MethodFlowPanel(FlowPanel):
     def mousePressEvent(self, event):  # noqa: N802
         child = self.childAt(event.position().toPoint())
-        if child is not None and child.property('experimentalLocked'):
-            QToolTip.showText(event.globalPosition().toPoint(),
-                              trans.t('experimental_locked_hint'), self)
+        reason = child.property('unavailableReason') if child is not None else None
+        if reason:
+            QToolTip.showText(event.globalPosition().toPoint(), reason, self)
             return
         super().mousePressEvent(event)
 
@@ -124,6 +124,8 @@ class CompareDialog(QDialog):
         self._publishing = False
         self._cancel_requested = False
         self._method_params = {}
+        self._edited_parameters = set()
+        self._parameter_panels = {}
         self._param_rows = {}
         self.param_widgets = {}
         self._canvases = {}
@@ -136,6 +138,8 @@ class CompareDialog(QDialog):
         self._ref_index = 0
         self._shared = self._collect_shared_settings()
         self._source_revision = int(getattr(window_main, "source_revision", 0))
+        self._workspace_outputs = [record for record in workspace_fusions(window_main)
+            if record.context.matches_stack(self._source_revision, self._source_indices)]
         manager = getattr(window_main, "label_manager", None)
         frame_ids = manager.frame_ids("input") if manager is not None else []
         self._frame_ids = [frame_ids[i] for i in self._source_indices] if frame_ids else None
@@ -174,10 +178,7 @@ class CompareDialog(QDialog):
             method = self._first_available_method()
         get_fusion(method)
         box = self._checks.get(method)
-        # Preserve a locked inherited choice; the execution guard reports why.
-        if box is not None and (box.isEnabled() or
-                                (fusion_is_experimental(method) and
-                                 not experimental_enabled(self.window_main))):
+        if box is not None and box.isEnabled():
             box.setChecked(True)
         if not self._selected_methods():
             # Only when the inherited method is unavailable: keep the empty
@@ -208,15 +209,9 @@ class CompareDialog(QDialog):
             box = self._checks.get(spec.id)
             if box is None:
                 continue
-            locked = (fusion_is_experimental(spec.id)
-                      and not experimental_enabled(self.window_main))
-            dependency = fusion_unavailable_reason(spec, available)
-            reason = '\n\n'.join(text for text in
-                                (trans.t('experimental_locked_hint') if locked else '',
-                                 dependency) if text)
-            box.setText(experimental_method_label(spec))
+            reason = fusion_unavailable_reason(spec, available)
+            box.setText(trans.t(spec.label_key))
             box.setEnabled(not reason)
-            box.setProperty('experimentalLocked', locked)
             box.setProperty("unavailableReason", reason)
             hint = trans.t(spec.hint_key) if spec.hint_key else ""
             box.setToolTip("\n\n".join(text for text in (hint, reason) if text))
@@ -242,6 +237,7 @@ class CompareDialog(QDialog):
             "reg_downscale_width": int(getattr(window, "reg_downscale_width", 1024)),
             "exposure_match": bool(getattr(window, "exposure_match", False)),
             "sharpen_output": bool(getattr(window, "sharpen_output", False)),
+            "sharpen_strength": getattr(window, "sharpen_strength", DEFAULT_SHARPEN_STRENGTH),
             "sort_mode": "desc" if getattr(window, "stack_reverse_order", False) else "asc",
         }
         for key in ("tile_block_size", "tile_overlap", "tile_threshold"):
@@ -445,7 +441,7 @@ class CompareDialog(QDialog):
         size_row.addWidget(self.preview_size_slider, 1)
         self.preview_size_spin = StepperSpinBox(
             minimum=160, maximum=960, step=20, value=self._detail_size)
-        self.preview_size_spin.setFixedWidth(110)
+        self.preview_size_spin.setMinimumWidth(110)
         self.preview_size_spin.setAccessibleName(size_label.text())
         self.preview_size_spin.lineEdit().setAccessibleName(size_label.text())
         size_label.setBuddy(self.preview_size_spin.lineEdit())
@@ -551,6 +547,7 @@ class CompareDialog(QDialog):
             row.addWidget(title)
             panel = AlgorithmParameterPanel(group)
             panel.set_parameters(specs, params)
+            self._parameter_panels[method] = panel
             panel.valuesChanged.connect(lambda values, m=method: self._params_changed(m, values))
             row.addWidget(panel)
             self.param_widgets[method] = panel.editors
@@ -586,6 +583,7 @@ class CompareDialog(QDialog):
         if self._method_params[method] == values:
             return
         self._method_params[method] = dict(values)
+        self._edited_parameters.add(method)
         self._results.pop(method, None)
         self._stale_methods.add(method)
         self._full_results.pop(method, None)
@@ -850,17 +848,90 @@ class CompareDialog(QDialog):
         else:
             self._refresh_panes()
 
+    def _reuse_workspace_outputs(self, methods, region):
+        if not self._workspace_outputs:
+            return
+        registration = self.align_combo.currentData()
+        roi = bool(self.mode_combo.currentData())
+        for method in methods:
+            if self._result_is_current(method):
+                continue
+            for record in self._workspace_outputs:
+                context = record.context
+                if context.algorithm != method or not context.matches_registration(
+                        registration, self._shared['registration_parameters'],
+                        self._shared['reg_downscale_width'], self._reverse_registration):
+                    continue
+                if context.parameters.get('defect_mask_path') or context.parameters.get('sensor_denoise'):
+                    continue
+                if (get_fusion(method).sort_frames and
+                        context.parameters.get('sort_mode', 'asc') != self._shared['sort_mode']):
+                    continue
+                if len(context.frames) != len(self._raw_frames):
+                    continue
+
+                image = record.image
+                height, width = image.shape[:2]
+                if (width, height) != (context.width, context.height):
+                    continue
+                x = y = 0
+                if context.roi_rect is not None:
+                    if not roi:
+                        continue
+                    x, y, rw, rh = context.roi_rect
+                    if context.roi_mode == 'paste':
+                        image = image[y:y + rh, x:x + rw]
+                        height, width = image.shape[:2]
+                        if (width, height) != (rw, rh):
+                            continue
+                grid_h, grid_w = self._frames[0].shape[:2]
+                if (context.roi_rect is None and (width, height) != (grid_w, grid_h)
+                        and method != 'dct'):
+                    continue
+                if x + width > grid_w or y + height > grid_h:
+                    continue
+                if region is not None:
+                    rx, ry, rw, rh = region
+                    if rx < x or ry < y or rx + rw > x + width or ry + rh > y + height:
+                        continue
+
+                specs = get_fusion(method).parameters
+                saved = context.parameters.get('fusion_parameters', context.parameters)
+                if not all(spec.key in saved for spec in specs):
+                    continue
+                parameters = resolve_fusion_parameters(method, {spec.key: saved[spec.key] for spec in specs})
+                if method in self._edited_parameters and self._method_params[method] != parameters:
+                    continue
+                if self._method_params[method] != parameters:
+                    self._method_params[method] = parameters
+                    self._parameter_panels[method].set_parameters(specs, parameters)
+                self._results[method] = {
+                    'key': self._result_key(method), 'image': image, 'bounds': (x, y, width, height),
+                    'full': not roi, 'display': None, 'record': record,
+                }
+                self._errors.pop(method, None)
+                # Use the archived aligned reference when it spans the source grid.
+                if (self._aligned_frames is None and registration != 'none' and
+                        context.roi_rect is None and (width, height) == (grid_w, grid_h)):
+                    self._aligned_frames = [frame.image for frame in context.frames]
+                    self._frames = self._aligned_frames
+                    self._show_frame(self._ref_index)
+                break
+
     def _result_key(self, method):
         roi = bool(self.mode_combo.currentData())
+        strength = self._shared['sharpen_strength'] if self._shared['sharpen_output'] else 0
         return (self._epoch, roi, tuple(sorted(self._method_params[method].items())),
-                self.ref_canvas.region() if roi else None)
+                self.ref_canvas.region() if roi else None, strength)
 
     def _refresh_panes(self):
         region = self.ref_canvas.region()
         for method in self._selected_methods():
             canvas = self._canvases[method]
             if self._result_is_current(method):
-                status = trans.t("compare_state_current")
+                record = self._results[method].get('record')
+                status = (trans.t('compare_workspace_result').format(name=record.label)
+                          if record is not None else trans.t('compare_state_current'))
             elif self._errors.get(method, (None,))[0] == self._result_key(method):
                 status = trans.t("msg_error") + ": " + self._errors[method][1]
             elif self._worker is not None and self._active_revision != self._revision:
@@ -998,9 +1069,8 @@ class CompareDialog(QDialog):
             self._set_idle()
             self.status_label.setText(self.align_combo.currentData(Qt.ItemDataRole.ToolTipRole))
             return
-        if not experimental_enabled(self.window_main) and (
-                alignment_is_experimental(self.align_combo.currentData()) or any(
-                    fusion_is_experimental(method) for method in self._selected_methods())):
+        if (not experimental_enabled(self.window_main)
+                and alignment_is_experimental(self.align_combo.currentData())):
             self._set_idle()
             self.status_label.setText(trans.t('experimental_locked_hint'))
             return
@@ -1011,6 +1081,19 @@ class CompareDialog(QDialog):
                 return
         methods = self._selected_methods()
         if not methods or len(self._raw_frames) < 2:
+            self._set_idle()
+            return
+        region = self.ref_canvas.region()
+        if region is None:
+            return
+        self._reuse_workspace_outputs(methods, region)
+        pending = []
+        for method in methods:
+            key = self._result_key(method)
+            if not self._result_is_current(method) and self._errors.get(method, (None,))[0] != key:
+                pending.append(method)
+        if not pending:
+            self._refresh_panes()
             self._set_idle()
             return
         if self._aligned_frames is None:
@@ -1027,20 +1110,6 @@ class CompareDialog(QDialog):
                 self.progress.setRange(0, 0)
                 self._launch_worker(worker, "alignment")
                 return
-        region = self.ref_canvas.region()
-        if region is None:
-            return
-        pending = []
-        for method in methods:
-            key = self._result_key(method)
-            cached = self._results.get(method)
-            failed = self._errors.get(method)
-            if (cached is None or cached['key'] != key) and (failed is None or failed[0] != key):
-                pending.append(method)
-        if not pending:
-            self._refresh_panes()
-            self._set_idle()
-            return
         self._active_keys = {method: self._result_key(method) for method in pending}
         worker = PreviewWorker(self._aligned_frames, pending, self._method_params,
                                self._shared, region, bool(self.mode_combo.currentData()), self)
@@ -1154,6 +1223,8 @@ class CompareDialog(QDialog):
             return
         window = self.window_main
         params = dict(self._method_params.get(method, {}))
+        record = self._results[method].get('record')
+        options = record.context.parameters if record is not None else self._shared['method_options'][method]
         previous = window._capture_parameter_state()
         try:
             with window._restore_scope():
@@ -1168,9 +1239,9 @@ class CompareDialog(QDialog):
                     self.registration_parameter_panel.values())
                 if hasattr(window, 'set_brightness_option'):
                     window.set_brightness_option('exposure_match', method,
-                        self._shared['method_options'][method]['exposure_match'])
+                        options.get('exposure_match', False))
                     window.set_brightness_option('base_correct', method,
-                        self._shared['method_options'][method]['base_frame'] != 'none')
+                        options.get('base_frame', 'none') != 'none')
             window.persist_settings()
             if hasattr(window, "push_parameter_undo"):
                 window.push_parameter_undo(previous)
@@ -1215,10 +1286,11 @@ class CompareDialog(QDialog):
                 parameters={**{key: value for key, value in self._shared.items() if key != 'method_options'},
                     **self._shared['method_options'][method],
                     'fusion_parameters': self._method_params[method]},
+                fusion_details=entry.get('fusion_details'),
                 **self._calibration)
             record = OutputRecord.create(
-                image, label, context=context, kind="compare",
-                exported=False)
+                image, label, context=context, kind="compare", exported=False,
+                fusion_details=entry.get('fusion_details'))
             window.output_manager.publish_compare_output(record)
             self._published = True
         except Exception as exc:
@@ -1240,7 +1312,8 @@ class CompareDialog(QDialog):
                    and (height, width) == self._aligned_frames[0].shape[:2]
                    and (height, width) == image.shape[:2])
         entry = {'key': key, 'image': image, 'bounds': tuple(bounds),
-                 'full': is_full, 'display': None}
+                 'full': is_full, 'display': None,
+                 'fusion_details': self._worker.fusion_details.get(method)}
         self._results[method] = entry
         if is_full:
             self._full_results[method] = entry
@@ -1446,6 +1519,7 @@ class CompareDialog(QDialog):
         self._aligned_frames = None
         self._frames = []
         self._raw_frames = []
+        self._workspace_outputs.clear()
         self._calibration = {}
         super().done(self._close_code)
         self.deleteLater()

@@ -140,6 +140,11 @@ online again. To use an existing browser account, choose the browser sign-in
 button on the account screen. Browser and desktop sessions are separate, so
 signing out here does not sign out the browser.
 
+Windows builds run by the same Windows user share one account device slot,
+including source builds with a separate settings directory. To release a slot
+occupied by an older registration, remove that entry in the account center.
+Removing a registration also signs out any session using it.
+
 For email sign-in, open the link on your phone or computer and confirm it;
 the waiting desktop app signs in automatically. If the account service has
 not yet been updated for cross-device sign-in, the app instead asks you to
@@ -151,10 +156,10 @@ again to retry. The previous desktop sign-in attempt is canceled.
 ### Quick Start Workflow
 
 1. Import your image sequence (File → Open Folder or drag-and-drop)
-2. Configure fusion settings in the right panel
+2. Choose a fusion method in the right panel
 3. Registration starts on **ECC**; choose **No alignment** if the frames are
    already aligned
-4. Adjust kernel size if needed
+4. Open **Parameters** for the selected method if you need to adjust its settings
 5. *(optional)* Open **Render settings** and check **Quick preview** to test parameters on a downscaled draft first
 6. Click "Start Render" to begin processing
 7. Export your results
@@ -180,8 +185,8 @@ You can resize the panels by dragging the splitter handle between them.
 
 The right panel contains all configuration options organized vertically:
 
-1. **Fusion Settings**: Select fusion algorithm and kernel size
-2. **Registration Settings**: Enable/disable alignment methods
+1. **Fusion Settings**: Choose a fusion method and open **Parameters** to adjust its settings.
+2. **Registration Settings**: Choose an alignment method and open **Parameters** when available. Parameter editors start collapsed, leaving more space for the source and output lists.
 3. **Action Buttons**: Start Render, plus reset, **Render settings**, and render all methods. The render settings dialog contains quick preview, frame order, exposure matching, brightness drift removal, and output sharpening
    These options are unchecked for new desktop settings and after reset. Saved choices are preserved.
 4. **Source Images List**: Shows all loaded images with filenames
@@ -194,11 +199,12 @@ The top menu bar provides access to all functions:
 - **File**: import/export operations, projects, processing templates and the recent-files list
 - **Edit**: Undo/redo, reset the current stack, image transformations and retouching
 - **Tools**: Image stitching, batch processing and conversion, method comparison, depth map, flat-field correction, scale bar, watermark and labels
-- **Settings**: Advanced Settings (General, Fusion, Registration, Startup & updates), GPU acceleration, theme and language
-- **Help**: Report a Problem (diagnostics and logs), contact information and the Discord community, Support Us, and update check. Support Us displays Alipay and PayPal codes; include your username in the transfer note for permanent project acknowledgment.
+- **Settings** offers Advanced Settings, GPU acceleration, theme, font size, and language.
+- **Help**: Report a Problem, Contact Us, Support Us, and check for updates. Contact Us loads the published contact details and WeChat QR codes. Support Us loads the current Alipay and PayPal codes. Reopen either dialog to fetch updates.
+- **Extensions (In development)** is visible and disabled.
 
-**Tools → Stitch Images…** opens a separate workspace for already-fused
-microscope regions and camera panoramas; it does not modify the current stack.
+**Tools → Stitch Images… (In development)** is currently unavailable. The following describes the workspace under development.
+
 The **Project assistant** tab gathers import, alignment and control points;
 **Source images** holds the list, grid and manual placement; **Panorama editor**
 holds seam, blend, exposure/color, output, projection, camera and HDR settings
@@ -381,9 +387,9 @@ File → Open Project rebuilds the recorded frames before replacing the current
 stack. If sources moved, choose the new source root and confirm the complete
 old/new path mapping. Save the project again to retain the relocated references.
 
-A project behaves like a document: the title bar shows its name with a `*` while
-there are unsaved changes, and closing the app or opening another project asks
-before discarding them. Source images are referenced, not copied.
+The title bar shows a named project's file name with a `*` while it has unsaved
+changes. An unnamed workspace displays **OpenFocus**. Closing the app or opening
+another project still asks before discarding unsaved edits. Source images are referenced, not copied.
 
 ### Processing Templates
 
@@ -448,6 +454,9 @@ text. The CLI supports it via `--scale-bar` (auto calibration) and
 
 When the selected target has no usable metadata, the dialog starts in manual
 calibration mode and waits for a valid pixel size.
+
+The automatic caption size follows the target image resolution. The dialog
+shows the calculated size in image pixels. Enter a size to set it manually.
 
 The preview draws at the target's native pixel geometry before fitting it to
 the viewport. Fit, 100%, pan and frame navigation change only the view. Apply
@@ -1007,18 +1016,22 @@ saved choices remain in use. **Reset** clears remembered choices and restores
 the method defaults. The CLI defaults exposure matching on and accepts
 `--no-exposure-match` to disable it.
 
-**Sharpen fused output** applies a mild unsharp mask after fusion, before the
-result is converted to its output bit depth. It is off by default and can be
-enabled in the main fusion options or batch options; the equivalent CLI flag is
-`--sharpen-output`. This affects the fused image, not registered frames or
-depth maps. It can make edges more distinct, but may amplify noise and halos.
-It is saved with the project and remembered between sessions.
+**Render settings → Output → Sharpen fused output** applies an unsharp mask
+after fusion and before conversion to the output bit depth. Sharpening is off
+by default. When enabled, a slider and percentage field adjust the strength
+from 0% to 200%. At 0% the result is unchanged. At 100% the strength matches
+earlier releases. Higher values may amplify noise and halos. The project and
+desktop preferences remember the strength independently of the on/off switch.
+Batch processing also offers both controls. The CLI equivalents are
+`--sharpen-output` and `--sharpen-strength PERCENT`.
 
 ### Alignment only (no fusion)
 
-Select **Alignment only (no fusion)** to register the stack and add one stack
-entry to the output list. The frames stay in memory until you export them;
-alignment-only does not create an extra cache or write beside the source files.
+Select **Alignment only (no fusion)** to add a registered stack to the output
+list. OpenFocus reuses the stack from a completed render if the frames and
+registration settings match. The mode initially carries over the current
+exposure matching option. If you change it here, the mode remembers that
+choice. Frames are available for review and are written on export.
 Save the entry to create one folder inside your chosen destination. Original
 filename stems are retained, with the extension of the format you select.
 
@@ -1314,6 +1327,8 @@ number. **Fit** uses a bounded thumbnail; **100%** displays the original region
 at one source pixel per device pixel, and can show loading or an error. Drag to
 pan. Position and font size use image pixels. Existing large coordinates and
 sizes are preserved when editing; an invalid position is reported for correction.
+New labels start with a size based on the previewed target image. The chosen
+size is saved with the label when you apply it.
 A fallback font or an unsuccessful draw is reported. Labels preserve the
 original bit depth when exported as PNG or TIFF.
 
@@ -1324,19 +1339,20 @@ The menu removal actions clear source labels, registered-stack labels, output
 labels, or all labels independently and can also be undone. Applying labels changes the session display;
 export an image to write the annotations to a file.
 
+Labels, Scale Bar and Watermark can update their Fit previews during fusion.
+At 100%, available original pixels appear immediately. If the original still
+needs to be decoded, the Fit image stays visible while the decode waits.
+
 ---
 
 ## 11. Settings and Configuration
 
-**Enable experimental features** in **Settings → Advanced Settings → General** is off by
-default and is remembered for this installation. With it off, desktop fusion
-offers OpenFocus A/B/C and No fusion; registration offers ECC and No alignment.
-Other fusion and registration methods and image stitching remain visible as
-experimental but cannot be used. Enable the option and click **OK** to unlock
-them; required dependencies may still limit availability. The experimental
-features are under development and may have performance, quality or availability
-limitations. Projects and templates do not override this preference. Restoring
-default settings turns it off again.
+All fusion methods are selectable when their dependencies are installed.
+**Enable experimental features** in **Settings → Advanced Settings → General**
+unlocks experimental registration methods. The installation remembers this
+preference. Restoring default settings turns it off.
+
+**Settings → Theme → Follow system** updates the interface when the operating system changes between light and dark. **Settings → Font size** offers Small (9 pt), Medium (10 pt), and Large (13 pt). **Custom…** previews 8–18 pt alongside the default before applying the size.
 
 **Settings → Advanced Settings**
 
@@ -1371,19 +1387,7 @@ Automatic update downloads run while idle and never install automatically. A com
 
 On Windows, the updater builds a separate candidate and moves the portable marker and `OpenFocusData` during the switch. If the switch fails it restores the old installation; if rollback cannot finish, the backup is kept and the app does not restart automatically. A permission prompt may appear once. Cancelling extraction discards incomplete staging and is checked between 256 KiB reads and writes; a blocked disk or network operation can delay it.
 
-The Dust Map tool and batch flat-field option are experimental. Enable
-**Experimental features** in Advanced Settings to use them.
-
-Flat-field correction changes session working pixels without overwriting source files. Select the white reference and a preview frame, then generate the preview again after changing source or scale. Reference and working/base images must share a coordinate domain and size. Applying prepares both stacks before committing; optional reference-frame removal belongs to the same undo step. Export corrected source images when you need to preserve these pixels outside the session.
-
-Batch processing accepts an optional white-field image in its processing options.
-Choose a defocused reference at the original frame resolution; it is scaled with
-the input stack and applied before registration, using the default dust size.
-An unreadable reference or a size mismatch fails the affected stack visibly.
-The reference is excluded from folder inputs, including grouped processing;
-at least two source frames must remain for fusion. Flat-field correction cannot
-be combined with transparent input. Leave the field empty to process without
-correction. The CLI also accepts the reference with `--dust-map WHITE`.
+**Dust Map (In development)** and white-field correction in Batch Processing and the command line are currently unavailable.
 
 Sensor cleanup is optional and runs on the original sensor-coordinate frames
 before registration. In the desktop application it lives in **Settings →
@@ -1403,7 +1407,7 @@ restored projects with such source histories. Pre-aligned ROI processing cannot
 be combined with sensor cleanup; leave ROI mode and render the full stack.
 Cleanup settings belong to the current session and saved project, not global
 application preferences. Batch and CLI process their original inputs separately,
-with sensor cleanup before flat-field correction and registration.
+with sensor cleanup before registration.
 Defect masks require source files with neutral EXIF orientation. Oriented files,
 camera RAW files, and sources whose orientation cannot be established are
 rejected because their decoded pixels may no longer match sensor coordinates.
@@ -1432,15 +1436,7 @@ carry the sensor-denoise flag but not a defect-mask path; recipes store the mask
 path and its fingerprint. Opening the project itself still
 requires its sources and any recorded flat-field reference.
 
-When a flat-field file reference is applied in **Tools → Dust Map
-(Flat-field)** at the stack's base scale, a saved
-project records its absolute path, content hash and dust size, and reapplies it
-once to the original sources on open. Keep the reference file unchanged and in
-place: a missing or changed reference prevents the project from opening. A
-reference selected from the stack, or correction at a different working/base
-scale, still requires exporting the corrected source stack before saving a
-project. If the working scale changes after correction, restore it to the
-correction scale before saving or export the corrected stack.
+Projects saved with a base-scale file-based flat-field reference still replay that correction on open. Keep the reference file unchanged and in place for project restoration.
 
 **Help → Report a Problem** opens on **Feedback Channels**, with links to the account center and GitHub.
 Under **Diagnostics**, **Session log** shows the local log and **Environment Info** shows the system and dependency report.
@@ -1644,11 +1640,11 @@ Process multiple folders automatically:
      dialog (or on the folder list) to queue them all at once; dropping
      switches to multi-folder mode and the thumbnails appear as they decode
    - **Remove Folders**: Remove selected folders from the list
-3. Configure output settings:
+3. Review the fusion and registration choices in **Method**. Grouping and sensor cleanup are in **Options**.
+4. Set the file format and destination in **Output**:
    - **Save to Subfolder**: Creates results in each input folder
    - **Save to Same Folder**: Saves alongside input while preserving existing files
    - **Custom Folder**: Specify output location
-4. Review current fusion/registration settings
 5. Click **Start Batch** to begin
 
 The batch dialog shows real-time progress. You can cancel processing at any time.
@@ -1658,7 +1654,7 @@ The batch dialog shows real-time progress. You can cancel processing at any time
 - Starts from a snapshot of the main window settings; batch controls override it.
 - Each folder or split group is processed independently through the same pipeline.
 - **Grouped fusion** is an optional way to process long stacks in multiple-folder
-  mode. Tick **Process large stacks in groups**; the **Group size** and
+  mode. In **Options**, tick **Process large stacks in groups**. The **Group size** and
   **Overlap** controls appear only while it is on. Group size must be at least 2
   and overlap between 0 and the group size minus 2. The desktop overlap starts
   at 1 and is limited to the allowed range when the size changes. Groups
@@ -1684,8 +1680,7 @@ The batch dialog shows real-time progress. You can cancel processing at any time
   line, an example is `python main.py --input stack --output fused.png --group-size 8 --group-overlap 1`.
   Grouped CLI input must be a folder and cannot be combined with `--depth-map`.
   A different stack-wide OpenFocus alignment reference cannot be combined with
-  grouping. A flat-field reference is applied to original frames before
-  registration; output sharpening is applied once after the final group.
+  grouping. Output sharpening is applied once after the final group.
 - **What lands where, by mode.** With **align only**, the selected destination
   receives one `<stack>_aligned` folder per stack and the output panel lists
   that folder. With **fusion + save aligned**, the fused image is written as
@@ -1781,6 +1776,11 @@ each page's own valid RGB profile independently.
 ---
 
 ## 13. Exporting Results
+
+Hover over an output to see its processing details. New fusion results report
+whether their input was processed as a whole or in tiles, plus the actual block
+size, configured grid overlap and number of tile passes. The tooltip shows the
+method settings used for that result.
 
 ### Saving a Single Result
 
@@ -1978,8 +1978,8 @@ an input or another output. Batch, grouped and dry-run modes reject this option.
 | `--base-frame` | Optional post-fusion step: match the output's low frequencies to the `last`/`first` frame (`none` default) |
 | `--sort` | Frame order for `openfocus_a/b/c`: `asc` (default, file order), `desc` (reverse a far-to-near sweep), `off` |
 | `--frame-order` | Folder input: `auto` (default) orders frames near to far by EXIF focus steps when every frame has them (OM SYSTEM focus bracketing starts mid-depth), otherwise by name; `name` always sorts by filename. Explicit file lists keep their order |
-| `--sharpen-output` | Apply mild unsharp masking to the fused output (off by default) |
-| `--dust-map WHITE` | Flat-field (dust map) correction from a defocused white-field shot |
+| `--sharpen-output` | Enable sharpening of the fused output (off by default) |
+| `--sharpen-strength PERCENT` | Set integer strength from 0 to 200 (default 100). Applies with `--sharpen-output`; 0 leaves the result unchanged. |
 | `--defect-mask-path MASK` | Sensor-coordinate defect mask repaired before registration |
 | `--sensor-denoise` | Conservative sensor denoising before registration |
 | `--kernel, -k` | Odd kernel size for methods that declare `kernel_size`; OpenFocus A/B use `--param radius=...` |
@@ -2201,7 +2201,6 @@ On macOS, use `Command` in place of `Ctrl` for these source list shortcuts.
 
 #### AI Unavailable
 
-- Enable experimental features in [Settings](#11-settings-and-configuration) and confirm the settings; AI methods are disabled in the desktop until opted in. This is separate from runtime and model availability.
 - Check that ONNX Runtime and the bundled model are installed.
 - Check via **Help → Report a Problem → Diagnostics → Environment Info**
 

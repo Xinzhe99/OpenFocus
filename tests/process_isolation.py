@@ -13,6 +13,7 @@ def sandbox_env(tmp_path, overrides=None, *, instance_name=None):
         "OPENFOCUS_CONTROL_FILE": str(tmp_path / "control.json"),
         "OPENFOCUS_INSTANCE_NAME": instance_name or f"OpenFocus-test-{os.getpid()}-{tmp_path.name}",
         "APPDATA": str(tmp_path / "appdata"),
+        "LOCALAPPDATA": str(tmp_path / "localappdata"),
         "XDG_CONFIG_HOME": str(tmp_path / "config"),
         "XDG_DATA_HOME": str(tmp_path / "data"),
         "HOME": str(tmp_path),

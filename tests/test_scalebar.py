@@ -242,23 +242,54 @@ def test_grayscale_bar_preserves_layout_and_pixels(dtype, position):
     np.testing.assert_array_equal(drawn, draw_scale_bar(color, .5, **kwargs)[:, :, 0])
 
 
-def test_existing_lazy_preview_never_resolves_full_source(qapp, monkeypatch):
+def test_existing_lazy_scale_preview_stays_editable_during_fusion(qapp, monkeypatch):
+    import threading
+    from types import SimpleNamespace
+    from core.resource_policy import heavy_job
     from core.source_frames import SourceFrame
     from dialogs.scalebar import ScaleBarDialog
+
     def no_decode(*args, **kwargs):
         raise AssertionError("full source decoded during fit preview")
+
     monkeypatch.setattr(SourceFrame, "full_resolution", no_decode)
     preview = np.full((120, 200), 100, np.uint8)
     frame = SourceFrame("unused.tif", 0, (24000, 40000), np.dtype("uint8"), preview, ())
     host = _scale_dialog_host(frame)
-    dialog = ScaleBarDialog(host)
-    _preview_scale(qapp, dialog)
-    assert dialog._ok_button.isEnabled()
-    assert max(dialog._preview_cache[1].shape[:2]) <= 1200
-    dialog.size_spin.setValue(16)
-    _preview_scale(qapp, dialog)
-    _close_scale(qapp, dialog)
-    host.deleteLater()
+    pending = SimpleNamespace(kind="fusion", image=None, label="Pending")
+    host.scale_bar_target = "all"
+    host.output_manager = SimpleNamespace(record_for_row=lambda _: pending,
+                                          record_for_item=lambda _: pending)
+    host.output_list = SimpleNamespace(count=lambda: 1, currentItem=lambda: pending)
+    held, release = threading.Event(), threading.Event()
+
+    def render():
+        with heavy_job():
+            held.set()
+            release.wait()
+
+    owner = threading.Thread(target=render)
+    owner.start()
+    dialog = None
+    try:
+        assert held.wait(2)
+        dialog = ScaleBarDialog(host)
+        _preview_scale(qapp, dialog)
+        assert dialog._target_record() is None
+        assert dialog._ok_button.isEnabled()
+        np.testing.assert_array_equal(dialog._preview_cache[1], preview)
+        assert dialog.preview_lbl._base_pixmap is not None
+        dialog.size_spin.setValue(16)
+        _preview_scale(qapp, dialog)
+        assert dialog._draw_config()['font_size'] == 16
+        assert dialog._ok_button.isEnabled()
+    finally:
+        release.set()
+        owner.join(2)
+        if dialog is not None:
+            _close_scale(qapp, dialog)
+        host.deleteLater()
+
 
 @pytest.mark.parametrize("dpr", [1.0, 2.0])
 def test_native_actual_on_small_source_keeps_idle_fit_bounded(qapp, tmp_path, monkeypatch, dpr):
@@ -721,7 +752,7 @@ def test_output_preview_uses_record_metadata_not_current_stack(qapp):
     # A historical record without its own metadata must not inherit the
     # currently loaded stack's calibration.
     record.linear_dng_metadata = None
-    assert dialog._preview_metadata() is None
+    assert dialog._preview_metadata(record.image) is None
     _close_scale(qapp, dialog)
     host.deleteLater()
 

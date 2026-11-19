@@ -179,6 +179,17 @@ FONT = {
     "display": 20,
 }
 
+UI_FONT_PRESETS = {'small': 9, 'medium': FONT['body'], 'large': 13}
+UI_FONT_RANGE = (8, 18)
+
+
+def ui_font_sizes(body_size):
+    if body_size == FONT['body']:
+        return FONT
+    return {role: max(7, round(points * body_size / FONT['body']))
+            for role, points in FONT.items()}
+
+
 WEIGHT = {"regular": 400, "medium": 500, "semibold": 600, "bold": 700}
 
 # Icon font shipped with Windows 11/10; the glyphs are the same line style the

@@ -8,6 +8,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- Show the actual whole-input or tiled processing mode, tile geometry, and
+  fusion settings for each result in the output list.
+- Add Follow System to the theme menu and offer small, medium, large and custom interface font sizes. The custom editor previews the proposed size beside the default.
 - Add a Neutral Gray desktop theme with a mid-gray canvas for the workspace, image comparisons, retouching, depth previews, and the label, watermark and scale bar editors.
 - Offer a hardware-matched TensorRT and PyTorch CUDA pack for StackMFF on supported Windows NVIDIA systems. Install it from Setup or Settings, including after a desktop upgrade. Neural renders try supported engines within the memory budget and report the actual execution device and fallback reasons.
 - Offer a PyTorch download mirror and installation from verified local archives. Show byte counts during download and unpacking, then show GPU verification separately.
@@ -59,15 +62,32 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Accelerate large fractional image reductions during ECC registration on supported Windows OpenCL GPUs. The CPU solver and Lanczos warp produce the same alignment, and the job log records completed GPU resizes.
 - Show estimated RAM and GPU memory in Render Settings, including expected CPU
   fallback when the selected neural render does not fit the device budget.
-- Reuse the selected OpenFocus B/C or StackMFF V2/V3 render’s saved depth when
-  opening Depth Map, pressing Compute with matching settings, or switching back
-  to its measure. Show the 2D preview before building a requested 3D surface.
-- Show the current WeChat group invite in Contact Us, with a bundled QR code for offline use.
+- Reuse saved OpenFocus B/C and StackMFF V2/V3 depth across compatible workspace results. Switching measures updates the map and the saved parameters automatically. Show the 2D preview before building a requested 3D surface.
+- Show existing compatible fusion results in Method Comparison with their original settings. ROI mode displays the requested crop of the stored image.
+- Add the Discord invite and the WeChat Official Account QR code to both website languages.
 - Keep progress, cancel controls, and timed notices on the left of the desktop
   status bar and a sponsor invitation that opens Contact Us on the right.
 - Open the user manual on GitHub in the current interface language from Help.
+- Show the current public sponsor acknowledgments in Support Us, with equal-size Alipay and PayPal payment codes.
 
 ### Changed
+- Display a disabled Extensions (In development) entry after Help.
+- Load the current WeChat group and Official Account codes in Contact Us and
+  the Alipay and PayPal codes in Support Us from the OpenFocus service.
+- Show the GPU and available engines in AI Acceleration Components. Keep
+  installation controls reachable when the window is narrow.
+- Default to the SJTU PyTorch mirror when the Windows region is China mainland. Use the official source directly in other regions.
+- Collapse workspace algorithm parameters by default. Open them as needed and reclaim space for the source and output lists on collapse.
+- Keep the stable-release note on the beta updates checkbox in Advanced Settings.
+- Make all fusion methods selectable without experimental opt-in when their
+  dependencies are installed.
+- Group render settings by workflow, brightness and color, and output. Adjust fusion sharpening from 0% to 200% in desktop renders, batch jobs, and the CLI. The 100% default preserves the previous sharpening amount.
+- Keep the batch queue visible beside Method, Output and Options tabs. Group depth-map source, appearance and export controls beside the preview.
+- Reorganize Labels, Watermark and Scale Bar around live previews and fixed Apply and Cancel controls. Drag a label in Fit view to set its position.
+- Choose the default font size for new labels and automatic scale bar captions from the target image resolution.
+- Open workspaces at their intended size when the screen has room. Use scrollable panes on smaller displays and restore the side-by-side divider position when space returns.
+- Mark Image Stitching and Dust Map as in development. Batch and command-line flat-field correction are currently unavailable.
+- Load the published email addresses, institution name and website links each time Contact Us opens.
 - Move frame review and cancellation to the source frame context menu. With the list focused, Ctrl+Shift+I includes all frames, Ctrl+Shift+X excludes all frames and Ctrl+Shift+F starts or cancels review. On macOS use Command. The cancellation notice clears after five seconds.
 - Edit OpenFocus A/B/C smoothing in whole levels, one per click. Fractional values
   from existing projects and recipes keep their original precision until edited.
@@ -92,8 +112,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   when the browser has no active session, or when the user needs to try again.
 - Require an account to enter the desktop application; a saved sign-in can be
   used offline. Signing out returns to the sign-in screen.
-- Reuse one account device slot across installed, portable and recognized preview
-  builds on the same Windows PC for the same user. Each profile keeps its own sign-in.
+- Reuse one account device slot across installed, portable, and source builds
+  for the same Windows user, even with different settings directories.
 - Group advanced desktop settings into General, Fusion, Registration, and Startup and Updates.
   Keep the tile size and overlap visible and write detailed session logs by default.
   Automatic error reports and usage statistics start checked and preserve saved opt-outs.
@@ -136,6 +156,17 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   transforms, cropping and output pixels are unchanged.
 
 ### Fixed
+- Name each Render All result and its suggested export file after the fusion method that produced it.
+- Keep the workspace responsive when opening or closing Support Us while its
+  network requests are pending.
+- Keep Labels, Scale Bar and Watermark previews editable during fusion. At
+  100%, use available original pixels and keep the Fit image visible while
+  any required decode waits.
+- Reuse matching registered frames in Alignment only without starting a
+  render worker. Carry the current exposure matching choice into the mode
+  unless it already has an explicit choice.
+- Show the matching download icon on the Linux desktop button on the website.
+- Let StackMFF accelerator workers exit normally after inference. A slow GPU shutdown no longer discards completed output.
 - Keep TIFFs with tiny embedded thumbnails visible in Scale Bar. Draw the bar on the thumbnail and show its caption at readable zoom levels.
 - Reuse the last alignment across fusion methods when the original frame selection and registration settings are restored.
 - Report project restore completion after the desktop has applied the frames and settings, including after an update restart.

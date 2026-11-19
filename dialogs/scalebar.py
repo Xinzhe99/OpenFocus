@@ -16,8 +16,10 @@ from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDialog,
+    QDialogButtonBox,
     QFontComboBox,
     QFormLayout,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -33,12 +35,14 @@ import cv2
 import numpy as np
 
 from locales import trans
+from ui.styles import tokens
+from utils.design_tokens import SPACE
 from utils import scalebar
 from utils.frame_pixels import BoundedPreviewWorker
 from widgets.stepper import StepperSpinBox, hide_spin_buttons
 from utils.image_utils import cv2_to_pixmap, to_display_uint8
-from utils.ui_utils import size_dialog_to_content
 from widgets.magnifier_label import MagnifierLabel
+from widgets.workspace import WorkspaceSplitter
 
 CALIBRATION_METADATA = "metadata"
 CALIBRATION_MANUAL = "manual"
@@ -49,7 +53,6 @@ class ScaleBarDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle(trans.t("dialog_scalebar_title"))
-        self._apply_style()
 
         window = parent
         self._detected = getattr(window, "source_px_um", None)
@@ -73,39 +76,23 @@ class ScaleBarDialog(QDialog):
         self._preview_timer.timeout.connect(self._refresh_preview)
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(14, 12, 14, 10)
-        root.setSpacing(8)
+        root.setContentsMargins(SPACE["md"], SPACE["md"], SPACE["md"], SPACE["sm"])
+        root.setSpacing(SPACE["sm"])
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QScrollArea.Shape.NoFrame)
-        content = QWidget()
-        content_col = QVBoxLayout(content)
-        content_col.setContentsMargins(0, 0, 0, 0)
-        content_col.setSpacing(8)
-        scroll.setWidget(content)
-        root.addWidget(scroll, 1)
-
-        self.header = QLabel(self._header_text())
-        self.header.setObjectName("mutedLabel")
-        self.header.setWordWrap(True)
-        content_col.addWidget(self.header)
-
-        body = QHBoxLayout()
-        body.setSpacing(14)
-        content_col.addLayout(body, 1)
-
-        # ---- left: form -------------------------------------------------
         form_host = QWidget()
         form_col = QVBoxLayout(form_host)
-        form_col.setContentsMargins(0, 0, 8, 0)
-        form_col.setSpacing(8)
+        form_col.setContentsMargins(0, 0, SPACE["xs"], 0)
+        form_col.setSpacing(SPACE["sm"])
+        scroll.setWidget(form_host)
+        workspace = WorkspaceSplitter()
+        workspace.addWidget(scroll)
+        root.addWidget(workspace, 1)
 
-        form_col.addWidget(self._section(trans.t("scalebar_section_calibration")))
-        form = QFormLayout()
-        form.setFormAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
-        form_col.addLayout(form)
+        self._target_form = self._group(form_col, "scalebar_target")
+        self._calibration_form = form = self._group(form_col, "scalebar_section_calibration")
 
         self.mode_combo = QComboBox()
         self.mode_combo.addItem(trans.t("scalebar_mode_metadata"),
@@ -131,20 +118,17 @@ class ScaleBarDialog(QDialog):
                 trans.t("scalebar_detected").format(value=f"{self._detected:g}"))
         else:
             self.detect_lbl = QLabel(trans.t("scalebar_no_metadata"))
+        self.detect_lbl.setObjectName("mutedLabel")
         self.detect_lbl.setWordWrap(True)
-        form.addRow("", self.detect_lbl)
+        form.addRow(self.detect_lbl)
 
         self.effective_lbl = QLabel("")
         self.effective_lbl.setWordWrap(True)
         self.effective_lbl.setObjectName("mutedLabel")
-        form.addRow("", self.effective_lbl)
+        form.addRow(self.effective_lbl)
 
         # ---- placement ---------------------------------------------------
-        form_col.addWidget(self._section(trans.t("scalebar_section_place")))
-        place_form = QFormLayout()
-        place_form.setFormAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-        place_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
-        form_col.addLayout(place_form)
+        self._place_form = place_form = self._group(form_col, "scalebar_section_place")
         self.pos_combo = QComboBox()
         for code, label in (("bottom-right", trans.t("scalebar_pos_br")),
                             ("bottom-left", trans.t("scalebar_pos_bl")),
@@ -161,43 +145,43 @@ class ScaleBarDialog(QDialog):
         custom_lay = QVBoxLayout(self.custom_row)
         custom_lay.setContentsMargins(0, 0, 0, 0)
         custom_lay.setSpacing(4)
-        self.custom_x = self._percent_row(
-            custom_lay, "X", float(getattr(window, "scale_bar_custom_x",
-                                           0.95) or 0.0))
-        self.custom_y = self._percent_row(
-            custom_lay, "Y", float(getattr(window, "scale_bar_custom_y",
-                                           0.95) or 0.0))
-        place_form.addRow("", self.custom_row)
-        self.custom_row.setVisible(pos == "custom")
+        self.custom_x, self._custom_x_spin = self._percent_row(
+            custom_lay, "X", float(getattr(window, "scale_bar_custom_x", 0.95) or 0.0))
+        self.custom_y, self._custom_y_spin = self._percent_row(
+            custom_lay, "Y", float(getattr(window, "scale_bar_custom_y", 0.95) or 0.0))
+        place_form.addRow(self.custom_row)
 
         # ---- appearance --------------------------------------------------
-        form_col.addWidget(self._section(trans.t("scalebar_section_text")))
-        text_form = QFormLayout()
-        text_form.setFormAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-        text_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
-        form_col.addLayout(text_form)
+        text_form = self._group(form_col, "label_group_look")
+        self.color_combo = QComboBox()
+        for code, label in (("auto", trans.t("scalebar_color_auto")),
+                            ("white", trans.t("scalebar_color_white")),
+                            ("black", trans.t("scalebar_color_black"))):
+            self.color_combo.addItem(label, code)
+        self.color_combo.setCurrentIndex(max(0, self.color_combo.findData(
+            getattr(window, "scale_bar_color", "auto"))))
+        text_form.addRow(trans.t("scalebar_color"), self.color_combo)
+
         self.font_combo = QFontComboBox()
+        self.font_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.font_combo.setMinimumContentsLength(14)
         family = getattr(window, "scale_bar_font_family", "") or ""
         self.font_combo.setCurrentFont(QFont(family or self.font().family()))
         text_form.addRow(trans.t("scalebar_font"), self.font_combo)
 
-        size_row = QWidget()
-        size_lay = QHBoxLayout(size_row)
-        size_lay.setContentsMargins(0, 0, 0, 0)
-        size_lay.setSpacing(8)
         self.size_spin = StepperSpinBox(
             minimum=0, maximum=400, decimals=0, step=2)
         self.size_spin.setValue(
             float(getattr(window, "scale_bar_font_size", 0.0) or 0.0))
+        self.size_spin.setSpecialValueText(trans.t("scalebar_align_auto"))
         self.size_spin.setMinimumWidth(96)
-        size_lay.addWidget(self.size_spin)
         self.size_spin.setToolTip(trans.t("scalebar_font_auto"))
-        text_form.addRow(trans.t("scalebar_font_size"), size_row)
+        text_form.addRow(trans.t("scalebar_font_size"), self.size_spin)
 
         self.bold_chk = QCheckBox(trans.t("scalebar_bold"))
         self.bold_chk.setChecked(
             bool(getattr(window, "scale_bar_font_bold", False)))
-        text_form.addRow("", self.bold_chk)
+        text_form.addRow(self.bold_chk)
 
         self.align_combo = QComboBox()
         for code, label in (("auto", trans.t("scalebar_align_auto")),
@@ -209,15 +193,6 @@ class ScaleBarDialog(QDialog):
             getattr(window, "scale_bar_text_align", "auto"))))
         text_form.addRow(trans.t("scalebar_text_align"), self.align_combo)
 
-        self.color_combo = QComboBox()
-        for code, label in (("auto", trans.t("scalebar_color_auto")),
-                            ("white", trans.t("scalebar_color_white")),
-                            ("black", trans.t("scalebar_color_black"))):
-            self.color_combo.addItem(label, code)
-        self.color_combo.setCurrentIndex(max(0, self.color_combo.findData(
-            getattr(window, "scale_bar_color", "auto"))))
-        text_form.addRow(trans.t("scalebar_color"), self.color_combo)
-
         self.target_combo = QComboBox()
         for code, label in (
                 ("all", trans.t("scalebar_target_all")),
@@ -225,14 +200,18 @@ class ScaleBarDialog(QDialog):
                 ("output", trans.t("scalebar_target_output"))):
             self.target_combo.addItem(label, code)
         self.target_combo.addItem(trans.t("label_target_registered"), "registered")
+        self.target_combo.setAccessibleName(trans.t("scalebar_target"))
 
         self.output_combo = QComboBox()
+        self.output_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.output_combo.setMinimumContentsLength(14)
         manager = getattr(window, "output_manager", None)
         outputs = getattr(window, "output_list", None)
         if manager is not None and outputs is not None:
             for index in range(outputs.count()):
                 record = manager.record_for_row(index)
-                if record is not None and record.kind != "aligned":
+                if (record is not None and record.kind != "aligned"
+                        and getattr(record, "image", None) is not None):
                     suffix = (" · " + trans.t("scalebar_baked_marker")
                               if getattr(record, "annotations_baked", False) else "")
                     self.output_combo.addItem(record.label + suffix, record)
@@ -269,60 +248,68 @@ class ScaleBarDialog(QDialog):
         self.target_combo.setCurrentIndex(
             max(0, self.target_combo.findData(stored)))
 
-        form.insertRow(0, trans.t("scalebar_target"), self.target_combo)
-        form.insertRow(1, trans.t("label_target_output"), self.output_combo)
-        self._target_form = form
-
-        self.font_note = QLabel("")
-        self.font_note.setWordWrap(True)
-        self.font_note.setObjectName("mutedLabel")
-        text_form.addRow("", self.font_note)
-
+        self._target_form.addRow(self.target_combo)
+        self._target_form.addRow(trans.t("label_target_output"), self.output_combo)
         form_col.addStretch()
-        body.addWidget(form_host, 1)
 
         # ---- right: preview ---------------------------------------------
-        preview_col = QVBoxLayout()
-        preview_col.setSpacing(6)
-        title = QLabel(trans.t("label_preview"))
-        bold = title.font()
-        bold.setBold(True)
-        title.setFont(bold)
-        preview_col.addWidget(title)
+        preview_scroll = QScrollArea()
+        preview_scroll.setWidgetResizable(True)
+        preview_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        preview_box = QGroupBox(trans.t("label_preview"))
+        preview_col = QVBoxLayout(preview_box)
+        preview_col.setSpacing(SPACE["xs"])
+        preview_scroll.setWidget(preview_box)
+        workspace.addWidget(preview_scroll)
 
-        self.preview_lbl = MagnifierLabel(parent=self)
-        self.preview_lbl.setMinimumSize(280, 240)
-        self.preview_lbl.setSizePolicy(QSizePolicy.Policy.Ignored,
-                                      QSizePolicy.Policy.Ignored)
-        self.preview_lbl.setObjectName("labelPreview")
-        preview_col.addWidget(self.preview_lbl, 1)
         navigation = QHBoxLayout()
         self.frame_index = QSpinBox()
         hide_spin_buttons(self.frame_index)
+        self.frame_index.setAccessibleName(trans.t("dust_preview_frame").rstrip(":"))
         self.frame_index.setRange(1, 1)
-        self.frame_index.setValue(max(1, int(getattr(window, "current_display_index", 0) or 0) + 1))
         self.prev_button = QPushButton("‹")
         self.prev_button.setToolTip(trans.t("label_preview_prev"))
+        self.prev_button.setAccessibleName(self.prev_button.toolTip())
+        self.prev_button.setAutoDefault(False)
         self.next_button = QPushButton("›")
         self.next_button.setToolTip(trans.t("label_preview_next"))
+        self.next_button.setAccessibleName(self.next_button.toolTip())
+        self.next_button.setAutoDefault(False)
         self.prev_button.clicked.connect(lambda: self.frame_index.stepBy(-1))
         self.next_button.clicked.connect(lambda: self.frame_index.stepBy(1))
         navigation.addWidget(self.prev_button)
         navigation.addWidget(self.frame_index)
         navigation.addWidget(self.next_button)
+        navigation.addStretch()
         fit = QPushButton(trans.t("retouch_fit_short").replace(" (F)", "").replace("（F）", ""))
+        fit.setAutoDefault(False)
         fit.clicked.connect(self._fit_size)
         actual = QPushButton(trans.t("retouch_zoom_100"))
+        actual.setAutoDefault(False)
         actual.clicked.connect(self._actual_size)
         navigation.addWidget(fit)
         navigation.addWidget(actual)
         preview_col.addLayout(navigation)
 
+        self.preview_lbl = MagnifierLabel(parent=self)
+        self.preview_lbl.setMinimumSize(200, 144)
+        self.preview_lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
+        self.preview_lbl.setObjectName("labelPreview")
+        preview_col.addWidget(self.preview_lbl, 1)
+
+        self.header = QLabel(self._header_text())
+        self.header.setObjectName("mutedLabel")
+        self.header.setWordWrap(True)
+        preview_col.addWidget(self.header)
+
         self.preview_meta = QLabel("")
         self.preview_meta.setWordWrap(True)
         self.preview_meta.setObjectName("mutedLabel")
         preview_col.addWidget(self.preview_meta)
-        body.addLayout(preview_col, 1)
+        self.font_note = QLabel("")
+        self.font_note.setWordWrap(True)
+        self.font_note.setObjectName("mutedLabel")
+        preview_col.addWidget(self.font_note)
 
         # ---- fixed bottom actions ---------------------------------------
         self._error = QLabel("")
@@ -330,21 +317,23 @@ class ScaleBarDialog(QDialog):
         self._error.setObjectName("errorLabel")
         root.addWidget(self._error)
 
-        row = QHBoxLayout()
-        row.addStretch()
-        self._ok_button = QPushButton(trans.t("label_apply_close"))
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.setObjectName("dialogButtonBar")
+        self._ok_button = buttons.button(QDialogButtonBox.StandardButton.Ok)
+        self._ok_button.setText(trans.t("label_apply_close"))
         self._ok_button.setObjectName("primaryButton")
         self._ok_button.setDefault(True)
-        self._ok_button.clicked.connect(self._save_and_accept)
-        cancel_btn = QPushButton(trans.t("btn_cancel"))
-        cancel_btn.clicked.connect(self.reject)
-        row.addWidget(self._ok_button)
-        row.addWidget(cancel_btn)
-        root.addLayout(row)
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText(trans.t("btn_cancel"))
+        buttons.accepted.connect(self._save_and_accept)
+        buttons.rejected.connect(self.reject)
+        root.addWidget(buttons)
 
-        self.pos_combo.currentIndexChanged.connect(
-            lambda: self.custom_row.setVisible(
-                self.pos_combo.currentData() == "custom"))
+        self.setTabOrder(self.target_combo, self.output_combo)
+        self.setTabOrder(self.output_combo, self.mode_combo)
+        self.mode_combo.currentIndexChanged.connect(self._sync_conditional_fields)
+        self.target_combo.setFocus()
+        self.pos_combo.currentIndexChanged.connect(self._sync_conditional_fields)
         for signal in (self.px_spin.valueChanged,
                        self.mode_combo.currentIndexChanged,
                        self.pos_combo.currentIndexChanged,
@@ -370,7 +359,7 @@ class ScaleBarDialog(QDialog):
             self.mode_combo.setCurrentIndex(
                 self.mode_combo.findData(CALIBRATION_MANUAL))
         self._refresh_preview()
-        size_dialog_to_content(self, scroll)
+        workspace.fit_dialog(880, 630)
 
     # ------------------------------------------------------------------
     def _header_text(self) -> str:
@@ -387,18 +376,20 @@ class ScaleBarDialog(QDialog):
             depth=depth, scale=f"{self._work_scale * 100:.0f}")
 
     def _percent_row(self, parent_layout, caption: str, value: float):
-        """A slider plus a numeric percentage box (sliders alone cannot
-        reproduce an exact stored position)."""
+        """Create linked slider and numeric controls for a stored percentage."""
         row = QHBoxLayout()
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(6)
         row.addWidget(QLabel(caption))
         slider = QSlider(Qt.Orientation.Horizontal)
+        slider.setAccessibleName(caption)
         slider.setRange(0, 100)
         slider.setValue(int(round(value * 100)))
         spin = StepperSpinBox(minimum=0, maximum=100, decimals=0, step=1)
+        spin.setAccessibleName(caption)
+        spin.setSuffix("%")
         spin.setValue(slider.value())
-        spin.setMinimumWidth(70)
+        spin.setMinimumWidth(max(96, spin.sizeHint().width()))
         slider.valueChanged.connect(
             lambda v: spin.setValue(v) if spin.value() != v else None)
         spin.valueChanged.connect(
@@ -407,14 +398,24 @@ class ScaleBarDialog(QDialog):
         row.addWidget(slider, 1)
         row.addWidget(spin)
         parent_layout.addLayout(row)
-        return slider
+        return slider, spin
 
-    def _section(self, text: str) -> QLabel:
-        lbl = QLabel(text)
-        font = lbl.font()
-        font.setBold(True)
-        lbl.setFont(font)
-        return lbl
+
+    @staticmethod
+    def _group(column, title_key):
+        box = QGroupBox(trans.t(title_key))
+        form = QFormLayout(box)
+        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+        column.addWidget(box)
+        return form
+
+    def _sync_conditional_fields(self):
+        manual = self.calibration_mode() == CALIBRATION_MANUAL
+        self.px_spin.setEnabled(manual)
+        self._calibration_form.setRowVisible(self.px_spin, manual)
+        self._place_form.setRowVisible(self.custom_row, self.pos_combo.currentData() == "custom")
+        self.effective_lbl.setText(self._effective_text())
 
     def _adapt_px_decimals(self, value: float) -> None:
         """Show enough decimals for sub-micron calibration, not more."""
@@ -429,10 +430,6 @@ class ScaleBarDialog(QDialog):
             decimals, step = 6, 0.0001
         self.px_spin.setDecimals(decimals)
         self.px_spin.setSingleStep(step)
-
-    def _apply_style(self):
-        """Styling comes from the generated application stylesheet."""
-        self.setStyleSheet("")
 
     # ------------------------------------------------------------------
     # Calibration
@@ -486,7 +483,7 @@ class ScaleBarDialog(QDialog):
             return self.output_combo.currentData()
         return None
 
-    def _preview_metadata(self):
+    def _preview_metadata(self, frame):
         """Linear calibration for the preview pixels, owned by their source.
 
         An output record must use its own metadata (or its render context),
@@ -505,19 +502,8 @@ class ScaleBarDialog(QDialog):
             return metadata
         if self.target_combo.currentData() == "output":
             return None
-        frame = self._preview_image()
         metadata = getattr(frame, "linear_metadata", None)
         return metadata if metadata is not None else getattr(self.parent(), "linear_dng_metadata", None)
-
-    @staticmethod
-    def _develop_preview(image, metadata):
-        """Develop camera-linear uint16 pixels once; ordinary images pass through."""
-        if (metadata is not None and image is not None
-                and image.dtype == np.uint16 and image.ndim == 3
-                and image.shape[2] == 3):
-            from utils.linear_dng import develop_linear
-            return develop_linear(image, metadata)
-        return image
 
     def _draft_values(self):
         values = self._draw_config()
@@ -559,17 +545,26 @@ class ScaleBarDialog(QDialog):
         self.size_spin.setValue(cfg.get("font_size", 0.0))
         self.bold_chk.setChecked(cfg.get("font_bold", False))
         self.align_combo.setCurrentIndex(self.align_combo.findData(cfg.get("text_align", "auto")))
-        self.custom_x.setValue(int(cfg.get("custom_x", 0.95) * 100))
-        self.custom_y.setValue(int(cfg.get("custom_y", 0.95) * 100))
+        x_percent = round(cfg.get("custom_x", 0.95) * 100)
+        y_percent = round(cfg.get("custom_y", 0.95) * 100)
+        self.custom_x.setValue(x_percent)
+        self.custom_y.setValue(y_percent)
+        # The sliders are signal-blocked while loading an owner's draft.
+        self._custom_x_spin.setValue(x_percent)
+        self._custom_y_spin.setValue(y_percent)
         del blockers
+        self._sync_conditional_fields()
         self._target_form.setRowVisible(
             self.output_combo,
             self.output_combo.count() > 0
             and self.target_combo.currentData() in ("all", "output"))
-        frames = getattr(self.parent(), "registration_results" if self.target_combo.currentData() == "registered" else "raw_images", ()) or ()
+        registered = self.target_combo.currentData() == "registered"
+        frames = getattr(self.parent(), "registration_results" if registered else "raw_images", ()) or ()
+        index_attr = "current_result_index" if registered else "current_display_index"
+        selected_index = int(getattr(self.parent(), index_attr, 0) or 0)
         self.frame_index.blockSignals(True)
         self.frame_index.setRange(1, max(1, len(frames)))
-        self.frame_index.setValue(min(len(frames) or 1, int(getattr(self.parent(), "current_display_index", 0) or 0) + 1))
+        self.frame_index.setValue(min(len(frames) or 1, selected_index + 1))
         self.frame_index.blockSignals(False)
         self.detect_lbl.setText(trans.t("scalebar_detected").format(value=f"{self._detected:g}")
                                 if self._detected else trans.t("scalebar_no_metadata"))
@@ -633,13 +628,13 @@ class ScaleBarDialog(QDialog):
         self._ok_button.setEnabled(False)
         self._preview_timer.start()
 
-    def _start_pixels(self, image, key):
+    def _start_pixels(self, image, metadata, key):
         self._pixel_key = key
         if self._pixel_worker is not None:
             if self._pixel_worker.key != key:
                 self._pixel_worker.requestInterruption()
             return
-        worker = BoundedPreviewWorker(image, self._preview_metadata(), key)
+        worker = BoundedPreviewWorker(image, metadata, key)
         self._pixel_worker = worker
         def finished():
             self._pixel_worker = None
@@ -652,7 +647,7 @@ class ScaleBarDialog(QDialog):
             if self._closing:
                 self._finish_close()
             else:
-                self._schedule_preview()
+                self._refresh_preview()
         worker.finished.connect(finished)
         worker.start()
 
@@ -681,7 +676,7 @@ class ScaleBarDialog(QDialog):
         baked = bool(record is not None and getattr(record, "annotations_baked", False))
         cfg = None if baked else self._draw_config()
         worker = SourceRegionWorker(image, key, scale_cfg=cfg,
-                                    metadata=self._preview_metadata(), develop=not baked)
+                                    metadata=self._preview_metadata(image), develop=not baked)
         self._region_worker = worker
         def ready(source_key, completed, pixels, rect):
             if (not self._closing and pixels is not None
@@ -691,7 +686,6 @@ class ScaleBarDialog(QDialog):
         def failed(source_key, message):
             if (not self._closing and source_key == self.preview_lbl._source_key
                     and source_key[2] == self._preview_revision):
-                self._ok_button.setEnabled(False)
                 self._error.setText(message)
         def finished():
             self._region_worker = None
@@ -743,10 +737,13 @@ class ScaleBarDialog(QDialog):
             super().closeEvent(event)
 
     def _refresh_preview(self, *_args):
+        if self._closing:
+            return
+        self._preview_timer.stop()
         image = self._preview_image()
         px_um = self.effective_px_um()
-        self.px_spin.setEnabled(self.calibration_mode() == CALIBRATION_MANUAL)
-        has_stack = self._target_record() is None and self.target_combo.currentData() != "output"
+        has_stack = (image is not None and self._target_record() is None
+                     and self.target_combo.currentData() != "output")
         for control in (self.frame_index, self.prev_button, self.next_button):
             control.setVisible(has_stack)
         self.prev_button.setEnabled(self.frame_index.value() > 1)
@@ -754,19 +751,32 @@ class ScaleBarDialog(QDialog):
         self.effective_lbl.setText(self._effective_text())
         self.font_note.clear()
         self.preview_meta.clear()
+        auto_text = trans.t("scalebar_align_auto")
+        self.size_spin.setSpecialValueText(auto_text)
         self._ok_button.setEnabled(False)
         if image is None:
-            self.preview_lbl.clear()
+            self._pixel_key = None
+            if self._pixel_worker is not None:
+                self._pixel_worker.requestInterruption()
+            self.preview_lbl.set_display_pixmap(None)
             self._error.setText(trans.t("label_preview_no_target"))
             return
+        self._error.clear()
         height, width = image.shape[:2]
+        metadata = self._preview_metadata(image)
         key = (self.target_combo.currentData(), id(image),
-               getattr(self._target_record(), "output_id", None), id(self._preview_metadata()))
+               getattr(self._target_record(), "output_id", None), id(metadata))
         if self._preview_cache is None or self._preview_cache[0] != key:
-            self._start_pixels(image, key)
+            label = self.preview_lbl
+            held = label._magnifier_active
+            label.set_display_pixmap(None)
+            label._magnifier_active = held
+            label.setText(trans.t("native_detail_loading"))
+            self._start_pixels(image, metadata, key)
             return
         _, display, error = self._preview_cache
         if error is not None:
+            self.preview_lbl.set_display_pixmap(None)
             self._error.setText(error)
             return
         if len(image.shape) == 3 and image.shape[2] == 4:
@@ -825,6 +835,8 @@ class ScaleBarDialog(QDialog):
             valid = not error
             self._ok_button.setEnabled(valid)
             self._error.setText(error)
+            if self.size_spin.value() == 0 and info["font_size_px"] is not None:
+                self.size_spin.setSpecialValueText(f"{auto_text} ({info['font_size_px']} px)")
             if info["substituted_font"]:
                 self.font_note.setText(trans.t("label_font_substituted").format(name=info["substituted_font"]))
             if valid:

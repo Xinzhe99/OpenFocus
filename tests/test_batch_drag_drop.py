@@ -513,6 +513,40 @@ def test_batch_fusion_noop_entry_is_no_fusion_not_no_alignment(qapp):
         qapp.processEvents()
 
 
+def test_batch_sharpen_strength_is_seeded_and_retained(qapp):
+    from PyQt6.QtWidgets import QWidget
+    from dialogs.batch import BatchProcessingDialog
+
+    parent = QWidget()
+    parent.current_fusion_method = lambda: 'openfocus_a'
+    parent.current_alignment_method = lambda: 'none'
+    parent.sharpen_output = False
+    parent.sharpen_strength = 155
+    dialog = BatchProcessingDialog(parent)
+    try:
+        spin = dialog.sharpen_strength_spin
+        assert not spin.isEnabled() and spin.value() == 155
+        dialog.chk_sharpen_output.setChecked(True)
+        assert spin.isEnabled()
+        spin.setValue(125)
+        _select_fusion(dialog, 'none')
+        assert not spin.isEnabled()
+        _select_fusion(dialog, 'openfocus_a')
+        assert spin.isEnabled() and spin.value() == 125
+        dialog.chk_sharpen_output.setChecked(False)
+        runtime = dialog.get_processing_settings()['runtime_settings']
+        assert runtime['sharpen_output'] is False
+        assert runtime['sharpen_strength'] == 125
+        dialog.chk_sharpen_output.setChecked(True)
+        assert spin.isEnabled() and spin.value() == 125
+        assert parent.sharpen_strength == 155
+    finally:
+        dialog.close()
+        dialog.deleteLater()
+        parent.deleteLater()
+        qapp.processEvents()
+
+
 def test_batch_fusion_only_options_follow_the_selected_method(qapp):
     """Alignment-only disables fusion-only inputs but keeps their drafts."""
     from dialogs.batch import BatchProcessingDialog
@@ -731,17 +765,17 @@ def test_split_preview_tracks_current_reference_paths(qapp, tmp_path):
     parent.current_alignment_method = lambda: 'none'
     dialog = BatchProcessingDialog(parent)
     try:
-        paths = [str(tmp_path / name) for name in ('a.png', 'b.png', 'c.png', 'flat.png')]
+        paths = [str(tmp_path / name) for name in ('a.png', 'b.png', 'c.png', 'mask.png')]
         dialog.single_folder_images_with_times = [(path, None, float(i), os.path.basename(path))
                                                   for i, path in enumerate(paths)]
         dialog.split_method_combo.setCurrentIndex(0)
         dialog.param_spinbox.setValue(2)
-        dialog.flat_field_path.setText(paths[3])
+        dialog.sensor_cleanup.path.setText(paths[3])
         assert [[entry[0] for entry in stack] for stack in dialog.single_folder_stacks] == [paths[:2], paths[2:3]]
         assert [[entry[0] for entry in stack] for stack in dialog.get_processing_settings()['frozen_stacks']] == [paths[:2], paths[2:3]]
-        dialog.flat_field_path.setText(paths[0])
+        dialog.sensor_cleanup.path.setText(paths[0])
         assert [[entry[0] for entry in stack] for stack in dialog.single_folder_stacks] == [paths[1:3], paths[3:]]
-        dialog.flat_field_path.clear()
+        dialog.sensor_cleanup.path.clear()
         assert [[entry[0] for entry in stack] for stack in dialog.single_folder_stacks] == [paths[:2], paths[2:]]
     finally:
         dialog.close()

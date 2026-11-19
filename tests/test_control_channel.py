@@ -522,6 +522,35 @@ def test_stack_method_render_export_and_project(server, stack_frames, tmp_path):
     assert json.loads(project.read_text(encoding='utf-8'))['settings']['stack_reverse_order'] is True
 
 
+def test_render_all_names_outputs_after_the_method_used(server, stack_frames, monkeypatch):
+    import re
+
+    from controllers import render_manager
+    from locales import trans
+
+    methods = ('openfocus_a', 'openfocus_b')
+    monkeypatch.setattr(render_manager, 'fusion_algorithms',
+                        lambda: tuple(get_fusion(method) for method in methods))
+    window = server.window
+    window.output_name_prefix = 'Trial'
+    window.set_fusion_method('openfocus_b')
+    assert call(server, 'stack.load', folder=str(stack_frames))['result']['loading']
+    assert wait_until(lambda: call(server, 'stack.frames')['result']['count'] == 3,
+                      timeout=20)
+
+    window.btn_compare_all.click()
+    assert wait_until(lambda: window.btn_render.isEnabled(), timeout=30)
+    outputs = call(server, 'output.list')['result']['records']
+    assert len(outputs) == 2
+    for output, method, tag in zip(outputs, reversed(methods), ('OpenFocusB', 'OpenFocusA')):
+        label = trans.t(get_fusion(method).label_key)
+        assert re.fullmatch(rf'Trial_OpenFocus_\d{{8}}_\d{{6}}_{tag}_NoAlign — {re.escape(label)}',
+                            output['label'])
+        call(server, 'output.select', index=output['index'])
+        _, filename = window.export_manager.selected_output()
+        assert re.fullmatch(rf'Trial_OpenFocus_\d{{8}}_\d{{6}}_{tag}_NoAlign_.+', filename)
+
+
 def test_ui_actions_tree_find_set_click_and_screenshot(server, stack_frames, tmp_path):
     token = server.token
     actions = call(server, "ui.actions", token=token)["result"]["actions"]
@@ -1836,14 +1865,14 @@ def test_stack_include_uses_the_checkbox_path(server, control_window):
     control_window.image_filenames = []
 
 
-def test_dust_dialog_requires_experimental_opt_in(server, control_window):
-    control_window.experimental_features = False
-    response = call(server, 'dialog.open', name='dust')
-    assert response['error']['code'] == 'invalid_argument'
+@pytest.mark.parametrize('name', ['dust', 'mosaic'])
+def test_development_tools_stay_unavailable_through_control(server, control_window, name):
+    from locales import trans
 
     control_window.experimental_features = True
-    assert call(server, 'dialog.open', name='dust')['result']['opened']
-    call(server, 'dialog.reject')
+    response = call(server, 'dialog.open', name=name)
+    assert response['error']['code'] == 'invalid_argument'
+    assert response['error']['message'] == trans.t('development_unavailable_hint')
 
 
 def test_dialog_open_reuses_the_managed_instance(server):
@@ -1868,6 +1897,21 @@ def test_option_set_keeps_checkboxes_in_sync(server, control_window, monkeypatch
     assert control_window.stack_reverse_order is True
     assert control_window.chk_reverse_order.isChecked() is True
     call(server, "option.set", name="reverse_order", value=False)
+
+
+def test_sharpening_options_are_independent(server, control_window):
+    control_window._clear_project_dirty()
+    assert call(server, 'option.set', name='sharpen_strength', value=170)['result']['value'] == 170
+    assert control_window._project_dirty
+    assert call(server, 'option.set', name='sharpen_output', value=True)['result']['value'] is True
+    assert control_window.chk_sharpen_output.isChecked()
+    assert call(server, 'option.set', name='sharpen_output', value=False)['result']['value'] is False
+    options = call(server, 'app.state')['result']['options']
+    assert options['sharpen_output'] is False
+    assert options['sharpen_strength'] == 170
+
+    control_window.reset_to_default()
+    assert call(server, 'app.state')['result']['options']['sharpen_strength'] == 100
 
 
 def test_diagnostic_options_are_reachable_and_take_effect_at_once(server, control_window):
@@ -2074,15 +2118,18 @@ def test_output_export_routes_aligned_records(server, control_window, monkeypatc
     assert captured["destination"] == str(tmp_path)
 
 
-def test_control_channel_respects_experimental_opt_in(server, control_window):
+def test_control_channel_exposes_fusion_with_experimental_alignment_locked(server, control_window):
+    from core.algorithms import fusion_algorithms
     from locales import trans
 
     control_window.experimental_features = False
     control_window.apply_experimental_features()
-    response = call(server, 'method.set', id='guided_filter')
+    for spec in fusion_algorithms():
+        assert call(server, 'method.set', id=spec.id)['result']['id'] == spec.id
+    response = call(server, 'align.set', id='openfocus')
     assert response['error']['code'] == 'invalid_argument'
     assert response['error']['message'] == trans.t('experimental_locked_hint')
-    assert control_window.current_fusion_method() != 'guided_filter'
+    assert control_window.current_alignment_method() == 'none'
 
 
 def test_alignment_only_selection_is_accepted(server, control_window):
@@ -2246,6 +2293,8 @@ def test_reset_stack_menu_clears_real_wipe_and_restores_import(qapp, control_win
     ('tile_block_size', 63), ('tile_overlap', -1), ('tile_threshold', 0),
     ('ai_batch_size', 0), ('reg_downscale_width', 63),
     ('resource_preference', None), ('resource_preference', 'other'),
+    ('sharpen_output', 1), ('sharpen_strength', True), ('sharpen_strength', 100.0),
+    ('sharpen_strength', -1), ('sharpen_strength', 201),
 ])
 def test_option_validation_is_atomic(server, control_window, monkeypatch, name, value):
     before = call(server, 'app.state')['result']['options']

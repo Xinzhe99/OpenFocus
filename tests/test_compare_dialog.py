@@ -63,6 +63,21 @@ def _finished(dialog):
     return (dialog._worker is None and not dialog._source_preview_workers and not dialog._display_workers
             and not dialog._preview_timer.isActive())
 
+
+def test_comparison_result_key_tracks_effective_sharpen_strength(dialog):
+    method = 'openfocus_a'
+    unsharpened = dialog._result_key(method)
+    dialog._shared['sharpen_strength'] = 160
+    assert dialog._result_key(method) == unsharpened
+    dialog._shared['sharpen_output'] = True
+    sharpened = dialog._result_key(method)
+    assert sharpened != unsharpened
+    dialog._shared['sharpen_strength'] = 100
+    assert dialog._result_key(method) != sharpened
+    dialog._shared['sharpen_strength'] = 0
+    assert dialog._result_key(method) == unsharpened
+
+
 def test_parameter_cards_stack_headers_and_wrap(dialog, qapp):
     for check in dialog._checks.values():
         check.setChecked(False)
@@ -270,13 +285,71 @@ def test_resizing_all_previews_reuses_full_results(dialog, qapp):
 
     dialog.preview_size_spin.setValue(240)
     qapp.processEvents()
-    assert dialog.ref_canvas.region() == (250, 50, 60, 60)
+    side = round(240 * dialog.ref_canvas.devicePixelRatioF() / 4)
+    assert dialog.ref_canvas.region() == (round(280 - side / 2), round(80 - side / 2), side, side)
     assert dialog.preview_size_slider.value() == 240
     _until(qapp, lambda: _finished(dialog))
     for method, image in results.items():
         assert dialog._canvases[method].width() == 240
         assert dialog._canvases[method].has_region()
         assert dialog._results[method]['image'] is image
+
+
+@pytest.mark.parametrize('roi_mode', [None, 'crop', 'paste'])
+def test_comparison_uses_saved_render_until_settings_change(qapp, roi_mode):
+    import numpy as np
+    from PyQt6.QtWidgets import QListWidget, QListWidgetItem
+    from controllers.output_manager import OutputManager, OutputRecord, OUTPUT_RECORD_ROLE
+    from core.algorithms import resolve_fusion_parameters
+    from core.render_context import build_render_context
+
+    host = QWidget()
+    host.experimental_features = True
+    host.raw_images = make_two_focus_stack((160, 560))
+    host.source_revision = 8
+    host.current_fusion_method = lambda: 'openfocus_a'
+    host.current_alignment_method = lambda: 'none'
+    host.brightness_option_for = lambda *_: False
+    host.thread_count = 1
+    host.output_list = QListWidget(host)
+    host.output_manager = OutputManager(host)
+    saved = resolve_fusion_parameters('openfocus_a', {'radius': 11})
+    roi = (160, 0, 240, 160) if roi_mode is not None else None
+    shape = (160, 240, 3) if roi_mode == 'crop' else (160, 560, 3)
+    output = np.zeros(shape, dtype=np.uint8)
+    region = output if roi_mode != 'paste' else output[:, 160:400]
+    region[:] = (0, 207, 30)
+    for revision in (7, 8):
+        pixels = output if revision == 8 else np.zeros_like(output)
+        context = build_render_context(host.raw_images, pixels, algorithm='openfocus_a',
+            source_revision=revision, roi_rect=roi, roi_mode=roi_mode,
+            parameters={'fusion_parameters': saved})
+        record = OutputRecord.create(pixels, f'Saved {revision}', context=context)
+        item = QListWidgetItem(record.label, host.output_list)
+        item.setData(OUTPUT_RECORD_ROLE, record)
+
+    dialog = CompareDialog(host)
+    try:
+        dialog.show()
+        dialog.mode_combo.setCurrentIndex(dialog.mode_combo.findData(roi is not None))
+        _until(qapp, lambda: _finished(dialog))
+        canvas = dialog._canvases['openfocus_a']
+        assert canvas.has_region()
+        assert canvas._pixmap.toImage().pixelColor(0, 0).green() == 207
+        assert dialog.param_widgets['openfocus_a']['radius'].value() == 11
+        assert 'Saved 8' in dialog._card_status['openfocus_a'].text()
+
+        if roi is not None:
+            dialog.ref_canvas.set_region_centre(QPointF(80, 80))
+        else:
+            dialog.param_widgets['openfocus_a']['radius'].setValue(13)
+        _until(qapp, lambda: _finished(dialog))
+        assert canvas.has_region()
+        assert 'Saved 8' not in dialog._card_status['openfocus_a'].text()
+    finally:
+        dialog.reject()
+        _until(qapp, lambda: not dialog._has_workers())
+        host.deleteLater()
 
 
 def test_excluded_frames_are_not_compared(qapp):
@@ -601,6 +674,11 @@ def test_mixed_methods_share_registration_and_invalidate_on_order_change(dialog,
     dialog._adopt_output()
     assert len(records) == 1
     assert records[0].context.source_indices == (0, 2, 4)
+    details = records[0].context.fusion_details
+    assert details.algorithm == 'openfocus_a'
+    assert details.tile_grid is None
+    assert dict(details.parameters) == dialog._method_params['openfocus_a']
+    assert dict(details.options)['reverse_order'] is True
     np.testing.assert_array_equal(resolve_frame(records[0].context.frames[-1].image), anchor)
 
 

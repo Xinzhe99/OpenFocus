@@ -1241,19 +1241,41 @@ def test_windows_portable_adopts_legacy_device_and_old_release_session_can_refre
     assert old_store.load() == session("refreshed-release-token")
 
 
-def test_windows_isolated_stores_do_not_share_devices(monkeypatch, tmp_path, windows_account_dirs):
-    local, _ = windows_account_dirs
-    isolated = tmp_path / "isolated"
-    monkeypatch.setenv("OPENFOCUS_DATA_DIR", str(isolated))
-    override = account.AccountClient(device_name="Same name")
-    preview = local / "OpenFocus Preview" / "6c66f5b9-render" / "profile"
-    explicit = account.AccountClient(store=account.TokenStore(preview / "test-session"),
-                                     device_name="Same name")
+def test_windows_trial_sign_in_reuses_installed_device(monkeypatch, tmp_path, windows_account_dirs):
+    local, roaming = windows_account_dirs
+    installed = account.AccountClient()
+    registered = installed._device_fields()
+    installed.store.save(session("installed-session"))
 
-    assert account._valid_device_id(override.device_id)
-    assert account._valid_device_id(explicit.device_id)
-    assert override.device_name == explicit.device_name
-    assert override.device_id != explicit.device_id
+    profile = tmp_path / "worktrees" / "source-trial" / "profile"
+    legacy_store = account.TokenStore(profile / "account-session")
+    legacy = account.AccountClient(store=legacy_store)._device_fields()
+    assert legacy["device_id"] != registered["device_id"]
+
+    class Listener(DummyListener):
+        def handle_request(self):
+            self.code = "browser-code"
+
+    def request(method, url, body=None, **kwargs):
+        assert (method, url) == ("POST", account.BASE_URL + "/v1/auth/exchange")
+        assert body["device_id"] == registered["device_id"]
+        return session("trial-session")
+
+    monkeypatch.setattr(account, "_CallbackServer", Listener)
+    monkeypatch.setattr(account.webbrowser, "open", lambda _url: True)
+    monkeypatch.setenv("OPENFOCUS_DATA_DIR", str(profile))
+    trial = account.AccountClient(request=request)
+    assert not trial.is_signed_in()
+    trial.login_with_browser()
+    assert legacy_store.load() == session("trial-session")
+    assert account.TokenStore(roaming / "account-session").load() == session("installed-session")
+
+
+def test_windows_explicit_stores_do_not_share_devices(tmp_path, windows_account_dirs):
+    local, _ = windows_account_dirs
+    first = account.AccountClient(store=account.TokenStore(tmp_path / "first" / "account-session"))
+    second = account.AccountClient(store=account.TokenStore(tmp_path / "second" / "account-session"))
+    assert first.device_id != second.device_id
     assert not (local / "OpenFocus" / "account-device").exists()
 
 

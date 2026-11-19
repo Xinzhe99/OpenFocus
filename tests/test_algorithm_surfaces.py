@@ -143,10 +143,14 @@ def test_openfocus_registration_panel_is_hidden_but_retains_values(algorithm_hos
     host.set_registration_parameters('openfocus', {'rotation': 6, 'reference_frame': 3})
     host.set_alignment_method('openfocus')
     assert host.registration_parameter_panel.isHidden()
+    assert host.registration_parameter_panel.disclosure.isHidden()
     assert host.registration_parameter_panel.values()['rotation'] == 6
     assert host.registration_parameter_panel.values()['reference_frame'] == 3
     host.set_alignment_method('shift')
-    assert not host.registration_parameter_panel.isHidden()
+    panel = host.registration_parameter_panel
+    assert not panel.disclosure.isHidden() and panel.isHidden()
+    panel.disclosure.click()
+    assert not panel.isHidden()
     assert host.registration_parameter_panel.values()['delta'] == 7
     host.reset_parameter_memories()
     host.set_alignment_method('openfocus')

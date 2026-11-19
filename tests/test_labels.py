@@ -70,11 +70,7 @@ def test_display_orders_label_scale_and_watermark(manager, transparent):
 
 
 def edit_dialog(monkeypatch, manager, callback):
-    from utils.frame_pixels import _PixelProgress
-    original_exec = QDialog.exec
     def execute(dialog):
-        if isinstance(dialog, _PixelProgress):
-            return original_exec(dialog)
         callback(dialog)
         return dialog.result()
     monkeypatch.setattr(QDialog, "exec", execute)
@@ -675,25 +671,41 @@ def test_unavailable_font_survives_other_edits_until_changed(manager, monkeypatc
     edit_dialog(monkeypatch, manager, inspect)
 
 
-def test_nested_preview_refresh_coalesces_and_applies_latest_edit(manager, monkeypatch):
-    label = caption(text='original')
+def test_pending_label_fit_uses_latest_edit_during_fusion(manager, qapp, monkeypatch):
+    import threading
+    from PyQt6.QtTest import QSignalSpy
+    from core.resource_policy import heavy_job
+    from core.source_frames import crop_frame
+
+    pixels = np.full((460, 1240, 3), 95, np.uint8)
+    frame = crop_frame(pixels, 20, 10, 1200, 440)
+    manager.window.registration_results = [frame]
+    label = caption(target="registered", text="original")
     manager.labels.add(label)
+    held, release = threading.Event(), threading.Event()
+
+    def render():
+        with heavy_job():
+            held.set()
+            release.wait()
 
     def inspect(dialog):
-        rendered = []
-        def render(frame, config, index, **kwargs):
-            rendered.append(config['format'])
-            if len(rendered) == 1:
-                manager.format_edit.setText('latest')
-            # Repeated unchanged notifications must not start nested workers
-            # or trigger an endless sequence of equivalent refreshes.
-            manager._refresh_preview()
-        monkeypatch.setattr(manager.preview, 'set_preview', render)
-        manager.format_edit.setText('first')
-        assert rendered == ['first', 'latest']
+        ready = QSignalSpy(manager.preview.fit_changed)
+        manager.format_edit.setText('latest')
         assert manager._draft.get(label.label_id).config.format == 'latest'
+        assert ready.wait(3000)
+        assert _visible_preview_rgb(manager.preview) == (95, 95, 95)
+        assert manager.preview._adder.config.format == 'latest'
+        assert manager.preview.placement_available()
+        assert manager._ok_button.isEnabled()
         dialog.reject()
 
-    edit_dialog(monkeypatch, manager, inspect)
+    owner = threading.Thread(target=render)
+    owner.start()
+    try:
+        assert held.wait(2)
+        edit_dialog(monkeypatch, manager, inspect)
+    finally:
+        release.set()
+        owner.join(2)
     assert manager.labels.get(label.label_id).config.format == 'original'
-    assert not manager._preview_refresh_active
