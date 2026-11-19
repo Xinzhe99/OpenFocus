@@ -618,6 +618,7 @@ def test_roi_startup_rejects_stale_results(qapp, monkeypatch, changed):
     window = SimpleNamespace(
         raw_images=original, image_filenames=['first.tif', 'second.tif'],
         source_revision=0, roi_aligned_images=[], roi_mode_active=False,
+        use_gpu=False,
         reg_downscale_width=1024, thread_count=1, resource_preference='balanced',
         result_slider=QSlider(), result_control_bar=QWidget(),
         btn_preview_roi=QPushButton(), label_manager=SimpleNamespace(
