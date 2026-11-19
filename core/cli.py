@@ -158,7 +158,7 @@ def build_parser() -> argparse.ArgumentParser:
                              "their predicted probabilities (default); 'hard' "
                              "takes the most probable frame per pixel")
     parser.add_argument("--cpu", action="store_true",
-                        help="Force CPU for OpenFocus A/B/C, Guided Filter, and AI fusion")
+                        help="Force CPU for OpenFocus A/B/C, Guided Filter, GFG-FGF, and AI fusion")
     parser.add_argument("--downscale", type=int, default=None,
                         help="Registration feature-detection downscale width")
     parser.add_argument("--tile-size", type=int, default=None,

@@ -27,7 +27,7 @@ _DEFAULT_TILE_BLOCK_SIZE = 1024
 _DEFAULT_TILE_OVERLAP = 256
 _DEFAULT_TILE_THRESHOLD = 2048
 _DEFAULT_AI_BATCH_SIZE = 2
-OPENCL_FUSION_ALGORITHMS = ('openfocus_a', 'openfocus_b', 'openfocus_c', 'guided_filter')
+OPENCL_FUSION_ALGORITHMS = ('openfocus_a', 'openfocus_b', 'openfocus_c', 'guided_filter', 'gfgfgf')
 
 
 def set_tile_mode(enabled: bool):
@@ -360,7 +360,10 @@ class MultiFocusFusion:
         thread_count = kwargs.get('thread_count', None)
         return gfgfgf_impl(input_source, img_resize, kernel_size=kernel_size,
                            thread_count=thread_count,
-                           should_cancel=kwargs.get('should_cancel'))
+                           should_cancel=kwargs.get('should_cancel'),
+                           progress_callback=kwargs.get('progress_callback'),
+                           use_gpu=self.use_gpu,
+                           device_callback=self._record_openfocus_device)
 
     def _fuse_openfocus_a(self,
                           input_source: Union[str, List[np.ndarray]],
