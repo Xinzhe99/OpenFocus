@@ -21,14 +21,19 @@ def _source(tmp_path, name="source.png", shape=(48, 80, 3)):
 
 
 def test_label_preview_never_resolves_original(qapp, tmp_path, monkeypatch):
+    from PyQt6.QtTest import QSignalSpy
+    from utils.image_utils import to_display_uint8
     from widgets.label_preview import LabelPreview
     frame, _ = _source(tmp_path, shape=(1500, 2000, 3))
     monkeypatch.setattr(SourceFrame, "full_resolution", lambda self: pytest.fail("GUI decoded original"))
     preview = LabelPreview()
+    ready = QSignalSpy(preview.fit_changed)
     preview.set_preview(frame, {"enabled": False}, 0)
-    assert preview._frame is display_image(frame)
+    assert ready.wait(3000)
+    np.testing.assert_array_equal(preview._frame, to_display_uint8(display_image(frame)))
     assert preview._source_shape == frame.shape
     assert max(preview._frame.shape[:2]) <= 1024
+    preview.close_preview()
     preview.deleteLater()
 
 

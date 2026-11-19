@@ -246,6 +246,7 @@ def test_http_reporting_survives_default_python_agent_block(monkeypatch):
 
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self):
+            self.rfile.read(int(self.headers['Content-Length']))
             agent = self.headers.get('User-Agent', '')
             self.send_response(403 if agent.startswith('Python-urllib/') else 204)
             self.end_headers()

@@ -8,6 +8,8 @@ import math
 import ntpath
 import os
 
+from utils.output_sharpen import validate_sharpen_strength
+
 VERSION = 2
 
 # The recipe deliberately excludes transient CLI controls (progress, resume,
@@ -19,6 +21,7 @@ _FIELDS = (
     "threads", "resource_preference", "batch_size", "cpu", "downscale",
     "tile_size", "tile_enabled", "tile_overlap", "tile_threshold",
     "scale_bar", "scale_um", "depth_map", "depth_colormap", "sharpen_output",
+    "sharpen_strength",
     "group_size", "group_overlap", "frame_order",
     "auto_background", "background_mode", "keep_soft_parts", "save_stacked", "missing_data_map",
 )
@@ -62,7 +65,7 @@ def _upgrade_recipe(recipe):
     recipe = json.loads(json.dumps(recipe, allow_nan=False))
     options = recipe.get('options', {})
     if isinstance(options, dict):
-        method = options.get('method', 'stackmffv3')
+        method = options.get('method')
         defaults = {
             'openfocus_a': {'kernel_size': 17, 'blend_smoothing': 2.0},
             'openfocus_b': {'kernel_size': 17, 'depth_smoothing': 1.44},
@@ -140,6 +143,8 @@ def validate_recipe(recipe, recipe_path):
                 continue
             if type(value) is not int or value < _INTEGER_LIMITS[key]:
                 raise ValueError(f"invalid {key}")
+        elif key == "sharpen_strength":
+            validate_sharpen_strength(value)
         elif key == "scale_um":
             if value is None:
                 continue
@@ -277,7 +282,7 @@ def save_recipe(path, recipe):
     atomic_json_write(path, recipe)
 
 
-def run_recipe(path, *, dry_run=False):
+def run_recipe(path, *, dry_run=False, experimental=False):
     """Execute a saved recipe using the CLI pipeline; return its exit code.
 
     A dry run checks the input stack and writes no result files.
@@ -285,6 +290,8 @@ def run_recipe(path, *, dry_run=False):
     from core.cli import run_cli
     recipe = load_recipe(path)
     argv = validate_recipe(recipe, path)
+    if experimental:
+        argv.append("--experimental")
     options = recipe.get("options", {})
     if options.get("defect_mask_path"):
         mask = _relative(options["defect_mask_path"], os.path.dirname(os.path.abspath(os.fspath(path))))
@@ -387,6 +394,8 @@ def capture_project_recipe(path, project_path, argv):
         processing.extend(("--defect-mask-path", mask))
     if settings.get("sharpen_output", False):
         processing.append("--sharpen-output")
+    if "sharpen_strength" in settings:
+        processing.extend(("--sharpen-strength", str(settings["sharpen_strength"])))
     if not settings.get("tile_enabled", True):
         processing.append("--no-tile-enabled")
     for key, flag in (("thread_count", "--threads"), ("ai_batch_size", "--batch-size"),

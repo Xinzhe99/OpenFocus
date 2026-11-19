@@ -7,11 +7,12 @@ import pytest
 
 from core.cli import build_parser, run_cli
 from core.recipes import capture_recipe, load_recipe, run_recipe, save_recipe, validate_recipe
+from utils.output_sharpen import DEFAULT_SHARPEN_STRENGTH
 
 
-def _stack(folder):
+def _stack(folder, count=2):
     folder.mkdir()
-    for index in range(2):
+    for index in range(count):
         image = np.zeros((64, 64, 3), dtype=np.uint8)
         image[8 + index * 8:40 + index * 8, 8:40] = 100 + index * 50
         assert cv2.imwrite(str(folder / f"{index}.png"), image)
@@ -43,9 +44,9 @@ def test_capture_relocate_and_execute(tmp_path):
     moved = tmp_path / "moved"
     shutil.move(str(original), str(moved))
     path = moved / "recipe.json"
-    assert run_recipe(path, dry_run=True) == 0
+    assert run_recipe(path, dry_run=True, experimental=True) == 0
     assert not (moved / "result.png").exists()
-    assert run_recipe(path) == 0
+    assert run_recipe(path, experimental=True) == 0
     assert cv2.imread(str(moved / "result.png")) is not None
 
 
@@ -53,8 +54,12 @@ def test_command_create_and_batch_dry_run(tmp_path):
     _stack(tmp_path / "stack")
     recipe = tmp_path / "recipe.json"
     assert run_cli(["recipe", "create", str(recipe), "-i", str(tmp_path / "stack"),
-                    "-d", str(tmp_path / "results"), "-m", "dct"]) == 0
-    assert run_cli(["recipe", "run", str(recipe), "--dry-run"]) == 0
+                    "-d", str(tmp_path / "results"), "-m", "dct", "--experimental"]) == 0
+    options = load_recipe(recipe)['options']
+    assert options['method'] == 'dct'
+    assert 'experimental' not in options
+    assert run_cli(["recipe", "run", str(recipe), "--dry-run"]) == 2
+    assert run_cli(["recipe", "run", str(recipe), "--dry-run", "--experimental"]) == 0
     assert not (tmp_path / "results").exists()
 
 
@@ -129,21 +134,50 @@ def test_legacy_project_capture_uses_new_inputs_and_preserves_settings(tmp_path)
     assert data["options"]["tile_enabled"] is False
     assert data["project_settings"]["tile_overlap"] == 128
     assert str(tmp_path / "old") not in recipe.read_text(encoding="utf-8")
-    assert run_recipe(recipe, dry_run=True) == 0
+    assert run_recipe(recipe, dry_run=True, experimental=True) == 0
 
 
-def test_recipe_preserves_grouping_and_output_sharpening(tmp_path):
-    _stack(tmp_path / "stack")
+def test_recipe_preserves_grouping_and_output_sharpening(tmp_path, monkeypatch):
+    from utils import output_sharpen
+
+    strengths = []
+    sharpen_output = output_sharpen.sharpen_output
+
+    def record_strength(image, should_cancel=None, *, strength):
+        strengths.append(strength)
+        return sharpen_output(image, should_cancel, strength=strength)
+
+    monkeypatch.setattr(output_sharpen, 'sharpen_output', record_strength)
+    _stack(tmp_path / "stack", count=4)
     path = tmp_path / "recipe.json"
     capture_recipe(path, ["-i", str(tmp_path / "stack"),
                           "-o", str(tmp_path / "out.png"),
                           "-m", "guided_filter", "--cpu", "--threads", "1",
-                          "--group-size", "2", "--sharpen-output"])
+                          "--group-size", "2", "--sharpen-output", "--sharpen-strength", "175"])
     data = load_recipe(path)
     assert data["options"]["group_size"] == 2
     assert data["options"]["sharpen_output"] is True
-    assert run_recipe(path) == 0
+    assert data["options"]["sharpen_strength"] == 175
+    assert run_recipe(path, experimental=True) == 0
     assert cv2.imread(str(tmp_path / "out.png")) is not None
+    assert strengths == [175]
+
+
+@pytest.mark.parametrize('version', [1, 2])
+def test_recipes_without_sharpen_strength_use_legacy_default(tmp_path, version):
+    recipe = {'version': version, 'input': ['stack'], 'output': 'out.png',
+              'options': {'sharpen_output': True}}
+    args = build_parser().parse_args(validate_recipe(recipe, tmp_path / 'recipe.json'))
+    assert args.sharpen_output is True
+    assert args.sharpen_strength == DEFAULT_SHARPEN_STRENGTH
+
+
+@pytest.mark.parametrize('strength', [True, -1, 201, 10.0, '10', None])
+def test_recipe_rejects_invalid_sharpen_strength(tmp_path, strength):
+    recipe = {'version': 2, 'input': ['stack'], 'output': 'out.png',
+              'options': {'sharpen_strength': strength}}
+    with pytest.raises(ValueError, match='sharpen_strength'):
+        validate_recipe(recipe, tmp_path / 'recipe.json')
 
 
 def test_recipe_rejects_invalid_project_snapshot(tmp_path):
@@ -193,10 +227,10 @@ def test_recipe_rerun_excludes_reference(tmp_path, monkeypatch, grouped):
     folder = tmp_path / 'stack'
     _stack(folder)
     white = folder / 'white.png'
-    assert cv2.imwrite(str(white), np.full((64, 64, 3), 200, np.uint8))
+    assert cv2.imwrite(str(white), np.zeros((64, 64), np.uint8))
     output = tmp_path / 'result.png'
     recipe = tmp_path / 'recipe.json'
-    args = ['-i', str(folder), '-o', str(output), '-m', 'dct', '--dust-map', str(white)]
+    args = ['-i', str(folder), '-o', str(output), '-m', 'dct', '--defect-mask-path', str(white)]
     if grouped:
         args += ['--group-size', '2']
     capture_recipe(recipe, args)
@@ -211,11 +245,11 @@ def test_recipe_rerun_excludes_reference(tmp_path, monkeypatch, grouped):
             counts.append(len(images))
             return np.zeros((64, 64, 3), np.uint8)
         monkeypatch.setattr(cli, '_fuse_stack', fuse)
-    assert run_recipe(recipe) == 0
-    assert run_recipe(recipe) == 0
+    assert run_recipe(recipe, experimental=True) == 0
+    assert run_recipe(recipe, experimental=True) == 0
     assert counts == ([['0.png', '1.png']] * 2 if grouped else [2, 2])
     (folder / '1.png').unlink()
-    assert run_recipe(recipe, dry_run=True) != 0
+    assert run_recipe(recipe, dry_run=True, experimental=True) != 0
 
 
 def test_recipe_rejects_output_inside_input_folder(tmp_path):
@@ -261,11 +295,11 @@ def test_sensor_recipe_excludes_mask_and_checks_fingerprint(tmp_path, monkeypatc
             seen.append(len(images))
             return np.zeros((64, 64, 3), np.uint8)
         monkeypatch.setattr(cli, '_fuse_stack', fuse)
-    assert run_recipe(recipe) == 0
+    assert run_recipe(recipe, experimental=True) == 0
     assert seen == ([['0.png', '1.png']] if grouped else [2])
     assert cv2.imwrite(str(mask), np.ones((64, 64), np.uint8))
     with pytest.raises(ValueError, match='fingerprint'):
-        run_recipe(recipe, dry_run=True)
+        run_recipe(recipe, dry_run=True, experimental=True)
 
 
 def test_sensor_recipe_defaults_are_disabled(tmp_path):
@@ -304,6 +338,25 @@ def test_project_recipe_keeps_filename_order(tmp_path):
     capture_project_recipe(recipe, project, ["-i", str(tmp_path / "new"),
                                              "-o", str(tmp_path / "out.png")])
     assert load_recipe(recipe)["options"]["frame_order"] == "name"
+
+
+@pytest.mark.parametrize('enabled', [False, True])
+def test_project_recipe_preserves_independent_sharpen_strength(tmp_path, enabled):
+    from core.recipes import capture_project_recipe
+
+    project = tmp_path / 'source.ofproj'
+    project.write_text(json.dumps({'openfocus_project': 3,
+        'sources': [str(tmp_path / 'gone.png')],
+        'settings': {'fusion_method': 'dct', 'sharpen_output': enabled, 'sharpen_strength': 175},
+    }), encoding='utf-8')
+    path = tmp_path / 'recipe.json'
+    capture_project_recipe(path, project, ['-i', str(tmp_path / 'new'),
+                                          '-o', str(tmp_path / 'out.png')])
+    recipe = load_recipe(path)
+    assert recipe['project_settings']['sharpen_strength'] == 175
+    args = build_parser().parse_args(validate_recipe(recipe, path))
+    assert args.sharpen_output is enabled
+    assert args.sharpen_strength == 175
 
 
 @pytest.mark.parametrize('method,expected', [
@@ -366,7 +419,7 @@ def test_recipe_rejects_unsaved_execution_controls(tmp_path, extra):
     assert not path.exists()
 
 
-@pytest.mark.parametrize("selection", ["file", "folder", "dust", "mask"])
+@pytest.mark.parametrize("selection", ["file", "folder", "mask"])
 @pytest.mark.parametrize("alias", [False, True])
 def test_recipe_creation_never_overwrites_sources(tmp_path, selection, alias):
     folder = tmp_path / "stack"
@@ -381,9 +434,9 @@ def test_recipe_creation_never_overwrites_sources(tmp_path, selection, alias):
             pytest.skip("hard links unavailable")
     original = source.read_bytes()
     inputs = [str(folder)] if selection == "folder" else [str(source)]
-    if selection in ("dust", "mask"):
+    if selection == "mask":
         inputs = [str(folder / "1.png")]
-    flags = {"dust": ["--dust-map", str(source)], "mask": ["--defect-mask-path", str(source)]}
+    flags = {"mask": ["--defect-mask-path", str(source)]}
     with pytest.raises(ValueError, match="destination"):
         capture_recipe(destination, ["-i", *inputs, "-o", str(tmp_path / "out.png"),
                                      "-m", "dct", *flags.get(selection, [])])

@@ -185,9 +185,12 @@ def test_v2_tiled_fusion_uses_global_depth_and_source_pixels():
     frames = _stack(size=(64, 80))
     path = weights_path("stackmff_v2_final.onnx")
     depth, index = tiled_depth(_Source(frames, None, None, None), path, False,
-                               tile_size=32, tile_overlap=8, thread_count=1)
-    fused = stackmff_v2.stackmffv2_impl(
-        frames, None, path, False, tile_size=32, tile_overlap=8, thread_count=1)
+                               tile_size=32, tile_overlap=96, thread_count=1)
+    fusion = MultiFocusFusion('stackmffv2', tile_enabled=True, tile_threshold=1,
+                              tile_block_size=32, tile_overlap=96, exposure_match=False)
+    fused = fusion.fuse(frames, model_path=path, thread_count=1)
+    assert fusion.fusion_details.input_size == (80, 64)
+    assert fusion.fusion_details.tile_grid == (64, 32, 3)
     assert 0.0 <= depth.min() <= depth.max() <= 1.0
     np.testing.assert_array_equal(index, np.rint(depth * (len(frames) - 1)))
     expected = np.stack(frames)[index, np.arange(depth.shape[0])[:, None],
@@ -234,19 +237,19 @@ def test_cli_runs_both_and_rejects_depth_for_v1(tmp_path):
 
     for method in ("stackmff", "stackmffv2"):
         output = tmp_path / f"{method}.png"
-        result = run(["-i", str(source), "-o", str(output), "-m", method,
+        result = run(["-i", str(source), "-o", str(output), "--experimental", "-m", method,
                       "--cpu", "--threads", "1", "--no-exposure-match"])
         assert result.returncode == 0, result.stderr
         assert cv2.imread(str(output), cv2.IMREAD_UNCHANGED) is not None
 
     depth = tmp_path / "v1_depth.png"
-    rejected = run(["-i", str(source), "-o", str(depth), "-m", "stackmff",
+    rejected = run(["-i", str(source), "-o", str(depth), "--experimental", "-m", "stackmff",
                     "--depth-map"])
     assert rejected.returncode == 2
     assert "not available" in rejected.stderr
     assert not depth.exists()
 
     accepted = run(["-i", str(source), "-o", str(tmp_path / "v2.png"),
-                    "-m", "stackmffv2", "--depth-map", "--cpu", "--threads", "1"])
+                    "--experimental", "-m", "stackmffv2", "--depth-map", "--cpu", "--threads", "1"])
     assert accepted.returncode == 0, accepted.stderr
     assert (tmp_path / "v2_depth.png").is_file()

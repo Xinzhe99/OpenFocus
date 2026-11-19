@@ -191,6 +191,17 @@ def _alignment_valid_mask(image: np.ndarray, *, should_cancel=None) -> Optional[
 
 
 @dataclass(frozen=True)
+class FusionDetails:
+    """Parameters and spatial domain of a completed fusion dispatch."""
+
+    algorithm: str
+    input_size: Tuple[int, int]  # width, height before model padding or output cropping
+    parameters: tuple
+    options: tuple
+    tile_grid: Optional[Tuple[int, int, int]] = None  # block size, configured overlap, passes
+
+
+@dataclass(frozen=True)
 class RenderedDepth:
     index: np.ndarray
     valid_rect: Tuple[int, int, int, int]
@@ -284,6 +295,7 @@ class RenderContext:
     linear_dng_metadata: object = None
     source_paths: Tuple[str, ...] = ()
     rendered_depth: Optional[RenderedDepth] = None
+    fusion_details: Optional[FusionDetails] = None
 
     @property
     def alignment(self) -> str:
@@ -300,6 +312,41 @@ class RenderContext:
 
     def iter_frames(self) -> Iterable[SourceFrame]:
         return iter(self.frames)
+
+    def matches_stack(self, revision, indices):
+        return self.source_revision == revision and self.source_indices == tuple(indices)
+
+    def matches_registration(self, alignment, parameters, downscale, reverse):
+        steps = alignment_steps(alignment)
+        if steps != self.alignment_steps or bool(steps) != any(f.aligned for f in self.frames):
+            return False
+        if not steps:
+            return True
+        from core.workers import _ordered_openfocus_registration
+        return (self.parameters.get('registration_parameters') == parameters
+                and self.parameters.get('reg_downscale_width') == downscale
+                and _ordered_openfocus_registration(steps, self.algorithm,
+                    self.parameters.get('sort_mode')) == reverse)
+
+    def same_depth_domain(self, other):
+        """Both maps must refer to the same registered frame grid and order."""
+        from core.workers import _ordered_openfocus_registration
+        return (self.matches_stack(other.source_revision, other.source_indices)
+                and (self.width, self.height, self.dtype) == (other.width, other.height, other.dtype)
+                and self.roi_rect == other.roi_rect
+                and (self.roi_rect is None or self.roi_mode == other.roi_mode)
+                and len(self.frames) == len(other.frames)
+                and all((a.frame_id, a.name, a.aligned, a.width, a.height, a.offset_x, a.offset_y) ==
+                        (b.frame_id, b.name, b.aligned, b.width, b.height, b.offset_x, b.offset_y)
+                        for a, b in zip(self.frames, other.frames))
+                and all(self.parameters.get(k) == other.parameters.get(k) for k in (
+                    'defect_mask_path', 'sensor_denoise'))
+                and not self.parameters.get('defect_mask_path')
+                and self.matches_registration(other.alignment_steps,
+                    other.parameters.get('registration_parameters'),
+                    other.parameters.get('reg_downscale_width'),
+                    _ordered_openfocus_registration(other.alignment_steps, other.algorithm,
+                                                     other.parameters.get('sort_mode'))))
 
     def matching_depth(self, method, parameters):
         depth = self.rendered_depth
@@ -356,6 +403,7 @@ def build_render_context(
     linear_dng_metadata=None,
     source_paths: Optional[Sequence[str]] = None,
     rendered_depth: Optional[dict] = None,
+    fusion_details: Optional[FusionDetails] = None,
     should_cancel=None,
 ) -> Optional[RenderContext]:
     """Build the provenance context for one completed fusion.
@@ -481,4 +529,5 @@ def build_render_context(
         linear_dng_metadata=linear_dng_metadata,
         source_paths=paths,
         rendered_depth=depth,
+        fusion_details=fusion_details,
     )

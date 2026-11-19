@@ -22,7 +22,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/Windows-10%2F11-0078D7?logo=windows&logoColor=white" alt="Windows 10/11">
   <img src="https://img.shields.io/badge/macOS-Apple%20Silicon-000000?logo=apple&logoColor=white" alt="macOS Apple Silicon">
-  <img src="https://img.shields.io/badge/Linux-CLI-FCC624?logo=linux&logoColor=black" alt="Linux CLI">
+  <img src="https://img.shields.io/badge/Linux-x86--64-FCC624?logo=linux&logoColor=black" alt="Linux x86-64 für Desktop und CLI">
   <a href="https://pypi.org/project/openfocus/"><img src="https://img.shields.io/badge/PyPI-openfocus-3775A9?logo=pypi&logoColor=white" alt="PyPI"></a>
 </p>
 
@@ -55,7 +55,7 @@
 ## 📢 News
 
 > [!NOTE]
-> **[v1.77.0-beta.7 Vorabversion](https://github.com/Xinzhe99/OpenFocus/releases/tag/v1.77.0-beta.7)** — GPU-Beschleunigung für kompatible OpenCL-Geräte in OpenFocus B mit CPU-Fallback, korrigierter Wischvergleich sowie automatischer Hintergrund und Retusche. Details im [Änderungsprotokoll](../../CHANGELOG.md).
+> **[v2.0.0 ist als stabile Version verfügbar](https://github.com/Xinzhe99/OpenFocus/releases/tag/v2.0.0)** — Mit einem portablen Desktop-Archiv für Linux x86_64. Details im [Änderungsprotokoll](../../CHANGELOG.md).
 
 Ältere Versionen stehen im [Änderungsprotokoll](../../CHANGELOG.md).
 
@@ -72,7 +72,7 @@ Das ist nicht verpflichtend, aber sehr willkommen.
 <tr>
 <td width="46%" valign="middle">
 
-### KI-Fusion: StackMFF V3
+### KI-Fusion: StackMFF V3 (experimentell)
 
 StackMFF V3 kombiniert mit KI die scharfen Bereiche der Quellbilder.
 
@@ -107,6 +107,8 @@ Vergleichen Sie Quellbild und Fusionsergebnis mit einem verschiebbaren Trenner.
 ### Methodenvergleich
 
 Vergleichen Sie Verfahren nebeneinander und übernehmen Sie das Ergebnis oder seine Einstellungen.
+
+OpenFocus A, OpenFocus B und OpenFocus C sind die einzigen stabilen Fusionsverfahren. Weitere Verfahren sind experimentell. Um sie in der Desktop-App zu verwenden, wählen Sie **Einstellungen → Erweiterte Einstellungen… → Experimentelle Funktionen aktivieren**. Für die Headless-CLI verwenden Sie `--experimental`.
 
 </td>
 <td width="54%">
@@ -220,11 +222,13 @@ Steuern Sie die Desktop-App über einen token-geschützten lokalen Agent-Kanal.
 <a id="install"></a>
 ## ⬇️ Installation
 
-Die [OpenFocus-Website](https://openfocus.top/#download) und ihre Installationsskripte bieten für Windows und macOS die neueste Version, auch eine neuere Betaversion (derzeit v1.77.0-beta.7). [GitHub Releases](https://github.com/Xinzhe99/OpenFocus/releases) bietet weitere Downloads. Der automatische Desktop-Updater bietet ebenfalls neuere Betaversionen an; die Linux-CLI von PyPI bleibt stabil.
+Auf der [Downloadseite von OpenFocus](https://openfocus.top/#download) finden Sie die jeweils neueste stabile Desktop-Version für Windows, macOS und Linux x86_64. Entpacken Sie das Linux-Archiv und starten Sie `OpenFocus/OpenFocus`. Installieren Sie Linux-Desktop-Updates manuell über die Downloadseite.
+
+Desktop-Updates nutzen standardmäßig den stabilen Kanal. Aktivieren Sie **Beta-Updates erhalten** in den erweiterten Einstellungen oder im Willkommensdialog, um Vorabversionen zu beziehen. Ältere Versionen und Vorabversionen finden Sie unter [GitHub Releases](https://github.com/Xinzhe99/OpenFocus/releases).
 
 Hinweise zur Installation und Fehlerbehebung stehen im [Handbuch](../USER_MANUAL_DE.md).
 
-Unter Linux installiert der Terminalbefehl die Headless-CLI; macOS erfordert Apple Silicon. Die DMG-App wird nach `/Applications`, die Terminal-Version nach `~/Applications` installiert.
+macOS erfordert Apple Silicon. Die DMG-App wird nach `/Applications`, die Terminal-Version nach `~/Applications` installiert. Unter Linux installiert der folgende Terminalbefehl die Headless-CLI.
 
 ```bash
 curl -fsSL https://openfocus.top/install.sh | sh -s -- --dry-run
@@ -254,7 +258,7 @@ Die Desktop-App startet automatisch einen token-geschützten lokalen Agent-Kanal
 
 ### 💻 Kommandozeile
 
-Alternativ die CLI unter Windows, macOS und Linux installieren – dieselbe Pipeline, ohne GUI-Stack:
+Installieren Sie die separate Headless-CLI mit `pip` unter Windows, macOS oder Linux. Sie bietet dieselbe Verarbeitung ohne grafische Oberfläche.
 
 ```bash
 pip install openfocus
@@ -266,7 +270,7 @@ Siehe das [CLI-Handbuch](../USER_MANUAL_DE.md#14-kommandozeilenschnittstelle).
 <a id="community"></a>
 ## Community & Support
 
-Fragen, Ideen oder Feedback? Besuchen Sie unsere [Discord-Community](https://discord.gg/afzmwgPt). Wir antworten so schnell wie möglich; wir nutzen die Pekinger Zeit (UTC+8), daher kann es durch die Zeitverschiebung zu Verzögerungen kommen.
+Fragen, Ideen oder Feedback? Besuchen Sie unsere [Discord-Community](https://discord.gg/Jamr2SR5). Wir antworten so schnell wie möglich; wir nutzen die Pekinger Zeit (UTC+8), daher kann es durch die Zeitverschiebung zu Verzögerungen kommen.
 
 - **Dokumentation** — [Benutzerhandbuch](../USER_MANUAL_DE.md) (zwölf Sprachen) · [Änderungsprotokoll](../../CHANGELOG.md) · [Leistung](../PERFORMANCE.md) · [Fusionsverfahren](../FUSION_METHODS.md)
 - **Zitation** — [CITATION.cff](../../CITATION.cff); jede Version wird auf Zenodo archiviert ([DOI](https://doi.org/10.5281/zenodo.23050823))

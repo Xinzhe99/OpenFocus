@@ -28,7 +28,7 @@ OpenFocus es una aplicación de escritorio profesional de fusión de imágenes m
 ### Funciones principales
 
 - **Fusión de imágenes multifoco**: combina varias imágenes con puntos de enfoque distintos en una sola imagen totalmente enfocada
-- **Diez algoritmos de fusión**: filtro guiado, DCT, DTCWT, GFG-FGF, StackMFF V1/V2/V3, OpenFocus A/B/C, además del modo de solo alineación
+- **Diez algoritmos de fusión**. OpenFocus A/B/C son estables. El filtro guiado, DCT, DTCWT, GFG-FGF y StackMFF V1/V2/V3 son experimentales. También hay un modo de solo alineación.
 - **Registro de imágenes**: alinea secuencias desalineadas con OpenFocus (rápido), ECC, homografía o la cadena homografía → ECC
 - **Fondo automático**: sustituir un fondo apilado irregular por un fotograma real y ver dónde ningún fotograma captó la escena con claridad
 - **Vista de comparación Wipe (cortina)**: comprueba la alineación y compara resultados con un divisor A/B
@@ -56,7 +56,7 @@ Las pilas de PNG transparentes se pueden fusionar en la aplicación de escritori
 
 Carga a tamaño completo, elige «sin alineación», desactiva la vista previa rápida y el ROI, y renderiza y guarda como PNG. El modo por lotes exige un método de fusión y salida PNG sin guardar una pila alineada. No se admiten alineación, redimensionado o reducción, corrección de campo plano, mapas de profundidad, comparación de métodos, retoque ni barras de escala con datos transparentes, y las etiquetas no se pueden incrustar en una exportación. Se rechaza un método de fusión que cambie las dimensiones del rectángulo. No se admiten máscaras variables o con bordes suavizados, máscaras distintas entre fotogramas, TIFF transparente de entrada ni salidas que no sean PNG, incluidos GIF y TIFF multipágina. La CLI también rechaza la limpieza del sensor y los mapas de profundidad para entradas transparentes.
 
-Por ejemplo, el equivalente en la CLI es `python main.py --input ./png-stack --output ./result.png --method guided_filter --align none`.
+Por ejemplo, el equivalente en la CLI es `python main.py --input ./png-stack --output ./result.png --method guided_filter --align none --experimental`.
 
 ### Formatos de salida compatibles
 
@@ -74,7 +74,7 @@ En **Guardar como**, TIFF normal guarda el resultado como una sola imagen; TIFF 
 ### Iniciar la aplicación
 
 La forma preferida de instalar una compilación empaquetada es el sitio web del proyecto, **https://openfocus.top**: enlaza el instalador de Windows, la compilación de macOS y el paquete de Linux, con scripts de instalación para terminal. Prefiérelo a recompilar: esos artefactos son la salida exacta del flujo de publicación. `pip install openfocus` instala solo la interfaz de línea de comandos sin interfaz gráfica (el paquete wheel no depende deliberadamente de PyQt6); usa una compilación de escritorio o una copia del código fuente para la interfaz gráfica.
-El sitio ofrece versiones estables de escritorio por defecto. En Windows y macOS puedes activar las actualizaciones beta; en Linux, actualiza descargando un nuevo archivo de escritorio. La CLI de PyPI se publica por separado.
+El sitio ofrece versiones estables de escritorio por defecto. La aplicación de escritorio para Linux x86-64 está disponible a partir de la versión 2.0.0. En Windows y macOS puedes activar las actualizaciones beta. En Linux, actualiza descargando un nuevo archivo de escritorio. La CLI de PyPI se publica por separado.
 
 Las versiones actuales para Windows no están firmadas. Antes de ejecutar el archivo descargado, compara su hash SHA-256 con el que figura en el manifiesto de la versión.
 
@@ -122,7 +122,7 @@ El panel derecho reúne todas las opciones de configuración, organizadas de arr
 
 1. **Ajustes de fusión**: selecciona el algoritmo de fusión y sus parámetros
 2. **Ajustes de registro**: activa o desactiva los métodos de alineación
-3. **Botones de acción**: Iniciar renderizado y las acciones secundarias Restablecer, Ajustes de renderizado y renderizar todos los métodos. El diálogo de ajustes reúne la vista previa rápida, el orden de los fotogramas, el igualado de exposición, la eliminación de deriva de brillo y la nitidez de salida
+3. **Botones de acción** para iniciar o restablecer el renderizado, abrir los ajustes o renderizar con todos los métodos disponibles. El diálogo de ajustes reúne la vista previa rápida, el orden de los fotogramas, el igualado de exposición, la eliminación de deriva de brillo y la nitidez de salida
 4. **Lista de imágenes de origen**: muestra todas las imágenes cargadas con sus nombres de archivo
 5. **Lista de salida**: muestra los resultados generados
 
@@ -367,7 +367,7 @@ En una ejecución individual de la CLI con registro y sin grupos, `--alignment-r
 ### Activar el registro
 
 1. En el panel derecho, localiza el grupo **Registro**
-2. Elige un método en la lista desplegable: **Sin alineación**, **OpenFocus (rápida)**, **Alinear (ECC)**, **Alinear (homografía)** o **Homografía → ECC** (encadenado)
+2. Elige **Sin alineación** o **Alinear (ECC)**. Si activas las funciones experimentales, también puedes elegir **OpenFocus (rápida)**, **Alinear (homografía)** u **Homografía → ECC** (encadenado)
 3. Ajusta el fotograma de referencia y los límites de búsqueda de OpenFocus en **Ajustes → Ajustes avanzados → Registro**.
 
 ### Cuándo usar el registro
@@ -389,7 +389,7 @@ Accede a los ajustes adicionales en **Ajustes → Ajustes avanzados → Registro
 
 ## 8. Métodos de fusión de imágenes
 
-OpenFocus ofrece diez algoritmos de fusión (además de un modo de solo alineación). Un perfil nuevo empieza en **StackMFF V3** con registro **ECC**; las listas siguientes describen todas las opciones. Cada uno tiene características distintas que lo hacen adecuado para diferentes tipos de imágenes.
+Un perfil nuevo de escritorio usa **OpenFocus B** con registro **ECC**. Los métodos de fusión estables son OpenFocus A, B y C. Para usar los demás métodos de fusión en el escritorio, marca **Activar funciones experimentales** en **Ajustes → Ajustes avanzados → General** y confirma. En la CLI, añade `--experimental` a cada comando que use un método de fusión experimental.
 
 ### Filtro guiado
 
@@ -438,8 +438,6 @@ OpenFocus ofrece diez algoritmos de fusión (además de un modo de solo alineaci
 
 ### StackMFF V3 (aprendizaje profundo)
 
-Es el método preseleccionado en una instalación nueva.
-
 - **Algoritmo**: clasificación de origen píxel a píxel (ONNX Runtime). La red predice, para cada píxel, de qué imagen de entrada proviene, y después mezcla las imágenes según esas probabilidades o elige una sola imagen
 - **Modo de salida de IA** (panel derecho, solo para este método):
   - **Mezcla suave (ponderada)**: opción predeterminada; cada píxel es una mezcla de las imágenes ponderada por probabilidad. Transiciones suaves y sin costuras duras; coincide con la configuración publicada en el artículo
@@ -463,7 +461,7 @@ CLI: `--method openfocus_b --param radius=8 --param smoothing=4 --param feather=
 
 En la interfaz, la igualación de exposición está activada por defecto en A/B/C y usa el primer fotograma procesado; en los demás métodos está desactivada y usa el último. Se conservan las opciones guardadas explícitamente; al activarla en A/B/C se usa el primero. La corrección de deriva de brillo permanece desactivada por defecto. Restablecer recupera los valores de cada método. En la CLI está activada por defecto para todos los métodos; `--no-exposure-match` la desactiva.
 
-Al seleccionar A/B/C se usa la alineación OpenFocus salvo que se haya elegido explícitamente otra alineación o restaurado un proyecto. Sus valores predeterminados son desplazamiento 0,03 y aumento 5 %.
+El registro predeterminado para A/B/C sigue siendo ECC aunque actives las funciones experimentales. Para usar la alineación OpenFocus, selecciónala explícitamente. Sus valores predeterminados son un desplazamiento de 0,03 y un aumento del 5 %.
 
 **Nitidear la salida fusionada** aplica una máscara de enfoque suave después de la fusión, antes de convertir el resultado a su profundidad de salida. Está desactivado por defecto y se puede activar en **Ajustes de renderizado** o en las opciones del lote; la opción equivalente de la CLI es `--sharpen-output`. Afecta a la imagen fusionada, no a los fotogramas registrados ni a los mapas de profundidad. Puede hacer más distintos los bordes, pero también amplificar el ruido y los halos. Se guarda con el proyecto y se recuerda entre sesiones.
 
@@ -495,6 +493,8 @@ Selecciona **Solo alineación (sin fusión)** para registrar la pila y añadir u
 
 Abre **Herramientas → Comparación de métodos** para ajustar varios métodos de forma independiente. El nombre, las etiquetas de parámetros y los controles de cada método permanecen juntos cuando la ventana se estrecha. Los cambios actualizan la vista previa automáticamente. **Vista previa ROI (rápida)** fusiona el área seleccionada con el contexto circundante; **Fusión de imagen completa** comprueba el resultado de toda la imagen y permite inspeccionar otra área sin volver a renderizar. Los resultados ROI pueden diferir de los de imagen completa porque las estadísticas de exposición y algunos algoritmos dependen de la extensión de la imagen.
 La **fusión de imagen completa** está seleccionada por defecto.
+
+Para incluir métodos experimentales en la comparación, activa las funciones experimentales.
 
 Una indicación visible explica cómo seleccionar o deseleccionar un resultado: haz clic en él o usa `Tab` para enfocarlo y pulsa `Enter` o `Espacio`.
 
@@ -646,9 +646,7 @@ Pulsa **Aceptar** para guardar. Cancelar, Esc o cerrar descartan los cambios.
 
 Las descargas automáticas de actualizaciones se ejecutan mientras la aplicación está inactiva y nunca se instalan solas. Una descarga completada permanece lista hasta que elijas explícitamente **Reiniciar y actualizar**. El reinicio protege las ediciones activas y el trabajo sin guardar, y después escribe los datos de recuperación antes de lanzar el reemplazo. Cancelar una descarga o preparación espera al límite seguro actual. Una compilación preparada completa y más reciente puede instalarse sin conexión.
 
-La corrección de campo plano cambia los píxeles de trabajo de la sesión sin sobrescribir los archivos de origen. Selecciona la referencia blanca y un fotograma de vista previa, y vuelve a generar la vista previa después de cambiar el origen o la escala. Las imágenes de referencia y de trabajo/base deben compartir dominio de coordenadas y tamaño. Aplicar prepara ambas pilas antes de confirmar; la eliminación opcional del fotograma de referencia pertenece al mismo paso de deshacer. Exporta las imágenes de origen corregidas cuando necesites conservar estos píxeles fuera de la sesión.
-
-El procesamiento por lotes acepta una imagen de campo blanco opcional en sus opciones de procesamiento. Elige una referencia desenfocada a la resolución original de los fotogramas; se escala con la pila de entrada y se aplica antes del registro, usando el tamaño de polvo predeterminado. Una referencia ilegible o un tamaño incompatible hacen fallar visiblemente la pila afectada. La referencia se excluye de las entradas de carpeta, incluido el procesamiento agrupado; deben quedar al menos dos fotogramas de origen para fusionar. La corrección de campo plano no se puede combinar con entrada transparente. Deja el campo vacío para procesar sin corrección. La CLI también acepta la referencia con `--dust-map WHITE`.
+El mapa de polvo, la corrección de campo plano por lotes y la unión de imágenes están en desarrollo y no están disponibles por ahora.
 
 La limpieza del sensor es opcional y se ejecuta sobre los fotogramas originales en coordenadas del sensor antes del registro. Selecciona una máscara de defectos explícita para corregir píxeles calientes o muertos conocidos; OpenFocus no infiere una máscara a partir de imágenes de la muestra. La máscara debe ser una imagen de un solo canal de 8 o 16 bits con las mismas dimensiones que el origen: cero significa no afectado y 1 o el valor máximo del canal marcan defectos. Revisa su extensión antes de procesar. Se rechazan las máscaras que cubren más del 10 % del fotograma o los defectos sin un vecino no enmascarado. Mantén la máscara a la resolución original y no la selecciones como imagen de origen. Para el procesamiento en la interfaz, carga los fotogramas de origen a escala completa cuando uses una máscara de defectos; la máscara nunca se redimensiona. La limpieza del sensor (incluida la reducción de ruido) no se puede aplicar a una pila de la interfaz después de una rotación, volteo, corrección de campo plano u otro cambio de origen: vuelve a cargar los fotogramas originales o desactiva la limpieza. Esto también se aplica a proyectos restaurados con esos historiales de origen. El procesamiento ROI prealineado no se puede combinar con la limpieza del sensor; sal del modo ROI y renderiza la pila completa. Los ajustes de limpieza pertenecen a la sesión actual y al proyecto guardado, no a las preferencias globales de la aplicación. El lote y la CLI procesan sus entradas originales por separado, con la limpieza del sensor antes de la corrección de campo plano y del registro. Las máscaras de defectos exigen archivos de origen con orientación EXIF neutra. Los archivos orientados, los RAW de cámara y las fuentes cuya orientación no se puede establecer se rechazan porque sus píxeles decodificados pueden ya no coincidir con las coordenadas del sensor. Usa imágenes de origen y una máscara en la misma orientación de píxeles conocida, con metadatos de orientación neutra. La reducción de ruido por sí sola no requiere máscara de defectos.
 
@@ -856,7 +854,7 @@ openfocus describe                      # JSON: métodos, parámetros, capacidad
 openfocus gui [--control] [--socket NAME] [paths…]   # inicia la aplicación de escritorio
 openfocus ctl <command> [flags]          # controla una ventana en ejecución (ver AGENT_CONTROL_SPEC.md)
 openfocus recipe create FILE --input … --output … [processing flags]
-openfocus recipe run FILE [--dry-run]    # reproduce una receta guardada sin interfaz
+openfocus recipe run FILE [--dry-run] [--experimental]
 openfocus retouch replay CHECKPOINT --base BASE --sources … --output RESULT
 ```
 
@@ -865,20 +863,20 @@ openfocus retouch replay CHECKPOINT --base BASE --sources … --output RESULT
 Desde un entorno de Python (o junto al ejecutable empaquetado):
 
 ```bash
-# Fusiona una carpeta con el método de IA predeterminado
+# Fusiona una carpeta con el método predeterminado (OpenFocus B)
 python main.py --input ./stack_folder --output ./result/fused.png
 
 # DTCWT con registro ECC, 8 hilos
-python main.py -i ./stack_folder -o ./result/fused.png -m dtcwt -a ecc -t 8
+python main.py -i ./stack_folder -o ./result/fused.png -m dtcwt -a ecc -t 8 --experimental
 
 # StackMFF V3 forzado a CPU con un tamaño de mosaico personalizado
-python main.py -i ./stack_folder -o ./result/fused.png -m stackmffv3 --cpu --tile-size 512
+python main.py -i ./stack_folder -o ./result/fused.png -m stackmffv3 --cpu --tile-size 512 --experimental
 
 # Lista explícita de archivos; también se aceptan archivos de vídeo como entrada
-python main.py -i img1.jpg img2.jpg img3.jpg -o fused.png -m gfgfgf
+python main.py -i img1.jpg img2.jpg img3.jpg -o fused.png -m gfgfgf --experimental
 
 # Una única pila Z TIFF multipágina con barra de escala calibrada por metadatos
-python main.py -i ./zstack.tif -o fused.png -m dtcwt --scale-bar
+python main.py -i ./zstack.tif -o fused.png -m dtcwt --scale-bar --experimental
 
 # Inspecciona fotogramas adyacentes similares sin fusionar ni cambiar la entrada
 python main.py -i ./stack_folder --suggest-duplicates
@@ -896,7 +894,8 @@ Por ejemplo, añade `--align openfocus --alignment-report alignment.json` a un r
 | `--output-dir, -d` | Modo por lotes: fusiona cada carpeta de entrada y escribe `<carpeta>.png` por pila |
 | `--resume` | Omite la carpeta solo si todos los resultados solicitados son archivos normales no vacíos; no verifica contenido ni parámetros |
 | `--config FILE` | Modo por lotes: anulaciones JSON por carpeta, p. ej. `{"stackA": {"method": "dct"}}` |
-| `--method, -m` | `stackmffv3` (predeterminado), `stackmffv2`, `stackmff`, `openfocus_a`, `openfocus_b`, `openfocus_c`, `guided_filter`, `dct`, `dtcwt`, `gfgfgf` |
+| `--method, -m` | Métodos estables (`openfocus_a`, `openfocus_b` por defecto, `openfocus_c`) y experimentales (`guided_filter`, `dct`, `dtcwt`, `gfgfgf`, `stackmff`, `stackmffv2`, `stackmffv3`) |
+| `--experimental` | Permite usar métodos de fusión experimentales en esta ejecución, incluso si se eligen mediante `--config` |
 | `--param KEY=JSON_VALUE` | Define cualquier parámetro de fusión; repetible y anula las opciones heredadas |
 | `--align, -a` | `none` (predeterminado), `homography`, `ecc`, `both`, `openfocus` |
 | `--align-param KEY=JSON_VALUE` | Define cualquier parámetro de registro; repetible |
@@ -907,7 +906,6 @@ Por ejemplo, añade `--align openfocus --alignment-report alignment.json` a un r
 | `--sort` | Orden de fotogramas para `openfocus_a/b/c`: `asc` (predeterminado, orden de archivo), `desc` (invierte un barrido de lejos a cerca), `off` |
 | `--frame-order` | Carpeta de entrada: `auto` (predeterminado) ordena los fotogramas de cerca a lejos según los pasos de enfoque EXIF cuando todos los tienen (el bracketing de enfoque de OM SYSTEM empieza a media profundidad); si no, por nombre; `name` siempre por nombre de archivo. Los archivos indicados explícitamente conservan su orden |
 | `--sharpen-output` | Aplica una máscara de enfoque suave a la salida fusionada (desactivado por defecto) |
-| `--dust-map WHITE` | Corrección de campo plano (mapa de polvo) a partir de una toma de campo blanco desenfocada |
 | `--defect-mask-path MASK` | Máscara de defectos en coordenadas del sensor que se repara antes del registro |
 | `--sensor-denoise` | Reducción de ruido conservadora del sensor antes del registro |
 | `--kernel, -k` | Solo para métodos que declaran `kernel_size` |
@@ -944,10 +942,12 @@ Una receta es un archivo JSON portátil con opciones de procesamiento de la CLI 
 
 ```bash
 openfocus recipe create line.json --input ./stack --output ./out/fused.tif \
-  --method dtcwt --align ecc --threads 8
+  --method openfocus_b --align ecc --threads 8
 openfocus recipe run line.json
 openfocus recipe run line.json --dry-run
 ```
+
+Si la receta usa un método de fusión experimental, añade `--experimental` cada vez que la ejecutes, incluso en una prueba con `--dry-run`. La receta guarda el método elegido.
 
 `recipe create --project project.ofproj --input ./stack --output ./out/fused.tif` captura los ajustes de procesamiento de un proyecto con entradas elegidas explícitamente; las fuentes del proyecto pueden haberse movido. Las recetas rechazan controles transitorios como `--dry-run`, `--resume`, `--json` y `--config`, y exigen que la salida esté fuera de todas las carpetas de entrada (y sea distinta de una entrada seleccionada explícitamente). Una máscara de defectos se guarda por ruta relativa con una huella SHA-256, de modo que una máscara ausente o modificada hace fallar la ejecución. Las ediciones de origen del proyecto (rotación, volteo, campo plano) no se pueden capturar; exporta primero la pila corregida.
 
@@ -1007,7 +1007,7 @@ Códigos de salida: `0` éxito, `1` error de procesamiento, `2` error de uso. Ej
 | `Ctrl+W` | Vaciar pila |
 | `Ctrl+Q` | Salir |
 | `Ctrl+R` | Iniciar renderizado |
-| `Ctrl+Shift+R` | Comparar todos los métodos |
+| `Ctrl+Shift+R` | Comparar los métodos disponibles |
 | `Ctrl+T` | Retocar resultado |
 | `Ctrl+M` | Mapa de profundidad |
 | `Ctrl+E` | Alternar comparación Wipe |

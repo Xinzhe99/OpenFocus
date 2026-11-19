@@ -29,19 +29,24 @@ def _tiled(mode, profile):
                               fusion_parameters={'mode': mode}, tile_enabled=True,
                               tile_block_size=64, tile_overlap=16, tile_threshold=32)
     with pp.active(profile):
-        return fusion.fuse(input_source=_stack(), img_resize=None, model_path=WEIGHTS,
-                           thread_count=1)
+        image = fusion.fuse(input_source=_stack(), img_resize=None, model_path=WEIGHTS,
+                            thread_count=1)
+        return image, fusion.fusion_details
 
 
 @pytest.mark.parametrize('mode', ['soft', 'hard'])
 def test_tiled_output_is_identical_and_geometry_matches_the_grid(mode):
-    reference = _tiled(mode, pp.NULL_PROFILE)
+    reference, details = _tiled(mode, pp.NULL_PROFILE)
     profile = pp.PerformanceProfile()
-    profiled = _tiled(mode, profile)
+    profiled, profiled_details = _tiled(mode, profile)
     np.testing.assert_array_equal(profiled, reference)
     assert profiled.dtype == reference.dtype
     report = profile.report('completed')
     _, _, coords = _ai_effective_tiling(3, 64, 150, 110, 16, 1)
+    assert details == profiled_details
+    assert details.input_size == (110, 150)
+    assert details.tile_grid == (64, 16, len(coords))
+    assert dict(details.parameters) == {'mode': mode}
     assert report['tiling']['count'] == len(coords)
     assert report['tiling']['coords'] == [list(c) for c in coords]
     assert report['tiling']['block_requested'] == 64

@@ -41,7 +41,7 @@ def test_cli_transparent_png_excludes_hidden_pixels_and_preserves_alpha(tmp_path
     results = []
     for index, folder in enumerate((first, second)):
         out = tmp_path / f"out{index}.png"
-        result = _run("--input", folder, "--output", out, "--method", "guided_filter",
+        result = _run("--input", folder, "--output", out, "--experimental", "--method", "guided_filter",
                       "--cpu", "--threads", "1")
         assert result.returncode == 0, result.stderr
         results.append(cv2.imread(str(out), cv2.IMREAD_UNCHANGED))
@@ -59,7 +59,7 @@ def test_cli_transparent_png_excludes_hidden_pixels_and_preserves_alpha(tmp_path
         source = cv2.imread(str(first / f"{index}.png"), cv2.IMREAD_UNCHANGED)
         assert cv2.imwrite(str(cropped / f"{index}.png"), source[8:72, 12:92, :3])
     opaque_out = tmp_path / "opaque-result.png"
-    result = _run("--input", cropped, "--output", opaque_out, "--method", "guided_filter",
+    result = _run("--input", cropped, "--output", opaque_out, "--experimental", "--method", "guided_filter",
                   "--cpu", "--threads", "1")
     assert result.returncode == 0, result.stderr
     expected = cv2.imread(str(opaque_out), cv2.IMREAD_UNCHANGED)
@@ -72,7 +72,7 @@ def test_cli_batch_preserves_transparent_png(tmp_path):
     _stack(second, np.uint8, 255)
     output = tmp_path / "results"
     result = _run("--input", first, second, "--output-dir", output,
-                  "--method", "guided_filter", "--cpu", "--threads", "1")
+                  "--experimental", "--method", "guided_filter", "--cpu", "--threads", "1")
     assert result.returncode == 0, result.stderr
     a = cv2.imread(str(output / "first.png"), cv2.IMREAD_UNCHANGED)
     b = cv2.imread(str(output / "second.png"), cv2.IMREAD_UNCHANGED)
@@ -97,7 +97,7 @@ def test_cli_rejects_incompatible_processing(tmp_path, option, value):
     _stack(folder, np.uint8, 1)
     out = tmp_path / "out.png"
     method = "openfocus_b" if option == "--depth-map" else "guided_filter"
-    result = _run("--input", folder, "--output", out, "--method", method, option, value)
+    result = _run("--input", folder, "--output", out, "--experimental", "--method", method, option, value)
     assert result.returncode != 0
     assert "transparent" in result.stderr.lower()
     assert not out.exists()
@@ -111,12 +111,12 @@ def test_cli_rejects_different_masks_and_non_png_output(tmp_path):
     frame[8, 12, 3] = 0
     assert cv2.imwrite(str(path), frame)
     out = tmp_path / "out.png"
-    result = _run("--input", folder, "--output", out, "--method", "guided_filter")
+    result = _run("--input", folder, "--output", out, "--experimental", "--method", "guided_filter")
     assert result.returncode != 0 and not out.exists()
     assert "alpha" in result.stderr.lower()
     _stack(tmp_path / "good", np.uint8, 1)
     out = tmp_path / "out.jpg"
-    result = _run("--input", tmp_path / "good", "--output", out, "--method", "guided_filter")
+    result = _run("--input", tmp_path / "good", "--output", out, "--experimental", "--method", "guided_filter")
     assert result.returncode != 0 and not out.exists()
     assert "png" in result.stderr.lower()
 

@@ -481,21 +481,31 @@ finally:
         log.close()
 
 
+def _load_stack_for_render(server, folder):
+    reply = call(server, "stack.load", folder=str(folder))
+    assert reply["ok"], reply
+    started = reply["result"]
+    assert started["loading"] is True
+
+    deadline = time.monotonic() + 30
+    frames = call(server, "stack.frames")["result"]
+    while not frames["load"]["finished"] and time.monotonic() < deadline:
+        QTest.qWait(20)
+        frames = call(server, "stack.frames")["result"]
+    load = frames["load"]
+    assert load["id"] == started["load_id"] and load["finished"], load
+    assert load["error"] is None, load
+    return frames
+
+
 def test_stack_method_render_export_and_project(server, stack_frames, tmp_path):
     token = server.token
-    assert call(server, "stack.load", token=token,
-                folder=str(stack_frames))["result"]["loading"] is True
-    deadline = time.monotonic() + 30
-    while time.monotonic() < deadline:
-        frames = call(server, "stack.frames", token=token)["result"]
-        if frames["count"] == 3:
-            break
-        QTest.qWait(20)
+    frames = _load_stack_for_render(server, stack_frames)
     assert frames["count"] == 3 and frames["dtype"] == "uint16"
 
     assert call(server, "method.set", token=token, id="openfocus_a")["result"]["id"] == "openfocus_a"
-    started = call(server, "render.start", token=token)["result"]
-    assert started["started"] is True
+    reply = call(server, "render.start", token=token)
+    assert reply["ok"] and reply["result"]["started"], reply
     deadline = time.monotonic() + 60
     while time.monotonic() < deadline:
         state = call(server, "render.state", token=token)["result"]
@@ -522,6 +532,33 @@ def test_stack_method_render_export_and_project(server, stack_frames, tmp_path):
     assert json.loads(project.read_text(encoding='utf-8'))['settings']['stack_reverse_order'] is True
 
 
+def test_render_all_names_outputs_after_the_method_used(server, stack_frames, monkeypatch):
+    import re
+
+    from controllers import render_manager
+    from locales import trans
+
+    methods = ('openfocus_a', 'openfocus_b')
+    monkeypatch.setattr(render_manager, 'fusion_algorithms',
+                        lambda: tuple(get_fusion(method) for method in methods))
+    window = server.window
+    window.output_name_prefix = 'Trial'
+    window.set_fusion_method('openfocus_b')
+    assert _load_stack_for_render(server, stack_frames)['count'] == 3
+
+    window.btn_compare_all.click()
+    assert wait_until(lambda: window.btn_render.isEnabled(), timeout=30)
+    outputs = call(server, 'output.list')['result']['records']
+    assert len(outputs) == 2
+    for output, method, tag in zip(outputs, reversed(methods), ('OpenFocusB', 'OpenFocusA')):
+        label = trans.t(get_fusion(method).label_key)
+        assert re.fullmatch(rf'Trial_OpenFocus_\d{{8}}_\d{{6}}_{tag}_NoAlign — {re.escape(label)}',
+                            output['label'])
+        call(server, 'output.select', index=output['index'])
+        _, filename = window.export_manager.selected_output()
+        assert re.fullmatch(rf'Trial_OpenFocus_\d{{8}}_\d{{6}}_{tag}_NoAlign_.+', filename)
+
+
 def test_ui_actions_tree_find_set_click_and_screenshot(server, stack_frames, tmp_path):
     token = server.token
     actions = call(server, "ui.actions", token=token)["result"]["actions"]
@@ -540,12 +577,7 @@ def test_ui_actions_tree_find_set_click_and_screenshot(server, stack_frames, tmp
     tree = call(server, "ui.tree", token=token, window="main")["result"]
     assert tree["children"]
 
-    call(server, "stack.load", token=token, folder=str(stack_frames))
-    deadline = time.monotonic() + 30
-    while time.monotonic() < deadline:
-        if call(server, "stack.frames", token=token)["result"]["count"] == 3:
-            break
-        QTest.qWait(20)
+    assert _load_stack_for_render(server, stack_frames)["count"] == 3
     button = call(server, "ui.find", token=token, object_name="btn_render")["result"]["matches"]
     assert button, "btn_render must be addressable"
     assert "clicked" in call(server, "ui.click", token=token,
@@ -1245,7 +1277,10 @@ def test_device_label_separates_available_adapter_and_completed_job(
         actual = f'DirectML ({model})' if method.startswith('stackmff') else f'OpenCL: {model}'
         manager.last_result['device'] = actual
         window._update_dynamic_status()
-        assert status.text() == trans.t('status_gpu').format('RTX 4060 Laptop GPU')
+        full_label = trans.t('status_gpu').format('RTX 4060 Laptop GPU')
+        status.resize(status.fontMetrics().horizontalAdvance(full_label) + 2 * status.margin() + 4,
+                      status.height())
+        assert status.text() == full_label
         assert status.toolTip().splitlines()[0] == trans.t('info_proc_unit').format(actual)
 
         window.use_gpu = False
@@ -1836,14 +1871,14 @@ def test_stack_include_uses_the_checkbox_path(server, control_window):
     control_window.image_filenames = []
 
 
-def test_dust_dialog_requires_experimental_opt_in(server, control_window):
-    control_window.experimental_features = False
-    response = call(server, 'dialog.open', name='dust')
-    assert response['error']['code'] == 'invalid_argument'
+@pytest.mark.parametrize('name', ['dust', 'mosaic'])
+def test_development_tools_stay_unavailable_through_control(server, control_window, name):
+    from locales import trans
 
     control_window.experimental_features = True
-    assert call(server, 'dialog.open', name='dust')['result']['opened']
-    call(server, 'dialog.reject')
+    response = call(server, 'dialog.open', name=name)
+    assert response['error']['code'] == 'invalid_argument'
+    assert response['error']['message'] == trans.t('development_unavailable_hint')
 
 
 def test_dialog_open_reuses_the_managed_instance(server):
@@ -1868,6 +1903,21 @@ def test_option_set_keeps_checkboxes_in_sync(server, control_window, monkeypatch
     assert control_window.stack_reverse_order is True
     assert control_window.chk_reverse_order.isChecked() is True
     call(server, "option.set", name="reverse_order", value=False)
+
+
+def test_sharpening_options_are_independent(server, control_window):
+    control_window._clear_project_dirty()
+    assert call(server, 'option.set', name='sharpen_strength', value=170)['result']['value'] == 170
+    assert control_window._project_dirty
+    assert call(server, 'option.set', name='sharpen_output', value=True)['result']['value'] is True
+    assert control_window.chk_sharpen_output.isChecked()
+    assert call(server, 'option.set', name='sharpen_output', value=False)['result']['value'] is False
+    options = call(server, 'app.state')['result']['options']
+    assert options['sharpen_output'] is False
+    assert options['sharpen_strength'] == 170
+
+    control_window.reset_to_default()
+    assert call(server, 'app.state')['result']['options']['sharpen_strength'] == 100
 
 
 def test_diagnostic_options_are_reachable_and_take_effect_at_once(server, control_window):
@@ -2074,15 +2124,30 @@ def test_output_export_routes_aligned_records(server, control_window, monkeypatc
     assert captured["destination"] == str(tmp_path)
 
 
-def test_control_channel_respects_experimental_opt_in(server, control_window):
+def test_control_channel_guards_experimental_fusion_and_alignment(server, control_window):
+    from core.algorithms import fusion_algorithms
     from locales import trans
 
+    assert call(server, 'method.set', id='guided_filter')['result']['id'] == 'guided_filter'
     control_window.experimental_features = False
     control_window.apply_experimental_features()
-    response = call(server, 'method.set', id='guided_filter')
+    locked_render = call(server, 'render.start')
+    assert locked_render['error']['code'] == 'invalid_argument'
+    assert trans.t('experimental_locked_hint') in locked_render['error']['message']
+    assert control_window.current_fusion_method() == 'guided_filter'
+    for spec in fusion_algorithms():
+        before = control_window.current_fusion_method()
+        reply = call(server, 'method.set', id=spec.id)
+        if spec.experimental:
+            assert reply['error']['code'] == 'invalid_argument'
+            assert trans.t('experimental_locked_hint') in reply['error']['message']
+            assert control_window.current_fusion_method() == before
+        else:
+            assert reply['result']['id'] == spec.id
+    response = call(server, 'align.set', id='openfocus')
     assert response['error']['code'] == 'invalid_argument'
     assert response['error']['message'] == trans.t('experimental_locked_hint')
-    assert control_window.current_fusion_method() != 'guided_filter'
+    assert control_window.current_alignment_method() == 'none'
 
 
 def test_alignment_only_selection_is_accepted(server, control_window):
@@ -2246,6 +2311,8 @@ def test_reset_stack_menu_clears_real_wipe_and_restores_import(qapp, control_win
     ('tile_block_size', 63), ('tile_overlap', -1), ('tile_threshold', 0),
     ('ai_batch_size', 0), ('reg_downscale_width', 63),
     ('resource_preference', None), ('resource_preference', 'other'),
+    ('sharpen_output', 1), ('sharpen_strength', True), ('sharpen_strength', 100.0),
+    ('sharpen_strength', -1), ('sharpen_strength', 201),
 ])
 def test_option_validation_is_atomic(server, control_window, monkeypatch, name, value):
     before = call(server, 'app.state')['result']['options']

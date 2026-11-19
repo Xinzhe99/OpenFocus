@@ -17,7 +17,8 @@ from core.algorithms import (fusion_algorithms, get_fusion, get_registration,
                              resolve_registration_parameters)
 from locales import trans
 from utils import app_paths
-from utils.design_tokens import PALETTES
+from utils.design_tokens import PALETTES, UI_FONT_PRESETS, UI_FONT_RANGE
+from utils.output_sharpen import DEFAULT_SHARPEN_STRENGTH, validate_sharpen_strength
 from utils.validators import normalize_kernel_size
 
 ORGANIZATION = "OpenFocus"
@@ -93,7 +94,9 @@ _PERSISTED_FIELDS = {
     "restore_last_stack": ("ui/restore_last_stack", False, "bool"),
     "experimental_features": ("ui/experimental_features", False, "bool"),
     "auto_error_reports": (REPORTS_AUTO_SEND_KEY, True, "bool"),
-    "ui_theme": ("ui/theme", DEFAULT_THEME, "str"),
+    "theme_mode": ("ui/theme", DEFAULT_THEME, "str"),
+    "font_size_mode": ("ui/font_size_mode", "medium", "str"),
+    "custom_font_size": ("ui/custom_font_size", UI_FONT_PRESETS['medium'], int),
     "scale_bar_enabled": ("export/scale_bar_enabled", False, "bool"),
     "scale_um_per_px_manual": ("export/scale_um_per_px_manual", 0.0, "float"),
     "scale_bar_position": ("export/scale_bar_position", "bottom-right", "str"),
@@ -123,6 +126,7 @@ _PERSISTED_FIELDS = {
     "exposure_match": ("fusion/exposure_match", True, "bool"),
     "stack_reverse_order": ("fusion/stack_reverse_order", False, "bool"),
     "sharpen_output": ("fusion/sharpen_output", False, "bool"),
+    "sharpen_strength": ("fusion/sharpen_strength", DEFAULT_SHARPEN_STRENGTH, "sharpen_strength"),
     "ask_load_scale": ("ui/ask_load_scale", True, "bool"),
     "load_scale_default": ("ui/load_scale_default", 1.0, "float"),
 }
@@ -190,6 +194,11 @@ def _cast(raw: Any, kind: Any, default: Any) -> Any:
             if isinstance(raw, bool):
                 return raw
             return str(raw).strip().lower() in ("true", "1", "yes", "on")
+        if kind == "sharpen_strength":
+            # QSettings reads numeric INI entries as strings after reopening.
+            if isinstance(raw, str) and raw.isdecimal():
+                raw = int(raw)
+            return validate_sharpen_strength(raw)
         # 字段表里的 kind 可能是类型也可能是其名字字符串（"str"/"float"）；
         # 直接 "str"(raw) 会 TypeError 被吞成 default——ui_theme、比例尺
         # 标定等所有字符串/浮点设置曾因此从未恢复过
@@ -404,8 +413,12 @@ def load_window_settings(window) -> None:
             setattr(window, attr, _cast(settings.value(key), kind, default))
         else:
             setattr(window, attr, getattr(window, attr, default))
-    if window.ui_theme not in PALETTES:
-        window.ui_theme = DEFAULT_THEME
+    if window.theme_mode not in PALETTES and window.theme_mode != 'system':
+        window.theme_mode = DEFAULT_THEME
+    if window.font_size_mode not in (*UI_FONT_PRESETS, 'custom'):
+        window.font_size_mode = 'medium'
+    minimum, maximum = UI_FONT_RANGE
+    window.custom_font_size = max(minimum, min(maximum, window.custom_font_size))
     if settings.value(REPORTS_CHOICE_KEY) == "unselected":
         # Old installations saved their then-current default during ordinary saves.
         window.auto_error_reports = True

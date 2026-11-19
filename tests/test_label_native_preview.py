@@ -8,6 +8,7 @@ pytest.importorskip("PyQt6")
 from PyQt6.QtCore import QObject, QPointF, Qt, pyqtSignal
 from PyQt6.QtGui import QMouseEvent
 
+from PyQt6.QtTest import QSignalSpy
 from core.source_frames import PREVIEW_EDGE, SourceFrame
 from widgets.label_preview import LabelPreview
 
@@ -139,16 +140,22 @@ def test_native_drag_uses_device_pixels(qapp, monkeypatch, dpr):
 @pytest.mark.parametrize("dtype,channels", [(np.uint16, 3), (np.float32, 1),
                                              (np.uint8, 4)])
 def test_fit_resizes_once_and_preserves_borrowed_pixels(qapp, monkeypatch, dtype, channels):
-    from utils import frame_pixels
-    from core import source_frames
+    from core import source_previews
+
     calls = []
-    original = source_frames._small
-    monkeypatch.setattr(source_frames, "_small", lambda image: (calls.append(image), original(image))[1])
-    monkeypatch.setattr(frame_pixels, "run_pixel_worker", lambda parent, title, operation: operation())
+    original = source_previews.render_source_region
+
+    def sample(image, *args, **kwargs):
+        calls.append(image)
+        return original(image, *args, **kwargs)
+
+    monkeypatch.setattr(source_previews, "render_source_region", sample)
     shape = (1600, 2400) if channels == 1 else (1600, 2400, channels)
     image = np.full(shape, 32, dtype=dtype)
     widget = LabelPreview()
+    ready = QSignalSpy(widget.fit_changed)
     widget.set_preview(image, {"enabled": False}, 0)
+    assert ready.wait(3000)
     assert max(widget._frame.shape[:2]) <= PREVIEW_EDGE
     widget.set_preview(image, {"enabled": False, "text": "edited"}, 0)
     assert calls == [image]
@@ -193,13 +200,15 @@ def test_native_tile_matches_export_crop(qapp):
 
 
 def test_fit_failure_discards_previous_frame(qapp, monkeypatch):
-    from utils import frame_pixels
+    from core import source_previews
     widget = LabelPreview()
     widget.set_preview(np.zeros((50, 50, 3), np.uint8), {"enabled": False}, 0)
     def fail(*args, **kwargs):
         raise MemoryError("fit allocation denied")
-    monkeypatch.setattr(frame_pixels, "run_pixel_worker", fail)
-    widget.set_preview(np.zeros((60, 60, 3), np.uint8), {"enabled": False}, 0)
+    monkeypatch.setattr(source_previews, "render_source_region", fail)
+    ready = QSignalSpy(widget.fit_changed)
+    widget.set_preview(np.zeros((60, 900, 3), np.uint8), {"enabled": False}, 0)
+    assert ready.wait(3000)
     assert widget._rendered.isNull()
     assert widget._frame is None
     assert widget.message() == "error"
@@ -213,7 +222,9 @@ def test_native_renders_one_source_pixel_per_screen_pixel(qapp, monkeypatch):
     widget.resize(320, 220)
     widget.show()
     qapp.processEvents()
+    ready = QSignalSpy(widget.fit_changed)
     widget.set_preview(np.zeros((2000, 2000, 3), np.uint8), {'enabled': False}, 0)
+    assert ready.wait(3000)
     widget.set_zoom_mode('actual')
     worker = widget._region_worker
     request = worker.requests[0]
@@ -245,3 +256,40 @@ def test_screen_change_refreshes_native_viewport(qapp, monkeypatch):
     widget.event(QEvent(event_type))
     assert refreshes
     widget.close_preview()
+
+
+def test_available_fit_supersedes_cold_request_during_fusion(qapp):
+    import threading
+    from core.resource_policy import heavy_job
+    from core.source_frames import process_frame
+
+    first = np.full((600, 900, 3), 10, np.uint8)
+    selected = np.full_like(first, 110)
+    held, release, decoded = (threading.Event() for _ in range(3))
+
+    def render():
+        with heavy_job():
+            held.set()
+            release.wait()
+
+    def process(pixels):
+        decoded.set()
+        return pixels
+
+    widget = LabelPreview()
+    ready = QSignalSpy(widget.fit_changed)
+    owner = threading.Thread(target=render)
+    owner.start()
+    try:
+        assert held.wait(2)
+        widget.set_preview(process_frame(first, process), {'enabled': False}, 0)
+        assert widget._fit_loading
+        widget.set_preview(selected, {'enabled': False}, 1)
+        assert ready.wait(3000)
+        assert not decoded.is_set()
+        assert len(ready) == 1
+        assert widget.pixmap().toImage().pixelColor(0, 0).red() == 110
+    finally:
+        release.set()
+        owner.join(2)
+        widget.close_preview()

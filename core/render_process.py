@@ -32,7 +32,7 @@ logger = get_logger(__name__)
 _CANCEL_GRACE_SECONDS = 3.0
 _ERROR_STATE_FIELDS = ('alignment_reused', 'alignment_computed', 'alignment_report',
                        'alignment_report_provenance', 'performance_report')
-_SUCCESS_STATE_FIELDS = (*_ERROR_STATE_FIELDS, 'prepared_cache', 'rendered_depth')
+_SUCCESS_STATE_FIELDS = (*_ERROR_STATE_FIELDS, 'prepared_cache', 'rendered_depth', 'fusion_details')
 _RENDER_STAGES = ('prepare', 'align', 'fuse', 'finish')
 _ERROR_CATEGORIES = ('resource_limit', 'memory', 'os', 'value', 'runtime', 'other')
 _ERROR_ORIGINS = ('child_worker', 'child_setup_or_transfer')
@@ -40,7 +40,7 @@ _CHILD_EXIT_ORIGIN = 'child_exit'
 _RENDER_SOURCE_FILES = tuple(Path(__file__).with_name(f'{name}.py') for name in (
     'render_process', 'frame_transport', 'source_frames', 'frame_storage',
     'frame_resolution_cache', 'workers', 'registration', 'resource_policy',
-    'algorithms', 'multi_focus_fusion',
+    'algorithms', 'multi_focus_fusion', 'render_context',
 ))
 
 
@@ -393,6 +393,7 @@ class RenderProcessWorker(RenderWorker):
 
     def run(self):
         self.failure_category = None
+        self.fusion_details = None
         self._child_error_evidence = None
         result = None
         error = None
@@ -431,6 +432,7 @@ class RenderProcessWorker(RenderWorker):
             result = None
             error = 'CANCELLED: render cancelled'
         if error is not None:
+            self.fusion_details = None
             self.error_signal.emit(error)
         elif result is not None:
             self.finished_signal.emit(*result)
