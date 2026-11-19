@@ -10,8 +10,10 @@ from PyQt6.QtWidgets import (
 )
 
 from core.compare_worker import AlignmentWorker, PreviewWorker, DisplayWorker
-from core.source_previews import SourcePreviewWorker
+from core.source_previews import DISPLAY_REGION_MAX_SIDE, SourcePreviewWorker, SourceRegionWorker
+from core.source_frames import PREVIEW_EDGE, ProcessedFrame, SourceFrame, display_image, preview_ready
 from locales import trans
+from utils.frame_pixels import BoundedPreviewWorker
 from utils.image_utils import cv2_to_pixmap
 from utils.settings_store import get_settings
 from core.algorithms import (alignment_steps, fusion_algorithms, get_fusion,
@@ -98,6 +100,11 @@ class CompareDialog(QDialog):
         self._display_workers = {}
         self._source_preview_generation = 0
         self._reference_source_size = None
+        self._reference_worker = None
+        self._viewport_tiles = ()
+        self._viewport_next = 0
+        self._viewport_request = None
+        self._viewport_serial = 0
         self._reference_region = None
         self._worker_kind = None
         self._active_revision = -1
@@ -356,6 +363,8 @@ class CompareDialog(QDialog):
         settings.add(view_group)
         self.fit_button = QPushButton(trans.t("retouch_fit"))
         settings.add(self.fit_button)
+        self.actual_button = QPushButton(trans.t('retouch_zoom_100'))
+        settings.add(self.actual_button)
         self.fullscreen_button = QPushButton(trans.t("compare_fullscreen"))
         self.fullscreen_button.clicked.connect(self._toggle_fullscreen)
         settings.add(self.fullscreen_button)
@@ -393,7 +402,9 @@ class CompareDialog(QDialog):
         self.ref_canvas.setToolTip(trans.t("compare_hint"))
         self.ref_canvas.set_detail_size(self._detail_size)
         self.ref_canvas.regionChanged.connect(self._region_changed)
+        self.ref_canvas.viewportChanged.connect(self._refresh_reference_viewport)
         self.fit_button.clicked.connect(self.ref_canvas.fit)
+        self.actual_button.clicked.connect(self.ref_canvas.actual_size)
         fit_shortcut = QShortcut(QKeySequence("F"), self)
         fit_shortcut.activated.connect(self.ref_canvas.fit)
         fullscreen_shortcut = QShortcut(QKeySequence("F11"), self)
@@ -646,19 +657,24 @@ class CompareDialog(QDialog):
         self._ref_index = max(0, min(index, len(self._frames) - 1))
         frame = self._frames[self._ref_index]
         self.ref_canvas.setToolTip("")
-        from core.source_frames import preview_ready
-        from core.image_loader import is_raw_source
-        if (preview_ready(frame) and
-                (getattr(frame, 'preview_is_available', True) or not is_raw_source(frame.path))):
-            self._set_reference_image(frame)
+        cached = (isinstance(frame, SourceFrame) and preview_ready(frame)
+                  and frame.preview_is_available)
+        small_array = (not isinstance(frame, (SourceFrame, ProcessedFrame))
+                       and max(frame.shape[:2]) <= PREVIEW_EDGE)
+        if cached or small_array:
+            self._set_reference_image(frame, display_image(frame), getattr(frame, 'preview_is_display', False))
         else:
             with QSignalBlocker(self.ref_canvas):
                 self.ref_canvas.set_pixmap(None)
             request = self._source_preview_generation
-            worker = SourcePreviewWorker(self._frames, request, [self._ref_index], selected_display=True)
-            self._source_preview_workers[worker] = request
-            worker.ready.connect(self._source_preview_ready)
-            worker.failed.connect(self._source_preview_failed)
+            if isinstance(frame, SourceFrame):
+                worker = SourcePreviewWorker(self._frames, request, [self._ref_index], selected_display=True)
+                worker.ready.connect(self._source_preview_ready)
+                worker.failed.connect(self._source_preview_failed)
+                self._source_preview_workers[worker] = worker.request_cancel
+            else:
+                worker = BoundedPreviewWorker(frame, self._calibration['linear_dng_metadata'], request)
+                self._source_preview_workers[worker] = worker.requestInterruption
             worker.finished.connect(self._source_preview_finished)
             worker.start()
         names = self._source_names
@@ -673,48 +689,134 @@ class CompareDialog(QDialog):
 
     def _cancel_source_previews(self):
         self._source_preview_generation += 1
-        for worker in self._source_preview_workers:
-            worker.request_cancel()
+        for cancel in self._source_preview_workers.values():
+            cancel()
+        self._viewport_tiles = ()
+        self._viewport_request = None
+        if self._reference_worker is not None:
+            self._reference_worker.request_cancel()
+        self.ref_canvas.clear_tiles()
+        self.ref_canvas.set_native_status('')
 
-    def _set_reference_image(self, frame):
-        from core.source_frames import display_image
-        image = display_image(frame)  # Called only after the bounded preview exists.
-        metadata = self._calibration["linear_dng_metadata"]
-        if metadata is not None and not getattr(frame, 'preview_is_display', False):
+    def _set_reference_image(self, frame, image, is_display):
+        metadata = self._calibration['linear_dng_metadata']
+        if image is not None and metadata is not None and not is_display:
             from utils.linear_dng import develop_linear
             image = develop_linear(image, metadata)
         size = (frame.shape[1], frame.shape[0])
         with QSignalBlocker(self.ref_canvas):
-            self.ref_canvas.set_pixmap(cv2_to_pixmap(image), source_size=size)
+            self.ref_canvas.set_pixmap(cv2_to_pixmap(image) if image is not None else None,
+                                       source_size=size, preview_only=isinstance(frame, (SourceFrame, ProcessedFrame)))
             if self._reference_region is not None and self._reference_region[0] == size:
                 x, y, width, height = self._reference_region[1]
                 self.ref_canvas.set_region_centre(QPointF(x + width / 2, y + height / 2))
         self._reference_source_size = size
+        self._refresh_reference_viewport()
 
     def _source_preview_ready(self, request, index, identity, _thumbnail):
         if (self._closing or request != self._source_preview_generation
                 or index != self._ref_index or not 0 <= index < len(self._frames)
                 or identity != id(self._frames[index])):
             return
-        from core.source_frames import preview_ready
         frame = self._frames[index]
         if not preview_ready(frame):
             return
-        self._set_reference_image(frame)
+        image = display_image(frame) if frame.preview_is_available else None
+        self._set_reference_image(frame, image, frame.preview_is_display)
+        self._reference_preview_published()
+
+    def _reference_preview_published(self):
         self._refresh_panes()
         if self._auto_enabled and self._worker is None:
             self._preview_timer.start(0)
 
     def _source_preview_failed(self, request, message):
         if not self._closing and request == self._source_preview_generation:
+            self.ref_canvas.set_native_status(trans.t('msg_display_error_title'))
             self.ref_canvas.setToolTip(message)
 
     def _source_preview_finished(self):
         worker = self.sender()
         self._source_preview_workers.pop(worker, None)
+        if (isinstance(worker, BoundedPreviewWorker) and not self._closing
+                and worker.key == self._source_preview_generation):
+            if worker.error:
+                self._source_preview_failed(worker.key, worker.error)
+            else:
+                self._set_reference_image(self._frames[self._ref_index], worker.pixels, True)
+                self._reference_preview_published()
         worker.deleteLater()
-        if self._closing and self._worker is None and not self._source_preview_workers and not self._display_workers:
+        if self._closing:
             self._finalize_close()
+
+    def _refresh_reference_viewport(self):
+        if self._closing:
+            return
+        tiles = self.ref_canvas.viewport_tiles(DISPLAY_REGION_MAX_SIDE)
+        if tiles == self._viewport_tiles:
+            return
+        self._viewport_tiles = tiles
+        self._viewport_next = 0
+        self._viewport_request = None
+        self.ref_canvas.clear_tiles()
+        self.ref_canvas.set_native_status(trans.t('native_detail_loading') if tiles else '')
+        self.ref_canvas.setToolTip(trans.t('compare_hint'))
+        if tiles:
+            self._submit_reference_tile()
+        elif self._reference_worker is not None:
+            self._reference_worker.request_cancel()
+
+    def _submit_reference_tile(self):
+        if self._viewport_next >= len(self._viewport_tiles):
+            self.ref_canvas.set_native_status('')
+            return
+        worker = self._reference_worker
+        if worker is None:
+            worker = SourceRegionWorker(self._frames[self._ref_index], self._source_preview_generation,
+                                        metadata=self._calibration['linear_dng_metadata'])
+            worker.ready.connect(self._reference_tile_ready)
+            worker.failed.connect(self._reference_tile_failed)
+            worker.finished.connect(self._reference_worker_finished)
+            self._reference_worker = worker
+            worker.start()
+        elif worker.cancelled:
+            return  # Its finished signal starts the current frame's request.
+        rect, size = self._viewport_tiles[self._viewport_next]
+        self._viewport_serial += 1
+        self._viewport_request = ('viewport', self._viewport_serial, rect, size)
+        worker.submit(self._viewport_request)
+
+    def _reference_tile_ready(self, generation, request, pixels, bounds):
+        if (self._closing or generation != self._source_preview_generation
+                or request != self._viewport_request):
+            return
+        pixmap = cv2_to_pixmap(pixels) if pixels is not None else None
+        if pixmap is None or pixmap.isNull():
+            self._reference_tile_failed(generation, trans.t('msg_display_error_title'))
+            return
+        self.ref_canvas.add_tile(bounds, pixmap)
+        self._viewport_request = None
+        self._viewport_next += 1
+        self._submit_reference_tile()
+
+    def _reference_tile_failed(self, generation, message):
+        if (self._closing or generation != self._source_preview_generation
+                or self._reference_worker is None or self._reference_worker.cancelled):
+            return
+        self.ref_canvas.set_native_status(trans.t('msg_display_error_title'))
+        self.ref_canvas.setToolTip(message)
+        self._viewport_next = len(self._viewport_tiles)
+        self._viewport_request = None
+        self._reference_worker.request_cancel()
+
+    def _reference_worker_finished(self):
+        worker = self.sender()
+        self._reference_worker = None
+        worker.deleteLater()
+        if self._closing:
+            self._finalize_close()
+        elif self._viewport_next < len(self._viewport_tiles):
+            self._submit_reference_tile()
 
     def _preview_size_changed(self, value):
         size = int(value)
@@ -916,7 +1018,6 @@ class CompareDialog(QDialog):
             if alignment == "none":
                 self._aligned_frames = self._raw_frames
                 self._frames = self._aligned_frames
-                self._show_frame(self._ref_index)
             else:
                 worker = AlignmentWorker(self._raw_frames, alignment, self._shared, self,
                                          reverse_registration=self._reverse_registration)
@@ -1173,8 +1274,7 @@ class CompareDialog(QDialog):
         self._worker_kind = None
         worker.deleteLater()
         if self._closing:
-            if not self._source_preview_workers and not self._display_workers:
-                self._finalize_close()
+            self._finalize_close()
             return
         if self._cancel_requested:
             self._cancelled_methods.update(m for m in self._selected_methods()
@@ -1260,9 +1360,10 @@ class CompareDialog(QDialog):
         result = super().event(event)
         screen_events = (getattr(QEvent.Type, 'ScreenChangeInternal', None),
                          getattr(QEvent.Type, 'DevicePixelRatioChange', None))
-        if (event.type() in screen_events and hasattr(self, '_layout_timer')
+        if (event.type() in screen_events and hasattr(self, 'ref_canvas')
                 and not self._closing):
             self._layout_timer.start(0)
+            self.ref_canvas.display_density_changed()
         return result
 
     def changeEvent(self, event):  # noqa: N802
@@ -1316,14 +1417,23 @@ class CompareDialog(QDialog):
         self._cancel_source_previews()
         if self._worker is not None:
             self._worker.cancel()
-        if self._worker is not None or self._source_preview_workers or self._display_workers:
+        if self._has_workers():
             self.status_label.setText(trans.t("compare_stopping"))
             self.setEnabled(False)
             return  # Close after every worker releases its source references.
         self._finalize_close()
 
+    def shutdown_running(self):
+        if not self._closing:
+            self.reject()
+        return self._has_workers()
+
+    def _has_workers(self):
+        return bool(self._worker is not None or self._reference_worker is not None
+                    or self._source_preview_workers or self._display_workers)
+
     def _finalize_close(self):
-        if self._worker is not None or self._source_preview_workers or self._display_workers:
+        if self._has_workers():
             return
         self._results.clear()
         self._full_results.clear()
@@ -1342,7 +1452,7 @@ class CompareDialog(QDialog):
 
     def closeEvent(self, event):  # noqa: N802
         self.done(QDialog.DialogCode.Rejected)
-        if self._worker is not None or self._source_preview_workers or self._display_workers:
+        if self._has_workers():
             event.ignore()
         else:
             event.accept()

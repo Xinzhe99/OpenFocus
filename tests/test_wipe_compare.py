@@ -386,3 +386,175 @@ def test_wipe_develops_quick_preview_result(qapp, monkeypatch):
     monkeypatch.setattr(scalebar, 'export_cfg', lambda *args, **kwargs: None)
     host._update_wipe_images()
     _assert_developed_color(host.wipe_widget._right_pixmap, frame)
+
+
+def test_wipe_reads_oriented_full_tiff_in_worker(qapp, tmp_path, monkeypatch):
+    import time
+    import threading
+    import tifffile
+    from PyQt6.QtTest import QTest
+    from core import source_frames
+
+    path = tmp_path / 'reduced.tif'
+    rgb = np.zeros((600, 900, 3), np.uint8)
+    rgb[::2, :, 0] = 230
+    rgb[1::2, :, 2] = 190
+    with tifffile.TiffWriter(path) as writer:
+        writer.write(rgb, photometric='rgb', compression='deflate', rowsperstrip=16,
+                     extratags=[(274, 'H', 1, 6, False)])
+        writer.write(np.full((20, 30, 3), 60, np.uint8), photometric='rgb', subfiletype=1)
+    frame, = source_frames.scan_source(path)
+    result = np.full(frame.shape, 115, np.uint8)
+    host = _host([_record([frame], result)])
+    gui = threading.get_ident()
+    resolve = source_frames.resolve_frame
+    threads = []
+    def observe(*args, **kwargs):
+        threads.append(threading.get_ident())
+        return resolve(*args, **kwargs)
+    monkeypatch.setattr(source_frames, 'resolve_frame', observe)
+    widget = host.wipe_widget
+    widget.resize(220, 220)
+    host._update_wipe_images()
+    assert widget._left_pixmap.height() == 30 and not threads
+    widget._zoom = 4.5 / widget.devicePixelRatioF()
+    widget.show()
+    side = widget._left_regions
+    try:
+        deadline = time.monotonic() + 10
+        while not side.tiles and not side.error and time.monotonic() < deadline:
+            QTest.qWait(10)
+        assert side.tiles, side.error
+        assert threads and gui not in threads
+        pixmap, sampled, _ = side.tiles[0]
+        x, y, w, h = sampled
+        oriented = np.rot90(rgb, -1)
+        assert (pixmap.width(), pixmap.height()) == (w, h)
+        for col in range(4):
+            assert pixmap.toImage().pixelColor(col, 0).getRgb()[:3] == tuple(oriented[y, x + col])
+        # Both alternating pixel columns survive the actual paint path.
+        screenshot = widget.grab()
+        physical = screenshot.devicePixelRatioF()
+        scanline = screenshot.toImage()
+        colors = [scanline.pixelColor(round(40 * physical) + col, round(80 * physical))
+                  for col in range(4)]
+        assert max(color.red() for color in colors) > 200
+        assert max(color.blue() for color in colors) > 160
+    finally:
+        worker = side.worker
+        widget.clear()
+        if worker is not None:
+            assert worker.wait(10000)
+        widget.close()
+        qapp.processEvents()
+
+
+@pytest.mark.parametrize('independent', [False, True])
+def test_wipe_detail_tracks_geometry_and_discards_stale_replies(qapp, monkeypatch, independent):
+    from PyQt6.QtCore import QPointF
+    from core import source_previews
+    from tests.test_label_native_preview import RegionWorker
+
+    class Worker(RegionWorker):
+        instances = []
+        def request_cancel(self):
+            self.cancelled = True  # Model an in-flight decode until finished is delivered.
+        def isRunning(self):
+            return True
+
+    class Widget(WipeCompareWidget):
+        def devicePixelRatioF(self):
+            return 1.25
+
+    monkeypatch.setattr(source_previews, 'SourceRegionWorker', Worker)
+    widget = Widget()
+    widget.resize(220, 220)
+    preview = cv2_to_pixmap(np.zeros((10, 10, 3), np.uint8))
+    left = (object(), {})
+    right = (object(), {})
+    def select(source):
+        widget.set_images(preview, preview, left_native=source, right_native=right,
+                          left_size=(1000, 600), right_size=(1600, 1000),
+                          left_offset=(160, 170), independent=independent)
+    select(left)
+    widget._zoom = 8
+    widget.show()
+    widget.grab()
+    a, b = widget._left_regions, widget._right_regions
+    old_worker, b_worker = a.worker, b.worker
+    try:
+        assert old_worker.frame is left[0] and b_worker.frame is right[0]
+        first = a.request
+        if independent:
+            # Left half is 110 DIP wide, with a 20 DIP fit margin.
+            assert first[2] == pytest.approx(((720 - 110) / 1.44, (432 - 220) / 1.44,
+                                              110 / .72, 220 / .72))
+        else:
+            assert first[2] == pytest.approx((530, 220, 110, 220))
+        assert first[3] == (138, 275)
+        widget._divider_ratio = .6
+        widget._pan = QPointF(9, -5)
+        widget.grab()
+        assert a.worker is old_worker and a.request != first
+        assert a.request[3] == (165, 275)
+        old_worker.ready.emit(old_worker.key, first, np.zeros((2, 2), np.uint8), first[2])
+        assert not a.tiles
+        select((object(), {}))
+        widget.grab()
+        assert old_worker.cancelled and len(Worker.instances) == 2
+        old_worker.finished.emit()
+        widget.grab()
+        assert a.worker is not old_worker and b.worker is b_worker
+        current = a.worker
+        current.failed.emit(current.key, 'decoder failure')
+        current.finished.emit()
+        widget.grab()
+        assert a.error and a.worker is None
+        widget.set_comparison_enabled(False)
+        widget.grab()
+        assert a.worker is None and b.request[3] == (275, 275)
+        assert widget.cancel_regions() and b_worker.cancelled
+        b_worker.finished.emit()
+        assert not widget.cancel_regions()
+    finally:
+        widget.clear()
+        for side in (a, b):
+            if side.worker is not None:
+                side.worker.finished.emit()
+        widget.close()
+
+
+def test_wipe_current_source_and_output_detail_keep_decorations(qapp, monkeypatch):
+    from controllers.label_manager import LabelManager
+    from utils.label_model import Label
+    from utils import scalebar, watermark
+
+    pixels = np.zeros((800, 1000, 3), np.uint8)
+    record = _record([pixels], pixels.copy(), source_revision=3)
+    host = _host([record])
+    host.raw_images = [pixels]
+    host.source_revision = 3
+    host.output_manager.record_for_item = lambda _item: record
+    host.label_manager = LabelManager(host)
+    for target in ('input', 'output'):
+        host.label_manager.labels.add(Label.from_dict({
+            'target': target, 'enabled': True, 'format': 'A', 'font_size': 12,
+            'x_location': 10, 'y_location': 20}))
+    cfg = {'px_um': 1, 'position': 'bottom-left', 'color': 'white'}
+    monkeypatch.setattr(scalebar, 'export_cfg', lambda *args, **kwargs: cfg)
+    mark = watermark.normalize_config({'text': 'test'}).to_dict()
+    monkeypatch.setattr(watermark, 'export_cfg', lambda *args, **kwargs: mark)
+    host._wipe_pixmap = MethodType(OpenFocus._wipe_pixmap, host)
+    host._update_wipe_images()
+    left, right = host.wipe_widget._left_regions.source, host.wipe_widget._right_regions.source
+    for (image, options), original, target in [(left, pixels, 'input'), (right, record.image, 'output')]:
+        assert image is original and options['target'] == target
+        assert options['labels'] is not host.label_manager and options['labels'].applicable_labels(target, 0)
+        assert options['scale_cfg'] == cfg and options['watermark_cfg'] == mark
+    host.source_revision += 1
+    record.annotations_baked = True
+    host._update_wipe_images()
+    left, right = host.wipe_widget._left_regions.source, host.wipe_widget._right_regions.source
+    assert left[0] is pixels and all(left[1][k] is None for k in ('labels', 'scale_cfg', 'watermark_cfg'))
+    assert right[1]['labels'] is None and right[1]['scale_cfg'] is None
+    assert right[1]['watermark_cfg'] == mark

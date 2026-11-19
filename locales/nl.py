@@ -1409,6 +1409,7 @@ PACK = {
     "label_position": "Positie",
     "label_colors": "Kleuren",
     "label_preview": "Voorbeeld",
+    "native_detail_loading": "Originele details laden…",
     "label_preview_hint": "Zo wordt beeld 1 gelabeld: {n!r}",
     "label_preview_empty": "Er wordt niets getekend: formaat en eigen tekst zijn beide leeg.",
     "label_format_hint": "Gebruik {value} voor het beeldnummer of typ een vaste tekst.",

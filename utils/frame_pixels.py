@@ -1,6 +1,8 @@
 """Bounded preview geometry and background pixel work for lazy consumers."""
 from copy import copy
 
+import numpy as np
+
 from PyQt6.QtCore import QEventLoop, QThread, QTimer, Qt
 from PyQt6.QtWidgets import QApplication, QDialog, QLabel, QVBoxLayout, QWidget
 
@@ -29,6 +31,55 @@ def preview_scale_config(config, source_shape, preview_shape):
     result["px_um"] /= scale
     result["font_size"] = result.get("font_size", 0) * scale
     return result
+
+
+PREVIEW_MAX_SIDE = 1200
+
+
+class BoundedPreviewWorker(QThread):
+    """Resolve and develop one fit preview under the shared memory admission."""
+
+    def __init__(self, frame, metadata, key, *, preserve_alpha=False):
+        super().__init__()
+        configure_native_worker_stack(self)
+        self.frame, self.metadata, self.key = frame, metadata, key
+        self.preserve_alpha = preserve_alpha
+        self.pixels = None
+        self.error = None
+
+    def run(self):
+        from core.resource_policy import heavy_job
+        from core.source_frames import ProcessedFrame, ensure_preview
+        from core.source_previews import render_source_region
+
+        try:
+            with heavy_job(self.isInterruptionRequested):
+                registered = None
+                if isinstance(self.frame, ProcessedFrame):
+                    from core.aligned_previews import registered_preview
+                    registered = registered_preview(self.frame, self.isInterruptionRequested,
+                                                    edge=PREVIEW_MAX_SIDE)
+                if registered is None:
+                    pixels = ensure_preview(self.frame, should_cancel=self.isInterruptionRequested)
+                    is_display = getattr(self.frame, "preview_is_display", False)
+                else:
+                    pixels, is_display = registered
+                if self.isInterruptionRequested():
+                    return
+                height, width = pixels.shape[:2]
+                scale = min(1.0, PREVIEW_MAX_SIDE / max(width, height))
+                metadata = (self.metadata if not is_display
+                            and pixels.dtype == np.uint16 and pixels.ndim == 3
+                            and pixels.shape[2] == 3 else None)
+                self.pixels, _ = render_source_region(
+                    pixels, (0, 0, width, height),
+                    (max(1, round(width * scale) - 2), max(1, round(height * scale) - 2)),
+                    metadata, preserve_alpha=self.preserve_alpha)
+        except Exception as exc:
+            if not self.isInterruptionRequested():
+                self.error = str(exc)
+        finally:
+            self.frame = self.metadata = None
 
 
 class _PixelWorker(QThread):

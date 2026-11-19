@@ -1409,6 +1409,7 @@ PACK = {
     "label_position": "Положение",
     "label_colors": "Цвета",
     "label_preview": "Предпросмотр",
+    "native_detail_loading": "Загрузка деталей оригинала…",
     "label_preview_hint": "Так будет подписан кадр 1: {n!r}",
     "label_preview_empty": "Ничего не будет нарисовано: формат и свой текст пусты.",
     "label_format_hint": "Используйте {value} для номера кадра или введите свой текст.",
