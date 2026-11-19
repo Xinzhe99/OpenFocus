@@ -182,7 +182,7 @@ class EnvironmentInfoDialog(QDialog):
         from core.multi_focus_fusion import ensure_openfocus_gpu_available
         openfocus_gpu = ensure_openfocus_gpu_available()
         info_lines.append('-' * 60)
-        info_lines.append('OpenFocus A/B/C / Guided Filter / GFG-FGF / DCT / OpenCL')
+        info_lines.append('OpenFocus A/B/C / Guided Filter / GFG-FGF / DCT / DTCWT / OpenCL')
         info_lines.append('  OpenCL GPU available; CPU fallback' if openfocus_gpu
                           else '  CPU')
         info_lines.append('')
@@ -232,7 +232,8 @@ class EnvironmentInfoDialog(QDialog):
              "OpenCL GPU available; CPU fallback" if openfocus_gpu else "CPU"),
             ("DCT", core and available.get("scipy", False),
              "OpenCL GPU available; CPU fallback" if openfocus_gpu else "CPU"),
-            ("DTCWT", core and available.get("dtcwt", False), "CPU"),
+            ("DTCWT", core and available.get("dtcwt", False),
+             "OpenCL GPU available; CPU fallback" if openfocus_gpu else "CPU"),
             ("StackMFF V1/V2/V3", core and available.get("onnxruntime", False), available.get("device", "CPU")),
         ]
         summary = [trans.t("env_fusion_alg")]
