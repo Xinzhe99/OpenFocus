@@ -791,6 +791,12 @@ El diálogo de lote muestra el progreso en tiempo real. Puedes cancelar el proce
 - PNG/TIFF conservan los datos de 16 bits; elegir explícitamente JPG/BMP convierte a 8 bits.
 - La cancelación espera a que el trabajador se detenga. Los archivos confirmados siguen disponibles; las tareas parciales, fallidas, canceladas y no iniciadas se contabilizan por separado.
 
+### Conversión de imágenes por lotes
+
+Abre el conversor de imágenes del menú Herramientas y añade los archivos. Por defecto, cada carpeta de origen tiene una carpeta de salida a su lado con el sufijo `_converted`. Puedes editar el sufijo o elegir una subcarpeta con nombre, la carpeta de origen o un destino común. El ejemplo muestra la ruta de la fila seleccionada.
+
+Conserva el tamaño original, limita el lado mayor a 2048, 4096 u 8192 píxeles o introduce un porcentaje de reducción. Las imágenes pequeñas no se amplían. DNG conserva las dimensiones del sensor. Los archivos del mismo formato que no necesitan reducción se cuentan como omitidos. Para quitar filas de la cola, usa el menú contextual, Supr o Retroceso.
+
 ---
 
 ## 13. Exportar resultados

@@ -793,6 +793,12 @@ La boîte de dialogue affiche la progression en temps réel. Vous pouvez annuler
 - PNG/TIFF conservent les données 16 bits ; choisir explicitement JPG/BMP convertit en 8 bits.
 - L'annulation attend l'arrêt du worker. Les fichiers validés restent disponibles ; les tâches partielles, échouées, annulées et non démarrées sont comptées séparément.
 
+### Conversion d’images par lots
+
+Ouvrez le convertisseur d’images dans le menu Outils et ajoutez les fichiers. Par défaut, un dossier de sortie portant le suffixe `_converted` est créé à côté de chaque dossier source. Modifiez le suffixe ou choisissez un sous-dossier nommé, le dossier source ou une destination commune. L’exemple indique le chemin de la ligne sélectionnée.
+
+Conservez la taille originale, limitez le grand côté à 2048, 4096 ou 8192 pixels ou saisissez un pourcentage de réduction. Les petites images ne sont pas agrandies. Le DNG conserve les dimensions du capteur. Les fichiers déjà au format choisi qui ne nécessitent aucune réduction sont comptés comme ignorés. Retirez les lignes sélectionnées de la file par clic droit, Suppr ou Retour arrière.
+
 ---
 
 ## 13. Exportation des résultats

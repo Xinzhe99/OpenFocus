@@ -805,6 +805,12 @@ Okno pokazuje postęp w czasie rzeczywistym. Przetwarzanie można anulować w do
 - PNG/TIFF zachowują dane 16-bitowe; jawne wybranie JPG/BMP konwertuje je do 8 bitów.
 - Anulowanie czeka na zatrzymanie wątku roboczego. Zatwierdzone pliki pozostają dostępne; zadania częściowe, nieudane, anulowane i nieuruchomione są liczone osobno.
 
+### Wsadowa konwersja obrazów
+
+Otwórz konwerter obrazów z menu Narzędzia i dodaj pliki. Domyślnie obok każdego folderu źródłowego powstaje folder wynikowy z przyrostkiem `_converted`. Możesz zmienić przyrostek albo wybrać nazwany podfolder, folder źródłowy lub wspólny folder docelowy. Przykładowa ścieżka dotyczy zaznaczonego wiersza.
+
+Zachowaj rozmiar oryginalny, ogranicz dłuższy bok do 2048, 4096 lub 8192 pikseli albo podaj skalę procentową. Małe obrazy nie są powiększane. DNG zachowuje wymiary matrycy. Pliki w formacie docelowym, których nie trzeba zmniejszać, są liczone jako pominięte. Zaznaczone wiersze można usunąć z kolejki za pomocą menu podręcznego albo klawiszy Delete i Backspace.
+
 ---
 
 ## 13. Eksport wyników

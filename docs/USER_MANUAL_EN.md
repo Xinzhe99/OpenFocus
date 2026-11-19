@@ -1690,21 +1690,23 @@ The batch dialog shows real-time progress. You can cancel processing at any time
 
 ### Batch image conversion
 
-Open **Tools → Batch Image Converter** independently of the current stack. Add files or all supported images in a folder, choose or enter an output folder and a format, then select **Convert**. The converter starts with PNG (lossless and 16-bit) and restores the last format you explicitly chose; an example filename below the selector shows the actual extension. This tool converts individual files and is separate from fusion Batch processing, which has its own output format. Missing output folders are created when conversion starts. The list shows output paths and errors per source; the summary reports successful and failed sources. Cancel stops between operations; already completed files remain available. Closing during conversion requests cancellation and closes the window when processing stops.
+Open **Tools → Batch Image Converter** and add images. By default, files in `Photos` are written to a sibling folder named `Photos_converted`. Edit the suffix, choose a named subfolder of each source folder, use the source folder itself, or browse to a single destination. The example shows the path for a selected file or the first queued file. Existing files keep their names and new outputs receive a number when necessary.
+
+Choose a format and output size, then select **Convert**. The initial format is lossless PNG. The dialog remembers your last format. Keep the original size, cap the long edge at 2048, 4096 or 8192 pixels, or enter a percentage. Each image keeps its aspect ratio and smaller images stay at their native resolution. DNG keeps the sensor dimensions. Switching back to a raster format restores your size choice.
+
+An image already in the target format is skipped unless it actually needs shrinking. For example, JPEG → JPEG at original size leaves the file untouched. If every file already matches at original size, choose another format or reduce the size to enable **Convert**. Skipped rows have their own count in the summary. Double-click a completed row for output paths or errors. Cancel or close to stop after the current operation. Completed files remain available.
 
 Drag local image files or folders onto the queue or dialog to add them. Folder
 imports include direct children only. Files are naturally sorted and deduplicated;
-the import summary reports added and skipped entries. Convert becomes available
-when the queue contains images and the output path names an existing directory
-or a new directory. Quoted paths and environment variables are supported.
-The selected format's relevant limitations appear below the format selector;
-hover over the selector for the full conversion guidance.
+the import summary reports added and skipped entries. Custom paths support
+quotes and environment variables. Missing output folders are created when
+needed. The selected format’s limits appear below the controls.
 
-The fixed 96×72 thumbnail sits to the left of each row. Select multiple rows and
-press **Delete** or **Backspace**, or choose **Remove**. These keys edit text
-normally when the output field has focus. Import and removal remain disabled
-until conversion or cancellation actually finishes. Thumbnails run in a separate,
-bounded queue and
+The fixed 96×72 thumbnail sits to the left of each row. Right-click a selected
+row and choose **Remove from queue** to remove the selection. Right-click an
+unselected row to act on it alone. **Delete** and **Backspace** remove selected
+rows while the list has focus. Queue edits are available again once conversion
+or cancellation finishes. Thumbnails run in a separate, bounded queue and
 use JPEG decoder scaling or small raster pages. Large RAW files use bounded
 embedded JPEG ranges from TIFF-based RAW or RAF containers; a format without a
 safe preview, including some CR3 files, shows a placeholder instead of unpacking
@@ -1719,9 +1721,8 @@ Supported three-color Bayer and X-Trans sensors retain the exact active CFA
 samples, their black levels, white level, as-shot white balance, D65 camera
 matrix, crop and orientation. Masked optical borders are omitted; active pixels
 are neither resized nor developed. Samples use a 16-bit TIFF container while
-retaining the original 12/14/16-bit white level. Existing DNG files are copied
-byte-for-byte, preserving their profiles, processing opcodes and proprietary
-metadata. Non-CFA three-color sensors use **LinearRaw**, containing camera-linear
+retaining the original 12/14/16-bit white level. Existing DNG inputs are skipped.
+Non-CFA three-color sensors use **LinearRaw**, containing camera-linear
 RGB rather than a sensor mosaic. Ordinary JPEG/PNG/TIFF inputs cannot become
 camera RAW by choosing DNG and are reported as errors.
 

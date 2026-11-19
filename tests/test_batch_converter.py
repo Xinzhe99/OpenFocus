@@ -166,7 +166,8 @@ def test_dialog_starts_without_main_window(qapp, clean_converter_format):
     dialog = BatchConverterDialog()
     try:
         assert not dialog.start.isEnabled()
-        assert not dialog.remove.isEnabled()
+        assert dialog.output_mode.currentData() == 'sibling'
+        assert dialog.directory.text() == '_converted'
         assert not dialog.delete_shortcut.isEnabled()
         assert not dialog.backspace_shortcut.isEnabled()
         assert not dialog.empty_hint.isHidden()
@@ -333,12 +334,14 @@ def test_converter_output_path_keyboard_and_delete_scope(
     source.touch()
     monkeypatch.setattr(FileDialog, 'getOpenFileNames', lambda *a: pytest.fail('Enter opened Add Files'))
     QTest.keyClick(dialog, Qt.Key.Key_Return)
+    dialog.output_mode.setCurrentIndex(dialog.output_mode.findData('custom'))
+    dialog.format.setCurrentText('TIFF')
     dialog.directory.setText(str(tmp_path))
     assert not dialog.start.isEnabled()
     dialog._append([source])
-    assert dialog.start.isEnabled() and not dialog.remove.isEnabled()
+    assert dialog.start.isEnabled() and not dialog.delete_shortcut.isEnabled()
     dialog.list.setCurrentRow(0)
-    assert dialog.remove.isEnabled() and dialog.delete_shortcut.isEnabled()
+    assert dialog.delete_shortcut.isEnabled()
     assert dialog.backspace_shortcut.isEnabled()
     dialog.directory.setFocus()
     dialog.directory.selectAll()
@@ -352,22 +355,200 @@ def test_converter_output_path_keyboard_and_delete_scope(
     dialog.directory.setText('"%OPENFOCUS_CONVERTER_OUTPUT%"')
     assert dialog.start.isEnabled() and not dialog.directory.toolTip()
     QTest.keyClick(dialog.directory, Qt.Key.Key_Return)
-    assert not dialog.start.isEnabled() and not dialog.remove.isEnabled()
+    assert not dialog.start.isEnabled() and not dialog.delete_shortcut.isEnabled()
     dialog.worker.finished.emit()
-    assert dialog.start.isEnabled() and dialog.remove.isEnabled()
+    assert dialog.start.isEnabled() and dialog.delete_shortcut.isEnabled()
     dialog.list.setFocus()
     qapp.processEvents()
     QTest.keyClick(dialog.list, getattr(Qt.Key, delete_key))
     assert not dialog.sources and dialog.list.count() == 0
     assert source.exists()
-    assert not dialog.start.isEnabled() and not dialog.remove.isEnabled()
+    assert not dialog.start.isEnabled() and not dialog.delete_shortcut.isEnabled()
     assert not dialog.empty_hint.isHidden()
+
+
+def test_converter_output_modes_preview_selected_source_and_preserve_values(
+        converter_dialog, tmp_path, monkeypatch):
+    from dialogs.batch_converter import FileDialog
+    dialog = converter_dialog
+    first = tmp_path / '甲' / '花.jpg'
+    second = tmp_path / '乙' / '葉.jpg'
+    for source in (first, second):
+        source.parent.mkdir()
+        source.touch()
+        dialog._append([source])
+    assert dialog.format_example.text() == str(tmp_path / '甲_converted' / '花.png')
+    dialog.list.setCurrentRow(1)
+    dialog.directory.setText('_成品')
+    assert dialog.format_example.text() == str(tmp_path / '乙_成品' / '葉.png')
+    assert not (tmp_path / '乙_成品').exists()
+    dialog.output_mode.setCurrentIndex(dialog.output_mode.findData('subfolder'))
+    assert dialog.directory.text() == 'OpenFocus_Output' and dialog.browse.isHidden()
+    dialog.directory.setText('../other')
+    assert not dialog.start.isEnabled() and dialog.directory.toolTip()
+    dialog.directory.setText('成品')
+    assert dialog.format_example.text() == str(second.parent / '成品' / '葉.png')
+    dialog.output_mode.setCurrentIndex(dialog.output_mode.findData('same'))
+    assert not dialog.directory.isVisible() and not dialog.browse.isVisible()
+    assert dialog.format_example.text() == str(second.with_suffix('.png'))
+    dialog.output_mode.setCurrentIndex(dialog.output_mode.findData('custom'))
+    assert not dialog.start.isEnabled() and dialog.browse.isVisible()
+    monkeypatch.setattr(FileDialog, 'getExistingDirectory', lambda *a: str(tmp_path))
+    dialog.browse.click()
+    assert dialog.format_example.text() == str(tmp_path / '葉.png')
+    dialog.output_mode.setCurrentIndex(dialog.output_mode.findData('sibling'))
+    assert dialog.directory.text() == '_成品'
+    dialog.output_mode.setCurrentIndex(dialog.output_mode.findData('custom'))
+    assert dialog.directory.text() == str(tmp_path)
+
+
+def test_converter_resize_state_and_unchanged_aliases(converter_dialog, tmp_path):
+    from locales import trans
+    dialog = converter_dialog
+    source = tmp_path / 'original.JPEG'
+    source.touch()
+    dialog._append([source])
+    dialog.format.setCurrentText('JPEG')
+    assert not dialog.start.isEnabled() and trans.t('converter_no_changes') in dialog.format_warning.text()
+    for edge in (2048, 4096, 8192):
+        dialog.output_size.setCurrentIndex(dialog.output_size.findData(edge))
+        assert dialog.start.isEnabled()
+        dialog.start.click()
+        assert (dialog.worker.max_edge, dialog.worker.scale) == (edge, 1.0)
+        dialog.worker.finished.emit()
+    dialog.output_size.setCurrentIndex(dialog.output_size.findData('percent'))
+    dialog.percent.setValue(100)
+    assert not dialog.start.isEnabled()
+    dialog.percent.setValue(37)
+    dialog.format.setCurrentText('DNG')
+    assert trans.t('converter_dng_original_size') in dialog.format_warning.text()
+    assert dialog.output_size.currentData() == 'original' and not dialog.output_size.isEnabled()
+    assert not dialog.percent.isVisible()
+    dialog.format.setCurrentText('PNG')
+    dialog.format.setCurrentText('JPEG')
+    assert dialog.output_size.currentData() == 'percent' and dialog.percent.isVisible()
+    dialog.start.click()
+    assert (dialog.worker.max_edge, dialog.worker.scale) == (None, 0.37)
+
+
+@pytest.mark.parametrize('clicked,remaining', [(1, [2]), (2, [0, 1])])
+def test_converter_queue_context_removal(qapp, converter_dialog, tmp_path, clicked, remaining):
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtGui import QContextMenuEvent
+    from PyQt6.QtTest import QTest
+    from PyQt6.QtWidgets import QMenu, QPushButton
+    from locales import trans
+    dialog = converter_dialog
+    sources = [tmp_path / f'原图{n}.jpg' for n in range(3)]
+    for source in sources:
+        source.touch()
+    dialog._append(sources)
+    assert all(button.text() != trans.t('batch_btn_remove') for button in dialog.findChildren(QPushButton))
+    dialog.list.item(0).setSelected(True)
+    dialog.list.item(1).setSelected(True)
+    view = dialog.list.viewport()
+    item = dialog.list.item(clicked)
+    dialog.list.scrollToItem(item)
+    pos = dialog.list.visualItemRect(item).center()
+    QTest.mouseClick(view, Qt.MouseButton.RightButton, pos=pos)
+    if qapp.activePopupWidget() is None:
+        # QTest's synthetic mouse events may omit the platform context event.
+        qapp.sendEvent(view, QContextMenuEvent(QContextMenuEvent.Reason.Mouse, pos, view.mapToGlobal(pos)))
+    menu = qapp.activePopupWidget()
+    assert isinstance(menu, QMenu)
+    assert [action.text() for action in menu.actions()] == [trans.t('converter_remove_queue')]
+    QTest.mouseClick(menu, Qt.MouseButton.LeftButton, pos=menu.actionGeometry(menu.actions()[0]).center())
+    assert dialog.sources == [str(sources[n]) for n in remaining]
+    assert all(source.exists() for source in sources)
+
+
+def test_converter_mixed_queue_skips_unchanged_and_writes_resized_sibling(
+        qapp, tmp_path, monkeypatch, clean_converter_format):
+    from dialogs.batch_converter import BatchConverterDialog, ThumbnailWorker
+    from locales import trans
+    monkeypatch.setattr(ThumbnailWorker, 'start', lambda self: None)
+    folder = tmp_path / '照片'
+    folder.mkdir()
+    small = folder / '1.jpeg'
+    large = folder / '2.jpg'
+    other = folder / '3.png'
+    for source, size in ((small, (8, 4)), (large, (2400, 1200)), (other, (80, 40))):
+        Image.new('RGB', size, 'blue').save(source)
+    originals = [source.read_bytes() for source in (small, large, other)]
+    dialog = BatchConverterDialog()
+    try:
+        dialog._append([small, large, other])
+        dialog.format.setCurrentText('JPEG')
+        dialog.output_size.setCurrentIndex(dialog.output_size.findData(2048))
+        assert trans.t('converter_skip_unchanged') in dialog.format_warning.text()
+        dialog.start.click()
+        assert dialog.worker.wait(15000)
+        qapp.processEvents()
+        records = dialog._conversion_results['items']
+        assert [r['status'] for r in records] == ['skipped', 'success', 'success']
+        assert trans.t('converter_status_skipped') in dialog.list.item(0).text()
+        assert f"{trans.t('converter_status_skipped')}: 1" in dialog.summary.text()
+        dest = tmp_path / '照片_converted'
+        assert sorted(path.name for path in dest.iterdir()) == ['2.jpg', '3.jpg']
+        for output, size in ((dest / '2.jpg', (2048, 1024)), (dest / '3.jpg', (80, 40))):
+            with Image.open(output) as img:
+                assert img.size == size
+        assert [source.read_bytes() for source in (small, large, other)] == originals
+        dialog.list.setCurrentRow(0)
+        dialog._remove()
+        details = []
+        monkeypatch.setattr('dialogs.batch_converter.QMessageBox.information',
+                            lambda parent, title, text: details.append(text))
+        dialog._show_result_details(dialog.list.item(0))
+        assert details and str(dest / '2.jpg') in details[0]
+    finally:
+        dialog.close()
+
+
+def test_converter_identifies_tiff_off_gui_thread(qapp, tmp_path, monkeypatch, clean_converter_format):
+    from threading import Event, get_ident
+    from PyQt6.QtTest import QSignalSpy
+    from dialogs.batch_converter import BatchConverterDialog
+    from locales import trans
+    source = tmp_path / '原图.tif'
+    Image.new('RGB', (8, 4)).save(source)
+    inspecting, resume = Event(), Event()
+    gui_thread = get_ident()
+    original = converter.image_loader._is_dng_tiff
+
+    def inspect(path):
+        assert get_ident() != gui_thread
+        inspecting.set()
+        assert resume.wait(5)
+        return original(path)
+
+    monkeypatch.setattr(converter.image_loader, '_is_dng_tiff', inspect)
+    dialog = BatchConverterDialog()
+    try:
+        dialog._append([source])
+        assert inspecting.wait(5)
+        dialog.format.setCurrentText('TIFF')
+        dialog.directory.setText('_输出')
+        assert dialog.format_example.text().endswith('原图.tif')
+        ready = QSignalSpy(dialog.thumbnail_worker.ready)
+        resume.set()
+        assert ready.wait(5000)
+        qapp.processEvents()
+        assert not dialog.start.isEnabled()
+        assert trans.t('converter_no_changes') in dialog.format_warning.text()
+    finally:
+        resume.set()
+        dialog.thumbnail_worker.stop()
+        dialog.thumbnail_worker.wait(5000)
+        dialog.close()
 
 
 @pytest.mark.parametrize('target', ['dialog', 'viewport'])
 def test_converter_busy_rejects_drop_mutation_and_repeat_start_until_finished(
         qapp, converter_dialog, tmp_path, monkeypatch, target):
-    from PyQt6.QtCore import QUrl
+    from PyQt6.QtCore import Qt, QUrl
+    from PyQt6.QtGui import QContextMenuEvent
+    from PyQt6.QtTest import QTest
     from dialogs.batch_converter import FileDialog
     dialog = converter_dialog
     source = tmp_path / 'photo.png'
@@ -375,7 +556,7 @@ def test_converter_busy_rejects_drop_mutation_and_repeat_start_until_finished(
     source.touch()
     extra.touch()
     dialog._append([source])
-    dialog.directory.setText(str(tmp_path))
+    dialog.format.setCurrentText('TIFF')
     dialog.list.setCurrentRow(0)
     dialog.start.click()
     worker = dialog.worker
@@ -387,6 +568,15 @@ def test_converter_busy_rejects_drop_mutation_and_repeat_start_until_finished(
     dialog._browse()
     dialog._append([extra])
     dialog._remove()
+    dialog.list.setFocus()
+    qapp.processEvents()
+    QTest.keyClick(dialog.list, Qt.Key.Key_Delete)
+    QTest.keyClick(dialog.list, Qt.Key.Key_Backspace)
+    view = dialog.list.viewport()
+    pos = dialog.list.visualItemRect(dialog.list.item(0)).center()
+    QTest.mouseClick(view, Qt.MouseButton.RightButton, pos=pos)
+    qapp.sendEvent(view, QContextMenuEvent(QContextMenuEvent.Reason.Mouse, pos, view.mapToGlobal(pos)))
+    assert qapp.activePopupWidget() is None
     dialog._start()
     receiver = dialog if target == 'dialog' else dialog.list.viewport()
     events = _converter_drop(qapp, receiver, [QUrl.fromLocalFile(str(extra))])
@@ -399,11 +589,11 @@ def test_converter_busy_rejects_drop_mutation_and_repeat_start_until_finished(
     assert not dialog.backspace_shortcut.isEnabled()
     worker.complete.emit({'items': [dict(index=0, source=str(source), status='cancelled',
                                          outputs=[], errors=[], stop_reason='user_cancel')],
-                          'counts': dict(success=0, failed=0, partial=0, cancelled=1, not_started=0),
+                          'counts': dict(success=0, skipped=0, failed=0, partial=0, cancelled=1, not_started=0),
                           'user_cancelled': True, 'scheduler_error': None})
     assert not dialog.start.isEnabled()
     worker.finished.emit()
-    assert dialog.start.isEnabled() and dialog.remove.isEnabled()
+    assert dialog.start.isEnabled() and dialog.delete_shortcut.isEnabled()
     assert not dialog.cancel.isEnabled()
 
 
@@ -676,7 +866,7 @@ def test_thumbnail_stale_completion_cannot_modify_readded_row(qapp, tmp_path, mo
         before = item.icon().cacheKey()
         image = QImage(20, 20, QImage.Format.Format_RGB888)
         image.fill(Qt.GlobalColor.red)
-        dialog._thumbnail_ready(old_token, image, 'old failure')
+        dialog._thumbnail_ready(old_token, image, 'old failure', '.dng')
         assert item.icon().cacheKey() == before and 'old failure' not in item.toolTip()
         assert item.sizeHint().height() == 88
         assert dialog.list.iconSize().width() == 96
@@ -695,10 +885,10 @@ def test_thumbnail_queue_is_bounded_and_delete_is_disabled_while_busy(qapp, tmp_
             source.touch()
         dialog._append(sources)
         assert len(dialog.thumbnail_worker._queue) == ThumbnailWorker.capacity
-        dialog.directory.setText(str(tmp_path))
+        dialog.format.setCurrentText('JPEG')
         dialog._start()
         assert not dialog.delete_shortcut.isEnabled()
-        assert not dialog.remove.isEnabled() and not dialog.add_files.isEnabled()
+        assert not dialog.add_files.isEnabled()
         monkeypatch.setattr(ConverterWorker, 'isRunning', lambda self: True)
         dialog.list.item(0).setSelected(True)
         dialog._remove()
@@ -770,7 +960,7 @@ def test_converter_close_waits_for_worker_and_keeps_controls_disabled(qapp, tmp_
     dialog = BatchConverterDialog()
     (tmp_path / 'input.png').touch()
     dialog._append([str(tmp_path / 'input.png')])
-    dialog.directory.setText(str(tmp_path))
+    dialog.format.setCurrentText('TIFF')
     dialog._start()
     interrupted = []
     running = [True]
@@ -780,7 +970,7 @@ def test_converter_close_waits_for_worker_and_keeps_controls_disabled(qapp, tmp_
         event = QCloseEvent()
         dialog.closeEvent(event)
         assert not event.isAccepted() and dialog._close_pending and interrupted
-        assert not dialog.remove.isEnabled() and not dialog.delete_shortcut.isEnabled()
+        assert not dialog.add_folder.isEnabled() and not dialog.delete_shortcut.isEnabled()
         running[0] = False
         dialog._finished()
         assert not dialog.start.isEnabled() and not dialog.delete_shortcut.isEnabled()
@@ -1507,7 +1697,7 @@ def test_queued_progress_survives_cancel_and_exposes_complete_details(qapp, tmp_
     monkeypatch.setattr(QMessageBox, 'information', lambda *args: details.append(args[2]))
     try:
         dialog._append([str(source)])
-        dialog.directory.setText(str(tmp_path))
+        dialog.format.setCurrentText('TIFF')
         dialog._start()
         worker = dialog.worker
         # Do not pump the GUI queue while the worker produces its page events.
@@ -1518,7 +1708,7 @@ def test_queued_progress_survives_cancel_and_exposes_complete_details(qapp, tmp_
         assert worker.wait(5000)
         qapp.processEvents()
         result = dialog._conversion_results
-        _assert_batch(result, partial=1)
+        _assert_batch(result, partial=1, skipped=0)
         assert result['user_cancelled']
         assert result['items'][0]['outputs'] == paths and len(paths) == 10
         assert [event['output'] for event in events if event['output']] == paths
