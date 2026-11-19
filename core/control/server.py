@@ -396,44 +396,17 @@ class ControlServer(QObject):
             renderer.start_render = self._original_start_render
 
     def _tracked_start_load(self, *args, **kwargs):
+        if getattr(self.window.source_manager, "_load_worker", None) is not None:
+            # A refused GUI request leaves the active generation in place.
+            return self._original_start_load(*args, **kwargs)
         load_id = self._begin_load()
-        success = kwargs.get("on_success")
-        failure = kwargs.get("on_error")
-
-        def on_success():
-            try:
-                if success is not None:
-                    success()
-            finally:
-                self._finish_load(load_id)
-
-        def on_error(message):
-            try:
-                if failure is not None:
-                    failure(message)
-            finally:
-                self._finish_load(load_id, message)
-
-        kwargs["on_success"] = on_success
-        kwargs["on_error"] = on_error
+        kwargs["on_finished"] = lambda error: self._finish_load(load_id, error)
         try:
             self._original_start_load(*args, **kwargs)
-        except Exception:
-            self._finish_load(load_id, "Load failed to start")
+        except Exception as exc:
+            self._finish_load(load_id, str(exc) or "Load failed to start")
             raise
-        self._watch_load(load_id)
         return load_id
-
-    def _watch_load(self, load_id):
-        """Finish the generation even when no callback fires (superseded load)."""
-        worker = getattr(self.window.source_manager, "_load_worker", None)
-        if worker is None:
-            self._finish_load(load_id, self._load_error or "Load did not start")
-            return
-        worker.finished_load.connect(
-            lambda ok, message, images, names, lid=load_id:
-            self._finish_load(lid, None if ok else (message or "Load failed")))
-        worker.finished.connect(lambda lid=load_id: self._finish_load(lid))
 
     def _tracked_start_render(self, *args, **kwargs):
         status = self._original_start_render(*args, **kwargs)
@@ -822,15 +795,15 @@ class ControlServer(QObject):
         load_id = None
         if folder:
             load_id = manager._start_load_worker(
-                folder=folder, scale=scale, append=append, linear_raw=linear_raw)
+                folder=folder, scale=scale, append=append, linear_raw=linear_raw, on_error=_log.warning)
             source = folder
         elif video:
             load_id = manager._start_load_worker(
-                video=video, scale=scale, append=append)
+                video=video, scale=scale, append=append, on_error=_log.warning)
             source = video
         else:
             load_id = manager._start_load_worker(
-                filepaths=list(files), scale=scale, append=append, linear_raw=linear_raw)
+                filepaths=list(files), scale=scale, append=append, linear_raw=linear_raw, on_error=_log.warning)
             source = list(files)
         return {"loading": True, "source": source, "load_id": load_id,
                 "baseline_count": self._load_baseline}
@@ -1305,7 +1278,7 @@ class ControlServer(QObject):
             window.add_recent_project(path)
 
         try:
-            apply_project(window, state, on_loaded=loaded)
+            apply_project(window, state, on_loaded=loaded, on_error=_log.warning)
         except Exception as error:  # noqa: BLE001 - reported to the client
             raise ControlError("invalid_argument", str(error)) from error
         return {"loading": True, "path": path, "load_id": self._load_id,
