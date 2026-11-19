@@ -791,6 +791,12 @@ La finestra batch mostra l'avanzamento in tempo reale. Puoi annullare l'elaboraz
 - PNG/TIFF conservano i dati a 16 bit; scegliere esplicitamente JPG/BMP converte a 8 bit.
 - L'annullamento attende l'arresto del worker. I file confermati restano disponibili; attività parziali, fallite, annullate e non avviate vengono conteggiate separatamente.
 
+### Conversione di immagini in serie
+
+Apri il convertitore di immagini dal menu Strumenti e aggiungi i file. Per impostazione predefinita, accanto a ogni cartella di origine viene creata una cartella con il suffisso `_converted`. Puoi modificare il suffisso o scegliere una sottocartella con nome, la cartella di origine o una destinazione comune. L’esempio mostra il percorso per la riga selezionata.
+
+Mantieni le dimensioni originali, limita il lato lungo a 2048, 4096 o 8192 pixel oppure imposta una percentuale di riduzione. Le immagini piccole non vengono ingrandite. Il DNG conserva le dimensioni del sensore. I file già nel formato scelto che non richiedono riduzione vengono conteggiati come saltati. Per rimuovere le righe selezionate dalla coda usa il menu contestuale, Canc o Backspace.
+
 ---
 
 ## 13. Esportazione dei risultati

@@ -31,6 +31,133 @@ OUTPUT_EXTENSIONS = {'DNG': '.dng', 'JPEG': '.jpg', 'PNG': '.png', 'TIFF': '.tif
 # RAW-only conversion target rather than the expected everyday output.
 DEFAULT_OUTPUT_FORMAT = 'PNG'
 OUTPUT_FORMAT_ORDER = ('PNG', 'JPEG', 'TIFF', 'BMP', 'WebP', 'DNG')
+_FORMAT_ALIASES = {'.jpeg': '.jpg', '.jpe': '.jpg', '.jfif': '.jpg', '.tiff': '.tif'}
+_WINDOWS_DEVICES = {'CON', 'PRN', 'AUX', 'NUL', 'CONIN$', 'CONOUT$'} | {
+    prefix + n for prefix in ('COM', 'LPT') for n in '123456789¹²³'}
+
+
+def same_output_format(source, ext):
+    """Compare file formats, including JPEG aliases and DNGs named .tif."""
+    suffix = Path(source).suffix.lower()
+    target = _FORMAT_ALIASES.get(ext.lower(), ext.lower())
+    if suffix in ('.tif', '.tiff') and target in ('.tif', '.dng'):
+        if image_loader._is_dng_tiff(source):
+            suffix = '.dng'
+    return _FORMAT_ALIASES.get(suffix, suffix) == target
+
+
+def _validate_component(name):
+    device = name.partition('.')[0].rstrip(' ').upper()
+    if (not name or name.endswith((' ', '.')) or device in _WINDOWS_DEVICES
+            or any(c in '<>:"/\\|?*' or ord(c) < 32 for c in name)
+            or len(name.encode('utf-16-le')) > 510):
+        raise ValueError(f"{trans.t('batch_path_invalid')} {name}")
+
+
+def output_directory(source, mode, value=None):
+    """Resolve a destination without creating it (also used by the UI preview)."""
+    if mode == 'custom':
+        if not value or not os.fspath(value).strip():
+            raise ValueError(trans.t('converter_required'))
+        path = Path(value)
+        if ((path.drive and not path.is_absolute()) or
+                os.fspath(path).upper().startswith(('\\\\.\\', '\\\\?\\GLOBALROOT\\'))):
+            raise ValueError(f"{trans.t('batch_path_invalid')} {path}")
+        parts = path.parts[1:] if path.anchor else path.parts
+        for component in parts:
+            if component != '..':
+                _validate_component(component)
+        destination = Path(os.path.abspath(path))
+    else:
+        parent = Path(os.path.abspath(source)).parent
+        if mode == 'same':
+            destination = parent
+        elif mode in ('sibling', 'subfolder'):
+            component = os.fspath(value) if value else ('_converted' if mode == 'sibling' else 'OpenFocus_Output')
+            _validate_component(component)
+            if mode == 'sibling':
+                component = parent.name + component
+                _validate_component(component)
+                parent = parent.parent
+            destination = parent / component
+        else:
+            raise ValueError(f"{trans.t('batch_path_invalid')} {mode}")
+    ancestor = destination
+    while not os.path.lexists(ancestor) and ancestor != ancestor.parent:
+        ancestor = ancestor.parent
+    if not ancestor.is_dir():
+        raise ValueError(f"{trans.t('batch_path_invalid')} {ancestor}")
+    return os.fspath(destination)
+
+
+def _resize_options(ext, max_edge, scale):
+    options = {}
+    if max_edge is not None:
+        if not isinstance(max_edge, int) or isinstance(max_edge, bool) or max_edge < 1:
+            raise ValueError(trans.t('converter_size_invalid'))
+        options['max_edge'] = max_edge
+    if not isinstance(scale, (int, float)) or isinstance(scale, bool) or not 0 < scale <= 1:
+        raise ValueError(trans.t('converter_size_invalid'))
+    if scale != 1:
+        options['scale'] = scale
+    if options and ext == '.dng':
+        raise ValueError(trans.t('converter_dng_original_size'))
+    return options
+
+
+def _target_size(width, height, max_edge, scale):
+    longest = max(width, height)
+    if max_edge is not None and max_edge < longest:
+        scale = min(scale, max_edge / longest)
+    return max(1, round(width * scale)), max(1, round(height * scale))
+
+
+def _unchanged(source, ext, max_edge, scale, cancelled):
+    """Use headers only. A resized TIFF job exports every full-resolution page."""
+    if not same_output_format(source, ext):
+        return False
+    if ext in ('.tif', '.dng'):
+        with tifffile.TiffFile(source) as tif:
+            if tif.is_dng or ext == '.dng':
+                return bool(tif.is_dng) and ext == '.dng'
+            found_page = False
+            for page in tif.pages:
+                if cancelled():
+                    raise InterruptedError()
+                if not page.is_reduced:
+                    found_page = True
+                    if max_edge is None and scale == 1:
+                        return True
+                    size = (page.imagewidth, page.imagelength)
+                    if _target_size(*size, max_edge, scale) != size:
+                        return False
+            return found_page
+    with Image.open(source) as header:
+        # A mislabeled JPEG input may actually be a PNG and needs conversion.
+        if Image.registered_extensions().get(ext) != header.format:
+            return False
+        # Swapping axes for EXIF rotation preserves this comparison.
+        return _target_size(*header.size, max_edge, scale) == header.size
+
+
+def _resize_pixels(pixels, max_edge, scale):
+    height, width = pixels.shape[:2]
+    size = _target_size(width, height, max_edge, scale)
+    if size == (width, height):
+        return pixels
+    if pixels.ndim != 3 or pixels.shape[2] != 4 or not image_loader._has_transparency(pixels):
+        return cv2.resize(pixels, size, interpolation=cv2.INTER_AREA)
+    # Filter straight-alpha color in premultiplied space. A transparent
+    # pixel's hidden color must not bleed into an adjacent opaque pixel.
+    weighted = pixels.astype(np.float32)
+    weighted[..., :3] *= weighted[..., 3:4]
+    reduced = cv2.resize(weighted, size, interpolation=cv2.INTER_AREA)
+    del weighted
+    alpha = reduced[..., 3:4]
+    np.divide(reduced[..., :3], alpha, out=reduced[..., :3], where=alpha != 0)
+    np.rint(reduced, out=reduced)
+    np.clip(reduced, 0, np.iinfo(pixels.dtype).max, out=reduced)
+    return reduced.astype(pixels.dtype)
 
 
 
@@ -194,6 +321,24 @@ def _decode_tiff(path, page, physical_page, p):
     return np.ascontiguousarray(transform(a) if transform else a)
 
 
+def _decode_fallback(header, data):
+    if header.format == 'PNG' and len(data) > 24 and data[24] == 16:
+        # Pillow exposes 16-bit RGB(A) as 8-bit. Use the full-depth decoder.
+        import imagecodecs
+        image = imagecodecs.png_decode(data)
+        if image.ndim == 2:
+            return image
+        if image.shape[2] == 2:
+            return cv2.merge((image[..., 0], image[..., 0], image[..., 0], image[..., 1]))
+        return cv2.cvtColor(image, cv2.COLOR_RGBA2BGRA if image.shape[2] == 4 else cv2.COLOR_RGB2BGR)
+    if header.mode == 'L' and 'transparency' not in header.info:
+        return np.asarray(header)
+    alpha = 'A' in header.getbands() or 'transparency' in header.info
+    mode = 'RGBA' if alpha else 'RGB'
+    image = np.asarray(header if header.mode == mode else header.convert(mode))
+    return cv2.cvtColor(image, cv2.COLOR_RGBA2BGRA if alpha else cv2.COLOR_RGB2BGR)
+
+
 def _decode(path, page, tiff_page=None):
     ext = Path(path).suffix.lower()
     if tiff_page is not None:
@@ -220,26 +365,17 @@ def _decode(path, page, tiff_page=None):
     else:
         with Image.open(path) as header:
             image_loader.validate_pil_header(path, header)
+            orientation = int(read_image_exif(header).get(274, 1))
             if header.mode == 'CMYK':
                 image = image_loader.cmyk_to_bgr(header, path, header.info.get('icc_profile', b''))
-                orientation = int(read_image_exif(header).get(274, 1))
-                transform = image_loader._EXIF_TRANSFORMS.get(orientation)
-                return np.ascontiguousarray(transform(image) if transform else image)
-        # Decode unchanged to retain alpha, including transparent non-PNG files.
-        data = np.fromfile(path, dtype=np.uint8)
-        image = cv2.imdecode(data, cv2.IMREAD_UNCHANGED)
-        if image is None:
-            with Image.open(path) as source:
-                orientation = int(read_image_exif(source).get(274, 1))
-                if source.mode not in ('RGB', 'RGBA', 'L'):
-                    source = source.convert('RGBA' if 'A' in source.getbands() or 'transparency' in source.info else 'RGB')
-                a = np.asarray(source)
-                image = a[..., [2, 1, 0, 3] if a.shape[-1] == 4 else [2, 1, 0]] if a.ndim == 3 else a.copy()
-                transform = image_loader._EXIF_TRANSFORMS.get(orientation)
-                if transform:
-                    image = np.ascontiguousarray(transform(image))
-        else:
-            image = image_loader.apply_exif_orientation(path, image)
+            else:
+                data = np.fromfile(path, dtype=np.uint8)
+                image = cv2.imdecode(data, cv2.IMREAD_UNCHANGED)
+                if image is None:
+                    image = _decode_fallback(header, data)
+            transform = image_loader._EXIF_TRANSFORMS.get(orientation)
+            if transform:
+                image = np.ascontiguousarray(transform(image))
     if image is None:
         raise ValueError('Could not decode image.')
     if image.dtype not in (np.uint8, np.uint16):
@@ -249,10 +385,6 @@ def _decode(path, page, tiff_page=None):
 
 
 def _write(path, pixels, source, page, ext, cancelled=None, tiff_page=None):
-    if pixels.ndim == 3 and pixels.shape[2] == 4 and ext != '.png':
-        if image_loader._has_transparency(pixels):
-            raise ValueError('This output format cannot safely preserve transparency; choose PNG.')
-        pixels = cv2.cvtColor(pixels, cv2.COLOR_BGRA2BGR)
     if pixels.dtype == np.uint16 and ext not in ('.jpg', '.png', '.tif'):
         pixels = to_display_uint8(pixels)
     if tiff_page is None:
@@ -283,8 +415,9 @@ def _write(path, pixels, source, page, ext, cancelled=None, tiff_page=None):
 
 
 def convert_one(source, output_dir, ext, page=0, pages=1, cancelled=lambda: False, *,
-                _admitted=False, _tiff_page=None):
+                max_edge=None, scale=1.0, _admitted=False, _tiff_page=None):
     """Write one frame, reserving a unique name without touching existing files."""
+    options = _resize_options(ext, max_edge, scale)
     if (_tiff_page is None and Path(source).suffix.lower() in ('.tif', '.tiff')
             and not image_loader._is_dng_tiff(source)):
         if not _admitted:
@@ -294,7 +427,7 @@ def convert_one(source, output_dir, ext, page=0, pages=1, cancelled=lambda: Fals
         with tifffile.TiffFile(source) as tif:
             entry = next(islice(image_loader.tiff_source_pages(tif), page, None))
             return convert_one(source, output_dir, ext, page, pages, cancelled,
-                               _admitted=True, _tiff_page=entry)
+                               _admitted=True, _tiff_page=entry, **options)
     with log_operation('converter.page', source=os.fspath(source), page=page + 1,
                        pages=pages, format=ext, output_dir=os.fspath(output_dir)) as operation:
         from utils.export_paths import publish_unique
@@ -310,6 +443,12 @@ def convert_one(source, output_dir, ext, page=0, pages=1, cancelled=lambda: Fals
             pixels = None if ext == '.dng' else _decode(source, page, _tiff_page)
             if cancelled():
                 raise InterruptedError()
+            if pixels is not None and pixels.ndim == 3 and pixels.shape[2] == 4 and ext not in ('.png', '.tif'):
+                if image_loader._has_transparency(pixels):
+                    raise ValueError('This output format cannot safely preserve transparency; choose PNG.')
+                pixels = cv2.cvtColor(pixels, cv2.COLOR_BGRA2BGR)
+            if options:
+                pixels = _resize_pixels(pixels, max_edge, scale)
             stem = Path(source).stem + (f'_page_{page + 1:04d}' if pages > 1 else '')
             def write_staged(part):
                 if ext == '.dng':
@@ -354,7 +493,7 @@ def _error_text(exc):
     return f'{message} {detail}' if detail and detail != message else message
 
 
-def _convert_source(index, source, directory, ext, count, cancelled, item):
+def _convert_source(index, source, directory, ext, count, cancelled, item, **resize_options):
     from core.registration import RegistrationCancelled
     record = dict(index=index, source=source, status='active', outputs=[], errors=[], stop_reason=None)
     outputs, errors = record['outputs'], record['errors']
@@ -381,7 +520,7 @@ def _convert_source(index, source, directory, ext, count, cancelled, item):
                     emit(page + 1, 'running')
                     try:
                         output = convert_one(source, directory, ext, page, count, cancelled,
-                                             _admitted=True, _tiff_page=entry)
+                                             _admitted=True, _tiff_page=entry, **resize_options)
                         outputs.append(output)
                         emit(page + 1, 'running', output=output)
                     except (InterruptedError, RegistrationCancelled):
@@ -417,8 +556,9 @@ def _native_worker(threads):
     threadpool_limits(limits=threads)
 
 
-def convert_batch(sources, directory, ext, cancelled, item, progress):
-    """Admit bounded jobs and preserve each input's independently committed result."""
+def convert_batch(sources, directory, ext, cancelled, item, progress, *, output_mode='custom',
+                  max_edge=None, scale=1.0, skip_same_format=False):
+    """Publish each input independently, optionally skipping unchanged same-format jobs."""
     from core.registration import RegistrationCancelled
     records = [dict(index=i, source=source, status='pending', outputs=[], errors=[], stop_reason=None)
                for i, source in enumerate(sources)]
@@ -440,7 +580,14 @@ def convert_batch(sources, directory, ext, cancelled, item, progress):
             with resource_policy.heavy_job(cancelled):
                 if cancelled():
                     raise InterruptedError()
-                os.makedirs(directory, exist_ok=True)
+                options = _resize_options(ext, max_edge, scale)
+                custom_dir = None
+                volumes = {}
+                if output_mode == 'custom':
+                    custom_dir = output_directory(None, 'custom', directory)
+                    if not skip_same_format:
+                        os.makedirs(custom_dir, exist_ok=True)
+                        volumes[custom_dir] = os.stat(custom_dir).st_dev
                 plan = resource_policy.plan_execution(resource_policy.Workload(
                     fixed_bytes=0, per_worker_bytes=1, outer_tasks=max(1, len(sources))))
                 native_threads = plan.native_threads if plan.workers == 1 else 1
@@ -462,7 +609,8 @@ def convert_batch(sources, directory, ext, cancelled, item, progress):
                             max_workers=plan.workers, initializer=_native_worker,
                             initargs=(native_threads,)) as pool:
                         pending, active, next_index = None, {}, 0
-                        used_ram = used_disk = 0
+                        used_ram = 0
+                        used_disk = {}
                         while active or next_index < len(records) or pending is not None:
                             try:
                                 while not stopped() and len(active) < plan.max_in_flight:
@@ -473,8 +621,20 @@ def convert_batch(sources, directory, ext, cancelled, item, progress):
                                         next_index += 1
                                         source = sources[index]
                                         try:
+                                            dest = custom_dir or output_directory(source, output_mode, directory)
+                                            if skip_same_format and _unchanged(source, ext, max_edge, scale, stopped):
+                                                if stopped():
+                                                    break
+                                                records[index]['status'] = 'skipped'
+                                                finish(records[index])
+                                                continue
                                             count, ram, disk = _estimate_source(source, stopped, ext)
-                                            pending = (index, source, count, ram, disk)
+                                            if stopped():
+                                                break
+                                            if dest not in volumes:
+                                                os.makedirs(dest, exist_ok=True)
+                                                volumes[dest] = os.stat(dest).st_dev
+                                            pending = (index, source, count, ram, disk, dest, volumes[dest])
                                         except (InterruptedError, RegistrationCancelled):
                                             break
                                         except Exception as exc:
@@ -483,12 +643,22 @@ def convert_batch(sources, directory, ext, cancelled, item, progress):
                                             rec['errors'].append(_error_text(exc))
                                             finish(rec)
                                             continue
-                                    index, source, count, ram, disk = pending
+                                    index, source, count, ram, disk, dest, volume = pending
                                     snapshot = resource_policy.probe_resources()
                                     ceiling = resource_policy.ram_ceiling(snapshot)
                                     free_ram = (min(plan.ram_budget - used_ram, ceiling - used_ram)
                                                 if active or ram <= plan.ram_budget else ceiling)
-                                    free_disk = shutil.disk_usage(directory).free - used_disk
+                                    try:
+                                        free_disk = shutil.disk_usage(dest).free - used_disk.get(volume, 0)
+                                    except OSError as exc:
+                                        if custom_dir:
+                                            raise
+                                        rec = records[index]
+                                        rec['status'] = 'failed'
+                                        rec['errors'].append(_error_text(exc))
+                                        finish(rec)
+                                        pending = None
+                                        continue
                                     if ram > free_ram or disk > free_disk:
                                         if active:
                                             break
@@ -503,12 +673,12 @@ def convert_batch(sources, directory, ext, cancelled, item, progress):
                                         continue
                                     if stopped():
                                         break
-                                    future = pool.submit(_convert_source, index, source, directory, ext,
-                                                         count, stopped, item)
+                                    future = pool.submit(_convert_source, index, source, dest, ext,
+                                                         count, stopped, item, **options)
                                     records[index]['status'] = 'active'
-                                    active[future] = (index, ram, disk)
+                                    active[future] = (index, ram, disk, volume)
                                     used_ram += ram
-                                    used_disk += disk
+                                    used_disk[volume] = used_disk.get(volume, 0) + disk
                                     pending = None
                             except Exception as exc:
                                 scheduler_error = _error_text(exc)
@@ -520,9 +690,9 @@ def convert_batch(sources, directory, ext, cancelled, item, progress):
                                 continue
                             done, _ = wait(active, timeout=0.05, return_when=FIRST_COMPLETED)
                             for future in done:
-                                index, ram, disk = active.pop(future)
+                                index, ram, disk, volume = active.pop(future)
                                 used_ram -= ram
-                                used_disk -= disk
+                                used_disk[volume] -= disk
                                 try:
                                     rec = future.result()
                                 except Exception as exc:
@@ -553,6 +723,8 @@ def convert_batch(sources, directory, ext, cancelled, item, progress):
                 finish(rec)
         counts = {status: sum(rec['status'] == status for rec in records)
                   for status in ('success', 'failed', 'partial', 'cancelled', 'not_started')}
+        if skip_same_format:
+            counts['skipped'] = sum(rec['status'] == 'skipped' for rec in records)
         return dict(items=records, counts=counts, user_cancelled=bool(cancelled()),
                     scheduler_error=scheduler_error)
 
