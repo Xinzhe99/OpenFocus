@@ -80,22 +80,19 @@ def test_data_override_takes_precedence_over_platform_and_portable(sandbox, tmp_
     assert not (sandbox.source / "OpenFocusData").exists()
 
 
-@pytest.mark.parametrize("override,shared", [
-    (None, True),
-    ("local/OpenFocus Preview/6c66f5b9-render/profile", True),
-    ("local/OpenFocus Preview/6c66f5b9-render/profile/isolated", False),
-    ("other/OpenFocus Preview/6c66f5b9-render/profile", False),
-    ("local/OpenFocus Preview/6c66f5b9-render/data", False),
+@pytest.mark.parametrize("override", [
+    None,
+    "local/OpenFocus Preview/6c66f5b9-render/profile",
+    "worktrees/trial/independent-profile",
 ])
-def test_windows_account_device_dir_uses_local_app_data(sandbox, tmp_path, override, shared):
+def test_windows_account_device_dir_is_independent_of_session_profile(sandbox, tmp_path, override):
     app_paths.sys.platform = "win32"
     local = tmp_path / "local"
     app_paths.os.environ["LOCALAPPDATA"] = str(local)
     if override is not None:
         app_paths.os.environ["OPENFOCUS_DATA_DIR"] = str(tmp_path / override)
 
-    profile = app_paths.user_data_dir()
-    assert app_paths.shared_account_device_dir(profile) == (local / "OpenFocus" if shared else None)
+    assert app_paths.shared_account_device_dir() == local / "OpenFocus"
     assert not local.exists()
 
 
@@ -106,13 +103,13 @@ def test_windows_portable_device_dir_stays_in_the_local_user_profile(sandbox):
 
     profile = app_paths.user_data_dir()
     assert profile == sandbox.installed / "OpenFocusData"
-    assert app_paths.shared_account_device_dir(profile) == sandbox.home / "AppData/Local/OpenFocus"
+    assert app_paths.shared_account_device_dir() == sandbox.home / "AppData/Local/OpenFocus"
 
 
 @pytest.mark.parametrize("platform", ["darwin", "linux"])
 def test_non_windows_account_device_dir_remains_profile_local(sandbox, platform):
     app_paths.sys.platform = platform
-    assert app_paths.shared_account_device_dir(app_paths.user_data_dir()) is None
+    assert app_paths.shared_account_device_dir() is None
 
 
 @pytest.mark.parametrize("frozen", [False, True])
