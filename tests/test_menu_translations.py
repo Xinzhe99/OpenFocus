@@ -61,8 +61,8 @@ def _menu_window(qapp):
             "show_watermark_dialog", "remove_watermark",
             "remove_scale_bar", "show_advanced_settings_dialog",
             'restore_default_settings', 'set_use_gpu', 'apply_theme', 'set_language',
-            "check_for_updates", "install_update_now", "open_logs_folder",
-            "show_quick_start", "show_environment_info", "show_feedback_dialog",
+            "check_for_updates", "install_update_now",
+            "show_quick_start", "show_feedback_dialog",
             "show_contact_info", "show_account_dialog"):
         setattr(window, name, stub)
     return window
@@ -171,12 +171,14 @@ def test_reset_stack_translations_exist_in_every_language():
             assert trans.translations[code].get(key), f"{code}: missing {key}"
 
 
-@pytest.mark.parametrize("action_index, expected", [
-    (0, [[4, 1], [5, 2], [6, 3]]),
-    (1, [[3, 6], [2, 5], [1, 4]]),
-    (2, [[6, 5, 4], [3, 2, 1]]),
+@pytest.mark.parametrize("action_key, expected", [
+    ("action_rotate_90_cw", [[4, 1], [5, 2], [6, 3]]),
+    ("action_rotate_90_ccw", [[3, 6], [2, 5], [1, 4]]),
+    ("action_rotate_180", [[6, 5, 4], [3, 2, 1]]),
+    ("action_flip_h", [[3, 2, 1], [6, 5, 4]]),
+    ("action_flip_v", [[4, 5, 6], [1, 2, 3]]),
 ])
-def test_rotation_menu_rotates_frames_in_the_named_direction(qapp, action_index, expected):
+def test_orientation_menu_transforms_frames_in_the_named_direction(qapp, action_key, expected):
     import numpy as np
     from controllers.transform_manager import TransformManager
     from ui.menus import setup_menus
@@ -194,48 +196,19 @@ def test_rotation_menu_rotates_frames_in_the_named_direction(qapp, action_index,
     reloaded = []
     manager.reload_image_stack = lambda **kwargs: reloaded.append(kwargs["initial_index"])
     window.rotate_stack = manager.rotate_stack
+    window.flip_stack = manager.flip_stack
     setup_menus(window)
 
     try:
-        window.ui_objs["menu_rotate"].actions()[action_index].trigger()
+        menu = window.ui_objs['menu_rotate_flip']
+        assert menu.menuAction() in window.ui_objs['menu_edit'].actions()
+        action = window.ui_objs[action_key]
+        assert action in menu.actions()
+        action.trigger()
         expected = np.array(expected, dtype=np.uint16)
         for images in (window.raw_images, window.base_images):
             np.testing.assert_array_equal(images[0], expected)
             np.testing.assert_array_equal(images[1], expected + 1000)
-        assert reloaded == [1]
-    finally:
-        window.close()
-        window.deleteLater()
-        qapp.processEvents()
-
-
-@pytest.mark.parametrize("action_index, expected", [
-    (0, [[3, 2, 1], [6, 5, 4]]),
-    (1, [[4, 5, 6], [1, 2, 3]]),
-])
-def test_flip_menu_preserves_viewed_frame(qapp, action_index, expected):
-    import numpy as np
-    from controllers.transform_manager import TransformManager
-    from ui.menus import setup_menus
-
-    window = _menu_window(qapp)
-    original = np.array([[1, 2, 3], [4, 5, 6]], dtype=np.uint16)
-    window.raw_images = [original.copy(), original + 1000]
-    window.base_images = [image.copy() for image in window.raw_images]
-    window.source_transforms = []
-    window.current_img_index, window.current_display_index = 0, 1
-    window.push_undo = lambda: None
-    manager = TransformManager(window)
-    manager._invalidate_processing_results = lambda **kwargs: None
-    reloaded = []
-    manager.reload_image_stack = lambda **kwargs: reloaded.append(kwargs["initial_index"])
-    window.flip_stack = manager.flip_stack
-    setup_menus(window)
-    try:
-        window.ui_objs["menu_flip"].actions()[action_index].trigger()
-        for images in (window.raw_images, window.base_images):
-            np.testing.assert_array_equal(images[0], np.array(expected, dtype=np.uint16))
-            np.testing.assert_array_equal(images[1], np.array(expected, dtype=np.uint16) + 1000)
         assert reloaded == [1]
     finally:
         window.close()

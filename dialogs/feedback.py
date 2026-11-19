@@ -3,15 +3,14 @@
 import os
 import webbrowser
 
-from PyQt6.QtCore import QTimer, QUrl
-from PyQt6.QtGui import QDesktopServices, QFont
+from PyQt6.QtCore import Qt, QTimer, QUrl
+from PyQt6.QtGui import QDesktopServices, QFontDatabase
 from utils.file_dialogs import FileDialog
 from PyQt6.QtWidgets import (
-    QDialog, QHBoxLayout, QLabel,
-    QPlainTextEdit, QPushButton, QVBoxLayout,
+    QDialog, QGroupBox, QHBoxLayout, QLabel, QPlainTextEdit, QPushButton,
+    QRadioButton, QStackedWidget, QTabWidget, QVBoxLayout, QWidget,
 )
 
-from constants import app_display_version
 from locales import trans
 from utils import logging_setup
 
@@ -19,8 +18,12 @@ ISSUES_URL = "https://github.com/Xinzhe99/OpenFocus/issues"
 
 MAX_INLINE_LOG = 40_000
 
-
-
+def _note(text=""):
+    label = QLabel(text)
+    label.setTextFormat(Qt.TextFormat.PlainText)
+    label.setWordWrap(True)
+    label.setObjectName("mutedLabel")
+    return label
 
 
 class FeedbackDialog(QDialog):
@@ -30,77 +33,119 @@ class FeedbackDialog(QDialog):
         super().__init__(parent or window_main)
         self.window_main = window_main
         self.setWindowTitle(trans.t("feedback_title"))
-        self.resize(720, 560)
+        self.resize(660, 420)
         self._facts_probe = None
         self._facts_timer = QTimer(self)
         self._facts_timer.setInterval(100)
         self._facts_timer.timeout.connect(self._poll_facts)
         self._account_job = None
-
-        root = QVBoxLayout(self)
-        root.setContentsMargins(14, 12, 14, 10)
-        root.setSpacing(6)
-
-        self.log_view = QPlainTextEdit()
-        self.log_view.setReadOnly(True)
-        f = QFont("Consolas")
-        f.setStyleHint(QFont.StyleHint.Monospace)
-        self.log_view.setFont(f)
-        self.log_view.setPlainText(
-            logging_setup.session_log_excerpt(MAX_INLINE_LOG))
-        root.addWidget(self.log_view, 1)
-
-        self.log_hint = QLabel(trans.t("feedback_log_hint").format(
-            path=str(logging_setup.session_log_path())))
-        self.log_hint.setWordWrap(True)
-        self.log_hint.setObjectName("mutedLabel")
-        root.addWidget(self.log_hint)
-        scope = QLabel(trans.t("feedback_local_export_scope"))
-        scope.setWordWrap(True)
-        root.addWidget(scope)
-        facts_button = QPushButton(trans.t("action_env_info"))
-        facts_button.setCheckable(True)
-        root.addWidget(facts_button)
-        self.facts_view = QPlainTextEdit()
-        self.facts_view.setReadOnly(True)
-        self.facts_view.setVisible(False)
-        root.addWidget(self.facts_view)
-        facts_button.toggled.connect(self._show_facts)
-        self.open_folder_button = QPushButton(trans.t("action_open_folder"))
-        self.open_folder_button.setVisible(False)
-        self.open_folder_button.clicked.connect(self._open_export_folder)
-        root.addWidget(self.open_folder_button)
         self._export_path = ""
 
-        buttons = QHBoxLayout()
-        copy_btn = QPushButton(trans.t("feedback_copy_log"))
-        copy_btn.setToolTip(trans.t("feedback_head").format(version=app_display_version()))
-        copy_btn.clicked.connect(self._copy_log)
-        issues_btn = QPushButton(trans.t("feedback_open_issues"))
-        issues_btn.setToolTip(trans.t("feedback_head").format(version=app_display_version()))
-        issues_btn.clicked.connect(self._open_issues)
-        export_btn = QPushButton(trans.t("feedback_export"))
-        export_btn.setToolTip(trans.t("feedback_head").format(version=app_display_version()))
-        export_btn.clicked.connect(self._export_package)
-        buttons.addWidget(copy_btn)
-        buttons.addWidget(issues_btn)
-        buttons.addWidget(export_btn)
-        client = getattr(window_main, '_account_client', None)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(14, 12, 14, 12)
+        root.setSpacing(12)
+        tabs = QTabWidget()
+        tabs.addTab(self._channels_page(), trans.t('feedback_tab_channels'))
+        tabs.addTab(self._diagnostics_page(), trans.t('feedback_tab_diagnostics'))
+        root.addWidget(tabs, 1)
+
+        footer = QHBoxLayout()
+        footer.addStretch()
+        logs = QPushButton(trans.t('menu_open_logs'))
+        logs.clicked.connect(self._open_logs_folder)
+        footer.addWidget(logs)
+        close = QPushButton(trans.t('btn_close'))
+        close.clicked.connect(self.reject)
+        footer.addWidget(close)
+        root.addLayout(footer)
+
+    def _channels_page(self):
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setSpacing(12)
+        channels = QGroupBox(trans.t('feedback_channels_title'))
+        channel_layout = QVBoxLayout(channels)
+        channel_layout.addWidget(_note(trans.t('feedback_channels_hint')))
+        actions = QHBoxLayout()
+        issues = QPushButton(trans.t('feedback_open_issues'))
+        issues.clicked.connect(self._open_issues)
+        client = getattr(self.window_main, '_account_client', None)
         if client is not None and client.is_signed_in():
             self.account_button = QPushButton(trans.t('feedback_account_center'))
+            self.account_button.setObjectName('primaryButton')
             self.account_button.clicked.connect(self._open_account_center)
-            root.addWidget(self.account_button)
-        report_btn = QPushButton(trans.t('report_review'))
-        report_btn.clicked.connect(self._review_report)
-        buttons.addWidget(report_btn)
-        buttons.addStretch()
-        close_btn = QPushButton(trans.t("btn_close"))
-        close_btn.clicked.connect(self.reject)
-        buttons.addWidget(close_btn)
-        root.addLayout(buttons)
+            actions.addWidget(self.account_button)
+        else:
+            issues.setObjectName('primaryButton')
+        actions.addWidget(issues)
+        actions.addStretch()
+        channel_layout.addLayout(actions)
+        self.account_status = _note()
+        self.account_status.hide()
+        channel_layout.addWidget(self.account_status)
+        layout.addWidget(channels)
+
+        report = QGroupBox(trans.t('feedback_error_title'))
+        report_layout = QVBoxLayout(report)
+        report_layout.addWidget(_note(trans.t('feedback_error_hint')))
+        review = QPushButton(trans.t('report_review'))
+        review.clicked.connect(self._review_report)
+        report_layout.addWidget(review, 0, Qt.AlignmentFlag.AlignLeft)
+        layout.addWidget(report)
+        layout.addStretch()
+        return page
+
+    def _diagnostics_page(self):
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        view_controls = QHBoxLayout()
+        log = QRadioButton(trans.t('feedback_log_name'))
+        facts = QRadioButton(trans.t('action_env_info'))
+        log.setChecked(True)
+        view_controls.addWidget(log)
+        view_controls.addWidget(facts)
+        view_controls.addStretch()
+        self.copy_button = QPushButton(trans.t('feedback_copy_log'))
+        self.copy_button.clicked.connect(self._copy_log)
+        view_controls.addWidget(self.copy_button)
+        layout.addLayout(view_controls)
+
+        self.views = QStackedWidget()
+        self.log_view = QPlainTextEdit()
+        self.facts_view = QPlainTextEdit()
+        fixed_font = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
+        for view, label in ((self.log_view, log), (self.facts_view, facts)):
+            view.setFont(fixed_font)
+            view.setReadOnly(True)
+            view.setAccessibleName(label.text())
+            self.views.addWidget(view)
+        self.log_view.setPlainText(logging_setup.session_log_excerpt(MAX_INLINE_LOG))
+        layout.addWidget(self.views, 1)
+        self.log_path = _note(trans.t('feedback_log_hint').format(path=logging_setup.session_log_path()))
+        self.log_path.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        layout.addWidget(self.log_path)
+        facts.toggled.connect(self._show_facts)
+
+        layout.addWidget(_note(trans.t('feedback_local_export_scope')))
+        export_actions = QHBoxLayout()
+        export = QPushButton(trans.t('feedback_export'))
+        export.clicked.connect(self._export_package)
+        export_actions.addWidget(export)
+        self.open_folder_button = QPushButton(trans.t('feedback_open_export_folder'))
+        self.open_folder_button.clicked.connect(self._open_export_folder)
+        self.open_folder_button.hide()
+        export_actions.addWidget(self.open_folder_button)
+        export_actions.addStretch()
+        layout.addLayout(export_actions)
+        self.diagnostic_status = _note()
+        self.diagnostic_status.hide()
+        layout.addWidget(self.diagnostic_status)
+        return page
 
     def _show_facts(self, visible):
-        self.facts_view.setVisible(visible)
+        self.views.setCurrentWidget(self.facts_view if visible else self.log_view)
+        self.copy_button.setVisible(not visible)
+        self.log_path.setVisible(not visible)
         if visible and self._facts_probe is None:
             from dialogs.about import _EnvironmentProbe
             self.facts_view.setPlainText(trans.t('msg_gif_processing_title'))
@@ -121,7 +166,8 @@ class FeedbackDialog(QDialog):
         job = _AccountJob(lambda _started: client.open_web_handoff(timeout=8), self.window_main)
         self._account_job = job
         self.account_button.setEnabled(False)
-        self.log_hint.setText(trans.t('account_wait_browser'))
+        self.account_status.setText(trans.t('account_wait_browser'))
+        self.account_status.show()
         job.finished.connect(self._account_center_finished)
         job.finished.connect(job._release)
         job.start()
@@ -131,17 +177,20 @@ class FeedbackDialog(QDialog):
         self._account_job = None
         self.account_button.setEnabled(True)
         if error is not None and error.category != 'timeout':
-            self.log_hint.setText(AccountDialog._error_text(error))
+            self.account_status.setText(AccountDialog._error_text(error))
         elif error is None and not result:
-            self.log_hint.setText(trans.t('account_generic_error'))
+            self.account_status.setText(trans.t('account_generic_error'))
         else:
-            self.log_hint.setText(trans.t('feedback_log_hint').format(
-                path=str(logging_setup.session_log_path())))
+            self.account_status.hide()
 
     def _copy_log(self):
         from PyQt6.QtWidgets import QApplication
         QApplication.clipboard().setText(self.log_view.toPlainText())
-        self.log_hint.setText(trans.t("feedback_copied"))
+        self.diagnostic_status.setText(trans.t('feedback_copied'))
+        self.diagnostic_status.show()
+
+    def _open_logs_folder(self):
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(logging_setup.logs_dir().absolute())))
 
     def _open_export_folder(self):
         if self._export_path:
@@ -168,12 +217,16 @@ class FeedbackDialog(QDialog):
             "Zip (*.zip)")
         if not dest:
             return
+        self.open_folder_button.hide()
+        self._export_path = ""
         try:
             path = logging_setup.export_feedback_package(dest)
         except Exception as exc:
-            self.log_hint.setText(trans.t("feedback_export_failed").format(
+            self.diagnostic_status.setText(trans.t('feedback_export_failed').format(
                 error=f"{dest}: {exc}"))
+            self.diagnostic_status.show()
             return
         self._export_path = os.path.abspath(str(path))
-        self.log_hint.setText(trans.t("feedback_exported").format(path=self._export_path))
+        self.diagnostic_status.setText(trans.t('feedback_exported').format(path=self._export_path))
+        self.diagnostic_status.show()
         self.open_folder_button.setVisible(True)

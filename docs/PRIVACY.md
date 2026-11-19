@@ -112,7 +112,7 @@ local machine (in portable mode, beside the executable). Image and project data
 are not uploaded. When usage reporting is enabled, its random installation ID is
 also stored locally and sent as described above.
 
-Detailed session logs are written locally. Open **Help → Open Logs Folder** to
+Detailed session logs are written locally. Open **Help → Report a Problem → Open Logs Folder** to
 find them. They rotate at approximately 1 MB per file with three backups per process, and
 inactive process logs expire after 14 days. Local logs may contain source/output
 paths and final-pixel checksums. Usage statistics never read these logs. A local

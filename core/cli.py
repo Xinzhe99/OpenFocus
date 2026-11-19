@@ -774,7 +774,7 @@ def _fuse_stack_admitted_body(images, args):
             parameters=args._registration_parameters,
             brightness_reference=("last" if getattr(args, "exposure_match", True)
                                   else "first"),
-            use_gpu=False, defer_warps=defer_warps)
+            accelerate_ecc=not args.cpu, defer_warps=defer_warps)
         with performance_profile.current().stage('registration', resources=True):
             images = reg.process(images, output_path=None, thread_count=args.threads,
                                  resource_preference=getattr(args, "resource_preference", "balanced"),
@@ -1219,20 +1219,27 @@ def _auto_background(args, fused):
     mask_bytes = h * w * len(frames) if aligned else 0
     mask_scratch = h * w * 16 if aligned else 0
     require_memory(background_working_set_bytes(h, w, len(frames)) + mask_bytes + mask_scratch)
-    # Registration fills uncovered borders with black; never sample those.
-    valid = [_alignment_valid_mask(f) for f in frames] if aligned else None
+    cancelled = getattr(args, "_should_cancel", None)
     progress = None
     if getattr(args, "json_progress", False):
         def progress(fraction, message):
             args._progress(event="background", stage=message, fraction=round(fraction, 3))
     t0 = time.time()
+    valid = None
+    if aligned:
+        valid = []
+        for i, frame in enumerate(frames):
+            valid.append(_alignment_valid_mask(frame, should_cancel=cancelled))
+            if progress is not None:
+                progress(0.1 * (i + 1) / len(frames), 'checking aligned frames')
     try:
         result = replace_background(
             frames, fused, preset=args.auto_background,
             clean=args.background_mode == "clean",
             keep_soft_parts=bool(getattr(args, "keep_soft_parts", False)),
-            valid_masks=valid, progress=progress,
-            cancelled=getattr(args, "_should_cancel", None))
+            valid_masks=valid, cancelled=cancelled, use_gpu=not getattr(args, 'cpu', False),
+            progress=(progress if progress is None or not aligned else
+                      lambda f, msg: progress(0.1 + 0.9 * f, msg)))
     finally:
         del frames, valid
     if result.changed:

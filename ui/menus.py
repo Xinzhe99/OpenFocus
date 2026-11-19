@@ -217,35 +217,34 @@ def setup_menus(window: QMainWindow) -> None:
 
     edit_menu.addSeparator()
 
-    rotate_menu = edit_menu.addMenu(trans.t('menu_rotate'))
-    window.ui_objs['menu_rotate'] = rotate_menu
+    orientation_menu = edit_menu.addMenu(trans.t('menu_rotate_flip'))
+    window.ui_objs['menu_rotate_flip'] = orientation_menu
 
     rotate_90_cw_action = QAction(trans.t('action_rotate_90_cw'), window)
     rotate_90_cw_action.triggered.connect(lambda: window.rotate_stack(cv2.ROTATE_90_CLOCKWISE))
-    rotate_menu.addAction(rotate_90_cw_action)
+    orientation_menu.addAction(rotate_90_cw_action)
     window.ui_objs['action_rotate_90_cw'] = rotate_90_cw_action
 
     rotate_90_ccw_action = QAction(trans.t('action_rotate_90_ccw'), window)
     rotate_90_ccw_action.triggered.connect(lambda: window.rotate_stack(cv2.ROTATE_90_COUNTERCLOCKWISE))
-    rotate_menu.addAction(rotate_90_ccw_action)
+    orientation_menu.addAction(rotate_90_ccw_action)
     window.ui_objs['action_rotate_90_ccw'] = rotate_90_ccw_action
 
     rotate_180_action = QAction(trans.t('action_rotate_180'), window)
     rotate_180_action.triggered.connect(lambda: window.rotate_stack(cv2.ROTATE_180))
-    rotate_menu.addAction(rotate_180_action)
+    orientation_menu.addAction(rotate_180_action)
     window.ui_objs['action_rotate_180'] = rotate_180_action
 
-    flip_menu = edit_menu.addMenu(trans.t('menu_flip'))
-    window.ui_objs['menu_flip'] = flip_menu
+    orientation_menu.addSeparator()
 
     flip_horizontal_action = QAction(trans.t('action_flip_h'), window)
     flip_horizontal_action.triggered.connect(lambda: window.flip_stack(1))
-    flip_menu.addAction(flip_horizontal_action)
+    orientation_menu.addAction(flip_horizontal_action)
     window.ui_objs['action_flip_h'] = flip_horizontal_action
 
     flip_vertical_action = QAction(trans.t('action_flip_v'), window)
     flip_vertical_action.triggered.connect(lambda: window.flip_stack(0))
-    flip_menu.addAction(flip_vertical_action)
+    orientation_menu.addAction(flip_vertical_action)
     window.ui_objs['action_flip_v'] = flip_vertical_action
 
     window.resize_action = QAction(trans.t('action_resize'), window)
@@ -254,19 +253,21 @@ def setup_menus(window: QMainWindow) -> None:
     edit_menu.addAction(window.resize_action)
     window.ui_objs['action_resize'] = window.resize_action
 
-    # Retouch brush: paint pixels from a source frame onto the result
-    retouch_action = QAction(trans.t('action_retouch'), window)
+    retouch_menu = edit_menu.addMenu(trans.t('menu_retouch'))
+    window.ui_objs['menu_retouch'] = retouch_menu
+
+    retouch_action = QAction(trans.t('retouch_from_workspace'), window)
     retouch_action.setShortcut("Ctrl+T")
     retouch_action.setToolTip(trans.t('action_retouch_hint'))
     retouch_action.triggered.connect(window.show_retouch_dialog)
-    edit_menu.addAction(retouch_action)
+    retouch_menu.addAction(retouch_action)
     window.ui_objs['action_retouch'] = retouch_action
-    retouch_action.setProperty("trans_key", 'action_retouch')
+    retouch_action.setProperty('trans_key', 'retouch_from_workspace')
 
-    standalone_retouch = QAction(trans.t('standalone_retouch_action'), window)
-    standalone_retouch.setProperty('trans_key', 'standalone_retouch_action')
+    standalone_retouch = QAction(trans.t('retouch_from_file'), window)
+    standalone_retouch.setProperty('trans_key', 'retouch_from_file')
     standalone_retouch.triggered.connect(window.show_standalone_retouch)
-    edit_menu.addAction(standalone_retouch)
+    retouch_menu.addAction(standalone_retouch)
     window.ui_objs['standalone_retouch_action'] = standalone_retouch
 
     # Labels live under Tools: adding and removing are two halves of one
@@ -540,12 +541,6 @@ def setup_menus(window: QMainWindow) -> None:
     help_menu.aboutToShow.connect(
         lambda: getattr(window, '_refresh_account_action', lambda: None)())
 
-
-    env_action = QAction(trans.t('action_env_info'), window)
-    env_action.triggered.connect(window.show_environment_info)
-    help_menu.addAction(env_action)
-    window.ui_objs['action_env_info'] = env_action
-
     feedback_action = QAction(trans.t('action_send_feedback'), window)
     feedback_action.setToolTip(trans.t('action_send_feedback_hint'))
     feedback_action.triggered.connect(window.show_feedback_dialog)
@@ -588,8 +583,3 @@ def setup_menus(window: QMainWindow) -> None:
     install_action.setVisible(False)
     help_menu.addAction(install_action)
     window.ui_objs['action_install_update'] = install_action
-
-    logs_action = QAction(trans.t('menu_open_logs'), window)
-    logs_action.triggered.connect(window.open_logs_folder)
-    help_menu.addAction(logs_action)
-    window.ui_objs['menu_open_logs'] = logs_action
