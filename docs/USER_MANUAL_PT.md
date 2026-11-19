@@ -76,6 +76,8 @@ Em **Salvar como**, TIFF comum salva o resultado como uma única imagem; TIFF em
 A forma preferida de instalar uma compilação empacotada é o site do projeto, **https://openfocus.top**: ele aponta para o instalador do Windows, a compilação do macOS e o pacote do Linux, com scripts de instalação para terminal. Prefira-o a recompilar: esses artefatos são a saída exata do pipeline de lançamento. `pip install openfocus` instala apenas a interface de linha de comando headless (a wheel não depende de PyQt6 de propósito); use uma compilação desktop ou uma cópia do código-fonte para a GUI.
 O site oferece versões desktop estáveis por padrão. No Windows e no macOS, você pode ativar atualizações beta; no Linux, atualize baixando um novo arquivo desktop. A CLI do PyPI é distribuída separadamente.
 
+As versões atuais para Windows não são assinadas digitalmente. Antes de executar o arquivo baixado, compare o hash SHA-256 dele com o valor indicado no manifesto da versão.
+
 Para instalar pelo terminal, visualize primeiro o comando e depois execute-o sem `--dry-run`: no macOS ou Linux, `curl -fsSL https://openfocus.top/install.sh | sh -s -- --dry-run` e depois `curl -fsSL https://openfocus.top/install.sh | sh` (no Linux instala a CLI); no Windows, `irm https://openfocus.top/install.ps1 | iex` no PowerShell.
 
 Após a instalação, inicie o OpenFocus de uma destas formas:
@@ -1063,7 +1065,7 @@ Códigos de saída: `0` sucesso, `1` erro de processamento, `2` erro de uso. Exe
 
 #### Aviso do Windows SmartScreen na primeira inicialização
 
-A assinatura dos binários do Windows depende da versão específica (consulte as notas da versão); a assinatura não é garantida. Baixe-os de **https://openfocus.top** em vez de um espelho de terceiros. Se o SmartScreen avisar, clique em **Mais informações → Executar assim mesmo**. A primeira inicialização após descompactar pode levar 30–60 segundos.
+As versões atuais para Windows não são assinadas digitalmente. Baixe o arquivo pelo site oficial do OpenFocus (**https://openfocus.top**). Antes de executar o arquivo baixado, compare o hash SHA-256 dele com o valor indicado no manifesto da versão. Se o SmartScreen avisar, clique em **Mais informações → Executar assim mesmo**. A primeira inicialização após descompactar pode levar 30–60 segundos.
 
 #### O macOS diz que o aplicativo "não pode ser aberto" ou "está danificado"
 
