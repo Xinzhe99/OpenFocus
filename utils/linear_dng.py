@@ -817,7 +817,9 @@ def convert_raw_to_dng(path, source, *, should_cancel=None):
                     def strips():
                         for start in range(0, pixels.shape[0], rows):
                             check_cancel()
-                            yield np.ascontiguousarray(pixels[start:start + rows], dtype='<u2').tobytes()
+                            # tobytes packs strided visible rows directly, even
+                            # when LibRaw's optical border adds row padding.
+                            yield pixels[start:start + rows].astype('<u2', copy=False).tobytes()
 
                     with tifffile.TiffWriter(path, byteorder='<', bigtiff=False) as writer:
                         writer.write(strips(), shape=pixels.shape, dtype='<u2',
