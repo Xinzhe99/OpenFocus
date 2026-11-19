@@ -40,7 +40,7 @@ def _texts(key, *fallbacks):
     return list(dict.fromkeys(values))
 
 SKIP = {"action_exit", "action_install_update", "menu_check_updates",
-        "menu_open_logs", "action_gpu_accel"}
+        "action_gpu_accel"}
 LANGUAGE_SKIP = {f"action_lang_{code}" for code in
                  ("de", "es", "fr", "it", "ja", "ko", "nl", "pl", "pt", "ru", "zh")}
 

@@ -2197,7 +2197,7 @@ def test_reset_stack_menu_clears_real_wipe_and_restores_import(qapp, control_win
     window.source_manager._apply_load_options(
         LoadOptions(1.0, ["frame0.tif", "frame1.tif"], list(frames), list(frames)))
     window.stack_slider.setValue(1)
-    window.ui_objs["menu_rotate"].actions()[0].trigger()
+    window.ui_objs["action_rotate_90_cw"].trigger()
     assert window.current_display_index == 1
     assert window.raw_images[0].shape == (40, 24, 3)
 
