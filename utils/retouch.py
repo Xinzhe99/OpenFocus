@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from collections import OrderedDict
 import dataclasses
+from math import isqrt, prod
 import threading
 from typing import Optional, Tuple
 
@@ -21,30 +22,87 @@ import numpy as np
 from core.render_context import RenderContext, SourceFrame
 
 
+_NAVIGATION_PREVIEW_BYTES = 64 * 1024 * 1024
+_STRIP_EDGE = 64
+
+
+def _preview_source(image):
+    from core.source_frames import ProcessedFrame
+    while isinstance(image, ProcessedFrame):
+        image = image.source
+    return image
+
+
+def _navigation_edge(frames):
+    from core.source_frames import PREVIEW_EDGE, SourceFrame as LazySourceFrame
+
+    # The capture can have a different layout from the native frame (e.g. a
+    # three-channel display thumbnail for a grayscale source). Allow for both.
+    bytes_per_pixel = 0
+    for frame in frames:
+        image = frame.image
+        source = _preview_source(image)
+        capture = source.preview if isinstance(source, LazySourceFrame) else source
+        if capture is not None:
+            bytes_per_pixel += max(prod(image.shape[2:]), prod(capture.shape[2:]))  # display uint8
+    return min(PREVIEW_EDGE, isqrt(_NAVIGATION_PREVIEW_BYTES // max(1, bytes_per_pixel)))
+
+
+def _strip_fallback(image):
+    """Keep a source-identifying strip icon even for unsupported transforms."""
+    from core.source_frames import SourceFrame as LazySourceFrame, _small, display_image
+    source = _preview_source(image)
+    is_display = bool(getattr(source, 'preview_is_display', False))
+    if isinstance(source, LazySourceFrame):
+        if source.preview is None:
+            return None, is_display
+        source = display_image(source)
+    if source is None or not source.size:
+        return None, is_display
+    return _small(source, _STRIP_EDGE), is_display
+
+
+def _display_capture(pixels, is_display, metadata):
+    from utils.image_utils import to_display_uint8
+    if not is_display and metadata is not None:
+        from utils.linear_dng import develop_linear
+        pixels = develop_linear(pixels, metadata)
+    return to_display_uint8(pixels)
+
+
 def prepare_retouch_document(base_image, context):
-    """Prepare the result and available thumbnails without decoding the stack."""
-    from core.source_frames import (ProcessedFrame, SourceFrame as LazySourceFrame,
-                                    display_image, resolve_frame)
+    """Prepare strip icons and frame-local navigation pixels on the pixel worker."""
+    from core.aligned_previews import registered_preview
+    from core.source_frames import _small, resolve_frame
 
     document = RetouchDocument(resolve_frame(base_image), context)
     document.source_previews = []
-    document.source_previews_are_display = []
+    document.source_navigation_previews = []
+    edge = _navigation_edge(document.frames)
+    remaining = _NAVIGATION_PREVIEW_BYTES
     for frame in document.frames:
-        image = frame.image
-        while isinstance(image, ProcessedFrame):
-            image = image.source
-        is_display = False
-        if isinstance(image, LazySourceFrame):
-            is_display = image.preview_is_display
-            image = None if image.preview is None else display_image(image)
-        if image is not None and image.size:
-            h, w = image.shape[:2]
-            scale = min(1.0, 64 / max(h, w))
-            image = cv2.resize(image, (max(1, round(w * scale)),
-                                       max(1, round(h * scale))),
-                               interpolation=cv2.INTER_AREA)
-        document.source_previews.append(image)
-        document.source_previews_are_display.append(is_display)
+        preview = registered_preview(frame.image, captured_only=True, edge=max(edge, _STRIP_EDGE))
+        navigation = None
+        if preview is None:
+            strip, is_display = _strip_fallback(frame.image)
+            if strip is not None:
+                strip = _display_capture(strip, is_display, context.linear_dng_metadata)
+        else:
+            image, is_display = preview
+            image = _display_capture(image, is_display, context.linear_dng_metadata)
+            source = _preview_source(frame.image)
+            if isinstance(source, np.ndarray) and np.shares_memory(image, source):
+                # Small array-backed frames are already within the edge limit.
+                # Own the capture even when the input is a view of a larger array.
+                image = image.copy()
+            strip = _small(image, _STRIP_EDGE)
+            if edge:
+                candidate = _small(image, edge)
+                if candidate.nbytes <= remaining:
+                    navigation = candidate
+                    remaining -= candidate.nbytes
+        document.source_previews.append(strip)
+        document.source_navigation_previews.append(navigation)
     return document
 
 TILE = 128  # undo granularity (pixels)
@@ -548,41 +606,6 @@ class TileHistory:
             self.evicted = True
 
 
-def compute_auto_background(image, frames, preset="auto", clean=True,
-                            cancelled=None, progress=None, keep_soft_parts=False,
-                            stacked=None):
-    """Run `core.background_fill.replace_background` on a retouch image.
-
-    With `stacked` (the stacked result `image` was retouched from), the
-    background is analysed from `stacked` and laid onto `image`, so edits
-    on the subject survive and an earlier replacement is not analysed
-    again.  Admits the working set with the resource policy and serializes
-    with other heavy jobs.  Returns a `BackgroundFillResult`."""
-    from core.background_fill import replace_background, background_working_set_bytes
-    from core.resource_policy import heavy_job, require_memory
-    h, w = image.shape[:2]
-    # Alignment masks are built sequentially: retain at most one byte/pixel
-    # per aligned frame, plus the connected-component construction scratch.
-    aligned = [frame for frame in frames if frame.aligned]
-    mask_bytes = sum(frame.image.shape[0] * frame.image.shape[1] for frame in aligned)
-    mask_scratch = max((frame.image.shape[0] * frame.image.shape[1] * 16
-                        for frame in aligned), default=0)
-    required = background_working_set_bytes(h, w, len(frames)) + mask_bytes + mask_scratch
-    with heavy_job(cancelled):
-        require_memory(required)
-        from core.source_frames import ProcessedFrame, SourceFrame as LazySourceFrame, materialize_frames
-        if any(isinstance(frame.image, (LazySourceFrame, ProcessedFrame)) for frame in frames):
-            images = materialize_frames([frame.image for frame in frames], should_cancel=cancelled)
-            frames = [dataclasses.replace(frame, image=pixels)
-                      for frame, pixels in zip(frames, images)]
-        valid_masks = [frame.valid_mask() for frame in frames]
-        result = replace_background([frame.image for frame in frames],
-                                    image if stacked is None else stacked, preset=preset,
-                                    valid_masks=valid_masks,
-                                    composite_onto=None if stacked is None else image,
-                                    clean=clean, keep_soft_parts=keep_soft_parts,
-                                    progress=progress, cancelled=cancelled)
-    return result
 
 
 class RetouchDocument:
@@ -702,9 +725,38 @@ class RetouchDocument:
     def active_frame(self) -> SourceFrame:
         return self.frames[self.frame_index]
 
+    def prepared_source(self, index):
+        """Return recently prepared brush pixels and mask together, if resident."""
+        frame = self.frames[index]
+        if frame.aligned and index not in self._mask_cache:
+            return None
+        with self._source_lock:
+            pixels = self._source_cache.get(index)
+        if pixels is None:
+            if not isinstance(frame.image, np.ndarray):
+                return None
+            pixels = frame.image
+        return pixels, self._mask_cache.get(index)
+
+    def retain_prepared_source(self, index, pixels, valid):
+        """Publish a completed selection without replacing its lazy descriptor."""
+        if pixels is not self.frames[index].image:
+            with self._source_lock:
+                self._remember_pixels(index, pixels)
+        if self.frames[index].aligned:
+            self._remember_mask(index, valid)
+
+    def _remember_pixels(self, index, pixels):
+        from constants import FRAME_RAM_BUDGET_BYTES
+        self._source_cache[index] = pixels
+        self._source_cache.move_to_end(index)
+        while len(self._source_cache) > 1 and (
+                len(self._source_cache) > 2 or
+                sum(frame.nbytes for frame in self._source_cache.values()) > FRAME_RAM_BUDGET_BYTES):
+            self._source_cache.popitem(last=False)
+
     def source_pixels(self, index: int):
         """Resolve the selected captured frame, keeping at most two lazy frames."""
-        from constants import FRAME_RAM_BUDGET_BYTES
         from core.source_frames import ProcessedFrame, SourceFrame as LazySourceFrame, resolve_frame
         image = self.frames[index].image
         if not isinstance(image, (LazySourceFrame, ProcessedFrame)):
@@ -717,11 +769,7 @@ class RetouchDocument:
             from core.image_loader import _has_transparency, UnsupportedTransparency
             if _has_transparency(pixels):
                 raise UnsupportedTransparency("Retouching transparent images is unsupported")
-            self._source_cache[index] = pixels
-            while len(self._source_cache) > 1 and (
-                    len(self._source_cache) > 2 or
-                    sum(frame.nbytes for frame in self._source_cache.values()) > FRAME_RAM_BUDGET_BYTES):
-                self._source_cache.popitem(last=False)
+            self._remember_pixels(index, pixels)
             return pixels
 
     @property
@@ -772,9 +820,12 @@ class RetouchDocument:
             frame = dataclasses.replace(frame, image=image)
         return frame
 
-    def resolve_all_sources(self, cancelled=None):
-        for index in range(len(self.frames)):
+    def resolve_all_sources(self, cancelled=None, progress=None):
+        total = len(self.frames)
+        for index in range(total):
             self.frames[index] = self.resolve_source(index, cancelled)
+            if progress is not None:
+                progress((index + 1) / total)
         self.context = dataclasses.replace(self.context, frames=tuple(self.frames))
 
     def result(self) -> np.ndarray:
@@ -835,8 +886,51 @@ class RetouchDocument:
             and frame.image.shape[:2] == (self.height, self.width)
             for frame in self.frames)
 
+    def _compute_background(self, stacked, preset, clean, keep_soft_parts,
+                            cancelled, progress, use_gpu):
+        from core.background_fill import background_working_set_bytes, replace_background
+        from core.resource_policy import heavy_job, require_memory
+
+        count = len(self.frames)
+        pixels = self.width * self.height
+        aligned = sum(frame.aligned for frame in self.frames)
+        required = background_working_set_bytes(self.height, self.width, count)
+        if aligned:
+            required += pixels * (aligned + 16)  # Retained masks and one labelling workspace.
+
+        if progress is not None:
+            progress(0., 'waiting for processing')
+        with heavy_job(cancelled):
+            require_memory(required)
+            if progress is not None:
+                progress(0., 'preparing source frames')
+            self.resolve_all_sources(cancelled, progress=None if progress is None else
+                                     lambda fraction: progress(0.12 * fraction, 'preparing source frames'))
+            masks = []
+            for index, frame in enumerate(self.frames):
+                if cancelled is not None and cancelled():
+                    from core.background_fill import BackgroundFillCancelled
+                    raise BackgroundFillCancelled()
+                mask = (self._mask_cache[index] if index in self._mask_cache else
+                        frame.valid_mask(should_cancel=cancelled))
+                masks.append(mask)
+                if progress is not None:
+                    progress(0.12 + 0.10 * (index + 1) / count, 'checking aligned frames')
+
+            def analyse(fraction, message):
+                if message != 'done':
+                    progress(0.22 + 0.74 * fraction, message)
+
+            return replace_background(
+                [frame.image for frame in self.frames], stacked, preset=preset,
+                valid_masks=masks, clean=clean, keep_soft_parts=keep_soft_parts,
+                composite_onto=None if stacked is self.base and not self.is_dirty else self.working,
+                cancelled=cancelled, progress=analyse if progress is not None else None,
+                use_gpu=use_gpu)
+
     def auto_background(self, preset: str = "auto", clean: bool = True,
-                        cancelled=None, progress=None, keep_soft_parts: bool = False) -> str:
+                        cancelled=None, progress=None, keep_soft_parts: bool = False,
+                        *, use_gpu: bool = False) -> str:
         """Replace the background of the current result with one source
         frame (see core.background_fill) as one history transaction.
 
@@ -860,14 +954,12 @@ class RetouchDocument:
         if stacked is None or stacked.shape != self.working.shape:
             stacked = self.base
         try:
-            self.resolve_all_sources(cancelled)
-            result = compute_auto_background(self.working, self.frames, preset, clean,
-                                             cancelled=cancelled, progress=progress,
-                                             keep_soft_parts=keep_soft_parts,
-                                             stacked=(None if stacked is self.base and not self.is_dirty
-                                                      else stacked))
+            result = self._compute_background(stacked, preset, clean, keep_soft_parts,
+                                              cancelled, progress, use_gpu)
         except (BackgroundFillCancelled, RegistrationCancelled):
             return "cancelled"
+        if progress is not None:
+            progress(0.96, 'saving the retouch')
         image = result.image
         map_bytes = sum(layer.nbytes for _, layer, _ in result.missing.layers())
         changed = not np.array_equal(image, self.working)
@@ -899,6 +991,8 @@ class RetouchDocument:
                         return "oversize"
                     self.history.remember_tile(key)
                     tile[...] = new
+                if progress is not None and sl[1].stop == self.width:
+                    progress(0.96 + 0.03 * sl[0].stop / self.height, 'saving the retouch')
             if cancelled is not None and cancelled():
                 self.history.abort()
                 return "cancelled"
@@ -910,6 +1004,8 @@ class RetouchDocument:
             fill = dataclasses.replace(result, image=None)
             status = self._commit_stroke_operation(operation, cancelled=cancelled, fill=fill)
             published = status in ("committed", "empty")
+            if published and progress is not None:
+                progress(1., 'done')
             return status
         except _HistoryCapacityError:
             self.history.abort()
@@ -956,10 +1052,14 @@ class RetouchDocument:
             self._mask_cache.move_to_end(index)
             return self._mask_cache[index]
         mask = dataclasses.replace(frame, image=self.source_pixels(index)).valid_mask()
+        self._remember_mask(index, mask)
+        return mask
+
+    def _remember_mask(self, index, mask):
         self._mask_cache[index] = mask
+        self._mask_cache.move_to_end(index)
         while len(self._mask_cache) > 2:
             self._mask_cache.popitem(last=False)
-        return mask
 
     def source_valid_at(self, x: float, y: float) -> bool:
         if not (0 <= x < self.width and 0 <= y < self.height):

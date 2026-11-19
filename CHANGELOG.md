@@ -1,5 +1,6 @@
 # Changelog
 - Open Linux desktop menu entries from bundle paths that contain percent signs.
+- Show embedded TIFF thumbnails stored after the main image in the batch converter, including their display orientation.
 
 All notable changes to OpenFocus are documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
@@ -7,6 +8,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- Batch Image Converter now defaults to a sibling `_converted` folder and previews the destination for the selected file. Choose a source-relative or custom folder, cap the long edge at 2K/4K/8K, or shrink by percentage. DNG keeps sensor dimensions. Unchanged same-format images are counted as skipped. Right-click queue rows to remove the selection.
 - Add an opt-in OpenCL GPU path for OpenFocus A fusion (`use_gpu=True`),
   porting the Burt-pyramid focus response, winner-take-all selection with
   low-response background accumulation, low-response blending and output
@@ -21,16 +23,23 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   output — to device kernels. Verified bit-exact against the CPU path
   (92-frame 2048x1366 stack: ndiff=0, ~3.8x faster on RTX 4060 Laptop);
   falls back to CPU when the device budget or build fails.
+- Accelerate large fractional image reductions during ECC registration on supported Windows OpenCL GPUs. The CPU solver and Lanczos warp produce the same alignment, and the job log records completed GPU resizes.
 - Show estimated RAM and GPU memory in Render Settings, including expected CPU
   fallback when the selected neural render does not fit the device budget.
-- Open the selected render's retained focus positions for export in Depth Map for
-  OpenFocus B/C and StackMFF V2/V3.
+- Reuse the selected OpenFocus B/C or StackMFF V2/V3 render’s saved depth when
+  opening Depth Map, pressing Compute with matching settings, or switching back
+  to its measure. Show the 2D preview before building a requested 3D surface.
 - Show the current WeChat group invite in Contact Us, with a bundled QR code for offline use.
 - Keep progress, cancel controls, and timed notices on the left of the desktop
   status bar and a sponsor invitation that opens Contact Us on the right.
 - Open the user manual on GitHub in the current interface language from Help.
 
 ### Changed
+- Move frame review and cancellation to the source frame context menu. With the list focused, Ctrl+Shift+I includes all frames, Ctrl+Shift+X excludes all frames and Ctrl+Shift+F starts or cancels review. On macOS use Command. The cancellation notice clears after five seconds.
+- Edit OpenFocus A/B/C smoothing in whole levels, one per click. Fractional values
+  from existing projects and recipes keep their original precision until edited.
+- Retouch’s Auto background dialog explains when to replace the background and when to use the Source Brush. It groups source and edge options, reports progress through preparation and replacement, and supports cancellation and retry.
+- Speed up Auto background’s registration mask checks and edge cleaning. Large stacks can use an OpenCL GPU for focus statistics with an exact CPU fallback.
 - Publish unsigned Windows builds with SHA-256 hashes for the installer and portable archive.
 - Include allowlisted error categories, render stages, and memory admission
   figures in sanitized reports, without adding exception messages or paths.
@@ -40,6 +49,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   of every 8- or 16-bit code, computed by the existing per-sample arithmetic
   and applied in parallel row bands, instead of float strips on one thread.
   Output pixels are unchanged.
+- Group rotation and flip in one Edit submenu. Retouch Result offers workspace outputs and existing image files.
+- Open feedback channels or local diagnostics from Help → Report a Problem. The log folder is accessible beside Close on both tabs.
 - The browser now shows a localized receipt when a desktop sign-in request arrives,
   when the browser has no active session, or when the user needs to try again.
 - Require an account to enter the desktop application; a saved sign-in can be
@@ -79,6 +90,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   opt in to beta updates through Advanced Settings or the welcome dialog.
 - Download and verify supported desktop updates while the app is idle. Keep
   release notes with the staged version and apply it from Restart and Update.
+- Place Japanese last in the desktop language menu.
 - Store registration results in the user cache with a shared 2 GiB budget and
   a Clear Registration Cache action in Advanced Settings.
 - Prepare ECC source frames concurrently within the alignment stage's CPU and
@@ -87,6 +99,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   transforms, cropping and output pixels are unchanged.
 
 ### Fixed
+- Reuse the last alignment across fusion methods when the original frame selection and registration settings are restored.
+- Report project restore completion after the desktop has applied the frames and settings, including after an update restart.
 - Stop desktop renders and affected batch stacks when registration rejects a frame.
   The error identifies the frame and the reason. Older projects use the same behavior.
 - Include the Qt XCB shape dependency in Linux desktop builds and use the
@@ -95,8 +109,13 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   stack loads can continue.
 - Bound Windows memory admission by reported commit headroom as well as
   available physical RAM, avoiding plans above the reported commit limit.
+- Stream baseline 4:4:4 JPEGs in Batch Image Converter, including 16-bit
+  sources. Failed source rows now retain the codec or filesystem error.
 - Include the immediate Windows job object's per-process commit limit in
   admission when that limit is present.
+- Budget native Fujifilm RAF-to-DNG conversion for the full sensor mosaic,
+  strip writer and embedded preview. Large GFX files can now convert under
+  memory limits that still protect the desktop.
 - Keep OpenFocus A on the GPU when a streamed source and the fusion workspace fit
   in memory. Long stacks can reuse cached frames without filling the decoded RAM cache.
 - Close the isolated language audit without project confirmation, including
@@ -116,6 +135,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   separate when both targets are selected.
 - Close finished batch progress dialogs before showing their summaries, and
   report retouch source loading as busy to the local control channel.
+- Show the selected captured source immediately in Retouch Result when its preview
+  is available. Scrubbing coalesces full-resolution loads and keeps brush settings
+  available while the selected source pixels and validity mask are prepared.
 - Report a stack load as finished only after the desktop releases its loader,
   so control clients can render as soon as their load completes.
 - Handle Windows lock contention when opening the report queue and depth cache.

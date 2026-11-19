@@ -1634,6 +1634,49 @@ def test_stack_load_reports_its_own_completion(server, stack_frames, monkeypatch
     assert pending["render"]["error"]["code"] == "busy"
 
 
+@pytest.mark.parametrize("outcome", ["published", "failed", "superseded"])
+def test_stack_load_waits_for_gui_publication(server, stack_frames, outcome):
+    from PyQt6.QtCore import QCoreApplication, QEvent
+
+    manager = server.window.source_manager
+    during = {}
+    errors = []
+
+    def prepare(options):
+        # Deliver the thread's queued finished signal inside preparation, as
+        # the nested event loop used by project restore can do on Windows.
+        during["thread_stopped"] = manager._load_worker.wait(5000)
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.MetaCall)
+        during["frames"] = call(server, "stack.frames")["result"]
+        if outcome == "failed":
+            raise ValueError("Project frame could not be decoded")
+        if outcome == "superseded":
+            manager.clear_image_stack()
+        return options
+
+    load_id = manager._start_load_worker(folder=str(stack_frames), prepare_options=prepare,
+                                         on_error=errors.append)
+    assert wait_until(lambda: call(server, "stack.frames")["result"]["load"]["finished"])
+    assert during["thread_stopped"]
+    pending = during["frames"]
+    assert pending["names"] == []
+    assert pending["load"]["id"] == load_id
+    assert pending["load"]["active"] and not pending["load"]["finished"]
+    final = call(server, "stack.frames")["result"]
+    assert final["load"]["id"] == load_id
+    assert not final["load"]["active"]
+    if outcome == "published":
+        assert final["names"] == ["f0.tif", "f1.tif", "f2.tif"]
+        assert final["load"]["error"] is None and not errors
+    elif outcome == "failed":
+        assert final["names"] == []
+        assert errors == ["Project frame could not be decoded"]
+        assert final["load"]["error"] == errors[0]
+    else:
+        assert final["names"] == []
+        assert final["load"]["error"] == "cancelled" and not errors
+
+
 def test_stack_load_reports_a_failed_decode(server, tmp_path):
     token = server.token
     started = call(server, "stack.load", token=token,
@@ -2154,7 +2197,7 @@ def test_reset_stack_menu_clears_real_wipe_and_restores_import(qapp, control_win
     window.source_manager._apply_load_options(
         LoadOptions(1.0, ["frame0.tif", "frame1.tif"], list(frames), list(frames)))
     window.stack_slider.setValue(1)
-    window.ui_objs["menu_rotate"].actions()[0].trigger()
+    window.ui_objs["action_rotate_90_cw"].trigger()
     assert window.current_display_index == 1
     assert window.raw_images[0].shape == (40, 24, 3)
 

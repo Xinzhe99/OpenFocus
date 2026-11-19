@@ -515,9 +515,39 @@ def _jpeg_segments(encoded):
 
 
 @pytest.mark.parametrize('selection_threshold', [1, 1024 ** 3])
+@pytest.mark.parametrize('sampling, factors', [
+    (cv2.IMWRITE_JPEG_SAMPLING_FACTOR_444, (1, 1)),
+    (cv2.IMWRITE_JPEG_SAMPLING_FACTOR_422, (2, 1)),
+    (cv2.IMWRITE_JPEG_SAMPLING_FACTOR_420, (2, 2)),
+])
+def test_standard_jpeg_sampling_uses_banded_encoder(
+        tmp_path, monkeypatch, bounded, sampling, factors, selection_threshold):
+    import io
+
+    monkeypatch.setattr(image_utils, '_BOUNDED_WRITE_THRESHOLD', selection_threshold)
+    pixels = np.random.default_rng(178).integers(0, 65536, (29, 38, 3), np.uint16)[::-1, ::2]
+    expected_source = pixels.copy()
+    pixels.flags.writeable = False
+    params = [cv2.IMWRITE_JPEG_QUALITY, 95, cv2.IMWRITE_JPEG_SAMPLING_FACTOR, sampling]
+    ok, reference = cv2.imencode('.jpg', image_utils.to_display_uint8(pixels), params)
+    assert ok
+    monkeypatch.setattr(cv2, 'imencode', lambda *a: pytest.fail('Whole-image JPEG encoder used'))
+    path = tmp_path / 'sampling.jpg'
+    profile = ImageCms.ImageCmsProfile(ImageCms.createProfile('sRGB')).tobytes()
+    assert image_utils.imwrite_auto(path, pixels, params, exif=_metadata(), icc_profile=profile)
+    with Image.open(path) as saved, Image.open(io.BytesIO(reference)) as expected:
+        assert saved.quantization == expected.quantization
+        assert saved.layer == expected.layer
+        assert saved.layer[0][1:3] == factors
+        np.testing.assert_array_equal(np.asarray(saved), np.asarray(expected))
+    np.testing.assert_array_equal(pixels, expected_source)
+    _assert_metadata(path, profile)
+    assert not list(bounded[1].iterdir())
+
+
+@pytest.mark.parametrize('selection_threshold', [1, 1024 ** 3])
 @pytest.mark.parametrize('flags, sampling, restart', [
     ([cv2.IMWRITE_JPEG_RST_INTERVAL, 1], None, 1),
-    ([cv2.IMWRITE_JPEG_SAMPLING_FACTOR, 0x111111], (1, 1), None),
     ([cv2.IMWRITE_JPEG_SAMPLING_FACTOR, 0x411111], (4, 1), None),
     ([cv2.IMWRITE_JPEG_LUMA_QUALITY, 80, cv2.IMWRITE_JPEG_CHROMA_QUALITY, 20], None, None),
     ([cv2.IMWRITE_JPEG_RST_INTERVAL, 1, cv2.IMWRITE_JPEG_PROGRESSIVE, 1,

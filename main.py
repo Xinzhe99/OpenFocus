@@ -159,7 +159,6 @@ import cv2
 from ui.styles import GLOBAL_DARK_STYLE
 from locales import trans
 from dialogs import (
-    EnvironmentInfoDialog,
     ContactInfoDialog,
     BatchProcessingDialog,
     TileSettingsDialog,
@@ -2822,13 +2821,6 @@ class OpenFocus(QMainWindow):
         from dialogs.welcome import WelcomeDialog
         WelcomeDialog(self, main_window=self).exec()
 
-    def open_logs_folder(self) -> None:
-        """Open the folder that contains the application log files."""
-        from PyQt6.QtGui import QDesktopServices
-        from utils.logging_setup import logs_dir
-        QDesktopServices.openUrl(QUrl.fromLocalFile(str(logs_dir())))
-
-
     def get_or_create_source_pixmap(self, index: int):
         """Return a bounded display pixmap without resolving original pixels."""
         if 0 <= index < len(self.stack_images):
@@ -3623,11 +3615,6 @@ class OpenFocus(QMainWindow):
         from dialogs.feedback import FeedbackDialog
         FeedbackDialog(self).exec()
 
-    def show_environment_info(self):
-        """显示环境信息对话框"""
-        dialog = EnvironmentInfoDialog(self)
-        dialog.exec()
-    
     def display_fusion_result(self):
         """显示融合结果到右侧预览区"""
         self.output_manager.show_fusion_result()
@@ -3744,6 +3731,7 @@ class OpenFocus(QMainWindow):
                 alignment=alignment_method,
                 registration_parameters=self.registration_parameters_for(alignment_method),
                 exposure_match=self.brightness_option_for('exposure_match'),
+                use_gpu=self.use_gpu,
                 reverse_registration=alignment_key[-1] == 'reverse-registration-v1',
             )
             self.roi_alignment_worker.finished_signal.connect(self._on_roi_alignment_finished)
@@ -4709,10 +4697,6 @@ class OpenFocus(QMainWindow):
         self.refresh_registration_parameters()
         c.btn_reset.setText(trans.t('btn_reset'))
         c.btn_render_settings.setText(trans.t('render_settings_title'))
-        c.btn_select_all.setText(trans.t('btn_select_all'))
-        c.btn_select_all.setToolTip(trans.t('btn_select_all_hint'))
-        c.btn_select_none.setText(trans.t('btn_select_none'))
-        c.btn_select_none.setToolTip(trans.t('btn_select_none_hint'))
         self.source_manager.decorate_source_items()
         # Keep the cancel/progress affordance while a render or comparison
         # runs — the retranslation must not reset "Cancel render"/"Cancel" to

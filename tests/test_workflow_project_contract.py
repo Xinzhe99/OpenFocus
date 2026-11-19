@@ -273,6 +273,39 @@ def test_render_with_exclusions_publishes_matching_names(qapp, monkeypatch):
     assert saved == []
 
 
+def test_restoring_checked_frames_reuses_ecc_across_fusion_methods(qapp, monkeypatch):
+    from PyQt6.QtCore import Qt
+    from main import OpenFocus
+    from tests.test_gui_units import _render_window, _patched_render_manager, _finish_alignment
+
+    window = _render_window([np.full((12, 18, 3), i, np.uint8) for i in range(3)])
+    window.effective_stack = OpenFocus.effective_stack.__get__(window)
+    window.set_alignment_method('ecc')
+    manager, _ = _patched_render_manager(monkeypatch, window, ai_available=True)
+    sources = SourceManager(window)
+    sources.decorate_source_items()
+    window.file_list.itemChanged.connect(sources.on_item_changed)
+    manager._publish_aligned_stack = lambda *_: None
+    manager.start_render()
+    first_context = manager._render_context
+    aligned = _finish_alignment(manager, window, manager.worker.args[0])
+
+    item = window.file_list.item(1)
+    item.setCheckState(Qt.CheckState.Unchecked)
+    window.set_fusion_method('stackmffv2')
+    manager.start_render(force_algorithm='stackmffv2')
+    assert manager.worker.args[2] is False
+    assert [int(frame[0, 0, 0]) for frame in manager.worker.args[0]] == [0, 2]
+    manager.on_render_error('CANCELLED: test')
+
+    item.setCheckState(Qt.CheckState.Checked)
+    assert manager._stack_changed_since(first_context)
+    manager.start_render(force_algorithm='stackmffv2')
+    assert manager.worker.args[2] is True
+    assert manager.worker.args[1] is aligned
+    assert [int(frame[0, 0, 0]) for frame in manager.worker.args[1]] == [7, 8, 9]
+
+
 def test_preview_reuses_only_matching_alignment_pixels(qapp, monkeypatch):
     from tests.test_gui_units import _render_window, _patched_render_manager
     window = _render_window([np.zeros((20, 30, 3), np.uint8) for _ in range(2)])
@@ -585,6 +618,7 @@ def test_roi_startup_rejects_stale_results(qapp, monkeypatch, changed):
     window = SimpleNamespace(
         raw_images=original, image_filenames=['first.tif', 'second.tif'],
         source_revision=0, roi_aligned_images=[], roi_mode_active=False,
+        use_gpu=False,
         reg_downscale_width=1024, thread_count=1, resource_preference='balanced',
         result_slider=QSlider(), result_control_bar=QWidget(),
         btn_preview_roi=QPushButton(), label_manager=SimpleNamespace(

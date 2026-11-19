@@ -134,7 +134,7 @@ La barra dei menu superiore dà accesso a tutte le funzioni:
 - **Modifica**: trasformazioni delle immagini, ritocco ed etichette
 - **Strumenti**: unione di immagini, elaborazione batch, confronto metodi, mappa di profondità, correzione di campo piatto, barra di scala ed etichette
 - **Impostazioni**: impostazioni avanzate (Generali, Fusione, Registrazione, Avvio e aggiornamenti), accelerazione GPU, tema e lingua
-- **Aiuto**: informazioni sull'ambiente, contatto, controllo aggiornamenti e cartella dei log
+- **Aiuto**: Invia feedback (diagnostica e log), contatto e controllo aggiornamenti
 
 **Strumenti → Unisci immagini…** apre uno spazio di lavoro separato per regioni di microscopio già fuse e panorami fotografici; non modifica lo stack corrente. La scheda **Assistente progetto** raccoglie importazione, allineamento e punti di controllo; **Immagini sorgente** contiene elenco, griglia e posizionamento manuale; **Editor panoramico** contiene impostazioni di giunzioni, fusione, esposizione/colore, uscita, proiezione, fotocamera e HDR oltre alle sovrapposizioni dell’anteprima. Usa **Aggiungi file…**, **Apri cartella** o **Aggiungi risultati…** per copiare risultati scelti della sessione corrente, oppure trascina file o cartelle nell’elenco o sulla tela. L’importazione di una cartella include solo i file supportati direttamente al suo interno, non le sottocartelle. Gli import seguono l’ordine naturale dei nomi, ignorano percorsi duplicati e aggiungono ogni pagina di un TIFF multipagina come immagine separata. Seleziona un’immagine e premi Canc o Backspace per rimuoverla dallo spazio di lavoro senza eliminare il file.
 
@@ -514,7 +514,7 @@ Regolare i parametri su stack grandi è lento a risoluzione piena. Apri **Impost
 
 ### Rotazione
 
-1. Vai su **Modifica → Ruota**
+1. Vai su **Modifica → Ruota e capovolgi**
 2. Scegli il tipo di rotazione:
    - **90° orario**: ruota tutte le immagini di 90 gradi a destra
    - **90° antiorario**: ruota tutte le immagini di 90 gradi a sinistra
@@ -522,7 +522,7 @@ Regolare i parametri su stack grandi è lento a risoluzione piena. Apri **Impost
 
 ### Capovolgimento
 
-1. Vai su **Modifica → Capovolgi**
+1. Vai su **Modifica → Ruota e capovolgi**
 2. Scegli il tipo di capovolgimento:
    - **Capovolgimento orizzontale**: specchia da sinistra a destra
    - **Capovolgimento verticale**: specchia dall'alto in basso
@@ -542,7 +542,7 @@ Le trasformazioni si applicano all'intero stack di immagini, mantenendo l'alline
 
 ## 10. Ritocco, etichette e annotazioni
 
-### Ritocco del risultato (Modifica → Ritocca risultato…, `Ctrl+T`)
+### Ritocco del risultato (Modifica → Ritocca risultato → Risultato in questa area di lavoro…, `Ctrl+T`)
 
 La fusione può ancora lasciare un difetto locale — un alone attorno a un bordo ad alto contrasto, una setola presa dal fotogramma sbagliato, rumore in un'area piatta. Lo spazio di lavoro copia i pixel dai fotogrammi esatti che hanno prodotto il risultato selezionato:
 
@@ -561,7 +561,7 @@ Per una correzione tonale locale, seleziona **Pennello esposizione**, imposta la
 
 La provenienza viaggia con l'output: i fotogrammi allineati, gli offset di ritaglio/incolla ROI, il taglio dei bordi DCT e la profondità di bit vengono registrati quando il risultato viene renderizzato. File batch, risultati legacy e voci di cartella di solo allineamento non hanno una sorgente registrata, quindi sono elencati come non disponibili invece di essere dedotti dallo stack corrente. Tratti non applicati e cronologia annulla sono solo di sessione; salvare un progetto non li memorizza.
 
-Per un file immagine esistente, scegli **Modifica → Ritocca file immagine…**, poi seleziona il risultato e una o più immagini sorgente. Le sorgenti devono essere già allineate al risultato sulla stessa griglia di pixel; dimensioni identiche non dimostrano l'allineamento. Sono accettate immagini PNG, TIFF, JPEG e BMP a pagina singola con dimensioni verticali, canali e profondità a 8 o 16 bit corrispondenti; l'orientamento EXIF viene applicato al caricamento. Immagini con alfa e multipagina non sono supportate. I fotogrammi selezionati sono forniti dall'utente, non sono provenienza di rendering registrata. Applica crea un output separato non esportato; salvalo dall'elenco output. I file scelti sono protetti dalla sovrascrittura durante questa sessione, incluse le esportazioni di mappe di profondità e mesh 3D. Come per altri risultati, i file di progetto non memorizzano questi pixel né la cronologia del pennello.
+Per un file immagine esistente, scegli **Modifica → Ritocca risultato → Risultato della fusione da file…**, poi seleziona il risultato e una o più immagini sorgente. Le sorgenti devono essere già allineate al risultato sulla stessa griglia di pixel; dimensioni identiche non dimostrano l'allineamento. Sono accettate immagini PNG, TIFF, JPEG e BMP a pagina singola con dimensioni verticali, canali e profondità a 8 o 16 bit corrispondenti; l'orientamento EXIF viene applicato al caricamento. Immagini con alfa e multipagina non sono supportate. I fotogrammi selezionati sono forniti dall'utente, non sono provenienza di rendering registrata. Applica crea un output separato non esportato; salvalo dall'elenco output. I file scelti sono protetti dalla sovrascrittura durante questa sessione, incluse le esportazioni di mappe di profondità e mesh 3D. Come per altri risultati, i file di progetto non memorizzano questi pixel né la cronologia del pennello.
 
 ### Sostituire lo sfondo (Sfondo automatico)
 
@@ -658,9 +658,9 @@ Le ricette richiedono che la posizione di output sia fuori da tutte le cartelle 
 
 Quando un riferimento file viene applicato in Strumenti alla scala base dello stack, un progetto salvato registra il percorso assoluto, l'hash del contenuto e la dimensione polvere, e lo riapplica una volta alle sorgenti originali all'apertura. Mantieni il file di riferimento invariato e al suo posto: un riferimento mancante o modificato impedisce l'apertura del progetto. Un riferimento selezionato dallo stack, o una correzione a una scala di lavoro/base diversa, richiede comunque di esportare lo stack sorgente corretto prima di salvare un progetto. Se la scala di lavoro cambia dopo la correzione, ripristinala alla scala di correzione prima di salvare o esporta lo stack corretto.
 
-**Aiuto → Invia feedback** apre i log locali. Il pulsante Copia copia il log visibile della sessione; lo ZIP di feedback contiene i log di sessione e dell'applicazione completa e le informazioni sull'ambiente. Controlla il pacchetto prima di inviarlo tu stesso. Aprire GitHub apre solo il tracker. Annullare un'esportazione lascia i file invariati; un errore conserva il file di destinazione precedente e mostra il percorso fallito.
+**Aiuto → Invia feedback** apre la scheda **Canali di feedback**, con accesso al centro account e a GitHub. In **Diagnostica** trovi **Log della sessione** e **Informazioni sull'ambiente**. Il pulsante **Apri cartella dei log** si trova in basso accanto a Chiudi. Il pulsante Copia copia il log visibile della sessione; lo ZIP di feedback contiene i log di sessione e dell'applicazione completa e le informazioni sull'ambiente. Controlla il pacchetto prima di inviarlo tu stesso. Aprire GitHub apre solo il tracker. Annullare un'esportazione lascia i file invariati; un errore conserva il file di destinazione precedente e mostra il percorso fallito.
 
-Ogni avvio scrive il proprio log rotante, così i lavori GUI/CLI concorrenti mantengono registrazioni separate. Gli ID attività collegano parametri, tempo trascorso ed esiti completati/annullati/falliti; gli errori inattesi includono una traccia completa. Lo ZIP di feedback include anche il report di crash corrente e le versioni delle dipendenze. Usa **Aiuto → Apri cartella log** o il percorso mostrato nella pagina di feedback per trovare i file. I log ruotano a 1 MB con tre backup per processo; i log di sessioni inattive più vecchi di 14 giorni vengono rimossi. Per log di supporto dettagliati, imposta `OPENFOCUS_LOG_LEVEL=DEBUG` prima dell'avvio; `OPENFOCUS_LOG_DIR` seleziona una cartella diversa.
+Ogni avvio scrive il proprio log rotante, così i lavori GUI/CLI concorrenti mantengono registrazioni separate. Gli ID attività collegano parametri, tempo trascorso ed esiti completati/annullati/falliti; gli errori inattesi includono una traccia completa. Lo ZIP di feedback include anche il report di crash corrente e le versioni delle dipendenze. Usa **Aiuto → Invia feedback → Apri cartella dei log** o il percorso mostrato nella pagina di feedback per trovare i file. I log ruotano a 1 MB con tre backup per processo; i log di sessioni inattive più vecchi di 14 giorni vengono rimossi. Per log di supporto dettagliati, imposta `OPENFOCUS_LOG_LEVEL=DEBUG` prima dell'avvio; `OPENFOCUS_LOG_DIR` seleziona una cartella diversa.
 
 ### Impostazioni dei tasselli (ottimizzazione della memoria)
 
@@ -792,6 +792,12 @@ La finestra batch mostra l'avanzamento in tempo reale. Puoi annullare l'elaboraz
 - Le copie `*_registered*` residue delle versioni precedenti non vengono caricate come fotogrammi quando il file originale è presente nella stessa cartella; il messaggio di caricamento indica quante sono state saltate.
 - PNG/TIFF conservano i dati a 16 bit; scegliere esplicitamente JPG/BMP converte a 8 bit.
 - L'annullamento attende l'arresto del worker. I file confermati restano disponibili; attività parziali, fallite, annullate e non avviate vengono conteggiate separatamente.
+
+### Conversione di immagini in serie
+
+Apri il convertitore di immagini dal menu Strumenti e aggiungi i file. Per impostazione predefinita, accanto a ogni cartella di origine viene creata una cartella con il suffisso `_converted`. Puoi modificare il suffisso o scegliere una sottocartella con nome, la cartella di origine o una destinazione comune. L’esempio mostra il percorso per la riga selezionata.
+
+Mantieni le dimensioni originali, limita il lato lungo a 2048, 4096 o 8192 pixel oppure imposta una percentuale di riduzione. Le immagini piccole non vengono ingrandite. Il DNG conserva le dimensioni del sensore. I file già nel formato scelto che non richiedono riduzione vengono conteggiati come saltati. Per rimuovere le righe selezionate dalla coda usa il menu contestuale, Canc o Backspace.
 
 ---
 
@@ -1046,7 +1052,7 @@ Codici di uscita: `0` successo, `1` errore di elaborazione, `2` errore d'uso. `p
 
 - Attiva e conferma le funzioni sperimentali nelle impostazioni avanzate; senza questa scelta i metodi IA desktop sono disabilitati. Runtime e modello sono requisiti separati.
 - Controlla ONNX Runtime e il modello incluso.
-- Controlla in **Aiuto → Informazioni sull'ambiente**
+- Controlla in **Aiuto → Invia feedback → Diagnostica → Informazioni sull'ambiente**
 
 #### Errori di memoria esaurita
 
@@ -1084,7 +1090,7 @@ oppure fai clic destro sull'app e scegli **Apri**. Le build macOS pubblicate son
 
 ### Come ottenere aiuto
 
-1. **Informazioni sull'ambiente**: vai su **Aiuto → Informazioni sull'ambiente** per controllare l'installazione
+1. **Informazioni sull'ambiente**: vai su **Aiuto → Invia feedback → Diagnostica → Informazioni sull'ambiente** per controllare l'installazione
 2. **Contatta il supporto**: vai su **Aiuto → Contattaci** per le informazioni di supporto
 
 ---

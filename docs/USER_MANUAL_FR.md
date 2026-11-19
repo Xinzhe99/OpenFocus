@@ -134,7 +134,7 @@ La barre de menus supérieure donne accès à toutes les fonctions :
 - **Édition** : transformations d'images, retouche et libellés
 - **Outils** : assemblage d’images, traitement par lots, comparaison de méthodes, carte de profondeur, correction de champ plat, barre d'échelle et libellés
 - **Paramètres** : paramètres avancés (Général, Fusion, Recalage, Démarrage et mises à jour), accélération GPU, thème et langue
-- **Aide** : informations sur l'environnement, contact, recherche de mises à jour et dossier des journaux
+- **Aide** : Envoyer un commentaire (diagnostic et journaux), contact et recherche de mises à jour
 
 **Outils → Assembler des images…** ouvre un espace de travail séparé pour des régions de microscope déjà fusionnées et des panoramas photographiques ; il ne modifie pas la pile actuelle. L’onglet **Assistant de projet** regroupe l’importation, l’alignement et les points de contrôle ; **Images sources** contient la liste, la grille et le placement manuel ; **Éditeur de panorama** contient les réglages de raccords, de mélange, d’exposition/couleur, de sortie, de projection, de caméra et de HDR ainsi que les superpositions d’aperçu. Utilisez **Ajouter des fichiers…**, **Ouvrir un dossier** ou **Ajouter des résultats…** pour copier des résultats choisis de la session en cours, ou déposez fichiers et dossiers sur la liste ou le canevas. L’import d’un dossier ne prend que les fichiers pris en charge directement dedans, sans sous-dossiers. Les imports suivent l’ordre naturel des noms, ignorent les chemins en double et ajoutent chaque page d’un TIFF multipage comme image distincte. Sélectionnez une image et appuyez sur Suppr ou Retour arrière pour la retirer de l’espace de travail sans supprimer le fichier.
 
@@ -514,7 +514,7 @@ Régler les paramètres sur de grandes piles est lent en pleine résolution. Ouv
 
 ### Rotation
 
-1. Allez dans **Édition → Pivoter**
+1. Allez dans **Édition → Pivoter et retourner**
 2. Choisissez le type de rotation :
    - **90° horaire** : pivote toutes les images de 90 degrés vers la droite
    - **90° antihoraire** : pivote toutes les images de 90 degrés vers la gauche
@@ -522,7 +522,7 @@ Régler les paramètres sur de grandes piles est lent en pleine résolution. Ouv
 
 ### Retournement
 
-1. Allez dans **Édition → Retourner**
+1. Allez dans **Édition → Pivoter et retourner**
 2. Choisissez le type de retournement :
    - **Retournement horizontal** : miroir de gauche à droite
    - **Retournement vertical** : miroir de haut en bas
@@ -542,7 +542,7 @@ Les transformations s'appliquent à toute la pile d'images, en conservant l'alig
 
 ## 10. Retouche, libellés et annotations
 
-### Retoucher le résultat (Édition → Retoucher le résultat…, `Ctrl+T`)
+### Retoucher le résultat (Édition → Retoucher le résultat → Sortie de cet espace de travail…, `Ctrl+T`)
 
 La fusion peut encore laisser un défaut local — un halo autour d'un contour très contrasté, un poil pris dans la mauvaise image, du bruit dans une zone plane. L'espace de travail copie les pixels des images exactes qui ont produit le résultat sélectionné :
 
@@ -561,7 +561,7 @@ Pour une correction tonale locale, sélectionnez **Pinceau d'exposition**, régl
 
 La provenance voyage avec la sortie : les images alignées, les décalages de recadrage/collage ROI, le rognage des bords DCT et la profondeur de bits sont enregistrés au moment du rendu. Les fichiers de lot, les résultats hérités et les entrées de dossier d'alignement seul n'ont pas de source enregistrée : ils sont donc listés comme indisponibles au lieu d'être devinés depuis la pile actuelle. Les traits non appliqués et l'historique d'annulation ne durent que le temps de la session ; enregistrer un projet ne les stocke pas.
 
-Pour un fichier image existant, choisissez **Édition → Retoucher des fichiers image…**, puis sélectionnez le résultat et une ou plusieurs images sources. Les sources doivent déjà être alignées sur le résultat dans la même grille de pixels ; des dimensions identiques ne prouvent pas l'alignement. Les images PNG, TIFF, JPEG et BMP d'une seule page, de dimensions verticales, canaux et profondeur 8 ou 16 bits identiques, sont acceptées ; l'orientation EXIF est appliquée au chargement. Les images avec alpha et multipage ne sont pas prises en charge. Les images sélectionnées sont fournies par l'utilisateur, pas issues d'une provenance de rendu enregistrée. Appliquer crée une sortie séparée non exportée ; enregistrez-la depuis la liste des sorties. Les fichiers choisis sont protégés contre l'écrasement pendant cette session, y compris les exports de cartes de profondeur et de maillages 3D. Comme pour les autres résultats, les fichiers de projet ne stockent ni ces pixels ni l'historique du pinceau.
+Pour un fichier image existant, choisissez **Édition → Retoucher le résultat → Résultat fusionné depuis un fichier…**, puis sélectionnez le résultat et une ou plusieurs images sources. Les sources doivent déjà être alignées sur le résultat dans la même grille de pixels ; des dimensions identiques ne prouvent pas l'alignement. Les images PNG, TIFF, JPEG et BMP d'une seule page, de dimensions verticales, canaux et profondeur 8 ou 16 bits identiques, sont acceptées ; l'orientation EXIF est appliquée au chargement. Les images avec alpha et multipage ne sont pas prises en charge. Les images sélectionnées sont fournies par l'utilisateur, pas issues d'une provenance de rendu enregistrée. Appliquer crée une sortie séparée non exportée ; enregistrez-la depuis la liste des sorties. Les fichiers choisis sont protégés contre l'écrasement pendant cette session, y compris les exports de cartes de profondeur et de maillages 3D. Comme pour les autres résultats, les fichiers de projet ne stockent ni ces pixels ni l'historique du pinceau.
 
 ### Remplacer l'arrière-plan (Arrière-plan automatique)
 
@@ -660,9 +660,9 @@ Les recettes exigent que leur sortie se trouve hors de tous les dossiers d'entr�
 
 Lorsqu'une référence de fichier est appliquée dans Outils à l'échelle de base de la pile, un projet enregistré conserve son chemin absolu, le hash du contenu et la taille de poussière, et la réapplique une fois aux sources d'origine à l'ouverture. Gardez le fichier de référence inchangé et en place : une référence manquante ou modifiée empêche l'ouverture du projet. Une référence sélectionnée depuis la pile, ou une correction à une autre échelle de travail/base, exige encore d'exporter la pile source corrigée avant d'enregistrer un projet. Si l'échelle de travail change après la correction, rétablissez l'échelle de correction avant d'enregistrer ou exportez la pile corrigée.
 
-**Aide → Envoyer des commentaires** ouvre les journaux locaux. Copier copie le journal visible de la session ; le ZIP de commentaires contient les journaux de session et de l'application complète, ainsi que les informations d'environnement. Relisez le paquet avant de l'envoyer vous-même. Ouvrir GitHub ne fait qu'ouvrir le tracker. Annuler un export laisse les fichiers inchangés ; une erreur conserve le fichier de destination précédent et affiche le chemin en échec.
+**Aide → Envoyer un commentaire** ouvre l’onglet **Canaux de retour**, qui donne accès au centre de compte et à GitHub. Dans **Diagnostic**, consultez **Journal de la session** ou **Informations sur l'environnement**. Le bouton **Ouvrir le dossier des journaux** se trouve en bas, à côté de Fermer. Copier copie le journal visible de la session ; le ZIP de commentaires contient les journaux de session et de l'application complète, ainsi que les informations d'environnement. Relisez le paquet avant de l'envoyer vous-même. Ouvrir GitHub ne fait qu'ouvrir le tracker. Annuler un export laisse les fichiers inchangés ; une erreur conserve le fichier de destination précédent et affiche le chemin en échec.
 
-Chaque lancement écrit son propre journal rotatif, de sorte que les tâches GUI/CLI simultanées conservent des enregistrements séparés. Les identifiants de tâche relient paramètres, durée et résultats terminés/annulés/échoués ; les erreurs inattendues incluent une trace complète. Le ZIP de commentaires contient aussi le rapport de plantage courant et les versions des dépendances. Utilisez **Aide → Ouvrir le dossier des journaux** ou le chemin affiché sur la page de commentaires pour trouver les fichiers. Les journaux tournent à 1 Mo avec trois sauvegardes par processus ; les journaux de sessions inactives de plus de 14 jours sont supprimés. Pour des journaux de support détaillés, définissez `OPENFOCUS_LOG_LEVEL=DEBUG` avant le lancement ; `OPENFOCUS_LOG_DIR` permet de choisir un autre dossier.
+Chaque lancement écrit son propre journal rotatif, de sorte que les tâches GUI/CLI simultanées conservent des enregistrements séparés. Les identifiants de tâche relient paramètres, durée et résultats terminés/annulés/échoués ; les erreurs inattendues incluent une trace complète. Le ZIP de commentaires contient aussi le rapport de plantage courant et les versions des dépendances. Utilisez **Aide → Envoyer un commentaire → Ouvrir le dossier des journaux** ou le chemin affiché sur la page de commentaires pour trouver les fichiers. Les journaux tournent à 1 Mo avec trois sauvegardes par processus ; les journaux de sessions inactives de plus de 14 jours sont supprimés. Pour des journaux de support détaillés, définissez `OPENFOCUS_LOG_LEVEL=DEBUG` avant le lancement ; `OPENFOCUS_LOG_DIR` permet de choisir un autre dossier.
 
 ### Paramètres des tuiles (optimisation de la mémoire)
 
@@ -794,6 +794,12 @@ La boîte de dialogue affiche la progression en temps réel. Vous pouvez annuler
 - Les copies `*_registered*` résiduelles d'anciennes versions ne sont pas chargées comme images lorsque leur fichier d'origine est présent dans le même dossier ; le message de chargement indique combien ont été ignorées.
 - PNG/TIFF conservent les données 16 bits ; choisir explicitement JPG/BMP convertit en 8 bits.
 - L'annulation attend l'arrêt du worker. Les fichiers validés restent disponibles ; les tâches partielles, échouées, annulées et non démarrées sont comptées séparément.
+
+### Conversion d’images par lots
+
+Ouvrez le convertisseur d’images dans le menu Outils et ajoutez les fichiers. Par défaut, un dossier de sortie portant le suffixe `_converted` est créé à côté de chaque dossier source. Modifiez le suffixe ou choisissez un sous-dossier nommé, le dossier source ou une destination commune. L’exemple indique le chemin de la ligne sélectionnée.
+
+Conservez la taille originale, limitez le grand côté à 2048, 4096 ou 8192 pixels ou saisissez un pourcentage de réduction. Les petites images ne sont pas agrandies. Le DNG conserve les dimensions du capteur. Les fichiers déjà au format choisi qui ne nécessitent aucune réduction sont comptés comme ignorés. Retirez les lignes sélectionnées de la file par clic droit, Suppr ou Retour arrière.
 
 ---
 
@@ -1048,7 +1054,7 @@ Codes de sortie : `0` succès, `1` erreur de traitement, `2` erreur d'utilisatio
 
 - Activez et confirmez les fonctions expérimentales dans les paramètres avancés ; les méthodes IA du bureau restent désactivées sans ce choix. Le moteur et le modèle sont des prérequis distincts.
 - Vérifiez ONNX Runtime et le modèle fourni.
-- Vérifiez via **Aide → Informations sur l'environnement**
+- Vérifiez via **Aide → Envoyer un commentaire → Diagnostic → Informations sur l'environnement**
 
 #### Erreurs de mémoire insuffisante
 
@@ -1086,7 +1092,7 @@ ou cliquez droit sur l'application et choisissez **Ouvrir**. Les versions macOS 
 
 ### Obtenir de l'aide
 
-1. **Informations sur l'environnement** : allez dans **Aide → Informations sur l'environnement** pour vérifier votre installation
+1. **Informations sur l'environnement** : allez dans **Aide → Envoyer un commentaire → Diagnostic → Informations sur l'environnement** pour vérifier votre installation
 2. **Contacter le support** : allez dans **Aide → Nous contacter** pour les informations de support
 
 ---

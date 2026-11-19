@@ -1857,7 +1857,9 @@ def test_stack_load_progress_status_and_cancel(qapp, monkeypatch):
     worker.progress.emit(3, 3)
     assert manager._load_status_label.text() == trans.t('depth_cancelling')
     assert not manager._load_cancel_button.isEnabled()
+    worker.finished_load.emit(False, 'CANCELLED', [], [])
     worker.finished.emit()
+    assert not bar.isVisible()
     assert status.currentMessage() == 'Background notice'
     manager._start_load_worker(video='clip.mp4')
     video_worker = manager._load_worker
@@ -1869,7 +1871,10 @@ def test_stack_load_progress_status_and_cancel(qapp, monkeypatch):
     assert manager._load_status_label.text() == trans.t('msg_loading_stack')
     worker.progress.emit(3, 3)
     assert (bar.minimum(), bar.maximum()) == (0, 0)
+    QTest.mouseClick(manager._load_cancel_button, Qt.MouseButton.LeftButton)
+    video_worker.finished_load.emit(False, 'CANCELLED', [], [])
     video_worker.finished.emit()
+    assert not bar.isVisible()
     window.close()
 
 

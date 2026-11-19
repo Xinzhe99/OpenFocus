@@ -1344,10 +1344,10 @@ def test_frame_navigation_has_no_window_and_coalesces_stale_pixel_work(qapp, mon
 
     def delayed(worker):
         calls.append((worker.index, threading.get_ident()))
+        original(worker)  # Completion may already be queued when selection changes.
         if worker.index == 1:
             entered.set()
             assert release.wait(5)
-        original(worker)
 
     monkeypatch.setattr(_SourceWorker, 'run', delayed)
     try:
@@ -1361,9 +1361,15 @@ def test_frame_navigation_has_no_window_and_coalesces_stale_pixel_work(qapp, mon
                     if isinstance(widget, QDialog) and widget.isVisible() and widget is not dlg]
         assert QApplication.activeModalWidget() in (None, dlg)
         assert not dlg.btn_auto_bg.isEnabled() and dlg.frame_slider.isEnabled()
+        assert dlg.num_diameter.isEnabled() and dlg.rb_restore.isEnabled()
+        assert dlg.canvas_image('source')[0].pixelColor(0, 0).red() == 80
         dlg.frame_slider.setValue(2)
+        assert dlg.canvas_image('source')[0].pixelColor(0, 0).red() == 180
         dlg.frame_spin.setValue(1)
+        assert dlg.canvas_image('source')[0].pixelColor(0, 0).red() == 20
         dlg.frame_list.setCurrentRow(2)
+        dlg.set_cursor(60, 48)
+        assert not dlg.cursor_source_valid() and not dlg.doc.is_dirty
         assert not dlg.begin_stroke(60, 48)
         release.set()
         _wait_for_source(qapp, dlg)
@@ -1376,6 +1382,39 @@ def test_frame_navigation_has_no_window_and_coalesces_stale_pixel_work(qapp, mon
         assert np.all(dlg.doc.working[48, 60] == 180)
     finally:
         release.set()
+        dlg._allow_close = True
+        dlg.close()
+
+
+def test_retouch_navigation_keeps_lazy_descriptors_and_copies_exact_pixels(qapp, tmp_path):
+    import cv2
+    from controllers.output_manager import OutputRecord
+    from core.source_frames import scan_source
+    from dialogs.retouch import RetouchDialog
+
+    base = np.zeros((128, 256, 3), np.uint16)
+    sources = []
+    for index in range(4):
+        image = base.copy()
+        image[:, 1:] = 1001 * (index + 1)
+        path = tmp_path / f'source-{index}.png'
+        assert cv2.imwrite(str(path), image)
+        sources.append(scan_source(str(path))[0])
+    context = build_render_context(sources, base, aligned=True)
+    record = OutputRecord.create(base, 'result', context=context)
+    dlg = RetouchDialog(None, record=record, apply_callback=lambda *_: (True, ''))
+    try:
+        dlg.show()
+        for index in range(4):
+            dlg.frame_slider.setValue(index)
+            _wait_for_source(qapp, dlg)
+            assert dlg.doc.active_frame.image is sources[index]
+            assert len(dlg.doc._source_cache) <= 2 and len(dlg.doc._mask_cache) <= 2
+        assert not dlg.begin_stroke(0, 48)  # Border-connected registration fill.
+        assert dlg.begin_stroke(60, 48)
+        dlg.end_stroke()
+        np.testing.assert_array_equal(dlg.doc.working[48, 60], [4004] * 3)
+    finally:
         dlg._allow_close = True
         dlg.close()
 

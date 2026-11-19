@@ -307,6 +307,7 @@ class TransformManager:
         window = self.window
 
         window.source_revision = getattr(window, "source_revision", 0) + 1
+        window.source_content_revision = getattr(window, "source_content_revision", 0) + 1
         window._source_display_key = None
         for field in ('_source_decode_workers', '_source_preview_workers'):
             for worker in tuple(getattr(window, field, {}).values()):

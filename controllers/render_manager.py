@@ -276,7 +276,9 @@ class RenderManager:
         from core.workers import _ordered_openfocus_registration
         reverse_registration = _ordered_openfocus_registration(
             alignment, method, 'desc' if getattr(window, 'stack_reverse_order', False) else 'asc')
-        return (getattr(window, "source_revision", 0), tuple(included),
+        # Checkbox edits advance source_revision to reject in-flight work.
+        # The ordered inclusion below already identifies those edits for reuse.
+        return (getattr(window, "source_content_revision", 0), tuple(included),
                 tuple(id(window.raw_images[i]) for i in included),
                 alignment_steps(alignment), tuple(sorted(parameters.items())),
                 getattr(window, "reg_downscale_width", None), brightness,
@@ -1295,7 +1297,7 @@ class RenderManager:
         if disk_cache_request is not None:
             parameters = self._processing_parameters(force_algorithm or fusion_method)
             disk_cache_request["identity"] = {
-                "source_revision": getattr(window, "source_revision", 0),
+                "source_revision": alignment_key[0],
                 "included": list(included_idx),
                 "frames": [{"name": name, "shape": list(image.shape),
                             "dtype": image.dtype.str}
