@@ -213,6 +213,44 @@ def test_contact_menu_allows_main_window_input_while_refreshing(
         _destroy_main_window(qapp, window)
 
 
+def test_status_sponsor_opens_contact_by_keyboard_and_mouse(
+        qapp, tmp_path, monkeypatch, theme_environment, invite_server):
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtTest import QTest
+    from dialogs.about import ContactInfoDialog
+    from locales import trans
+    from tests.test_control_channel import _new_main_window, _destroy_main_window, wait_until
+
+    window = _new_main_window(qapp, tmp_path, monkeypatch)
+    try:
+        label = window.lbl_status_sponsor
+        trans.set_language('en')
+        english = label.accessibleName()
+        trans.set_language('zh')
+        assert label.accessibleName() == '欢迎成为 OpenFocus 的赞助商，帮助 OpenFocus 发展'
+        assert label.accessibleName() != english
+        assert label.accessibleName() in label.text()
+        bar = window.statusBar()
+        bar.showMessage('Background notice', 5000)
+        qapp.processEvents()
+        assert label.isVisible()
+        assert label.mapTo(bar, label.rect().topRight()).x() >= bar.width() - 15
+        assert label.focusPolicy() in (Qt.FocusPolicy.TabFocus, Qt.FocusPolicy.StrongFocus,
+                                       Qt.FocusPolicy.WheelFocus)
+        for keyboard in (True, False):
+            if keyboard:
+                label.setFocus(Qt.FocusReason.TabFocusReason)
+                QTest.keyClick(label, Qt.Key.Key_Return)
+            else:
+                QTest.mouseClick(label, Qt.MouseButton.LeftButton, pos=label.contentsRect().center())
+            dialog = window.findChild(ContactInfoDialog)
+            assert dialog is not None and dialog.isVisible()
+            dialog.close()
+            assert wait_until(lambda: window.findChild(ContactInfoDialog) is None)
+    finally:
+        _destroy_main_window(qapp, window)
+
+
 def test_dustmap_preview_follows_the_theme(qapp, theme_environment):
     from PyQt6.QtGui import QColor, QPalette
     from PyQt6.QtWidgets import QWidget

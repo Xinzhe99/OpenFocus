@@ -1,17 +1,20 @@
-"""First-run welcome dialog: quick start guide + theme choice."""
+"""First-run entry points for opening a workspace or trying the demo stack."""
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QDialog,
-    QGroupBox,
     QHBoxLayout,
     QLabel,
     QPushButton,
-    QSizePolicy,
+    QToolButton,
     QVBoxLayout,
+    QWidget,
 )
 
 from locales import trans
+from utils.design_tokens import FONT, SPACE
+from utils.settings_store import DEFAULT_THEME
 
 
 class WelcomeDialog(QDialog):
@@ -19,41 +22,50 @@ class WelcomeDialog(QDialog):
         super().__init__(parent)
         self._main_window = main_window
         self.setWindowTitle(trans.t('welcome_title'))
-        self.setMinimumWidth(480)
-        self._apply_dialog_style()
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(18, 14, 18, 14)
-        layout.setSpacing(10)
+        layout.setContentsMargins(*(SPACE['xl'],) * 4)
+        layout.setSpacing(SPACE['md'])
+
+        heading = QLabel(trans.t('welcome_heading'))
+        heading.setWordWrap(True)
+        font = heading.font()
+        font.setPointSize(FONT['title'])
+        font.setBold(True)
+        heading.setFont(font)
+        layout.addWidget(heading)
 
         body = QLabel(trans.t('welcome_body'))
         body.setWordWrap(True)
-        body.setTextFormat(Qt.TextFormat.RichText)
+        body.setTextFormat(Qt.TextFormat.PlainText)
         layout.addWidget(body)
 
-        experimental = QGroupBox(trans.t('experimental_features'))
-        experimental.setObjectName('experimentalIntro')
-        experimental_layout = QVBoxLayout(experimental)
-        hint = QLabel(trans.t('experimental_locked_hint') + '\n' +
-                      trans.t('experimental_features_hint'))
-        hint.setWordWrap(True)
-        hint.setTextFormat(Qt.TextFormat.PlainText)
-        experimental_layout.addWidget(hint)
-        layout.addWidget(experimental)
+        self._settings_button = QToolButton()
+        self._settings_button.setText(trans.t('menu_settings'))
+        self._settings_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self._settings_button.setCheckable(True)
+        self._settings_button.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        layout.addWidget(self._settings_button, alignment=Qt.AlignmentFlag.AlignLeft)
 
-        # Theme choice (applies immediately through the main window and persists)
+        self._preferences = QWidget()
+        preferences = QVBoxLayout(self._preferences)
+        preferences.setContentsMargins(0, 0, 0, 0)
+        preferences.setSpacing(SPACE['sm'])
         theme_row = QHBoxLayout()
         theme_label = QLabel(trans.t('welcome_choose_theme'))
+        theme = QComboBox()
+        for code in ('light', 'dark'):
+            theme.addItem(trans.t(f'theme_{code}'), code)
+        current = getattr(main_window, 'ui_theme', DEFAULT_THEME)
+        theme.setCurrentIndex(theme.findData(current))
+        theme.setEnabled(main_window is not None)
+        if main_window is not None:
+            theme.currentIndexChanged.connect(lambda index: main_window.apply_theme(theme.itemData(index)))
+        theme_label.setBuddy(theme)
         theme_row.addWidget(theme_label)
-        self._theme_buttons = {}
-        for code in ("dark", "light"):
-            btn = QPushButton(trans.t(f'theme_{code}'))
-            btn.setCheckable(True)
-            btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            btn.clicked.connect(lambda _checked=False, c=code: self._choose_theme(c))
-            self._theme_buttons[code] = btn
-            theme_row.addWidget(btn)
-        layout.addLayout(theme_row)
+        theme_row.addWidget(theme)
+        theme_row.addStretch()
+        preferences.addLayout(theme_row)
 
         manager = getattr(self._main_window, 'update_manager', None)
         self.chk_include_beta = QCheckBox(trans.t('action_include_beta'))
@@ -63,26 +75,21 @@ class WelcomeDialog(QDialog):
         self.chk_include_beta.setEnabled(manager is not None)
         if manager is not None:
             self.chk_include_beta.toggled.connect(manager.set_include_beta)
-        layout.addWidget(self.chk_include_beta)
-        beta_hint = QLabel(trans.t('action_include_beta_hint'))
-        beta_hint.setWordWrap(True)
-        layout.addWidget(beta_hint)
-
-        # Demo stack: zero-friction first success
-        demo_row = QHBoxLayout()
-        demo_btn = QPushButton(trans.t('btn_load_demo'))
-        demo_btn.setSizePolicy(QSizePolicy.Policy.Fixed,
-                               QSizePolicy.Policy.Fixed)
-        demo_btn.setToolTip('\n\n'.join((trans.t('btn_load_demo'),
-                                          trans.t('btn_load_demo_hint'))))
-        demo_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        demo_btn.clicked.connect(self._load_demo)
-        demo_row.addWidget(demo_btn)
-        demo_row.addStretch()
-        layout.addLayout(demo_row)
+        preferences.addWidget(self.chk_include_beta)
+        hint = QLabel(trans.t('welcome_experimental_hint'))
+        hint.setObjectName('mutedLabel')
+        hint.setWordWrap(True)
+        preferences.addWidget(hint)
+        layout.addWidget(self._preferences)
 
         row = QHBoxLayout()
         row.addStretch()
+        demo_btn = QPushButton(trans.t('btn_load_demo'))
+        demo_btn.setEnabled(main_window is not None)
+        demo_btn.setToolTip(trans.t('btn_load_demo_hint'))
+        demo_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        demo_btn.clicked.connect(self._load_demo)
+        row.addWidget(demo_btn)
         ok = QPushButton(trans.t('btn_get_started'))
         ok.setObjectName("primaryButton")
         ok.setDefault(True)
@@ -90,27 +97,20 @@ class WelcomeDialog(QDialog):
         row.addWidget(ok)
         layout.addLayout(row)
 
-        self._sync_theme_buttons()
+        self._settings_button.toggled.connect(self._show_preferences)
+        self._preferences.hide()
+        self._settings_button.setArrowType(Qt.ArrowType.RightArrow)
+        width = min(440, self.screen().availableGeometry().width())
+        self.resize(width, layout.totalHeightForWidth(width))
+        ok.setFocus()
 
     def _load_demo(self) -> None:
         if self._main_window is not None:
             self._main_window.load_demo_stack()
             self.accept()
 
-
-    def _apply_dialog_style(self):
-        """Styling comes from the generated application stylesheet."""
-        self.setStyleSheet("")
-
-    def _choose_theme(self, code: str) -> None:
-        if self._main_window is not None:
-            self._main_window.apply_theme(code)
-        self._apply_dialog_style()
-        self._sync_theme_buttons()
-
-    def _sync_theme_buttons(self) -> None:
-        from utils.settings_store import DEFAULT_THEME
-        current = (getattr(self._main_window, "ui_theme", DEFAULT_THEME)
-                   if self._main_window else DEFAULT_THEME)
-        for code, btn in self._theme_buttons.items():
-            btn.setChecked(code == current)
+    def _show_preferences(self, visible):
+        self._settings_button.setArrowType(Qt.ArrowType.DownArrow if visible else Qt.ArrowType.RightArrow)
+        self._preferences.setVisible(visible)
+        self.layout().activate()
+        self.resize(self.width(), self.layout().totalHeightForWidth(self.width()))

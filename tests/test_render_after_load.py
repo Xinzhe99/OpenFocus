@@ -242,10 +242,11 @@ def test_replaced_load_cannot_satisfy_an_older_render_request(qapp, monkeypatch)
 
 def test_waiting_caption_survives_refresh_and_cancel_stops_deferred_start(qapp, monkeypatch):
     from PyQt6.QtCore import QTimer
-    from PyQt6.QtWidgets import QPushButton, QStatusBar
+    from PyQt6.QtWidgets import QPushButton
     from locales import trans
+    from ui.status_bar import WorkspaceStatusBar
     window, render, source = _setup(qapp, frames=3)
-    window._bar = QStatusBar()
+    window._bar = WorkspaceStatusBar()
     window.btn_render = QPushButton()
     deferred = []
     monkeypatch.setattr(QTimer, 'singleShot', lambda _ms, callback: deferred.append(callback))
@@ -271,10 +272,10 @@ def test_waiting_caption_survives_refresh_and_cancel_stops_deferred_start(qapp, 
 
 def test_resource_wait_preparation_fusion_and_late_cancel_stages_are_truthful(qapp):
     from types import SimpleNamespace
-    from PyQt6.QtWidgets import QStatusBar
     from locales import trans
+    from ui.status_bar import WorkspaceStatusBar
     window, render, _source = _setup(qapp)
-    window._bar = QStatusBar()
+    window._bar = WorkspaceStatusBar()
     render.worker = SimpleNamespace(is_cancelled=False)
     for stage, key in [('waiting', 'render_stage_waiting'),
                        ('prepare', 'render_stage_prepare'),
@@ -283,32 +284,36 @@ def test_resource_wait_preparation_fusion_and_late_cancel_stages_are_truthful(qa
                        ('finish', 'render_progress')]:
         render.on_render_stage(stage)
         assert render._status_bar_label.text() == trans.t(key)
-        assert window.statusBar().currentMessage() == trans.t(key)
+        assert not window.statusBar().currentMessage()
     render.on_render_stage('prepare')
     render.on_render_progress(1, 2)
-    assert window.statusBar().currentMessage().startswith(trans.t('render_stage_prepare'))
+    assert render._status_bar_label.text().startswith(trans.t('render_stage_prepare'))
     assert render._control_progress == (1, 2)
     render.on_render_stage('fuse')
     assert render._control_progress is None
     render.on_render_progress(1, 3)
-    assert window.statusBar().currentMessage().startswith(trans.t('render_stage_fuse'))
+    assert render._status_bar_label.text().startswith(trans.t('render_stage_fuse'))
     render.on_render_stage('finish')
     assert render._control_progress is None
-    assert window.statusBar().currentMessage() == trans.t('render_progress')
+    assert render._status_bar_label.text() == trans.t('render_progress')
     render.worker.is_cancelled = True
     render.on_render_stage('fuse')
     render.on_render_progress(1, 10)
     assert render._status_bar_label.text() == trans.t('depth_cancelling')
-    assert window.statusBar().currentMessage() == trans.t('depth_cancelling')
+    assert not window.statusBar().currentMessage()
     window._bar.deleteLater()
 
 
-def test_render_progress_count_remains_visible_after_status_message_clears(qapp):
+def test_render_progress_stays_on_left_without_duplicate_notice(qapp):
     from types import SimpleNamespace
-    from PyQt6.QtWidgets import QStatusBar
+    from PyQt6.QtCore import QPoint
+    from PyQt6.QtWidgets import QLabel
     from locales import trans
+    from ui.status_bar import WorkspaceStatusBar
     window, render, _source = _setup(qapp)
-    window._bar = QStatusBar()
+    window._bar = status = WorkspaceStatusBar()
+    status.resize(960, 30)
+    status.show()
     render.worker = SimpleNamespace(is_cancelled=False)
     render.on_render_stage('fuse')
     render.on_render_progress(1, 228)
@@ -316,6 +321,13 @@ def test_render_progress_count_remains_visible_after_status_message_clears(qapp)
     assert render._status_bar_progress.value() == 1
     assert render._status_bar_label.text().startswith(trans.t('render_stage_fuse'))
     assert '(1/228)' in render._status_bar_label.text()
+    qapp.processEvents()
+    assert render._status_bar_progress.mapTo(status, QPoint()).x() < status.width() // 2
+    assert [label for label in status.findChildren(QLabel)
+            if '(1/228)' in label.text() and label.isVisible()] == [render._status_bar_label]
+    status.showMessage('Background notice', 5000)
+    assert render._status_bar_progress.isVisible()
+    assert render._status_bar_label.isVisible()
     window.statusBar().clearMessage()
     assert '(1/228)' in render._status_bar_label.text()
     render.on_render_stage('finish')

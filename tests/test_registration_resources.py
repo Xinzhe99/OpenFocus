@@ -336,6 +336,48 @@ def test_openfocus_fixed_brightness_preserves_identity_codes(dtype):
         np.testing.assert_array_equal(image, frame)
 
 
+@pytest.mark.parametrize('dtype,width', [(np.uint8, 64), (np.uint16, 128), (np.float32, 128)])
+def test_ecc_releases_deferred_color_and_preserves_estimator_inputs(monkeypatch, dtype, width):
+    from weakref import ref
+    from core.source_frames import process_frame
+
+    rng = np.random.default_rng(182)
+    base = rng.integers(0, 65536, (96, 128, 3), dtype=np.uint16).astype(dtype)
+    if dtype == np.float32:
+        base /= 257.0
+    images = [base, np.roll(base, 1, axis=1)]
+    expected = []
+    for image in images:
+        if width < image.shape[1]:
+            scale = width / image.shape[1]
+            image = cv2.resize(image, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+        gray = cv2.GaussianBlur(cv2.cvtColor(image, cv2.COLOR_BGR2GRAY), (5, 5), 0)
+        expected.append(gray.astype(np.float32) / (65535.0 if dtype == np.uint16 else 255.0))
+
+    decoded = []
+    def produce(image):
+        pixels = image.copy()
+        decoded.append(ref(pixels))
+        return pixels
+
+    blur = cv2.GaussianBlur
+    def check_lifetime(*args):
+        assert decoded[-1]() is None  # only the gray plane is needed at this point
+        return blur(*args)
+
+    estimate = cv2.findTransformECC
+    def check_pair(previous, current, *args):
+        for actual, reference in zip((previous, current), expected):
+            np.testing.assert_array_equal(actual.view(np.uint32), reference.view(np.uint32))
+        return estimate(previous, current, *args)
+
+    monkeypatch.setattr(cv2, 'GaussianBlur', check_lifetime)
+    monkeypatch.setattr(cv2, 'findTransformECC', check_pair)
+    sources = [process_frame(image, produce) for image in images]
+    registration._align_ecc_impl(sources, thread_count=1, downscale_width=width, defer_warps=True)
+    assert len(decoded) == 2
+
+
 @pytest.mark.parametrize('workers', [1, 2, 3])
 def test_ecc_preparation_and_estimation_share_budget(monkeypatch, workers):
     from time import sleep

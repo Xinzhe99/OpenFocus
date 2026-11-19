@@ -21,7 +21,6 @@ class ROIRenderOptionsDialog(QDialog):
                  frames=None, frame_indices=None):
         super().__init__(parent)
         self.setWindowTitle(trans.t("dialog_roi_title"))
-        self.resize(460, 320)
         self._frame_names = list(frame_names or [])
         self._roi_size = tuple(roi_size) if roi_size else None
         self._output_size = tuple(output_size) if output_size else None
@@ -60,6 +59,8 @@ class ROIRenderOptionsDialog(QDialog):
         hbox.addWidget(QLabel(trans.t("dialog_roi_lbl_base")))
         
         self.combo_frames = QComboBox()
+        self.combo_frames.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.combo_frames.setMinimumContentsLength(16)
         for i in range(num_frames):
             # Name the frame, not just its position: "Frame 3" was ambiguous
             # once frames had been excluded or reordered.
@@ -86,7 +87,6 @@ class ROIRenderOptionsDialog(QDialog):
         self.lbl_output.setWordWrap(True)
         self.lbl_output.setObjectName("mutedLabel")
         layout.addWidget(self.lbl_output)
-        layout.addStretch(1)
 
         # Buttons
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
@@ -107,17 +107,16 @@ class ROIRenderOptionsDialog(QDialog):
         layout.addWidget(btns)
 
         # Logic (after every widget exists)
-        self.rb_crop.toggled.connect(self._sync_choice)
         self.rb_paste.toggled.connect(self._sync_choice)
-        self.combo_frames.currentIndexChanged.connect(
-            lambda _i: self._sync_choice())
+        self.combo_frames.currentIndexChanged.connect(self._sync_choice)
         self._sync_choice()
 
     def _sync_choice(self, *_args):
         crop = self.rb_crop.isChecked()
         self.frame_container.setVisible(not crop)
         index = self.combo_frames.currentIndex()
-        if 0 <= index < len(self._frames):
+        has_frame = 0 <= index < len(self._frames)
+        if has_frame:
             frame = self._frames[index]
             height, width = frame.shape[:2]
             self._output_size = (width, height)
@@ -125,7 +124,7 @@ class ROIRenderOptionsDialog(QDialog):
                 self._show_base_preview(index, frame)
         if crop:
             self._cancel_previews()
-        self.lbl_preview.setVisible(not crop)
+        self.lbl_preview.setVisible(not crop and has_frame)
         size = self._roi_size if crop else self._output_size
         text = trans.t("dialog_roi_size_crop") if crop else trans.t(
             "dialog_roi_size_paste")
@@ -133,6 +132,9 @@ class ROIRenderOptionsDialog(QDialog):
             text += " " + trans.t("dialog_roi_size_px").format(
                 w=size[0], h=size[1])
         self.lbl_output.setText(text)
+        self.layout().activate()
+        width = self.width() if self.isVisible() else self.sizeHint().width()
+        self.resize(width, self.layout().totalHeightForWidth(width))
 
     def _cancel_previews(self, *_args):
         self._preview_key = None
