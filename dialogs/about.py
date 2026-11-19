@@ -133,7 +133,7 @@ class EnvironmentInfoDialog(QDialog):
 
         # StackMFF runtime and the provider actually selected by its probe.
         info_lines.append("-" * 60)
-        info_lines.append("ONNX Runtime / StackMFF")
+        info_lines.append('StackMFF / AI inference')
         try:
             import onnxruntime
             from fusion_methods import neural_runtime
@@ -147,15 +147,23 @@ class EnvironmentInfoDialog(QDialog):
             info_lines.append(f"  ✓ {trans.t('env_installed').format(onnxruntime.__version__)}")
             diagnostics = neural_runtime.device_diagnostics()
             info_lines.append('  Registered runtime providers: ' + ', '.join(diagnostics['providers']))
+            native = diagnostics.get('eligible_native', ())
+            if native:
+                info_lines.append('  Managed engines: ' + ', '.join(neural_runtime.display_name(k) for k in native))
             for index, name, _vendor, _memory in diagnostics['hardware']:
                 info_lines.append(f'  Hardware DXGI {index}: {name}')
             if diagnostics['actual'] is not None:
                 info_lines.append(f"  Last successful neural inference: {neural_runtime.display_name(diagnostics['actual'])} "
                                   f"({diagnostics['checkpoint']})")
+            for reason in diagnostics.get('fallback_reasons', ()):
+                info_lines.append('  Engine fallback: ' + reason)
             for error in diagnostics['probe_errors']:
                 info_lines.append('  Provider probe: ' + error)
             if neural_runtime.is_accelerator(kind):
-                info_lines.append(f"  ✓ {trans.t('env_gpu_accel')} ({available['device']})")
+                if kind in native:
+                    info_lines.append('  ' + trans.t('neural_provider_ready').format(available['device']))
+                else:
+                    info_lines.append(f"  ✓ {trans.t('env_gpu_accel')} ({available['device']})")
             else:
                 if unadmitted:
                     # The provider was verified; say why it is not used

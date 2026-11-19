@@ -3,7 +3,6 @@
 Frame order defines depth positions. The expected layer is min-max normalised
 over the padded inference, then the nearest source frame is sampled.
 """
-from contextlib import nullcontext
 
 import numpy as np
 
@@ -20,7 +19,8 @@ def _prepare_inference(frames, model_path, use_gpu, thread_count=None,
                        result_count=1, fixed_bytes=0, height=None, width=None, device=None):
     """Admit the retrained model and its attention workspace."""
     from fusion_methods import neural_runtime
-    device = device if device is not None else neural_runtime.resolve_device(use_gpu)
+    device = (device if device is not None and use_gpu
+              else neural_runtime.resolve_job_device(use_gpu))
     return common.plan_attention_inference(
         _ALGORITHM, frames, model_path, device,
         thread_count=thread_count, resource_preference=resource_preference,
@@ -66,11 +66,7 @@ def infer(frames, model_path, use_gpu, should_cancel=None,
           execution_plan=None, thread_count=None,
           resource_preference='balanced'):
     """Return (fused pixels, depth 0-1, index 0..N-1) for one whole tile."""
-    from core.resource_policy import heavy_job
-    from fusion_methods.neural_runtime import start_inference_job
-    with heavy_job(should_cancel) if execution_plan is None else nullcontext():
-        if execution_plan is None:
-            start_inference_job()
+    with common.neural_lease(execution_plan, should_cancel):
         return _infer_under_lease(frames, model_path, use_gpu, should_cancel,
                                   execution_plan, thread_count, resource_preference)
 
@@ -107,13 +103,7 @@ def stackmffv2_impl(input_source, img_resize, model_path, use_gpu,
                     execution_plan=None, tile_size=None, tile_overlap=0,
                     exposure_gains=None, source_all_uint8=None, focus_callback=None, **kwargs):
     """Whole-stack fusion; the caller may already hold the heavy-job lease."""
-    from core.resource_policy import heavy_job
-
-    lease = heavy_job(should_cancel) if execution_plan is None else nullcontext()
-    with lease:
-        if execution_plan is None:
-            from fusion_methods.neural_runtime import start_inference_job
-            start_inference_job()
+    with common.neural_lease(execution_plan, should_cancel):
         common.cancel(should_cancel)
         if tile_size is not None:
             from fusion_methods.stackmff_v2_tiled import _tiled_fusion_under_lease
@@ -145,11 +135,7 @@ def depth_positions(images, model_path, use_gpu, should_cancel=None,
                     resource_preference='balanced', tile_size=None,
                     tile_overlap=0, progress_callback=None):
     """Sampled layer positions, with adaptive whole-stack spatial tiling."""
-    from core.resource_policy import heavy_job
-    from fusion_methods.neural_runtime import start_inference_job
-    with heavy_job(should_cancel) if execution_plan is None else nullcontext():
-        if execution_plan is None:
-            start_inference_job()
+    with common.neural_lease(execution_plan, should_cancel):
         return _depth_positions_under_lease(
             images, model_path, use_gpu, should_cancel, execution_plan,
             thread_count, resource_preference, tile_size, tile_overlap, progress_callback)

@@ -207,13 +207,13 @@ def _neural_depth_tiles(images, tile_size):
 def _plan_depth_tiles(images, use_gpu, thread_count, resource_preference):
     from dataclasses import replace
     from core.resource_policy import plan_neural_tiles
-    from fusion_methods.neural_runtime import resolve_device, estimate_inference_bytes
+    from fusion_methods.neural_runtime import resolve_job_device, estimate_inference_bytes
 
     h, w = images[0].shape[:2]
     channels = images[0].shape[2] if images[0].ndim == 3 else 1
     requested = max(h, w) if len(images) * h * w <= _NEURAL_WHOLE_FRAME_PIXELS else 1024
     tile_size, plan = plan_neural_tiles(
-        len(images), h, w, channels, requested, resolve_device(use_gpu),
+        len(images), h, w, channels, requested, resolve_job_device(use_gpu),
         estimate_inference_bytes, itemsize=max(image.dtype.itemsize for image in images),
         preference=resource_preference, user_threads=thread_count)
     return replace(plan, tile_size=tile_size)
@@ -336,8 +336,13 @@ def compute_focus_index(images: Sequence[np.ndarray], method: str, parameters=No
             values[target] = value
     values = resolve_fusion_parameters(method, values, depth=True)
     depth_block = legacy_parameters.get('block_size')
+    from contextlib import nullcontext
+    inference = nullcontext()
+    if spec.neural:
+        from fusion_methods.neural_runtime import inference_job
+        inference = inference_job()
     try:
-        with heavy_job(should_cancel), scratch_directory():
+        with heavy_job(should_cancel), inference, scratch_directory():
             if method != 'openfocus_b':
                 from core.source_frames import materialize_frames
                 images = materialize_frames(images, should_cancel,
@@ -345,9 +350,6 @@ def compute_focus_index(images: Sequence[np.ndarray], method: str, parameters=No
                                             resource_preference=resource_preference)
             _check(images, allow_grayscale=method in ('openfocus_b', 'openfocus_c'),
                    should_cancel=should_cancel)
-            if spec.neural:
-                from fusion_methods.neural_runtime import start_inference_job
-                start_inference_job()
             n = len(images)
             h, w = images[0].shape[:2]
             if spec.depth_planner:
