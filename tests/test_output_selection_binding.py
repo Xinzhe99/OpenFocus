@@ -22,7 +22,7 @@ def test_bound_output_selection_ignores_repeated_clicks(qapp):
         display_output_image_in_result_view=lambda item: calls.append('clicked'),
         delete_selected_output_images=lambda: None)
     window.source_manager = SimpleNamespace(**{name: lambda *args: None for name in (
-        'toggle_stack_review', 'show_source_context_menu', 'sync_slider_from_list',
+        'bind_source_actions', 'show_source_context_menu', 'sync_slider_from_list',
         'on_item_changed', 'apply_list_order', 'delete_selected_source_images')})
     window.render_manager = SimpleNamespace(start_render=lambda: None)
     bind_right_panel(window, components)

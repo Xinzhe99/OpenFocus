@@ -4710,10 +4710,6 @@ class OpenFocus(QMainWindow):
         self.refresh_registration_parameters()
         c.btn_reset.setText(trans.t('btn_reset'))
         c.btn_render_settings.setText(trans.t('render_settings_title'))
-        c.btn_select_all.setText(trans.t('btn_select_all'))
-        c.btn_select_all.setToolTip(trans.t('btn_select_all_hint'))
-        c.btn_select_none.setText(trans.t('btn_select_none'))
-        c.btn_select_none.setToolTip(trans.t('btn_select_none_hint'))
         self.source_manager.decorate_source_items()
         # Keep the cancel/progress affordance while a render or comparison
         # runs — the retranslation must not reset "Cancel render"/"Cancel" to
