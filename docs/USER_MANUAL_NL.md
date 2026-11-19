@@ -86,7 +86,7 @@ De website biedt standaard stabiele desktopversies. Op Windows en macOS kunt u b
 | macOS Apple Silicon (M1–M4) | `OpenFocus-*-macos-arm64.zip` | Draagbaar (uitpakken) |
 | Linux x86-64 | `OpenFocus-*-linux-x86_64.tar.gz` | Draagbaar (uitpakken en `OpenFocus/OpenFocus` starten) |
 
-Of de Windows-builds ondertekend zijn, hangt af van de specifieke release (zie de releaseopmerkingen); een handtekening is niet gegarandeerd. Bij de eerste start kan daarom een beveiligingsvraag verschijnen: onder **Windows** SmartScreen → 'Meer informatie' → 'Toch uitvoeren' (de eerste start kan 30–60 s duren). De macOS-builds zijn niet genotariseerd; na de DMG-installatie (naar Programma's) voert u indien nodig `xattr -cr /Applications/OpenFocus.app` uit, na de terminalinstallatie (naar `~/Applications`) `xattr -cr ~/Applications/OpenFocus.app`, of u klikt met rechts op de app → **Open**.
+De huidige Windows-builds zijn niet ondertekend. Vergelijk vóór het starten de SHA-256-hash van het gedownloade bestand met de waarde in het releasemanifest. Bij de eerste start kan daarom een beveiligingsvraag verschijnen: onder **Windows** SmartScreen → 'Meer informatie' → 'Toch uitvoeren' (de eerste start kan 30–60 s duren). De macOS-builds zijn niet genotariseerd; na de DMG-installatie (naar Programma's) voert u indien nodig `xattr -cr /Applications/OpenFocus.app` uit, na de terminalinstallatie (naar `~/Applications`) `xattr -cr ~/Applications/OpenFocus.app`, of u klikt met rechts op de app → **Open**.
 
 Bekijk voor installatie vanaf de terminal eerst de opdracht voor macOS of Linux met `--dry-run` en voer die daarna zonder die optie uit. Op Linux installeert dit de headless CLI; macOS-builds vereisen Apple Silicon en worden in `~/Applications` geïnstalleerd.
 
@@ -1119,7 +1119,7 @@ Exitcodes: `0` succes, `1` verwerkingsfout, `2` gebruiksfout. `python main.py --
 
 #### Windows SmartScreen-waarschuwing bij de eerste start
 
-Of de Windows-binaries ondertekend zijn, hangt af van de specifieke release (zie de releaseopmerkingen); een handtekening is niet gegarandeerd. Download ze van **https://openfocus.top** in plaats van een externe mirror. Als SmartScreen waarschuwt, klik op **Meer informatie → Toch uitvoeren**. De eerste start na uitpakken kan 30–60 seconden duren.
+De huidige Windows-builds zijn niet ondertekend. Download de bestanden van de officiële OpenFocus-website (**https://openfocus.top**). Vergelijk vóór het starten de SHA-256-hash van het gedownloade bestand met de waarde in het releasemanifest. Als SmartScreen waarschuwt, klik op **Meer informatie → Toch uitvoeren**. De eerste start na uitpakken kan 30–60 seconden duren.
 
 #### macOS meldt dat de app „niet kan worden geopend” of „beschadigd is”
 

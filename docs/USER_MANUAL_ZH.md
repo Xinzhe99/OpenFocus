@@ -98,6 +98,8 @@ CLI 也会拒绝透明输入的传感器清理与深度图。
 
 从 [OpenFocus 官网](https://openfocus.top/#download) 可获取 Windows、macOS 和 Linux x86-64 桌面版；Linux 桌面包从 1.77.0 正式版开始提供，也可从 GitHub 下载对应版本。桌面更新默认选择稳定版；Linux 用户通过下载并解压新包手动更新。`pip install openfocus` 和 Linux 的 `install.sh` 安装的是独立的无界面 CLI。
 
+当前的 Windows 版本未签名。运行前，请核对下载文件的 SHA-256 哈希值是否与发布清单中的值一致。
+
 终端安装方式如下：
 
 ```bash
@@ -1659,7 +1661,7 @@ macOS 上，以上源列表快捷键使用 `Command` 代替 `Ctrl`。
 
 #### Windows 首次启动弹出 SmartScreen 警告
 
-Windows 构建的签名状态因具体 release 而异，见发布说明；不保证签名。请从 **https://openfocus.top** 下载，而不要使用第三方镜像；若出现 SmartScreen 警告，点击 **更多信息 → 仍要运行**。解压后的首次启动可能需要 30–60 秒。
+Windows 版本未签名，首次启动时可能出现 SmartScreen 提示。请从 **https://openfocus.top** 或项目的 GitHub Releases 页面下载，可用发布清单中的 SHA-256 校验下载文件。解压后的首次启动可能需要 30–60 秒。
 
 #### macOS 提示"无法打开"或"已损坏"
 

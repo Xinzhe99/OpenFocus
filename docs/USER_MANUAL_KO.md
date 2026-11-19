@@ -98,6 +98,8 @@ OpenFocus는 연구자, 엔지니어, 이미지 처리 전문가를 위해 만�
 있습니다. 터미널에서도 설치할 수 있습니다.
 공식 사이트에서는 기본적으로 안정 버전을 제공합니다. Windows와 macOS에서는 베타 자동 업데이트를 선택할 수 있습니다. Linux 데스크톱은 새 압축 파일을 내려받아 수동으로 업데이트합니다. PyPI CLI는 별도로 제공됩니다.
 
+현재 배포되는 Windows 버전에는 디지털 서명이 없습니다. 실행하기 전에 다운로드한 파일의 SHA-256 해시가 릴리스 매니페스트에 있는 값과 일치하는지 확인하세요.
+
 ```bash
 # macOS(Apple Silicon, ~/Applications) 또는 Linux(헤드리스 CLI)
 curl -fsSL https://openfocus.top/install.sh | sh -s -- --dry-run
@@ -1541,9 +1543,9 @@ openfocus retouch replay edits.ofretouch --base fused.png --sources frame1.png f
 
 #### Windows 첫 실행 시 SmartScreen 경고
 
-Windows 빌드의 서명 여부는 릴리스에 따라 다릅니다(릴리스 노트 참조). 서명은
-보장되지 않습니다. **https://openfocus.top**에서 내려받고(제3자
-미러는 피하세요) SmartScreen 경고가 나오면 **추가 정보 → 그래도 실행**을 클릭하세요.
+현재 배포되는 Windows 버전에는 디지털 서명이 없습니다. OpenFocus 공식 사이트(**https://openfocus.top**)에서 파일을 다운로드하세요.
+실행하기 전에 다운로드한 파일의 SHA-256 해시가 릴리스 매니페스트에 있는 값과 일치하는지 확인하세요.
+SmartScreen 경고가 나오면 **추가 정보 → 그래도 실행**을 클릭하세요.
 압축을 푼 뒤 처음 실행할 때는 30–60초 정도 걸릴 수 있습니다.
 
 #### macOS에서 앱을 "열 수 없음" 또는 "손상됨"으로 표시됨

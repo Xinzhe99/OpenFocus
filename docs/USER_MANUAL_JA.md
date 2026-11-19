@@ -103,6 +103,8 @@ OpenFocus は、研究者、エンジニア、画像処理の専門家のため�
 にもあります。ターミナルからもインストールできます。
 公式サイトのダウンロードは安定版が既定です。Windows と macOS ではベータ版の自動更新を選択できます。Linux のデスクトップ版は新しいアーカイブをダウンロードして手動で更新します。PyPI の CLI は別途提供されます。
 
+現在の Windows 版にはデジタル署名がありません。実行する前に、ダウンロードしたファイルの SHA-256 ハッシュがリリースマニフェストの値と一致することを確認してください。
+
 ```bash
 # macOS（Apple Silicon、~/Applications へ）または Linux（ヘッドレス CLI）
 curl -fsSL https://openfocus.top/install.sh | sh -s -- --dry-run
@@ -1655,9 +1657,8 @@ openfocus retouch replay edits.ofretouch --base fused.png --sources frame1.png f
 
 #### 初回起動時の Windows SmartScreen 警告
 
-Windows ビルドの署名状態はリリースごとに異なります（リリースノートを参照）。
-署名は保証されません。**https://openfocus.top** から
-ダウンロードし（第三者ミラーは避けてください）、SmartScreen の警告が出た場合は
+現在の Windows 版にはデジタル署名がありません。OpenFocus 公式サイト（**https://openfocus.top**）からダウンロードしてください。
+実行する前に、ダウンロードしたファイルの SHA-256 ハッシュがリリースマニフェストの値と一致することを確認してください。SmartScreen の警告が出た場合は
 **詳細情報 → 実行** をクリックしてください。zip 展開後の初回起動には 30〜60 秒
 かかることがあります。
 
