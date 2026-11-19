@@ -435,8 +435,9 @@ if reporters:
                             + log_path.read_text(encoding="utf-8", errors="replace"))
             time.sleep(0.05)
         assert discovery.is_file(), "GUI did not publish control discovery"
+        client_env = dict(env, TMPDIR=str(tmp_path))
         cli = subprocess.run([sys.executable, str(root / "main.py"), "ctl", "ping"],
-                             cwd=root, env=env, capture_output=True, text=True, timeout=30)
+                             cwd=root, env=client_env, capture_output=True, text=True, timeout=30)
         assert cli.returncode == 0, cli.stderr
         assert json.loads(cli.stdout)["result"]["pong"] is True
         forwarded = subprocess.run(command, cwd=root, env=env, capture_output=True,
@@ -464,7 +465,7 @@ try:
 finally:
     session.close()
 '''
-        client = subprocess.run([sys.executable, "-c", script], cwd=root, env=env,
+        client = subprocess.run([sys.executable, "-c", script], cwd=root, env=client_env,
                                 capture_output=True, text=True, timeout=45)
         assert client.returncode == 0, client.stderr
         assert gui.wait(timeout=30) == 0, log_path.read_text(encoding="utf-8", errors="replace")
@@ -1600,7 +1601,20 @@ def test_server_encodes_a_too_large_reply_as_an_error(server):
     assert reply["error"]["code"] == "internal"
 
 
-def test_stack_load_reports_its_own_completion(server, stack_frames):
+def test_stack_load_reports_its_own_completion(server, stack_frames, monkeypatch):
+    manager = server.window.source_manager
+    finish_worker = manager._finish_load_worker
+    pending = {}
+
+    def observe_before_release(worker):
+        try:
+            pending["frames"] = call(server, "stack.frames")
+            pending["render"] = call(server, "render.start")
+        finally:
+            finish_worker(worker)
+
+    monkeypatch.setattr(manager, "_finish_load_worker", observe_before_release)
+    assert call(server, "method.set", id="dct")["ok"]
     token = server.token
     started = call(server, "stack.load", token=token, folder=str(stack_frames))["result"]
     assert started["load_id"] == 1
@@ -1613,6 +1627,11 @@ def test_stack_load_reports_its_own_completion(server, stack_frames):
     assert frames["load"]["finished"] is True
     assert frames["load"]["error"] is None
     assert frames["count"] == 3
+    before_release = pending["frames"]["result"]
+    assert before_release["count"] == frames["count"]
+    assert before_release["load"]["active"]
+    assert not before_release["load"]["finished"]
+    assert pending["render"]["error"]["code"] == "busy"
 
 
 def test_stack_load_reports_a_failed_decode(server, tmp_path):

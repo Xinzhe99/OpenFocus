@@ -26,6 +26,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Open the selected render's retained focus positions for export in Depth Map for
   OpenFocus B/C and StackMFF V2/V3.
 - Show the current WeChat group invite in Contact Us, with a bundled QR code for offline use.
+- Keep progress, cancel controls, and timed notices on the left of the desktop
+  status bar and a sponsor invitation that opens Contact Us on the right.
 - Open the user manual on GitHub in the current interface language from Help.
 
 ### Changed
@@ -37,6 +39,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   of every 8- or 16-bit code, computed by the existing per-sample arithmetic
   and applied in parallel row bands, instead of float strips on one thread.
   Output pixels are unchanged.
+- The browser now shows a localized receipt when a desktop sign-in request arrives,
+  when the browser has no active session, or when the user needs to try again.
 - Require an account to enter the desktop application; a saved sign-in can be
   used offline. Signing out returns to the sign-in screen.
 - Reuse one account device slot across installed, portable and recognized preview
@@ -57,6 +61,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   128-row calls, so row workers no longer wait on each other to start the
   next call. Output pixels are unchanged.
 - Record Windows memory commitment and process usage when neural sessions fail.
+- Blend StackMFF V3 soft-mode colors in smaller row bands on wide images to
+  reduce temporary host memory during color reconstruction.
 - Convert OpenFocus source frames to gray codes in parallel row bands instead
   of on one thread. Output pixels are unchanged.
 - Mark Dust Map and batch flat-field correction as experimental desktop tools.
@@ -93,6 +99,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Keep sign-in methods available while a browser or email sign-in is pending;
   choosing another method or retrying cancels the previous attempt and ignores
   its late callbacks.
+- Restore the saved desktop workspace after an update without showing a failure
+  dialog while its source images are still loading.
 - Wait for asynchronous image progress dialogs in the menu action sweep.
 - Keep private control sockets within Unix path length limits.
 - Honor cancellation after the final linear RAW header is read, before memory
@@ -101,6 +109,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   separate when both targets are selected.
 - Close finished batch progress dialogs before showing their summaries, and
   report retouch source loading as busy to the local control channel.
+- Report a stack load as finished only after the desktop releases its loader,
+  so control clients can render as soon as their load completes.
 - Handle Windows lock contention when opening the report queue and depth cache.
 - Run deferred ECC and homography resampling on the render's planned threads
   with the published OpenCV packages. Their Python bindings do not expose the

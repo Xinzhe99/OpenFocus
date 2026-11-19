@@ -28,10 +28,16 @@ def _window():
     window.excluded_frames = set()
     manager = SourceManager(window)
     from main import OpenFocus
+    from ui.status_bar import WorkspaceStatusBar
     window._status_host = QMainWindow()
+    bar = WorkspaceStatusBar(window._status_host)
+    window._status_host.setStatusBar(bar)
+    window._review_status = bar._message_label
     window.statusBar = window._status_host.statusBar
     window._set_review_status = OpenFocus._set_review_status.__get__(window)
-    window._on_status_message_changed = OpenFocus._on_status_message_changed.__get__(window)
+    window._refresh_status_sponsor = OpenFocus._refresh_status_sponsor.__get__(window)
+    window.ui_theme = 'light'
+    window.show_contact_info = lambda: None
     window._on_update_action_clicked = lambda: None
     window.source_manager = manager
     OpenFocus._build_update_indicator(window)
@@ -472,6 +478,7 @@ def test_review_precedes_select_all_and_retouch_belongs_to_outputs(qapp):
 
 
 def test_review_status_yields_to_temporary_messages_and_returns(qapp):
+    from PyQt6.QtTest import QSignalSpy
     window, manager, panel = _window()
     window._status_host.show()
     try:
@@ -485,13 +492,17 @@ def test_review_status_yields_to_temporary_messages_and_returns(qapp):
         assert window._review_status.accessibleName() == expected
         assert window._review_status.isVisible()
 
-        window.statusBar().showMessage("Rendering")
-        assert not window._review_status.isVisible()
+        status = window.statusBar()
+        status.showMessage('Background notice', 100)
+        expired = QSignalSpy(status.messageChanged)
+        assert window._review_status.text() == 'Background notice'
+        manager._review_status_key = 'stack_review_stale'
         manager.refresh_review_text()
-        assert window.statusBar().currentMessage() == "Rendering"
-        window.statusBar().clearMessage()
+        assert window._review_status.text() == 'Background notice'
+        assert expired.wait(5000)
+        assert not status.currentMessage()
         assert window._review_status.isVisible()
-        assert window._review_status.text() == expected
+        assert window._review_status.text() == trans.t('stack_review_stale')
 
         manager._clear_review()
         assert not window._review_status.text()

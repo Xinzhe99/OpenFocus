@@ -1,4 +1,5 @@
-"""Process-level regressions for queued GUI startup during a normal close."""
+"""Process-level regressions for desktop startup and close."""
+import json
 import os
 from pathlib import Path
 import site
@@ -116,6 +117,57 @@ assert not browser_calls, browser_calls
     assert {path.name: path.read_bytes() for path in sentinel.iterdir()} == {
         "settings.ini": b"sentinel settings\n"
     }
+
+
+def test_update_restart_restores_frames_without_a_warning(qapp, tmp_path):
+    from core.control.client import launch_gui, request, require_ok, wait_for
+    from utils import recovery
+
+    root = Path(__file__).resolve().parents[1]
+    source = root / "assets" / "demo_stack" / "demo_01.jpg"
+    env = sandbox_env(tmp_path, {"QT_QPA_PLATFORM": "offscreen"})
+    env["PYTHONPATH"] = os.pathsep.join(filter(None, (site.getusersitepackages(), env.get("PYTHONPATH"))))
+    profile = Path(env["OPENFOCUS_DATA_DIR"])
+    snapshots = profile / recovery.RECOVERY_DIR_NAME
+    snapshots.mkdir(parents=True)
+    (profile / "settings.ini").write_text("[ui]\nfirst_run_done=1\n", encoding="utf-8")
+    (snapshots / recovery.SESSION_FILE).write_text(json.dumps({
+        "openfocus_project": 1, "sources": [str(source)],
+        "recovery_document": {"version": 1, "project_path": "", "dirty": True},
+    }), encoding="utf-8")
+    marker = snapshots / recovery.PENDING_RESTORE_FILE
+    marker.touch()
+    bootstrap = """
+import runpy, sys
+from tests.process_isolation import install_test_account, install_usage_sender
+install_test_account()
+install_usage_sender()
+sys.argv = sys.argv[1:]
+runpy.run_path(sys.argv[0], run_name="__main__")
+"""
+    gui = None
+
+    def start(command, **kwargs):
+        nonlocal gui
+        gui = subprocess.Popen([command[0], "-c", bootstrap, *command[1:], "--restore-session"], **kwargs)
+        return gui
+
+    try:
+        access = launch_gui(env=env, process_factory=start)
+        # Generation zero describes the idle desktop before the restore starts.
+        frames = wait_for("stack.frames", lambda state: state["load"]["id"] > 0
+                          and state["load"]["finished"], timeout=20, discovery=access)
+        assert frames["load"]["error"] is None, frames["load"]
+        assert frames["names"] == [source.name]
+        assert not marker.exists()
+        dialogs = require_ok(request("dialog.list", discovery=access))["dialogs"]
+        assert not [dialog for dialog in dialogs if dialog["class"] == "QMessageBox"]
+        require_ok(request("app.quit", {"force": True}, discovery=access))
+        assert gui.wait(timeout=15) == 0
+    finally:
+        if gui is not None and gui.poll() is None:
+            gui.kill()
+            gui.wait(timeout=10)
 
 
 def test_close_waits_for_account_worker(qapp, tmp_path, monkeypatch):

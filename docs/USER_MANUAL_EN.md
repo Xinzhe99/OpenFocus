@@ -119,9 +119,9 @@ After installation, launch OpenFocus by:
 4. **Python Source**: Run `pip install -r requirements.txt`, then
    `python main.py` in your activated environment
 
-The first launch opens the welcome dialog, where you can choose the theme and
-load the bundled demo stack. A fresh profile defaults to the light theme; the
-choice is remembered.
+On the welcome screen, choose **Load Demo Stack** to try the bundled photos, or
+**Open workspace** to start with your own. Expand **Settings** to change the
+theme or opt in to beta updates. A fresh profile uses the light theme.
 
 Sign in online once on each device using email, GitHub or Google. A saved local
 session permits offline use until you sign out or remove it. A device that has

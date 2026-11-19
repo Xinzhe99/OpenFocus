@@ -250,9 +250,12 @@ def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 17,
             blend2 = w2 >= float(feather_theta)
 
             # pass 2: weighted accumulation over top-2 picks
+            def prepare(index, cancelled):
+                return _prepare_frame(frames[index], img_resize, cancelled)
+
             accumulated = None
-            produced = _ordered_frame_results(len(frames), produce, workers, should_cancel)
-            for index, (frame, response) in produced:
+            produced = _ordered_frame_results(len(frames), prepare, workers, should_cancel)
+            for index, frame in produced:
                 _check_cancel(should_cancel)
                 if accumulated is None:
                     accumulated = np.zeros(frame.shape, np.float32)
@@ -270,7 +273,7 @@ def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 17,
                         accumulated[rows] += np.where(is2, 0.5, 0.0) * frame[rows]
                 run_bands(height, 128, accumulate_top_two,
                           scratch_bytes=min(128, height) * width * 64)
-                del frame, response
+                del frame
                 step += 1
                 if progress_callback is not None:
                     progress_callback(step, total_steps)

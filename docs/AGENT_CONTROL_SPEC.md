@@ -58,6 +58,8 @@ token. A stale file (process gone) is reported as `not_running`; `--launch`
 starts a new GUI first. The file is removed on a clean quit.
 
 The socket is per-user local IPC (Windows named pipe, Unix-domain socket).
+On Unix, discovery records the absolute path of the default socket so that a
+client with a different temporary directory can connect.
 Requests without the token are rejected with `unauthorized`. The discovery
 file is created with owner-only permissions from the first byte (a restricted
 ACL on Windows, mode `0600` elsewhere). On Windows the server also compares
@@ -127,6 +129,9 @@ menu or a drag-drop advance the same `load_id`, so a wait can bind to one
 request instead of any non-empty stack. Poll `stack.frames` until
 `load.finished` is true and inspect `load.error`; a failed or cancelled decode
 reports `finished:true` with the reason and leaves the previous frames alone.
+A successful load reports `finished:true` once the desktop has released the
+loader and can accept a new load or render. An earlier `render.start`
+returns `busy` while the stack is loading.
 
 `linear_raw` is a boolean, default `false`, passed to folder and file loads.
 `linear_raw:true` with video returns `invalid_argument`.
