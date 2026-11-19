@@ -1521,14 +1521,13 @@ class SourceManager(QObject):
     def processing_selection_changed(self) -> None:
         window = self.window
         window.source_revision = getattr(window, "source_revision", 0) + 1
-        clear_prepared = getattr(getattr(window, 'render_manager', None),
-                                 'clear_prepared_cache', None)
-        if callable(clear_prepared):
-            clear_prepared()
-        window.aligned_images = []
-        window.is_images_aligned = False
-        window.last_alignment_options = None
-        window.alignment_request_key = None
+        # The last completed alignment still belongs to its original ordered
+        # selection. Restore it if those same frames are checked again.
+        key = getattr(window, 'alignment_request_key', None)
+        if key is None:
+            window.aligned_images = []
+            window.last_alignment_options = None
+        window.is_images_aligned = bool(key and tuple(window.included_indices()) == key[1])
         window.transform_manager.reset_roi_selection()
         self._refresh_source_count()
         self.decorate_source_items()
