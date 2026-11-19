@@ -4939,6 +4939,9 @@ if __name__ == "__main__":
     app.show_tray_icon()
     _log.info("main window ready")
 
+    from ui.report_retry import schedule_report_retries, start_failure_capture
+    start_failure_capture(window)
+
     # An existing local session is sufficient offline; a new profile must sign in.
     _quit_on_last_window = app.quitOnLastWindowClosed()
     app.setQuitOnLastWindowClosed(False)
@@ -5119,7 +5122,6 @@ if __name__ == "__main__":
         QTimer.singleShot(0, window.accelerator_banner.check_at_startup)
     from utils.app_paths import user_data_dir
     if (user_data_dir() / 'reports' / 'reports.json').exists():
-        from ui.report_retry import schedule_report_retries
         schedule_report_retries(window)
     try:
         from ui.crash_report import offer_previous_crash
