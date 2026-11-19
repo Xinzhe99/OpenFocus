@@ -912,23 +912,25 @@ def resolve_region(frame, x, y, width, height, *, channels=None, should_cancel=N
     return image
 
 
+def _normalize_frame(image, *, should_cancel):
+    from core.frame_storage import create_transient_frame
+    from core.registration import RegistrationCancelled
+    output = create_transient_frame(image.shape, np.float32)
+    for y in range(0, image.shape[0], 128):
+        if should_cancel is not None and should_cancel():
+            raise RegistrationCancelled()
+        strip = image[y:y + 128].astype(np.float32)
+        if image.dtype == np.uint16:
+            strip *= 255.0 / 65535.0
+        output[y:y + 128] = strip
+    return output
+
+
 def normalize_frames(frames, should_cancel=None):
     """Describe the existing shared float32 domain, preserving uint16 low bits."""
     if not any(frame.dtype == np.uint16 for frame in frames):
         return list(frames)
-
-    def normalize(image):
-        from core.frame_storage import create_transient_frame
-        from core.registration import RegistrationCancelled
-        output = create_transient_frame(image.shape, np.float32)
-        for y in range(0, image.shape[0], 128):
-            if should_cancel is not None and should_cancel():
-                raise RegistrationCancelled()
-            strip = image[y:y + 128].astype(np.float32)
-            if image.dtype == np.uint16:
-                strip *= 255.0 / 65535.0
-            output[y:y + 128] = strip
-        return output
+    normalize = partial(_normalize_frame, should_cancel=should_cancel)
 
     return [frame if frame.dtype == np.float32 else process_frame(
                 frame, normalize, dtype=np.float32, should_cancel=should_cancel,
@@ -936,24 +938,50 @@ def normalize_frames(frames, should_cancel=None):
                 * math.prod(frame.shape[1:]) * 4) for frame in frames]
 
 
+@dataclass(eq=False)
+class _ExposureGain:
+    """One frame's render gain, shared with its reduced preview once measured."""
+    gain: float | None
+    target: float | None
+    should_cancel: object
+
+    def __call__(self, image):
+        from core.frame_storage import create_transient_frame
+        from core.registration import RegistrationCancelled
+        from utils.image_utils import _exposure_mean, apply_exposure_gain
+
+        if self.gain is None:
+            mean = _exposure_mean(image, self.should_cancel, normalize_uint16=True)
+            self.gain = 1.0 if self.target <= 1e-6 or mean <= 1e-6 else self.target / mean
+        if self.gain == 1.0:
+            return image
+        output = create_transient_frame(image.shape, image.dtype)
+        if self.target is not None and _uses_exposure_table(image.shape, image.dtype):
+            _match_through_table(image, self.gain, output, self.should_cancel)
+            return output
+        adjust = _matched_strip if self.target is not None else apply_exposure_gain
+        for y in range(0, image.shape[0], 128):
+            if self.should_cancel is not None and self.should_cancel():
+                raise RegistrationCancelled()
+            output[y:y + 128] = adjust(image[y:y + 128], self.gain)
+        return output
+
+    def preview(self, image, is_display, linear_metadata):
+        if self.gain is None or (self.gain != 1 and is_display and linear_metadata is not None):
+            # A developed thumbnail cannot reproduce a gain applied before development.
+            return None
+        if self.gain == 1:
+            return image
+        from utils.image_utils import apply_exposure_gain
+        adjust = _matched_strip if self.target is not None else apply_exposure_gain
+        return adjust(image, self.gain)
+
+
 def exposure_frames(frames, gains, should_cancel=None):
     """Apply precomputed whole-frame gains inside each admitted source consumer."""
-    from core.frame_storage import create_transient_frame
-    from utils.image_utils import apply_exposure_gain
-    from core.registration import RegistrationCancelled
-
-    def adjusted(gain):
-        def apply(image):
-            output = create_transient_frame(image.shape, image.dtype)
-            for y in range(0, image.shape[0], 128):
-                if should_cancel is not None and should_cancel():
-                    raise RegistrationCancelled()
-                output[y:y + 128] = apply_exposure_gain(image[y:y + 128], gain)
-            return output
-        return apply
 
     return [frame if gain == 1.0 else process_frame(
-                frame, adjusted(gain), should_cancel=should_cancel,
+                frame, _ExposureGain(gain, None, should_cancel), should_cancel=should_cancel,
                 scratch_bytes=frame.nbytes + min(frame.shape[0], 128)
                 * math.prod(frame.shape[1:]) * (4 + frame.dtype.itemsize))
             for frame, gain in zip(frames, gains)]
@@ -1043,29 +1071,8 @@ def _exposure_workspace_bytes(frame):
 def match_exposure_frames(frames, should_cancel=None, *, reference_index=-1):
     """Resolve the selected target mean once and retain one gain per source."""
     from utils.image_utils import _exposure_mean
-    from core.frame_storage import create_transient_frame
     reference = frames[reference_index]
     target = _exposure_mean(resolve_frame(reference), should_cancel, normalize_uint16=True)
-
-    def matcher(gain):
-        def match(image):
-            nonlocal gain
-            from core.registration import RegistrationCancelled
-            if gain is None:
-                mean = _exposure_mean(image, should_cancel, normalize_uint16=True)
-                gain = 1.0 if target <= 1e-6 or mean <= 1e-6 else target / mean
-            if gain == 1.0:
-                return image
-            output = create_transient_frame(image.shape, image.dtype)
-            if _uses_exposure_table(image.shape, image.dtype):
-                _match_through_table(image, gain, output, should_cancel)
-                return output
-            for y in range(0, image.shape[0], 128):
-                if should_cancel is not None and should_cancel():
-                    raise RegistrationCancelled()
-                output[y:y + 128] = _matched_strip(image[y:y + 128], gain)
-            return output
-        return match
 
     # A matched frame is cached for every later reader in the render, so its
     # processed (for example aligned) source is needed again only when the GUI
@@ -1073,7 +1080,7 @@ def match_exposure_frames(frames, should_cancel=None, *, reference_index=-1):
     from core.frame_resolution_cache import within_retention_limit
     store_sources = within_retention_limit(frames)
     # Native u16 restoration peaks at three float32 strips; outputs stay bounded.
-    return [process_frame(frame, matcher(1.0 if frame is reference else None),
+    return [process_frame(frame, _ExposureGain(1.0 if frame is reference else None, target, should_cancel),
                           store_source=store_sources,
                           should_cancel=should_cancel,
                           scratch_bytes=frame.nbytes + _exposure_workspace_bytes(frame))
