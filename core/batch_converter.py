@@ -54,6 +54,19 @@ def estimate_job(path, page=0, ext=None):
                 # Original DNGs are copied in 1 MiB chunks. Sensor dimensions
                 # must not reserve demosaic buffers for that validated copy.
                 return 64 * 1024**2, compressed + 1024**2
+            # Native Fujifilm RAF stores a sensor mosaic. RawPy.raw_type and
+            # raw_pattern would unpack it here, before the job is admitted.
+            from utils.linear_dng import _raf_header_identity
+            if _raf_header_identity(path) is not None:
+                pixels = width * height
+                # One uint16 sensor plus a second plane's worth of LibRaw
+                # workspace, the encoded input, and bounded preview/metadata.
+                # The uncompressed TIFF writer holds one 128-row strip.
+                strip = width * min(height, 128) * 2
+                ram = pixels * 4 + compressed + strip + 96 * 1024**2
+                # The staged output is renamed on the destination filesystem:
+                # one CFA plane plus the 768px RGB preview and TIFF headers.
+                return ram, pixels * 2 + 4 * 1024**2
     elif Path(path).suffix.lower() in ('.tif', '.tiff'):
         with tifffile.TiffFile(path) as tif:
             _, entry = next(islice(image_loader.tiff_source_pages(tif), page, None))

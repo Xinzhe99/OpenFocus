@@ -96,6 +96,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   sources. Failed source rows now retain the codec or filesystem error.
 - Include the immediate Windows job object's per-process commit limit in
   admission when that limit is present.
+- Budget native Fujifilm RAF-to-DNG conversion for the full sensor mosaic,
+  strip writer and embedded preview. Large GFX files can now convert under
+  memory limits that still protect the desktop.
 - Keep OpenFocus A on the GPU when a streamed source and the fusion workspace fit
   in memory. Long stacks can reuse cached frames without filling the decoded RAM cache.
 - Close the isolated language audit without project confirmation, including
