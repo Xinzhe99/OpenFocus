@@ -17,6 +17,10 @@ are independent of account sign-in and diagnostic reporting.
   newer release from `openfocus.top` while idle; installation requires the user
   to choose to restart and update. Builds without self-update open the website
   download page instead.
+- **Sponsor acknowledgments** — opening **Support Us** requests the public list
+  from `account.openfocus.top` without account credentials or an installation
+  ID. Only display names approved for public acknowledgment are published.
+  The payment QR codes are bundled and available offline.
 - **Usage reporting** — while enabled, the desktop app sends only a
   randomly generated installation ID, app version and operating system to
   `openfocus.top`, normally no more than once every 24 hours after a successful

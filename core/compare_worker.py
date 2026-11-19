@@ -7,6 +7,7 @@ allowed to finish when cancelled; their output is never published afterwards.
 """
 
 from copy import deepcopy
+from dataclasses import replace
 from threading import Event
 
 import numpy as np
@@ -15,6 +16,7 @@ from core.resource_policy import heavy_job
 from core.registration import RegistrationCancelled
 from utils.logging_setup import frame_details, log_operation
 from utils.platform_utils import configure_native_worker_stack
+from utils.output_sharpen import DEFAULT_SHARPEN_STRENGTH, validate_sharpen_strength
 from core.frame_storage import store_frame, scratch_directory
 from core.source_frames import materialize_frames
 
@@ -181,9 +183,12 @@ class PreviewWorker(_CancellableWorker):
         self.methods = tuple(methods)
         self.per_method = deepcopy(per_method)
         self.shared = deepcopy(shared)
+        self.sharpen_strength = validate_sharpen_strength(
+            self.shared.get('sharpen_strength', DEFAULT_SHARPEN_STRENGTH))
         self.region = tuple(region) if region is not None else None
         self.roi_only = bool(roi_only)
         self._materialized_images = None
+        self.fusion_details = {}
 
     def _settings(self, method):
         own = self.per_method.get(method, {})
@@ -225,7 +230,7 @@ class PreviewWorker(_CancellableWorker):
         base_frame = self.shared.get('method_options', {}).get(method, self.shared).get('base_frame', 'none')
         if base_frame in ("first", "last"):
             halo += 4 * 32  # Low-pass base correction follows fusion.
-        if self.shared.get('sharpen_output', False):
+        if self.shared.get('sharpen_output', False) and self.sharpen_strength:
             halo += 4
 
         x0 = max(0, ((x - halo) // grid) * grid)
@@ -265,6 +270,7 @@ class PreviewWorker(_CancellableWorker):
                               thread_count=params['thread_count'], roi_only=self.roi_only,
                               requested_region=self.region, input_region=context, output_region=bounds,
                               sharpen_output=bool(self.shared.get('sharpen_output', False)),
+                              sharpen_strength=self.sharpen_strength,
                               registration_parameters=self.shared.get('registration_parameters'))
         inputs, is_16bit = prepare_fusion_input(inputs, self._should_cancel)
         if self._should_cancel():
@@ -277,11 +283,19 @@ class PreviewWorker(_CancellableWorker):
             raise ValueError("Fusion returned an invalid comparison image size.")
         if self.shared.get('sharpen_output', False):
             from utils.output_sharpen import sharpen_output
-            result = sharpen_output(result, self._should_cancel)
+            result = sharpen_output(result, self._should_cancel, strength=self.sharpen_strength)
         x, y, w, h = bounds
         if context != bounds:
             result = result[y - y0:y - y0 + h, x - x0:x - x0 + w]
-        return store_frame(quantize_fuse_output(result, is_16bit)), bounds
+        result = store_frame(quantize_fuse_output(result, is_16bit))
+        details = fusion.fusion_details
+        if details is not None:
+            sharpened = bool(self.shared.get('sharpen_output', False))
+            options = details.options + (('sharpen_output', sharpened),)
+            if sharpened:
+                options += (('sharpen_strength', self.sharpen_strength),)
+            self.fusion_details[method] = replace(details, options=options)
+        return result, bounds
 
     def run(self):
         with log_operation("comparison_preview", methods=self.methods, parameters=self.per_method,

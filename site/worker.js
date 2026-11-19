@@ -7,6 +7,7 @@
  * - "/download/latest/<kind>" streams the matching R2 object with byte-range
  *   support, or redirects to the GitHub asset when the mirror has no object.
  * - "/api/updates" and "/download/releases/<tag>/<kind>" use R2 only.
+ * - The two WeChat QR paths proxy the current PNGs from the account service.
  *
  * With `run_worker_first: true` in wrangler.jsonc every request reaches this
  * worker, so `www` canonicalisation also applies to static paths. Everything
@@ -36,6 +37,14 @@ const DOWNLOAD_KINDS = new Set([
 ]);
 const EDGE_CACHE_SECONDS = 300;
 const NO_STORE = "no-store";
+const QR_ORIGIN = "https://account.openfocus.top";
+const QR_ROUTES = new Map([
+  ["/wechat-group.png", "wechat-group"],
+  ["/wechat-official-account.jpg", "wechat-official-account"],
+]);
+const QR_MAX_BYTES = 512 * 1024;
+const QR_MAX_DIMENSION = 1024;
+const PNG_SIGNATURE = [137, 80, 78, 71, 13, 10, 26, 10];
 // /download/latest/* is a mutable URL even though the R2 object it resolves to
 // is versioned, so no downstream cache may pin the response.
 const OBJECT_CACHE = NO_STORE;
@@ -72,6 +81,80 @@ function badGateway(message, method = "GET") {
       "Retry-After": "60",
     },
   });
+}
+
+async function readQrPng(response) {
+  const declaredLength = response.headers.get("Content-Length");
+  const limit = declaredLength === null ? QR_MAX_BYTES : Number(declaredLength);
+  if (!response.body || limit < 45 || limit > QR_MAX_BYTES ||
+      (declaredLength !== null && !/^\d+$/.test(declaredLength)) ||
+      response.headers.get("Content-Type")?.toLowerCase() !== "image/png") {
+    response.body?.cancel().catch(() => {});
+    return null;
+  }
+
+  const buffer = new Uint8Array(limit);
+  let size = 0;
+  const reader = response.body.getReader();
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (size + value.byteLength > limit) {
+      reader.cancel().catch(() => {});
+      return null;
+    }
+    buffer.set(value, size);
+    size += value.byteLength;
+  }
+  if (size < 45 || (declaredLength !== null && size !== limit) ||
+      !PNG_SIGNATURE.every((byte, offset) => buffer[offset] === byte)) return null;
+
+  const header = new DataView(buffer.buffer);
+  if (header.getUint32(8) !== 13 || header.getUint32(12) !== 0x49484452) return null; // IHDR
+  if (header.getUint32(size - 12) !== 0 || header.getUint32(size - 8) !== 0x49454e44 ||
+      header.getUint32(size - 4) !== 0xae426082) return null; // IEND
+  const width = header.getUint32(16);
+  const height = header.getUint32(20);
+  return width > 0 && height > 0 && width <= QR_MAX_DIMENSION && height <= QR_MAX_DIMENSION
+    ? buffer.subarray(0, size) : null;
+}
+
+async function proxyQr(id, method) {
+  if (method !== "GET" && method !== "HEAD") {
+    return textResponse("Method Not Allowed", 405, { Allow: "GET, HEAD" }, method);
+  }
+
+  try {
+    // The account API exposes GET. Validate the same representation for HEAD.
+    const upstream = await fetch(`${QR_ORIGIN}/v1/qr/${id}`, {
+      method: "GET",
+      headers: { Accept: "image/png", "User-Agent": "OpenFocus/Website" },
+      credentials: "omit",
+      redirect: "manual",
+      cache: "no-store",
+    });
+    if (upstream.status !== 200) {
+      upstream.body?.cancel().catch(() => {});
+      if (upstream.status === 404) {
+        return textResponse("QR code is unpublished", 404, {}, method);
+      }
+    } else {
+      const png = await readQrPng(upstream);
+      if (png) {
+        return new Response(method === "HEAD" ? null : png, {
+          headers: {
+            "Content-Type": "image/png",
+            "Content-Length": String(png.byteLength),
+            "Cache-Control": NO_STORE,
+            "X-Content-Type-Options": "nosniff",
+          },
+        });
+      }
+    }
+  } catch {
+    // Network and body read failures use the same public upstream error.
+  }
+  return textResponse("QR code service is unavailable", 502, {}, method);
 }
 
 function preferredLanguage(request) {
@@ -747,6 +830,9 @@ export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
     const method = (request.method || "GET").toUpperCase();
+
+    const qrId = QR_ROUTES.get(url.pathname);
+    if (qrId) return proxyQr(qrId, method);
 
     if (url.hostname === "www.openfocus.top") {
       const target = new URL(request.url);

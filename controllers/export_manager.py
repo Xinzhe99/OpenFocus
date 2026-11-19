@@ -229,10 +229,11 @@ class ExportManager:
     # ------------------------------------------------------------------
     # Filename helpers
     # ------------------------------------------------------------------
-    def _fusion_tag(self) -> str:
+    def _fusion_tag(self, method: str | None = None) -> str:
         from core.algorithms import get_fusion
 
-        method = self.window.current_fusion_method()
+        if method is None:
+            method = self.window.current_fusion_method()
         return "None" if method == "none" else get_fusion(method).file_tag
 
     def _align_tag(self) -> str:
@@ -241,9 +242,9 @@ class ExportManager:
         method = self.window.current_alignment_method()
         return "NoAlign" if method == "none" else get_registration(method).file_tag
 
-    def generate_default_filename(self) -> str:
+    def generate_default_filename(self, *, fusion_method: str | None = None) -> str:
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        name = (f"OpenFocus_{timestamp}_{self._fusion_tag()}_"
+        name = (f"OpenFocus_{timestamp}_{self._fusion_tag(fusion_method)}_"
                 f"{self._align_tag()}")
         from utils.export_paths import prefix_output_name
         return prefix_output_name(getattr(self.window, "output_name_prefix", ""), name)

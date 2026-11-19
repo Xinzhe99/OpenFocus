@@ -1040,7 +1040,7 @@ def test_render_completion_attaches_provenance(qapp, monkeypatch):
             self._status = Status()
             self.export_manager = type(
                 "E", (), {"generate_default_filename":
-                          staticmethod(lambda: "render.png")})()
+                          staticmethod(lambda *, fusion_method: "render.png")})()
             self.output_manager = OutputManager(self)
 
         def included_indices(self):

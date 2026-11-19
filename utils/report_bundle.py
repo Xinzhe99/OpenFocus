@@ -17,6 +17,7 @@ import traceback
 
 import zipfile
 from utils import diagnostics, logging_setup
+from utils.output_sharpen import MAX_SHARPEN_STRENGTH
 
 MAX_BUNDLE_BYTES = 2 * 1024 * 1024
 _MAX_LOG_BYTES = 2 * 1024 * 1024
@@ -169,6 +170,8 @@ def _numeric_fields(fields, depth=0):
         return result
     for key, value in fields.items():
         if key in _NUMBERS and type(value) in (int, float) and abs(value) <= 10**15 and math.isfinite(value):
+            result[key] = value
+        elif key == 'sharpen_strength' and type(value) is int and 0 <= value <= MAX_SHARPEN_STRENGTH:
             result[key] = value
         elif key in _SHAPES and isinstance(value, (list, tuple)) and 1 <= len(value) <= 4 and all(type(x) is int and 0 <= x <= 10**9 for x in value):
             result[key] = list(value)

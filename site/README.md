@@ -1,9 +1,8 @@
 # OpenFocus website
 
-Static product site for OpenFocus: English at `/`, Simplified Chinese at
-`/zh/`. No framework, no runtime, no third-party requests — one HTML file per
-language with CSS and JavaScript inlined, deployed as Cloudflare Workers
-static assets.
+Static product site for OpenFocus with English at `/` and Simplified Chinese
+at `/zh/`. The build produces one HTML file per language with inlined CSS
+and JavaScript. A Cloudflare Worker serves the static assets and live routes.
 
 Full operating manual (architecture, R2 mirror, release checklist,
 troubleshooting): [`docs/WEBSITE_OPERATIONS.md`](../docs/WEBSITE_OPERATIONS.md).
@@ -18,12 +17,14 @@ Output goes to `site/dist/` (git-ignored). The build also writes `robots.txt`,
 `sitemap.xml`, `_headers` and a bilingual `404.html`, and derives the icon,
 Open Graph image and WebP screenshots from `assets/`.
 
-The build copies `assets/readme/wechat-group.png` unchanged to
-`/wechat-group.png`. The English and Chinese community sections and the desktop
-Contact Us dialog use that URL. It has a five-minute cache lifetime so the
-invite can be rotated by replacing the PNG and redeploying. Desktop packages
-also include that PNG for offline use and label it as the bundled copy when
-the live request fails.
+The community section uses `/wechat-group.png` and `/wechat-official-account.jpg`
+for its same-origin WeChat image links. The Worker proxies both paths to the
+public QR endpoints at `https://account.openfocus.top` and serves PNG bytes at
+both URLs. Responses use `Cache-Control: no-store`. An unpublished QR returns
+`404`, and an upstream failure returns `502`.
+
+Publish or rotate the QR codes in the account service admin console. The website
+uses the current values on subsequent requests without a site rebuild or deploy.
 
 Set the public Worker origin so canonical URLs, Open Graph tags, the sitemap
 and no-JavaScript download links point at the correct deployment:
@@ -45,9 +46,12 @@ python -m http.server 8788 --directory site/dist
 ```
 
 `http://127.0.0.1:8788/` is English, `/zh/` is Chinese. This static server
-does not implement the Worker download/API routes or the custom 404 page.
+omits the Worker QR, download and API routes and the custom 404 page.
 
 ## Deploy
+
+Before deploying the QR routes, publish both WeChat codes in the account
+service so the live image URLs are available when the site switches over.
 
 A production deploy needs an authenticated Cloudflare account that can reach
 the `openfocus.top` zone, the `openfocus-site` Worker, the
@@ -96,7 +100,7 @@ footer; publish it before enabling the analytics binding.
 | `site/template.html` | Page structure; `{{placeholders}}` resolve from the content |
 | `site/style.css` | Design tokens (light/dark), layout, responsive rules |
 | `site/app.js` | Theme, OS-aware navigation download, Linux desktop availability, copy button and menus |
-| `site/worker.js` | `/` language negotiation; `www` → apex; `/api/latest` and `/download/latest/*` for website downloads; mirror-only `/api/updates` and `/download/releases/<tag>/<kind>` for desktop updates |
+| `site/worker.js` | Language negotiation, `www` → apex, live WeChat QR routes, website downloads and mirror-only desktop updates |
 | `site/install.sh` | macOS app installer + Linux CLI installer (`curl … | sh`, `--dry-run`) |
 | `site/install.ps1` | Windows installer (`irm … | iex`, `OPENFOCUS_DRY_RUN=1`) |
 | `site/wrangler.jsonc` | Worker name and static-asset routing |

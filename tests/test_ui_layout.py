@@ -149,7 +149,7 @@ def test_main_selector_explains_missing_dtcwt(qapp, monkeypatch):
     combo = QComboBox()
     algorithm_combo.fill_fusion_combo(combo)
     host = SimpleNamespace(combo_fusion=combo, combo_align=QComboBox(),
-                           _stackmff_available=True, experimental_features=True)
+                           _stackmff_available=True, experimental_features=False)
     monkeypatch.setattr(algorithm_combo, '_package_available', lambda _name: False)
     main.OpenFocus.refresh_method_availability(host)
     index = combo.findData('dtcwt')
@@ -211,7 +211,7 @@ def test_alignment_only_disables_fusion_only_options(qapp):
     assert not host.chk_base_correct.isEnabled()
     assert not host.chk_sharpen_output.isEnabled()
     assert not host.chk_reverse_order.isEnabled()
-    assert not host.chk_exposure_match.isEnabled()
+    assert host.chk_exposure_match.isEnabled()
     assert _t.t("radio_no_fusion_hint") in host.chk_base_correct.toolTip()
     assert _t.t("radio_no_fusion_hint") in host.chk_reverse_order.toolTip()
 
@@ -486,7 +486,7 @@ def test_first_run_theme_is_light():
     from utils.settings_store import DEFAULT_THEME, _PERSISTED_FIELDS
 
     assert DEFAULT_THEME == "light"
-    assert _PERSISTED_FIELDS["ui_theme"][1] == "light"
+    assert _PERSISTED_FIELDS['theme_mode'][1] == 'light'
 
 
 def test_batch_dialog_offers_real_method_choices(qapp):

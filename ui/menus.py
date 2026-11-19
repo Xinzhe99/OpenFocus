@@ -2,13 +2,12 @@ import cv2
 
 from PyQt6.QtCore import QEvent, QObject, QUrl
 from PyQt6.QtGui import QAction, QActionGroup, QDesktopServices
-from PyQt6.QtWidgets import QMainWindow, QToolTip
+from PyQt6.QtWidgets import QMainWindow, QMenu, QToolTip
 from locales import trans
-from core.experimental import experimental_enabled
 from utils.design_tokens import PALETTES
 
 
-class _LockedExperimentalHint(QObject):
+class _UnavailableToolHint(QObject):
     def __init__(self, menu, action):
         super().__init__(menu)
         self.menu = menu
@@ -23,20 +22,20 @@ class _LockedExperimentalHint(QObject):
         return super().eventFilter(watched, event)
 
 
-def update_experimental_actions(window: QMainWindow) -> None:
-    """Refresh experimental tool actions after settings or language changes."""
-    enabled = experimental_enabled(window)
+def update_development_actions(window: QMainWindow) -> None:
+    """Retranslate the unavailable tools after the standard menu sweep."""
     for key in ('mosaic_title', 'menu_dust_map'):
         action = getattr(window, 'ui_objs', {}).get(key)
         if action is not None:
-            action.setText(f"{trans.t(key)} ({trans.t('experimental_label')})")
-            action.setEnabled(enabled)
-            action.setToolTip('' if enabled else trans.t('experimental_locked_hint'))
+            action.setText(f"{trans.t(key)} ({trans.t('development_label')})")
+            action.setEnabled(False)
+            action.setToolTip(trans.t('development_unavailable_hint'))
 
 
 def _show_support_dialog(window):
-    from dialogs.about import SupportUsDialog
-    SupportUsDialog(window).exec()
+    from dialogs._community_layout import show_community_dialog
+    from dialogs.support import SupportUsDialog
+    show_community_dialog(window, SupportUsDialog)
 
 
 def _open_github_manual() -> None:
@@ -293,12 +292,10 @@ def setup_menus(window: QMainWindow) -> None:
 
     mosaic_action = QAction(trans.t('mosaic_title'), window)
     mosaic_action.setProperty('trans_key', 'mosaic_title')
-    mosaic_action.triggered.connect(window.show_mosaic_dialog)
     batch_menu.addAction(mosaic_action)
     window.ui_objs['mosaic_title'] = mosaic_action
-    batch_menu._locked_mosaic_hint = _LockedExperimentalHint(batch_menu, mosaic_action)
+    batch_menu._locked_mosaic_hint = _UnavailableToolHint(batch_menu, mosaic_action)
     batch_menu.installEventFilter(batch_menu._locked_mosaic_hint)
-    update_experimental_actions(window)
 
     def open_converter():
         from dialogs.batch_converter import BatchConverterDialog
@@ -320,13 +317,12 @@ def setup_menus(window: QMainWindow) -> None:
     window.ui_objs['menu_depth_map'] = depth_action
 
     dust_action = QAction(trans.t('menu_dust_map'), window)
-    dust_action.triggered.connect(window.show_dust_map_dialog)
     dust_action.setProperty("trans_key", 'menu_dust_map')
     batch_menu.addAction(dust_action)
     window.ui_objs['menu_dust_map'] = dust_action
-    batch_menu._locked_dust_hint = _LockedExperimentalHint(batch_menu, dust_action)
+    batch_menu._locked_dust_hint = _UnavailableToolHint(batch_menu, dust_action)
     batch_menu.installEventFilter(batch_menu._locked_dust_hint)
-    update_experimental_actions(window)
+    update_development_actions(window)
 
     batch_menu.addSeparator()
 
@@ -493,11 +489,11 @@ def setup_menus(window: QMainWindow) -> None:
     theme_menu = settings_menu.addMenu(trans.t('menu_theme'))
     theme_group_theme = QActionGroup(window)
     theme_group_theme.setExclusive(True)
-    for theme_code in PALETTES:
+    for theme_code in (*PALETTES, 'system'):
         trans_key = f'theme_{theme_code}'
         act = QAction(trans.t(trans_key), window)
         act.setCheckable(True)
-        act.setChecked(getattr(window, 'ui_theme', 'light') == theme_code)
+        act.setChecked(getattr(window, 'theme_mode', 'light') == theme_code)
         act.setData(theme_code)
         act.setProperty("trans_key", trans_key)
         act.triggered.connect(
@@ -507,6 +503,21 @@ def setup_menus(window: QMainWindow) -> None:
         window.ui_objs[trans_key] = act
     window.ui_objs['menu_theme'] = theme_menu
     window.ui_objs['menu_theme'].setProperty("trans_key", 'menu_theme')
+
+    font_menu = settings_menu.addMenu(trans.t('menu_ui_font'))
+    font_group = QActionGroup(window)
+    font_group.setExclusive(True)
+    for mode in ('large', 'medium', 'small', 'custom'):
+        key = f'ui_font_{mode}'
+        action = font_menu.addAction(trans.t(key))
+        action.setCheckable(True)
+        action.setChecked(getattr(window, 'font_size_mode', 'medium') == mode)
+        action.setData(mode)
+        action.triggered.connect(lambda _checked, choice=mode: window.set_ui_font_size(choice))
+        font_group.addAction(action)
+        window.ui_objs[key] = action
+    window.ui_objs['menu_ui_font'] = font_menu
+
 
     # Language Submenu
     lang_menu = settings_menu.addMenu(trans.t('menu_language'))
@@ -589,3 +600,12 @@ def setup_menus(window: QMainWindow) -> None:
     install_action.setVisible(False)
     help_menu.addAction(install_action)
     window.ui_objs['action_install_update'] = install_action
+
+    extensions_menu = QMenu(trans.t('menu_extensions'), menubar)
+    extensions_menu.setEnabled(False)
+    # Qt's native macOS menu bar hides empty menus.
+    unavailable_action = extensions_menu.addAction(trans.t('development_unavailable_hint'))
+    unavailable_action.setEnabled(False)
+    menubar.addMenu(extensions_menu)
+    window.ui_objs['menu_extensions'] = extensions_menu
+    window.ui_objs['development_unavailable_hint'] = unavailable_action

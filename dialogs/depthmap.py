@@ -14,7 +14,6 @@ from PyQt6.QtCore import QSignalBlocker, QThread, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QIcon, QImage, QPainter, QPixmap
 from utils.file_dialogs import FileDialog
 from PyQt6.QtWidgets import (
-    QApplication,
     QCheckBox,
     QColorDialog,
     QComboBox,
@@ -22,29 +21,31 @@ from PyQt6.QtWidgets import (
     QDoubleSpinBox,
     QFormLayout,
     QHBoxLayout,
+    QFrame,
     QLabel,
     QLineEdit,
     QListWidget,
     QListWidgetItem,
     QPushButton,
     QMessageBox,
+    QTabWidget,
     QSlider,
     QScrollArea,
-    QSplitter,
     QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
 
+from controllers.output_manager import workspace_fusions
 from core.algorithms import (alignment_steps, depth_algorithms, get_fusion, registration_parameter_specs,
     registration_algorithms, resolve_fusion_parameters, desktop_registration_parameters)
 from ui.algorithm_parameters import AlgorithmParameterPanel
 from ui.algorithm_combo import apply_method_availability, selected_item_enabled
-from core.experimental import (alignment_is_experimental, experimental_enabled,
-                               fusion_is_experimental)
+from core.experimental import alignment_is_experimental, experimental_enabled
 from locales import trans
 from widgets.flow_layout import FlowPanel
 from widgets.stepper import StepperSpinBox
+from widgets.workspace import WorkspaceSplitter
 from utils import colormap as cmap
 from utils.image_utils import imwrite_auto
 from utils.settings_store import get_settings, image_save_dir, remember_image_save
@@ -747,12 +748,6 @@ class DepthMapDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle(trans.t("depth_dialog_title"))
-        self.resize(880, 620)
-        screen = self.screen() or QApplication.primaryScreen()
-        if screen is not None:
-            available = screen.availableGeometry()
-            self.resize(min(880, max(520, available.width() - 80)),
-                        min(620, max(400, available.height() - 100)))
         self._apply_style()
 
         self.window_main = parent
@@ -790,6 +785,7 @@ class DepthMapDialog(QDialog):
         self._texture_description = ""
         self._texture_identity = None
         self._method_drafts = {}
+        self._edited_method_parameters = set()
         self._registration_drafts = {}
         self._capture_sources()
         self._custom = self._load_custom_schemes()
@@ -801,7 +797,7 @@ class DepthMapDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(14, 10, 14, 10)
 
-        splitter = QSplitter(Qt.Orientation.Horizontal, self)
+        splitter = WorkspaceSplitter()
 
         # ---- preview side ----
         pv = QWidget()
@@ -810,11 +806,11 @@ class DepthMapDialog(QDialog):
         self.preview_lbl = QLabel(trans.t("depth_no_map_yet"))
         self.preview_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.preview_lbl.setMinimumSize(180, 130)
+        self.preview_lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
         self.preview_lbl.setObjectName("depthPreview")
         # The 3D surface lives on its own tab: it answers a different question
         # ("what does this relief look like?") than the colourised map, and it
         # used to require exporting an OBJ and opening another program.
-        from PyQt6.QtWidgets import QTabWidget
         from widgets.depth_surface import DepthSurface
         self.tabs = QTabWidget()
         map_page = QWidget()
@@ -885,16 +881,18 @@ class DepthMapDialog(QDialog):
 
         self.legend = _GradientBar()
         pvlay.addWidget(self.legend)
-        splitter.addWidget(pv)
+        preview_scroll = QScrollArea()
+        preview_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        preview_scroll.setWidgetResizable(True)
+        preview_scroll.setWidget(pv)
+        splitter.addWidget(preview_scroll)
 
         # ---- controls side ----
-        side = QWidget()
-        self._side_controls = side
-        form = QFormLayout(side)
-        form.setFormAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-        form.setContentsMargins(8, 0, 0, 0)
-        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
-        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+        self._side_controls = QTabWidget()
+        source_page, form = self._settings_form()
+        appearance_page, appearance = self._settings_form()
+        export_page, exports = self._settings_form()
+        self._source_form = form
         self.source_combo = QComboBox()
         self.source_combo.addItem(trans.t("depth_source_current"), "current")
         self.source_combo.addItem(trans.t("depth_source_from_output"), "output")
@@ -932,7 +930,7 @@ class DepthMapDialog(QDialog):
 
         self.map_combo = QComboBox()
         self._fill_colormaps()
-        form.addRow(trans.t("depth_colormap"), self.map_combo)
+        appearance.addRow(trans.t("depth_colormap"), self.map_combo)
 
         edit_btn = QPushButton(trans.t("depth_edit_custom"))
         edit_btn.clicked.connect(self._edit_custom_scheme)
@@ -940,23 +938,23 @@ class DepthMapDialog(QDialog):
         row.addWidget(edit_btn)
         self.invert_chk = QCheckBox(trans.t("depth_invert"))
         row.addWidget(self.invert_chk)
-        form.addRow("", row)
+        appearance.addRow(row)
 
         self.gamma_spin = StepperSpinBox(minimum=0.4, maximum=2.5, decimals=2, step=0.05, value=1.0)
         self.gamma_spin.setDecimals(2)
         self.gamma_spin.setRange(0.4, 2.5)
         self.gamma_spin.setSingleStep(0.05)
         self.gamma_spin.setValue(1.0)
-        form.addRow(trans.t("depth_gamma"), self.gamma_spin)
+        appearance.addRow(trans.t("depth_gamma"), self.gamma_spin)
 
         self.smooth_spin = StepperSpinBox(minimum=0, maximum=5, decimals=0, step=1)
         self.smooth_spin.setRange(0, 5)
         self.smooth_spin.setToolTip(trans.t("depth_smooth_hint"))
-        form.addRow(trans.t("depth_smooth"), self.smooth_spin)
+        appearance.addRow(trans.t("depth_smooth"), self.smooth_spin)
 
         self.physical_chk = QCheckBox(trans.t("depth_physical"))
         self.physical_chk.setAccessibleName(trans.t("depth_physical"))
-        form.addRow(self.physical_chk)
+        appearance.addRow(self.physical_chk)
         # Calibration only affects the calibrated-depth mode above, so its
         # rows live in their own panel and appear with it. Hiding (rather than
         # disabling) keeps the side panel short on small windows; every value
@@ -996,20 +994,19 @@ class DepthMapDialog(QDialog):
         self.btn_save_physical = QPushButton(trans.t("depth_save_physical"))
         self.btn_save_physical.setAccessibleName(trans.t("depth_save_physical"))
         self.btn_save_physical.clicked.connect(self._save_physical)
-        phys_form.addRow(self.btn_save_physical)
-        form.addRow(self.physical_panel)
+        appearance.addRow(self.physical_panel)
         self.mesh_size = StepperSpinBox(minimum=2, maximum=4096, decimals=0,
                                         step=20, value=600)
-        form.addRow(trans.t("depth_mesh_size"), self.mesh_size)
+        exports.addRow(trans.t("depth_mesh_size"), self.mesh_size)
         self.texture_combo = QComboBox()
         self.texture_combo.setToolTip(trans.t("depth_texture_hint"))
         self.texture_combo.setAccessibleName(trans.t("depth_texture"))
         self._fill_textures()
-        form.addRow(trans.t("depth_texture"), self.texture_combo)
+        appearance.addRow(trans.t("depth_texture"), self.texture_combo)
         self.lbl_texture_source = QLabel(trans.t("depth_no_map_yet"))
         self.lbl_texture_source.setWordWrap(True)
         self.lbl_texture_source.setObjectName("mutedLabel")
-        form.addRow(self.lbl_texture_source)
+        appearance.addRow(self.lbl_texture_source)
         self.physical_chk.toggled.connect(self._on_physical_toggled)
         for control in (self.z_start, self.z_step, self.z_unit,
                         self.z_direction, self.z_mapping, self.mesh_size, self.texture_combo):
@@ -1032,24 +1029,24 @@ class DepthMapDialog(QDialog):
         row2.addWidget(self.overlay_chk)
         row2.addWidget(self.opacity_spin)
         row2.addStretch(1)
-        form.addRow("", row2)
+        appearance.insertRow(4, row2)
 
         self.lbl_source = QLabel("")
         self.lbl_source.setObjectName("mutedLabel")
         self.lbl_source.setWordWrap(True)
-        form.addRow(self.lbl_source)
+        form.insertRow(1, self.lbl_source)
+        self._side_controls.addTab(source_page, trans.t('depth_source_label'))
+        self._side_controls.addTab(appearance_page, trans.t('watermark_section_appearance'))
+        self._side_controls.addTab(export_page, trans.t('depth_export_tab'))
 
-        for combo in side.findChildren(QComboBox):
+        for combo in self._side_controls.findChildren(QComboBox):
             combo.setSizeAdjustPolicy(
                 QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
             combo.setMinimumContentsLength(
                 3 if combo in (self.z_unit, self.z_direction) else 12)
 
 
-        side_scroll = QScrollArea()
-        side_scroll.setWidgetResizable(True)
-        side_scroll.setWidget(side)
-        splitter.addWidget(side_scroll)
+        splitter.addWidget(self._side_controls)
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 0)
         layout.addWidget(splitter, 1)
@@ -1058,8 +1055,10 @@ class DepthMapDialog(QDialog):
         layout.addWidget(self.status_lbl)
 
         # ---- actions ----
+        # Export choices live beside the preview. Compute stays within reach.
         btns = FlowPanel(h_spacing=6, v_spacing=6)
         self.compute_btn = QPushButton(trans.t("depth_compute"))
+        self.compute_btn.setObjectName('primaryButton')
         self.compute_btn.setToolTip(trans.t("depth_manual_compute_hint"))
         self.compute_btn.clicked.connect(self._compute)
         self.cancel_btn = QPushButton(trans.t("btn_cancel_compute"))
@@ -1079,9 +1078,10 @@ class DepthMapDialog(QDialog):
             button.setToolTip(trans.t("depth_products_hint"))
         self.btn_save_indices.clicked.connect(lambda: self._export_product(False))
         self.btn_save_render.clicked.connect(lambda: self._export_product(True))
-        for button in (self.compute_btn, self.cancel_btn, self.btn_save_indices,
-                       self.btn_save_render, self.btn_save_color,
-                       self.btn_save_raw, self.btn_save_3d, close_btn):
+        for button in (self.btn_save_color, self.btn_save_raw, self.btn_save_indices,
+                       self.btn_save_render, self.btn_save_physical, self.btn_save_3d):
+            exports.addRow(button)
+        for button in (self.compute_btn, self.cancel_btn, close_btn):
             btns.add(button)
         layout.addWidget(btns)
 
@@ -1108,23 +1108,20 @@ class DepthMapDialog(QDialog):
             if _widget is not None:
                 _widget.setProperty("controlId", _control)
         self._load_rendered_depth()
+        splitter.fit_dialog(900, 630)
 
-    def showEvent(self, event):  # noqa: N802
-        super().showEvent(event)
-        if not getattr(self, "_initial_screen_checked", False):
-            self._initial_screen_checked = True
-            QTimer.singleShot(0, self._fit_initial_screen)
-
-    def _fit_initial_screen(self):
-        screen = self.screen() or QApplication.primaryScreen()
-        if screen is None:
-            return
-        self.layout().activate()
-        available = screen.availableGeometry()
-        frame = self.frameGeometry()
-        max_width = max(1, available.width() - max(0, frame.width() - self.width()))
-        max_height = max(1, available.height() - max(0, frame.height() - self.height()))
-        self.resize(min(self.width(), max_width), min(self.height(), max_height))
+    @staticmethod
+    def _settings_form():
+        scroll = QScrollArea()
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setWidgetResizable(True)
+        content = QWidget()
+        form = QFormLayout(content)
+        form.setContentsMargins(10, 10, 10, 10)
+        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+        scroll.setWidget(content)
+        return scroll, form
 
 
     # ------------------------------------------------------------------
@@ -1144,6 +1141,8 @@ class DepthMapDialog(QDialog):
         self._current_images = list(images)
         self._current_names = list(names)
         self._current_indices = list(indices)
+        self._current_source_revision = getattr(win, 'source_revision', 0)
+        self._workspace_outputs = tuple(workspace_fusions(win))
         self._current_source_paths = source_paths(getattr(win, 'image_source_paths', ()),
             getattr(getattr(win, 'image_loader', None), 'image_paths', ()))
         from core.image_loader import stack_icc_profile
@@ -1175,10 +1174,9 @@ class DepthMapDialog(QDialog):
 
     def _on_source_changed(self):
         self._source_mode = self.source_combo.currentData()
+        self._sync_registration_controls()
         self._sync_method_controls()
         self._invalidate_computation()
-        self.align_combo.setEnabled(self._source_mode == "current")
-        self.registration_parameter_panel.setEnabled(self._source_mode == 'current')
         self._fill_textures()
         self._update_source_summary()
         self._update_overlay_availability()
@@ -1208,9 +1206,6 @@ class DepthMapDialog(QDialog):
         if hasattr(self, "lbl_texture_source") and not self._has_current_map():
             self.lbl_texture_source.setText(trans.t("depth_no_map_yet"))
 
-    def _capture_indices(self):
-        context = self._source_context()
-        return list(context.source_indices) if context is not None else list(self._current_indices)
 
     def _physical_values(self, index):
         from utils.mesh_export import physical_depth
@@ -1270,9 +1265,7 @@ class DepthMapDialog(QDialog):
     def _available_depth_method_id(self):
         from ui.algorithm_combo import fusion_unavailable_reason
         for spec in depth_algorithms():
-            if (not fusion_unavailable_reason(spec, self._ai_fusion_available)
-                    and (experimental_enabled(self.window_main)
-                         or not fusion_is_experimental(spec.id))):
+            if not fusion_unavailable_reason(spec, self._ai_fusion_available):
                 return spec.id
         return depth_algorithms()[0].id
 
@@ -1360,6 +1353,7 @@ class DepthMapDialog(QDialog):
         label = getattr(self, "lbl_source", None)
         if label is None:
             return
+        record = self._saved_output(self.method_combo.currentData(), self._parameters_for(self.method_combo.currentData()))
         context = self._source_context()
         images = ([frame.image for frame in context.frames] if context is not None
                   else self._current_images if self._source_mode == "current" else [])
@@ -1371,15 +1365,16 @@ class DepthMapDialog(QDialog):
             parts.append(self.align_combo.currentText())
         if context is not None:
             parts.extend((self._source_record.label, context.alignment))
-            if self._source_record.kind == 'fusion':
-                if context.rendered_depth is not None:
-                    saved = trans.t(get_fusion(context.algorithm).label_key)
-                    parts.append(trans.t('depth_saved_measure').format(method=saved))
-                else:
-                    parts.append(trans.t('depth_estimate_only'))
+            if record is None and self._source_record.kind == 'fusion':
+                parts.append(trans.t('depth_estimate_only'))
             label.setToolTip("\n".join(frame.name for frame in context.frames))
         else:
             label.setToolTip("\n".join(self._current_names))
+        if record is not None:
+            saved = trans.t(get_fusion(record.context.algorithm).label_key)
+            parts.append(trans.t('depth_saved_measure').format(method=saved))
+            if record is not self._source_record:
+                parts.append(record.label)
         label.setText(" · ".join(parts) if len(images) >= 2 else
                       trans.t("depth_need_two_frames").format(n=len(images)))
         if self._source_mode == "output" and context is None:
@@ -1421,9 +1416,10 @@ class DepthMapDialog(QDialog):
             getter = getattr(self.window_main, 'fusion_parameters_for', None)
             parameters = (getter(method, depth=True) if callable(getter)
                           else resolve_fusion_parameters(method, depth=True))
-            context = self._source_context()
+            record = self._saved_output(method)
+            context = record.context if record is not None else self._source_context()
             if context is not None and context.algorithm == method:
-                saved = (context.rendered_depth.parameters if context.rendered_depth is not None
+                saved = (context.rendered_depth.parameters if record is not None
                          else context.parameters.get('fusion_parameters', context.parameters))
                 allowed = {spec.key for spec in get_fusion(method).depth.parameters}
                 parameters.update({k: v for k, v in saved.items() if k in allowed})
@@ -1438,8 +1434,10 @@ class DepthMapDialog(QDialog):
     def _on_parameter_changed(self, values):
         key = (self._source_mode, self.method_combo.currentData())
         if self._method_drafts[key] != values:
+            self._edited_method_parameters.add(key)
             self._method_drafts[key] = dict(values)
             self._invalidate_computation()
+            self._update_source_summary()
             self._load_rendered_depth()
 
     def _sync_registration_controls(self):
@@ -1454,12 +1452,15 @@ class DepthMapDialog(QDialog):
 
     def _on_alignment_changed(self):
         self._sync_registration_controls()
-        self._update_source_summary()
+        self._reset_saved_parameters()
         self._invalidate_computation()
+        self._load_rendered_depth()
 
     def _on_registration_parameter_changed(self, values):
         self._registration_drafts[self.align_combo.currentData()] = dict(values)
+        self._reset_saved_parameters()
         self._invalidate_computation()
+        self._load_rendered_depth()
 
     def _update_overlay_availability(self):
         base = self._matching_texture()
@@ -1481,6 +1482,7 @@ class DepthMapDialog(QDialog):
         """
         physical = self.physical_chk.isChecked()
         self.physical_panel.setVisible(physical)
+        self.btn_save_physical.setVisible(physical)
         self.relief_row.setVisible(not physical)
         self.relief_spin.setEnabled(not physical)
         show_opacity = self._overlay_available and self.overlay_chk.isChecked()
@@ -1532,8 +1534,12 @@ class DepthMapDialog(QDialog):
         self.cancel_btn.setVisible(busy and not self._closing)
         self.cancel_btn.setEnabled(not self._closing and busy and not self._cancelling)
         self._side_controls.setEnabled(not self._closing and self._export_worker is None)
-        self.align_combo.setEnabled(self._source_mode == "current")
-        self.registration_parameter_panel.setEnabled(self._source_mode == 'current')
+        uses_alignment = self._source_mode == 'current'
+        self.align_combo.setEnabled(uses_alignment)
+        self._source_form.setRowVisible(self.align_combo, uses_alignment)
+        self.registration_parameter_panel.setEnabled(uses_alignment)
+        if not uses_alignment:
+            self.registration_parameter_panel.hide()
         self.texture_combo.setEnabled(self._has_current_map())
         self.lbl_map_state.setVisible(self._index01 is not None and
             (self._stale or self._map_request != self._request))
@@ -1554,9 +1560,8 @@ class DepthMapDialog(QDialog):
             if not selected_item_enabled(combo):
                 self.status_lbl.setText(combo.currentData(Qt.ItemDataRole.ToolTipRole) or '')
                 return
-        if not experimental_enabled(self.window_main) and (
-                fusion_is_experimental(self.method_combo.currentData()) or
-                (uses_alignment and alignment_is_experimental(self.align_combo.currentData()))):
+        if (uses_alignment and not experimental_enabled(self.window_main)
+                and alignment_is_experimental(self.align_combo.currentData())):
             self.status_lbl.setText(trans.t('experimental_locked_hint'))
             return
         for editor in self.registration_parameter_panel.editors.values():
@@ -1564,19 +1569,59 @@ class DepthMapDialog(QDialog):
                 editor.interpretText()
         self._start_depth()
 
-    def _load_rendered_depth(self):
+    def _reset_saved_parameters(self):
+        for key in tuple(self._method_drafts):
+            if key[0] == 'current' and key not in self._edited_method_parameters:
+                del self._method_drafts[key]
+        self._sync_method_controls()
+        self._update_source_summary()
+
+    def _saved_output(self, method, parameters=None):
+        """Prefer the selected output, then use the newest matching history entry."""
+        from core.workers import _ordered_openfocus_registration
         context = self._source_context()
-        if context is None or self._source_record.kind != 'fusion':
-            return False
+        if self._source_mode == 'output' and context is None:
+            return None
+        selected = (self._source_record,) if context is not None else ()
+        for record in (*selected, *self._workspace_outputs):
+            candidate = record.context
+            depth = (candidate.rendered_depth if parameters is None
+                     else candidate.matching_depth(method, parameters))
+            if depth is None or candidate.algorithm != method:
+                continue
+            if record is self._source_record and context is not None:
+                if record.kind == 'fusion':
+                    return record
+                continue
+            if context is not None:
+                if candidate.same_depth_domain(context):
+                    return record
+                continue
+            if (not self._current_images or candidate.roi_rect is not None
+                    or depth.index.shape != self._current_images[0].shape[:2]
+                    or not candidate.matches_stack(self._current_source_revision, self._current_indices)
+                    or candidate.parameters.get('defect_mask_path') or candidate.parameters.get('sensor_denoise')):
+                continue
+            reverse = get_fusion(method).sort_frames and self._reverse_order
+            if depth.reverse_order != reverse:
+                continue
+            alignment = self.align_combo.currentData()
+            if candidate.matches_registration(alignment, self._registration_drafts[alignment],
+                    self._registration_settings['reg_downscale_width'],
+                    _ordered_openfocus_registration(alignment, method, 'desc' if reverse else 'asc')):
+                return record
+        return None
+
+    def _load_rendered_depth(self):
         method = self.method_combo.currentData()
-        depth = context.matching_depth(method, self._parameters_for(method))
-        if depth is None:
+        record = self._saved_output(method, self._parameters_for(method))
+        if record is None:
             return False
         if not (self._has_current_map() and self._map_rendered):
-            self._start_depth(depth)
+            self._start_depth(saved_output=record)
         return True
 
-    def _start_depth(self, rendered_depth=None):
+    def _start_depth(self, saved_output=None):
         if self._closing or self._worker is not None or self._export_worker is not None:
             return
         method = self.method_combo.currentData()
@@ -1585,7 +1630,11 @@ class DepthMapDialog(QDialog):
             self.status_lbl.setText(trans.t("depth_need_stack"))
             self._reconcile_controls()
             return
-        context = self._source_context()
+        record = saved_output or (self._source_record if self._source_mode == 'output' else None)
+        context = record.context if record is not None else None
+        rendered_depth = context.rendered_depth if saved_output is not None else None
+        if saved_output is not None:
+            imgs = [frame.image for frame in context.frames]
         parameters = dict(self._parameters_for(method))
         reverse = (context.parameters.get("sort_mode") == "desc" if context is not None
                    else self._reverse_order)
@@ -1605,14 +1654,15 @@ class DepthMapDialog(QDialog):
         worker.request = self._request
         worker.parameters = parameters
         worker.context = context
-        worker.source_paths = (source_paths(getattr(self._source_record, 'source_paths', ()),
-                               getattr(context, 'source_paths', ()))
-                               if self._source_mode == 'output' else self._current_source_paths)
-        worker.output_texture = self._output_texture if context is not None else None
-        worker.output_label = self._source_record.label if context is not None else ""
+        worker.source_paths = (source_paths(getattr(record, 'source_paths', ()),
+                                            getattr(context, 'source_paths', ()))
+                               if record is not None else self._current_source_paths
+                               if self._source_mode == 'current' else ())
+        worker.output_texture = record.image if context is not None else None
+        worker.output_label = record.label if context is not None else ''
         worker.source_mode = self._source_mode
-        worker.source_id = context.context_id if context is not None else "current"
-        worker.source_indices = self._capture_indices()
+        worker.source_id = context.context_id if context is not None else 'current'
+        worker.source_indices = list(context.source_indices if context is not None else self._current_indices)
         worker.icc_profile = (getattr(context, "icc_profile", b"") if context is not None
                               else self._current_icc_profile)
         if context is not None:
@@ -2234,6 +2284,7 @@ class DepthMapDialog(QDialog):
         self._mesh_height = self._mesh_texture = None
         self._current_images = []
         self._output_context = self._output_texture = self._source_record = None
+        self._workspace_outputs = ()
         self._worker_outcome = self._export_outcome = None
         self.preview_lbl.clear()
         self.surface.set_surface(None, None)
