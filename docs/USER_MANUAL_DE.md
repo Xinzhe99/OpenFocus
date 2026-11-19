@@ -832,6 +832,12 @@ Der Stapeldialog zeigt den Fortschritt in Echtzeit. Die Verarbeitung kann jederz
 - PNG/TIFF erhalten 16-Bit-Daten; die ausdrückliche Wahl von JPG/BMP wandelt sie in 8 Bit um.
 - Ein Abbruch wartet, bis der Worker stoppt. Abgeschlossene Dateien bleiben verfügbar; teilweise, fehlgeschlagene, abgebrochene und nicht gestartete Aufgaben werden getrennt gezählt.
 
+### Stapelkonvertierung von Bildern
+
+Den Bildkonverter im Menü Werkzeuge öffnen und Dateien hinzufügen. Standardmäßig entsteht neben jedem Quellordner ein Ausgabeordner mit dem Suffix `_converted`. Das Suffix lässt sich ändern. Alternativ stehen ein benannter Unterordner, der Quellordner oder ein gemeinsamer Zielordner zur Wahl. Der Beispielpfad bezieht sich auf die ausgewählte Zeile.
+
+Die Originalgröße beibehalten, die lange Seite auf 2048, 4096 oder 8192 Pixel begrenzen oder einen Prozentsatz wählen. Kleine Bilder werden nicht vergrößert. DNG behält die Sensorabmessungen bei. Dateien im Zielformat, die keine Verkleinerung benötigen, zählen als übersprungen. Ein Rechtsklick, Entf oder die Rücktaste entfernt die Auswahl aus der Warteschlange.
+
 ---
 
 ## 13. Ergebnisse exportieren

@@ -832,6 +832,12 @@ Het batchdialoog toont voortgang in realtime. Je kunt de verwerking op elk momen
 - PNG/TIFF behouden 16-bitgegevens; expliciet JPG/BMP kiezen zet ze om naar 8 bit.
 - Annuleren wacht tot de worker stopt. Vastgelegde bestanden blijven beschikbaar; gedeeltelijke, mislukte, geannuleerde en niet-gestarte taken worden afzonderlijk geteld.
 
+### Afbeeldingen in batches converteren
+
+Open de afbeeldingsconverter in het menu Gereedschap en voeg bestanden toe. Standaard verschijnt naast elke bronmap een uitvoermap met het achtervoegsel `_converted`. Pas het achtervoegsel aan of kies een benoemde submap, de bronmap of een gemeenschappelijke doelmap. Het voorbeeld toont het pad voor de geselecteerde rij.
+
+Behoud de oorspronkelijke grootte, begrens de langste zijde op 2048, 4096 of 8192 pixels of kies een verkleiningspercentage. Kleine afbeeldingen worden niet vergroot. DNG behoudt de sensorafmetingen. Bestanden in het gekozen formaat die niet kleiner hoeven te worden, tellen als overgeslagen. Verwijder geselecteerde rijen uit de wachtrij met het contextmenu, Delete of Backspace.
+
 ---
 
 ## 13. Resultaten exporteren
