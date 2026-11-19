@@ -98,7 +98,10 @@ def test_dtcwt_gpu_matches_cpu_across_levels(nlevels, monkeypatch):
     _require_gpu(monkeypatch)
     frames = _stack(shape=(65, 67), dtype=np.uint8, channels=3, count=4)
     cpu_out = dtcwt_mod._dtcwt_impl(frames, None, nlevels, False, thread_count=1)
-    gpu_out = dtcwt_mod._dtcwt_impl(frames, None, nlevels, True, thread_count=1)
+    seen = []
+    gpu_out = dtcwt_mod._dtcwt_impl(
+        frames, None, nlevels, True, thread_count=1, device_callback=seen.append)
+    assert len(seen) == 1 and seen[0].startswith('OpenCL: ')
     assert gpu_out.shape == cpu_out.shape and gpu_out.dtype == cpu_out.dtype
     diff = np.abs(gpu_out.astype(np.int32) - cpu_out.astype(np.int32))
     assert diff.max() <= 2
@@ -107,6 +110,8 @@ def test_dtcwt_gpu_matches_cpu_across_levels(nlevels, monkeypatch):
 def test_dtcwt_gpu_tiled_matches_cpu(monkeypatch):
     _require_gpu(monkeypatch)
     frames = _stack(shape=(96, 112), dtype=np.uint8, channels=3, count=4)
+    fixed, worker = dtcwt_mod.estimate_working_set(48, 48, 3, len(frames))
+    monkeypatch.setattr('core.multi_focus_fusion.memory_budget_bytes', lambda: fixed + worker)
     options = dict(
         algorithm='dtcwt',
         exposure_match=False,
@@ -121,12 +126,13 @@ def test_dtcwt_gpu_tiled_matches_cpu(monkeypatch):
     gpu = MultiFocusFusion(use_gpu=True, **options)
     expected = cpu.fuse(frames, thread_count=1, N=3)
     actual = gpu.fuse(frames, thread_count=1, N=3)
+    assert gpu.get_info()['device'].startswith('OpenCL: ')
     diff = np.abs(actual.astype(np.int32) - expected.astype(np.int32))
     assert diff.max() <= 2
 
 
 def test_dtcwt_gpu_1ch_streaming_mode_matches_3ch_mode(monkeypatch):
-    _require_gpu()
+    _require_gpu(monkeypatch)
     from core import resource_policy
     from fusion_methods._openfocus_gpu_dtcwt import GpuDtcwt, _plan_levels
 
@@ -139,26 +145,38 @@ def test_dtcwt_gpu_1ch_streaming_mode_matches_3ch_mode(monkeypatch):
     lp_n = specs[-1].lolo_h * specs[-1].lolo_w
     hp_bytes = sum(s.hp_h * s.hp_w * 6 * 8 for s in specs)
     dec_bytes = sum(s.hp_h * s.hp_w * 4 for s in specs)
-    pad_max_h = max(s.pad_h for s in specs)
-    pad_max_w = max(s.pad_w for s in specs)
-    lo_max = max(r0 * c0 * 4, (pad_max_h >> 1) * pad_max_w * 4)
-    max_quad = max(r0 * c0 * 4, lp_n * 4)
+    quad = r0 * c0 * 4
+    pad = max(s.pad_h * s.pad_w * 4 for s in specs)
+    active = len(frames) * len(specs) * 4
     fixed = (
-        65 * 67 * 3 * 2
-        + 2 * dec_bytes
-        + hp_bytes
-        + 8 * max_quad
-        + 3 * lp_n * 4
-        + max(pad_max_h * pad_max_w * 4, 2 * lo_max)
-        + 16 * 1024 * 1024
+        2 * frames[0].nbytes + 2 * dec_bytes + hp_bytes
+        + 6 * quad + 2 * max(quad, pad // 2) + pad
+        + 3 * lp_n * 4 + active + 16 * 1024 * 1024
     )
     per_ch = hp_bytes + lp_n * 4
-    mid_vram = fixed + per_ch + max(1024, per_ch // 2)
+    mid_vram = fixed + 2 * per_ch
 
     monkeypatch.setattr(_openfocus_gpu, '_free_vram', lambda device: (mid_vram, mid_vram * 4))
     monkeypatch.setattr(resource_policy, 'vram_budget', lambda snap: mid_vram)
+    from fusion_methods._openfocus_gpu_dtcwt import _source_staging_bytes
+
+    staging = max(_source_staging_bytes(frames[0]), 2 * frames[0].nbytes) + active + 16 * 1024 * 1024
+    monkeypatch.setattr(resource_policy, 'ram_ceiling', lambda snap: mid_vram + staging)
+    uploads = []
+    import pyopencl as cl
+    enqueue_copy = cl.enqueue_copy
+
+    def observe_upload(queue, dest, src, *args, **kwargs):
+        if isinstance(src, np.ndarray):
+            uploads.append(src.nbytes)
+        return enqueue_copy(queue, dest, src, *args, **kwargs)
+
+    monkeypatch.setattr(cl, 'enqueue_copy', observe_upload)
     streamed = GpuDtcwt().fuse(frames, 4)
     np.testing.assert_array_equal(streamed, full)
+    # The three-channel path uploads each frame at most twice. Ensure the
+    # constrained run actually repeated uploads for separate channels.
+    assert len(uploads) > 2 * len(frames)
 
 
 def test_dtcwt_missing_opencl_falls_back(monkeypatch):
@@ -208,12 +226,15 @@ def test_dtcwt_device_failure_falls_back_with_monotonic_progress(monkeypatch):
     class DeviceError(Exception):
         pass
 
+    drained = []
+
     def initialize(self):
         self.cl = SimpleNamespace(Error=DeviceError)
         self.device_name = 'FakeCL'
 
     def fail(self, images, nlevels, cancel, progress):
-        progress(1, len(images) * 2)
+        self.q = SimpleNamespace(finish=lambda: drained.append(_openfocus_gpu._device_lock.locked()))
+        progress(1, 2 * len(images) + 1)
         raise DeviceError('device lost')
 
     frames = _stack(shape=(48, 52), dtype=np.uint8, channels=3, count=4)
@@ -235,7 +256,34 @@ def test_dtcwt_device_failure_falls_back_with_monotonic_progress(monkeypatch):
     assert currents == sorted(currents)
     assert progress[-1][0] == progress[-1][1]
     assert fusion.get_info()['device'] == 'CPU'
+    assert drained == [True]
     np.testing.assert_array_equal(actual, expected)
+
+
+def test_dtcwt_cancellation_drains_queue_without_cpu_retry(monkeypatch):
+    from fusion_methods._openfocus_gpu_dtcwt import GpuDtcwt
+
+    class DeviceError(Exception):
+        pass
+
+    drained = []
+
+    def initialize(self):
+        self.cl = SimpleNamespace(Error=DeviceError)
+
+    def cancel(self, *_):
+        self.q = SimpleNamespace(finish=lambda: drained.append(_openfocus_gpu._device_lock.locked()))
+        raise RegistrationCancelled()
+
+    monkeypatch.setattr(GpuDtcwt, '__init__', initialize)
+    monkeypatch.setattr(GpuDtcwt, '_fuse_locked', cancel)
+    devices = []
+    frames = _stack(count=2)
+    with pytest.raises(RegistrationCancelled):
+        dtcwt_mod._dtcwt_impl(frames, None, 3, True, device_callback=devices.append)
+    assert drained == [True]
+    assert devices == []
+    assert not _openfocus_gpu._device_lock.locked()
 
 
 def test_dtcwt_tiny_budget_falls_back_to_cpu(monkeypatch):
@@ -273,14 +321,17 @@ def test_dtcwt_gpu_cancellation_raises_before_and_during_execution(monkeypatch):
     with pytest.raises(RegistrationCancelled):
         dtcwt_mod._dtcwt_impl(frames, None, 3, True, should_cancel=lambda: True)
 
-    calls = [0]
-
-    def cancel_midway():
-        calls[0] += 1
-        return calls[0] > 6
-
+    progress = []
+    devices = []
     with pytest.raises(RegistrationCancelled):
-        dtcwt_mod._dtcwt_impl(frames, None, 3, True, should_cancel=cancel_midway)
+        dtcwt_mod._dtcwt_impl(
+            frames, None, 3, True, should_cancel=lambda: bool(progress and progress[-1] >= 1),
+            progress_callback=lambda done, total: progress.append(done),
+            device_callback=devices.append)
+    assert progress == [0, 1]
+    assert devices == []
+    dtcwt_mod._dtcwt_impl(frames, None, 3, True, device_callback=devices.append)
+    assert len(devices) == 1 and devices[0].startswith('OpenCL: ')
 
 
 def test_dtcwt_gpu_clears_source_cache_and_emits_no_kernel_warnings(monkeypatch):
@@ -288,24 +339,33 @@ def test_dtcwt_gpu_clears_source_cache_and_emits_no_kernel_warnings(monkeypatch)
     SOURCE_CACHE.clear()
     raw = _stack(shape=(64, 64), dtype=np.uint8, channels=3, count=3)
     lazy = [process_frame(f, lambda img: img.copy()) for f in raw]
+    seen = []
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter('always')
-        _openfocus_gpu_dtcwt.GpuDtcwt().fuse(lazy, 3)
-        _openfocus_gpu_dtcwt.GpuDtcwt().fuse(lazy, 3)
-        SOURCE_CACHE.clear()
+        for i in range(2):
+            SOURCE_CACHE.put(('dtcwt-probe', i), raw[0])
+            dtcwt_mod._dtcwt_impl(lazy, None, 3, True, device_callback=seen.append)
+            assert SOURCE_CACHE.bytes == 0
+    assert len(seen) == 2 and all(device.startswith('OpenCL: ') for device in seen)
     repeated = [w for w in caught if 'RepeatedKernelRetrieval' in str(w.category.__name__)]
     assert repeated == []
 
 
-def test_dtcwt_cpu_kernels_consistent_argmax_and_transform_parity():
+@pytest.mark.parametrize('shape', [(1, 1), (1, 9), (11, 1), (131, 53)])
+def test_dtcwt_compiled_vote_matches_scipy_and_python(shape):
     from scipy.ndimage import convolve
-    from fusion_methods._dtcwt_kernels import FastTransform2d, consistent_argmax_3x3
+    from fusion_methods._dtcwt_kernels import _vote, consistent_vote
 
     rng = np.random.default_rng(99)
     for n_labels in (3, 17, 300):
-        idx = rng.integers(0, n_labels, (41, 53), dtype=np.int32)
+        idx = rng.integers(0, n_labels, shape, dtype=np.int32)
         out = np.empty_like(idx)
-        consistent_argmax_3x3(idx, out)
+        vote = consistent_vote()
+        for start in range(0, shape[0], 128):
+            vote(idx, out, start, min(start + 128, shape[0]))
+        python_out = np.empty_like(idx)
+        _vote(idx, python_out, 0, shape[0])
+        np.testing.assert_array_equal(out, python_out)
         # Verify exact match with convolve argmax
         kernel = np.ones((3, 3), dtype=np.float32)
         best_c = None
@@ -320,12 +380,3 @@ def test_dtcwt_cpu_kernels_consistent_argmax_and_transform_parity():
                 best_c[win] = votes[win]
                 best_l[win] = label
         np.testing.assert_array_equal(out, best_l)
-
-    ref_t = dtcwt_mod.dtcwt.Transform2d()
-    fast_t = FastTransform2d()
-    plane = rng.uniform(0.0, 1.0, (51, 63)).astype(np.float32)
-    pyr_ref = ref_t.forward(plane, nlevels=4)
-    pyr_fast = fast_t.forward(plane, nlevels=4)
-    rec_ref = ref_t.inverse(pyr_ref)
-    rec_fast = fast_t.inverse(pyr_fast)
-    assert np.max(np.abs(rec_fast - rec_ref)) < 1e-4

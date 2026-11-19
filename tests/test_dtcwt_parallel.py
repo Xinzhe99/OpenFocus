@@ -159,11 +159,11 @@ def test_tiled_child_plan_is_serial(monkeypatch):
     real = module._dtcwt_impl
 
     def observed(input_source, img_resize, N, use_gpu, thread_count=None,
-                 should_cancel=None, execution_plan=None):
+                 should_cancel=None, execution_plan=None, **callbacks):
         seen["plan"] = execution_plan
         return real(input_source, img_resize, N, use_gpu,
                     thread_count=thread_count, should_cancel=should_cancel,
-                    execution_plan=execution_plan)
+                    execution_plan=execution_plan, **callbacks)
 
     monkeypatch.setattr(module, "_dtcwt_impl", observed)
     monkeypatch.setattr(

@@ -6,6 +6,11 @@ OpenFocus A, Guided Filter, GFG-FGF, DCT and DTCWT stream one source frame at a 
 
 For OpenFocus B full GPU depth and OpenFocus A/C, Guided Filter, GFG-FGF, DCT and DTCWT GPU fusion, unified-memory devices use the host budget; discrete GPUs require a readable free-memory report. AMD devices use the OpenCL free-memory extension and NVIDIA devices use a uniquely matched `nvidia-smi` report. If discrete free memory is unknown, A, C, Guided Filter, GFG-FGF, DCT and DTCWT fall back to CPU and B skips full GPU depth; B's bounded GPU stages can still be used when admitted.
 
+DTCWT retains the upstream wavelet transform on the CPU. Its OpenCL path uses
+single-precision arithmetic, so GPU results can vary slightly by driver.
+Unsupported floating-point ranges and non-finite samples use the CPU path.
+Cancelling a GPU render waits for queued device work and ends the render.
+
 Retouch’s **Auto background** and the CLI `--auto-background` can use OpenCL to select the peak, first sharpest frame, and median focus energy for every pixel in a large stack. The GPU processes bands that fit the device memory budget. The log records the device after the reduction completes. Small stacks, unavailable devices, and failed GPU operations use the CPU path. Turning off GPU acceleration in the desktop or passing `--cpu` on the CLI selects CPU processing for the entire replacement.
 
 Windows, macOS and Linux desktop builds include PyOpenCL. The separate Linux CLI wheel declares it as a dependency. The PyOpenCL wheels include an ICD loader on Linux, but a compatible GPU driver and its OpenCL ICD must be installed separately (normally registered in `/etc/OpenCL/vendors`). Windows needs the GPU vendor's OpenCL driver. macOS supplies OpenCL through the system, but Apple has deprecated OpenCL and device and compiler availability depend on the macOS version and hardware. The presence of PyOpenCL or an OpenCL loader alone does not establish GPU support; platforms without a compatible PyOpenCL wheel may need a source build and OpenCL development libraries. See [PyOpenCL installation](https://documen.tician.de/pyopencl/misc.html).
