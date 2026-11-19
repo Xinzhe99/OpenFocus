@@ -65,6 +65,7 @@
     },
     {
       "url": "https://download.pytorch.org/whl/cu124/torch-2.5.1%2Bcu124-cp310-cp310-win_amd64.whl",
+      "mirrors": ["https://mirror.sjtu.edu.cn/pytorch-wheels/cu124/torch-2.5.1%2Bcu124-cp310-cp310-win_amd64.whl"],
       "size": 2510729365,
       "sha256": "6f99d8459369cfd6661c2aee14787592fe50156a33faf9ef643ba04e42d6543f"
     },

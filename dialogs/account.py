@@ -1,4 +1,5 @@
 """Optional desktop account access; all account I/O runs off the GUI thread."""
+import sys
 import threading
 from datetime import date
 
@@ -61,7 +62,11 @@ class AccountDialog(QDialog):
     """Sign in, manage the local session, or exit the application."""
 
     def __init__(self, window_main, parent=None, *, required=False):
-        super().__init__(parent or window_main)
+        startup = (sys.platform == 'win32' and required and parent is None
+                   and not window_main.isVisible())
+        super().__init__(None if startup else parent or window_main)
+        if startup:
+            self.setWindowIcon(window_main.windowIcon())
         self.window_main = window_main
         self.required = required
         self.client = getattr(window_main, '_account_client', None)

@@ -59,9 +59,9 @@ def test_failed_repair_keeps_working_generation(transaction, monkeypatch, failur
         monkeypatch.setattr(pack, '_probe', fail)
     cancelling = False
 
-    def progress(done, total, phase):
+    def progress(phase, name, done, total):
         nonlocal cancelling
-        cancelling = failure == 'cancel' and phase.startswith('Unpacking ')
+        cancelling = failure == 'cancel' and phase == 'unpack'
 
     with pytest.raises({'cancel': pack.PackCancelled, 'hash': ValueError, 'probe': RuntimeError}[failure]):
         pack.install_pack(artifact_dir=sources, progress=progress, cancelled=lambda: cancelling)
@@ -97,24 +97,28 @@ def test_unsupported_hardware_does_not_start_install(transaction, monkeypatch):
     assert not root.exists()
 
 
-def test_interrupted_transfer_resumes_at_first_missing_byte(tmp_path, monkeypatch):
+@pytest.mark.parametrize('prefer_mirror', [False, True])
+def test_interrupted_transfer_resumes_at_first_missing_byte(tmp_path, monkeypatch, prefer_mirror):
     import io
 
     payload = b'abcdefghij'
-    ranges = []
+    requests = []
+    official = 'https://download.pytorch.org/whl/example.whl'
+    mirror = 'https://mirror.sjtu.edu.cn/pytorch-wheels/example.whl'
 
     def open_transfer(request, timeout):
         requested = request.get_header('Range')
-        ranges.append(requested)
+        requests.append((request.full_url, requested))
         stream = io.BytesIO(payload[:3] if requested is None else payload[3:])
         stream.status = 200 if requested is None else 206
         stream.headers = {'Content-Range': 'bytes 3-9/10'}
         return stream
 
     monkeypatch.setattr(pack, 'urlopen', open_transfer)
-    artifact = {'url': 'https://www.python.org/example.zip', 'size': len(payload),
+    artifact = {'url': official, 'mirrors': [mirror], 'size': len(payload),
                 'sha256': hashlib.sha256(payload).hexdigest()}
-    archive = tmp_path / 'example.zip'
-    pack._fetch(artifact, archive, None, None, lambda count: None)
-    assert ranges == [None, 'bytes=3-']
+    archive = tmp_path / 'example.whl'
+    pack._fetch(artifact, archive, None, None, lambda count: None,
+                prefer_mirror=prefer_mirror)
+    assert requests == [(mirror if prefer_mirror else official, None), (official, 'bytes=3-')]
     assert archive.read_bytes() == payload
