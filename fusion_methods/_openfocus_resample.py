@@ -156,14 +156,18 @@ def half_gray_axes(height, width):
 def _resample_rows(source, output, vertical_indices, vertical_weights,
                    vertical_counts, horizontal_indices, horizontal_weights,
                    horizontal_counts, start, stop, scratch):
+    # One vertical tap at a time across a whole scratch row, so the column
+    # loop vectorises. Every pixel still starts at zero and takes its taps in
+    # order, the same FMA sequence as a per-pixel loop.
     for y in range(start, stop):
-        local_y = y - start
+        row = scratch[y - start]
         for x in range(source.shape[1]):
-            accumulator = np.float32(0.0)
-            for tap in range(vertical_counts[y]):
-                value = np.float32(source[vertical_indices[y, tap], x])
-                accumulator = _fma_f32(vertical_weights[y, tap], value, accumulator)
-            scratch[local_y, x] = accumulator
+            row[x] = np.float32(0.0)
+        for tap in range(vertical_counts[y]):
+            weight = vertical_weights[y, tap]
+            line = source[vertical_indices[y, tap]]
+            for x in range(source.shape[1]):
+                row[x] = _fma_f32(weight, np.float32(line[x]), row[x])
     for y in range(start, stop):
         local_y = y - start
         for x in range(output.shape[1]):
