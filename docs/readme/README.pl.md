@@ -269,7 +269,7 @@ Zobacz [podręcznik CLI](../USER_MANUAL_PL.md#14-interfejs-wiersza-poleceń).
 <a id="community"></a>
 ## Społeczność i wsparcie
 
-Masz pytania, pomysły lub uwagi? Dołącz do naszej [społeczności Discord](https://discord.gg/afzmwgPt). Odpowiadamy tak szybko, jak to możliwe; pracujemy według czasu pekińskiego (UTC+8), więc różnica czasu może opóźnić odpowiedź.
+Masz pytania, pomysły lub uwagi? Dołącz do naszej [społeczności Discord](https://discord.gg/Jamr2SR5). Odpowiadamy tak szybko, jak to możliwe; pracujemy według czasu pekińskiego (UTC+8), więc różnica czasu może opóźnić odpowiedź.
 
 - **Dokumentacja** — [podręcznik użytkownika](../USER_MANUAL_PL.md) (dwanaście języków) · [historia zmian](../../CHANGELOG.md) · [wydajność](../PERFORMANCE.md) · [metody fuzji](../FUSION_METHODS.md)
 - **Cytowanie** — [CITATION.cff](../../CITATION.cff); każde wydanie jest archiwizowane na Zenodo ([DOI](https://doi.org/10.5281/zenodo.23050823))

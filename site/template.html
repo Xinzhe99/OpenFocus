@@ -220,10 +220,27 @@
   </section>
   <section id="community">
     <h2>{{community.title}}</h2>
-    <p class="note">{{community.intro}}</p>
-    <a class="community-qr" href="/wechat-group.png">
-      <img src="/wechat-group.png" width="369" height="373" alt="{{community.qr_alt}}" loading="lazy">
-    </a>
+    <div class="grid">
+      <div>
+        <h3>{{community.group_title}}</h3>
+        <p>{{community.group_intro}}</p>
+        <a class="community-qr" href="/wechat-group.png">
+          <img src="/wechat-group.png" width="369" height="373" alt="{{community.qr_alt}}" loading="lazy">
+        </a>
+      </div>
+      <div>
+        <h3>{{community.official_title}}</h3>
+        <p>{{community.official_intro}}</p>
+        <a class="community-qr" href="/wechat-official-account.jpg">
+          <img src="/wechat-official-account.jpg" width="430" height="430" alt="{{community.official_qr_alt}}" loading="lazy">
+        </a>
+      </div>
+      <div>
+        <h3>Discord</h3>
+        <p>{{community.discord_intro}}</p>
+        <a class="btn" href="{{community_discord_url}}" rel="noopener">{{community.discord_action}}</a>
+      </div>
+    </div>
   </section>
   <section id="privacy">
     <h2>{{privacy.title}}</h2>

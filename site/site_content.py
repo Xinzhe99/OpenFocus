@@ -296,8 +296,14 @@ def _en() -> dict:
         },
         "community": {
             "title": "Community",
-            "intro": "Scan the QR code in WeChat to join the OpenFocus group.",
+            "group_title": "WeChat group",
+            "group_intro": "Scan in WeChat to join the discussion.",
             "qr_alt": "QR code for the OpenFocus WeChat group",
+            "official_title": "WeChat Official Account",
+            "official_intro": "Scan in WeChat to follow OpenFocus updates.",
+            "official_qr_alt": "QR code for the OpenFocus WeChat Official Account",
+            "discord_intro": "Ask questions and share your work.",
+            "discord_action": "Join Discord",
         },
         "privacy": {
             "title": "Privacy",
@@ -567,8 +573,14 @@ def _zh() -> dict:
         },
         "community": {
             "title": "用户社区",
-            "intro": "使用微信扫描二维码，加入 OpenFocus 微信交流群。",
+            "group_title": "微信群",
+            "group_intro": "微信扫码，加入 OpenFocus 交流群。",
             "qr_alt": "OpenFocus 微信交流群二维码",
+            "official_title": "微信公众号",
+            "official_intro": "微信扫码，关注 OpenFocus 更新。",
+            "official_qr_alt": "OpenFocus 微信公众号二维码",
+            "discord_intro": "交流使用问题，分享你的作品。",
+            "discord_action": "加入 Discord",
         },
         "privacy": {
             "title": "隐私",
