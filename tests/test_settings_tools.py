@@ -643,8 +643,8 @@ def test_output_prefix_default_and_safe_suggested_name(settings_window):
     from controllers.export_manager import ExportManager
     from utils.export_paths import valid_output_prefix
     manager = ExportManager(settings_window)
-    manager._fusion_tag = lambda: "Fusion"
-    manager._align_tag = lambda: "Align"
+    settings_window.current_fusion_method = lambda: 'openfocus_a'
+    settings_window.current_alignment_method = lambda: 'none'
     original = manager.generate_default_filename()
     assert original.startswith("OpenFocus_")
     settings_window.output_name_prefix = "sample"

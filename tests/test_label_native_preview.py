@@ -151,6 +151,7 @@ def test_fit_resizes_once_and_preserves_borrowed_pixels(qapp, monkeypatch, dtype
 
     monkeypatch.setattr(source_previews, "render_source_region", sample)
     shape = (1600, 2400) if channels == 1 else (1600, 2400, channels)
+    image = np.full(shape, 32, dtype=dtype)
     widget = LabelPreview()
     ready = QSignalSpy(widget.fit_changed)
     widget.set_preview(image, {"enabled": False}, 0)

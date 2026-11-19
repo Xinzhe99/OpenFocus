@@ -192,11 +192,6 @@ class BatchProcessingDialog(QDialog):
         # non-accepting one lets Qt bubble them up to the dialog's handler.
         self.folder_list.setAcceptDrops(False)
         self.setAcceptDrops(True)
-        # Height follows the content between three and six rows: a fixed
-        # minimum left a large empty block under two queued stacks (the list
-        # was stretched by the scroll page). _fit_folder_list() reapplies it
-        # whenever the list changes.
-        self.folder_list.setMinimumHeight(self._folder_row_height() * 2 + 10)
         self._folder_list_placeholder = QLabel(trans.t('batch_no_folders'))
         self._folder_list_placeholder.setAlignment(
             Qt.AlignmentFlag.AlignCenter)
@@ -606,31 +601,14 @@ class BatchProcessingDialog(QDialog):
 
 
     def _fit_folder_list(self) -> None:
-        """Fit up to six queued stacks without reserving empty rows."""
-        rows = max(2, min(6, self.folder_list.count()))
-        # setFixedHeight first, then relax the minimum: doing it the other way
-        # round the minimum won and the list never grew past three rows.
-        self.folder_list.setMinimumHeight(self._folder_row_height() * 2 + 10)
-        self.folder_list.setFixedHeight(self._folder_row_height() * rows + 10)
+        """Show up to six complete rows, even for paths that scroll sideways."""
+        queue = self.folder_list
+        rows = min(queue.count(), 6)
+        if rows:
+            item_height = sum(queue.sizeHintForRow(row) for row in range(rows))
+            chrome = 2 * queue.frameWidth() + queue.horizontalScrollBar().sizeHint().height()
+            queue.setFixedHeight(item_height + chrome)
 
-    def _folder_row_height(self) -> int:
-        """Height of one folder row, from a real item when there is one.
-
-        The old estimate (icon + 14) was 74 px against an actual 44 px row, so
-        a three-row list reserved nearly two rows of blank space.
-        """
-        if self.folder_list.count():
-            item = self.folder_list.item(0)
-            if item is not None:
-                hint = item.sizeHint()
-                if hint.height() > 0:
-                    return hint.height()
-        # Fall back to the widget's own row metric before the first item.
-        if self.folder_list.count():
-            vh = self.folder_list.visualItemRect(self.folder_list.item(0)).height()
-            if vh > 0:
-                return vh
-        return self.folder_list.iconSize().height() + 14
 
     def _update_folder_placeholder(self) -> None:
         """Show the empty-state hint only while the list has no rows."""

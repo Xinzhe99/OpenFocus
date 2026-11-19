@@ -173,6 +173,7 @@ This stable release includes the features introduced in the 1.77.0 beta series.
   size during another method's fusion.
 - Match exposure, base correction, and effective sharpening when reusing
   workspace results in Method Comparison.
+- Keep queued batch rows fully visible when long folder paths add a horizontal scrollbar.
 - Name each Render All result and its suggested export file after the fusion method that produced it.
 - Keep the workspace responsive when opening or closing Support Us while its
   network requests are pending.

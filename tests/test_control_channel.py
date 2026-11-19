@@ -1274,7 +1274,10 @@ def test_device_label_separates_available_adapter_and_completed_job(
         actual = f'DirectML ({model})' if method.startswith('stackmff') else f'OpenCL: {model}'
         manager.last_result['device'] = actual
         window._update_dynamic_status()
-        assert status.text() == trans.t('status_gpu').format('RTX 4060 Laptop GPU')
+        full_label = trans.t('status_gpu').format('RTX 4060 Laptop GPU')
+        status.resize(status.fontMetrics().horizontalAdvance(full_label) + 2 * status.margin() + 4,
+                      status.height())
+        assert status.text() == full_label
         assert status.toolTip().splitlines()[0] == trans.t('info_proc_unit').format(actual)
 
         window.use_gpu = False

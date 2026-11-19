@@ -658,15 +658,12 @@ def test_unavailable_font_survives_other_edits_until_changed(manager, monkeypatc
         manager.format_edit.setText('edited')
         assert manager._draft.get(label.label_id).config.font_family == label.config.font_family
         combo = manager.font_family_combo
-        original = combo.currentFont().family()
-        index = next(i for i in range(combo.count())
-                     if i != combo.currentIndex() and combo.itemText(i) != original)
-        combo.setCurrentIndex(index)
-        selected = combo.currentFont().family()
-        assert selected != original
+        family = 'Arial' if combo.currentFont().family() != 'Arial' else 'Times New Roman'
+        combo.setEditText(family)
+        assert combo.currentFont().family() == family
         manager._ok_button.click()
         assert dialog.result() == QDialog.DialogCode.Accepted
-        assert manager.labels.get(label.label_id).config.font_family == selected
+        assert manager.labels.get(label.label_id).config.font_family == family
 
     edit_dialog(monkeypatch, manager, inspect)
 

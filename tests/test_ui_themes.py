@@ -480,45 +480,42 @@ def test_community_dialogs_leave_main_window_responsive_during_pending_requests(
 def test_status_sponsor_opens_published_link_without_displacing_messages(
         qapp, tmp_path, monkeypatch, theme_environment):
     import json
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from threading import Thread
     from PyQt6.QtCore import Qt
     from PyQt6.QtGui import QDesktopServices, QTextDocument
-    from PyQt6.QtNetwork import QHostAddress, QTcpServer
     from PyQt6.QtTest import QTest
     from locales import trans
     from tests.test_control_channel import _new_main_window, _destroy_main_window, wait_until
     from ui.status_bar import SponsorLink
 
-    server = QTcpServer()
-    assert server.listen(QHostAddress(QHostAddress.SpecialAddress.LocalHost))
+    destination = 'https://example.org/sponsor'
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            text = 'OpenFocus <Studio>' if self.path.endswith('?lang=zh') else 'OpenFocus Studio'
+            body = json.dumps({'text': text, 'url': destination}).encode()
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+    thread = Thread(target=server.serve_forever, kwargs={'poll_interval': 0.05}, daemon=True)
+    thread.start()
     monkeypatch.setenv('no_proxy', '127.0.0.1')
     monkeypatch.setattr(SponsorLink, '_endpoint',
-                        f'http://127.0.0.1:{server.serverPort()}/v1/sponsor-placement')
-    destination = 'https://example.org/sponsor'
-    payload = json.dumps({'text': 'OpenFocus <Studio>', 'url': destination}).encode()
-    response = (b'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n'
-                + f'Content-Length: {len(payload)}\r\nConnection: close\r\n\r\n'.encode()
-                + payload)
-
-    def accept():
-        socket = server.nextPendingConnection()
-        socket.disconnected.connect(socket.deleteLater)
-        received = bytearray()
-
-        def answer():
-            received.extend(bytes(socket.readAll()))
-            if b'\r\n\r\n' in received:
-                socket.write(response)
-                socket.disconnectFromHost()
-
-        socket.readyRead.connect(answer)
-        if socket.bytesAvailable():
-            answer()
-
-    server.newConnection.connect(accept)
+                        f'http://127.0.0.1:{server.server_port}/v1/sponsor-placement')
+    trans.set_language('en')
     opened = []
     monkeypatch.setattr(QDesktopServices, 'openUrl', lambda url: opened.append(url.toString()))
-    window = _new_main_window(qapp, tmp_path, monkeypatch)
+    window = None
     try:
+        window = _new_main_window(qapp, tmp_path, monkeypatch)
         window.resize(1240, window.height())
         label = window.lbl_status_sponsor
         trans.set_language('zh')
@@ -541,9 +538,11 @@ def test_status_sponsor_opens_published_link_without_displacing_messages(
         QTest.mouseClick(label, Qt.MouseButton.LeftButton, pos=pos)
         assert opened == [destination, destination]
     finally:
-        _destroy_main_window(qapp, window)
-        server.close()
-        server.deleteLater()
+        if window is not None:
+            _destroy_main_window(qapp, window)
+        server.shutdown()
+        thread.join()
+        server.server_close()
 
 
 def test_dustmap_preview_follows_the_theme(qapp, theme_environment):
