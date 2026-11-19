@@ -355,7 +355,7 @@ class SourceManager(QObject):
     def _start_load_worker(self, folder=None, video=None, filepaths=None,
                            scale=1.0, append=False, on_success=None,
                            accept_event=None, prepare_options=None, on_error=None,
-                           linear_raw=False) -> None:
+                           linear_raw=False, on_finished=None) -> None:
         """Run the loader on a background thread and apply results on the
         UI thread when it finishes."""
         window = self.window
@@ -365,16 +365,21 @@ class SourceManager(QObject):
             if on_error is not None:
                 on_error(trans.t("msg_load_in_progress"))
             return
+
+        def reject_start(message):
+            if on_error is not None:
+                on_error(message)
+            else:
+                show_warning_box(window, trans.t("msg_load_failed"), message)
+            if on_finished is not None:
+                on_finished(message)
+
         current_metadata = getattr(window, "linear_dng_metadata", None)
         if append and getattr(window, "raw_images", None):
             if current_metadata is not None:
                 linear_raw = True
             elif linear_raw:
-                message = trans.t("linear_raw_mismatch")
-                if on_error is not None:
-                    on_error(message)
-                else:
-                    show_warning_box(window, trans.t("msg_load_failed"), message)
+                reject_start(trans.t("linear_raw_mismatch"))
                 return
         if linear_raw and folder and append:
             from core.image_loader import ImageStackLoader, is_raw_source
@@ -392,20 +397,12 @@ class SourceManager(QObject):
             except OSError:
                 mixed = False  # The worker reports directory errors without changing the stack.
             if mixed:
-                message = trans.t("linear_raw_invalid")
-                if on_error is not None:
-                    on_error(message)
-                else:
-                    show_warning_box(window, trans.t("msg_load_failed"), message)
+                reject_start(trans.t("linear_raw_invalid"))
                 return
         if linear_raw and filepaths:
             from core.image_loader import is_raw_source
             if not all(is_raw_source(path) for path in filepaths):
-                message = trans.t("linear_raw_invalid")
-                if on_error is not None:
-                    on_error(message)
-                else:
-                    show_warning_box(window, trans.t("msg_load_failed"), message)
+                reject_start(trans.t("linear_raw_invalid"))
                 return
         working_scale = scale
         if append and getattr(window, "raw_images", None):
@@ -434,10 +431,15 @@ class SourceManager(QObject):
                     and self._stack_baseline is baseline
                     and getattr(window, "linear_dng_metadata", None) is metadata)
 
+        # A discarded generation never reaches the publication point.
+        result_error = "CANCELLED"
+
         def reject_changed_append():
+            nonlocal result_error
             if append_target_is_current():
                 return False
             message = trans.t("msg_append_target_changed")
+            result_error = message
             if on_error is not None:
                 on_error(message)
             else:
@@ -472,7 +474,18 @@ class SourceManager(QObject):
                     and not getattr(window, "_shutting_down", False)
                     and generation == getattr(self, "_load_generation", -1))
 
+        # Preparing or displaying frames may run a nested Qt event loop. Keep
+        # the loader busy until both its thread and its GUI transaction finish.
+        result_handled = thread_finished = False
+
+        def on_thread_finished():
+            nonlocal thread_finished
+            thread_finished = True
+            if result_handled:
+                self._finish_load_worker(worker)
+
         def on_done(ok: bool, message: str, images, filenames) -> None:
+            nonlocal result_error, result_handled
             accepted = False
             previous_window_state = None
             previous_baseline = None
@@ -480,6 +493,7 @@ class SourceManager(QObject):
                 if not load_is_current():
                     return  # superseded by a newer load request
                 if not ok:
+                    result_error = message or "Load failed"
                     if on_error is not None:
                         on_error(message)
                     elif not message.startswith("CANCELLED") and accept_event is None:
@@ -597,6 +611,7 @@ class SourceManager(QObject):
                 self._show_linear_profile_notice(getattr(window, "linear_dng_metadata", None))
                 worker._load_applied = load_is_current()
             except Exception as exc:  # pylint: disable=broad-except
+                result_error = str(exc) or "Load failed"
                 if not accepted and previous_window_state is not None:
                     for name, value in previous_window_state.items():
                         setattr(window, name, value)
@@ -626,11 +641,16 @@ class SourceManager(QObject):
                     previous_state = getattr(worker, "_previous_loader_state", None)
                     if previous_state is not None:
                         previous_state.clear()
+                if on_finished is not None:
+                    on_finished(None if worker._load_applied else result_error)
+                result_handled = True
+                if thread_finished:
+                    self._finish_load_worker(worker)
 
         worker = self._load_worker
         worker.progress.connect(self._on_load_progress)
         worker.finished_load.connect(on_done)
-        worker.finished.connect(lambda: self._finish_load_worker(worker))
+        worker.finished.connect(on_thread_finished)
         self._show_load_status()
         worker.start()
 
