@@ -48,6 +48,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   of every 8- or 16-bit code, computed by the existing per-sample arithmetic
   and applied in parallel row bands, instead of float strips on one thread.
   Output pixels are unchanged.
+- Group rotation and flip in one Edit submenu. Retouch Result offers workspace outputs and existing image files.
+- Open feedback channels or local diagnostics from Help → Report a Problem. The log folder is accessible beside Close on both tabs.
 - The browser now shows a localized receipt when a desktop sign-in request arrives,
   when the browser has no active session, or when the user needs to try again.
 - Require an account to enter the desktop application; a saved sign-in can be

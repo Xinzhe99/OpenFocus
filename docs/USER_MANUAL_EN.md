@@ -193,7 +193,7 @@ The top menu bar provides access to all functions:
 - **Edit**: Undo/redo, reset the current stack, image transformations and retouching
 - **Tools**: Image stitching, batch processing and conversion, method comparison, depth map, flat-field correction, scale bar, watermark and labels
 - **Settings**: Advanced Settings (General, Fusion, Registration, Startup & updates), GPU acceleration, theme and language
-- **Help**: Environment info, contact information and the Discord community, Support Us, update check, and the log folder. Support Us displays Alipay and PayPal codes; include your username in the transfer note for permanent project acknowledgment.
+- **Help**: Report a Problem (diagnostics and logs), contact information and the Discord community, Support Us, and update check. Support Us displays Alipay and PayPal codes; include your username in the transfer note for permanent project acknowledgment.
 
 **Tools → Stitch Images…** opens a separate workspace for already-fused
 microscope regions and camera panoramas; it does not modify the current stack.
@@ -1094,7 +1094,7 @@ pollutes the full-resolution alignment cache.
 
 ### Rotation
 
-1. Go to **Edit → Rotate**
+1. Go to **Edit → Rotate and Flip**
 2. Choose rotation type:
    - **90° Clockwise**: Rotate all images 90 degrees right
    - **90° Counter-Clockwise**: Rotate all images 90 degrees left
@@ -1102,7 +1102,7 @@ pollutes the full-resolution alignment cache.
 
 ### Flipping
 
-1. Go to **Edit → Flip**
+1. Go to **Edit → Rotate and Flip**
 2. Choose flip type:
    - **Horizontal Flip**: Mirror left-to-right
    - **Vertical Flip**: Mirror top-to-bottom
@@ -1123,7 +1123,7 @@ Transformations are applied to the entire image stack, maintaining alignment bet
 
 ## 10. Retouching, Labels and Annotations
 
-### Retouching the Result (Edit → Retouch Result…, `Ctrl+T`)
+### Retouching the Result (Edit → Retouch Result → Output in This Workspace…, `Ctrl+T`)
 
 Fusion can still leave a local defect — a halo around a high-contrast edge,
 a bristle taken from the wrong frame, noise in a flat area. The workspace
@@ -1214,7 +1214,7 @@ recorded source, so they are listed as unavailable instead of being guessed
 from the current stack. Unapplied strokes and undo history are session-only;
 saving a project does not store them.
 
-For an existing image file, choose **Edit → Retouch Image Files…**, then select
+For an existing image file, choose **Edit → Retouch Result → Fused Result from File…**, then select
 the result and one or more source images. The sources must already be aligned
 to the result on the same pixel grid; matching dimensions alone cannot prove
 alignment. Single-page PNG, TIFF, JPEG and BMP images with matching upright
@@ -1440,11 +1440,11 @@ scale, still requires exporting the corrected source stack before saving a
 project. If the working scale changes after correction, restore it to the
 correction scale before saving or export the corrected stack.
 
-**Help → Send feedback** opens local logs. Copy copies the visible session log;
+**Help → Report a Problem** opens on **Feedback Channels**, with links to the account center and GitHub.
+Under **Diagnostics**, **Session log** shows the local log and **Environment Info** shows the system and dependency report.
+**Open Logs Folder** is at the bottom next to Close. Copy copies the visible session log;
 the local feedback ZIP can contain file paths, so review it before sharing.
 Signed-in users can open their account center in the browser to submit feedback.
-The Environment Info control shows the same system and dependency report as
-**Help → Environment Info**.
 **Review error report** shows the sanitized diagnostics that will be sent;
 nothing is uploaded until you choose **Send to OpenFocus**. Automatic reports
 are sent only after a session with an error when enabled. A previous native
@@ -1454,7 +1454,7 @@ user file names or paths. See [Privacy Policy](PRIVACY.md) for details.
 Each launch writes its own rotating log, so concurrent GUI/CLI jobs keep separate
 records. Task IDs link parameters, elapsed time and completed/cancelled/failed
 outcomes; unexpected errors include a full traceback. The feedback ZIP also
-includes the current crash report and dependency versions. Use **Help → Open Logs
+includes the current crash report and dependency versions. Use **Help → Report a Problem → Open Logs
 Folder** or the path shown on the feedback page to find the files. Logs rotate at
 1 MB with three backups per process; inactive session logs older than 14 days are
 removed. For detailed support logs, set `OPENFOCUS_LOG_LEVEL=DEBUG` before
@@ -1501,7 +1501,7 @@ system can provide both readings; otherwise it shows `N/A`.
 
 ### Diagnosing a slow render
 
-For a single, non-grouped CLI render, add `--profile-performance FILE` to save the stage timings. Use `--log-level debug` for detailed logging during that run. Find the desktop logs under **Help → Open Logs Folder**. [Performance guide](./PERFORMANCE.md#diagnosing-a-slow-render)
+For a single, non-grouped CLI render, add `--profile-performance FILE` to save the stage timings. Use `--log-level debug` for detailed logging during that run. Find the desktop logs under **Help → Report a Problem → Open Logs Folder**. [Performance guide](./PERFORMANCE.md#diagnosing-a-slow-render)
 
 ### Resource Mode
 
@@ -2197,7 +2197,7 @@ On macOS, use `Command` in place of `Ctrl` for these source list shortcuts.
 
 - Enable experimental features in [Settings](#11-settings-and-configuration) and confirm the settings; AI methods are disabled in the desktop until opted in. This is separate from runtime and model availability.
 - Check that ONNX Runtime and the bundled model are installed.
-- Check via **Help → Environment Info**
+- Check via **Help → Report a Problem → Diagnostics → Environment Info**
 
 #### Out of Memory Errors
 
@@ -2249,7 +2249,7 @@ from source.
 
 ### Getting Help
 
-1. **Environment Info**: Go to **Help → Environment Info** to check your installation
+1. **Environment Info**: Go to **Help → Report a Problem → Diagnostics → Environment Info** to check your installation
 2. **Contact Support**: Go to **Help → Contact Us** for support information
 
 ---

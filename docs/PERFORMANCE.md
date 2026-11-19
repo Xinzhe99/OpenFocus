@@ -20,7 +20,7 @@ time and memory use per stage.
 | | Render profile | Detailed logging |
 |---|---|---|
 | Answers | How long each stage took, and what it cost in memory | Which plan, tile size, directory and thread count were chosen, and why |
-| GUI | Available through the local control channel | **Help → Open Logs Folder** |
+| GUI | Available through the local control channel | **Help → Report a Problem → Open Logs Folder** |
 | CLI | `--profile-performance [FILE]` | `--log-level debug` |
 | Agent control | `option.set name=profile_performance` enables profiling for `render.result` | `option.set name=debug_logging` overrides the detail for this session |
 | Result | A report: text summary and JSON | `DEBUG` lines in the session log |
@@ -167,7 +167,7 @@ by its file name.
 ### Detailed logging
 
 Each desktop session and its isolated render process write detailed (`DEBUG`)
-local logs by default. Open them from **Help → Open Logs Folder**.
+local logs by default. Open them from **Help → Report a Problem → Open Logs Folder**.
 `--log-level` overrides the level for one CLI run and prints the log path to
 stderr. `OPENFOCUS_LOG_LEVEL` selects a level before launch.
 

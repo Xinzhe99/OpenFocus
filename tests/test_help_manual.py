@@ -22,7 +22,6 @@ def test_help_opens_localized_github_manual(qapp, monkeypatch):
         assert manual in actions and manual.isVisible()
         assert manual.text() == '用户手册 (GitHub)'
         assert window.ui_objs['menu_quick_start'] in actions
-        assert window.ui_objs['menu_open_logs'] in actions
 
         for language in (*trans.PACK_ORDER, 'xx'):
             monkeypatch.setattr(trans, 'current_lang', language)

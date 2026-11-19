@@ -146,7 +146,7 @@ Prawy panel zawiera parametry i listy:
 - **Edycja**: cofanie i ponawianie, obrót, odbicie, zmiana rozmiaru, retusz wyniku i retusz plików obrazów
 - **Narzędzia**: łączenie obrazów, przetwarzanie wsadowe, porównanie metod, mapa głębi, mapa pyłu, pasek skali, etykiety
 - **Ustawienia**: ustawienia zaawansowane (Ogólne, Fuzja, Rejestracja, Uruchamianie i aktualizacje), akceleracja GPU, motyw, język
-- **Pomoc**: informacje o środowisku, opinia, kontakt, przewodnik szybkiego startu, sprawdzanie aktualizacji, instalacja gotowej aktualizacji i folder logów
+- **Pomoc**: Wyślij opinię (diagnostyka i logi), kontakt, przewodnik szybkiego startu, sprawdzanie aktualizacji i instalacja gotowej aktualizacji
 
 **Narzędzia → Połącz obrazy…** otwiera osobny obszar roboczy dla już pofuzjowanych obszarów mikroskopu i panoram fotograficznych; nie zmienia bieżącego stosu. Karta **Asystent projektu** grupuje import, wyrównywanie i punkty kontrolne, **Obrazy źródłowe** zawiera listę, siatkę i ręczne rozmieszczenie, a **Edytor panoramy** zawiera ustawienia szwów, mieszania, ekspozycji/koloru, wyjścia, odwzorowania, aparatu i HDR oraz nakładki podglądu. Użyj **Dodaj pliki…**, **Otwórz folder** lub **Dodaj wyniki…**, aby skopiować wybrane wyniki bieżącej sesji, albo przeciągnij pliki lub foldery na listę bądź obszar roboczy. Import folderu obejmuje tylko obsługiwane pliki bezpośrednio w nim, bez podfolderów. Import zachowuje naturalną kolejność nazw, pomija powtórzone ścieżki i dodaje każdą stronę wielostronicowego TIFF jako osobny obraz. Wybierz obraz i naciśnij Delete lub Backspace, aby usunąć go z obszaru roboczego bez kasowania pliku.
 
@@ -530,7 +530,7 @@ Dostrajanie parametrów na dużych stosach w pełnej rozdzielczości jest wolne.
 
 ### Obrót
 
-1. Wybierz **Edycja → Obrót**
+1. Wybierz **Edycja → Obrót i odbicie**
 2. Wybierz typ obrotu:
    - **90° zgodnie z ruchem wskazówek zegara**: obrót wszystkich obrazów o 90 stopni w prawo
    - **90° przeciwnie do ruchu wskazówek zegara**: obrót wszystkich obrazów o 90 stopni w lewo
@@ -538,7 +538,7 @@ Dostrajanie parametrów na dużych stosach w pełnej rozdzielczości jest wolne.
 
 ### Odbijanie
 
-1. Wybierz **Edycja → Odbicie**
+1. Wybierz **Edycja → Obrót i odbicie**
 2. Wybierz typ odbicia:
    - **Odbicie poziome**: lustrzane odbicie od lewej do prawej
    - **Odbicie pionowe**: lustrzane odbicie od góry do dołu
@@ -558,7 +558,7 @@ Przekształcenia są stosowane do całego stosu obrazów i zachowują wyrównani
 
 ## 10. Retusz, etykiety i adnotacje
 
-### Retusz wyniku (Edycja → Retusz wyniku…, `Ctrl+T`)
+### Retusz wyniku (Edycja → Retusz wyniku → Wynik w tym obszarze roboczym…, `Ctrl+T`)
 
 Fuzja może pozostawić lokalną wadę — obwódkę przy kontrastowej krawędzi, włos pochodzący z niewłaściwej klatki, szum na płaskim obszarze. Przestrzeń robocza kopiuje piksele z dokładnych klatek, które utworzyły wybrany wynik:
 
@@ -577,7 +577,7 @@ Do lokalnej korekty tonalnej wybierz **Pędzel ekspozycji**, ustaw wartość w s
 
 Pochodzenie podróżuje z wynikiem: wyrównane klatki, przesunięcia przycięcia/wklejenia ROI, przycięcie krawędzi DCT i głębia są zapisywane przy renderowaniu. Pliki wsadowe, starsze wyniki i pozycje folderów tylko wyrównania nie mają zapisanego źródła, więc są oznaczone jako niedostępne, a nie zgadywane z bieżącego stosu. Niezastosowane pociągnięcia i historia cofania istnieją tylko w sesji; zapis projektu ich nie przechowuje.
 
-Dla istniejącego pliku obrazu wybierz **Edycja → Retuszuj pliki obrazów…**, a następnie wskaż wynik i jedną lub więcej klatek źródłowych. Źródła muszą być już wyrównane do wyniku na tej samej siatce pikseli; same pasujące wymiary nie dowodzą wyrównania. Akceptowane są jednostronicowe PNG, TIFF, JPEG i BMP o pasujących wymiarach pionowych, kanałach i głębi 8 lub 16 bitów; orientacja EXIF jest stosowana przy wczytywaniu. Kanały alfa i obrazy wielostronicowe nie są obsługiwane. Wybrane klatki są dostarczone przez użytkownika, a nie zapisanym pochodzeniem renderu. Zastosowanie tworzy osobny niewyeksportowany wynik; zapisz go z listy wyników. Wybrane pliki są chronione przed nadpisaniem w tej sesji, w tym podczas eksportu mapy głębi i siatki 3D. Jak przy innych wynikach, pliki projektów nie przechowują tych pikseli ani historii pędzla.
+Dla istniejącego pliku obrazu wybierz **Edycja → Retusz wyniku → Wynik fuzji z pliku…**, a następnie wskaż wynik i jedną lub więcej klatek źródłowych. Źródła muszą być już wyrównane do wyniku na tej samej siatce pikseli; same pasujące wymiary nie dowodzą wyrównania. Akceptowane są jednostronicowe PNG, TIFF, JPEG i BMP o pasujących wymiarach pionowych, kanałach i głębi 8 lub 16 bitów; orientacja EXIF jest stosowana przy wczytywaniu. Kanały alfa i obrazy wielostronicowe nie są obsługiwane. Wybrane klatki są dostarczone przez użytkownika, a nie zapisanym pochodzeniem renderu. Zastosowanie tworzy osobny niewyeksportowany wynik; zapisz go z listy wyników. Wybrane pliki są chronione przed nadpisaniem w tej sesji, w tym podczas eksportu mapy głębi i siatki 3D. Jak przy innych wynikach, pliki projektów nie przechowują tych pikseli ani historii pędzla.
 
 ### Zastępowanie tła (Automatyczne tło)
 
@@ -671,9 +671,9 @@ Przepisy wymagają, aby miejsce wyjściowe znajdowało się poza każdym foldere
 
 Gdy odniesienie plikowe jest stosowane w **Narzędzia → Mapa pyłu (korekcja pola płaskiego)** w skali bazowej stosu, zapisany projekt przechowuje jego ścieżkę bezwzględną, hash zawartości i rozmiar pyłu, a przy otwarciu stosuje je raz do oryginalnych źródeł. Utrzymuj plik odniesienia niezmieniony i na miejscu: brakujące lub zmienione odniesienie uniemożliwia otwarcie projektu. Odniesienie wybrane ze stosu lub korekcja w innej skali roboczej/bazowej nadal wymaga wyeksportowania poprawionego stosu źródłowego przed zapisaniem projektu. Jeśli skala robocza zmieni się po korekcji, przywróć ją do skali korekcji przed zapisaniem albo wyeksportuj poprawiony stos.
 
-**Pomoc → Wyślij opinię** otwiera lokalne logi. Kopiuj kopiuje widoczny log sesji; ZIP opinii zawiera log sesji i pełny log aplikacji oraz informacje o środowisku. Przejrzyj pakiet przed wysłaniem. Otwarcie GitHub tylko otwiera tracker. Anulowanie eksportu pozostawia pliki bez zmian; przy błędzie poprzedni plik docelowy zostaje zachowany, a ścieżka błędu jest pokazywana.
+Po wybraniu **Pomoc → Wyślij opinię** otwiera się karta **Kanały kontaktu** z dostępem do centrum konta i serwisu GitHub. Na karcie **Diagnostyka** znajdziesz **Dziennik sesji** i **Informacje o środowisku**. Przycisk **Otwórz folder logów** znajduje się na dole obok przycisku Zamknij. Kopiuj kopiuje widoczny log sesji; ZIP opinii zawiera log sesji i pełny log aplikacji oraz informacje o środowisku. Przejrzyj pakiet przed wysłaniem. Otwarcie GitHub tylko otwiera tracker. Anulowanie eksportu pozostawia pliki bez zmian; przy błędzie poprzedni plik docelowy zostaje zachowany, a ścieżka błędu jest pokazywana.
 
-Każde uruchomienie zapisuje własny rotowany log, więc równoległe zadania GUI i CLI prowadzą osobne zapisy. Identyfikatory zadań łączą parametry, czas i wyniki „ukończone/anulowane/błąd”; nieoczekiwane błędy zawierają pełny ślad stosu. ZIP opinii zawiera też bieżący raport awarii i wersje zależności. Użyj **Pomoc → Otwórz folder logów** lub ścieżki na stronie opinii. Logi rotują przy 1 MB z trzema kopiami zapasowymi na proces; nieaktywne logi sesji starsze niż 14 dni są usuwane. Dla szczegółowych logów wsparcia ustaw `OPENFOCUS_LOG_LEVEL=DEBUG` przed uruchomieniem; `OPENFOCUS_LOG_DIR` opcjonalnie wybiera inny folder logów.
+Każde uruchomienie zapisuje własny rotowany log, więc równoległe zadania GUI i CLI prowadzą osobne zapisy. Identyfikatory zadań łączą parametry, czas i wyniki „ukończone/anulowane/błąd”; nieoczekiwane błędy zawierają pełny ślad stosu. ZIP opinii zawiera też bieżący raport awarii i wersje zależności. Użyj **Pomoc → Wyślij opinię → Otwórz folder logów** lub ścieżki na stronie opinii. Logi rotują przy 1 MB z trzema kopiami zapasowymi na proces; nieaktywne logi sesji starsze niż 14 dni są usuwane. Dla szczegółowych logów wsparcia ustaw `OPENFOCUS_LOG_LEVEL=DEBUG` przed uruchomieniem; `OPENFOCUS_LOG_DIR` opcjonalnie wybiera inny folder logów.
 
 ### Ustawienia kafelków (optymalizacja pamięci)
 
@@ -1091,7 +1091,7 @@ Kody wyjścia: `0` — sukces, `1` — błąd przetwarzania, `2` — błąd uży
 
 - Włącz i zatwierdź funkcje eksperymentalne w ustawieniach zaawansowanych; bez tego metody AI w aplikacji są wyłączone. Środowisko i model to osobne wymagania.
 - Sprawdź ONNX Runtime i dołączony model.
-- Sprawdź przez **Pomoc → Informacje o środowisku**
+- Sprawdź przez **Pomoc → Wyślij opinię → Diagnostyka → Informacje o środowisku**
 - StackMFF V3 nie wymaga torchvision
 
 #### Błędy braku pamięci
@@ -1131,10 +1131,10 @@ albo kliknij aplikację prawym przyciskiem i wybierz **Otwórz**. Opublikowane k
 
 ### Uzyskiwanie pomocy
 
-1. **Informacje o środowisku**: otwórz **Pomoc → Informacje o środowisku**, aby sprawdzić instalację
-2. **Wyślij opinię**: **Pomoc → Wyślij opinię…** otwiera lokalne logi; skopiuj log lub wyeksportuj ZIP i dołącz go do zgłoszenia
+1. **Informacje o środowisku**: otwórz **Pomoc → Wyślij opinię → Diagnostyka → Informacje o środowisku**, aby sprawdzić instalację
+2. **Wyślij opinię**: **Pomoc → Wyślij opinię → Diagnostyka** otwiera lokalne logi; skopiuj log lub wyeksportuj ZIP i dołącz go do zgłoszenia
 3. **Kontakt**: otwórz **Pomoc → Kontakt**, aby uzyskać informacje o wsparciu
-4. **Logi**: **Pomoc → Otwórz folder logów**
+4. **Logi**: **Pomoc → Wyślij opinię → Otwórz folder logów**
 
 ---
 
