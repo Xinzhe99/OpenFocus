@@ -8,6 +8,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- Offer a hardware-matched TensorRT and PyTorch CUDA pack for StackMFF on supported Windows NVIDIA systems. Install it from Setup or Settings, including after a desktop upgrade. Neural renders try supported engines within the memory budget and report the actual execution device and fallback reasons.
 - Batch Image Converter now defaults to a sibling `_converted` folder and previews the destination for the selected file. Choose a source-relative or custom folder, cap the long edge at 2K/4K/8K, or shrink by percentage. DNG keeps sensor dimensions. Unchanged same-format images are counted as skipped. Right-click queue rows to remove the selection.
 - Add an opt-in OpenCL GPU path for OpenFocus A fusion (`use_gpu=True`),
   porting the Burt-pyramid focus response, winner-take-all selection with

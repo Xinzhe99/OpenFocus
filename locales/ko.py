@@ -1,6 +1,13 @@
 """Korean language pack for OpenFocus."""
 
 PACK = {
+    "ai_pack_title": "AI 추론 가속 구성 요소",
+    "ai_pack_offer": "{device}의 StackMFF에는 TensorRT와 PyTorch CUDA를 권장합니다.",
+    "ai_pack_check": "GPU와 설치된 구성 요소를 확인하는 중…",
+    "ai_pack_base": "이 장치에서는 OpenFocus에 내장된 추론 엔진을 사용합니다.",
+    "ai_pack_driver": "CUDA 12.4 이상을 지원하는 NVIDIA 드라이버로 업데이트하세요.",
+    "ai_pack_ready": "{device}용 구성 요소가 설치되었습니다. 다음 GPU 합성부터 사용할 수 있습니다.",
+    "ai_pack_details": "다운로드 크기는 {size}이며 설치 시 {disk}의 여유 공간이 필요합니다. 구성 요소는 OpenFocus 전용 환경에 설치됩니다. 첫 합성 시 TensorRT가 엔진을 컴파일하므로 시간이 더 걸릴 수 있습니다.",
     "account_title": "OpenFocus 계정",
     "account_heading": "OpenFocus 로그인",
     "account_subtitle": "이 기기에서 먼저 온라인으로 한 번 로그인하세요. 저장된 세션으로 로그아웃하거나 세션을 삭제할 때까지 오프라인에서 OpenFocus를 사용할 수 있습니다.",

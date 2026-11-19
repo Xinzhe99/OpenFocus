@@ -5,7 +5,6 @@ positions to a single feathered image, which is normalized once before any
 source pixels are selected.
 """
 
-from contextlib import nullcontext
 
 import cv2
 import numpy as np
@@ -120,12 +119,12 @@ def tiled_output_bytes(height, width, channels, result_count):
 def _plan(source, model_path, use_gpu, tile_size, execution_plan,
           thread_count, resource_preference, result_count):
     from core.resource_policy import ResourceLimitError, plan_neural_tiles
-    from fusion_methods.neural_runtime import resolve_device, estimate_inference_bytes
+    from fusion_methods.neural_runtime import resolve_job_device, estimate_inference_bytes
     from fusion_methods.stackmff_v2 import _prepare_inference
     h, w = source.shape[:2]
     channels = source.shape[2] if len(source.shape) == 3 else 1
-    device = (execution_plan.device_kind if execution_plan is not None
-              else resolve_device(use_gpu))
+    device = (execution_plan.device_kind if execution_plan is not None and use_gpu
+              else resolve_job_device(use_gpu))
     from core.source_frames import frame_resolution_bytes, source_cache_growth_bytes
     source_resolution = max(frame_resolution_bytes(frame) for frame in source.items)
     source_cache = source_cache_growth_bytes(source.items)
@@ -140,6 +139,9 @@ def _plan(source, model_path, use_gpu, tile_size, execution_plan,
     if execution_plan is not None:
         from dataclasses import replace
         outer = replace(outer, ram_budget=min(outer.ram_budget, execution_plan.ram_budget),
+                        vram_budget=min(outer.vram_budget, execution_plan.vram_budget)
+                        if execution_plan.vram_budget else outer.vram_budget,
+                        device_fallback=outer.device_fallback or execution_plan.device_fallback,
                         native_threads=min(outer.native_threads, execution_plan.native_threads))
     first = source.get(0)
     fixed = tiled_output_bytes(h, w, channels, result_count) + source_resolution + source_cache
@@ -186,11 +188,7 @@ def tiled_depth(source, model_path, use_gpu, should_cancel=None,
                 resource_preference='balanced', tile_size=None, tile_overlap=0,
                 progress_callback=None, result_count=0):
     """Return globally normalized depth and sampled indices for a source."""
-    from core.resource_policy import heavy_job
-    from fusion_methods.neural_runtime import start_inference_job
-    with heavy_job(should_cancel) if execution_plan is None else nullcontext():
-        if execution_plan is None:
-            start_inference_job()
+    with common.neural_lease(execution_plan, should_cancel):
         return _tiled_depth_under_lease(
             source, model_path, use_gpu, should_cancel, execution_plan,
             thread_count, resource_preference, tile_size, tile_overlap,
@@ -262,11 +260,7 @@ def tiled_fusion(input_source, img_resize, model_path, use_gpu,
                  resource_preference='balanced', tile_size=None, tile_overlap=0,
                  progress_callback=None, exposure_gains=None, source_all_uint8=None):
     """Fuse a list or directory without materializing a full-frame stack."""
-    from core.resource_policy import heavy_job
-    from fusion_methods.neural_runtime import start_inference_job
-    with heavy_job(should_cancel) if execution_plan is None else nullcontext():
-        if execution_plan is None:
-            start_inference_job()
+    with common.neural_lease(execution_plan, should_cancel):
         return _tiled_fusion_under_lease(
             input_source, img_resize, model_path, use_gpu, should_cancel,
             execution_plan, thread_count, resource_preference, tile_size,

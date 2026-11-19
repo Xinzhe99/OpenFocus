@@ -40,6 +40,7 @@ UninstallDisplayIcon={app}\{#MyAppExeName}
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 Name: "explorercontext"; Description: "Add OpenFocus to the Windows Explorer context menu"
+Name: "airecommendation"; Description: "Review NVIDIA acceleration for AI models when OpenFocus starts"; Flags: unchecked; Check: FileExists(ExpandConstant('{sys}\nvcuda.dll'))
 
 [InstallDelete]
 ; These directories belong to the installed application; keep user data intact.
@@ -73,4 +74,13 @@ Root: HKA; Subkey: "Software\Classes\*\shell\OpenFocus.Import"; ValueType: strin
 Root: HKA; Subkey: "Software\Classes\*\shell\OpenFocus.Import\DropTarget"; ValueType: string; ValueName: "Clsid"; ValueData: "{{08A1D5C2-DB59-4A62-AC2B-ED9E960A986E}"; Tasks: explorercontext
 
 [Run]
-Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#MyAppName}}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\{#MyAppExeName}"; Parameters: "{code:LaunchParameters}"; Description: "{cm:LaunchProgram,{#MyAppName}}"; Flags: nowait postinstall skipifsilent runasoriginaluser
+
+[Code]
+function LaunchParameters(Param: String): String;
+begin
+  if WizardIsTaskSelected('airecommendation') then
+    Result := '--ai-runtime'
+  else
+    Result := '';
+end;

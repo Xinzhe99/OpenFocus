@@ -38,7 +38,7 @@ def _is_cli_invocation(argv):
             skip_value = False
         elif arg == "--control-socket":
             skip_value = True
-        elif arg.startswith("-") and arg not in {"--control", "--restore-session"}:
+        elif arg.startswith("-") and arg not in {"--control", "--restore-session", "--ai-runtime"}:
             return True
     return False
 
@@ -123,6 +123,9 @@ if __name__ == "__main__":
     from core.cli import SUBCOMMANDS, run_cli
     if _argv and (_argv[0] in SUBCOMMANDS or _argv[0] in ("--version", "-V", "--describe")):
         sys.exit(run_cli(_argv))
+    _ai_runtime_flag = '--ai-runtime' in _argv
+    if _ai_runtime_flag:
+        _argv.remove('--ai-runtime')
     # Consume the legacy flag and optional socket name before GUI startup.
     _argv = [arg for arg in _argv if arg != "--control"]
     _control_socket = None
@@ -809,6 +812,10 @@ class OpenFocus(QMainWindow):
         self.main_splitter.setSizes([int(total_width * 0.75), int(total_width * 0.25)])
 
         main_layout.addWidget(self.update_banner)
+        from ui.accelerator_setup import AcceleratorBanner
+        self.accelerator_banner = AcceleratorBanner(self)
+        self.accelerator_banner.installed.connect(self._update_dynamic_status)
+        main_layout.addWidget(self.accelerator_banner)
         main_layout.addWidget(self.main_splitter, 1)
 
     def eventFilter(self, obj, event):
@@ -4265,6 +4272,9 @@ class OpenFocus(QMainWindow):
         from dialogs.account import AccountDialog, cancel_account_jobs
         from dialogs.retouch import RetouchDialog, _SHARPNESS_WORKERS
         shutdown_running = cancel_account_jobs(self)
+        accelerator = getattr(self, 'accelerator_banner', None)
+        if accelerator is not None:
+            shutdown_running = accelerator.shutdown_running() or shutdown_running
         from ui.sensor_cleanup import cancel_sensor_inspections
         shutdown_running = cancel_sensor_inspections(self) or shutdown_running
         from dialogs.scalebar import ScaleBarDialog
@@ -4788,6 +4798,9 @@ class OpenFocus(QMainWindow):
         banner = getattr(self, "update_banner", None)
         if banner is not None:
             banner.retranslate()
+        accelerator = getattr(self, 'accelerator_banner', None)
+        if accelerator is not None:
+            accelerator.retranslate()
         self.rebuild_recent_menu()
         self.rebuild_recent_projects_menu()
         self.apply_experimental_features()
@@ -4826,7 +4839,7 @@ if __name__ == "__main__":
             paths = (_shell_paths if _shell_paths is not None else
                      [os.path.abspath(a) for a in sys.argv[1:] if not a.startswith("-")])
             payload = {"paths": paths, "explorer": _shell_paths is not None,
-                       "request_path": _shell_request}
+                       "request_path": _shell_request, "ai_runtime": _ai_runtime_flag}
             probe.write((_json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8"))
             while probe.bytesToWrite() and probe.waitForBytesWritten(60000):
                 pass
@@ -4916,6 +4929,8 @@ if __name__ == "__main__":
         window.show()
         window.raise_()
         window.activateWindow()
+        if isinstance(request, dict) and request.get('ai_runtime') is True:
+            window.accelerator_banner.open_settings()
         return True
 
     def _on_new_connection() -> None:
@@ -5043,6 +5058,10 @@ if __name__ == "__main__":
         app.queue_import(_shell_paths, explorer=True, request_path=_shell_request)
 
     window.show()
+    if _ai_runtime_flag:
+        QTimer.singleShot(0, window.accelerator_banner.open_settings)
+    else:
+        QTimer.singleShot(0, window.accelerator_banner.check_at_startup)
     from utils.app_paths import user_data_dir
     if (user_data_dir() / 'reports' / 'reports.json').exists():
         from ui.report_retry import schedule_report_retries
@@ -5061,7 +5080,7 @@ if __name__ == "__main__":
 
     # First-run quick-start guide (once ever)
     from utils.settings_store import get_settings
-    if str(get_settings().value("ui/first_run_done", "") or "") != "1":
+    if not _ai_runtime_flag and str(get_settings().value("ui/first_run_done", "") or "") != "1":
         def _show_welcome():
             # A slow cooperative close can make this timer overdue. Entering
             # exec() now would consume Qt's posted last-window Quit event.

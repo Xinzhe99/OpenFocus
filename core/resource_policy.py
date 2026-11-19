@@ -134,6 +134,7 @@ class ExecutionPlan:
     tile_size: Optional[int] = None
     required_ram: int = 0
     required_vram: int = 0
+    device_fallback: Optional[str] = None
 
     def describe(self) -> str:
         return (f"workers={self.workers}, threads={self.native_threads}, "
@@ -284,9 +285,13 @@ def _directml_memory() -> tuple:
 
 def _gpu_memory(kind: str) -> tuple:
     """Return free and total bytes without importing a full ML framework."""
-    reading = torch_backend.device_memory(kind)
-    if reading is not None:
-        return reading
+    if kind in ('TENSORRT', 'TORCH_CUDA'):
+        # Native engines run on CUDA ordinal zero independent of host frameworks.
+        kind = 'CUDA'
+    else:
+        reading = torch_backend.device_memory(kind)
+        if reading is not None:
+            return reading
     if kind not in ('CUDA', 'ROCM'):
         return 0, 0
     import ctypes
@@ -353,7 +358,7 @@ def probe_resources(device_kind: Optional[str] = None) -> ResourceSnapshot:
     free_vram = total_vram = 0
     if kind == 'DIRECTML':
         free_vram, total_vram = _directml_memory()
-    elif kind in ('CUDA', 'ROCM', 'XPU', 'OPENVINO'):
+    elif kind in ('CUDA', 'ROCM', 'XPU', 'OPENVINO', 'TENSORRT', 'TORCH_CUDA'):
         free_vram, total_vram = _gpu_memory(kind)
     return replace(
         ram,
@@ -787,6 +792,7 @@ def plan_neural_tiles(frames: int, height: int, width: int, channels: int,
     """
     if source_resolution_bytes < 0 or source_cache_bytes < 0:
         raise ValueError('Source workspace sizes must be nonnegative')
+    live = snapshot is None
     snapshot = snapshot or probe_resources(device_kind)
     maximum = max(1, min(int(block_size), height, width))
     minimum = min(maximum, 64)
@@ -797,15 +803,17 @@ def plan_neural_tiles(frames: int, height: int, width: int, channels: int,
     ceiling = ram_ceiling(snapshot)
     if not snapshot.ram_known:
         raise ResourceLimitError('Available physical memory could not be determined')
-    kinds = [str(device_kind).upper()]
-    if kinds[0] != 'CPU':
-        kinds.append('CPU')
+    from fusion_methods.neural_runtime import candidate_devices, VRAM_GATED_KINDS
+    requested = str(device_kind).upper()
+    kinds = candidate_devices(requested) if live else dict.fromkeys((requested, 'CPU'))
     for kind in kinds:
+        if live and kind not in ('CPU', requested):
+            snapshot = probe_resources(kind)
         # Dedicated devices need the selected provider's real free VRAM.
-        dedicated = kind in ('DIRECTML', 'CUDA', 'ROCM', 'OPENVINO')
+        dedicated = kind in VRAM_GATED_KINDS
         if dedicated and (snapshot.device_kind.upper() != kind or not snapshot.vram_known):
             continue
-        if kind not in ('CPU', 'COREML', 'DIRECTML', 'CUDA', 'ROCM', 'OPENVINO'):
+        if not dedicated and kind not in ('CPU', 'COREML'):
             continue
         block = maximum
         while True:
@@ -833,6 +841,8 @@ def plan_neural_tiles(frames: int, height: int, width: int, channels: int,
                     device_kind=kind,
                     required_ram=required,
                     required_vram=device_required if dedicated else 0,
+                    device_fallback=(None if kind == requested else
+                                     f'{requested} did not fit the available memory budget'),
                     reasons=(f'neural tile {block}px, {kind}',))
             if block <= minimum:
                 break

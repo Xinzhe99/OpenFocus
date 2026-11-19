@@ -5,6 +5,13 @@ fall back to this table.
 """
 
 EN = {
+    "ai_pack_title": "AI acceleration components",
+    "ai_pack_offer": "Recommended for {device}: TensorRT and PyTorch CUDA for StackMFF.",
+    "ai_pack_check": "Checking the GPU and installed components…",
+    "ai_pack_base": "OpenFocus will use its bundled inference engines on this device.",
+    "ai_pack_driver": "This NVIDIA driver needs an update to CUDA 12.4 or later.",
+    "ai_pack_ready": "The acceleration components for {device} are installed. The next GPU-enabled render can use them.",
+    "ai_pack_details": "Download {size}. Allow {disk} free for installation. OpenFocus installs these components in its own environment. TensorRT may take longer on the first render while it builds an engine.",
     "account_title": "OpenFocus account",
     "account_heading": "Sign in to OpenFocus",
     "account_subtitle": "Sign in online once on this device. Your saved session lets you use OpenFocus offline until you sign out or remove it.",

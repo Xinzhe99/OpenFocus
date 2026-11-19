@@ -215,11 +215,12 @@ Control the desktop app through a token-protected local channel.
 - **Languages** — twelve UI languages with automatic locale detection.
 - **Memory** — bounded frame/tile work, disk-backed intermediates and neural models loaded only when selected.
 
-StackMFF V1/V2/V3 use dynamic ONNX checkpoints and ONNX Runtime; production
-inference does not bundle PyTorch. The current runtime can use DirectML on
-Windows or CoreML on macOS and falls back to CPU when needed. A provider being
-available does not prove GPU execution; support across GPU hardware still needs
-validation. See [GPU support](docs/GPU_SUPPORT.md).
+StackMFF V1/V2/V3 run with the bundled ONNX Runtime. Supported Windows x64
+NVIDIA systems can install TensorRT and PyTorch CUDA from **Settings → AI
+acceleration components**. With GPU acceleration enabled, OpenFocus tries the
+applicable native engines, then an accelerated ONNX Runtime provider such as
+DirectML or CoreML, then CPU. Diagnostics record the engine used by the model.
+See [GPU support](docs/GPU_SUPPORT.md).
 
 Neural inference adapts spatial tile size to available resources while keeping
 all focal frames in each inference. Imported frames and alignment scratch can
