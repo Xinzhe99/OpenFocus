@@ -30,6 +30,13 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   on real/synthetic scenes, identical PSNR 39.54 / SSIM 0.9968 on
   `tools/synthetic_benchmark.py`) and up to 18.8x–35.6x warm speedup vs
   baseline CPU (t=1) / 4.4x–11.1x vs optimized CPU (t=1) on RTX 4060 Laptop.
+- Add an opt-in OpenCL GPU path and compiled CPU kernels for DCT fusion
+  (`use_gpu=True`), streaming single frames through OpenCL 1.2 fixed-point `uint8`
+  / FP32 block-variance computation, online block argmax, and selected-block
+  reconstruction with automatic CPU fallback, achieving 100.0000% bit-exact
+  output (`ndiff=0`, `max_diff=0`, identical PSNR 40.13 / SSIM 0.9965 on
+  `tools/synthetic_benchmark.py`), 1.6x–2.6x CPU speedups across thread counts,
+  and 10.3x–22.1x warm GPU speedup vs baseline CPU (t=1) on RTX 4060 Laptop.
 - Add an opt-in OpenCL GPU path for OpenFocus C pyramid fusion
   (`use_gpu=True`), porting the full weighted-pyramid chain — normalize,
   Gaussian down/up, detail+weight, IIR weight filter, merge, collapse and

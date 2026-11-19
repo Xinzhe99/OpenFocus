@@ -849,8 +849,9 @@ def test_environment_reports_openfocus_bc_capability(monkeypatch, available):
     text = EnvironmentInfoDialog.environment_report()
     expected = 'OpenCL GPU available; CPU fallback' if available else 'CPU'
     assert f'OpenFocus A/B/C / Guided Filter: {expected}' in text
+    assert f'DCT: {expected}' in text
     assert 'GFG-FGF: CPU' in text
-    assert 'OpenFocus A/B/C / Guided Filter / OpenCL' in text
+    assert 'OpenFocus A/B/C / Guided Filter / DCT / OpenCL' in text
 
 
 def test_environment_explains_an_unadmitted_provider(monkeypatch):
