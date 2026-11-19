@@ -17,6 +17,16 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Laptop); falls back to CPU when the device budget or build fails.
 - Prepare Linux x86-64 desktop release archives and website downloads, alongside
   the separate headless CLI distributed through PyPI.
+- Add an opt-in OpenCL GPU path and compiled CPU kernels for Guided Filter fusion
+  (`use_gpu=True`), porting saliency (channel sum, Laplacian, Gaussian, online
+  argmax), base/detail decomposition, two-scale guided-filter weight refinement
+  (`r=45` base and local-memory mean-shifted `r=7` detail), and weighted
+  reconstruction to pure OpenCL 1.2 FP32 kernels with single-frame streaming
+  and automatic CPU fallback. CPU optimization is bit-exact (`ndiff=0`,
+  3.2x–5.3x faster on single thread); GPU achieves `max_diff=1` (`>=99.96%` exact
+  on real/synthetic scenes, identical PSNR 39.54 / SSIM 0.9968 on
+  `tools/synthetic_benchmark.py`) and up to 18.8x–35.6x warm speedup vs
+  baseline CPU (t=1) / 4.4x–11.1x vs optimized CPU (t=1) on RTX 4060 Laptop.
 - Add an opt-in OpenCL GPU path for OpenFocus C pyramid fusion
   (`use_gpu=True`), porting the full weighted-pyramid chain — normalize,
   Gaussian down/up, detail+weight, IIR weight filter, merge, collapse and

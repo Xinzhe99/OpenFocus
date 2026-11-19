@@ -27,6 +27,7 @@ _DEFAULT_TILE_BLOCK_SIZE = 1024
 _DEFAULT_TILE_OVERLAP = 256
 _DEFAULT_TILE_THRESHOLD = 2048
 _DEFAULT_AI_BATCH_SIZE = 2
+OPENCL_FUSION_ALGORITHMS = ('openfocus_a', 'openfocus_b', 'openfocus_c', 'guided_filter')
 
 
 def set_tile_mode(enabled: bool):
@@ -622,7 +623,7 @@ class MultiFocusFusion:
 
     def _validate_spatial_environment(self) -> None:
         """验证空间域融合依赖"""
-        if self.use_gpu and self.algorithm not in ('openfocus_a', 'openfocus_b', 'openfocus_c'):
+        if self.use_gpu and self.algorithm not in OPENCL_FUSION_ALGORITHMS:
             print(f"Note: {self.descriptor.display_name} fusion runs on CPU only; switching to CPU mode.")
             self.use_gpu = False
 
@@ -1074,6 +1075,9 @@ class MultiFocusFusion:
             kernel_size=kernel_size,
             thread_count=thread_count,
             should_cancel=kwargs.get('should_cancel'),
+            progress_callback=kwargs.get('progress_callback'),
+            use_gpu=self.use_gpu,
+            device_callback=self._record_openfocus_device,
         )
 
     def _fuse_dct(self,
@@ -2054,7 +2058,7 @@ class MultiFocusFusion:
             from fusion_methods import neural_runtime
             kind = neural_runtime.cached_device() if self.use_gpu else 'CPU'
             device_name = self._actual_device or neural_runtime.display_name(kind or 'N/A')
-        elif self.algorithm in ('openfocus_a', 'openfocus_b', 'openfocus_c'):
+        elif self.algorithm in OPENCL_FUSION_ALGORITHMS:
             device_name = self._actual_device or 'CPU'
         else:
             device_name = 'CPU'
