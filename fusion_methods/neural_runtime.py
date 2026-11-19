@@ -181,11 +181,11 @@ def _adapter_name(kind):
     return _ADAPTER_NAME if kind == _DEVICE else ''
 
 
-def display_name(kind):
+def display_name(kind, *, include_adapter=True):
     provider = {'DIRECTML': 'DirectML', 'CUDA': 'CUDA', 'ROCM': 'ROCm',
                 'OPENVINO': 'OpenVINO GPU', 'COREML': 'CoreML',
                 'TENSORRT': 'TensorRT', 'TORCH_CUDA': 'PyTorch CUDA'}.get(kind, str(kind))
-    adapter = _adapter_name(kind)
+    adapter = _adapter_name(kind) if include_adapter else ''
     return f'{provider} ({adapter})' if adapter else provider
 
 
