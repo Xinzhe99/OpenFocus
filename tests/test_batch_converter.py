@@ -1232,6 +1232,21 @@ def test_tiff_unsupported_layout_is_rejected_before_decode(tmp_path, monkeypatch
     assert sorted(p.name for p in tmp_path.iterdir()) == ['unsupported.tif']
 
 
+@pytest.mark.parametrize('subifd', [False, True])
+def test_converter_thumbnail_uses_first_images_own_reduced_rgb(tmp_path, subifd):
+    source = tmp_path / 'portrait.tif'
+    preview = np.zeros((16, 12, 3), np.uint8)
+    preview[:8, :, 0] = 212
+    preview[8:, :, 2] = 156
+    with tifffile.TiffWriter(source) as writer:
+        writer.write(shape=(2400, 1800, 3), dtype=np.uint16, photometric='rgb',
+                     subifds=1 if subifd else None, extratags=[(274, 'H', 1, 6, False)])
+        writer.write(preview, photometric='rgb', subfiletype=1)
+        writer.write(np.full((12, 9, 3), 64, np.uint8), photometric='rgb')
+        writer.write(np.full((4, 3, 3), 255, np.uint8), photometric='rgb', subfiletype=1)
+    np.testing.assert_array_equal(converter.thumbnail_rgb(source), np.rot90(preview, -1))
+
+
 def test_tiff_thumbnail_admission_precedes_pixel_decode(tmp_path, monkeypatch):
     source = tmp_path / 'preview.tif'
     tifffile.imwrite(source, np.zeros((8, 8, 3), np.uint8), photometric='rgb')

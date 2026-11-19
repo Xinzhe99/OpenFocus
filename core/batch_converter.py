@@ -6,7 +6,7 @@ import shutil
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 import struct
-from itertools import islice
+from itertools import chain, islice, takewhile
 from contextlib import ExitStack
 from threading import Event
 import math
@@ -705,8 +705,13 @@ def thumbnail_rgb(path, size=(96, 72)):
         return render(Image.fromarray(cv2.cvtColor(pixels, cv2.COLOR_BGR2RGB)), orientation=1)
     if Path(path).suffix.lower() in ('.tif', '.tiff'):
         with tifffile.TiffFile(path) as tif:
-            first = tif.pages[0]
-            candidates = [first] + (list(first.pages) if first.pages else [])
+            from core.source_frames import _matching_tiff_previews, _tiff_orientation
+            pages = iter(tif.pages)
+            first = next((page for page in pages if not page.is_reduced), None)
+            if first is None:
+                raise ValueError('No full-resolution TIFF page is available')
+            following = takewhile(lambda page: page.is_reduced, pages)
+            candidates = chain((first,), _matching_tiff_previews(first, following))
             small = [p for p in candidates if p.imagewidth * p.imagelength <= 4_000_000
                      and p.photometric.name in ('RGB', 'MINISBLACK')]
             if not small:
@@ -719,9 +724,6 @@ def thumbnail_rgb(path, size=(96, 72)):
                 pixels = (pixels // 257).astype(np.uint8)
             if pixels.dtype != np.uint8:
                 raise ValueError('Unsupported TIFF thumbnail representation')
-            image = Image.fromarray(pixels)
-            if 'Orientation' in page.tags:
-                image.getexif()[274] = int(page.tags['Orientation'].value)
-            return render(image)
+            return render(Image.fromarray(pixels), orientation=_tiff_orientation(first))
     with Image.open(path) as image:
         return render(image)
