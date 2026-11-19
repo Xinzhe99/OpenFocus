@@ -31,6 +31,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Open the user manual on GitHub in the current interface language from Help.
 
 ### Changed
+- Edit OpenFocus A/B/C smoothing in whole levels, one per click. Fractional values
+  from existing projects and recipes keep their original precision until edited.
 - Include allowlisted error categories, render stages, and memory admission
   figures in sanitized reports, without adding exception messages or paths.
 - Use each indexed TIFF page's color map for previews, full-resolution fusion and conversion.

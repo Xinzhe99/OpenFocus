@@ -406,21 +406,69 @@ def test_method_dropdown_groups_families_in_a_stable_order(qapp, algorithm_host)
                 assert item.font().pointSizeF() < combo.font().pointSizeF()
 
 
-def test_openfocus_b_default_precision_and_saved_value(qapp, algorithm_host):
+@pytest.mark.parametrize('method', ['openfocus_a', 'openfocus_b', 'openfocus_c'])
+def test_openfocus_smoothing_edits_whole_levels(algorithm_host, method):
     host = algorithm_host
-    host.set_fusion_method('openfocus_b')
-    editors = host.fusion_parameter_panel.editors
-    assert editors['radius'].value() == 8
-    assert editors['smoothing'].value() == pytest.approx(4)
-    assert editors['feather'].value() == 3
-    assert editors['smoothing'].text().endswith('4.0')
+    host.set_fusion_method(method)
+    panel = host.fusion_parameter_panel
+    editor = panel.editors['smoothing']
+    assert editor.text() == '4'
+    editor.stepUp()
+    assert editor.text() == '5' and host.fusion_parameters_for(method)['smoothing'] == 5
+    editor.stepDown()
+    assert editor.text() == '4' and host.fusion_parameters_for(method)['smoothing'] == 4
 
-    editors['smoothing'].setValue(6.666667)
-    assert editors['smoothing'].value() == pytest.approx(6.666667)
-    assert editors['smoothing'].text().endswith('6.666667')
 
-    editors['smoothing'].setValue(1.2)
+def test_saved_fraction_survives_other_edits_and_method_switch(algorithm_host):
+    from PyQt6.QtCore import Qt
+
+    host = algorithm_host
+    method = 'openfocus_b'
+    exact = 1.6 / .24
+    host.set_fusion_method(method)
+    host.set_fusion_parameters(method, {'smoothing': exact})
+    panel = host.fusion_parameter_panel
+    editor = panel.editors['smoothing']
+    assert editor.text() == '7'
+    assert editor.accessibleDescription() and editor.toolTip()
+    QTest.keyClick(editor, Qt.Key.Key_Return)
+    panel.editors['radius'].stepUp()
     host.set_fusion_method('openfocus_c')
-    assert host.fusion_parameter_panel.editors['smoothing'].value() == pytest.approx(4)
-    host.set_fusion_method('openfocus_b')
-    assert host.fusion_parameter_panel.editors['smoothing'].value() == pytest.approx(1.2)
+    host.set_fusion_method(method)
+    assert panel.values() == {'radius': 9, 'smoothing': exact, 'feather': 3}
+    editor = panel.editors['smoothing']
+    editor.selectAll()
+    QTest.keyClicks(editor, '7')
+    QTest.keyClick(editor, Qt.Key.Key_Return)
+    assert host.fusion_parameters_for(method)['smoothing'] == 7
+
+
+def test_compare_and_batch_edit_smoothing_locally(algorithm_host):
+    from dialogs.batch import BatchProcessingDialog
+    from dialogs.compare import CompareDialog
+
+    host = algorithm_host
+    method = 'openfocus_b'
+    exact = 1.6 / .24
+    host.set_fusion_method(method)
+    host.set_fusion_parameters(method, {'smoothing': exact})
+    compare = CompareDialog(host)
+    batch = BatchProcessingDialog(host)
+    try:
+        widgets = compare.param_widgets[method]
+        assert widgets['smoothing'].text() == '7'
+        widgets['feather'].stepUp()
+        assert compare._method_params[method]['smoothing'] == exact
+        widgets['smoothing'].stepDown()
+        assert compare._method_params[method]['smoothing'] == 6
+        widgets = batch.fusion_parameter_panel.editors
+        assert widgets['smoothing'].text() == '7'
+        widgets['radius'].stepDown()
+        assert batch.get_processing_settings()['fusion_params']['smoothing'] == exact
+        widgets['smoothing'].stepUp()
+        assert batch.get_processing_settings()['fusion_params']['smoothing'] == 8
+        assert host.fusion_parameters_for(method)['smoothing'] == exact
+    finally:
+        for dialog in (compare, batch):
+            dialog.reject()
+            dialog.deleteLater()
