@@ -78,8 +78,7 @@ beta, use `v<APP_VERSION>-beta.<N>` with a positive integer `N`, for example
 `v1.78.0-beta.1`. Keep `constants.APP_VERSION` numeric. Both tagged channels
 lock the checked-out commit and run the three-OS test suite and installed
 headless wheel smoke for that commit, alongside the desktop builds. All must
-succeed before publication. Beta builds follow the same configured SignPath
-signing or unsigned path as stable builds.
+succeed before publication. Windows installers and portable builds are unsigned.
 
 Before freezing each desktop build, the workflow writes a validated build marker.
 Beta applications display and report the full beta version, while the numeric
@@ -94,7 +93,7 @@ SHA-256 hashes against `OpenFocus-<tag>-build.json`, and verifies that the tag
 still points to the locked commit before publishing. A failed draft can be
 retried. Once published, a tag and its release bytes are immutable: a rerun
 succeeds without modifying the release only when its original build identity
-and every asset match. Changed bytes, including rebuilt signed binaries, require
+and every asset match. Changes to the published binaries require
 a new version and tag. Historical releases without a verifiable build identity
 cannot be silently replaced or amended by rerunning the workflow.
 

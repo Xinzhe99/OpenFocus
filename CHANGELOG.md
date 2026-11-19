@@ -31,6 +31,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Open the user manual on GitHub in the current interface language from Help.
 
 ### Changed
+- Publish unsigned Windows builds with SHA-256 hashes for the installer and portable archive.
 - Include allowlisted error categories, render stages, and memory admission
   figures in sanitized reports, without adding exception messages or paths.
 - Use each indexed TIFF page's color map for previews, full-resolution fusion and conversion.
