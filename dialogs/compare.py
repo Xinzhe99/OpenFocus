@@ -22,10 +22,8 @@ from core.algorithms import (alignment_steps, fusion_algorithms, get_fusion,
     registration_parameter_specs, registration_algorithms, resolve_fusion_parameters,
     desktop_registration_parameters)
 from ui.algorithm_parameters import AlgorithmParameterPanel
-from ui.algorithm_combo import (apply_method_availability, experimental_method_label,
-                                selected_item_enabled)
-from core.experimental import (alignment_is_experimental, experimental_enabled,
-                               fusion_is_experimental)
+from ui.algorithm_combo import apply_method_availability, selected_item_enabled
+from core.experimental import alignment_is_experimental, experimental_enabled
 from widgets.compare_canvas import (
     DEFAULT_DETAIL_SIZE, DetailCanvas, SourceCanvas,
 )
@@ -50,9 +48,9 @@ class _ActionFlowPanel(FlowPanel):
 class _MethodFlowPanel(FlowPanel):
     def mousePressEvent(self, event):  # noqa: N802
         child = self.childAt(event.position().toPoint())
-        if child is not None and child.property('experimentalLocked'):
-            QToolTip.showText(event.globalPosition().toPoint(),
-                              trans.t('experimental_locked_hint'), self)
+        reason = child.property('unavailableReason') if child is not None else None
+        if reason:
+            QToolTip.showText(event.globalPosition().toPoint(), reason, self)
             return
         super().mousePressEvent(event)
 
@@ -180,10 +178,7 @@ class CompareDialog(QDialog):
             method = self._first_available_method()
         get_fusion(method)
         box = self._checks.get(method)
-        # Preserve a locked inherited choice; the execution guard reports why.
-        if box is not None and (box.isEnabled() or
-                                (fusion_is_experimental(method) and
-                                 not experimental_enabled(self.window_main))):
+        if box is not None and box.isEnabled():
             box.setChecked(True)
         if not self._selected_methods():
             # Only when the inherited method is unavailable: keep the empty
@@ -214,15 +209,9 @@ class CompareDialog(QDialog):
             box = self._checks.get(spec.id)
             if box is None:
                 continue
-            locked = (fusion_is_experimental(spec.id)
-                      and not experimental_enabled(self.window_main))
-            dependency = fusion_unavailable_reason(spec, available)
-            reason = '\n\n'.join(text for text in
-                                (trans.t('experimental_locked_hint') if locked else '',
-                                 dependency) if text)
-            box.setText(experimental_method_label(spec))
+            reason = fusion_unavailable_reason(spec, available)
+            box.setText(trans.t(spec.label_key))
             box.setEnabled(not reason)
-            box.setProperty('experimentalLocked', locked)
             box.setProperty("unavailableReason", reason)
             hint = trans.t(spec.hint_key) if spec.hint_key else ""
             box.setToolTip("\n\n".join(text for text in (hint, reason) if text))
@@ -1080,9 +1069,8 @@ class CompareDialog(QDialog):
             self._set_idle()
             self.status_label.setText(self.align_combo.currentData(Qt.ItemDataRole.ToolTipRole))
             return
-        if not experimental_enabled(self.window_main) and (
-                alignment_is_experimental(self.align_combo.currentData()) or any(
-                    fusion_is_experimental(method) for method in self._selected_methods())):
+        if (not experimental_enabled(self.window_main)
+                and alignment_is_experimental(self.align_combo.currentData())):
             self._set_idle()
             self.status_label.setText(trans.t('experimental_locked_hint'))
             return
@@ -1298,10 +1286,11 @@ class CompareDialog(QDialog):
                 parameters={**{key: value for key, value in self._shared.items() if key != 'method_options'},
                     **self._shared['method_options'][method],
                     'fusion_parameters': self._method_params[method]},
+                fusion_details=entry.get('fusion_details'),
                 **self._calibration)
             record = OutputRecord.create(
-                image, label, context=context, kind="compare",
-                exported=False)
+                image, label, context=context, kind="compare", exported=False,
+                fusion_details=entry.get('fusion_details'))
             window.output_manager.publish_compare_output(record)
             self._published = True
         except Exception as exc:
@@ -1323,7 +1312,8 @@ class CompareDialog(QDialog):
                    and (height, width) == self._aligned_frames[0].shape[:2]
                    and (height, width) == image.shape[:2])
         entry = {'key': key, 'image': image, 'bounds': tuple(bounds),
-                 'full': is_full, 'display': None}
+                 'full': is_full, 'display': None,
+                 'fusion_details': self._worker.fusion_details.get(method)}
         self._results[method] = entry
         if is_full:
             self._full_results[method] = entry

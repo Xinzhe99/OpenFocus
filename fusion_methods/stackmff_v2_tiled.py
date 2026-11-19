@@ -198,7 +198,7 @@ def tiled_depth(source, model_path, use_gpu, should_cancel=None,
 def _tiled_depth_under_lease(source, model_path, use_gpu, should_cancel=None,
                              execution_plan=None, thread_count=None,
                              resource_preference='balanced', tile_size=None, tile_overlap=0,
-                             progress_callback=None, result_count=0):
+                             progress_callback=None, result_count=0, tile_grid_callback=None):
     from fusion_methods import neural_runtime
     source_h, source_w = source.shape[:2]
     h = source_h + (-source_h) % common.ATTENTION_PAD_ALIGN
@@ -215,6 +215,8 @@ def _tiled_depth_under_lease(source, model_path, use_gpu, should_cancel=None,
     ys = sorted(set(_tile_axis_starts(h, block, overlap, common.ATTENTION_PAD_ALIGN)))
     xs = sorted(set(_tile_axis_starts(w, block, overlap, common.ATTENTION_PAD_ALIGN)))
     total = len(xs) * len(ys)
+    if tile_grid_callback is not None:
+        tile_grid_callback(block, overlap, total)
     expected = create_frame((h, w), np.float32)
     weight = create_frame((h, w), np.float32)
     expected[...] = 0
@@ -271,11 +273,11 @@ def _tiled_fusion_under_lease(input_source, img_resize, model_path, use_gpu,
                               should_cancel=None, execution_plan=None, thread_count=None,
                               resource_preference='balanced', tile_size=None, tile_overlap=0,
                               progress_callback=None, exposure_gains=None, source_all_uint8=None,
-                              focus_callback=None):
+                              focus_callback=None, tile_grid_callback=None):
     source = _Source(input_source, img_resize, exposure_gains, should_cancel)
     depth, index = _tiled_depth_under_lease(source, model_path, use_gpu, should_cancel,
                                execution_plan, thread_count, resource_preference,
-                               tile_size, tile_overlap, progress_callback, 1)
+                               tile_size, tile_overlap, progress_callback, 1, tile_grid_callback)
     del depth
     first = _normalized(source.get(0))
     if source_all_uint8 is None:

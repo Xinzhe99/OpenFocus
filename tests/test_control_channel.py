@@ -2089,15 +2089,18 @@ def test_output_export_routes_aligned_records(server, control_window, monkeypatc
     assert captured["destination"] == str(tmp_path)
 
 
-def test_control_channel_respects_experimental_opt_in(server, control_window):
+def test_control_channel_exposes_fusion_with_experimental_alignment_locked(server, control_window):
+    from core.algorithms import fusion_algorithms
     from locales import trans
 
     control_window.experimental_features = False
     control_window.apply_experimental_features()
-    response = call(server, 'method.set', id='guided_filter')
+    for spec in fusion_algorithms():
+        assert call(server, 'method.set', id=spec.id)['result']['id'] == spec.id
+    response = call(server, 'align.set', id='openfocus')
     assert response['error']['code'] == 'invalid_argument'
     assert response['error']['message'] == trans.t('experimental_locked_hint')
-    assert control_window.current_fusion_method() != 'guided_filter'
+    assert control_window.current_alignment_method() == 'none'
 
 
 def test_alignment_only_selection_is_accepted(server, control_window):

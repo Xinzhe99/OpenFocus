@@ -883,12 +883,11 @@ class ControlServer(QObject):
                 "parameters": self.window.registration_parameters_for(method)}
 
     def _validate_method_selection(self, method, args, *, fusion):
-        from core.experimental import (alignment_is_experimental, experimental_enabled,
-                                       fusion_is_experimental)
+        from core.experimental import alignment_is_experimental, experimental_enabled
         window = self.window
-        experimental = fusion_is_experimental if fusion else alignment_is_experimental
-        if (hasattr(window, 'experimental_features') and not experimental_enabled(window)
-                and experimental(method) and not getattr(window, '_restore_depth', 0)):
+        if (not fusion and hasattr(window, 'experimental_features')
+                and not experimental_enabled(window) and alignment_is_experimental(method)
+                and not getattr(window, '_restore_depth', 0)):
             raise ValueError(trans.t('experimental_locked_hint'))
         if method != "none":
             (get_fusion if fusion else get_registration)(method)

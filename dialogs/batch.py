@@ -37,8 +37,7 @@ from core.algorithms import (alignment_steps, fusion_algorithms, get_fusion,
     desktop_registration_parameters)
 from ui.algorithm_parameters import AlgorithmParameterPanel
 from ui.algorithm_combo import apply_method_availability, selected_item_enabled
-from core.experimental import (alignment_is_experimental, experimental_enabled,
-                               fusion_is_experimental)
+from core.experimental import alignment_is_experimental, experimental_enabled
 from locales import trans
 from utils.output_sharpen import DEFAULT_SHARPEN_STRENGTH, MAX_SHARPEN_STRENGTH
 from widgets.stepper import StepperSpinBox
@@ -1407,8 +1406,7 @@ class BatchProcessingDialog(QDialog):
             if not selected_item_enabled(combo):
                 raise ValueError(combo.currentData(Qt.ItemDataRole.ToolTipRole) or '')
         if (not experimental_enabled(self.parent_window)
-                and (fusion_is_experimental(self.fusion_combo.currentData())
-                     or alignment_is_experimental(self.align_combo.currentData()))):
+                and alignment_is_experimental(self.align_combo.currentData())):
             raise ValueError(trans.t('experimental_locked_hint'))
         format_str = self.format_combo.currentText().lower()
         
@@ -1525,8 +1523,7 @@ class BatchProcessingDialog(QDialog):
         if (not selected_item_enabled(self.fusion_combo)
                 or not selected_item_enabled(self.align_combo)
                 or (not experimental_enabled(self.parent_window)
-                    and (fusion_is_experimental(self.fusion_combo.currentData())
-                         or alignment_is_experimental(self.align_combo.currentData())))):
+                    and alignment_is_experimental(self.align_combo.currentData()))):
             for combo in (self.fusion_combo, self.align_combo):
                 if not selected_item_enabled(combo):
                     QMessageBox.warning(self, trans.t('msg_error'),

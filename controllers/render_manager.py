@@ -14,8 +14,8 @@ from core.render_process import RenderProcessWorker
 from dialogs import ROIRenderOptionsDialog  # Import the new dialog
 from locales import trans
 from core.algorithms import fusion_algorithms, get_fusion, get_registration, alignment_steps
-from core.experimental import (experimental_enabled, fusion_is_experimental,
-                               processing_is_locked)
+from core.experimental import processing_is_locked
+from ui.algorithm_combo import fusion_unavailable_reason
 
 
 
@@ -837,12 +837,12 @@ class RenderManager:
             show_warning_box(window, trans.t("msg_no_images_title"), trans.t("msg_render_need_images_text"))
             return
 
-        if processing_is_locked(window, method='none'):
+        if processing_is_locked(window):
             show_warning_box(window, trans.t('experimental_label'), trans.t('experimental_locked_hint'))
             return
+        ai_available = is_ai_fusion_available()
         methods = [spec.id for spec in fusion_algorithms()
-                   if (experimental_enabled(window) or not fusion_is_experimental(spec.id))
-                   and (not spec.neural or is_ai_fusion_available())]
+                   if not fusion_unavailable_reason(spec, ai_available)]
 
         self._compare_queue = list(methods)
         self._compare_total = len(methods)
@@ -920,7 +920,7 @@ class RenderManager:
                             roi_choice: dict | None = None, storage_assessment=_STORAGE_UNSET,
                             cpu_confirmed: bool = False) -> None:
         window = self.window
-        # Why the last start returned; "started" only when a worker runs.
+        # "started" means the request was accepted, even for a cache hit.
         self._start_status = "started"
 
         # A render is already running: this click cancels it
@@ -957,7 +957,7 @@ class RenderManager:
                 getattr(window, "source_manager", None), "_load_worker", None) is not None else "cancelled"
             window.statusBar().showMessage(trans.t("msg_render_queue_cancelled"), 5000)
             return
-        if processing_is_locked(window, method=force_algorithm):
+        if processing_is_locked(window):
             self._start_status = 'unavailable'
             if interactive:
                 show_warning_box(window, trans.t('experimental_label'),
@@ -1037,21 +1037,41 @@ class RenderManager:
             self._restore_ui_controls()
             return
 
+        fusion_method = window.current_fusion_method()
+        method = force_algorithm or fusion_method
+        alignment_method = window.current_alignment_method()
+        registration_parameters = window.registration_parameters_for(alignment_method)
+        requested_steps = alignment_steps(alignment_method)
+        collect_report = bool(getattr(window, 'collect_alignment_report', False) and requested_steps)
+        need_fusion = force_algorithm is not None or method != "none"
+        alignment_key = self._alignment_key(included_idx, method)
+        reusable = bool(window.is_images_aligned
+                        and getattr(window, "aligned_images", None)
+                        and len(window.aligned_images) == len(stack_images)
+                        and getattr(window, "alignment_request_key", None) == alignment_key
+                        and not cleanup)
+        preview = getattr(window, 'chk_quick_preview', None)
+        publish_cached_alignment = (
+            not need_fusion and requested_steps and reusable and not collect_report
+            and not getattr(window, 'roi_mode_active', False)
+            and not (preview is not None and preview.isChecked()))
+
         # One storage assessment per render start, before any UI is locked.
         storage_override = None
         from core.frame_storage import automatic_preflight_may_block
-        preview = getattr(window, 'chk_quick_preview', None)
-        if (storage_assessment is _STORAGE_UNSET and force_algorithm is None
-                and not getattr(window, 'roi_mode_active', False)
-                and not (preview is not None and preview.isChecked())
-                and automatic_preflight_may_block()):
-            self._begin_storage_preflight(stack_images, force_algorithm, interactive, confirmed, roi_choice,
-                                          cpu_confirmed)
-            self._start_status = 'preflight'
-            return
-        self.last_storage_assessment = assessment = (
-            self._storage_preflight(force_algorithm, stack_images)
-            if storage_assessment is _STORAGE_UNSET else storage_assessment)
+        assessment = None
+        if not publish_cached_alignment:
+            if (storage_assessment is _STORAGE_UNSET and force_algorithm is None
+                    and not getattr(window, 'roi_mode_active', False)
+                    and not (preview is not None and preview.isChecked())
+                    and automatic_preflight_may_block()):
+                self._begin_storage_preflight(stack_images, force_algorithm, interactive, confirmed, roi_choice,
+                                              cpu_confirmed)
+                self._start_status = 'preflight'
+                return
+            assessment = (self._storage_preflight(force_algorithm, stack_images)
+                          if storage_assessment is _STORAGE_UNSET else storage_assessment)
+        self.last_storage_assessment = assessment
         status = assessment['status'] if assessment else 'ok'
         if status == 'critical' or (status == 'advisory' and not confirmed):
             if not interactive:
@@ -1109,18 +1129,6 @@ class RenderManager:
                 "exposure_match") else bool(
                     getattr(win, "base_frame_correct", False))
 
-        fusion_method = window.current_fusion_method()
-        alignment_method = window.current_alignment_method()
-        registration_parameters = window.registration_parameters_for(alignment_method)
-        requested_steps = alignment_steps(alignment_method)
-        collect_report = bool(getattr(window, 'collect_alignment_report', False) and requested_steps)
-
-        need_fusion = (
-            force_algorithm is not None
-            or fusion_method != "none"
-        )
-
-
         if force_algorithm is None and fusion_method != "none" and get_fusion(fusion_method).neural \
                 and not is_ai_fusion_available():
             if interactive:
@@ -1133,13 +1141,7 @@ class RenderManager:
             self._restore_ui_controls()
             return
 
-        alignment_key = self._alignment_key(included_idx, force_algorithm or fusion_method)
         disk_alignment_options = requested_steps
-        reusable = bool(window.is_images_aligned
-                        and getattr(window, "aligned_images", None)
-                        and len(window.aligned_images) == len(stack_images)
-                        and getattr(window, "alignment_request_key", None) == alignment_key
-                        and not (getattr(window, "defect_mask_path", "") or getattr(window, "sensor_denoise", False)))
         # Handle ROI options - check if ROI mode is active and we have aligned images
         roi_rect = None
         roi_mode = "crop"
@@ -1316,14 +1318,15 @@ class RenderManager:
                 window.raw_images is source_ref
                 and getattr(window, "source_revision", 0) == revision)
 
-        method = force_algorithm or fusion_method
         fusion_parameters = window.fusion_parameters_for(method)
         # Reusable aligned descriptors are what the fusion stage actually reads.
         estimate_frames = effective_aligned_images if effective_is_aligned else source_images
-        memory_estimate = self._estimate_memory(
-            estimate_frames, method, fusion_parameters, roi_rect,
-            register=bool(requested_steps and effective_alignment != 'none'
-                          and (not effective_is_aligned or collect_report)))
+        memory_estimate = None
+        if not publish_cached_alignment:
+            memory_estimate = self._estimate_memory(
+                estimate_frames, method, fusion_parameters, roi_rect,
+                register=bool(requested_steps and effective_alignment != 'none'
+                              and (not effective_is_aligned or collect_report)))
         if (memory_estimate and (memory_estimate.ram_short or memory_estimate.gpu_fallback)
                 and interactive and not confirmed and force_algorithm is None
                 and not self._confirm_memory(memory_estimate)):
@@ -1423,6 +1426,11 @@ class RenderManager:
         self._control_progress = None
         self.last_state = "running"
         self._render_interactive = interactive
+        if publish_cached_alignment:
+            self._render_context["alignment_reused"] = True
+            self.on_render_finished(effective_aligned_images, None, True, 0.0, 0.0, "CPU")
+            return
+
         all_source_paths = list(getattr(window, "image_source_paths", None) or [])
         source_paths = ([all_source_paths[i] for i in included_idx]
                         if len(all_source_paths) == len(window.raw_images) else [])
@@ -1634,6 +1642,7 @@ class RenderManager:
                             frame_ids=ctx.get("frame_ids"),
                             source_revision=ctx.get("source_revision", 0),
                             parameters=ctx.get("parameters"),
+                            fusion_details=getattr(self.worker, 'fusion_details', None),
                             linear_dng_metadata=ctx.get("linear_dng_metadata"),
                             source_exif=((ctx.get("frame_exif") or (b"",))[0]),
                             frame_exif=ctx.get("frame_exif"),
@@ -1719,6 +1728,7 @@ class RenderManager:
                             "the output will not be retouchable")
                     window.output_manager.update_output_list_for_fusion(
                         context=new_context,
+                        fusion_details=getattr(self.worker, 'fusion_details', None),
                         linear_dng_metadata=(context or {}).get("linear_dng_metadata"),
                         source_paths=(context or {}).get("source_paths", ()))
 
@@ -1859,7 +1869,9 @@ class RenderManager:
 
             if preview:
                 info_lines.append(trans.t("info_preview_quality"))
-            cache_hit = bool(getattr(self.worker, "alignment_reused", False) or reused_preview_alignment)
+            cache_hit = bool((context or {}).get("alignment_reused")
+                             or getattr(self.worker, "alignment_reused", False)
+                             or reused_preview_alignment)
             if effective_registration and cache_hit:
                 # The frames are aligned, but this run did not align them:
                 # reporting 0.00 s under the method name read as "aligned
@@ -1875,11 +1887,10 @@ class RenderManager:
                 info_lines.append(trans.t("info_align_none"))
                 info_lines.append(trans.t("info_align_time").format(0.0))
 
-            fusion_method = window.current_fusion_method()
+            fusion_method = (context or {}).get('algorithm') or window.current_fusion_method()
             if fusion_method == "none" and not compare:
                 # 仅对齐模式：只跑配准，融合时间不适用
                 info_lines.append(trans.t("info_fusion_none"))
-                info_lines.append(trans.t("info_align_time").format(alignment_time))
             else:
                 # 对比渲染时显示的是队列里实际渲染的方法，而非当前下拉选择
                 compare_method = getattr(self, "_compare_current", None)
@@ -1975,6 +1986,7 @@ class RenderManager:
             source_exif=((ctx.get("frame_exif") or (b"",))[0]),
             frame_exif=ctx.get("frame_exif"), frame_icc_profiles=ctx.get("frame_icc_profiles"),
             rendered_depth=getattr(self.worker, 'rendered_depth', None),
+            fusion_details=getattr(self.worker, 'fusion_details', None),
             linear_dng_metadata=ctx.get("linear_dng_metadata"), source_paths=ctx.get("source_paths"))
 
     def _context_ready(self, worker, result, error):

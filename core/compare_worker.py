@@ -7,6 +7,7 @@ allowed to finish when cancelled; their output is never published afterwards.
 """
 
 from copy import deepcopy
+from dataclasses import replace
 from threading import Event
 
 import numpy as np
@@ -187,6 +188,7 @@ class PreviewWorker(_CancellableWorker):
         self.region = tuple(region) if region is not None else None
         self.roi_only = bool(roi_only)
         self._materialized_images = None
+        self.fusion_details = {}
 
     def _settings(self, method):
         own = self.per_method.get(method, {})
@@ -285,7 +287,15 @@ class PreviewWorker(_CancellableWorker):
         x, y, w, h = bounds
         if context != bounds:
             result = result[y - y0:y - y0 + h, x - x0:x - x0 + w]
-        return store_frame(quantize_fuse_output(result, is_16bit)), bounds
+        result = store_frame(quantize_fuse_output(result, is_16bit))
+        details = fusion.fusion_details
+        if details is not None:
+            sharpened = bool(self.shared.get('sharpen_output', False))
+            options = details.options + (('sharpen_output', sharpened),)
+            if sharpened:
+                options += (('sharpen_strength', self.sharpen_strength),)
+            self.fusion_details[method] = replace(details, options=options)
+        return result, bounds
 
     def run(self):
         with log_operation("comparison_preview", methods=self.methods, parameters=self.per_method,

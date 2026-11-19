@@ -246,6 +246,81 @@ def workspace_fusions(window):
             yield record
 
 
+def _fusion_tooltip_lines(record):
+    from core.algorithms import get_fusion
+
+    context = record.context
+    details = record.fusion_details or getattr(context, 'fusion_details', None)
+    lines = []
+    if details is not None:
+        width, height = details.input_size
+        if details.tile_grid is None:
+            lines.append(trans.t('output_fusion_whole').format(width=width, height=height))
+        else:
+            block, overlap, count = details.tile_grid
+            lines.append(trans.t('output_fusion_tiled').format(width=width, height=height))
+            lines.append(trans.t('output_fusion_grid').format(block=block, overlap=overlap, count=count))
+        method = details.algorithm
+        params, options = dict(details.parameters), dict(details.options)
+    else:
+        # Older records may retain parameters, but a requested tile setting
+        # does not tell us which path or tile geometry the render used.
+        method = getattr(context, 'algorithm', 'unknown')
+        options = getattr(context, 'parameters', None) or {}
+        params = options.get('fusion_parameters', options) or {}
+    try:
+        spec = get_fusion(method)
+    except ValueError:
+        spec = None
+    if spec is not None and record.kind == 'fusion':
+        lines.insert(0, trans.t('info_fusion_method').format(trans.t(spec.label_key)))
+    parameters = []
+    for parameter in spec.parameters if spec is not None else ():
+        if parameter.key not in params:
+            continue
+        value = params[parameter.key]
+        if parameter.choices:
+            if value not in parameter.choices:
+                continue
+            if parameter.choice_labels:
+                value = trans.t(parameter.choice_labels[parameter.choices.index(value)])
+        elif not isinstance(value, (int, float)):
+            continue
+        parameters.append(f'{trans.t(parameter.label_key).rstrip(":： ")} {value}')
+    if parameters:
+        lines.append(trans.t('output_fusion_parameters').format(' · '.join(parameters)))
+
+    flags = []
+    for key, label in (('exposure_match', 'output_fusion_exposure'),
+                       ('base_frame', 'output_fusion_base'),
+                       ('reverse_order', 'output_fusion_reverse'),
+                       ('sharpen_output', 'output_fusion_sharpen'),
+                       ('sensor_denoise', 'sensor_denoise'), ('defect_mask', 'sensor_mask')):
+        value = options.get(key)
+        text = None
+        if key == 'base_frame':
+            if value in ('first', 'last'):
+                text = trans.t(f'output_fusion_base_{value}')
+            else:
+                value = False if value == 'none' else options.get('base_correct')
+        elif key == 'reverse_order' and details is None and spec is not None and spec.sort_frames:
+            order = options.get('sort_mode')
+            value = order == 'desc' if order in ('asc', 'desc', 'off') else options.get('stack_reverse_order')
+        elif key == 'defect_mask' and details is None and 'defect_mask_path' in options:
+            value = bool(options['defect_mask_path'])
+        elif key == 'sharpen_output' and value is True and isinstance(options.get('sharpen_strength'), int):
+            text = f"{options['sharpen_strength']}%"
+        if text is None and isinstance(value, bool):
+            if key in ('sensor_denoise', 'defect_mask') and not value:
+                continue
+            text = trans.t('output_fusion_on' if value else 'output_fusion_off')
+        if text is not None:
+            flags.append(f'{trans.t(label)} {text}')
+    if flags:
+        lines.append(' · '.join(flags))
+    return lines
+
+
 @dataclass
 class OutputRecord:
     """Stable identity for one entry in the output history.
@@ -300,10 +375,11 @@ class OutputRecord:
     frame_icc_profiles: tuple = ()
     linear_dng_metadata: Any = None
     source_paths: tuple = ()
+    fusion_details: Any = None
 
     @classmethod
     def create(cls, image, label: str, *, context=None, kind: str = "fusion",
-               parent_id: Optional[str] = None, exported: bool = False):
+               parent_id: Optional[str] = None, exported: bool = False, fusion_details=None):
         return cls(output_id=uuid.uuid4().hex, image=image, label=label,
                    context=context, kind=kind, parent_id=parent_id,
                    exported=exported,
@@ -311,7 +387,8 @@ class OutputRecord:
                    frame_exif=tuple(getattr(context, 'frame_exif', ()) or ()),
                    frame_icc_profiles=tuple(getattr(context, 'frame_icc_profiles', ()) or ()),
                    linear_dng_metadata=deepcopy(getattr(context, 'linear_dng_metadata', None)),
-                   source_paths=tuple(getattr(context, 'source_paths', ()) or ()))
+                   source_paths=tuple(getattr(context, 'source_paths', ()) or ()),
+                   fusion_details=fusion_details)
 
     @property
     def retouchable(self) -> bool:
@@ -515,6 +592,8 @@ class OutputManager:
             h, w = record.image.shape[:2]
             lines.append(trans.t('status_res_fmt').format(w, h))
         lines.extend(line for line in record.tooltip_details if line not in lines)
+        if record.kind in ('fusion', 'compare'):
+            lines.extend(line for line in _fusion_tooltip_lines(record) if line not in lines)
         if record.export_path:
             lines.append(record.export_path)
         if not record.exported:
@@ -675,7 +754,7 @@ class OutputManager:
             self._remove_row(row)
 
     def update_output_list_for_fusion(self, context=None, linear_dng_metadata=None,
-                                      source_paths=()) -> None:
+                                      source_paths=(), fusion_details=None) -> None:
         window = self.window
 
         fusion_filename = window.export_manager.generate_default_filename()
@@ -685,7 +764,7 @@ class OutputManager:
         if window.fusion_result is not None:
             image = window.fusion_result
             record = OutputRecord.create(image, fusion_filename,
-                                         context=context, kind="fusion")
+                                         context=context, kind="fusion", fusion_details=fusion_details)
             # Freeze the load lineage with the result so later rotate/flip/
             # resize/exclusion keep it in this stack's watermark scope.
             record.stack_lineage = watermark.stack_lineage(window)

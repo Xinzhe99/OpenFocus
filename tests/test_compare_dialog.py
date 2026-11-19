@@ -674,6 +674,11 @@ def test_mixed_methods_share_registration_and_invalidate_on_order_change(dialog,
     dialog._adopt_output()
     assert len(records) == 1
     assert records[0].context.source_indices == (0, 2, 4)
+    details = records[0].context.fusion_details
+    assert details.algorithm == 'openfocus_a'
+    assert details.tile_grid is None
+    assert dict(details.parameters) == dialog._method_params['openfocus_a']
+    assert dict(details.options)['reverse_order'] is True
     np.testing.assert_array_equal(resolve_frame(records[0].context.frames[-1].image), anchor)
 
 

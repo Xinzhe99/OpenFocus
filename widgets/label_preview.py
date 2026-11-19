@@ -20,14 +20,14 @@ from PyQt6.QtWidgets import QLabel, QSizePolicy, QStyle
 
 from locales import trans
 from utils.validators import LabelAdder, build_label_text
-from utils.frame_pixels import preview_pixels as display_image, preview_label_config
+from utils.frame_pixels import BoundedPreviewWorker, preview_label_config
 
 # One display-depth copy of the current frame is enough for form edits. The
 # source stack already lives in the window; this cache must never grow with it.
 MAX_DEVELOPED_CACHE_BYTES = 512 * 1024 * 1024
 
 # Retain cancelled threads until Qt reports their completion.
-_LIVE_REGION_WORKERS = set()
+_LIVE_PREVIEW_WORKERS = set()
 
 
 class _DraftLabels:
@@ -49,6 +49,7 @@ class _DraftLabels:
 class LabelPreview(QLabel):
     """A scaled preview of a source frame carrying one label."""
     status_changed = pyqtSignal()
+    fit_changed = pyqtSignal()
     position_changed = pyqtSignal(float, float)
 
     def __init__(self, parent=None):
@@ -82,6 +83,9 @@ class LabelPreview(QLabel):
         self._source_shape = None
         self._source_key = None
         self._generation = 0
+        self._fit_worker = None
+        self._fit_loading = False
+        self._fit_error = ""
         self._labels = None
         self._target = "input"
         self._region_worker = None
@@ -97,12 +101,10 @@ class LabelPreview(QLabel):
     def set_preview(self, frame, config, index, *, linear_dng_metadata=None,
                     labels=None, target="input"):
         """Retain the source and build one bounded fit image per frame."""
-        from core.source_frames import ProcessedFrame, SourceFrame, _small
-        from utils.frame_pixels import run_pixel_worker
+        from core.source_frames import PREVIEW_EDGE, SourceFrame
 
         self._closed = False
         self._generation += 1
-        generation = self._generation
         self._cancel_native()
         shape = None if frame is None else tuple(frame.shape)
         dtype = None if frame is None else frame.dtype
@@ -117,32 +119,53 @@ class LabelPreview(QLabel):
         self._target = target
         self._adder.config.update_config(config)
         self._index = max(0, int(index))
+        self._linear_dng_metadata = linear_dng_metadata
         if not same:
             self._frame = None
-            self._source_key = None
+            self._source_key = (shape, dtype, linear_dng_metadata)
+            self._fit_error = ""
             self._rendered = QPixmap()
             self.release_developed_cache()
-            try:
-                if frame is None:
-                    source = None
-                elif isinstance(frame, (SourceFrame, ProcessedFrame)):
-                    source = display_image(frame, self)
-                else:
-                    source = run_pixel_worker(self, "OpenFocus", lambda: _small(frame))
-            except Exception as exc:
-                if generation == self._generation and not self._closed:
-                    self._status = "error"
-                    self._native_error = str(exc)
-                    self.clear()
-                    self.status_changed.emit()
-                return
-            if generation != self._generation or self._closed:
-                return
-            self._frame = source
-            self._source_key = (shape, dtype, linear_dng_metadata)
-        self._linear_dng_metadata = (None if getattr(frame, "preview_is_display", False)
-                                     else linear_dng_metadata)
+            if self._fit_worker is not None:
+                self._fit_worker.requestInterruption()
+            # Small in-memory images have no pixel I/O or unbounded resize.
+            pixels = frame
+            if isinstance(frame, SourceFrame):
+                pixels = frame.preview if frame.preview_is_available else None
+            if isinstance(pixels, np.ndarray) and pixels.size and max(pixels.shape[:2]) <= PREVIEW_EDGE:
+                self._frame = pixels
+            self._fit_loading = frame is not None and self._frame is None
+            if self._fit_loading:
+                self._start_fit()
         self.refresh()
+
+    def _start_fit(self):
+        from core.source_frames import PREVIEW_EDGE
+
+        if self._fit_worker is not None:
+            return
+        worker = BoundedPreviewWorker(self._source, self._linear_dng_metadata,
+                                      self._source_key, edge=PREVIEW_EDGE)
+        self._fit_worker = worker
+        _LIVE_PREVIEW_WORKERS.add(worker)
+        worker.finished.connect(lambda worker=worker: _LIVE_PREVIEW_WORKERS.discard(worker))
+        worker.finished.connect(self._fit_finished)
+        worker.finished.connect(worker.deleteLater)
+        self.destroyed.connect(worker.request_cancel)
+        worker.start()
+
+    def _fit_finished(self):
+        worker, self._fit_worker = self._fit_worker, None
+        if self._closed or not self._fit_loading:
+            return
+        if worker.key is not self._source_key:
+            self._start_fit()
+            return
+        self._fit_loading = False
+        self._fit_error = worker.error or ""
+        self._frame = worker.pixels
+        self.refresh()
+        self.fit_changed.emit()
 
     def release_developed_cache(self):
         """Drop the one display-depth frame cache immediately.
@@ -211,6 +234,10 @@ class LabelPreview(QLabel):
         self.cancel_drag()
         self._generation += 1
         self._cancel_native()
+        if self._fit_worker is not None:
+            self._fit_worker.requestInterruption()
+        self._fit_loading = False
+        self._fit_error = ""
         self._source = self._frame = None
         self._source_key = self._source_shape = None
         self._rendered = QPixmap()
@@ -219,7 +246,11 @@ class LabelPreview(QLabel):
     def _show_rendered(self):
         self._cancel_native()
         if self._rendered.isNull():
-            self.clear()
+            if self._fit_loading or self._fit_error:
+                self.setText(self._fit_error or trans.t('native_detail_loading'))
+            else:
+                self.clear()
+            self.status_changed.emit()
             return
         width, height = max(1, self.width() - 8), max(1, self.height() - 8)
         if self._zoom_mode != "actual" or self._source is None:
@@ -261,12 +292,14 @@ class LabelPreview(QLabel):
             self._native_loading = True
             key = (self._generation, self._native_batch)
             labels = self._labels if self._labels is not None else _DraftLabels(self._adder.config)
+            # The fit preview can already be developed. The native worker
+            # still uses the original frame's camera calibration.
             worker = SourceRegionWorker(self._source, key, labels=labels,
                                         target=self._target, index=self._index,
                                         metadata=self._linear_dng_metadata)
             self._region_worker = worker
-            _LIVE_REGION_WORKERS.add(worker)
-            worker.finished.connect(lambda worker=worker: _LIVE_REGION_WORKERS.discard(worker))
+            _LIVE_PREVIEW_WORKERS.add(worker)
+            worker.finished.connect(lambda worker=worker: _LIVE_PREVIEW_WORKERS.discard(worker))
             worker.finished.connect(worker.deleteLater)
             worker.ready.connect(self._native_ready)
             worker.failed.connect(self._native_failed)
@@ -444,7 +477,7 @@ class LabelPreview(QLabel):
 
     def draw_error(self) -> str:
         """Non-empty when the last draw attempt failed outright."""
-        return self._adder.last_error
+        return self._adder.last_error if not (self._fit_loading or self._fit_error) else ""
 
     def native_status(self):
         """Describe asynchronous native viewport work for the dialog."""
@@ -480,9 +513,17 @@ class LabelPreview(QLabel):
     def refresh(self) -> None:
         from utils.image_utils import to_display_uint8
 
+        if self._fit_loading or self._fit_error:
+            self._status = "error" if self._fit_error else ""
+            self.substituted_font = ""
+            self._show_rendered()
+            return
+
         self._native_error = ""
         canvas = self._canvas()
         metadata = self._linear_dng_metadata
+        if getattr(self._source, 'preview_is_display', False):
+            metadata = None
         if (metadata is not None and self._frame is not None
                 and canvas.dtype == np.uint16 and canvas.ndim == 3
                 and canvas.shape[2] == 3):

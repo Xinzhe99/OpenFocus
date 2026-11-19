@@ -41,8 +41,7 @@ from core.algorithms import (alignment_steps, depth_algorithms, get_fusion, regi
     registration_algorithms, resolve_fusion_parameters, desktop_registration_parameters)
 from ui.algorithm_parameters import AlgorithmParameterPanel
 from ui.algorithm_combo import apply_method_availability, selected_item_enabled
-from core.experimental import (alignment_is_experimental, experimental_enabled,
-                               fusion_is_experimental)
+from core.experimental import alignment_is_experimental, experimental_enabled
 from locales import trans
 from widgets.flow_layout import FlowPanel
 from widgets.stepper import StepperSpinBox
@@ -1266,9 +1265,7 @@ class DepthMapDialog(QDialog):
     def _available_depth_method_id(self):
         from ui.algorithm_combo import fusion_unavailable_reason
         for spec in depth_algorithms():
-            if (not fusion_unavailable_reason(spec, self._ai_fusion_available)
-                    and (experimental_enabled(self.window_main)
-                         or not fusion_is_experimental(spec.id))):
+            if not fusion_unavailable_reason(spec, self._ai_fusion_available):
                 return spec.id
         return depth_algorithms()[0].id
 
@@ -1563,9 +1560,8 @@ class DepthMapDialog(QDialog):
             if not selected_item_enabled(combo):
                 self.status_lbl.setText(combo.currentData(Qt.ItemDataRole.ToolTipRole) or '')
                 return
-        if not experimental_enabled(self.window_main) and (
-                fusion_is_experimental(self.method_combo.currentData()) or
-                (uses_alignment and alignment_is_experimental(self.align_combo.currentData()))):
+        if (uses_alignment and not experimental_enabled(self.window_main)
+                and alignment_is_experimental(self.align_combo.currentData())):
             self.status_lbl.setText(trans.t('experimental_locked_hint'))
             return
         for editor in self.registration_parameter_panel.editors.values():

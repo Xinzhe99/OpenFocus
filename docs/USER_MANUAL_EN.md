@@ -1018,9 +1018,11 @@ Batch processing also offers both controls. The CLI equivalents are
 
 ### Alignment only (no fusion)
 
-Select **Alignment only (no fusion)** to register the stack and add one stack
-entry to the output list. The frames stay in memory until you export them;
-alignment-only does not create an extra cache or write beside the source files.
+Select **Alignment only (no fusion)** to add a registered stack to the output
+list. OpenFocus reuses the stack from a completed render if the frames and
+registration settings match. The mode initially carries over the current
+exposure matching option. If you change it here, the mode remembers that
+choice. Frames are available for review and are written on export.
 Save the entry to create one folder inside your chosen destination. Original
 filename stems are retained, with the extension of the format you select.
 
@@ -1326,14 +1328,18 @@ The menu removal actions clear source labels, registered-stack labels, output
 labels, or all labels independently and can also be undone. Applying labels changes the session display;
 export an image to write the annotations to a file.
 
+Labels, Scale Bar and Watermark can update their Fit previews during fusion.
+At 100%, available original pixels appear immediately. If the original still
+needs to be decoded, the Fit image stays visible while the decode waits.
+
 ---
 
 ## 11. Settings and Configuration
 
-**Enable experimental features** in **Settings → Advanced Settings → General** is off by
-default and is remembered for this installation. With it off, desktop fusion
-offers OpenFocus A/B/C and No fusion; registration offers ECC and No alignment.
-Enable the option and click **OK** to unlock other fusion and registration methods. Availability depends on their required dependencies. Projects and templates preserve the installation preference. Restoring default settings turns it off.
+All fusion methods are selectable when their dependencies are installed.
+**Enable experimental features** in **Settings → Advanced Settings → General**
+unlocks experimental registration methods. The installation remembers this
+preference. Restoring default settings turns it off.
 
 **Settings → Theme → Follow system** updates the interface when the operating system changes between light and dark. **Settings → Font size** offers Small (9 pt), Medium (10 pt), and Large (13 pt). **Custom…** previews 8–18 pt alongside the default before applying the size.
 
@@ -1760,6 +1766,11 @@ each page's own valid RGB profile independently.
 
 ## 13. Exporting Results
 
+Hover over an output to see its processing details. New fusion results report
+whether their input was processed as a whole or in tiles, plus the actual block
+size, configured grid overlap and number of tile passes. The tooltip shows the
+method settings used for that result.
+
 ### Saving a Single Result
 
 1. Select the result you want to save in the output list
@@ -2179,7 +2190,6 @@ On macOS, use `Command` in place of `Ctrl` for these source list shortcuts.
 
 #### AI Unavailable
 
-- Enable experimental features in [Settings](#11-settings-and-configuration) and confirm the settings; AI methods are disabled in the desktop until opted in. This is separate from runtime and model availability.
 - Check that ONNX Runtime and the bundled model are installed.
 - Check via **Help → Report a Problem → Diagnostics → Environment Info**
 

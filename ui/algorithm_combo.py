@@ -11,8 +11,7 @@ from PyQt6.QtGui import QBrush, QFont, QPalette
 from PyQt6.QtWidgets import QComboBox, QToolTip
 
 from core.algorithms import fusion_algorithms
-from core.experimental import (alignment_is_experimental, experimental_enabled,
-                               fusion_is_experimental)
+from core.experimental import alignment_is_experimental, experimental_enabled
 from locales import trans
 
 CATEGORY_ORDER = ('ai', 'spatial', 'transform')
@@ -63,15 +62,6 @@ def fusion_unavailable_reason(spec, ai_available):
         return trans.t("env_dtcwt_unavailable")
     return ""
 
-def experimental_method_label(spec, *, alignment=False):
-    label = trans.t(spec.label_key)
-    is_experimental = (alignment_is_experimental(spec.id) if alignment
-                       else fusion_is_experimental(spec.id))
-    if is_experimental:
-        label = f"{label} ({trans.t('experimental_label')})"
-    return label
-
-
 def apply_method_availability(combo, specs, window, *, alignment=False,
                               ai_available=None, recommended=None):
     """Update labels and disabled explanations without changing the selection."""
@@ -81,16 +71,18 @@ def apply_method_availability(combo, specs, window, *, alignment=False,
         index = combo.findData(spec.id)
         if index < 0:
             continue
-        experimental = (alignment_is_experimental(spec.id) if alignment
-                        else fusion_is_experimental(spec.id))
-        label = experimental_method_label(spec, alignment=alignment)
+        experimental = alignment and alignment_is_experimental(spec.id)
+        label = trans.t(spec.label_key)
+        if experimental:
+            label += f" ({trans.t('experimental_label')})"
         if spec.id == recommended:
             label += f" ({trans.t('recommended')})"
         combo.setItemText(index, label)
-        dependency = '' if alignment else fusion_unavailable_reason(spec, ai_available)
-        locked = trans.t('experimental_locked_hint') if experimental and not enabled else ''
-        combo.setItemData(index, locked or None, _LOCKED_HINT_ROLE)
-        reason = '\n\n'.join(text for text in (locked, dependency) if text)
+        if alignment:
+            reason = trans.t('experimental_locked_hint') if experimental and not enabled else ''
+        else:
+            reason = fusion_unavailable_reason(spec, ai_available)
+        combo.setItemData(index, reason or None, _LOCKED_HINT_ROLE)
         item = combo.model().item(index)
         if item is not None:
             item.setEnabled(not reason)
@@ -145,7 +137,7 @@ def fill_fusion_combo(combo, specs=None, *, none_label=None, none_hint=None):
             if spec.category != last:
                 _add_header(combo, spec.category)
                 last = spec.category
-            combo.addItem(experimental_method_label(spec), spec.id)
+            combo.addItem(trans.t(spec.label_key), spec.id)
             if spec.hint_key:
                 combo.setItemData(combo.count() - 1, trans.t(spec.hint_key),
                                   Qt.ItemDataRole.ToolTipRole)

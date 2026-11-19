@@ -17,6 +17,7 @@ from utils.sorting import natural_sort_key
 from core.algorithms import get_fusion, resolve_fusion_parameters, resolve_runner
 from core.frame_storage import (capture_scratch, create_frame, is_mapped_frame,
                                 run_with_scratch, store_frame)
+from core.render_context import FusionDetails
 
 
 # Tile 参数已改为 MultiFocusFusion 实例属性，见类构造函数中的默认值和访问器方法。
@@ -293,6 +294,7 @@ class MultiFocusFusion:
         self._ensure_supported_algorithm(algorithm)
         self.algorithm = algorithm
         self.fusion_parameters = resolve_fusion_parameters(algorithm, fusion_parameters)
+        self.fusion_details = None
         self.use_gpu = bool(use_gpu)
         self._actual_device = None
         self._fallback_reasons = ()
@@ -653,6 +655,8 @@ class MultiFocusFusion:
         from core.frame_storage import scratch_directory
         from utils.logging_setup import log_operation, log_action, image_result_details
         from contextlib import nullcontext
+
+        self.fusion_details = None
         inference = nullcontext()
         if self.descriptor.neural:
             from fusion_methods import neural_runtime
@@ -687,6 +691,7 @@ class MultiFocusFusion:
                 raise RegistrationCancelled()
 
         check_cancel()
+        self._tile_grid = None
         supplied = kwargs.pop('parameters', None)
         values = dict(self.fusion_parameters)
         if supplied is not None:
@@ -700,7 +705,8 @@ class MultiFocusFusion:
         unknown = set(kwargs) - runtime_keys
         if unknown:
             raise ValueError(f'Unknown fusion parameters: {sorted(unknown)}')
-        kwargs.update(resolve_fusion_parameters(self.algorithm, values))
+        parameters = resolve_fusion_parameters(self.algorithm, values)
+        kwargs.update(parameters)
         if img_resize is not None and self.descriptor.runner == get_fusion('dct').runner:
             raise ValueError("DCT fusion does not support dynamic resizing. Resize images before processing.")
         native_codes = self.algorithm in ('openfocus_a', 'openfocus_b', 'openfocus_c')
@@ -1052,7 +1058,13 @@ class MultiFocusFusion:
                     frame = frame.source
                 if isinstance(frame, SourceFrame):
                     frame.validate_source()
-        return result if is_mapped_frame(result) else store_frame(result)
+        result = result if is_mapped_frame(result) else store_frame(result)
+        options = [('exposure_match', self.exposure_match), ('base_frame', self.base_frame)]
+        if spec.sort_frames:
+            options.append(('reverse_order', self.sort_mode == 'desc'))
+        self.fusion_details = FusionDetails(self.algorithm, (width, height),
+                                           tuple(parameters.items()), tuple(options), self._tile_grid)
+        return result
     
     def _fuse_guided_filter(self, 
                             input_source: Union[str, List[np.ndarray]], 
@@ -1236,6 +1248,7 @@ class MultiFocusFusion:
             exposure_gains=kwargs.get('exposure_gains'),
             source_all_uint8=kwargs.get('source_all_uint8'),
             focus_callback=kwargs.get('focus_callback'),
+            tile_grid_callback=self._record_tile_grid,
         )
 
     
@@ -1429,6 +1442,11 @@ class MultiFocusFusion:
                 check_cancel()
                 del image
         return resized
+
+    def _record_tile_grid(self, block, overlap, count):
+        # A single tile covers the full input, even if a tiled runner was used.
+        if count > 1:
+            self._tile_grid = (block, overlap, count)
 
     def _fuse_tiled(self,
                     input_source: Union[List[np.ndarray], str],
@@ -1629,6 +1647,8 @@ class MultiFocusFusion:
         weight[...] = 0
 
         print(f"Tiled fusion: {optimal_threads} parallel workers (memory-optimized)")
+        if block_size < max(h, w):
+            self._record_tile_grid(block_size, overlap, len(tile_coords))
         log_debug('fusion_tiling', method=algorithm, frames=num_images, shape=(h, w, channels),
                   block_requested=self.tile_block_size, block=block_size,
                   overlap_requested=self.tile_overlap, overlap=overlap,
@@ -1871,6 +1891,7 @@ class MultiFocusFusion:
         block_size, _, tile_coords = _ai_effective_tiling(
             count, block_size, h, w, overlap, self.ai_batch_size)
         overlap = max(0, min(int(overlap), block_size // 2))
+        self._record_tile_grid(block_size, overlap, len(tile_coords))
         log_debug('fusion_tiling', method=self.algorithm, frames=count, shape=(h, w, channels),
                   block_requested=self.tile_block_size, block_after_image_clamp=clamped_block,
                   block_after_memory_plan=planned_block, block=block_size,

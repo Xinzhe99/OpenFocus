@@ -198,8 +198,7 @@ from utils.settings_store import (
 )
 from core.frame_storage import (configure_storage_directory, restore_storage_directory,
                                 set_storage_fallback_notifier)
-from core.experimental import (alignment_is_experimental, experimental_enabled,
-                               fusion_is_experimental)
+from core.experimental import alignment_is_experimental, experimental_enabled
 from ui.image_panels import create_source_panel, create_result_panel
 from ui.menus import setup_menus
 from ui.right_panel import bind_right_panel, create_right_panel, set_panel_label
@@ -729,9 +728,8 @@ class OpenFocus(QMainWindow):
         for combo, attr in ((self.combo_fusion, "_preferred_fusion_method"),
                             (self.combo_align, "_preferred_alignment_method")):
             saved = getattr(self, attr, None)
-            locked = (not experimental_enabled(self) and
-                      (fusion_is_experimental(saved) if combo is self.combo_fusion
-                       else alignment_is_experimental(saved)))
+            locked = (combo is self.combo_align and not experimental_enabled(self)
+                      and alignment_is_experimental(saved))
             if saved is not None and not locked:
                 index = combo.findData(saved)
                 if index >= 0:
@@ -1557,24 +1555,6 @@ class OpenFocus(QMainWindow):
 
     def refresh_method_availability(self) -> None:
         """Keep unavailable entries disabled without changing the request."""
-        from ui.algorithm_combo import fusion_unavailable_reason
-
-        available = getattr(self, "_stackmff_available", None)
-        for spec in fusion_algorithms():
-            reason = fusion_unavailable_reason(spec, available)
-            index = self.combo_fusion.findData(spec.id)
-            if index < 0:
-                continue
-            item = self.combo_fusion.model().item(index)
-            if item is not None:
-                item.setEnabled(not reason)
-            # Keep the method's own hint when it is usable; replace it with the
-            # dependency message only while the model cannot run.
-            tooltip = (trans.t(spec.hint_key) if spec.hint_key else "")
-            if reason:
-                tooltip = reason
-            self.combo_fusion.setItemData(
-                index, tooltip, Qt.ItemDataRole.ToolTipRole)
         from ui.right_panel import refresh_experimental_selectors
         refresh_experimental_selectors(self)
 
@@ -2042,7 +2022,9 @@ class OpenFocus(QMainWindow):
         if key in memory:
             return bool(memory[key])
         if method == "none":
-            return False
+            # With no separate choice yet, carry the current reference into
+            # Alignment only so switching off fusion can reuse registered frames.
+            return option == "exposure_match" and self.exposure_match
         spec = get_fusion(method)
         return (spec.default_exposure_match if option == "exposure_match"
                 else spec.default_base_correct)
@@ -3068,9 +3050,6 @@ class OpenFocus(QMainWindow):
         return "none" if code == "none" else get_registration(code).id
 
     def set_fusion_method(self, code: str) -> None:
-        if (hasattr(self, 'experimental_features') and not experimental_enabled(self)
-                and fusion_is_experimental(code) and not getattr(self, '_restore_depth', 0)):
-            raise ValueError(trans.t('experimental_locked_hint'))
         if code != "none":
             get_fusion(code)
         index = self.combo_fusion.findData(code)
@@ -3174,11 +3153,10 @@ class OpenFocus(QMainWindow):
         specs = () if spec is None else spec.parameters
         self.fusion_parameter_panel.set_parameters(specs, self.fusion_parameters_for(method))
         self._sync_brightness_checkboxes(method)
-        # These options are consumed only by the fusion step.
-        no_fusion = spec is None
+        # Exposure also selects the registration reference.
         self._set_fusion_option_available(
-            getattr(self, "chk_exposure_match", None), not no_fusion,
-            "radio_no_fusion_hint" if no_fusion else "chk_exposure_match_hint")
+            getattr(self, "chk_exposure_match", None), True, "chk_exposure_match_hint")
+        no_fusion = spec is None
         self._set_fusion_option_available(
             getattr(self, "chk_base_correct", None), not no_fusion,
             "radio_no_fusion_hint" if no_fusion else "chk_base_correct_hint")
