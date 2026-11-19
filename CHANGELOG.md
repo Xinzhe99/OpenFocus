@@ -92,8 +92,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   when the browser has no active session, or when the user needs to try again.
 - Require an account to enter the desktop application; a saved sign-in can be
   used offline. Signing out returns to the sign-in screen.
-- Reuse one account device slot across installed, portable and recognized preview
-  builds on the same Windows PC for the same user. Each profile keeps its own sign-in.
+- Reuse one account device slot across installed, portable, and source builds
+  for the same Windows user, even with different settings directories.
 - Group advanced desktop settings into General, Fusion, Registration, and Startup and Updates.
   Keep the tile size and overlap visible and write detailed session logs by default.
   Automatic error reports and usage statistics start checked and preserve saved opt-outs.
