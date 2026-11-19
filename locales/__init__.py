@@ -85,6 +85,24 @@ class TranslationManager(QObject):
                     ('label_of_radius', 'label_of_smoothing', 'label_of_feather',
                      'label_of_smoothing_a_hint'), values)))
 
+        whole_level_hints = {
+            'en': 'The field shows the nearest whole level. The saved value {value} is kept until you edit this field.',
+            'zh': '此处显示最接近的整数级别。编辑此项前，保留已保存的值 {value}。',
+            'ja': '最も近い整数のレベルを表示しています。この欄を編集するまで、保存値 {value} を保持します。',
+            'es': 'Se muestra el nivel entero más cercano. Se conserva el valor guardado {value} hasta que edite este campo.',
+            'de': 'Das Feld zeigt die nächstgelegene ganze Stufe. Der gespeicherte Wert {value} bleibt erhalten, bis Sie dieses Feld bearbeiten.',
+            'fr': 'Ce champ affiche le niveau entier le plus proche. La valeur enregistrée {value} est conservée jusqu’à la modification de ce champ.',
+            'ru': 'В поле показан ближайший целый уровень. Сохранённое значение {value} сохраняется до редактирования этого поля.',
+            'ko': '가장 가까운 정수 단계로 표시합니다. 이 값을 편집할 때까지 저장된 값 {value}을(를) 유지합니다.',
+            'pt': 'O campo mostra o nível inteiro mais próximo. O valor guardado {value} é mantido até editar este campo.',
+            'it': 'Il campo mostra il livello intero più vicino. Il valore salvato {value} viene mantenuto finché non si modifica questo campo.',
+            'nl': 'Dit veld toont het dichtstbijzijnde gehele niveau. De opgeslagen waarde {value} blijft behouden totdat u dit veld bewerkt.',
+            'pl': 'Pole pokazuje najbliższy poziom całkowity. Zapisana wartość {value} zostanie zachowana do czasu edycji tego pola.',
+        }
+        for code, text in whole_level_hints.items():
+            if code in self.translations:
+                self.translations[code]['whole_level_saved_value'] = text
+
         parameter_help_keys = (
             'parameter_help_tiles', 'parameter_help_registration_width',
             'parameter_help_ai_mode', 'parameter_help_kernel', 'parameter_help_radius',

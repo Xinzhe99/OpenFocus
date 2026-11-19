@@ -980,9 +980,12 @@ Each neural tile uses every frame. Source frames and alignment scratch can be di
 - **OpenFocus B**: blends neighboring frames guided by a smoothed depth map.
 - **OpenFocus C**: combines source detail across a multilevel weighted pyramid.
 - **Parameters**: A and B expose Radius and Smoothing; B also exposes Feather.
-  The defaults are R8/S4 for A, R8/S4/F3 for B and S4 for C. A's Smoothing
-  control currently has no effect, unlike the reference method. B smooths its
-  depth map; C smooths its multilevel fusion weights. C has no Radius control.
+  The defaults are R8/S4 for A, R8/S4/F3 for B and S4 for C. A currently ignores
+  Smoothing. B smooths its depth map and C smooths its multilevel fusion weights.
+  C has no Radius control.
+- **Smoothing levels**: The desktop controls move one whole level per click. If
+  a saved level is fractional, the field shows the nearest integer and its tooltip
+  gives the exact value. Rendering and saving use that value until you edit Smoothing.
 
 ECC remains the default registration method for A/B/C even when experimental
 features are enabled. OpenFocus alignment is used when explicitly selected;
