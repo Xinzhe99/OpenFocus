@@ -79,12 +79,21 @@ def _source_region(image, x, y, width, height):
         return np.empty((0, 0) + image.shape[2:], dtype=image.dtype)
     preview = display_image(image)
     sx, sy = preview.shape[1] / image.shape[1], preview.shape[0] / image.shape[0]
-    x0, y0 = int(x * sx), int(y * sy)
-    x1 = max(x0 + 1, int(np.ceil((x + width) * sx)))
-    y1 = max(y0 + 1, int(np.ceil((y + height) * sy)))
+    pw, ph = max(1, round(width * sx)), max(1, round(height * sy))
+    if sx == sy == 1:
+        crop = preview[y:y + height, x:x + width]
+    else:
+        # Map reduced pixel centres to the exact captured ROI. Rounding out
+        # its edges and stretching the slice shifts small, off-grid regions.
+        dx, dy = width * sx / pw, height * sy / ph
+        inverse = np.array([[dx, 0., x * sx + (dx - 1.) / 2.],
+                            [0., dy, y * sy + (dy - 1.) / 2.]])
+        crop = cv2.warpAffine(preview, inverse, (pw, ph),
+                              flags=cv2.INTER_LINEAR | cv2.WARP_INVERSE_MAP,
+                              borderMode=cv2.BORDER_REPLICATE)
     values = {item.name: getattr(image, item.name) for item in fields(LazySourceFrame)}
     values.update(shape=(height, width) + image.shape[2:],
-                  preview=store_preview(preview[y0:y1, x0:x1]), source=image, region=(x, y, width, height))
+                  preview=store_preview(crop), source=image, region=(x, y, width, height))
     return _SourceRegion(**values)
 
 
