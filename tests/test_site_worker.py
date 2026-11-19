@@ -40,7 +40,7 @@ def test_built_installer_runs_shell_syntax_check_after_crlf_checkout(tmp_path, m
     (site / "install.sh").write_bytes(installer.replace("\n", "\r\n").encode("utf-8"))
     for name in ("OpenFocus.png", "ui.png", "benchmark.png",
                  "readme/method-comparison_poster.jpg", "readme/retouch_poster.jpg",
-                 "readme/wechat-group.png"):
+                 "readme/wechat-group.png", "readme/wechat-official-account.jpg"):
         target = root / "assets" / name
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(original_root / "assets" / name, target)
