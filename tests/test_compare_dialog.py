@@ -52,8 +52,7 @@ def dialog(qapp):
     yield instance
     if not sip.isdeleted(instance):
         instance.reject()
-    _until(qapp, lambda: instance._worker is None and not instance._source_preview_workers
-           and not instance._display_workers)
+    _until(qapp, lambda: not instance._has_workers())
     QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
     window.close()
     window.deleteLater()
@@ -61,7 +60,7 @@ def dialog(qapp):
 
 
 def _finished(dialog):
-    return (dialog._worker is None and not dialog._display_workers
+    return (dialog._worker is None and not dialog._source_preview_workers and not dialog._display_workers
             and not dialog._preview_timer.isActive())
 
 def test_parameter_cards_stack_headers_and_wrap(dialog, qapp):
@@ -817,7 +816,7 @@ def test_registered_parameters_cross_dialogs_and_adoption(qapp, extra_algorithms
         window.close()
 
 
-def test_source_preview_reframe_rejects_old_generation_and_identity(dialog, tmp_path, monkeypatch):
+def test_source_preview_reframe_rejects_old_generation_and_identity(dialog, qapp, tmp_path, monkeypatch):
     import cv2
     import numpy as np
     from PyQt6.QtCore import QObject, pyqtSignal
@@ -878,6 +877,7 @@ def test_source_preview_reframe_rejects_old_generation_and_identity(dialog, tmp_
     finally:
         for worker in tuple(dialog._source_preview_workers):
             worker.finished.emit()
+    _until(qapp, lambda: not dialog._has_workers())
     QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
     assert sip.isdeleted(dialog)
 
@@ -938,3 +938,134 @@ def test_full_candidate_display_is_bounded_and_deselection_releases_it(dialog, q
     assert 'openfocus_a' not in dialog._results
     assert 'openfocus_a' not in dialog._full_results
     assert canvas._pixmap is None
+
+
+def test_reference_zoom_reads_oriented_page_and_aligned_crop(dialog, qapp, tmp_path, monkeypatch):
+    import numpy as np
+    import tifffile
+    from PyQt6.QtCore import QThread
+    from core.source_frames import SourceFrame, crop_frame, scan_source
+
+    # Deliberately unrelated flat reduced IFD. Every native pixel is identifiable.
+    path = tmp_path / 'reference.tif'
+    y, x = np.indices((720, 960), dtype=np.uint16)
+    rgb = np.stack((x % 251, y % 239, (x + y) % 233), axis=-1).astype(np.uint8)
+    with tifffile.TiffWriter(path) as writer:
+        writer.write(rgb, photometric='rgb', extratags=[(274, 'H', 1, 6, False)])
+        writer.write(np.zeros((180, 240, 3), np.uint8), photometric='rgb', subfiletype=1)
+    source, = scan_source(str(path))
+    aligned = crop_frame(source, 83, 121, 540, 740)
+    expected = np.rot90(rgb, k=3)[121:861, 83:623]
+    calls = []
+    original = SourceFrame.full_resolution
+
+    def resolve(frame, **kwargs):
+        calls.append((frame.page, QThread.currentThread() is qapp.thread()))
+        return original(frame, **kwargs)
+
+    monkeypatch.setattr(SourceFrame, 'full_resolution', resolve)
+    dialog._auto_enabled = False
+    dialog._frames = [aligned, source]
+    canvas = dialog.ref_canvas
+    monkeypatch.setattr(canvas, 'devicePixelRatioF', lambda: 1.)
+    canvas.setFixedSize(188, 144)
+    dialog._show_frame(0)
+    _until(qapp, lambda: not dialog._source_preview_workers)
+    assert canvas._source_size == (540, 740)
+    assert canvas._pixmap.toImage().pixelColor(10, 10).getRgb()[:3] == (0, 0, 0)
+    assert calls == [] and dialog._reference_worker is None
+
+    anchor = QPointF(canvas.width() / 2, canvas.height() / 2)
+    anchor_image = canvas.widget_to_image(anchor)
+    dialog.actual_button.click()
+    assert canvas._zoom * canvas.devicePixelRatioF() == pytest.approx(1.0)
+    _until(qapp, lambda: bool(canvas._tiles) and dialog._viewport_request is None)
+    assert calls == [(0, False)]
+    assert (canvas.widget_to_image(anchor) - anchor_image).manhattanLength() <= 1.0
+    bounds, pixmap = canvas._tiles[0]
+    assert pixmap.width() == bounds.width() and pixmap.height() == bounds.height()
+    pixels = pixmap.toImage()
+    for x, y in ((0, 0), (13, 19), (pixels.width() - 1, pixels.height() - 1)):
+        assert pixels.pixelColor(x, y).getRgb()[:3] == tuple(expected[int(bounds.y()) + y, int(bounds.x()) + x])
+    painted = canvas.grab().toImage()
+    sample = QPointF(17.5, 42.5)
+    original_point = canvas.widget_to_image(sample)
+    color = painted.pixelColor(int(sample.x() * painted.devicePixelRatio()),
+                               int(sample.y() * painted.devicePixelRatio()))
+    assert color.getRgb()[:3] == tuple(expected[int(original_point.y()), int(original_point.x())])
+
+    canvas.set_region_centre(anchor_image)
+    region = canvas.region()
+    assert region[0] + region[2] // 2 == pytest.approx(anchor_image.x(), abs=1)
+    dialog._show_frame(1)
+    assert not canvas._tiles
+    _until(qapp, lambda: dialog._reference_worker is None)
+    assert calls == [(0, False)]
+
+
+@pytest.mark.parametrize('roi_only', [False, True])
+def test_candidate_detail_pixels_match_fusion_at_nonzero_origin(dialog, qapp, roi_only):
+    dialog.mode_combo.setCurrentIndex(dialog.mode_combo.findData(roi_only))
+    dialog.view_combo.setCurrentIndex(dialog.view_combo.findData('detail'))
+    dialog.ref_canvas.set_magnification(8)
+    dialog.ref_canvas.set_region_centre(QPointF(410, 99))
+    dialog._preview_timer.stop()
+    dialog._start_request()
+    _until(qapp, lambda: _finished(dialog) and 'openfocus_a' in dialog._results)
+    entry = dialog._results['openfocus_a']
+    bx, by, _, _ = entry['bounds']
+    canvas = dialog._canvases['openfocus_a']
+    x, y, width, height = dialog.ref_canvas.region()
+    assert x > 0 and y > 0
+    assert canvas._bounds == (x, y, width, height)
+    assert canvas._pixmap.width() == width and canvas._pixmap.height() == height
+    image = canvas._pixmap.toImage()
+    for dx, dy in ((0, 0), (width // 2, height // 2), (width - 1, height - 1)):
+        assert image.pixelColor(dx, dy).getRgb()[:3] == tuple(entry['image'][y - by + dy, x - bx + dx, ::-1])
+
+
+def test_native_frame_switch_and_shutdown_wait_for_retirement(dialog, tmp_path, monkeypatch):
+    import cv2
+    import numpy as np
+    from PyQt6.QtCore import QObject, pyqtSignal
+    from core.source_frames import scan_source
+    from dialogs import compare
+
+    class HeldRegion(QObject):
+        ready = pyqtSignal(object, object, object, object)
+        failed = pyqtSignal(object, str)
+        finished = pyqtSignal()
+
+        def __init__(self, frame, key, *, metadata=None):
+            super().__init__()
+            self.frame, self.key, self.cancelled = frame, key, False
+
+        def start(self): pass
+        def request_cancel(self): self.cancelled = True
+        def submit(self, request): self.request = request
+
+    path = str(tmp_path / 'source.png')
+    pixels = np.full((80, 120, 3), 111, np.uint8)
+    assert cv2.imwrite(path, pixels)
+    first, second = (scan_source(path)[0] for _ in range(2))
+    monkeypatch.setattr(compare, 'SourceRegionWorker', HeldRegion)
+    dialog._auto_enabled = False
+    dialog._frames = [first, second]
+    dialog._show_frame(0)
+    dialog.actual_button.click()
+    old = dialog._reference_worker
+    assert old.frame is first
+    dialog._show_frame(1)
+    assert old.cancelled and dialog._reference_worker is old
+    old.ready.emit(old.key, old.request, pixels, old.request[2])
+    assert not dialog.ref_canvas._tiles
+    old.finished.emit()
+    current = dialog._reference_worker
+    assert current.frame is second
+    assert dialog.shutdown_running()
+    assert current.cancelled and not dialog.isEnabled()
+    current.ready.emit(current.key, current.request, pixels, current.request[2])
+    assert not dialog.ref_canvas._tiles
+    current.finished.emit()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    assert sip.isdeleted(dialog)

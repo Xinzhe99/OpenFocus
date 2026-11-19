@@ -1,4 +1,5 @@
 """Source selection and exact result crops for the comparison workbench."""
+import math
 
 from PyQt6.QtCore import QPointF, QRect, QRectF, Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QPainter, QPen, QTransform
@@ -25,15 +26,16 @@ class _Canvas(QWidget):
         painter.drawRect(self.rect().adjusted(0, 0, -1, -1))
         return theme
 
-    def _label(self, painter, theme):
+    def _label(self, painter, theme, title=None):
+        title = title or self._title
         metrics = painter.fontMetrics()
         width = min(self.width() - 12,
-                    metrics.horizontalAdvance(self._title) + 16)
+                    metrics.horizontalAdvance(title) + 16)
         bar = QRect(self.width() - width - 6, 6, width,
                     max(22, metrics.height() + 4))
         painter.fillRect(bar, QColor(theme["accent"]))
         painter.setPen(QColor(theme["textOnAccent"]))
-        title = metrics.elidedText(self._title, Qt.TextElideMode.ElideRight,
+        title = metrics.elidedText(title, Qt.TextElideMode.ElideRight,
                                    max(0, width - 16))
         painter.drawText(bar, Qt.AlignmentFlag.AlignCenter, title)
 
@@ -48,16 +50,22 @@ class SourceCanvas(_Canvas):
     """A fitted source image with a persistent, integer inspection square."""
 
     regionChanged = pyqtSignal(object)
+    viewportChanged = pyqtSignal()
 
     def __init__(self, title: str, parent=None):
         super().__init__(title, parent)
         self._pixmap = None
+        self._tiles = []
+        self._preview_only = False
+        self._native_status = ''
+        self._camera_size = None
         self._source_size = (0, 0)
         self._region = None
         self._region_centre = None
         self._magnification = 1.0
         self._detail_size = DEFAULT_DETAIL_SIZE
         self._zoom = 1.0
+        self._actual = False
         self._pan = QPointF()
         self._fit_pending = False
         self._drag_region = False
@@ -68,7 +76,7 @@ class SourceCanvas(_Canvas):
         self.setCursor(Qt.CursorShape.CrossCursor)
 
     def has_image(self) -> bool:
-        return self._pixmap is not None and not self._pixmap.isNull()
+        return min(self._source_size) > 0
 
     def set_region_enabled(self, enabled: bool) -> None:
         """Show and accept the inspection square when enabled."""
@@ -85,22 +93,64 @@ class SourceCanvas(_Canvas):
     def region_enabled(self) -> bool:
         return self._region_enabled
 
-    def set_pixmap(self, pixmap, reset=False, *, source_size=None):
-        old_size = self._source_size if self.has_image() else None
+    def set_pixmap(self, pixmap, reset=False, *, source_size=None, preview_only=False):
         self._pixmap = pixmap
+        self._tiles.clear()
+        self._preview_only = preview_only
         self._source_size = (tuple(source_size) if source_size is not None else
                              (pixmap.width(), pixmap.height()) if pixmap is not None else (0, 0))
         if not self.has_image():
-            self._fit_pending = False
+            self._native_status = ''
             self._drag_region = False
             self._pan_from = None
             self._set_region(None)
-        elif reset or old_size != self._source_size:
+        elif reset or self._camera_size != self._source_size:
+            self._camera_size = self._source_size
             self._fit_pending = True
             self.set_region_centre(QPointF(self._source_size[0] / 2,
                                           self._source_size[1] / 2))
             if self.isVisible():
                 self.fit()
+        elif self._region is None:
+            self.set_region_centre(QPointF(self._source_size[0] / 2, self._source_size[1] / 2))
+        self.update()
+        self.viewportChanged.emit()
+
+    def viewport_tiles(self, max_side):
+        """Return visible working-image rectangles and their physical display sizes."""
+        if not self.has_image() or not self.isVisible() or self._fit_pending:
+            return ()
+        width, height = self._source_size
+        density = min(1., self._zoom * self.devicePixelRatioF())
+        if self._pixmap is not None:
+            # Warped and resized previews can contain interpolated pixels even
+            # when their stored dimensions appear sufficient for a closer look.
+            inspecting = self._preview_only and (self._actual or self._zoom > self._fit_zoom())
+            if (not inspecting and self._pixmap.width() >= round(width * density)
+                    and self._pixmap.height() >= round(height * density)):
+                return ()
+        visible = self._image_transform().inverted()[0].mapRect(QRectF(self.rect()))
+        left, top = max(0, math.floor(visible.left())), max(0, math.floor(visible.top()))
+        right = min(width, math.ceil(visible.right()))
+        bottom = min(height, math.ceil(visible.bottom()))
+        step = max(1, math.floor((max_side - 2) / density))
+        tiles = []
+        for y in range(top, bottom, step):
+            for x in range(left, right, step):
+                w, h = min(step, right - x), min(step, bottom - y)
+                tiles.append(((x, y, w, h), (math.ceil(w * density), math.ceil(h * density))))
+        return tuple(tiles)
+
+    def set_native_status(self, text):
+        self._native_status = text
+        self.update()
+
+    def clear_tiles(self):
+        self._tiles.clear()
+        self.update()
+
+    def add_tile(self, rect, pixmap):
+        self._tiles.append((QRectF(*rect), pixmap))
         self.update()
 
     def region(self):
@@ -120,7 +170,7 @@ class SourceCanvas(_Canvas):
             return
         width, height = self._source_size
         side = min(width, height,
-                   max(1, round(self._detail_size / self._magnification)))
+                   max(1, round(self._detail_size * self.devicePixelRatioF() / self._magnification)))
         half = side / 2
         # Keep the subpixel centre independently of the integer crop. Reusing
         # the rounded crop's centre accumulates drift while a slider moves.
@@ -144,19 +194,56 @@ class SourceCanvas(_Canvas):
     def magnification(self) -> float:
         return self._magnification
 
+    def _fit_zoom(self):
+        return min(max(1, self.width() - 8) / self._source_size[0],
+                   max(1, self.height() - 8) / self._source_size[1],
+                   1.0 / self.devicePixelRatioF())
+
     def fit(self):
         if not self.has_image():
             return
-        self._zoom = min(max(1, self.width() - 8) / self._source_size[0],
-                         max(1, self.height() - 8) / self._source_size[1], 1.0)
+        self._actual = False
+        self._zoom = self._fit_zoom()
         self._pan = QPointF()
         self._fit_pending = not self.isVisible()
         self.update()
+        self.viewportChanged.emit()
+
+    def actual_size(self):
+        if self._region_centre is not None:
+            self._centre_at_actual_size(self._region_centre)
+
+    def _centre_at_actual_size(self, point):
+        dpr = self.devicePixelRatioF()
+        self._actual = True
+        self._zoom = 1.0 / dpr
+        self._fit_pending = False
+        centre = QPointF(self.width() / 2, self.height() / 2)
+        self._pan += centre - self.image_to_widget(point)
+        # Align source pixel edges with physical device pixel edges.
+        origin = self.image_to_widget(QPointF()) * dpr
+        self._pan += (QPointF(round(origin.x()), round(origin.y())) - origin) / dpr
+        self.update()
+        self.viewportChanged.emit()
+
+    def display_density_changed(self):
+        self.set_detail_size(self._detail_size)
+        if self._actual and self.has_image():
+            centre = self.widget_to_image(QPointF(self.width() / 2, self.height() / 2))
+            self._centre_at_actual_size(centre)
+        else:
+            self.viewportChanged.emit()
 
     def showEvent(self, event):  # noqa: N802
         super().showEvent(event)
         if self._fit_pending:
             self.fit()
+        else:
+            self.viewportChanged.emit()
+
+    def resizeEvent(self, event):  # noqa: N802
+        super().resizeEvent(event)
+        self.viewportChanged.emit()
 
     def _image_transform(self):
         if not self.has_image():
@@ -197,6 +284,7 @@ class SourceCanvas(_Canvas):
             self._pan += event.position() - self._pan_from
             self._pan_from = QPointF(event.position())
             self.update()
+            self.viewportChanged.emit()
             event.accept()
         else:
             super().mouseMoveEvent(event)
@@ -214,6 +302,7 @@ class SourceCanvas(_Canvas):
             self._pan_from = None
             self.setCursor(Qt.CursorShape.CrossCursor)
             self.update()
+            self.viewportChanged.emit()
             event.accept()
         else:
             super().mouseReleaseEvent(event)
@@ -223,20 +312,20 @@ class SourceCanvas(_Canvas):
         if not self.has_image() or not delta:
             event.ignore()
             return
-        if (not self._region_enabled
-                and not event.modifiers() & Qt.KeyboardModifier.ControlModifier):
-            # Magnification only resizes the inspection square.
-            event.ignore()
-            return
         if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            self._actual = False
             anchor = self.widget_to_image(event.position())
             factor = 1.15 if delta > 0 else 1 / 1.15
             self._zoom = max(0.000001, min(12.0, self._zoom * factor))
             self._pan += event.position() - self.image_to_widget(anchor)
             self.update()
-        else:
+            self.viewportChanged.emit()
+        elif self._region_enabled:
             factor = 1.2 if delta > 0 else 1 / 1.2
             self.set_magnification(self._magnification * factor)
+        else:
+            event.ignore()
+            return
         event.accept()
 
     def paintEvent(self, event):  # noqa: N802
@@ -244,18 +333,21 @@ class SourceCanvas(_Canvas):
         theme = self._background(painter)
         if self.has_image():
             painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform,
-                                  self._zoom < 1.0)
+                                  self._zoom * self.devicePixelRatioF() < 1.0)
             transform = self._image_transform()
-            source = QRectF(0, 0, self._pixmap.width(), self._pixmap.height())
-            target = QRectF(0, 0, *self._source_size)
-            painter.drawPixmap(transform.mapRect(target), self._pixmap, source)
+            if self._pixmap is not None:
+                source = QRectF(self._pixmap.rect())
+                painter.drawPixmap(transform.mapRect(QRectF(0, 0, *self._source_size)),
+                                   self._pixmap, source)
+            for bounds, pixmap in self._tiles:
+                painter.drawPixmap(transform.mapRect(bounds), pixmap, QRectF(pixmap.rect()))
             if self._region is not None and self._region_enabled:
                 painter.setPen(QPen(QColor(255, 255, 255), 2))
                 painter.setBrush(Qt.BrushStyle.NoBrush)
                 painter.drawRect(transform.mapRect(QRectF(*self._region)))
         else:
             self._empty(painter, theme)
-        self._label(painter, theme)
+        self._label(painter, theme, self._native_status or self._title)
         painter.end()
 
 
@@ -344,7 +436,8 @@ class DetailCanvas(_Canvas):
                             (y - by) * self._pixmap.height() / bh,
                             width * self._pixmap.width() / bw,
                             height * self._pixmap.height() / bh)
-            painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+            painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform,
+                                  source.width() > self.width() * self.devicePixelRatioF())
             painter.drawPixmap(QRectF(self.rect()), self._pixmap, source)
         else:
             self._empty(painter, theme, self._status)

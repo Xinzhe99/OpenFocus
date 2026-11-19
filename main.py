@@ -280,6 +280,50 @@ def _capture_watermark_snapshot(host) -> dict:
         return {}
 
 
+def _wipe_fit_pixels(frame):
+    """Read a ready preview or sample a resident image for the wipe canvas."""
+    from core.source_frames import PREVIEW_EDGE, ProcessedFrame, SourceFrame, display_image
+    if isinstance(frame, ProcessedFrame) or (isinstance(frame, SourceFrame) and frame.preview is None):
+        # No inexpensive base image. The visible region worker supplies it.
+        return None
+    image = display_image(frame)
+    height, width = image.shape[:2]
+    if max(width, height) <= PREVIEW_EDGE:
+        return image
+    scale = PREVIEW_EDGE / max(width, height)
+    w, h = max(1, round(width * scale)), max(1, round(height * scale))
+    # Sample pixel centres directly, including for rotated or mapped arrays.
+    # cv2.resize may first copy an entire non-contiguous resident frame.
+    import numpy as np
+    cols = ((np.arange(w) + .5) * (width / w)).astype(np.intp)
+    rows = ((np.arange(h) + .5) * (height / h)).astype(np.intp)
+    return image[rows[:, None], cols]
+
+
+def _wipe_fit_pixmap(host, frame, metadata, *, labels=None, target='input', index=0,
+                     scale_cfg=None, watermark_cfg=None, output_id=None, annotations_baked=False):
+    image = _wipe_fit_pixels(frame)
+    if image is None:
+        pixmap = QPixmap(1, 1)
+        pixmap.fill(Qt.GlobalColor.transparent)
+    else:
+        if metadata is not None and not getattr(frame, 'preview_is_display', False):
+            from utils.linear_dng import develop_linear
+            image = develop_linear(image, metadata)
+        if labels is not None or scale_cfg or watermark_cfg:
+            manager = labels if labels is not None else host.label_manager
+            image = manager.display_bgr_image(
+                target, image, index, output_id=output_id, source_shape=frame.shape,
+                scale_cfg=scale_cfg, watermark_cfg=watermark_cfg,
+                annotations_baked=annotations_baked)
+        pixmap = host._bgr_to_pixmap(image)
+    native = None
+    if image is None or image.shape[:2] != frame.shape[:2]:
+        native = (frame, dict(metadata=metadata, labels=labels, target=target, index=index,
+                              scale_cfg=scale_cfg, watermark_cfg=watermark_cfg))
+    return pixmap, native
+
+
 def _resolve_wipe_right_record(host, image, target):
     """Record owning the B-side pixels, including independent aligned history."""
     record = host.output_manager.record_for_image(image)
@@ -3237,11 +3281,13 @@ class OpenFocus(QMainWindow):
         cache = getattr(self, "_wipe_pix_cache", None)
         if cache is None:
             cache = self._wipe_pix_cache = {}
-        record = self.output_manager.record_for_image(image) if kind == "right" else None
+        record = None
         target = ("input" if kind == "left" else
                   "registered" if self._wipe_right_shows_registration() else "output")
         if kind == "right":
             record = _resolve_wipe_right_record(self, image, target)
+            if target == 'registered' and record is not None and record.kind == 'aligned':
+                index = next((i for i, item in enumerate(record.aligned_frames) if item is image), index)
         if target == "output":
             index = 0
         baked = record is not None and record.annotations_baked
@@ -3249,7 +3295,7 @@ class OpenFocus(QMainWindow):
         label_revision = int(getattr(self.label_manager, "revision", 0))
         from utils import scalebar, watermark
         wm_target = "source" if target == "input" else target
-        scale_cfg = scalebar.export_cfg(self, target=wm_target, record=record)
+        scale_cfg = None if baked else scalebar.export_cfg(self, target=wm_target, record=record)
         watermark_cfg = watermark.export_cfg(self, target=wm_target, record=record)
         # Include the scaled-bar/watermark configuration in the key: without it
         # a cached pixmap kept showing an annotation after it was removed (or
@@ -3258,13 +3304,6 @@ class OpenFocus(QMainWindow):
                      else tuple(sorted(scale_cfg.items())))
         watermark_key = (None if watermark_cfg is None
                          else tuple(sorted(watermark_cfg.items())))
-        entry = cache.get(kind)
-        if (entry is not None and entry[0] is image and entry[1] == index
-                and entry[2] == labeled and entry[3] == scale_key
-                and entry[4] == label_revision and entry[5] == watermark_key):
-            return entry[6]
-        from core.source_frames import display_image
-        display = display_image(image)
         if target == "registered":
             metadata = (record.linear_dng_metadata if record is not None and record.kind == "aligned"
                         else getattr(self, "linear_dng_metadata", None))
@@ -3275,22 +3314,26 @@ class OpenFocus(QMainWindow):
                 if preview_record is not None and preview_record.image is image:
                     metadata = preview_record.linear_dng_metadata
         else:
-            metadata = getattr(self, "linear_dng_metadata", None)
-        if metadata is not None and not getattr(image, 'preview_is_display', False):
-            from utils.linear_dng import develop_linear
-            display = develop_linear(display, metadata)
-        if labeled or scale_cfg or watermark_cfg:
-            display = self.label_manager.display_bgr_image(
-                target, display, index, scale_cfg=scale_cfg,
-                output_id=record.output_id if record else None,
-                watermark_cfg=watermark_cfg,
-                watermark_canvas=image.shape,
-                annotations_baked=bool(record is not None and record.annotations_baked))
-        pixmap = self._bgr_to_pixmap(display)
-        if len(cache) > 4:
-            cache.clear()
-        cache[kind] = (image, index, labeled, scale_key, label_revision,
-                       watermark_key, pixmap)
+            metadata = getattr(self, 'linear_dng_metadata', None)
+        metadata = metadata or getattr(image, 'linear_metadata', None)
+        output_id = getattr(record, 'output_id', None)
+        key = (target, index, baked, labeled, scale_key, label_revision, watermark_key, output_id, metadata)
+        entry = cache.get(kind)
+        if entry is not None and entry[0] is image and entry[1] == key:
+            return entry[2]
+        labels = None
+        if labeled:
+            overrides = ({'registered': getattr(record, 'aligned_frame_ids', ())}
+                         if target == 'registered' and record is not None and record.kind == 'aligned'
+                         else None)
+            labels = self.label_manager.snapshot(frame_ids_override=overrides)
+            if output_id is not None:
+                labels._snapshot_output_id = output_id
+        pixmap, native = _wipe_fit_pixmap(self, image, metadata, labels=labels, target=target,
+                                          index=index, scale_cfg=scale_cfg,
+                                          watermark_cfg=watermark_cfg, output_id=output_id,
+                                          annotations_baked=baked)
+        cache[kind] = (image, key, pixmap, native)
         return pixmap
 
     def set_wipe_mode(self, enabled: bool) -> None:
@@ -3301,6 +3344,7 @@ class OpenFocus(QMainWindow):
             self.view_stack.setCurrentIndex(0)
             self.wipe_widget.clear()
             self._wipe_source_cache = None
+            self._wipe_pix_cache = {}
             return
 
         if getattr(self, 'roi_mode_active', False):
@@ -3463,7 +3507,7 @@ class OpenFocus(QMainWindow):
             not self.fusion_results and bool(self.registration_results))
 
     def _update_wipe_images(self) -> None:
-        if not self.wipe_active:
+        if not self.wipe_active or getattr(self, '_shutting_down', False):
             return
 
         self._setup_wipe_left_slider()
@@ -3490,25 +3534,28 @@ class OpenFocus(QMainWindow):
                            and frame.offset_x == 0 and frame.offset_y == 0
                            and 0 <= source_index < len(self.raw_images)
                            and self.raw_images[source_index] is frame.image)
+        if not annotate_source:
+            getattr(self, '_wipe_pix_cache', {}).pop('left', None)
         cached = getattr(self, "_wipe_source_cache", None)
+        left_native = None
+        metadata = (getattr(record, 'linear_dng_metadata', None) or
+                    (getattr(frame.image, 'linear_metadata', None) if frame is not None else None))
         if frame is None:
             self._wipe_source_cache = None
             left_pix = None
         elif annotate_source:
             self._wipe_source_cache = None
             left_pix = self._wipe_pixmap("left", source_index, frame.image)
-        elif cached is not None and cached[0] is frame.image:
-            left_pix = cached[1]
+            entry = getattr(self, '_wipe_pix_cache', {}).get('left')
+            left_native = entry[3] if entry is not None else None
+        elif cached is not None and cached[0] is frame.image and cached[1] is metadata:
+            left_pix, left_native = cached[2:]
         else:
-            from core.source_frames import display_image
-            image = display_image(frame.image)
-            metadata = getattr(record, "linear_dng_metadata", None)
-            if metadata is not None and not getattr(frame.image, 'preview_is_display', False):
-                from utils.linear_dng import develop_linear
-                image = develop_linear(image, metadata)
-            left_pix = self._bgr_to_pixmap(image)
-            self._wipe_source_cache = (frame.image, left_pix)
+            left_pix, left_native = _wipe_fit_pixmap(self, frame.image, metadata)
+            self._wipe_source_cache = (frame.image, metadata, left_pix, left_native)
         right_pix = self._wipe_pixmap("right", self._wipe_right_index(), right_image)
+        entry = getattr(self, '_wipe_pix_cache', {}).get('right')
+        right_native = entry[3] if right_pix is not None and entry is not None else None
         left_title = trans.t("wipe_output_source").format(n=left_idx + 1) if frame is not None else "-"
         if self.chk_wipe_follow_right.isChecked():
             # B is the latest render; in a registration-only session that is an
@@ -3534,7 +3581,8 @@ class OpenFocus(QMainWindow):
             left_offset=(frame.offset_x, frame.offset_y) if frame is not None else (0, 0),
             left_size=(frame.width, frame.height) if frame is not None else None,
             right_size=(right_image.shape[1], right_image.shape[0]) if right_image is not None else None,
-            independent=independent, notice=notice)
+            independent=independent, notice=notice,
+            left_native=left_native, right_native=right_native)
 
         # Keep the index labels in sync with whatever is being shown
         self.lbl_wipe_left_index.setText(left_title)
@@ -4279,11 +4327,12 @@ class OpenFocus(QMainWindow):
             shutdown_running = accelerator.shutdown_running() or shutdown_running
         from ui.sensor_cleanup import cancel_sensor_inspections
         shutdown_running = cancel_sensor_inspections(self) or shutdown_running
+        from dialogs.compare import CompareDialog
         from dialogs.scalebar import ScaleBarDialog
-        for dialog in self.findChildren(ScaleBarDialog):
-            stop = getattr(dialog, 'shutdown_running', None)
-            if callable(stop):
-                shutdown_running = stop() or shutdown_running
+        from dialogs.watermark import WatermarkDialog
+        for dialog_type in (ScaleBarDialog, WatermarkDialog, CompareDialog):
+            for dialog in self.findChildren(dialog_type):
+                shutdown_running = dialog.shutdown_running() or shutdown_running
         loader = getattr(self, '_standalone_retouch_load_dialog', None)
         if loader is not None:
             loader.reject()
@@ -4341,6 +4390,9 @@ class OpenFocus(QMainWindow):
         cancel_registration_preview = getattr(output_manager, 'cancel_registration_preview', None)
         if callable(cancel_registration_preview):
             shutdown_running = cancel_registration_preview() or shutdown_running
+        wipe = getattr(self, 'wipe_widget', None)
+        if wipe is not None:
+            shutdown_running = wipe.cancel_regions() or shutdown_running
         timer = getattr(self, "_retouch_shutdown_timer", None)
         if shutdown_running:
             self._retouch_quit_authorized = True

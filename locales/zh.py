@@ -1405,6 +1405,7 @@ ZH = {
     "label_position": "位置",
     "label_colors": "颜色",
     "label_preview": "预览",
+    "native_detail_loading": "正在读取原图细节…",
     "label_preview_hint": "当前帧将显示为：{n!r}",
     "label_preview_empty": "不会绘制任何内容：格式字符串和自定义文本都是空的。",
     "label_format_hint": "用 {value} 表示帧编号，也可以直接输入固定文字。",

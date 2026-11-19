@@ -1416,6 +1416,7 @@ PACK = {
     "label_position": "Position",
     "label_colors": "Couleurs",
     "label_preview": "Aperçu",
+    "native_detail_loading": "Chargement des détails de l’original…",
     "label_preview_hint": "Voici ce que lira l'image 1 : {n!r}",
     "label_preview_empty": "Rien ne sera dessiné : le format et le texte personnalisé sont vides.",
     "label_format_hint": "Utilisez {value} pour le numéro, ou saisissez un texte fixe.",

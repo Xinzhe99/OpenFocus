@@ -1434,6 +1434,7 @@ EN = {
     "label_position": "Position",
     "label_colors": "Colours",
     "label_preview": "Preview",
+    "native_detail_loading": "Loading original detail…",
     "label_preview_hint": "This frame will read: {n!r}",
     "label_preview_empty": "Nothing will be drawn: the format and the custom text are both empty.",
     "label_format_hint": "Use {value} for the frame number, or type a fixed caption.",

@@ -209,7 +209,7 @@ DISPLAY_REGION_MAX_SIDE = 4096
 _SOURCE_DISPLAY = threading.Semaphore(1)
 
 
-def render_source_region(image, rect, size, metadata=None):
+def render_source_region(image, rect, size, metadata=None, *, preserve_alpha=False):
     """Sample an original-pixel rectangle without copying its full pixel domain.
 
     The returned rectangle includes integer edge pixels; the consumer maps it
@@ -242,12 +242,16 @@ def render_source_region(image, rect, size, metadata=None):
             crop = develop_linear(crop, metadata)
         # The tile must outlive the borrowed mapping independently.
         tile = np.array(to_display_uint8(crop), copy=True, order='C')
-    if tile.ndim == 3 and tile.shape[2] == 4:
-        from utils.image_utils import composite_transparent_for_display
-        tile = composite_transparent_for_display(
-            tile, origin=(left, top), scale=((right - left) / tile.shape[1],
-                                            (bottom - top) / tile.shape[0]))
+    if not preserve_alpha and tile.ndim == 3 and tile.shape[2] == 4:
+        tile = _composite_region(tile, (left, top, right - left, bottom - top))
     return tile, (left, top, right - left, bottom - top)
+
+
+def _composite_region(tile, rect):
+    from utils.image_utils import composite_transparent_for_display
+    x, y, width, height = rect
+    return composite_transparent_for_display(
+        tile, origin=(x, y), scale=(width / tile.shape[1], height / tile.shape[0]))
 
 
 class SourceRegionWorker(QThread):
@@ -405,8 +409,16 @@ class SourceRegionWorker(QThread):
                             if kind in self._pending:
                                 continue
                         _, _, rect, size = request
-                        tile, sampled = render_source_region(image, rect, size, self.metadata)
+                        keep_alpha = bool(self.watermark_cfg and self.labels is None and not self.scale_cfg
+                                          and image.ndim == 3 and image.shape[2] == 4)
+                        if keep_alpha:
+                            tile, sampled = render_source_region(image, rect, size, self.metadata,
+                                                                 preserve_alpha=True)
+                        else:
+                            tile, sampled = render_source_region(image, rect, size, self.metadata)
                         tile = self._decorate(tile, sampled, image)
+                        if keep_alpha and tile is not None:
+                            tile = _composite_region(tile, sampled)
                     with self._condition:
                         if not self.cancelled and kind not in self._pending:
                             self.ready.emit(self.key, request, tile, sampled)
