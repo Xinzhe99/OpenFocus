@@ -755,7 +755,7 @@ De planner houdt rekening met fysieke cores, CPU-affiniteit en quota en voert é
 
 StackMFF V1/V2/V3 gebruiken ONNX Runtime. DirectML op Windows en CoreML op macOS kunnen inferentie versnellen; anders wordt de CPU gebruikt. Beschikbaarheid van een provider bewijst geen GPU-uitvoering. Ondersteuning voor andere GPU’s vereist validatie.
 
-OpenFocus B kan diepteverwerking en bronfusie versnellen op een geschikte OpenCL-GPU; afhankelijk van het geheugenbudget zijn begrensde GPU-stappen of terugval op de CPU mogelijk. Als GPU-versnelling is ingeschakeld, kunnen OpenFocus A, OpenFocus C, Geleide filter en GFG-FGF fusie van het volledige beeld op een geschikte OpenCL-GPU uitvoeren; bij onvoldoende geheugen of problemen met het apparaat of stuurprogramma vallen ze terug op de CPU. De export van C's dieptekaart en uitlijning gebruiken de CPU. Zie [GPU-ondersteuning](GPU_SUPPORT.md).
+OpenFocus B kan diepteverwerking en bronfusie versnellen op een geschikte OpenCL-GPU; afhankelijk van het geheugenbudget zijn begrensde GPU-stappen of terugval op de CPU mogelijk. Als GPU-versnelling is ingeschakeld, kunnen OpenFocus A, OpenFocus C, Geleide filter, GFG-FGF en DCT fusie van het volledige beeld op een geschikte OpenCL-GPU uitvoeren; bij onvoldoende geheugen of problemen met het apparaat of stuurprogramma vallen ze terug op de CPU. De export van C's dieptekaart en uitlijning gebruiken de CPU. Zie [GPU-ondersteuning](GPU_SUPPORT.md).
 
 - Schakel via **Instellingen → GPU-versnelling**
 - Uitschakelen dwingt ondersteunde fusiemethoden naar de CPU — nuttig bij problemen met GPU-stuurprogramma's

@@ -27,7 +27,7 @@ _DEFAULT_TILE_BLOCK_SIZE = 1024
 _DEFAULT_TILE_OVERLAP = 256
 _DEFAULT_TILE_THRESHOLD = 2048
 _DEFAULT_AI_BATCH_SIZE = 2
-OPENCL_FUSION_ALGORITHMS = ('openfocus_a', 'openfocus_b', 'openfocus_c', 'guided_filter', 'gfgfgf')
+OPENCL_FUSION_ALGORITHMS = ('openfocus_a', 'openfocus_b', 'openfocus_c', 'guided_filter', 'gfgfgf', 'dct')
 
 
 def set_tile_mode(enabled: bool):
@@ -601,7 +601,7 @@ class MultiFocusFusion:
                 "DCT fusion requires OpenCV. Install it with: pip install opencv-python-headless"
             ) from exc
 
-        if self.use_gpu:
+        if self.use_gpu and self.algorithm not in OPENCL_FUSION_ALGORITHMS:
             print("Note: DCT fusion currently runs on CPU only; switching to CPU mode.")
             self.use_gpu = False
 
@@ -1129,6 +1129,9 @@ class MultiFocusFusion:
             kernel_size=kernel_size,
             thread_count=kwargs.get('thread_count'),
             should_cancel=kwargs.get('should_cancel'),
+            progress_callback=kwargs.get('progress_callback'),
+            use_gpu=self.use_gpu,
+            device_callback=self._record_openfocus_device,
         )
         return result[:original_shape[0], :original_shape[1]] if original_shape else result
     
