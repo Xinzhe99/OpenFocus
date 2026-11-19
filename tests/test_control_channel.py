@@ -1870,6 +1870,21 @@ def test_option_set_keeps_checkboxes_in_sync(server, control_window, monkeypatch
     call(server, "option.set", name="reverse_order", value=False)
 
 
+def test_sharpening_options_are_independent(server, control_window):
+    control_window._clear_project_dirty()
+    assert call(server, 'option.set', name='sharpen_strength', value=170)['result']['value'] == 170
+    assert control_window._project_dirty
+    assert call(server, 'option.set', name='sharpen_output', value=True)['result']['value'] is True
+    assert control_window.chk_sharpen_output.isChecked()
+    assert call(server, 'option.set', name='sharpen_output', value=False)['result']['value'] is False
+    options = call(server, 'app.state')['result']['options']
+    assert options['sharpen_output'] is False
+    assert options['sharpen_strength'] == 170
+
+    control_window.reset_to_default()
+    assert call(server, 'app.state')['result']['options']['sharpen_strength'] == 100
+
+
 def test_diagnostic_options_are_reachable_and_take_effect_at_once(server, control_window):
     from utils import logging_setup as logs
     assert call(server, "app.state")["result"]["options"]["profile_performance"] is False
@@ -2246,6 +2261,8 @@ def test_reset_stack_menu_clears_real_wipe_and_restores_import(qapp, control_win
     ('tile_block_size', 63), ('tile_overlap', -1), ('tile_threshold', 0),
     ('ai_batch_size', 0), ('reg_downscale_width', 63),
     ('resource_preference', None), ('resource_preference', 'other'),
+    ('sharpen_output', 1), ('sharpen_strength', True), ('sharpen_strength', 100.0),
+    ('sharpen_strength', -1), ('sharpen_strength', 201),
 ])
 def test_option_validation_is_atomic(server, control_window, monkeypatch, name, value):
     before = call(server, 'app.state')['result']['options']

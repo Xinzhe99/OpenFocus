@@ -8,6 +8,8 @@ import math
 import ntpath
 import os
 
+from utils.output_sharpen import validate_sharpen_strength
+
 VERSION = 2
 
 # The recipe deliberately excludes transient CLI controls (progress, resume,
@@ -19,6 +21,7 @@ _FIELDS = (
     "threads", "resource_preference", "batch_size", "cpu", "downscale",
     "tile_size", "tile_enabled", "tile_overlap", "tile_threshold",
     "scale_bar", "scale_um", "depth_map", "depth_colormap", "sharpen_output",
+    "sharpen_strength",
     "group_size", "group_overlap", "frame_order",
     "auto_background", "background_mode", "keep_soft_parts", "save_stacked", "missing_data_map",
 )
@@ -140,6 +143,8 @@ def validate_recipe(recipe, recipe_path):
                 continue
             if type(value) is not int or value < _INTEGER_LIMITS[key]:
                 raise ValueError(f"invalid {key}")
+        elif key == "sharpen_strength":
+            validate_sharpen_strength(value)
         elif key == "scale_um":
             if value is None:
                 continue
@@ -387,6 +392,8 @@ def capture_project_recipe(path, project_path, argv):
         processing.extend(("--defect-mask-path", mask))
     if settings.get("sharpen_output", False):
         processing.append("--sharpen-output")
+    if "sharpen_strength" in settings:
+        processing.extend(("--sharpen-strength", str(settings["sharpen_strength"])))
     if not settings.get("tile_enabled", True):
         processing.append("--no-tile-enabled")
     for key, flag in (("thread_count", "--threads"), ("ai_batch_size", "--batch-size"),

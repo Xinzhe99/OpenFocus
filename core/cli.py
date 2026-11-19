@@ -29,6 +29,8 @@ from typing import List, Optional, Tuple
 from utils import performance_profile
 from utils.sorting import natural_sort_key
 from utils.path_identity import file_identity, path_key
+from utils.output_sharpen import (DEFAULT_SHARPEN_STRENGTH, MAX_SHARPEN_STRENGTH,
+                                  validate_sharpen_strength)
 from core.resource_policy import heavy_job, require_memory
 from core.frame_storage import scratch_directory
 
@@ -67,6 +69,14 @@ class _StderrProxy:
 
     def isatty(self):
         return False
+
+
+def _parse_sharpen_strength(value):
+    try:
+        return validate_sharpen_strength(int(value))
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            f"expected an integer from 0 to {MAX_SHARPEN_STRENGTH}") from exc
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -130,7 +140,11 @@ def build_parser() -> argparse.ArgumentParser:
                              "processed frame, other methods use the last (default: on; "
                              "--no-exposure-match disables it). Applied before tiling.")
     parser.add_argument("--sharpen-output", action="store_true",
-                        help="Apply mild unsharp masking to the fused output (off by default).")
+                        help="Apply unsharp masking to the fused output (off by default).")
+    parser.add_argument("--sharpen-strength", type=_parse_sharpen_strength,
+                        default=DEFAULT_SHARPEN_STRENGTH, metavar="PERCENT",
+                        help=f"Output sharpening strength (0–{MAX_SHARPEN_STRENGTH} percent, "
+                             "default: %(default)s). Does not enable sharpening on its own.")
     parser.add_argument("--sort", default="asc", choices=["asc", "desc", "off"],
                         help="Frame order for openfocus_a/b/c: 'asc' keeps file order "
                              "(default), 'desc' reverses it, 'off' leaves it unchanged")
@@ -263,6 +277,7 @@ def _validate_execution_args(args):
     for name in ('exposure_match', 'sharpen_output', 'cpu', 'keep_soft_parts'):
         if type(getattr(args, name)) is not bool:
             raise ValueError(f"{name} must be boolean")
+    validate_sharpen_strength(getattr(args, 'sharpen_strength', DEFAULT_SHARPEN_STRENGTH))
     actions = {action.dest: action for action in build_parser()._actions}
     for name in ('method', 'align', 'base_frame', 'sort', 'ai_mode',
                  'resource_preference', 'auto_background', 'background_mode'):
@@ -799,11 +814,13 @@ def _fuse_stack_admitted_body(images, args):
         fusion_kwargs["tile_threshold"] = args.tile_threshold
     fusion = MultiFocusFusion(**fusion_kwargs)
     from core.fusion_diagnostics import log_effective_fusion
+    sharpen_strength = getattr(args, 'sharpen_strength', DEFAULT_SHARPEN_STRENGTH)
     log_effective_fusion(fusion, images, origin='cli', thread_count=args.threads,
         registration=alignment_steps(args.align), registration_parameters=args._registration_parameters,
         registration_downscale_width=args.downscale,
         registration_brightness_reference='last' if getattr(args, 'exposure_match', True) else 'first',
         reverse_registration=preordered, sharpen_output=bool(getattr(args, 'sharpen_output', False)),
+        sharpen_strength=sharpen_strength,
         sensor_denoise=bool(getattr(args, 'sensor_denoise', False)),
         defect_mask=bool(getattr(args, 'defect_mask_path', None)),
         flat_field=bool(getattr(args, 'dust_map', None)), grouped=bool(getattr(args, '_grouped', False)))
@@ -832,7 +849,7 @@ def _fuse_stack_admitted_body(images, args):
         raise RuntimeError("Fusion returned no result")
     if getattr(args, "sharpen_output", False):
         from utils.output_sharpen import sharpen_output
-        fused = sharpen_output(fused)
+        fused = sharpen_output(fused, should_cancel, strength=sharpen_strength)
     fused = quantize_fuse_output(fused, is_16bit)
     from core.transparency import restore_transparent_canvas
     fused = restore_transparent_canvas(fused, transparent)
@@ -914,11 +931,13 @@ def _fuse_grouped(paths, args):
                           resource_preference=args.resource_preference,
                           should_cancel=getattr(args, "_should_cancel", None),
                           progress=progress, preprocess=preprocess)
-    if args.sharpen_output:
+    sharpen_strength = getattr(args, 'sharpen_strength', DEFAULT_SHARPEN_STRENGTH)
+    if args.sharpen_output and sharpen_strength:
         from utils.image_utils import normalize_fuse_input, quantize_fuse_output
         from utils.output_sharpen import sharpen_output
         frames, is_16bit = normalize_fuse_input([result])
-        result = quantize_fuse_output(sharpen_output(frames[0]), is_16bit)
+        result = quantize_fuse_output(sharpen_output(
+            frames[0], getattr(args, '_should_cancel', None), strength=sharpen_strength), is_16bit)
     return result
 
 
@@ -2037,7 +2056,8 @@ def _run_cli_parsed(args) -> int:
                 raise ValueError(f"Overrides for {folder} must be an object")
             unknown = set(override) - {
                 "method", "align", "kernel",
-                "ai_mode", "base_frame", "sort", "exposure_match", "sharpen_output", "cpu", "threads",
+                "ai_mode", "base_frame", "sort", "exposure_match", "sharpen_output", "sharpen_strength",
+                "cpu", "threads",
                 "batch_size", "downscale", "tile_size", "align_shift_limit",
                 "resource_preference", "fusion_parameters", "registration_parameters",
                 "auto_background", "background_mode", "keep_soft_parts"}

@@ -513,6 +513,40 @@ def test_batch_fusion_noop_entry_is_no_fusion_not_no_alignment(qapp):
         qapp.processEvents()
 
 
+def test_batch_sharpen_strength_is_seeded_and_retained(qapp):
+    from PyQt6.QtWidgets import QWidget
+    from dialogs.batch import BatchProcessingDialog
+
+    parent = QWidget()
+    parent.current_fusion_method = lambda: 'openfocus_a'
+    parent.current_alignment_method = lambda: 'none'
+    parent.sharpen_output = False
+    parent.sharpen_strength = 155
+    dialog = BatchProcessingDialog(parent)
+    try:
+        spin = dialog.sharpen_strength_spin
+        assert not spin.isEnabled() and spin.value() == 155
+        dialog.chk_sharpen_output.setChecked(True)
+        assert spin.isEnabled()
+        spin.setValue(125)
+        _select_fusion(dialog, 'none')
+        assert not spin.isEnabled()
+        _select_fusion(dialog, 'openfocus_a')
+        assert spin.isEnabled() and spin.value() == 125
+        dialog.chk_sharpen_output.setChecked(False)
+        runtime = dialog.get_processing_settings()['runtime_settings']
+        assert runtime['sharpen_output'] is False
+        assert runtime['sharpen_strength'] == 125
+        dialog.chk_sharpen_output.setChecked(True)
+        assert spin.isEnabled() and spin.value() == 125
+        assert parent.sharpen_strength == 155
+    finally:
+        dialog.close()
+        dialog.deleteLater()
+        parent.deleteLater()
+        qapp.processEvents()
+
+
 def test_batch_fusion_only_options_follow_the_selected_method(qapp):
     """Alignment-only disables fusion-only inputs but keeps their drafts."""
     from dialogs.batch import BatchProcessingDialog

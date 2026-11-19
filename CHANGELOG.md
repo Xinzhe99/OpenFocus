@@ -60,6 +60,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Open the user manual on GitHub in the current interface language from Help.
 
 ### Changed
+- Group render settings by workflow, brightness and color, and output. Adjust fusion sharpening from 0% to 200% in desktop renders, batch jobs, and the CLI. The 100% default preserves the previous sharpening amount.
 - Move frame review and cancellation to the source frame context menu. With the list focused, Ctrl+Shift+I includes all frames, Ctrl+Shift+X excludes all frames and Ctrl+Shift+F starts or cancels review. On macOS use Command. The cancellation notice clears after five seconds.
 - Edit OpenFocus A/B/C smoothing in whole levels, one per click. Fractional values
   from existing projects and recipes keep their original precision until edited.

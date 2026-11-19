@@ -1343,32 +1343,44 @@ def test_openfocus_desktop_tiling_status_stays_whole_frame(settings_window, meth
         dialog.deleteLater()
 
 
-def test_enabling_sharpening_reveals_risk_in_small_render_dialog(qapp):
+def test_sharpening_controls_and_risk_are_reachable_in_small_render_dialog(qapp):
     from PyQt6.QtCore import QPoint, QRect
     from dialogs.render_settings import RenderSettingsDialog
     from locales import trans
     from ui.right_panel import ElidingCheckBox
 
     window = QWidget()
+    window.sharpen_strength = 85
+    window.set_sharpen_strength = lambda value: setattr(window, 'sharpen_strength', value)
     for name in ('chk_quick_preview', 'chk_reverse_order', 'chk_exposure_match',
                  'chk_base_correct', 'chk_sharpen_output'):
         setattr(window, name, ElidingCheckBox(trans.t(name), trans.t(name + '_hint'), window))
     dialog = RenderSettingsDialog(window)
     try:
-        dialog.resize(dialog.width(), 210)
         dialog.show()
+        dialog.resize(360, 210)
         qapp.processEvents()
-        assert dialog._sharpen_risk.isHidden()
+        assert not dialog._sharpen_risk.isVisible()
         window.chk_sharpen_output.click()
         qapp.processEvents()
         qapp.processEvents()
         viewport = dialog._scroll.viewport()
         risk_rect = QRect(dialog._sharpen_risk.mapTo(viewport, QPoint()),
                           dialog._sharpen_risk.size())
-        assert not dialog._sharpen_risk.isHidden()
+        assert dialog._sharpen_risk.isVisible()
         assert viewport.rect().contains(risk_rect)
+        assert viewport.rect().contains(QRect(
+            dialog._strength_spin.mapTo(viewport, QPoint()), dialog._strength_spin.size()))
+        assert dialog._strength_spin.value() == 85
+        dialog._strength_spin.setValue(175)
+        assert dialog._strength_slider.value() == window.sharpen_strength == 175
         window.chk_sharpen_output.click()
-        assert dialog._sharpen_risk.isHidden()
+        assert not dialog._sharpen_risk.isVisible()
+        assert window.sharpen_strength == 175
+        window.chk_sharpen_output.click()
+        assert dialog._strength_spin.value() == 175
+        dialog._strength_reset.click()
+        assert dialog._strength_spin.value() == window.sharpen_strength == 100
     finally:
         dialog.close()
         window.deleteLater()
