@@ -253,8 +253,8 @@ class TranslationManager(QObject):
     # Ordered so the menu lists languages consistently no matter what the
     # filesystem returns. 'en'/'zh' live in en.py/zh.py; 'ja'/'es' ship in
     # _extra.py; everything else is one <code>.py module in this package.
-    PACK_ORDER = ("en", "zh", "ja", "es", "de", "fr", "ru", "ko", "pt", "it",
-                  "nl", "pl")
+    PACK_ORDER = ("en", "zh", "es", "de", "fr", "ru", "ko", "pt", "it", "nl",
+                  "pl", "ja")
     LANG_NAMES = {
         "en": "English", "zh": "中文", "ja": "日本語", "es": "Español",
         "de": "Deutsch", "fr": "Français", "ru": "Русский",
