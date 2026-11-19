@@ -22,6 +22,7 @@ class ParameterSpec:
     odd: bool = False
     hint_key: str | None = None
     choice_labels: tuple = ()
+    whole_level_editor: bool = False  # Desktop presentation; decimals describes the accepted value.
 
 
 @dataclass(frozen=True)
@@ -179,6 +180,9 @@ def _parameters(specs):
             raise ValueError(f'Invalid choice label: {spec.key}')
         if not isinstance(spec.odd, bool) or (spec.hint_key is not None and not isinstance(spec.hint_key, str)):
             raise ValueError(f'Invalid parameter metadata: {spec.key}')
+        if not isinstance(spec.whole_level_editor, bool) or (
+                spec.whole_level_editor and (spec.choices or spec.step != 1)):
+            raise ValueError(f'Invalid whole-level editor: {spec.key}')
         if spec.choices:
             if any(not isinstance(v, (str, int, float, bool)) or isinstance(v, float) and not math.isfinite(v) for v in spec.choices):
                 raise ValueError(f'Invalid choices: {spec.key}')
@@ -397,9 +401,9 @@ _K_GUIDED = ParameterSpec('kernel_size', 'label_kernel_guided', 31, 1, 51, 2, od
 _K_DCT = ParameterSpec('kernel_size', 'label_kernel_dct', 7, 1, 51, 2, odd=True)
 _K_GFG = ParameterSpec('kernel_size', 'label_kernel_gfg', 7, 1, 51, 2, odd=True)
 _R_OF = ParameterSpec('radius', 'label_of_radius', 8, 1, 50)
-_S_A = ParameterSpec('smoothing', 'label_of_smoothing', 4., 0, 8, .1, 6, hint_key='label_of_smoothing_a_hint')
-_S_B = ParameterSpec('smoothing', 'label_of_smoothing', 4., 0, 34, .1, 6)
-_S_C = ParameterSpec('smoothing', 'label_of_smoothing', 4., 0, 14, .1, 6)
+_S_A = ParameterSpec('smoothing', 'label_of_smoothing', 4., 0, 8, decimals=6, whole_level_editor=True, hint_key='label_of_smoothing_a_hint')
+_S_B = ParameterSpec('smoothing', 'label_of_smoothing', 4., 0, 34, decimals=6, whole_level_editor=True)
+_S_C = ParameterSpec('smoothing', 'label_of_smoothing', 4., 0, 14, decimals=6, whole_level_editor=True)
 _FEATHER_B = ParameterSpec('feather', 'label_of_feather', 3, 0, 10)
 _LEVELS = ParameterSpec('N', 'compare_levels', 4, 1, 6)
 _MODE = ParameterSpec('mode', 'label_ai_mode', 'soft', choices=('soft', 'hard'), choice_labels=('radio_ai_soft', 'radio_ai_hard'))
