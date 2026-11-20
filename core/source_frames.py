@@ -846,6 +846,22 @@ class ProcessedFrame:
 
 
 @dataclass(frozen=True, eq=False)
+class TileExposureCache:
+    """Native-depth tiled V3 frames and their whole-frame exposure gains.
+
+    Unlike a plain list of prepared frames, these pixels are not exposure
+    adjusted: each tile applies its frame's gain to its own crop. Iterating
+    yields the frames, which is how the render worker counts retained pixels.
+    Frame transport carries the gains with them across desktop renders.
+    """
+    frames: list
+    gains: tuple[float, ...]
+
+    def __iter__(self):
+        return iter(self.frames)
+
+
+@dataclass(frozen=True, eq=False)
 class PreparedFrame(ProcessedFrame):
     """A mapped processing result with the file identity it was captured from.
 
