@@ -1221,17 +1221,19 @@ def exposure_gains(frames):
     return [1.0 if m <= 1e-6 else target / m for m in means]
 
 
-def apply_exposure_gain(frame, gain):
+def apply_exposure_gain(frame, gain, *, copy=True):
     """Apply one gain to the color channels, preserving dtype and alpha.
 
     Alpha is opacity, not exposure: scaling it turns transparent pixels
     opaque (or vice versa) and changes the fused result.
+
+    ``copy=False`` scales a float32 frame in place, for a caller that owns it.
     """
     if gain == 1.0 or frame is None:
         return frame
     dtype = frame.dtype
     limit = 65535.0 if dtype == np.uint16 else 255.0
-    out = frame.astype(np.float32)
+    out = frame.astype(np.float32, copy=copy)
     if out.ndim == 3 and out.shape[2] == 4:
         color = out[:, :, :3]
         color *= float(gain)

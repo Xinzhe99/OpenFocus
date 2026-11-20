@@ -55,7 +55,7 @@ def test_real_descriptor_fusion_matches_array_consumer(tmp_path, method, tiled, 
     np.testing.assert_array_equal(actual, expected)
 
 
-@pytest.mark.parametrize('method', CLASSICAL)
+@pytest.mark.parametrize('method', [*CLASSICAL, 'stackmffv3'])
 def test_source_normalization_exposure_and_resize_match_prepared_consumer(tmp_path, method):
     arrays, descriptors = _sources(tmp_path)
     normalized, _ = normalize_fuse_input(arrays)
@@ -66,6 +66,27 @@ def test_source_normalization_exposure_and_resize_match_prepared_consumer(tmp_pa
     actual = _fusion(method).fuse(descriptors, img_resize=resize, thread_count=1)
     np.testing.assert_array_equal(actual, expected)
     assert actual.shape == expected.shape
+
+
+def test_exposure_frames_normalize_in_the_pass_that_applies_the_gain(tmp_path):
+    from core.aligned_previews import registered_preview
+    _, descriptors = _sources(tmp_path)     # uint8, uint16, uint8
+    gains = [0.5, 1.0, 1.7]
+    separate = source_frames.exposure_frames(source_frames.normalize_frames(descriptors), gains)
+    combined = source_frames.exposure_frames(descriptors, gains, normalize=True)
+    for two_pass, one_pass, descriptor, gain in zip(separate, combined, descriptors, gains):
+        # One processing step over the file, with no normalized frame between.
+        assert one_pass.source is descriptor and one_pass.dtype == np.float32
+        np.testing.assert_array_equal(one_pass.full_resolution(), two_pass.full_resolution())
+        if gain != 1.0:
+            assert (source_frames.frame_resolution_bytes(one_pass)
+                    < source_frames.frame_resolution_bytes(two_pass))
+        # Either way the preview scales the captured codes, not float32 pixels.
+        expected, actual = registered_preview(two_pass), registered_preview(one_pass)
+        np.testing.assert_array_equal(actual[0], expected[0])
+        assert actual[0].dtype == expected[0].dtype and actual[1] == expected[1]
+    ready = np.ones((4, 4, 3), np.float32)
+    assert source_frames.exposure_frames([ready], [1.0], normalize=True)[0] is ready
 
 
 @pytest.mark.parametrize('method', ['guided_filter', 'gfgfgf', 'dct'])

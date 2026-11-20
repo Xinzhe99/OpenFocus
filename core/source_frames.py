@@ -964,7 +964,8 @@ def _normalize_frame(image, *, should_cancel, gain=1.0):
         strip = image[y:y + 128].astype(np.float32)
         if image.dtype == np.uint16:
             strip *= 255.0 / 65535.0
-        output[y:y + 128] = strip
+        # The strip is this pass's own copy, so the gain needs no second one.
+        output[y:y + 128] = apply_exposure_gain(strip, gain, copy=False)
     return output
 
 
@@ -982,10 +983,15 @@ def normalize_frames(frames, should_cancel=None):
 
 @dataclass(eq=False)
 class _ExposureGain:
-    """One frame's render gain, shared with its reduced preview once measured."""
+    """One frame's render gain, shared with its reduced preview once measured.
+
+    With ``normalize``, the same strips also convert an integer frame to the
+    shared float32 domain. Previews keep their native codes either way.
+    """
     gain: float | None
     target: float | None
     should_cancel: object
+    normalize: bool = False
 
     def __call__(self, image):
         from core.frame_storage import create_transient_frame
@@ -995,6 +1001,8 @@ class _ExposureGain:
         if self.gain is None:
             mean = _exposure_mean(image, self.should_cancel, normalize_uint16=True)
             self.gain = 1.0 if self.target <= 1e-6 or mean <= 1e-6 else self.target / mean
+        if self.normalize:
+            return _normalize_frame(image, should_cancel=self.should_cancel, gain=self.gain)
         if self.gain == 1.0:
             return image
         output = create_transient_frame(image.shape, image.dtype)
@@ -1019,14 +1027,29 @@ class _ExposureGain:
         return adjust(image, self.gain)
 
 
-def exposure_frames(frames, gains, should_cancel=None):
-    """Apply precomputed whole-frame gains inside each admitted source consumer."""
+def exposure_frames(frames, gains, should_cancel=None, *, normalize=False):
+    """Apply precomputed whole-frame gains inside each admitted source consumer.
 
-    return [frame if gain == 1.0 else process_frame(
-                frame, _ExposureGain(gain, None, should_cancel), should_cancel=should_cancel,
-                scratch_bytes=frame.nbytes + min(frame.shape[0], 128)
-                * math.prod(frame.shape[1:]) * (4 + frame.dtype.itemsize))
-            for frame, gain in zip(frames, gains)]
+    With ``normalize``, integer frames reach the shared float32 domain in the
+    same strips, as normalize_frames would otherwise have done in a pass of
+    its own. The gains must then have been measured on normalized strips.
+    """
+    result = []
+    for frame, gain in zip(frames, gains):
+        convert = normalize and frame.dtype != np.float32
+        if gain == 1.0 and not convert:
+            result.append(frame)
+            continue
+        strip = min(frame.shape[0], 128) * math.prod(frame.shape[1:])
+        if convert:
+            # As normalize_frames: the output and one float32 strip.
+            dtype, workspace = np.float32, frame.size * 4 + strip * 4
+        else:
+            dtype, workspace = frame.dtype, frame.nbytes + strip * (4 + frame.dtype.itemsize)
+        result.append(process_frame(
+            frame, _ExposureGain(gain, None, should_cancel, normalize=convert),
+            dtype=dtype, should_cancel=should_cancel, scratch_bytes=workspace))
+    return result
 
 
 def _matched_strip(strip, gain):

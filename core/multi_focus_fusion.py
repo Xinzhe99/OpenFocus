@@ -841,6 +841,10 @@ class MultiFocusFusion:
         # bounded by rows and cancellation is checked between strips.
         normalize_sources = (not deferred_exposure and not native_codes
                              and any(frame.dtype == np.uint16 for frame in input_source))
+        # Exposure matching converts a streamed frame to float32 in the strips
+        # it scales, and measures its gains on the same normalized strips, so
+        # a matched stack never stores a normalized intermediate.
+        normalize_with_gain = normalize_sources and streaming_sources and self.exposure_match
         preparation = 0
         for frame in input_source:
             strip_size = min(frame.shape[0], 128) * int(np.prod(frame.shape[1:]))
@@ -873,8 +877,9 @@ class MultiFocusFusion:
         if reuse_preparation:
             pass
         elif normalize_sources and streaming_sources:
-            from core.source_frames import normalize_frames
-            input_source = normalize_frames(input_source, should_cancel)
+            if not normalize_with_gain:
+                from core.source_frames import normalize_frames
+                input_source = normalize_frames(input_source, should_cancel)
         elif normalize_sources:
             normalized_frames = []
             for frame in input_source:
@@ -909,11 +914,12 @@ class MultiFocusFusion:
                     policy.native_thread_ceiling(self.resource_preference, kwargs.get('thread_count'))):
                 exposure_gains_ = self._exposure_gains_for_source(
                     input_source, should_cancel,
-                    normalize_uint16=deferred_exposure or native_codes)
+                    normalize_uint16=deferred_exposure or native_codes or normalize_with_gain)
             check_cancel()
             if streaming_sources:
                 from core.source_frames import exposure_frames
-                input_source = exposure_frames(input_source, exposure_gains_, should_cancel)
+                input_source = exposure_frames(input_source, exposure_gains_, should_cancel,
+                                               normalize=normalize_with_gain)
             elif exposure_gains_ is not None and isinstance(input_source, list) and not deferred_exposure:
                 matched = []
                 for frame, gain in zip(input_source, exposure_gains_):
