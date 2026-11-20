@@ -933,20 +933,28 @@ def crop_frame(frame, x, y, width, height, *, channels=None, should_cancel=None)
 
 def resolve_region(frame, x, y, width, height, *, channels=None, should_cancel=None):
     """Copy one resolved region so a tile cannot retain its decoded full source."""
-    cropped = crop_frame(frame, x, y, width, height, channels=channels,
-                         should_cancel=should_cancel)
+    from core.frame_storage import scratch_directory
     from core.resource_policy import require_memory
-    require_memory(frame_resolution_bytes(cropped) + cropped.nbytes)
-    # This crop descriptor is never resolved again, so a cached copy could not
-    # be read: only the full frame behind it is worth keeping.
-    image = np.array(cropped.full_resolution(cache_result=False), copy=True, order='C')
-    from core.registration import RegistrationCancelled
-    if should_cancel is not None and should_cancel():
-        raise RegistrationCancelled()
-    return image
+    _check_resolution_cancel(should_cancel)
+    # Resolve the frame itself. Resolving a crop descriptor would admit the
+    # frame's whole decode workspace again, even when its pixels are cached.
+    with scratch_directory():
+        select_frame_scratch((frame,), should_cancel=should_cancel)
+        image = resolve_frame(frame, should_cancel=should_cancel)
+    region = crop_frame(frame, x, y, width, height, channels=channels)
+    crop = region.processor(image)
+    if crop.shape != region.shape:
+        raise ValueError('Requested region does not fit the frame')
+    # Resolution admitted any decode, so the tile is the only new allocation.
+    require_memory(crop.nbytes)
+    result = np.array(crop, copy=True, order='C')
+    _check_resolution_cancel(should_cancel)
+    return result
 
 
-def _normalize_frame(image, *, should_cancel):
+def _normalize_frame(image, *, should_cancel, gain=1.0):
+    """Convert to the shared float32 domain, scaling each strip by ``gain``."""
+    from utils.image_utils import apply_exposure_gain
     from core.frame_storage import create_transient_frame
     from core.registration import RegistrationCancelled
     output = create_transient_frame(image.shape, np.float32)
