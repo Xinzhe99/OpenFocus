@@ -54,7 +54,7 @@ def test_gio_launches_bundle_with_special_path(tmp_path, open_files):
     executable = bundle / "OpenFocus"
     executable.write_text(
         '#!/bin/sh\n'
-        'printf "launched\\n%s\\n" "$@" > "$OPENFOCUS_DESKTOP_MARKER.tmp"\n'
+        'printf "%s\\n" "$@" > "$OPENFOCUS_DESKTOP_MARKER.tmp"\n'
         'mv "$OPENFOCUS_DESKTOP_MARKER.tmp" "$OPENFOCUS_DESKTOP_MARKER"\n',
         encoding="utf-8")
     executable.chmod(0o755)
@@ -72,4 +72,4 @@ def test_gio_launches_bundle_with_special_path(tmp_path, open_files):
     deadline = time.monotonic() + 10
     while not marker.exists() and time.monotonic() < deadline:
         time.sleep(0.05)
-    assert marker.read_text(encoding="utf-8") == "launched\n" + "\n".join(map(str, inputs)) + "\n"
+    assert marker.read_text(encoding="utf-8") == "\n".join(map(str, inputs)) + "\n"
