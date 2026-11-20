@@ -19,6 +19,33 @@ _AXIS = np.dtype([('start', '<i4'), ('count', '<i4'), ('weight', '<f4', _TAPS)])
 _TILE_ROWS = 128
 _MIN_SOURCE_BYTES = 8 * 1024**2
 _MAX_SIDE = 32768
+_KERNEL_NAMES = ((1, 'area8'), (2, 'area16'))
+
+_cache_lock = Lock()
+_queue_lock = Lock()
+_PROGRAM_CACHE = None
+
+
+def _get_or_build_program(cl, device):
+    global _PROGRAM_CACHE
+    from fusion_methods._openfocus_gpu import _device_cache_key
+
+    key = _device_cache_key(device)
+    with _cache_lock:
+        if _PROGRAM_CACHE is not None and _PROGRAM_CACHE[0] == key:
+            return _PROGRAM_CACHE[1:]
+        context = cl.Context([device])
+        queue = cl.CommandQueue(context, device=device)
+        program = cl.Program(context, _KERNEL).build()
+        kernels = {size: cl.Kernel(program, name) for size, name in _KERNEL_NAMES}
+        _PROGRAM_CACHE = (key, context, queue, kernels)
+        return context, queue, kernels
+
+
+def _invalidate_program_cache():
+    global _PROGRAM_CACHE
+    with _cache_lock:
+        _PROGRAM_CACHE = None
 
 _KERNEL = r'''
 #pragma OPENCL FP_CONTRACT OFF
@@ -99,6 +126,8 @@ class ExactAreaGpu:
         self._shape = None
         self._buffers = None
         self._context = None
+        self._queue = None
+        self._kernels = None
         self.frames_resized = 0
         self.device_name = ''
 
@@ -139,11 +168,9 @@ class ExactAreaGpu:
                 policy.frame_ram_budget(policy.probe_resources())):
             return False
         if self._context is None:
-            cl = self._cl
-            self._context = cl.Context([self._device])
-            self._queue = cl.CommandQueue(self._context, device=self._device)
-            program = cl.Program(self._context, _KERNEL).build()
-            self._kernels = {1: cl.Kernel(program, 'area8'), 2: cl.Kernel(program, 'area16')}
+            self._context, self._queue, self._kernels = _get_or_build_program(
+                self._cl, self._device,
+            )
         xs, ys = _axis_table(source_w, width), _axis_table(source_h, height)
         cl, context = self._cl, self._context
         flags = cl.mem_flags
@@ -174,7 +201,7 @@ class ExactAreaGpu:
                 or not (0 < width < w <= 4 * width and 0 < height < h <= 4 * height)
                 or (w % width == 0 and h % height == 0)):
             return None
-        with self._lock:
+        with self._lock, _queue_lock:
             if self._disabled:
                 return None
             try:
@@ -196,7 +223,8 @@ class ExactAreaGpu:
                     stop = min(row + _TILE_ROWS, height)
                     first = starts[row]
                     last = starts[stop - 1] + counts[stop - 1]
-                    self._cl.enqueue_copy(self._queue, src, image[first:last], is_blocking=True)
+                    band = image[first:last]
+                    self._cl.enqueue_copy(self._queue, src, band, is_blocking=False)
                     kernel(self._queue, (width * channels, stop - row), None, src, dst, xs, ys,
                            np.int32(channels), np.int32(w * channels), first, np.int32(row))
                     self._cl.enqueue_copy(self._queue, output[row:stop], dst, is_blocking=True)
@@ -207,7 +235,22 @@ class ExactAreaGpu:
                 self.frames_resized += 1
                 return output
             except Exception as exc:
+                queue = self._queue
+                if queue is not None:
+                    try:
+                        queue.finish()
+                    except Exception:
+                        pass
+                err_types = tuple(
+                    t for t in (getattr(self._cl, 'Error', None), MemoryError)
+                    if isinstance(t, type)
+                )
+                if err_types and isinstance(exc, err_types):
+                    _invalidate_program_cache()
                 self._disabled = True
                 self._buffers = None
+                self._context = None
+                self._queue = None
+                self._kernels = None
                 logging.getLogger(__name__).info('ECC area resize using CPU: %s', exc)
                 return None

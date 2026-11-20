@@ -1,10 +1,77 @@
 """Bounded OpenCL depth activity and ordered merge for OpenFocus B."""
+import atexit
 import logging
 from threading import Lock
 
 import numpy as np
 
 _device_lock = Lock()
+_cache_lock = Lock()
+_PROGRAM_CACHE = None
+_DEPTH_PROGRAM_CACHE = None
+
+_nvml_lock = Lock()
+_nvml_state = None
+_nvml_atexit_registered = False
+
+_MERGE_KERNEL_NAMES = (
+    'activity', 'merge', 'merge_u8_i64', 'merge_u16_u16', 'merge_u8_u16',
+)
+_DEPTH_KERNEL_NAMES = (
+    'gray_u8', 'gray_u16', 'detail_pool', 'detail_smooth', 'detail_select',
+    'init_detail', 'detail_confidence', 'confidence', 'apply_detail',
+    'activity', 'init_activity', 'select_activity', 'guide', 'snap',
+)
+_FILTER_KERNEL_NAMES = ('filt4', 'filt_guided', 'transpose_u16')
+_RESAMPLE_KERNEL_NAMES = ('vert', 'horiz')
+
+
+def _device_cache_key(device):
+    return (
+        getattr(device, 'int_ptr', None),
+        str(getattr(device, 'name', '')),
+        str(getattr(device, 'vendor', '')),
+        str(getattr(device, 'driver_version', '')),
+        int(getattr(device, 'global_mem_size', 0)),
+    )
+
+
+def _get_or_build_merge_program(cl, device):
+    global _PROGRAM_CACHE, _DEPTH_PROGRAM_CACHE
+    key = _device_cache_key(device)
+    with _cache_lock:
+        if _PROGRAM_CACHE is not None and _PROGRAM_CACHE[0] == key:
+            return _PROGRAM_CACHE[1:]
+        ctx = cl.Context(devices=[device])
+        queue = cl.CommandQueue(ctx, device=device)
+        program = cl.Program(ctx, _MERGE_KERNEL).build()
+        kernels = {name: cl.Kernel(program, name) for name in _MERGE_KERNEL_NAMES}
+        _PROGRAM_CACHE = (key, ctx, queue, program, kernels)
+        _DEPTH_PROGRAM_CACHE = None
+        return ctx, queue, program, kernels
+
+
+def _get_or_build_depth_program(cl, device, context):
+    global _DEPTH_PROGRAM_CACHE
+    key = (_device_cache_key(device), id(context))
+    with _cache_lock:
+        if _DEPTH_PROGRAM_CACHE is not None and _DEPTH_PROGRAM_CACHE[0] == key:
+            return _DEPTH_PROGRAM_CACHE[1:]
+        program = cl.Program(context, _FILTER_K + _DEPTH_K + _RESAMPLE_K).build()
+        depth_kernels = {name: cl.Kernel(program, name) for name in _DEPTH_KERNEL_NAMES}
+        filter_kernels = {name: cl.Kernel(program, name) for name in _FILTER_KERNEL_NAMES}
+        resample_kernels = {name: cl.Kernel(program, name) for name in _RESAMPLE_KERNEL_NAMES}
+        _DEPTH_PROGRAM_CACHE = (
+            key, program, depth_kernels, filter_kernels, resample_kernels,
+        )
+        return program, depth_kernels, filter_kernels, resample_kernels
+
+
+def _invalidate_program_cache():
+    global _PROGRAM_CACHE, _DEPTH_PROGRAM_CACHE
+    with _cache_lock:
+        _PROGRAM_CACHE = None
+        _DEPTH_PROGRAM_CACHE = None
 
 _MERGE_KERNEL = r'''
 __kernel void activity(__global const ushort *gray, __global const ushort *fine,
@@ -107,8 +174,28 @@ def device_status(gpu):
     return gpu.device_name
 
 
-def _nvml_free_vram(device):
-    """Query free/total bytes via in-process NVML, returning None if unavailable."""
+def _shutdown_nvml_locked():
+    global _nvml_state
+    state = _nvml_state
+    _nvml_state = None
+    if state is not None:
+        shutdown = state[0]
+        try:
+            shutdown()
+        except Exception:
+            pass
+
+
+def _shutdown_nvml():
+    with _nvml_lock:
+        _shutdown_nvml_locked()
+
+
+def _load_nvml_state_locked():
+    global _nvml_state, _nvml_atexit_registered
+    if _nvml_state is not None:
+        return _nvml_state
+
     import ctypes
     import os
     import sys
@@ -155,35 +242,58 @@ def _nvml_free_vram(device):
             return None
     except Exception:
         return None
-    try:
-        count = ctypes.c_uint()
-        if get_count(ctypes.byref(count)) != 0:
-            return None
-        target_name = str(device.name).strip()
-        target_total = int(device.global_mem_size)
-        matches = []
-        buf = ctypes.create_string_buffer(256)
-        info = _MemInfo()
-        for idx in range(count.value):
-            handle = ctypes.c_void_p()
-            if get_handle(idx, ctypes.byref(handle)) != 0:
-                continue
-            if get_name(handle, buf, len(buf)) != 0:
-                continue
-            if get_mem(handle, ctypes.byref(info)) != 0:
-                continue
-            name = buf.value.decode('utf-8', errors='replace').strip()
-            total_bytes = int(info.total)
-            if name == target_name and abs(total_bytes - target_total) <= 64 * 1024 * 1024:
-                matches.append((int(info.free), total_bytes))
-        return matches[0] if len(matches) == 1 else None
-    except Exception:
+    if not _nvml_atexit_registered:
+        atexit.register(_shutdown_nvml)
+        _nvml_atexit_registered = True
+    _nvml_state = (shutdown, get_count, get_handle, get_name, get_mem, _MemInfo)
+    return _nvml_state
+
+
+def _nvml_free_vram(device):
+    """Query free/total bytes via cached in-process NVML session."""
+    import ctypes
+
+    target_name = str(device.name).strip()
+    target_total = int(device.global_mem_size)
+    with _nvml_lock:
+        for _ in range(2):
+            state = _load_nvml_state_locked()
+            if state is None:
+                return None
+            _, get_count, get_handle, get_name, get_mem, mem_info_cls = state
+            try:
+                count = ctypes.c_uint()
+                if get_count(ctypes.byref(count)) != 0:
+                    _shutdown_nvml_locked()
+                    continue
+                matches = []
+                saw_error = False
+                buf = ctypes.create_string_buffer(256)
+                info = mem_info_cls()
+                for idx in range(count.value):
+                    handle = ctypes.c_void_p()
+                    if get_handle(idx, ctypes.byref(handle)) != 0:
+                        saw_error = True
+                        continue
+                    if get_name(handle, buf, len(buf)) != 0:
+                        saw_error = True
+                        continue
+                    if get_mem(handle, ctypes.byref(info)) != 0:
+                        saw_error = True
+                        continue
+                    name = buf.value.decode('utf-8', errors='replace').strip()
+                    total_bytes = int(info.total)
+                    if name == target_name and abs(total_bytes - target_total) <= 64 * 1024 * 1024:
+                        matches.append((int(info.free), total_bytes))
+                if matches:
+                    return matches[0] if len(matches) == 1 else None
+                if saw_error:
+                    _shutdown_nvml_locked()
+                    continue
+                return None
+            except Exception:
+                _shutdown_nvml_locked()
         return None
-    finally:
-        try:
-            shutdown()
-        except Exception:
-            pass
 
 
 def _free_vram(device):
@@ -243,16 +353,22 @@ class Merge:
                 raise GpuError('GPU merge workspace exceeds the resource budget')
             self.cl = cl
             self.device = device
-            self.context = cl.Context(devices=[device])
-            self.queue = cl.CommandQueue(self.context, device=device)
-            self.program = cl.Program(self.context, _MERGE_KERNEL).build()
+            self.context, self.queue, self.program, kernels = _get_or_build_merge_program(
+                cl, device,
+            )
             self.device_name = opencl_device_name(device)
-            self.activity_kernel = cl.Kernel(self.program, 'activity')
-            self.kernel = cl.Kernel(self.program, 'merge')
-            self.merge_u8_i64_kernel = cl.Kernel(self.program, 'merge_u8_i64')
-            self.merge_u16_u16_kernel = cl.Kernel(self.program, 'merge_u16_u16')
-            self.merge_u8_u16_kernel = cl.Kernel(self.program, 'merge_u8_u16')
+            self.activity_kernel = kernels['activity']
+            self.kernel = kernels['merge']
+            self.merge_u8_i64_kernel = kernels['merge_u8_i64']
+            self.merge_u16_u16_kernel = kernels['merge_u16_u16']
+            self.merge_u8_u16_kernel = kernels['merge_u8_u16']
+            self.depth_program = None
+            self._merge_acc = None
+            self._merge_depth = None
+            self._merge_src = None
+            self._merge_src_bytes = 0
             self._merge_u16_depth = False
+            self._merge_needs_drain = False
             self.rows = rows
             self.failed = False
             self.used = False
@@ -260,6 +376,14 @@ class Merge:
             raise
         except Exception as exc:
             raise GpuError('OpenCL GPU initialization failed') from exc
+
+    def _drain_queue(self):
+        queue = getattr(self, 'queue', None)
+        if queue is not None:
+            try:
+                queue.finish()
+            except Exception:
+                _invalidate_program_cache()
 
     def acquire(self, should_cancel):
         from fusion_methods.openfocus_ab import _check_cancel
@@ -322,15 +446,26 @@ class Merge:
                     logging.getLogger(__name__).info('OpenFocus full GPU depth exceeds the free VRAM budget')
                     return None
             try:
-                self.depth_program = self.cl.Program(
-                    self.context, _FILTER_K + _DEPTH_K + _RESAMPLE_K).build()
-                engine = _GpuB(self, img_resize, should_cancel)
+                depth_prog, depth_k, filt_k, resamp_k = _get_or_build_depth_program(
+                    self.cl, self.device, self.context,
+                )
+                self.depth_program = depth_prog
+                engine = _GpuB(
+                    self, img_resize, should_cancel,
+                    depth_kernels=depth_k, filter_kernels=filt_k, resample_kernels=resamp_k,
+                )
                 return engine.depth(frames, kernel_size, smoothing, feather, shape,
                                     len(frames), should_cancel, progress)
             except CallbackFailure as exc:
+                self._drain_queue()
                 raise exc.__cause__
             except (self.cl.Error, MemoryError) as exc:
+                _invalidate_program_cache()
+                self._drain_queue()
                 raise GpuError('OpenCL GPU depth failed') from exc
+            except BaseException:
+                self._drain_queue()
+                raise
         finally:
             self.depth_program = None
             self.release()
@@ -348,6 +483,9 @@ class Merge:
             self.activity_kernel(self.queue, (source.size,), None, gb, fb, ob)
             cl.enqueue_copy(self.queue, result, ob, is_blocking=True)
         except Exception as exc:
+            if hasattr(self, 'cl') and isinstance(exc, (self.cl.Error, MemoryError)):
+                _invalidate_program_cache()
+            self._drain_queue()
             raise GpuError('OpenCL GPU depth activity failed') from exc
         output[...] = result
 
@@ -384,6 +522,9 @@ class Merge:
                 return False
             cl = self.cl
             codes = np.ascontiguousarray(depth, dtype=np.uint16 if u16_depth else np.int64)
+            self._merge_src = None
+            self._merge_src_bytes = 0
+            self._merge_needs_drain = False
             self._merge_depth = cl.Buffer(self.context, cl.mem_flags.READ_ONLY |
                                           cl.mem_flags.COPY_HOST_PTR, hostbuf=codes)
             self._merge_acc = cl.Buffer(self.context, cl.mem_flags.READ_WRITE,
@@ -392,8 +533,13 @@ class Merge:
             self._merge_u16_depth = u16_depth
             return True
         except Exception as exc:
-            self._merge_acc = self._merge_depth = None
+            if hasattr(self, 'cl') and isinstance(exc, (self.cl.Error, MemoryError)):
+                _invalidate_program_cache()
+            self._drain_queue()
+            self._merge_acc = self._merge_depth = self._merge_src = None
+            self._merge_src_bytes = 0
             self._merge_u16_depth = False
+            self._merge_needs_drain = False
             self.release()
             raise GpuError('OpenCL GPU merge allocation failed') from exc
 
@@ -402,8 +548,15 @@ class Merge:
             cl = self.cl
             is_u8 = getattr(frame, 'dtype', None) == np.uint8
             image = np.ascontiguousarray(frame, dtype=np.uint8 if is_u8 else np.uint16)
-            ib = cl.Buffer(self.context, cl.mem_flags.READ_ONLY | cl.mem_flags.COPY_HOST_PTR,
-                           hostbuf=image)
+            if self._merge_src is None or self._merge_src_bytes != image.nbytes:
+                self._merge_src = None
+                self._merge_src_bytes = 0
+                self._merge_src = cl.Buffer(
+                    self.context, cl.mem_flags.READ_ONLY, max(1, image.nbytes),
+                )
+                self._merge_src_bytes = image.nbytes
+            self._merge_needs_drain = True
+            cl.enqueue_copy(self.queue, self._merge_src, image, is_blocking=False)
             height, width = self._merge_shape[:2]
             channels = 1 if image.ndim == 2 else image.shape[2]
             if self._merge_u16_depth:
@@ -411,12 +564,17 @@ class Merge:
             else:
                 kern = self.merge_u8_i64_kernel if is_u8 else self.kernel
             event = kern(self.queue, (height * width,), None, self._merge_acc,
-                         ib, self._merge_depth, np.int32(width), np.int32(channels),
-                         np.int32(65535 // max(1, count - 1)), np.int32(index),
-                         np.int32(scale), np.int32(index == 0))
+                         self._merge_src, self._merge_depth, np.int32(width),
+                         np.int32(channels), np.int32(65535 // max(1, count - 1)),
+                         np.int32(index), np.int32(scale), np.int32(index == 0))
             event.wait()
+            self._merge_needs_drain = False
             self.used = True
         except Exception as exc:
+            if hasattr(self, 'cl') and isinstance(exc, (self.cl.Error, MemoryError)):
+                _invalidate_program_cache()
+            self._drain_queue()
+            self._merge_needs_drain = False
             raise GpuError('OpenCL GPU merge failed') from exc
 
     def finish_merge(self, result):
@@ -429,13 +587,20 @@ class Merge:
             output = result if direct else np.empty(self._merge_shape, dtype=np.uint16)
             self.cl.enqueue_copy(self.queue, output, self._merge_acc, is_blocking=True)
         except Exception as exc:
+            if hasattr(self, 'cl') and isinstance(exc, (self.cl.Error, MemoryError)):
+                _invalidate_program_cache()
+            self._drain_queue()
             raise GpuError('OpenCL GPU merge download failed') from exc
         if not direct:
             result[...] = output
 
     def end_merge(self):
-        self._merge_acc = self._merge_depth = None
+        if getattr(self, '_merge_needs_drain', False):
+            self._drain_queue()
+        self._merge_acc = self._merge_depth = self._merge_src = None
+        self._merge_src_bytes = 0
         self._merge_u16_depth = False
+        self._merge_needs_drain = False
         self.release()
 
     def band(self, accumulator, image, depth, index, step, scale, first):
@@ -461,6 +626,9 @@ class Merge:
             result = np.empty_like(acc)
             cl.enqueue_copy(self.queue, result, ab, is_blocking=True)
         except Exception as exc:
+            if hasattr(self, 'cl') and isinstance(exc, (self.cl.Error, MemoryError)):
+                _invalidate_program_cache()
+            self._drain_queue()
             raise GpuError('OpenCL GPU merge failed') from exc
         accumulator[...] = result
 
@@ -746,14 +914,14 @@ __kernel void horiz(__global const float* scratch, __global ushort* out,
 class _Filter:
     """Unguided/guided IIR axis filter; mirrors gpu_filter.Filter + device ctx."""
 
-    def __init__(self, cl, ctx, q, mf, prg):
+    def __init__(self, cl, ctx, q, mf, prg, kernels=None):
         self.cl = cl
         self.ctx = ctx
         self.q = q
         self.mf = mf
         self.p = prg
-        self.kernels = {name: cl.Kernel(self.p, name)
-                        for name in ('filt4', 'filt_guided', 'transpose_u16')}
+        self.kernels = (kernels if kernels is not None else
+                        {name: cl.Kernel(self.p, name) for name in _FILTER_KERNEL_NAMES})
         self._bufs = {}
 
     def _bufs_for(self, h, w, guided):
@@ -849,13 +1017,14 @@ class _Filter:
 
 
 class _HalfResample:
-    def __init__(self, cl, ctx, q, mf, prg):
+    def __init__(self, cl, ctx, q, mf, prg, kernels=None):
         self.cl = cl
         self.ctx = ctx
         self.q = q
         self.mf = mf
         self.p = prg
-        self.kernels = {name: cl.Kernel(self.p, name) for name in ('vert', 'horiz')}
+        self.kernels = (kernels if kernels is not None else
+                        {name: cl.Kernel(self.p, name) for name in _RESAMPLE_KERNEL_NAMES})
         self._cache = {}
         self._scratch = {}
 
@@ -947,7 +1116,8 @@ class _ExpandDepth(_HalfResample):
 class _GpuB:
     """GPU depth_map (half-res + preserve-detail) + MergeWeighted stream."""
 
-    def __init__(self, gpu, img_resize, should_cancel):
+    def __init__(self, gpu, img_resize, should_cancel,
+                 depth_kernels=None, filter_kernels=None, resample_kernels=None):
         self.gpu = gpu
         cl, ctx, q, mf, pk = gpu.cl, gpu.context, gpu.queue, gpu.cl.mem_flags, gpu.depth_program
         self.img_resize = img_resize
@@ -957,13 +1127,11 @@ class _GpuB:
         self.q = q
         self.mf = mf
         self.p = pk
-        self.kernels = {name: cl.Kernel(self.p, name) for name in (
-            'gray_u8', 'gray_u16', 'detail_pool', 'detail_smooth', 'detail_select',
-            'init_detail', 'detail_confidence', 'confidence', 'apply_detail',
-            'activity', 'init_activity', 'select_activity', 'guide', 'snap')}
-        self.filt = _Filter(cl, ctx, q, mf, pk)
-        self.half = _HalfResample(cl, ctx, q, mf, pk)
-        self.expand = _ExpandDepth(cl, ctx, q, mf, pk)
+        self.kernels = (depth_kernels if depth_kernels is not None else
+                        {name: cl.Kernel(self.p, name) for name in _DEPTH_KERNEL_NAMES})
+        self.filt = _Filter(cl, ctx, q, mf, pk, kernels=filter_kernels)
+        self.half = _HalfResample(cl, ctx, q, mf, pk, kernels=resample_kernels)
+        self.expand = _ExpandDepth(cl, ctx, q, mf, pk, kernels=resample_kernels)
         self._cbuf = {}
 
     def _buf(self, key, nbytes):
@@ -1023,6 +1191,7 @@ class _GpuB:
         coarse_r = float(np.float32(extent * coarse_p / np.float32(100)))
         step = 65535 // (count - 1)
 
+        completed = False
         try:
             gray_buf = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, height * width * 2)
             pb = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, m_bytes)
@@ -1119,8 +1288,12 @@ class _GpuB:
                                      np.int32(step), np.int32(m))
             self.kernels['apply_detail'](self.q, (m,), None, depth_buf, d_second_buf,
                                          d_winner_buf, np.int32(m))
-            return self.expand.run_buf(depth_buf, (oh, ow), shape)
+            out = self.expand.run_buf(depth_buf, (oh, ow), shape)
+            completed = True
+            return out
         finally:
+            if not completed:
+                self.gpu._drain_queue()
             self._cbuf.clear()
             self.filt._bufs.clear()
             self.half._cache.clear()

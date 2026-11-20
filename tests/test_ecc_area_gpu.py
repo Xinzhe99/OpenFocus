@@ -109,3 +109,98 @@ def test_hardware_stripes_reuse_and_return_independent_outputs(hardware_gpu, dty
         np.testing.assert_array_equal(actual, expected)
     assert hardware_gpu.frames_resized == 2
     assert hardware_gpu.device_name.startswith('OpenCL')
+
+
+def test_ecc_area_program_cache_reuse_and_error_drain(monkeypatch):
+    import sys
+    from fusion_methods import _openfocus_gpu
+
+    builds = []
+    events = []
+    gpu_holder = []
+
+    class FakeError(Exception):
+        pass
+
+    class FakeProgram:
+        def __init__(self, ctx, src):
+            self.ctx = ctx
+
+        def build(self):
+            builds.append(self.ctx)
+            return self
+
+    class FakeQueue:
+        def finish(self):
+            cur = gpu_holder[-1]
+            events.append(('finish', cur._buffers is not None))
+
+    def fake_kernel_call(*args, **kwargs):
+        return None
+
+    fail_copy = [False]
+
+    def fake_enqueue_copy(queue, dst, src, is_blocking=True):
+        if fail_copy[0] and is_blocking:
+            raise FakeError('queue lost')
+
+    fake_cl = SimpleNamespace(
+        Error=FakeError,
+        device_fp_config=SimpleNamespace(ROUND_TO_NEAREST=1),
+        mem_flags=SimpleNamespace(READ_ONLY=1, WRITE_ONLY=2, COPY_HOST_PTR=4),
+        Context=lambda devs: ('ctx', len(builds)),
+        CommandQueue=lambda ctx, device=None: FakeQueue(),
+        Program=FakeProgram,
+        Kernel=lambda prg, name: fake_kernel_call,
+        Buffer=lambda *args, **kwargs: object(),
+        enqueue_copy=fake_enqueue_copy,
+    )
+    fake_dev = SimpleNamespace(
+        int_ptr=999,
+        name='Fake GPU',
+        vendor='FakeVendor',
+        driver_version='1.0',
+        global_mem_size=8 * 1024**3,
+        max_mem_alloc_size=2 * 1024**3,
+        endian_little=True,
+        single_fp_config=1,
+    )
+
+    area._invalidate_program_cache()
+    monkeypatch.setitem(sys.modules, 'pyopencl', fake_cl)
+    monkeypatch.setattr(area, '_cpu_contract', lambda: True)
+    monkeypatch.setattr(area, '_MIN_SOURCE_BYTES', 0)
+    monkeypatch.setattr(cv2.ipp, 'useIPP_NotExact', lambda: False)
+    monkeypatch.setattr(_openfocus_gpu, '_device', lambda cl: fake_dev)
+    monkeypatch.setattr(_openfocus_gpu, '_free_vram', lambda dev: (4 * 1024**3, 8 * 1024**3))
+
+    def fake_select(self):
+        self._round_mode = lambda: 0
+        self._device = fake_dev
+        self._cl = fake_cl
+        return True
+
+    image = np.zeros((182, 182), np.uint8)
+    try:
+        g1 = area.ExactAreaGpu()
+        gpu_holder.append(g1)
+        monkeypatch.setattr(g1, '_select_device', lambda: fake_select(g1))
+        assert g1.resize(image, (64, 64)) is not None
+
+        g2 = area.ExactAreaGpu()
+        gpu_holder.append(g2)
+        monkeypatch.setattr(g2, '_select_device', lambda: fake_select(g2))
+        assert g2.resize(image, (64, 64)) is not None
+
+        assert len(builds) == 1
+        assert g1._context is g2._context
+        assert g1._queue is g2._queue
+
+        fail_copy[0] = True
+        assert g2.resize(image, (64, 64)) is None
+        assert events == [('finish', True)]
+        assert g2._disabled is True
+        assert g2._buffers is None
+        assert area._PROGRAM_CACHE is None
+    finally:
+        area._invalidate_program_cache()

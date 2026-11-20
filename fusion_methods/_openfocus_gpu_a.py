@@ -7,11 +7,45 @@ low-response blending, and output code exit onto OpenCL kernels.
 from __future__ import annotations
 
 import math
+from threading import Lock
 
 import numpy as np
 
 from fusion_methods._openfocus_pixels import frame_codes
 from fusion_methods.openfocus_ab import _check_cancel
+
+_KERNEL_NAMES = (
+    'a_gray_u8', 'a_gray_u16', 'a_down2', 'a_laplacian0',
+    'a_laplacian', 'a_accumulate', 'a_select_u8', 'a_select_u16',
+    'a_blend_low', 'a_out_u8', 'a_out_f32',
+)
+
+_cache_lock = Lock()
+_PROGRAM_CACHE = None
+
+
+def _get_or_build_program(cl, device):
+    global _PROGRAM_CACHE
+    from fusion_methods._openfocus_gpu import _device_cache_key
+
+    key = _device_cache_key(device)
+    with _cache_lock:
+        if _PROGRAM_CACHE is not None and _PROGRAM_CACHE[0] == key:
+            return _PROGRAM_CACHE[1:]
+        ctx = cl.Context(devices=[device])
+        queue = cl.CommandQueue(ctx, device=device)
+        program = cl.Program(ctx, _A_K).build(
+            options=['-cl-fp32-correctly-rounded-divide-sqrt'],
+        )
+        kernels = {name: cl.Kernel(program, name) for name in _KERNEL_NAMES}
+        _PROGRAM_CACHE = (key, ctx, queue, kernels)
+        return ctx, queue, kernels
+
+
+def _invalidate_program_cache():
+    global _PROGRAM_CACHE
+    with _cache_lock:
+        _PROGRAM_CACHE = None
 
 _A_K = r'''
 #pragma OPENCL FP_CONTRACT OFF
@@ -303,16 +337,8 @@ class GpuA:
             self.cl = cl
             self.device = device
             self.device_name = opencl_device_name(device)
-            self.ctx = cl.Context(devices=[device])
-            self.q = cl.CommandQueue(self.ctx, device=device)
             self.mf = cl.mem_flags
-            prog = cl.Program(self.ctx, _A_K).build(
-                options=['-cl-fp32-correctly-rounded-divide-sqrt'])
-            self.k = {name: cl.Kernel(prog, name) for name in (
-                'a_gray_u8', 'a_gray_u16', 'a_down2', 'a_laplacian0',
-                'a_laplacian', 'a_accumulate', 'a_select_u8', 'a_select_u16',
-                'a_blend_low', 'a_out_u8', 'a_out_f32',
-            )}
+            self.ctx, self.q, self.k = _get_or_build_program(cl, device)
         except GpuError:
             raise
         except Exception as exc:
@@ -320,6 +346,14 @@ class GpuA:
 
     def _run(self, kernel, gsize, *args):
         kernel(self.q, gsize if isinstance(gsize, tuple) else (gsize,), None, *args)
+
+    def _drain_queue(self):
+        q = getattr(self, 'q', None)
+        if q is not None:
+            try:
+                q.finish()
+            except Exception:
+                _invalidate_program_cache()
 
     def fuse(self, frames, img_resize, radius, should_cancel=None, progress_callback=None):
         from fusion_methods._openfocus_gpu import GpuError, _device_lock
@@ -340,9 +374,15 @@ class GpuA:
                 return self._fuse_locked(frames, img_resize, radius, should_cancel,
                                          progress if progress_callback is not None else None)
             except CallbackFailure as exc:
+                self._drain_queue()
                 raise exc.__cause__
             except (self.cl.Error, MemoryError) as exc:
+                _invalidate_program_cache()
+                self._drain_queue()
                 raise GpuError('OpenCL GPU A execution failed') from exc
+            except BaseException:
+                self._drain_queue()
+                raise
         finally:
             self.k = None
             self.q = None
@@ -431,82 +471,97 @@ class GpuA:
         wt_buf = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, max(1, n * 4))
         stat_buf = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, max(1, n * 4))
 
-        for index, source in enumerate(frames):
-            _check_cancel(should_cancel)
-            if fast_hard:
-                with without_source_cache_growth():
-                    raw = resolve_frame(source, should_cancel=should_cancel)
+        src_buf = None
+        src_buf_bytes = 0
+        in_flight = False
+        try:
+            for index, source in enumerate(frames):
                 _check_cancel(should_cancel)
-                if tuple(raw.shape) != tuple(shape):
-                    raise ValueError('OpenFocus A requires frames with matching shapes')
-                host_src = np.ascontiguousarray(raw)
-                del raw
-                src_buf = self.cl.Buffer(self.ctx, self.mf.READ_ONLY | self.mf.COPY_HOST_PTR,
-                                         hostbuf=host_src)
-                src_is_u8 = host_src.dtype == np.uint8
+                if fast_hard:
+                    with without_source_cache_growth():
+                        raw = resolve_frame(source, should_cancel=should_cancel)
+                    _check_cancel(should_cancel)
+                    if tuple(raw.shape) != tuple(shape):
+                        raise ValueError('OpenFocus A requires frames with matching shapes')
+                    host_src = np.ascontiguousarray(raw)
+                    del raw
+                    src_is_u8 = host_src.dtype == np.uint8
+                    u8_gray = 0
+                else:
+                    with without_source_cache_growth():
+                        raw_code = frame_codes(source, img_resize, should_cancel)
+                    if tuple(raw_code.shape) != tuple(shape):
+                        raise ValueError('OpenFocus A requires frames with matching shapes')
+                    host_src = np.ascontiguousarray(raw_code, dtype=np.uint16)
+                    del raw_code
+                    src_is_u8 = False
+                    u8_gray = 1 if getattr(source, 'dtype', None) == np.uint8 else 0
+                if src_buf is None or src_buf_bytes != host_src.nbytes:
+                    src_buf = None
+                    src_buf_bytes = 0
+                    src_buf = self.cl.Buffer(
+                        self.ctx, self.mf.READ_ONLY, max(1, host_src.nbytes),
+                    )
+                    src_buf_bytes = host_src.nbytes
+                in_flight = True
+                self.cl.enqueue_copy(self.q, src_buf, host_src, is_blocking=False)
                 if src_is_u8:
                     self._run(self.k['a_gray_u8'], n, src_buf, gray_bufs[0],
                               np.int32(n), np.int32(channels))
                 else:
                     self._run(self.k['a_gray_u16'], n, src_buf, gray_bufs[0],
-                              np.int32(n), np.int32(channels), np.int32(0))
+                              np.int32(n), np.int32(channels), np.int32(u8_gray))
+
+                for level in range(levels_count):
+                    _check_cancel(should_cancel)
+                    gh, gw = pyr_shapes[level]
+                    rh, rw = pyr_shapes[level + 1]
+                    self._run(self.k['a_down2'], (rw, rh),
+                              gray_bufs[level], gray_bufs[level + 1],
+                              np.int32(gh), np.int32(gw), np.int32(rh), np.int32(rw))
+                    if level == 0:
+                        self._run(self.k['a_laplacian0'], (gw, gh),
+                                  gray_bufs[level], gray_bufs[level + 1], resp_buf,
+                                  np.int32(gh), np.int32(gw), np.int32(rh), np.int32(rw))
+                    else:
+                        self._run(self.k['a_laplacian'], (gw, gh),
+                                  gray_bufs[level], gray_bufs[level + 1], lap_buf,
+                                  np.int32(gh), np.int32(gw), np.int32(rh), np.int32(rw))
+                        self._run(self.k['a_accumulate'], (width, height),
+                                  lap_buf, resp_buf,
+                                  np.int32(height), np.int32(width),
+                                  np.int32(gh), np.int32(gw), np.int32(level))
+
+                select_kern = self.k['a_select_u8'] if src_is_u8 else self.k['a_select_u16']
+                self._run(select_kern, n, src_buf, resp_buf, best_buf, out_buf,
+                          acc_buf, wt_buf, stat_buf, np.int32(n), np.int32(channels),
+                          np.int32(1 if index == 0 else 0))
+                # Bound queued frame uploads to one source, even for very deep stacks.
+                self.q.finish()
+                in_flight = False
+                del host_src
+                if progress_callback is not None:
+                    progress_callback(index + 1, total)
+
+            _check_cancel(should_cancel)
+            in_flight = True
+            self._run(self.k['a_blend_low'], n, out_buf, best_buf,
+                      acc_buf, wt_buf, stat_buf, np.int32(n), np.int32(channels))
+
+            out_dtype = np.uint8 if is_u8 else np.float32
+            out = np.empty(shape, dtype=out_dtype)
+            dst_buf = self.cl.Buffer(self.ctx, self.mf.WRITE_ONLY, out_bytes)
+            if is_u8:
+                self._run(self.k['a_out_u8'], samples, out_buf, dst_buf,
+                          np.int32(samples), np.int32(channels))
             else:
-                with without_source_cache_growth():
-                    raw_code = frame_codes(source, img_resize, should_cancel)
-                if tuple(raw_code.shape) != tuple(shape):
-                    raise ValueError('OpenFocus A requires frames with matching shapes')
-                host_src = np.ascontiguousarray(raw_code, dtype=np.uint16)
-                del raw_code
-                src_buf = self.cl.Buffer(self.ctx, self.mf.READ_ONLY | self.mf.COPY_HOST_PTR,
-                                         hostbuf=host_src)
-                u8_gray = 1 if getattr(source, 'dtype', None) == np.uint8 else 0
-                src_is_u8 = False
-                self._run(self.k['a_gray_u16'], n, src_buf, gray_bufs[0],
-                          np.int32(n), np.int32(channels), np.int32(u8_gray))
-
-            for level in range(levels_count):
-                _check_cancel(should_cancel)
-                gh, gw = pyr_shapes[level]
-                rh, rw = pyr_shapes[level + 1]
-                self._run(self.k['a_down2'], (rw, rh),
-                          gray_bufs[level], gray_bufs[level + 1],
-                          np.int32(gh), np.int32(gw), np.int32(rh), np.int32(rw))
-                if level == 0:
-                    self._run(self.k['a_laplacian0'], (gw, gh),
-                              gray_bufs[level], gray_bufs[level + 1], resp_buf,
-                              np.int32(gh), np.int32(gw), np.int32(rh), np.int32(rw))
-                else:
-                    self._run(self.k['a_laplacian'], (gw, gh),
-                              gray_bufs[level], gray_bufs[level + 1], lap_buf,
-                              np.int32(gh), np.int32(gw), np.int32(rh), np.int32(rw))
-                    self._run(self.k['a_accumulate'], (width, height),
-                              lap_buf, resp_buf,
-                              np.int32(height), np.int32(width),
-                              np.int32(gh), np.int32(gw), np.int32(level))
-
-            select_kern = self.k['a_select_u8'] if src_is_u8 else self.k['a_select_u16']
-            self._run(select_kern, n, src_buf, resp_buf, best_buf, out_buf,
-                      acc_buf, wt_buf, stat_buf, np.int32(n), np.int32(channels),
-                      np.int32(1 if index == 0 else 0))
-            # Bound queued frame uploads to one source, even for very deep stacks.
-            self.q.finish()
-            del src_buf, host_src
-            if progress_callback is not None:
-                progress_callback(index + 1, total)
-
-        _check_cancel(should_cancel)
-        self._run(self.k['a_blend_low'], n, out_buf, best_buf,
-                  acc_buf, wt_buf, stat_buf, np.int32(n), np.int32(channels))
-
-        out_dtype = np.uint8 if is_u8 else np.float32
-        out = np.empty(shape, dtype=out_dtype)
-        dst_buf = self.cl.Buffer(self.ctx, self.mf.WRITE_ONLY, out_bytes)
-        if is_u8:
-            self._run(self.k['a_out_u8'], samples, out_buf, dst_buf,
-                      np.int32(samples), np.int32(channels))
-        else:
-            self._run(self.k['a_out_f32'], samples, out_buf, dst_buf,
-                      np.int32(samples))
-        self.cl.enqueue_copy(self.q, out, dst_buf, is_blocking=True)
-        _check_cancel(should_cancel)
-        return out
+                self._run(self.k['a_out_f32'], samples, out_buf, dst_buf,
+                          np.int32(samples))
+            self.cl.enqueue_copy(self.q, out, dst_buf, is_blocking=True)
+            in_flight = False
+            _check_cancel(should_cancel)
+            return out
+        except BaseException:
+            if in_flight:
+                self._drain_queue()
+            raise
