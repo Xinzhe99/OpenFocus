@@ -16,6 +16,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Choose the PyTorch download order from the network region, with a manual
   override and a server-maintained list of mirrors. Resume interrupted
   transfers on the next source and log why the source changed.
+- Read the tiles of a tiled neural render from the frames it prepared, instead
+  of copying every prepared frame into the render's frame cache a second time.
+  This about halves the scratch storage those renders hold. Output pixels are
+  unchanged.
 
 ### Fixed
 - Recover a desktop email sign-in after a lost connection to the approval
@@ -30,6 +34,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   memory needed if GPU inference falls back to CPU.
 - Use consistent visible QR code sizes in the Contact Us and Support Us
   dialogs while preserving the artwork and a scannable white border.
+- Keep checking the original file when a crop of a prepared frame is prepared
+  again. A changed source could otherwise go unnoticed and its old pixels be
+  used.
 
 ## [2.0.0]
 

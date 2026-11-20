@@ -1047,13 +1047,10 @@ class MultiFocusFusion:
                                                  deferred_exposure)
         check_cancel()
         if streaming_sources:
-            from core.source_frames import SourceFrame, ProcessedFrame
+            from core.source_frames import validate_frame_source
             for frame in identity_sources:
                 check_cancel()
-                while isinstance(frame, ProcessedFrame):
-                    frame = frame.source
-                if isinstance(frame, SourceFrame):
-                    frame.validate_source()
+                validate_frame_source(frame)
         result = result if is_mapped_frame(result) else store_frame(result)
         options = [('exposure_match', self.exposure_match), ('base_frame', self.base_frame)]
         if spec.sort_frames:

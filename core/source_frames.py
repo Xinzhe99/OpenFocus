@@ -840,6 +840,28 @@ class ProcessedFrame:
 
 
 @dataclass(frozen=True, eq=False)
+class PreparedFrame(ProcessedFrame):
+    """A mapped processing result with the file identity it was captured from.
+
+    ``source`` is already the finished pixel array, so every tile reads it
+    directly and no second full copy enters the resolution cache. Only the
+    file identity survives from the chain that produced it. A RetainedFrame
+    instead keeps that chain as ``source`` beside its ``pixels``.
+    """
+    original: SourceFrame | None = None
+
+    def full_resolution(self, *, should_cancel=None, cache_result=True, store_result=True):
+        _check_resolution_cancel(should_cancel)
+        _check_resolution_cancel(self.should_cancel)
+        validate_frame_source(self)
+        if self.source.shape != self.shape or self.source.dtype != self.dtype:
+            raise ValueError('Prepared frame does not match its declared shape/dtype')
+        pixels = self.source.view()
+        pixels.setflags(write=False)
+        return pixels
+
+
+@dataclass(frozen=True, eq=False)
 class RetainedFrame(ProcessedFrame):
     """Read-only aligned pixels with their original lazy source provenance.
 
@@ -864,6 +886,8 @@ class RetainedFrame(ProcessedFrame):
 
 def frame_has_mapped_pixels(frame):
     """Whether materializing this frame can reuse existing mapped pixels."""
+    if isinstance(frame, PreparedFrame):
+        return is_mapped_frame(frame.source)
     return is_mapped_frame(frame.pixels if isinstance(frame, RetainedFrame) else frame)
 
 
@@ -1342,19 +1366,18 @@ def materialize_frames(frames, should_cancel=None, *, staging_bytes=0,
         return result
 
 
+def _original_source(frame):
+    """The file descriptor or array at the start of a frame's processing."""
+    while isinstance(frame, ProcessedFrame):
+        frame = frame.original if isinstance(frame, PreparedFrame) else frame.source
+    return frame
+
+
 def validate_frame_source(source):
     """Check the original source identity behind a processed frame."""
-    while isinstance(source, ProcessedFrame):
-        processor = source.processor
-        if isinstance(processor, partial) and processor.func is _validated_snapshot:
-            validate_frame_source(processor.keywords['source'])
-        source = source.source
-    if isinstance(source, SourceFrame):
-        source.validate_source()
-
-def _validated_snapshot(image, source):
-    validate_frame_source(source)
-    return image
+    original = _original_source(source)
+    if isinstance(original, SourceFrame):
+        original.validate_source()
 
 
 def materialize_for_repeated_access(frames, should_cancel=None, *, thread_count=0,
@@ -1367,18 +1390,15 @@ def materialize_for_repeated_access(frames, should_cancel=None, *, thread_count=
     """
     indices = [i for i, frame in enumerate(frames)
                if isinstance(frame, (SourceFrame, ProcessedFrame))
-               and not isinstance(frame, RetainedFrame)]
+               and not isinstance(frame, (RetainedFrame, PreparedFrame))]
     if not indices:
         return frames
     lazy = [frames[i] for i in indices]
     from core.frame_storage import ScratchSpaceError, scratch_directory, select_scratch
-    paths = []
-    for frame in lazy:
-        original = frame
-        while isinstance(original, ProcessedFrame):
-            original = original.source
-        if isinstance(original, SourceFrame):
-            paths.append(original.path)
+    # A crop of an earlier snapshot still answers for that snapshot's file.
+    originals = [_original_source(frame) for frame in lazy]
+    originals = [original if isinstance(original, SourceFrame) else None for original in originals]
+    paths = [original.path for original in originals if original is not None]
     with scratch_directory():
         try:
             select_scratch(sum(frame.nbytes for frame in lazy) + staging_bytes, paths)
@@ -1396,11 +1416,10 @@ def materialize_for_repeated_access(frames, should_cancel=None, *, thread_count=
                                     staging_bytes=staging_bytes)
 
     result = list(frames)
-    for index, original, image in zip(indices, lazy, stored):
-        while isinstance(original, ProcessedFrame):
-            original = original.source
-        result[index] = process_frame(image, partial(_validated_snapshot, source=original),
-                                      should_cancel=should_cancel, scratch_bytes=0)
+    for index, original, image in zip(indices, originals, stored):
+        result[index] = PreparedFrame(source=image, processor=None, shape=image.shape,
+                                      dtype=image.dtype, should_cancel=should_cancel,
+                                      original=original)
     return result
 
 
