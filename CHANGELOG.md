@@ -51,6 +51,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Show the fusion method once in output names after rendering all methods.
 - Reuse one account registration for the same Windows installation and
   consolidate older registrations identified by locally retained device IDs.
+- Restore the isolated agent smoke and menu sweep after the desktop sign-in
+  requirement. Return a nonzero exit status for failed smoke checks.
 - Admit StackMFF tiles against live render-process memory, including the host
   memory needed if GPU inference falls back to CPU.
 - Use consistent visible QR code sizes in the Contact Us and Support Us
