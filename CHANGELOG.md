@@ -47,6 +47,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Open dropped or externally supplied `.ofproj` files through the same project
   workflow as the File menu. Accept macOS file-open events from the packaged
   app and forward selected paths from the installed Linux launcher.
+- Keep the startup reply available until the second process reads it, so
+  Windows file forwarding is acknowledged reliably.
 - Reuse one account registration for the same Windows installation and
   consolidate older registrations identified by locally retained device IDs.
 - Admit StackMFF tiles against live render-process memory, including the host

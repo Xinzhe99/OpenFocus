@@ -156,7 +156,7 @@ from PyQt6.QtCore import Qt, QThread, QUrl, QEvent, QSignalBlocker, pyqtSignal
 from PyQt6.QtGui import QKeySequence, QShortcut
 from PyQt6.QtGui import QFont, QIcon, QDesktopServices, QDragEnterEvent, QDropEvent, QPixmap
 from core import ImageStackLoader
-from core.app import OpenFocusApplication, process_command_line_args
+from core.app import OpenFocusApplication, _serve_instance_request, process_command_line_args
 from core.workers import ROIAlignmentWorker
 import cv2
 from ui.styles import GLOBAL_DARK_STYLE
@@ -4845,17 +4845,15 @@ if __name__ == "__main__":
                      [os.path.abspath(a) for a in sys.argv[1:] if not a.startswith("-")])
             payload = {"paths": paths, "explorer": _shell_paths is not None,
                        "request_path": _shell_request, "ai_runtime": _ai_runtime_flag}
-            probe.write((_json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8"))
-            while probe.bytesToWrite() and probe.waitForBytesWritten(60000):
-                pass
-            reply = bytearray()
+            wire = (_json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8")
+            sent = probe.write(wire) == len(wire)
             reply_deadline = _time.monotonic() + 60
-            while not probe.bytesToWrite() and b"\n" not in reply:
-                remaining = max(0, int((reply_deadline - _time.monotonic()) * 1000))
-                if not remaining or not probe.waitForReadyRead(remaining):
+            while sent and not probe.canReadLine():
+                remaining = int((reply_deadline - _time.monotonic()) * 1000)
+                if remaining <= 0 or not probe.waitForReadyRead(remaining):
                     break
-                reply.extend(bytes(probe.readAll()))
-            accepted = reply == b"OK\n"
+            accepted = sent and bytes(probe.readLine()) == b"OK\n"
+            probe.disconnectFromServer()
             if not accepted:
                 detail = ("The running OpenFocus instance did not accept the import. "
                           "Please try again.")
@@ -4944,28 +4942,10 @@ if __name__ == "__main__":
 
     def _on_new_connection() -> None:
         while _single_server.hasPendingConnections():
-            conn = _single_server.nextPendingConnection()
-            buffer = bytearray()
-
-            def receive(c=conn, data=buffer):
-                data.extend(bytes(c.readAll()))
-                if b"\n" in data:
-                    line, _, _ = data.partition(b"\n")
-                    try:
-                        accepted = _on_second_instance(line.decode("utf-8", "strict"))
-                    except UnicodeDecodeError:
-                        accepted = False
-                    if accepted:
-                        c.write(b"OK\n")
-                        c.flush()
-                    c.disconnectFromServer()
-
-            conn.readyRead.connect(receive)
-            conn.disconnected.connect(conn.deleteLater)
-            if conn.bytesAvailable():
-                receive()
+            _serve_instance_request(_single_server.nextPendingConnection(), _on_second_instance)
 
     _single_server.newConnection.connect(_on_new_connection)
+    _on_new_connection()
 
     # ---- Update restart: restore the session the updater snapshotted ----
     # The swap script relaunches with --restore-session, so this runs before

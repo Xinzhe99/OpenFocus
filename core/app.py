@@ -308,6 +308,31 @@ class OpenFocusApplication(QApplication):
         _dispatch_external_import(self.main_window, paths)
 
 
+def _serve_instance_request(connection, handle_request):
+    """Reply to one startup request and let the client close after reading."""
+    def receive():
+        if not connection.canReadLine():
+            return
+        connection.readyRead.disconnect(receive)
+        try:
+            request = bytes(connection.readLine()).decode('utf-8', 'strict')
+        except UnicodeDecodeError:
+            connection.disconnectFromServer()
+            return
+        if handle_request(request):
+            connection.write(b'OK\n')
+            # On Windows, disconnecting now can discard the unread reply.
+        else:
+            connection.disconnectFromServer()
+
+    timeout = QTimer(connection, singleShot=True, interval=60_000)
+    timeout.timeout.connect(connection.abort)
+    connection.disconnected.connect(connection.deleteLater)
+    connection.readyRead.connect(receive)
+    timeout.start()
+    receive()
+
+
 def process_command_line_args(main_window, args: List[str]):
     """Handle files passed via command-line (drag-to-EXE, desktop file %U, etc.)."""
     if not args:

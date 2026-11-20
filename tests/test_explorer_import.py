@@ -1,4 +1,5 @@
 """External import requests retain their selection and wait for active work."""
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -17,6 +18,48 @@ class Timer:
 
     def start(self, delay):
         self.delays.append(delay)
+
+
+def test_running_instance_keeps_reply_readable_until_client_disconnects(qapp):
+    from uuid import uuid4
+
+    from PyQt6 import sip
+    from PyQt6.QtNetwork import QLocalServer, QLocalSocket
+
+    from core.app import _serve_instance_request
+    from tests.test_control_channel import wait_until
+
+    name = f'of-startup-{uuid4().hex}'
+    server = QLocalServer()
+    assert server.listen(f'/tmp/{name}' if os.name == 'posix' else name)
+    client = QLocalSocket()
+    requests = []
+    connections = []
+
+    def accept():
+        connection = server.nextPendingConnection()
+        connections.append(connection)
+
+        def handle(request):
+            requests.append(request)
+            return True
+
+        _serve_instance_request(connection, handle)
+
+    server.newConnection.connect(accept)
+    try:
+        client.connectToServer(server.fullServerName())
+        assert client.waitForConnected(1000)
+        client.write(b'["frame.png"]\n')
+        assert wait_until(client.canReadLine)
+        assert requests == ['["frame.png"]\n']
+        assert client.state() == QLocalSocket.LocalSocketState.ConnectedState
+        assert bytes(client.readLine()) == b'OK\n'
+        client.disconnectFromServer()
+        assert wait_until(lambda: sip.isdeleted(connections[0]))
+    finally:
+        client.abort()
+        server.close()
 
 
 def test_explorer_combines_folders_and_images_in_selection_order(tmp_path, monkeypatch):
