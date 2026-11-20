@@ -34,20 +34,9 @@ _dimension_signals = _DimensionSignals()
 _dimension_requests = itertools.count()
 
 
-def _source_dimensions(path, video=False, linear_raw=False):
+def _source_dimensions(path, linear_raw=False):
     """Inspect header geometry only; return oriented dimensions when known."""
     try:
-        if video:
-            import cv2
-            cap = cv2.VideoCapture(path)
-            try:
-                if not cap.isOpened():
-                    return None
-                width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-                height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                return (width, height) if width > 0 and height > 0 else None
-            finally:
-                cap.release()
         from core.image_loader import is_raw_source
         if is_raw_source(path):
             import rawpy
@@ -81,7 +70,7 @@ def _source_dimensions(path, video=False, linear_raw=False):
         return None
 
 
-def _inspect_dimensions(request, paths, folder, video, linear_raw):
+def _inspect_dimensions(request, paths, folder, linear_raw):
     try:
         if folder:
             from core.image_loader import ImageStackLoader
@@ -91,11 +80,22 @@ def _inspect_dimensions(request, paths, folder, video, linear_raw):
                                 and os.path.splitext(entry.name)[1].lower() in ImageStackLoader.SUPPORTED_FORMATS),
                                key=lambda path: natural_sort_key(os.path.basename(path)))
         path = paths[0] if paths else None
-        dimensions = _source_dimensions(path, video, linear_raw) if path else None
+        dimensions = _source_dimensions(path, linear_raw=linear_raw) if path else None
         result = (dimensions, os.path.basename(path) if path else '')
     except Exception:
         result = (None, '')
     _dimension_signals.ready.emit(request, result)
+
+
+def _inspect_video_dimensions(request, path, should_cancel):
+    from core.video_import import probe_video_dimensions
+
+    try:
+        dimensions = probe_video_dimensions(path, should_cancel)
+    except Exception:
+        dimensions = None
+    if not should_cancel():
+        _dimension_signals.ready.emit(request, (dimensions, os.path.basename(path)))
 
 
 class DurationDialog(QDialog):
@@ -199,16 +199,21 @@ class DownsampleDialog(QDialog):
         if abs(initial - self.scale_percent / 100.0) > 1e-12:
             self._preset_scale = initial
         self._dimension_request = next(_dimension_requests)
+        self._cancel_video_probe = None
 
         # Styling comes from the generated application stylesheet.
         self._build_layout()
         _dimension_signals.ready.connect(self._dimensions_ready)
         self.finished.connect(self._stop_dimensions)
         self._update_dimensions()
-        if base_dimensions is None and (source_paths or source_folder or source_video):
+        if base_dimensions is None and source_video:
+            self._cancel_video_probe = threading.Event()
+            threading.Thread(target=_inspect_video_dimensions,
+                             args=(self._dimension_request, source_video, self._cancel_video_probe.is_set),
+                             daemon=True).start()
+        elif base_dimensions is None and (source_paths or source_folder):
             threading.Thread(target=_inspect_dimensions,
-                             args=(self._dimension_request, tuple(source_paths) or ((source_video,) if source_video else ()),
-                                   source_folder, bool(source_video), linear_raw),
+                             args=(self._dimension_request, tuple(source_paths), source_folder, linear_raw),
                              daemon=True).start()
 
     def _build_layout(self):
@@ -388,6 +393,8 @@ class DownsampleDialog(QDialog):
 
     def _stop_dimensions(self, _result):
         self._dimension_request = None
+        if self._cancel_video_probe is not None:
+            self._cancel_video_probe.set()
         try:
             _dimension_signals.ready.disconnect(self._dimensions_ready)
         except (TypeError, RuntimeError):
