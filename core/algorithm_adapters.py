@@ -137,7 +137,8 @@ def depth_dct(images, progress_callback=None, should_cancel=None, **parameters):
     from core.depth_map import _measure_dct
     return _measure_dct(images, progress_callback, should_cancel,
                         kernel_size=parameters['kernel_size'],
-                        block_size=parameters.get('block_size', 8))
+                        block_size=parameters.get('block_size', 8),
+                        thread_count=parameters.get('thread_count'))
 
 
 def depth_gfg(images, progress_callback=None, should_cancel=None, **parameters):
@@ -147,7 +148,9 @@ def depth_gfg(images, progress_callback=None, should_cancel=None, **parameters):
 
 def depth_dtcwt(images, progress_callback=None, should_cancel=None, **parameters):
     from core.depth_map import _measure_dtcwt
-    return _measure_dtcwt(images, progress_callback, should_cancel, nlevels=parameters['N'])
+    return _measure_dtcwt(images, progress_callback, should_cancel,
+                          nlevels=parameters['N'],
+                          thread_count=parameters.get('thread_count'))
 
 
 def depth_neural(images, progress_callback=None, should_cancel=None, **parameters):
