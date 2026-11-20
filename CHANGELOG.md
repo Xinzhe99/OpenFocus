@@ -25,6 +25,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Choose the PyTorch download order from the network region, with a manual
   override and a server-maintained list of mirrors. Resume interrupted
   transfers on the next source and log why the source changed.
+- Stream DCT, GFG-FGF, DTCWT, and OpenFocus C depth map estimation without
+  materializing the stack or pre-converting all 16-bit frames to float32.
+  Bound concurrent frame workers by the memory budget and preserve the
+  existing focus decisions for low-contrast and mixed-bit-depth inputs.
 
 ### Fixed
 - Give comparison alignment workers on macOS enough stack for the first
