@@ -9,7 +9,7 @@ from PyQt6.QtWidgets import (QCheckBox, QDialog, QFrame, QHBoxLayout, QLabel,
                              QLineEdit, QPushButton, QVBoxLayout, QWidget)
 
 from locales import trans
-from utils.account_client import AccountClient, AccountError
+from utils.account_client import BASE_URL, AccountClient, AccountError
 from utils.design_tokens import palette
 from utils.settings_store import enable_account_default_reports
 from utils.ui_utils import resource_path
@@ -216,6 +216,11 @@ class AccountDialog(QDialog):
         self.status.setWordWrap(True)
         self.status.setTextFormat(Qt.TextFormat.PlainText)
         card_layout.addWidget(self.status)
+        self.devices_button = QPushButton(trans.t('account_web_center'))
+        self.devices_button.setObjectName('accountManageDevices')
+        self.devices_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.devices_button.clicked.connect(self._open_account_devices)
+        card_layout.addWidget(self.devices_button)
         self.retry_button = QPushButton(trans.t('btn_retry'))
         self.retry_button.setObjectName('accountRetry')
         self.retry_button.clicked.connect(self._retry_account_load)
@@ -270,6 +275,13 @@ class AccountDialog(QDialog):
             self._start('web_center', lambda _started: self.client.open_web_handoff(
                 cancel=self._cancel, timeout=8))
 
+    def _open_account_devices(self):
+        url = QUrl(BASE_URL + '/account/devices')
+        query = QUrlQuery()
+        query.addQueryItem('lang', 'zh' if trans.current_lang == 'zh' else 'en')
+        url.setQuery(query)
+        QDesktopServices.openUrl(url)
+
 
     def _sign_in_browser(self):
         cancel = self._begin_sign_in()
@@ -300,6 +312,7 @@ class AccountDialog(QDialog):
         switching = self._operation in ('email', 'github', 'google', 'browser')
         self.form.setEnabled((not busy or switching) and self.client is not None and not pending)
         self.retry_button.setVisible(not busy and self.client is None)
+        self.devices_button.hide()
         self.logout_button.setVisible(signed_in or pending)
         self.logout_button.setText(trans.t('account_cleanup_retry' if pending else 'account_sign_out'))
         self.center_button.setVisible(signed_in)
@@ -415,9 +428,12 @@ class AccountDialog(QDialog):
                 self._refresh_controls()
                 return
             self._refresh_controls()
-            self.status.setText(trans.t('account_cleanup_pending') if getattr(self.client, 'logout_cleanup_pending', False)
-                                else self._error_text(error))
+            pending = getattr(self.client, 'logout_cleanup_pending', False)
+            self.status.setText(trans.t('account_cleanup_pending') if pending else self._error_text(error))
             self.status.show()
+            if error.category == 'device_limit_reached' and not pending:
+                self.devices_button.show()
+                self._layout_timer.start(0)
             return
         report_cleanup_failed = False
         if operation == 'load':

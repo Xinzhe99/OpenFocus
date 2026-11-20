@@ -140,13 +140,14 @@ online again. To use an existing browser account, choose the browser sign-in
 button on the account screen. Browser and desktop sessions are separate, so
 signing out here does not sign out the browser.
 
-Windows builds run by the same Windows user share one account device slot,
-including source builds with a separate settings directory. Before switching
-from an older portable copy to the installer, update the portable copy in its
-original folder, keep `OpenFocusData`, and open it once with its saved session.
-The updated portable app can then carry the old device registration forward.
-Remove unused old registrations in the account center to free their slots.
-Removing a registration also signs out any session using it.
+Current Windows builds reuse one account device slot for the same Windows
+installation. The account service can consolidate older registrations when
+OpenFocus still has their device IDs. Before switching from an older portable
+copy to the installer, update the portable copy in its original folder, keep
+`OpenFocusData`, and open it once with its saved session. If a device limit
+message still appears, choose **Manage devices** to remove a registration
+you no longer use and try again. Removing a registration signs out any session
+using it.
 
 For email sign-in, open the link on your phone or computer and confirm it;
 the waiting desktop app signs in automatically. If the account service has

@@ -1206,6 +1206,7 @@ class MultiFocusFusion:
             resource_preference=self.resource_preference,
             execution_plan=kwargs.get('execution_plan'),
             focus_callback=kwargs.get('focus_callback'),
+            tile_plan=kwargs.get('tile_plan'),
         )
 
     def _fuse_stackmff(self, input_source, img_resize=None,
@@ -1224,6 +1225,7 @@ class MultiFocusFusion:
             thread_count=kwargs.get('thread_count'),
             resource_preference=self.resource_preference,
             execution_plan=kwargs.get('execution_plan'),
+            tile_plan=kwargs.get('tile_plan'),
         )
 
     def _fuse_stackmffv2(self, input_source, img_resize=None,
@@ -1532,20 +1534,12 @@ class MultiFocusFusion:
         tile_coords = [(x, y, min(x + block_size, w), min(y + block_size, h))
                        for y in ys for x in xs]
 
-        # StackMFF V3 使用批量处理
-        if get_fusion(algorithm).tile_runner:
-            # The neural path owns its own accumulators: allocating a second
-            # pair here only to return before using it cost 16 bytes per pixel
-            # of address space (and RSS once touched) for nothing.
-            return resolve_runner(get_fusion(algorithm).tile_runner)(
+        if descriptor.tile_runner:
+            return resolve_runner(descriptor.tile_runner)(
                 self, imgs, img_dir, tile_coords, h, w, channels,
-                block_size, overlap, **kwargs,
-                thread_count=thread_count,
-                should_cancel=should_cancel,
-                progress_callback=progress_callback,
-                out_dtype=out_dtype,
-                exposure_gains=exposure_gains,
-            )
+                block_size, overlap, **kwargs, thread_count=thread_count,
+                should_cancel=should_cancel, progress_callback=progress_callback,
+                out_dtype=out_dtype, exposure_gains=exposure_gains)
 
         native_codes = algorithm in ('openfocus_a', 'openfocus_b', 'openfocus_c')
         if native_codes:
@@ -1840,18 +1834,13 @@ class MultiFocusFusion:
             return fused[:, :, 0]
         return fused
 
-    def _fuse_tiled_neural(self, imgs, img_dir, tile_coords, h, w, channels,
-                           block_size, overlap, *, prepare, label,
+    def _fuse_tiled_neural(self, imgs, img_dir, h, w, channels,
+                           block_size, overlap, *, label,
                            default_weights, mode_normalizer=None,
                            should_cancel=None, progress_callback=None,
                            out_dtype=np.uint8, exposure_gains=None,
                            thread_count=None, focus_callback=None, **kwargs):
-        """Shared semantic-tile loop for every neural back-end.
-
-        Each method supplies its admission helper (``prepare``) and checkpoint;
-        the fusion itself is dispatched through the descriptor's runner, so a
-        new model needs no copy of this accumulator.
-        """
+        """Admit and fuse one complete-stack tile at a time."""
         from core.image_loader import admit_image_decode, decode_image
         from core.registration import RegistrationCancelled
         from utils.weights import weights_path
@@ -1867,14 +1856,40 @@ class MultiFocusFusion:
             files = [f for f in sorted(os.listdir(img_dir), key=natural_sort_key)
                      if f.lower().endswith(exts)]
         count = len(imgs) if imgs is not None else len(files)
-        from core.resource_policy import plan_neural_tiles
-        from fusion_methods.neural_runtime import resolve_job_device, estimate_inference_bytes
+        from core.resource_policy import plan_neural_tiles, require_memory
+        from fusion_methods.neural_runtime import (apply_inference_budget,
+                                                   estimate_inference_bytes, resolve_job_device)
         from fusion_methods.neural_common import ATTENTION_PAD_ALIGN
         profile = _profile()
         requested_device = resolve_job_device(self.use_gpu)
+        model_path = kwargs.get('model_path') or weights_path(os.path.basename(default_weights))
+        if mode_normalizer is not None:
+            kwargs['mode'] = mode_normalizer(
+                kwargs.get('mode', self.fusion_parameters.get('mode', 'soft')))
+        hard_pick = self.algorithm == 'stackmffv3' and kwargs.get('mode') == 'hard'
+
+        # Touch accumulator pages before reading the final child headroom.
+        # Alignment, prepared frames and existing caches also belong to that
+        # live reading. The final image and normalization mask still come later.
+        resident_output = h * w * (channels + 1 + (focus_callback is not None)) * 4
+        remaining_output = h * w * channels * np.dtype(out_dtype).itemsize + min(h, 128) * w
+        check_cancel()
+        require_memory(resident_output + remaining_output)
+        acc = create_frame((h, w, channels), np.float32)
+        weight = create_frame((h, w, 1), np.float32)
+        focus = create_frame((h, w), np.float32) if focus_callback is not None else None
+        for start in range(0, h, 128):
+            check_cancel()
+            rows = slice(start, start + 128)
+            acc[rows] = 0
+            weight[rows] = -1 if hard_pick else 0
+            if focus is not None:
+                focus[rows] = 0
+
         from core.source_frames import frame_resolution_bytes, source_cache_growth_bytes
-        source_resolution = max((frame_resolution_bytes(frame) for frame in imgs), default=0) if imgs is not None else 0
+        source_resolution = max(map(frame_resolution_bytes, imgs), default=0) if imgs is not None else 0
         source_cache = source_cache_growth_bytes(imgs) if imgs is not None else 0
+        check_cancel()
         clamped_block = block_size
         with profile.stage('plan_neural_tiles'):
             block_size, tile_plan = plan_neural_tiles(
@@ -1883,7 +1898,9 @@ class MultiFocusFusion:
                 itemsize=(max(frame.dtype.itemsize for frame in imgs)
                           if imgs is not None else np.dtype(out_dtype).itemsize),
                 source_resolution_bytes=source_resolution, source_cache_bytes=source_cache,
+                output_bytes=remaining_output, resident_output_bytes=resident_output,
                 preference=self.resource_preference, user_threads=thread_count)
+        apply_inference_budget(tile_plan)
         planned_block = block_size
         overlap = _planned_tile_overlap(overlap, clamped_block, planned_block)
         block_size, _, tile_coords = _ai_effective_tiling(
@@ -1898,18 +1915,13 @@ class MultiFocusFusion:
                   device=tile_plan.device_kind)
         if profile.enabled:
             profile.add('threads', 'plan_neural_tiles', tile_plan.native_threads)
+            profile.add('threads', 'plan_attention_inference', tile_plan.native_threads)
             profile.tiling(height=h, width=w, coords=tile_coords,
                            overlap_requested=self.tile_overlap, overlap_effective=overlap,
                            block_requested=self.tile_block_size,
                            block_after_image_clamp=clamped_block,
                            block_after_memory_plan=planned_block, block_effective=block_size,
                            pad_alignment=ATTENTION_PAD_ALIGN)
-        model_path = kwargs.get('model_path') or weights_path(os.path.basename(default_weights))
-        if mode_normalizer is not None:
-            kwargs['mode'] = mode_normalizer(
-                kwargs.get('mode', self.fusion_parameters.get('mode', 'soft')))
-        hard_pick = self.algorithm == 'stackmffv3' and kwargs.get('mode') == 'hard'
-
 
         def crop_frames(coords):
             check_cancel()
@@ -1938,39 +1950,24 @@ class MultiFocusFusion:
             return normalize_fuse_input(crops)[0]
 
         check_cancel()
-        with profile.stage('resolve_region'):
-            crops = crop_frames(tile_coords[0])
-        with profile.stage('prepare_inference'):
-            _, device, plan = prepare(
-                crops, model_path, tile_plan.device_kind != 'CPU', thread_count=thread_count,
-                resource_preference=self.resource_preference, execution_plan=tile_plan,
-                fixed_bytes=min(h, 128) * w * ((channels + 1) * 4))
-        check_cancel()
-        acc = create_frame((h, w, channels), np.float32)
-        weight = create_frame((h, w, 1), np.float32)
-        acc[...] = 0
-        weight[...] = -1 if hard_pick else 0
-        focus = create_frame((h, w), np.float32) if focus_callback is not None else None
         if focus is not None:
-            focus[...] = 0
             tile_focus = None
             def capture(positions, _scale):
                 nonlocal tile_focus
                 tile_focus = positions
         total = len(tile_coords)
-        print(f"{label} tiled fusion: {total} tiles, one per call ({device})")
+        print(f"{label} tiled fusion: {total} tiles, one per call ({tile_plan.device_kind})")
         if progress_callback is not None:
             progress_callback(0, total)
         for index, coords in enumerate(tile_coords):
             check_cancel()
             tile_started = time.perf_counter()
             with profile.tile(index, coords, count):
-                if index:
-                    with profile.stage('resolve_region'):
-                        crops = crop_frames(coords)
+                with profile.stage('resolve_region'):
+                    crops = crop_frames(coords)
                 runner_parameters = dict(kwargs)
                 runner_parameters.update(model_path=model_path,
-                    should_cancel=should_cancel, thread_count=thread_count, execution_plan=plan)
+                    should_cancel=should_cancel, tile_plan=tile_plan)
                 if focus is not None:
                     runner_parameters['focus_callback'] = capture
                 with profile.stage('runner'):
@@ -2038,22 +2035,20 @@ class MultiFocusFusion:
     def _fuse_tiled_ai_batched(self, imgs, img_dir, tile_coords, h, w,
                                channels, block_size, overlap, **kwargs):
         """StackMFF V3 tiles: probability blend/pick, one inference per tile."""
-        from fusion_methods.stackmffv3 import _prepare_inference, normalize_mode
+        from fusion_methods.stackmffv3 import normalize_mode
 
         return self._fuse_tiled_neural(
-            imgs, img_dir, tile_coords, h, w, channels, block_size, overlap,
-            prepare=_prepare_inference, label="StackMFF V3",
+            imgs, img_dir, h, w, channels, block_size, overlap,
+            label="StackMFF V3",
             default_weights=self.descriptor.weights or 'weights/stackmff_v3_final.onnx',
             mode_normalizer=normalize_mode, **kwargs)
 
     def _fuse_tiled_stackmff(self, imgs, img_dir, tile_coords, h, w,
                              channels, block_size, overlap, **kwargs):
         """StackMFF (V1) tiles: whole-stack attention per semantic tile."""
-        from fusion_methods.stackmff_v1 import _prepare_inference
-
         return self._fuse_tiled_neural(
-            imgs, img_dir, tile_coords, h, w, channels, block_size, overlap,
-            prepare=_prepare_inference, label="StackMFF",
+            imgs, img_dir, h, w, channels, block_size, overlap,
+            label="StackMFF",
             default_weights=self.descriptor.weights or 'weights/stackmff_final.onnx',
             **kwargs)
 

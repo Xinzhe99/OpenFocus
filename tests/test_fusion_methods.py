@@ -492,11 +492,9 @@ def test_guided_tiled_exposure_matches_whole_frame_preprocessing(dtype, base_fra
 @pytest.mark.parametrize('dtype', [np.uint8, np.uint16])
 def test_v3_tiled_exposure_matches_whole_stack_preprocessing(dtype, monkeypatch):
     import core.multi_focus_fusion as fusion_module
-    import fusion_methods.stackmffv3 as v3
     from utils.image_utils import apply_exposure_gain, exposure_gains
 
     monkeypatch.setattr(MultiFocusFusion, '_validate_ai_environment', lambda self: None)
-    monkeypatch.setattr(v3, '_prepare_inference', lambda *a, **k: (None, 'CPU', object()))
 
     def fuse_crop(source, *args, **kwargs):
         normalized, _ = normalize_fuse_input(source)

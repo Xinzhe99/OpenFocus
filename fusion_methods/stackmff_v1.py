@@ -30,13 +30,16 @@ def _prepare_inference(frames, model_path, use_gpu, thread_count=None,
 
 def _fuse_tile(frames, model_path, use_gpu, should_cancel=None,
                execution_plan=None, thread_count=None,
-               resource_preference='balanced', **_kwargs):
+               resource_preference='balanced', *, tile_plan=None):
     """Fuse one tile; returns 0-255 pixels in the caller's dtype."""
     common.cancel(should_cancel)
     out_dtype = np.float32 if any(f.dtype == np.uint16 for f in frames) else fuse_output_dtype(frames)
-    model, device, plan = _prepare_inference(
-        frames, model_path, use_gpu, thread_count=thread_count,
-        resource_preference=resource_preference, execution_plan=execution_plan)
+    if tile_plan is None:
+        model, device, plan = _prepare_inference(
+            frames, model_path, use_gpu, thread_count=thread_count,
+            resource_preference=resource_preference, execution_plan=execution_plan)
+    else:
+        model, device, plan = model_path, tile_plan.device_kind, tile_plan
     # The backbone pads internally. Keep the original dimensions here so the
     # second inference scale matches the released benchmark preprocessing.
     planes = common.stage_planes(frames, 1, should_cancel)
@@ -60,9 +63,9 @@ def _fuse_tile(frames, model_path, use_gpu, should_cancel=None,
 def stackmff_impl(input_source, img_resize, model_path, use_gpu,
                   should_cancel=None, progress_callback=None,
                   thread_count=None, resource_preference='balanced',
-                  execution_plan=None, **kwargs):
+                  execution_plan=None, *, tile_plan=None):
     """Whole-stack fusion used by both the direct and tiled paths."""
-    with common.neural_lease(execution_plan, should_cancel):
+    with common.neural_lease(tile_plan or execution_plan, should_cancel):
         common.cancel(should_cancel)
         frames = common.read_stack(input_source, img_resize, should_cancel,
                                    execution_plan)
@@ -73,7 +76,7 @@ def stackmff_impl(input_source, img_resize, model_path, use_gpu,
         result = _fuse_tile(
             frames, model_path, use_gpu, should_cancel=should_cancel,
             execution_plan=execution_plan, thread_count=thread_count,
-            resource_preference=resource_preference)
+            resource_preference=resource_preference, tile_plan=tile_plan)
         common.cancel(should_cancel)
         if progress_callback is not None:
             progress_callback(1, 1)

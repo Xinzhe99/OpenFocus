@@ -62,8 +62,7 @@ def test_tiled_hard_selection_does_not_blend_conflicting_tiles(monkeypatch):
 
         monkeypatch.setattr(mff, 'resolve_runner', lambda _name: predict)
         return fusion._fuse_tiled_neural(
-            frames, None, [], 16, 24, 3, 12, 4,
-            prepare=lambda *args, **kwargs: (None, 'CPU', None),
+            frames, None, 16, 24, 3, 12, 4,
             label='test', default_weights=WEIGHTS,
             mode_normalizer=lambda value: value, mode=mode)
 

@@ -1,17 +1,19 @@
 """Offer a hardware-matched inference pack without blocking desktop startup."""
 from pathlib import Path
-import sys
 
 from PyQt6.QtCore import QLocale, QThread, Qt, pyqtSignal
-from PyQt6.QtWidgets import (QDialog, QFrame, QHBoxLayout, QLabel, QProgressBar,
-                             QPushButton, QScrollArea, QSizePolicy, QStyle, QVBoxLayout, QWidget)
+from PyQt6.QtWidgets import (QComboBox, QDialog, QFrame, QHBoxLayout, QLabel,
+                             QProgressBar, QPushButton, QScrollArea, QSizePolicy, QVBoxLayout, QWidget)
 
 from locales import trans
-from ui.right_panel import ElidingButton, ElidingCheckBox
+from ui.right_panel import ElidingButton
 from utils.design_tokens import SPACE
 from utils.file_dialogs import FileDialog
 from utils.settings_store import get_settings
 from utils.ui_utils import size_dialog_to_content
+
+_PRIORITY_OPTIONS = (('ai_pack_source_auto', None), ('ai_pack_source_mirrors', True),
+                     ('ai_pack_source_official', False))
 
 
 class _PackJob(QThread):
@@ -62,20 +64,6 @@ def _plain_label(parent):
     return label
 
 
-def _windows_region() -> str:
-    """Read Windows' Country or region setting independently of app language."""
-    if sys.platform != 'win32':
-        return ''
-
-    import ctypes
-    try:
-        get_region = ctypes.windll.kernel32.GetUserDefaultGeoName
-    except AttributeError:
-        return ''
-    region = ctypes.create_unicode_buffer(16)
-    return region.value if get_region(region, len(region)) else ''
-
-
 class _PackDialog(QDialog):
     def __init__(self, banner):
         super().__init__(banner.window())
@@ -121,12 +109,13 @@ class _PackDialog(QDialog):
         body.addWidget(self.feedback)
         body.addWidget(self.progress)
 
-        self.mirror = None
-        if _windows_region() == 'CN':
-            self.mirror = ElidingCheckBox(parent=page)
-            self.mirror.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-            self.mirror.setChecked(True)
-            body.addWidget(self.mirror)
+        self.source = QComboBox(page)
+        self.source.setProperty('controlId', 'ai_pack_download_source')
+        self.source.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.source.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        for key, prefer_mirror in _PRIORITY_OPTIONS:
+            self.source.addItem(trans.t(key), prefer_mirror)
+        body.addWidget(self.source)
         self.install_button = ElidingButton(parent=page)
         self.install_button.setObjectName('primaryButton')
         self.install_button.setAutoDefault(False)
@@ -154,22 +143,8 @@ class _PackDialog(QDialog):
         footer = margins.top() + margins.bottom() + root.spacing() + self.close_button.sizeHint().height()
         self.resize(self.width(), min(self.height(), body_height + footer))
 
-    def _fit_mirror(self):
-        if self.mirror is None:
-            return
-        style = self.mirror.style()
-        chrome = (style.pixelMetric(QStyle.PixelMetric.PM_IndicatorWidth, None, self.mirror)
-                  + style.pixelMetric(QStyle.PixelMetric.PM_CheckBoxLabelSpacing, None, self.mirror)
-                  + SPACE['xs'])
-        self.mirror.refit(max(1, self.mirror.contentsRect().width() - chrome))
-
-    def resizeEvent(self, event):  # noqa: N802 (Qt casing)
-        super().resizeEvent(event)
-        self._fit_mirror()
-
     def _download(self):
-        self.banner.request_install(
-            prefer_mirror=self.mirror is not None and self.mirror.isChecked())
+        self.banner.request_install(prefer_mirror=self.source.currentData())
 
     def _pick_archives(self):
         folder = FileDialog.getExistingDirectory(self, trans.t('ai_pack_archive_folder'))
@@ -230,11 +205,11 @@ class AcceleratorBanner(QWidget):
     def installing(self):
         return self.job is not None and self.job.install
 
-    def request_install(self, artifact_dir=None, *, prefer_mirror=False):
+    def request_install(self, artifact_dir=None, *, prefer_mirror=None):
         if self.job is None and self.status and self.status.supported and not self.status.installed:
             self._start(True, artifact_dir, prefer_mirror)
 
-    def _start(self, install, artifact_dir=None, prefer_mirror=False):
+    def _start(self, install, artifact_dir=None, prefer_mirror=None):
         if self.job is not None or getattr(self.window(), '_shutting_down', False):
             return
         self.error = ''
@@ -321,10 +296,12 @@ class AcceleratorBanner(QWidget):
         dialog.install_button.setVisible(can_install)
         dialog.local_button.setText(trans.t('ai_pack_install_local'))
         dialog.local_button.setVisible(can_install)
-        if dialog.mirror is not None:
-            dialog.mirror.setText(trans.t('ai_pack_mirror'))
-            dialog.mirror.setVisible(can_install)
-            dialog._fit_mirror()
+        source_label = trans.t('ai_pack_download_source')
+        dialog.source.setAccessibleName(source_label)
+        dialog.source.setToolTip(source_label)
+        for index, (key, _) in enumerate(_PRIORITY_OPTIONS):
+            dialog.source.setItemText(index, trans.t(key))
+        dialog.source.setVisible(can_install)
         dialog.progress.setVisible(self.job is not None)
         dialog.error.setText(self.error)
         dialog.error.setVisible(bool(self.error))
