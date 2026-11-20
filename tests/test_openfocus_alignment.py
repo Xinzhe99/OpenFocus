@@ -288,3 +288,36 @@ def test_valid_bounds_follow_float32_inverse_coordinates():
             sx = np.float32(x) - np.float32(transform.dx)
             sy = np.float32(y) - np.float32(transform.dy)
             assert (left <= x < right and top <= y < bottom) == (0 <= sx < 19 and 0 <= sy < 19)
+
+
+@pytest.mark.parametrize('dtype', [np.uint8, np.uint16])
+@pytest.mark.parametrize('channels', [None, 1, 3, 4])
+@pytest.mark.parametrize('dx,dy', [(2.25, -1.75), (-3.5, 4.125)])
+def test_native_translation_warp_matches_numpy_fallback(monkeypatch, dtype, channels, dx, dy):
+    if not alignment._native_kernels.available():
+        pytest.skip('Numba native kernels unavailable')
+    rng = np.random.default_rng(99)
+    image = rng.integers(0, np.iinfo(dtype).max + 1, (37, 41), dtype=np.uint16).astype(dtype)
+    if channels is not None:
+        image = np.stack([(image + c * 17).astype(dtype) for c in range(channels)], axis=2)
+    # Test a strided view as well to verify non-contiguous handling.
+    sliced = image[1:, 2:]
+    actual = alignment._warp(sliced, dx, dy, None)
+    monkeypatch.setattr(alignment._native_kernels, 'available', lambda: False)
+    expected = alignment._warp(sliced, dx, dy, None)
+    assert actual.dtype == dtype
+    np.testing.assert_array_equal(actual, expected)
+
+
+def test_translation_warp_cancels_between_row_bands():
+    image = np.zeros((513, 32, 3), np.uint8)
+    calls = 0
+
+    def cancelled():
+        nonlocal calls
+        calls += 1
+        return calls >= 3
+
+    with pytest.raises(RegistrationCancelled):
+        alignment._warp(image, 1.5, -1.5, cancelled)
+    assert calls == 3

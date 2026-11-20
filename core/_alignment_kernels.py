@@ -1,4 +1,4 @@
-"""Native CPU kernels for the fast translation estimator.
+"""Native CPU kernels for OpenFocus translation and similarity alignment.
 
 These mirror the row-wise definitions in core.openfocus_alignment exactly:
 uint32 accumulation, truncating integer division, edge replication and the
@@ -109,28 +109,239 @@ if _HAVE_NUMBA:
 
     @njit(cache=True, nogil=True)
     def warp_u16(image, dx, dy):
-        h, w = image.shape[:2]
         out = np.empty_like(image)
-        channels = 1 if image.ndim == 2 else image.shape[2]
-        for y in range(h):
-            iy, jy, fy, inv_y = _axis(np.float32(y) - np.float32(dy), h)
-            gy = np.uint32(256) - fy
-            for x in range(w):
-                ix, jx, fx, inv_x = _axis(np.float32(x) - np.float32(dx), w)
-                gx = np.uint32(256) - fx
-                invalid = inv_y or inv_x
-                for c in range(channels):
-                    if image.ndim == 2:
-                        top = np.uint32(image[iy, ix]) * gx + np.uint32(image[iy, jx]) * fx
-                        bottom = np.uint32(image[jy, ix]) * gx + np.uint32(image[jy, jx]) * fx
-                        value = (top * gy + bottom * fy) >> np.uint32(16)
-                        out[y, x] = np.uint16(0 if invalid else value)
-                    else:
-                        top = np.uint32(image[iy, ix, c]) * gx + np.uint32(image[iy, jx, c]) * fx
-                        bottom = np.uint32(image[jy, ix, c]) * gx + np.uint32(image[jy, jx, c]) * fx
-                        value = (top * gy + bottom * fy) >> np.uint32(16)
-                        out[y, x, c] = np.uint16(0 if invalid else value)
+        warp_int_rows(image, out, dx, dy, 0, image.shape[0])
         return out
+
+    @njit(cache=True, nogil=True)
+    def _map_uv_row(y, cy, p1c, p0c):
+        dy_ = np.float32(np.float32(y) - cy)
+        return np.float32(dy_ * p1c), np.float32(dy_ * p0c)
+
+    @njit(cache=True, nogil=True)
+    def _map_uv_col(x, cx, p08, p18, tx, ty, v_dy, u_dy):
+        dx_ = np.float32(np.float32(x) - cx)
+        v = np.float32(np.float32(v_dy - np.float32(dx_ * p08)) + ty)
+        u = np.float32(np.float32(np.float32(dx_ * p18) + u_dy) + tx)
+        return u, v
+
+    @njit(cache=True, nogil=True)
+    def _bilinear_u32_2d(image, iy, jy, ix, jx, gx, fx, gy, fy):
+        top = np.uint32(image[iy, ix]) * gx + np.uint32(image[iy, jx]) * fx
+        bottom = np.uint32(image[jy, ix]) * gx + np.uint32(image[jy, jx]) * fx
+        return (top * gy + bottom * fy) >> np.uint32(16)
+
+    @njit(cache=True, nogil=True)
+    def warp_int_rows(image, out, dx, dy, y_start, y_stop):
+        """Translate uint8/uint16 2D or 3D image rows using exact Q8.8 weights."""
+        h, w = image.shape[:2]
+        dx32 = np.float32(dx)
+        dy32 = np.float32(dy)
+        ix = np.empty(w, np.int32)
+        jx = np.empty(w, np.int32)
+        fx = np.empty(w, np.uint32)
+        inv_x = np.empty(w, np.bool_)
+        for x in range(w):
+            ix_v, jx_v, fx_v, inv_v = _axis(np.float32(x) - dx32, w)
+            ix[x] = ix_v
+            jx[x] = jx_v
+            fx[x] = fx_v
+            inv_x[x] = inv_v
+        if image.ndim == 2:
+            for y in range(y_start, y_stop):
+                iy, jy, fy, inv_y = _axis(np.float32(y) - dy32, h)
+                if inv_y:
+                    for x in range(w):
+                        out[y, x] = np.uint32(0)
+                    continue
+                gy = np.uint32(256) - fy
+                for x in range(w):
+                    if inv_x[x]:
+                        out[y, x] = np.uint32(0)
+                    else:
+                        fxx = fx[x]
+                        out[y, x] = _bilinear_u32_2d(
+                            image, iy, jy, ix[x], jx[x], np.uint32(256) - fxx, fxx, gy, fy
+                        )
+        else:
+            channels = image.shape[2]
+            for y in range(y_start, y_stop):
+                iy, jy, fy, inv_y = _axis(np.float32(y) - dy32, h)
+                if inv_y:
+                    for x in range(w):
+                        for c in range(channels):
+                            out[y, x, c] = np.uint32(0)
+                    continue
+                gy = np.uint32(256) - fy
+                for x in range(w):
+                    if inv_x[x]:
+                        for c in range(channels):
+                            out[y, x, c] = np.uint32(0)
+                    else:
+                        fxx = fx[x]
+                        gxx = np.uint32(256) - fxx
+                        ixx = ix[x]
+                        jxx = jx[x]
+                        for c in range(channels):
+                            top = np.uint32(image[iy, ixx, c]) * gxx + np.uint32(image[iy, jxx, c]) * fxx
+                            bottom = np.uint32(image[jy, ixx, c]) * gxx + np.uint32(image[jy, jxx, c]) * fxx
+                            out[y, x, c] = (top * gy + bottom * fy) >> np.uint32(16)
+
+    @njit(cache=True, nogil=True)
+    def fast_downsize_u16_rows(img, out, oy_start, oy_stop):
+        """2x2 mean (sum+2)>>2 matching fast_downsize with odd edge replication."""
+        h, w = img.shape
+        ow = out.shape[1]
+        for oy in range(oy_start, oy_stop):
+            y0 = 2 * oy
+            y1 = y0 + 1 if y0 + 1 < h else h - 1
+            for ox in range(ow):
+                x0 = 2 * ox
+                x1 = x0 + 1 if x0 + 1 < w else w - 1
+                total = (
+                    np.uint32(img[y0, x0])
+                    + np.uint32(img[y0, x1])
+                    + np.uint32(img[y1, x0])
+                    + np.uint32(img[y1, x1])
+                    + np.uint32(2)
+                ) >> np.uint32(2)
+                out[oy, ox] = np.uint16(total)
+
+    @njit(cache=True, nogil=True)
+    def score_chunk_u16(ref, img_b, xs, ys, p08, p0c, p18, p1c, tx, ty, cx, cy,
+                        idx, ssum, ssq, cnt):
+        """Score alive similarity candidates over a uint16 level with zero temporaries."""
+        h, w = img_b.shape
+        h_f = np.float32(h)
+        w_f = np.float32(w)
+        nyy = ys.shape[0]
+        nxx = xs.shape[0]
+        n_alive = idx.shape[0]
+        for k in range(n_alive):
+            c_idx = idx[k]
+            p08_k = p08[c_idx]
+            p0c_k = p0c[c_idx]
+            p18_k = p18[c_idx]
+            p1c_k = p1c[c_idx]
+            tx_k = tx[c_idx]
+            ty_k = ty[c_idx]
+            cx_k = cx[c_idx]
+            cy_k = cy[c_idx]
+            acc_sum = np.int64(0)
+            acc_sq = np.int64(0)
+            acc_cnt = np.int64(0)
+            for iy_i in range(nyy):
+                v_dy, u_dy = _map_uv_row(ys[iy_i], cy_k, p1c_k, p0c_k)
+                for ix_i in range(nxx):
+                    u, v = _map_uv_col(xs[ix_i], cx_k, p08_k, p18_k, tx_k, ty_k, v_dy, u_dy)
+                    if not (u >= np.float32(0.0) and u < w_f and v >= np.float32(0.0) and v < h_f):
+                        continue
+                    ix, jx, fx, _ = _axis(u, w)
+                    iy, jy, fy, _ = _axis(v, h)
+                    gx = np.uint32(256) - fx
+                    gy = np.uint32(256) - fy
+                    val = _bilinear_u32_2d(img_b, iy, jy, ix, jx, gx, fx, gy, fy)
+                    diff = np.int64(ref[iy_i, ix_i]) - np.int64(val)
+                    acc_sum += diff
+                    acc_sq += diff * diff
+                    acc_cnt += 1
+            ssum[c_idx] = acc_sum
+            ssq[c_idx] = acc_sq
+            cnt[c_idx] = acc_cnt
+
+    @njit(cache=True, nogil=True)
+    def warp_alignment_int_rows(image, out, tx, ty, cx, cy, p08, p0c, p18, p1c, y_start, y_stop):
+        """Similarity warp for uint8/uint16 2D or 3D images matching _warp_alignment."""
+        h, w = image.shape[:2]
+        if image.ndim == 2:
+            for y in range(y_start, y_stop):
+                v_dy, u_dy = _map_uv_row(np.float32(y), cy, p1c, p0c)
+                for x in range(w):
+                    u, v = _map_uv_col(np.float32(x), cx, p08, p18, tx, ty, v_dy, u_dy)
+                    ix, jx, fx, inv_x = _axis(u, w)
+                    iy, jy, fy, inv_y = _axis(v, h)
+                    if inv_x or inv_y:
+                        out[y, x] = np.uint32(0)
+                    else:
+                        out[y, x] = _bilinear_u32_2d(
+                            image, iy, jy, ix, jx,
+                            np.uint32(256) - fx, fx, np.uint32(256) - fy, fy,
+                        )
+        else:
+            channels = image.shape[2]
+            for y in range(y_start, y_stop):
+                v_dy, u_dy = _map_uv_row(np.float32(y), cy, p1c, p0c)
+                for x in range(w):
+                    u, v = _map_uv_col(np.float32(x), cx, p08, p18, tx, ty, v_dy, u_dy)
+                    ix, jx, fx, inv_x = _axis(u, w)
+                    iy, jy, fy, inv_y = _axis(v, h)
+                    if inv_x or inv_y:
+                        for c in range(channels):
+                            out[y, x, c] = np.uint32(0)
+                    else:
+                        gx = np.uint32(256) - fx
+                        gy = np.uint32(256) - fy
+                        for c in range(channels):
+                            top = np.uint32(image[iy, ix, c]) * gx + np.uint32(image[iy, jx, c]) * fx
+                            bottom = np.uint32(image[jy, ix, c]) * gx + np.uint32(image[jy, jx, c]) * fx
+                            out[y, x, c] = (top * gy + bottom * fy) >> np.uint32(16)
+
+    @njit(cache=True, nogil=True)
+    def warp_alignment_float_rows(image, out, tx, ty, cx, cy, p08, p0c, p18, p1c, y_start, y_stop):
+        """Similarity warp for internal float32/float64 2D or 3D images."""
+        h, w = image.shape[:2]
+        inv_scale = np.float64(65536.0)
+        if image.ndim == 2:
+            for y in range(y_start, y_stop):
+                v_dy, u_dy = _map_uv_row(np.float32(y), cy, p1c, p0c)
+                for x in range(w):
+                    u, v = _map_uv_col(np.float32(x), cx, p08, p18, tx, ty, v_dy, u_dy)
+                    ix, jx, fx, inv_x = _axis(u, w)
+                    iy, jy, fy, inv_y = _axis(v, h)
+                    if inv_x or inv_y:
+                        out[y, x] = np.float64(0.0)
+                    else:
+                        fgx = np.float64(np.uint32(256) - fx)
+                        ffx = np.float64(fx)
+                        fgy = np.float64(np.uint32(256) - fy)
+                        ffy = np.float64(fy)
+                        top = np.float64(image[iy, ix]) * fgx + np.float64(image[iy, jx]) * ffx
+                        bottom = np.float64(image[jy, ix]) * fgx + np.float64(image[jy, jx]) * ffx
+                        out[y, x] = (top * fgy + bottom * ffy) / inv_scale
+        else:
+            channels = image.shape[2]
+            for y in range(y_start, y_stop):
+                v_dy, u_dy = _map_uv_row(np.float32(y), cy, p1c, p0c)
+                for x in range(w):
+                    u, v = _map_uv_col(np.float32(x), cx, p08, p18, tx, ty, v_dy, u_dy)
+                    ix, jx, fx, inv_x = _axis(u, w)
+                    iy, jy, fy, inv_y = _axis(v, h)
+                    if inv_x or inv_y:
+                        for c in range(channels):
+                            out[y, x, c] = np.float64(0.0)
+                    else:
+                        fgx = np.float64(np.uint32(256) - fx)
+                        ffx = np.float64(fx)
+                        fgy = np.float64(np.uint32(256) - fy)
+                        ffy = np.float64(fy)
+                        for c in range(channels):
+                            top = np.float64(image[iy, ix, c]) * fgx + np.float64(image[iy, jx, c]) * ffx
+                            bottom = np.float64(image[jy, ix, c]) * fgx + np.float64(image[jy, jx, c]) * ffx
+                            out[y, x, c] = (top * fgy + bottom * ffy) / inv_scale
+
+    @njit(cache=True, nogil=True)
+    def valid_mask_rows(mask, h, w, tx, ty, cx, cy, p08, p0c, p18, p1c, y_start, y_stop):
+        """Geometric validity mask matching alignment_valid_mask float32 boundaries."""
+        h_f = np.float32(h)
+        w_f = np.float32(w)
+        for y in range(y_start, y_stop):
+            v_dy, u_dy = _map_uv_row(np.float32(y), cy, p1c, p0c)
+            for x in range(w):
+                u, v = _map_uv_col(np.float32(x), cx, p08, p18, tx, ty, v_dy, u_dy)
+                mask[y, x] = (
+                    u >= np.float32(0.0) and u < w_f
+                    and v >= np.float32(0.0) and v < h_f
+                )
 
 
 if _HAVE_NUMBA:
