@@ -99,13 +99,15 @@ def pending_restore_path() -> str:
     return os.path.join(recovery_dir(), PENDING_RESTORE_FILE)
 
 
-def load_snapshot_state() -> Optional[dict]:
+def load_snapshot_state(path: Optional[str] = None) -> Optional[dict]:
     """Validated project state from the recovery snapshot, lock ignored."""
     try:
-        if not os.path.isfile(session_path()):
+        if path is None:
+            path = session_path()
+        if not os.path.isfile(path):
             return None
         from utils.project_file import validate_project
-        ok, _err, state = validate_project(session_path())
+        ok, _err, state = validate_project(path)
         return state if ok else None
     except Exception:
         return None
@@ -160,18 +162,17 @@ def clear_pending_restore() -> None:
         pass
 
 
-def pending_recovery() -> Optional[dict]:
-    """Return a validated project state when the last session crashed.
-
-    None when the last exit was clean, no snapshot exists, or its source
-    files have since moved.
-    """
+def crash_snapshot_path() -> Optional[str]:
+    """Locate a crash snapshot without probing any of its source files."""
     try:
-        if not os.path.exists(lock_path()):
-            return None
-        return load_snapshot_state()
-    except Exception:
-        return None
+        directory = recovery_dir()
+        if os.path.exists(os.path.join(directory, LOCK_FILE)):
+            path = os.path.join(directory, SESSION_FILE)
+            if os.path.isfile(path):
+                return path
+    except OSError:
+        pass
+    return None
 
 
 def snapshot_frame_count(state: Optional[dict]) -> int:
