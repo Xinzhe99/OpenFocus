@@ -696,6 +696,68 @@ def test_mixed_and_parallel_depth_match_serial_reference(method, first_16bit):
     np.testing.assert_array_equal(parallel, serial)
 
 
+def test_dct_low_contrast_depth_matches_padded_block_variance():
+    from utils.image_utils import normalize_fuse_input
+
+    rng = np.random.default_rng(145)
+    h, w = 131, 103
+    frames = [rng.integers(60535, 60660, (h, w, 3), dtype=np.uint16) for _ in range(3)]
+    variances = []
+    for image in normalize_fuse_input(frames)[0]:
+        padded = cv2.copyMakeBorder(image, 0, 5, 0, 1, cv2.BORDER_REPLICATE)
+        gray = cv2.cvtColor(padded, cv2.COLOR_BGR2GRAY)
+        mean = cv2.resize(gray, (13, 17), interpolation=cv2.INTER_AREA)
+        mean_square = cv2.resize(gray ** 2, (13, 17), interpolation=cv2.INTER_AREA)
+        variances.append(mean_square - mean ** 2)
+    winners = np.argmax(variances, axis=0).astype(np.float32) / np.float32(2)
+    expected = winners.repeat(8, axis=0).repeat(8, axis=1)[:h, :w]
+
+    actual = compute_focus_index(frames, "dct", kernel_size=1, thread_count=3)
+
+    np.testing.assert_array_equal(actual, expected)
+
+
+def test_gfg_depth_preserves_mixed_bit_depth_grayscale_order():
+    from fusion_methods.gfg_fgf import GfgDecision, gfg_focus_map
+    from utils.image_utils import normalize_fuse_input
+
+    rng = np.random.default_rng(116)
+    image = rng.integers(100, 220, (132, 104, 3), dtype=np.uint8)
+    frames = [image.astype(np.uint16) * np.uint16(257), image]
+    decision = GfgDecision()
+    for index, source in enumerate(normalize_fuse_input(frames)[0]):
+        gray = cv2.cvtColor(source, cv2.COLOR_BGR2GRAY) / np.float32(255)
+        decision.update(index, gfg_focus_map(gray, 7))
+
+    actual = compute_focus_index(frames, "gfgfgf", kernel_size=7, thread_count=2)
+
+    np.testing.assert_array_equal(actual, decision.idx)
+
+
+def test_dtcwt_depth_preserves_near_tied_wavelet_energy():
+    pytest.importorskip("dtcwt")
+    from fusion_methods.dtcwt import dtcwt
+    from utils.image_utils import normalize_fuse_input
+
+    rng = np.random.default_rng(27)
+    h, w = 132, 104
+    original = rng.integers(60000, 62000, (h, w, 3), dtype=np.uint16)
+    other = original.copy()
+    other[h // 2, w // 2, 1] += 1
+    energies = []
+    for source in normalize_fuse_input([original, other])[0]:
+        gray = cv2.cvtColor(source, cv2.COLOR_BGR2GRAY) / np.float32(255)
+        acc = np.zeros((h, w), np.float32)
+        for highpass in dtcwt.Transform2d().forward(gray, nlevels=3).highpasses:
+            power = np.sum(np.abs(highpass) ** 2, axis=2).astype(np.float32)
+            acc += cv2.resize(power, (w, h), interpolation=cv2.INTER_LINEAR)
+        energies.append(acc)
+
+    actual = compute_focus_index([original, other], "dtcwt", {"N": 3}, thread_count=2)
+
+    np.testing.assert_array_equal(actual, energies[1] > energies[0])
+
+
 @pytest.mark.parametrize("method", ["dct", "gfgfgf", "dtcwt"])
 def test_16bit_streaming_depth_stays_below_full_stack_conversion_memory(method):
     if method == "dtcwt":

@@ -79,26 +79,8 @@ def _worker_count(thread_count, count):
         return 1
 
 
-def _bgr_to_gray(image, dst=None):
-    if image.ndim == 2:
-        if dst is not None:
-            dst[...] = image
-            return dst
-        return image
-    if image.shape[2] == 1:
-        plane = image[:, :, 0]
-        if dst is not None:
-            dst[...] = plane
-            return dst
-        return plane
-    if dst is not None:
-        cv2.cvtColor(image, cv2.COLOR_BGR2GRAY, dst=dst)
-        return dst
-    return cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-
-
-def _resolve_depth_gray(frame, promote_f32, should_cancel, *, scale_01=False):
-    """Resolve one source descriptor/array and return single-channel grayscale."""
+def _resolve_depth_gray(frame, promote_f32, should_cancel, *, scale_01=False, padding=(0, 0)):
+    """Preserve color normalization, padding and grayscale order in bounded bands."""
     from core.source_frames import resolve_frame, without_source_cache_growth
 
     with without_source_cache_growth():
@@ -106,31 +88,29 @@ def _resolve_depth_gray(frame, promote_f32, should_cancel, *, scale_01=False):
     if should_cancel is not None and should_cancel():
         raise DepthMapCancelled()
     dtype = raw.dtype
-    if dtype == np.uint16 or dtype == np.float64 or (promote_f32 and dtype == np.uint8):
+    pad_rows, pad_cols = padding
+    gray_dtype = np.float32 if promote_f32 or dtype in (np.uint16, np.float64) else dtype
+    if dtype != gray_dtype or pad_rows or pad_cols:
         h, w = raw.shape[:2]
-        gray = np.empty((h, w), np.float32)
-        if dtype == np.uint16:
-            scale = np.float32(1.0 / 65535.0 if scale_01 else 255.0 / 65535.0)
-        else:
-            scale = np.float32(1.0 / 255.0) if scale_01 else None
+        gray = np.empty((h + pad_rows, w + pad_cols), gray_dtype)
         for y0 in range(0, h, 128):
             if y0 and should_cancel is not None and should_cancel():
                 raise DepthMapCancelled()
             y1 = min(h, y0 + 128)
-            band = raw[y0:y1].astype(np.float32)
-            if scale is not None:
-                band *= scale
-            _bgr_to_gray(band, dst=gray[y0:y1])
-        return gray
-    gray = _bgr_to_gray(raw)
+            band = raw[y0:y1].astype(gray_dtype, copy=False)
+            if dtype == np.uint16:
+                band *= np.float32(255.0 / 65535.0)
+            bottom = pad_rows if y1 == h else 0
+            if bottom or pad_cols:
+                band = cv2.copyMakeBorder(band, 0, bottom, 0, pad_cols, cv2.BORDER_REPLICATE)
+            cv2.cvtColor(band, cv2.COLOR_BGR2GRAY, dst=gray[y0:y1 + bottom])
+    else:
+        gray = cv2.cvtColor(raw, cv2.COLOR_BGR2GRAY)
     if not scale_01:
         return gray
     if gray.dtype == np.uint8:
         return _U8_NORM_LUT[gray]
-    if gray is raw or np.shares_memory(gray, raw):
-        gray = gray.astype(np.float32, copy=True)
-    else:
-        gray = gray if gray.dtype == np.float32 else gray.astype(np.float32)
+    gray = gray.astype(np.float32, copy=False)
     gray /= np.float32(255.0)
     return gray
 
@@ -196,47 +176,35 @@ def _measure_dct(images, progress, should_cancel, kernel_size=7, block_size=8,
     if map_h == 0 or map_w == 0:
         raise ValueError("Block size too large for the image")
 
-    kernels = dct_mod._load_kernels()
     n = len(images)
     max_workers = _worker_count(thread_count, n)
     promote_f32 = any(image.dtype == np.uint16 for image in images)
+    # Up to 16x16, both 8-bit block sums fit exactly in float32. Floating
+    # inputs need OpenCV's original accumulation for near-tied variances.
+    kernels = (dct_mod._load_kernels()
+               if block_size <= 16 and all(image.dtype == np.uint8 for image in images)
+               else None)
     if kernels is not None and max_workers > 1:
-        # Warm JIT dispatcher on main thread so workers never race on compile.
         dummy_out = np.empty((1, 1), dtype=np.float32)
-        if promote_f32 or any(image.dtype in (np.float32, np.float64) for image in images):
-            kernels.block_variance_f32(np.zeros((block_size, block_size), dtype=np.float32),
-                                       block_size, block_size, block_size, dummy_out)
-        else:
-            kernels.block_variance_u8(np.zeros((block_size, block_size), dtype=np.uint8),
-                                      block_size, block_size, block_size, dummy_out)
+        kernels.block_variance_u8(np.zeros((1, 1), dtype=np.uint8), 1, 1, block_size, dummy_out)
 
     max_var = np.full((map_h, map_w), -1.0, np.float32)
     best = np.zeros((map_h, map_w), np.int32)
-    pad_rows, pad_cols = h_trim - h, w_trim - w
+    padding = (0, 0) if kernels is not None else (h_trim - h, w_trim - w)
 
     def worker_fn(idx):
-        gray = _resolve_depth_gray(images[idx], promote_f32, should_cancel, scale_01=False)
+        gray = _resolve_depth_gray(images[idx], promote_f32, should_cancel, padding=padding)
         if kernels is not None:
             var_map = np.empty((map_h, map_w), dtype=np.float32)
-            if gray.dtype == np.uint8:
-                kernels.block_variance_u8(gray, h, w, block_size, var_map)
-            else:
-                gray_f32 = gray if gray.dtype == np.float32 else gray.astype(np.float32)
-                kernels.block_variance_f32(gray_f32, h, w, block_size, var_map)
-            del gray
+            kernels.block_variance_u8(gray, h, w, block_size, var_map)
             return var_map
-        if pad_rows or pad_cols:
-            gray = cv2.copyMakeBorder(gray, 0, pad_rows, 0, pad_cols, cv2.BORDER_REPLICATE)
-        gray_f32 = gray if gray.dtype == np.float32 else gray.astype(np.float32)
+        gray_f32 = gray.astype(np.float32, copy=False)
         del gray
         mean_val = cv2.resize(gray_f32, (map_w, map_h), interpolation=cv2.INTER_AREA)
         np.square(mean_val, out=mean_val)
-        sq = np.square(gray_f32)
-        del gray_f32
-        mean_sq = cv2.resize(sq, (map_w, map_h), interpolation=cv2.INTER_AREA)
-        del sq
+        np.square(gray_f32, out=gray_f32)
+        mean_sq = cv2.resize(gray_f32, (map_w, map_h), interpolation=cv2.INTER_AREA)
         mean_sq -= mean_val
-        del mean_val
         return mean_sq
 
     def consume_fn(idx, var_map):
@@ -320,10 +288,11 @@ def _measure_dtcwt(images, progress, should_cancel, nlevels=4, thread_count=None
         lvl = np.empty((h, w), np.float32)
         for level_yh in coeffs.highpasses:
             _tick(None, idx, n, should_cancel)
-            # (H', W', 6) -> 每方向实部虚部平方求和，避免复杂模长开方，上采样回全分辨率累加
-            mag2 = (level_yh.real * level_yh.real + level_yh.imag * level_yh.imag).sum(
-                axis=2, dtype=np.float32
-            )
+            # The rounded magnitude is part of the existing focus tie behavior.
+            magnitude = np.abs(level_yh)
+            np.square(magnitude, out=magnitude)
+            mag2 = magnitude.sum(axis=2).astype(np.float32, copy=False)
+            del magnitude
             cv2.resize(mag2, (w, h), interpolation=cv2.INTER_LINEAR, dst=lvl)
             acc += lvl
         del lvl
