@@ -140,12 +140,14 @@ def estimate_render_memory(frames, algorithm, parameters, *, preview=False, roi=
 def _estimate_neural(estimate, itemsize, channels, threshold, block, source_bytes,
                      requested, tiled):
     from fusion_methods.neural_common import attention_inference_bytes
-    from fusion_methods.neural_runtime import VRAM_GATED_KINDS, estimate_inference_bytes
+    from fusion_methods.neural_runtime import (UNIFIED_MEMORY_KINDS, VRAM_GATED_KINDS,
+                                               candidate_devices, estimate_inference_bytes,
+                                               is_accelerator)
 
     count, height, width = estimate.frames, estimate.height, estimate.width
     snapshot = estimate.snapshot
     device = requested or 'CPU'
-    accelerator = device if device in VRAM_GATED_KINDS or device == 'COREML' else None
+    accelerator = device if is_accelerator(device) else None
     whole, whole_vram = attention_inference_bytes(count, height, width, channels, device)
     whole += source_bytes
     needs_tiles = (max(height, width) > threshold
@@ -153,11 +155,23 @@ def _estimate_neural(estimate, itemsize, channels, threshold, block, source_byte
                    or (estimate.algorithm == 'stackmffv2'
                        and whole > policy.ram_ceiling(snapshot)))
     if not (tiled and needs_tiles):
+        working = whole
+        if device == 'TORCH_MPS' and snapshot.ram_known:
+            ceiling = policy.ram_ceiling(snapshot)
+            if working > ceiling:
+                for kind in candidate_devices(device, probe_ort=False):
+                    if kind == device or (kind not in UNIFIED_MEMORY_KINDS and kind != 'CPU'):
+                        continue
+                    working, _ = attention_inference_bytes(count, height, width, channels, kind)
+                    working += source_bytes
+                    if working <= ceiling or kind == 'CPU':
+                        device = kind
+                        break
         if device in VRAM_GATED_KINDS and (
                 not snapshot.vram_known or whole_vram > policy.vram_budget(snapshot)):
             # Whole-frame backends admit host buffers before logits chooses CPU.
             device = 'CPU'
-        return replace(estimate, fusion_ram=whole, whole_ram=whole, accelerator=accelerator,
+        return replace(estimate, fusion_ram=working, whole_ram=whole, accelerator=accelerator,
                        device=device if requested else None,
                        vram_required=whole_vram if accelerator in VRAM_GATED_KINDS else 0)
 

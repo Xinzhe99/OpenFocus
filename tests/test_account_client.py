@@ -8,6 +8,7 @@ import os
 import sys
 import threading
 import urllib.error
+from http.client import IncompleteRead
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
 from types import SimpleNamespace
@@ -637,6 +638,17 @@ def test_http_error_only_exposes_allowlisted_bounded_codes(monkeypatch, body, ex
     assert "private" not in str(exc.value)
 
 
+def test_incomplete_http_body_is_a_network_failure(monkeypatch):
+    class Response:
+        def read(self, size):
+            raise IncompleteRead(b'{"private":"partial')
+
+    opener = SimpleNamespace(open=lambda *args, **kwargs: nullcontext(Response()))
+    monkeypatch.setattr(account.urllib.request, "build_opener", lambda *args: opener)
+    with pytest.raises(account.AccountError, match="network"):
+        account._http("POST", "https://account.example/v1/auth/email/poll")
+
+
 def test_login_rejects_unrecognized_language():
     client = account.AccountClient(store=MemoryStore())
     with pytest.raises(ValueError, match="language"):
@@ -672,6 +684,59 @@ def test_phone_handoff_exchanges_pkce_code_without_exposing_secrets(monkeypatch,
     expected = base64.urlsafe_b64encode(hashlib.sha256(exchange["code_verifier"].encode()).digest()).rstrip(b"=").decode()
     assert start["code_challenge"] == expected
     assert all(secret not in caplog.text for secret in ("flow-secret", "poll-secret", "code-secret", "private-token"))
+
+
+def test_email_recovers_lost_poll_and_retries_same_exchange(monkeypatch, caplog):
+    monkeypatch.setattr(account, "_CallbackServer", DummyListener)
+    monkeypatch.setattr(account, "_EMAIL_POLL_INTERVAL", 0)
+    steps = iter([
+        ("capabilities", account.AccountError("network")),
+        ("capabilities", {"cross_device": "poll-v1", "retryable_poll": True}),
+        ("start", {"ok": True, "flow_id": "flow-secret", "poll_token": "poll-secret"}),
+        ("poll", account.AccountError("network")),
+        ("poll", {"status": "approved", "code": "code-secret"}),
+        ("exchange", account.AccountError("http", 502)),
+        ("exchange", session()),
+    ])
+    sent = {}
+
+    def request(method, url, body=None, **kwargs):
+        path, response = next(steps)
+        assert url.endswith("/" + path)
+        sent.setdefault(path, []).append(body)
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+    store = MemoryStore()
+    client = account.AccountClient(store=store, request=request)
+    with caplog.at_level(logging.INFO, logger="openfocus"):
+        assert client.login("email", "user@example.test") == {"id": "user"}
+    assert store.load() == session()
+    assert sent["poll"][0] == sent["poll"][1]
+    assert sent["exchange"][0] == sent["exchange"][1]
+    verifier = sent["exchange"][0]["code_verifier"]
+    assert sent["poll"][0] == {"flow_id": "flow-secret", "poll_token": "poll-secret", "code_verifier": verifier}
+    assert all(secret not in caplog.text for secret in ("user@example.test", "flow-secret", "poll-secret",
+                                                       "code-secret", verifier, "private-token"))
+    assert '"endpoint": "/v1/auth/email/poll"' in caplog.text
+
+
+def test_email_start_is_not_repeated_after_an_uncertain_response(monkeypatch):
+    monkeypatch.setattr(account, "_CallbackServer", DummyListener)
+    steps = iter(("capabilities", "start"))
+
+    def request(method, url, **kwargs):
+        endpoint = next(steps)
+        assert url.endswith("/" + endpoint)
+        if endpoint == "capabilities":
+            return {"cross_device": "poll-v1", "retryable_poll": True}
+        raise account.AccountError("network")
+
+    client = account.AccountClient(store=MemoryStore(), request=request)
+    with pytest.raises(account.AccountError, match="network"):
+        client.login("email", "user@example.test")
+    assert not client.is_signed_in()
 
 
 @pytest.mark.parametrize("status", [404, 405])
@@ -829,7 +894,7 @@ def test_email_default_timeout_matches_service_lifetime(monkeypatch):
     monkeypatch.setattr(account, "_CallbackServer", DummyListener)
     monkeypatch.setattr(account.time, "monotonic", lambda: 100.0)
     deadlines = []
-    def poll(self, generation, cancel, flow_id, poll_token, deadline):
+    def poll(self, generation, cancel, body, deadline):
         deadlines.append(deadline)
         raise account.AccountError("sign_in_expired")
     monkeypatch.setattr(account.AccountClient, "_poll_email", poll)

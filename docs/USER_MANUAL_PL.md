@@ -722,7 +722,7 @@ Planista uwzględnia fizyczne rdzenie, powinowactwo CPU i limity oraz uruchamia 
 
 ### Akceleracja GPU
 
-StackMFF V1/V2/V3 używają ONNX Runtime. DirectML w Windows i CoreML w macOS mogą przyspieszać wnioskowanie; w przeciwnym razie używany jest CPU. Dostępność dostawcy nie dowodzi wykonania na GPU. Obsługa innych GPU wymaga weryfikacji.
+Dla StackMFF V1/V2/V3 zainstaluj zgodny pakiet w **Ustawienia → Składniki przyspieszania AI**. OpenFocus oferuje TensorRT i PyTorch CUDA w systemie Windows z kartą NVIDIA, PyTorch CUDA w systemie Linux z kartą NVIDIA oraz PyTorch MPS na Apple Silicon. Zależnie od urządzenia może użyć DirectML, CoreML lub CPU. Zobacz [wymagania GPU](GPU_SUPPORT.md).
 
 OpenFocus B może przyspieszać przetwarzanie głębi i łączenie źródeł na zgodnym GPU OpenCL; zależnie od budżetu pamięci może używać ograniczonych etapów GPU lub wrócić do CPU. Po włączeniu akceleracji GPU OpenFocus A, OpenFocus C, Filtr sterowany, GFG-FGF, DCT i DTCWT mogą wykonywać fuzję całego obrazu na zgodnym GPU OpenCL; przy braku pamięci lub problemach z urządzeniem albo sterownikiem wracają do CPU. Eksport mapy głębi C i wyrównanie używają CPU. Zobacz [obsługę GPU](GPU_SUPPORT.md).
 

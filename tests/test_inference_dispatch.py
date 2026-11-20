@@ -17,7 +17,7 @@ from fusion_methods import inference_client, neural_runtime as runtime
 def worker_command(tmp_path):
     script = tmp_path / 'protocol.py'
     script.write_text('''import array, json, math, mmap, os, sys, time
-print(json.dumps({'ready':True,'backends':['TORCH_CUDA'],'device':'test device'}), flush=True)
+print(json.dumps({'ready':True,'backends':['TORCH_CUDA','TORCH_MPS'],'device':'test device'}), flush=True)
 for line in sys.stdin:
     r = json.loads(line)
     assert all(os.path.isabs(r[k]) for k in ('model', 'cache'))
@@ -38,11 +38,13 @@ for line in sys.stdin:
     return [sys.executable, '-I', '-u', str(script)]
 
 
-def test_worker_maps_independent_input_and_releases_output(worker_command, tmp_path):
+@pytest.mark.parametrize('backend', ['TORCH_CUDA', 'TORCH_MPS'])
+def test_worker_maps_independent_input_and_releases_output(worker_command, tmp_path, backend):
     worker = inference_client.Worker(worker_command, None)
     planes = np.arange(24, dtype=np.float32).reshape(1, 2, 3, 4)
     try:
-        result = worker.run('TORCH_CUDA', str(tmp_path / 'original.onnx'), planes, tmp_path, None)
+        assert backend in worker.backends
+        result = worker.run(backend, str(tmp_path / 'original.onnx'), planes, tmp_path, None)
         path = Path(result.filename) if isinstance(result, np.memmap) else None
         retained = result[:, :, :1]
         np.testing.assert_array_equal(result, planes + 2)
@@ -68,7 +70,7 @@ def test_worker_failure_reaps_child(worker_command, tmp_path, mode):
     model = tmp_path / ('exit.onnx' if mode == 'exit' else 'delay.onnx')
     try:
         with pytest.raises(RegistrationCancelled if mode == 'cancel' else inference_client.WorkerLost):
-            worker.run('TORCH_CUDA', str(model), np.zeros((1, 2, 4, 4), np.float32), tmp_path, cancel)
+            worker.run('TORCH_MPS', str(model), np.zeros((1, 2, 4, 4), np.float32), tmp_path, cancel)
         assert worker.process.poll() is not None
     finally:
         worker.close()
@@ -188,4 +190,46 @@ def test_native_admission_charges_tensorrt_workspace_and_plan_limit(monkeypatch)
         runtime.apply_inference_budget(plan)
         assert runtime._memory_refusal('model', shape, 'TENSORRT', 1)
         assert runtime._memory_refusal('model', shape, 'TORCH_CUDA', 1) is None
+    runtime.start_inference_job()
+
+
+def test_mps_job_reports_execution_and_tries_ort_before_cpu(worker_command, monkeypatch, tmp_path):
+    from core import inference_pack
+
+    model = tmp_path / 'model.onnx'
+    model.touch()
+    monkeypatch.setattr(runtime, '_PACK', (('TORCH_MPS',), tuple(worker_command), 'Apple GPU'))
+    monkeypatch.setattr(runtime, '_DEVICE', 'COREML')
+    monkeypatch.setattr(runtime, '_AVAILABLE_PROVIDERS', ('CoreMLExecutionProvider',))
+    monkeypatch.setattr(runtime, '_vram_snapshot', lambda _: pytest.fail('MPS queried VRAM'))
+    monkeypatch.setattr(inference_pack, 'pack_root', lambda: tmp_path)
+    monkeypatch.setattr(resource_policy, 'probe_memory', lambda: resource_policy.ResourceSnapshot(
+        available_ram=8 * 1024**3, total_ram=16 * 1024**3))
+    planes = np.zeros((1, 3, 64, 64), np.float32)
+    with runtime.inference_job():
+        result = runtime.logits(planes, model, runtime.resolve_device(True), 1)
+        np.testing.assert_array_equal(result, planes + 2)
+        assert runtime.actual_device() == 'TORCH_MPS'
+        assert runtime.actual_device_report() == 'PyTorch MPS (Apple GPU)'
+
+    calls = []
+
+    def reject_model(*_):
+        calls.append('TORCH_MPS')
+        raise inference_client.WorkerError('unsupported MPS operator')
+
+    def run_ort(planes, _path, device, *_):
+        calls.append(device)
+        if device == 'COREML':
+            raise RuntimeError('graph is unsupported by CoreML')
+        return planes, device
+
+    monkeypatch.setattr(runtime, '_run_native', reject_model)
+    monkeypatch.setattr(runtime, '_run_ort', run_ort)
+    monkeypatch.setattr(resource_policy, 'require_memory', lambda *_: None)
+    with runtime.inference_job():
+        runtime.logits(planes, model, 'TORCH_MPS', 1)
+        assert calls == ['TORCH_MPS', 'COREML', 'CPU']
+        assert runtime.actual_device() == 'CPU'
+        assert any('unsupported MPS operator' in s for s in runtime.device_diagnostics()['fallback_reasons'])
     runtime.start_inference_job()

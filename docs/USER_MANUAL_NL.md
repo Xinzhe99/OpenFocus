@@ -751,7 +751,7 @@ De planner houdt rekening met fysieke cores, CPU-affiniteit en quota en voert é
 
 ### GPU-versnelling
 
-StackMFF V1/V2/V3 gebruiken ONNX Runtime. DirectML op Windows en CoreML op macOS kunnen inferentie versnellen; anders wordt de CPU gebruikt. Beschikbaarheid van een provider bewijst geen GPU-uitvoering. Ondersteuning voor andere GPU’s vereist validatie.
+Voor StackMFF V1/V2/V3 installeer je het geschikte pakket via **Instellingen → AI-versnellingsonderdelen**. OpenFocus biedt TensorRT en PyTorch CUDA op Windows met NVIDIA, PyTorch CUDA op Linux met NVIDIA en PyTorch MPS op Apple Silicon. Afhankelijk van het apparaat kan OpenFocus terugvallen op DirectML, CoreML of de CPU. Zie de [GPU-vereisten](GPU_SUPPORT.md).
 
 OpenFocus B kan diepteverwerking en bronfusie versnellen op een geschikte OpenCL-GPU; afhankelijk van het geheugenbudget zijn begrensde GPU-stappen of terugval op de CPU mogelijk. Als GPU-versnelling is ingeschakeld, kunnen OpenFocus A, OpenFocus C, Geleide filter, GFG-FGF, DCT en DTCWT fusie van het volledige beeld op een geschikte OpenCL-GPU uitvoeren; bij onvoldoende geheugen of problemen met het apparaat of stuurprogramma vallen ze terug op de CPU. De export van C's dieptekaart en uitlijning gebruiken de CPU. Zie [GPU-ondersteuning](GPU_SUPPORT.md).
 

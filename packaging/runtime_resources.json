@@ -31,7 +31,7 @@
     "docs/WEBSITE_OPERATIONS.md",
     "LICENSE",
     "packaging/runtime_resources.json",
-    "core/accelerator_win64.json",
+    "core/accelerator_*.json",
     "core/inference_worker.py",
     "core/inference_tensorrt.py",
     "core/__init__.py",

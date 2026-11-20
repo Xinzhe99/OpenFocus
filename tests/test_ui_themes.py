@@ -746,7 +746,8 @@ def test_batch_dialog_has_an_empty_state(qapp, tmp_path):
 
 
 @pytest.mark.parametrize('language', ['en', 'zh'])
-def test_accelerator_download_priority_can_override_region(qapp, monkeypatch, language):
+@pytest.mark.parametrize(('backend', 'engine'), [('TORCH_CUDA', 'PyTorch CUDA'), ('TORCH_MPS', 'PyTorch MPS')])
+def test_accelerator_download_priority_can_override_region(qapp, monkeypatch, language, backend, engine):
     from PyQt6.QtWidgets import QWidget
     from core.inference_pack import PackStatus
     from locales import trans
@@ -755,7 +756,7 @@ def test_accelerator_download_priority_can_override_region(qapp, monkeypatch, la
     monkeypatch.setattr(trans, 'current_lang', language)
     window = QWidget()
     banner = accelerator_setup.AcceleratorBanner(window)
-    banner.status = PackStatus(True, 'NVIDIA GPU', '', 100, False, ('TORCH_CUDA',), 'test', 200)
+    banner.status = PackStatus(True, 'Test GPU', '', 100, False, (backend,), 'test', 200)
     installs = []
     monkeypatch.setattr(banner, '_start', lambda *args: installs.append(args))
     try:
@@ -763,6 +764,8 @@ def test_accelerator_download_priority_can_override_region(qapp, monkeypatch, la
         banner.open_settings()
         qapp.processEvents()
         dialog = banner.dialog
+        assert engine in banner.label.text()
+        assert dialog.engines.text() == engine
         assert dialog.install_button.isVisible()
         assert dialog.source.isVisible()
         assert dialog.source.currentIndex() == 0

@@ -5,6 +5,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- Offer PyTorch CUDA on supported NVIDIA Linux systems and PyTorch MPS on
+  Apple Silicon. The optional packs use the same installer and verify all
+  three StackMFF models before activation.
+
 ### Changed
 - Preselect NVIDIA acceleration review on Windows PCs with an NVIDIA driver,
   including when upgrading from 2.0.0.
@@ -13,6 +18,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   transfers on the next source and log why the source changed.
 
 ### Fixed
+- Recover a desktop email sign-in after a lost connection to the approval
+  endpoint without sending a second email. Record the failed request stage
+  without logging sign-in credentials.
 - Carry over a Windows portable build's existing device registration when
   restoring its saved sign-in after an in-place update.
 - Show the fusion method once in output names after rendering all methods.

@@ -751,7 +751,7 @@ Der Planer berücksichtigt physische Kerne, CPU-Affinität und Kontingente und f
 
 ### GPU-Beschleunigung
 
-StackMFF V1/V2/V3 nutzen ONNX Runtime. DirectML unter Windows und CoreML unter macOS können die Inferenz beschleunigen; andernfalls wird die CPU verwendet. Die Verfügbarkeit eines Providers belegt keine GPU-Ausführung. Weitere GPU-Unterstützung muss validiert werden.
+Für StackMFF V1/V2/V3 können Sie unter **Einstellungen → KI-Beschleunigungskomponenten** ein passendes Paket installieren. OpenFocus bietet TensorRT und PyTorch CUDA unter Windows mit NVIDIA, PyTorch CUDA unter Linux mit NVIDIA und PyTorch MPS auf Apple Silicon an. Je nach Gerät stehen DirectML, CoreML oder die CPU als Alternativen zur Verfügung. Die Voraussetzungen finden Sie in der [GPU-Dokumentation](GPU_SUPPORT.md).
 
 OpenFocus B kann Tiefenverarbeitung und Quellenzusammenführung mit einer kompatiblen OpenCL-GPU beschleunigen; je nach Speicherbudget sind begrenzte GPU-Schritte oder CPU-Rückfall möglich. Bei aktivierter GPU-Beschleunigung können OpenFocus A, OpenFocus C, Geführter Filter, GFG-FGF, DCT und DTCWT die Ganzbild-Fusion auf einer kompatiblen OpenCL-GPU ausführen; bei unzureichendem Speicher oder Geräte- bzw. Treiberproblemen fallen sie auf die CPU zurück. Der Tiefenkartenexport von C und die Ausrichtung laufen auf der CPU. Siehe [GPU-Unterstützung](GPU_SUPPORT.md).
 

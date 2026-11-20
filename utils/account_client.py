@@ -26,9 +26,11 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import webbrowser
+from http.client import HTTPException
 
 from constants import app_display_version
 from utils.app_paths import legacy_windows_account_dirs, shared_account_device_dir, user_data_dir
+from utils.logging_setup import log_action
 from utils.report_client import ReportError, _file_lock
 
 BASE_URL = "https://account.openfocus.top"
@@ -46,6 +48,7 @@ _GUID_PATTERN = re.compile(r"(?:[0-9a-f]{32}|[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9
 _LEGACY_DEVICE_PATTERN = re.compile(r"[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]")
 _MAX_RESPONSE = 1024 * 1024
 _MAX_ERROR_RESPONSE = 16 * 1024
+_EMAIL_POLL_INTERVAL = 2
 _ERROR_CODES = frozenset({
     "verified_email_required", "email_required", "invalid_code", "invalid_verifier",
     "terms_required", "invalid_terms_version", "account_disabled", "invalid_email",
@@ -60,6 +63,10 @@ class AccountError(Exception):
         self.status = status
         self.retry_after = retry_after
         super().__init__(category)
+
+
+def _retryable_login_request(error):
+    return error.category == 'network' or (error.category == 'http' and error.status in (408, 502, 503, 504))
 
 
 def pkce_pair():
@@ -374,12 +381,12 @@ def _http(method, url, body=None, token=None, timeout=15):
                 code = value.get("error") if isinstance(value, dict) else None
                 if isinstance(code, str) and code in _ERROR_CODES:
                     category = code
-        except (OSError, ValueError, UnicodeError, RecursionError):
+        except (OSError, HTTPException, ValueError, UnicodeError, RecursionError):
             pass
         finally:
             exc.close()
         raise AccountError(category, exc.code, retry) from None
-    except (urllib.error.URLError, TimeoutError, OSError):
+    except (urllib.error.URLError, TimeoutError, OSError, HTTPException):
         raise AccountError("network") from None
     except (ValueError, UnicodeError):
         raise AccountError("invalid_response") from None
@@ -588,10 +595,15 @@ class AccountClient:
             raise
         return self._login_call(generation, "POST", "/v1/auth/exchange",
                                 {"code": code, "code_verifier": verifier, **device, **evidence},
-                                cancel=cancel)
+                                cancel=cancel, retry_transient=True)
 
     def _call(self, method, path, body=None, token=None, timeout=15):
-        result = self._request(method, self.base_url + path, body=body, token=token, timeout=timeout)
+        try:
+            result = self._request(method, self.base_url + path, body=body, token=token, timeout=timeout)
+        except AccountError as exc:
+            log_action('account_request_failed', method=method, endpoint=path,
+                       category=exc.category, status=exc.status)
+            raise
         if not isinstance(result, dict):
             raise AccountError("invalid_response")
         return result
@@ -626,45 +638,55 @@ class AccountClient:
             if self._logout_cleanup_pending or self._logout_in_progress:
                 raise AccountError("storage")
 
-    def _login_call(self, generation, method, path, body=None, *, cancel=None, timeout=15, check_after=True):
-        self._check_login(generation, cancel)
-        try:
-            result = self._call(method, path, body, timeout=timeout)
-        except AccountError as exc:
-            with self._condition:
-                if generation != (self._generation, self._login_epoch) or (cancel is not None and cancel.is_set()):
-                    raise AccountError("cancelled") from None
-                if exc.category == "account_disabled":
-                    self._invalidate_session()
-                    self._clear_storage()
-            raise
-        if check_after:
+    def _login_call(self, generation, method, path, body=None, *, cancel=None, timeout=15,
+                    check_after=True, retry_transient=False):
+        for attempt in range(2 if retry_transient else 1):
             self._check_login(generation, cancel)
-        return result
+            try:
+                result = self._call(method, path, body, timeout=timeout)
+            except AccountError as exc:
+                with self._condition:
+                    self._check_login(generation, cancel)
+                    if exc.category == "account_disabled":
+                        self._invalidate_session()
+                        self._clear_storage()
+                if retry_transient and attempt == 0 and _retryable_login_request(exc):
+                    continue
+                raise
+            if check_after:
+                self._check_login(generation, cancel)
+            return result
 
-    def _poll_email(self, generation, cancel, flow_id, poll_token, deadline):
+    def _poll_email(self, generation, cancel, body, deadline):
+        failures = 0
         while True:
             self._check_login(generation, cancel)
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise AccountError("timeout")
-            result = self._login_call(generation, "POST", "/v1/auth/email/poll",
-                                      {"flow_id": flow_id, "poll_token": poll_token},
-                                      cancel=cancel, timeout=min(15, remaining))
-            if time.monotonic() >= deadline:
-                raise AccountError("timeout")
-            status = result.get("status")
-            if status == "approved":
-                code = result.get("code")
-                if (not isinstance(code, str) or not 1 <= len(code) <= 4096
-                        or any(ord(c) <= 32 or ord(c) >= 127 for c in code)):
+            try:
+                result = self._login_call(generation, "POST", "/v1/auth/email/poll", body,
+                                          cancel=cancel, timeout=min(15, remaining))
+            except AccountError as exc:
+                if "code_verifier" not in body or failures >= 2 or not _retryable_login_request(exc):
+                    raise
+                failures += 1
+            else:
+                failures = 0
+                if time.monotonic() >= deadline:
+                    raise AccountError("timeout")
+                status = result.get("status")
+                if status == "approved":
+                    code = result.get("code")
+                    if (not isinstance(code, str) or not 1 <= len(code) <= 4096
+                            or any(ord(c) <= 32 or ord(c) >= 127 for c in code)):
+                        raise AccountError("invalid_response")
+                    return code
+                if status == "expired":
+                    raise AccountError("sign_in_expired")
+                if status != "pending":
                     raise AccountError("invalid_response")
-                return code
-            if status == "expired":
-                raise AccountError("sign_in_expired")
-            if status != "pending":
-                raise AccountError("invalid_response")
-            next_poll = min(deadline, time.monotonic() + 2)
+            next_poll = min(deadline, time.monotonic() + _EMAIL_POLL_INTERVAL)
             while time.monotonic() < next_poll:
                 self._check_login(generation, cancel)
                 with self._condition:
@@ -694,9 +716,11 @@ class AccountClient:
                 self.email_handoff_mode = None
         self._check_login(generation, cancel)
         handoff = "loopback"
+        retryable_poll = False
         if provider == "email":
             try:
-                capabilities = self._login_call(generation, "GET", "/v1/auth/email/capabilities", cancel=cancel)
+                capabilities = self._login_call(generation, "GET", "/v1/auth/email/capabilities",
+                                                cancel=cancel, retry_transient=True)
             except AccountError as exc:
                 if exc.status not in (404, 405):
                     raise
@@ -704,6 +728,7 @@ class AccountClient:
                 if capabilities.get("cross_device") != "poll-v1":
                     raise AccountError("invalid_response")
                 handoff = "poll-v1"
+                retryable_poll = capabilities.get("retryable_poll") is True
         verifier, challenge = pkce_pair()
         try:
             server = _CallbackServer(("127.0.0.1", 0), _CallbackHandler)
@@ -751,7 +776,10 @@ class AccountClient:
                     on_started()
                 deadline = time.monotonic() + timeout
                 if provider == "email" and handoff == "poll-v1":
-                    code = self._poll_email(generation, cancel, flow_id, poll_token, deadline)
+                    poll = {"flow_id": flow_id, "poll_token": poll_token}
+                    if retryable_poll:
+                        poll["code_verifier"] = verifier
+                    code = self._poll_email(generation, cancel, poll, deadline)
                 else:
                     while not server.code and not server.error:
                         self._check_login(generation, cancel)

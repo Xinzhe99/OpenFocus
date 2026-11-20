@@ -841,6 +841,7 @@ def test_render_estimate_uses_raw_metadata_and_predicts_v2_cpu_fallback(monkeypa
                          commit_headroom=12 * GiB, process_commit_headroom=1)
     monkeypatch.setattr(policy, 'probe_resources', lambda kind: snapshot)
     monkeypatch.setattr(neural_runtime, 'cached_device', lambda: 'DIRECTML')
+    monkeypatch.setattr(neural_runtime, '_AVAILABLE_PROVIDERS', ('DmlExecutionProvider',))
 
     estimate = estimate_render_memory([frame] * 57, 'stackmffv2', {}, register=True,
                                       tile_block=1024)

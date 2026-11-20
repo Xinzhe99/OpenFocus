@@ -988,7 +988,7 @@ Windows에서는 별도의 후보 버전을 준비하고 전환할 때 포터블
 
 ### GPU 가속 토글
 
-StackMFF V1/V2/V3는 ONNX Runtime을 사용합니다. Windows의 DirectML과 macOS의 CoreML이 추론을 가속할 수 있으며, 그렇지 않으면 CPU를 사용합니다. 공급자의 존재만으로 GPU 실행이 증명되지는 않습니다. 다른 GPU 지원은 검증이 필요합니다.
+**설정 → AI 가속 구성 요소**에서 StackMFF V1/V2/V3에 맞는 패키지를 설치할 수 있습니다. NVIDIA GPU가 있는 Windows에서는 TensorRT와 PyTorch CUDA, Linux에서는 PyTorch CUDA, Apple Silicon Mac에서는 PyTorch MPS를 제공합니다. 장치에 따라 DirectML, CoreML 또는 CPU를 사용할 수 있습니다. 자세한 내용은 [GPU 요구 사항](GPU_SUPPORT.md)을 참조하세요.
 
 OpenFocus B는 호환 OpenCL GPU로 깊이 처리와 원본 병합을 가속할 수 있습니다. 메모리 예산에 따라 제한된 GPU 단계를 사용하거나 CPU로 전환합니다. GPU 가속을 켜면 OpenFocus A, OpenFocus C, 가이드 필터, GFG-FGF, DCT 및 DTCWT는 호환 OpenCL GPU에서 전체 이미지 합성을 수행할 수 있습니다. 메모리가 부족하거나 장치 또는 드라이버에 문제가 있으면 CPU로 전환합니다. C의 깊이 맵 내보내기와 정렬은 CPU를 사용합니다. [GPU 지원](GPU_SUPPORT.md)을 참고하세요.
 

@@ -281,8 +281,11 @@ class AcceleratorBanner(QWidget):
         self.configure.setText(trans.t('ai_pack_title'))
         self.dismiss.setText(trans.t('report_not_now'))
         status = self.status
+        engines = ''
         if status and status.supported:
-            self.label.setText(trans.t('ai_pack_offer').format(device=status.device))
+            from fusion_methods.neural_runtime import display_name
+            engines = ' · '.join(display_name(engine, include_adapter=False) for engine in status.backends)
+            self.label.setText(trans.t('ai_pack_offer').format(device=status.device, engines=engines))
         dialog = self.dialog
         if dialog is None:
             return
@@ -312,21 +315,19 @@ class AcceleratorBanner(QWidget):
             dialog.feedback.setText(feedback)
             dialog.feedback.setVisible(bool(feedback))
 
-        device = engines = description = ''
+        device = description = ''
         if checking:
             heading = trans.t('ai_pack_check')
         elif status is None:
             heading = trans.t('ai_pack_check_failed')
         else:
             device = status.device
-            if status.supported:
-                from fusion_methods.neural_runtime import display_name
-                engines = ' · '.join(display_name(engine, include_adapter=False) for engine in status.backends)
             if busy:
                 heading = trans.t('ai_pack_installing')
             elif not status.supported:
                 heading = trans.t('ai_pack_bundled')
-                description = trans.t('ai_pack_driver' if status.reason == 'driver' else 'ai_pack_base')
+                reason_key = {'driver': 'ai_pack_driver', 'os_version': 'ai_pack_macos_update'}
+                description = trans.t(reason_key.get(status.reason, 'ai_pack_base'))
             elif status.installed:
                 heading = trans.t('ai_pack_installed')
                 description = trans.t('ai_pack_ready')
