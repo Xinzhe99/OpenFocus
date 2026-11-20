@@ -46,7 +46,7 @@ def invite_server(qapp, monkeypatch):
 
 @pytest.fixture
 def contact_replies(invite_server):
-    reply = {'body': b'{}'}
+    reply = {'body': b'{}', 'pngs': {}}
     paths = []
 
     def accept_connection():
@@ -61,6 +61,11 @@ def contact_replies(invite_server):
                 paths.append(path)
                 body = reply['body']
                 headers = (f'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n'
+                           f'Content-Length: {len(body)}\r\nConnection: close\r\n\r\n')
+                socket.write(headers.encode('ascii') + body)
+            elif path in reply['pngs']:
+                body = reply['pngs'][path]
+                headers = (f'HTTP/1.1 200 OK\r\nContent-Type: image/png\r\n'
                            f'Content-Length: {len(body)}\r\nConnection: close\r\n\r\n')
                 socket.write(headers.encode('ascii') + body)
             else:
@@ -262,12 +267,22 @@ def test_contact_refreshes_and_omits_missing_or_unsafe_details(qapp, theme_envir
         qapp.processEvents()
 
 
+def _image_pixels(image):
+    import numpy as np
+    from PyQt6.QtGui import QImage
+
+    rgb = image.convertToFormat(QImage.Format.Format_RGB888)
+    bits = rgb.constBits()
+    bits.setsize(rgb.sizeInBytes())
+    rows = np.frombuffer(bits, dtype=np.uint8).reshape(rgb.height(), rgb.bytesPerLine())
+    return rows[:, :rgb.width() * 3].reshape(rgb.height(), rgb.width(), 3).copy()
+
+
 def test_discord_qr_decodes_the_current_published_invite(qapp, theme_environment, contact_replies):
     import json
 
     import cv2
     import numpy as np
-    from PyQt6.QtGui import QImage
     from PyQt6.QtWidgets import QLabel
     from dialogs.about import ContactInfoDialog
     from locales import trans
@@ -296,11 +311,8 @@ def test_discord_qr_decodes_the_current_published_invite(qapp, theme_environment
             assert len(links) == 1 and links[0].property('communityUrl') == invite
 
             # Decode Qt's painted widget at its actual device pixel ratio.
-            image = qr.grab().toImage().convertToFormat(QImage.Format.Format_RGB888)
-            bits = image.constBits()
-            bits.setsize(image.sizeInBytes())
-            rows = np.frombuffer(bits, dtype=np.uint8).reshape(image.height(), image.bytesPerLine())
-            pixels = rows[:, :image.width() * 3].reshape(image.height(), image.width(), 3)
+            image = qr.grab().toImage()
+            pixels = _image_pixels(image)
             assert cv2.QRCodeDetector().detectAndDecode(pixels)[0] == invite
             badge_y, badge_x = np.nonzero(np.all(pixels == [88, 101, 242], axis=2))
             assert badge_x.size and badge_y.size
@@ -319,6 +331,101 @@ def test_discord_qr_decodes_the_current_published_invite(qapp, theme_environment
         dialog.close()
         dialog.deleteLater()
         qapp.processEvents()
+
+
+def test_community_qr_same_geometry_in_dialog_capture(qapp, theme_environment, contact_replies, tmp_path):
+    import json
+    from io import BytesIO
+
+    import cv2
+    import numpy as np
+    from PIL import Image, ImageDraw
+    from PyQt6.QtCore import QPoint, QRect
+    from PyQt6.QtWidgets import QLabel
+
+    from dialogs.about import ContactInfoDialog
+    from dialogs.support import SupportUsDialog
+    from locales import trans
+    from tests.test_control_channel import wait_until
+
+    reply, _ = contact_replies
+    trans.set_language('en')
+    invite = 'https://discord.gg/OpenFocus1'
+    reply['body'] = json.dumps({'discord_url': invite}).encode('utf-8')
+    mark = (40, 90, 180)
+    codes = {
+        'wechat-group': ('GROUP1', 1, (5, 79, 68, 4), True),
+        'wechat-official-account': ('https://example.org/official', 6, (61, 3, 7, 38), False),
+        'alipay': ('https://example.org/alipay', 5, (12, 45, 35, 11), False),
+        'paypal': ('https://example.org/paypal', 6, (83, 38, 24, 12), True),
+    }
+    for slot, (payload, version, padding, transparent) in codes.items():
+        params = cv2.QRCodeEncoder_Params()
+        params.correction_level = cv2.QRCodeEncoder_CORRECT_LEVEL_H
+        params.version = version
+        modules = cv2.QRCodeEncoder_create(params).encode(payload)[2:-2, 2:-2]
+        step = 6
+        side = len(modules) * step
+        artwork = Image.fromarray(modules).resize((side, side), Image.Resampling.NEAREST).convert('RGB')
+        center = side // 2
+        ImageDraw.Draw(artwork).rectangle((center - step, center - step, center + step, center + step), fill=mark)
+        left, top, right, bottom = padding
+        size = (left + side + right, top + side + bottom)
+        # Transparent padding deliberately carries black RGB beneath its zero alpha.
+        source = Image.new('RGBA', size, (0, 0, 0, 0)) if transparent else Image.new('RGB', size, 'white')
+        source.paste(artwork, (left, top))
+        stream = BytesIO()
+        source.save(stream, 'PNG')
+        reply['pngs'][f'/v1/qr/{slot}'.encode()] = stream.getvalue()
+
+    for dialog_type, slots, box in (
+        (ContactInfoDialog, ('discord-invite', 'wechat-group', 'wechat-official-account'), 152),
+        (SupportUsDialog, ('alipay', 'paypal'), 228),
+    ):
+        dialog = dialog_type()
+        try:
+            dialog.show()
+            if qapp.platformName() == 'windows':
+                dialog.raise_()
+            labels = [dialog.findChild(QLabel, slot) for slot in slots]
+            assert wait_until(lambda: all(label.isVisible() for label in labels))
+            assert wait_until(lambda: dialog.windowHandle().isExposed())
+            qapp.processEvents()
+            if qapp.platformName() == 'windows':
+                qapp.sync()
+                capture = dialog.screen().grabWindow(int(dialog.winId()))
+            else:
+                capture = dialog.grab()
+            assert not capture.isNull()
+            assert capture.save(str(tmp_path / f'{dialog_type.__name__}.png'))
+            image = capture.toImage()
+            ratio = dialog.devicePixelRatioF()
+            side = round(box * ratio)
+            for slot, label in zip(slots, labels):
+                assert label.width() == label.height() == box
+                assert abs(label.geometry().center().x() - label.parentWidget().rect().center().x()) <= 1
+                origin = label.mapTo(dialog, QPoint())
+                region = QRect(round(origin.x() * ratio), round(origin.y() * ratio), side, side)
+                assert image.rect().contains(region)
+                pixels = _image_pixels(image.copy(region))
+                ys, xs = np.nonzero(np.any(pixels[1:-1, 1:-1] < 192, axis=2))
+                width, height = np.ptp(xs) + 1, np.ptp(ys) + 1
+                assert width == height == side * 7 // 10
+                assert abs(xs.min() + xs.max() + 1 - (side - 2)) <= 2
+                assert abs(ys.min() + ys.max() + 1 - (side - 2)) <= 2
+                # Account for the one-pixel trim at the native capture boundary.
+                version = 1 if slot == 'discord-invite' else codes[slot][1]
+                modules = 17 + 4 * version
+                quiet = min(xs.min(), ys.min(), side - 3 - xs.max(), side - 3 - ys.max())
+                assert quiet + 1 >= 4 * width / modules
+                payload = invite if slot == 'discord-invite' else codes[slot][0]
+                assert cv2.QRCodeDetector().detectAndDecode(pixels[1:-1, 1:-1])[0] == payload
+                if slot != 'discord-invite':
+                    assert np.any(np.all(pixels == mark, axis=2))
+        finally:
+            dialog.close()
+            dialog.deleteLater()
+            qapp.processEvents()
 
 
 @pytest.mark.parametrize('response', ['png', 'invalid', 'oversized', 'timeout', 'redirect',
@@ -391,7 +498,9 @@ def test_contact_uses_only_current_published_qr(qapp, monkeypatch, invite_server
             assert wait_until(lambda: status.isHidden() or status.text() != trans.t('community_qr_loading'))
             if color:
                 assert qr.isVisible() and status.isHidden()
-                assert qr.pixmap().toImage().pixelColor(0, 0).name() == color
+                image = qr.pixmap().toImage()
+                assert image.pixelColor(0, 0).name() == '#ffffff'
+                assert image.pixelColor(image.width() // 2, image.height() // 2).name() == color
             else:
                 assert qr.isHidden()
                 expected = 'community_qr_unpublished' if response == 'unpublished' else 'community_qr_unavailable'
@@ -636,16 +745,13 @@ def test_batch_dialog_has_an_empty_state(qapp, tmp_path):
         qapp.processEvents()
 
 
-@pytest.mark.parametrize(('region', 'language', 'prefer_mirror'), [
-    ('CN', 'en', True), ('US', 'zh', False), ('TW', 'zh', False), ('', 'zh', False),
-])
-def test_accelerator_download_mirror_follows_region(qapp, monkeypatch, region, language, prefer_mirror):
-    from PyQt6.QtWidgets import QCheckBox, QWidget
+@pytest.mark.parametrize('language', ['en', 'zh'])
+def test_accelerator_download_priority_can_override_region(qapp, monkeypatch, language):
+    from PyQt6.QtWidgets import QWidget
     from core.inference_pack import PackStatus
     from locales import trans
     from ui import accelerator_setup
 
-    monkeypatch.setattr(accelerator_setup, '_windows_region', lambda: region)
     monkeypatch.setattr(trans, 'current_lang', language)
     window = QWidget()
     banner = accelerator_setup.AcceleratorBanner(window)
@@ -658,19 +764,13 @@ def test_accelerator_download_mirror_follows_region(qapp, monkeypatch, region, l
         qapp.processEvents()
         dialog = banner.dialog
         assert dialog.install_button.isVisible()
-        checkboxes = dialog.findChildren(QCheckBox)
-        if prefer_mirror:
-            mirror, = checkboxes
-            assert mirror.isVisible() and mirror.isChecked()
-        else:
-            assert not checkboxes
-        dialog.install_button.click()
-        assert installs[-1] == (True, None, prefer_mirror)
-        if prefer_mirror:
-            mirror.click()
+        assert dialog.source.isVisible()
+        assert dialog.source.currentIndex() == 0
+        for index, expected in enumerate((None, True, False)):
+            dialog.source.setCurrentIndex(index)
             banner.retranslate()
             dialog.install_button.click()
-            assert installs[-1] == (True, None, False)
+            assert installs[-1] == (True, None, expected)
     finally:
         if banner.dialog is not None:
             banner.dialog.close()

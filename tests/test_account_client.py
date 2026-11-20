@@ -5,9 +5,11 @@ import io
 import json
 import logging
 import os
+import sys
 import threading
 import urllib.error
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 from types import SimpleNamespace
 
 import pytest
@@ -1152,8 +1154,34 @@ def test_browser_login_cancellation_discards_exchange_result(monkeypatch):
     assert store.value == session()
 
 
+_TEST_MACHINE_GUID = "6cf17fd3-51ac-41e1-a71d-6a70de6e7baa"
+_TEST_MACHINE_KEY = hashlib.sha256(
+    b"OpenFocus/account/windows-machine-key/v1\0" + _TEST_MACHINE_GUID.replace("-", "").encode("ascii")
+).hexdigest()
+
+
 @pytest.fixture
-def windows_account_dirs(monkeypatch, tmp_path):
+def machine_registry(monkeypatch):
+    registry = SimpleNamespace(HKEY_LOCAL_MACHINE=object(), KEY_READ=0x20019,
+                               KEY_WOW64_64KEY=0x100, REG_SZ=1, value=(_TEST_MACHINE_GUID, 1))
+
+    def open_key(root, path, reserved, access):
+        assert (root, path, reserved, access) == (
+            registry.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Cryptography", 0, 0x20119)
+        return nullcontext(registry)
+
+    def query_value(key, name):
+        assert key is registry and name == "MachineGuid"
+        return registry.value
+
+    registry.OpenKey = open_key
+    registry.QueryValueEx = query_value
+    monkeypatch.setitem(sys.modules, "winreg", registry)
+    return registry
+
+
+@pytest.fixture
+def windows_account_dirs(monkeypatch, tmp_path, machine_registry):
     local = tmp_path / "local"
     roaming = tmp_path / "roaming"
     windows = SimpleNamespace(platform="win32")
@@ -1166,7 +1194,34 @@ def windows_account_dirs(monkeypatch, tmp_path):
     return local, roaming / "OpenFocus"
 
 
-def test_windows_release_adopts_device_from_signed_in_preview(monkeypatch, windows_account_dirs):
+@pytest.fixture
+def windows_browser_flow(monkeypatch, windows_account_dirs):
+    class Listener(DummyListener):
+        def handle_request(self):
+            self.code = "exchange-code"
+
+    urls = []
+    monkeypatch.setattr(account, "_CallbackServer", Listener)
+    monkeypatch.setattr(account.webbrowser, "open", lambda url: urls.append(url) or True)
+    return urls
+
+
+@pytest.mark.parametrize("value,kind,expected", [
+    ("  {" + _TEST_MACHINE_GUID.upper() + "}  ", 1, _TEST_MACHINE_KEY),
+    (_TEST_MACHINE_GUID.replace("-", ""), 1, _TEST_MACHINE_KEY),
+    (_TEST_MACHINE_GUID, 2, None),
+    (_TEST_MACHINE_GUID.encode("ascii"), 1, None),
+    ("{" + _TEST_MACHINE_GUID, 1, None),
+    (_TEST_MACHINE_GUID.replace("-", "", 1) + "-", 1, None),
+    ("00000000-0000-0000-0000-000000000000", 1, None),
+])
+def test_windows_machine_key_normalizes_valid_registry_strings(
+        windows_account_dirs, machine_registry, value, kind, expected):
+    machine_registry.value = (value, kind)
+    assert account._windows_machine_key() == expected
+
+
+def test_windows_release_adopts_device_from_signed_in_preview(monkeypatch, windows_account_dirs, caplog):
     local, roaming = windows_account_dirs
     preview = local / "OpenFocus Preview" / "6c66f5b9-render" / "profile"
     preview_store = account.TokenStore(preview / "account-session")
@@ -1180,6 +1235,7 @@ def test_windows_release_adopts_device_from_signed_in_preview(monkeypatch, windo
             self.code = "exchange-code"
 
     exchanges = []
+    bodies = []
     revocations = []
 
     def request(method, url, body=None, token=None, **kwargs):
@@ -1188,6 +1244,7 @@ def test_windows_release_adopts_device_from_signed_in_preview(monkeypatch, windo
             return {"ok": True}
         assert (method, url.rsplit("/", 1)[-1]) == ("POST", "exchange")
         exchanges.append({key: body[key] for key in legacy})
+        bodies.append(body)
         return session("release-token")
 
     monkeypatch.setattr(account, "_CallbackServer", Listener)
@@ -1198,8 +1255,14 @@ def test_windows_release_adopts_device_from_signed_in_preview(monkeypatch, windo
         preview_env.setenv("OPENFOCUS_DATA_DIR", str(preview))
         upgraded_preview = account.AccountClient()
         assert upgraded_preview.token() == "preview-token"
-    stable.login("github")
+    with caplog.at_level(logging.DEBUG):
+        stable.login("github")
     assert exchanges == [legacy]
+    assert bodies[0]["machine_key"] == _TEST_MACHINE_KEY
+    assert set(bodies[0]["legacy_device_ids"]) == {unused.device_id, legacy["device_id"]}
+    assert _TEST_MACHINE_GUID not in json.dumps(bodies)
+    assert all(value not in caplog.text for value in (
+        _TEST_MACHINE_GUID, _TEST_MACHINE_KEY, legacy["device_id"], "exchange-code", "release-token"))
     assert stable.token() == "release-token"
     assert (local / "OpenFocus" / "account-device").is_file()
     assert upgraded_preview._device_fields() == legacy
@@ -1260,6 +1323,8 @@ def test_windows_trial_sign_in_reuses_installed_device(monkeypatch, tmp_path, wi
     def request(method, url, body=None, **kwargs):
         assert (method, url) == ("POST", account.BASE_URL + "/v1/auth/exchange")
         assert body["device_id"] == registered["device_id"]
+        assert body["machine_key"] == _TEST_MACHINE_KEY
+        assert body["legacy_device_ids"] == [registered["device_id"], legacy["device_id"]]
         return session("trial-session")
 
     monkeypatch.setattr(account, "_CallbackServer", Listener)
@@ -1278,6 +1343,137 @@ def test_windows_explicit_stores_do_not_share_devices(tmp_path, windows_account_
     second = account.AccountClient(store=account.TokenStore(tmp_path / "second" / "account-session"))
     assert first.device_id != second.device_id
     assert not (local / "OpenFocus" / "account-device").exists()
+
+
+@pytest.mark.parametrize("operation", ["email", "browser"])
+def test_windows_exchange_limits_legacy_evidence_to_existing_random_ids(
+        windows_account_dirs, windows_browser_flow, operation):
+    local, roaming = windows_account_dirs
+
+    def write_device(profile, device_id):
+        profile.mkdir(parents=True, exist_ok=True)
+        (profile / "account-device").write_text(json.dumps({"device_id": device_id}), encoding="utf-8")
+
+    ids = [base64.urlsafe_b64encode(hashlib.sha256(str(index).encode()).digest()).decode()[:-1]
+           for index in range(20)]
+    write_device(local / "OpenFocus", ids[0])
+    write_device(roaming, ids[1])
+    previews = local / "OpenFocus Preview"
+    write_device(previews / "00000000-weak" / "profile", "A" * 43)
+    write_device(previews / "00000001-short" / "profile", "short-device")
+    write_device(previews / "00000002-copy" / "profile", ids[0])
+    for index, device_id in enumerate(ids[2:], 3):
+        write_device(previews / f"{index:08x}-preview" / "profile", device_id)
+    write_device(local / "some-other-profile", ids[-1])
+
+    def request(method, url, body=None, **kwargs):
+        if operation == "email":
+            if url.endswith("/capabilities"):
+                return {"cross_device": "poll-v1"}
+            if url.endswith("/start"):
+                return {"ok": True, "flow_id": "email-flow", "poll_token": "poll-token"}
+            if url.endswith("/poll"):
+                return {"status": "approved", "code": "exchange-code"}
+        assert (method, url) == ("POST", account.BASE_URL + "/v1/auth/exchange")
+        assert body["device_id"] == ids[0]
+        assert body["machine_key"] == _TEST_MACHINE_KEY
+        assert body["legacy_device_ids"] == ids[:16]
+        return session()
+
+    client = account.AccountClient(request=request)
+    if operation == "email":
+        assert client.login("email", "user@example.test") == {"id": "user"}
+    else:
+        assert client.login_with_browser() == {"id": "user"}
+
+
+@pytest.mark.parametrize("state", ["missing", "unwritable", "corrupt"])
+def test_windows_machine_key_supplies_repeatable_legacy_compatible_device_id(
+        monkeypatch, windows_account_dirs, windows_browser_flow, state):
+    local, _ = windows_account_dirs
+    path = local / "OpenFocus" / "account-device"
+    if state == "corrupt":
+        path.parent.mkdir(parents=True)
+        path.write_text("corrupt", encoding="utf-8")
+    if state == "unwritable":
+        original_replace = account.os.replace
+
+        def replace(source, destination):
+            if destination == path:
+                raise PermissionError("private path")
+            return original_replace(source, destination)
+
+        monkeypatch.setattr(account.os, "replace", replace)
+
+    ids = []
+    def request(method, url, body=None, **kwargs):
+        assert (method, url) == ("POST", account.BASE_URL + "/v1/auth/exchange")
+        assert body["machine_key"] == _TEST_MACHINE_KEY
+        assert body["legacy_device_ids"] == (ids[:1] if state == "missing" else [])
+        ids.append(body["device_id"])
+        return session()
+
+    for _ in range(2):
+        assert account.AccountClient(request=request).login_with_browser() == {"id": "user"}
+    assert ids[0] == ids[1] and account._valid_device_id(ids[0])
+    assert ids[0] not in (_TEST_MACHINE_GUID, _TEST_MACHINE_KEY)
+    assert len(windows_browser_flow) == 2
+    assert all(url.startswith(account.BASE_URL + "/v1/auth/browser/start?")
+               and all(value not in url for value in (_TEST_MACHINE_GUID, _TEST_MACHINE_KEY, ids[0]))
+               for url in windows_browser_flow)
+    if state == "corrupt":
+        assert path.read_text(encoding="utf-8") == "corrupt"
+    else:
+        assert path.exists() == (state == "missing")
+
+
+def test_windows_missing_registry_keeps_old_exchange_fields(
+        monkeypatch, machine_registry, windows_account_dirs, windows_browser_flow):
+    def denied(*args):
+        raise PermissionError("private registry detail")
+
+    monkeypatch.setattr(machine_registry, "OpenKey", denied)
+    client = account.AccountClient()
+    device = client._device_fields()
+
+    def request(method, url, body=None, **kwargs):
+        assert (method, url) == ("POST", account.BASE_URL + "/v1/auth/exchange")
+        assert "machine_key" not in body
+        assert body["legacy_device_ids"] == [device["device_id"]]
+        assert {key: body[key] for key in device} == device
+        return session()
+
+    account.AccountClient(request=request).login_with_browser()
+
+
+def test_windows_cancelled_during_machine_lookup_does_not_exchange_or_create_device(
+        monkeypatch, machine_registry, windows_account_dirs, windows_browser_flow):
+    local, _ = windows_account_dirs
+    cancel = threading.Event()
+
+    def query(*args):
+        cancel.set()
+        return machine_registry.value
+
+    monkeypatch.setattr(machine_registry, "QueryValueEx", query)
+    client = account.AccountClient(request=lambda *args, **kwargs: pytest.fail("unexpected exchange"))
+    with pytest.raises(account.AccountError, match="cancelled"):
+        client.login_with_browser(cancel=cancel)
+    assert not (local / "OpenFocus" / "account-device").exists()
+    assert not client.is_signed_in()
+
+
+def test_explicit_windows_store_does_not_read_or_send_machine_evidence(
+        tmp_path, monkeypatch, machine_registry, windows_account_dirs, windows_browser_flow):
+    monkeypatch.setattr(machine_registry, "OpenKey", lambda *args: pytest.fail("unexpected registry read"))
+
+    def request(method, url, body=None, **kwargs):
+        assert (method, url) == ("POST", account.BASE_URL + "/v1/auth/exchange")
+        assert "machine_key" not in body and "legacy_device_ids" not in body
+        return session()
+
+    store = account.TokenStore(tmp_path / "profile" / "account-session")
+    account.AccountClient(store=store, request=request).login_with_browser()
 
 
 def test_device_identity_is_stable_and_private(tmp_path):
@@ -1322,6 +1518,7 @@ def test_exchange_sends_device_identity(monkeypatch):
     client.login("email", "user@example.test")
     assert bodies[0]["device_id"] == "test-device-123"
     assert bodies[0]["device_name"] == "Test PC"
+    assert "machine_key" not in bodies[0] and "legacy_device_ids" not in bodies[0]
 
 
 def test_http_sends_run_and_platform_headers(monkeypatch):
