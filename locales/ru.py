@@ -588,6 +588,7 @@ PACK = {
     "msg_multipage_saved_info": "Сохранено {count} кадров в:\n{path}",
     "recovery_title": "Восстановление сеанса",
     "recovery_text": "В прошлый раз OpenFocus завершился некорректно.\n\nВосстановить последний рабочий сеанс ({count} кадров)?",
+    "recovery_checking": "Проверка файлов предыдущего сеанса…",
     "btn_restore": "Восстановить сеанс",
     "btn_start_fresh": "Начать заново",
     "menu_recent_empty": "(Нет недавних файлов)",

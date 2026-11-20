@@ -43,6 +43,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Recover a desktop email sign-in after a lost connection to the approval
   endpoint without sending a second email. Record the failed request stage
   without logging sign-in credentials.
+- Keep Start Fresh available while recovery checks saved source paths. If
+  the user starts fresh, keep the previous snapshot until there is a new
+  session to save.
 - Carry over a Windows portable build's existing device registration when
   restoring its saved sign-in after an in-place update.
 - Show the fusion method once in output names after rendering all methods.
