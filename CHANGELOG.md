@@ -11,6 +11,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   three StackMFF models before activation.
 
 ### Changed
+- Stream background replacement focus protection and CPU focus measures in
+  bounded memory stripes, replace per-pixel `3x3` linear solves in color
+  guided filtering with closed-form banded computation, band initial frame
+  grayscale loading, and cache the OpenCL background-focus program with
+  queue draining on cancellation or fallback.
 - Preselect NVIDIA acceleration review on Windows PCs with an NVIDIA driver,
   including when upgrading from 2.0.0.
 - Choose the PyTorch download order from the network region, with a manual
