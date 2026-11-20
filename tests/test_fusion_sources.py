@@ -510,6 +510,47 @@ def test_tiled_v3_stages_deferred_frames_once_and_preserves_pixels(tmp_path, mon
     assert tiles[0][0] == 0 and tiles[-1][0] == tiles[-1][1] and tiles[-1][1] > 1
 
 
+@pytest.mark.parametrize('exposure', [False, True])
+def test_tiled_v3_discards_a_cache_prepared_in_the_other_representation(
+        tmp_path, monkeypatch, exposure):
+    """Native-depth frames with gains and adjusted float32 frames are not interchangeable."""
+    from fusion_methods import stackmffv3
+
+    arrays, descriptors = _sources(tmp_path)
+    monkeypatch.setattr(stackmffv3, '_probabilities',
+                        lambda batch, *args: np.full_like(batch, 1 / batch.shape[1]))
+    fusion = _fusion('stackmffv3', tiled=True, exposure=exposure)
+    expected = fusion.fuse(descriptors, thread_count=1)
+    stale = [np.zeros_like(frame) for frame in arrays]
+    # An exposure-matched 16-bit render keeps native-depth frames, so it must
+    # not read a plain list; any other render must not read unadjusted frames.
+    fusion.prepared_cache = (stale if exposure else
+                             source_frames.TileExposureCache(stale, (1.0,) * len(stale)))
+    np.testing.assert_array_equal(fusion.fuse(descriptors, thread_count=1), expected)
+    assert fusion.prepared_cache is None
+
+
+def test_tiled_v3_retains_gains_for_frames_that_were_mapped_already(tmp_path, monkeypatch):
+    from fusion_methods import stackmffv3
+
+    _arrays, descriptors = _sources(tmp_path, mixed=False)
+    monkeypatch.setattr(stackmffv3, '_probabilities',
+                        lambda batch, *args: np.full_like(batch, 1 / batch.shape[1]))
+    expected = _fusion('stackmffv3', tiled=True).fuse(descriptors, thread_count=1)
+    # Prepared frames are mapped already, so the render snapshots nothing.
+    prepared = source_frames.materialize_for_repeated_access(descriptors, required=True)
+    fusion = _fusion('stackmffv3', tiled=True)
+    fusion.retain_preparation = True
+    np.testing.assert_array_equal(fusion.fuse(prepared, thread_count=1), expected)
+    cache = fusion.prepared_cache
+    assert isinstance(cache, source_frames.TileExposureCache)
+    assert all(cached is frame for cached, frame in zip(cache.frames, prepared, strict=True))
+    assert len(cache.gains) == len(prepared)
+    monkeypatch.setattr(MultiFocusFusion, '_exposure_gains_for_source',
+                        lambda *a, **kw: pytest.fail('measured cached gains again'))
+    np.testing.assert_array_equal(fusion.fuse(prepared, thread_count=1), expected)
+
+
 def test_tiled_v3_rechecks_staged_source_after_last_tile(tmp_path, monkeypatch):
     from fusion_methods import stackmffv3
 

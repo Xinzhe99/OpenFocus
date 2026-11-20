@@ -52,6 +52,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Select StackMFF V3's query, key and value projections before transposing
   their attention heads, in the network and in the packaged ONNX graph. The
   graph's weights and its logits are unchanged.
+- Keep the 16-bit frames of an exposure-matched tiled StackMFF V3 render at
+  their native depth and apply each frame's gain to its tile crops, instead of
+  preparing a float32 copy of the stack. This halves the prepared frames such
+  a render stores, and a repeated desktop render reuses the measured gains.
+  Output pixels are unchanged.
 
 ### Fixed
 - Give comparison alignment workers on macOS enough stack for the first

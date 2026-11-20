@@ -1445,8 +1445,8 @@ class RenderManager:
         all_source_paths = list(getattr(window, "image_source_paths", None) or [])
         source_paths = ([all_source_paths[i] for i in included_idx]
                         if len(all_source_paths) == len(window.raw_images) else [])
-        # The cache contains the exact post-alignment, post-exposure pixels.
-        # Keep one stack only, and bound the retained temporary files to 2 GiB.
+        # Prepared frames may be float32 or native-depth with per-frame gains.
+        # Budget for the larger representation until fusion chooses its tile path.
         from core.source_frames import SourceFrame
         import numpy as np
         method = (force_algorithm or fusion_method) if need_fusion else None
