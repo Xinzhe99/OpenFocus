@@ -82,6 +82,7 @@ class AlignmentWorker(_CancellableWorker):
 
     def __init__(self, images, alignment, shared, parent=None, *, reverse_registration=False):
         super().__init__(parent)
+        configure_native_worker_stack(self)
         self.images = images
         self.alignment = alignment
         self.shared = deepcopy(shared)

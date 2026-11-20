@@ -22,6 +22,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   transfers on the next source and log why the source changed.
 
 ### Fixed
+- Give comparison alignment workers on macOS enough stack for the first
+  native alignment kernel compilation.
 - Recover a desktop email sign-in after a lost connection to the approval
   endpoint without sending a second email. Record the failed request stage
   without logging sign-in credentials.
