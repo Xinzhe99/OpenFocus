@@ -663,3 +663,104 @@ def test_render_focus_intersects_transparency_with_a_full_frame_roi():
     expected = np.zeros((4, 5), dtype=np.float32)
     expected[:3, 1:] = positions[1:, :4] / np.float32(23)
     np.testing.assert_array_equal(index, expected)
+
+
+@pytest.mark.parametrize("method", ["dct", "gfgfgf", "dtcwt", "openfocus_c"])
+def test_streaming_depth_methods_skip_full_stack_materialization(monkeypatch, method):
+    if method == "dtcwt":
+        pytest.importorskip("dtcwt")
+    from core import source_frames
+
+    frames = _synthetic_thirds(64, 96)
+    lazy = [source_frames.process_frame(frame.copy(), lambda img: img, shape=frame.shape)
+            for frame in frames]
+    monkeypatch.setattr(
+        source_frames, "materialize_frames",
+        lambda *a, **kw: pytest.fail(f"{method} materialized the whole stack"),
+    )
+    actual = compute_focus_index(lazy, method, thread_count=2)
+    expected = compute_focus_index(frames, method, thread_count=1)
+    np.testing.assert_array_equal(actual, expected)
+
+
+@pytest.mark.parametrize("method", ["dct", "gfgfgf", "dtcwt"])
+@pytest.mark.parametrize("first_16bit", [False, True])
+def test_mixed_and_parallel_depth_match_serial_reference(method, first_16bit):
+    if method == "dtcwt":
+        pytest.importorskip("dtcwt")
+    frames = _synthetic_thirds(65, 97)
+    mixed = [frame.astype(np.uint16) * np.uint16(257) if ((i == 0) == first_16bit) else frame
+             for i, frame in enumerate(frames)]
+    serial = compute_focus_index(mixed, method, thread_count=1)
+    parallel = compute_focus_index(mixed, method, thread_count=4)
+    np.testing.assert_array_equal(parallel, serial)
+
+
+@pytest.mark.parametrize("method", ["dct", "gfgfgf", "dtcwt"])
+def test_16bit_streaming_depth_stays_below_full_stack_conversion_memory(method):
+    if method == "dtcwt":
+        pytest.importorskip("dtcwt")
+    import tracemalloc
+
+    rng = np.random.default_rng(19)
+    h, w, n = 128, 160, 16
+    frames = [rng.integers(0, 65536, (h, w, 3), dtype=np.uint16) for _ in range(n)]
+    full_float_stack_bytes = n * h * w * 3 * 4
+    _ = compute_focus_index([f[:32, :32] for f in frames[:2]], method, thread_count=1)
+
+    already_tracing = tracemalloc.is_tracing()
+    if not already_tracing:
+        tracemalloc.start()
+    baseline = tracemalloc.get_traced_memory()[0]
+    tracemalloc.reset_peak()
+    try:
+        compute_focus_index(frames, method, thread_count=1)
+        peak = tracemalloc.get_traced_memory()[1] - baseline
+    finally:
+        if not already_tracing:
+            tracemalloc.stop()
+    assert peak < full_float_stack_bytes
+
+
+@pytest.mark.parametrize("method", ["dct", "gfgfgf", "dtcwt"])
+def test_depth_admission_is_stack_independent_for_streaming_methods(monkeypatch, method):
+    from core import depth_map, resource_policy
+
+    if method == "dtcwt":
+        pytest.importorskip("dtcwt")
+    recorded = []
+    real_plan = resource_policy.plan_execution
+
+    def observe(workload, **kwargs):
+        recorded.append((workload.frames, workload.fixed_bytes, workload.per_worker_bytes))
+        return real_plan(workload, **kwargs)
+
+    monkeypatch.setattr(resource_policy, "plan_execution", observe)
+    small = [np.zeros((32, 32, 3), np.uint16)] * 2
+    large = [np.zeros((32, 32, 3), np.uint16)] * 100
+    depth_map.compute_focus_index(small, method, thread_count=1)
+    # Run only admission check for the 100-frame stack by short-circuiting runner.
+    monkeypatch.setattr(depth_map, "resolve_runner", lambda _path: (lambda imgs, **_kw: np.zeros((32, 32), np.int32)))
+    depth_map.compute_focus_index(large, method, thread_count=1)
+    assert len(recorded) == 2
+    assert recorded[0][1] == recorded[1][1]
+    assert recorded[0][2] == recorded[1][2]
+
+
+@pytest.mark.parametrize("runner_name", ["_measure_dct", "_measure_gfgfgf", "_measure_dtcwt"])
+def test_parallel_depth_runners_cancel_promptly(runner_name):
+    if runner_name == "_measure_dtcwt":
+        pytest.importorskip("dtcwt")
+    from core import depth_map
+
+    frames = _synthetic_thirds(64, 80) * 4
+    calls = 0
+
+    def should_cancel():
+        nonlocal calls
+        calls += 1
+        return calls >= 2
+
+    runner = getattr(depth_map, runner_name)
+    with pytest.raises(DepthMapCancelled):
+        runner(frames, None, should_cancel, thread_count=4)

@@ -11,6 +11,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   three StackMFF models before activation.
 
 ### Changed
+- Stream DCT, GFG-FGF, DTCWT, and OpenFocus C depth map estimation without
+  materializing or pre-converting whole 16-bit stacks to full-resolution
+  `float32` color frames, reuse compiled DCT block-variance kernels, avoid
+  complex modulus square roots in DTCWT energy accumulation, and execute frame
+  workers with bounded memory-aware parallelism.
 - Preselect NVIDIA acceleration review on Windows PCs with an NVIDIA driver,
   including when upgrading from 2.0.0.
 - Choose the PyTorch download order from the network region, with a manual
