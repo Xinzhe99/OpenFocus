@@ -25,6 +25,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   stack first. Color output pixels are unchanged.
 - Reduce StackMFF V3's three-quarter-scale inference input four rows at a
   time and one plane at a time. Output pixels are unchanged.
+- Rotate images whose EXIF orientation is a quarter turn with OpenCV instead
+  of copying a rotated NumPy view.
 
 ### Fixed
 - Recover a desktop email sign-in after a lost connection to the approval
