@@ -288,6 +288,9 @@ def main() -> int:
     parser.add_argument("--launch", action="store_true",
                         help="start a private GUI (isolated discovery file "
                              "and socket; never touches a live session)")
+    parser.add_argument("--account-profile", type=Path, metavar="DIRECTORY",
+                        help="read a saved desktop sign-in for --launch "
+                             "(default: current desktop profile)")
     parser.add_argument("--allow-existing", action="store_true",
                         help="attach to an already-running session; the "
                              "sweep triggers every action destructively")
@@ -302,6 +305,7 @@ def main() -> int:
             timeout=options.timeout,
             launch=options.launch,
             allow_existing=options.allow_existing,
+            account_profile=options.account_profile,
         )
         results = Sweep(options.timeout, session).run()
     except Exception as error:  # noqa: BLE001 - command-line report

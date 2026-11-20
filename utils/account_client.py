@@ -269,14 +269,16 @@ class TokenStore:
 
     Default Windows stores share a device identity across session profiles.
 
-    An explicit path selects file storage (DPAPI-protected on Windows); useful
-    for isolated profiles and tests. File creation uses owner-only permissions.
+    ``profile`` selects a different desktop profile with the platform default
+    credential storage. An explicit ``path`` instead selects file storage.
     """
-    def __init__(self, path=None):
+    def __init__(self, path=None, *, profile=None):
+        if path is not None and profile is not None:
+            raise TypeError("pass path or profile, not both")
         self._keychain = sys.platform == "darwin" and path is None
         self._shared_device_dir = None
         if path is None:
-            root = user_data_dir()
+            root = user_data_dir() if profile is None else Path(profile).expanduser().absolute()
             path = root / _SESSION_FILENAME
             self._shared_device_dir = shared_account_device_dir()
             profile = os.path.normcase(os.path.realpath(os.fspath(root)))

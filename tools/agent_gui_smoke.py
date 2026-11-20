@@ -415,6 +415,9 @@ def main() -> int:
     parser.add_argument("--launch", action="store_true",
                         help="start a private GUI (isolated discovery file "
                              "and socket; never touches a live session)")
+    parser.add_argument("--account-profile", type=Path, metavar="DIRECTORY",
+                        help="read a saved desktop sign-in for --launch "
+                             "(default: current desktop profile)")
     parser.add_argument("--allow-existing", action="store_true",
                         help="attach to an already-running session; the "
                              "smoke clears stacks and answers prompts, so "
@@ -432,6 +435,7 @@ def main() -> int:
             timeout=options.timeout,
             launch=options.launch,
             allow_existing=options.allow_existing,
+            account_profile=options.account_profile,
         )
         smoke = Smoke(options.timeout, session)
         smoke.call("ping")
@@ -447,9 +451,9 @@ def main() -> int:
                 pass
         if session is not None:
             session.close()
-    print(json.dumps({"ok": all(check["ok"] for check in checks),
-                      "checks": checks}, ensure_ascii=False, indent=2))
-    return 0
+    passed = all(check["ok"] for check in checks)
+    print(json.dumps({"ok": passed, "checks": checks}, ensure_ascii=False, indent=2))
+    return 0 if passed else 1
 
 
 if __name__ == "__main__":
