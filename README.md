@@ -281,6 +281,11 @@ The wheel cannot launch the desktop app; use the desktop build or a checkout.
 - End-to-end runner: `python tools/agent_gui_smoke.py --launch`
 - Every-action sweep: `python tools/agent_action_sweep.py --launch`
 
+With `--launch`, these tools read the current desktop's saved sign-in or the
+one in `--account-profile DIRECTORY`. They start a private desktop profile,
+disable automatic reports and usage sharing, and remove the private copy of
+the credential after startup.
+
 
 ### 💻 Command Line Usage
 

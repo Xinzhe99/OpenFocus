@@ -339,18 +339,32 @@ class Session:
 
 
 def tool_session(timeout=60.0, launch=False, allow_existing=False,
-                 launch_timeout=60.0):
+                 launch_timeout=60.0, *, account_profile=None):
     """Session for tool runs (smoke, sweep).
 
     These tools clear stacks, answer prompts and trigger renders, so they
     must never land on a user's live session by accident: attaching
     requires ``allow_existing``, and ``launch`` starts a private instance
     with its own discovery file and socket that cannot see the user's.
+    The launch reads a saved account session from ``account_profile`` or the
+    current desktop profile. The private copy is removed once startup ends.
     """
-    import tempfile
     if launch:
+        import shutil
+        import tempfile
+
         from PyQt6.QtCore import QSettings
         from constants import app_display_version
+        from utils.account_client import TokenStore
+        from utils.settings_store import REPORTS_AUTO_SEND_KEY
+        from utils.usage_analytics import ENABLED_KEY
+
+        account = TokenStore(profile=account_profile).load()
+        if account is None:
+            raise ControlError(
+                "confirm_required",
+                "Sign in to OpenFocus before using --launch. For a separate "
+                "signed-in desktop profile, pass --account-profile DIRECTORY.")
 
         root = Path(tempfile.mkdtemp(prefix="openfocus-tool-"))
         settings = QSettings(str(root / "settings.ini"), QSettings.Format.IniFormat)
@@ -361,8 +375,11 @@ def tool_session(timeout=60.0, launch=False, allow_existing=False,
         settings.setValue("rendering/ai_cpu_warning_dismissed", True)
         settings.setValue("ui/experimental_features", True)
         settings.setValue("account/intro_version", app_display_version())
+        settings.setValue(REPORTS_AUTO_SEND_KEY, False)
+        settings.setValue(ENABLED_KEY, False)
         settings.sync()
         if settings.status() != QSettings.Status.NoError:
+            shutil.rmtree(root)
             raise ControlError("internal", "Could not initialize private settings")
         env = os.environ.copy()
         env["OPENFOCUS_DATA_DIR"] = str(root)
@@ -372,7 +389,19 @@ def tool_session(timeout=60.0, launch=False, allow_existing=False,
         socket_name = f"OpenFocus-tool-control-{root.name}"
         if os.name == 'posix':
             socket_name = f"/tmp/ofc-{root.name}"
-        discovery = launch_gui(socket_name, timeout=launch_timeout, env=env)
+        private_account = TokenStore(profile=root)
+        launched = False
+        try:
+            try:
+                private_account.save(account)
+                discovery = launch_gui(socket_name, timeout=launch_timeout, env=env)
+                launched = True
+            finally:
+                private_account.clear()
+        except BaseException:
+            if not launched:
+                shutil.rmtree(root)
+            raise
         return Session(discovery=discovery, timeout=timeout)
     if not allow_existing and discovery_path().exists():
         raise ControlError(
