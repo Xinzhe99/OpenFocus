@@ -588,6 +588,7 @@ PACK = {
     "msg_multipage_saved_info": "{count}개 프레임을 저장했습니다:\n{path}",
     "recovery_title": "세션 복구",
     "recovery_text": "지난번에 OpenFocus가 정상적으로 종료되지 않았습니다.\n\n마지막 작업 세션({count} 프레임)을 복원하시겠습니까?",
+    "recovery_checking": "이전 세션의 파일을 확인하는 중…",
     "btn_restore": "세션 복원",
     "btn_start_fresh": "새로 시작",
     "menu_recent_empty": "(최근 파일 없음)",

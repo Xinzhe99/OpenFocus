@@ -38,7 +38,10 @@ openfocus gui                           # detached
 python main.py                          # from a checkout
 ```
 
-`openfocus gui --control` also waits for discovery and prints connection info.
+`openfocus gui --control` waits for discovery and prints connection info. On a
+new profile, start the desktop with `openfocus gui` and complete sign-in before
+waiting for the control channel. A failed readiness wait closes the process
+started by that command.
 
 At startup the server writes `<user-data>/control.json`:
 

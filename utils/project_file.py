@@ -282,8 +282,7 @@ def _collect_state(window) -> Dict[str, Any]:
             abs_paths.append(cand)
             continue
         # 多页 TIFF 的每帧是合成名（X_page_NNN.tif），磁盘上只有容器
-        # X.tif——不映射回容器的话工程永远校验失败，崩溃恢复也被连带
-        # 静默丢弃（pending_recovery 会过滤校验失败的快照）
+        # X.tif——不映射回容器的话工程永远校验失败，快照也无法恢复
         mapped = _multipage_container_for(name, folder)
         abs_paths.append(mapped if mapped else name)
     # Decode each container once; a separate ordered frame list preserves

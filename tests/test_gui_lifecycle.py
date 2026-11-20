@@ -119,6 +119,29 @@ assert not browser_calls, browser_calls
     }
 
 
+def test_control_launch_timeout_reaps_its_child(tmp_path):
+    from core.control.client import launch_gui
+    from core.control.protocol import ControlError
+
+    env = sandbox_env(tmp_path, {"QT_QPA_PLATFORM": "offscreen"})
+    gui = None
+
+    def start(command, **kwargs):
+        nonlocal gui
+        gui = subprocess.Popen([command[0], "-c", "import time; time.sleep(60)"], **kwargs)
+        return gui
+
+    try:
+        with pytest.raises(ControlError, match="did not open the control channel") as error:
+            launch_gui(env=env, timeout=0.25, process_factory=start)
+        assert "signing in" in error.value.hint
+        assert gui.poll() is not None
+    finally:
+        if gui is not None and gui.poll() is None:
+            gui.kill()
+            gui.wait(timeout=5)
+
+
 def test_update_restart_restores_frames_without_a_warning(qapp, tmp_path):
     from core.control.client import launch_gui, request, require_ok, wait_for
     from utils import recovery

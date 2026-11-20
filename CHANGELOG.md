@@ -36,11 +36,16 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   existing focus decisions for low-contrast and mixed-bit-depth inputs.
 
 ### Fixed
+- Close the desktop process when its CLI launcher times out waiting for the
+  control channel, and explain how to complete first-run sign-in.
 - Give comparison alignment workers on macOS enough stack for the first
   native alignment kernel compilation.
 - Recover a desktop email sign-in after a lost connection to the approval
   endpoint without sending a second email. Record the failed request stage
   without logging sign-in credentials.
+- Keep Start Fresh available while recovery checks saved source paths. If
+  the user starts fresh, keep the previous snapshot until there is a new
+  session to save.
 - Carry over a Windows portable build's existing device registration when
   restoring its saved sign-in after an in-place update.
 - Show the fusion method once in output names after rendering all methods.
@@ -52,6 +57,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   memory needed if GPU inference falls back to CPU.
 - Use consistent visible QR code sizes in the Contact Us and Support Us
   dialogs while preserving the artwork and a scannable white border.
+- Let users cancel a stuck video import or close its scale dialog. Video
+  decoding runs in a separate process so another import can start in the
+  same session.
 
 ## [2.0.0]
 
