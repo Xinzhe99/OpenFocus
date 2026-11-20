@@ -648,14 +648,14 @@ class SourceFrame:
             return self._decode(key, cache, should_cancel)
 
     def _decode(self, key, cache, should_cancel=None):
-        from core.image_loader import decode_image
+        from core.image_loader import decode_image, is_scaled_jpeg
         from core.registration import RegistrationCancelled
         from utils.logging_setup import log_operation
         from utils.performance_profile import current as current_profile
         with log_operation('source_decode', path=self.path, page=self.page, scale=self.scale,
                            cancel_on=(RegistrationCancelled,)), \
                 current_profile().stage('source_decode'):
-            scaled_raw = False
+            scaled_at_decode = False
             if self.linear_metadata is not None:
                 from utils.linear_dng import load_linear_raw
                 # Calibration is checked again because the source can be replaced
@@ -670,7 +670,7 @@ class SourceFrame:
                 if is_raw_source(self.path):
                     image = decode_image(self.path, allow_transparent_png=True,
                                          scale_factor=self.scale)
-                    scaled_raw = 0 < self.scale <= 1
+                    scaled_at_decode = 0 < self.scale <= 1
                 else:
                     from core.image_loader import decode_tiff_page
                     if self.ndim == 2:
@@ -682,7 +682,13 @@ class SourceFrame:
                 if is_raw_source(self.path):
                     image = decode_image(self.path, allow_transparent_png=True,
                                          scale_factor=self.scale)
-                    scaled_raw = 0 < self.scale <= 1
+                    scaled_at_decode = 0 < self.scale <= 1
+                elif is_scaled_jpeg(self.path, self.scale):
+                    # Reduced before its EXIF orientation, by this job's resizer.
+                    image = decode_image(self.path, scale_factor=self.scale,
+                                         preserve_grayscale=self.ndim == 2,
+                                         area_resizer=_area_resizer.get())
+                    scaled_at_decode = True
                 else:
                     if self.ndim == 2:
                         image = decode_image(self.path, allow_transparent_png=True,
@@ -695,7 +701,7 @@ class SourceFrame:
             if self.shape[-1] == 4 and image.ndim == 3 and image.shape[2] == 3:
                 image = cv2.cvtColor(image, cv2.COLOR_BGR2BGRA)
                 _check_resolution_cancel(should_cancel)
-            if self.linear_metadata is None and self.scale != 1 and not scaled_raw:
+            if self.linear_metadata is None and self.scale != 1 and not scaled_at_decode:
                 dsize = (max(1, int(image.shape[1] * self.scale)),
                          max(1, int(image.shape[0] * self.scale)))
                 backend = _area_resizer.get()
