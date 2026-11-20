@@ -5,6 +5,15 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+- Preselect NVIDIA acceleration review on Windows PCs with an NVIDIA driver,
+  including when upgrading from 2.0.0.
+
+### Fixed
+- Carry over a Windows portable build's existing device registration when
+  restoring its saved sign-in after an in-place update.
+- Show the fusion method once in output names after rendering all methods.
+
 ## [2.0.0]
 
 This stable release includes the features introduced in the 1.77.0 beta series.

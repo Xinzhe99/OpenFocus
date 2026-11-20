@@ -121,7 +121,7 @@ def _legacy_device_identity(profile, shared_dir):
     return fallback
 
 
-def _device_identity(store, device_name):
+def _device_identity(store, device_name, *, migrate_only=False):
     session_path = getattr(store, "path", None)
     if session_path is None:
         return secrets.token_urlsafe(32), device_name
@@ -131,6 +131,13 @@ def _device_identity(store, device_name):
     loaded = _load_device_identity(path)
     if loaded is not None:
         return loaded
+    identity = None
+    if migrate_only:
+        # A restored session can identify this profile's legacy device before
+        # another installation tries to register. Leave new profiles alone.
+        identity = _load_device_identity(profile / _DEVICE_FILENAME)
+        if identity is None:
+            return None
     temporary = None
     try:
         # The stable lock serializes both threads and processes, including on
@@ -139,7 +146,8 @@ def _device_identity(store, device_name):
             loaded = _load_device_identity(path)
             if loaded is not None:
                 return loaded
-            identity = _legacy_device_identity(profile, shared_dir) if shared_dir is not None else None
+            if identity is None and shared_dir is not None:
+                identity = _legacy_device_identity(profile, shared_dir)
             if identity is None:
                 identity = (secrets.token_urlsafe(32), device_name)
             fd, temporary = tempfile.mkstemp(prefix=".account-device-", dir=path.parent)
@@ -459,18 +467,21 @@ class AccountClient:
             raise ValueError("Invalid device id")
         self.device_name = (device_name or _default_device_name()).strip()[:80] or _default_device_name()
         self.device_id = device_id
-        # A fresh Windows profile should not mint a shared ID at startup. The
-        # first exchange can adopt an ID once a legacy portable profile is in use.
-        if device_id is None and getattr(self.store, "_shared_device_dir", None) is None:
-            try:
-                self._device_fields()
-            except AccountError:
-                # Loading the app remains possible; exchange must retry persistence.
-                pass
-        self._condition = threading.Condition(threading.RLock())
         self._session = copy.deepcopy(self.store.load())
         if not _valid_session(self._session):
             self._session = None
+        if device_id is None:
+            try:
+                if getattr(self.store, "_shared_device_dir", None) is None:
+                    self._device_fields()
+                elif self._session is not None:
+                    identity = _device_identity(self.store, self.device_name, migrate_only=True)
+                    if identity is not None:
+                        self.device_id, self.device_name = identity
+            except AccountError:
+                # Loading the app remains possible; exchange retries persistence.
+                pass
+        self._condition = threading.Condition(threading.RLock())
         self._generation = 0
         self._login_epoch = 0
         self._refreshing = False

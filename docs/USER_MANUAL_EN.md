@@ -141,8 +141,11 @@ button on the account screen. Browser and desktop sessions are separate, so
 signing out here does not sign out the browser.
 
 Windows builds run by the same Windows user share one account device slot,
-including source builds with a separate settings directory. To release a slot
-occupied by an older registration, remove that entry in the account center.
+including source builds with a separate settings directory. Before switching
+from an older portable copy to the installer, update the portable copy in its
+original folder, keep `OpenFocusData`, and open it once with its saved session.
+The updated portable app can then carry the old device registration forward.
+Remove unused old registrations in the account center to free their slots.
 Removing a registration also signs out any session using it.
 
 For email sign-in, open the link on your phone or computer and confirm it;
