@@ -432,16 +432,21 @@ def test_cached_materialized_snapshot_retains_original_identity(tmp_path):
     source = _source(tmp_path)
     snapshot = materialize_for_repeated_access([source], required=True)[0]
     crop = crop_frame(snapshot, 0, 0, 4, 4)
+    # Staging a crop of prepared pixels must carry the original fingerprint
+    # through a second snapshot, including after a cache hit.
+    second = materialize_for_repeated_access([crop], required=True)[0]
     with cache_module.render_scope([snapshot, crop]):
         first = snapshot.full_resolution()
+        assert np.shares_memory(first, snapshot.source)
+        assert not first.flags.writeable
         np.testing.assert_array_equal(first, snapshot.full_resolution())
+        np.testing.assert_array_equal(second.full_resolution(), first[:4, :4])
         crop.full_resolution()
         stamp = source.fingerprint[1] + 10_000_000_000
         os.utime(source.path, ns=(stamp, stamp))
-        with pytest.raises(OSError):
-            snapshot.full_resolution()
-        with pytest.raises(OSError):
-            crop.full_resolution()
+        for frame in (snapshot, crop, second):
+            with pytest.raises(OSError):
+                frame.full_resolution()
 
 
 def test_cache_discards_unpublished_store_on_cancellation(monkeypatch):
