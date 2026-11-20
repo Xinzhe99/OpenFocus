@@ -43,12 +43,11 @@ are independent of account sign-in and diagnostic reporting.
   device ID to manage the three-device limit. The computer name is a display
   label. On Windows, installed, portable, source and recognized preview builds
   run by the same user on the same PC share the ID in
-  `%LOCALAPPDATA%\OpenFocus\account-device`. On the first sign-in after an
-  upgrade, OpenFocus looks for an existing ID in the active profile, the normal
-  roaming profile and recognized preview profiles. It prefers an ID from a
-  profile with a saved session. Each profile keeps its own credentials, so
-  signing out of one leaves the others signed in. Custom data directories and
-  explicit session paths keep profile-local IDs, as do macOS and Linux builds.
+  `%LOCALAPPDATA%\OpenFocus\account-device`. An updated build can carry over
+  the active profile's former ID when it restores a saved session. On the first
+  sign-in without a shared ID, OpenFocus also checks the normal roaming profile
+  and recognized preview profiles. Each profile keeps its own credentials.
+  Explicit session paths and macOS and Linux builds keep profile-local IDs.
   Account requests include the app version, operating system, and a random ID
   and start time for the current app run.
 - **Error reports** — you can review and send a sanitized report while signed in or

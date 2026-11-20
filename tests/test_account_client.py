@@ -1223,20 +1223,21 @@ def test_windows_portable_adopts_legacy_device_and_old_release_session_can_refre
         assert body is None and token == "old-release-token"
         return session("refreshed-release-token")
 
-    stable = account.AccountClient(request=request)
-    assert not (local / "OpenFocus" / "account-device").exists()
     portable = tmp_path / "portable" / "OpenFocusData"
     portable_store = account.TokenStore(portable / "account-session")
     portable_store.save(session("portable-token"))
     legacy = account.AccountClient(store=portable_store)._device_fields()
     assert legacy != old_device
 
-    monkeypatch.setattr(app_paths, "is_portable_mode", lambda: True)
-    monkeypatch.setattr(app_paths, "portable_data_dir", lambda: str(portable))
-    client = account.AccountClient()
-    assert client._device_fields() == legacy
+    with monkeypatch.context() as portable_env:
+        portable_env.setattr(app_paths, "is_portable_mode", lambda: True)
+        portable_env.setattr(app_paths, "portable_data_dir", lambda: str(portable))
+        client = account.AccountClient()
+        assert client.token() == "portable-token"
+
+    stable = account.AccountClient(request=request)
     assert stable._device_fields() == legacy
-    assert client.token() == "portable-token"
+    assert client._device_fields() == legacy
     assert stable.refresh()
     assert old_store.load() == session("refreshed-release-token")
 

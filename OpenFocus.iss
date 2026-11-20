@@ -40,7 +40,8 @@ UninstallDisplayIcon={app}\{#MyAppExeName}
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 Name: "explorercontext"; Description: "Add OpenFocus to the Windows Explorer context menu"
-Name: "airecommendation"; Description: "Review NVIDIA acceleration for AI models when OpenFocus starts"; Flags: unchecked; Check: FileExists(ExpandConstant('{sys}\nvcuda.dll'))
+; A new task name prevents the 2.0.0 unchecked default from carrying forward.
+Name: "reviewnvidiaacceleration"; Description: "Review NVIDIA acceleration for AI models when OpenFocus starts"; Check: FileExists(ExpandConstant('{sys}\nvcuda.dll'))
 
 [InstallDelete]
 ; These directories belong to the installed application; keep user data intact.
@@ -79,7 +80,7 @@ Filename: "{app}\{#MyAppExeName}"; Parameters: "{code:LaunchParameters}"; Descri
 [Code]
 function LaunchParameters(Param: String): String;
 begin
-  if WizardIsTaskSelected('airecommendation') then
+  if WizardIsTaskSelected('reviewnvidiaacceleration') then
     Result := '--ai-runtime'
   else
     Result := '';

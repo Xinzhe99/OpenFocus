@@ -269,8 +269,7 @@ class ExportManager:
 
     @staticmethod
     def filename_from_label(label: str) -> str:
-        """Output-list label -> safe default filename (compare-all labels
-        carry ' — Method' suffixes)."""
+        """Convert an output-list label into a safe default filename."""
         import re as _re
         name = (label or "").replace(" — ", "_").strip()
         name = _re.sub(r'[\\/:*?"<>|\s]+', "_", name)
