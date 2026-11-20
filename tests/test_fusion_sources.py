@@ -455,6 +455,22 @@ def test_direct_v2_long_resized_sources_stage_once_and_keep_identity(tmp_path, m
         source.get(0, (0, 0, 13, 11))
 
 
+def test_direct_v2_resized_prepared_sources_keep_identity(tmp_path):
+    from fusion_methods.stackmff_v2_tiled import _Source
+    rng = np.random.default_rng(806)
+    arrays = [rng.integers(0, 256, (64, 32, 3), dtype=np.uint8) for _ in range(2)]
+    descriptors = _write_sources(tmp_path, arrays)
+    # Tiled renders hand V2 prepared snapshots, whose pixels are no longer a file.
+    prepared = source_frames.materialize_for_repeated_access(descriptors, required=True)
+    source = _Source(prepared, (40, 80), None, None)
+    np.testing.assert_array_equal(source.get(0, (3, 5, 13, 11)),
+                                  cv2.resize(arrays[0], (40, 80))[5:16, 3:16])
+    with open(descriptors[0].path, 'ab') as stream:
+        stream.write(b'changed after V2 staging')
+    with pytest.raises(OSError, match='Source changed'):
+        source.get(0, (0, 0, 13, 11))
+
+
 @pytest.mark.parametrize('exposure', [False, True])
 def test_tiled_v3_stages_deferred_frames_once_and_preserves_pixels(tmp_path, monkeypatch, exposure):
     from collections import Counter
