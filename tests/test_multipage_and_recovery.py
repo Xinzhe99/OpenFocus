@@ -125,16 +125,17 @@ class TestRecovery:
         w = self._fake_window(stack)
         w.sharpen_strength = 145
 
-        assert rec.pending_recovery() is None      # clean: no lock
+        assert rec.crash_snapshot_path() is None   # clean: no lock
         assert rec.write_snapshot(w)              # snapshot saved
         rec.init_lock()                           # session goes live
-        assert rec.pending_recovery() is not None  # crash leaves lock -> recoverable
-        state = rec.pending_recovery()
+        path = rec.crash_snapshot_path()
+        assert path == rec.session_path()
+        state = rec.load_snapshot_state(path)
         assert rec.snapshot_frame_count(state) == 2
         assert state['settings']['sharpen_strength'] == 145
         assert state['settings']['sharpen_output'] is False
         rec.mark_clean_exit()                     # normal close
-        assert rec.pending_recovery() is None     # lock cleared, snapshot kept
+        assert rec.crash_snapshot_path() is None  # lock cleared, snapshot kept
         assert os.path.isfile(rec.session_path())
 
     @pytest.mark.parametrize("project_path,dirty", [("A.ofproj", True), ("A.ofproj", False), (None, True)])
@@ -168,9 +169,10 @@ class TestRecovery:
         w = self._fake_window(stack)
         assert rec.write_snapshot(w)
         rec.init_lock()
-        # sources vanish (USB stick removed): recovery must not be offered
+        # A missing source does not destroy the candidate or produce valid state.
         shutil.rmtree(stack)
-        assert rec.pending_recovery() is None
+        assert rec.crash_snapshot_path() == rec.session_path()
+        assert rec.load_snapshot_state(rec.crash_snapshot_path()) is None
 
 
     def test_cleared_workspace_is_not_offered_after_crash(self, tmp_path, recovery_mod):
@@ -187,10 +189,108 @@ class TestRecovery:
         window.label_manager.reset_labels = lambda: None
         assert rec.write_snapshot(window)
         rec.init_lock()
-        assert rec.snapshot_frame_count(rec.pending_recovery()) == 2
+        assert rec.snapshot_frame_count(rec.load_snapshot_state(rec.crash_snapshot_path())) == 2
 
         SourceManager(window).clear_image_stack()
 
         assert window.raw_images == []
-        assert rec.pending_recovery() is None
+        assert rec.crash_snapshot_path() is None
         assert not os.path.exists(rec.session_path())
+
+    @pytest.mark.parametrize('restore', [False, True], ids=['start-fresh', 'restore'])
+    def test_recovery_choice_during_source_probe(self, qapp, tmp_path, recovery_mod, monkeypatch, restore):
+        from pathlib import Path
+        from threading import Event, current_thread
+
+        from PyQt6.QtCore import QTimer, Qt
+        from PyQt6.QtTest import QTest
+        from PyQt6.QtWidgets import QMessageBox, QWidget
+
+        from locales import trans
+        from ui.session_recovery import prompt_crash_recovery
+
+        rec = recovery_mod
+        stack = tmp_path / 'stack'
+        stack.mkdir()
+        saved = self._fake_window(str(stack))
+        saved.project_path = str(tmp_path / 'original.ofproj')
+        saved._project_dirty = True
+        assert rec.write_snapshot(saved)
+        rec.init_lock()
+        snapshot = Path(rec.session_path())
+        original_bytes = snapshot.read_bytes()
+
+        # Stall the actual filesystem probe for a saved source, simulating
+        # an unresponsive share without relying on network timing.
+        slow_path = os.path.join(stack, saved.image_filenames[0])
+        release = Event()
+        returned = Event()
+        workers = []
+        isfile = os.path.isfile
+
+        def delayed_isfile(path):
+            if os.fspath(path) == slow_path:
+                workers.append(current_thread())
+                release.wait(5)
+                returned.set()
+            return isfile(path)
+
+        monkeypatch.setattr(os.path, 'isfile', delayed_isfile)
+        parent = QWidget()
+        observed = []
+        clicked = []
+        driver = QTimer()
+        watchdog = QTimer()
+        watchdog.setSingleShot(True)
+
+        def close_timed_out_prompt():
+            box = qapp.activeModalWidget()
+            if isinstance(box, QMessageBox) and box.parentWidget() is parent:
+                box.reject()
+
+        def drive_prompt():
+            box = qapp.activeModalWidget()
+            if not workers or not isinstance(box, QMessageBox) or box.parentWidget() is not parent:
+                return
+            buttons = {button.text(): button for button in box.buttons()}
+            restore_btn = buttons.get(trans.t('btn_restore'))
+            fresh_btn = buttons.get(trans.t('btn_start_fresh'))
+            if restore_btn is None or fresh_btn is None:
+                return
+            if not observed:
+                observed.append((box.text(), restore_btn.isEnabled(), fresh_btn.isEnabled(), returned.is_set()))
+                if restore:
+                    release.set()
+            button = restore_btn if restore else fresh_btn
+            if button.isEnabled():
+                clicked.append(button.text())
+                QTest.mouseClick(button, Qt.MouseButton.LeftButton)
+
+        watchdog.timeout.connect(close_timed_out_prompt)
+        watchdog.start(5000)
+        driver.timeout.connect(drive_prompt)
+        driver.start(10)
+        try:
+            state = prompt_crash_recovery(parent)
+            assert observed == [(trans.t('recovery_checking'), False, True, False)]
+            assert clicked == [trans.t('btn_restore' if restore else 'btn_start_fresh')]
+            if restore:
+                assert rec.snapshot_frame_count(state) == 2
+                assert state['recovery_document']['project_path'] == saved.project_path
+                assert state['recovery_document']['dirty'] is True
+            else:
+                assert state is None
+                assert not returned.is_set()
+        finally:
+            driver.stop()
+            watchdog.stop()
+            release.set()
+            for worker in workers:
+                if worker is not current_thread():
+                    worker.join(5)
+                    assert not worker.is_alive()
+
+        qapp.processEvents()
+        assert qapp.activeModalWidget() is None
+        assert snapshot.read_bytes() == original_bytes
+        assert rec.crash_snapshot_path() == str(snapshot)
