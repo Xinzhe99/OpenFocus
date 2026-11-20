@@ -235,17 +235,18 @@ class ExactAreaGpu:
                 self.frames_resized += 1
                 return output
             except Exception as exc:
+                drain_failed = False
                 queue = self._queue
                 if queue is not None:
                     try:
                         queue.finish()
                     except Exception:
-                        pass
+                        drain_failed = True
                 err_types = tuple(
                     t for t in (getattr(self._cl, 'Error', None), MemoryError)
                     if isinstance(t, type)
                 )
-                if err_types and isinstance(exc, err_types):
+                if drain_failed or (err_types and isinstance(exc, err_types)):
                     _invalidate_program_cache()
                 self._disabled = True
                 self._buffers = None

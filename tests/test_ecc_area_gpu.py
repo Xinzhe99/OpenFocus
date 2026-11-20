@@ -111,7 +111,8 @@ def test_hardware_stripes_reuse_and_return_independent_outputs(hardware_gpu, dty
     assert hardware_gpu.device_name.startswith('OpenCL')
 
 
-def test_ecc_area_program_cache_reuse_and_error_drain(monkeypatch):
+@pytest.mark.parametrize('drain_fails', [False, True])
+def test_ecc_area_program_cache_reuse_and_error_drain(monkeypatch, drain_fails):
     import sys
     from fusion_methods import _openfocus_gpu
 
@@ -134,6 +135,8 @@ def test_ecc_area_program_cache_reuse_and_error_drain(monkeypatch):
         def finish(self):
             cur = gpu_holder[-1]
             events.append(('finish', cur._buffers is not None))
+            if drain_fails:
+                raise FakeError('queue could not drain')
 
     def fake_kernel_call(*args, **kwargs):
         return None
@@ -142,6 +145,8 @@ def test_ecc_area_program_cache_reuse_and_error_drain(monkeypatch):
 
     def fake_enqueue_copy(queue, dst, src, is_blocking=True):
         if fail_copy[0] and is_blocking:
+            if drain_fails:
+                raise ValueError('host readback failed')
             raise FakeError('queue lost')
 
     fake_cl = SimpleNamespace(
@@ -202,5 +207,12 @@ def test_ecc_area_program_cache_reuse_and_error_drain(monkeypatch):
         assert g2._disabled is True
         assert g2._buffers is None
         assert area._PROGRAM_CACHE is None
+
+        fail_copy[0] = False
+        g3 = area.ExactAreaGpu()
+        monkeypatch.setattr(g3, '_select_device', lambda: fake_select(g3))
+        assert g3.resize(image, (64, 64)) is not None
+        assert len(builds) == 2
+        assert g3._queue is not g1._queue
     finally:
         area._invalidate_program_cache()

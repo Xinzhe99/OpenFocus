@@ -755,7 +755,7 @@ def test_nvml_free_vram_reuses_session_and_recovers_on_error(monkeypatch):
     from types import SimpleNamespace
     from fusion_methods import _openfocus_gpu
 
-    state_calls = {'init': 0, 'shutdown': 0, 'mem': 0, 'fail_once': False}
+    state_calls = {'init': 0, 'shutdown': 0, 'mem': 0, 'fail_once': False, 'devices': 1}
 
     class FakeNvml:
         def nvmlInit_v2(self):
@@ -782,12 +782,12 @@ def test_nvml_free_vram_reuses_session_and_recovers_on_error(monkeypatch):
 
         @staticmethod
         def _get_count(count_ref):
-            count_ref._obj.value = 1
+            count_ref._obj.value = state_calls['devices']
             return 0
 
         @staticmethod
         def _get_handle(idx, handle_ref):
-            handle_ref._obj.value = 0x1234
+            handle_ref._obj.value = 0x1234 + idx
             return 0
 
         @staticmethod
@@ -826,6 +826,13 @@ def test_nvml_free_vram_reuses_session_and_recovers_on_error(monkeypatch):
         assert _openfocus_gpu._nvml_free_vram(dev) == (6 * 1024**3, 8 * 1024**3)
         assert state_calls['shutdown'] == 1
         assert state_calls['init'] == 2
+
+        # A partial enumeration cannot disambiguate matching adapters.
+        state_calls['devices'] = 2
+        state_calls['fail_once'] = True
+        assert _openfocus_gpu._nvml_free_vram(dev) is None
+        assert state_calls['shutdown'] == 2
+        assert state_calls['init'] == 3
     finally:
         _openfocus_gpu._nvml_state = prev_state
         _openfocus_gpu._nvml_atexit_registered = prev_atexit

@@ -267,30 +267,22 @@ def _nvml_free_vram(device):
                     _shutdown_nvml_locked()
                     continue
                 matches = []
-                saw_error = False
                 buf = ctypes.create_string_buffer(256)
                 info = mem_info_cls()
                 for idx in range(count.value):
                     handle = ctypes.c_void_p()
-                    if get_handle(idx, ctypes.byref(handle)) != 0:
-                        saw_error = True
-                        continue
-                    if get_name(handle, buf, len(buf)) != 0:
-                        saw_error = True
-                        continue
-                    if get_mem(handle, ctypes.byref(info)) != 0:
-                        saw_error = True
-                        continue
+                    if (get_handle(idx, ctypes.byref(handle)) != 0
+                            or get_name(handle, buf, len(buf)) != 0
+                            or get_mem(handle, ctypes.byref(info)) != 0):
+                        break
                     name = buf.value.decode('utf-8', errors='replace').strip()
                     total_bytes = int(info.total)
                     if name == target_name and abs(total_bytes - target_total) <= 64 * 1024 * 1024:
                         matches.append((int(info.free), total_bytes))
-                if matches:
+                else:
                     return matches[0] if len(matches) == 1 else None
-                if saw_error:
-                    _shutdown_nvml_locked()
-                    continue
-                return None
+                # A failed query may hide a second identical adapter.
+                _shutdown_nvml_locked()
             except Exception:
                 _shutdown_nvml_locked()
         return None
