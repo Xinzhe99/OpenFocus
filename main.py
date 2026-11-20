@@ -4375,9 +4375,11 @@ class OpenFocus(QMainWindow):
         except Exception:
             get_logger(__name__).exception("Unable to persist settings during shutdown")
 
-        # Crash auto-recovery: keep the last snapshot, clear the live lock
+        # A fresh workspace leaves the previous snapshot alone. An explicit
+        # stack clear already removes the snapshot when the stack is cleared.
         from utils import recovery
-        recovery.write_snapshot(self)
+        if getattr(self, 'raw_images', None):
+            recovery.write_snapshot(self)
         recovery.mark_clean_exit()
 
         # Stop ROI alignment worker if running
@@ -5028,24 +5030,17 @@ if __name__ == "__main__":
             show_warning_box(window, trans.t('update_check_failed_title'),
                              trans.t('update_failed_after_restart'))
 
-
     # Crash auto-recovery: a leftover lock means the last session died
     # without a clean close. Offer the saved snapshot before anything else.
-    pending = None if recovered else recovery.pending_recovery()
-    if pending is not None:
-        from PyQt6.QtWidgets import QMessageBox
-        box = QMessageBox(window)
-        style_message_box(box)
-        box.setIcon(QMessageBox.Icon.Question)
-        box.setWindowTitle(trans.t('recovery_title'))
-        box.setText(trans.t('recovery_text').format(
-            count=recovery.snapshot_frame_count(pending)))
-        restore_btn = box.addButton(trans.t('btn_restore'), QMessageBox.ButtonRole.AcceptRole)
-        box.addButton(trans.t('btn_start_fresh'), QMessageBox.ButtonRole.RejectRole)
-        box.setDefaultButton(restore_btn)
-        box.exec()
-        recovered = False
-        if box.clickedButton() is restore_btn:
+    if not recovered:
+        from ui.session_recovery import prompt_crash_recovery
+        generation = getattr(window.source_manager, '_load_generation', 0)
+        pending = prompt_crash_recovery(window)
+        # The control channel can change the stack even during a modal prompt.
+        if (pending is not None and not window.raw_images
+                and getattr(window.source_manager, '_load_worker', None) is None
+                and generation == getattr(window.source_manager, '_load_generation', 0)
+                and not getattr(window, '_shutting_down', False)):
             from utils.project_file import apply_project
             document = pending.get('recovery_document')
             def _crash_restored():

@@ -588,6 +588,7 @@ PACK = {
     "msg_multipage_saved_info": "{count} quadros salvos em:\n{path}",
     "recovery_title": "Recuperação de sessão",
     "recovery_text": "O OpenFocus não foi fechado corretamente na última vez.\n\nRestaurar a última sessão de trabalho ({count} quadros)?",
+    "recovery_checking": "Verificando os arquivos da sessão anterior…",
     "btn_restore": "Restaurar sessão",
     "btn_start_fresh": "Começar do zero",
     "menu_recent_empty": "(Nenhum arquivo recente)",
