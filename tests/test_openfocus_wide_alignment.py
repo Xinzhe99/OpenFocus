@@ -545,3 +545,109 @@ def test_normalized_float_arrays_support_warm_plan_cache(cached_plan):
     for source, frame in zip(arrays, result):
         assert isinstance(frame, ProcessedFrame)
         assert frame.full_resolution() is source
+
+
+@pytest.mark.parametrize('dtype', [np.uint8, np.uint16, np.float32, np.float64])
+@pytest.mark.parametrize('channels', [None, 1, 3, 4])
+@pytest.mark.parametrize('f8', [
+    (5.3, -3.7, 18.0, 14.0, 3.7, 1.031, 1.031, 1.0),
+    (-1.25, 2.5, 12.0, 9.0, -5.25, 0.94, 0.94, 1.0),
+])
+def test_native_warp_alignment_matches_numpy_fallback(monkeypatch, dtype, channels, f8):
+    if not alignment._native_kernels.available():
+        pytest.skip('Numba native kernels unavailable')
+    rng = np.random.default_rng(701)
+    if np.issubdtype(dtype, np.floating):
+        base = (rng.random((39, 43)) * 255.0).astype(dtype)
+    else:
+        base = rng.integers(0, np.iinfo(dtype).max + 1, (39, 43), dtype=np.uint16).astype(dtype)
+    if channels is not None:
+        base = np.stack([np.roll(base, c + 1, axis=1) for c in range(channels)], axis=2)
+    sliced = base[1:-1, 1:-1]
+    actual = alignment._warp_alignment(sliced, f8, None)
+    actual_mask = alignment.alignment_valid_mask(_transform(sliced, f8))
+    monkeypatch.setattr(alignment._native_kernels, 'available', lambda: False)
+    expected = alignment._warp_alignment(sliced, f8, None)
+    expected_mask = alignment.alignment_valid_mask(_transform(sliced, f8))
+    assert actual.dtype == dtype
+    np.testing.assert_array_equal(actual, expected)
+    np.testing.assert_array_equal(actual_mask, expected_mask)
+
+
+@pytest.mark.parametrize('shape', [(1, 1), (1, 7), (7, 1), (17, 19), (64, 64), (73, 101)])
+def test_native_fast_downsize_matches_numpy_fallback(monkeypatch, shape):
+    if not alignment._native_kernels.available():
+        pytest.skip('Numba native kernels unavailable')
+    rng = np.random.default_rng(702)
+    image = rng.integers(0, 65536, (shape[0] + 1, shape[1] + 1), dtype=np.uint16)[:shape[0], :shape[1]]
+    actual = alignment.fast_downsize(image)
+    monkeypatch.setattr(alignment._native_kernels, 'available', lambda: False)
+    expected = alignment.fast_downsize(image)
+    np.testing.assert_array_equal(actual, expected)
+
+
+def test_native_score_chunk_and_wide_search_match_numpy_fallback(monkeypatch):
+    if not alignment._native_kernels.available():
+        pytest.skip('Numba native kernels unavailable')
+    yy, xx = np.mgrid[0:192, 0:256].astype(np.float32)
+    ref = (
+        np.sin(xx * 0.08) * np.cos(yy * 0.07) * 20000
+        + np.sin((xx + yy) * 0.17) * 9000
+        + 32768
+    ).clip(0, 65535).astype(np.uint16)
+    test = alignment._warp_alignment(ref, (4.25, -2.5, 128.0, 96.0, 2.1, 1.02, 1.02, 1.0), None)
+
+    xs = np.arange(0, 256, 16, dtype=np.float32)
+    ys = np.arange(0, 192, 12, dtype=np.float32)
+    cand = np.array([
+        [0.0, 0.0, 4.0, -2.0, 2.0, 1.02, 1.02, 1.0],
+        [0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+        [0.0, 0.0, 2000.0, 2000.0, 0.0, 1.0, 1.0, 1.0],  # wholly OOB
+    ], dtype=np.float32)
+    nat_chunk = alignment._score_chunk(ref, test, xs, ys, cand)
+    nat_mag = alignment.align_pair_wide(ref, test, h_pct=3.0, v_pct=3.0, rot_deg=0.0, mag_pct=5.0)
+    nat_rot = alignment.align_pair_wide(ref, test, h_pct=3.0, v_pct=3.0, rot_deg=3.0, mag_pct=5.0)
+
+    monkeypatch.setattr(alignment._native_kernels, 'available', lambda: False)
+    py_chunk = alignment._score_chunk(ref, test, xs, ys, cand)
+    py_mag = alignment.align_pair_wide(ref, test, h_pct=3.0, v_pct=3.0, rot_deg=0.0, mag_pct=5.0)
+    py_rot = alignment.align_pair_wide(ref, test, h_pct=3.0, v_pct=3.0, rot_deg=3.0, mag_pct=5.0)
+
+    for actual, expected in zip(nat_chunk, py_chunk):
+        np.testing.assert_array_equal(actual, expected)
+    np.testing.assert_array_equal(nat_mag[0], py_mag[0])
+    assert nat_mag[1] == py_mag[1]
+    np.testing.assert_array_equal(nat_rot[0], py_rot[0])
+    assert nat_rot[1] == py_rot[1]
+
+
+def test_wide_kernels_cancel_promptly_between_row_bands():
+    calls = 0
+
+    def cancelled():
+        nonlocal calls
+        calls += 1
+        return calls >= 3
+
+    image = np.zeros((513, 32, 3), np.uint8)
+    with pytest.raises(RegistrationCancelled):
+        alignment._warp_alignment(image, (0.0, 0.0, 1.5, -0.5, 0.0, 1.0, 1.0, 1.0), cancelled)
+    assert calls == 3
+
+    calls = 0
+    fimage = np.zeros((513, 32, 3), np.float32)
+    with pytest.raises(RegistrationCancelled):
+        alignment._alignment_gray16(fimage, cancelled)
+    assert calls == 3
+
+    calls = 0
+    gray = np.zeros((513, 32), np.uint16)
+    with pytest.raises(RegistrationCancelled):
+        alignment.fast_downsize(gray, cancelled)
+    assert calls == 3
+
+    calls = 0
+    transform = _transform(image, (0.0, 0.0, 1.5, -0.5, 1.0, 1.01, 1.01, 1.0))
+    with pytest.raises(RegistrationCancelled):
+        alignment.alignment_valid_mask(transform, should_cancel=cancelled)
+    assert calls == 3

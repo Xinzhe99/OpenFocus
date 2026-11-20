@@ -11,6 +11,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   three StackMFF models before activation.
 
 ### Changed
+- Accelerate OpenFocus alignment candidate scoring, similarity warping,
+  uint8 translation warping, pyramid downsizing, and validity mask generation
+  with single-threaded native CPU kernels while preserving bit-exact results
+  and row-band cancellation.
 - Preselect NVIDIA acceleration review on Windows PCs with an NVIDIA driver,
   including when upgrading from 2.0.0.
 - Stream background replacement focus protection and CPU focus measures in
@@ -23,6 +27,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   transfers on the next source and log why the source changed.
 
 ### Fixed
+- Give comparison alignment workers on macOS enough stack for the first
+  native alignment kernel compilation.
 - Recover a desktop email sign-in after a lost connection to the approval
   endpoint without sending a second email. Record the failed request stage
   without logging sign-in credentials.
