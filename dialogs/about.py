@@ -8,7 +8,7 @@ from html import escape
 from unicodedata import category
 from urllib.parse import urlencode, urlsplit
 
-from PyQt6.QtCore import QRect, QRectF, QTimer, Qt, QUrl
+from PyQt6.QtCore import QEvent, QRect, QRectF, QTimer, Qt, QUrl
 from PyQt6.QtGui import QColor, QFont, QImage
 from PyQt6.QtWidgets import (
     QDialog,
@@ -339,7 +339,8 @@ class ContactInfoDialog(QDialog):
         self._contact_columns = 0
         title = trans.t('dialog_contact_title')
         self.setWindowTitle(title)
-        body = community_body(self, title, trans.t('contact_welcome'), width=820, height=470)
+        self._contact_scroll, body = community_body(self, title, trans.t('contact_welcome'),
+                                                    width=880, height=470)
 
         self._contact_cards.setSpacing(body.spacing())
         body.addLayout(self._contact_cards)
@@ -375,7 +376,11 @@ class ContactInfoDialog(QDialog):
             self._cards.append(card)
             add_published_qr(self, column, self._requests, trans.t(label), slot, self._QR_SIZE)
             column.addStretch()
-        self._arrange_contact_cards(self.width())
+        self._contact_reflow = QTimer(self, singleShot=True)
+        self._contact_reflow.timeout.connect(self._arrange_contact_cards)
+        self._contact_scroll.viewport().installEventFilter(self)
+        self._contact_scroll.widget().installEventFilter(self)
+        self._arrange_contact_cards()
 
         # 居中显示
         if parent:
@@ -485,12 +490,32 @@ class ContactInfoDialog(QDialog):
         label.setToolTip(f'<qt>{escape(value)}</qt>')
         self._contact_details.addWidget(label)
 
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        self._arrange_contact_cards(event.size().width())
+    def eventFilter(self, watched, event):
+        if event.type() in (QEvent.Type.Resize, QEvent.Type.LayoutRequest):
+            self._contact_reflow.start()
+        return super().eventFilter(watched, event)
 
-    def _arrange_contact_cards(self, width):
-        columns = 4 if width >= 820 else 2 if width >= 500 else 1
+    def _arrange_contact_cards(self):
+        # Reserve the scrollbar width even before it appears. Reflowing can
+        # change the scroll range, but must not make the column count oscillate.
+        scroll = self._contact_scroll
+        available = scroll.maximumViewportSize().width() - scroll.verticalScrollBar().sizeHint().width()
+        minimum_widths = []
+        for index, card in enumerate(self._cards):
+            minimum = card.minimumSizeHint().width()
+            if index:
+                # QR labels can be hidden while downloading. Reserve their width.
+                margins = card.layout().contentsMargins()
+                minimum = max(minimum, self._QR_SIZE + margins.left() + margins.right()
+                              + 2 * card.frameWidth())
+            minimum_widths.append(minimum)
+        columns = 1
+        for count in (4, 2):
+            width = sum(max(minimum_widths[column::count]) for column in range(count))
+            width += (count - 1) * self._contact_cards.horizontalSpacing()
+            if width <= available:
+                columns = count
+                break
         if self._contact_columns == columns:
             return
         self._contact_columns = columns
