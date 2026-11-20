@@ -22,9 +22,18 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and row-band cancellation.
 - Preselect NVIDIA acceleration review on Windows PCs with an NVIDIA driver,
   including when upgrading from 2.0.0.
+- Stream background replacement focus protection and CPU focus measures in
+  bounded memory stripes, replace per-pixel `3x3` linear solves in color
+  guided filtering with closed-form banded computation, band initial frame
+  grayscale loading, and cache the OpenCL background-focus program. Drain
+  the queue on cancellation and fall back to the CPU if synchronization fails.
 - Choose the PyTorch download order from the network region, with a manual
   override and a server-maintained list of mirrors. Resume interrupted
   transfers on the next source and log why the source changed.
+- Stream DCT, GFG-FGF, DTCWT, and OpenFocus C depth map estimation without
+  materializing the stack or pre-converting all 16-bit frames to float32.
+  Bound concurrent frame workers by the memory budget and preserve the
+  existing focus decisions for low-contrast and mixed-bit-depth inputs.
 
 ### Fixed
 - Give comparison alignment workers on macOS enough stack for the first

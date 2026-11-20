@@ -4,6 +4,8 @@ Hard selectors estimate a dominant source frame; wavelet and pyramid methods
 estimate activity rather than an exact pixel provenance map. These maps are
 not physical surface measurements. Input normalization is shared with fusion.
 """
+from collections import deque
+import concurrent.futures
 import os
 from typing import Callable, List, Optional, Sequence
 
@@ -12,6 +14,9 @@ import numpy as np
 
 from core.algorithms import get_fusion, resolve_fusion_parameters, resolve_runner
 from core.frame_storage import create_frame, store_frame, scratch_directory
+
+_U8_NORM_LUT = np.arange(256, dtype=np.float32) / np.float32(255.0)
+_STREAMING_DEPTH_METHODS = frozenset(('openfocus_b', 'openfocus_c', 'dct', 'gfgfgf', 'dtcwt'))
 
 
 class DepthMapCancelled(Exception):
@@ -28,8 +33,10 @@ def _check(images: Sequence[np.ndarray], allow_grayscale=False, should_cancel=No
             from core.registration import RegistrationCancelled
             raise RegistrationCancelled()
         if image.ndim == 3 and image.shape[2] == 4:
-            if _has_transparency(resolve_frame(image, should_cancel=should_cancel)):
-                raise ValueError("Depth maps of transparent images are unsupported")
+            from core.source_frames import without_source_cache_growth
+            with without_source_cache_growth():
+                if _has_transparency(resolve_frame(image, should_cancel=should_cancel)):
+                    raise ValueError("Depth maps of transparent images are unsupported")
     first = images[0]
     if not ((first.ndim == 3 and first.shape[2] >= 3) or
             (allow_grayscale and (first.ndim == 2 or
@@ -63,11 +70,101 @@ def _tick(progress: Optional[Callable], i: int, n: int,
             pass
 
 
+def _worker_count(thread_count, count):
+    if thread_count is None:
+        return 1
+    try:
+        return max(1, min(int(thread_count), int(count)))
+    except (TypeError, ValueError):
+        return 1
+
+
+def _resolve_depth_gray(frame, promote_f32, should_cancel, *, scale_01=False, padding=(0, 0)):
+    """Preserve color normalization, padding and grayscale order in bounded bands."""
+    from core.source_frames import resolve_frame, without_source_cache_growth
+
+    with without_source_cache_growth():
+        raw = resolve_frame(frame, should_cancel=should_cancel)
+    if should_cancel is not None and should_cancel():
+        raise DepthMapCancelled()
+    dtype = raw.dtype
+    pad_rows, pad_cols = padding
+    gray_dtype = np.float32 if promote_f32 or dtype in (np.uint16, np.float64) else dtype
+    if dtype != gray_dtype or pad_rows or pad_cols:
+        h, w = raw.shape[:2]
+        gray = np.empty((h + pad_rows, w + pad_cols), gray_dtype)
+        for y0 in range(0, h, 128):
+            if y0 and should_cancel is not None and should_cancel():
+                raise DepthMapCancelled()
+            y1 = min(h, y0 + 128)
+            band = raw[y0:y1].astype(gray_dtype, copy=False)
+            if dtype == np.uint16:
+                band *= np.float32(255.0 / 65535.0)
+            bottom = pad_rows if y1 == h else 0
+            if bottom or pad_cols:
+                band = cv2.copyMakeBorder(band, 0, bottom, 0, pad_cols, cv2.BORDER_REPLICATE)
+            cv2.cvtColor(band, cv2.COLOR_BGR2GRAY, dst=gray[y0:y1 + bottom])
+    else:
+        gray = cv2.cvtColor(raw, cv2.COLOR_BGR2GRAY)
+    if not scale_01:
+        return gray
+    if gray.dtype == np.uint8:
+        return _U8_NORM_LUT[gray]
+    gray = gray.astype(np.float32, copy=False)
+    gray /= np.float32(255.0)
+    return gray
+
+
+def _ordered_frame_map(count, max_workers, worker_fn, consume_fn, progress, should_cancel):
+    """Execute worker_fn over 0..count-1 with bounded concurrency and consume in order."""
+    if max_workers <= 1:
+        for idx in range(count):
+            _tick(progress, idx, count, should_cancel)
+            item = worker_fn(idx)
+            consume_fn(idx, item)
+            del item
+        return
+
+    from core.frame_storage import capture_scratch, run_with_scratch
+
+    scratch = capture_scratch()
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
+        window = deque()
+        next_submit = 0
+        try:
+            while next_submit < count or window:
+                _tick(None, next_submit, count, should_cancel)
+                while next_submit < count and len(window) < max_workers:
+                    idx = next_submit
+                    window.append((idx, pool.submit(run_with_scratch, scratch, worker_fn, idx)))
+                    next_submit += 1
+                for _, pending in window:
+                    if pending.done() and pending.exception() is not None:
+                        pending.result()
+                idx, future = window[0]
+                if not future.done():
+                    concurrent.futures.wait((future,), timeout=0.05)
+                    continue
+                window.popleft()
+                item = future.result()
+                del future
+                _tick(progress, idx, count, should_cancel)
+                consume_fn(idx, item)
+                del item
+        except BaseException:
+            for _, future in window:
+                future.cancel()
+            pool.shutdown(wait=True, cancel_futures=True)
+            raise
+
+
 # --------------------------------------------------------------------------
 # dct — block variance + double median consistency
 # --------------------------------------------------------------------------
-def _measure_dct(images, progress, should_cancel, kernel_size=7, block_size=8):
+def _measure_dct(images, progress, should_cancel, kernel_size=7, block_size=8,
+                 thread_count=None):
     from scipy.ndimage import median_filter
+    from fusion_methods import dct as dct_mod
 
     if kernel_size % 2 == 0:
         kernel_size += 1
@@ -79,28 +176,57 @@ def _measure_dct(images, progress, should_cancel, kernel_size=7, block_size=8):
     if map_h == 0 or map_w == 0:
         raise ValueError("Block size too large for the image")
 
+    n = len(images)
+    max_workers = _worker_count(thread_count, n)
+    promote_f32 = any(image.dtype == np.uint16 for image in images)
+    # Up to 16x16, both 8-bit block sums fit exactly in float32. Floating
+    # inputs need OpenCV's original accumulation for near-tied variances.
+    kernels = (dct_mod._load_kernels()
+               if block_size <= 16 and all(image.dtype == np.uint8 for image in images)
+               else None)
+    if kernels is not None and max_workers > 1:
+        dummy_out = np.empty((1, 1), dtype=np.float32)
+        kernels.block_variance_u8(np.zeros((1, 1), dtype=np.uint8), 1, 1, block_size, dummy_out)
+
     max_var = np.full((map_h, map_w), -1.0, np.float32)
     best = np.zeros((map_h, map_w), np.int32)
-    for idx, bgr in enumerate(images):
-        _tick(progress, idx, len(images), should_cancel)
-        if (h_trim, w_trim) != (h, w):
-            bgr = cv2.copyMakeBorder(bgr, 0, h_trim - h, 0, w_trim - w,
-                                     cv2.BORDER_REPLICATE)
-        gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY).astype(np.float32)
-        mean_sq = cv2.resize(gray ** 2, (map_w, map_h),
-                             interpolation=cv2.INTER_AREA)
-        mean_val = cv2.resize(gray, (map_w, map_h),
-                              interpolation=cv2.INTER_AREA)
-        var = mean_sq - mean_val ** 2
-        mask = var > max_var
-        max_var[mask] = var[mask]
-        best[mask] = idx
+    padding = (0, 0) if kernels is not None else (h_trim - h, w_trim - w)
+
+    def worker_fn(idx):
+        gray = _resolve_depth_gray(images[idx], promote_f32, should_cancel, padding=padding)
+        if kernels is not None:
+            var_map = np.empty((map_h, map_w), dtype=np.float32)
+            kernels.block_variance_u8(gray, h, w, block_size, var_map)
+            return var_map
+        gray_f32 = gray.astype(np.float32, copy=False)
+        del gray
+        mean_val = cv2.resize(gray_f32, (map_w, map_h), interpolation=cv2.INTER_AREA)
+        np.square(mean_val, out=mean_val)
+        np.square(gray_f32, out=gray_f32)
+        mean_sq = cv2.resize(gray_f32, (map_w, map_h), interpolation=cv2.INTER_AREA)
+        mean_sq -= mean_val
+        return mean_sq
+
+    def consume_fn(idx, var_map):
+        if kernels is not None:
+            kernels.argmax_update_blocks(var_map, max_var, best, idx)
+        else:
+            mask = var_map > max_var
+            max_var[mask] = var_map[mask]
+            best[mask] = idx
+
+    _ordered_frame_map(n, max_workers, worker_fn, consume_fn, progress, should_cancel)
 
     best = median_filter(best, size=kernel_size, mode="nearest")
     best = median_filter(best, size=kernel_size, mode="nearest")
-    best = cv2.resize(best.astype(np.float32), (w_trim, h_trim),
-                      interpolation=cv2.INTER_NEAREST).astype(np.int32)
-    return best[:h, :w]
+    out = create_frame((h, w), np.int32)
+    col_idx = np.arange(w, dtype=np.intp) // block_size
+    for y0 in range(0, h, 128):
+        _tick(None, n, n, should_cancel)
+        y1 = min(h, y0 + 128)
+        row_idx = np.arange(y0, y1, dtype=np.intp) // block_size
+        out[y0:y1] = best[row_idx[:, None], col_idx[None, :]]
+    return out
 
 
 # --------------------------------------------------------------------------
@@ -108,17 +234,26 @@ def _measure_dct(images, progress, should_cancel, kernel_size=7, block_size=8):
 # --------------------------------------------------------------------------
 def _measure_gfgfgf(images, progress, should_cancel, kernel_size=7,
                     thread_count=None):
-    from fusion_methods.gfg_fgf import gfg_focus_map, GfgDecision
+    from fusion_methods import gfg_fgf
 
     if kernel_size % 2 == 0:
         kernel_size += 1
     n = len(images)
+    max_workers = _worker_count(thread_count, n)
+    if max_workers > 1:
+        gfg_fgf.gfg_focus_map(np.zeros((8, 8), dtype=np.float32), kernel_size)
+    promote_f32 = any(image.dtype == np.uint16 for image in images)
     # 与融合同一聚焦图与并列决策（Sobel 小区域度量），深度图才与融合一致
-    decision = GfgDecision()
-    for idx, bgr in enumerate(images):
-        _tick(progress, idx, n, should_cancel)
-        g = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY).astype(np.float32) / 255.0
-        decision.update(idx, gfg_focus_map(g, kernel_size))
+    decision = gfg_fgf.GfgDecision()
+
+    def worker_fn(idx):
+        g = _resolve_depth_gray(images[idx], promote_f32, should_cancel, scale_01=True)
+        return gfg_fgf.gfg_focus_map(g, kernel_size)
+
+    def consume_fn(idx, afm):
+        decision.update(idx, afm)
+
+    _ordered_frame_map(n, max_workers, worker_fn, consume_fn, progress, should_cancel)
     _tick(None, n, n, should_cancel)
     return decision.idx
 
@@ -126,7 +261,7 @@ def _measure_gfgfgf(images, progress, should_cancel, kernel_size=7,
 # --------------------------------------------------------------------------
 # dtcwt — per-frame wavelet high-pass energy (its activity level)
 # --------------------------------------------------------------------------
-def _measure_dtcwt(images, progress, should_cancel, nlevels=4):
+def _measure_dtcwt(images, progress, should_cancel, nlevels=4, thread_count=None):
     """DTCWT high-pass energy per frame.
 
     nlevels mirrors the fusion's own decomposition depth
@@ -139,23 +274,35 @@ def _measure_dtcwt(images, progress, should_cancel, nlevels=4):
     if dtcwt_lib is None:  # pragma: no cover - env dependent
         raise RuntimeError("DTCWT depth maps need dtcwt, scipy and six")
 
-    transform = dtcwt_lib.Transform2d()
     n = len(images)
     h, w = images[0].shape[:2]
-    # 流式 argmax：能量栈不物化
-    best_val = best_idx = None
-    for idx, bgr in enumerate(images):
-        _tick(progress, idx, n, should_cancel)
-        gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY).astype(np.float32) / 255.0
-        coeffs = transform.forward(gray, nlevels=nlevels)
+    max_workers = _worker_count(thread_count, n)
+    promote_f32 = any(image.dtype == np.uint16 for image in images)
+
+    def worker_fn(idx):
+        gray = _resolve_depth_gray(images[idx], promote_f32, should_cancel, scale_01=True)
+        coeffs = dtcwt_lib.Transform2d().forward(gray, nlevels=nlevels)
+        del gray
         acc = create_frame((h, w), np.float32)
         acc[...] = 0
+        lvl = np.empty((h, w), np.float32)
         for level_yh in coeffs.highpasses:
             _tick(None, idx, n, should_cancel)
-            # (H', W', 6) -> 每方向幅值平方求和，上采样回全分辨率累加
-            mag2 = np.sum(np.abs(level_yh) ** 2, axis=2).astype(np.float32)
-            lvl = cv2.resize(mag2, (w, h), interpolation=cv2.INTER_LINEAR)
+            # The rounded magnitude is part of the existing focus tie behavior.
+            magnitude = np.abs(level_yh)
+            np.square(magnitude, out=magnitude)
+            mag2 = magnitude.sum(axis=2).astype(np.float32, copy=False)
+            del magnitude
+            cv2.resize(mag2, (w, h), interpolation=cv2.INTER_LINEAR, dst=lvl)
             acc += lvl
+        del lvl
+        return acc
+
+    # 流式 argmax：能量栈不物化
+    best_val = best_idx = None
+
+    def consume_fn(idx, acc):
+        nonlocal best_val, best_idx
         if best_val is None:
             best_val = acc
             best_idx = create_frame(acc.shape, np.int32)
@@ -164,6 +311,8 @@ def _measure_dtcwt(images, progress, should_cancel, nlevels=4):
             hit = acc > best_val
             best_val[hit] = acc[hit]
             best_idx[hit] = idx
+
+    _ordered_frame_map(n, max_workers, worker_fn, consume_fn, progress, should_cancel)
     return best_idx
 
 
@@ -343,7 +492,7 @@ def compute_focus_index(images: Sequence[np.ndarray], method: str, parameters=No
         inference = inference_job()
     try:
         with heavy_job(should_cancel), inference, scratch_directory():
-            if method != 'openfocus_b':
+            if method not in _STREAMING_DEPTH_METHODS:
                 from core.source_frames import materialize_frames
                 images = materialize_frames(images, should_cancel,
                                             thread_count=thread_count,
@@ -352,22 +501,41 @@ def compute_focus_index(images: Sequence[np.ndarray], method: str, parameters=No
                    should_cancel=should_cancel)
             n = len(images)
             h, w = images[0].shape[:2]
+            channels = images[0].shape[2] if images[0].ndim == 3 else 1
+            itemsize = max(image.dtype.itemsize for image in images)
             if spec.depth_planner:
                 plan, model_path = resolve_runner(spec.depth_planner)(
                     images, model_path, use_gpu, thread_count, resource_preference)
+                runner_threads = plan.native_threads
+            elif method in ('dct', 'gfgfgf', 'dtcwt'):
+                pixels = h * w
+                src_frame = pixels * channels * itemsize
+                band_scratch = min(h, 128) * w * 16
+                fixed_mult = {'dct': 8, 'gfgfgf': 16, 'dtcwt': 12}[method]
+                worker_mult = {'dct': 16, 'gfgfgf': 32, 'dtcwt': 96}[method]
+                # Cap outer workers at 4 to balance memory bandwidth and cache reuse
+                # against per-worker scratch footprint (matching dtcwt fusion bounds).
+                plan = plan_execution(
+                    Workload(algorithm=method, frames=n, height=h, width=w,
+                             channels=channels, itemsize=itemsize,
+                             fixed_bytes=pixels * fixed_mult + 4 * 1024 * 1024,
+                             per_worker_bytes=src_frame + pixels * worker_mult + band_scratch,
+                             outer_tasks=min(n, 4), parallel_layer='outer'),
+                    preference=resource_preference, user_threads=thread_count)
+                runner_threads = plan.workers
             else:
                 # The shared CPU model includes normalization, map storage,
                 # method scratch and the final normalized output.
                 plan = plan_execution(
                     Workload(algorithm=method, frames=n, height=h, width=w,
-                             channels=images[0].shape[2] if images[0].ndim == 3 else 1,
-                             itemsize=max(image.dtype.itemsize for image in images),
+                             channels=channels, itemsize=itemsize,
                              parallel_layer='native'),
                     preference=resource_preference, user_threads=thread_count)
+                runner_threads = plan.native_threads
             _tick(None, 0, n, should_cancel)
-            # Neural runners normalize one spatial tile at a time. B/C prepare
-            # one frame at a time, using fusion's stack-wide bit-depth rule.
-            if method not in ('openfocus_b', 'openfocus_c', 'stackmffv2', 'stackmffv3'):
+            # Streaming depth methods normalize one grayscale frame/tile at a time,
+            # avoiding O(N) full-resolution float32 conversion stacks for 16-bit inputs.
+            if method not in _STREAMING_DEPTH_METHODS and method not in ('stackmffv2', 'stackmffv3'):
                 if any(image.dtype == np.uint16 for image in images):
                     normalized = []
                     for image in images:
@@ -378,7 +546,7 @@ def compute_focus_index(images: Sequence[np.ndarray], method: str, parameters=No
                         normalized.append(image if converted is image else store_frame(converted))
                     images = normalized
             runtime = {'progress_callback': progress_callback, 'should_cancel': should_cancel,
-                       'thread_count': plan.native_threads, 'use_gpu': use_gpu,
+                       'thread_count': runner_threads, 'use_gpu': use_gpu,
                        'model_path': model_path, 'execution_plan': plan}
             if depth_block is not None:
                 runtime['block_size'] = depth_block
