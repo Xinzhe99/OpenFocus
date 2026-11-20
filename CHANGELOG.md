@@ -49,6 +49,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   orientation, so the rotation moves only the reduced image. Image dimensions
   are unchanged; a pixel value can differ by one level where rounding falls
   the other way.
+- Select StackMFF V3's query, key and value projections before transposing
+  their attention heads, in the network and in the packaged ONNX graph. The
+  graph's weights and its logits are unchanged.
 
 ### Fixed
 - Give comparison alignment workers on macOS enough stack for the first
