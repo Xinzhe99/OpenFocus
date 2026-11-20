@@ -40,6 +40,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   control channel, and explain how to complete first-run sign-in.
 - Give comparison alignment workers on macOS enough stack for the first
   native alignment kernel compilation.
+- Reflow contact cards to fit the available width so the QR codes can remain
+  at their scannable size without being clipped at the right edge.
 - Recover a desktop email sign-in after a lost connection to the approval
   endpoint without sending a second email. Record the failed request stage
   without logging sign-in credentials.
@@ -55,8 +57,6 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   memory needed if GPU inference falls back to CPU.
 - Use consistent visible QR code sizes in the Contact Us and Support Us
   dialogs while preserving the artwork and a scannable white border.
-- Reflow contact cards to fit the available width so the QR codes can remain
-  at their scannable size without being clipped at the right edge.
 
 ## [2.0.0]
 
