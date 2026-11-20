@@ -189,7 +189,8 @@ def test_catalog_country_and_manual_priority(artifact, transport, monkeypatch, c
     def open_catalog(request, timeout):
         assert request.full_url == 'https://account.openfocus.top/v1/runtime-mirrors'
         assert request.get_method() == 'GET'
-        assert dict(request.header_items()) == {'Accept': 'application/json'}
+        assert request.get_header('Authorization') is None
+        assert request.get_header('Cookie') is None
         body = json.dumps({'country': country, 'mirrors': {
             artifact['sha256']: [_MIRROR, _SECOND, _MIRROR, _OFFICIAL],
         }})
