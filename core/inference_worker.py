@@ -1,4 +1,4 @@
-"""Isolated NVIDIA inference worker. The desktop never imports its GPU libraries."""
+"""Isolated native inference worker. The desktop never imports its GPU libraries."""
 import hashlib
 import io
 import json
@@ -6,8 +6,10 @@ import math
 import mmap
 import os
 from pathlib import Path
+import platform
 import stat
 import sys
+import warnings
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -23,7 +25,9 @@ _TORCH_EXPORTS = {
 }
 
 
-def _load_torch_model(digest):
+def _load_torch_model(digest, device):
+    import torch
+
     from core.models.stackmff_v1.network import StackMFF
     from core.models.stackmff_v2.network import StackMFF_V2
     from core.models.stackmff_v3.model_io import load_checkpoint, load_variant_checkpoint
@@ -42,7 +46,7 @@ def _load_torch_model(digest):
         model = load_variant_checkpoint(source, StackMFF_V2, 'v2_v3backbone')
     else:
         model = load_checkpoint(source)
-    return model.to('cuda:0').eval().forward_logits
+    return model.to(device=device, dtype=torch.float32).forward_logits
 
 
 def _absolute_path(value):
@@ -68,34 +72,76 @@ class InferenceWorker:
             return mmap.mmap(handle.fileno(), 0, access=mmap.ACCESS_WRITE)
 
     def __init__(self):
+        is_apple = sys.platform == 'darwin' and platform.machine() == 'arm64'
+        if is_apple:
+            # The worker inherits this environment variable even under Python -I.
+            os.environ['PYTORCH_ENABLE_MPS_FALLBACK'] = '0'
         import numpy
         import torch
 
         self.torch = torch
         self.numpy = numpy
-        if not torch.version.cuda or torch.version.hip or not torch.cuda.is_available():
-            raise RuntimeError('NVIDIA CUDA is unavailable')
-        torch.cuda.set_device(0)
-        # Driver enumeration alone does not prove the wheel has usable kernels.
-        torch.ones(1, device='cuda:0').add_(1).item()
-        torch.backends.cuda.matmul.allow_tf32 = False
-        torch.backends.cudnn.allow_tf32 = False
-        self.device = torch.cuda.get_device_name(0)
-        self.backends = ['TORCH_CUDA']
+        if is_apple:
+            if not torch.backends.mps.is_available():
+                raise RuntimeError('Apple Silicon MPS is unavailable')
+            # A few operators register CPU fallbacks even with fallback disabled.
+            # Treat their warnings as failures on every request in this process.
+            torch.set_warn_always(True)
+            warnings.filterwarnings('error', message=r'The operator .*MPS backend.*run on the CPU.*',
+                                    category=UserWarning)
+            self.torch_device = 'mps'
+            self.device = 'Apple Silicon GPU'
+            self.backends = ['TORCH_MPS']
+        else:
+            if (sys.platform not in ('win32', 'linux') or not torch.version.cuda
+                    or torch.version.hip or not torch.cuda.is_available()):
+                raise RuntimeError('NVIDIA CUDA is unavailable')
+            torch.cuda.set_device(0)
+            torch.backends.cuda.matmul.allow_tf32 = False
+            torch.backends.cudnn.allow_tf32 = False
+            self.torch_device = 'cuda:0'
+            self.device = torch.cuda.get_device_name(0)
+            self.backends = ['TORCH_CUDA']
+        # Device enumeration alone does not prove that kernels execute.
+        if torch.ones(1, device=self.torch_device, dtype=torch.float32).add_(1).item() != 2:
+            raise RuntimeError('GPU startup operation returned an incorrect result')
         self.trt = None
-        try:
-            from core.inference_tensorrt import TensorRT
-            self.trt = TensorRT(torch)
-            self.backends.insert(0, 'TENSORRT')
-        except Exception as exc:
-            print(f'TensorRT unavailable: {exc}', file=sys.stderr, flush=True)
+        if sys.platform == 'win32':
+            try:
+                from core.inference_tensorrt import TensorRT
+                self.trt = TensorRT(torch)
+                self.backends.insert(0, 'TENSORRT')
+            except Exception as exc:
+                print(f'TensorRT unavailable: {exc}', file=sys.stderr, flush=True)
         self.active_key = None
         self.sessions = {}
+
+    def probe_models(self):
+        """Execute the released checkpoints before accepting a Unix pack install."""
+        # 128px exercises shifted attention at both feature scales. Multiple
+        # layers also exercise inter-layer attention with the desktop's padding.
+        shape = (1, 3, 128, 128)
+        with self.torch.inference_mode():
+            x = self.torch.zeros(shape, device=self.torch_device, dtype=self.torch.float32)
+            for expected, (name, _) in _TORCH_EXPORTS.items():
+                graph = (ROOT / 'weights' / name).with_suffix('.onnx')
+                try:
+                    digest = hashlib.sha256(graph.read_bytes()).hexdigest()
+                    if digest != expected:
+                        raise ValueError('ONNX graph does not match the verified release')
+                    predict = _load_torch_model(digest, self.torch_device)
+                    self._validate_logits(predict(x), x.device, shape)
+                    del predict
+                except Exception as exc:
+                    raise RuntimeError(f'{graph.name}: {exc}') from exc
 
     def clear(self):
         self.sessions.clear()
         self.active_key = None
-        self.torch.cuda.empty_cache()
+        if self.torch_device == 'mps':
+            self.torch.mps.empty_cache()
+        else:
+            self.torch.cuda.empty_cache()
 
     def _select(self, backend, model, shape, cache):
         # Read through a single handle so replacement cannot mix a digest and graph.
@@ -118,11 +164,11 @@ class InferenceWorker:
             if len(self.sessions) == 2:
                 del self.sessions[next(iter(self.sessions))]
                 self.torch.cuda.empty_cache()
-            if backend == 'TORCH_CUDA':
-                predict = _load_torch_model(digest)
+            if backend != 'TENSORRT':
+                predict = _load_torch_model(digest, self.torch_device)
             else:
                 verified = digest in _TORCH_EXPORTS
-                load_reference = (lambda: _load_torch_model(digest)) if verified else None
+                load_reference = (lambda: _load_torch_model(digest, self.torch_device)) if verified else None
                 predict = self.trt.load(graph, digest, shape, cache, reference=load_reference)
         self.sessions[scale] = predict
         return predict
@@ -147,16 +193,20 @@ class InferenceWorker:
         # numpy.ndarray (unlike frombuffer) doesn't hold an exported memoryview.
         # The mmap remains open until the synchronous D2H copy has completed.
         shared = self.torch.from_numpy(self.numpy.ndarray(shape, self.numpy.float32, buffer=region))
-        x = shared.to('cuda:0')
+        x = shared.to(self.torch_device)
         y = predict(x)
-        if y.device != x.device or y.dtype != x.dtype or tuple(y.shape) != shape:
-            raise ValueError('GPU inference did not return float32 logits with the input shape')
+        self._validate_logits(y, x.device, shape)
+        shared.copy_(y, non_blocking=False)
+
+    def _validate_logits(self, y, device, shape):
+        if y.device != device or y.dtype != self.torch.float32 or tuple(y.shape) != shape:
+            raise ValueError(f'Expected float32 logits on {device} with the input shape; '
+                             f'got {y.dtype} on {y.device} with shape {tuple(y.shape)}')
         # The reductions propagate NaN and cover both signs of infinity without
         # allocating a tensor-sized mask. Leave the shared input intact on failure.
         low, high = self.torch.aminmax(y)
         if not (math.isfinite(low.item()) and math.isfinite(high.item())):
             raise ValueError('GPU inference returned non-finite logits')
-        shared.copy_(y, non_blocking=False)
 
 
 def main():
@@ -171,6 +221,8 @@ def main():
         sys.path.append(str(ROOT))
         try:
             worker = InferenceWorker()
+            if sys.argv[1:] == ['--probe']:
+                worker.probe_models()
         except Exception as exc:
             reply({'error': str(exc)})
             return 1

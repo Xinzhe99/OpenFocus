@@ -825,9 +825,10 @@ def plan_neural_tiles(frames: int, height: int, width: int, channels: int,
         ceiling = min(ceiling, max(0, active.maximum_ram - resident_output_bytes))
     if not snapshot.ram_known:
         require_memory(0, snapshot)
-    from fusion_methods.neural_runtime import candidate_devices, VRAM_GATED_KINDS
+    from fusion_methods.neural_runtime import (UNIFIED_MEMORY_KINDS, VRAM_GATED_KINDS,
+                                               candidate_devices)
     requested = str(device_kind).upper()
-    kinds = candidate_devices(requested) if live else dict.fromkeys((requested, 'CPU'))
+    kinds = candidate_devices(requested, probe_ort=live)
     for kind in kinds:
         dedicated = kind in VRAM_GATED_KINDS
         if dedicated:
@@ -835,7 +836,7 @@ def plan_neural_tiles(frames: int, height: int, width: int, channels: int,
             if device_snapshot.device_kind.upper() != kind or not device_snapshot.vram_known:
                 continue
             device_budget = vram_budget(device_snapshot)
-        elif kind in ('CPU', 'COREML'):
+        elif kind == 'CPU' or kind in UNIFIED_MEMORY_KINDS:
             device_budget = 0
         else:
             continue

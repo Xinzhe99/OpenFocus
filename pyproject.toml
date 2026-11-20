@@ -75,4 +75,4 @@ version = { attr = "constants.APP_VERSION" }
 
 [tool.setuptools.package-data]
 weights = ["*.onnx", "*.pth"]
-core = ["py.typed", "accelerator_win64.json"]
+core = ["py.typed", "accelerator_*.json"]

@@ -43,7 +43,7 @@ class Worker:
             engines = reply.get('backends')
             if reply.get('ready') is not True or not isinstance(engines, list):
                 raise WorkerLost(str(reply.get('error', 'Invalid worker startup response')))
-            self.backends = tuple(k for k in engines if k in ('TORCH_CUDA', 'TENSORRT'))
+            self.backends = tuple(k for k in engines if k in ('TORCH_CUDA', 'TENSORRT', 'TORCH_MPS'))
             self.device = str(reply.get('device') or '')
         except BaseException:
             self.close(force=True)

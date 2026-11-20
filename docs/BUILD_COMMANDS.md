@@ -144,4 +144,8 @@ CLI and first-run desktop smoke checks enabled after pruning. The release job
 also downloads the v1.76.0 Windows ZIP, checks its pinned SHA-256, and runs
 `tools/frozen_upgrade_smoke.py` against it before packaging.
 
-The original PyTorch checkpoints and export tooling are development artifacts and are excluded from desktop bundles. The wheel's package data includes the dynamic `.onnx` checkpoints. Local builds and releases should be verified on their target platforms, including the intended accelerators.
+The wheel and desktop bundles include the ONNX graphs, verified PyTorch
+checkpoints, worker sources and per-platform accelerator manifests. The
+export tooling stays in the source repository. The optional pack supplies
+its own interpreter and dependencies after installation. Verify model
+execution using each target platform's intended accelerator.

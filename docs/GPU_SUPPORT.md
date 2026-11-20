@@ -17,30 +17,42 @@ Windows, macOS and Linux desktop builds include PyOpenCL. The separate Linux CLI
 
 ECC registration can use OpenCL to downsample large source and working images. The GPU path matches the area filter and rounding of the supported Windows x64 OpenCV 5.0.0 build. It accepts contiguous 8-bit and 16-bit images and fractional reductions up to 4× on each axis. Other builds, unsupported dimensions and insufficient memory use the CPU resize. ECC estimates the transforms on the CPU and applies them with the same Lanczos interpolation. The desktop GPU Acceleration switch and CLI `--cpu` control this preparation step. The `registration_ecc_resize` log event gives the device and completed GPU resize count for the stack.
 
-StackMFF V1, V2 and V3 ship with dynamic ONNX models. With GPU acceleration enabled on a supported Windows x64 NVIDIA system, OpenFocus can use an optional pack containing TensorRT and PyTorch CUDA. The default order for neural inference is TensorRT, PyTorch CUDA, an accelerated ONNX Runtime provider, then ONNX Runtime CPU. Windows includes DirectML. macOS uses CoreML when available. Source or CLI installations can also use compatible CUDA or ROCm ONNX Runtime distributions. The Linux desktop bundle includes ONNX Runtime CPU. Classical algorithms use their own CPU or OpenCL implementations.
+StackMFF V1, V2 and V3 ship with dynamic ONNX models. **Settings → AI acceleration
+components** checks the hardware and offers a compatible optional pack once
+per pack version. Windows Setup can also open this screen.
 
-Choose **Settings → AI acceleration components** to check the current machine and download the pack. Windows Setup can open the same screen. A first launch or upgrade offers it once per pack version on compatible hardware. Windows x64 uses one tested pack with PyTorch 2.5.1, CUDA 12.4 and TensorRT 10.4. The NVIDIA GPU at CUDA device 0 must report compute capability 7.5, 8.0, 8.6, 8.9 or 9.0 and a driver supporting CUDA 12.4 or later. The pack installs its CUDA libraries in the private worker environment, so a system CUDA Toolkit is optional. The worker belongs to the user profile or to the portable application data directory.
+| Desktop platform | Optional native engines | Requirements | Download | Free disk |
+| --- | --- | --- | ---: | ---: |
+| Windows x64 | TensorRT 10.4, PyTorch 2.5.1 CUDA | NVIDIA CUDA 12.4 driver support and compute capability 7.5, 8.0, 8.6, 8.9 or 9.0 | 3.65 GB | 8 GiB |
+| Linux x86-64 | PyTorch 2.6 CUDA | glibc 2.17+, NVIDIA CUDA 12.4 driver support and a supported Maxwell through Hopper GPU | 3.13 GB | 8 GiB |
+| macOS arm64 | PyTorch 2.6 MPS | Apple Silicon, macOS 13 or later | 116 MB | 1 GiB |
 
-An installed pack is reused across application updates that require the same
-pack version. Windows Setup keeps the user's pack in `%LOCALAPPDATA%\OpenFocus\inference-packs`.
-An in-place portable update keeps `OpenFocusData`. Keep that folder with the
-application when moving a portable copy to a different directory.
+OpenFocus tries an installed native engine, a compatible ONNX Runtime
+accelerator and CPU in that order. Windows includes DirectML, and macOS uses
+CoreML when available. The Linux desktop includes ONNX Runtime CPU. Source
+and CLI environments can also use compatible CUDA or ROCm ONNX Runtime
+distributions. The NVIDIA packs use CUDA device 0 and supply their own CUDA
+libraries. For Linux, NVIDIA lists driver 550.54.15 for CUDA 12.4 Update 1.
+[NVIDIA CUDA release notes](https://docs.nvidia.com/cuda/archive/12.4.1/cuda-toolkit-release-notes/index.html)
 
-The pack downloads 3.65 GB and needs 8 GiB of free space. **Automatic** prefers
-mirrors for a mainland China network connection and the official source for
-other regions. When the network region is unavailable, it uses Windows
-**Country or region**. Use **Mirrors first** or **Official first** to override
-the order, for example when using a proxy. The service publishes the PyTorch
-mirror list, with Aliyun, NJU and SJTU in the bundled fallback list. Transfers
-can resume from the next source at the first missing byte. TensorRT uses
-NVIDIA's package repository.
+Compatible packs are reused across app updates. Windows Setup keeps the pack
+in `%LOCALAPPDATA%\OpenFocus\inference-packs`. Portable installations keep it
+in `OpenFocusData`, which should move with the application. Linux and macOS
+store downloaded components under the user's OpenFocus data directory.
 
-To reuse saved archives, choose **Install from folder…** and select a directory
-containing the original files from `core/accelerator_win64.json`. Every source
-uses the same pinned byte counts and SHA-256 hashes. The pack is activated
-after the private worker successfully probes both GPU engines.
+**Automatic** prefers mirrors for mainland China network connections and
+official sources elsewhere. When the network region is unknown, Windows can
+use its system **Country or region**. Use **Mirrors first** or **Official
+first** to override the order. OpenFocus downloads from a catalog of sources
+and can resume a partial download on the next source.
 
-TensorRT builds an FP32 engine for a particular ONNX model and input shape. The first run includes compilation. OpenFocus reuses compatible local plans on later runs. PyTorch CUDA uses the verified matching checkpoint for each shipped StackMFF model. If the selected model, shape or available memory rules out an engine, the dispatcher tries the next compatible path. Decoding, registration, colour reconstruction and export have their own execution costs.
+Choose **Install from folder…** to use saved archives listed in the matching
+`core/accelerator_*.json` manifest. Each download and local file is checked
+against its pinned size and SHA-256. The installer activates the isolated
+worker after the GPU probe passes. The Linux and macOS probes execute all
+three shipped StackMFF models.
+
+TensorRT compiles an FP32 engine for each ONNX model and input shape and reuses compatible plans. PyTorch CUDA and MPS use the verified FP32 checkpoint for each shipped StackMFF model. When an engine declines the model, shape or memory budget, OpenFocus tries the next compatible engine. Decoding, registration, colour reconstruction and export have their own execution costs.
 
 An integrated GPU is a GPU and can accelerate AI fusion when its driver and a supported ONNX Runtime execution provider can execute the bundled model. OpenFocus does not require a discrete GPU, dedicated VRAM or a particular adapter name. DirectML tries the enumerated hardware adapters, including integrated Intel/AMD adapters, preferring adapters with more dedicated memory without excluding shared-memory devices. Apple silicon also has an integrated GPU; CoreML may choose CPU, GPU or Neural Engine compute units. A CoreML profile proves use of the CoreML provider, not which compute unit it used.
 
@@ -48,7 +60,7 @@ Hardware inventory, engine availability and actual execution are reported separa
 
 An explicit CPU preference runs neural inference on CPU. With acceleration enabled, the status shows an eligible engine before a render and the actual engine after successful execution. Each ONNX accelerator session checks its first real inference profile, since placement can differ by model or input shape. Entirely CPU-placed inference is reported as CPU. Mixed placement is reported by provider name. Profiles are deleted after inspection and placement is retained in the bounded session cache.
 
-If an accelerator fails or its memory budget is unknown or insufficient, neural inference can fall back to CPU for that job without erasing the verified provider capability. Windows DirectML admission uses the selected adapter's DXGI LOCAL budget, including GPU-accessible unified memory, together with host-RAM admission. CUDA and ROCm require a readable free-VRAM budget from the driver. An OpenVINO GPU provider without a reliable free-VRAM reading is not admitted and falls back to CPU. Image decoding, alignment and output also use system memory and temporary disk space.
+If an engine fails or its memory budget is unknown or insufficient, OpenFocus can fall back for that job. Windows DirectML admission uses the selected adapter's DXGI LOCAL budget and host RAM. CUDA and ROCm require a readable free-VRAM estimate. An OpenVINO GPU provider needs a reliable free-VRAM estimate for admission. MPS uses unified memory, so its model, worker and staging buffers share the host-RAM budget. Image decoding, alignment and output also use system memory and temporary disk space.
 
 The GPU Acceleration menu option is a preference for future supported jobs. For neural inference it remains available for a verified provider when its free memory is temporarily unreadable, so it can be enabled or disabled and a later job can retry the memory check. The execution status continues to show CPU while the provider is unadmitted.
 

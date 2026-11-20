@@ -24,7 +24,7 @@ _PROVIDER = {'CPU': 'CPUExecutionProvider', 'DIRECTML': 'DmlExecutionProvider',
              'CUDA': 'CUDAExecutionProvider', 'ROCM': 'ROCMExecutionProvider',
              'OPENVINO': 'OpenVINOExecutionProvider', 'COREML': 'CoreMLExecutionProvider'}
 _ORT_ORDER = ('CUDA', 'ROCM', 'DIRECTML', 'OPENVINO', 'COREML')
-_NATIVE_ORDER = ('TENSORRT', 'TORCH_CUDA')
+_NATIVE_ORDER = ('TENSORRT', 'TORCH_CUDA', 'TORCH_MPS')
 # A refresh publishes one immutable installation snapshot. A live job holds
 # its own reference, so an installer cannot switch its interpreter mid-job.
 _PACK = None
@@ -50,7 +50,8 @@ _PROBE_ERRORS = ()
 # cannot be read; AI jobs then run on CPU.
 _UNADMITTED = None
 # Providers whose jobs logits() admits only against known free device memory.
-VRAM_GATED_KINDS = ('DIRECTML', 'CUDA', 'ROCM', 'OPENVINO') + _NATIVE_ORDER
+VRAM_GATED_KINDS = ('DIRECTML', 'CUDA', 'ROCM', 'OPENVINO', 'TENSORRT', 'TORCH_CUDA')
+UNIFIED_MEMORY_KINDS = ('COREML', 'TORCH_MPS')
 
 
 def native_startup_bytes(kind):
@@ -181,14 +182,15 @@ def is_accelerator(kind):
 def _adapter_name(kind):
     if kind in _NATIVE_ORDER:
         pack = _JOB_PACK if _JOB_PACK is not None else _PACK
-        return pack[2] if pack else ''
+        return pack[2] if pack and kind in pack[0] else ''
     return _ADAPTER_NAME if kind == _DEVICE else ''
 
 
 def display_name(kind, *, include_adapter=True):
     provider = {'DIRECTML': 'DirectML', 'CUDA': 'CUDA', 'ROCM': 'ROCm',
                 'OPENVINO': 'OpenVINO GPU', 'COREML': 'CoreML',
-                'TENSORRT': 'TensorRT', 'TORCH_CUDA': 'PyTorch CUDA'}.get(kind, str(kind))
+                'TENSORRT': 'TensorRT', 'TORCH_CUDA': 'PyTorch CUDA',
+                'TORCH_MPS': 'PyTorch MPS'}.get(kind, str(kind))
     adapter = _adapter_name(kind) if include_adapter else ''
     return f'{provider} ({adapter})' if adapter else provider
 
@@ -553,14 +555,18 @@ def apply_inference_budget(plan):
         _FALLBACK_CPU |= plan.device_kind == 'CPU'
 
 
-def candidate_devices(device):
+def candidate_devices(device, *, probe_ort=True):
     """Yield increasingly compatible engines, deferring ORT probes until needed."""
     if device == 'CPU':
         yield 'CPU'
         return
     if device in _NATIVE_ORDER:
-        yield from _NATIVE_ORDER[_NATIVE_ORDER.index(device):]
-        device = resolve_ort_device()
+        pack = _JOB_PACK if _JOB_PACK is not None else _PACK
+        yield device
+        if pack:
+            yield from (kind for kind in _NATIVE_ORDER[_NATIVE_ORDER.index(device) + 1:]
+                        if kind in pack[0])
+        device = resolve_ort_device() if probe_ort else _DEVICE
     if device in _ORT_ORDER:
         yield device
     for kind in _ORT_ORDER:
@@ -585,6 +591,24 @@ def resolve_job_device(use_gpu):
 
 
 def _memory_refusal(path, shape, device, threads, *, reclaim=True):
+    if device == 'TORCH_MPS':
+        from core.resource_policy import probe_memory, ram_ceiling
+        n, hp, wp = shape
+        # The staged planes already exist. Admit the extra mmap plus the GPU
+        # working set in RAM. A live reading already reflects a started worker.
+        required = estimate_inference_bytes(*shape, device) + n * hp * wp * 4
+        startup = native_startup_bytes(device)
+        if _JOB_RAM_LIMIT is not None and required + startup > _JOB_RAM_LIMIT:
+            return f'Host memory plan budget {_JOB_RAM_LIMIT} bytes, requires {required + startup}'
+        if _WORKER is None:
+            required += startup
+        snapshot = probe_memory()
+        if not snapshot.ram_known:
+            return 'available host memory could not be read'
+        budget = ram_ceiling(snapshot)
+        if required > budget:
+            return f'Host memory budget {budget} bytes, requires {required}'
+        return None
     from core.resource_policy import vram_budget
     if device not in VRAM_GATED_KINDS:
         return None
@@ -649,11 +673,12 @@ def _run_native(planes, path, device, should_cancel, profile):
     try:
         with profile.stage('session.acquire'):
             if _WORKER is None:
-                # Leave physical/commit headroom for importing both CUDA libraries.
-                from core.resource_policy import require_memory
-                require_memory(native_startup_bytes(device) + planes.nbytes, None, _JOB_RAM_LIMIT)
+                if device in VRAM_GATED_KINDS:
+                    # Leave physical/commit headroom for importing CUDA libraries.
+                    from core.resource_policy import require_memory
+                    require_memory(native_startup_bytes(device) + planes.nbytes, None, _JOB_RAM_LIMIT)
                 _WORKER = Worker(_JOB_PACK[1], should_cancel)
-                # Creating the worker's CUDA context consumes device memory.
+                # Worker startup reduces whichever memory pool admits the model.
                 refusal = _memory_refusal(path, planes.shape[1:], device, 1, reclaim=False)
                 if refusal:
                     raise WorkerError(refusal)
