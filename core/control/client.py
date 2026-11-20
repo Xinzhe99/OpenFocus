@@ -181,8 +181,8 @@ def _launch_command(socket_name=None, paths=()):
 def launch_gui(socket_name=None, timeout=45.0, paths=(), *, env=None, process_factory=None):
     """Start a detached GUI and wait for its control discovery file.
 
-    ``process_factory``, when provided, receives the same arguments as
-    ``subprocess.Popen`` and returns a process with ``poll`` and ``returncode``.
+    ``process_factory`` accepts the same arguments as ``subprocess.Popen``
+    and returns a subprocess owned by this launch until discovery succeeds.
     """
     before = None
     child_env = os.environ.copy() if env is None else env.copy()
@@ -203,32 +203,40 @@ def launch_gui(socket_name=None, timeout=45.0, paths=(), *, env=None, process_fa
         creationflags=creation,
         start_new_session=sys.platform != "win32",
     )
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if process.poll() is not None and process.returncode not in (0, None):
-            raise ControlError(
-                "internal", f"OpenFocus exited during startup ({process.returncode})",
-                "Start it manually with `openfocus gui` to see the error.")
-        try:
-            payload = read_discovery(path)
-            matching = socket_name is None or payload["socket"] == socket_name
-            fresh = before is None or path.stat().st_mtime_ns != before
-            if matching and fresh:
-                return payload
-            # A second GUI process forwards paths to the existing instance and
-            # exits without rewriting its discovery file.
-            if matching and process.poll() == 0:
-                try:
+    try:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if process.poll() is not None and process.returncode != 0:
+                raise ControlError(
+                    "internal", f"OpenFocus exited during startup ({process.returncode})",
+                    "Start it manually with `openfocus gui` to see the error.")
+            try:
+                payload = read_discovery(path)
+                matching = socket_name is None or payload["socket"] == socket_name
+                fresh = before is None or path.stat().st_mtime_ns != before
+                if matching and fresh:
+                    return payload
+                # A second GUI process forwards paths to the existing instance
+                # and exits without rewriting its discovery file.
+                if matching and process.poll() == 0:
                     if require_ok(request("ping", discovery=payload, timeout=2)).get("pong"):
                         return payload
-                except ControlError:
-                    pass
-        except (ControlError, OSError):
-            pass
-        time.sleep(0.25)
-    raise ControlError(
-        "internal", "OpenFocus did not open the control channel in time",
-        "Start it with `openfocus gui` and retry.")
+            except (ControlError, OSError):
+                pass
+            time.sleep(0.25)
+        raise ControlError(
+            "internal", "OpenFocus did not open the control channel in time",
+            "For a new profile, run `openfocus gui` and finish signing in first.")
+    except BaseException:
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+        raise
+
 
 class Session:
     """One persistent local connection for a sequence of commands.
