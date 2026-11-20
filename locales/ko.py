@@ -811,6 +811,7 @@ PACK = {
     "msg_delete_source_changed": "원본 스택이 변경되었습니다. 삭제할 프레임을 다시 선택하세요.",
     "msg_append_target_changed": "원본 스택이 변경되었습니다. 프레임을 다시 가져오세요.",
     "msg_external_import_video_combination": "동영상 하나만 가져오거나 폴더와 이미지를 함께 선택하세요.",
+    "msg_external_import_project_single": "프로젝트 파일은 한 번에 하나씩 여세요.",
     "report_cleanup_failed": "대기 중인 자동 보고서를 삭제하지 못했습니다. 자동 보고는 계속 비활성화됩니다. 다시 켜기 전에 재시도하세요.",
     "compare_direction_needs_verify": "이 후보의 정합 방향은 해당 방법을 단독 실행할 때와 다릅니다. 매개변수를 채택하기 전에 방법을 따로 검증하세요.",
     "msg_transform_committed_refresh_failed": "변환은 적용되었지만 화면을 새로 고칠 수 없습니다.",
