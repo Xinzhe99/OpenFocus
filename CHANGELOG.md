@@ -20,6 +20,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   of copying every prepared frame into the render's frame cache a second time.
   This about halves the scratch storage those renders hold. Output pixels are
   unchanged.
+- Convert streamed 16-bit sources to float32 in the same strips that apply
+  their exposure-matching gain, instead of storing a normalized copy of the
+  stack first. Color output pixels are unchanged.
 
 ### Fixed
 - Recover a desktop email sign-in after a lost connection to the approval
