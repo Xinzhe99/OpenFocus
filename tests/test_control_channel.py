@@ -327,6 +327,7 @@ def test_settings_data_override_bypasses_portable_store(tmp_path, monkeypatch):
 def test_private_tool_launches_isolate_settings_and_instances(tmp_path, monkeypatch):
     from core.control.client import tool_session
     from core.control import client as control_client
+    from utils import account_client
     import tempfile
 
     launch_command = control_client._launch_command
@@ -336,7 +337,7 @@ def test_private_tool_launches_isolate_settings_and_instances(tmp_path, monkeypa
         bootstrap = (
             "import runpy, sys; "
             "from tests.process_isolation import install_test_account; "
-            "install_test_account(); "
+            "install_test_account(seed=False); "
             "sys.argv = sys.argv[1:]; "
             "runpy.run_path(sys.argv[0], run_name='__main__')"
         )
@@ -357,6 +358,13 @@ def test_private_tool_launches_isolate_settings_and_instances(tmp_path, monkeypa
     settings.sync()
     original = real_file.read_bytes()
     monkeypatch.setenv("OPENFOCUS_DATA_DIR", str(real_root))
+    token_store = account_client.TokenStore
+    account = {"token": "test-session-token", "expires_at": 1, "user": {"id": "test-user"}}
+    source_store = token_store(real_root / "account-session")
+    source_store.save(account)
+    # Use file stores so this test also runs with a locked macOS Keychain.
+    monkeypatch.setattr(account_client, "TokenStore", lambda *, profile=None:
+                        token_store((profile or real_root) / "account-session"))
     monkeypatch.setenv("OPENFOCUS_CONTROL_FILE", str(real_root / "control.json"))
     monkeypatch.setenv("OPENFOCUS_INSTANCE_NAME", "OpenFocus-existing-instance")
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
@@ -372,6 +380,7 @@ def test_private_tool_launches_isolate_settings_and_instances(tmp_path, monkeypa
         assert first.call("app.state")["options"]["thread_count"] == 3
         assert second.call("app.state")["options"]["thread_count"] != 3
         assert real_file.read_bytes() == original
+        assert source_store.load() == account
         assert not (real_root / "control.json").exists()
         assert os.environ["OPENFOCUS_DATA_DIR"] == str(real_root)
         assert os.environ["OPENFOCUS_INSTANCE_NAME"] == "OpenFocus-existing-instance"
