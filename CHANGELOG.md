@@ -44,6 +44,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Carry over a Windows portable build's existing device registration when
   restoring its saved sign-in after an in-place update.
 - Show the fusion method once in output names after rendering all methods.
+- Open dropped or externally supplied `.ofproj` files through the same project
+  workflow as the File menu. Handle macOS file-open events and keep the frames
+  from one selection together.
 - Reuse one account registration for the same Windows installation and
   consolidate older registrations identified by locally retained device IDs.
 - Admit StackMFF tiles against live render-process memory, including the host

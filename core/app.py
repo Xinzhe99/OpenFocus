@@ -14,7 +14,7 @@ from urllib.parse import unquote
 
 from PyQt6 import sip
 from PyQt6.QtWidgets import QApplication, QAbstractSpinBox, QComboBox, QSystemTrayIcon, QWidget
-from PyQt6.QtGui import QFileOpenEvent, QWheelEvent
+from PyQt6.QtGui import QWheelEvent
 from PyQt6.QtCore import QEvent, QPointF, QTimer, Qt, QUrl
 
 
@@ -110,8 +110,29 @@ def _process_explorer_import(window, paths):
                          trans.t('msg_no_valid_files_text'))
 
 
+def dispatch_project_open(window, local_paths) -> bool:
+    """Handle a project document in an external file selection."""
+    from utils.project_file import PROJECT_SUFFIX
+
+    for path in local_paths:
+        if not path.lower().endswith(PROJECT_SUFFIX) or os.path.isdir(path):
+            continue
+        if len(local_paths) == 1:
+            window.open_project_path(path)
+        else:
+            from locales import trans
+            from utils import show_warning_box
+            show_warning_box(window, trans.t('msg_load_failed'),
+                             trans.t('msg_external_import_project_single'))
+        return True
+    return False
+
+
 def _dispatch_external_import(window, paths):
     """Dispatch a complete external selection without dropping media."""
+    paths = [PlatformFileHandler.normalize(path) for path in paths]
+    if dispatch_project_open(window, paths):
+        return
     src = window.source_manager
     c = PlatformFileHandler.classify(paths)
     if c['videos'] and (len(c['videos']) > 1 or c['dirs'] or c['images'] or c['other']):
@@ -123,8 +144,7 @@ def _dispatch_external_import(window, paths):
                          + '\n'.join(involved))
     elif c['dirs'] and c['images']:
         selected = set(c['dirs'] + c['images'])
-        ordered = [PlatformFileHandler.normalize(path) for path in paths]
-        _process_explorer_import(window, [path for path in ordered if path in selected])
+        _process_explorer_import(window, [path for path in paths if path in selected])
     elif c['dirs']:
         if len(c['dirs']) == 1 and not c['other']:
             src.load_image_stack_from_icon(c['dirs'][0])
@@ -195,9 +215,7 @@ class OpenFocusApplication(QApplication):
         self.main_window = window
         self._ready = True
         if self._pending:
-            pending = self._pending.copy()
-            self._pending.clear()
-            QTimer.singleShot(100, lambda: self.queue_import(pending))
+            QTimer.singleShot(100, self._queue_file_open_paths)
 
     def show_tray_icon(self):
         """Expose the Windows notification icon throughout the desktop session."""
@@ -225,20 +243,22 @@ class OpenFocusApplication(QApplication):
         window.activateWindow()
 
     def event(self, event) -> bool:
-        if event.type() == QFileOpenEvent.Type:
-            path = QFileOpenEvent(event).file()
+        if event.type() == QEvent.Type.FileOpen:
+            path = event.file()
+            if not path:
+                path = event.url().toLocalFile()
             if path:
-                if self._ready and self.main_window:
-                    self._handle(path)
-                else:
-                    self._pending.append(path)
+                first = not self._pending
+                self._pending.append(path)
+                if first and self._ready:
+                    QTimer.singleShot(100, self._queue_file_open_paths)
             return True
         return super().event(event)
 
-    def _handle(self, path: str):
-        normalized = PlatformFileHandler.normalize(path)
-        if normalized:
-            self.queue_import([normalized])
+    def _queue_file_open_paths(self):
+        # macOS can deliver one event per file in the same Finder selection.
+        paths, self._pending = self._pending, []
+        self.queue_import(paths)
 
     def queue_import(self, paths, *, explorer=False, request_path=None):
         """Serialize external imports, including their modal prompts and workers."""

@@ -810,6 +810,7 @@ PACK = {
     "msg_delete_source_changed": "Der Quell-Stack wurde geändert. Wählen Sie die Bilder vor dem Löschen erneut aus.",
     "msg_append_target_changed": "Der Quell-Stack wurde geändert. Importieren Sie die Bilder erneut.",
     "msg_external_import_video_combination": "Importieren Sie ein einzelnes Video oder wählen Sie Ordner und Bilder gemeinsam aus.",
+    "msg_external_import_project_single": "Öffnen Sie jeweils nur eine Projektdatei.",
     "report_cleanup_failed": "Automatische Berichte in der Warteschlange konnten nicht entfernt werden. Die automatische Berichterstattung bleibt deaktiviert; versuchen Sie es vor dem Aktivieren erneut.",
     "compare_direction_needs_verify": "Dieser Kandidat verwendet eine andere Registrierungsrichtung als der separate Methodenlauf. Prüfen Sie die Methode separat, bevor Sie ihre Parameter übernehmen.",
     "msg_transform_committed_refresh_failed": "Die Transformation wurde angewendet, aber die Anzeige konnte nicht aktualisiert werden.",

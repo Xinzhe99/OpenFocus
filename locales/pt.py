@@ -810,6 +810,7 @@ PACK = {
     "msg_delete_source_changed": "A pilha de origem mudou. Selecione os quadros novamente antes de excluí-los.",
     "msg_append_target_changed": "A pilha de origem mudou. Importe os quadros novamente.",
     "msg_external_import_video_combination": "Importe um vídeo separadamente ou selecione pastas e imagens juntas.",
+    "msg_external_import_project_single": "Abra um ficheiro de projeto de cada vez.",
     "report_cleanup_failed": "Não foi possível remover os relatórios automáticos pendentes. O envio automático continua desativado; tente novamente antes de ativá-lo.",
     "compare_direction_needs_verify": "Este candidato usa uma direção de registro diferente da execução separada do método. Verifique o método separadamente antes de adotar seus parâmetros.",
     "msg_transform_committed_refresh_failed": "A transformação foi aplicada, mas não foi possível atualizar a visualização.",

@@ -810,6 +810,7 @@ PACK = {
     "msg_delete_source_changed": "Stos źródłowy się zmienił. Wybierz klatki ponownie przed usunięciem.",
     "msg_append_target_changed": "Stos źródłowy się zmienił. Zaimportuj klatki ponownie.",
     "msg_external_import_video_combination": "Zaimportuj jeden film osobno albo wybierz razem foldery i obrazy.",
+    "msg_external_import_project_single": "Otwieraj tylko jeden plik projektu naraz.",
     "report_cleanup_failed": "Nie można usunąć oczekujących raportów automatycznych. Automatyczne raportowanie pozostaje wyłączone; spróbuj ponownie przed jego włączeniem.",
     "compare_direction_needs_verify": "Ten kandydat używa innego kierunku rejestracji niż osobne uruchomienie metody. Sprawdź metodę osobno przed przyjęciem jej parametrów.",
     "msg_transform_committed_refresh_failed": "Transformacja została zastosowana, ale nie można było odświeżyć widoku.",

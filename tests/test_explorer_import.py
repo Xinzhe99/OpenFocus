@@ -1,10 +1,12 @@
 """External import requests retain their selection and wait for active work."""
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 pytest.importorskip("PyQt6")
 
+from PyQt6.QtCore import QEvent, QUrl
 from PyQt6.QtWidgets import QApplication
 from core.app import OpenFocusApplication, PlatformFileHandler
 
@@ -109,7 +111,7 @@ def external_import(tmp_path, monkeypatch):
     folder2.mkdir()
     paths = {name: tmp_path / name for name in
              ('frame2.png', 'frame10.png', 'separate.png', 'other.png',
-              'clip.mp4', 'clip2.mp4', 'notes.txt')}
+              'clip.mp4', 'clip2.mp4', 'notes.txt', '会话 100%.OFPROJ')}
     for path in paths.values():
         path.touch()
     paths.update(folder=folder, folder2=folder2)
@@ -122,7 +124,8 @@ def external_import(tmp_path, monkeypatch):
         load_image_files_from_icon=lambda value: calls.append(('images', value)),
         load_video_stack_from_icon=lambda value: calls.append(('video', value)),
     )
-    window = SimpleNamespace(source_manager=source)
+    window = SimpleNamespace(source_manager=source,
+                             open_project_path=lambda path: calls.append(('project', path)))
     monkeypatch.setattr(PlatformFileHandler, 'is_image', lambda path: path.endswith('.png'))
     monkeypatch.setattr(PlatformFileHandler, 'is_video', lambda path: path.endswith('.mp4'))
     monkeypatch.setattr(utils, 'show_warning_box', lambda *args: warnings.append(args))
@@ -134,10 +137,64 @@ def external_import(tmp_path, monkeypatch):
         if entry == 'application':
             app = SimpleNamespace(_ready=True, main_window=window)
             OpenFocusApplication._process(app, selected)
+        elif entry == 'file-event':
+            class FileOpen(QEvent):
+                def __init__(self, path):
+                    super().__init__(QEvent.Type.FileOpen)
+                    self.path = path
+
+                def file(self):
+                    return ''
+
+                def url(self):
+                    return QUrl.fromLocalFile(self.path)
+
+            callbacks = []
+            monkeypatch.setattr(app_module.QTimer, 'singleShot', lambda delay, callback: callbacks.append(callback))
+            app = SimpleNamespace(_ready=True, main_window=window, _pending=[])
+            app._queue_file_open_paths = lambda: OpenFocusApplication._queue_file_open_paths(app)
+            app.queue_import = lambda paths: OpenFocusApplication._process(app, paths)
+            for path in selected:
+                OpenFocusApplication.event(app, FileOpen(path))
+            for callback in callbacks:
+                callback()
+        elif entry == 'drop':
+            from controllers.source_manager import SourceManager
+            event = SimpleNamespace(
+                mimeData=lambda: SimpleNamespace(urls=lambda: list(map(QUrl.fromLocalFile, selected))),
+                acceptProposedAction=lambda: None)
+            SourceManager.handle_drop_event(SimpleNamespace(window=window), event)
         else:
             app_module.process_command_line_args(window, selected)
 
     return paths, source, window, calls, warnings, dispatch
+
+
+@pytest.mark.parametrize('entry', ['application', 'fallback', 'file-event', 'drop'])
+def test_external_project_is_opened(external_import, entry):
+    paths, _, _, calls, warnings, dispatch = external_import
+    dispatch(entry, ['会话 100%.OFPROJ'])
+    (kind, path), = calls
+    assert kind == 'project'
+    assert Path(path) == paths['会话 100%.OFPROJ']
+    assert not warnings
+
+
+def test_file_open_batch_keeps_one_stack(external_import):
+    paths, _, _, calls, warnings, dispatch = external_import
+    dispatch('file-event', ['separate.png', 'other.png'])
+    (kind, frames), = calls
+    assert kind == 'images'
+    assert list(map(Path, frames)) == [paths['separate.png'], paths['other.png']]
+    assert not warnings
+
+
+@pytest.mark.parametrize('entry', ['application', 'fallback', 'drop'])
+def test_project_and_image_selection_is_rejected_without_import(external_import, entry):
+    _, _, _, calls, warnings, dispatch = external_import
+    dispatch(entry, ['会话 100%.OFPROJ', 'separate.png'])
+    assert not calls
+    assert len(warnings) == 1
 
 
 @pytest.mark.parametrize('entry', ['application', 'fallback'])

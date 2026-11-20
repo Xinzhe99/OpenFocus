@@ -2147,22 +2147,34 @@ class OpenFocus(QMainWindow):
 
     def open_project_dialog(self) -> None:
         from utils.file_dialogs import FileDialog
-        from utils.project_file import validate_project_for_open, apply_project, PROJECT_SUFFIX
-        from utils.settings_store import get_last_dialog_dir, set_last_dialog_dir
+        from utils.project_file import PROJECT_SUFFIX
+        from utils.settings_store import get_last_dialog_dir
         if not self._confirm_discard_project_changes(
                 "msg_discard_unsaved_project"):
             return
         path, _ = FileDialog.getOpenFileName(
             self, trans.t('menu_open_project'),
             get_last_dialog_dir(), f"OpenFocus Project (*{PROJECT_SUFFIX})")
-        if not path:
-            return
+        if path:
+            self._load_project_path(path, remember_directory=True)
+
+    def open_project_path(self, path: str) -> None:
+        """Open a project selected outside the file picker."""
+        if self._confirm_discard_project_changes("msg_discard_unsaved_project"):
+            self._load_project_path(path)
+
+    def _load_project_path(self, path: str, *, remember_directory: bool = False) -> None:
+        from utils.project_file import validate_project_for_open, apply_project
+
         ok, err, state = validate_project_for_open(self, path)
         if not ok:
             if err:
                 show_warning_box(self, trans.t("msg_error"), err)
             return
-        set_last_dialog_dir(path)
+        if remember_directory:
+            from utils.settings_store import set_last_dialog_dir
+            set_last_dialog_dir(path)
+
         def loaded():
             self.project_path = path
             self._clear_project_dirty()
@@ -4559,7 +4571,6 @@ class OpenFocus(QMainWindow):
         menu.addAction(clear_action)
 
     def _open_recent_project(self, path: str) -> None:
-        from utils.project_file import validate_project_for_open, apply_project
         if not os.path.exists(path):
             show_warning_box(self, trans.t('msg_recent_missing_title'),
                              trans.t('msg_recent_project_missing'))
@@ -4568,21 +4579,7 @@ class OpenFocus(QMainWindow):
                 self.persist_settings()
                 self.rebuild_recent_projects_menu()
             return
-        if not self._confirm_discard_project_changes(
-                "msg_discard_unsaved_project"):
-            return
-        ok, err, state = validate_project_for_open(self, path)
-        if not ok:
-            if err:
-                show_warning_box(self, trans.t('msg_error'), err)
-            return
-        def loaded():
-            self.project_path = path
-            self._clear_project_dirty()
-            if state.get("sources_relocated"):
-                self._mark_project_dirty()
-            self.add_recent_project(path)
-        apply_project(self, state, on_loaded=loaded)
+        self.open_project_path(path)
 
     def _clear_recent_projects(self) -> None:
         self.recent_projects = []

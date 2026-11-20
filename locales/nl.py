@@ -810,6 +810,7 @@ PACK = {
     "msg_delete_source_changed": "De bronstapel is gewijzigd. Selecteer de frames opnieuw voordat u ze verwijdert.",
     "msg_append_target_changed": "De bronstapel is gewijzigd. Importeer de frames opnieuw.",
     "msg_external_import_video_combination": "Importeer één video apart of selecteer mappen en afbeeldingen samen.",
+    "msg_external_import_project_single": "Open één projectbestand tegelijk.",
     "report_cleanup_failed": "Automatische rapporten in de wachtrij konden niet worden verwijderd. Automatische rapportage blijft uitgeschakeld; probeer het opnieuw voordat u deze inschakelt.",
     "compare_direction_needs_verify": "Deze kandidaat gebruikt een andere registratierichting dan wanneer de methode afzonderlijk wordt uitgevoerd. Controleer de methode afzonderlijk voordat u de parameters overneemt.",
     "msg_transform_committed_refresh_failed": "De transformatie is toegepast, maar de weergave kon niet worden vernieuwd.",

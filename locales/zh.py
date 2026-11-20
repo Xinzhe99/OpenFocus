@@ -835,6 +835,7 @@ ZH = {
     "msg_delete_source_changed": "源图像栈已更改。请重新选择要删除的帧。",
     "msg_append_target_changed": "源图像栈已更改。请重新导入帧。",
     "msg_external_import_video_combination": "请单独导入一个视频，或同时选择文件夹和图像。",
+    "msg_external_import_project_single": "请一次只打开一个项目文件。",
     "report_cleanup_failed": "无法删除排队的自动报告。自动报告仍处于禁用状态；请在启用前重试。",
     "compare_direction_needs_verify": "此候选使用的配准方向与单独运行该方法不同，请单独验证此方法后再采纳参数。",
     "msg_transform_committed_refresh_failed": "变换已应用，但无法刷新显示。",

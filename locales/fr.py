@@ -810,6 +810,7 @@ PACK = {
     "msg_delete_source_changed": "La pile source a changé. Sélectionnez à nouveau les images avant de les supprimer.",
     "msg_append_target_changed": "La pile source a changé. Importez à nouveau les images.",
     "msg_external_import_video_combination": "Importez une seule vidéo ou sélectionnez ensemble des dossiers et des images.",
+    "msg_external_import_project_single": "Ouvrez un seul fichier de projet à la fois.",
     "report_cleanup_failed": "Impossible de supprimer les rapports automatiques en attente. Les rapports automatiques restent désactivés ; réessayez avant de les activer.",
     "compare_direction_needs_verify": "Ce candidat utilise une direction de recalage différente de celle de la méthode exécutée séparément. Vérifiez la méthode séparément avant d'adopter ses paramètres.",
     "msg_transform_committed_refresh_failed": "La transformation a été appliquée, mais l'affichage n'a pas pu être actualisé.",
