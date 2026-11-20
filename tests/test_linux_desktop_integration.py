@@ -42,7 +42,8 @@ def test_rejects_newline_in_bundle_path(tmp_path):
         installer.exec_argument(str(tmp_path / "bad\npath"))
 
 
-def test_gio_launches_bundle_with_special_path(tmp_path):
+@pytest.mark.parametrize("open_files", [False, True])
+def test_gio_launches_bundle_with_special_path(tmp_path, open_files):
     gio = shutil.which("gio")
     if gio is None:
         pytest.skip("GLib gio desktop launcher is unavailable")
@@ -51,7 +52,11 @@ def test_gio_launches_bundle_with_special_path(tmp_path):
     icon.parent.mkdir(parents=True)
     icon.write_bytes(b"icon")
     executable = bundle / "OpenFocus"
-    executable.write_text('#!/bin/sh\nprintf launched > "$OPENFOCUS_DESKTOP_MARKER"\n', encoding="utf-8")
+    executable.write_text(
+        '#!/bin/sh\n'
+        'printf "launched\\n%s\\n" "$@" > "$OPENFOCUS_DESKTOP_MARKER.tmp"\n'
+        'mv "$OPENFOCUS_DESKTOP_MARKER.tmp" "$OPENFOCUS_DESKTOP_MARKER"\n',
+        encoding="utf-8")
     executable.chmod(0o755)
     template = Path(__file__).resolve().parents[1] / "assets" / "openfocus.desktop"
     (bundle / "openfocus.desktop").write_bytes(template.read_bytes())
@@ -59,8 +64,12 @@ def test_gio_launches_bundle_with_special_path(tmp_path):
     marker = tmp_path / "launched"
     environment = os.environ.copy()
     environment["OPENFOCUS_DESKTOP_MARKER"] = str(marker)
-    subprocess.run([gio, "launch", str(entry)], env=environment, check=True, timeout=20)
+    inputs = [tmp_path / "会话 100%.ofproj", tmp_path / "frame with spaces.png"] if open_files else []
+    for path in inputs:
+        path.touch()
+    subprocess.run([gio, "launch", str(entry), *map(str, inputs)],
+                   env=environment, check=True, timeout=20)
     deadline = time.monotonic() + 10
     while not marker.exists() and time.monotonic() < deadline:
         time.sleep(0.05)
-    assert marker.read_text(encoding="utf-8") == "launched"
+    assert marker.read_text(encoding="utf-8") == "launched\n" + "\n".join(map(str, inputs)) + "\n"
