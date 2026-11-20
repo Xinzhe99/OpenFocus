@@ -588,6 +588,7 @@ PACK = {
     "msg_multipage_saved_info": "{count} frames opgeslagen in:\n{path}",
     "recovery_title": "Sessieherstel",
     "recovery_text": "OpenFocus is de vorige keer niet netjes afgesloten.\n\nDe laatste werksessie herstellen ({count} frames)?",
+    "recovery_checking": "Bestanden van de vorige sessie controleren…",
     "btn_restore": "Sessie herstellen",
     "btn_start_fresh": "Opnieuw beginnen",
     "menu_recent_empty": "(Geen recente bestanden)",

@@ -623,6 +623,7 @@ EN = {
     "msg_multipage_saved_info": "Saved {count} frames to:\n{path}",
     "recovery_title": "Session Recovery",
     "recovery_text": "OpenFocus did not close cleanly last time.\n\nRestore the last working session ({count} frames)?",
+    "recovery_checking": "Checking files from the previous session…",
     "btn_restore": "Restore Session",
     "btn_start_fresh": "Start Fresh",
     "menu_recent_empty": "(No Recent Files)",

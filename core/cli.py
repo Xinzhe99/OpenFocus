@@ -2476,9 +2476,14 @@ def _run_gui(argv: List[str]) -> int:
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     if control or socket_name:
         from core.control.client import launch_gui
-        from core.control.protocol import discovery_path
+        from core.control.protocol import ControlError, discovery_path
         try:
             payload = launch_gui(socket_name, paths=paths)
+        except ControlError as exc:
+            print(f"error: {exc.message}", file=sys.stderr)
+            if exc.hint:
+                print(exc.hint, file=sys.stderr)
+            return EXIT_ERROR
         except Exception as exc:  # noqa: BLE001 - reported to the caller
             print(f"error: {exc}", file=sys.stderr)
             return EXIT_ERROR

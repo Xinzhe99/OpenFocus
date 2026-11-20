@@ -621,6 +621,7 @@ ZH = {
     "msg_multipage_saved_info": "已保存 {count} 帧到：\n{path}",
     "recovery_title": "会话恢复",
     "recovery_text": "OpenFocus 上次未正常退出。\n\n是否恢复上次的工作会话（{count} 帧）？",
+    "recovery_checking": "正在检查上次会话的文件…",
     "btn_restore": "恢复会话",
     "btn_start_fresh": "重新开始",
     "menu_recent_empty": "（无最近文件）",

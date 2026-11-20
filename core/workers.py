@@ -234,7 +234,9 @@ class StackLoadWorker(QThread):
                         ok, msg, imgs, names = self.loader.load_from_folder(
                             self.folder, scale_factor=self.scale, exclude_paths=self.exclude_paths, **options)
                     elif self.video:
-                        ok, msg, imgs, names = self.loader.load_from_video(self.video, scale_factor=self.scale)
+                        from core.video_import import load_video
+                        ok, msg, imgs = load_video(self.video, self.scale, self.loader.should_cancel)
+                        names = self.loader._set_video_frames(self.video, imgs) if ok else []
                     else:
                         from utils.path_identity import same_path
                         paths = [path for path in self.filepaths if not any(

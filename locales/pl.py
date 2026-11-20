@@ -588,6 +588,7 @@ PACK = {
     "msg_multipage_saved_info": "Zapisano {count} klatek do:\n{path}",
     "recovery_title": "Odzyskiwanie sesji",
     "recovery_text": "OpenFocus nie zamknął się czysto ostatnim razem.\n\nPrzywrócić ostatnią sesję ({count} klatek)?",
+    "recovery_checking": "Sprawdzanie plików poprzedniej sesji…",
     "btn_restore": "Przywróć sesję",
     "btn_start_fresh": "Zacznij od nowa",
     "menu_recent_empty": "(Brak ostatnich plików)",
