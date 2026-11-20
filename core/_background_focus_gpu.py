@@ -110,9 +110,6 @@ def reduce_focus(energy, check_cancel):
     try:
         check_cancel()
         device = None
-        queue = None
-        workspace = None
-        outputs = None
         try:
             import pyopencl as cl
             device = _device(cl)
@@ -134,6 +131,7 @@ def reduce_focus(energy, check_cancel):
             if device is not None:
                 _PROGRAM_CACHE.pop(device.int_ptr, None)
             raise GpuError('Could not initialize background focus reduction') from exc
+        completed = False
         try:
             for start in range(0, peak.size, band):
                 check_cancel()
@@ -149,17 +147,18 @@ def reduce_focus(energy, check_cancel):
                 except Exception as exc:
                     _PROGRAM_CACHE.pop(device.int_ptr, None)
                     raise GpuError('OpenCL background focus reduction failed') from exc
+            completed = True
         finally:
-            if queue is not None:
-                try:
-                    queue.finish()
-                except Exception:
-                    pass
-            workspace = None
-            outputs_arrays = tuple(array.reshape(height, width) for array, _ in outputs) if outputs else None
-            outputs = None
+            try:
+                queue.finish()
+            except Exception as exc:
+                _PROGRAM_CACHE.pop(device.int_ptr, None)
+                if completed:
+                    raise GpuError('OpenCL background focus synchronization failed') from exc
+            finally:
+                del workspace, outputs
         log.info('Background focus reduction completed on %s (frames=%d, pixels=%d, band_pixels=%d)',
                  opencl_device_name(device), frames, peak.size, band)
-        return outputs_arrays
+        return peak.reshape(height, width), median.reshape(height, width), indices.reshape(height, width)
     finally:
         _device_lock.release()
