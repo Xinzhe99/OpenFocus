@@ -1,10 +1,15 @@
 """Managed pack transactions with tiny local archives and no GPU or network."""
 from contextlib import nullcontext
+import gzip
 import hashlib
 import io
 import json
 import logging
+import os
 from pathlib import Path
+import stat
+import subprocess
+import tarfile
 from types import SimpleNamespace
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
@@ -49,7 +54,7 @@ def network_log(caplog, monkeypatch):
 
 
 def test_production_pack_has_pinned_binary_sources():
-    manifest = pack._manifest()
+    manifest = pack._manifest('win32')
     origins = {'www.python.org', 'download.pytorch.org', 'pypi.nvidia.com', 'files.pythonhosted.org'}
     for artifact in manifest['artifacts']:
         url = urlsplit(artifact['url'])
@@ -69,6 +74,103 @@ def test_production_pack_has_pinned_binary_sources():
     ]
 
 
+@pytest.mark.parametrize(('target', 'backend', 'abi', 'torch_size', 'total'), [
+    ('linux', 'TORCH_CUDA', 'cp311-cp311-linux_x86_64', 768460593, 3128517661),
+    ('darwin', 'TORCH_MPS', 'cp311-none-macosx_11_0_arm64', 66530713, 116468949),
+])
+def test_unix_manifests_pin_platform_artifacts(target, backend, abi, torch_size, total):
+    manifest = pack._manifest(target)
+    assert manifest['backends'] == [backend]
+    artifacts = manifest['artifacts']
+    assert sum(a['size'] for a in artifacts) == total
+    assert urlsplit(artifacts[0]['url']).hostname == 'github.com'
+    assert artifacts[0]['url'].endswith('-install_only.tar.gz')
+    assert artifacts[0]['unpacked_size'] > artifacts[0]['size']
+    for artifact in artifacts:
+        url = urlsplit(artifact['url'])
+        assert url.scheme == 'https'
+        assert url.hostname in {'github.com', 'files.pythonhosted.org', 'download-r2.pytorch.org'}
+        assert url.path.endswith(('.tar.gz', '.whl'))
+        assert artifact['size'] > 0 and len(bytes.fromhex(artifact['sha256'])) == 32
+    torch, = (a for a in artifacts if '/torch-' in a['url'])
+    assert torch['size'] == torch_size and torch['url'].endswith(f'-{abi}.whl')
+    assert torch['mirrors']
+    cuda_libraries = [a for a in artifacts if '/nvidia_' in a['url']]
+    assert len(cuda_libraries) == (13 if target == 'linux' else 0)
+
+
+@pytest.mark.parametrize(('host', 'machine', 'bits', 'target'), [
+    ('win32', 'AMD64', 64, 'win32'),
+    ('win32', 'AMD64', 32, ''),
+    ('linux', 'x86_64', 64, 'linux'),
+    ('linux', 'aarch64', 64, ''),
+    ('darwin', 'arm64', 64, 'darwin'),
+    ('darwin', 'x86_64', 64, ''),
+    ('freebsd14', 'amd64', 64, ''),
+])
+def test_pack_rules_select_only_supported_builds(monkeypatch, host, machine, bits, target):
+    monkeypatch.setattr(pack, 'sys', SimpleNamespace(platform=host, maxsize=2 ** (bits - 1) - 1))
+    monkeypatch.setattr(pack.platform, 'machine', lambda: machine)
+    assert pack._platform() == target
+    if not target:
+        monkeypatch.setattr(pack, '_manifest', lambda *_: pytest.fail('unsupported platform selected a manifest'))
+        status = pack.pack_status()
+        assert not status.supported and not status.installed and status.reason == 'platform'
+        assert status.download_bytes == 0 and status.backends == ()
+        assert pack.worker_command() is None
+        with pytest.raises(RuntimeError, match='platform'):
+            pack.install_pack()
+
+
+@pytest.mark.parametrize(('version', 'supported'), [('12.7.6', False), ('13.0', True), ('26.1', True)])
+def test_macos_mps_floor(monkeypatch, version, supported):
+    monkeypatch.setattr(pack.platform, 'mac_ver', lambda: (version, (), 'arm64'))
+    assert (pack._hardware('darwin')[1] == '') == supported
+
+
+@pytest.mark.parametrize('libc', ['glibc 2.16', 'musl 1.2', ''])
+def test_linux_rejects_unsupported_libc_before_loading_cuda(monkeypatch, libc):
+    monkeypatch.setattr(pack.os, 'confstr', lambda _: libc, raising=False)
+    monkeypatch.setattr(pack.ctypes, 'CDLL', lambda _: pytest.fail('unsupported OS tried loading CUDA'))
+    assert pack._hardware('linux') == ('', 'libc')
+
+
+@pytest.mark.parametrize(('driver_version', 'capability', 'result'), [
+    (12030, (8, 9), 'driver'),
+    (12040, (3, 7), 'architecture'),
+    (12040, (5, 2), ''),
+    (12040, (8, 9), ''),
+    (12080, (9, 0), ''),
+    (12080, (12, 0), 'architecture'),
+])
+def test_linux_uses_cuda_driver_device_zero(monkeypatch, driver_version, capability, result):
+    monkeypatch.setattr(pack.os, 'confstr', lambda _: 'glibc 2.17', raising=False)
+
+    def get_device(_device, which):
+        assert which == 0
+        return 0
+
+    def get_version(out):
+        out._obj.value = driver_version
+        return 0
+
+    def get_capability(major, minor, _device):
+        major._obj.value, minor._obj.value = capability
+        return 0
+
+    def get_name(out, *_):
+        out.value = b'Test GPU'
+        return 0
+
+    def load(library):
+        assert library == 'libcuda.so.1'
+        return SimpleNamespace(cuInit=lambda _: 0, cuDeviceGet=get_device, cuDriverGetVersion=get_version,
+                               cuDeviceComputeCapability=get_capability, cuDeviceGetName=get_name)
+
+    monkeypatch.setattr(pack.ctypes, 'CDLL', load)
+    assert pack._hardware('linux') == ('Test GPU', result)
+
+
 @pytest.fixture
 def transaction(tmp_path, monkeypatch):
     sources = tmp_path / 'archives'
@@ -78,12 +180,13 @@ def transaction(tmp_path, monkeypatch):
         for name in ('python.exe', 'python310.dll', 'python310._pth'):
             z.writestr(name, 'input')
     data = archive.read_bytes()
-    manifest = {'version': 'test', 'backends': ['TORCH_CUDA'], 'required_free_bytes': 1,
+    manifest = {'version': 'test', 'backends': ['TORCH_CUDA'], 'required_free_bytes': 4096,
                 'artifacts': [{'url': 'https://www.python.org/embed.zip', 'size': len(data),
                                'sha256': hashlib.sha256(data).hexdigest()}]}
     root = tmp_path / 'packs'
-    monkeypatch.setattr(pack, '_manifest', lambda: manifest)
-    monkeypatch.setattr(pack, '_hardware', lambda: ('test device', ''))
+    monkeypatch.setattr(pack, '_platform', lambda: 'win32')
+    monkeypatch.setattr(pack, '_manifest', lambda _: manifest)
+    monkeypatch.setattr(pack, '_hardware', lambda _: ('test device', ''))
     monkeypatch.setattr(pack, 'pack_root', lambda: root)
     monkeypatch.setattr(pack, '_WORKER', Path(__file__).resolve())
     monkeypatch.setattr(pack, '_install_lock', lambda _: nullcontext())
@@ -131,13 +234,12 @@ def test_successful_repair_replaces_generation(transaction):
     assert not (root / old).exists()
     assert (root / new / 'python310._pth').read_text().splitlines() == [
         'python310.zip', '.', 'Lib/site-packages']
-    if pack.sys.platform == 'win32':
-        assert pack.worker_command() == [str(root / new / 'python.exe'), '-I', '-u', str(pack._WORKER)]
+    assert pack.worker_command() == [str(root / new / 'python.exe'), '-I', '-u', str(pack._WORKER)]
 
 
 def test_unsupported_hardware_does_not_start_install(transaction, monkeypatch):
     root, sources = transaction
-    monkeypatch.setattr(pack, '_hardware', lambda: ('unsupported device', 'architecture'))
+    monkeypatch.setattr(pack, '_hardware', lambda _: ('unsupported device', 'architecture'))
     with pytest.raises(RuntimeError, match='architecture'):
         pack.install_pack(artifact_dir=sources)
     assert not root.exists()
@@ -153,7 +255,7 @@ def test_offline_install_never_opens_network(transaction, transport):
 
 def test_online_install_uses_catalog_and_keeps_pinned_archive_name(transaction, transport):
     root, sources = transaction
-    artifact, = pack._manifest()['artifacts']
+    artifact, = pack._manifest('win32')['artifacts']
     requests = []
     archive = (sources / 'embed.zip').read_bytes()
 
@@ -171,6 +273,188 @@ def test_online_install_uses_catalog_and_keeps_pinned_archive_name(transaction, 
     assert requests == [pack._MIRROR_CATALOG, _MIRROR]
     generation = pack._active(root)['generation']
     assert (root / generation / 'python.exe').is_file()
+
+
+def _tar_file(archive, name, contents, mode=0o644):
+    member = tarfile.TarInfo(name)
+    member.mode = mode
+    member.size = len(contents)
+    archive.addfile(member, io.BytesIO(contents))
+
+
+def _tar_entry(archive, name, kind, target=''):
+    member = tarfile.TarInfo(name)
+    member.type = kind
+    member.linkname = target
+    archive.addfile(member)
+
+
+def _pin(archive, **metadata):
+    data = archive.read_bytes()
+    return {'url': f'https://example.com/{archive.name}', 'size': len(data),
+            'sha256': hashlib.sha256(data).hexdigest(), **metadata}
+
+
+@pytest.fixture(params=['linux', 'darwin'])
+def unix_transaction(request, tmp_path, monkeypatch):
+    platform = request.param
+    sources = tmp_path / 'offline'
+    sources.mkdir()
+    interpreter = b'#!/bin/sh\nread line\n'
+    archive = sources / 'python.tar.gz'
+    with tarfile.open(archive, 'w:gz') as tar:
+        _tar_file(tar, 'python/bin/python3.11', interpreter, mode=0o4755)
+    wheel = sources / 'array.whl'
+    with zipfile.ZipFile(wheel, 'w') as z:
+        z.writestr('array_module/__init__.py', 'pinned dependency')
+        z.writestr('array_module-1.0.data/purelib/array_extra.py', 'pinned Python data')
+    backend = 'TORCH_MPS' if platform == 'darwin' else 'TORCH_CUDA'
+    manifest = {'version': f'test-{platform}', 'backends': [backend], 'required_free_bytes': 4096,
+                'artifacts': [_pin(archive, unpacked_size=len(interpreter)), _pin(wheel)]}
+    root = (tmp_path / 'packs').resolve()
+    monkeypatch.setattr(pack, '_platform', lambda: platform)
+    monkeypatch.setattr(pack, '_manifest', lambda _: manifest)
+    monkeypatch.setattr(pack, '_hardware', lambda _: ('test device', ''))
+    monkeypatch.setattr(pack, 'pack_root', lambda: root)
+    if os.name == 'nt':
+        # Only these two host APIs depend on the native OS in the Unix transaction.
+        monkeypatch.setattr(pack, '_install_lock', lambda _: nullcontext())
+        monkeypatch.setattr(pack, '_remove_retired', lambda *_: None)
+    return root, sources, backend
+
+
+def test_unix_offline_install_uses_same_worker_command(unix_transaction, monkeypatch, transport):
+    from core import inference_process
+
+    root, sources, backend = unix_transaction
+    commands = []
+
+    def spawn(command, **kwargs):
+        commands.append(command)
+        assert kwargs['stdin'] == subprocess.DEVNULL
+        kwargs['stdout'].write(json.dumps({'ready': True, 'backends': [backend]}).encode())
+        return nullcontext(SimpleNamespace(returncode=0, poll=lambda: 0))
+
+    monkeypatch.setattr(inference_process, 'spawn', spawn)
+    transport(lambda *args, **kwargs: pytest.fail('offline install attempted a network request'))
+    status = pack.install_pack(artifact_dir=sources)
+    assert status.installed and status.backends == (backend,)
+    runtime, = root.glob('gen-*')
+    expected = [str(runtime / 'python/bin/python3.11'), '-I', '-u', str(pack._WORKER)]
+    assert pack.worker_command() == expected
+    assert commands == [expected + ['--probe']]
+    site = runtime / 'python/lib/python3.11/site-packages'
+    assert (site / 'array_module/__init__.py').read_text() == 'pinned dependency'
+    assert (site / 'array_extra.py').read_text() == 'pinned Python data'
+    if os.name != 'nt':
+        assert stat.S_IMODE(Path(expected[0]).stat().st_mode) == 0o755
+
+
+@pytest.mark.skipif(os.name == 'nt', reason='POSIX interpreter symlinks')
+def test_unix_receipt_cannot_launch_external_interpreter(unix_transaction, monkeypatch):
+    root, sources, _ = unix_transaction
+    monkeypatch.setattr(pack, '_probe', lambda *args: None)
+    pack.install_pack(artifact_dir=sources)
+    runtime = root / pack._active(root)['generation']
+    binary = runtime / 'python/bin/python3.11'
+    external = root.parent / 'external-python'
+    binary.rename(external)
+    binary.symlink_to(external)
+    assert pack.worker_command() is None
+    assert not pack.pack_status().installed
+
+
+@pytest.mark.skipif(os.name == 'nt', reason='POSIX worker leases')
+def test_unix_repair_preserves_live_worker_generation(unix_transaction, monkeypatch):
+    from core.inference_process import spawn
+
+    root, sources, _ = unix_transaction
+    monkeypatch.setattr(pack, '_probe', lambda *args: None)
+    pack.install_pack(artifact_dir=sources)
+    old = pack._active(root)['generation']
+    with spawn(pack.worker_command(), stdin=subprocess.PIPE) as worker:
+        pack.install_pack(artifact_dir=sources)
+        assert worker.poll() is None
+        assert (root / old / 'python/lib/python3.11/site-packages/array_extra.py').is_file()
+        assert pack._active(root)['generation'] != old
+        worker.communicate(b'release\n', timeout=5)
+    pack.install_pack(artifact_dir=sources)
+    assert not (root / old).exists()
+    assert len(list(root.glob('gen-*'))) == 1
+
+
+@pytest.mark.skipif(os.name == 'nt', reason='POSIX installer locks')
+def test_posix_installer_lock_is_exclusive_and_released(unix_transaction):
+    root, _, _ = unix_transaction
+    root.mkdir()
+    with pack._install_lock(root):
+        with pytest.raises(RuntimeError, match='installation is already running'):
+            with pack._install_lock(root):
+                pytest.fail('second installer claimed the lock')
+    with pack._install_lock(root):
+        assert (root / 'install.lock').is_file()
+
+
+@pytest.mark.parametrize(('name', 'kind', 'target'), [
+    ('/outside', tarfile.DIRTYPE, ''),
+    ('//outside', tarfile.DIRTYPE, ''),
+    ('python/../../outside', tarfile.DIRTYPE, ''),
+    ('python/device', tarfile.CHRTYPE, ''),
+    ('python/fifo', tarfile.FIFOTYPE, ''),
+    ('python/bin/link', tarfile.SYMTYPE, '../../../outside'),
+    ('python/bin/link', tarfile.SYMTYPE, '/outside'),
+    ('python/bin/link', tarfile.LNKTYPE, 'outside'),
+])
+def test_tar_rejects_unsafe_paths_and_entry_types(tmp_path, name, kind, target):
+    archive = tmp_path / 'runtime.tar.gz'
+    with tarfile.open(archive, 'w:gz') as tar:
+        _tar_file(tar, 'python/bin/python3.11', b'abc')
+        _tar_entry(tar, name, kind, target)
+    runtime = (tmp_path / 'runtime').resolve()
+    runtime.mkdir()
+    with pytest.raises(ValueError, match='Invalid'):
+        pack._extract_python(archive, runtime, 3, None, lambda *_: None)
+    assert not (tmp_path / 'outside').exists()
+
+
+@pytest.mark.skipif(os.name == 'nt', reason='POSIX archive symlinks')
+def test_tar_keeps_confined_relative_file_links(tmp_path):
+    archive = tmp_path / 'runtime.tar.gz'
+    with tarfile.open(archive, 'w:gz') as tar:
+        _tar_entry(tar, 'python/bin/link', tarfile.SYMTYPE, '../lib/library')
+        _tar_file(tar, 'python/lib/library', b'abc')
+    runtime = (tmp_path / 'runtime').resolve()
+    runtime.mkdir()
+    pack._extract_python(archive, runtime, 3, None, lambda *_: None)
+    link = runtime / 'python/bin/link'
+    assert link.is_symlink() and link.read_bytes() == b'abc'
+
+
+def test_tar_limits_decompressed_metadata_and_padding(tmp_path, monkeypatch):
+    archive = tmp_path / 'runtime.tar.gz'
+    with gzip.open(archive, 'wb') as compressed:
+        compressed.write(b'\0' * 15000)
+    monkeypatch.setattr(pack, '_TAR_MAX_BYTES', 10240)
+    with pytest.raises(ValueError, match='unpack limit'):
+        pack._extract_python(archive, tmp_path.resolve(), 3, None, lambda *_: None)
+
+
+def test_linux_wheels_share_empty_namespace_only(tmp_path):
+    runtime = tmp_path / 'runtime'
+    runtime.mkdir()
+    for i, content in enumerate((b'', b'', b'conflict')):
+        archive = tmp_path / f'cuda{i}.whl'
+        with zipfile.ZipFile(archive, 'w') as z:
+            z.writestr('nvidia/__init__.py', content)
+            z.writestr(f'nvidia/lib{i}/__init__.py', b'abc')
+        if content:
+            with pytest.raises(FileExistsError):
+                pack._extract_zip(archive, runtime, 'linux', None, lambda *_: None, 4096)
+        else:
+            pack._extract_zip(archive, runtime, 'linux', None, lambda *_: None, 4096)
+    site = runtime / 'python/lib/python3.11/site-packages'
+    assert (site / 'nvidia/__init__.py').read_bytes() == b''
+    assert (site / 'nvidia/lib1/__init__.py').read_bytes() == b'abc'
 
 
 @pytest.mark.parametrize(('country', 'windows', 'override', 'expected'), [

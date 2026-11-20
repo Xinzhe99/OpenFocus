@@ -726,7 +726,7 @@ CLI: `--method openfocus_b --param radius=8 --param smoothing=4 --param feather=
 
 ### Ускорение на GPU
 
-StackMFF V1/V2/V3 используют ONNX Runtime. DirectML в Windows и CoreML в macOS могут ускорять инференс; иначе используется CPU. Доступность провайдера не доказывает выполнение на GPU. Поддержка других GPU требует проверки.
+Для StackMFF V1/V2/V3 установите совместимый пакет через **Настройки → Компоненты ускорения ИИ**. OpenFocus предлагает TensorRT и PyTorch CUDA в Windows с NVIDIA, PyTorch CUDA в Linux с NVIDIA и PyTorch MPS на Apple Silicon. В зависимости от устройства OpenFocus может использовать DirectML, CoreML или ЦП. См. [требования к GPU](GPU_SUPPORT.md).
 
 OpenFocus B может ускорять обработку глубины и объединение источников на совместимом GPU OpenCL; в зависимости от доступной памяти возможны ограниченные этапы GPU или переход на CPU. При включённом ускорении на GPU OpenFocus A, OpenFocus C, Направляющий фильтр, GFG-FGF, DCT и DTCWT могут выполнять фузию всего изображения на совместимом GPU OpenCL; при нехватке памяти или проблемах с устройством либо драйвером выполняется переход на CPU. Экспорт карты глубины C и совмещение используют CPU. См. [поддержку GPU](GPU_SUPPORT.md).
 

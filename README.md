@@ -219,12 +219,12 @@ OpenFocus A, B and C are the stable fusion methods. To use the other fusion
 methods, enable **Experimental features** in Advanced Settings or pass
 `--experimental` to the headless CLI.
 
-StackMFF V1/V2/V3 run with the bundled ONNX Runtime. Supported Windows x64
-NVIDIA systems can install TensorRT and PyTorch CUDA from **Settings → AI
-acceleration components**. With GPU acceleration enabled, OpenFocus tries the
-applicable native engines, then an accelerated ONNX Runtime provider such as
-DirectML or CoreML, then CPU. Diagnostics record the engine used by the model.
-See [GPU support](docs/GPU_SUPPORT.md).
+StackMFF V1/V2/V3 run with the bundled ONNX Runtime. **Settings → AI acceleration
+components** can install TensorRT and PyTorch CUDA on compatible Windows NVIDIA
+systems, PyTorch CUDA on Linux NVIDIA systems, and PyTorch MPS on Apple Silicon.
+With GPU acceleration enabled, OpenFocus tries the installed native engine,
+then an available ONNX Runtime accelerator, then CPU. Diagnostics record the
+engine used by the model. See [GPU support](docs/GPU_SUPPORT.md).
 
 Neural inference adapts spatial tile size to available resources while keeping
 all focal frames in each inference. Imported frames and alignment scratch can

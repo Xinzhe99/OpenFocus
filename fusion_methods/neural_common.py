@@ -120,13 +120,17 @@ def normalized_frames(frames, should_cancel=None):
 
 def attention_inference_bytes(frames, height, width, channels, device, result_count=1):
     """Host working set and new VRAM requirement for a whole inference."""
-    from fusion_methods.neural_runtime import estimate_inference_bytes
+    from fusion_methods.neural_runtime import (UNIFIED_MEMORY_KINDS, VRAM_GATED_KINDS,
+                                               estimate_inference_bytes, native_startup_bytes)
     hp = height + (-height) % ATTENTION_PAD_ALIGN
     wp = width + (-width) % ATTENTION_PAD_ALIGN
     inference = estimate_inference_bytes(frames, height, width, device)
     host = (frames * hp * wp * 4 * (2 * channels + 3)
             + result_count * height * width * channels * 4 + inference)
-    return host, inference + frames * hp * wp * 4 * 6
+    if device in UNIFIED_MEMORY_KINDS:
+        host += native_startup_bytes(device)
+    vram = inference + frames * hp * wp * 4 * 6 if device in VRAM_GATED_KINDS else 0
+    return host, vram
 
 
 def plan_attention_inference(algorithm, frames, model_path, device,

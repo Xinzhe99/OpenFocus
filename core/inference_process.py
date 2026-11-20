@@ -8,6 +8,18 @@ import threading
 _DLL_LOCK = threading.Lock()
 
 
+def _spawn_posix(command, kwargs):
+    import fcntl
+
+    # Keep a shared lock on the interpreter open in the worker itself so a
+    # concurrent repair cannot discard the generation or its lazy imports.
+    with open(command[0], 'rb') as binary:
+        fd = binary.fileno()
+        fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        pass_fds = (*kwargs.pop('pass_fds', ()), fd)
+        return subprocess.Popen(command, pass_fds=pass_fds, **kwargs)
+
+
 def spawn(command, **kwargs):
     env = os.environ.copy()
     for key in tuple(env):
@@ -25,9 +37,10 @@ def spawn(command, **kwargs):
                     os.path.normcase(os.path.abspath(p)) + os.sep).startswith(root + os.sep))
     kwargs.setdefault('cwd', os.path.dirname(command[0]))
     kwargs.setdefault('env', env)
-    if sys.platform == 'win32':
-        kwargs.setdefault('creationflags', subprocess.CREATE_NO_WINDOW)
-    if not bundle or sys.platform != 'win32':
+    if sys.platform != 'win32':
+        return _spawn_posix(command, kwargs)
+    kwargs.setdefault('creationflags', subprocess.CREATE_NO_WINDOW)
+    if not bundle:
         return subprocess.Popen(command, **kwargs)
 
     # PyInstaller's Win32 DLL directory is inherited independently of PATH.

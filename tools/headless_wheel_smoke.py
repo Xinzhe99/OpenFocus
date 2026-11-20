@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 from importlib.metadata import version
+from importlib.resources import files
 from importlib.util import find_spec
 import json
 import os
@@ -23,6 +24,9 @@ def main() -> None:
             raise RuntimeError(
                 f"Use a clean wheel environment without {module}")
     installed_version = version("openfocus")
+    for tag in ('win64', 'linux_x86_64', 'macos_arm64'):
+        if not files('core').joinpath(f'accelerator_{tag}.json').is_file():
+            raise FileNotFoundError(f'The installed wheel is missing the {tag} accelerator pack manifest')
     executable = Path(sysconfig.get_path("scripts")) / (
         "openfocus.exe" if sys.platform == "win32" else "openfocus")
     if not executable.is_file():

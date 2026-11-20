@@ -1,4 +1,4 @@
-"""Memory admission and device fallback for ONNX neural inference."""
+"""Memory admission and device fallback for neural inference."""
 import numpy as np
 import pytest
 
@@ -22,9 +22,11 @@ def _frames():
 
 
 @pytest.mark.parametrize('adapter', [v1, v2, v3])
-@pytest.mark.parametrize('device', ['CPU', 'DIRECTML', 'COREML'])
+@pytest.mark.parametrize('device', ['CPU', 'DIRECTML', 'COREML', 'TORCH_MPS'])
 def test_all_adapters_admit_host_memory_before_session(monkeypatch, adapter, device):
     monkeypatch.setattr(neural_runtime, 'resolve_device', lambda _: device)
+    monkeypatch.setattr(neural_runtime, '_DEVICE', 'CPU')
+    monkeypatch.setattr(neural_runtime, '_AVAILABLE_PROVIDERS', ())
     if adapter is v3:
         monkeypatch.setattr(v3, '_resolve_device', lambda _: device)
     monkeypatch.setattr(resource_policy, 'probe_resources', lambda *a, **k: _snapshot())
@@ -98,3 +100,77 @@ def test_coreml_shared_memory_requires_host_admission(monkeypatch):
                         lambda *a, **k: _snapshot('COREML', available_ram=1024))
     with pytest.raises(resource_policy.ResourceLimitError):
         v2._prepare_inference(_frames(), 'model.onnx', True)
+
+
+@pytest.mark.parametrize('fallback', ['COREML', 'CPU'])
+def test_mps_host_charge_in_planners_and_preflight(monkeypatch, fallback):
+    from core.render_preflight import estimate_render_memory
+    from fusion_methods.neural_common import attention_inference_bytes
+
+    device = 'TORCH_MPS'
+    model = 'model.onnx'
+    frames = [np.zeros((64, 64, 3), np.uint8)] * 3
+    shape = (3, 64, 64, 3)
+    estimate_inference = neural_runtime.estimate_inference_bytes
+    startup = neural_runtime.native_startup_bytes(device)
+    whole, vram = attention_inference_bytes(*shape, device)
+    coreml, _ = attention_inference_bytes(*shape, 'COREML')
+    assert whole == coreml + startup and vram == 0
+    tile_args = (*shape, 64)
+    tile, _ = resource_policy.neural_tile_bytes(*tile_args, device, estimate_inference)
+    coreml_tile, _ = resource_policy.neural_tile_bytes(*tile_args, 'COREML', estimate_inference)
+    assert tile == coreml_tile + startup
+
+    monkeypatch.setattr(neural_runtime, 'resolve_device', lambda _: device)
+    monkeypatch.setattr(neural_runtime, 'cached_device', lambda: device)
+    monkeypatch.setattr(neural_runtime, '_DEVICE', fallback)
+    monkeypatch.setattr(neural_runtime, '_AVAILABLE_PROVIDERS',
+                        ('CoreMLExecutionProvider',) if fallback == 'COREML' else ())
+    monkeypatch.setattr(neural_runtime, '_vram_snapshot', lambda _: pytest.fail('MPS queried VRAM'))
+    headroom = whole
+    monkeypatch.setattr(resource_policy, 'probe_resources',
+                        lambda kind='CPU': _snapshot(kind, commit_headroom=headroom))
+    with neural_runtime.inference_job():
+        _, selected, plan = v1._prepare_inference(frames, model, True)
+        assert selected == device and plan.vram_budget == 0
+        preflight = estimate_render_memory(frames, 'stackmff', {})
+        assert preflight.device == device and preflight.vram_required == 0
+
+        headroom = tile
+        block, plan = resource_policy.plan_neural_tiles(*tile_args, device, estimate_inference)
+        assert block == 64 and plan.device_kind == device
+        assert plan.required_ram == tile and plan.required_vram == 0
+        headroom -= 1
+        _, plan = resource_policy.plan_neural_tiles(*tile_args, device, estimate_inference)
+        assert plan.device_kind == fallback
+
+        headroom = whole - 1
+        _, selected, _ = v1._prepare_inference(frames, model, True)
+        assert selected == fallback
+        preflight = estimate_render_memory(frames, 'stackmff', {})
+        assert preflight.device == fallback and preflight.vram_required == 0
+        assert preflight.accelerator == device and not preflight.ram_short
+    neural_runtime.start_inference_job()
+
+
+def test_mps_live_and_frozen_ram_limits_count_worker_once(monkeypatch):
+    device = 'TORCH_MPS'
+    shape = (3, 64, 64)
+    inference = neural_runtime.estimate_inference_bytes(*shape, device) + int(np.prod(shape)) * 4
+    startup = neural_runtime.native_startup_bytes(device)
+    headroom = inference + startup
+    monkeypatch.setattr(resource_policy, 'probe_memory', lambda: _snapshot(commit_headroom=headroom))
+    monkeypatch.setattr(neural_runtime, '_vram_snapshot', lambda _: pytest.fail('MPS queried VRAM'))
+    with neural_runtime.inference_job():
+        plan = resource_policy.ExecutionPlan(ram_budget=headroom, device_kind=device)
+        neural_runtime.apply_inference_budget(plan)
+        assert neural_runtime._memory_refusal('model', shape, device, 1) is None
+        headroom = inference
+        assert 'Host memory budget' in neural_runtime._memory_refusal('model', shape, device, 1)
+        with monkeypatch.context() as m:
+            m.setattr(neural_runtime, '_WORKER', object())
+            assert neural_runtime._memory_refusal('model', shape, device, 1) is None
+            neural_runtime.apply_inference_budget(resource_policy.ExecutionPlan(
+                ram_budget=inference + startup - 1, device_kind=device))
+            assert 'Host memory plan budget' in neural_runtime._memory_refusal('model', shape, device, 1)
+    neural_runtime.start_inference_job()

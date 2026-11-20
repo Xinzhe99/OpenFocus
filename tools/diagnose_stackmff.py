@@ -1,4 +1,4 @@
-"""Small, real CPU inference diagnostic for shipped StackMFF models.
+"""Exercise the shipped StackMFF models and report their actual execution engines.
 
 Run from a checkout with ONNX Runtime and OpenCV installed::
 
@@ -9,9 +9,9 @@ Run from a checkout with ONNX Runtime and OpenCV installed::
 
 PyTorch and ONNX are development-only dependencies for --torch. No source
 images are opened; the deterministic focus stack is two 64x80 colour frames.
-With --gpu the public consumers request the verified accelerator, report actual
-fallback/device, and alternate V1/V3 twice to exercise session isolation. The
-logit/checkpoint parity comparison always uses the CPU execution provider.
+With --gpu the whole and tiled fusion paths request the verified accelerator.
+Each method runs twice to exercise checkpoint switching and report fallback.
+The logit/checkpoint parity comparison always uses the CPU execution provider.
 Similarity of a particular image is not evidence that checkpoints are identical.
 """
 import argparse
@@ -49,10 +49,18 @@ def main(argv=None):
     import cv2
     import numpy as np
     import onnxruntime as ort
+    from core.algorithms import get_fusion
     from core.multi_focus_fusion import MultiFocusFusion
     from core.resource_policy import directml_adapters
     from fusion_methods import neural_runtime
     from utils.logging_setup import image_result_details
+
+    models = {
+        'stackmff': get_fusion('stackmff'),
+        'stackmff_v2': get_fusion('stackmffv2'),
+        'stackmff_v3': get_fusion('stackmffv3'),
+    }
+    paths = {key: args.weights_dir / Path(spec.weights).name for key, spec in models.items()}
 
     report = {'runtime_version': ort.__version__,
               'available_providers': ort.get_available_providers(),
@@ -71,10 +79,7 @@ def main(argv=None):
         report['torch_cuda_devices'] = [torch.cuda.get_device_name(i)
                                         for i in range(torch.cuda.device_count())]
         variants = _variants()
-    for method in ('stackmff', 'stackmff_v2', 'stackmff_v3'):
-        stem = {'stackmff': 'stackmff_final', 'stackmff_v2': 'stackmff_v2_final',
-                'stackmff_v3': 'stackmff_v3_final'}[method]
-        path = args.weights_dir / (stem + '.onnx')
+    for method, path in paths.items():
         session = ort.InferenceSession(str(path), providers=['CPUExecutionProvider'])
         outputs[method] = session.run(['logits'], {'input': stack})[0]
         details = {'onnx_sha256': _sha256(path),
@@ -111,12 +116,11 @@ def main(argv=None):
     for tiled in (False, True):
         fused = {}
         identities = {}
-        for method in ('stackmff', 'stackmffv3', 'stackmff', 'stackmffv3'):
+        for key in tuple(models) * 2:
+            method = models[key].id
             fusion = MultiFocusFusion(method, use_gpu=args.gpu, exposure_match=False,
                 tile_enabled=tiled, tile_block_size=64, tile_overlap=16, tile_threshold=32)
-            stem = 'stackmff_final' if method == 'stackmff' else 'stackmff_v3_final'
-            result = fusion.fuse(frames, thread_count=1,
-                model_path=str((args.weights_dir / (stem + '.onnx')).resolve()))
+            result = fusion.fuse(frames, thread_count=1, model_path=str(paths[key].resolve()))
             if method in fused and not np.array_equal(result, fused[method]):
                 raise RuntimeError(f'{method} changed after switching checkpoints')
             fused[method] = result

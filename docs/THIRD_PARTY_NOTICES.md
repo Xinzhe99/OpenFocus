@@ -203,13 +203,17 @@ OTHER DEALINGS IN THE SOFTWARE.
   compares the shipped ONNX graphs with their original PyTorch checkpoints
   using a two-layer 64×64 tensor, and exercises whole/tiled public fusion on
   two 64×80 colour frames. `--gpu` requests the runtime's verified accelerator
-  for those consumers, repeats V1/V3 in one process, and reports actual device,
-  output hashes and differences. `--weights-dir` can inspect a packaged build.
-  PyTorch remains optional and is not used by the product runtime.
+  for those consumers, repeats V1/V2/V3 in one process, and reports actual
+  devices, output hashes and differences. `--weights-dir` can inspect a build.
+  The optional acceleration packs use these verified checkpoints with PyTorch.
 - **Citations**: Xie et al., *Applied Intelligence* 55:503 (2025),
   https://doi.org/10.1007/s10489-025-06383-8; Xie et al., *Engineering
   Applications of Artificial Intelligence* 162 (2025) 112667,
   https://doi.org/10.1016/j.engappai.2025.112667.
+
+The Unix acceleration packs use [Python Build Standalone](https://github.com/astral-sh/python-build-standalone)
+and official [PyTorch](https://github.com/pytorch/pytorch) wheels. The pinned
+archives and wheels retain the upstream license files and dependency notices.
 
 The MIT text below covers the vendored V3 snapshot and its released V3 weights;
 the retrained V1/V2 derivatives have the separate terms that follow it.
