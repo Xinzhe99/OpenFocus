@@ -840,6 +840,28 @@ class ProcessedFrame:
 
 
 @dataclass(frozen=True, eq=False)
+class PreparedFrame(ProcessedFrame):
+    """A mapped processing result with the file identity it was captured from.
+
+    ``source`` is already the finished pixel array, so every tile reads it
+    directly and no second full copy enters the resolution cache. Only the
+    file identity survives from the chain that produced it. A RetainedFrame
+    instead keeps that chain as ``source`` beside its ``pixels``.
+    """
+    original: SourceFrame | None = None
+
+    def full_resolution(self, *, should_cancel=None, cache_result=True, store_result=True):
+        _check_resolution_cancel(should_cancel)
+        _check_resolution_cancel(self.should_cancel)
+        validate_frame_source(self)
+        if self.source.shape != self.shape or self.source.dtype != self.dtype:
+            raise ValueError('Prepared frame does not match its declared shape/dtype')
+        pixels = self.source.view()
+        pixels.setflags(write=False)
+        return pixels
+
+
+@dataclass(frozen=True, eq=False)
 class RetainedFrame(ProcessedFrame):
     """Read-only aligned pixels with their original lazy source provenance.
 
@@ -864,6 +886,8 @@ class RetainedFrame(ProcessedFrame):
 
 def frame_has_mapped_pixels(frame):
     """Whether materializing this frame can reuse existing mapped pixels."""
+    if isinstance(frame, PreparedFrame):
+        return is_mapped_frame(frame.source)
     return is_mapped_frame(frame.pixels if isinstance(frame, RetainedFrame) else frame)
 
 
@@ -909,20 +933,28 @@ def crop_frame(frame, x, y, width, height, *, channels=None, should_cancel=None)
 
 def resolve_region(frame, x, y, width, height, *, channels=None, should_cancel=None):
     """Copy one resolved region so a tile cannot retain its decoded full source."""
-    cropped = crop_frame(frame, x, y, width, height, channels=channels,
-                         should_cancel=should_cancel)
+    from core.frame_storage import scratch_directory
     from core.resource_policy import require_memory
-    require_memory(frame_resolution_bytes(cropped) + cropped.nbytes)
-    # This crop descriptor is never resolved again, so a cached copy could not
-    # be read: only the full frame behind it is worth keeping.
-    image = np.array(cropped.full_resolution(cache_result=False), copy=True, order='C')
-    from core.registration import RegistrationCancelled
-    if should_cancel is not None and should_cancel():
-        raise RegistrationCancelled()
-    return image
+    _check_resolution_cancel(should_cancel)
+    # Resolve the frame itself. Resolving a crop descriptor would admit the
+    # frame's whole decode workspace again, even when its pixels are cached.
+    with scratch_directory():
+        select_frame_scratch((frame,), should_cancel=should_cancel)
+        image = resolve_frame(frame, should_cancel=should_cancel)
+    region = crop_frame(frame, x, y, width, height, channels=channels)
+    crop = region.processor(image)
+    if crop.shape != region.shape:
+        raise ValueError('Requested region does not fit the frame')
+    # Resolution admitted any decode, so the tile is the only new allocation.
+    require_memory(crop.nbytes)
+    result = np.array(crop, copy=True, order='C')
+    _check_resolution_cancel(should_cancel)
+    return result
 
 
-def _normalize_frame(image, *, should_cancel):
+def _normalize_frame(image, *, should_cancel, gain=1.0):
+    """Convert to the shared float32 domain, scaling each strip by ``gain``."""
+    from utils.image_utils import apply_exposure_gain
     from core.frame_storage import create_transient_frame
     from core.registration import RegistrationCancelled
     output = create_transient_frame(image.shape, np.float32)
@@ -932,7 +964,8 @@ def _normalize_frame(image, *, should_cancel):
         strip = image[y:y + 128].astype(np.float32)
         if image.dtype == np.uint16:
             strip *= 255.0 / 65535.0
-        output[y:y + 128] = strip
+        # The strip is this pass's own copy, so the gain needs no second one.
+        output[y:y + 128] = apply_exposure_gain(strip, gain, copy=False)
     return output
 
 
@@ -950,10 +983,15 @@ def normalize_frames(frames, should_cancel=None):
 
 @dataclass(eq=False)
 class _ExposureGain:
-    """One frame's render gain, shared with its reduced preview once measured."""
+    """One frame's render gain, shared with its reduced preview once measured.
+
+    With ``normalize``, the same strips also convert an integer frame to the
+    shared float32 domain. Previews keep their native codes either way.
+    """
     gain: float | None
     target: float | None
     should_cancel: object
+    normalize: bool = False
 
     def __call__(self, image):
         from core.frame_storage import create_transient_frame
@@ -963,6 +1001,8 @@ class _ExposureGain:
         if self.gain is None:
             mean = _exposure_mean(image, self.should_cancel, normalize_uint16=True)
             self.gain = 1.0 if self.target <= 1e-6 or mean <= 1e-6 else self.target / mean
+        if self.normalize:
+            return _normalize_frame(image, should_cancel=self.should_cancel, gain=self.gain)
         if self.gain == 1.0:
             return image
         output = create_transient_frame(image.shape, image.dtype)
@@ -987,14 +1027,29 @@ class _ExposureGain:
         return adjust(image, self.gain)
 
 
-def exposure_frames(frames, gains, should_cancel=None):
-    """Apply precomputed whole-frame gains inside each admitted source consumer."""
+def exposure_frames(frames, gains, should_cancel=None, *, normalize=False):
+    """Apply precomputed whole-frame gains inside each admitted source consumer.
 
-    return [frame if gain == 1.0 else process_frame(
-                frame, _ExposureGain(gain, None, should_cancel), should_cancel=should_cancel,
-                scratch_bytes=frame.nbytes + min(frame.shape[0], 128)
-                * math.prod(frame.shape[1:]) * (4 + frame.dtype.itemsize))
-            for frame, gain in zip(frames, gains)]
+    With ``normalize``, integer frames reach the shared float32 domain in the
+    same strips, as normalize_frames would otherwise have done in a pass of
+    its own. The gains must then have been measured on normalized strips.
+    """
+    result = []
+    for frame, gain in zip(frames, gains):
+        convert = normalize and frame.dtype != np.float32
+        if gain == 1.0 and not convert:
+            result.append(frame)
+            continue
+        strip = min(frame.shape[0], 128) * math.prod(frame.shape[1:])
+        if convert:
+            # As normalize_frames: the output and one float32 strip.
+            dtype, workspace = np.float32, frame.size * 4 + strip * 4
+        else:
+            dtype, workspace = frame.dtype, frame.nbytes + strip * (4 + frame.dtype.itemsize)
+        result.append(process_frame(
+            frame, _ExposureGain(gain, None, should_cancel, normalize=convert),
+            dtype=dtype, should_cancel=should_cancel, scratch_bytes=workspace))
+    return result
 
 
 def _matched_strip(strip, gain):
@@ -1342,19 +1397,18 @@ def materialize_frames(frames, should_cancel=None, *, staging_bytes=0,
         return result
 
 
+def _original_source(frame):
+    """The file descriptor or array at the start of a frame's processing."""
+    while isinstance(frame, ProcessedFrame):
+        frame = frame.original if isinstance(frame, PreparedFrame) else frame.source
+    return frame
+
+
 def validate_frame_source(source):
     """Check the original source identity behind a processed frame."""
-    while isinstance(source, ProcessedFrame):
-        processor = source.processor
-        if isinstance(processor, partial) and processor.func is _validated_snapshot:
-            validate_frame_source(processor.keywords['source'])
-        source = source.source
-    if isinstance(source, SourceFrame):
-        source.validate_source()
-
-def _validated_snapshot(image, source):
-    validate_frame_source(source)
-    return image
+    original = _original_source(source)
+    if isinstance(original, SourceFrame):
+        original.validate_source()
 
 
 def materialize_for_repeated_access(frames, should_cancel=None, *, thread_count=0,
@@ -1367,18 +1421,15 @@ def materialize_for_repeated_access(frames, should_cancel=None, *, thread_count=
     """
     indices = [i for i, frame in enumerate(frames)
                if isinstance(frame, (SourceFrame, ProcessedFrame))
-               and not isinstance(frame, RetainedFrame)]
+               and not isinstance(frame, (RetainedFrame, PreparedFrame))]
     if not indices:
         return frames
     lazy = [frames[i] for i in indices]
     from core.frame_storage import ScratchSpaceError, scratch_directory, select_scratch
-    paths = []
-    for frame in lazy:
-        original = frame
-        while isinstance(original, ProcessedFrame):
-            original = original.source
-        if isinstance(original, SourceFrame):
-            paths.append(original.path)
+    # A crop of an earlier snapshot still answers for that snapshot's file.
+    originals = [_original_source(frame) for frame in lazy]
+    originals = [original if isinstance(original, SourceFrame) else None for original in originals]
+    paths = [original.path for original in originals if original is not None]
     with scratch_directory():
         try:
             select_scratch(sum(frame.nbytes for frame in lazy) + staging_bytes, paths)
@@ -1396,11 +1447,10 @@ def materialize_for_repeated_access(frames, should_cancel=None, *, thread_count=
                                     staging_bytes=staging_bytes)
 
     result = list(frames)
-    for index, original, image in zip(indices, lazy, stored):
-        while isinstance(original, ProcessedFrame):
-            original = original.source
-        result[index] = process_frame(image, partial(_validated_snapshot, source=original),
-                                      should_cancel=should_cancel, scratch_bytes=0)
+    for index, original, image in zip(indices, originals, stored):
+        result[index] = PreparedFrame(source=image, processor=None, shape=image.shape,
+                                      dtype=image.dtype, should_cancel=should_cancel,
+                                      original=original)
     return result
 
 

@@ -34,6 +34,17 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   materializing the stack or pre-converting all 16-bit frames to float32.
   Bound concurrent frame workers by the memory budget and preserve the
   existing focus decisions for low-contrast and mixed-bit-depth inputs.
+- Read the tiles of a tiled neural render from the frames it prepared, instead
+  of copying every prepared frame into the render's frame cache a second time.
+  This about halves the scratch storage those renders hold. Output pixels are
+  unchanged.
+- Convert streamed 16-bit sources to float32 in the same strips that apply
+  their exposure-matching gain, instead of storing a normalized copy of the
+  stack first. Color output pixels are unchanged.
+- Reduce StackMFF V3's three-quarter-scale inference input four rows at a
+  time and one plane at a time. Output pixels are unchanged.
+- Rotate images whose EXIF orientation is a quarter turn with OpenCV instead
+  of copying a rotated NumPy view.
 
 ### Fixed
 - Give comparison alignment workers on macOS enough stack for the first
@@ -50,6 +61,14 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   memory needed if GPU inference falls back to CPU.
 - Use consistent visible QR code sizes in the Contact Us and Support Us
   dialogs while preserving the artwork and a scannable white border.
+- Keep checking the original file when a crop of a prepared frame is prepared
+  again. A changed source could otherwise go unnoticed and its old pixels be
+  used.
+- Stop refusing a tile for lack of memory when its frame is already resolved.
+  A tile read reserved a full decode of the frame even when the pixels were
+  cached.
+- Check the original files behind prepared frames when tiled StackMFF V2
+  reads resized sources.
 
 ## [2.0.0]
 

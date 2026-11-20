@@ -69,13 +69,9 @@ class _Source:
 
     def get(self, index, region=None):
         common.cancel(self.should_cancel)
-        from core.source_frames import SourceFrame, ProcessedFrame, resolve_frame
+        from core.source_frames import resolve_frame, validate_frame_source
         if self.original_items is not None:
-            original = self.original_items[index]
-            while isinstance(original, ProcessedFrame):
-                original = original.source
-            if isinstance(original, SourceFrame):
-                original.validate_source()
+            validate_frame_source(self.original_items[index])
         frame = resolve_frame(self.items[index])
         if frame.shape[:2] != self.shape[:2]:
             raise ValueError('All frames must have the same dimensions')
