@@ -37,6 +37,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Keep checking the original file when a crop of a prepared frame is prepared
   again. A changed source could otherwise go unnoticed and its old pixels be
   used.
+- Stop refusing a tile for lack of memory when its frame is already resolved.
+  A tile read reserved a full decode of the frame even when the pixels were
+  cached.
 
 ## [2.0.0]
 
