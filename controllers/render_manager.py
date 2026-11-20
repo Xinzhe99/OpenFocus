@@ -1739,8 +1739,6 @@ class RenderManager:
                             "the output will not be retouchable")
                     method = (context or {}).get("algorithm")
                     label = window.export_manager.generate_default_filename(fusion_method=method)
-                    if compare and method:
-                        label = f"{label} — {self.algo_display_name(method)}"
                     window.output_manager.update_output_list_for_fusion(
                         label,
                         context=new_context,

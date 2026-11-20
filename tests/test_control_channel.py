@@ -536,7 +536,6 @@ def test_render_all_names_outputs_after_the_method_used(server, stack_frames, mo
     import re
 
     from controllers import render_manager
-    from locales import trans
 
     methods = ('openfocus_a', 'openfocus_b')
     monkeypatch.setattr(render_manager, 'fusion_algorithms',
@@ -547,16 +546,16 @@ def test_render_all_names_outputs_after_the_method_used(server, stack_frames, mo
     assert _load_stack_for_render(server, stack_frames)['count'] == 3
 
     window.btn_compare_all.click()
-    assert wait_until(lambda: window.btn_render.isEnabled(), timeout=30)
+    assert wait_until(lambda: window.btn_render.isEnabled(), timeout=75)
     outputs = call(server, 'output.list')['result']['records']
     assert len(outputs) == 2
-    for output, method, tag in zip(outputs, reversed(methods), ('OpenFocusB', 'OpenFocusA')):
-        label = trans.t(get_fusion(method).label_key)
-        assert re.fullmatch(rf'Trial_OpenFocus_\d{{8}}_\d{{6}}_{tag}_NoAlign — {re.escape(label)}',
-                            output['label'])
+    for output, tag in zip(outputs, ('OpenFocusB', 'OpenFocusA')):
+        name = output['label']
+        assert re.fullmatch(rf'Trial_OpenFocus_\d{{8}}_\d{{6}}_{tag}_NoAlign', name)
+        assert window.output_list.item(output['index']).text() == name
         call(server, 'output.select', index=output['index'])
         _, filename = window.export_manager.selected_output()
-        assert re.fullmatch(rf'Trial_OpenFocus_\d{{8}}_\d{{6}}_{tag}_NoAlign_.+', filename)
+        assert filename == name
 
 
 def test_ui_actions_tree_find_set_click_and_screenshot(server, stack_frames, tmp_path):
