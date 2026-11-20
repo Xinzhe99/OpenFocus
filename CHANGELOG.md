@@ -55,6 +55,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   memory needed if GPU inference falls back to CPU.
 - Use consistent visible QR code sizes in the Contact Us and Support Us
   dialogs while preserving the artwork and a scannable white border.
+- Reflow contact cards to fit the available width so the QR codes can remain
+  at their scannable size without being clipped at the right edge.
 
 ## [2.0.0]
 

@@ -25,60 +25,67 @@ def theme_environment(qapp):
         qapp.processEvents()
 
 
-@pytest.fixture
-def invite_server(qapp, monkeypatch):
-    from PyQt6.QtNetwork import QHostAddress, QTcpServer
+def _set_community_origin(monkeypatch, port):
     from dialogs import _community_download
     from dialogs.about import ContactInfoDialog
     from dialogs.support import SupportUsDialog
 
-    server = QTcpServer()
-    assert server.listen(QHostAddress(QHostAddress.SpecialAddress.LocalHost))
     monkeypatch.setenv('no_proxy', '127.0.0.1')
-    origin = f'http://127.0.0.1:{server.serverPort()}'
+    origin = f'http://127.0.0.1:{port}'
     monkeypatch.setattr(_community_download, 'QR_BASE_URL', f'{origin}/v1/qr')
     monkeypatch.setattr(ContactInfoDialog, '_CONTACT_INFO_URL', f'{origin}/v1/contact-info')
     monkeypatch.setattr(SupportUsDialog, '_SPONSORS_URL', f'{origin}/v1/sponsors')
+
+
+@pytest.fixture
+def invite_server(qapp, monkeypatch):
+    from PyQt6.QtNetwork import QHostAddress, QTcpServer
+
+    server = QTcpServer()
+    assert server.listen(QHostAddress(QHostAddress.SpecialAddress.LocalHost))
+    _set_community_origin(monkeypatch, server.serverPort())
     yield server
     server.close()
     server.deleteLater()
 
 
 @pytest.fixture
-def contact_replies(invite_server):
+def contact_replies(monkeypatch):
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from threading import Thread
+
     reply = {'body': b'{}', 'pngs': {}}
     paths = []
 
-    def accept_connection():
-        socket = invite_server.nextPendingConnection()
-
-        def write_response():
-            if not socket.canReadLine():
-                return
-            path = bytes(socket.readLine()).split()[1]
-            socket.readAll()
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            path = self.path.encode('ascii')
             if path.startswith(b'/v1/contact-info?'):
                 paths.append(path)
-                body = reply['body']
-                headers = (f'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n'
-                           f'Content-Length: {len(body)}\r\nConnection: close\r\n\r\n')
-                socket.write(headers.encode('ascii') + body)
+                body, content_type = reply['body'], 'application/json'
             elif path in reply['pngs']:
-                body = reply['pngs'][path]
-                headers = (f'HTTP/1.1 200 OK\r\nContent-Type: image/png\r\n'
-                           f'Content-Length: {len(body)}\r\nConnection: close\r\n\r\n')
-                socket.write(headers.encode('ascii') + body)
+                body, content_type = reply['pngs'][path], 'image/png'
             else:
-                socket.write(b'HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n')
-            socket.disconnectFromHost()
+                self.send_error(404)
+                return
+            self.send_response(200)
+            self.send_header('Content-Type', content_type)
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
 
-        socket.readyRead.connect(write_response)
-        if socket.bytesAvailable():
-            write_response()
+        def log_message(self, *_args):
+            pass
 
-    invite_server.newConnection.connect(accept_connection)
-    yield reply, paths
-    invite_server.newConnection.disconnect(accept_connection)
+    with ThreadingHTTPServer(('127.0.0.1', 0), Handler) as server:
+        _set_community_origin(monkeypatch, server.server_port)
+        thread = Thread(target=server.serve_forever, kwargs={'poll_interval': .05}, daemon=True)
+        thread.start()
+        try:
+            yield reply, paths
+        finally:
+            server.shutdown()
+            thread.join()
 
 
 def test_contact_links_are_accessible_and_follow_the_theme(qapp, theme_environment, contact_replies):
@@ -177,13 +184,12 @@ def test_contact_links_are_accessible_and_follow_the_theme(qapp, theme_environme
                 wechat_card = dialog.findChild(QLabel, 'wechat-group').parentWidget()
                 assert contact_card.x() < discord_card.x() < wechat_card.x()
                 dialog.resize(560, 480)
-                qapp.processEvents()
-                assert discord_card.x() > contact_card.x() and discord_card.y() == contact_card.y()
+                assert wait_until(lambda: discord_card.x() > contact_card.x()
+                                  and discord_card.y() == contact_card.y()
+                                  and wechat_card.y() > discord_card.y())
                 assert wechat_card.x() == contact_card.x() and wechat_card.y() > contact_card.y()
                 dialog.resize(440, 480)
-                qapp.processEvents()
-                assert wechat_card.x() == contact_card.x()
-                assert discord_card.x() == contact_card.x()
+                assert wait_until(lambda: wechat_card.x() == discord_card.x() == contact_card.x())
                 assert contact_card.y() < discord_card.y() < wechat_card.y()
             finally:
                 dialog.close()
@@ -341,7 +347,7 @@ def test_community_qr_same_geometry_in_dialog_capture(qapp, theme_environment, c
     import numpy as np
     from PIL import Image, ImageDraw
     from PyQt6.QtCore import QPoint, QRect
-    from PyQt6.QtWidgets import QLabel
+    from PyQt6.QtWidgets import QLabel, QScrollArea
 
     from dialogs.about import ContactInfoDialog
     from dialogs.support import SupportUsDialog
@@ -422,6 +428,15 @@ def test_community_qr_same_geometry_in_dialog_capture(qapp, theme_environment, c
                 assert cv2.QRCodeDetector().detectAndDecode(pixels[1:-1, 1:-1])[0] == payload
                 if slot != 'discord-invite':
                     assert np.any(np.all(pixels == mark, axis=2))
+            if dialog_type is ContactInfoDialog:
+                dialog.resize(820, dialog.height())
+                viewport = dialog.findChild(QScrollArea).viewport()
+
+                def all_codes_fit():
+                    return all(0 <= label.mapTo(viewport, QPoint()).x()
+                               <= viewport.width() - label.width() for label in labels)
+
+                assert wait_until(all_codes_fit)
         finally:
             dialog.close()
             dialog.deleteLater()
