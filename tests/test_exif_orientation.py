@@ -87,3 +87,23 @@ def test_png_orientation_applied_once(tmp_path):
     got = decode_image(path)
     assert got.shape == expected.shape
     assert np.array_equal(got[:, :, ::-1], expected)
+
+
+@pytest.mark.parametrize("turns", [1, -1])
+@pytest.mark.parametrize("shape, dtype, contiguous", [
+    ((5, 7), np.uint8, True), ((5, 7), np.uint16, True),
+    ((5, 7, 3), np.uint8, True), ((5, 7, 4), np.uint16, True),
+    # Layouts and dtypes that keep NumPy's view.
+    ((5, 7, 1), np.uint8, False), ((5, 7, 2), np.uint8, False),
+    ((5, 7, 3), np.float32, False), ((0, 7, 3), np.uint8, False),
+])
+def test_quarter_turn_matches_rot90(shape, dtype, contiguous, turns):
+    from core.image_loader import _quarter_turn
+    image = np.arange(np.prod(shape)).reshape(shape).astype(dtype)
+    turned = _quarter_turn(image, turns)
+    assert turned.dtype == image.dtype
+    np.testing.assert_array_equal(turned, np.rot90(image, turns))
+    assert turned.flags.c_contiguous == (contiguous or not image.size)
+    # A mirrored view is not contiguous, so it is never handed to OpenCV.
+    mirrored = image[:, ::-1]
+    np.testing.assert_array_equal(_quarter_turn(mirrored, turns), np.rot90(mirrored, turns))

@@ -784,9 +784,9 @@ def softmax(x):
     return x
 
 
-def _resize_antialias(planes, scale, should_cancel=None):
+def _resize_triangle(planes, scale, should_cancel=None):
+    """Antialiased bilinear resize of the last two axes, at any scale."""
     from fusion_methods.neural_common import cancel
-    # PyTorch bilinear antialias uses a triangle filter widened for downsampling.
     result = planes
     for axis in (2, 3):
         cancel(should_cancel)
@@ -807,6 +807,55 @@ def _resize_antialias(planes, scale, should_cancel=None):
             dst[..., i] = np.sum(src[..., first:last] * weights, axis=-1)
         result = np.moveaxis(dst, -1, axis)
     return result
+
+
+def _resize_three_quarters_axis(source, dest):
+    """Reduce the first axis by 3/4: four input rows make three output rows.
+
+    These are the weights `_resize_triangle` computes at this scale. Output
+    centers repeat at input offsets 1/6, 3/2 and 17/6 with radius 4/3, so the
+    outer two outputs also read one row of the neighbouring group. At either
+    end of the axis that row is missing, and renormalizing the two remaining
+    taps gives 7/10 and 3/10. Products are summed in input order, which keeps
+    every float32 result identical to the general filter.
+    """
+    a, b, c, d = (source[offset::4] for offset in range(4))
+    dest[0] = a[0] * 0.7 + b[0] * 0.3
+    dest[3::3] = d[:-1] * (1 / 11) + a[1:] * (7 / 11) + b[1:] * (3 / 11)
+    dest[1::3] = b * 0.5 + c * 0.5
+    dest[2:-1:3] = c[:-1] * (3 / 11) + d[:-1] * (7 / 11) + a[1:] * (1 / 11)
+    dest[-1] = c[-1] * 0.3 + d[-1] * 0.7
+
+
+def _resize_three_quarters(planes, should_cancel=None):
+    """`_resize_triangle` at 3/4 scale for float32 planes of whole four-row groups.
+
+    Each plane is finished before the next starts, so the intermediate
+    vertical pass is one plane however deep the stack is.
+    """
+    from fusion_methods.neural_common import cancel
+    cancel(should_cancel)
+    h, w = planes.shape[-2:]
+    height, width = 3 * h // 4, 3 * w // 4
+    result = np.empty((*planes.shape[:2], height, width), dtype=np.float32)
+    vertical = np.empty((height, w), dtype=np.float32)
+    for batch, layer in np.ndindex(planes.shape[:2]):
+        cancel(should_cancel)
+        _resize_three_quarters_axis(planes[batch, layer], vertical)
+        cancel(should_cancel)
+        _resize_three_quarters_axis(vertical.T, result[batch, layer].T)
+    return result
+
+
+def _resize_antialias(planes, scale, should_cancel=None):
+    # PyTorch bilinear antialias uses a triangle filter widened for downsampling.
+    h, w = planes.shape[-2:]
+    # Staged tiles are padded to multiples of 64, so the reduced inference
+    # scale normally takes the grouped path.
+    if (scale == 0.75 and planes.dtype == np.float32 and h and w
+            and h % 4 == 0 and w % 4 == 0):
+        return _resize_three_quarters(planes, should_cancel)
+    return _resize_triangle(planes, scale, should_cancel)
 
 
 def probabilities(planes, path, device, threads, sigma, cancel=None):
