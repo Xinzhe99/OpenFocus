@@ -96,3 +96,83 @@ def test_mid_run_device_failure_discards_partial_results(monkeypatch, caplog):
     monkeypatch.setattr(cl, 'enqueue_copy', fail_second_upload)
     _compare(bf.focus_measures(gray, 0.5, use_gpu=True), expected)
     assert 'second band failed' in caplog.text
+
+
+def test_reduce_focus_reuses_cached_program_and_drains_queue_on_cancel(monkeypatch):
+    from fusion_methods._openfocus_gpu import gpu_available
+
+    if not gpu_available():
+        pytest.skip('No OpenCL GPU available')
+    import pyopencl as cl
+
+    gpu._PROGRAM_CACHE.clear()
+    energy = np.random.default_rng(77).random((5, 19, 17), dtype=np.float32)
+    builds = []
+    finishes = []
+    real_program = cl.Program
+
+    class ObservedProgram(real_program):
+        def build(self, *args, **kwargs):
+            builds.append(1)
+            return super().build(*args, **kwargs)
+
+    real_queue_cls = cl.CommandQueue
+
+    class ObservedQueue(real_queue_cls):
+        def finish(self):
+            finishes.append(1)
+            return super().finish()
+
+    monkeypatch.setattr(cl, 'Program', ObservedProgram)
+    monkeypatch.setattr(cl, 'CommandQueue', ObservedQueue)
+
+    out1 = gpu.reduce_focus(energy, lambda: None)
+    out2 = gpu.reduce_focus(energy, lambda: None)
+    assert len(builds) == 1
+    assert len(finishes) == 2
+    for a, b in zip(out1, out2):
+        assert a.tobytes() == b.tobytes()
+
+    # Cancellation during band execution must still drain the command queue.
+    monkeypatch.setattr(gpu, '_band_pixels', lambda *args: 50)
+    calls = 0
+
+    def cancel_on_band():
+        nonlocal calls
+        calls += 1
+        if calls >= 4:
+            raise bf.BackgroundFillCancelled()
+
+    finishes.clear()
+    with pytest.raises(bf.BackgroundFillCancelled):
+        gpu.reduce_focus(energy, cancel_on_band)
+    assert len(finishes) == 1
+    gpu._PROGRAM_CACHE.clear()
+
+
+def test_opencl_sync_failure_falls_back_and_rebuilds_queue(monkeypatch, caplog):
+    from fusion_methods._openfocus_gpu import gpu_available
+
+    if not gpu_available():
+        pytest.skip('No OpenCL GPU available')
+    import pyopencl as cl
+
+    gray = np.random.default_rng(84).random((7, 25, 23), dtype=np.float32)
+    expected = _reference(gray)
+    monkeypatch.setattr(bf, '_GPU_FOCUS_MIN_BYTES', 0)
+    monkeypatch.setattr(gpu, '_PROGRAM_CACHE', {})
+    caplog.set_level(logging.INFO, logger=gpu.__name__)
+
+    class FailedFinishQueue(cl.CommandQueue):
+        def finish(self):
+            super().finish()
+            raise cl.RuntimeError('OpenCL command queue rejected synchronization')
+
+    with monkeypatch.context() as fault:
+        fault.setattr(cl, 'CommandQueue', FailedFinishQueue)
+        _compare(bf.focus_measures(gray, 0.5, use_gpu=True), expected)
+    assert 'Background focus reduction using CPU: OpenCL command queue rejected synchronization' in caplog.text
+    caplog.clear()
+
+    _compare(bf.focus_measures(gray, 0.5, use_gpu=True), expected)
+    assert 'Background focus reduction completed on OpenCL' in caplog.text
