@@ -643,6 +643,14 @@ class GpuGff:
     def _run(self, kernel, gsize, *args, lsize=None):
         kernel(self.q, gsize if isinstance(gsize, tuple) else (gsize,), lsize, *args)
 
+    def _drain_queue(self):
+        q = getattr(self, 'q', None)
+        if q is not None:
+            try:
+                q.finish()
+            except Exception:
+                _invalidate_program_cache()
+
     def fuse(self, frames, img_resize, average_filter_size,
              should_cancel=None, progress_callback=None):
         from fusion_methods._openfocus_gpu import GpuError, _device_lock
@@ -664,10 +672,15 @@ class GpuGff:
                     frames, img_resize, average_filter_size, should_cancel,
                     progress if progress_callback is not None else None)
             except CallbackFailure as exc:
+                self._drain_queue()
                 raise exc.__cause__
             except (self.cl.Error, MemoryError) as exc:
                 _invalidate_program_cache()
+                self._drain_queue()
                 raise GpuError('OpenCL GPU Guided Filter execution failed') from exc
+            except BaseException:
+                self._drain_queue()
+                raise
         finally:
             self.k = None
             self.q = None
@@ -778,119 +791,137 @@ class GpuGff:
             del raw
             return host_src, channels, _upload_kind(dtype)
 
-        # Pass 1: Saliency map and streaming strict-`>` winner selection.
-        for index in range(count):
-            host_src, channels, kind = prepare_upload(index)
-            self.cl.enqueue_copy(self.q, src_buf, host_src, is_blocking=False)
-            self._run(self.k[f'gff_sum_{kind}'], n, src_buf, t1_buf,
-                      np.int32(n), np.int32(channels))
-            self._run(self.k['gff_laplacian_abs'], (width, height),
-                      t1_buf, t2_buf, np.int32(height), np.int32(width))
-            self._run(self.k['gff_gauss_h'], (width, height),
-                      t2_buf, t1_buf, gkern_buf, np.int32(_GAUSS_RAD),
-                      np.int32(height), np.int32(width))
-            self._run(self.k['gff_gauss_v_argmax'], (width, height),
-                      t1_buf, best_buf, idx_buf, gkern_buf, np.int32(_GAUSS_RAD),
-                      np.int32(height), np.int32(width), np.int32(index))
-            self.q.finish()
-            del host_src
-            if progress_callback is not None:
-                progress_callback(index + 1, total_steps)
-
-        wins_buf = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, max(1, count * 4))
-        self.cl.enqueue_fill_buffer(self.q, wins_buf, np.uint32(0), 0, count * 4)
-        self._run(self.k['gff_bincount'], n, idx_buf, wins_buf, np.int32(n))
-        wins = np.empty(count, dtype=np.uint32)
-        self.cl.enqueue_copy(self.q, wins, wins_buf, is_blocking=True)
-        del best_buf, t1_buf, t2_buf, gkern_buf, wins_buf
-
-        # Pass 2: Base/detail guided-filter weight refinement and accumulation.
-        idx_T = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, max(1, 4 * n))
-        acc_b = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, max(1, 16 * n))
-        acc_d = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, max(1, 16 * n))
-        bgrg = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, max(1, 16 * n))
-        bgrg_T = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, max(1, 16 * n))
-        base_buf = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, max(1, 16 * n))
-        tmp4_T = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, max(1, 16 * n))
-        tmp4 = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, max(1, 16 * n))
-
-        zero_f32 = np.float32(0.0)
-        self.cl.enqueue_fill_buffer(self.q, acc_b, zero_f32, 0, 16 * n)
-        self.cl.enqueue_fill_buffer(self.q, acc_d, zero_f32, 0, 16 * n)
-
-        grid_hw = (_round16(width), _round16(height))
-        grid_wh = (_round16(height), _round16(width))
-        local_16 = (16, 16)
-        rad_avg = int(average_filter_size) // 2
-        inv_avg = np.float32(1.0 / ((2 * rad_avg + 1) * (2 * rad_avg + 1)))
-
-        self._run(self.k['transpose_i32'], grid_hw, idx_buf, idx_T,
-                  np.int32(height), np.int32(width), lsize=local_16)
-
-        for index in range(count):
-            _check_cancel(should_cancel)
-            if not wins[index]:
+        in_flight = False
+        try:
+            # Pass 1: Saliency map and streaming strict-`>` winner selection.
+            for index in range(count):
+                host_src, channels, kind = prepare_upload(index)
+                in_flight = True
+                self.cl.enqueue_copy(self.q, src_buf, host_src, is_blocking=False)
+                self._run(self.k[f'gff_sum_{kind}'], n, src_buf, t1_buf,
+                          np.int32(n), np.int32(channels))
+                self._run(self.k['gff_laplacian_abs'], (width, height),
+                          t1_buf, t2_buf, np.int32(height), np.int32(width))
+                self._run(self.k['gff_gauss_h'], (width, height),
+                          t2_buf, t1_buf, gkern_buf, np.int32(_GAUSS_RAD),
+                          np.int32(height), np.int32(width))
+                self._run(self.k['gff_gauss_v_argmax'], (width, height),
+                          t1_buf, best_buf, idx_buf, gkern_buf, np.int32(_GAUSS_RAD),
+                          np.int32(height), np.int32(width), np.int32(index))
+                self.q.finish()
+                in_flight = False
+                del host_src
                 if progress_callback is not None:
-                    progress_callback(count + index + 1, total_steps)
-                continue
-            host_src, channels, kind = prepare_upload(index)
-            self.cl.enqueue_copy(self.q, src_buf, host_src, is_blocking=False)
-            self._run(self.k[f'prep_{kind}_f4'], grid_hw, src_buf, bgrg, bgrg_T,
-                      np.int32(height), np.int32(width), np.int32(channels), lsize=local_16)
-            if rad_avg > 0:
-                self._run(self.k['box3_col_chunk'], (height, _cdiv(width, _CHUNK)),
-                          bgrg_T, tmp4_T, np.int32(width), np.int32(height),
-                          np.int32(rad_avg), np.float32(1.0))
+                    progress_callback(index + 1, total_steps)
+
+            wins_buf = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, max(1, count * 4))
+            in_flight = True
+            self.cl.enqueue_fill_buffer(self.q, wins_buf, np.uint32(0), 0, count * 4)
+            self._run(self.k['gff_bincount'], n, idx_buf, wins_buf, np.int32(n))
+            wins = np.empty(count, dtype=np.uint32)
+            self.cl.enqueue_copy(self.q, wins, wins_buf, is_blocking=True)
+            in_flight = False
+            del best_buf, t1_buf, t2_buf, gkern_buf, wins_buf
+
+            # Pass 2: Base/detail guided-filter weight refinement and accumulation.
+            idx_T = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, max(1, 4 * n))
+            acc_b = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, max(1, 16 * n))
+            acc_d = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, max(1, 16 * n))
+            bgrg = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, max(1, 16 * n))
+            bgrg_T = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, max(1, 16 * n))
+            base_buf = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, max(1, 16 * n))
+            tmp4_T = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, max(1, 16 * n))
+            tmp4 = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, max(1, 16 * n))
+
+            zero_f32 = np.float32(0.0)
+            in_flight = True
+            self.cl.enqueue_fill_buffer(self.q, acc_b, zero_f32, 0, 16 * n)
+            self.cl.enqueue_fill_buffer(self.q, acc_d, zero_f32, 0, 16 * n)
+
+            grid_hw = (_round16(width), _round16(height))
+            grid_wh = (_round16(height), _round16(width))
+            local_16 = (16, 16)
+            rad_avg = int(average_filter_size) // 2
+            inv_avg = np.float32(1.0 / ((2 * rad_avg + 1) * (2 * rad_avg + 1)))
+
+            self._run(self.k['transpose_i32'], grid_hw, idx_buf, idx_T,
+                      np.int32(height), np.int32(width), lsize=local_16)
+
+            for index in range(count):
+                _check_cancel(should_cancel)
+                if not wins[index]:
+                    if progress_callback is not None:
+                        progress_callback(count + index + 1, total_steps)
+                    continue
+                host_src, channels, kind = prepare_upload(index)
+                in_flight = True
+                self.cl.enqueue_copy(self.q, src_buf, host_src, is_blocking=False)
+                self._run(self.k[f'prep_{kind}_f4'], grid_hw, src_buf, bgrg, bgrg_T,
+                          np.int32(height), np.int32(width), np.int32(channels), lsize=local_16)
+                if rad_avg > 0:
+                    self._run(self.k['box3_col_chunk'], (height, _cdiv(width, _CHUNK)),
+                              bgrg_T, tmp4_T, np.int32(width), np.int32(height),
+                              np.int32(rad_avg), np.float32(1.0))
+                    self._run(self.k['transpose_f4'], grid_wh, tmp4_T, tmp4,
+                              np.int32(width), np.int32(height), lsize=local_16)
+                    self._run(self.k['box3_col_chunk'], (width, _cdiv(height, _CHUNK)),
+                              tmp4, base_buf, np.int32(height), np.int32(width),
+                              np.int32(rad_avg), inv_avg)
+                    layer_base = base_buf
+                else:
+                    layer_base = bgrg
+
+                # Base layer guided filter (r=45, eps=0.3) via coalesced chunked passes.
+                self._run(self.k['gf4_h_chunk'], (height, _cdiv(width, _CHUNK)),
+                          bgrg_T, idx_T, tmp4_T, np.int32(height), np.int32(width),
+                          np.int32(_DEFAULT_R1), np.int32(index))
                 self._run(self.k['transpose_f4'], grid_wh, tmp4_T, tmp4,
                           np.int32(width), np.int32(height), lsize=local_16)
-                self._run(self.k['box3_col_chunk'], (width, _cdiv(height, _CHUNK)),
-                          tmp4, base_buf, np.int32(height), np.int32(width),
-                          np.int32(rad_avg), inv_avg)
-                layer_base = base_buf
-            else:
-                layer_base = bgrg
+                self._run(self.k['gf4_v_ab_chunk'], (width, _cdiv(height, _CHUNK)),
+                          tmp4, tmp4_T, np.int32(height), np.int32(width),
+                          np.int32(_DEFAULT_R1), np.float32(_DEFAULT_EPS1))
+                self._run(self.k['transpose_f2'], grid_hw, tmp4_T, tmp4,
+                          np.int32(height), np.int32(width), lsize=local_16)
+                self._run(self.k['gf2_h_chunk'], (height, _cdiv(width, _CHUNK)),
+                          tmp4, tmp4_T, np.int32(height), np.int32(width),
+                          np.int32(_DEFAULT_R1))
+                self._run(self.k['transpose_f2'], grid_wh, tmp4_T, tmp4,
+                          np.int32(width), np.int32(height), lsize=local_16)
+                self._run(self.k['gf2_v_accum_chunk'], (width, _cdiv(height, _CHUNK)),
+                          tmp4, bgrg, layer_base, acc_b, np.int32(height), np.int32(width),
+                          np.int32(_DEFAULT_R1))
 
-            # Base layer guided filter (r=45, eps=0.3) via coalesced chunked passes.
-            self._run(self.k['gf4_h_chunk'], (height, _cdiv(width, _CHUNK)),
-                      bgrg_T, idx_T, tmp4_T, np.int32(height), np.int32(width),
-                      np.int32(_DEFAULT_R1), np.int32(index))
-            self._run(self.k['transpose_f4'], grid_wh, tmp4_T, tmp4,
-                      np.int32(width), np.int32(height), lsize=local_16)
-            self._run(self.k['gf4_v_ab_chunk'], (width, _cdiv(height, _CHUNK)),
-                      tmp4, tmp4_T, np.int32(height), np.int32(width),
-                      np.int32(_DEFAULT_R1), np.float32(_DEFAULT_EPS1))
-            self._run(self.k['transpose_f2'], grid_hw, tmp4_T, tmp4,
-                      np.int32(height), np.int32(width), lsize=local_16)
-            self._run(self.k['gf2_h_chunk'], (height, _cdiv(width, _CHUNK)),
-                      tmp4, tmp4_T, np.int32(height), np.int32(width),
-                      np.int32(_DEFAULT_R1))
-            self._run(self.k['transpose_f2'], grid_wh, tmp4_T, tmp4,
-                      np.int32(width), np.int32(height), lsize=local_16)
-            self._run(self.k['gf2_v_accum_chunk'], (width, _cdiv(height, _CHUNK)),
-                      tmp4, bgrg, layer_base, acc_b, np.int32(height), np.int32(width),
-                      np.int32(_DEFAULT_R1))
+                # Detail layer guided filter (r=7, eps=1e-5) via 16x16 local-memory tiles.
+                self._run(self.k['gf4_r7_local'], grid_hw, bgrg, idx_buf, tmp4_T,
+                          np.int32(height), np.int32(width), np.float32(_DEFAULT_EPS2),
+                          np.int32(index), lsize=local_16)
+                self._run(self.k['gf2_r7_accum_local'], grid_hw, tmp4_T, bgrg, layer_base,
+                          acc_d, np.int32(height), np.int32(width), lsize=local_16)
 
-            # Detail layer guided filter (r=7, eps=1e-5) via 16x16 local-memory tiles.
-            self._run(self.k['gf4_r7_local'], grid_hw, bgrg, idx_buf, tmp4_T,
-                      np.int32(height), np.int32(width), np.float32(_DEFAULT_EPS2),
-                      np.int32(index), lsize=local_16)
-            self._run(self.k['gf2_r7_accum_local'], grid_hw, tmp4_T, bgrg, layer_base,
-                      acc_d, np.int32(height), np.int32(width), lsize=local_16)
+                self.q.finish()
+                in_flight = False
+                del host_src
+                if progress_callback is not None:
+                    progress_callback(count + index + 1, total_steps)
 
-            self.q.finish()
-            del host_src
+            if in_flight:
+                self.q.finish()
+                in_flight = False
+            del src_buf, idx_buf, idx_T, bgrg, bgrg_T, base_buf, tmp4_T, tmp4
+
+            _check_cancel(should_cancel)
+            out = np.empty(shape, dtype=out_dtype)
+            dst_buf = self.cl.Buffer(self.ctx, self.mf.WRITE_ONLY, out_bytes)
+            recon_kern = self.k['gff_reconstruct_u8' if is_u8_out else 'gff_reconstruct_f32']
+            in_flight = True
+            self._run(recon_kern, n, acc_b, acc_d, dst_buf, np.int32(n))
+            self.cl.enqueue_copy(self.q, out, dst_buf, is_blocking=True)
+            in_flight = False
             if progress_callback is not None:
-                progress_callback(count + index + 1, total_steps)
-
-        del src_buf, idx_buf, idx_T, bgrg, bgrg_T, base_buf, tmp4_T, tmp4
-
-        _check_cancel(should_cancel)
-        out = np.empty(shape, dtype=out_dtype)
-        dst_buf = self.cl.Buffer(self.ctx, self.mf.WRITE_ONLY, out_bytes)
-        recon_kern = self.k['gff_reconstruct_u8' if is_u8_out else 'gff_reconstruct_f32']
-        self._run(recon_kern, n, acc_b, acc_d, dst_buf, np.int32(n))
-        self.cl.enqueue_copy(self.q, out, dst_buf, is_blocking=True)
-        if progress_callback is not None:
-            progress_callback(total_steps, total_steps)
-        _check_cancel(should_cancel)
-        return out
+                progress_callback(total_steps, total_steps)
+            _check_cancel(should_cancel)
+            return out
+        except BaseException:
+            if in_flight:
+                self._drain_queue()
+            raise

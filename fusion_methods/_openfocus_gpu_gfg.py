@@ -637,6 +637,14 @@ class GpuGfg:
         l = (lsize,) if isinstance(lsize, int) else lsize
         kernel(self.q, g, l, *args)
 
+    def _drain_queue(self):
+        q = getattr(self, 'q', None)
+        if q is not None:
+            try:
+                q.finish()
+            except Exception:
+                _invalidate_program_cache()
+
     def fuse(self, frames, img_resize, kernel_size, min_frame_focus,
              should_cancel=None, progress_callback=None):
         from fusion_methods._openfocus_gpu import GpuError, _device_lock
@@ -658,10 +666,15 @@ class GpuGfg:
                     frames, img_resize, kernel_size, min_frame_focus, should_cancel,
                     progress if progress_callback is not None else None)
             except CallbackFailure as exc:
+                self._drain_queue()
                 raise exc.__cause__
             except (self.cl.Error, MemoryError) as exc:
                 _invalidate_program_cache()
+                self._drain_queue()
                 raise GpuError('OpenCL GPU GFG-FGF execution failed') from exc
+            except BaseException:
+                self._drain_queue()
+                raise
         finally:
             self.k = None
             self.q = None
@@ -788,197 +801,235 @@ class GpuGfg:
         red_groups = max(1, min(256, _cdiv(n, 256)))
         wg4_buf = self.cl.Buffer(self.ctx, self.mf.WRITE_ONLY, red_groups * 16)
 
-        # Frame 0 upload + dominant channel selection (same argmax over channel sums).
-        host0, ch0, kind0 = prepare_upload(0)
-        self.cl.enqueue_copy(self.q, src_buf, host0, is_blocking=False)
-        self._run(self.k[f'gfg_chan_sum_{kind0}'], red_groups * 256,
-                  src_buf, wg4_buf, np.int32(n), np.int32(ch0), lsize=256)
-        wg4_host = np.empty((red_groups, 4), dtype=np.float32)
-        self.cl.enqueue_copy(self.q, wg4_host, wg4_buf, is_blocking=True)
-        channel_idx = int(np.argmax(wg4_host[:, :3].sum(axis=0, dtype=np.float64)))
-        del wg4_buf, wg4_host
+        in_flight = False
+        try:
+            # Frame 0 upload + dominant channel selection (same argmax over channel sums).
+            host0, ch0, kind0 = prepare_upload(0)
+            in_flight = True
+            self.cl.enqueue_copy(self.q, src_buf, host0, is_blocking=False)
+            self._run(self.k[f'gfg_chan_sum_{kind0}'], red_groups * 256,
+                      src_buf, wg4_buf, np.int32(n), np.int32(ch0), lsize=256)
+            wg4_host = np.empty((red_groups, 4), dtype=np.float32)
+            self.cl.enqueue_copy(self.q, wg4_host, wg4_buf, is_blocking=True)
+            in_flight = False
+            channel_idx = int(np.argmax(wg4_host[:, :3].sum(axis=0, dtype=np.float64)))
+            del wg4_buf, wg4_host
 
-        scale = float(min_frame_focus)
-        focus_vals = None
-        max_focus = 1.0
-        if scale > 0.0:
-            inner_n = max(1, (height - 2) * (width - 2))
-            sc_groups = max(1, min(256, _cdiv(inner_n, 256)))
-            sc_buf = self.cl.Buffer(self.ctx, self.mf.WRITE_ONLY, sc_groups * 4)
-            sc_host = np.empty(sc_groups, dtype=np.float32)
-            focus_vals = np.zeros(count, dtype=np.float32)
+            scale = float(min_frame_focus)
+            focus_vals = None
+            max_focus = 1.0
+            if scale > 0.0:
+                inner_n = max(1, (height - 2) * (width - 2))
+                sc_groups = max(1, min(256, _cdiv(inner_n, 256)))
+                sc_buf = self.cl.Buffer(self.ctx, self.mf.WRITE_ONLY, sc_groups * 4)
+                sc_host = np.empty(sc_groups, dtype=np.float32)
+                focus_vals = np.zeros(count, dtype=np.float32)
+                for index in range(count):
+                    h_src = None
+                    if index == 0:
+                        cur_ch, cur_kind = ch0, kind0
+                    else:
+                        h_src, cur_ch, cur_kind = prepare_upload(index)
+                        in_flight = True
+                        self.cl.enqueue_copy(self.q, src_buf, h_src, is_blocking=False)
+                    in_flight = True
+                    self._run(self.k[f'gfg_extract_{cur_kind}'], n,
+                              src_buf, gray_buf, np.int32(n), np.int32(cur_ch), np.int32(channel_idx))
+                    if height > 2 and width > 2:
+                        self._run(self.k['gfg_scharr_sum'], sc_groups * 256,
+                                  gray_buf, sc_buf, np.int32(height), np.int32(width), lsize=256)
+                        self.cl.enqueue_copy(self.q, sc_host, sc_buf, is_blocking=True)
+                        focus_vals[index] = float(sc_host.sum(dtype=np.float64)) / ((height - 2) * (width - 2))
+                    else:
+                        self.q.finish()
+                    in_flight = False
+                    if h_src is not None:
+                        del h_src
+                del sc_buf, sc_host
+                max_focus = float(np.max(focus_vals)) or 1.0
+
+            grid_hw = (_round16(width), _round16(height))
+            grid_wh = (_round16(height), _round16(width))
+            local_16 = (16, 16)
+            rad_mean = mean_ksize // 2
+            r_sub = max(1, _GF_RADIUS // _GF_SUB)
+
+            first_valid = True
             for index in range(count):
-                if index == 0:
+                _check_cancel(should_cancel)
+                if scale > 0.0 and focus_vals[index] < scale * max_focus:
+                    if progress_callback is not None:
+                        progress_callback(index + 1, total_steps)
+                    continue
+
+                h_src = None
+                if index == 0 and host0 is not None:
+                    # Re-use frame 0 already resident in src_buf when scale <= 0
+                    if scale > 0.0:
+                        in_flight = True
+                        self.cl.enqueue_copy(self.q, src_buf, host0, is_blocking=False)
                     cur_ch, cur_kind = ch0, kind0
                 else:
+                    if host0 is not None:
+                        del host0
+                        host0 = None
                     h_src, cur_ch, cur_kind = prepare_upload(index)
+                    in_flight = True
                     self.cl.enqueue_copy(self.q, src_buf, h_src, is_blocking=False)
-                    del h_src
+
+                in_flight = True
                 self._run(self.k[f'gfg_extract_{cur_kind}'], n,
                           src_buf, gray_buf, np.int32(n), np.int32(cur_ch), np.int32(channel_idx))
-                if height > 2 and width > 2:
-                    self._run(self.k['gfg_scharr_sum'], sc_groups * 256,
-                              gray_buf, sc_buf, np.int32(height), np.int32(width), lsize=256)
-                    self.cl.enqueue_copy(self.q, sc_host, sc_buf, is_blocking=True)
-                    focus_vals[index] = float(sc_host.sum(dtype=np.float64)) / ((height - 2) * (width - 2))
+
+                if rad_mean > 0:
+                    self._run(self.k['transpose_f1'], grid_hw, gray_buf, t1_buf,
+                              np.int32(height), np.int32(width), lsize=local_16)
+                    self._run(self.k['box1_col_chunk'], (height, _cdiv(width, _CHUNK)),
+                              t1_buf, ia_buf, np.int32(width), np.int32(height), np.int32(rad_mean))
+                    self._run(self.k['transpose_f1'], grid_wh, ia_buf, t1_buf,
+                              np.int32(width), np.int32(height), lsize=local_16)
+                    self._run(self.k['box1_col_sum'], (width, _cdiv(height, _CHUNK)),
+                              t1_buf, afm_buf, np.int32(height), np.int32(width), np.int32(rad_mean))
+                    blur_buf = afm_buf
                 else:
-                    self.q.finish()
-            del sc_buf, sc_host
-            max_focus = float(np.max(focus_vals)) or 1.0
+                    blur_buf = gray_buf
 
-        grid_hw = (_round16(width), _round16(height))
-        grid_wh = (_round16(height), _round16(width))
-        local_16 = (16, 16)
-        rad_mean = mean_ksize // 2
-        r_sub = max(1, _GF_RADIUS // _GF_SUB)
+                self._run(self.k['gfg_ia_combine'], (width, height),
+                          gray_buf, blur_buf, ia_buf,
+                          np.int32(height), np.int32(width),
+                          np.float32(_GFG_THRESHOLD), np.int32(1 if rad_mean > 0 else 0))
 
-        first_valid = True
-        for index in range(count):
-            _check_cancel(should_cancel)
-            if scale > 0.0 and focus_vals[index] < scale * max_focus:
-                if progress_callback is not None:
-                    progress_callback(index + 1, total_steps)
-                continue
-
-            if index == 0 and host0 is not None:
-                # Re-use frame 0 already resident in src_buf when scale <= 0
-                if scale > 0.0:
-                    self.cl.enqueue_copy(self.q, src_buf, host0, is_blocking=False)
-                cur_ch, cur_kind = ch0, kind0
-                del host0
-                host0 = None
-            else:
-                if host0 is not None:
+                self._run(self.k['gfg_area_down_pair'], (w_sub, h_sub),
+                          gray_buf, ia_buf, sub4_buf,
+                          np.int32(height), np.int32(width), np.int32(h_sub), np.int32(w_sub))
+                self._run(self.k['gfg_fgf_sub_ab'], (w_sub, h_sub),
+                          sub4_buf, ab_buf,
+                          np.int32(h_sub), np.int32(w_sub), np.int32(r_sub), np.float32(_GF_EPS))
+                self._run(self.k['gfg_fgf_sub_mean_ab'], (w_sub, h_sub),
+                          ab_buf, mab_buf,
+                          np.int32(h_sub), np.int32(w_sub), np.int32(r_sub))
+                self._run(self.k['gfg_fgf_up_q'], (width, height),
+                          mab_buf, gray_buf, afm_buf,
+                          np.int32(height), np.int32(width), np.int32(h_sub), np.int32(w_sub))
+                self._run(self.k['gfg_sobel_decision'], (width, height),
+                          afm_buf, val_buf, sob_buf, idx_buf,
+                          np.int32(height), np.int32(width), np.int32(index),
+                          np.float32(_TIE_EPS), np.int32(1 if first_valid else 0))
+                first_valid = False
+                self.q.finish()
+                in_flight = False
+                if index == 0 and host0 is not None:
                     del host0
                     host0 = None
+                if h_src is not None:
+                    del h_src
+                if progress_callback is not None:
+                    progress_callback(index + 1, total_steps)
+
+            if host0 is not None:
+                del host0
+                host0 = None
+
+            if first_valid:
+                # All frames filtered by min_frame_focus: degrade to frame 0.
+                in_flight = True
+                self.cl.enqueue_fill_buffer(self.q, idx_buf, np.int32(0), 0, 4 * n)
+
+            del val_buf, sob_buf, ia_buf, t1_buf, afm_buf
+
+            wins_buf = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, max(1, count * 4))
+            in_flight = True
+            self.cl.enqueue_fill_buffer(self.q, wins_buf, np.uint32(0), 0, count * 4)
+            self._run(self.k['gfg_bincount'], n, idx_buf, wins_buf, np.int32(n))
+            wins = np.empty(count, dtype=np.uint32)
+            self.cl.enqueue_copy(self.q, wins, wins_buf, is_blocking=True)
+            in_flight = False
+            del wins_buf
+
+            # Pass 3: Fast guided filter refinement on active decision masks + fused RGB accumulation.
+            acc_buf = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, max(1, 16 * n))
+            in_flight = True
+            self.cl.enqueue_fill_buffer(self.q, acc_buf, np.float32(0.0), 0, 16 * n)
+
+            for index in range(count):
+                _check_cancel(should_cancel)
+                if not wins[index]:
+                    if progress_callback is not None:
+                        progress_callback(count + index + 1, total_steps)
+                    continue
                 h_src, cur_ch, cur_kind = prepare_upload(index)
+                in_flight = True
                 self.cl.enqueue_copy(self.q, src_buf, h_src, is_blocking=False)
+
+                self._run(self.k[f'gfg_extract_{cur_kind}'], n,
+                          src_buf, gray_buf, np.int32(n), np.int32(cur_ch), np.int32(channel_idx))
+                self._run(self.k['gfg_area_down_mask'], (w_sub, h_sub),
+                          gray_buf, idx_buf, sub4_buf,
+                          np.int32(height), np.int32(width),
+                          np.int32(h_sub), np.int32(w_sub), np.int32(index))
+                self._run(self.k['gfg_fgf_sub_ab'], (w_sub, h_sub),
+                          sub4_buf, ab_buf,
+                          np.int32(h_sub), np.int32(w_sub), np.int32(r_sub), np.float32(_GF_EPS))
+                self._run(self.k['gfg_fgf_sub_mean_ab'], (w_sub, h_sub),
+                          ab_buf, mab_buf,
+                          np.int32(h_sub), np.int32(w_sub), np.int32(r_sub))
+                self._run(self.k[f'gfg_up_accum_{cur_kind}'], (width, height),
+                          mab_buf, gray_buf, src_buf, acc_buf,
+                          np.int32(height), np.int32(width),
+                          np.int32(h_sub), np.int32(w_sub), np.int32(cur_ch))
+                self.q.finish()
+                in_flight = False
                 del h_src
-
-            self._run(self.k[f'gfg_extract_{cur_kind}'], n,
-                      src_buf, gray_buf, np.int32(n), np.int32(cur_ch), np.int32(channel_idx))
-
-            if rad_mean > 0:
-                self._run(self.k['transpose_f1'], grid_hw, gray_buf, t1_buf,
-                          np.int32(height), np.int32(width), lsize=local_16)
-                self._run(self.k['box1_col_chunk'], (height, _cdiv(width, _CHUNK)),
-                          t1_buf, ia_buf, np.int32(width), np.int32(height), np.int32(rad_mean))
-                self._run(self.k['transpose_f1'], grid_wh, ia_buf, t1_buf,
-                          np.int32(width), np.int32(height), lsize=local_16)
-                self._run(self.k['box1_col_sum'], (width, _cdiv(height, _CHUNK)),
-                          t1_buf, afm_buf, np.int32(height), np.int32(width), np.int32(rad_mean))
-                blur_buf = afm_buf
-            else:
-                blur_buf = gray_buf
-
-            self._run(self.k['gfg_ia_combine'], (width, height),
-                      gray_buf, blur_buf, ia_buf,
-                      np.int32(height), np.int32(width),
-                      np.float32(_GFG_THRESHOLD), np.int32(1 if rad_mean > 0 else 0))
-
-            self._run(self.k['gfg_area_down_pair'], (w_sub, h_sub),
-                      gray_buf, ia_buf, sub4_buf,
-                      np.int32(height), np.int32(width), np.int32(h_sub), np.int32(w_sub))
-            self._run(self.k['gfg_fgf_sub_ab'], (w_sub, h_sub),
-                      sub4_buf, ab_buf,
-                      np.int32(h_sub), np.int32(w_sub), np.int32(r_sub), np.float32(_GF_EPS))
-            self._run(self.k['gfg_fgf_sub_mean_ab'], (w_sub, h_sub),
-                      ab_buf, mab_buf,
-                      np.int32(h_sub), np.int32(w_sub), np.int32(r_sub))
-            self._run(self.k['gfg_fgf_up_q'], (width, height),
-                      mab_buf, gray_buf, afm_buf,
-                      np.int32(height), np.int32(width), np.int32(h_sub), np.int32(w_sub))
-            self._run(self.k['gfg_sobel_decision'], (width, height),
-                      afm_buf, val_buf, sob_buf, idx_buf,
-                      np.int32(height), np.int32(width), np.int32(index),
-                      np.float32(_TIE_EPS), np.int32(1 if first_valid else 0))
-            first_valid = False
-            self.q.finish()
-            if progress_callback is not None:
-                progress_callback(index + 1, total_steps)
-
-        if first_valid:
-            # All frames filtered by min_frame_focus: degrade to frame 0.
-            self.cl.enqueue_fill_buffer(self.q, idx_buf, np.int32(0), 0, 4 * n)
-
-        del val_buf, sob_buf, ia_buf, t1_buf, afm_buf
-
-        wins_buf = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, max(1, count * 4))
-        self.cl.enqueue_fill_buffer(self.q, wins_buf, np.uint32(0), 0, count * 4)
-        self._run(self.k['gfg_bincount'], n, idx_buf, wins_buf, np.int32(n))
-        wins = np.empty(count, dtype=np.uint32)
-        self.cl.enqueue_copy(self.q, wins, wins_buf, is_blocking=True)
-        del wins_buf
-
-        # Pass 3: Fast guided filter refinement on active decision masks + fused RGB accumulation.
-        acc_buf = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, max(1, 16 * n))
-        self.cl.enqueue_fill_buffer(self.q, acc_buf, np.float32(0.0), 0, 16 * n)
-
-        for index in range(count):
-            _check_cancel(should_cancel)
-            if not wins[index]:
                 if progress_callback is not None:
                     progress_callback(count + index + 1, total_steps)
-                continue
-            h_src, cur_ch, cur_kind = prepare_upload(index)
-            self.cl.enqueue_copy(self.q, src_buf, h_src, is_blocking=False)
-            del h_src
 
-            self._run(self.k[f'gfg_extract_{cur_kind}'], n,
-                      src_buf, gray_buf, np.int32(n), np.int32(cur_ch), np.int32(channel_idx))
-            self._run(self.k['gfg_area_down_mask'], (w_sub, h_sub),
-                      gray_buf, idx_buf, sub4_buf,
-                      np.int32(height), np.int32(width),
-                      np.int32(h_sub), np.int32(w_sub), np.int32(index))
-            self._run(self.k['gfg_fgf_sub_ab'], (w_sub, h_sub),
-                      sub4_buf, ab_buf,
-                      np.int32(h_sub), np.int32(w_sub), np.int32(r_sub), np.float32(_GF_EPS))
-            self._run(self.k['gfg_fgf_sub_mean_ab'], (w_sub, h_sub),
-                      ab_buf, mab_buf,
-                      np.int32(h_sub), np.int32(w_sub), np.int32(r_sub))
-            self._run(self.k[f'gfg_up_accum_{cur_kind}'], (width, height),
-                      mab_buf, gray_buf, src_buf, acc_buf,
-                      np.int32(height), np.int32(width),
-                      np.int32(h_sub), np.int32(w_sub), np.int32(cur_ch))
-            self.q.finish()
+            del gray_buf, sub4_buf, ab_buf, mab_buf
+
+            # Zero-weight fallback: only resolve frames referenced by sum_w <= 1e-6 pixels.
+            zcnt_buf = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, 4)
+            in_flight = True
+            self.cl.enqueue_fill_buffer(self.q, zcnt_buf, np.uint32(0), 0, 4)
+            self._run(self.k['gfg_count_zero'], n, acc_buf, zcnt_buf, np.int32(n))
+            zcnt = np.empty(1, dtype=np.uint32)
+            self.cl.enqueue_copy(self.q, zcnt, zcnt_buf, is_blocking=True)
+            in_flight = False
+            del zcnt_buf
+            if int(zcnt[0]) > 0:
+                host_acc = np.empty((height, width, 4), dtype=np.float32)
+                host_idx = np.empty((height, width), dtype=np.int32)
+                in_flight = True
+                self.cl.enqueue_copy(self.q, host_acc, acc_buf, is_blocking=False)
+                self.cl.enqueue_copy(self.q, host_idx, idx_buf, is_blocking=True)
+                in_flight = False
+                zero_winners = np.unique(host_idx[host_acc[:, :, 3] <= 1e-6])
+                del host_acc, host_idx
+                for k in zero_winners:
+                    _check_cancel(should_cancel)
+                    h_src, cur_ch, cur_kind = prepare_upload(int(k))
+                    in_flight = True
+                    self.cl.enqueue_copy(self.q, src_buf, h_src, is_blocking=True)
+                    del h_src
+                    self._run(self.k[f'gfg_fill_zero_{cur_kind}'], n,
+                              src_buf, idx_buf, acc_buf,
+                              np.int32(n), np.int32(cur_ch), np.int32(int(k)))
+                self.q.finish()
+                in_flight = False
+
+            del src_buf, idx_buf
+
+            _check_cancel(should_cancel)
+            out = np.empty(shape, dtype=out_dtype)
+            dst_buf = self.cl.Buffer(self.ctx, self.mf.WRITE_ONLY, out_bytes)
+            norm_kern = self.k['gfg_normalize_u8' if is_u8_out else 'gfg_normalize_f32']
+            in_flight = True
+            self._run(norm_kern, n, acc_buf, dst_buf, np.int32(n))
+            self.cl.enqueue_copy(self.q, out, dst_buf, is_blocking=True)
+            in_flight = False
             if progress_callback is not None:
-                progress_callback(count + index + 1, total_steps)
-
-        del gray_buf, sub4_buf, ab_buf, mab_buf
-
-        # Zero-weight fallback: only resolve frames referenced by sum_w <= 1e-6 pixels.
-        zcnt_buf = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, 4)
-        self.cl.enqueue_fill_buffer(self.q, zcnt_buf, np.uint32(0), 0, 4)
-        self._run(self.k['gfg_count_zero'], n, acc_buf, zcnt_buf, np.int32(n))
-        zcnt = np.empty(1, dtype=np.uint32)
-        self.cl.enqueue_copy(self.q, zcnt, zcnt_buf, is_blocking=True)
-        del zcnt_buf
-        if int(zcnt[0]) > 0:
-            host_acc = np.empty((height, width, 4), dtype=np.float32)
-            host_idx = np.empty((height, width), dtype=np.int32)
-            self.cl.enqueue_copy(self.q, host_acc, acc_buf, is_blocking=False)
-            self.cl.enqueue_copy(self.q, host_idx, idx_buf, is_blocking=True)
-            zero_winners = np.unique(host_idx[host_acc[:, :, 3] <= 1e-6])
-            del host_acc, host_idx
-            for k in zero_winners:
-                _check_cancel(should_cancel)
-                h_src, cur_ch, cur_kind = prepare_upload(int(k))
-                self.cl.enqueue_copy(self.q, src_buf, h_src, is_blocking=False)
-                del h_src
-                self._run(self.k[f'gfg_fill_zero_{cur_kind}'], n,
-                          src_buf, idx_buf, acc_buf,
-                          np.int32(n), np.int32(cur_ch), np.int32(int(k)))
-            self.q.finish()
-
-        del src_buf, idx_buf
-
-        _check_cancel(should_cancel)
-        out = np.empty(shape, dtype=out_dtype)
-        dst_buf = self.cl.Buffer(self.ctx, self.mf.WRITE_ONLY, out_bytes)
-        norm_kern = self.k['gfg_normalize_u8' if is_u8_out else 'gfg_normalize_f32']
-        self._run(norm_kern, n, acc_buf, dst_buf, np.int32(n))
-        self.cl.enqueue_copy(self.q, out, dst_buf, is_blocking=True)
-        if progress_callback is not None:
-            progress_callback(total_steps, total_steps)
-        _check_cancel(should_cancel)
-        return out
+                progress_callback(total_steps, total_steps)
+            _check_cancel(should_cancel)
+            return out
+        except BaseException:
+            if in_flight:
+                self._drain_queue()
+            raise
