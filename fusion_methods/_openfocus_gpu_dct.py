@@ -314,6 +314,14 @@ class GpuDct:
         g = gsize if isinstance(gsize, tuple) else (gsize,)
         kernel(self.q, g, None, *args)
 
+    def _drain_queue(self):
+        q = getattr(self, 'q', None)
+        if q is not None:
+            try:
+                q.finish()
+            except Exception:
+                _invalidate_program_cache()
+
     def fuse(self, frames, block_size, kernel_size,
              should_cancel=None, progress_callback=None):
         from fusion_methods._openfocus_gpu import GpuError, _device_lock
@@ -335,10 +343,15 @@ class GpuDct:
                     frames, block_size, kernel_size, should_cancel,
                     progress if progress_callback is not None else None)
             except CallbackFailure as exc:
+                self._drain_queue()
                 raise exc.__cause__
             except (self.cl.Error, MemoryError) as exc:
                 _invalidate_program_cache()
+                self._drain_queue()
                 raise GpuError('OpenCL GPU DCT execution failed') from exc
+            except BaseException:
+                self._drain_queue()
+                raise
         finally:
             self.k = None
             self.q = None
@@ -453,75 +466,93 @@ class GpuDct:
         max_var_buf = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, max(1, 4 * n_blocks))
         idx_buf = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, max(1, 4 * n_blocks))
 
-        # Pass 1: streaming variance + strict '>' argmax per block.
-        for index in range(count):
+        in_flight = False
+        try:
+            # Pass 1: streaming variance + strict '>' argmax per block.
+            for index in range(count):
+                _check_cancel(should_cancel)
+                h_src, ch, kind = prepare_upload(index)
+                in_flight = True
+                self.cl.enqueue_copy(self.q, src_buf, h_src, is_blocking=False)
+                self._run(
+                    self.k[f'dct_block_var_argmax_{kind}'],
+                    (map_w, map_h),
+                    src_buf, max_var_buf, idx_buf,
+                    np.int32(orig_h), np.int32(orig_w),
+                    np.int32(map_h), np.int32(map_w),
+                    np.int32(block_size), np.int32(ch),
+                    np.int32(index), np.int32(1 if index == 0 else 0),
+                )
+                self.q.finish()
+                in_flight = False
+                del h_src
+                if progress_callback is not None:
+                    progress_callback(index + 1, total_steps)
+
+            del max_var_buf
+
+            # Pass 2: consistency verification via two median filters on compact block index grid.
+            best_index_map = np.empty((map_h, map_w), dtype=np.int32)
+            in_flight = True
+            self.cl.enqueue_copy(self.q, best_index_map, idx_buf, is_blocking=True)
+            in_flight = False
             _check_cancel(should_cancel)
-            h_src, ch, kind = prepare_upload(index)
-            self.cl.enqueue_copy(self.q, src_buf, h_src, is_blocking=False)
-            del h_src
-            self._run(
-                self.k[f'dct_block_var_argmax_{kind}'],
-                (map_w, map_h),
-                src_buf, max_var_buf, idx_buf,
-                np.int32(orig_h), np.int32(orig_w),
-                np.int32(map_h), np.int32(map_w),
-                np.int32(block_size), np.int32(ch),
-                np.int32(index), np.int32(1 if index == 0 else 0),
+            filtered = median_filter(best_index_map, size=ksize, mode='nearest')
+            _check_cancel(should_cancel)
+            filtered = median_filter(filtered, size=ksize, mode='nearest')
+            final_index_map = np.ascontiguousarray(filtered, dtype=np.int32)
+            del best_index_map, filtered
+
+            unique_set = set(int(v) for v in np.unique(final_index_map))
+            in_flight = True
+            self.cl.enqueue_copy(self.q, idx_buf, final_index_map, is_blocking=False)
+
+            # Pass 3: reconstruct selected blocks for active source frames only.
+            out_buf = self.cl.Buffer(self.ctx, self.mf.WRITE_ONLY, max(1, out_bytes))
+            self.cl.enqueue_fill_buffer(
+                self.q, out_buf, np.uint8(0) if is_u8_out else np.float32(0.0), 0, out_bytes
             )
-            self.q.finish()
-            if progress_callback is not None:
-                progress_callback(index + 1, total_steps)
+            out_suffix = 'u8' if is_u8_out else 'f32'
 
-        del max_var_buf
-
-        # Pass 2: consistency verification via two median filters on compact block index grid.
-        best_index_map = np.empty((map_h, map_w), dtype=np.int32)
-        self.cl.enqueue_copy(self.q, best_index_map, idx_buf, is_blocking=True)
-        _check_cancel(should_cancel)
-        filtered = median_filter(best_index_map, size=ksize, mode='nearest')
-        _check_cancel(should_cancel)
-        filtered = median_filter(filtered, size=ksize, mode='nearest')
-        final_index_map = np.ascontiguousarray(filtered, dtype=np.int32)
-        del best_index_map, filtered
-
-        unique_set = set(int(v) for v in np.unique(final_index_map))
-        self.cl.enqueue_copy(self.q, idx_buf, final_index_map, is_blocking=False)
-        del final_index_map
-
-        # Pass 3: reconstruct selected blocks for active source frames only.
-        out_buf = self.cl.Buffer(self.ctx, self.mf.WRITE_ONLY, max(1, out_bytes))
-        self.cl.enqueue_fill_buffer(
-            self.q, out_buf, np.uint8(0) if is_u8_out else np.float32(0.0), 0, out_bytes
-        )
-        out_suffix = 'u8' if is_u8_out else 'f32'
-
-        for index in range(count):
-            _check_cancel(should_cancel)
-            if index not in unique_set:
+            for index in range(count):
+                _check_cancel(should_cancel)
+                if index not in unique_set:
+                    if progress_callback is not None:
+                        progress_callback(count + index + 1, total_steps)
+                    continue
+                h_src, ch, kind = prepare_upload(index)
+                in_flight = True
+                self.cl.enqueue_copy(self.q, src_buf, h_src, is_blocking=False)
+                self._run(
+                    self.k[f'dct_copy_{kind}_{out_suffix}'],
+                    (orig_w, orig_h),
+                    src_buf, idx_buf, out_buf,
+                    np.int32(orig_h), np.int32(orig_w),
+                    np.int32(map_w), np.int32(block_size),
+                    np.int32(ch), np.int32(index),
+                )
+                self.q.finish()
+                in_flight = False
+                del h_src
                 if progress_callback is not None:
                     progress_callback(count + index + 1, total_steps)
-                continue
-            h_src, ch, kind = prepare_upload(index)
-            self.cl.enqueue_copy(self.q, src_buf, h_src, is_blocking=False)
-            del h_src
-            self._run(
-                self.k[f'dct_copy_{kind}_{out_suffix}'],
-                (orig_w, orig_h),
-                src_buf, idx_buf, out_buf,
-                np.int32(orig_h), np.int32(orig_w),
-                np.int32(map_w), np.int32(block_size),
-                np.int32(ch), np.int32(index),
-            )
-            self.q.finish()
+
+            if in_flight:
+                self.q.finish()
+                in_flight = False
+            del final_index_map
+            del src_buf, idx_buf
+
+            _check_cancel(should_cancel)
+            out = np.empty(shape, dtype=out_dtype)
+            in_flight = True
+            self.cl.enqueue_copy(self.q, out, out_buf, is_blocking=True)
+            in_flight = False
             if progress_callback is not None:
-                progress_callback(count + index + 1, total_steps)
-
-        del src_buf, idx_buf
-
-        _check_cancel(should_cancel)
-        out = np.empty(shape, dtype=out_dtype)
-        self.cl.enqueue_copy(self.q, out, out_buf, is_blocking=True)
-        if progress_callback is not None:
-            progress_callback(total_steps, total_steps)
-        _check_cancel(should_cancel)
-        return out
+                progress_callback(total_steps, total_steps)
+            _check_cancel(should_cancel)
+            return out
+        except BaseException:
+            if in_flight:
+                self._drain_queue()
+            raise

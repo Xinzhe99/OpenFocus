@@ -11,6 +11,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   three StackMFF models before activation.
 
 ### Changed
+- Reuse OpenCL contexts and compiled kernels across OpenFocus A/B/C and ECC
+  resize jobs. Reuse upload buffers within a job and drain pending work
+  before releasing buffers after cancellation or error.
+- Reuse the NVML session for VRAM queries and repeat device enumeration after
+  a query fails to avoid using memory information from the wrong adapter.
 - Accelerate OpenFocus alignment candidate scoring, similarity warping,
   uint8 translation warping, pyramid downsizing, and validity mask generation
   with single-threaded native CPU kernels while preserving bit-exact results
