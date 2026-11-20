@@ -23,6 +23,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Convert streamed 16-bit sources to float32 in the same strips that apply
   their exposure-matching gain, instead of storing a normalized copy of the
   stack first. Color output pixels are unchanged.
+- Reduce StackMFF V3's three-quarter-scale inference input four rows at a
+  time and one plane at a time. Output pixels are unchanged.
 
 ### Fixed
 - Recover a desktop email sign-in after a lost connection to the approval
