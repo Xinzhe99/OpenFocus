@@ -742,7 +742,7 @@ def test_reduced_buffers_released_at_consumption_boundaries(monkeypatch):
     def resize(*args):
         small = original_resize(*args)
         refs['small'] = weakref.ref(small)
-        refs['backing'] = weakref.ref(small.base)
+        refs['backing'] = weakref.ref(small.base) if small.base is not None else refs['small']
         return small
     def softmax(values):
         if 'small' in refs:
@@ -784,6 +784,45 @@ def test_probability_layer_cancellation_stops_next_layer(monkeypatch, stage):
                                      0.5, lambda: cancelled[0])
     assert counts == ({'resize': 1, 'gaussian': 0} if stage == 'resize'
                       else {'resize': 5, 'gaussian': 1})
+
+
+@pytest.mark.parametrize('shape', [(4, 4), (64, 192), (260, 128)])
+def test_three_quarters_resize_matches_general_triangle_filter(shape):
+    # Float32 products must be rounded before summing, including both edges.
+    h, w = shape
+    planes = np.random.default_rng(408).normal(size=(2, 3, h, 2 * w)).astype(np.float32)[..., ::2]
+    np.testing.assert_array_equal(neural_runtime._resize_three_quarters(planes),
+                                  neural_runtime._resize_triangle(planes, 0.75))
+
+
+@pytest.mark.parametrize('shape, dtype, scale, grouped', [
+    ((64, 128), np.float32, 0.75, True),
+    ((8, 10), np.float32, 0.75, False),     # width is not whole groups of four
+    ((6, 8), np.float32, 0.75, False),      # nor is this height
+    ((64, 128), np.float64, 0.75, False),
+    ((64, 128), np.float32, 0.5, False),
+])
+def test_antialias_groups_rows_only_for_whole_float32_groups(monkeypatch, shape, dtype, scale, grouped):
+    used = []
+    for name in ('_resize_three_quarters', '_resize_triangle'):
+        original = getattr(neural_runtime, name)
+        monkeypatch.setattr(neural_runtime, name,
+                            lambda *args, name=name, original=original: used.append(name) or original(*args))
+    result = neural_runtime._resize_antialias(np.ones((1, 2, *shape), dtype), scale)
+    assert used == ['_resize_three_quarters' if grouped else '_resize_triangle']
+    assert result.dtype == np.float32
+    assert result.shape == (1, 2, int(shape[0] * scale), int(shape[1] * scale))
+    np.testing.assert_allclose(result, 1, rtol=1e-6)
+
+
+def test_three_quarters_resize_stops_between_planes():
+    from core.registration import RegistrationCancelled
+    polls = []
+    with pytest.raises(RegistrationCancelled):
+        neural_runtime._resize_antialias(np.zeros((1, 3, 8, 8), np.float32), 0.75,
+                                         lambda: polls.append(1) or len(polls) > 3)
+    # Once on entry, twice for the first plane, then before the second.
+    assert len(polls) == 4
 
 
 def test_antialias_cancellation_between_output_positions(monkeypatch):
