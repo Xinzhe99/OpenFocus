@@ -71,12 +71,16 @@ def legacy_windows_account_dirs(profile: Path, shared_dir: Path) -> Iterator[Pat
     try:
         previews = sorted((shared_dir.parent / _WINDOWS_PREVIEW_DIR).iterdir(),
                           key=lambda path: path.name.casefold())
-    except (FileNotFoundError, NotADirectoryError):
+    except OSError:
         return
     for preview in previews:
         candidate = preview / "profile"
-        if candidate != profile and candidate.is_dir():
-            yield candidate
+        if candidate != profile:
+            try:
+                if candidate.is_dir():
+                    yield candidate
+            except OSError:
+                continue
 
 
 def user_data_dir() -> Path:

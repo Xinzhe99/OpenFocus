@@ -53,6 +53,10 @@ _UNADMITTED = None
 VRAM_GATED_KINDS = ('DIRECTML', 'CUDA', 'ROCM', 'OPENVINO') + _NATIVE_ORDER
 
 
+def native_startup_bytes(kind):
+    return 512 * 1024**2 if kind in _NATIVE_ORDER else 0
+
+
 def device_diagnostics():
     """Cached hardware, provider capability and job execution; never probes."""
     return {'hardware': _HARDWARE_ADAPTERS, 'providers': _AVAILABLE_PROVIDERS,
@@ -647,7 +651,7 @@ def _run_native(planes, path, device, should_cancel, profile):
             if _WORKER is None:
                 # Leave physical/commit headroom for importing both CUDA libraries.
                 from core.resource_policy import require_memory
-                require_memory(512 * 1024**2 + planes.nbytes, None, _JOB_RAM_LIMIT)
+                require_memory(native_startup_bytes(device) + planes.nbytes, None, _JOB_RAM_LIMIT)
                 _WORKER = Worker(_JOB_PACK[1], should_cancel)
                 # Creating the worker's CUDA context consumes device memory.
                 refusal = _memory_refusal(path, planes.shape[1:], device, 1, reclaim=False)

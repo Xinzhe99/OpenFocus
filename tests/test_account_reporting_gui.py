@@ -4,9 +4,9 @@ import time
 from threading import Event
 
 import pytest
-from PyQt6.QtCore import QSettings
+from PyQt6.QtCore import QSettings, Qt
 from PyQt6.QtTest import QTest
-from PyQt6.QtWidgets import QWidget
+from PyQt6.QtWidgets import QPushButton, QWidget
 
 
 def _wait(qapp, predicate):
@@ -513,6 +513,57 @@ def test_failed_sign_in_can_be_retried(qapp, settings, failure):
         dialog.github_button.click()
         _wait(qapp, lambda: dialog._job is None)
         assert client.is_signed_in()
+    finally:
+        dialog.reject()
+        window.deleteLater()
+
+
+@pytest.mark.parametrize('language,operation', [('en', 'github'), ('zh', 'browser')])
+def test_device_limit_offers_account_devices_recovery(qapp, settings, monkeypatch, language, operation):
+    from dialogs.account import AccountDialog, QDesktopServices
+    from locales import trans
+    from utils.account_client import AccountError
+
+    class FullAccount(_Account):
+        full = True
+
+        def login(self, provider, **kwargs):
+            if self.full:
+                raise AccountError('device_limit_reached', status=409)
+            return super().login(provider, **kwargs)
+
+        def login_with_browser(self, **kwargs):
+            if self.full:
+                raise AccountError('device_limit_reached', status=409)
+            return super().login_with_browser(**kwargs)
+
+    opened = []
+    monkeypatch.setattr(trans, 'current_lang', language)
+    monkeypatch.setattr(QDesktopServices, 'openUrl', lambda url: opened.append(url.toString()) or True)
+    window = QWidget()
+    client = window._account_client = FullAccount()
+    dialog = AccountDialog(window)
+    try:
+        dialog.show()
+        recovery = dialog.findChild(QPushButton, 'accountManageDevices')
+        assert recovery is not None and recovery.isHidden()
+        dialog.terms.setChecked(True)
+        sign_in = getattr(dialog, operation + '_button')
+        sign_in.click()
+        _wait(qapp, lambda: dialog._job is None)
+        assert dialog.status.text() == trans.t('account_device_limit')
+        assert recovery.isVisible() and recovery.isEnabled()
+        assert recovery.text() == trans.t('account_web_center')
+        assert not opened and not client.is_signed_in()
+
+        QTest.mouseClick(recovery, Qt.MouseButton.LeftButton)
+        assert opened == [f'https://account.openfocus.top/account/devices?lang={language}']
+        assert sign_in.isEnabled()
+
+        client.full = False
+        sign_in.click()
+        _wait(qapp, lambda: dialog._job is None)
+        assert client.is_signed_in() and recovery.isHidden()
     finally:
         dialog.reject()
         window.deleteLater()

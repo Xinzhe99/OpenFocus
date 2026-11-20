@@ -1,8 +1,10 @@
 """Shared layout for the project’s contact and support dialogs."""
 from html import escape
 
-from PyQt6.QtCore import QByteArray, QBuffer, QIODevice, Qt
-from PyQt6.QtGui import QImageReader, QPixmap
+import cv2
+import numpy as np
+from PyQt6.QtCore import QByteArray, QBuffer, QIODevice, QRect, Qt
+from PyQt6.QtGui import QImage, QImageReader, QPainter, QPixmap
 from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QScrollArea, QVBoxLayout, QWidget
 
 from dialogs import _community_download as downloads
@@ -134,20 +136,82 @@ def show_community_dialog(parent, dialog_type):
     dialog.activateWindow()
 
 
+class _QrLabel(QLabel):
+    def __init__(self, title, slot, size):
+        super().__init__()
+        self._code = None
+        self._ratio = None
+        self.setObjectName(slot)
+        self.setAccessibleName(title)
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setStyleSheet('background: white;')
+        self.setFixedSize(size, size)
+        self.hide()
+
+    def set_code(self, image, *, source=None, overlay=None):
+        self._code = image, source if source is not None else image.rect(), overlay
+        self._render_code()
+        self.show()
+
+    def clear(self):
+        self._code = None
+        super().clear()
+
+    def paintEvent(self, event):
+        if self._code is not None and self.devicePixelRatioF() != self._ratio:
+            self._render_code()
+        super().paintEvent(event)
+
+    def _render_code(self):
+        image, source, overlay = self._code
+        self._ratio = self.devicePixelRatioF()
+        side = round(self.width() * self._ratio)
+        # Reserve at least four modules of white space even for a 21-module QR.
+        code_side = side * 7 // 10
+        inset = (side - code_side) // 2
+        target = QRect(inset, inset, code_side, code_side)
+        pixmap = QPixmap(side, side)
+        pixmap.fill(Qt.GlobalColor.white)
+        painter = QPainter(pixmap)
+        painter.drawImage(target, image, source)
+        if overlay is not None:
+            overlay(painter, target)
+        painter.end()
+        pixmap.setDevicePixelRatio(self._ratio)
+        self.setPixmap(pixmap)
+
+
+def community_qr(column, title, slot, size):
+    qr = _QrLabel(title, slot, size)
+    column.addWidget(qr, alignment=Qt.AlignmentFlag.AlignHCenter)
+    return qr
+
+
+def _qr_region(image):
+    # Published artwork is upright with light or transparent padding. Measure
+    # the dark pattern on white, but draw the original pixels to keep its logo.
+    if image.hasAlphaChannel():
+        opaque = QImage(image.size(), QImage.Format.Format_RGB32)
+        opaque.fill(Qt.GlobalColor.white)
+        painter = QPainter(opaque)
+        painter.drawImage(0, 0, image)
+        painter.end()
+        image = opaque
+    gray = image.convertToFormat(QImage.Format.Format_Grayscale8)
+    bits = gray.constBits()
+    bits.setsize(gray.sizeInBytes())
+    rows = np.frombuffer(bits, dtype=np.uint8).reshape(gray.height(), gray.bytesPerLine())
+    mask = cv2.inRange(rows[:, :gray.width()], 0, 191)
+    return QRect(*cv2.boundingRect(mask))
+
+
 def add_published_qr(dialog, column, requests, title, slot, size):
-    """Display the currently published PNG with its original quiet zone."""
+    """Display the currently published PNG in the shared QR geometry."""
     heading = community_label(title, 'section')
     heading.setAlignment(Qt.AlignmentFlag.AlignCenter)
     column.addWidget(heading)
 
-    qr = QLabel()
-    qr.setObjectName(slot)
-    qr.setAccessibleName(title)
-    qr.setAlignment(Qt.AlignmentFlag.AlignCenter)
-    qr.setStyleSheet('background: white;')
-    qr.setFixedSize(size, size)
-    qr.hide()
-    column.addWidget(qr, alignment=Qt.AlignmentFlag.AlignHCenter)
+    qr = community_qr(column, title, slot, size)
 
     status = community_label(trans.t('community_qr_loading'), 'muted')
     status.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -168,14 +232,11 @@ def add_published_qr(dialog, column, requests, title, slot, size):
                     and 1 <= dimensions.height() <= downloads.QR_MAX_DIMENSION):
                 image = reader.read()
                 if not image.isNull():
-                    ratio = qr.devicePixelRatioF()
-                    pixels = round(size * ratio)
-                    pixmap = QPixmap.fromImage(image.scaled(pixels, pixels, Qt.AspectRatioMode.KeepAspectRatio))
-                    pixmap.setDevicePixelRatio(ratio)
-                    qr.setPixmap(pixmap)
-                    qr.show()
-                    status.hide()
-                    return
+                    region = _qr_region(image)
+                    if not region.isEmpty():
+                        qr.set_code(image, source=region)
+                        status.hide()
+                        return
         status.setText(trans.t('community_qr_unpublished' if code == 404 else 'community_qr_unavailable'))
 
     requests.get(url, 'image/png', downloads.QR_MAX_BYTES, display)

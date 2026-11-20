@@ -171,25 +171,28 @@ def _prepare_inference(frames, model_path, use_gpu, thread_count=None,
 def _stackmffv3_batch_impl(tiles_list, model_path, use_gpu, mode='soft',
                           should_cancel=None, thread_count=None,
                           resource_preference='balanced', execution_plan=None,
-                          focus_callback=None):
+                          focus_callback=None, *, tile_plan=None):
     """Fuse tiles in order with B=1 until true batching passes GPU gates.
 
-    A supplied plan means the caller owns the heavy-job lease, including when
-    dispatching to a child thread. Actual inference allocations are rechecked.
+    The spatial scheduler supplies a tile plan covering the complete grid.
+    Other callers still admit each batch before inference.
     """
-    with common.neural_lease(execution_plan, should_cancel):
+    with common.neural_lease(tile_plan or execution_plan, should_cancel):
         _cancel(should_cancel)
         if not tiles_list:
             return []
         _validate_tiles(tiles_list)
         mode = normalize_mode(mode)
         profile = _profile()
-        with profile.stage('plan_attention_inference'):
-            model, device, plan = _prepare_inference(
-                tiles_list[0], model_path, use_gpu, thread_count,
-                resource_preference, execution_plan, len(tiles_list))
-        if profile.enabled:
-            profile.add('threads', 'plan_attention_inference', plan.native_threads)
+        if tile_plan is None:
+            with profile.stage('plan_attention_inference'):
+                model, device, plan = _prepare_inference(
+                    tiles_list[0], model_path, use_gpu, thread_count,
+                    resource_preference, execution_plan, len(tiles_list))
+            if profile.enabled:
+                profile.add('threads', 'plan_attention_inference', plan.native_threads)
+        else:
+            model, device, plan = model_path, tile_plan.device_kind, tile_plan
         results = []
         for tile in tiles_list:
             _cancel(should_cancel)
@@ -227,11 +230,11 @@ def _read_stack(input_source, img_resize, should_cancel=None, execution_plan=Non
 def _stackmffv3_impl(input_source, img_resize, model_path, use_gpu,
                      mode='soft', progress_callback=None, should_cancel=None,
                      thread_count=None, resource_preference='balanced',
-                     execution_plan=None, focus_callback=None):
+                     execution_plan=None, focus_callback=None, *, tile_plan=None):
     """Whole-frame fusion with the same resource contract as tiled fusion."""
     from core.resource_policy import heavy_job
 
-    lease = heavy_job(should_cancel) if execution_plan is None else nullcontext()
+    lease = heavy_job(should_cancel) if execution_plan is None and tile_plan is None else nullcontext()
     with lease:
         _cancel(should_cancel)
         frames = _read_stack(input_source, img_resize, should_cancel, execution_plan)
@@ -243,7 +246,7 @@ def _stackmffv3_impl(input_source, img_resize, model_path, use_gpu,
             [frames], model_path, use_gpu, mode,
             should_cancel=should_cancel, thread_count=thread_count,
             resource_preference=resource_preference, execution_plan=execution_plan,
-            focus_callback=focus_callback)[0]
+            focus_callback=focus_callback, tile_plan=tile_plan)[0]
         _cancel(should_cancel)
         if progress_callback is not None:
             progress_callback(1, 1)

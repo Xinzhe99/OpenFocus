@@ -8,11 +8,20 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Changed
 - Preselect NVIDIA acceleration review on Windows PCs with an NVIDIA driver,
   including when upgrading from 2.0.0.
+- Choose the PyTorch download order from the network region, with a manual
+  override and a server-maintained list of mirrors. Resume interrupted
+  transfers on the next source and log why the source changed.
 
 ### Fixed
 - Carry over a Windows portable build's existing device registration when
   restoring its saved sign-in after an in-place update.
 - Show the fusion method once in output names after rendering all methods.
+- Reuse one account registration for the same Windows installation and
+  consolidate older registrations identified by locally retained device IDs.
+- Admit StackMFF tiles against live render-process memory, including the host
+  memory needed if GPU inference falls back to CPU.
+- Use consistent visible QR code sizes in the Contact Us and Support Us
+  dialogs while preserving the artwork and a scannable white border.
 
 ## [2.0.0]
 

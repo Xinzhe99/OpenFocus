@@ -13,6 +13,7 @@ import math
 import os
 from pathlib import Path
 import platform
+import re
 import secrets
 import socketserver
 import string
@@ -35,6 +36,14 @@ _RUN_ID = secrets.token_urlsafe(16)
 _RUN_STARTED = int(time.time())
 _SESSION_FILENAME = "account-session"
 _DEVICE_FILENAME = "account-device"
+_MAX_DEVICE_RECORD = 4096
+_MAX_LEGACY_DEVICE_IDS = 16
+_MACHINE_KEY_DOMAIN = b"OpenFocus/account/windows-machine-key/v1\0"
+_FALLBACK_DEVICE_DOMAIN = b"OpenFocus/account/windows-device-id/v1\0"
+_GUID_PATTERN = re.compile(r"(?:[0-9a-f]{32}|[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})",
+                           re.IGNORECASE | re.ASCII)
+# Canonical unpadded base64url encoding of the 32 bytes used by historical builds.
+_LEGACY_DEVICE_PATTERN = re.compile(r"[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]")
 _MAX_RESPONSE = 1024 * 1024
 _MAX_ERROR_RESPONSE = 16 * 1024
 _ERROR_CODES = frozenset({
@@ -79,6 +88,34 @@ def _valid_device_id(value):
             and all(char in string.ascii_letters + string.digits + "-_" for char in value))
 
 
+def _windows_machine_key():
+    if sys.platform != "win32":
+        return None
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Cryptography",
+                            0, winreg.KEY_READ | winreg.KEY_WOW64_64KEY) as key:
+            value, kind = winreg.QueryValueEx(key, "MachineGuid")
+    except (ImportError, OSError):
+        return None
+    if kind != winreg.REG_SZ or not isinstance(value, str):
+        return None
+    value = value.strip()
+    if value.startswith("{") and value.endswith("}"):
+        value = value[1:-1]
+    if _GUID_PATTERN.fullmatch(value) is None:
+        return None
+    normalized = value.replace("-", "").lower()
+    if normalized in ("0" * 32, "f" * 32):
+        return None
+    return hashlib.sha256(_MACHINE_KEY_DOMAIN + normalized.encode("ascii")).hexdigest()
+
+
+def _fallback_device_id(machine_key):
+    digest = hashlib.sha256(_FALLBACK_DEVICE_DOMAIN + bytes.fromhex(machine_key)).digest()
+    return base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+
+
 def _default_device_name():
     name = ''.join(char for char in platform.node() if char.isprintable() and char != '"')
     return name.strip()[:80] or "OpenFocus desktop"
@@ -86,10 +123,14 @@ def _default_device_name():
 
 def _load_device_identity(path):
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
+        with path.open("rb") as stream:
+            raw = stream.read(_MAX_DEVICE_RECORD + 1)
+        if len(raw) > _MAX_DEVICE_RECORD:
+            raise AccountError("storage")
+        value = json.loads(raw.decode("utf-8"))
     except FileNotFoundError:
         return None
-    except (OSError, ValueError, UnicodeError):
+    except (OSError, ValueError, RecursionError):
         raise AccountError("storage") from None
     if not isinstance(value, dict) or not _valid_device_id(value.get("device_id")):
         raise AccountError("storage")
@@ -121,7 +162,30 @@ def _legacy_device_identity(profile, shared_dir):
     return fallback
 
 
-def _device_identity(store, device_name, *, migrate_only=False):
+def _legacy_device_ids(profile, shared_dir, cancel):
+    def profiles():
+        yield shared_dir
+        yield from legacy_windows_account_dirs(profile, shared_dir)
+
+    ids = {}
+    for directory in profiles():
+        if cancel is not None and cancel.is_set():
+            raise AccountError("cancelled")
+        try:
+            identity = _load_device_identity(directory / _DEVICE_FILENAME)
+        except AccountError:
+            continue
+        if identity is None:
+            continue
+        device_id = identity[0]
+        if _LEGACY_DEVICE_PATTERN.fullmatch(device_id) and len(set(device_id)) >= 16:
+            ids[device_id] = None
+            if len(ids) == _MAX_LEGACY_DEVICE_IDS:
+                break
+    return list(ids)
+
+
+def _device_identity(store, device_name, fallback_id=None, cancel=None, *, migrate_only=False):
     session_path = getattr(store, "path", None)
     if session_path is None:
         return secrets.token_urlsafe(32), device_name
@@ -133,8 +197,7 @@ def _device_identity(store, device_name, *, migrate_only=False):
         return loaded
     identity = None
     if migrate_only:
-        # A restored session can identify this profile's legacy device before
-        # another installation tries to register. Leave new profiles alone.
+        # Restore a known profile ID without minting one for a fresh profile.
         identity = _load_device_identity(profile / _DEVICE_FILENAME)
         if identity is None:
             return None
@@ -142,20 +205,22 @@ def _device_identity(store, device_name, *, migrate_only=False):
     try:
         # The stable lock serializes both threads and processes, including on
         # filesystems without hard-link support. Never replace an existing ID.
-        with _file_lock(path.parent, ".account-device.lock", deadline=time.monotonic() + 15):
+        with _file_lock(path.parent, ".account-device.lock", cancel=cancel, deadline=time.monotonic() + 15):
             loaded = _load_device_identity(path)
             if loaded is not None:
                 return loaded
             if identity is None and shared_dir is not None:
                 identity = _legacy_device_identity(profile, shared_dir)
             if identity is None:
-                identity = (secrets.token_urlsafe(32), device_name)
+                identity = (fallback_id or secrets.token_urlsafe(32), device_name)
             fd, temporary = tempfile.mkstemp(prefix=".account-device-", dir=path.parent)
             with os.fdopen(fd, "w", encoding="utf-8") as output:
                 json.dump({"device_id": identity[0], "device_name": identity[1]}, output,
                           separators=(",", ":"), ensure_ascii=False)
                 output.flush()
                 os.fsync(output.fileno())
+            if cancel is not None and cancel.is_set():
+                raise AccountError("cancelled")
             os.replace(temporary, path)
             temporary = None
             return identity
@@ -467,6 +532,8 @@ class AccountClient:
             raise ValueError("Invalid device id")
         self.device_name = (device_name or _default_device_name()).strip()[:80] or _default_device_name()
         self.device_id = device_id
+        self._use_windows_device_evidence = (device_id is None and self.base_url == BASE_URL
+                                             and getattr(self.store, "_shared_device_dir", None) is not None)
         self._session = copy.deepcopy(self.store.load())
         if not _valid_session(self._session):
             self._session = None
@@ -491,10 +558,37 @@ class AccountClient:
         self._pending_logout_token = None
         self.email_handoff_mode = None
 
-    def _device_fields(self):
+    def _device_fields(self, fallback_id=None, cancel=None):
         if self.device_id is None:
-            self.device_id, self.device_name = _device_identity(self.store, self.device_name)
+            try:
+                self.device_id, self.device_name = _device_identity(self.store, self.device_name, fallback_id, cancel)
+            except AccountError as exc:
+                if fallback_id is None or exc.category != "storage":
+                    raise
+                return {"device_id": fallback_id, "device_name": self.device_name}
         return {"device_id": self.device_id, "device_name": self.device_name}
+
+    def _exchange_login(self, generation, code, verifier, cancel):
+        self._check_login(generation, cancel)
+        evidence = {}
+        fallback_id = None
+        try:
+            if self._use_windows_device_evidence:
+                machine_key = _windows_machine_key()
+                if machine_key is not None:
+                    evidence["machine_key"] = machine_key
+                    fallback_id = _fallback_device_id(machine_key)
+                # Collect only IDs that predate this exchange's file creation.
+                evidence["legacy_device_ids"] = _legacy_device_ids(
+                    self.store.path.parent, self.store._shared_device_dir, cancel)
+            self._check_login(generation, cancel)
+            device = self._device_fields(fallback_id, cancel)
+        except AccountError:
+            self._check_login(generation, cancel)
+            raise
+        return self._login_call(generation, "POST", "/v1/auth/exchange",
+                                {"code": code, "code_verifier": verifier, **device, **evidence},
+                                cancel=cancel)
 
     def _call(self, method, path, body=None, token=None, timeout=15):
         result = self._request(method, self.base_url + path, body=body, token=token, timeout=timeout)
@@ -675,9 +769,7 @@ class AccountClient:
                                     self._clear_storage()
                         raise AccountError(server.error)
                     code = server.code
-                session = self._login_call(generation, "POST", "/v1/auth/exchange",
-                                           {"code": code, "code_verifier": verifier,
-                                            **self._device_fields()}, cancel=cancel)
+                session = self._exchange_login(generation, code, verifier, cancel)
                 with self._condition:
                     if generation != (self._generation, self._login_epoch) or (cancel is not None and cancel.is_set()):
                         raise AccountError("cancelled")
@@ -741,9 +833,7 @@ class AccountClient:
                             self._invalidate_session()
                             self._clear_storage()
                 raise AccountError(server.error)
-            session = self._login_call(generation, "POST", "/v1/auth/exchange",
-                                       {"code": server.code, "code_verifier": verifier,
-                                        **self._device_fields()}, cancel=cancel)
+            session = self._exchange_login(generation, server.code, verifier, cancel)
             with self._condition:
                 if generation != (self._generation, self._login_epoch) or (cancel is not None and cancel.is_set()):
                     raise AccountError("cancelled")

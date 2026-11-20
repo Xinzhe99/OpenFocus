@@ -21,7 +21,24 @@ StackMFF V1, V2 and V3 ship with dynamic ONNX models. With GPU acceleration enab
 
 Choose **Settings → AI acceleration components** to check the current machine and download the pack. Windows Setup can open the same screen. A first launch or upgrade offers it once per pack version on compatible hardware. Windows x64 uses one tested pack with PyTorch 2.5.1, CUDA 12.4 and TensorRT 10.4. The NVIDIA GPU at CUDA device 0 must report compute capability 7.5, 8.0, 8.6, 8.9 or 9.0 and a driver supporting CUDA 12.4 or later. The pack installs its CUDA libraries in the private worker environment, so a system CUDA Toolkit is optional. The worker belongs to the user profile or to the portable application data directory.
 
-The pack downloads 3.65 GB and needs 8 GiB of free space. If Windows **Country or region** is set to mainland China, the download dialog shows the [SJTU PyTorch wheel mirror](https://mirror.sjtu.edu.cn/docs/pytorch-wheels) checked by default. Clear the checkbox to use the official PyTorch server. Other regions use the official server directly. An interrupted mirror transfer resumes from the official server. TensorRT uses NVIDIA’s package repository. To reuse saved downloads, choose **Install from folder…** and select a directory containing all the original archives from `core/accelerator_win64.json`. Every source uses the same pinned byte counts and SHA-256 hashes. The pack is activated after the private worker successfully probes both GPU engines.
+An installed pack is reused across application updates that require the same
+pack version. Windows Setup keeps the user's pack in `%LOCALAPPDATA%\OpenFocus\inference-packs`.
+An in-place portable update keeps `OpenFocusData`. Keep that folder with the
+application when moving a portable copy to a different directory.
+
+The pack downloads 3.65 GB and needs 8 GiB of free space. **Automatic** prefers
+mirrors for a mainland China network connection and the official source for
+other regions. When the network region is unavailable, it uses Windows
+**Country or region**. Use **Mirrors first** or **Official first** to override
+the order, for example when using a proxy. The service publishes the PyTorch
+mirror list, with Aliyun, NJU and SJTU in the bundled fallback list. Transfers
+can resume from the next source at the first missing byte. TensorRT uses
+NVIDIA's package repository.
+
+To reuse saved archives, choose **Install from folder…** and select a directory
+containing the original files from `core/accelerator_win64.json`. Every source
+uses the same pinned byte counts and SHA-256 hashes. The pack is activated
+after the private worker successfully probes both GPU engines.
 
 TensorRT builds an FP32 engine for a particular ONNX model and input shape. The first run includes compilation. OpenFocus reuses compatible local plans on later runs. PyTorch CUDA uses the verified matching checkpoint for each shipped StackMFF model. If the selected model, shape or available memory rules out an engine, the dispatcher tries the next compatible path. Decoding, registration, colour reconstruction and export have their own execution costs.
 
