@@ -113,10 +113,11 @@ class IntraLayerWindowAttention(nn.Module):
             x = torch.roll(x, shifts=(-s, -s), dims=(1, 2))
         xw = window_partition(x, ws)                                 # M*nW, T, C
 
-        qkv = self.qkv(xw).reshape(M, nW, T, 3, heads, d).permute(3, 0, 1, 4, 2, 5)
-        q = qkv[0].reshape(M, nW * heads, T, d)
-        k = qkv[1].reshape(M, nW * heads, T, d)
-        v = qkv[2].reshape(M, nW * heads, T, d)
+        # Select each projection before permuting its heads. This avoids
+        # transposing a joint Q/K/V tensor in the exported attention graph.
+        qkv = self.qkv(xw).reshape(M, nW, T, 3, heads, d)
+        q, k, v = (qkv.select(3, i).permute(0, 1, 3, 2, 4).reshape(M, nW * heads, T, d)
+                   for i in range(3))
 
         bias = self.rel_pos_bias_table[self.rel_index.reshape(-1)].reshape(T, T, heads)
         bias = bias.permute(2, 0, 1)                                 # heads, T, T
@@ -173,8 +174,8 @@ class InterLayerAttention(nn.Module):
         t = xs.permute(0, 2, 3, 1, 4).reshape(M, N, C)              # M groups of N tokens
 
         qkv = self.qkv(self.norm1(t)).reshape(M, N, 3, self.heads, self.head_dim)
-        qkv = qkv.permute(2, 0, 3, 1, 4)                             # 3, M, heads, N, d
-        o = F.scaled_dot_product_attention(qkv[0], qkv[1], qkv[2])   # M, heads, N, d
+        q, k, v = (qkv.select(2, i).permute(0, 2, 1, 3) for i in range(3))
+        o = F.scaled_dot_product_attention(q, k, v)                  # M, heads, N, d
         o = o.transpose(1, 2).reshape(M, N, C)
         t = t + self.proj(o)
         t = t + self.mlp(self.norm2(t))
