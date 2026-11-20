@@ -11,6 +11,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   three StackMFF models before activation.
 
 ### Changed
+- Accelerate OpenFocus alignment candidate scoring, similarity warping,
+  uint8 translation warping, pyramid downsizing, and validity mask generation
+  with single-threaded native CPU kernels while preserving bit-exact results
+  and row-band cancellation.
 - Preselect NVIDIA acceleration review on Windows PCs with an NVIDIA driver,
   including when upgrading from 2.0.0.
 - Choose the PyTorch download order from the network region, with a manual

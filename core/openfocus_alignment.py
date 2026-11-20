@@ -25,6 +25,17 @@ def _check_cancel(should_cancel):
         raise RegistrationCancelled()
 
 
+def _run_row_bands(rows, band, should_cancel, fn, *args):
+    """Run a row-bounded native kernel, checking cancellation between bands."""
+    if should_cancel is None:
+        fn(*args, 0, rows)
+        return
+    for start in range(0, rows, band):
+        _check_cancel(should_cancel)
+        fn(*args, start, min(rows, start + band))
+    _check_cancel(should_cancel)
+
+
 def _geometry(frame, *, internal_float=False):
     shape = tuple(frame.shape)
     dtype = np.dtype(frame.dtype)
@@ -183,10 +194,12 @@ def _alignment_geometry(frame):
 def _validate_internal_float(image, should_cancel):
     if image.dtype.kind != 'f':
         return
-    for row in image:
+    for start in range(0, len(image), 128):
         _check_cancel(should_cancel)
-        if not np.isfinite(row).all() or row.min() < 0 or row.max() > 255:
+        band = image[start:start + 128]
+        if not np.isfinite(band).all() or band.min() < 0 or band.max() > 255:
             raise ValueError('Internal floating alignment pixels must be finite and in [0, 255]')
+    _check_cancel(should_cancel)
 
 
 def _alignment_gray16(image, should_cancel):
@@ -194,14 +207,18 @@ def _alignment_gray16(image, should_cancel):
         return _gray16(image, should_cancel)
     _validate_internal_float(image, should_cancel)
     gray = np.empty(image.shape[:2], np.uint16)
-    for y, row in enumerate(image):
+    take = min(image.shape[2], 3) if image.ndim == 3 else 1
+    for start in range(0, len(image), 128):
         _check_cancel(should_cancel)
+        band = image[start:start + 128]
         # Recover native code values from normalize_fuse_input's 0..255
         # floats before taking the same truncated equal-channel mean.
-        take = min(image.shape[2], 3) if image.ndim == 3 else 1
-        color = row[:, :take] if image.ndim == 3 else row
+        color = band[:, :, :take] if image.ndim == 3 else band
         codes = np.rint(color.astype(np.float64) * 257.).astype(np.uint16)
-        gray[y] = codes.sum(axis=1, dtype=np.uint32) // take if image.ndim == 3 else codes
+        gray[start:start + 128] = (
+            codes.sum(axis=2, dtype=np.uint32) // take if image.ndim == 3 else codes
+        )
+    _check_cancel(should_cancel)
     return gray
 
 
@@ -405,11 +422,15 @@ def _warp(image, dx, dy, should_cancel):
     # from inside sampling, before the vectorized/native plane path starts.
     _sample_plane(image, np.zeros(1, np.float32), np.zeros(1, np.float32))
     _check_cancel(should_cancel)
-    if (_native_kernels.available() and image.dtype == np.uint16
-            and image.ndim in (2, 3)):
-        return _native_kernels.warp_u16(image, _F32(dx), _F32(dy))
     h, w = image.shape[:2]
     output = np.empty_like(image)
+    if (_native_kernels.available() and image.dtype in (np.uint8, np.uint16)
+            and image.ndim in (2, 3)):
+        _run_row_bands(
+            h, 128, should_cancel, _native_kernels.warp_int_rows,
+            image, output, _F32(dx), _F32(dy),
+        )
+        return output
     x = np.arange(w, dtype=np.float32) - _F32(dx)
     y = np.arange(h, dtype=np.float32) - _F32(dy)
     ix, jx, fx, invalid_x = _axis_samples(x, w)
@@ -521,7 +542,11 @@ _BIG = F32(1.0e6)
 def fast_downsize(img, should_cancel=None):
     """2x2 mean (sum+2)>>2, ceil dimensions and edge tail."""
     h, w = img.shape
-    out = np.empty(((h + 1) // 2, (w + 1) // 2), np.uint16)
+    oh = (h + 1) // 2
+    out = np.empty((oh, (w + 1) // 2), np.uint16)
+    if _native_kernels.available() and img.dtype == np.uint16 and img.ndim == 2:
+        _run_row_bands(oh, 128, should_cancel, _native_kernels.fast_downsize_u16_rows, img, out)
+        return out
     xs = np.arange(0, w, 2)
     xe = np.minimum(xs + 1, w - 1)
     for y in range(0, h, 2):
@@ -687,6 +712,20 @@ def _score_chunk(img_a, img_b, xs, ys, cand):
     if not alive.any():
         return ssum, ssq, cnt
     idx = np.nonzero(alive)[0]
+    if (_native_kernels.available() and img_a.dtype == np.uint16
+            and img_b.dtype == np.uint16 and img_a.ndim == 2 and img_b.ndim == 2):
+        xs_i = xs.astype(np.int64)
+        ys_i = ys.astype(np.int64)
+        ref = np.ascontiguousarray(img_a[ys_i[:, None], xs_i[None, :]], dtype=np.uint16)
+        xs_f = np.ascontiguousarray(xs, dtype=np.float32)
+        ys_f = np.ascontiguousarray(ys, dtype=np.float32)
+        _native_kernels.score_chunk_u16(
+            ref, img_b, xs_f, ys_f,
+            fields["P08"], fields["P0C"], fields["P18"], fields["P1C"],
+            fields["tx"], fields["ty"], fields["cx"], fields["cy"],
+            idx, ssum, ssq, cnt,
+        )
+        return ssum, ssq, cnt
     u, v = map_coords({k: v[idx] for k, v in fields.items()},
                       xs[None, :], ys[:, None])
     nyy, nxx = len(ys), len(xs)
@@ -1124,9 +1163,24 @@ def _warp_alignment(image, f8, should_cancel):
     _check_cancel(should_cancel)
     if tx == cx and ty == cy and rotation == 0 and mx == 1 and my == 1:
         return image
+    # Preserve the pointwise-sampler cancellation hook used by callers that
+    # cancel inside _bilinear_points before the native/row path runs.
+    probe = image if image.ndim == 2 else image[:, :, 0]
+    _bilinear_points(probe, np.zeros(1, np.float32), np.zeros(1, np.float32))
+    _check_cancel(should_cancel)
     fields = gpu_params(f8)
     h, w = image.shape[:2]
     output = np.empty_like(image)
+    if (_native_kernels.available() and image.ndim in (2, 3)
+            and image.dtype in (np.uint8, np.uint16, np.float32, np.float64)):
+        kernel = (_native_kernels.warp_alignment_float_rows if image.dtype.kind == 'f'
+                  else _native_kernels.warp_alignment_int_rows)
+        _run_row_bands(
+            h, 128, should_cancel, kernel, image, output,
+            fields["tx"], fields["ty"], fields["cx"], fields["cy"],
+            fields["P08"], fields["P0C"], fields["P18"], fields["P1C"],
+        )
+        return output
     xs = np.arange(w, dtype=np.float32)
     for y in range(h):
         _check_cancel(should_cancel)
@@ -1158,6 +1212,14 @@ def alignment_valid_mask(transform, *, should_cancel=None):
     h, w = transform.source.shape[:2]
     mask = np.empty((h, w), bool)
     fields = gpu_params(transform.f8)
+    if _native_kernels.available():
+        _run_row_bands(
+            h, 256, should_cancel, _native_kernels.valid_mask_rows,
+            mask, h, w,
+            fields["tx"], fields["ty"], fields["cx"], fields["cy"],
+            fields["P08"], fields["P0C"], fields["P18"], fields["P1C"],
+        )
+        return mask
     xs = np.arange(w, dtype=np.float32)
     for y in range(h):
         _check_cancel(should_cancel)
