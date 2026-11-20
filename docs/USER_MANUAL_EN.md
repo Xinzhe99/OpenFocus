@@ -390,6 +390,8 @@ files require saving a new input stack first.
 File → Open Project rebuilds the recorded frames before replacing the current
 stack. If sources moved, choose the new source root and confirm the complete
 old/new path mapping. Save the project again to retain the relocated references.
+You can also drop one `.ofproj` file into the desktop window or pass its path
+to `openfocus gui`. On macOS, OpenFocus also handles files sent to its Dock icon.
 
 The title bar shows a named project's file name with a `*` while it has unsaved
 changes. An unnamed workspace displays **OpenFocus**. Closing the app or opening

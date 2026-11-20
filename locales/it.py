@@ -811,6 +811,7 @@ PACK = {
     "msg_delete_source_changed": "Lo stack sorgente è cambiato. Seleziona di nuovo i frame prima di eliminarli.",
     "msg_append_target_changed": "Lo stack sorgente è cambiato. Importa di nuovo i frame.",
     "msg_external_import_video_combination": "Importa un solo video oppure seleziona insieme cartelle e immagini.",
+    "msg_external_import_project_single": "Apri un solo file di progetto alla volta.",
     "report_cleanup_failed": "Impossibile rimuovere i rapporti automatici in coda. L'invio automatico rimane disattivato; riprova prima di attivarlo.",
     "compare_direction_needs_verify": "Questo candidato usa una direzione di registrazione diversa dall'esecuzione separata del metodo. Verifica il metodo separatamente prima di adottarne i parametri.",
     "msg_transform_committed_refresh_failed": "La trasformazione è stata applicata, ma non è stato possibile aggiornare la visualizzazione.",
