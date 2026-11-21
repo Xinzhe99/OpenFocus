@@ -187,12 +187,20 @@ def plan_attention_inference(algorithm, frames, model_path, device,
 
 
 class _TileCrop(ProcessedFrame):
-    """An ephemeral crop that only borrows its full source's render cache."""
+    """A packed crop from a source already admitted by the tile planner."""
 
     def full_resolution(self, *, should_cancel=None, cache_result=True, store_result=True):
+        cancel(self.should_cancel)
+        cancel(should_cancel)
         with _profile().stage('resolve_region'):
-            return super().full_resolution(should_cancel=should_cancel, cache_result=False,
-                                           store_result=False)
+            source = self.source
+            if isinstance(source, ProcessedFrame):
+                source = source.full_resolution(should_cancel=should_cancel or self.should_cancel,
+                                                cache_result=False, store_result=False)
+            image = self.processor(source)
+        cancel(self.should_cancel)
+        cancel(should_cancel)
+        return image
 
 
 def _packed_crop(image, *, rows, columns, normalize, gain):
@@ -216,11 +224,9 @@ def tile_sources(frames, coords, *, exposure_gains=None, should_cancel=None):
             raise ValueError('All frames must have the same dimensions')
         shape = (y1 - y0, x1 - x0) + frame.shape[2:]
         dtype = np.dtype(np.float32) if normalize else frame.dtype
-        pixels = (y1 - y0) * (x1 - x0) * (shape[2] if len(shape) == 3 else 1)
         processor = partial(_packed_crop, rows=slice(y0, y1), columns=slice(x0, x1),
                             normalize=normalize, gain=gain)
-        sources.append(_TileCrop(frame, processor, shape, dtype, should_cancel,
-                                 pixels * (12 if gain is not None else dtype.itemsize)))
+        sources.append(_TileCrop(frame, processor, shape, dtype, should_cancel))
     return sources
 
 

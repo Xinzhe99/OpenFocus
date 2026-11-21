@@ -786,7 +786,7 @@ def neural_tile_bytes(frames, height, width, channels, block, kind,
     if output_bytes is None:
         output_bytes = height * width * ((channels + 1) * 4 + channels * 4)
     # Matched/normalized crops may coexist with their predecessors.
-    crops = (1 if streamed_crops else frames) * block * block * channels * 8
+    crops = block * block * channels * (12 if streamed_crops else frames * 8)
     # Streamed color never goes to the device. Keep the six luma/logit and
     # transfer planes also budgeted at provider admission.
     staging = frames * tile_pixels * 4 * (6 if streamed_crops else 2 * channels + 3)

@@ -118,6 +118,14 @@ def test_v1_supports_dynamic_stack_depth(depth):
     assert np.all(result.astype(np.int16) <= source.max(axis=0).astype(np.int16) + 1)
 
 
+def test_v1_tiled_fusion_keeps_single_pixel_edge():
+    frame = np.full((64, 65, 3), 137, np.uint8)
+    fusion = MultiFocusFusion('stackmff', use_gpu=False, exposure_match=False,
+                              tile_block_size=64, tile_overlap=0, tile_threshold=1)
+    result = fusion.fuse([frame, frame.copy()], thread_count=1)
+    np.testing.assert_array_equal(result, frame)
+
+
 def test_v1_cancels_between_inference_scales(monkeypatch):
     from core.registration import RegistrationCancelled
     from fusion_methods import neural_runtime
