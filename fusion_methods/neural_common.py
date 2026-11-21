@@ -1,10 +1,14 @@
 """Shared staging, cancellation and resource planning for neural fusion."""
 import os
 from contextlib import contextmanager
+from functools import partial
+from itertools import repeat
 
 import cv2
 import numpy as np
 
+from core.source_frames import ProcessedFrame
+from utils.performance_profile import current as _profile
 from utils.sorting import natural_sort_key
 ATTENTION_PAD_ALIGN = 64
 
@@ -182,6 +186,50 @@ def plan_attention_inference(algorithm, frames, model_path, device,
         return model_path, device, plan
 
 
+class _TileCrop(ProcessedFrame):
+    """A packed crop from a source already admitted by the tile planner."""
+
+    def full_resolution(self, *, should_cancel=None, cache_result=True, store_result=True):
+        cancel(self.should_cancel)
+        cancel(should_cancel)
+        with _profile().stage('resolve_region'):
+            source = self.source
+            if isinstance(source, ProcessedFrame):
+                source = source.full_resolution(should_cancel=should_cancel or self.should_cancel,
+                                                cache_result=False, store_result=False)
+            image = self.processor(source)
+        cancel(self.should_cancel)
+        cancel(should_cancel)
+        return image
+
+
+def _packed_crop(image, *, rows, columns, normalize, gain):
+    # The packed grid preserves OpenCV's SIMD/scalar luma rounding at tile edges.
+    image = np.ascontiguousarray(image[rows, columns])
+    if gain is None:
+        return image
+    from utils.image_utils import apply_exposure_gain
+    return apply_exposure_gain(working_frame(image, normalize), gain)
+
+
+def tile_sources(frames, coords, *, exposure_gains=None, should_cancel=None):
+    """Describe one packed crop per frame, resolving only the crop being used."""
+    x0, y0, x1, y1 = coords
+    normalize = exposure_gains is not None and any(frame.dtype == np.uint16 for frame in frames)
+    gains = repeat(None) if exposure_gains is None else exposure_gains
+    sources = []
+    for frame, gain in zip(frames, gains):
+        cancel(should_cancel)
+        if frame.shape[0] < y1 or frame.shape[1] < x1:
+            raise ValueError('All frames must have the same dimensions')
+        shape = (y1 - y0, x1 - x0) + frame.shape[2:]
+        dtype = np.dtype(np.float32) if normalize else frame.dtype
+        processor = partial(_packed_crop, rows=slice(y0, y1), columns=slice(x0, x1),
+                            normalize=normalize, gain=gain)
+        sources.append(_TileCrop(frame, processor, shape, dtype, should_cancel))
+    return sources
+
+
 def _ycbcr(frame):
     """BT.601 Y/Cb/Cr in 0-255, independent of cv2's float input range."""
     data = frame.astype(np.float32, copy=False)
@@ -215,17 +263,35 @@ def tensor_to_bgr(fused_luma, frames, should_cancel=None):
     cancel(should_cancel)
     normalize_stack = any(frame.dtype == np.uint16 for frame in frames)
     target = np.clip(fused_luma, 0.0, 255.0)
-    best = cb = cr = None
-    for frame in frames:
+    from core.source_frames import resolve_frame
+    height, width = target.shape
+    band_rows = max(1, min(128, (64 * 1024) // width))
+    best = np.empty((height, width), dtype=np.result_type(target.dtype, np.float32))
+    cb = np.empty((height, width), dtype=np.float32)
+    cr = np.empty_like(cb)
+    for index, frame in enumerate(frames):
         cancel(should_cancel)
-        luma, frame_cb, frame_cr = _ycbcr(working_frame(frame, normalize_stack))
-        distance = np.abs(luma - target)
-        if best is None:
-            best, cb, cr = distance, frame_cb, frame_cr
-            continue
-        better = (distance < best) | (np.isnan(distance) & ~np.isnan(best))
-        np.copyto(best, distance, where=better)
-        np.copyto(cb, frame_cb, where=better)
-        np.copyto(cr, frame_cr, where=better)
+        image = resolve_frame(frame, should_cancel=should_cancel)
+        for start in range(0, height, band_rows):
+            cancel(should_cancel)
+            rows = slice(start, start + band_rows)
+            luma, frame_cb, frame_cr = _ycbcr(working_frame(image[rows], normalize_stack))
+            distance = np.abs(luma - target[rows])
+            if index == 0:
+                best[rows], cb[rows], cr[rows] = distance, frame_cb, frame_cr
+            else:
+                previous = best[rows]
+                better = (distance < previous) | (np.isnan(distance) & ~np.isnan(previous))
+                np.copyto(previous, distance, where=better)
+                np.copyto(cb[rows], frame_cb, where=better)
+                np.copyto(cr[rows], frame_cr, where=better)
+        del image, luma, frame_cb, frame_cr, distance
+    fused = np.empty((height, width, 3), dtype=np.float32)
+    for start in range(0, height, band_rows):
+        cancel(should_cancel)
+        rows = slice(start, start + band_rows)
+        color = _ycbcr_to_bgr(target[rows], cb[rows], cr[rows])
+        np.clip(color, 0.0, 255.0, out=fused[rows])
+        del color
     cancel(should_cancel)
-    return np.clip(_ycbcr_to_bgr(target, cb, cr), 0.0, 255.0)
+    return fused
