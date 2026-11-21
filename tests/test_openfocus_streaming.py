@@ -647,7 +647,8 @@ def test_producer_window_stays_bounded_as_stack_length_grows(monkeypatch):
 
 
 @pytest.mark.parametrize('exposure', [False, True])
-def test_large_tiff_b_snapshots_real_ecc_warps_before_whole_depth(tmp_path, monkeypatch, exposure):
+@pytest.mark.parametrize('space', ['available', 'full', 'fills-during-stage'])
+def test_large_tiff_b_runs_real_ecc_warps_with_or_without_snapshots(tmp_path, monkeypatch, exposure, space):
     from collections import Counter
     from core import multi_focus_fusion, registration
 
@@ -680,6 +681,29 @@ def test_large_tiff_b_snapshots_real_ecc_warps_before_whole_depth(tmp_path, monk
             return 129 * 1024 ** 2
         return original_cost(frame, metadata_only=metadata_only)
     monkeypatch.setattr(source_frames, 'frame_resolution_bytes', expensive)
+    if space == 'full':
+        select_scratch = frame_storage.select_scratch
+
+        def fits_only_live_buffers(size, *args, **kwargs):
+            if size > 32 * 40 * 48:
+                raise frame_storage.ScratchSpaceError(str(tmp_path), size, 32 * 40 * 48)
+            return select_scratch(size, *args, **kwargs)
+
+        monkeypatch.setattr(frame_storage, 'select_scratch', fits_only_live_buffers)
+    elif space == 'fills-during-stage':
+        store_frame = source_frames.store_frame
+        snapshots = []
+
+        def runs_out_of_space(image, *, prefer_ram=True):
+            if not prefer_ram:
+                if snapshots:
+                    raise frame_storage.ScratchSpaceError(str(tmp_path), image.nbytes, 0)
+                stored = store_frame(image, prefer_ram=False)
+                snapshots.append(Path(stored.filename))
+                return stored
+            return store_frame(image)
+
+        monkeypatch.setattr(source_frames, 'store_frame', runs_out_of_space)
     original_warp = registration.PerspectiveWarp.__call__
     calls = Counter()
     def counted(warp, image):
@@ -693,8 +717,14 @@ def test_large_tiff_b_snapshots_real_ecc_warps_before_whole_depth(tmp_path, monk
     actual = multi_focus_fusion.MultiFocusFusion(**options).fuse(
         deferred, thread_count=1, progress_callback=progress)
     np.testing.assert_array_equal(actual, expected)
-    assert preparation == [(0, 3), (1, 3), (2, 3), (3, 3)]
-    assert [calls[source.path] for source in descriptors] == [2 if exposure else 1, 1, 1]
+    if space == 'available':
+        assert preparation == [(0, 3), (1, 3), (2, 3), (3, 3)]
+        assert [calls[source.path] for source in descriptors] == [2 if exposure else 1, 1, 1]
+    elif space == 'full':
+        assert not preparation
+    else:
+        assert preparation == [(0, 3), (1, 3)]
+        assert len(snapshots) == 1 and not snapshots[0].exists()
 
 
 def test_required_source_snapshots_fail_before_writing_when_scratch_is_full(tmp_path, monkeypatch):

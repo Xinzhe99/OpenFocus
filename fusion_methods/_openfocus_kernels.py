@@ -233,14 +233,12 @@ def blend_low_response_rows(output, best, accumulated, weights, statistics, star
 
 @njit(nogil=True)
 def merge_rows(accumulator, image, depth, index, step, start, stop,
-               scale, first, reverse):
+               left, right, scale, first):
     for y in range(start, stop):
-        for x in range(depth.shape[1]):
+        for x in range(left, right):
             weight = 1024
             if not first:
                 delta = np.int64(depth[y, x]) - step * index
-                if reverse:
-                    delta = -delta
                 if delta >= 0:
                     if delta > step:
                         continue
@@ -268,18 +266,22 @@ def merge_rows(accumulator, image, depth, index, step, start, stop,
                              + value * weight) >> 10)
 
 
-@njit(nogil=True)
-def active_source_rows(depth, step, active, start, stop):
-    """Mark every source that a depth code in these rows gives merge weight.
+@njit(nogil=True, inline='always')
+def _include_sample(bounds, index, x, y):
+    bounds[index, 0] = min(bounds[index, 0], x)
+    bounds[index, 1] = min(bounds[index, 1], y)
+    bounds[index, 2] = max(bounds[index, 2], x + 1)
+    bounds[index, 3] = max(bounds[index, 3], y + 1)
 
-    A code selects source code // step (clipped to the stack), and also the
-    next source when it falls between two sources.
-    """
-    last = active.shape[0] - 1
+
+@njit(nogil=True)
+def source_bounds_rows(depth, step, bounds, start, stop):
+    """Bound the samples contributed by the two depth neighbors."""
+    last = bounds.shape[0] - 1
     for y in range(start, stop):
         for x in range(depth.shape[1]):
             code = np.int64(depth[y, x])
             lower = min(max(code // step, 0), last)
-            active[lower] = True
-            if code % step != 0:
-                active[min(lower + 1, last)] = True
+            _include_sample(bounds, lower, x, y)
+            if lower < last and code % step != 0:
+                _include_sample(bounds, lower + 1, x, y)
