@@ -16,6 +16,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   accumulation, specialized selection/gray/merge loops, exact integer
   reciprocals (`detail_rows`, `smooth_detail_rows`, `snap_rows`, `merge_rows`,
   `active_source_rows`), and parallel banded output code conversion.
+- Use the scalar Burt selector for small OpenFocus A images to reduce
+  first-render compilation time. Include the cached-row workspace in the
+  memory budget for larger selection passes.
 - Reuse OpenCL contexts and compiled kernels across OpenFocus A/B/C and ECC
   resize jobs. Reuse upload buffers within a job and drain pending work
   before releasing buffers after cancellation or error.

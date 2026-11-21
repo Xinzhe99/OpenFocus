@@ -144,7 +144,8 @@ def test_down2_rows_and_burt_laplacian_rows_match_reference(shape, dtype, scale)
 
 @pytest.mark.parametrize('shape', [(1, 1), (1, 17), (23, 1), (32, 34), (41, 39), (37, 65), (130, 129), (16, 257)])
 @pytest.mark.parametrize('radius', [1, 2, 4, 8, 16, 32, 64])
-def test_burt_fused_accumulation_matches_exact_reference(shape, radius):
+def test_burt_fused_accumulation_matches_exact_reference(shape, radius, monkeypatch):
+    monkeypatch.setattr(kernels, '_BURT_CACHE_MIN_PIXELS', 0)
     rng = np.random.default_rng(404 + shape[0] * 31 + shape[1] + radius)
     gray = rng.integers(0, 65536, size=shape, dtype=np.uint16)
     gray.flat[::9] = 65535
@@ -184,7 +185,8 @@ def test_burt_fused_accumulation_matches_exact_reference(shape, radius):
 @pytest.mark.parametrize('dtype', [np.uint8, np.uint16])
 @pytest.mark.parametrize('channels', [0, 3, 4])
 @pytest.mark.parametrize('reverse_view', [False, True])
-def test_select_and_blend_rows_parity_across_states_and_layouts(dtype, channels, reverse_view):
+def test_select_and_blend_rows_parity_across_states_and_layouts(dtype, channels, reverse_view, monkeypatch):
+    monkeypatch.setattr(kernels, '_BURT_CACHE_MIN_PIXELS', 0)
     if reverse_view and channels == 0:
         pytest.skip('channel flip only applies to 3D')
     rng = np.random.default_rng(505 + channels + (1 if dtype == np.uint16 else 0))
