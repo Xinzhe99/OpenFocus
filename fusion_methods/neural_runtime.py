@@ -15,6 +15,8 @@ import traceback
 import cv2
 import numpy as np
 
+from core.models.attention_workspace import released_attention_workspace_bytes
+
 from utils.logging_setup import get_logger, log_action
 from utils.performance_profile import current as _profile
 
@@ -25,6 +27,7 @@ _PROVIDER = {'CPU': 'CPUExecutionProvider', 'DIRECTML': 'DmlExecutionProvider',
              'OPENVINO': 'OpenVINOExecutionProvider', 'COREML': 'CoreMLExecutionProvider'}
 _ORT_ORDER = ('CUDA', 'ROCM', 'DIRECTML', 'OPENVINO', 'COREML')
 _NATIVE_ORDER = ('TENSORRT', 'TORCH_CUDA', 'TORCH_MPS')
+_NATIVE_TORCH = ('TORCH_CUDA', 'TORCH_MPS')
 # A refresh publishes one immutable installation snapshot. A live job holds
 # its own reference, so an installer cannot switch its interpreter mid-job.
 _PACK = None
@@ -378,11 +381,17 @@ def estimate_inference_bytes(n, h, w, kind):
     pixels = hp * wp
     feature_base = 7 if kind == 'CPU' else 12
     workspace = 0
+    if kind in _NATIVE_TORCH:
+        # The app supplies the worker source. These engines accept only the
+        # released graph/checkpoint pairs and always enable bounded attention.
+        attention = released_attention_workspace_bytes(n, hp, wp)
+    else:
+        attention = pixels // 16 * 3 * 4 * (n * 64 + n * n)
     if kind == 'TENSORRT':
         from core.inference_tensorrt import workspace_bytes
         workspace = workspace_bytes(n, hp, wp)
     return (int(n * pixels * 3 * 4 * (feature_base + 4))
-            + int(pixels / 16 * 3 * 4 * (n * 64 + n * n))
+            + attention
             + n * pixels * 4 * 6 + 4 * 1024 * 1024 + workspace)
 
 

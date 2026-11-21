@@ -115,11 +115,12 @@ def test_mps_host_charge_in_planners_and_preflight(monkeypatch, fallback):
     startup = neural_runtime.native_startup_bytes(device)
     whole, vram = attention_inference_bytes(*shape, device)
     coreml, _ = attention_inference_bytes(*shape, 'COREML')
-    assert whole == coreml + startup and vram == 0
+    workspace_delta = estimate_inference(3, 64, 64, device) - estimate_inference(3, 64, 64, 'COREML')
+    assert whole == coreml + workspace_delta + startup and vram == 0
     tile_args = (*shape, 64)
     tile, _ = resource_policy.neural_tile_bytes(*tile_args, device, estimate_inference)
     coreml_tile, _ = resource_policy.neural_tile_bytes(*tile_args, 'COREML', estimate_inference)
-    assert tile == coreml_tile + startup
+    assert tile == coreml_tile + workspace_delta + startup
 
     monkeypatch.setattr(neural_runtime, 'resolve_device', lambda _: device)
     monkeypatch.setattr(neural_runtime, 'cached_device', lambda: device)
@@ -174,3 +175,20 @@ def test_mps_live_and_frozen_ram_limits_count_worker_once(monkeypatch):
                 ram_budget=inference + startup - 1, device_kind=device))
             assert 'Host memory plan budget' in neural_runtime._memory_refusal('model', shape, device, 1)
     neural_runtime.start_inference_job()
+
+
+@pytest.mark.parametrize('device', ['TORCH_CUDA', 'TORCH_MPS'])
+def test_deep_tile_planner_admits_native_attention_with_its_bounded_workspace(monkeypatch, device):
+    from core.models.attention_workspace import released_attention_workspace_bytes
+
+    estimate = neural_runtime.estimate_inference_bytes
+    tile_args = (600, 64, 64, 3, 64)
+    host, vram = resource_policy.neural_tile_bytes(*tile_args, device, estimate)
+    assert released_attention_workspace_bytes(600, 64, 64) == 64 * 1024**2
+    assert estimate(600, 64, 64, 'CUDA') > vram
+    monkeypatch.setattr(resource_policy, 'vram_budget', lambda _: vram)
+    snapshot = _snapshot(device, free_vram=GiB, total_vram=GiB, commit_headroom=host)
+    block, plan = resource_policy.plan_neural_tiles(*tile_args, device, estimate, snapshot=snapshot)
+    assert block == 64 and plan.device_kind == device
+    assert plan.required_ram == host
+    assert plan.required_vram == (vram if device == 'TORCH_CUDA' else 0)

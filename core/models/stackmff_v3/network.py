@@ -21,6 +21,28 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from core.models import attention_workspace
+
+
+def _score_attention(q, k, v, mask=None):
+    """Float32 attention for a bounded block with the complete key axis."""
+    if q.is_cuda:
+        if q.ndim == 3:
+            # CUDA's fused kernel takes [batch, heads, tokens, channels].
+            result = F.scaled_dot_product_attention(q[:, None], k[:, None], v[:, None])
+            return result[:, 0]
+        if mask.ndim == 4:
+            mask = mask.expand(q.shape[0], *mask.shape).flatten(0, 1)
+        mask = mask.contiguous()
+        result = F.scaled_dot_product_attention(q.flatten(0, 1), k.flatten(0, 1),
+                                                v.flatten(0, 1), attn_mask=mask)
+        return result.reshape(q.shape)
+    scores = torch.matmul(q, k.transpose(-2, -1)).mul_(q.shape[-1] ** -0.5)
+    if mask is not None:
+        scores.add_(mask)
+    scores = scores.softmax(dim=-1)
+    return torch.matmul(scores, v)
+
 
 def window_partition(x, ws):
     """[M, h, w, C] -> [M * nW, ws*ws, C] (windows are ordered per image)."""
@@ -58,6 +80,8 @@ class IntraLayerWindowAttention(nn.Module):
     (shift=True, shift = window//2 with the standard attention mask).
     """
 
+    bounded_workspace = False
+
     def __init__(self, dim, num_heads, window=8, shift=False, mlp_ratio=2.0):
         super().__init__()
         assert dim % num_heads == 0
@@ -85,8 +109,8 @@ class IntraLayerWindowAttention(nn.Module):
         self.norm2 = nn.LayerNorm(dim)
         self.mlp = Mlp(dim, mlp_ratio)
 
-    def _shift_mask(self, h, w, s, device):
-        """Standard Swin attention mask for shifted windows: [nW, T, T]."""
+    def _shift_regions(self, h, w, s, device):
+        """Swin region IDs: [nW, T]. Materialize the mask per window block."""
         ws = self.ws
         img = torch.zeros(1, h, w, 1, device=device)
         cnt = 0
@@ -95,10 +119,34 @@ class IntraLayerWindowAttention(nn.Module):
             for wsl in slices:
                 img[:, hs, wsl, :] = cnt
                 cnt += 1
-        mw = window_partition(img, ws).squeeze(-1)                  # nW, T
+        return window_partition(img, ws).squeeze(-1)
+
+    @staticmethod
+    def _shift_mask(mw):
         am = mw.unsqueeze(1) - mw.unsqueeze(2)                      # nW, T, T
         am = am.masked_fill(am != 0, -100.0).masked_fill(am == 0, 0.0)
         return am
+
+    def _bounded_windows(self, qkv, bias, regions):
+        _, layers, windows, heads, tokens, dim = qkv.shape
+        window_scores = heads * tokens * tokens
+        budget = attention_workspace.SCORE_ELEMENTS
+        window_block = min(windows, budget // window_scores)
+        layer_block = budget // (window_block * window_scores)
+        output = qkv.new_empty((layers, windows, tokens, heads, dim))
+        for start in range(0, windows, window_block):
+            window_slice = slice(start, start + window_block)
+            if regions is None:
+                mask = bias
+            else:
+                mask = bias.unsqueeze(0) + self._shift_mask(regions[window_slice]).unsqueeze(1)
+            # Keep window and head axes distinct to broadcast the mask directly.
+            for layer in range(0, layers, layer_block):
+                layer_slice = slice(layer, layer + layer_block)
+                q, k, v = qkv[:, layer_slice, window_slice].unbind(0)
+                output[layer_slice, window_slice].copy_(_score_attention(q, k, v, mask).transpose(2, 3))
+            del mask
+        return output.reshape(layers * windows, tokens, heads * dim)
 
     def forward(self, x):
         M, h, w, C = x.shape
@@ -114,20 +162,22 @@ class IntraLayerWindowAttention(nn.Module):
         xw = window_partition(x, ws)                                 # M*nW, T, C
 
         qkv = self.qkv(xw).reshape(M, nW, T, 3, heads, d).permute(3, 0, 1, 4, 2, 5)
-        q = qkv[0].reshape(M, nW * heads, T, d)
-        k = qkv[1].reshape(M, nW * heads, T, d)
-        v = qkv[2].reshape(M, nW * heads, T, d)
-
         bias = self.rel_pos_bias_table[self.rel_index.reshape(-1)].reshape(T, T, heads)
         bias = bias.permute(2, 0, 1)                                 # heads, T, T
-        if s > 0:
-            full = bias.unsqueeze(0) + self._shift_mask(h, w, s, x.device).unsqueeze(1)  # nW, heads, T, T
+        regions = self._shift_regions(h, w, s, x.device) if s > 0 else None
+        if self.bounded_workspace and M * nW * heads * T * T > attention_workspace.SCORE_ELEMENTS:
+            o = self._bounded_windows(qkv, bias, regions)
         else:
-            full = bias.unsqueeze(0).expand(nW, -1, -1, -1)
-        full = full.reshape(1, nW * heads, T, T).to(q.dtype)
-
-        o = F.scaled_dot_product_attention(q, k, v, attn_mask=full)  # M, nW*heads, T, d
-        o = o.reshape(M, nW, heads, T, d).transpose(2, 3).reshape(M * nW, T, C)
+            q = qkv[0].reshape(M, nW * heads, T, d)
+            k = qkv[1].reshape(M, nW * heads, T, d)
+            v = qkv[2].reshape(M, nW * heads, T, d)
+            if regions is not None:
+                full = bias.unsqueeze(0) + self._shift_mask(regions).unsqueeze(1)  # nW, heads, T, T
+            else:
+                full = bias.unsqueeze(0).expand(nW, -1, -1, -1)
+            full = full.reshape(1, nW * heads, T, T).to(q.dtype)
+            o = F.scaled_dot_product_attention(q, k, v, attn_mask=full)  # M, nW*heads, T, d
+            o = o.reshape(M, nW, heads, T, d).transpose(2, 3).reshape(M * nW, T, C)
         o = self.proj(o)
         o = window_reverse(o, ws, M, h, w)
         if s > 0:
@@ -147,6 +197,8 @@ class InterLayerAttention(nn.Module):
     up-sample the residual update afterwards.
     """
 
+    bounded_workspace = False
+
     def __init__(self, dim, num_heads, mlp_ratio=2.0, pool=1):
         super().__init__()
         assert dim % num_heads == 0
@@ -158,6 +210,28 @@ class InterLayerAttention(nn.Module):
         self.proj = nn.Linear(dim, dim)
         self.norm2 = nn.LayerNorm(dim)
         self.mlp = Mlp(dim, mlp_ratio)
+
+    def _bounded_focus(self, qkv):
+        _, sites, heads, layers, dim = qkv.shape
+        budget = attention_workspace.SCORE_ELEMENTS
+        query_block = min(layers, attention_workspace.FOCUS_QUERY_LIMIT, budget // (heads * layers))
+        if query_block == 0:
+            raise ValueError(f'Cross-layer attention cannot fit one query across {layers} focus layers')
+        site_block = budget // (heads * query_block * layers)
+        output = qkv.new_empty((sites, layers, heads, dim))
+        for start in range(0, sites, site_block):
+            site_slice = slice(start, start + site_block)
+            # Pack the strided projections once per site block. Every query
+            # block reuses the same keys and values in original layer order.
+            q, k, v = (part.reshape(-1, layers, dim) for part in qkv[:, site_slice].unbind(0))
+            for layer in range(0, layers, query_block):
+                query_slice = slice(layer, layer + query_block)
+                block = _score_attention(q[:, query_slice], k, v)
+                block = block.reshape(-1, heads, block.shape[-2], dim).transpose(1, 2)
+                output[site_slice, query_slice].copy_(block)
+                del block
+            del q, k, v
+        return output.reshape(sites, layers, heads * dim)
 
     def forward(self, x):
         B, N, h, w, C = x.shape
@@ -174,8 +248,11 @@ class InterLayerAttention(nn.Module):
 
         qkv = self.qkv(self.norm1(t)).reshape(M, N, 3, self.heads, self.head_dim)
         qkv = qkv.permute(2, 0, 3, 1, 4)                             # 3, M, heads, N, d
-        o = F.scaled_dot_product_attention(qkv[0], qkv[1], qkv[2])   # M, heads, N, d
-        o = o.transpose(1, 2).reshape(M, N, C)
+        if self.bounded_workspace and M * self.heads * N * N > attention_workspace.SCORE_ELEMENTS:
+            o = self._bounded_focus(qkv)
+        else:
+            o = F.scaled_dot_product_attention(qkv[0], qkv[1], qkv[2])   # M, heads, N, d
+            o = o.transpose(1, 2).reshape(M, N, C)
         t = t + self.proj(o)
         t = t + self.mlp(self.norm2(t))
 
