@@ -17,10 +17,9 @@ from fusion_methods.openfocus_bc import _source_codes
 from fusion_methods.openfocus_ab import _check_cancel
 
 _KERNEL_NAMES = (
-    'c_norm', 'c_norm_u8', 'c_down_h', 'c_down_v', 'c_up_h', 'c_up_v',
-    'c_detail_w', 'c_last_w', 'c_merge', 'c_collapse',
-    'c_merge_focus',
-    'c_out_u8', 'c_out_f32', 'c_transpose', 'filt4',
+    'c_norm', 'c_norm_u8', 'c_down_h', 'c_down_v', 'c_up_h',
+    'c_detail_w', 'c_collapse', 'c_merge', 'c_merge_focus',
+    'c_out_u8', 'c_out_f32', 'transpose_u16', 'filt4',
 )
 
 _cache_lock = Lock()
@@ -101,51 +100,55 @@ __kernel void c_down_v(__global const float* s, __global float* d,
     }
 }
 
+static inline float c_up_total(const __constant float* w, int origin, int length)
+{
+    float total=0.0f;
+    for(int k=0;k<5;k++){
+        int i=origin+k;
+        if(i>=0&&i<length) total=total+w[k];
+    }
+    return total;
+}
+
+static inline float c_up_value(__global const float* s, const __constant float* w,
+                               int offset, int stride, int origin, int length, float total)
+{
+    float value=0.0f;
+    for(int k=0;k<5;k++){
+        int i=origin+k;
+        if(i>=0&&i<length){float p=s[offset+i*stride]*w[k]; value=value+p;}
+    }
+    return value/total;
+}
+
 __kernel void c_up_h(__global const float* s, __global float* d,
-                     const int W, const int H, const int C, const int odd)
+                     const int SW, const int H, const int DW, const int C)
+{
+    int x=get_global_id(0); if(x>=DW)return;
+    int y=get_global_id(1); if(y>=H)return;
+    // Interleave both horizontal phases in fine-width pixel order.
+    const __constant float* w=(x&1)?C_ODD:C_EVEN;
+    int sx=(x>>1)-2;
+    float total=c_up_total(w,sx,SW);
+    for(int c=0;c<C;c++)
+        d[(y*DW+x)*C+c]=c_up_value(s,w,y*SW*C+c,C,sx,SW,total);
+}
+
+__kernel void c_detail_w(__global float* fine, __global const float* horizontal,
+                         __global ushort* weight, const int W, const int H,
+                         const int SH, const int C)
 {
     int x=get_global_id(0); if(x>=W)return;
     int y=get_global_id(1); if(y>=H)return;
-    const __constant float* w=odd?C_ODD:C_EVEN;
-    float total=0.0f;
-    for(int k=0;k<5;k++){int sx=x+k-2; if(sx>=0&&sx<W) total=total+w[k];}
-    for(int c=0;c<C;c++){
-        float v=0.0f;
-        for(int k=0;k<5;k++){int sx=x+k-2; if(sx>=0&&sx<W){float p=s[(y*W+sx)*C+c]*w[k]; v=v+p;}}
-        d[(y*W+x)*C+c]=v/total;
-    }
-}
-
-__kernel void c_up_v(__global const float* s, __global float* d,
-                     const int SW, const int SH, const int DW, const int DH,
-                     const int parity, const int C)
-{
-    int x=get_global_id(0); if(x>=SW)return;
-    int y=get_global_id(1); if(y>=DH)return;
-    int sy0=y>>1;
     const __constant float* w=(y&1)?C_ODD:C_EVEN;
-    float total=0.0f;
-    for(int k=0;k<5;k++){int sy=sy0+k-2; if(sy>=0&&sy<SH) total=total+w[k];}
-    int ox=2*x+parity; if(ox>=DW)return;
-    for(int c=0;c<C;c++){
-        float v=0.0f;
-        for(int k=0;k<5;k++){int sy=sy0+k-2; if(sy>=0&&sy<SH){float p=s[(sy*SW+x)*C+c]*w[k]; v=v+p;}}
-        d[(y*DW+ox)*C+c]=v/total;
-    }
-}
-
-__kernel void c_detail_w(__global const float* fine, __global const float* up,
-                         __global float* detail, __global ushort* weight,
-                         const int W, const int H, const int C)
-{
-    int x=get_global_id(0); if(x>=W)return;
-    int y=get_global_id(1); if(y>=H)return;
+    int sy=(y>>1)-2;
+    float total=c_up_total(w,sy,SH);
     float st=0.0f;
     for(int c=0;c<C;c++){
         int i=(y*W+x)*C+c;
-        float lo=up[i];
+        float lo=c_up_value(horizontal,w,x*C+c,W*C,sy,SH,total);
         float v=(fine[i]-lo)/(lo+0.1f);
-        detail[i]=v;
+        fine[i]=v;
         if(c<3) st=st+fabs(v);
     }
     if(C==1) st=st*3.0f;
@@ -153,13 +156,6 @@ __kernel void c_detail_w(__global const float* fine, __global const float* up,
     int border=(H>2&&(y==0||y==H-1))||(W>2&&(x==0||x==W-1));
     int wi=border?0:min(65535,(int)(st*21845.0f));
     weight[y*W+x]=(ushort)wi;
-}
-
-__kernel void c_last_w(__global ushort* weight, const int W, const int H)
-{
-    int x=get_global_id(0); if(x>=W)return;
-    int y=get_global_id(1); if(y>=H)return;
-    weight[y*W+x]=(y==0||x==0||y==H-1||x==W-1)?(ushort)0:(ushort)65535;
 }
 
 __kernel void c_merge(__global const float* detail, __global const ushort* weight,
@@ -192,13 +188,20 @@ __kernel void c_merge_focus(__global const float* detail, __global const ushort*
     }
 }
 
-__kernel void c_collapse(__global const float* coarse, __global const float* detail,
-                         __global float* out, const int n)
+__kernel void c_collapse(__global float* detail, __global const float* horizontal,
+                         const int W, const int H, const int SH, const int C)
 {
-    int i=get_global_id(0); if(i>=n)return;
-    float v=coarse[i];
-    float t=(v+0.1f)*detail[i]; float value=t+v;
-    out[i]=fmin(1.0f,fmax(0.0f,value));
+    int x=get_global_id(0); if(x>=W)return;
+    int y=get_global_id(1); if(y>=H)return;
+    const __constant float* w=(y&1)?C_ODD:C_EVEN;
+    int sy=(y>>1)-2;
+    float total=c_up_total(w,sy,SH);
+    for(int c=0;c<C;c++){
+        int i=(y*W+x)*C+c;
+        float v=c_up_value(horizontal,w,x*C+c,W*C,sy,SH,total);
+        float t=(v+0.1f)*detail[i]; float value=t+v;
+        detail[i]=fmin(1.0f,fmax(0.0f,value));
+    }
 }
 
 __kernel void c_out_u8(__global const float* src, __global uchar* dst, const int n)
@@ -216,19 +219,11 @@ __kernel void c_out_f32(__global const float* src, __global float* dst, const in
     float code=v*65535.0f;
     dst[i]=rint(code)*(1.0f/257.0f);
 }
-
-__kernel void c_transpose(__global const ushort* src, __global ushort* dst,
-                          const int H, const int W)
-{
-    int x=get_global_id(0); if(x>=W)return;
-    int y=get_global_id(1); if(y>=H)return;
-    dst[x*H+y]=src[y*W+x];
-}
 '''
 
 
 class GpuC:
-    """Device-resident C pyramid fusion; mirrors fuse_pyramid step for step."""
+    """Device-resident C pyramid fusion with bounded, in-order scratch reuse."""
 
     def __init__(self):
         from fusion_methods._openfocus_gpu import GpuError, _device, opencl_device_name
@@ -246,29 +241,12 @@ class GpuC:
             raise
         except Exception as exc:
             raise GpuError('OpenCL GPU C initialization failed') from exc
-        self._planes = {}
-        self._weights = {}
-        self._filt = {}
 
-    # -- buffer helpers ---------------------------------------------------------
+    def _f32(self, pixels, channels):
+        return self.cl.Buffer(self.ctx, self.mf.READ_WRITE, pixels * channels * 4)
 
-    def _f32(self, h, w, c):
-        return self.cl.Buffer(self.ctx, self.mf.READ_WRITE, h * w * c * 4)
-
-    def _u16(self, h, w):
-        return self.cl.Buffer(self.ctx, self.mf.READ_WRITE, h * w * 2)
-
-    def _plane(self, key, h, w, c):
-        k = (key, h, w, c)
-        if k not in self._planes:
-            self._planes[k] = self._f32(h, w, c)
-        return self._planes[k]
-
-    def _weight_plane(self, h, w):
-        k = ('w', h, w)
-        if k not in self._weights:
-            self._weights[k] = self._u16(h, w)
-        return self._weights[k]
+    def _u16(self, pixels):
+        return self.cl.Buffer(self.ctx, self.mf.READ_WRITE, pixels * 2)
 
     def _run(self, kernel, gsize, *args):
         kernel(self.q, gsize if isinstance(gsize, tuple) else (gsize,), None, *args)
@@ -279,37 +257,25 @@ class GpuC:
                         np.int32(h), np.int32(w), np.int32(count),
                         np.uint32(q), np.uint32(t), np.int32(step))
 
-    def _filter_w(self, weight, h, w, radius):
+    def _filter_w(self, weight, scratch, h, w, config):
         """Device-side openfocus_depth._filter: axis 1 (horizontal) then 0."""
-        from fusion_methods.openfocus_depth import _weight
-        q = int(_weight(radius))
-        t = (4096 - q) >> 1
-        count_h = max(1, min(int(radius), w))   # along original x
-        count_v = max(1, min(int(radius), h))   # along original y
-        if (h, w) not in self._filt:
-            # a: transposed (w,h) work plane; first: shared history (h*w elems).
-            # filt4 reads src[y,x] before writing out[y,x] in reverse row order,
-            # so src==dst aliasing is safe and saves a copy per axis.
-            self._filt[(h, w)] = (self._u16(w, h), self._u16(h, w))
-        a, first = self._filt[(h, w)]
-        # horizontal (axis 1): transpose -> filt4 in place -> transpose back
-        self._run(self.k['c_transpose'], (w, h), weight, a,
-                  np.int32(h), np.int32(w))
-        self._filt4(a, a, first, w, h, count_h, q, t)
-        self._run(self.k['c_transpose'], (h, w), a, weight,
+        a, first = scratch
+        count_h, count_v, q, t = config
+        # filt4 reads src[y,x] before writing that cell, so src==dst is safe.
+        self._run(self.k['transpose_u16'], (w, h), weight, a,
                   np.int32(w), np.int32(h))
-        # vertical (axis 0): filt4 in place on (h,w)
+        self._filt4(a, a, first, w, h, count_h, q, t)
+        self._run(self.k['transpose_u16'], (h, w), a, weight,
+                  np.int32(h), np.int32(w))
         self._filt4(weight, weight, first, h, w, count_v, q, t)
 
-    def _up(self, src, dst, sh, sw, dh, dw, c):
-        """Mirror _up(): horizontal keeps coarse shape; two vertical parity passes."""
-        tmp = self._plane(('uh', sh, sw, c), sh, sw, c)
-        for parity, odd in ((0, 0), (1, 1)):
-            self._run(self.k['c_up_h'], (sw, sh), src, tmp,
-                      np.int32(sw), np.int32(sh), np.int32(c), np.int32(odd))
-            self._run(self.k['c_up_v'], (sw, dh), tmp, dst,
-                      np.int32(sw), np.int32(sh), np.int32(dw), np.int32(dh),
-                      np.int32(parity), np.int32(c))
+    def _synthesize(self, kernel, coarse, horizontal, target, sh, sw, dh, dw, c,
+                    *extra):
+        self._run(self.k['c_up_h'], (dw, sh), coarse, horizontal,
+                  np.int32(sw), np.int32(sh), np.int32(dw), np.int32(c))
+        self._run(kernel, (dw, dh), target, horizontal, *extra,
+                  np.int32(dw), np.int32(dh), np.int32(sh), np.int32(c))
+
     def _drain_queue(self):
         q = getattr(self, 'q', None)
         if q is not None:
@@ -351,10 +317,6 @@ class GpuC:
                 self._drain_queue()
                 raise
         finally:
-            for cache in ('_planes', '_weights', '_filt'):
-                bufs = getattr(self, cache, None)
-                if bufs is not None:
-                    bufs.clear()
             self.k = self.q = self.ctx = None
             _device_lock.release()
 
@@ -370,31 +332,62 @@ class GpuC:
             if min(nxt) < 16 and (len(levels) > 1 or nxt == levels[-1]):
                 break
             levels.append(nxt)
+        detail_levels = list(zip(levels, levels[1:]))
         count = len(frames)
         total = count + 1
         if progress_callback is not None:
             progress_callback(0, total)
         parameter = np.float32(max(0.0, (float(smoothing) - 1.0) / 5.0))
+        out_dtype = np.uint8 if is_u8 else np.float32
+        out_bytes = 1 if is_u8 else 4
         from dataclasses import replace
         from core import resource_policy
-        from core.multi_focus_fusion import memory_budget_bytes
-        from core.source_frames import frame_resolution_bytes, source_cache_growth_bytes
+        from core.source_frames import (
+            frame_has_mapped_pixels, frame_resolution_bytes, without_source_cache_growth,
+        )
         from fusion_methods._openfocus_gpu import GpuError, _free_vram
 
         snapshot = resource_policy.probe_resources()
-        host_budget = min(int(memory_budget_bytes()),
-                          int(resource_policy.frame_ram_budget(snapshot)))
+        host_budget = resource_policy.ram_ceiling(snapshot)
         in_bytes = 1 if (img_resize is None and is_u8) else 2
-        staging = (height * width * channels * (in_bytes + (1 if is_u8 else 4))
-                   + max((frame_resolution_bytes(frame) for frame in frames), default=0)
-                   + source_cache_growth_bytes(frames) + 16 * 1024 * 1024)
+        full_size = height * width
+        n = full_size * channels
+        source_peak = 0
+        for frame in frames:
+            _check_cancel(should_cancel)
+            resolution = frame_resolution_bytes(frame)
+            if frame_has_mapped_pixels(frame):
+                resolution = max(resolution, frame.nbytes)
+            if img_resize is None and frame.dtype in (np.uint8, np.uint16):
+                packed = isinstance(frame, np.ndarray) and frame.flags.c_contiguous
+                working = frame.nbytes * (1 if packed else 2)
+            else:
+                # Legacy conversion can hold int32 codes and OpenCV's float32
+                # inputs/outputs. The packed upload may also need a driver copy.
+                row_samples = max(min(frame.shape[0], 128) * int(np.prod(frame.shape[1:])),
+                                  min(height, 128) * width * channels)
+                conversion = (frame.size * 4 if img_resize is None
+                              else 8 * (frame.size + n))
+                working = max(n * 8, conversion + row_samples * 16)
+            source_peak = max(source_peak, resolution + working)
+        readback = max(2 * n * out_bytes,
+                       n * out_bytes + 4 * full_size if focus_callback is not None else 0)
+        staging = max(source_peak, readback) + 16 * 1024 * 1024
         if staging > host_budget:
             raise GpuError('OpenFocus C GPU staging exceeds the host memory budget')
-        # Includes all cached pyramid planes, input/output buffers and context headroom.
-        need = sum(h * w * (channels * 4 * 8 + 2 * 4) for h, w in levels)
-        need += height * width * channels * 6 + 16 * 1024 * 1024
-        if focus_callback is not None:
-            need += height * width * 2
+        # Each size matches an allocation below. The queue is in order, so
+        # a smaller pyramid level can reuse a prefix of the same scratch plane.
+        detail_sizes = [h * w for (h, w), _ in detail_levels]
+        coarsest_size = levels[-1][0] * levels[-1][1]
+        rolling_sizes = (full_size, levels[1][0] * levels[1][1]) if detail_levels else ()
+        horizontal_size = (max(height * levels[1][1], levels[1][0] * width)
+                           if detail_levels else 0)
+        filter_planes = 2 if detail_levels and parameter > 0 else 0
+        keep_winner = focus_callback is not None and bool(detail_levels)
+        need = 4 * channels * (sum(rolling_sizes) + horizontal_size + coarsest_size)
+        need += sum(detail_sizes) * (4 * channels + 2)
+        need += 2 * full_size * (bool(detail_levels) + filter_planes + keep_winner)
+        need += n * (in_bytes + out_bytes) + 16 * 1024 * 1024
         limit = int(self.device.global_mem_size) // 2
         if self.device.host_unified_memory:
             limit = min(limit, host_budget - staging)
@@ -405,115 +398,100 @@ class GpuC:
             snapshot = replace(snapshot, free_vram=memory[0], total_vram=memory[1])
             limit = min(limit, resource_policy.vram_budget(snapshot))
         single = int(self.device.max_mem_alloc_size)
-        level0 = height * width * channels * 4
-        if need > limit or level0 > single:
+        if need > limit or n * 4 > single:
             raise GpuError('OpenFocus C GPU workspace exceeds the device budget')
 
-
-        accumulators, maxima = [], []
-        for h, w in levels:
-            acc = self._plane(('acc', h, w, channels), h, w, channels)
-            best = self._u16(h, w)
-            accumulators.append(acc)
-            maxima.append(best)
-        winner = self._u16(height, width) if focus_callback is not None else None
-
-        src = None
-        src_bytes = 0
+        accumulators = [self._f32(size, channels) for size in detail_sizes]
+        maxima = [self._u16(size) for size in detail_sizes]
+        coarsest = self._f32(coarsest_size, channels)
+        rolling = tuple(self._f32(size, channels) for size in rolling_sizes)
+        horizontal = self._f32(horizontal_size, channels) if detail_levels else None
+        weight = self._u16(full_size) if detail_levels else None
+        winner = self._u16(full_size) if keep_winner else None
+        filter_scratch = tuple(self._u16(full_size) for _ in range(filter_planes))
+        filter_configs = []
+        if filter_scratch:
+            from fusion_methods.openfocus_depth import _weight
+            for (h, w), _ in detail_levels:
+                radius = float(np.float32(np.float32(max(h, w)) * parameter / np.float32(100)))
+                q = int(_weight(radius))
+                filter_configs.append((max(1, min(int(radius), w)), max(1, min(int(radius), h)),
+                                       q, (4096 - q) >> 1))
+        src = self.cl.Buffer(self.ctx, self.mf.READ_ONLY, n * in_bytes)
         in_flight = False
         try:
             for index, frame in enumerate(frames):
                 _check_cancel(should_cancel)
-                pixels, scale = _source_codes(frame, img_resize, should_cancel)
+                with without_source_cache_growth():
+                    pixels, scale = _source_codes(frame, img_resize, should_cancel)
                 if tuple(pixels.shape) != tuple(shape):
                     raise ValueError('OpenFocus C requires frames with matching shapes')
+                if not detail_levels and index > 0:
+                    del pixels
+                    if progress_callback is not None:
+                        progress_callback(index + 1, total)
+                    continue
                 pix_u8 = pixels.dtype == np.uint8
                 codes = np.ascontiguousarray(pixels, dtype=np.uint8 if pix_u8 else np.uint16)
+                del pixels
                 factor = np.float32(scale / (65280.0 if is_u8 else 65535.0))
-                n = height * width * channels
-                base = self._plane(('g0', height, width, channels), height, width, channels)
-                if src is None or src_bytes != codes.nbytes:
-                    src = None
-                    src_bytes = 0
-                    src = self.cl.Buffer(self.ctx, self.mf.READ_ONLY, max(1, codes.nbytes))
-                    src_bytes = codes.nbytes
+                fine = rolling[0] if detail_levels else coarsest
                 in_flight = True
                 self.cl.enqueue_copy(self.q, src, codes, is_blocking=False)
-                self._run(self.k['c_norm_u8' if pix_u8 else 'c_norm'], (n,), src, base,
-                          np.float32(factor), np.int32(n))
+                self._run(self.k['c_norm_u8' if pix_u8 else 'c_norm'], n, src, fine,
+                          factor, np.int32(n))
 
-                gaussian = [base]
-                for level in range(1, len(levels)):
-                    ph, pw = levels[level - 1]
-                    ch, cw = levels[level]
-                    tmp = self._plane(('dt', level, ph, cw, channels), ph, cw, channels)
-                    out = self._plane(('g', level, ch, cw, channels), ch, cw, channels)
-                    self._run(self.k['c_down_h'], (cw, ph), gaussian[-1], tmp,
-                              np.int32(pw), np.int32(ph), np.int32(cw), np.int32(channels))
-                    self._run(self.k['c_down_v'], (cw, ch), tmp, out,
-                              np.int32(cw), np.int32(ph), np.int32(cw), np.int32(ch),
-                              np.int32(channels))
-                    gaussian.append(out)
-
-                for level, (h, w) in enumerate(levels):
+                for level, ((h, w), (ch, cw)) in enumerate(detail_levels):
                     _check_cancel(should_cancel)
-                    c = channels
-                    if level + 1 == len(levels):
-                        detail = gaussian[level]
-                        weight = self._weight_plane(h, w)
-                        self._run(self.k['c_last_w'], (w, h), weight,
-                                  np.int32(w), np.int32(h))
-                    else:
-                        th, tw = levels[level + 1]
-                        up = self._plane(('up', level, h, w, c), h, w, c)
-                        detail = self._plane(('det', level, h, w, c), h, w, c)
-                        weight = self._weight_plane(h, w)
-                        self._up(gaussian[level + 1], up, th, tw, h, w, c)
-                        self._run(self.k['c_detail_w'], (w, h), gaussian[level], up,
-                                  detail, weight, np.int32(w), np.int32(h), np.int32(c))
-                    if parameter > 0:
-                        radius = np.float32(np.float32(max(h, w)) * parameter / np.float32(100))
-                        self._filter_w(weight, h, w, float(radius))
-                    buffers = detail, weight, accumulators[level], maxima[level]
-                    dimensions = np.int32(w), np.int32(h), np.int32(c)
+                    # Coarsest weights depended only on geometry, so every
+                    # frame tied. Write the first frame directly to its own plane.
+                    coarse = (coarsest if index == 0 and level == len(detail_levels) - 1
+                              else rolling[(level + 1) % 2])
+                    self._run(self.k['c_down_h'], (cw, h), fine, horizontal,
+                              np.int32(w), np.int32(h), np.int32(cw), np.int32(channels))
+                    self._run(self.k['c_down_v'], (cw, ch), horizontal, coarse,
+                              np.int32(cw), np.int32(h), np.int32(cw), np.int32(ch),
+                              np.int32(channels))
+                    self._synthesize(self.k['c_detail_w'], coarse, horizontal, fine,
+                                     ch, cw, h, w, channels, weight)
+                    if filter_scratch:
+                        self._filter_w(weight, filter_scratch, h, w, filter_configs[level])
+                    buffers = fine, weight, accumulators[level], maxima[level]
+                    dimensions = np.int32(w), np.int32(h), np.int32(channels)
                     if level == 0 and winner is not None:
                         self._run(self.k['c_merge_focus'], (w, h), *buffers, winner,
                                   np.int32(index), *dimensions)
                     else:
                         self._run(self.k['c_merge'], (w, h), *buffers,
                                   np.int32(index == 0), *dimensions)
+                    fine = coarse
                 # Bound queued frame uploads to one source, even for very deep stacks.
                 self.q.finish()
                 in_flight = False
-                del codes, pixels
+                del codes
                 if progress_callback is not None:
                     progress_callback(index + 1, total)
 
-            result = accumulators[-1]
+            result = coarsest
             in_flight = True
-            for level in range(len(levels) - 2, -1, -1):
+            for ((h, w), (ch, cw)), detail in zip(reversed(detail_levels), reversed(accumulators)):
                 _check_cancel(should_cancel)
-                h, w = levels[level]
-                th, tw = levels[level + 1]
-                coarse = self._plane(('cc', level, h, w, channels), h, w, channels)
-                out = self._plane(('co', level, h, w, channels), h, w, channels)
-                self._up(result, coarse, th, tw, h, w, channels)
-                self._run(self.k['c_collapse'], (h * w * channels,),
-                          coarse, accumulators[level], out, np.int32(h * w * channels))
-                result = out
+                self._synthesize(self.k['c_collapse'], result, horizontal, detail,
+                                 ch, cw, h, w, channels)
+                result = detail
 
-            oh, ow = height, width
-            out_dtype = np.uint8 if is_u8 else np.float32
-            out = np.empty((oh, ow, channels), out_dtype)
+            out = np.empty((height, width, channels), out_dtype)
             dst = self.cl.Buffer(self.ctx, self.mf.WRITE_ONLY, out.nbytes)
-            n = oh * ow * channels
             kern = self.k['c_out_u8'] if is_u8 else self.k['c_out_f32']
-            self._run(kern, (n,), result, dst, np.int32(n))
+            self._run(kern, n, result, dst, np.int32(n))
             self.cl.enqueue_copy(self.q, out, dst, is_blocking=True)
-            if winner is not None:
+            if focus_callback is not None:
                 from core.frame_storage import create_frame
                 positions = create_frame((height, width), np.uint16)
-                self.cl.enqueue_copy(self.q, positions, winner, is_blocking=True)
+                if winner is None:
+                    positions.fill(0)
+                else:
+                    self.cl.enqueue_copy(self.q, positions, winner, is_blocking=True)
                 in_flight = False
                 _check_cancel(should_cancel)
                 focus_callback(positions, count - 1)

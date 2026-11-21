@@ -9,15 +9,32 @@ import numpy as np
 from fusion_methods._depth_kernel import njit
 
 
+def reciprocal32(divisor):
+    """Round 2**32 / divisor up for bounded, exact unsigned division."""
+    return ((1 << 32) + divisor - 1) // divisor
+
+
+_ACTIVITY_RECIPROCALS = np.array([reciprocal32(d) for d in range(10, 111)],
+                                 dtype=np.int64)
+
+
+@njit(nogil=True, inline='always')
+def _normalized_difference(value, mean):
+    maximum = max(value, mean)
+    denominator = (maximum * 100 * np.int64(0x80008001)) >> 47
+    numerator = 110 * abs(value - mean)
+    # The upward error is below 110*65535 / 2**32, smaller than 1/110.
+    # Thus it cannot cross the next integer for any of these denominators.
+    return min(65535, (numerator * _ACTIVITY_RECIPROCALS[denominator]) >> 32)
+
+
 @njit(nogil=True)
 def activity_rows(gray, fine, output, start, stop):
     for y in range(start, stop):
         for x in range(gray.shape[1]):
-            g = np.int64(gray[y, x])
-            f = np.int64(fine[y, x])
-            maximum = max(g, f)
-            denominator = ((maximum * 100 * np.int64(0x80008001)) >> 32) >> 15
-            output[y, x] = min(65535, 110 * abs(g - f) // (denominator + 10))
+            output[y, x] = _normalized_difference(np.int64(gray[y, x]),
+                                                  np.int64(fine[y, x]))
+
 
 @njit(nogil=True)
 def _reflect(position, length):
@@ -29,13 +46,13 @@ def _reflect(position, length):
 
 
 @njit(nogil=True)
-def detail_rows(gray, output, start, stop):
+def detail_rows(gray, output, row_offset):
     """Pool normalized full-resolution high-frequency energy onto the depth grid."""
     height, width = gray.shape
-    for y in range(start, stop):
+    for y in range(output.shape[0]):
+        y0 = min(2 * (y + row_offset), height - 1)
+        y1 = min(y0 + 1, height - 1)
         for x in range(output.shape[1]):
-            y0 = min(2 * y, height - 1)
-            y1 = min(2 * y + 1, height - 1)
             x0 = min(2 * x, width - 1)
             x1 = min(2 * x + 1, width - 1)
             a = np.int64(gray[y0, x0])
@@ -45,30 +62,27 @@ def detail_rows(gray, output, start, stop):
             mean = (a + b + c + d) // 4
             energy = 0
             for value in (a, b, c, d):
-                maximum = max(value, mean)
-                denominator = ((maximum * 100 * np.int64(0x80008001)) >> 32) >> 15
-                energy += min(65535, 110 * abs(value - mean) // (denominator + 10))
+                energy += _normalized_difference(value, mean)
             output[y, x] = energy // 4
 
 
 @njit(nogil=True)
-def smooth_detail_rows(detail, output, start, stop):
-    """Mean of the reflected 5x5 neighbourhood, slid along each row.
-
-    The five reflected rows are summed per column once per output row, so
-    rows are reflected once per row and columns only within two of an edge.
-    """
+def smooth_detail_rows(detail, output, start, stop, columns=None):
+    """Slide an integer sum vertically and horizontally over reflected edges."""
+    if start >= stop:
+        return
     height, width = detail.shape
-    columns = np.empty(width, np.int64)
+    if columns is None:
+        columns = np.empty(width, np.int32)
+    r0 = _reflect(start - 2, height)
+    r1 = _reflect(start - 1, height)
+    r3 = _reflect(start + 1, height)
+    r4 = _reflect(start + 2, height)
+    for x in range(width):
+        columns[x] = (np.int32(detail[r0, x]) + np.int32(detail[r1, x])
+                      + np.int32(detail[start, x]) + np.int32(detail[r3, x])
+                      + np.int32(detail[r4, x]))
     for y in range(start, stop):
-        r0 = _reflect(y - 2, height)
-        r1 = _reflect(y - 1, height)
-        r3 = _reflect(y + 1, height)
-        r4 = _reflect(y + 2, height)
-        for x in range(width):
-            columns[x] = (np.int64(detail[r0, x]) + np.int64(detail[r1, x])
-                          + np.int64(detail[y, x]) + np.int64(detail[r3, x])
-                          + np.int64(detail[r4, x]))
         total = 0
         for dx in range(-2, 3):
             total += columns[_reflect(dx, width)]
@@ -78,6 +92,12 @@ def smooth_detail_rows(detail, output, start, stop):
                 entering = x + 3 if x + 3 < width else _reflect(x + 3, width)
                 leaving = x - 2 if x >= 2 else _reflect(x - 2, width)
                 total += columns[entering] - columns[leaving]
+        if y + 1 < stop:
+            entering = _reflect(y + 3, height)
+            leaving = _reflect(y - 2, height)
+            for x in range(width):
+                columns[x] += (np.int32(detail[entering, x])
+                               - np.int32(detail[leaving, x]))
 
 
 @njit(nogil=True)
@@ -120,33 +140,38 @@ def apply_detail_rows(depth, mask, winner, start, stop):
 
 
 @njit(nogil=True)
-def initialize_activity_rows(activity, depth, votes, count, start, stop):
+def initialize_activity_rows(activity, depth, votes, reciprocal, start, stop):
     for y in range(start, stop):
         for x in range(activity.shape[1]):
             depth[y, x] = 0
-            votes[y, x] = np.int64(activity[y, x]) // count
+            if votes is not None:
+                # 65535 / 2**32 < 1 / count for every supported stack size.
+                votes[y, x] = (np.int64(activity[y, x]) * reciprocal) >> 32
 
 
 @njit(nogil=True)
-def select_activity_rows(activity, best, depth, votes, code, count, start, stop):
+def select_activity_rows(activity, best, depth, votes, code, reciprocal, start, stop):
     for y in range(start, stop):
         for x in range(activity.shape[1]):
             value = activity[y, x]
-            votes[y, x] = (np.int64(votes[y, x]) + np.int64(value) // count) & 65535
+            if votes is not None:
+                votes[y, x] += (np.int64(value) * reciprocal) >> 32
             if value > best[y, x]:
                 best[y, x] = value
                 depth[y, x] = code
 
 
 @njit(nogil=True)
-def confidence_rows(best, votes, start, stop):
+def confidence_hist_rows(best, votes, histogram, start, stop):
     for y in range(start, stop):
         for x in range(best.shape[1]):
-            best[y, x] = abs(np.int64(best[y, x]) - np.int64(votes[y, x]))
+            confidence = abs(np.int64(best[y, x]) - np.int64(votes[y, x]))
+            best[y, x] = confidence
+            histogram[confidence] += 1
 
 
 @njit(nogil=True)
-def guide_rows(best, lut, output, start, stop):
+def guide_rows(best, lut, start, stop):
     ratio = np.float32(4095.0 / 65535.0)
     for y in range(start, stop):
         for x in range(best.shape[1]):
@@ -156,7 +181,7 @@ def guide_rows(best, lut, output, start, stop):
             left = np.float32(lut[index] * np.float32(np.float32(1) - fraction))
             right = np.float32(lut[index + 1] * fraction)
             value = np.float32(left + right)
-            output[y, x] = min(65535, max(0, np.int64(value)))
+            best[y, x] = min(65535, max(0, np.int64(value)))
 
 
 
