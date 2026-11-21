@@ -91,25 +91,59 @@ def _blend_tile(probs, frames, mode, should_cancel=None, focus_callback=None):
         expected = create_transient_frame((height, width), np.float32)
         expected[...] = 0
     from core.source_frames import resolve_frame
+    kernels = common.load_stackmff_kernels()
     band_rows = min(height, 256, max(1, (64 * 1024) // (width * channels)))
     if selected_indices is None:
         indices = range(len(frames))
         source_dtypes = {np.float32} if normalize_stack else {frame.dtype for frame in frames}
-        scratch = np.empty((band_rows, width, channels),
-                           dtype=np.result_type(probs.dtype, np.float32, *source_dtypes))
+        scratch = None
     else:
         indices = np.flatnonzero(np.bincount(selected_indices.ravel(), minlength=len(frames)))
     for index in indices:
         _cancel(should_cancel)
         image = resolve_frame(frames[index], should_cancel=should_cancel)
+        use_fast = (kernels is not None and result.flags.c_contiguous
+                    and image.flags.c_contiguous
+                    and ((image.ndim == 3 and image.shape[2] == channels)
+                         or (image.ndim == 2 and channels == 1)))
         for row in range(0, height, band_rows):
             _cancel(should_cancel)
             stop = min(row + band_rows, height)
-            source = common.working_frame(image[row:stop], normalize_stack)
+            output = result[row:stop]
+            img_band = image[row:stop]
+            if use_fast:
+                src_band = img_band[:, :, None] if img_band.ndim == 2 else img_band
+                if selected_indices is None:
+                    prob_band = np.ascontiguousarray(probs[index, row:stop])
+                    exp_band = expected[row:stop] if expected is not None else output[:, :, 0]
+                    has_exp = bool(expected is not None and index)
+                    if src_band.dtype == np.float32:
+                        kernels.v3_accumulate_soft_f32(src_band, prob_band, output, exp_band, float(index), has_exp)
+                        continue
+                    if src_band.dtype == np.uint16:
+                        kernels.v3_accumulate_soft_u16(src_band, prob_band, output, exp_band, float(index), has_exp)
+                        continue
+                    if src_band.dtype == np.uint8:
+                        kernels.v3_accumulate_soft_u8(src_band, prob_band, output, exp_band, float(index), has_exp)
+                        continue
+                else:
+                    sel_band = np.ascontiguousarray(selected_indices[row:stop])
+                    if src_band.dtype == np.float32:
+                        kernels.v3_scatter_hard_f32(src_band, sel_band, index, output)
+                        continue
+                    if src_band.dtype == np.uint16:
+                        kernels.v3_scatter_hard_u16(src_band, sel_band, index, output)
+                        continue
+                    if src_band.dtype == np.uint8:
+                        kernels.v3_scatter_hard_u8(src_band, sel_band, index, output)
+                        continue
+            source = common.working_frame(img_band, normalize_stack)
             if source.ndim == 2:
                 source = source[:, :, None]
-            output = result[row:stop]
             if selected_indices is None:
+                if scratch is None:
+                    scratch = np.empty((band_rows, width, channels),
+                                       dtype=np.result_type(probs.dtype, np.float32, *source_dtypes))
                 probability = probs[index, row:stop]
                 product = scratch[:stop - row]
                 np.multiply(probability[:, :, None], source, out=product)

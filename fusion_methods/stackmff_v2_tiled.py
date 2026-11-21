@@ -194,6 +194,109 @@ def _stage_tile_planes(source, region, should_cancel):
     return planes
 
 
+_MAX_V2_CHUNK_BYTES = 512 * 1024 ** 2
+
+
+def _stage_direct_rgb_chunk(source, y, chunk_xs, block, source_h, source_w,
+                            all_rows, all_cols, kernels, io_workers, should_cancel,
+                            *, worker_buffers=None):
+    """Stage one horizontal chunk of direct RGB TIFF tiles into a batch of luma planes."""
+    from concurrent.futures import ThreadPoolExecutor
+    from core.source_frames import read_rgb_tiff_rows
+
+    count = len(source.items)
+    k_count = len(chunk_xs)
+    chunk_planes = np.empty((k_count, count, block, block), dtype=np.float32)
+    if y + block <= source_h:
+        y_top, y_bot, local_rows = y, y + block, None
+    else:
+        rows_slice = all_rows[y:y + block]
+        y_top, y_bot = int(rows_slice.min()), int(rows_slice.max()) + 1
+        local_rows = (rows_slice - y_top).astype(np.int32)
+
+    tile_specs = []
+    for x in chunk_xs:
+        if local_rows is None and x + block <= source_w:
+            tile_specs.append((True, x, None))
+        else:
+            r_loc = (local_rows if local_rows is not None
+                     else np.arange(y - y_top, y - y_top + block, dtype=np.int32))
+            c_loc = all_cols[x:x + block].astype(np.int32)
+            tile_specs.append((False, r_loc, c_loc))
+
+    has_u16 = any(item.dtype == np.uint16 for item in source.items)
+    has_u8 = any(item.dtype == np.uint8 for item in source.items)
+    mixed_16 = bool(source.mixed_16 or has_u16)
+    gains = source.gains
+    if worker_buffers is None:
+        worker_u16 = [np.empty((block, source_w, 3), dtype=np.uint16) if has_u16 else None
+                      for _ in range(io_workers)]
+        worker_u8 = [np.empty((block, source_w, 3), dtype=np.uint8) if has_u8 else None
+                     for _ in range(io_workers)]
+        worker_bgr_f32 = [np.empty((block, block, 3), dtype=np.float32) if mixed_16 else None
+                          for _ in range(io_workers)]
+        worker_bgr_u8 = [np.empty((block, block, 3), dtype=np.uint8)
+                         if (has_u8 and not mixed_16 and gains is not None) else None
+                         for _ in range(io_workers)]
+    else:
+        worker_u16, worker_u8, worker_bgr_f32, worker_bgr_u8 = worker_buffers
+
+    inv255 = np.float32(255.0)
+
+    def _stage_worker(worker_id):
+        b_u16 = worker_u16[worker_id]
+        b_u8 = worker_u8[worker_id]
+        bgr_f32 = worker_bgr_f32[worker_id]
+        bgr_u8 = worker_bgr_u8[worker_id]
+        for idx in range(worker_id, count, io_workers):
+            common.cancel(should_cancel)
+            item = source.items[idx]
+            gain = float(gains[idx]) if gains is not None else 1.0
+            if item.dtype == np.uint16:
+                band = read_rgb_tiff_rows(item, y_top, y_bot, b_u16, should_cancel=should_cancel)
+                for k_idx, (fast, a, b_idx) in enumerate(tile_specs):
+                    if fast:
+                        kernels.pack_rgb_u16_to_bgr_f32(band, 0, a, block, block, bgr_f32, gain)
+                    else:
+                        kernels.pack_rgb_u16_to_bgr_f32_indexed(band, a, b_idx, bgr_f32, gain)
+                    dst = chunk_planes[k_idx, idx]
+                    cv2.cvtColor(bgr_f32, cv2.COLOR_BGR2GRAY, dst=dst)
+                    np.divide(dst, inv255, out=dst, dtype=np.float32)
+            else:
+                band = read_rgb_tiff_rows(item, y_top, y_bot, b_u8, should_cancel=should_cancel)
+                for k_idx, (fast, a, b_idx) in enumerate(tile_specs):
+                    dst = chunk_planes[k_idx, idx]
+                    if mixed_16:
+                        if fast:
+                            kernels.pack_rgb_u8_to_bgr_f32(band, 0, a, block, block, bgr_f32, gain)
+                        else:
+                            kernels.pack_rgb_u8_to_bgr_f32_indexed(band, a, b_idx, bgr_f32, gain)
+                        cv2.cvtColor(bgr_f32, cv2.COLOR_BGR2GRAY, dst=dst)
+                        np.divide(dst, inv255, out=dst, dtype=np.float32)
+                    elif gain == 1.0:
+                        if fast:
+                            kernels.rgb_u8_to_luma(band, 0, a, block, block, dst)
+                        else:
+                            kernels.rgb_u8_to_luma_indexed(band, a, b_idx, dst)
+                    else:
+                        if fast:
+                            kernels.pack_rgb_u8_to_bgr_u8(band, 0, a, block, block, bgr_u8)
+                        else:
+                            kernels.pack_rgb_u8_to_bgr_u8_indexed(band, a, b_idx, bgr_u8)
+                        adjusted = apply_exposure_gain(bgr_u8, gain)
+                        common.write_luma_plane(adjusted, dst)
+
+    if io_workers > 1:
+        with ThreadPoolExecutor(max_workers=io_workers) as executor:
+            futures = [executor.submit(_stage_worker, wid) for wid in range(io_workers)]
+            for fut in futures:
+                fut.result()
+    else:
+        _stage_worker(0)
+    common.cancel(should_cancel)
+    return chunk_planes
+
+
 def tiled_depth(source, model_path, use_gpu, should_cancel=None,
                 execution_plan=None, thread_count=None,
                 resource_preference='balanced', tile_size=None, tile_overlap=0,
@@ -239,24 +342,94 @@ def _tiled_depth_under_lease(source, model_path, use_gpu, should_cancel=None,
     if progress_callback is not None:
         progress_callback(0, total)
     done = 0
-    for y in ys:
-        for x in xs:
+
+    def _accumulate_tile(x_pos, y_pos, tile_planes):
+        nonlocal done
+        logits = neural_runtime.logits(tile_planes, model, device, plan.native_threads, should_cancel)
+        positions = _expected_positions(logits, should_cancel, threads=plan.native_threads)[:block, :block]
+        del logits
+        rows_sl, cols_sl = slice(y_pos, y_pos + block), slice(x_pos, x_pos + block)
+        if weight is None:
+            expected[rows_sl, cols_sl] = positions
+        else:
+            weights = _weights(x_pos, y_pos, x_pos + block, y_pos + block, w, h, overlap)
+            expected[rows_sl, cols_sl] += positions * weights
+            weight[rows_sl, cols_sl] += weights
+        done += 1
+        if progress_callback is not None:
+            progress_callback(done, total)
+
+    from core.source_frames import is_direct_rgb_tiff
+    kernels = common.load_stackmff_kernels()
+    use_direct_chunked = (
+        kernels is not None
+        and count > 0
+        and len(xs) > 0
+        and all(is_direct_rgb_tiff(item) and item.ndim == 3 and item.shape[2] == 3
+                for item in source.items)
+    )
+    if use_direct_chunked:
+        for item in source.items:
+            if item.shape[:2] != (source_h, source_w):
+                raise ValueError('All frames must have the same dimensions')
+        from core import resource_policy as policy
+
+        one_tile_bytes = count * block * block * 4
+        snapshot = policy.probe_resources('CPU')
+        ram_ceil = policy.ram_ceiling(snapshot) if snapshot.ram_known else 512 * 1024**2
+        budget = min(ram_ceil, plan.ram_budget) if getattr(plan, 'ram_budget', None) else ram_ceil
+        chunk_cap = min(_MAX_V2_CHUNK_BYTES, max(one_tile_bytes, budget // 4))
+        max_k = max(1, min(len(xs), chunk_cap // max(1, one_tile_bytes)))
+        while max_k > 1:
+            try:
+                policy.require_memory(max_k * one_tile_bytes, user_limit=getattr(plan, 'ram_budget', None))
+                break
+            except (policy.ResourceLimitError, MemoryError):
+                max_k = max(1, max_k // 2)
+
+        ph = (-source_h) % common.ATTENTION_PAD_ALIGN
+        pw = (-source_w) % common.ATTENTION_PAD_ALIGN
+        pad_mode = 'reflect' if ph < source_h and pw < source_w else 'edge'
+        all_rows = (np.pad(np.arange(source_h, dtype=np.int32), (0, ph), mode=pad_mode)
+                    if ph else np.arange(source_h, dtype=np.int32))
+        all_cols = (np.pad(np.arange(source_w, dtype=np.int32), (0, pw), mode=pad_mode)
+                    if pw else np.arange(source_w, dtype=np.int32))
+        has_u16 = any(item.dtype == np.uint16 for item in source.items)
+        has_u8 = any(item.dtype == np.uint8 for item in source.items)
+        mixed_16 = bool(source.mixed_16 or has_u16)
+        io_workers = min(max(1, int(plan.native_threads or 1)), 4, count)
+        worker_buffers = (
+            [np.empty((block, source_w, 3), dtype=np.uint16) if has_u16 else None
+             for _ in range(io_workers)],
+            [np.empty((block, source_w, 3), dtype=np.uint8) if has_u8 else None
+             for _ in range(io_workers)],
+            [np.empty((block, block, 3), dtype=np.float32) if mixed_16 else None
+             for _ in range(io_workers)],
+            [np.empty((block, block, 3), dtype=np.uint8)
+             if (has_u8 and not mixed_16 and source.gains is not None) else None
+             for _ in range(io_workers)],
+        )
+
+        for y in ys:
             common.cancel(should_cancel)
-            planes = _stage_tile_planes(source, (x, y, block, block), should_cancel)
-            logits = neural_runtime.logits(planes, model, device, plan.native_threads, should_cancel)
-            del planes
-            positions = _expected_positions(logits, should_cancel)[:block, :block]
-            del logits
-            rows, cols = slice(y, y + block), slice(x, x + block)
-            if weight is None:
-                expected[rows, cols] = positions
-            else:
-                weights = _weights(x, y, x + block, y + block, w, h, overlap)
-                expected[rows, cols] += positions * weights
-                weight[rows, cols] += weights
-            done += 1
-            if progress_callback is not None:
-                progress_callback(done, total)
+            for c_start in range(0, len(xs), max_k):
+                common.cancel(should_cancel)
+                chunk_xs = xs[c_start:c_start + max_k]
+                chunk_planes = _stage_direct_rgb_chunk(
+                    source, y, chunk_xs, block, source_h, source_w,
+                    all_rows, all_cols, kernels, io_workers, should_cancel,
+                    worker_buffers=worker_buffers)
+                for k_idx, x in enumerate(chunk_xs):
+                    common.cancel(should_cancel)
+                    _accumulate_tile(x, y, chunk_planes[k_idx:k_idx + 1])
+                del chunk_planes
+    else:
+        for y in ys:
+            for x in xs:
+                common.cancel(should_cancel)
+                planes = _stage_tile_planes(source, (x, y, block, block), should_cancel)
+                _accumulate_tile(x, y, planes)
+                del planes
     common.cancel(should_cancel)
     if weight is not None:
         for start in range(0, h, 128):

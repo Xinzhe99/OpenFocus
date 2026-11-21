@@ -912,6 +912,40 @@ def crop_frame(frame, x, y, width, height, *, channels=None, should_cancel=None)
     return process_frame(frame, crop, shape=shape, should_cancel=should_cancel, scratch_bytes=0)
 
 
+def is_direct_rgb_tiff(frame):
+    """Return True when frame backs a native-endian uncompressed RGB TIFF."""
+    return bool(isinstance(frame, SourceFrame) and frame._rgb_tiff_offset is not None)
+
+
+def read_rgb_tiff_rows(frame, y0, y1, dest_buf, *, should_cancel=None):
+    """Read row band [y0, y1) directly from an uncompressed RGB TIFF into dest_buf.
+
+    Opens and closes the file per read to keep active file-descriptor counts
+    bounded by worker concurrency while validating the underlying source.
+    """
+    _check_resolution_cancel(should_cancel)
+    if not is_direct_rgb_tiff(frame):
+        raise TypeError('read_rgb_tiff_rows requires a direct-mapped RGB SourceFrame')
+    frame.validate_source()
+    row_count = int(y1) - int(y0)
+    if row_count <= 0:
+        return dest_buf[:0]
+    row_bytes = frame.shape[1] * frame.shape[2] * frame.dtype.itemsize
+    expected_bytes = row_count * row_bytes
+    view = memoryview(dest_buf[:row_count]).cast('B')
+    with open(frame.path, 'rb') as stream:
+        stream.seek(frame._rgb_tiff_offset + int(y0) * row_bytes)
+        offset = 0
+        while offset < expected_bytes:
+            _check_resolution_cancel(should_cancel)
+            n = stream.readinto(view[offset:expected_bytes])
+            if not n:
+                raise OSError(f'Truncated RGB TIFF row read from {frame.path}')
+            offset += n
+    _check_resolution_cancel(should_cancel)
+    return dest_buf[:row_count]
+
+
 @contextmanager
 def borrow_frame_region(frame, key, *, should_cancel=None):
     """Borrow pixels for one short-lived read without pinning mapped pages."""

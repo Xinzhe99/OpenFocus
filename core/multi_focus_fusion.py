@@ -29,6 +29,7 @@ _DEFAULT_TILE_OVERLAP = 256
 _DEFAULT_TILE_THRESHOLD = 2048
 _DEFAULT_AI_BATCH_SIZE = 2
 _PREPARED_CACHE_BYTES = 2 * 1024 ** 3
+_MAX_NEURAL_CHUNK_BYTES = 256 * 1024 ** 2
 OPENCL_FUSION_ALGORITHMS = ('openfocus_a', 'openfocus_b', 'openfocus_c', 'guided_filter', 'gfgfgf', 'dct', 'dtcwt')
 
 
@@ -1881,7 +1882,7 @@ class MultiFocusFusion:
             files = [f for f in sorted(os.listdir(img_dir), key=natural_sort_key)
                      if f.lower().endswith(exts)]
         count = len(imgs) if imgs is not None else len(files)
-        from core.resource_policy import plan_neural_tiles, require_memory
+        from core.resource_policy import ResourceLimitError, plan_neural_tiles, require_memory
         from fusion_methods.neural_runtime import (apply_inference_budget,
                                                    estimate_inference_bytes, resolve_job_device)
         from fusion_methods.neural_common import ATTENTION_PAD_ALIGN
@@ -1992,12 +1993,11 @@ class MultiFocusFusion:
         print(f"{label} tiled fusion: {total} tiles, one per call ({tile_plan.device_kind})")
         if progress_callback is not None:
             progress_callback(0, total)
-        for index, coords in enumerate(tile_coords):
-            check_cancel()
+
+        def _consume_tile(tile_idx, coords, crops):
+            nonlocal tile_focus
             tile_started = time.perf_counter()
-            with profile.tile(index, coords, count):
-                with profile.stage('resolve_region'):
-                    crops = crop_frames(coords)
+            with profile.tile(tile_idx, coords, count):
                 runner_parameters = dict(kwargs)
                 runner_parameters.update(model_path=model_path,
                     should_cancel=should_cancel, tile_plan=tile_plan)
@@ -2019,9 +2019,6 @@ class MultiFocusFusion:
                     if focus is not None and (tile_focus is None or tile_focus.shape != (fh, fw)):
                         raise RuntimeError('Fusion returned no matching focus positions for a tile')
                     if hard_pick:
-                        # A hard result selects one source frame per pixel. In the
-                        # overlap, take the tile whose interior weight is greatest
-                        # instead of blending two independently selected pixels.
                         existing = weight[y0:y1, x0:x1, 0]
                         selected = weight2d > existing
                         np.copyto(acc[y0:y1, x0:x1], fused_tile,
@@ -2035,15 +2032,116 @@ class MultiFocusFusion:
                         if focus is not None:
                             np.multiply(tile_focus, weight2d, out=tile_focus)
                             focus[y0:y1, x0:x1] += tile_focus
-                del fused_tile, crops, weight2d
+                del fused_tile, weight2d
                 if focus is not None:
                     tile_focus = None
-            log_debug('fusion_tile', index=index, tiles=total, coords=coords,
+            log_debug('fusion_tile', index=tile_idx, tiles=total, coords=coords,
                       elapsed_ms=round((time.perf_counter() - tile_started) * 1000, 3))
             check_cancel()
             if progress_callback is not None:
-                progress_callback(index + 1, total)
+                progress_callback(tile_idx + 1, total)
             check_cancel()
+
+        from core.source_frames import is_direct_rgb_tiff, read_rgb_tiff_rows
+        from fusion_methods.neural_common import load_stackmff_kernels
+        kernels = load_stackmff_kernels() if imgs is not None else None
+        use_direct_chunked = (
+            imgs is not None
+            and kernels is not None
+            and total > 0
+            and all(is_direct_rgb_tiff(frame) and frame.ndim == 3 and frame.shape[2] == 3
+                    for frame in imgs)
+            and all(0 <= y0 < y1 <= h and 0 <= x0 < x1 <= w for x0, y0, x1, y1 in tile_coords)
+        )
+        if use_direct_chunked:
+            for frame in imgs:
+                if frame.shape[:2] != (h, w):
+                    raise ValueError('All frames must have the same dimensions')
+            has_u16 = any(frame.dtype == np.uint16 for frame in imgs)
+            has_u8 = any(frame.dtype == np.uint8 for frame in imgs)
+            max_tile_h = max(y1 - y0 for _, y0, _, y1 in tile_coords)
+            io_workers = min(max(1, int(tile_plan.native_threads or 1)), 4, count)
+            worker_u16 = [np.empty((max_tile_h, w, 3), dtype=np.uint16) if has_u16 else None
+                          for _ in range(io_workers)]
+            worker_u8 = [np.empty((max_tile_h, w, 3), dtype=np.uint8) if has_u8 else None
+                         for _ in range(io_workers)]
+            budget = tile_plan.ram_budget if getattr(tile_plan, 'ram_budget', None) else 512 * 1024**2
+            # Group consecutive tiles sharing identical (y0, y1) bands so each row-band is read once.
+            pos = 0
+            while pos < total:
+                check_cancel()
+                band_y0, band_y1 = tile_coords[pos][1], tile_coords[pos][3]
+                band_end = pos + 1
+                while band_end < total and tile_coords[band_end][1] == band_y0 and tile_coords[band_end][3] == band_y1:
+                    band_end += 1
+                band_h = band_y1 - band_y0
+                ref_w = max(tile_coords[i][2] - tile_coords[i][0] for i in range(pos, band_end))
+                crop_itemsize = 4 if normalize_stack else 1
+                one_tile_bytes = count * band_h * ref_w * 3 * crop_itemsize
+                chunk_cap = min(_MAX_NEURAL_CHUNK_BYTES, max(one_tile_bytes, budget // 4))
+                max_k = max(1, min(band_end - pos, chunk_cap // max(1, one_tile_bytes)))
+                while max_k > 1:
+                    try:
+                        require_memory(max_k * one_tile_bytes, user_limit=getattr(tile_plan, 'ram_budget', None))
+                        break
+                    except (ResourceLimitError, MemoryError):
+                        max_k = max(1, max_k // 2)
+                for chunk_start in range(pos, band_end, max_k):
+                    check_cancel()
+                    chunk_end = min(band_end, chunk_start + max_k)
+                    chunk_coords = tile_coords[chunk_start:chunk_end]
+                    k_count = len(chunk_coords)
+                    chunk_crops = [[None] * count for _ in range(k_count)]
+                    with profile.stage('resolve_region'):
+                        def _stage_color_worker(wid):
+                            b_u16 = worker_u16[wid]
+                            b_u8 = worker_u8[wid]
+                            for idx in range(wid, count, io_workers):
+                                check_cancel()
+                                frame = imgs[idx]
+                                gain = float(exposure_gains[idx]) if exposure_gains is not None else 1.0
+                                if frame.dtype == np.uint16:
+                                    band = read_rgb_tiff_rows(frame, band_y0, band_y1, b_u16, should_cancel=should_cancel)
+                                    for k_i, (tx0, _, tx1, _) in enumerate(chunk_coords):
+                                        tw = tx1 - tx0
+                                        dst = np.empty((band_h, tw, 3), dtype=np.float32)
+                                        kernels.pack_rgb_u16_to_bgr_f32(band, 0, tx0, band_h, tw, dst, gain)
+                                        chunk_crops[k_i][idx] = dst
+                                else:
+                                    band = read_rgb_tiff_rows(frame, band_y0, band_y1, b_u8, should_cancel=should_cancel)
+                                    for k_i, (tx0, _, tx1, _) in enumerate(chunk_coords):
+                                        tw = tx1 - tx0
+                                        if normalize_stack:
+                                            dst = np.empty((band_h, tw, 3), dtype=np.float32)
+                                            kernels.pack_rgb_u8_to_bgr_f32(band, 0, tx0, band_h, tw, dst, gain)
+                                        else:
+                                            dst = np.empty((band_h, tw, 3), dtype=np.uint8)
+                                            kernels.pack_rgb_u8_to_bgr_u8(band, 0, tx0, band_h, tw, dst)
+                                            if gain != 1.0:
+                                                dst = apply_exposure_gain(dst, gain)
+                                        chunk_crops[k_i][idx] = dst
+
+                        if io_workers > 1:
+                            with concurrent.futures.ThreadPoolExecutor(max_workers=io_workers) as executor:
+                                futures = [executor.submit(_stage_color_worker, wid) for wid in range(io_workers)]
+                                for fut in futures:
+                                    fut.result()
+                        else:
+                            _stage_color_worker(0)
+                    for k_i, coords in enumerate(chunk_coords):
+                        check_cancel()
+                        crops = chunk_crops[k_i]
+                        chunk_crops[k_i] = None
+                        _consume_tile(chunk_start + k_i, coords, crops)
+                        del crops
+                pos = band_end
+        else:
+            for index, coords in enumerate(tile_coords):
+                check_cancel()
+                with profile.stage('resolve_region'):
+                    crops = crop_frames(coords)
+                _consume_tile(index, coords, crops)
+                del crops
 
         with profile.stage('normalize'):
             fused = create_frame(acc.shape, out_dtype)

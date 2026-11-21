@@ -11,6 +11,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   three StackMFF models before activation.
 
 ### Changed
+- Accelerate StackMFF V1, V2, and V3 tiled staging, multi-scale probability
+  post-processing, and color/depth reconstruction with bounded RGB TIFF
+  row-band readers, positive-stride RGB-to-BGR native kernels, L1-resident
+  antialias resizing, parallel layer reductions, and direct strip scatters.
 - Reuse OpenCL contexts and compiled kernels across OpenFocus A/B/C and ECC
   resize jobs. Reuse upload buffers within a job and drain pending work
   before releasing buffers after cancellation or error.
