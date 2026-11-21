@@ -28,6 +28,7 @@ _DEFAULT_TILE_BLOCK_SIZE = 1024
 _DEFAULT_TILE_OVERLAP = 256
 _DEFAULT_TILE_THRESHOLD = 2048
 _DEFAULT_AI_BATCH_SIZE = 2
+_PREPARED_CACHE_BYTES = 2 * 1024 ** 3
 OPENCL_FUSION_ALGORITHMS = ('openfocus_a', 'openfocus_b', 'openfocus_c', 'guided_filter', 'gfgfgf', 'dct', 'dtcwt')
 
 
@@ -707,6 +708,7 @@ class MultiFocusFusion:
             raise ValueError("DCT fusion does not support dynamic resizing. Resize images before processing.")
         native_codes = self.algorithm in ('openfocus_a', 'openfocus_b', 'openfocus_c')
         streaming_sources = self.descriptor.streaming_sources
+        native_neural_tiles = False
         if streaming_sources and isinstance(input_source, str) and os.path.isdir(input_source):
             from core.source_frames import scan_source
             exts = ('.png', '.jpg', '.jpeg', '.jpe', '.jfif', '.webp', '.tif', '.tiff', '.bmp')
@@ -762,16 +764,17 @@ class MultiFocusFusion:
                 from core.source_frames import select_frame_scratch
                 snapshot_bytes = 0
                 if self.descriptor.neural and self.tile_enabled:
-                    normalized = any(frame.dtype == np.uint16 for frame in input_source)
-                    snapshot_bytes = sum(frame.size * (4 if normalized else frame.dtype.itemsize)
-                                         for frame in input_source)
+                    snapshot_bytes = sum(frame.nbytes for frame in input_source)
+                    native_neural_tiles = img_resize is None and snapshot_bytes > _PREPARED_CACHE_BYTES
+                    if not native_neural_tiles:
+                        snapshot_bytes += estimate_fusion_space(input_source, self.exposure_match)
                 elif self.algorithm == 'openfocus_b':
                     # Prefer a volume that can hold prepared sources and global maps.
                     snapshot_bytes = (sum(frame.nbytes for frame in input_source)
                                       + input_source[0].shape[0] * input_source[0].shape[1] * 48)
                 select_frame_scratch(input_source,
-                    preferred_size=estimate_fusion_space(input_source, self.exposure_match)
-                                   + snapshot_bytes,
+                    preferred_size=snapshot_bytes if self.descriptor.neural else
+                                   estimate_fusion_space(input_source, self.exposure_match) + snapshot_bytes,
                     should_cancel=should_cancel)
             else:
                 from core.frame_storage import estimate_fusion_space
@@ -834,7 +837,9 @@ class MultiFocusFusion:
         identity_sources = input_source
         resize_for_tiles = (self.tile_enabled and needs_tiles and img_resize is not None
                             and self.algorithm not in ('openfocus_b', 'openfocus_c'))
-        deferred_exposure = (not streaming_sources and self.tile_enabled and needs_tiles
+        native_neural_tiles = native_neural_tiles and needs_tiles
+        deferred_exposure = ((not streaming_sources or native_neural_tiles)
+                             and self.tile_enabled and needs_tiles
                              and isinstance(input_source, list) and not resize_for_tiles
                              and (img_resize is None or self.algorithm not in ('openfocus_b', 'openfocus_c')))
         # Retain prepared pixels on disk; color conversion/gain scratch is
@@ -857,9 +862,21 @@ class MultiFocusFusion:
         # Sorting fixes the reference end before exposure and tile dispatch.
         with _profile().stage('sort'):
             input_source = self._maybe_sort_input(input_source, should_cancel)
+        large_native_stack = native_codes and sum(frame.nbytes for frame in input_source) > _PREPARED_CACHE_BYTES
+        if native_neural_tiles or large_native_stack:
+            from core.source_frames import map_native_rgb_tiffs, materialize_for_repeated_access
+            with _profile().stage('prepare_tile_sources'):
+                input_source = map_native_rgb_tiffs(input_source, should_cancel)
+        if native_neural_tiles:
+            with _profile().stage('snapshot_tile_sources'):
+                input_source = materialize_for_repeated_access(
+                    input_source, should_cancel, thread_count=kwargs.get('thread_count', 0),
+                    resource_preference=self.resource_preference,
+                    progress_callback=getattr(progress_callback, 'preparation', None))
         cached_preparation = getattr(self, 'prepared_cache', None)
         reuse_preparation = (cached_preparation is not None and spec.neural
-                             and self.tile_enabled and needs_tiles and streaming_sources)
+                             and self.tile_enabled and needs_tiles and streaming_sources
+                             and not native_neural_tiles)
         if reuse_preparation:
             from core.source_frames import validate_frame_source
             for frame in identity_sources:
@@ -911,7 +928,7 @@ class MultiFocusFusion:
                     input_source, should_cancel,
                     normalize_uint16=deferred_exposure or native_codes)
             check_cancel()
-            if streaming_sources:
+            if streaming_sources and not deferred_exposure:
                 from core.source_frames import exposure_frames
                 input_source = exposure_frames(input_source, exposure_gains_, should_cancel)
             elif exposure_gains_ is not None and isinstance(input_source, list) and not deferred_exposure:
@@ -930,7 +947,8 @@ class MultiFocusFusion:
                         adjusted[y:y + 128] = apply_exposure_gain(frame[y:y + 128], gain)
                     matched.append(adjusted)
                 input_source = matched
-        if spec.neural and self.tile_enabled and needs_tiles and streaming_sources and not reuse_preparation:
+        if (spec.neural and self.tile_enabled and needs_tiles and streaming_sources
+                and not (reuse_preparation or native_neural_tiles)):
             from core.source_frames import materialize_for_repeated_access
             before_snapshot = input_source
             input_source = materialize_for_repeated_access(
@@ -939,12 +957,12 @@ class MultiFocusFusion:
                 progress_callback=getattr(progress_callback, 'preparation', None))
             if (getattr(self, 'retain_preparation', False)
                     and input_source is not before_snapshot
-                    and sum(frame.nbytes for frame in input_source) <= 2 * 1024 ** 3):
+                    and sum(frame.nbytes for frame in input_source) <= _PREPARED_CACHE_BYTES):
                 self.prepared_cache = input_source
         elif self.algorithm == 'openfocus_b' and streaming_sources:
             from core.source_frames import (SourceFrame, ProcessedFrame,
-                                            frame_resolution_bytes,
-                                            materialize_for_repeated_access)
+                                            frame_resolution_bytes, materialize_for_repeated_access,
+                                            source_cache_growth_bytes)
             indices = []
             for index, frame in enumerate(input_source):
                 original = frame
@@ -952,14 +970,18 @@ class MultiFocusFusion:
                     original = original.source
                 if isinstance(original, SourceFrame):
                     indices.append(index)
-            # Large lazy warps can no longer be admitted after global depth and
-            # merge planes consume RAM. Snapshot them before allocating those
-            # planes; array-backed processors retain their original semantics.
+            # Tiled B needs repeated access. Whole-frame B only stages when
+            # a source cannot be resolved alongside the full-frame workspaces.
             tiled = self.tile_enabled and needs_tiles and img_resize is None
-            expensive = any(frame_resolution_bytes(input_source[index]) >
-                            max(128 * 1024 ** 2, memory_budget_bytes() // 4)
-                            for index in indices)
-            if indices and (tiled or expensive):
+            if indices and not tiled:
+                fixed, worker = resolve_runner(spec.resource_estimator)(
+                    max(h, height), max(w, width), kwargs, count)
+                decode = max(frame_resolution_bytes(frame) for frame in input_source)
+                tiled_or_over_budget = (fixed + worker + decode + source_cache_growth_bytes(input_source)
+                                        > memory_budget_bytes())
+            else:
+                tiled_or_over_budget = tiled
+            if indices and tiled_or_over_budget:
                 prepared = materialize_for_repeated_access(
                     [input_source[index] for index in indices], should_cancel,
                     thread_count=kwargs.get('thread_count', 0),
@@ -1923,17 +1945,27 @@ class MultiFocusFusion:
                            block_after_memory_plan=planned_block, block_effective=block_size,
                            pad_alignment=ATTENTION_PAD_ALIGN)
 
+        if imgs is not None:
+            from core.frame_storage import frame_region
+            from core.source_frames import resolve_frame
+            from fusion_methods.neural_common import copy_tile_colors
+            normalize_stack = any(frame.dtype == np.uint16 for frame in imgs)
+
         def crop_frames(coords):
             check_cancel()
             x0, y0, x1, y1 = coords
             if imgs is not None:
-                from core.source_frames import resolve_region
-                crops = [resolve_region(frame, x0, y0, x1 - x0, y1 - y0,
-                                        should_cancel=should_cancel) for frame in imgs]
-                if exposure_gains is not None:
-                    crops = normalize_fuse_input(crops)[0]
-                    crops = [apply_exposure_gain(crop, gain)
-                             for crop, gain in zip(crops, exposure_gains)]
+                crops = []
+                region = np.s_[y0:y1, x0:x1]
+                for index, frame in enumerate(imgs):
+                    check_cancel()
+                    image = resolve_frame(frame, should_cancel=should_cancel)
+                    with frame_region(image, region) as pixels:
+                        if pixels.shape[:2] != (y1 - y0, x1 - x0):
+                            raise ValueError('All frames must have the same dimensions')
+                        gain = exposure_gains[index] if exposure_gains is not None else 1.0
+                        crops.append(copy_tile_colors(pixels, normalize_stack, gain))
+                    del image, pixels
                 return crops
             crops = []
             for index, name in enumerate(files):

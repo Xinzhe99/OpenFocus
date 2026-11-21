@@ -7,6 +7,7 @@ Q12 state and guided forward history independently of these planes.
 import numpy as np
 
 from fusion_methods._depth_kernel import njit
+from fusion_methods._openfocus_kernels import merge_rows
 
 
 def reciprocal32(divisor):
@@ -201,3 +202,19 @@ def snap_rows(depth, lut, step, start, stop):
             correction = ((correction >> 10) if correction >= 0
                           else -((-correction) >> 10))
             depth[y, x] = (snapped + correction) & 65535
+
+
+@njit(nogil=True)
+def merge_active_rows(accumulator, image, depth, index, step, scale, active, tile_width):
+    """Merge each contiguous run of active tiles in a row band."""
+    col = 0
+    while col < active.size:
+        if not active[col]:
+            col += 1
+            continue
+        left = col * tile_width
+        while col < active.size and active[col]:
+            col += 1
+        right = min(col * tile_width, depth.shape[1])
+        merge_rows(accumulator[:, left:right], image[:, left:right], depth[:, left:right],
+                   index, step, 0, depth.shape[0], scale, False, False)

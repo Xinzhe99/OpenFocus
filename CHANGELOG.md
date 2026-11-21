@@ -47,6 +47,14 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   reconstruction allocations, size V2 tiles from frame metadata, skip V2 weight
   maps when tiles cover each pixel once, and bound V3 hard-choice scratch by
   the stack depth.
+- On large stacks, read plain RGB TIFF pixels from the source file and retain
+  native bit depth in StackMFF tile snapshots. Prepare a warped or compressed
+  frame once when temporary storage can hold the prepared stack.
+- Reuse OpenFocus A response rows and limit GPU output readback size. Skip
+  inactive OpenFocus B merge tiles and reuse OpenFocus C pyramid buffers.
+- Bound PyTorch CUDA and MPS attention workspace while retaining all focus
+  layers. Reuse CUDA worker admission on completed tile sizes and reuse logits
+  storage for probabilities. StackMFF V2 reads only contributing color strips.
 
 ### Fixed
 - Close the desktop process when its CLI launcher times out waiting for the

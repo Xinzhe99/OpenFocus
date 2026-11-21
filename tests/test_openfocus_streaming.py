@@ -673,7 +673,7 @@ def test_large_tiff_b_snapshots_real_ecc_warps_before_whole_depth(tmp_path, monk
                    exposure_match=exposure, use_gpu=False)
     expected = multi_focus_fusion.MultiFocusFusion(**options).fuse(eager, thread_count=1)
     monkeypatch.setattr(source_frames, 'SOURCE_CACHE', source_frames.FrameCache(0))
-    monkeypatch.setattr(multi_focus_fusion, 'memory_budget_bytes', lambda: 512 * 1024 ** 2)
+    monkeypatch.setattr(multi_focus_fusion, 'memory_budget_bytes', lambda: 129 * 1024 ** 2)
     original_cost = source_frames.frame_resolution_bytes
     def expensive(frame, *, metadata_only=False):
         if isinstance(frame, source_frames.ProcessedFrame) and not isinstance(frame.source, np.ndarray):

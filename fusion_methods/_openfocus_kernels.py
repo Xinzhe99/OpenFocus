@@ -71,210 +71,212 @@ def down2_rows(image, output, start, stop, scale=1):
                     output[y, x, channel] = (total * scale) >> 2
 
 
+A_MAX_RESPONSE = 65535 * 16
+A_BLEND_LIMIT = 65536
+A_SATURATED, A_SHARP, A_BACKGROUND = range(3)
+
+
 @njit(nogil=True)
-def burt_laplacian_rows(gray, reduced, output, start, stop, clamp=False):
+def _burt_laplacian_row(gray, reduced, output, y):
     """Absolute Burt difference in Q4; quarter-phase weights are exact."""
     height, width = reduced.shape
     fine_width = gray.shape[1]
     if fine_width == 0:
         return
-    for y in range(start, stop):
-        y0 = y // 2 - (1 if y % 2 == 0 else 0)
-        y1 = min(y0 + 1, height - 1)
-        y0 = max(y0, 0)
-        wy0 = 1 if y % 2 == 0 else 3
-        wy1 = 4 - wy0
+    y0 = y // 2 - (1 if y % 2 == 0 else 0)
+    y1 = min(y0 + 1, height - 1)
+    y0 = max(y0, 0)
+    wy0 = 1 if y % 2 == 0 else 3
+    wy1 = 4 - wy0
 
-        # Interpolate vertically first. Every pair within the coarse grid then
-        # uses the same two columns with complementary quarter-phase weights.
-        edge = np.int64(reduced[y0, 0]) * wy0 + np.int64(reduced[y1, 0]) * wy1
-        value = abs(np.int64(gray[y, 0]) * 16 - edge * 4)
-        output[y, 0] = min(value, 65535 * 16) if clamp else value
-        for x in range(1, width):
-            left = np.int64(reduced[y0, x - 1]) * wy0 + np.int64(reduced[y1, x - 1]) * wy1
-            right = np.int64(reduced[y0, x]) * wy0 + np.int64(reduced[y1, x]) * wy1
-            odd = 2 * x - 1
-            value = abs(np.int64(gray[y, odd]) * 16 - (3 * left + right))
-            output[y, odd] = min(value, 65535 * 16) if clamp else value
-            value = abs(np.int64(gray[y, odd + 1]) * 16 - (left + 3 * right))
-            output[y, odd + 1] = min(value, 65535 * 16) if clamp else value
-        if fine_width % 2 == 0:
-            edge = (np.int64(reduced[y0, width - 1]) * wy0
-                    + np.int64(reduced[y1, width - 1]) * wy1)
-            value = abs(np.int64(gray[y, fine_width - 1]) * 16 - edge * 4)
-            output[y, fine_width - 1] = min(value, 65535 * 16) if clamp else value
+    # Interpolate vertically first; each interior pair shares columns.
+    left = np.int64(reduced[y0, 0]) * wy0 + np.int64(reduced[y1, 0]) * wy1
+    output[0] = abs(np.int64(gray[y, 0]) * 16 - left * 4)
+    for x in range(1, width):
+        right = np.int64(reduced[y0, x]) * wy0 + np.int64(reduced[y1, x]) * wy1
+        odd = 2 * x - 1
+        output[odd] = abs(np.int64(gray[y, odd]) * 16 - (3 * left + right))
+        output[odd + 1] = abs(np.int64(gray[y, odd + 1]) * 16 - (left + 3 * right))
+        left = right
+    if fine_width % 2 == 0:
+        output[fine_width - 1] = abs(np.int64(gray[y, fine_width - 1]) * 16 - left * 4)
 
 
 @njit(nogil=True)
-def burt_accumulate_rows(laplacian, response, level, start, stop):
-    """Accumulate the rounded, half-pixel bilinear expansion in Q4."""
-    height, width = laplacian.shape
-    fine_width = response.shape[1]
+def burt_laplacian_rows(gray, reduced, output, start, stop):
+    for y in range(start, stop):
+        _burt_laplacian_row(gray, reduced, output[y], y)
+
+
+@njit(nogil=True)
+def _burt_accumulate_row(laplacians, offset, height, width, response, level, y):
+    """Add one rounded, half-pixel bilinear expansion in Q4."""
+    fine_width = response.size
     if fine_width == 0:
         return
-    if level == 1:
-        # The two-pixel spans are the hottest case. Adjacent output pixels
-        # share four coarse codes and use complementary horizontal weights.
-        for y in range(start, stop):
-            y0 = y // 2 - (1 if y % 2 == 0 else 0)
-            y1 = min(y0 + 1, height - 1)
-            y0 = max(y0, 0)
-            wy0 = 1 if y % 2 == 0 else 3
-            wy1 = 4 - wy0
-            edge = np.int64(laplacian[y0, 0]) * wy0 + np.int64(laplacian[y1, 0]) * wy1
-            value = (edge + 2) >> 2
-            response[y, 0] = min(np.int64(response[y, 0]) + value, 65535 * 16)
-            for x in range(1, width):
-                left = (np.int64(laplacian[y0, x - 1]) * wy0
-                        + np.int64(laplacian[y1, x - 1]) * wy1)
-                right = np.int64(laplacian[y0, x]) * wy0 + np.int64(laplacian[y1, x]) * wy1
-                odd = 2 * x - 1
-                value = (3 * left + right + 8) >> 4
-                response[y, odd] = min(np.int64(response[y, odd]) + value, 65535 * 16)
-                value = (left + 3 * right + 8) >> 4
-                response[y, odd + 1] = min(np.int64(response[y, odd + 1]) + value, 65535 * 16)
-            if fine_width % 2 == 0:
-                edge = (np.int64(laplacian[y0, width - 1]) * wy0
-                        + np.int64(laplacian[y1, width - 1]) * wy1)
-                value = (edge + 2) >> 2
-                response[y, fine_width - 1] = min(
-                    np.int64(response[y, fine_width - 1]) + value, 65535 * 16)
-        return
-
     shift = level + 1
     factor = 1 << level
     den = 1 << shift
-    phase = factor >> 1
-    rounding = 1 << (2 * shift - 1)
-    for y in range(start, stop):
-        py = 2 * y + 1 - factor
-        y0 = py >> shift
-        fy = py - (y0 << shift)
-        ya = max(0, min(y0, height - 1))
-        yb = max(0, min(y0 + 1, height - 1))
-        left = np.int64(laplacian[ya, 0]) * (den - fy) + np.int64(laplacian[yb, 0]) * fy
-        end = min(phase, fine_width)
-        value = (left + factor) >> shift
-        for x in range(end):
-            response[y, x] = min(np.int64(response[y, x]) + value, 65535 * 16)
-
-        # Each span starts at horizontal weight 1/den, then advances by 2/den.
-        # Hoist clamping and both vertical interpolations out of the pixel loop.
-        for column in range(1, width):
-            right = (np.int64(laplacian[ya, column]) * (den - fy)
-                     + np.int64(laplacian[yb, column]) * fy)
-            delta = right - left
-            initial = (left << shift) + delta + rounding
-            span = min(factor, fine_width - end)
-            for dx in range(span):
-                value = (initial + 2 * delta * dx) >> (2 * shift)
-                x = end + dx
-                response[y, x] = min(np.int64(response[y, x]) + value, 65535 * 16)
-            end += span
+    py = 2 * y + 1 - factor
+    y0 = py >> shift
+    fy = py - (y0 << shift)
+    row_a = offset + max(0, min(y0, height - 1)) * width
+    row_b = offset + max(0, min(y0 + 1, height - 1)) * width
+    left = np.int64(laplacians[row_a]) * (den - fy) + np.int64(laplacians[row_b]) * fy
+    if level == 1:
+        # The two-pixel spans use complementary horizontal weights.
+        response[0] += (left + 2) >> 2
+        for x in range(1, width):
+            right = (np.int64(laplacians[row_a + x]) * (den - fy)
+                     + np.int64(laplacians[row_b + x]) * fy)
+            odd = 2 * x - 1
+            response[odd] += (3 * left + right + 8) >> 4
+            response[odd + 1] += (left + 3 * right + 8) >> 4
             left = right
+        if fine_width % 2 == 0:
+            response[fine_width - 1] += (left + 2) >> 2
+        return
 
-        value = (left + factor) >> shift
-        for x in range(end, fine_width):
-            response[y, x] = min(np.int64(response[y, x]) + value, 65535 * 16)
+    end = min(factor >> 1, fine_width)
+    value = (left + factor) >> shift
+    for x in range(end):
+        response[x] += value
+
+    # Each span starts at horizontal weight 1/den, then advances by 2/den.
+    # Hoist clamping and both vertical interpolations out of the pixel loop.
+    rounding = 1 << (2 * shift - 1)
+    for column in range(1, width):
+        right = (np.int64(laplacians[row_a + column]) * (den - fy)
+                 + np.int64(laplacians[row_b + column]) * fy)
+        delta = right - left
+        initial = (left << shift) + delta + rounding
+        span = min(factor, fine_width - end)
+        for dx in range(span):
+            response[end + dx] += (initial + 2 * delta * dx) >> (2 * shift)
+        end += span
+        left = right
+
+    value = (left + factor) >> shift
+    for x in range(end, fine_width):
+        response[x] += value
 
 
 @njit(nogil=True)
-def select_rows(image, response, best, output, start, stop, scale, first,
-                accumulated, weights, statistics):
+def select_rows(image, gray, half_gray, laplacians, levels, response, best, output,
+                start, stop, scale, first, background):
+    """Finish each response row in scratch before consuming its winning codes."""
+    state = A_SATURATED
+    channels = 1 if image.ndim == 2 else image.shape[2]
+    weight_column, stat_column = channels, channels + 1
+    statistics = background.view(np.uint32)
     for y in range(start, stop):
         local_y = y - start
-        for x in range(response.shape[1]):
-            score = np.int64(response[y, x])
+        _burt_laplacian_row(gray, half_gray, response, y)
+        height, width = half_gray.shape
+        offset = 0
+        for level in range(1, levels):
+            _burt_accumulate_row(laplacians, offset, height, width, response, level, y)
+            offset += height * width
+            height, width = (height + 1) // 2, (width + 1) // 2
+
+        for x in range(response.size):
             previous = 0 if first else np.int64(best[y, x])
+            if previous == A_MAX_RESPONSE:
+                continue
+            # Every contribution is nonnegative, so clamp only the final sum.
+            score = min(np.int64(response[x]), A_MAX_RESPONSE)
             take = first or score > previous
-            # A pixel that has reached the sharp threshold can never blend.
-            collect = previous < 65536 and score < 65536
+            collect = previous < A_BLEND_LIMIT and score < A_BLEND_LIMIT
+            if collect:
+                state = A_BACKGROUND
+            elif state == A_SATURATED and score != A_MAX_RESPONSE:
+                state = A_SHARP
             if not (collect or take):
                 continue
+            factor = np.float32(1.0)
+            weight = np.float32(0.0)
             if collect:
-                # Responses are saturated at 65535*16. Store the minimum and
-                # runner-up in code units to keep both in one uint16 pair.
                 current_code = score >> 4
                 if first:
-                    statistics[local_y, x, 0] = current_code
-                    statistics[local_y, x, 1] = 0
+                    statistics[local_y, x, stat_column] = current_code
+                    weight = np.float32(1.0 if score else 0.0)
+                    background[local_y, x, weight_column] = weight
                 else:
-                    minimum = min(np.int64(statistics[local_y, x, 0]), current_code)
-                    second = np.int64(statistics[local_y, x, 1])
-                    if score > previous:
+                    # Low responses fit 12 bits in code units. Keep the
+                    # minimum and runner-up in one slot beside the sums.
+                    packed = np.int64(statistics[local_y, x, stat_column])
+                    minimum = packed & 4095
+                    second = packed >> 12
+                    if score == 0:
+                        if minimum:
+                            statistics[local_y, x, stat_column] = second << 12
+                        continue  # Zero cannot win and adds no weight.
+                    if take:
                         second = previous >> 4
+                        ratio = np.float32(previous) / np.float32(score)
+                        factor = ratio * ratio
+                        factor *= factor
+                        weight = np.float32(1.0)
+                        background[local_y, x, weight_column] = (
+                            background[local_y, x, weight_column] * factor + weight)
                     else:
                         second = max(second, current_code)
-                    statistics[local_y, x, 0] = minimum
-                    statistics[local_y, x, 1] = second
-                factor = np.float32(1.0)
-                if first:
-                    weight = np.float32(1.0 if score else 0.0)
-                    weights[local_y, x] = weight
-                elif score > previous:
-                    ratio = np.float32(previous) / np.float32(score)
-                    factor = ratio * ratio
-                    factor *= factor
-                    weight = np.float32(1.0)
-                    weights[local_y, x] = weights[local_y, x] * factor + weight
+                        ratio = np.float32(score) / np.float32(previous)
+                        weight = ratio * ratio
+                        weight *= weight
+                        background[local_y, x, weight_column] += weight
+                    statistics[local_y, x, stat_column] = (second << 12) | min(minimum, current_code)
+            for channel in range(channels):
+                if image.ndim == 2:
+                    value = np.int64(image[y, x]) * scale
                 else:
-                    ratio = (np.float32(score) / np.float32(previous)
-                             if previous else np.float32(0.0))
-                    weight = ratio * ratio
-                    weight *= weight
-                    weights[local_y, x] += weight
-            if image.ndim == 2:
-                value = np.int64(image[y, x]) * scale
-                if collect:
-                    if first:
-                        accumulated[local_y, x] = np.float32(value) * weight
-                    else:
-                        accumulated[local_y, x] = (accumulated[local_y, x] * factor
-                                                    + np.float32(value) * weight)
-                if take:
-                    output[y, x] = value
-            else:
-                for channel in range(image.shape[2]):
                     value = np.int64(image[y, x, channel]) * scale
-                    if collect:
-                        if first:
-                            accumulated[local_y, x, channel] = np.float32(value) * weight
-                        else:
-                            accumulated[local_y, x, channel] = (
-                                accumulated[local_y, x, channel] * factor
-                                + np.float32(value) * weight)
-                    if take:
+                if collect:
+                    weighted = np.float32(value) * weight
+                    if not first:
+                        weighted = background[local_y, x, channel] * factor + weighted
+                    background[local_y, x, channel] = weighted
+                if take:
+                    if image.ndim == 2:
+                        output[y, x] = value
+                    else:
                         output[y, x, channel] = value
             if take:
                 best[y, x] = score
+    return state
 
 
 @njit(nogil=True)
-def blend_low_response_rows(output, best, accumulated, weights, statistics, start, stop):
+def blend_low_response_rows(output, best, background, start, stop):
+    channels = 1 if output.ndim == 2 else output.shape[2]
+    statistics = background.view(np.uint32)
     for y in range(start, stop):
         local_y = y - start
         for x in range(best.shape[1]):
             score = np.int64(best[y, x])
-            if score >= 65536 or (score >> 4) == statistics[local_y, x, 0]:
+            if score >= A_BLEND_LIMIT:
                 continue
-            second = np.int64(statistics[local_y, x, 1]) << 4
+            packed = np.int64(statistics[local_y, x, channels + 1])
+            if (score >> 4) == (packed & 4095):
+                continue
+            second = (packed >> 12) << 4
             gap = max(0, score - second)
             if gap * 2 >= score:
                 continue
             # Blend only when the two leading focus responses are close.
             confidence = min(score, 5 * score - 10 * gap)
-            strength = (np.float32(min(32768, 65536 - score)) / np.float32(32768)
+            strength = (np.float32(min(32768, A_BLEND_LIMIT - score)) / np.float32(32768)
                         * np.float32(confidence) / np.float32(score))
-            denominator = weights[local_y, x]
+            denominator = background[local_y, x, channels]
             if denominator <= 0:
                 continue
             if output.ndim == 2:
-                average = accumulated[local_y, x] / denominator
+                average = background[local_y, x, 0] / denominator
                 value = np.float32(output[y, x]) * (np.float32(1.0) - strength) + average * strength
                 output[y, x] = min(65535, max(0, int(value + np.float32(0.5))))
             else:
-                for channel in range(output.shape[2]):
-                    average = accumulated[local_y, x, channel] / denominator
+                for channel in range(channels):
+                    average = background[local_y, x, channel] / denominator
                     value = (np.float32(output[y, x, channel]) * (np.float32(1.0) - strength)
                              + average * strength)
                     output[y, x, channel] = min(65535, max(0, int(value + np.float32(0.5))))

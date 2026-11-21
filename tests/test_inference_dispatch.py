@@ -1,5 +1,6 @@
 """Exercise the real worker transport without requiring a GPU or pack install."""
 import gc
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -184,12 +185,65 @@ def test_native_admission_charges_tensorrt_workspace_and_plan_limit(monkeypatch)
         free_vram=8 * gib, total_vram=8 * gib))
     with runtime.inference_job():
         shape = (29, 512, 512)
-        # This budget admits the feature maps and inputs but only 256 MiB of builder memory.
-        base = runtime.estimate_inference_bytes(*shape, 'TORCH_CUDA') + 6 * 4 * np.prod(shape)
+        # Leave only 256 MiB of budget for the builder above the dense estimate.
+        base = runtime.estimate_inference_bytes(*shape, 'CUDA') + 6 * 4 * np.prod(shape)
         plan = resource_policy.ExecutionPlan(ram_budget=8 * gib, vram_budget=base + 256 * 1024**2)
         runtime.apply_inference_budget(plan)
         assert runtime._memory_refusal('model', shape, 'TENSORRT', 1)
         assert runtime._memory_refusal('model', shape, 'TORCH_CUDA', 1) is None
+    runtime.start_inference_job()
+
+
+def test_cuda_reuses_admitted_worker_for_full_and_reduced_tiles(monkeypatch, tmp_path):
+    from core import inference_pack
+
+    model = str(tmp_path / 'verified.onnx')
+    Path(model).touch()
+    alternate = str(tmp_path / 'alternate.onnx')
+    Path(alternate).touch()
+    device = 'TORCH_CUDA'
+    probes, worker_events = [], []
+    available = 4 * 1024**3
+
+    def snapshot(kind):
+        probes.append(kind)
+        return resource_policy.ResourceSnapshot(free_vram=available, total_vram=4 * 1024**3)
+
+    class Worker:
+        backends = (device,)
+
+        def __init__(self, *_):
+            worker_events.append('start')
+
+        def run(self, _device, _path, planes, *_):
+            worker_events.append(planes.shape[1:])
+            return planes.copy()
+
+        def close(self):
+            worker_events.append('close')
+
+    monkeypatch.setattr(runtime, '_PACK', ((device,), ('installed',), 'test GPU'))
+    monkeypatch.setattr(runtime, '_vram_snapshot', snapshot)
+    monkeypatch.setattr(inference_client, 'Worker', Worker)
+    monkeypatch.setattr(inference_pack, 'pack_root', lambda: tmp_path)
+    monkeypatch.setattr(resource_policy, 'require_memory', lambda *_: None)
+
+    full = np.zeros((1, 4, 128, 128), np.float32)
+    reduced = np.zeros((1, 4, 64, 64), np.float32)
+    with runtime.inference_job():
+        runtime.logits(full, model, device, 1)
+        available = 1024  # Worker-held space is unavailable to a fresh process.
+        runtime.logits(reduced, model, device, 1)
+        runtime.logits(full, model, device, 1)
+        assert probes == [device, device]  # Cold and post-startup admission.
+        assert worker_events == ['start', full.shape[1:], reduced.shape[1:], full.shape[1:]]
+        for path, shape in [(alternate, full.shape[1:]), (model, (4, 192, 128))]:
+            assert runtime._memory_refusal(path, shape, device, 1, reclaim=False)
+        runtime.apply_inference_budget(resource_policy.ExecutionPlan(vram_budget=1, device_kind=device))
+        assert 'GPU memory plan budget' in runtime._memory_refusal(model, full.shape[1:], device, 1)
+        runtime.apply_inference_budget(resource_policy.ExecutionPlan(device_kind=device))
+    assert worker_events[-1] == 'close'
+    assert 'GPU memory budget' in runtime._memory_refusal(model, full.shape[1:], device, 1)
     runtime.start_inference_job()
 
 
@@ -233,3 +287,23 @@ def test_mps_job_reports_execution_and_tries_ort_before_cpu(worker_command, monk
         assert runtime.actual_device() == 'CPU'
         assert any('unsupported MPS operator' in s for s in runtime.device_diagnostics()['fallback_reasons'])
     runtime.start_inference_job()
+
+
+@pytest.mark.parametrize('graph', ['stackmff_final', 'stackmff_v2_final', 'stackmff_v3_final'])
+def test_native_worker_runs_deep_released_checkpoints(tmp_path, graph):
+    from core.inference_worker import ROOT
+
+    python = os.environ.get('OPENFOCUS_TEST_NATIVE_WORKER_PYTHON')
+    if not python:
+        pytest.skip('Set OPENFOCUS_TEST_NATIVE_WORKER_PYTHON to the GPU pack interpreter')
+    worker = inference_client.Worker([python, '-I', '-u', str(ROOT / 'core' / 'inference_worker.py')], None)
+    try:
+        backend, = (kind for kind in worker.backends if kind in ('TORCH_CUDA', 'TORCH_MPS'))
+        assert worker.device
+        model = str(ROOT / 'weights' / f'{graph}.onnx')
+        planes = np.random.default_rng(217).random((1, 500, 128, 128), dtype=np.float32)
+        result = worker.run(backend, model, planes, tmp_path, None)
+        assert result.shape == planes.shape and result.dtype == np.float32
+        assert np.isfinite(result).all()
+    finally:
+        worker.close()

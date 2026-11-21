@@ -58,7 +58,7 @@ def _snap_lut(feather=0):
 _AXIS_BLOCK_ROWS = 2048
 
 
-def _axis(src, guide, main, low, count, axis, cancel, allocate):
+def _axis(src, guide, main, low, count, axis, cancel, allocate, *, output=None):
     from fusion_methods._depth_kernel import axis_block
     cancel = cancellation_check(cancel)
 
@@ -70,7 +70,13 @@ def _axis(src, guide, main, low, count, axis, cancel, allocate):
             guide = guide.T
     h, w = src.shape
     count = max(1, min(int(count), h))
-    out = allocate((h, w), np.uint16)
+    # Unguided filtering can overwrite its source on the reverse sweep. For
+    # the horizontal axis, pack one strip to keep both sweeps cache-local.
+    pack = bool(axis and guide is None)
+    if output is None:
+        out = allocate((h, w), np.uint16)
+    else:
+        out = output.T if axis else output
     out_pixels = np.asarray(out)
     q = t = tm = tl = 0
     if guide is None:
@@ -81,29 +87,46 @@ def _axis(src, guide, main, low, count, axis, cancel, allocate):
         tl = (4096 - _weight(low)) >> 1
     # Both recurrence directions stay ordered inside each independent strip.
     # Each worker reuses its history plane for all its assigned columns.
-    def columns(left, right, first):
-        first_pixels = np.asarray(first)
-        initial = ((src[:count, left:right].sum(axis=0, dtype=np.uint64) << 4)
+    def columns(left, right, workspace):
+        first, packed = workspace
+        first = np.asarray(first)
+        if pack:
+            source = np.asarray(packed)[:, :right - left]
+            source[...] = src[:, left:right]
+            destination = source
+            begin, end = 0, source.shape[1]
+        else:
+            source, destination = src, out_pixels
+            begin, end = left, right
+        initial = ((source[:count, begin:end].sum(axis=0, dtype=np.uint64) << 4)
                    // count)
         if guide is None:
             initial *= t + q
         acc = (initial & 0xffffffff).astype(np.uint32)
         for start in range(0, h, _AXIS_BLOCK_ROWS):
             cancel()
-            axis_block(src, guide, first_pixels, out_pixels, acc, q, t, tm, tl,
-                       start, min(h, start + _AXIS_BLOCK_ROWS), left, right, False)
-        acc = first_pixels[-1, :right - left].astype(np.uint32) << 4
+            axis_block(source, guide, first, destination, acc, q, t, tm, tl,
+                       start, min(h, start + _AXIS_BLOCK_ROWS), begin, end, False)
+        acc = first[-1, :end - begin].astype(np.uint32) << 4
         if guide is None:
             acc *= t + q
         for stop in range(h, 0, -_AXIS_BLOCK_ROWS):
             cancel()
-            axis_block(src, guide, first_pixels, out_pixels, acc, q, t, tm, tl,
-                       max(0, stop - _AXIS_BLOCK_ROWS), stop, left, right, True)
+            axis_block(source, guide, first, destination, acc, q, t, tm, tl,
+                       max(0, stop - _AXIS_BLOCK_ROWS), stop, begin, end, True)
+        if pack:
+            out_pixels[:, left:right] = destination
+
+    strip_shape = h, min(w, 64)
+    history_dtype = np.uint16 if guide is None else np.uint32
+    strip_bytes = h * strip_shape[1] * ((2 if guide is None else 4) + 2 * pack)
+    # The row planner admits this bounded workspace independently of the
+    # transient-frame cap, which may already be full of long-lived planes.
+    scratch = np.empty if allocate is create_frame else allocate
     run_bands(w, 64, columns,
-              scratch_bytes=h * min(w, 64) * (2 if guide is None else 4)
-              + count * min(w, 64) * 8 + min(w, 64) * 32,
-              workspace=lambda: allocate((h, min(w, 64)),
-                                         np.uint16 if guide is None else np.uint32))
+              scratch_bytes=strip_bytes + count * strip_shape[1] * 8 + strip_shape[1] * 32,
+              workspace=lambda: (scratch(strip_shape, history_dtype),
+                                 scratch(strip_shape, np.uint16) if pack else None))
     return out.T if axis else out
 
 
@@ -124,7 +147,7 @@ def _mapped_cast(image, dtype, cancel, allocate):
     return result
 
 
-def _filter(src, radius, cancel, guide=None, low=None, *, allocate=None):
+def _filter(src, radius, cancel, guide=None, low=None, *, allocate=None, overwrite=False):
     low = radius if low is None else low
     allocate = create_frame if allocate is None else allocate
     # Code planes contain only final 16-bit values. Q12 state and guided
@@ -132,8 +155,11 @@ def _filter(src, radius, cancel, guide=None, low=None, *, allocate=None):
     result = _mapped_cast(src, np.uint16, cancel, allocate)
     if radius == 0:
         return result
-    guide = (None if guide is None
-             else _mapped_cast(guide, np.uint16, cancel, allocate))
+    if guide is None:
+        output = result if overwrite else allocate(src.shape, np.uint16)
+        _axis(result, None, radius, low, radius, 1, cancel, allocate, output=output)
+        return _axis(output, None, radius, low, radius, 0, cancel, allocate, output=output)
+    guide = _mapped_cast(guide, np.uint16, cancel, allocate)
     for axis in (1, 0):
         result = _axis(result, guide, radius, low, radius, axis, cancel, allocate)
     return result
@@ -142,7 +168,7 @@ def _filter(src, radius, cancel, guide=None, low=None, *, allocate=None):
 def _activity_frames(frames, img_resize, kernel_size, thread_count, should_cancel,
                      *, half_resolution=False, preserve_detail=False, gpu=None):
     """Return ordered activity planes from the admitted source window."""
-    from core.source_frames import resolve_frame
+    from core.source_frames import resolve_frame, without_source_cache_growth
     from fusion_methods.openfocus_ab import (
         _check_cancel, _frame_pass_workers, _ordered_frame_results)
     from fusion_methods._openfocus_pixels import frame_gray_codes
@@ -169,7 +195,8 @@ def _activity_frames(frames, img_resize, kernel_size, thread_count, should_cance
         def cancel():
             _check_cancel(cancelled)
 
-        pixels = resolve_frame(frames[index])
+        with without_source_cache_growth():
+            pixels = resolve_frame(frames[index], should_cancel=cancelled)
         gray = frame_gray_codes(pixels, img_resize, cancelled, depth_color=True)
         del pixels
         if gray.shape != shape:
@@ -205,7 +232,8 @@ def _activity_frames(frames, img_resize, kernel_size, thread_count, should_cance
         fine_radius = np.float32(extent * fine_parameter / np.float32(100))
         coarse_radius = np.float32(extent * coarse_parameter / np.float32(100))
         fine = _filter(gray, fine_radius, cancel)
-        diff = create_frame(gray.shape, np.uint16)
+        # The pointwise difference can replace the fine filter's result.
+        diff = fine
         if gpu is not None and not gpu.failed:
             from fusion_methods._openfocus_gpu import GpuError, log_fallback
             for start in range(0, gray.shape[0], gpu.rows):
@@ -230,7 +258,7 @@ def _activity_frames(frames, img_resize, kernel_size, thread_count, should_cance
                 activity_rows(gray, fine, diff, start, stop)
             run_bands(gray.shape[0], 128, activity)
         del gray, fine
-        activity = _filter(diff, coarse_radius, cancel)
+        activity = _filter(diff, coarse_radius, cancel, overwrite=True)
         return (activity, detail) if preserve_detail else activity
 
     return _ordered_frame_results(len(frames), produce, workers, should_cancel)
