@@ -59,20 +59,37 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Output pixels are unchanged.
 
 ### Fixed
+- Close the desktop process when its CLI launcher times out waiting for the
+  control channel, and explain how to complete first-run sign-in.
 - Give comparison alignment workers on macOS enough stack for the first
   native alignment kernel compilation.
+- Reflow contact cards to fit the available width so the QR codes can remain
+  at their scannable size without being clipped at the right edge.
 - Recover a desktop email sign-in after a lost connection to the approval
   endpoint without sending a second email. Record the failed request stage
   without logging sign-in credentials.
+- Keep Start Fresh available while recovery checks saved source paths. If
+  the user starts fresh, keep the previous snapshot until there is a new
+  session to save.
 - Carry over a Windows portable build's existing device registration when
   restoring its saved sign-in after an in-place update.
 - Show the fusion method once in output names after rendering all methods.
+- Open dropped or externally supplied `.ofproj` files through the same project
+  workflow as the File menu. Accept macOS file-open events from the packaged
+  app and forward selected paths from the installed Linux launcher.
+- Keep the startup reply available until the second process reads it, so
+  Windows file forwarding is acknowledged reliably.
 - Reuse one account registration for the same Windows installation and
   consolidate older registrations identified by locally retained device IDs.
+- Restore the isolated agent smoke and menu sweep after the desktop sign-in
+  requirement. Return a nonzero exit status for failed smoke checks.
 - Admit StackMFF tiles against live render-process memory, including the host
   memory needed if GPU inference falls back to CPU.
 - Use consistent visible QR code sizes in the Contact Us and Support Us
   dialogs while preserving the artwork and a scannable white border.
+- Let users cancel a stuck video import or close its scale dialog. Video
+  decoding runs in a separate process so another import can start in the
+  same session.
 - Keep checking the original file when a crop of a prepared frame is prepared
   again. A changed source could otherwise go unnoticed and its old pixels be
   used.
