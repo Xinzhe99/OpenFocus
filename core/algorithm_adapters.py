@@ -120,7 +120,8 @@ def registration_homography(registration, images, thread_count=4, should_cancel=
 
 
 def registration_ecc(registration, images, thread_count=4, should_cancel=None, **parameters):
-    return registration._process_ecc(images, thread_count=thread_count, should_cancel=should_cancel, failure_policy=parameters['failure_policy'])
+    return registration._process_ecc(images, thread_count=thread_count, should_cancel=should_cancel,
+        failure_policy=parameters['failure_policy'], stage_budget=parameters.get('stage_budget'))
 
 
 def registration_openfocus(registration, images, thread_count=4, should_cancel=None, **parameters):

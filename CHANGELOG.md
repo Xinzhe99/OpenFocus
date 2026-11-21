@@ -16,6 +16,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   before releasing buffers after cancellation or error.
 - Reuse the NVML session for VRAM queries and repeat device enumeration after
   a query fails to avoid using memory information from the wrong adapter.
+- Budget deferred ECC image preparation and OpenCV solves separately so
+  multiple pairs can be solved concurrently when full-size decodes are costly.
 - Accelerate OpenFocus alignment candidate scoring, similarity warping,
   uint8 translation warping, pyramid downsizing, and validity mask generation
   with single-threaded native CPU kernels while preserving bit-exact results
