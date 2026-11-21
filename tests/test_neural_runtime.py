@@ -737,7 +737,7 @@ def test_cancelled_failed_gpu_does_not_start_cpu(monkeypatch):
 def test_reduced_buffers_released_at_consumption_boundaries(monkeypatch):
     import weakref
     original_resize = neural_runtime._resize_antialias
-    original_softmax = neural_runtime.softmax
+    original_softmax = neural_runtime.softmax_inplace
     refs = {}
     def resize(*args):
         small = original_resize(*args)
@@ -757,7 +757,7 @@ def test_reduced_buffers_released_at_consumption_boundaries(monkeypatch):
         return gaussian(*args, **kwargs)
     monkeypatch.setattr(neural_runtime, '_resize_antialias', resize)
     monkeypatch.setattr(neural_runtime, 'logits', lambda planes, *_: planes.copy())
-    monkeypatch.setattr(neural_runtime, 'softmax', softmax)
+    monkeypatch.setattr(neural_runtime, 'softmax_inplace', softmax)
     monkeypatch.setattr(cv2, 'GaussianBlur', blur)
     neural_runtime.probabilities(np.zeros((1, 3, 64, 64), np.float32), 'model', 'CPU', 1, 0.5)
 
@@ -916,10 +916,23 @@ def test_cpu_retry_failure_propagates_without_success_reporting(monkeypatch):
 def test_probability_arithmetic_matches_original_order(monkeypatch, count, shape, sigma):
     rng = np.random.default_rng(42)
     planes = rng.random((1, count, shape[0], shape[1] * 2), dtype=np.float32)[..., ::2]
-    monkeypatch.setattr(neural_runtime, 'logits', lambda values, *_: values.copy())
-    p = neural_runtime.softmax(planes.copy())
+    # Return a cropped view like logits from a padded inference at an image edge.
+    def logits(values, *_args):
+        h, w = values.shape[-2:]
+        backing = np.empty(values.shape[:2] + (h + (-h) % 64, w + (-w) % 64), np.float32)
+        view = backing[..., :h, :w]
+        view[...] = values
+        return view
+
+    def reference_softmax(values):
+        shifted = values - values.max(axis=1, keepdims=True)
+        np.exp(shifted, out=shifted)
+        return shifted / shifted.sum(axis=1, keepdims=True)
+
+    monkeypatch.setattr(neural_runtime, 'logits', logits)
+    p = reference_softmax(planes)
     small = neural_runtime._resize_antialias(planes, 0.75)
-    q = neural_runtime.softmax(small.copy())
+    q = reference_softmax(small)
     h, w = shape
     for n in range(count):
         p[0, n] += cv2.resize(q[0, n], (w, h), interpolation=cv2.INTER_LINEAR)
