@@ -454,3 +454,36 @@ def test_saved_registration_parameters_are_complete(tmp_path):
     target.set_registration_parameters("openfocus", {"rotation": 1.0, "reference_frame": 2})
     project_file._apply_after_load(target, state)
     assert target.registration_parameters_for("openfocus") == source.registration_parameters_for("openfocus")
+
+
+@pytest.mark.parametrize('document', ['project', 'template'])
+@pytest.mark.parametrize('scale', [None, 'dual'])
+def test_stackmff_scale_in_saved_settings(tmp_path, document, scale):
+    paths = _make_stack(str(tmp_path / 'sources'), n=1)
+    source = _window(paths, str(tmp_path))
+    method = 'stackmffv3'
+    source.set_fusion_method(method)
+    source.set_fusion_parameters(method, {'mode': 'hard', 'inference_scale': 'dual'})
+    if document == 'project':
+        path = tmp_path / 'scale.ofproj'
+        assert project_file.save_project(source, str(path))[0]
+    else:
+        path = tmp_path / 'scale.oftemplate'
+        project_file.save_template(source, str(path))
+    saved = json.loads(path.read_text(encoding='utf-8'))
+    parameters = saved['settings']['method_parameters'][method]
+    assert parameters == {'mode': 'hard', 'inference_scale': 'dual'}
+    if scale is None:
+        del parameters['inference_scale']
+        path.write_text(json.dumps(saved), encoding='utf-8')
+
+    target = _window(paths, str(tmp_path))
+    target.set_fusion_parameters(method, {'inference_scale': 'dual' if scale is None else 'single'})
+    if document == 'project':
+        ok, error, state = project_file.validate_project(str(path))
+        assert ok, error
+        project_file._apply_after_load(target, state)
+    else:
+        project_file.apply_template(target, project_file.load_template(str(path)))
+    assert target.current_fusion_method() == method
+    assert target.fusion_parameters_for(method) == {'mode': 'hard', 'inference_scale': scale or 'single'}

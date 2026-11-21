@@ -24,9 +24,12 @@ def _stack(count=3, size=(150, 110)):
     return frames
 
 
-def _tiled(mode, profile):
+def _tiled(mode, profile, scale):
+    parameters = {'mode': mode}
+    if scale is not None:
+        parameters['inference_scale'] = scale
     fusion = MultiFocusFusion(algorithm='stackmffv3', use_gpu=False,
-                              fusion_parameters={'mode': mode}, tile_enabled=True,
+                              fusion_parameters=parameters, tile_enabled=True,
                               tile_block_size=64, tile_overlap=16, tile_threshold=32)
     with pp.active(profile):
         image = fusion.fuse(input_source=_stack(), img_resize=None, model_path=WEIGHTS,
@@ -35,10 +38,11 @@ def _tiled(mode, profile):
 
 
 @pytest.mark.parametrize('mode', ['soft', 'hard'])
-def test_tiled_output_is_identical_and_geometry_matches_the_grid(mode):
-    reference, details = _tiled(mode, pp.NULL_PROFILE)
+@pytest.mark.parametrize('scale', [None, 'dual'], ids=['default', 'dual'])
+def test_tiled_output_is_identical_and_geometry_matches_the_grid(mode, scale):
+    reference, details = _tiled(mode, pp.NULL_PROFILE, scale)
     profile = pp.PerformanceProfile()
-    profiled, profiled_details = _tiled(mode, profile)
+    profiled, profiled_details = _tiled(mode, profile, scale)
     np.testing.assert_array_equal(profiled, reference)
     assert profiled.dtype == reference.dtype
     report = profile.report('completed')
@@ -46,7 +50,7 @@ def test_tiled_output_is_identical_and_geometry_matches_the_grid(mode):
     assert details == profiled_details
     assert details.input_size == (110, 150)
     assert details.tile_grid == (64, 16, len(coords))
-    assert dict(details.parameters) == {'mode': mode}
+    assert dict(details.parameters) == {'mode': mode, 'inference_scale': scale or 'single'}
     assert report['tiling']['count'] == len(coords)
     assert report['tiling']['coords'] == [list(c) for c in coords]
     assert report['tiling']['block_requested'] == 64
@@ -54,15 +58,19 @@ def test_tiled_output_is_identical_and_geometry_matches_the_grid(mode):
     stages = report['stages']
     assert stages['tiled/tile']['count'] == len(coords)
     probabilities = 'tiled/tile/runner/probabilities'
-    for name in ('logits.full', 'resize.0.75', 'logits.reduced', 'softmax.full'):
+    for name in ('logits.full', 'softmax.full'):
         assert stages[f'{probabilities}/{name}']['count'] == len(coords)
+    for name in ('resize.0.75', 'logits.reduced', 'softmax.reduced', 'upsample_combine'):
+        stage = stages.get(f'{probabilities}/{name}')
+        assert (stage['count'] if stage else 0) == (len(coords) if scale == 'dual' else 0)
     assert stages[f'{probabilities}/logits.full/session.run']['count'] == len(coords)
     # Gaussian smoothing exists only in soft mode.
     assert (f'{probabilities}/gaussian' in stages) == (mode == 'soft')
     assert report['threads']['plan_neural_tiles'] == [1]
     assert report['threads']['plan_attention_inference'] == [1]
     assert report['threads']['session_intra_op'] == [1]
-    assert report['sessions']['hits'] + report['sessions']['created'] == 2 * len(coords)
+    num_scales = 2 if scale == 'dual' else 1
+    assert report['sessions']['hits'] + report['sessions']['created'] == num_scales * len(coords)
     assert all(key['model'] == 'stackmff_v3_final.onnx' for key in report['sessions']['keys'])
     assert PROJECT_ROOT not in pp.dumps(report)
 
