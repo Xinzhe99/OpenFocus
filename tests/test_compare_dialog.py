@@ -588,18 +588,21 @@ def test_queued_full_result_is_rejected_after_method_changes(dialog, qapp):
 
 def test_method_checkboxes_follow_the_shared_family_groups(dialog):
     from PyQt6.QtWidgets import QLabel
-    from core.algorithms import fusion_algorithms
     from locales import trans
-    from ui.algorithm_combo import CATEGORY_KEYS, CATEGORY_ORDER
 
     headers = [label.text() for label in dialog.findChildren(QLabel)
                if label.objectName() == "sectionLabel"]
-    assert headers == [trans.t(CATEGORY_KEYS[category])
-                       for category in CATEGORY_ORDER]
-    assert list(dialog._checks) == [
-        spec.id for spec in sorted(
-            fusion_algorithms(),
-            key=lambda spec: CATEGORY_ORDER.index(spec.category))]
+    assert headers == [trans.t("group_openfocus_methods"),
+                       trans.t("group_stackmff_methods"),
+                       trans.t("group_other_methods")]
+    groups = {}
+    for method, checkbox in dialog._checks.items():
+        groups.setdefault(checkbox.parentWidget(), []).append(method)
+    assert list(groups.values()) == [
+        ["openfocus_a", "openfocus_b", "openfocus_c"],
+        ["stackmffv3", "stackmffv2", "stackmff"],
+        ["guided_filter", "gfgfgf", "dct", "dtcwt"],
+    ]
 
 
 def test_unavailable_methods_stay_visible_with_a_reason(
