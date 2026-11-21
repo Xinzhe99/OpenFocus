@@ -834,13 +834,33 @@ class MultiFocusFusion:
         identity_sources = input_source
         resize_for_tiles = (self.tile_enabled and needs_tiles and img_resize is not None
                             and self.algorithm not in ('openfocus_b', 'openfocus_c'))
-        deferred_exposure = (not streaming_sources and self.tile_enabled and needs_tiles
-                             and isinstance(input_source, list) and not resize_for_tiles
-                             and (img_resize is None or self.algorithm not in ('openfocus_b', 'openfocus_c')))
+        from core.source_frames import TileExposureCache
+        # Tiled V3 keeps exposure-matched 16-bit frames at their native depth.
+        # Each tile owns its crop, so it normalizes the crop and applies the
+        # whole-frame gain there instead of preparing a float32 stack.
+        has_uint16 = any(frame.dtype == np.uint16 for frame in input_source)
+        tile_raw_exposure = bool(
+            self.algorithm == 'stackmffv3' and self.tile_enabled and needs_tiles
+            and img_resize is None and self.exposure_match and has_uint16)
+        cached_preparation = getattr(self, 'prepared_cache', None)
+        cached_gains = None
+        if isinstance(cached_preparation, TileExposureCache) != tile_raw_exposure:
+            # Prepared in the other representation, e.g. before tiling changed.
+            cached_preparation = self.prepared_cache = None
+        elif tile_raw_exposure:
+            cached_gains = cached_preparation.gains
+            cached_preparation = cached_preparation.frames
+        deferred_exposure = tile_raw_exposure or (
+            not streaming_sources and self.tile_enabled and needs_tiles
+            and isinstance(input_source, list) and not resize_for_tiles
+            and (img_resize is None or self.algorithm not in ('openfocus_b', 'openfocus_c')))
         # Retain prepared pixels on disk; color conversion/gain scratch is
         # bounded by rows and cancellation is checked between strips.
-        normalize_sources = (not deferred_exposure and not native_codes
-                             and any(frame.dtype == np.uint16 for frame in input_source))
+        normalize_sources = not deferred_exposure and not native_codes and has_uint16
+        # Exposure matching converts a streamed frame to float32 in the strips
+        # it scales, and measures its gains on the same normalized strips, so
+        # a matched stack never stores a normalized intermediate.
+        normalize_with_gain = normalize_sources and streaming_sources and self.exposure_match
         preparation = 0
         for frame in input_source:
             strip_size = min(frame.shape[0], 128) * int(np.prod(frame.shape[1:]))
@@ -857,7 +877,6 @@ class MultiFocusFusion:
         # Sorting fixes the reference end before exposure and tile dispatch.
         with _profile().stage('sort'):
             input_source = self._maybe_sort_input(input_source, should_cancel)
-        cached_preparation = getattr(self, 'prepared_cache', None)
         reuse_preparation = (cached_preparation is not None and spec.neural
                              and self.tile_enabled and needs_tiles and streaming_sources)
         if reuse_preparation:
@@ -873,8 +892,9 @@ class MultiFocusFusion:
         if reuse_preparation:
             pass
         elif normalize_sources and streaming_sources:
-            from core.source_frames import normalize_frames
-            input_source = normalize_frames(input_source, should_cancel)
+            if not normalize_with_gain:
+                from core.source_frames import normalize_frames
+                input_source = normalize_frames(input_source, should_cancel)
         elif normalize_sources:
             normalized_frames = []
             for frame in input_source:
@@ -896,7 +916,7 @@ class MultiFocusFusion:
             del normalized
         exposure_gains_ = None
         if reuse_preparation:
-            pass
+            exposure_gains_ = cached_gains
         elif self.exposure_match and native_codes:
             from core.source_frames import match_exposure_frames
             from core.registration import deferred_warp_threads
@@ -909,11 +929,12 @@ class MultiFocusFusion:
                     policy.native_thread_ceiling(self.resource_preference, kwargs.get('thread_count'))):
                 exposure_gains_ = self._exposure_gains_for_source(
                     input_source, should_cancel,
-                    normalize_uint16=deferred_exposure or native_codes)
+                    normalize_uint16=deferred_exposure or native_codes or normalize_with_gain)
             check_cancel()
-            if streaming_sources:
+            if streaming_sources and not deferred_exposure:
                 from core.source_frames import exposure_frames
-                input_source = exposure_frames(input_source, exposure_gains_, should_cancel)
+                input_source = exposure_frames(input_source, exposure_gains_, should_cancel,
+                                               normalize=normalize_with_gain)
             elif exposure_gains_ is not None and isinstance(input_source, list) and not deferred_exposure:
                 matched = []
                 for frame, gain in zip(input_source, exposure_gains_):
@@ -931,16 +952,22 @@ class MultiFocusFusion:
                     matched.append(adjusted)
                 input_source = matched
         if spec.neural and self.tile_enabled and needs_tiles and streaming_sources and not reuse_preparation:
-            from core.source_frames import materialize_for_repeated_access
+            from core.source_frames import frame_has_mapped_pixels, materialize_for_repeated_access
             before_snapshot = input_source
             input_source = materialize_for_repeated_access(
                 input_source, should_cancel, thread_count=kwargs.get('thread_count', 0),
                 resource_preference=self.resource_preference,
                 progress_callback=getattr(progress_callback, 'preparation', None))
             if (getattr(self, 'retain_preparation', False)
-                    and input_source is not before_snapshot
                     and sum(frame.nbytes for frame in input_source) <= 2 * 1024 ** 3):
-                self.prepared_cache = input_source
+                snapshotted = input_source is not before_snapshot
+                if tile_raw_exposure:
+                    # Frames that were mapped already needed no snapshot, but
+                    # their measured gains are still worth keeping with them.
+                    if snapshotted or all(frame_has_mapped_pixels(frame) for frame in input_source):
+                        self.prepared_cache = TileExposureCache(input_source, tuple(exposure_gains_))
+                elif snapshotted:
+                    self.prepared_cache = input_source
         elif self.algorithm == 'openfocus_b' and streaming_sources:
             from core.source_frames import (SourceFrame, ProcessedFrame,
                                             frame_resolution_bytes,
@@ -1047,13 +1074,10 @@ class MultiFocusFusion:
                                                  deferred_exposure)
         check_cancel()
         if streaming_sources:
-            from core.source_frames import SourceFrame, ProcessedFrame
+            from core.source_frames import validate_frame_source
             for frame in identity_sources:
                 check_cancel()
-                while isinstance(frame, ProcessedFrame):
-                    frame = frame.source
-                if isinstance(frame, SourceFrame):
-                    frame.validate_source()
+                validate_frame_source(frame)
         result = result if is_mapped_frame(result) else store_frame(result)
         options = [('exposure_match', self.exposure_match), ('base_frame', self.base_frame)]
         if spec.sort_frames:
@@ -1922,18 +1946,25 @@ class MultiFocusFusion:
                            block_after_image_clamp=clamped_block,
                            block_after_memory_plan=planned_block, block_effective=block_size,
                            pad_alignment=ATTENTION_PAD_ALIGN)
+        normalize_crops = (exposure_gains is not None and imgs is not None
+                           and any(frame.dtype == np.uint16 for frame in imgs))
 
         def crop_frames(coords):
             check_cancel()
             x0, y0, x1, y1 = coords
             if imgs is not None:
                 from core.source_frames import resolve_region
-                crops = [resolve_region(frame, x0, y0, x1 - x0, y1 - y0,
-                                        should_cancel=should_cancel) for frame in imgs]
-                if exposure_gains is not None:
-                    crops = normalize_fuse_input(crops)[0]
-                    crops = [apply_exposure_gain(crop, gain)
-                             for crop, gain in zip(crops, exposure_gains)]
+                from fusion_methods.neural_common import working_frame
+                crops = []
+                for index, frame in enumerate(imgs):
+                    crop = resolve_region(frame, x0, y0, x1 - x0, y1 - y0,
+                                          should_cancel=should_cancel)
+                    if exposure_gains is not None:
+                        # resolve_region returned this tile's own copy, so the
+                        # gain can scale a float32 crop in place.
+                        crop = working_frame(crop, normalize_crops)
+                        crop = apply_exposure_gain(crop, exposure_gains[index], copy=False)
+                    crops.append(crop)
                 return crops
             crops = []
             for index, name in enumerate(files):

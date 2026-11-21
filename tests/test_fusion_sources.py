@@ -55,7 +55,7 @@ def test_real_descriptor_fusion_matches_array_consumer(tmp_path, method, tiled, 
     np.testing.assert_array_equal(actual, expected)
 
 
-@pytest.mark.parametrize('method', CLASSICAL)
+@pytest.mark.parametrize('method', [*CLASSICAL, 'stackmffv3'])
 def test_source_normalization_exposure_and_resize_match_prepared_consumer(tmp_path, method):
     arrays, descriptors = _sources(tmp_path)
     normalized, _ = normalize_fuse_input(arrays)
@@ -66,6 +66,27 @@ def test_source_normalization_exposure_and_resize_match_prepared_consumer(tmp_pa
     actual = _fusion(method).fuse(descriptors, img_resize=resize, thread_count=1)
     np.testing.assert_array_equal(actual, expected)
     assert actual.shape == expected.shape
+
+
+def test_exposure_frames_normalize_in_the_pass_that_applies_the_gain(tmp_path):
+    from core.aligned_previews import registered_preview
+    _, descriptors = _sources(tmp_path)     # uint8, uint16, uint8
+    gains = [0.5, 1.0, 1.7]
+    separate = source_frames.exposure_frames(source_frames.normalize_frames(descriptors), gains)
+    combined = source_frames.exposure_frames(descriptors, gains, normalize=True)
+    for two_pass, one_pass, descriptor, gain in zip(separate, combined, descriptors, gains):
+        # One processing step over the file, with no normalized frame between.
+        assert one_pass.source is descriptor and one_pass.dtype == np.float32
+        np.testing.assert_array_equal(one_pass.full_resolution(), two_pass.full_resolution())
+        if gain != 1.0:
+            assert (source_frames.frame_resolution_bytes(one_pass)
+                    < source_frames.frame_resolution_bytes(two_pass))
+        # Either way the preview scales the captured codes, not float32 pixels.
+        expected, actual = registered_preview(two_pass), registered_preview(one_pass)
+        np.testing.assert_array_equal(actual[0], expected[0])
+        assert actual[0].dtype == expected[0].dtype and actual[1] == expected[1]
+    ready = np.ones((4, 4, 3), np.float32)
+    assert source_frames.exposure_frames([ready], [1.0], normalize=True)[0] is ready
 
 
 @pytest.mark.parametrize('method', ['guided_filter', 'gfgfgf', 'dct'])
@@ -434,6 +455,22 @@ def test_direct_v2_long_resized_sources_stage_once_and_keep_identity(tmp_path, m
         source.get(0, (0, 0, 13, 11))
 
 
+def test_direct_v2_resized_prepared_sources_keep_identity(tmp_path):
+    from fusion_methods.stackmff_v2_tiled import _Source
+    rng = np.random.default_rng(806)
+    arrays = [rng.integers(0, 256, (64, 32, 3), dtype=np.uint8) for _ in range(2)]
+    descriptors = _write_sources(tmp_path, arrays)
+    # Tiled renders hand V2 prepared snapshots, whose pixels are no longer a file.
+    prepared = source_frames.materialize_for_repeated_access(descriptors, required=True)
+    source = _Source(prepared, (40, 80), None, None)
+    np.testing.assert_array_equal(source.get(0, (3, 5, 13, 11)),
+                                  cv2.resize(arrays[0], (40, 80))[5:16, 3:16])
+    with open(descriptors[0].path, 'ab') as stream:
+        stream.write(b'changed after V2 staging')
+    with pytest.raises(OSError, match='Source changed'):
+        source.get(0, (0, 0, 13, 11))
+
+
 @pytest.mark.parametrize('exposure', [False, True])
 def test_tiled_v3_stages_deferred_frames_once_and_preserves_pixels(tmp_path, monkeypatch, exposure):
     from collections import Counter
@@ -471,6 +508,47 @@ def test_tiled_v3_stages_deferred_frames_once_and_preserves_pixels(tmp_path, mon
     assert processed == {index: passes for index in range(len(descriptors))}
     assert preparation == [(0, 3), (1, 3), (2, 3), (3, 3)]
     assert tiles[0][0] == 0 and tiles[-1][0] == tiles[-1][1] and tiles[-1][1] > 1
+
+
+@pytest.mark.parametrize('exposure', [False, True])
+def test_tiled_v3_discards_a_cache_prepared_in_the_other_representation(
+        tmp_path, monkeypatch, exposure):
+    """Native-depth frames with gains and adjusted float32 frames are not interchangeable."""
+    from fusion_methods import stackmffv3
+
+    arrays, descriptors = _sources(tmp_path)
+    monkeypatch.setattr(stackmffv3, '_probabilities',
+                        lambda batch, *args: np.full_like(batch, 1 / batch.shape[1]))
+    fusion = _fusion('stackmffv3', tiled=True, exposure=exposure)
+    expected = fusion.fuse(descriptors, thread_count=1)
+    stale = [np.zeros_like(frame) for frame in arrays]
+    # An exposure-matched 16-bit render keeps native-depth frames, so it must
+    # not read a plain list; any other render must not read unadjusted frames.
+    fusion.prepared_cache = (stale if exposure else
+                             source_frames.TileExposureCache(stale, (1.0,) * len(stale)))
+    np.testing.assert_array_equal(fusion.fuse(descriptors, thread_count=1), expected)
+    assert fusion.prepared_cache is None
+
+
+def test_tiled_v3_retains_gains_for_frames_that_were_mapped_already(tmp_path, monkeypatch):
+    from fusion_methods import stackmffv3
+
+    _arrays, descriptors = _sources(tmp_path, mixed=False)
+    monkeypatch.setattr(stackmffv3, '_probabilities',
+                        lambda batch, *args: np.full_like(batch, 1 / batch.shape[1]))
+    expected = _fusion('stackmffv3', tiled=True).fuse(descriptors, thread_count=1)
+    # Prepared frames are mapped already, so the render snapshots nothing.
+    prepared = source_frames.materialize_for_repeated_access(descriptors, required=True)
+    fusion = _fusion('stackmffv3', tiled=True)
+    fusion.retain_preparation = True
+    np.testing.assert_array_equal(fusion.fuse(prepared, thread_count=1), expected)
+    cache = fusion.prepared_cache
+    assert isinstance(cache, source_frames.TileExposureCache)
+    assert all(cached is frame for cached, frame in zip(cache.frames, prepared, strict=True))
+    assert len(cache.gains) == len(prepared)
+    monkeypatch.setattr(MultiFocusFusion, '_exposure_gains_for_source',
+                        lambda *a, **kw: pytest.fail('measured cached gains again'))
+    np.testing.assert_array_equal(fusion.fuse(prepared, thread_count=1), expected)
 
 
 def test_tiled_v3_rechecks_staged_source_after_last_tile(tmp_path, monkeypatch):

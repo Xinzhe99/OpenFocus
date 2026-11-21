@@ -58,10 +58,20 @@ def test_the_ai_stack_is_a_base_dependency():
 
 
 def test_dynamic_onnx_checkpoints_are_packaged():
+    import hashlib
+    from core.inference_worker import _TORCH_EXPORTS
+
     data = tomllib.loads(PYPROJECT.read_text(encoding="utf-8"))["tool"]["setuptools"]["package-data"]
     assert {'*.onnx', '*.pth'} <= set(data['weights'])
+    shipped = {}
     for name in ("stackmff_final.onnx", "stackmff_v2_final.onnx", "stackmff_v3_final.onnx"):
-        assert (ROOT / "weights" / name).is_file()
+        graph = ROOT / "weights" / name
+        checkpoint = graph.with_suffix(".pth")
+        shipped[hashlib.sha256(graph.read_bytes()).hexdigest()] = (
+            checkpoint.name, hashlib.sha256(checkpoint.read_bytes()).hexdigest())
+    # Exactly the shipped graphs: code that checks every entry against its
+    # graph file would reject one kept for a replaced graph.
+    assert _TORCH_EXPORTS == shipped
 
 
 def test_optional_input_decoders_ship_by_default():

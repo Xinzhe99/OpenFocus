@@ -20,7 +20,7 @@ _TORCH_EXPORTS = {
         'stackmff_final.pth', '8a530228077a4dc0476258f55dd6e00d0b00d04861b1177bdbe4767eb449fb7d'),
     '045c7db9052f2d31c78633ced5eb299e841b2974c63eebcfbbf36f4ad2610614': (
         'stackmff_v2_final.pth', 'f7f2ee36453d6073d62b89289133012b95116c07b208e76f5ba6d00a1f3f2cda'),
-    '7b92bf31c984eac2b93d6000158b4802b7d62c23140d52e28a47676f58d5c4f7': (
+    'ebf28996d80bd9f7ba6dfca3177ab0e0997ab39075c7341beac0bcf8919081f5': (
         'stackmff_v3_final.pth', '39b2ea3738e8fea1676c379238d6be81a87988fc9952dbd6ac3825d5d7249f46'),
 }
 
