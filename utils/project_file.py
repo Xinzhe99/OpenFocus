@@ -794,6 +794,10 @@ def _normalize_algorithm_settings(settings, *, legacy=True, old_parameters=False
         if old_parameters:
             values = migrate_openfocus_parameters(name, values)
         resolved = resolve_fusion_parameters(name, values)
+        if name == "stackmffv3":
+            # Legacy processing settings omitted the scale. Apply the default
+            # even when the destination already remembers a different scale.
+            values.setdefault("inference_scale", resolved["inference_scale"])
         settings["method_parameters"][name] = {key: resolved[key] for key in values}
     for name, values in registrations.items():
         if not isinstance(values, dict):

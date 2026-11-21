@@ -1178,6 +1178,7 @@ class MultiFocusFusion:
                          mode: str = 'soft',
                          should_cancel=None,
                          progress_callback=None,
+                         *, inference_scale: str = 'single',
                          **kwargs) -> np.ndarray:
         """
         StackMFF-V3 融合
@@ -1187,6 +1188,7 @@ class MultiFocusFusion:
             img_resize: 目标尺寸
             model_path: 模型权重文件路径
             mode: 'soft'（概率加权混合）| 'hard'（逐像素取最可能帧）
+            inference_scale: 'single'（默认）| 'dual'（原尺寸和 0.75 倍）
         
         Returns:
             融合后的图像
@@ -1200,6 +1202,7 @@ class MultiFocusFusion:
             model_path,
             self.use_gpu,
             mode=mode,
+            inference_scale=inference_scale,
             should_cancel=should_cancel,
             progress_callback=progress_callback,
             thread_count=kwargs.get('thread_count'),
@@ -2116,6 +2119,7 @@ def fuse_images(input_source: Union[str, List[np.ndarray]],
         img_resize: 目标尺寸
         ai_batch_size: StackMFF V3 批量处理大小（默认2）
         mode: StackMFF V3 输出模式，'soft'（概率加权，默认）或 'hard'（argmax）
+        inference_scale: StackMFF V3 推理尺度，'single'（默认）或 'dual'（原尺寸和 0.75 倍）
         **kwargs: 算法特定参数
     
     Returns:

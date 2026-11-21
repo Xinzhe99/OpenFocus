@@ -18,7 +18,7 @@ def settings_window(qapp):
     window.reg_downscale_width = 1024
     window.align_cache_enabled = True
     window.ai_batch_size = 2
-    window._fusion_parameters_by_method = {"stackmffv3": {"mode": "soft"}}
+    window._fusion_parameters_by_method = {"stackmffv3": {"mode": "soft", "inference_scale": "single"}}
     window.fusion_parameters_for = lambda method, depth=False: dict(
         window._fusion_parameters_by_method.get(method, {}))
     window.set_fusion_parameters = lambda method, values: window._fusion_parameters_by_method.__setitem__(
@@ -471,7 +471,7 @@ def test_resource_mode_only_changes_concurrency(settings_window):
     dialog._apply()
     assert settings_window.resource_preference == "responsive"
     assert settings_window.tile_block_size == 512
-    assert settings_window.fusion_parameters_for("stackmffv3") == {"mode": "soft"}
+    assert settings_window.fusion_parameters_for("stackmffv3") == {"mode": "soft", "inference_scale": "single"}
     dialog.deleteLater()
 
 
