@@ -1382,18 +1382,18 @@ def materialize_for_repeated_access(frames, should_cancel=None, *, thread_count=
     with scratch_directory():
         try:
             select_scratch(sum(frame.nbytes for frame in lazy) + staging_bytes, paths)
-            if progress_callback is not None:
-                progress_callback(0, len(lazy))
-            stored = materialize_frames(lazy, should_cancel, thread_count=thread_count,
-                                        resource_preference=resource_preference,
-                                        progress_callback=progress_callback, prefer_ram=False,
-                                        staging_bytes=staging_bytes)
         except ScratchSpaceError:
             if required:
                 raise
             logger.warning('Insufficient scratch space for source snapshots; '
                            'using streamed sources')
             return frames
+        if progress_callback is not None:
+            progress_callback(0, len(lazy))
+        stored = materialize_frames(lazy, should_cancel, thread_count=thread_count,
+                                    resource_preference=resource_preference,
+                                    progress_callback=progress_callback, prefer_ram=False,
+                                    staging_bytes=staging_bytes)
 
     result = list(frames)
     for index, original, image in zip(indices, lazy, stored):
