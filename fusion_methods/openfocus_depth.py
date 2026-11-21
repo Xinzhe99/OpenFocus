@@ -145,13 +145,11 @@ def _activity_frames(frames, img_resize, kernel_size, thread_count, should_cance
     from core.source_frames import resolve_frame
     from fusion_methods.openfocus_ab import (
         _check_cancel, _frame_pass_workers, _ordered_frame_results)
-    from fusion_methods._depth_kernel import prepare_depth_kernel
     from fusion_methods._openfocus_pixels import frame_gray_codes
     from fusion_methods._openfocus_depth_rows import activity_rows, detail_rows, smooth_detail_rows
 
     if not 2 <= len(frames) <= 65536:
         raise ValueError('OpenFocus depth requires between 2 and 65536 source frames')
-    prepare_depth_kernel(guided=False, should_cancel=should_cancel)
     workers = _frame_pass_workers(frames, img_resize, 'openfocus_b', thread_count,
                                   activity_only=True)
     if gpu is not None and not gpu.failed:
@@ -178,18 +176,28 @@ def _activity_frames(frames, img_resize, kernel_size, thread_count, should_cance
             raise ValueError('OpenFocus depth requires frames with matching shapes')
         detail = None
         if preserve_detail:
-            detail_shape = (max(1, shape[0] // 2), max(1, shape[1] // 2))
-            pooled = create_frame(detail_shape, np.uint16)
-            detail = create_frame(detail_shape, np.uint16)
-            def measure_detail(start, stop):
+            height, width = max(1, shape[0] // 2), max(1, shape[1] // 2)
+            detail = create_frame((height, width), np.uint16)
+            band = 64
+            scratch_rows = min(height, band + 4)
+
+            def measure_detail(start, stop, workspace):
                 cancel()
-                detail_rows(gray, pooled, start, stop)
-            run_bands(detail_shape[0], 128, measure_detail)
-            def smooth_detail(start, stop):
+                pooled, columns = workspace
+                # Reflect only at image boundaries. Interior bands include
+                # the two pooled rows needed on each side by the 5x5 mean.
+                first = max(0, start - 2)
+                last = min(height, stop + 2)
+                pooled = pooled[:last - first]
+                detail_rows(gray, pooled, first)
                 cancel()
-                smooth_detail_rows(pooled, detail, start, stop)
-            run_bands(detail_shape[0], 128, smooth_detail)
-            del pooled
+                smooth_detail_rows(pooled, detail[first:stop], start - first,
+                                   stop - first, columns)
+
+            run_bands(height, band, measure_detail,
+                      scratch_bytes=width * (2 * scratch_rows + 4),
+                      workspace=lambda: (create_frame((scratch_rows, width), np.uint16),
+                                         np.empty(width, np.int32)))
         if half_resolution:
             from fusion_methods._openfocus_resample import half_gray
             gray = half_gray(gray, cancelled, axes=axes)
@@ -236,11 +244,6 @@ def depth_map(frames, img_resize, kernel_size, smoothing, should_cancel,
     """Estimate depth with the specified integer feather, defaulting to F0."""
     _validate_feather(feather)
     from fusion_methods.openfocus_ab import _check_cancel
-    from fusion_methods._depth_kernel import prepare_depth_kernel
-    from fusion_methods._openfocus_depth_rows import (
-        initialize_activity_rows, select_activity_rows, confidence_rows,
-        guide_rows, snap_rows, initialize_detail_rows, select_detail_rows,
-        detail_confidence_rows, apply_detail_rows)
 
     if not 2 <= len(frames) <= 65536:
         raise ValueError('OpenFocus depth requires between 2 and 65536 source frames')
@@ -248,7 +251,6 @@ def depth_map(frames, img_resize, kernel_size, smoothing, should_cancel,
         raise ValueError('Detail preservation requires half-resolution depth')
     algorithm = 'openfocus_c' if half_resolution else 'openfocus_b'
     configure_rows(frames, img_resize, algorithm, thread_count, should_cancel)
-    prepare_depth_kernel(guided=True, should_cancel=should_cancel)
 
     def cancel():
         _check_cancel(should_cancel)
@@ -297,7 +299,17 @@ def depth_map(frames, img_resize, kernel_size, smoothing, should_cancel,
             return result
 
 
+    from fusion_methods._depth_kernel import prepare_depth_kernel
+    from fusion_methods._openfocus_depth_rows import (
+        apply_detail_rows, confidence_hist_rows, detail_confidence_rows,
+        guide_rows, initialize_activity_rows, initialize_detail_rows, reciprocal32,
+        select_activity_rows, select_detail_rows, snap_rows,
+    )
+    smooth = np.float32(np.float32(smoothing) * np.float32(0.75) * np.float32(0.03125))
+    prepare_depth_kernel(guided=smooth != 0, should_cancel=should_cancel)
+
     step = 65535 // (len(frames) - 1)
+    reciprocal = reciprocal32(len(frames))
     best = depth = votes = None
     detail_best = detail_second = detail_winner = None
     produced = _activity_frames(frames, img_resize, kernel_size, thread_count,
@@ -326,10 +338,14 @@ def depth_map(frames, img_resize, kernel_size, smoothing, should_cancel,
             if best is None:
                 best = activity
                 depth = create_frame(activity.shape, np.uint16)
-                votes = create_frame(activity.shape, np.uint16)
+                extent = np.float32(max(depth.shape))
+                # Activity votes are used only to build the smoothing guide.
+                scale = np.float32(extent * smooth / np.float32(100))
+                if scale != 0:
+                    votes = create_frame(activity.shape, np.uint16)
                 def initialize(start, stop):
                     cancel()
-                    initialize_activity_rows(activity, depth, votes, len(frames),
+                    initialize_activity_rows(activity, depth, votes, reciprocal,
                                              start, stop)
                 run_bands(activity.shape[0], 128, initialize)
             else:
@@ -339,7 +355,7 @@ def depth_map(frames, img_resize, kernel_size, smoothing, should_cancel,
                 def select(start, stop):
                     cancel()
                     select_activity_rows(activity, best, depth, votes, code,
-                                         len(frames), start, stop)
+                                         reciprocal, start, stop)
                 run_bands(activity.shape[0], 128, select)
             if progress_callback is not None:
                 progress_callback(index, len(frames))
@@ -355,31 +371,27 @@ def depth_map(frames, img_resize, kernel_size, smoothing, should_cancel,
             detail_confidence_rows(best, detail_best, detail_second, start, stop)
         run_bands(best.shape[0], 128, detail_confidence)
         del detail_best
-    hist = np.zeros(65536, np.int64)
-    for rows in _rows(best, cancel):
-        confidence_rows(best, votes, rows.start, rows.stop)
-        hist += np.bincount(best[rows].ravel(), minlength=65536)
-    del votes
-    threshold = int(np.float32(np.float32(best.size) * np.float32(0.009999999776482582)))
-    lo = int(np.searchsorted(np.cumsum(hist), threshold)) if threshold else 0
-    hi = (65535 - int(np.searchsorted(np.cumsum(hist[::-1]), threshold))
-          if threshold else 65535)
-    positions = np.arange(4096, dtype=np.float64) * 65535.0 / 4095.0
-    span = max(hi - lo, 1)
-    guide_lut = (65535.0 * np.sqrt(np.clip((positions - lo) / span, 0, 1))).astype(np.float32)
-    guide = create_frame(best.shape, np.uint16)
-    def make_guide(start, stop):
-        cancel()
-        guide_rows(best, guide_lut, guide, start, stop)
-    run_bands(best.shape[0], 128, make_guide)
+    if votes is not None:
+        hist = np.zeros(65536, np.int64)
+        for rows in _rows(best, cancel):
+            confidence_hist_rows(best, votes, hist, rows.start, rows.stop)
+        del votes
+        threshold = int(np.float32(np.float32(best.size) * np.float32(0.009999999776482582)))
+        lo = int(np.searchsorted(np.cumsum(hist), threshold)) if threshold else 0
+        hi = (65535 - int(np.searchsorted(np.cumsum(hist[::-1]), threshold))
+              if threshold else 65535)
+        positions = np.arange(4096, dtype=np.float64) * 65535.0 / 4095.0
+        span = max(hi - lo, 1)
+        guide_lut = (65535.0 * np.sqrt(np.clip((positions - lo) / span, 0, 1))).astype(np.float32)
+        # Reuse the confidence plane for the pointwise guide transform.
+        def make_guide(start, stop):
+            cancel()
+            guide_rows(best, guide_lut, start, stop)
+        run_bands(best.shape[0], 128, make_guide)
+        low = np.float32(extent * np.float32(smooth * np.float32(64)) / np.float32(100))
+        for _ in range(2):
+            depth = _filter(depth, scale, cancel, best, low)
     del best
-    smooth = np.float32(np.float32(smoothing) * np.float32(0.75) * np.float32(0.03125))
-    extent = np.float32(max(depth.shape))
-    scale = np.float32(extent * smooth / np.float32(100))
-    low = np.float32(extent * np.float32(smooth * np.float32(64)) / np.float32(100))
-    for _ in range(2):
-        depth = _filter(depth, scale, cancel, guide, low)
-    del guide
     half = step >> 1
     if half:
         lut = _snap_lut(feather)

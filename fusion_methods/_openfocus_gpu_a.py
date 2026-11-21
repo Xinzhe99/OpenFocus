@@ -15,8 +15,8 @@ from fusion_methods._openfocus_pixels import frame_codes
 from fusion_methods.openfocus_ab import _check_cancel
 
 _KERNEL_NAMES = (
-    'a_gray_u8', 'a_gray_u16', 'a_down2', 'a_laplacian0',
-    'a_laplacian', 'a_accumulate', 'a_select_u8', 'a_select_u16',
+    'a_down2_u8', 'a_down2_u16', 'a_down2', 'a_laplacian',
+    'a_select_u8', 'a_select_u16',
     'a_blend_low', 'a_out_u8', 'a_out_f32',
 )
 
@@ -50,33 +50,45 @@ def _invalidate_program_cache():
 _A_K = r'''
 #pragma OPENCL FP_CONTRACT OFF
 
-__kernel void a_gray_u8(__global const uchar* src, __global int* gray,
-                        const int n, const int C)
+static inline int gray_u8(__global const uchar* src, size_t i, int channels, int u8_gray)
 {
-    int i = get_global_id(0);
-    if (i >= n) return;
-    if (C == 1) {
-        gray[i] = (int)src[i] << 8;
-        return;
-    }
-    size_t base = (size_t)i * C;
-    int total = (int)src[base] + (int)src[base + 1] + (C >= 3 ? (int)src[base + 2] : 0);
-    gray[i] = (total / 3) << 8;
+    if (channels == 1) return (int)src[i] << 8;
+    size_t base = i * channels;
+    int total = (int)src[base] + (int)src[base + 1]
+              + (channels >= 3 ? (int)src[base + 2] : 0);
+    return (total / 3) << 8;
 }
 
-__kernel void a_gray_u16(__global const ushort* src, __global int* gray,
-                         const int n, const int C, const int u8_gray)
+static inline int gray_u16(__global const ushort* src, size_t i, int channels, int u8_gray)
 {
-    int i = get_global_id(0);
-    if (i >= n) return;
-    if (C == 1) {
-        gray[i] = (int)src[i];
-        return;
-    }
-    size_t base = (size_t)i * C;
-    int total = (int)src[base] + (int)src[base + 1] + (C >= 3 ? (int)src[base + 2] : 0);
-    gray[i] = u8_gray ? (((total >> 8) / 3) << 8) : (total / 3);
+    if (channels == 1) return (int)src[i];
+    size_t base = i * channels;
+    int total = (int)src[base] + (int)src[base + 1]
+              + (channels >= 3 ? (int)src[base + 2] : 0);
+    return u8_gray ? (((total >> 8) / 3) << 8) : (total / 3);
 }
+
+#define DEFINE_A_DOWN2(NAME, PIXEL_T, GRAY) \
+__kernel void NAME(__global const PIXEL_T* src, __global int* out, \
+                   const int H, const int W, const int OH, const int OW, \
+                   const int channels, const int u8_gray) \
+{ \
+    int x = get_global_id(0); \
+    int y = get_global_id(1); \
+    if (x >= OW || y >= OH) return; \
+    size_t top = (size_t)(2 * y) * W; \
+    size_t bottom = (size_t)min(2 * y + 1, H - 1) * W; \
+    int left = 2 * x; \
+    int right = min(left + 1, W - 1); \
+    int total = GRAY(src, top + left, channels, u8_gray) \
+              + GRAY(src, top + right, channels, u8_gray) \
+              + GRAY(src, bottom + left, channels, u8_gray) \
+              + GRAY(src, bottom + right, channels, u8_gray); \
+    out[(size_t)y * OW + x] = total >> 2; \
+}
+
+DEFINE_A_DOWN2(a_down2_u8, uchar, gray_u8)
+DEFINE_A_DOWN2(a_down2_u16, ushort, gray_u16)
 
 __kernel void a_down2(__global const int* gray, __global int* out,
                       const int H, const int W, const int OH, const int OW)
@@ -89,105 +101,102 @@ __kernel void a_down2(__global const int* gray, __global int* out,
     int bottom = min(top + 1, H - 1);
     int left = 2 * x;
     int right = min(left + 1, W - 1);
-    long total = (long)gray[(size_t)top * W + left]
-               + (long)gray[(size_t)top * W + right]
-               + (long)gray[(size_t)bottom * W + left]
-               + (long)gray[(size_t)bottom * W + right];
-    out[(size_t)y * OW + x] = (int)(total >> 2);
+    int total = gray[(size_t)top * W + left] + gray[(size_t)top * W + right]
+              + gray[(size_t)bottom * W + left] + gray[(size_t)bottom * W + right];
+    out[(size_t)y * OW + x] = total >> 2;
 }
 
-__kernel void a_laplacian0(__global const int* gray, __global const int* reduced,
-                           __global int* resp, const int GH, const int GW,
-                           const int RH, const int RW)
+static inline int burt_expand2(__global const int* reduced, int y, int x, int H, int W)
 {
-    int x = get_global_id(0);
-    if (x >= GW) return;
-    int y = get_global_id(1);
-    if (y >= GH) return;
-    int y0 = (y >> 1) - ((y & 1) == 0 ? 1 : 0);
-    int y1 = min(y0 + 1, RH - 1);
+    int y0 = (y >> 1) - ((y & 1) == 0);
+    int y1 = min(y0 + 1, H - 1);
     y0 = max(y0, 0);
-    long wy0 = (y & 1) == 0 ? 1L : 3L;
-    long wy1 = 4L - wy0;
-    int x0 = (x >> 1) - ((x & 1) == 0 ? 1 : 0);
-    int x1 = min(x0 + 1, RW - 1);
+    int wy0 = (y & 1) == 0 ? 1 : 3;
+    int wy1 = 4 - wy0;
+    int x0 = (x >> 1) - ((x & 1) == 0);
+    int x1 = min(x0 + 1, W - 1);
     x0 = max(x0, 0);
-    long wx0 = (x & 1) == 0 ? 1L : 3L;
-    long wx1 = 4L - wx0;
-    long top = (long)reduced[(size_t)y0 * RW + x0] * wx0 + (long)reduced[(size_t)y0 * RW + x1] * wx1;
-    long bottom = (long)reduced[(size_t)y1 * RW + x0] * wx0 + (long)reduced[(size_t)y1 * RW + x1] * wx1;
-    long value = (long)gray[(size_t)y * GW + x] * 16L - top * wy0 - bottom * wy1;
-    long abs_val = value < 0L ? -value : value;
-    resp[(size_t)y * GW + x] = (int)min(abs_val, 65535L * 16L);
+    int wx0 = (x & 1) == 0 ? 1 : 3;
+    int wx1 = 4 - wx0;
+    size_t row0 = (size_t)y0 * W;
+    size_t row1 = (size_t)y1 * W;
+    int top = reduced[row0 + x0] * wx0 + reduced[row0 + x1] * wx1;
+    int bottom = reduced[row1 + x0] * wx0 + reduced[row1 + x1] * wx1;
+    return top * wy0 + bottom * wy1;
 }
 
 __kernel void a_laplacian(__global const int* gray, __global const int* reduced,
-                          __global int* out, const int GH, const int GW,
+                          __global int* lap, const int offset, const int GH, const int GW,
                           const int RH, const int RW)
 {
     int x = get_global_id(0);
-    if (x >= GW) return;
     int y = get_global_id(1);
-    if (y >= GH) return;
-    int y0 = (y >> 1) - ((y & 1) == 0 ? 1 : 0);
-    int y1 = min(y0 + 1, RH - 1);
-    y0 = max(y0, 0);
-    long wy0 = (y & 1) == 0 ? 1L : 3L;
-    long wy1 = 4L - wy0;
-    int x0 = (x >> 1) - ((x & 1) == 0 ? 1 : 0);
-    int x1 = min(x0 + 1, RW - 1);
-    x0 = max(x0, 0);
-    long wx0 = (x & 1) == 0 ? 1L : 3L;
-    long wx1 = 4L - wx0;
-    long top = (long)reduced[(size_t)y0 * RW + x0] * wx0 + (long)reduced[(size_t)y0 * RW + x1] * wx1;
-    long bottom = (long)reduced[(size_t)y1 * RW + x0] * wx0 + (long)reduced[(size_t)y1 * RW + x1] * wx1;
-    long value = (long)gray[(size_t)y * GW + x] * 16L - top * wy0 - bottom * wy1;
-    out[(size_t)y * GW + x] = (int)(value < 0L ? -value : value);
+    if (x >= GW || y >= GH) return;
+    size_t i = (size_t)y * GW + x;
+    lap[offset + i] = (int)abs(gray[i] * 16 - burt_expand2(reduced, y, x, RH, RW));
 }
 
-__kernel void a_accumulate(__global const int* lap, __global int* resp,
-                           const int H, const int W, const int LH, const int LW,
-                           const int level)
+static inline int burt_expand_laplacian(__global const int* lap, int y, int x,
+                                        int H, int W, int level)
 {
-    int x = get_global_id(0);
-    if (x >= W) return;
-    int y = get_global_id(1);
-    if (y >= H) return;
+    if (level == 1) return (burt_expand2(lap, y, x, H, W) + 8) >> 4;
+
     int shift = level + 1;
     int factor = 1 << level;
-    long den = 1L << shift;
-    long rounding = 1L << (2 * shift - 1);
+    int den = 1 << shift;
     int py = 2 * y + 1 - factor;
-    int y0 = (py >= 0) ? (py >> shift) : -((-py + (int)den - 1) >> shift);
-    long fy = (long)py - (long)y0 * den;
-    int ya = max(0, min(y0, LH - 1));
-    int yb = max(0, min(y0 + 1, LH - 1));
     int px = 2 * x + 1 - factor;
-    int x0 = (px >= 0) ? (px >> shift) : -((-px + (int)den - 1) >> shift);
-    long fx = (long)px - (long)x0 * den;
-    int xa = max(0, min(x0, LW - 1));
-    int xb = max(0, min(x0 + 1, LW - 1));
-    long left = (long)lap[(size_t)ya * LW + xa] * (den - fy) + (long)lap[(size_t)yb * LW + xa] * fy;
-    long right = (long)lap[(size_t)ya * LW + xb] * (den - fy) + (long)lap[(size_t)yb * LW + xb] * fy;
-    long value = ((left << shift) + (right - left) * fx + rounding) >> (2 * shift);
-    size_t idx = (size_t)y * W + x;
-    long total = (long)resp[idx] + value;
-    resp[idx] = (int)min(total, 65535L * 16L);
+    int y0 = py >> shift;
+    int x0 = px >> shift;
+    int fy = py - y0 * den;
+    int fx = px - x0 * den;
+    int ya = max(0, min(y0, H - 1));
+    int yb = max(0, min(y0 + 1, H - 1));
+    int xa = max(0, min(x0, W - 1));
+    int xb = max(0, min(x0 + 1, W - 1));
+    size_t row0 = (size_t)ya * W;
+    size_t row1 = (size_t)yb * W;
+    int a = lap[row0 + xa], b = lap[row1 + xa];
+    int c = lap[row0 + xb], d = lap[row1 + xb];
+    int bits = shift * 2;
+    // Q4 Laplacians are at most 65535*16. For den <= 32 the
+    // weighted numerator and rounding both fit a signed int.
+    if (shift <= 5) {
+        int left = a * (den - fy) + b * fy;
+        int right = c * (den - fy) + d * fy;
+        return (left * (den - fx) + right * fx + (1 << (bits - 1))) >> bits;
+    }
+    long left = (long)a * (den - fy) + (long)b * fy;
+    long right = (long)c * (den - fy) + (long)d * fy;
+    return (int)((left * (den - fx) + right * fx + (1L << (bits - 1))) >> bits);
 }
 
-#define DEFINE_A_SELECT(NAME, PIXEL_T, SCALE) \
-__kernel void NAME(__global const PIXEL_T* image, __global const int* response, \
-                   __global int* best, __global ushort* output, \
+#define DEFINE_A_SELECT(NAME, PIXEL_T, SCALE, GRAY) \
+__kernel void NAME(__global const PIXEL_T* image, __global const int* half_gray, \
+                   __global const int* lap, __global int* best, __global ushort* output, \
                    __global float* accumulated, __global float* weights, \
-                   __global ushort* stats, const int n, const int C, \
-                   const int first) \
+                   __global ushort* stats, const int H, const int W, const int C, \
+                   const int levels, const int first, const int u8_gray) \
 { \
-    int k = get_global_id(0); \
-    if (k >= n) return; \
-    long score = (long)response[k]; \
-    long previous = first ? 0L : (long)best[k]; \
-    int take = first || (score > previous); \
-    int collect = first || (previous < 65536L); \
+    int x = get_global_id(0); \
+    int y = get_global_id(1); \
+    if (x >= W || y >= H) return; \
+    size_t k = (size_t)y * W + x; \
+    int previous = first ? 0 : best[k]; \
+    if (previous == 65535 * 16) return; \
+    int h = (H + 1) >> 1; \
+    int w = (W + 1) >> 1; \
+    int score = (int)abs(GRAY(image, k, C, u8_gray) * 16 - burt_expand2(half_gray, y, x, h, w)); \
+    for (int level = 1; level < levels && score < 65535 * 16; ++level) { \
+        score += burt_expand_laplacian(lap, y, x, h, w, level); \
+        lap += (size_t)h * w; \
+        h = (h + 1) >> 1; \
+        w = (w + 1) >> 1; \
+    } \
+    score = min(score, 65535 * 16); \
+    int take = first || score > previous; \
+    int collect = previous < 65536 && score < 65536; \
+    if (!take && !collect) return; \
     float factor = 1.0f; \
     float weight = 0.0f; \
     if (collect) { \
@@ -246,8 +255,8 @@ __kernel void NAME(__global const PIXEL_T* image, __global const int* response, 
     } \
 }
 
-DEFINE_A_SELECT(a_select_u8, uchar, 256)
-DEFINE_A_SELECT(a_select_u16, ushort, 1)
+DEFINE_A_SELECT(a_select_u8, uchar, 256, gray_u8)
+DEFINE_A_SELECT(a_select_u16, ushort, 1, gray_u16)
 
 __kernel void a_blend_low(__global ushort* output, __global const int* best,
                           __global const float* accumulated, __global const float* weights,
@@ -298,7 +307,7 @@ __kernel void a_out_f32(__global const ushort* src, __global float* dst, const i
 '''
 
 
-def _source_staging_bytes(frame, shape, img_resize, fast_hard):
+def _source_staging_bytes(frame, shape, img_resize, native_upload):
     from core.source_frames import frame_has_mapped_pixels, frame_resolution_bytes
 
     # Resolution accounts for decode and deferred processors (including ECC).
@@ -306,7 +315,7 @@ def _source_staging_bytes(frame, shape, img_resize, fast_hard):
     resolution = frame_resolution_bytes(frame)
     if frame_has_mapped_pixels(frame):
         resolution = max(resolution, frame.nbytes)
-    if fast_hard:
+    if native_upload:
         packed = 0 if isinstance(frame, np.ndarray) and frame.flags.c_contiguous else frame.nbytes
         return resolution + packed + frame.nbytes  # packing and native upload staging
 
@@ -325,7 +334,7 @@ def _source_staging_bytes(frame, shape, img_resize, fast_hard):
 
 
 class GpuA:
-    """Device-resident OpenFocus A fusion; mirrors openfocus_a_impl (hard) step for step."""
+    """Device-resident OpenFocus A fusion with exact integer Burt responses."""
 
     def __init__(self):
         from fusion_methods._openfocus_gpu import GpuError, _device, opencl_device_name
@@ -402,8 +411,7 @@ class GpuA:
         height, width = int(shape[0]), int(shape[1])
         if min(height, width) < 1:
             raise GpuError('OpenFocus A GPU requires non-empty frames')
-        is_gray = len(shape) == 2
-        channels = 1 if is_gray else int(shape[2])
+        channels = 1 if len(shape) == 2 else int(shape[2])
         n = height * width
         total = len(frames)
         if progress_callback is not None:
@@ -414,11 +422,14 @@ class GpuA:
         pyr_shapes = [(height, width)]
         for _ in range(levels_count):
             ph, pw = pyr_shapes[-1]
-            pyr_shapes.append(((ph + 1) // 2, (pw + 1) // 2))
+            reduced_shape = ((ph + 1) // 2, (pw + 1) // 2)
+            pyr_shapes.append(reduced_shape)
+            if reduced_shape == (1, 1):
+                break  # Subsequent Laplacians of a single pixel are zero.
+        levels_count = len(pyr_shapes) - 1
 
         is_u8 = all(getattr(source, 'dtype', None) == np.uint8 for source in frames)
-        fast_hard = img_resize is None and all(
-            getattr(source, 'dtype', None) in (np.uint8, np.uint16) for source in frames)
+        native_upload = img_resize is None
 
         snapshot = resource_policy.probe_memory()
         # This serial stage can spend the reserve-protected headroom, including
@@ -429,7 +440,8 @@ class GpuA:
         source_peak = 0
         for frame in frames:
             _check_cancel(should_cancel)
-            source_peak = max(source_peak, _source_staging_bytes(frame, shape, img_resize, fast_hard))
+            use_native = native_upload and frame.dtype in (np.uint8, np.uint16)
+            source_peak = max(source_peak, _source_staging_bytes(frame, shape, img_resize, use_native))
         # Upload and readback never overlap. The latter can hold the output and
         # a native transfer copy. Budget context/driver overhead separately.
         staging = max(source_peak, out_bytes * 2) + 16 * 1024 * 1024
@@ -437,11 +449,13 @@ class GpuA:
             raise GpuError(f'OpenFocus A GPU staging exceeds the host memory budget '
                            f'({staging >> 20} MiB needed, {host_budget >> 20} MiB available)')
 
-        lap_bytes = max(1, pyr_shapes[1][0] * pyr_shapes[1][1]) * 4 if levels_count > 1 else 0
-        src_bytes = samples * (1 if fast_hard and is_u8 else 2)
-        need = (sum(max(1, h * w) * 4 for h, w in pyr_shapes)
-                + lap_bytes
-                + n * 4 * 4          # resp, best, wt, stat
+        # Keep the first reduced gray plane for selection. Deeper levels use
+        # two alternating gray buffers and one packed coarse Laplacian buffer.
+        gray_sizes = [h * w * 4 for h, w in pyr_shapes[1:4]]
+        lap_bytes = sum(h * w * 4 for h, w in pyr_shapes[1:-1])
+        src_bytes = samples * (1 if native_upload and is_u8 else 2)
+        need = (sum(gray_sizes) + lap_bytes
+                + n * 4 * 3          # best, weight, statistics
                 + n * channels * 2   # output codes
                 + n * channels * 4   # accumulated sums
                 + max(src_bytes, out_bytes)  # upload and readback are disjoint
@@ -460,24 +474,21 @@ class GpuA:
         if need > limit or largest > single:
             raise GpuError('OpenFocus A GPU workspace exceeds the device budget')
 
-        gray_bufs = [self.cl.Buffer(self.ctx, self.mf.READ_WRITE, max(1, h * w) * 4)
-                     for h, w in pyr_shapes]
+        gray_bufs = [self.cl.Buffer(self.ctx, self.mf.READ_WRITE, size) for size in gray_sizes]
         lap_buf = (self.cl.Buffer(self.ctx, self.mf.READ_WRITE, lap_bytes)
-                   if lap_bytes else None)
-        resp_buf = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, max(1, n * 4))
+                   if lap_bytes else gray_bufs[0])
         best_buf = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, max(1, n * 4))
         out_buf = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, max(1, n * channels * 2))
         acc_buf = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, max(1, n * channels * 4))
         wt_buf = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, max(1, n * 4))
         stat_buf = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, max(1, n * 4))
 
-        src_buf = None
-        src_buf_bytes = 0
+        src_buf = self.cl.Buffer(self.ctx, self.mf.READ_ONLY, src_bytes)
         in_flight = False
         try:
             for index, source in enumerate(frames):
                 _check_cancel(should_cancel)
-                if fast_hard:
+                if native_upload and source.dtype in (np.uint8, np.uint16):
                     with without_source_cache_growth():
                         raw = resolve_frame(source, should_cancel=should_cancel)
                     _check_cancel(should_cancel)
@@ -496,46 +507,37 @@ class GpuA:
                     del raw_code
                     src_is_u8 = False
                     u8_gray = 1 if getattr(source, 'dtype', None) == np.uint8 else 0
-                if src_buf is None or src_buf_bytes != host_src.nbytes:
-                    src_buf = None
-                    src_buf_bytes = 0
-                    src_buf = self.cl.Buffer(
-                        self.ctx, self.mf.READ_ONLY, max(1, host_src.nbytes),
-                    )
-                    src_buf_bytes = host_src.nbytes
                 in_flight = True
                 self.cl.enqueue_copy(self.q, src_buf, host_src, is_blocking=False)
-                if src_is_u8:
-                    self._run(self.k['a_gray_u8'], n, src_buf, gray_bufs[0],
-                              np.int32(n), np.int32(channels))
-                else:
-                    self._run(self.k['a_gray_u16'], n, src_buf, gray_bufs[0],
-                              np.int32(n), np.int32(channels), np.int32(u8_gray))
+                _check_cancel(should_cancel)
+                rh, rw = pyr_shapes[1]
+                down2 = self.k['a_down2_u8'] if src_is_u8 else self.k['a_down2_u16']
+                self._run(down2, (rw, rh), src_buf, gray_bufs[0], np.int32(height),
+                          np.int32(width), np.int32(rh), np.int32(rw), np.int32(channels),
+                          np.int32(u8_gray))
 
-                for level in range(levels_count):
+                offset = 0
+                gray_slot = 0
+                for level in range(1, levels_count):
                     _check_cancel(should_cancel)
                     gh, gw = pyr_shapes[level]
                     rh, rw = pyr_shapes[level + 1]
-                    self._run(self.k['a_down2'], (rw, rh),
-                              gray_bufs[level], gray_bufs[level + 1],
+                    reduced_slot = 1 + (level - 1) % 2
+                    self._run(self.k['a_down2'], (rw, rh), gray_bufs[gray_slot],
+                              gray_bufs[reduced_slot], np.int32(gh), np.int32(gw),
+                              np.int32(rh), np.int32(rw))
+                    self._run(self.k['a_laplacian'], (gw, gh), gray_bufs[gray_slot],
+                              gray_bufs[reduced_slot], lap_buf, np.int32(offset),
                               np.int32(gh), np.int32(gw), np.int32(rh), np.int32(rw))
-                    if level == 0:
-                        self._run(self.k['a_laplacian0'], (gw, gh),
-                                  gray_bufs[level], gray_bufs[level + 1], resp_buf,
-                                  np.int32(gh), np.int32(gw), np.int32(rh), np.int32(rw))
-                    else:
-                        self._run(self.k['a_laplacian'], (gw, gh),
-                                  gray_bufs[level], gray_bufs[level + 1], lap_buf,
-                                  np.int32(gh), np.int32(gw), np.int32(rh), np.int32(rw))
-                        self._run(self.k['a_accumulate'], (width, height),
-                                  lap_buf, resp_buf,
-                                  np.int32(height), np.int32(width),
-                                  np.int32(gh), np.int32(gw), np.int32(level))
+                    offset += gh * gw
+                    gray_slot = reduced_slot
 
+                _check_cancel(should_cancel)
                 select_kern = self.k['a_select_u8'] if src_is_u8 else self.k['a_select_u16']
-                self._run(select_kern, n, src_buf, resp_buf, best_buf, out_buf,
-                          acc_buf, wt_buf, stat_buf, np.int32(n), np.int32(channels),
-                          np.int32(1 if index == 0 else 0))
+                self._run(select_kern, (width, height), src_buf, gray_bufs[0], lap_buf,
+                          best_buf, out_buf, acc_buf, wt_buf, stat_buf, np.int32(height),
+                          np.int32(width), np.int32(channels), np.int32(levels_count),
+                          np.int32(index == 0), np.int32(u8_gray))
                 # Bound queued frame uploads to one source, even for very deep stacks.
                 self.q.finish()
                 in_flight = False
@@ -543,6 +545,7 @@ class GpuA:
                 if progress_callback is not None:
                     progress_callback(index + 1, total)
 
+            del src_buf, gray_bufs, lap_buf
             _check_cancel(should_cancel)
             in_flight = True
             self._run(self.k['a_blend_low'], n, out_buf, best_buf,
