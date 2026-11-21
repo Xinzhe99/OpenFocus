@@ -1164,6 +1164,13 @@ class RenderWorker(QThread):
                               reverse_registration=self._reverse_registration)
         fusion.prepared_cache = self.prepared_cache
         fusion.retain_preparation = self.retain_preparation
+        if (self.retain_aligned_pixels and not self.preview and self.roi_rect is None
+                and not self.defect_mask_path and not self.sensor_denoise
+                and self.alignment_report is None):
+            from core.frame_resolution_cache import within_retention_limit
+            from core.source_frames import ProcessedFrame
+            fusion.retain_aligned_pixels = (within_retention_limit(images)
+                                            and any(isinstance(frame, ProcessedFrame) for frame in images))
         profile = performance_profile.current()
         with profile.stage('prepare_input'):
             images, is_16bit = prepare_fusion_input(images, should_cancel)

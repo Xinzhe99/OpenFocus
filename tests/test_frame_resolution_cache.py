@@ -455,3 +455,25 @@ def test_cache_discards_unpublished_store_on_cancellation(monkeypatch):
     with pytest.raises(RegistrationCancelled):
         cache.put(object(), np.zeros((2, 2), np.uint8), should_cancel=lambda: bool(cancelled))
     assert cache._used == 0 and not cache._entries
+
+
+@pytest.mark.parametrize('method', ['openfocus_a', 'openfocus_c'])
+def test_whole_cpu_fusion_reuses_existing_snapshots_without_new_writes(tmp_path, method):
+    from core.multi_focus_fusion import MultiFocusFusion
+    from utils.performance_profile import PerformanceProfile, active
+
+    frames = [_source(tmp_path, f'source-{i}.png', value) for i, value in enumerate((12, 64, 220))]
+    eager = [frame.full_resolution().copy() for frame in frames]
+    options = dict(algorithm=method, use_gpu=False, exposure_match=False, tile_enabled=False)
+    expected = MultiFocusFusion(**options).fuse(eager, thread_count=1)
+    SOURCE_CACHE.clear()
+    profile = PerformanceProfile()
+    with active(profile), cache_module.render_scope(frames) as scope, _bound(frames):
+        frames[0].full_resolution()
+        actual = MultiFocusFusion(**options).fuse(frames, thread_count=1)
+        np.testing.assert_array_equal(actual, expected)
+        assert scope.get(frames[1]) is None
+        np.testing.assert_array_equal(frames[1].full_resolution(), eager[1])
+        np.testing.assert_array_equal(scope.get(frames[1]), eager[1])
+    counts = profile.report('completed')['cache']['by_kind']['source']
+    assert counts['puts'] == 2 and counts['hits'] >= 2
