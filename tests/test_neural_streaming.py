@@ -34,15 +34,17 @@ def test_streamed_v3_color_matches_full_stack_reference(mode):
 def test_streamed_v1_color_keeps_nearest_frame_chroma():
     frames = _mixed_frames()
     normalized, _ = normalize_fuse_input(frames)
-    colors = [neural_common._ycbcr(frame) for frame in normalized]
+    blue, green, red = np.moveaxis(np.stack(normalized), -1, 0)
+    luma = 0.299 * red + 0.587 * green + 0.114 * blue
     target = np.random.default_rng(4).uniform(0, 255, (13, 17))
     target = target.astype(np.float32)
-    nearest = np.abs(np.stack([item[0] for item in colors]) - target)
-    nearest = nearest.argmin(axis=0)
+    nearest = np.abs(luma - target).argmin(axis=0)
     rows, cols = np.arange(13)[:, None], np.arange(17)[None, :]
-    cb = np.stack([item[1] for item in colors])[nearest, rows, cols]
-    cr = np.stack([item[2] for item in colors])[nearest, rows, cols]
-    expected = np.clip(neural_common._ycbcr_to_bgr(target, cb, cr), 0, 255)
+    cb = ((blue - luma) * 0.564 + 128.0)[nearest, rows, cols] - 128.0
+    cr = ((red - luma) * 0.713 + 128.0)[nearest, rows, cols] - 128.0
+    expected = np.clip(np.stack((target + 1.773 * cb,
+                                 target - 0.714 * cr - 0.344 * cb,
+                                 target + 1.403 * cr), axis=-1), 0, 255)
     np.testing.assert_array_equal(neural_common.tensor_to_bgr(target, frames),
                                   expected)
 
@@ -96,13 +98,13 @@ def test_v2_tile_planes_release_crop_before_next_read(monkeypatch, cancel_after)
             return crop
 
     source = LazySource()
-    convert = neural_common.luma_plane
+    convert = neural_common.write_luma_plane
 
-    def track_plane(frame):
+    def track_plane(frame, destination):
         source.staged += 1
-        return convert(frame)
+        convert(frame, destination)
 
-    monkeypatch.setattr(neural_common, 'luma_plane', track_plane)
+    monkeypatch.setattr(neural_common, 'write_luma_plane', track_plane)
     if cancel_after is not None:
         with pytest.raises(RegistrationCancelled):
             _stage_tile_planes(source, (0, 0, 64, 64), lambda: source.staged == cancel_after)
