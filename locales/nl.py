@@ -1032,6 +1032,8 @@ PACK = {
     "advanced_privacy": "Privacy",
     "advanced_working_storage": "Opslag voor werkbestanden",
     "advanced_tile_memory_status": "{method} gebruikt tegels als er te weinig geheugen is om het hele beeld te verwerken.",
+    "advanced_tile_manual": "Handmatige tegelinstellingen",
+    "advanced_tile_neural_status": "{method} kan tegels tot {block} px kiezen op basis van het apparaat en het beschikbare geheugen.",
     "advanced_settings_intro": "Prestatie- en registratie-instellingen beïnvloeden snelheid en geheugen. De AI-uitvoermodus verandert het fusieresultaat, de registratiebreedte de uitlijnschatting.",
     "render_memory_commit": "Windows-commitruimte (RAM en wisselbestand): {size}.",
     "render_memory_device": "Verwacht fusieapparaat: {device}.",

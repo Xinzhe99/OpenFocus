@@ -14,7 +14,8 @@ from utils.image_utils import apply_exposure_gain, normalize_fuse_input
 from utils.logging_setup import log_debug
 from utils.performance_profile import current as _profile
 from utils.sorting import natural_sort_key
-from core.algorithms import FUSION_DEFAULT, get_fusion, resolve_fusion_parameters, resolve_runner
+from core.algorithms import (FUSION_DEFAULT, _NEURAL_TILE_RUNNERS, get_fusion,
+                             resolve_fusion_parameters, resolve_runner)
 from core.frame_storage import (capture_scratch, create_frame, is_mapped_frame,
                                 run_with_scratch, store_frame)
 from core.render_context import FusionDetails
@@ -1467,7 +1468,7 @@ class MultiFocusFusion:
         - 将图像切成若干 `block_size` 大小的块，块间以 `overlap` 重叠。
         - 对每个块调用对应算法的融合函数，最后对重叠区域简单平均融合以消除边界伪影。
         - 支持多线程并行处理 tile，线程数根据系统内存自动计算（保守策略）。
-        - StackMFF V3 使用批量处理以利用 GPU 并行能力。
+        - StackMFF V1/V3 先按内存预算确定网格，再逐块推理。
         """
 
         imgs = None
@@ -1523,6 +1524,13 @@ class MultiFocusFusion:
         num_images = len(imgs) if imgs is not None else len(files)
 
         descriptor = get_fusion(algorithm)
+        if descriptor.tile_runner in _NEURAL_TILE_RUNNERS:
+            return resolve_runner(descriptor.tile_runner)(
+                self, imgs, img_dir, h, w, channels,
+                block_size, overlap, **kwargs, thread_count=thread_count,
+                should_cancel=should_cancel, progress_callback=progress_callback,
+                out_dtype=out_dtype, exposure_gains=exposure_gains)
+
         grid = 1
         if descriptor.roi and not descriptor.tile_runner:
             parameters = {parameter.key: kwargs[parameter.key]
@@ -2032,7 +2040,7 @@ class MultiFocusFusion:
             focus_callback(focus, count - 1)
         return fused[:, :, 0] if channels == 1 else fused
 
-    def _fuse_tiled_ai_batched(self, imgs, img_dir, tile_coords, h, w,
+    def _fuse_tiled_ai_batched(self, imgs, img_dir, h, w,
                                channels, block_size, overlap, **kwargs):
         """StackMFF V3 tiles: probability blend/pick, one inference per tile."""
         from fusion_methods.stackmffv3 import normalize_mode
@@ -2043,7 +2051,7 @@ class MultiFocusFusion:
             default_weights=self.descriptor.weights or 'weights/stackmff_v3_final.onnx',
             mode_normalizer=normalize_mode, **kwargs)
 
-    def _fuse_tiled_stackmff(self, imgs, img_dir, tile_coords, h, w,
+    def _fuse_tiled_stackmff(self, imgs, img_dir, h, w,
                              channels, block_size, overlap, **kwargs):
         """StackMFF (V1) tiles: whole-stack attention per semantic tile."""
         return self._fuse_tiled_neural(

@@ -1032,6 +1032,8 @@ PACK = {
     "advanced_privacy": "Datenschutz",
     "advanced_working_storage": "Speicherort für Arbeitsdateien",
     "advanced_tile_memory_status": "{method} verwendet Kacheln, wenn der verfügbare Speicher für das gesamte Bild nicht ausreicht.",
+    "advanced_tile_manual": "Manuelle Kacheleinstellungen",
+    "advanced_tile_neural_status": "{method} kann je nach Gerät und verfügbarem Speicher Kacheln bis zu {block} px wählen.",
     "advanced_settings_intro": "Leistungs- und Registrierungseinstellungen wirken auf Geschwindigkeit und Speicher. Der KI-Ausgabemodus verändert das Fusionsergebnis, die Registrierungsbreite die Ausrichtungsschätzung.",
     "render_memory_commit": "Freier Windows-Commit (RAM und Auslagerungsdatei): {size}.",
     "render_memory_device": "Voraussichtliches Fusionsgerät: {device}.",
