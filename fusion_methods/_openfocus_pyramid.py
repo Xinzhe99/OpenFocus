@@ -364,7 +364,7 @@ def _detail_weight_rows(horizontal, target, weight, coarse_height, origin, start
         first = max(0, -top)
         last = min(5, coarse_height - top)
         is_y_border = height > 2 and (y == 0 or y == height - 1)
-        if first == 0 and last == 5 and channels == 3 and width >= 2:
+        if first == 0 and last == 5 and channels == 3 and width > 2:
             r0 = top - origin
             r1 = r0 + 1
             r2 = r0 + 2
@@ -430,7 +430,6 @@ def _detail_weight_rows(horizontal, target, weight, coarse_height, origin, start
                     weight[y, x] = min(65535, int(np.float32(strength * _W_SCALE)))
                 # x = width - 1 border
                 xm = width - 1
-                s_end = _ZERO
                 for c in range(3):
                     lo = np.float32(np.float32(_ZERO + np.float32(horizontal[r0, xm, c] * w0))
                                     + np.float32(horizontal[r1, xm, c] * w1))
@@ -438,13 +437,8 @@ def _detail_weight_rows(horizontal, target, weight, coarse_height, origin, start
                     lo = np.float32(np.float32(lo + np.float32(horizontal[r3, xm, c] * w3))
                                     + np.float32(horizontal[r4, xm, c] * w4))
                     denom = np.float32(lo + _POINT_ONE)
-                    v = np.float32(np.float32(target[y, xm, c] - lo) / denom)
-                    target[y, xm, c] = v
-                    s_end = np.float32(s_end + abs(v))
-                if width > 2:
-                    weight[y, xm] = 0
-                else:
-                    weight[y, xm] = min(65535, int(np.float32(s_end * _W_SCALE)))
+                    target[y, xm, c] = np.float32(np.float32(target[y, xm, c] - lo) / denom)
+                weight[y, xm] = 0
         elif first == 0 and last == 5 and channels == 1 and width >= 2 and not is_y_border:
             r0 = top - origin
             r1 = r0 + 1
