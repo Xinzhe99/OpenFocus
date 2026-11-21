@@ -1,5 +1,6 @@
-"""Exercise the real worker transport without requiring a GPU or pack install."""
+"""Test accelerator dispatch and transport, with opt-in GPU worker coverage."""
 import gc
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -184,8 +185,8 @@ def test_native_admission_charges_tensorrt_workspace_and_plan_limit(monkeypatch)
         free_vram=8 * gib, total_vram=8 * gib))
     with runtime.inference_job():
         shape = (29, 512, 512)
-        # This budget admits the feature maps and inputs but only 256 MiB of builder memory.
-        base = runtime.estimate_inference_bytes(*shape, 'TORCH_CUDA') + 6 * 4 * np.prod(shape)
+        # This budget covers the unchanged dense estimate and 256 MiB of builder memory.
+        base = runtime.estimate_inference_bytes(*shape, 'CUDA') + 6 * 4 * np.prod(shape)
         plan = resource_policy.ExecutionPlan(ram_budget=8 * gib, vram_budget=base + 256 * 1024**2)
         runtime.apply_inference_budget(plan)
         assert runtime._memory_refusal('model', shape, 'TENSORRT', 1)
@@ -233,3 +234,23 @@ def test_mps_job_reports_execution_and_tries_ort_before_cpu(worker_command, monk
         assert runtime.actual_device() == 'CPU'
         assert any('unsupported MPS operator' in s for s in runtime.device_diagnostics()['fallback_reasons'])
     runtime.start_inference_job()
+
+
+@pytest.mark.parametrize('graph', ['stackmff_final', 'stackmff_v2_final', 'stackmff_v3_final'])
+def test_native_worker_runs_deep_released_checkpoints(tmp_path, graph):
+    from core.inference_worker import ROOT
+
+    python = os.environ.get('OPENFOCUS_TEST_NATIVE_WORKER_PYTHON')
+    if not python:
+        pytest.skip('Set OPENFOCUS_TEST_NATIVE_WORKER_PYTHON to the GPU pack interpreter')
+    worker = inference_client.Worker([python, '-I', '-u', str(ROOT / 'core' / 'inference_worker.py')], None)
+    try:
+        backend, = (k for k in worker.backends if k in ('TORCH_CUDA', 'TORCH_MPS'))
+        assert worker.device
+        model = str(ROOT / 'weights' / f'{graph}.onnx')
+        planes = np.random.default_rng(217).random((1, 600, 64, 64), dtype=np.float32)
+        result = worker.run(backend, model, planes, tmp_path, None)
+        assert result.shape == planes.shape and result.dtype == np.float32
+        assert np.isfinite(result).all()
+    finally:
+        worker.close()

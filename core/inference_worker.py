@@ -25,12 +25,13 @@ _TORCH_EXPORTS = {
 }
 
 
-def _load_torch_model(digest, device):
+def _load_torch_model(digest, device, *, bounded_workspace=False):
     import torch
 
     from core.models.stackmff_v1.network import StackMFF
     from core.models.stackmff_v2.network import StackMFF_V2
     from core.models.stackmff_v3.model_io import load_checkpoint, load_variant_checkpoint
+    from core.models.stackmff_v3.network import InterLayerAttention, IntraLayerWindowAttention
 
     if digest not in _TORCH_EXPORTS:
         raise ValueError('This ONNX graph has no verified native PyTorch adapter')
@@ -46,6 +47,10 @@ def _load_torch_model(digest, device):
         model = load_variant_checkpoint(source, StackMFF_V2, 'v2_v3backbone')
     else:
         model = load_checkpoint(source)
+    if bounded_workspace:
+        for module in model.modules():
+            if isinstance(module, (IntraLayerWindowAttention, InterLayerAttention)):
+                module.bounded_workspace = True
     return model.to(device=device, dtype=torch.float32).forward_logits
 
 
@@ -129,7 +134,7 @@ class InferenceWorker:
                     digest = hashlib.sha256(graph.read_bytes()).hexdigest()
                     if digest != expected:
                         raise ValueError('ONNX graph does not match the verified release')
-                    predict = _load_torch_model(digest, self.torch_device)
+                    predict = _load_torch_model(digest, self.torch_device, bounded_workspace=True)
                     self._validate_logits(predict(x), x.device, shape)
                     del predict
                 except Exception as exc:
@@ -165,7 +170,7 @@ class InferenceWorker:
                 del self.sessions[next(iter(self.sessions))]
                 self.torch.cuda.empty_cache()
             if backend != 'TENSORRT':
-                predict = _load_torch_model(digest, self.torch_device)
+                predict = _load_torch_model(digest, self.torch_device, bounded_workspace=True)
             else:
                 verified = digest in _TORCH_EXPORTS
                 load_reference = (lambda: _load_torch_model(digest, self.torch_device)) if verified else None
