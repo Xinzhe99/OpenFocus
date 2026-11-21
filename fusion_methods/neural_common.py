@@ -209,6 +209,23 @@ def plan_attention_inference(algorithm, frames, model_path, device,
 
 
 
+_STACKMFF_KERNELS = None
+
+
+def load_stackmff_kernels():
+    """Return compiled StackMFF Numba kernels, or None when admission/Numba is unavailable."""
+    global _STACKMFF_KERNELS
+    if _STACKMFF_KERNELS is not None:
+        return _STACKMFF_KERNELS
+    from core.resource_policy import ResourceLimitError
+    try:
+        from fusion_methods import _stackmff_kernels
+    except (ImportError, MemoryError, ResourceLimitError):
+        return None
+    _STACKMFF_KERNELS = _stackmff_kernels
+    return _STACKMFF_KERNELS
+
+
 def _ycbcr_to_bgr(luma, cb, cr):
     luma = luma.astype(np.float32, copy=False)
     cb = cb - 128.0
@@ -227,39 +244,60 @@ def tensor_to_bgr(fused_luma, frames, should_cancel=None):
     The conversion is written out because cv2's float32 YCrCb path expects
     0-1 inputs, while every buffer here is in the project's 0-255 range.
     """
+    from core.source_frames import resolve_frame
+
     cancel(should_cancel)
     normalize_stack = any(frame.dtype == np.uint16 for frame in frames)
-    target = np.clip(fused_luma, 0.0, 255.0)
+    target = np.clip(fused_luma, 0.0, 255.0).astype(np.float32, copy=False)
     best = np.empty(target.shape, dtype=np.float32)
     cb = np.empty_like(best)
     cr = np.empty_like(best)
-    luma = np.empty_like(best)
-    work = np.empty_like(best)
-    better = np.empty(best.shape, dtype=bool)
+    kernels = load_stackmff_kernels()
+    luma = work = better = None
+    target_c = np.ascontiguousarray(target) if kernels is not None else None
     for index, frame in enumerate(frames):
         cancel(should_cancel)
-        source = working_frame(frame, normalize_stack).astype(np.float32, copy=False)
-        if source.ndim == 3 and source.shape[2] == 1:
-            source = source[:, :, 0]
-        blue, green, red = ((source,) * 3 if source.ndim == 2 else
-                            (source[:, :, 0], source[:, :, 1], source[:, :, 2]))
-        # Keep the reference's float32 arithmetic order.
-        np.multiply(red, np.float32(0.299), out=luma)
-        np.multiply(green, np.float32(0.587), out=work)
-        np.add(luma, work, out=luma)
-        np.multiply(blue, np.float32(0.114), out=work)
-        np.add(luma, work, out=luma)
-        np.subtract(luma, target, out=work)
-        np.abs(work, out=work)
-        if index == 0:
-            better.fill(True)
-        else:
-            np.less(work, best, out=better)
-            better |= np.isnan(work) & ~np.isnan(best)
-        np.copyto(best, work, where=better)
-        np.subtract(blue, luma, out=cb, where=better)
-        np.subtract(red, luma, out=cr, where=better)
-        del source, blue, green, red
+        raw = resolve_frame(frame, should_cancel=should_cancel)
+        used_kernel = False
+        if (kernels is not None and raw.ndim == 3 and raw.shape[2] >= 3
+                and raw.flags.c_contiguous and target_c.shape == raw.shape[:2]):
+            if raw.dtype == np.float32:
+                kernels.v1_update_nearest_f32(raw, target_c, best, cb, cr, index == 0)
+                used_kernel = True
+            elif raw.dtype == np.uint16:
+                kernels.v1_update_nearest_u16(raw, target_c, best, cb, cr, index == 0)
+                used_kernel = True
+            elif raw.dtype == np.uint8:
+                kernels.v1_update_nearest_u8(raw, target_c, best, cb, cr, index == 0)
+                used_kernel = True
+        if not used_kernel:
+            if luma is None:
+                luma = np.empty_like(best)
+                work = np.empty_like(best)
+                better = np.empty(best.shape, dtype=bool)
+            source = working_frame(raw, normalize_stack).astype(np.float32, copy=False)
+            if source.ndim == 3 and source.shape[2] == 1:
+                source = source[:, :, 0]
+            blue, green, red = ((source,) * 3 if source.ndim == 2 else
+                                (source[:, :, 0], source[:, :, 1], source[:, :, 2]))
+            # Keep the reference's float32 arithmetic order.
+            np.multiply(red, np.float32(0.299), out=luma)
+            np.multiply(green, np.float32(0.587), out=work)
+            np.add(luma, work, out=luma)
+            np.multiply(blue, np.float32(0.114), out=work)
+            np.add(luma, work, out=luma)
+            np.subtract(luma, target, out=work)
+            np.abs(work, out=work)
+            if index == 0:
+                better.fill(True)
+            else:
+                np.less(work, best, out=better)
+                better |= np.isnan(work) & ~np.isnan(best)
+            np.copyto(best, work, where=better)
+            np.subtract(blue, luma, out=cb, where=better)
+            np.subtract(red, luma, out=cr, where=better)
+            del source, blue, green, red
+        del raw
     cancel(should_cancel)
     cb *= np.float32(0.564)
     cb += np.float32(128)

@@ -29,12 +29,34 @@ def _prepare_inference(frames, model_path, use_gpu, thread_count=None,
         fixed_bytes=fixed_bytes, height=height, width=width)
 
 
-def _expected_positions(logits, should_cancel):
+def _expected_positions(logits, should_cancel, *, threads=1):
     """Reuse private logits for softmax and the ordered layer reduction."""
-    from fusion_methods.neural_runtime import softmax_inplace
+    from fusion_methods.neural_runtime import _run_softmax_inplace
 
     common.cancel(should_cancel)
-    probs = softmax_inplace(logits)
+    workers = max(1, min(4, int(threads or 1)))
+    probs = _run_softmax_inplace(logits, workers)
+    kernels = common.load_stackmff_kernels()
+    if (kernels is not None and probs.ndim == 4 and probs.shape[0] == 1
+            and probs.dtype == np.float32 and probs.flags.c_contiguous):
+        h, w = probs.shape[2], probs.shape[3]
+        total = h * w
+        out = np.empty((h, w), dtype=np.float32)
+        probs_flat = probs.reshape(probs.shape[1], total)
+        out_flat = out.reshape(-1)
+        if workers > 1 and probs.size >= 262144 and total >= workers:
+            from concurrent.futures import ThreadPoolExecutor
+
+            step = (total + workers - 1) // workers
+            ranges = [(s, min(total, s + step)) for s in range(0, total, step)]
+            with ThreadPoolExecutor(max_workers=len(ranges)) as executor:
+                list(executor.map(
+                    lambda rng: kernels.v2_weighted_sum_layers(probs_flat, rng[0], rng[1], out_flat),
+                    ranges))
+        else:
+            kernels.v2_weighted_sum_layers(probs_flat, 0, total, out_flat)
+        common.cancel(should_cancel)
+        return out
     weights = np.arange(1, probs.shape[1] + 1, dtype=np.float32)[None, :, None, None]
     np.multiply(probs, weights, out=probs)
     common.cancel(should_cancel)
@@ -47,7 +69,7 @@ def _whole_depth(frames, model, device, threads, should_cancel):
     planes = common.stage_planes(frames, PAD_ALIGN, should_cancel)
     scores = logits(planes, model, device, threads, should_cancel)
     del planes
-    depth = _expected_positions(scores, should_cancel)
+    depth = _expected_positions(scores, should_cancel, threads=threads)
     del scores
     n = len(frames)
     lo, hi = depth.min(), depth.max()
@@ -64,7 +86,9 @@ def _sample(frames, index, should_cancel=None, *, dtype=np.float32, round_uint8=
             gains=None, normalize_for_exposure=False, original_frames=None):
     """Read each contributing frame once and only visit its selected row strips."""
     from core.frame_storage import create_frame, frame_region
-    from core.source_frames import resolve_frame, validate_frame_source
+    from core.source_frames import (
+        is_direct_rgb_tiff, read_rgb_tiff_rows, resolve_frame, validate_frame_source,
+    )
 
     shape = frames[0].shape
     strips = [[] for _ in frames]
@@ -81,6 +105,10 @@ def _sample(frames, index, should_cancel=None, *, dtype=np.float32, round_uint8=
         del values
 
     out = create_frame(shape, dtype)
+    kernels = common.load_stackmff_kernels()
+    strip_rgb_u16 = None
+    strip_rgb_u8 = None
+    out_is_3ch = out.ndim == 3 and out.shape[2] == 3 and out.flags.c_contiguous
     for layer, frame in enumerate(frames):
         common.cancel(should_cancel)
         if frame.shape[:2] != shape[:2]:
@@ -92,8 +120,28 @@ def _sample(frames, index, should_cancel=None, *, dtype=np.float32, round_uint8=
         if not strips[layer]:
             validate_frame_source(frame)
             continue
-        image = resolve_frame(frame, should_cancel=should_cancel)
         gain = gains[layer] if gains is not None else 1.0
+        if (kernels is not None and out_is_3ch and is_direct_rgb_tiff(frame)
+                and frame.ndim == 3 and frame.shape[2] == 3 and not round_uint8):
+            if frame.dtype == np.uint16 and out.dtype == np.float32:
+                if strip_rgb_u16 is None:
+                    strip_rgb_u16 = np.empty((min(_STRIP_ROWS, shape[0]), shape[1], 3), dtype=np.uint16)
+                for start in strips[layer]:
+                    stop = min(shape[0], start + _STRIP_ROWS)
+                    band = read_rgb_tiff_rows(frame, start, stop, strip_rgb_u16, should_cancel=should_cancel)
+                    idx_band = np.ascontiguousarray(index[start:stop])
+                    kernels.v2_scatter_strip_rgb_u16_to_f32(band, idx_band, layer, out[start:stop], gain, 255.0)
+                continue
+            if frame.dtype == np.uint8 and out.dtype == np.uint8 and gain == 1.0:
+                if strip_rgb_u8 is None:
+                    strip_rgb_u8 = np.empty((min(_STRIP_ROWS, shape[0]), shape[1], 3), dtype=np.uint8)
+                for start in strips[layer]:
+                    stop = min(shape[0], start + _STRIP_ROWS)
+                    band = read_rgb_tiff_rows(frame, start, stop, strip_rgb_u8, should_cancel=should_cancel)
+                    idx_band = np.ascontiguousarray(index[start:stop])
+                    kernels.v2_scatter_strip_rgb_u8(band, idx_band, layer, out[start:stop])
+                continue
+        image = resolve_frame(frame, should_cancel=should_cancel)
         for start in strips[layer]:
             common.cancel(should_cancel)
             rows = slice(start, start + _STRIP_ROWS)

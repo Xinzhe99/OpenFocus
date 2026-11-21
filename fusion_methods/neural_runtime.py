@@ -811,10 +811,32 @@ def softmax(x):
     return _softmax_shifted(x - x.max(axis=1, keepdims=True))
 
 
-def softmax_inplace(x):
-    """Normalize an owned, writable float32 logits buffer over all layers."""
+def _softmax_slice(x):
     x -= x.max(axis=1, keepdims=True)
     return _softmax_shifted(x)
+
+
+def softmax_inplace(x):
+    """Normalize an owned, writable float32 logits buffer over all layers."""
+    return _softmax_slice(x)
+
+
+_DEFAULT_SOFTMAX_INPLACE = softmax_inplace
+
+
+def _run_softmax_inplace(x, threads=1):
+    workers = max(1, min(4, int(threads or 1)))
+    if (workers > 1 and softmax_inplace is _DEFAULT_SOFTMAX_INPLACE
+            and x.ndim == 4 and x.size >= 262144 and x.shape[2] >= workers):
+        from concurrent.futures import ThreadPoolExecutor
+
+        h = x.shape[2]
+        step = (h + workers - 1) // workers
+        slices = [x[:, :, y0:min(h, y0 + step), :] for y0 in range(0, h, step)]
+        with ThreadPoolExecutor(max_workers=len(slices)) as executor:
+            list(executor.map(_softmax_slice, slices))
+        return x
+    return softmax_inplace(x)
 
 
 def _softmax_shifted(x):
@@ -824,7 +846,24 @@ def _softmax_shifted(x):
 
 
 def _resize_antialias(planes, scale, should_cancel=None):
-    from fusion_methods.neural_common import cancel
+    from fusion_methods.neural_common import cancel, load_stackmff_kernels
+
+    if planes.ndim == 4 and planes.dtype == np.float32 and planes.size >= 65536:
+        kernels = load_stackmff_kernels()
+        if kernels is not None:
+            b_dim, n_dim, old_h, old_w = planes.shape
+            vy_first, vy_cnt, vy_w = kernels.precompute_antialias_taps(old_h, scale)
+            hx_first, hx_cnt, hx_w = kernels.precompute_antialias_taps(old_w, scale)
+            out = np.empty((b_dim, n_dim, vy_first.shape[0], hx_first.shape[0]), dtype=np.float32)
+            for b in range(b_dim):
+                for n0 in range(0, n_dim, 8):
+                    cancel(should_cancel)
+                    kernels.resize_antialias_range(
+                        planes, b, n0, min(n_dim, n0 + 8),
+                        vy_first, vy_cnt, vy_w, hx_first, hx_cnt, hx_w, out)
+            cancel(should_cancel)
+            return out
+
     # PyTorch bilinear antialias uses a triangle filter widened for downsampling.
     result = planes
     for axis in (2, 3):
@@ -848,39 +887,116 @@ def _resize_antialias(planes, scale, should_cancel=None):
     return result
 
 
+_DEFAULT_RESIZE_ANTIALIAS = _resize_antialias
+
+
+def _run_resize_antialias(planes, scale, should_cancel=None, threads=1):
+    from fusion_methods.neural_common import cancel, load_stackmff_kernels
+
+    workers = max(1, min(4, int(threads or 1)))
+    if (workers > 1 and _resize_antialias is _DEFAULT_RESIZE_ANTIALIAS
+            and planes.ndim == 4 and planes.dtype == np.float32 and planes.size >= 65536):
+        kernels = load_stackmff_kernels()
+        if kernels is not None:
+            from concurrent.futures import ThreadPoolExecutor
+
+            b_dim, n_dim, old_h, old_w = planes.shape
+            if n_dim >= 8:
+                vy_first, vy_cnt, vy_w = kernels.precompute_antialias_taps(old_h, scale)
+                hx_first, hx_cnt, hx_w = kernels.precompute_antialias_taps(old_w, scale)
+                out = np.empty((b_dim, n_dim, vy_first.shape[0], hx_first.shape[0]), dtype=np.float32)
+                step = (n_dim + workers - 1) // workers
+                ranges = [(n0, min(n_dim, n0 + step)) for n0 in range(0, n_dim, step)]
+                for b in range(b_dim):
+                    cancel(should_cancel)
+                    def _run_range(rng_pair, b_idx=b):
+                        for pos in range(rng_pair[0], rng_pair[1], 8):
+                            cancel(should_cancel)
+                            kernels.resize_antialias_range(
+                                planes, b_idx, pos, min(rng_pair[1], pos + 8),
+                                vy_first, vy_cnt, vy_w, hx_first, hx_cnt, hx_w, out)
+                    with ThreadPoolExecutor(max_workers=len(ranges)) as executor:
+                        list(executor.map(_run_range, ranges))
+                cancel(should_cancel)
+                return out
+    return _resize_antialias(planes, scale, should_cancel)
+
+
 def probabilities(planes, path, device, threads, sigma, cancel=None):
     from fusion_methods.neural_common import cancel as check
     profile = _profile()
     h, w = planes.shape[-2:]
+    workers = max(1, min(4, int(threads or 1)))
     with profile.stage('logits.full'):
         p = logits(planes, path, device, threads, cancel)
     with profile.stage('softmax.full'):
-        p = softmax_inplace(p)
+        p = _run_softmax_inplace(p, workers)
     check(cancel)
     with profile.stage('resize.0.75'):
-        small = _resize_antialias(planes, 0.75, cancel)
+        small = _run_resize_antialias(planes, 0.75, cancel, workers)
     with profile.stage('logits.reduced'):
         q = logits(small, path, device, threads, cancel)
     del small
     with profile.stage('softmax.reduced'):
-        q = softmax_inplace(q)
+        q = _run_softmax_inplace(q, workers)
+    n_layers = p.shape[1]
     with profile.stage('upsample_combine'):
-        scratch = np.empty((h, w), np.float32)
-        for n in range(p.shape[1]):
-            check(cancel)
-            cv2.resize(q[0, n], (w, h), dst=scratch, interpolation=cv2.INTER_LINEAR)
-            p[0, n] += scratch
-        del q
-        p *= 0.5
+        if workers > 1 and n_layers >= 8:
+            from concurrent.futures import ThreadPoolExecutor
+
+            step = (n_layers + workers - 1) // workers
+            ranges = [(n0, min(n_layers, n0 + step)) for n0 in range(0, n_layers, step)]
+            def _upsample_range(rng_pair):
+                scratch = np.empty((h, w), np.float32)
+                for n in range(rng_pair[0], rng_pair[1]):
+                    check(cancel)
+                    cv2.resize(q[0, n], (w, h), dst=scratch, interpolation=cv2.INTER_LINEAR)
+                    p[0, n] += scratch
+                    p[0, n] *= np.float32(0.5)
+            with ThreadPoolExecutor(max_workers=len(ranges)) as executor:
+                list(executor.map(_upsample_range, ranges))
+            del q
+        else:
+            scratch = np.empty((h, w), np.float32)
+            for n in range(n_layers):
+                check(cancel)
+                cv2.resize(q[0, n], (w, h), dst=scratch, interpolation=cv2.INTER_LINEAR)
+                p[0, n] += scratch
+            del q
+            p *= 0.5
     if sigma:
         with profile.stage('gaussian'):
             radius = int(3 * sigma + 0.5)
-            for n in range(p.shape[1]):
+            ksize = (radius * 2 + 1,) * 2
+            if workers > 1 and n_layers >= 8:
+                from concurrent.futures import ThreadPoolExecutor
+
+                step = (n_layers + workers - 1) // workers
+                ranges = [(n0, min(n_layers, n0 + step)) for n0 in range(0, n_layers, step)]
+                def _blur_range(rng_pair):
+                    scratch = np.empty((h, w), np.float32)
+                    for n in range(rng_pair[0], rng_pair[1]):
+                        check(cancel)
+                        cv2.GaussianBlur(p[0, n], ksize, sigma,
+                                         dst=scratch, borderType=cv2.BORDER_REPLICATE)
+                        p[0, n] = scratch
+                with ThreadPoolExecutor(max_workers=len(ranges)) as executor:
+                    list(executor.map(_blur_range, ranges))
                 check(cancel)
-                cv2.GaussianBlur(p[0, n], (radius * 2 + 1,) * 2, sigma,
-                                 dst=scratch, borderType=cv2.BORDER_REPLICATE)
-                p[0, n] = scratch
-            check(cancel)
-            p /= p.sum(axis=1, keepdims=True)
+                ystep = (h + workers - 1) // workers
+                yslices = [p[:, :, y0:min(h, y0 + ystep), :] for y0 in range(0, h, ystep) if y0 < h]
+                def _norm_slice(sub):
+                    sub /= sub.sum(axis=1, keepdims=True)
+                with ThreadPoolExecutor(max_workers=len(yslices)) as executor:
+                    list(executor.map(_norm_slice, yslices))
+            else:
+                scratch = np.empty((h, w), np.float32)
+                for n in range(n_layers):
+                    check(cancel)
+                    cv2.GaussianBlur(p[0, n], ksize, sigma,
+                                     dst=scratch, borderType=cv2.BORDER_REPLICATE)
+                    p[0, n] = scratch
+                check(cancel)
+                p /= p.sum(axis=1, keepdims=True)
     check(cancel)
     return p
