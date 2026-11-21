@@ -347,6 +347,29 @@ above). For the 24×256 tile it was 0.95 GB against 0.45 GB; at that size the
 process baseline (runtime, model, libraries) dominates, so the ratio does not
 describe the per-tile working set.
 
+## Consecutive desktop renders
+
+A full tiled StackMFF render can retain its disk-backed prepared pixels for
+the next render on the same stack. V1, V2 and V3 can reuse that snapshot in any
+order. A compatible render with another fusion method can run between them.
+The cache key includes the selected sources in order, registration and exposure
+matching. Each source is revalidated on use. The retained preparation and
+aligned pixels share a 2 GiB budget. Renders above the limit still use per-job
+scratch and can reuse matching registration transforms.
+
+On Windows 11, a CPU render of six 512 × 384 RGB16 frames with exposure
+matching took 2.97 s in the render process. After running OpenFocus A, StackMFF
+V1 and V2 in between, the same V3 render took 2.47 s with identical exported
+pixels. The three intervening and repeated StackMFF cache hits performed zero
+source decodes and skipped exposure statistics. Turning exposure matching off
+and back on triggered fresh preparation.
+
+Desktop startup can precompile the shared B/C CPU depth recurrence in a
+low-priority subprocess after a quiet interval. The process requires spare RAM
+and exits when foreground work needs it. On the test machine the recurrence
+took 5.63 s to compile fresh and 1.20 s to load from the compiled cache. An
+actual B render request reaped the idle compiler within 139 ms and completed.
+
 ## Current bounded execution (unreleased)
 
 OpenFocus A/B/C choose either a RAM-admitted frame window or one reusable row
