@@ -959,12 +959,19 @@ class MultiFocusFusion:
                             max(128 * 1024 ** 2, memory_budget_bytes() // 4)
                             for index in indices)
             if indices and (tiled or expensive):
+                from core.frame_storage import ScratchSpaceError
                 sources = [input_source[index] for index in indices]
-                prepared = materialize_for_repeated_access(
-                    sources, should_cancel, thread_count=kwargs.get('thread_count', 0),
-                    resource_preference=self.resource_preference,
-                    progress_callback=getattr(progress_callback, 'preparation', None),
-                    required=tiled, staging_bytes=height * width * 48)
+                try:
+                    prepared = materialize_for_repeated_access(
+                        sources, should_cancel, thread_count=kwargs.get('thread_count', 0),
+                        resource_preference=self.resource_preference,
+                        progress_callback=getattr(progress_callback, 'preparation', None),
+                        required=tiled, staging_bytes=height * width * 48)
+                except ScratchSpaceError:
+                    if tiled:
+                        raise
+                    log_debug('fusion_b_snapshots_skipped', reason='scratch write failed')
+                    prepared = sources
                 if prepared is not sources:
                     for index, frame in zip(indices, prepared):
                         input_source[index] = frame
