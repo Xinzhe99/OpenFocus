@@ -324,7 +324,8 @@ def test_deep_tiled_fusion_preserves_mixed_tiff_pixels(tmp_path, monkeypatch, me
     assert set(decoded) == {frames[2].path}
 
 
-def test_native_tiff_regions_preserve_page_order_and_source_identity(tmp_path):
+@pytest.mark.parametrize('byteorder', ['<', '>'])
+def test_tiff_regions_preserve_byte_order_and_source_identity(tmp_path, byteorder):
     import os
     import tifffile
     from core.frame_storage import frame_region
@@ -333,14 +334,15 @@ def test_native_tiff_regions_preserve_page_order_and_source_identity(tmp_path):
     rng = np.random.default_rng(109)
     images = rng.integers(0, 65536, (2, 71, 76, 3), dtype=np.uint16)
     path = tmp_path / 'pages.tiff'
-    with tifffile.TiffWriter(path) as writer:
+    with tifffile.TiffWriter(path, byteorder=byteorder) as writer:
         for image in images:
             writer.write(image, photometric='rgb', rowsperstrip=7, contiguous=False)
     sources = scan_source(str(path), header_only=True)
     mapped = map_native_rgb_tiffs(sources)
     for image, frame in zip(images, mapped, strict=True):
         image_map = resolve_frame(frame)
-        assert isinstance(image_map, np.memmap) and os.path.samefile(image_map.filename, path)
+        if np.dtype('u2').newbyteorder(byteorder).isnative:
+            assert isinstance(image_map, np.memmap) and os.path.samefile(image_map.filename, path)
         with frame_region(image_map, np.s_[4:66, 3:73]) as pixels:
             np.testing.assert_array_equal(pixels, image[4:66, 3:73, ::-1])
     stamp = path.stat()
