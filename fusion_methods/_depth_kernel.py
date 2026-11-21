@@ -1,4 +1,10 @@
 """CPU Q12 recurrence, advanced in cancellable blocks.
+    transpose_signature = (pixels, pixels, types.int64, types.int64)
+        for kernel in (_pack_rows_T, _unpack_rows_T):
+            _check_cancel(should_cancel)
+            if transpose_signature not in kernel.signatures:
+                require_memory(DEPTH_KERNEL_STARTUP_BYTES)
+                kernel.compile(transpose_signature)
 
 Import only from the processing path. Compiled kernels use Numba's cache so
 isolated render processes can reuse them; an unavailable cache keeps the
