@@ -270,6 +270,21 @@ class _ProfiledSession:
         return result
 
 
+class _CpuSession:
+    """A CPU session that releases its arena's unused memory after each run.
+
+    The arena would otherwise keep the working set of both inference scales
+    between tiles and after the render.
+    """
+
+    def __init__(self, session, run_options):
+        self.session = session
+        self._run_options = run_options
+
+    def run(self, outputs, inputs):
+        return self.session.run(outputs, inputs, self._run_options)
+
+
 def refresh_accelerator_pack():
     """Refresh local pack eligibility without importing its engines or running a model."""
     global _PACK
@@ -477,7 +492,16 @@ def _session(path, shape, device, threads):
                 profile.session_evicted(_describe_session(evicted))
         options = ort.SessionOptions()
         options.intra_op_num_threads = max(1, int(threads or 1))
-        options.enable_cpu_mem_arena = False
+        if device == 'CPU':
+            # Buffer reuse keeps a buffer allocated from the first tensor
+            # planned into it until the last one, so a run held about 2.5
+            # times the memory it holds without reuse, and took longer.
+            # Without reuse, the first run of a shape allocates each tensor
+            # separately. The arena keeps that run fast, and _CpuSession
+            # asks it to release its unused memory when every run ends.
+            options.enable_mem_reuse = False
+        else:
+            options.enable_cpu_mem_arena = False
         trace_directory = operator_trace_directory() if device == 'CPU' else None
         if device != 'CPU':
             options.enable_profiling = True
@@ -521,8 +545,12 @@ def _session(path, shape, device, threads):
                    shape=shape, threads=options.intra_op_num_threads)
         if device != 'CPU':
             session = _ProfiledSession(session, device)
-        elif trace_directory is not None:
-            _TRACED[key] = session
+        else:
+            if trace_directory is not None:
+                _TRACED[key] = session
+            run_options = ort.RunOptions()
+            run_options.add_run_config_entry('memory.enable_memory_arena_shrinkage', 'cpu:0')
+            session = _CpuSession(session, run_options)
         _SESSIONS[key] = session
     _SESSIONS.move_to_end(key)
     return _SESSIONS[key]

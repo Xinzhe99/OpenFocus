@@ -16,6 +16,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   before releasing buffers after cancellation or error.
 - Reuse the NVML session for VRAM queries and repeat device enumeration after
   a query fails to avoid using memory information from the wrong adapter.
+- Run StackMFF V1, V2 and V3 on the CPU without ONNX Runtime's buffer reuse,
+  which kept each reusable buffer allocated until the end of an inference
+  call, and ask the runtime to release its unused arena memory after each
+  call. On Linux with 2 threads, a 15-frame 512-pixel V3 tile at both
+  inference scales raises resident memory by 572 MiB at its peak instead of
+  1,799 MiB, and takes about 12% less time. Output pixels are unchanged.
 - Accelerate OpenFocus alignment candidate scoring, similarity warping,
   uint8 translation warping, pyramid downsizing, and validity mask generation
   with single-threaded native CPU kernels while preserving bit-exact results

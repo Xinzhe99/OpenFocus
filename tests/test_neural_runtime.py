@@ -12,6 +12,16 @@ from fusion_methods import neural_runtime
 from utils.weights import weights_path
 
 
+class _RunOptions:
+    """Stand-in for the runtime's run options that records its entries."""
+
+    def __init__(self):
+        self.entries = {}
+
+    def add_run_config_entry(self, key, value):
+        self.entries[key] = value
+
+
 def _focus_stack():
     texture = np.random.default_rng(37).integers(0, 256, (64, 80, 3), dtype=np.uint8)
     blurred = cv2.GaussianBlur(texture, (9, 9), 2)
@@ -79,7 +89,7 @@ def test_sessions_isolate_checkpoint_shape_and_directml_adapter(monkeypatch, tmp
             return ['DmlExecutionProvider', 'CPUExecutionProvider']
 
     monkeypatch.setitem(sys.modules, 'onnxruntime', SimpleNamespace(
-        SessionOptions=Options, InferenceSession=Session,
+        SessionOptions=Options, InferenceSession=Session, RunOptions=_RunOptions,
         ExecutionMode=SimpleNamespace(ORT_SEQUENTIAL=0)))
     monkeypatch.setattr(neural_runtime, '_SESSIONS', OrderedDict())
     first = tmp_path / 'v1.onnx'
@@ -96,6 +106,131 @@ def test_sessions_isolate_checkpoint_shape_and_directml_adapter(monkeypatch, tmp
     monkeypatch.setattr(neural_runtime, '_DIRECTML_ADAPTER_INDEX', 2)
     assert neural_runtime._session(str(first), (2, 64, 64), 'DIRECTML', 1) is not gpu
     assert calls[-1][1][0] == ('DmlExecutionProvider', {'device_id': 2})
+
+
+def test_cpu_sessions_plan_without_buffer_reuse_and_return_their_arena(monkeypatch, tmp_path):
+    built = {}
+
+    class Options:
+        def add_free_dimension_override_by_name(self, *args):
+            pass
+
+    class Session:
+        def __init__(self, path, sess_options, providers):
+            provider = providers[0]
+            built[provider if isinstance(provider, str) else provider[0]] = sess_options
+            self.run_options = []
+
+        def disable_fallback(self):
+            pass
+
+        def get_providers(self):
+            return ['DmlExecutionProvider', 'CPUExecutionProvider']
+
+        def run(self, outputs, inputs, run_options=None):
+            self.run_options.append(run_options)
+            return ['logits']
+
+    monkeypatch.setitem(sys.modules, 'onnxruntime', SimpleNamespace(
+        SessionOptions=Options, InferenceSession=Session, RunOptions=_RunOptions,
+        ExecutionMode=SimpleNamespace(ORT_SEQUENTIAL=0)))
+    monkeypatch.setattr(neural_runtime, '_SESSIONS', OrderedDict())
+    monkeypatch.setattr(neural_runtime, '_DIRECTML_ADAPTER_INDEX', 0)
+    model = tmp_path / 'model.onnx'
+    model.write_bytes(b'model')
+
+    cpu = neural_runtime._session(str(model), (2, 64, 64), 'CPU', 1)
+    options = built['CPUExecutionProvider']
+    assert options.enable_mem_reuse is False
+    assert not hasattr(options, 'enable_cpu_mem_arena')     # the arena stays on
+    assert cpu.run(['logits'], {}) == ['logits']
+    assert cpu.run(['logits'], {}) == ['logits']
+    # Every run asks for the arena back, not only the first.
+    assert [entry.entries for entry in cpu.session.run_options] == [
+        {'memory.enable_memory_arena_shrinkage': 'cpu:0'}] * 2
+
+    neural_runtime._session(str(model), (2, 64, 64), 'DIRECTML', 1)
+    options = built['DmlExecutionProvider']
+    assert options.enable_cpu_mem_arena is False
+    assert not hasattr(options, 'enable_mem_reuse')         # accelerators keep the default
+
+
+@pytest.mark.parametrize('name', ['stackmff_final.onnx', 'stackmff_v2_final.onnx',
+                                  'stackmff_v3_final.onnx'])
+def test_cpu_session_logits_equal_a_session_planned_with_buffer_reuse(monkeypatch, name):
+    ort = pytest.importorskip('onnxruntime')
+    monkeypatch.setattr(neural_runtime, '_SESSIONS', OrderedDict())
+    monkeypatch.setattr(neural_runtime, '_TRACED', {})
+    planes = np.random.default_rng(5).random((1, 3, 64, 128), dtype=np.float32)
+    path = weights_path(name)
+    options = ort.SessionOptions()
+    options.intra_op_num_threads = 1
+    options.enable_cpu_mem_arena = False
+    for dimension, value in zip(('layers', 'height', 'width'), planes.shape[1:]):
+        options.add_free_dimension_override_by_name(dimension, value)
+    expected = ort.InferenceSession(
+        path, sess_options=options, providers=['CPUExecutionProvider']).run(
+            ['logits'], {'input': planes})[0]
+    try:
+        session = neural_runtime._session(path, planes.shape[1:], 'CPU', 1)
+        # The second run of a shape uses the tensor layout recorded during the first.
+        for _ in range(2):
+            actual = session.run(['logits'], {'input': planes})[0]
+            assert actual.dtype == expected.dtype and actual.shape == expected.shape
+            assert actual.tobytes() == expected.tobytes()
+    finally:
+        neural_runtime._clear_sessions()
+
+
+@pytest.mark.skipif(not sys.platform.startswith('linux'), reason='reads /proc/self/statm')
+def test_cpu_session_holds_its_working_set_only_while_it_runs(monkeypatch):
+    pytest.importorskip('onnxruntime')
+    import os
+    import threading
+
+    def resident():
+        with open('/proc/self/statm') as stream:
+            return int(stream.read().split()[1]) * os.sysconf('SC_PAGE_SIZE')
+
+    def run(session):
+        """Resident growth at the highest point of one run, and after it."""
+        before = peak = resident()
+        done = threading.Event()
+
+        def watch():
+            nonlocal peak
+            while not done.is_set():
+                peak = max(peak, resident())
+                done.wait(0.001)
+
+        watcher = threading.Thread(target=watch)
+        watcher.start()
+        try:
+            session.run(['logits'], {'input': planes})
+        finally:
+            done.set()
+            watcher.join()
+        return peak - before, resident() - before
+
+    monkeypatch.setattr(neural_runtime, '_SESSIONS', OrderedDict())
+    monkeypatch.setattr(neural_runtime, '_TRACED', {})
+    shape = (8, 256, 256)
+    planes = np.random.default_rng(5).random((1, *shape), dtype=np.float32)
+    # One quarter-resolution feature tensor of the V3 network: layers x H/4 x W/4 x 48 float32.
+    tokens = shape[0] * (shape[1] // 4) * (shape[2] // 4) * 48 * 4
+    try:
+        session = neural_runtime._session(weights_path('stackmff_v3_final.onnx'), shape, 'CPU', 1)
+        run(session)
+        peak, kept = run(session)
+        # About 16 feature tensors without buffer reuse, 39 with it.
+        assert 8 * tokens < peak < 24 * tokens
+        assert kept < 4 * tokens
+        # The same session keeps its working set when a run does not ask for
+        # the arena back, which is what the limit above would catch.
+        _, kept = run(session.session)
+        assert kept > 8 * tokens
+    finally:
+        neural_runtime._clear_sessions()
 
 
 def test_accelerator_sessions_keep_two_shapes_and_evict_oldest(monkeypatch, tmp_path):
@@ -226,7 +361,7 @@ def test_traced_session_released_before_replacement(monkeypatch, tmp_path):
 
     monkeypatch.setattr(Options, 'add_free_dimension_override_by_name', remember_dimension)
     monkeypatch.setitem(sys.modules, 'onnxruntime', SimpleNamespace(
-        SessionOptions=Options, InferenceSession=make_session))
+        SessionOptions=Options, InferenceSession=make_session, RunOptions=_RunOptions))
     monkeypatch.setattr(neural_runtime, '_SESSIONS', OrderedDict())
     monkeypatch.setattr(neural_runtime, '_TRACED', {})
     monkeypatch.setattr(neural_runtime, 'operator_trace_directory', lambda: str(tmp_path))
