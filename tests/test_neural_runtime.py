@@ -911,11 +911,14 @@ def test_cpu_retry_failure_propagates_without_success_reporting(monkeypatch):
         neural_runtime.start_inference_job()
 
 
-@pytest.mark.parametrize('count,shape', [(2, (64, 64)), (3, (65, 71)), (17, (66, 70))])
+@pytest.mark.parametrize('count,shape,batch,threads', [
+    (2, (64, 64), 1, 1), (3, (65, 71), 1, 1), (17, (66, 70), 1, 1),
+    (16, (96, 96), 2, 4),
+])
 @pytest.mark.parametrize('sigma', [0, 0.5])
-def test_probability_arithmetic_matches_original_order(monkeypatch, count, shape, sigma):
+def test_probability_arithmetic_matches_original_order(monkeypatch, count, shape, batch, threads, sigma):
     rng = np.random.default_rng(42)
-    planes = rng.random((1, count, shape[0], shape[1] * 2), dtype=np.float32)[..., ::2]
+    planes = rng.random((batch, count, shape[0], shape[1] * 2), dtype=np.float32)[..., ::2]
 
     def logits(values, *_):
         h, w = values.shape[-2:]
@@ -945,7 +948,7 @@ def test_probability_arithmetic_matches_original_order(monkeypatch, count, shape
             p[0, n] = cv2.GaussianBlur(p[0, n], (radius * 2 + 1,) * 2, sigma,
                                         borderType=cv2.BORDER_REPLICATE)
         p /= p.sum(axis=1, keepdims=True)
-    actual = neural_runtime.probabilities(planes, 'model', 'CPU', 1, sigma)
+    actual = neural_runtime.probabilities(planes, 'model', 'CPU', threads, sigma)
     np.testing.assert_array_equal(actual, p)
     np.testing.assert_array_equal(planes, original)
 

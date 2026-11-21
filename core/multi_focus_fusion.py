@@ -1882,7 +1882,7 @@ class MultiFocusFusion:
             files = [f for f in sorted(os.listdir(img_dir), key=natural_sort_key)
                      if f.lower().endswith(exts)]
         count = len(imgs) if imgs is not None else len(files)
-        from core.resource_policy import ResourceLimitError, plan_neural_tiles, require_memory
+        from core.resource_policy import plan_neural_tiles, require_memory
         from fusion_methods.neural_runtime import (apply_inference_budget,
                                                    estimate_inference_bytes, resolve_job_device)
         from fusion_methods.neural_common import ATTENTION_PAD_ALIGN
@@ -1994,10 +1994,13 @@ class MultiFocusFusion:
         if progress_callback is not None:
             progress_callback(0, total)
 
-        def _consume_tile(tile_idx, coords, crops):
+        def _consume_tile(tile_idx, coords, crops=None):
             nonlocal tile_focus
             tile_started = time.perf_counter()
             with profile.tile(tile_idx, coords, count):
+                if crops is None:
+                    with profile.stage('resolve_region'):
+                        crops = crop_frames(coords)
                 runner_parameters = dict(kwargs)
                 runner_parameters.update(model_path=model_path,
                     should_cancel=should_cancel, tile_plan=tile_plan)
@@ -2043,12 +2046,11 @@ class MultiFocusFusion:
             check_cancel()
 
         from core.source_frames import is_direct_rgb_tiff, read_rgb_tiff_rows
-        from fusion_methods.neural_common import load_stackmff_kernels
-        kernels = load_stackmff_kernels() if imgs is not None else None
+        from fusion_methods.neural_common import plan_rgb_staging
+        kernels = None
         use_direct_chunked = (
             imgs is not None
-            and kernels is not None
-            and total > 0
+            and total > 1
             and all(is_direct_rgb_tiff(frame) and frame.ndim == 3 and frame.shape[2] == 3
                     for frame in imgs)
             and all(0 <= y0 < y1 <= h and 0 <= x0 < x1 <= w for x0, y0, x1, y1 in tile_coords)
@@ -2059,13 +2061,22 @@ class MultiFocusFusion:
                     raise ValueError('All frames must have the same dimensions')
             has_u16 = any(frame.dtype == np.uint16 for frame in imgs)
             has_u8 = any(frame.dtype == np.uint8 for frame in imgs)
-            max_tile_h = max(y1 - y0 for _, y0, _, y1 in tile_coords)
+            row_tiles = next((i for i, coords in enumerate(tile_coords)
+                              if coords[1] != tile_coords[0][1]), total)
             io_workers = min(max(1, int(tile_plan.native_threads or 1)), 4, count)
+            tile_pixels = block_size * block_size
+            one_tile_bytes = count * tile_pixels * 3 * (4 if normalize_stack else 1)
+            worker_bytes = block_size * w * 3 * (2 * has_u16 + has_u8)
+            if not normalize_stack and exposure_gains is not None:
+                worker_bytes += tile_pixels * 3 * 5
+            kernels, max_k = plan_rgb_staging(tile_plan, row_tiles, one_tile_bytes,
+                                              io_workers * worker_bytes, _MAX_NEURAL_CHUNK_BYTES)
+        if kernels is not None:
+            max_tile_h = max(y1 - y0 for _, y0, _, y1 in tile_coords)
             worker_u16 = [np.empty((max_tile_h, w, 3), dtype=np.uint16) if has_u16 else None
                           for _ in range(io_workers)]
             worker_u8 = [np.empty((max_tile_h, w, 3), dtype=np.uint8) if has_u8 else None
                          for _ in range(io_workers)]
-            budget = tile_plan.ram_budget if getattr(tile_plan, 'ram_budget', None) else 512 * 1024**2
             # Group consecutive tiles sharing identical (y0, y1) bands so each row-band is read once.
             pos = 0
             while pos < total:
@@ -2075,20 +2086,12 @@ class MultiFocusFusion:
                 while band_end < total and tile_coords[band_end][1] == band_y0 and tile_coords[band_end][3] == band_y1:
                     band_end += 1
                 band_h = band_y1 - band_y0
-                ref_w = max(tile_coords[i][2] - tile_coords[i][0] for i in range(pos, band_end))
-                crop_itemsize = 4 if normalize_stack else 1
-                one_tile_bytes = count * band_h * ref_w * 3 * crop_itemsize
-                chunk_cap = min(_MAX_NEURAL_CHUNK_BYTES, max(one_tile_bytes, budget // 4))
-                max_k = max(1, min(band_end - pos, chunk_cap // max(1, one_tile_bytes)))
-                while max_k > 1:
-                    try:
-                        require_memory(max_k * one_tile_bytes, user_limit=getattr(tile_plan, 'ram_budget', None))
-                        break
-                    except (ResourceLimitError, MemoryError):
-                        max_k = max(1, max_k // 2)
                 for chunk_start in range(pos, band_end, max_k):
                     check_cancel()
                     chunk_end = min(band_end, chunk_start + max_k)
+                    if chunk_end == chunk_start + 1:
+                        _consume_tile(chunk_start, tile_coords[chunk_start])
+                        continue
                     chunk_coords = tile_coords[chunk_start:chunk_end]
                     k_count = len(chunk_coords)
                     chunk_crops = [[None] * count for _ in range(k_count)]
@@ -2138,10 +2141,7 @@ class MultiFocusFusion:
         else:
             for index, coords in enumerate(tile_coords):
                 check_cancel()
-                with profile.stage('resolve_region'):
-                    crops = crop_frames(coords)
-                _consume_tile(index, coords, crops)
-                del crops
+                _consume_tile(index, coords)
 
         with profile.stage('normalize'):
             fused = create_frame(acc.shape, out_dtype)

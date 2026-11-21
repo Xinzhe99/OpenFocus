@@ -331,6 +331,27 @@ def _tiled_depth_under_lease(source, model_path, use_gpu, should_cancel=None,
     total = len(xs) * len(ys)
     if tile_grid_callback is not None:
         tile_grid_callback(block, overlap, total)
+
+    from core.source_frames import is_direct_rgb_tiff
+
+    kernels = None
+    if len(xs) > 1 and all(is_direct_rgb_tiff(item) for item in source.items):
+        for item in source.items:
+            if item.shape[:2] != (source_h, source_w):
+                raise ValueError('All frames must have the same dimensions')
+        has_u16 = any(item.dtype == np.uint16 for item in source.items)
+        has_u8 = any(item.dtype == np.uint8 for item in source.items)
+        mixed_16 = source.mixed_16 or has_u16
+        io_workers = min(max(1, int(plan.native_threads or 1)), 4, count)
+        tile_pixels = block * block
+        worker_bytes = block * source_w * 3 * (2 * has_u16 + has_u8)
+        if mixed_16:
+            worker_bytes += tile_pixels * 3 * 4
+        elif source.gains is not None:
+            worker_bytes += tile_pixels * (3 * 7 + 1)
+        kernels, max_k = common.plan_rgb_staging(plan, len(xs), count * tile_pixels * 4,
+                                                io_workers * worker_bytes, _MAX_V2_CHUNK_BYTES)
+
     expected = create_frame((h, w), np.float32)
     # Edge tiles can overlap even at zero requested overlap. Only a grid
     # that divides the padded canvas exactly writes every pixel once.
@@ -359,34 +380,7 @@ def _tiled_depth_under_lease(source, model_path, use_gpu, should_cancel=None,
         if progress_callback is not None:
             progress_callback(done, total)
 
-    from core.source_frames import is_direct_rgb_tiff
-    kernels = common.load_stackmff_kernels()
-    use_direct_chunked = (
-        kernels is not None
-        and count > 0
-        and len(xs) > 0
-        and all(is_direct_rgb_tiff(item) and item.ndim == 3 and item.shape[2] == 3
-                for item in source.items)
-    )
-    if use_direct_chunked:
-        for item in source.items:
-            if item.shape[:2] != (source_h, source_w):
-                raise ValueError('All frames must have the same dimensions')
-        from core import resource_policy as policy
-
-        one_tile_bytes = count * block * block * 4
-        snapshot = policy.probe_resources('CPU')
-        ram_ceil = policy.ram_ceiling(snapshot) if snapshot.ram_known else 512 * 1024**2
-        budget = min(ram_ceil, plan.ram_budget) if getattr(plan, 'ram_budget', None) else ram_ceil
-        chunk_cap = min(_MAX_V2_CHUNK_BYTES, max(one_tile_bytes, budget // 4))
-        max_k = max(1, min(len(xs), chunk_cap // max(1, one_tile_bytes)))
-        while max_k > 1:
-            try:
-                policy.require_memory(max_k * one_tile_bytes, user_limit=getattr(plan, 'ram_budget', None))
-                break
-            except (policy.ResourceLimitError, MemoryError):
-                max_k = max(1, max_k // 2)
-
+    if kernels is not None:
         ph = (-source_h) % common.ATTENTION_PAD_ALIGN
         pw = (-source_w) % common.ATTENTION_PAD_ALIGN
         pad_mode = 'reflect' if ph < source_h and pw < source_w else 'edge'
@@ -394,10 +388,6 @@ def _tiled_depth_under_lease(source, model_path, use_gpu, should_cancel=None,
                     if ph else np.arange(source_h, dtype=np.int32))
         all_cols = (np.pad(np.arange(source_w, dtype=np.int32), (0, pw), mode=pad_mode)
                     if pw else np.arange(source_w, dtype=np.int32))
-        has_u16 = any(item.dtype == np.uint16 for item in source.items)
-        has_u8 = any(item.dtype == np.uint8 for item in source.items)
-        mixed_16 = bool(source.mixed_16 or has_u16)
-        io_workers = min(max(1, int(plan.native_threads or 1)), 4, count)
         worker_buffers = (
             [np.empty((block, source_w, 3), dtype=np.uint16) if has_u16 else None
              for _ in range(io_workers)],
@@ -415,6 +405,12 @@ def _tiled_depth_under_lease(source, model_path, use_gpu, should_cancel=None,
             for c_start in range(0, len(xs), max_k):
                 common.cancel(should_cancel)
                 chunk_xs = xs[c_start:c_start + max_k]
+                if len(chunk_xs) == 1:
+                    x = chunk_xs[0]
+                    planes = _stage_tile_planes(source, (x, y, block, block), should_cancel)
+                    _accumulate_tile(x, y, planes)
+                    del planes
+                    continue
                 chunk_planes = _stage_direct_rgb_chunk(
                     source, y, chunk_xs, block, source_h, source_w,
                     all_rows, all_cols, kernels, io_workers, should_cancel,
