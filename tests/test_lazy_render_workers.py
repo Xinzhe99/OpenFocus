@@ -424,21 +424,23 @@ def test_source_decode_failure_keeps_request_key(monkeypatch):
 
 def test_ecc_consumes_adjacent_gray_planes_without_staging_them(monkeypatch):
     from core import registration
-    source = np.full((32, 40, 3), 90, np.uint8)
+    sources = [np.full((32, 40, 3), value, np.uint8) for value in (90, 100, 110)]
     pairs = []
     def ecc(template, image, matrix, *args):
         assert template.dtype == image.dtype == np.float32
         assert template.shape == image.shape == (32, 40)
-        np.testing.assert_allclose(template, 90 / 255)
-        pairs.append((template.shape, image.shape))
+        pair = (90 + 10 * len(pairs), 100 + 10 * len(pairs))
+        np.testing.assert_allclose(template, pair[0] / 255)
+        np.testing.assert_allclose(image, pair[1] / 255)
+        pairs.append(pair)
         return 1.0, matrix
     def forbidden(*args, **kwargs):
         raise AssertionError('Deferred ECC stored a frame')
     monkeypatch.setattr(registration, 'store_frame', forbidden)
     monkeypatch.setattr(registration.cv2, 'findTransformECC', ecc)
-    result = registration._align_ecc_impl([source] * 3, thread_count=1, defer_warps=True)
+    result = registration._align_ecc_impl(sources, thread_count=1, defer_warps=True)
     assert len(pairs) == 2
-    for image in result:
+    for image, source in zip(result, sources, strict=True):
         np.testing.assert_array_equal(source_frames.resolve_frame(image), source[2:-2, 2:-2])
 
 
