@@ -44,8 +44,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   reusable pyramid storage, and fewer full-image operations. Expand exact
   OpenCL ECC resize coverage and reuse successful repeated pair solves.
 - Write neural input grayscale directly into model planes. Reduce V1 color
-  reconstruction allocations, size V2 tiles from frame metadata, and bound V3
-  hard-choice scratch by the stack depth.
+  reconstruction allocations, size V2 tiles from frame metadata, skip V2 weight
+  maps when tiles cover each pixel once, and bound V3 hard-choice scratch by
+  the stack depth.
 
 ### Fixed
 - Close the desktop process when its CLI launcher times out waiting for the

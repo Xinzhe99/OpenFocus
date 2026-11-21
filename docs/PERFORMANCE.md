@@ -491,6 +491,11 @@ limit and resource mode. A serial deferred warp can borrow idle threads only
 when the active OpenCV backend can be shown to enforce the limit; unknown or
 unbounded backends keep native parallelism disabled.
 
+ECC can reuse the result of a successful ordered pair of identical prepared
+gray planes. The cache is local to a render and holds up to 32 transforms.
+When a deferred integer-image warp is an exact in-bounds translation, it
+copies the matching crop directly. General transforms use OpenCV Lanczos4.
+
 #### ECC preparation measurements (2026-11-13)
 
 The first 12 frames of a real 5220×3912 Olympus ORF stack were registered
@@ -525,6 +530,11 @@ Alignment plan manifests and encoded aligned images share the alignment cache
 budget. Accounting covers manifest file bytes and encoded image bytes, not all
 filesystem allocation. Evicted plans are estimated again; source files are not
 cache entries. Eviction is best effort if deletion fails.
+
+Tiled StackMFF V2 writes expected layer positions directly when a regular grid
+covers every pixel of the padded image exactly once. This saves 48 MiB of
+weight storage on a 4096 × 3072 canvas. The depth normalization uses the full
+padded image. Shifted edge tiles and feathered overlaps still accumulate weights.
 
 Grouped fusion checks temporary disk capacity with the shared safety reserve
 before writing intermediate results. This check does not reserve disk space;
@@ -573,7 +583,8 @@ only the isolated process is terminated; the GUI thread is never terminated.
 Fresh processes still re-import libraries and create new inference sessions.
 Numba kernels may reuse compiled code from a writable cache across render
 processes; an unavailable, busy or damaged cache falls back to compilation.
-The first render still pays compilation costs.
+First use can compile kernels absent from the cache. The desktop can precompile
+the shared B/C depth recurrence during idle time.
 
 Within a render, decoded and deferred processed frames may be reused from the
 job's selected temporary volume. The cache checks source fingerprints, leaves
