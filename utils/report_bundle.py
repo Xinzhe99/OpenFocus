@@ -17,6 +17,7 @@ import traceback
 
 import zipfile
 from utils import diagnostics, logging_setup
+from utils.account_client import safe_sign_in_evidence
 from utils.output_sharpen import MAX_SHARPEN_STRENGTH
 
 MAX_BUNDLE_BYTES = 2 * 1024 * 1024
@@ -37,7 +38,7 @@ settings.applied depth_map neural_provider_probe neural_provider_selected neural
 ort_operator_trace render_child_error resource_admission diagnostic_failure
 render.state render_dispatch render_dispatch.worker_started render_dispatch.admitted
 render_dispatch.ipc_ready render_dispatch.request_encoded render_dispatch.spawn_started
-render_dispatch.spawn_completed'''.split())
+render_dispatch.spawn_completed account_sign_in'''.split())
 _NUMBERS = frozenset('''elapsed_ms seconds frame_count frames loaded_frames file_count
 folder_count count workers preview_threads thread_count native_threads page pages files
 success total index column stack_index scale scale_factor reg_downscale_width duration_sec
@@ -313,6 +314,8 @@ def _events_and_error(text):
                 parameters = _safe_child_failure(parsed)
             elif name == 'resource_admission':
                 parameters = _safe_admission(parsed)
+            elif name == 'account_sign_in.failed':
+                parameters = safe_sign_in_evidence(parsed)
             else:
                 parameters = _numeric_fields(parsed)
             event = {'timestamp': stamp, 'event': name, 'parameters': parameters}
@@ -456,6 +459,22 @@ def _pack_report(events, error, capture, facts, platform, signature, has_error, 
         raise ValueError('report bundle exceeds 2 MiB')
     return ReportBundle(data, signature, has_error, f'{kind}: diagnostic report', summary,
                         _excerpt(events), platform, occurred_at, app_version, build_channel)
+
+
+def snapshot_sign_in_failure(record):
+    """Capture only sign-in evidence, including before the reporting choice is set."""
+    evidence = safe_sign_in_evidence(record.report_sign_in)
+    if not all(key in evidence for key in ('method', 'stage', 'category')):
+        return None
+    timestamp = datetime.datetime.fromtimestamp(record.created).isoformat(timespec='milliseconds')
+    event = {'timestamp': timestamp, 'event': 'account_sign_in.failed', 'parameters': evidence}
+    error = {'kind': 'AccountError', 'stack_lines': [], 'timestamp': timestamp}
+    platform = _platform()
+    signature = _fingerprint('AccountError', platform, (), _json_text({
+        key: evidence[key] for key in ('method', 'stage', 'category', 'status') if key in evidence
+    }))
+    return _pack_report([event], error, {}, {'platform': platform}, platform,
+                        signature, True, int(record.created))
 
 
 def snapshot_failure(record, facts):

@@ -3573,6 +3573,9 @@ class OpenFocus(QMainWindow):
 
     def _account_loaded(self, client, error) -> None:
         self._account_load_job = None
+        if error is not None:
+            from utils.account_client import log_sign_in_failure
+            log_sign_in_failure('restore', error)
         if error is None and getattr(self, '_account_client', None) is None:
             self._account_client = client
             if client.is_signed_in() and not getattr(self, '_shutting_down', False):
@@ -4892,6 +4895,9 @@ if __name__ == "__main__":
 
     from ui.report_retry import schedule_report_retries, start_failure_capture
     start_failure_capture(window)
+    from utils.app_paths import user_data_dir
+    if (user_data_dir() / 'reports' / 'reports.json').exists():
+        schedule_report_retries(window)
 
     # An existing local session is sufficient offline; a new profile must sign in.
     _quit_on_last_window = app.quitOnLastWindowClosed()
@@ -5046,9 +5052,6 @@ if __name__ == "__main__":
         QTimer.singleShot(0, window.accelerator_banner.open_settings)
     else:
         QTimer.singleShot(0, window.accelerator_banner.check_at_startup)
-    from utils.app_paths import user_data_dir
-    if (user_data_dir() / 'reports' / 'reports.json').exists():
-        schedule_report_retries(window)
     try:
         from ui.crash_report import offer_previous_crash
         offer_previous_crash(window)

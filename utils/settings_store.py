@@ -484,7 +484,7 @@ def enable_account_default_reports(window) -> None:
         directory = user_data_dir() / "reports"
         old_values = {key: settings.value(key) if settings.contains(key) else None
                       for key in (REPORTS_AUTO_SEND_KEY, REPORTS_CHOICE_KEY)}
-        ReportClient(directory).enable_automatic()
+        ReportClient(directory).enable_automatic(preserve_sign_in=True)
         try:
             settings.setValue(REPORTS_AUTO_SEND_KEY, True)
             settings.setValue(REPORTS_CHOICE_KEY, "account_default")

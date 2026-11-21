@@ -61,6 +61,13 @@ are independent of account sign-in and diagnostic reporting.
   At startup the app can offer a previous native crash or an uncaught Python
   exit for review. Sending either requires confirmation. Automatic reports are
   skipped for development runs. Report metadata includes the build channel.
+  Failed sign-in attempts can locally queue a separate report containing only
+  the sign-in method, stage, error category, elapsed time, optional HTTP
+  status, and available service correlation IDs. The IDs identify an app
+  run or request. The queue persists across restarts and these reports are
+  delivered anonymously after automatic reporting is authorized. The default
+  authorization takes effect after sign-in under the reporting terms. An
+  explicit opt-out keeps sign-in diagnostics in the ordinary local log.
   Reports can include a separate random
   report installation ID,
   software and system versions, selected hardware details, image counts and
