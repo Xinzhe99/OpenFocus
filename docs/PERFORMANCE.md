@@ -45,8 +45,8 @@ workspace. The 15 comparisons covered 100, 200, 300, 400 and 500 layers at
 cover one inference tile including the model and inputs on the device.
 
 The following pairs fused 100 RGB16 TIFFs at 2048 × 1152 on the same CUDA
-backend, with 40 tiles of 256 × 256. Both working and exported pixels matched
-within each pair.
+backend, with 40 tiles of 256 × 256 and zero overlap. V3 used soft fusion.
+Both working and exported pixels matched within each pair.
 
 | Checkpoint | Fusion time (s) | Peak process-tree RSS (GiB) | Peak temporary mappings (GiB) |
 | --- | ---: | ---: | ---: |
