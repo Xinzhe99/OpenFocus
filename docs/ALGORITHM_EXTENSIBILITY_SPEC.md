@@ -22,7 +22,7 @@
 - `DepthSpec(runner, parameters)`：可选的焦点位置度量。返回未归一化的帧位置，由统一入口规范化到 float32 [0,1]。深度参数独立声明；OpenFocus C 的深度度量需要 kernel，而其融合不需要。
 - `FusionAlgorithm(id, label_key, display_name, file_tag, runner, parameters, depth, hint_key, environment, resource_estimator, parallel_frames, ordered_plan, neural, sort_frames, roi, promotes_color, tile_decider, default_exposure_match, default_base_correct, tile_runner, depth_planner, ..., streaming_sources=False)`：能力声明。环境检查、资源估算、局部 halo/grid、分块判定、专用 tile 执行与深度资源规划均为延迟 callable；并发、帧序、彩色输出和亮度默认值为数据字段。`streaming_sources=True` 声明 runner 能按预算消费有长度的 `SourceFrame` / `ProcessedFrame` 序列，不保留整栈解码像素；扩展方法默认仍使用 ndarray 输入契约。详细调用签名及完整示例见 `CONTRIBUTING.md`。
 - `RegistrationAlgorithm(id, label_key, file_tag, runner, parameters, steps, hint_key)`：原子方法声明适配器，组合方法声明有序 steps。`both` 规范化为 `(homography, ecc)`；`none` 为 `()`。
-- `fusion_algorithms()`、`registration_algorithms()`、`depth_algorithms()` 返回按显示顺序排列的描述；`get_fusion(id)`、`get_registration(id)` 遇未知 id 抛 ValueError。
+- `fusion_algorithms()`、`registration_algorithms()`、`depth_algorithms()` 按注册顺序返回描述。桌面融合界面按 `FusionAlgorithm.family` 依次显示 OpenFocus 方法、StackMFF、其他方法（默认组），组内保留注册顺序。`get_fusion(id)`、`get_registration(id)` 遇未知 id 抛 ValueError。
 - `register_fusion(spec)`、`register_registration(spec)` 拒绝重复 id 和无效描述；用于项目内注册及隔离测试，不提供用户运行时插件安装流程。
 - `fusion_defaults(id, depth=False)`、`resolve_fusion_parameters(id, values=None, depth=False)`、`registration_defaults(id)`、`resolve_registration_parameters(id, values=None)` 统一默认值与校验。
 - `alignment_steps(id_or_steps)` 返回有序的字符串 tuple，保留算法顺序，拒绝未知方法，不能截断或按三个旧位置解释。
@@ -31,7 +31,7 @@ runner 使用延迟解析的 `module:callable` 路径；现有类的适配方法
 
 流式源能力与算法数值域相互独立。源描述符的 shape、dtype、校准、ROI 与身份可不解码读取；像素只通过共享源接口按需解析。runner 必须在有界窗口内释放每帧及其视图，瓦片读取不能通过 N 个小视图把 N 个完整源帧留在内存。归一化、曝光、协作取消与解码/缓存增长预算由共用管线处理；不能通过提前转换全栈来冒充流式。
 
-所有现有方法的默认值、标签、文件名标签与先前的显示顺序均从注册描述派生；不保留第二份手写支持列表。没有局部边界声明的方法以完整帧计算后裁切比较结果，保证正确性；不能默默猜一个固定 halo。
+所有现有方法的默认值、标签、文件名标签与桌面分组均从注册描述派生，不保留第二份手写支持列表。没有局部边界声明的方法以完整帧计算后裁切比较结果，保证正确性，不能默默猜一个固定 halo。
 
 ## 运行契约迁移
 
