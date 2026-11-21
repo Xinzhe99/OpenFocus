@@ -64,6 +64,39 @@ def _finished(dialog):
             and not dialog._preview_timer.isActive())
 
 
+def test_stackmff_scale_reaches_comparison_request(dialog, qapp, monkeypatch):
+    from core.multi_focus_fusion import MultiFocusFusion
+
+    monkeypatch.setattr('core.multi_focus_fusion.is_ai_fusion_available', lambda: True)
+    method = 'stackmffv3'
+    seen = []
+
+    def fuse(fusion, *, input_source, **kwargs):
+        seen.append(dict(fusion.fusion_parameters))
+        return input_source[0].copy()
+
+    monkeypatch.setattr(MultiFocusFusion, '_validate_environment', lambda self: None)
+    monkeypatch.setattr(MultiFocusFusion, 'fuse', fuse)
+    dialog._checks['openfocus_a'].setChecked(False)
+    dialog._apply_method_availability()
+    dialog._checks[method].setChecked(True)
+    dialog.mode_combo.setCurrentIndex(dialog.mode_combo.findData(False))
+    editors = dialog.param_widgets[method]
+    scale = editors['inference_scale']
+    mode = editors['mode']
+    assert scale.currentData() == 'single'
+    mode.setCurrentIndex(mode.findData('hard'))
+    dialog.run_comparison()
+    _until(qapp, lambda: _finished(dialog) and method in dialog._full_results)
+    assert seen == [{'mode': 'hard', 'inference_scale': 'single'}]
+
+    scale.setCurrentIndex(scale.findData('dual'))
+    dialog.run_comparison()
+    _until(qapp, lambda: _finished(dialog) and method in dialog._full_results)
+    assert seen == [{'mode': 'hard', 'inference_scale': 'single'},
+                    {'mode': 'hard', 'inference_scale': 'dual'}]
+
+
 def test_comparison_result_key_tracks_effective_sharpen_strength(dialog):
     method = 'openfocus_a'
     unsharpened = dialog._result_key(method)

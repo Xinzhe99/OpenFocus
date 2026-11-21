@@ -809,28 +809,29 @@ def _resize_antialias(planes, scale, should_cancel=None):
     return result
 
 
-def probabilities(planes, path, device, threads, sigma, cancel=None):
+def probabilities(planes, path, device, threads, sigma, cancel=None, *, dual_scale=True):
     from fusion_methods.neural_common import cancel as check
     profile = _profile()
-    h, w = planes.shape[-2:]
     with profile.stage('logits.full'):
         p = logits(planes, path, device, threads, cancel)
     with profile.stage('softmax.full'):
         p = softmax(p)
     check(cancel)
-    with profile.stage('resize.0.75'):
-        small = _resize_antialias(planes, 0.75, cancel)
-    with profile.stage('logits.reduced'):
-        q = logits(small, path, device, threads, cancel)
-    del small
-    with profile.stage('softmax.reduced'):
-        q = softmax(q)
-    with profile.stage('upsample_combine'):
-        for n in range(p.shape[1]):
-            check(cancel)
-            p[0, n] += cv2.resize(q[0, n], (w, h), interpolation=cv2.INTER_LINEAR)
-        del q
-        p *= 0.5
+    if dual_scale:
+        h, w = planes.shape[-2:]
+        with profile.stage('resize.0.75'):
+            small = _resize_antialias(planes, 0.75, cancel)
+        with profile.stage('logits.reduced'):
+            q = logits(small, path, device, threads, cancel)
+        del small
+        with profile.stage('softmax.reduced'):
+            q = softmax(q)
+        with profile.stage('upsample_combine'):
+            for n in range(p.shape[1]):
+                check(cancel)
+                p[0, n] += cv2.resize(q[0, n], (w, h), interpolation=cv2.INTER_LINEAR)
+            del q
+            p *= 0.5
     if sigma:
         with profile.stage('gaussian'):
             radius = int(3 * sigma + 0.5)

@@ -72,6 +72,7 @@ _ENUMS = {
     'registration_brightness_reference': frozenset(('first', 'last')),
     'resource_preference': frozenset(('balanced', 'responsive', 'maximum')),
     'mode': frozenset(('soft', 'hard')),
+    'inference_scale': frozenset(('single', 'dual')),
     'failure_policy': frozenset(('continue', 'fail')),
     'roi_mode': frozenset(('crop', 'paste')),
     'action': frozenset(('press', 'move', 'release', 'scroll')),

@@ -483,3 +483,43 @@ def test_compare_and_batch_edit_smoothing_locally(algorithm_host):
         for dialog in (compare, batch):
             dialog.reject()
             dialog.deleteLater()
+
+
+def test_stackmff_scale_crosses_main_batch_and_settings(algorithm_host, tmp_path, monkeypatch):
+    from PyQt6.QtCore import QSettings
+    from core.workers import RenderWorker
+    from dialogs.batch import BatchProcessingDialog
+    from utils import settings_store
+
+    monkeypatch.setattr('core.multi_focus_fusion.is_ai_fusion_available', lambda: True)
+    settings = QSettings(str(tmp_path / 'scale.ini'), QSettings.Format.IniFormat)
+    monkeypatch.setattr(settings_store, 'get_settings', lambda: settings)
+    settings.setValue('fusion/ai_mode', 'hard')
+    host = algorithm_host
+    method = 'stackmffv3'
+    settings_store.load_parameter_memories(host)
+    host.set_fusion_method(method)
+    panel = host.fusion_parameter_panel
+    assert panel.values() == {'mode': 'hard', 'inference_scale': 'single'}
+
+    scale = panel.editors['inference_scale']
+    assert [scale.itemData(i) for i in range(scale.count())] == ['single', 'dual']
+    scale.setCurrentIndex(scale.findData('dual'))
+    render = RenderWorker(host.raw_images, algorithm=method,
+                          fusion_parameters=host.fusion_parameters_for(method))
+    assert render.fusion_parameters == {'mode': 'hard', 'inference_scale': 'dual'}
+    settings_store.save_parameter_memories(host)
+    host._fusion_parameters_by_method = {}
+    settings_store.load_parameter_memories(host)
+    assert host.fusion_parameters_for(method) == render.fusion_parameters
+
+    batch = BatchProcessingDialog(host)
+    try:
+        assert batch.get_processing_settings()['fusion_params'] == render.fusion_parameters
+        batch_scale = batch.fusion_parameter_panel.editors['inference_scale']
+        batch_scale.setCurrentIndex(batch_scale.findData('single'))
+        assert batch.get_processing_settings()['fusion_params'] == {'mode': 'hard', 'inference_scale': 'single'}
+        assert host.fusion_parameters_for(method)['inference_scale'] == 'dual'
+    finally:
+        batch.reject()
+        batch.deleteLater()
