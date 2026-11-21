@@ -135,6 +135,147 @@ def test_v2_single_padded_tile_matches_whole_frame_depth():
     np.testing.assert_array_equal(index, expected_index)
 
 
+@pytest.mark.parametrize('layout', ['c', 'fortran', 'cropped'])
+def test_v2_expected_positions_keeps_reference_reduction_and_reuses_softmax(monkeypatch, layout):
+    from fusion_methods import neural_runtime, stackmff_v2
+
+    rng = np.random.default_rng(18)
+    logits = rng.normal(size=(1, 137, 17, 41)).astype(np.float32)
+    if layout == 'fortran':
+        logits = np.asfortranarray(logits)
+    elif layout == 'cropped':
+        logits = logits[..., 1::2]
+    original = logits.copy()
+    probs = neural_runtime.softmax(logits)
+    weights = np.arange(1, 138, dtype=np.float32)[None, :, None, None]
+    weighted = probs * weights
+    monkeypatch.setattr(neural_runtime, 'softmax', lambda _: probs)
+
+    actual = stackmff_v2._expected_positions(logits)
+
+    np.testing.assert_array_equal(actual, weighted.sum(axis=1)[0])
+    np.testing.assert_array_equal(probs, weighted)
+    np.testing.assert_array_equal(logits, original)
+
+
+@pytest.mark.parametrize('tail,mixed', [((), True), ((1,), False), ((3,), True), ((3,), False)])
+def test_v2_whole_and_tiled_sample_reference_depth_and_pixels(monkeypatch, tail, mixed):
+    from types import SimpleNamespace
+    from fusion_methods import neural_runtime, stackmff_v2 as v2, stackmff_v2_tiled as tiled
+
+    rng = np.random.default_rng(218)
+    h, w = 13, 19
+    frames = [rng.integers(0, 65536 if mixed and i == 1 else 256, (h, w) + tail,
+                          dtype=np.uint16 if mixed and i == 1 else np.uint8)
+              for i in range(3)]
+    normalized, _ = normalize_fuse_input(frames)
+    planes = neural_common.stage_planes(normalized, 64)
+    logits = rng.normal(size=planes.shape).astype(np.float32) * np.float32(0.3)
+    logits[0, :, 0, 0] = [2, -2, -2]
+    logits[0, :, 0, 1] = [-2, -2, 2]
+    # Extremes outside the crop must still set the exact depth range.
+    logits[0, :, -1, -1] = [30, -30, -30]
+    logits[0, :, -1, -2] = [-30, -30, 30]
+    probs = neural_runtime.softmax(logits)
+    positions = (probs * np.arange(1, 4, dtype=np.float32)[None, :, None, None]).sum(axis=1)[0]
+    lo, hi = positions.min(), positions.max()
+    expected_depth = ((positions - lo) / (hi - lo + 1e-8))[:h, :w]
+    expected_index = np.clip(np.rint(expected_depth * 2), 0, 2).astype(np.int64)
+    expected = np.stack(normalized)[expected_index, np.arange(h)[:, None], np.arange(w)[None, :]]
+    if tail == (1,):
+        expected = expected[..., 0]
+
+    def run_model(values, *_):
+        np.testing.assert_array_equal(values, planes)
+        return logits
+
+    plan = SimpleNamespace(native_threads=1)
+    monkeypatch.setattr(v2, '_prepare_inference', lambda *a, **k: ('model', 'CPU', plan))
+    monkeypatch.setattr(tiled, '_plan', lambda *_: (64, 'model', 'CPU', plan))
+    monkeypatch.setattr(neural_runtime, 'logits', run_model)
+
+    whole, depth, index = v2._infer_under_lease(frames, 'model', False)
+    tile_depth, tile_index = tiled._tiled_depth_under_lease(tiled._Source(frames, None, None, None),
+                                                          'model', False)
+    tile_image = tiled._tiled_fusion_under_lease(frames, None, 'model', False)
+
+    for actual_depth, actual_index, actual in [(depth, index, whole), (tile_depth, tile_index, tile_image)]:
+        np.testing.assert_array_equal(actual_depth, expected_depth)
+        np.testing.assert_array_equal(actual_index, expected_index)
+        np.testing.assert_array_equal(actual, expected)
+        assert actual.dtype == expected.dtype
+
+
+@pytest.mark.parametrize('mixed', [False, True])
+def test_v2_tiled_sparse_reconstruction_keeps_exposure_and_alpha(monkeypatch, mixed):
+    from fusion_methods import stackmff_v2_tiled as tiled
+    from utils.image_utils import apply_exposure_gain
+
+    rng = np.random.default_rng(316)
+    shape = (129, 11, 4)
+    frames = [rng.integers(0, 256, shape, np.uint8),
+              rng.integers(0, 65536, shape, np.uint16) if mixed else
+              rng.integers(0, 256, shape, np.uint8)]
+    gains = [1.14, .71]
+    index = rng.integers(0, 2, shape[:2], np.int64)
+    normalized, _ = normalize_fuse_input(frames)
+    adjusted = [apply_exposure_gain(frame, gain) for frame, gain in zip(normalized, gains)]
+    expected = np.stack(adjusted)[index, np.arange(shape[0])[:, None], np.arange(shape[1])[None, :]]
+    monkeypatch.setattr(tiled, '_tiled_depth_under_lease', lambda *_: (None, index))
+
+    actual = tiled._tiled_fusion_under_lease(frames, None, 'model', False, exposure_gains=gains)
+
+    np.testing.assert_array_equal(actual, expected)
+    assert actual.dtype == expected.dtype
+
+
+@pytest.mark.parametrize('cancel', [False, True])
+def test_v2_sparse_reconstruction_only_resolves_selected_layers_and_strips(monkeypatch, cancel):
+    from core import source_frames
+    from core.registration import RegistrationCancelled
+    from fusion_methods.stackmff_v2 import _sample
+
+    shape = (257, 11)
+    frames = [np.full(shape, layer, np.uint8) for layer in range(200)]
+    index = np.zeros((shape[0], shape[1] + 1), dtype=np.int64)[:, :-1]
+    index[-1] = len(frames) - 1
+    layers = {id(frame): layer for layer, frame in enumerate(frames)}
+    resolved, copied = [], []
+    resolve, copyto = source_frames.resolve_frame, np.copyto
+
+    def resolve_layer(frame, **kwargs):
+        resolved.append(layers[id(frame)])
+        return resolve(frame, **kwargs)
+
+    def copy_strip(out, frame, **kwargs):
+        copied.append((int(frame[0, 0]), out.shape[0]))
+        copyto(out, frame, **kwargs)
+
+    monkeypatch.setattr(source_frames, 'resolve_frame', resolve_layer)
+    monkeypatch.setattr(np, 'copyto', copy_strip)
+    if cancel:
+        with pytest.raises(RegistrationCancelled):
+            _sample(frames, index, lambda: bool(resolved))
+        assert resolved == [0]
+        assert not copied
+    else:
+        actual = _sample(frames, index)
+        assert resolved == [0, 199]
+        assert copied == [(0, 128), (0, 128), (199, 1)]
+        np.testing.assert_array_equal(actual, index.astype(np.float32))
+
+
+def test_v2_tiled_canvas_admission_accounts_for_live_maps_and_strips():
+    from fusion_methods.stackmff_v2_tiled import tiled_output_bytes
+
+    h, w, c = 1545, 2041, 3
+    padded_h, padded_w = 1600, 2048
+    depth_bytes = padded_h * padded_w * 12 + 128 * padded_w * 12
+    color_bytes = padded_h * padded_w * 8 + h * w * c * 4 + 128 * w * (1 + 8 * c)
+    assert tiled_output_bytes(h, w, c, 0) == depth_bytes
+    assert tiled_output_bytes(h, w, c, 1) == max(depth_bytes, color_bytes)
+
+
 def test_two_hundred_large_frames_get_a_bounded_full_stack_plan():
     from core.resource_policy import ResourceSnapshot, plan_neural_tiles
     from fusion_methods.neural_runtime import estimate_inference_bytes
