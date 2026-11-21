@@ -1,10 +1,4 @@
 """CPU Q12 recurrence, advanced in cancellable blocks.
-    transpose_signature = (pixels, pixels, types.int64, types.int64)
-        for kernel in (_pack_rows_T, _unpack_rows_T):
-            _check_cancel(should_cancel)
-            if transpose_signature not in kernel.signatures:
-                require_memory(DEPTH_KERNEL_STARTUP_BYTES)
-                kernel.compile(transpose_signature)
 
 Import only from the processing path. Compiled kernels use Numba's cache so
 isolated render processes can reuse them; an unavailable cache keeps the
@@ -265,7 +259,13 @@ def prepare_depth_kernel(guided=True, should_cancel=None):
     pixels = types.Array(types.uint16, 2, 'C')
     forward = types.Array(types.uint32, 2, 'C')
     accumulator = types.Array(types.uint32, 1, 'C')
+    transpose_signature = (pixels, pixels, types.int64, types.int64)
     with _prepare_lock:
+        for kernel in (_pack_rows_T, _unpack_rows_T):
+            _check_cancel(should_cancel)
+            if transpose_signature not in kernel.signatures:
+                require_memory(DEPTH_KERNEL_STARTUP_BYTES)
+                kernel.compile(transpose_signature)
         for layout in ('C', 'F'):
             source = types.Array(types.uint16, 2, layout)
             guides = ((types.none, pixels, types.Array(types.uint16, 2, 'F'))

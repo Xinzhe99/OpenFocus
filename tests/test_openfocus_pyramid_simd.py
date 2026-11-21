@@ -127,7 +127,7 @@ def _ref_axis_block(src, guide, first, output, acc, q, t, tm, tl, start, stop, l
 
 
 @pytest.mark.parametrize('shape', [
-    (1, 1), (1, 5), (5, 1), (2, 3), (3, 7), (7, 9), (17, 31), (63, 127), (128, 193)
+    (1, 1), (1, 5), (5, 1), (2, 3), (3, 7), (7, 9), (17, 2), (17, 31), (63, 127), (128, 193)
 ])
 @pytest.mark.parametrize('channels', [1, 2, 3, 4])
 def test_pyramid_down_and_synthesize_bit_exact(shape, channels):
