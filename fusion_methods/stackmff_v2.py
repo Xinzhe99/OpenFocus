@@ -7,11 +7,12 @@ over the padded inference, then the nearest source frame is sampled.
 import numpy as np
 
 from fusion_methods import neural_common as common
-from utils.image_utils import fuse_output_dtype
+from utils.image_utils import apply_exposure_gain, fuse_output_dtype
 
 PAD_ALIGN = common.ATTENTION_PAD_ALIGN
 DEFAULT_WEIGHTS = 'weights/stackmff_v2_final.onnx'
 _ALGORITHM = 'stackmffv2'
+_STRIP_ROWS = 128
 
 
 def _prepare_inference(frames, model_path, use_gpu, thread_count=None,
@@ -28,36 +29,104 @@ def _prepare_inference(frames, model_path, use_gpu, thread_count=None,
         fixed_bytes=fixed_bytes, height=height, width=width)
 
 
-def _inference_depth(planes, model, device, should_cancel=None, threads=1):
-    """Return depth normalized over the complete padded inference."""
+def _expected_positions(logits, should_cancel=None):
+    """Weight private softmax storage, keeping the reference axis reduction."""
     from fusion_methods import neural_runtime
-    probs = neural_runtime.softmax(neural_runtime.logits(planes, model, device, threads, should_cancel))
-    n = probs.shape[1]
-    depth = (probs * np.arange(1, n + 1, dtype=np.float32)[None, :, None, None]).sum(axis=1)[0]
-    lo, hi = depth.min(), depth.max()
-    depth = (depth - lo) / (hi - lo + 1e-8)
-    index = np.clip(np.rint(depth * (n - 1)), 0, n - 1).astype(np.int64)
-    return depth, index
-
-
-
-
-def _sample(frames, index, should_cancel=None):
-    """Reference output: copy the sampled source frame at every pixel."""
     common.cancel(should_cancel)
+    probs = neural_runtime.softmax(logits)
+    weights = np.arange(1, probs.shape[1] + 1, dtype=np.float32)[None, :, None, None]
+    # The shipped graph returns float32. Keep NumPy's promotion for other graphs.
+    if np.result_type(probs, weights) == probs.dtype:
+        np.multiply(probs, weights, out=probs)
+    else:
+        probs = probs * weights
+    common.cancel(should_cancel)
+    return probs.sum(axis=1)[0]
+
+
+def _whole_depth(frames, model, device, threads, should_cancel):
+    from fusion_methods import neural_runtime
+    normalized = common.normalized_frames(frames, should_cancel)
+    planes = common.stage_planes(normalized, PAD_ALIGN, should_cancel)
+    del normalized
+    logits = neural_runtime.logits(planes, model, device, threads, should_cancel)
+    del planes
+    n = logits.shape[1]
+    depth = _expected_positions(logits, should_cancel)
+    del logits
+    lo, hi = depth.min(), depth.max()
+    depth -= lo
+    depth /= hi - lo + 1e-8
+    index = np.clip(np.rint(depth * (n - 1)), 0, n - 1).astype(np.int64)
+    h, w = frames[0].shape[:2]
+    return depth[:h, :w], index[:h, :w]
+
+
+def _validate_sample_shape(shape, expected):
+    if shape[:2] != expected[:2]:
+        raise ValueError('All frames must have the same dimensions')
+    if len(shape) != len(expected) or (len(shape) == 3 and shape[2] not in (1, expected[2])):
+        raise ValueError('All frames must have compatible channel counts')
+
+
+def _sample(frames, index, should_cancel=None, *, dtype=np.float32, round_uint8=False,
+            gains=None, normalize_for_exposure=False, original_frames=None):
+    """Resolve each selected source once and reconstruct only the strips it serves."""
     from core.frame_storage import create_frame
-    out = create_frame(frames[0].shape, np.float32)
+    from core.source_frames import resolve_frame, validate_frame_source
+
+    common.cancel(should_cancel)
+    shape = frames[0].shape
+    strips = [[] for _ in frames]
+    count = len(frames)
+    for start in range(0, index.shape[0], _STRIP_ROWS):
+        common.cancel(should_cancel)
+        values = index[start:start + _STRIP_ROWS].ravel()
+        # Non-finite depth can cast to a negative index. Out-of-range values
+        # name no source, so leave those output pixels at their initial value.
+        if values.min() < 0 or values.max() >= count:
+            values = values[(values >= 0) & (values < count)]
+        for layer in np.flatnonzero(np.bincount(values, minlength=count)):
+            strips[layer].append(start)
+        del values
+
+    out = create_frame(shape, dtype)
     for layer, frame in enumerate(frames):
         common.cancel(should_cancel)
-        from core.source_frames import resolve_frame
-        frame = resolve_frame(frame)
-        for start in range(0, out.shape[0], 128):
+        _validate_sample_shape(frame.shape, shape)
+        if original_frames is not None:
+            validate_frame_source(original_frames[layer])
+        if not strips[layer]:
+            validate_frame_source(frame)
+            continue
+        frame = resolve_frame(frame, should_cancel=should_cancel)
+        gain = gains[layer] if gains is not None else 1.0
+        for start in strips[layer]:
             common.cancel(should_cancel)
-            rows = slice(start, min(out.shape[0], start + 128))
+            rows = slice(start, start + _STRIP_ROWS)
             mask = index[rows] == layer
-            np.copyto(out[rows], frame[rows],
-                      where=mask[:, :, None] if frame.ndim == 3 else mask,
-                      casting='unsafe')
+            if gain == 1.0 and frame.dtype != np.uint16 and (not round_uint8 or frame.dtype == np.uint8):
+                np.copyto(out[rows], frame[rows],
+                          where=mask[:, :, None] if frame.ndim == 3 else mask,
+                          casting='unsafe')
+            else:
+                pixels = frame[rows][mask]
+                if gain != 1.0:
+                    if normalize_for_exposure:
+                        pixels = common.working_frame(pixels, True)
+                    # The leading row preserves the channel/alpha interpretation.
+                    pixels = apply_exposure_gain(pixels[None], gain)[0]
+                if pixels.dtype == np.uint16:
+                    pixels = common.working_frame(pixels, True)
+                if round_uint8:
+                    pixels = pixels.astype(np.float32, copy=False)
+                    np.rint(pixels, out=pixels)
+                    np.clip(pixels, 0, 255, out=pixels)
+                out[rows][mask] = pixels
+                del pixels
+        del frame
+    if out.dtype != np.uint8:
+        np.clip(out, 0.0, 255.0, out=out)
     common.cancel(should_cancel)
     return out[..., 0] if out.ndim == 3 and out.shape[-1] == 1 else out
 
@@ -79,21 +148,9 @@ def _infer_under_lease(frames, model_path, use_gpu, should_cancel=None,
     model, device, plan = _prepare_inference(
         frames, model_path, use_gpu, thread_count=thread_count,
         resource_preference=resource_preference, execution_plan=execution_plan)
-    normalized = common.normalized_frames(frames, should_cancel)
-    planes = common.stage_planes(normalized, PAD_ALIGN, should_cancel)
-    depth_full, index_full = _inference_depth(planes, model, device, should_cancel, plan.native_threads)
-    del planes
-    h, w = normalized[0].shape[:2]
-    # The model normalises across the padded map before we crop.
-    depth = depth_full[:h, :w]
-    index = index_full[:h, :w]
-    fused = _sample(normalized, index, should_cancel)
-    del depth_full, index_full
-    if out_dtype is np.uint8:
-        fused = np.clip(np.round(fused), 0, 255).astype(np.uint8)
-    else:
-        np.clip(fused, 0.0, 255.0, out=fused)
-    common.cancel(should_cancel)
+    depth, index = _whole_depth(frames, model, device, plan.native_threads, should_cancel)
+    fused = _sample(frames, index, should_cancel, dtype=out_dtype,
+                    round_uint8=out_dtype is np.uint8)
     return fused, depth, index
 
 

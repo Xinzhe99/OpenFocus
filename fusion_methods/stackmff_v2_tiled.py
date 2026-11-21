@@ -9,9 +9,10 @@ source pixels are selected.
 import cv2
 import numpy as np
 
-from fusion_methods import neural_common as common
-from utils.image_utils import apply_exposure_gain
 from core.frame_storage import create_frame
+from fusion_methods import neural_common as common
+from fusion_methods.stackmff_v2 import _STRIP_ROWS, _expected_positions, _sample
+from utils.image_utils import apply_exposure_gain
 
 
 class _Source:
@@ -103,17 +104,22 @@ class _Source:
         return frame[rows[:, None], cols[None, :]]
 
 
-def _normalized(frame):
-    if frame.dtype == np.uint16:
-        return frame.astype(np.float32) * (255.0 / 65535.0)
-    return frame
-
-
 def tiled_output_bytes(height, width, channels, result_count):
-    """Full-canvas accumulators for V2's globally normalized depth."""
+    """Bound the canvas maps and strip workspace through V2 reconstruction."""
     padded_h = height + (-height) % common.ATTENTION_PAD_ALIGN
     padded_w = width + (-width) % common.ATTENTION_PAD_ALIGN
-    return padded_h * padded_w * (32 + channels * 8 * result_count)
+    pixels = padded_h * padded_w
+    # Weight is released before the int64 index is built. Index generation
+    # holds at most one float32 and one int64 strip as temporaries.
+    depth_bytes = pixels * 12 + min(padded_h, _STRIP_ROWS) * padded_w * 12
+    if not result_count:
+        return depth_bytes
+    # Depth is released before color reconstruction. Allow for a mask and
+    # two float32 strips when gathering, normalizing, or adjusting pixels.
+    output_bytes = pixels * 8 + height * width * channels * 4 * result_count
+    # Filtering invalid indices can hold two int64 strips and a boolean mask.
+    sample_bytes = min(height, _STRIP_ROWS) * width * max(17, 1 + channels * 8)
+    return max(depth_bytes, output_bytes + sample_bytes)
 
 
 def _plan(source, model_path, use_gpu, tile_size, execution_plan,
@@ -228,12 +234,10 @@ def _tiled_depth_under_lease(source, model_path, use_gpu, should_cancel=None,
         for x in xs:
             common.cancel(should_cancel)
             planes = _stage_tile_planes(source, (x, y, block, block), should_cancel)
-            probs = neural_runtime.softmax(neural_runtime.logits(
-                planes, model, device, plan.native_threads, should_cancel))
+            logits = neural_runtime.logits(planes, model, device, plan.native_threads, should_cancel)
             del planes
-            positions = (probs * np.arange(1, count + 1, dtype=np.float32)
-                         [None, :, None, None]).sum(axis=1)[0, :block, :block]
-            del probs
+            positions = _expected_positions(logits, should_cancel)[:block, :block]
+            del logits
             weights = _weights(x, y, x + block, y + block, w, h, overlap)
             expected[y:y+block, x:x+block] += positions * weights
             weight[y:y+block, x:x+block] += weights
@@ -241,18 +245,18 @@ def _tiled_depth_under_lease(source, model_path, use_gpu, should_cancel=None,
             if progress_callback is not None:
                 progress_callback(done, total)
     common.cancel(should_cancel)
-    for start in range(0, h, 128):
+    for start in range(0, h, _STRIP_ROWS):
         common.cancel(should_cancel)
-        rows = slice(start, min(h, start + 128))
+        rows = slice(start, start + _STRIP_ROWS)
         np.divide(expected[rows], weight[rows], out=expected[rows], where=weight[rows] != 0)
     del weight
     lo, hi = expected.min(), expected.max()
     expected -= lo
     expected /= hi - lo + 1e-8
     index = create_frame((h, w), np.int64)
-    for start in range(0, h, 128):
+    for start in range(0, h, _STRIP_ROWS):
         common.cancel(should_cancel)
-        rows = slice(start, min(h, start + 128))
+        rows = slice(start, start + _STRIP_ROWS)
         index[rows] = np.clip(np.rint(expected[rows] * (count - 1)), 0, count - 1).astype(np.int64)
     return expected[:source_h, :source_w], index[:source_h, :source_w]
 
@@ -279,23 +283,13 @@ def _tiled_fusion_under_lease(input_source, img_resize, model_path, use_gpu,
                                execution_plan, thread_count, resource_preference,
                                tile_size, tile_overlap, progress_callback, 1, tile_grid_callback)
     del depth
-    first = _normalized(source.get(0))
     if source_all_uint8 is None:
-        source_all_uint8 = all(item.dtype == np.uint8 for item in source.items) if not source.directory else first.dtype == np.uint8
-    output = create_frame(first.shape, np.uint8 if source_all_uint8 else np.float32)
-    for i in range(len(source.items)):
-        common.cancel(should_cancel)
-        frame = first if i == 0 else _normalized(source.get(i))
-        for start in range(0, output.shape[0], 128):
-            common.cancel(should_cancel)
-            rows = slice(start, min(output.shape[0], start + 128))
-            mask = index[rows] == i
-            np.copyto(output[rows], frame[rows],
-                      where=mask[:, :, None] if frame.ndim == 3 else mask,
-                      casting='unsafe')
-    if output.dtype != np.uint8:
-        np.clip(output, 0, 255, out=output)
-    common.cancel(should_cancel)
+        source_all_uint8 = (source.items[0].dtype == np.uint8 if source.directory else
+                            all(item.dtype == np.uint8 for item in source.items))
+    output = _sample(source.items, index, should_cancel,
+                     dtype=np.uint8 if source_all_uint8 else np.float32,
+                     gains=source.gains, normalize_for_exposure=source.mixed_16,
+                     original_frames=source.original_items)
     if focus_callback is not None:
         focus_callback(index, len(source.items) - 1)
-    return output[..., 0] if output.ndim == 3 and output.shape[-1] == 1 else output
+    return output
