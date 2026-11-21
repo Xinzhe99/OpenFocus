@@ -63,15 +63,18 @@ def _native_sources(tmp_path):
     return sources, pixels
 
 
-def test_b_active_sources_include_fractional_neighbors_across_row_bands():
+def test_b_source_rectangles_cover_fractional_neighbors_across_row_bands():
     count = 92
     step = 65535 // (count - 1)
     depth = np.zeros((129, 4), np.uint16)
     depth[0, 0] = 7 * step
     depth[128, 0] = 23 * step + 1
     depth[128, 1] = 65535
-    active = bc._active_sources(depth, count, None)
-    assert np.flatnonzero(active).tolist() == [0, 7, 23, 24, 91]
+    bounds = bc._source_bounds(depth, count, None)
+    assert np.flatnonzero(bounds[:, 0] < bounds[:, 2]).tolist() == [0, 7, 23, 24, 91]
+    np.testing.assert_array_equal(bounds[[0, 7, 23, 24, 91]],
+                                  [(0, 0, 4, 129), (0, 0, 1, 1), (0, 128, 1, 129),
+                                   (0, 128, 1, 129), (1, 128, 2, 129)])
 
 
 @pytest.mark.parametrize('method', [bc.openfocus_b_impl])
@@ -174,6 +177,5 @@ def test_b_active_sources_match_the_numpy_selection(count, dtype):
         # Depth overrides arrive as int64 codes, also outside the code range.
         depth = rng.integers(-3 * step, 65535 + 5 * step, shape, dtype=np.int64)
         depth[::2] = 2 * step
-    active = bc._active_sources(depth, count, None)
-    assert active.dtype == np.bool_
-    np.testing.assert_array_equal(active, _numpy_active_sources(depth, count))
+    bounds = bc._source_bounds(depth, count, None)
+    np.testing.assert_array_equal(bounds[:, 0] < bounds[:, 2], _numpy_active_sources(depth, count))

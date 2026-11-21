@@ -36,6 +36,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   existing focus decisions for low-contrast and mixed-bit-depth inputs.
 
 ### Fixed
+- Let whole-image OpenFocus B stream sources when full-stack snapshots do
+  not fit in scratch storage. Bound CPU blending to contributing regions.
 - Close the desktop process when its CLI launcher times out waiting for the
   control channel, and explain how to complete first-run sign-in.
 - Give comparison alignment workers on macOS enough stack for the first
