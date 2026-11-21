@@ -58,6 +58,19 @@ def test_source_frame_decodes_once_per_scope(tmp_path, monkeypatch):
     assert cache_module.current() is None
 
 
+def test_source_frame_can_use_direct_disk_cache(tmp_path):
+    frame = _source(tmp_path, value=57)
+    disk = cache_module.ResolutionCache(frame.nbytes)
+    try:
+        with cache_module.active(disk), _bound([frame]):
+            image = frame.full_resolution()
+            stored = disk.get(frame)
+            assert np.shares_memory(image, stored)
+            np.testing.assert_array_equal(stored, np.full(frame.shape, 57, np.uint8))
+    finally:
+        disk.close()
+
+
 def test_processed_frame_runs_processor_once(tmp_path):
     counter = []
     processed = _processed(_source(tmp_path), counter)

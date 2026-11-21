@@ -642,7 +642,7 @@ class SourceFrame:
         if cached is not None:
             _check_resolution_cancel(should_cancel)
             return cached
-        if _retain_decoded_sources.get() and (cache is None or not cache.read_only):
+        if _retain_decoded_sources.get() and not getattr(cache, 'read_only', False):
             SOURCE_CACHE.make_room(self.nbytes)
         else:
             key = None
