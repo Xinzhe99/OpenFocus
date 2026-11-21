@@ -1394,6 +1394,7 @@ def map_native_rgb_tiffs(frames, should_cancel=None):
                 if (page.is_memmappable and int(page.photometric) == 2 and page.axes == 'YXS'
                         and page.shape == frame.shape and page.samplesperpixel == 3
                         and page.dtype == frame.dtype and frame.dtype in (np.uint8, np.uint16)
+                        and frame.dtype.newbyteorder(tif.byteorder).isnative
                         and page.bitspersample == frame.dtype.itemsize * 8):
                     frame = replace(frame, _rgb_tiff_offset=page.dataoffsets[0])
         result.append(frame)
