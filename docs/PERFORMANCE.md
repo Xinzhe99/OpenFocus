@@ -64,6 +64,14 @@ snapshot, TIFF-header preflight admitted the six methods at 2K, 4K and 8K
 in 100-layer steps through 500. At 8K, preflight selected 256-pixel StackMFF
 tiles at 100 and 200 layers and 128-pixel tiles at 300 through 500.
 
+A separate StackMFF V2 run fused 500 RGB16 TIFFs at 7680 × 4320 on the
+RTX 4060 Laptop GPU with PyTorch CUDA. Registration and exposure matching
+were off. The run used 2,040 tiles of 128 × 128 with zero overlap and took
+2,296.87 s in the fusion stage. Peak process-tree RSS was 2.49 GiB, peak
+process-tree commit was 6.12 GiB, and temporary mappings peaked at 0.62 GiB.
+The exported TIFF matched the quantized pixels on read-back. The inference
+session calls accounted for 752.80 s of the fusion stage.
+
 ## Switching fusion methods on the same stack
 
 The Windows desktop rendered six compressed 512 × 320 RGB16 TIFFs using ECC
