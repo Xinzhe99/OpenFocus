@@ -530,3 +530,309 @@ def test_mismatched_frame_shapes_are_rejected(use_gpu):
     frames = [np.zeros((65, 67, 3), np.uint8), np.zeros((66, 67, 3), np.uint8)]
     with pytest.raises(ValueError, match='matching shapes'):
         openfocus_b_impl(frames, use_gpu=use_gpu, thread_count=1)
+
+
+def test_openfocus_b_program_cache_reuse_and_invalidation():
+    from fusion_methods import _openfocus_gpu
+    if not _openfocus_gpu.gpu_available():
+        pytest.skip('No OpenCL GPU is available')
+    _openfocus_gpu._invalidate_program_cache()
+    try:
+        m1 = _openfocus_gpu.Merge(67, 3)
+        m2 = _openfocus_gpu.Merge(128, 3)
+        assert m1.context is m2.context
+        assert m1.queue is m2.queue
+        assert m1.program is m2.program
+
+        d1 = _openfocus_gpu._get_or_build_depth_program(m1.cl, m1.device, m1.context)
+        d2 = _openfocus_gpu._get_or_build_depth_program(m2.cl, m2.device, m2.context)
+        assert d1[0] is d2[0]
+        assert d1[1] is d2[1]
+    finally:
+        _openfocus_gpu._invalidate_program_cache()
+    assert _openfocus_gpu._PROGRAM_CACHE is None
+    assert _openfocus_gpu._DEPTH_PROGRAM_CACHE is None
+
+
+@pytest.mark.parametrize('module_name,cls_name', [
+    ('fusion_methods._openfocus_gpu_a', 'GpuA'),
+    ('fusion_methods._openfocus_gpu_c', 'GpuC'),
+])
+def test_openfocus_ac_program_cache_reuse_and_invalidation(module_name, cls_name):
+    import importlib
+    from fusion_methods import _openfocus_gpu
+
+    if not _openfocus_gpu.gpu_available():
+        pytest.skip('No OpenCL GPU is available')
+    mod = importlib.import_module(module_name)
+    mod._invalidate_program_cache()
+    cl = __import__('pyopencl')
+    dev = _openfocus_gpu._device(cl)
+    try:
+        ctx1, q1, k1 = mod._get_or_build_program(cl, dev)
+        ctx2, q2, k2 = mod._get_or_build_program(cl, dev)
+        assert ctx1 is ctx2 and q1 is q2 and k1 is k2
+    finally:
+        mod._invalidate_program_cache()
+    assert mod._PROGRAM_CACHE is None
+
+
+@pytest.mark.parametrize('algo,module_name,cls_name', [
+    ('openfocus_a', 'fusion_methods._openfocus_gpu_a', 'GpuA'),
+    ('openfocus_c', 'fusion_methods._openfocus_gpu_c', 'GpuC'),
+])
+def test_openfocus_ac_drain_queue_on_error_and_cancel(
+        monkeypatch, algo, module_name, cls_name):
+    import importlib
+    from types import SimpleNamespace
+    from core.registration import RegistrationCancelled
+    from fusion_methods import _openfocus_gpu
+
+    mod = importlib.import_module(module_name)
+    cls = getattr(mod, cls_name)
+
+    class DeviceError(Exception):
+        pass
+
+    drained = []
+
+    def initialize(self):
+        self.cl = SimpleNamespace(Error=DeviceError)
+        self.device_name = 'FakeCL'
+
+    def make_fail(exc):
+        def fail(self, *args, **kwargs):
+            self.q = SimpleNamespace(
+                finish=lambda: drained.append(_openfocus_gpu._device_lock.locked()),
+            )
+            raise exc
+        return fail
+
+    frames = _stack(np.uint8, 3)
+    options = dict(algorithm=algo, exposure_match=False, base_frame='none', sort_mode='off')
+    expected = MultiFocusFusion(use_gpu=False, **options).fuse(frames, thread_count=1)
+    monkeypatch.setattr(cls, '__init__', initialize)
+
+    # 1) cl.Error falls back cleanly, drains queue under lock, and invalidates cache.
+    monkeypatch.setattr(cls, '_fuse_locked', make_fail(DeviceError('lost')))
+    monkeypatch.setattr(mod, '_PROGRAM_CACHE', ('stale',))
+    actual = MultiFocusFusion(use_gpu=True, **options).fuse(frames, thread_count=1)
+    assert drained == [True]
+    assert mod._PROGRAM_CACHE is None
+    np.testing.assert_array_equal(actual, expected)
+
+    # 2) Cancellation drains queue under lock before releasing device lock.
+    drained.clear()
+    monkeypatch.setattr(cls, '_fuse_locked', make_fail(RegistrationCancelled('stop')))
+    with pytest.raises(RegistrationCancelled):
+        MultiFocusFusion(use_gpu=True, **options).fuse(frames, thread_count=1)
+    assert drained == [True]
+
+
+def test_openfocus_b_full_depth_drains_queue_before_clearing_buffers_on_cancel():
+    from types import SimpleNamespace
+    from core.registration import RegistrationCancelled
+    from fusion_methods import _openfocus_gpu
+
+    events = []
+
+    class TrackingDict(dict):
+        def clear(self):
+            events.append(('clear', _openfocus_gpu._device_lock.locked()))
+            super().clear()
+
+    class DummyEvent:
+        def __call__(self, *args, **kwargs):
+            return self
+
+        def wait(self):
+            return None
+
+    gpu = _openfocus_gpu.Merge.__new__(_openfocus_gpu.Merge)
+    gpu.cl = SimpleNamespace(
+        Error=RuntimeError,
+        mem_flags=SimpleNamespace(READ_WRITE=1, READ_ONLY=2, COPY_HOST_PTR=4),
+        Buffer=lambda *a, **kw: object(),
+        enqueue_copy=lambda *a, **kw: None,
+        Kernel=lambda prg, name: DummyEvent(),
+    )
+    gpu.device = SimpleNamespace(max_mem_alloc_size=10**9, host_unified_memory=True)
+    gpu.context = object()
+    gpu.queue = SimpleNamespace(
+        finish=lambda: events.append(('finish', _openfocus_gpu._device_lock.locked())),
+    )
+    gpu.depth_program = object()
+    gpu.used = False
+    gpu.failed = False
+
+    depth_k = {n: DummyEvent() for n in _openfocus_gpu._DEPTH_KERNEL_NAMES}
+    filt_k = {n: DummyEvent() for n in _openfocus_gpu._FILTER_KERNEL_NAMES}
+    resamp_k = {n: DummyEvent() for n in _openfocus_gpu._RESAMPLE_KERNEL_NAMES}
+
+    engine = _openfocus_gpu._GpuB(
+        gpu, None, lambda: True,
+        depth_kernels=depth_k, filter_kernels=filt_k, resample_kernels=resamp_k,
+    )
+    engine._cbuf = TrackingDict()
+
+    gpu.acquire(lambda: False)
+    try:
+        with pytest.raises(RegistrationCancelled):
+            engine.depth(
+                _stack(np.uint8, 3), 17, 1.44, 0, (65, 67, 3), 3, lambda: True, None,
+            )
+    finally:
+        gpu.release()
+
+    assert events[0] == ('finish', True)
+    assert ('clear', True) in events
+    assert events.index(('finish', True)) < events.index(('clear', True))
+
+
+def test_openfocus_b_resident_frame_reuses_upload_buffer():
+    from types import SimpleNamespace
+    from fusion_methods import _openfocus_gpu
+
+    allocs = []
+    copies = []
+
+    class FakeEvent:
+        def wait(self):
+            return None
+
+    def fake_buffer(ctx, flags, size=0, hostbuf=None):
+        allocs.append((flags, size))
+        return object()
+
+    def fake_copy(q, dst, src, is_blocking=True):
+        copies.append((dst, src.dtype, is_blocking))
+
+    gpu = _openfocus_gpu.Merge.__new__(_openfocus_gpu.Merge)
+    gpu.cl = SimpleNamespace(
+        Error=RuntimeError,
+        mem_flags=SimpleNamespace(READ_ONLY=1),
+        Buffer=fake_buffer,
+        enqueue_copy=fake_copy,
+    )
+    gpu.context = object()
+    gpu.queue = SimpleNamespace(finish=lambda: None)
+    gpu._merge_acc = object()
+    gpu._merge_depth = object()
+    gpu._merge_src = None
+    gpu._merge_src_bytes = 0
+    gpu._merge_shape = (4, 5, 3)
+    gpu._merge_u16_depth = False
+    gpu._merge_needs_drain = False
+    gpu.used = False
+    gpu.merge_u8_i64_kernel = lambda *args: FakeEvent()
+    gpu.kernel = lambda *args: FakeEvent()
+
+    f_u8 = np.zeros((4, 5, 3), np.uint8)
+    f_u16 = np.zeros((4, 5, 3), np.uint16)
+
+    gpu.acquire(None)
+    try:
+        gpu.resident_frame(f_u8, 0, 3, 256)
+        first_buf = gpu._merge_src
+        gpu.resident_frame(f_u8, 1, 3, 256)
+        assert gpu._merge_src is first_buf
+        assert len(allocs) == 1
+        assert copies[0][2] is False and copies[1][2] is False
+
+        gpu.resident_frame(f_u16, 2, 3, 1)
+        assert len(allocs) == 2
+        assert gpu._merge_src is not first_buf
+        assert not gpu._merge_needs_drain
+    finally:
+        gpu.end_merge()
+
+    assert gpu._merge_src is None
+    assert gpu._merge_src_bytes == 0
+
+
+def test_nvml_free_vram_reuses_session_and_recovers_on_error(monkeypatch):
+    import ctypes
+    from types import SimpleNamespace
+    from fusion_methods import _openfocus_gpu
+
+    state_calls = {'init': 0, 'shutdown': 0, 'mem': 0, 'fail_once': False, 'devices': 1}
+
+    class FakeNvml:
+        def nvmlInit_v2(self):
+            state_calls['init'] += 1
+            return 0
+
+        def nvmlShutdown(self):
+            state_calls['shutdown'] += 1
+            return 0
+
+        class _Fn:
+            def __init__(self, fn):
+                self._fn = fn
+                self.argtypes = None
+
+            def __call__(self, *args):
+                return self._fn(*args)
+
+        def __init__(self):
+            self.nvmlDeviceGetCount_v2 = self._Fn(self._get_count)
+            self.nvmlDeviceGetHandleByIndex_v2 = self._Fn(self._get_handle)
+            self.nvmlDeviceGetName = self._Fn(self._get_name)
+            self.nvmlDeviceGetMemoryInfo = self._Fn(self._get_mem)
+
+        @staticmethod
+        def _get_count(count_ref):
+            count_ref._obj.value = state_calls['devices']
+            return 0
+
+        @staticmethod
+        def _get_handle(idx, handle_ref):
+            handle_ref._obj.value = 0x1234 + idx
+            return 0
+
+        @staticmethod
+        def _get_name(handle, buf, size):
+            buf.value = b'Fake RTX GPU'
+            return 0
+
+        @staticmethod
+        def _get_mem(handle, info_ref):
+            state_calls['mem'] += 1
+            if state_calls['fail_once']:
+                state_calls['fail_once'] = False
+                return 1
+            info_ref._obj.total = 8 * 1024**3
+            info_ref._obj.free = 6 * 1024**3
+            info_ref._obj.used = 2 * 1024**3
+            return 0
+
+    fake_lib = FakeNvml()
+    dev = SimpleNamespace(name='Fake RTX GPU', global_mem_size=8 * 1024**3)
+    prev_state = _openfocus_gpu._nvml_state
+    prev_atexit = _openfocus_gpu._nvml_atexit_registered
+    monkeypatch.setattr(ctypes, 'CDLL', lambda name: fake_lib)
+    try:
+        _openfocus_gpu._nvml_state = None
+        _openfocus_gpu._nvml_atexit_registered = True
+
+        assert _openfocus_gpu._nvml_free_vram(dev) == (6 * 1024**3, 8 * 1024**3)
+        assert _openfocus_gpu._nvml_free_vram(dev) == (6 * 1024**3, 8 * 1024**3)
+        assert state_calls['init'] == 1
+        assert state_calls['shutdown'] == 0
+        assert state_calls['mem'] == 2
+
+        # Transient error tears down session, re-initializes cleanly, and succeeds.
+        state_calls['fail_once'] = True
+        assert _openfocus_gpu._nvml_free_vram(dev) == (6 * 1024**3, 8 * 1024**3)
+        assert state_calls['shutdown'] == 1
+        assert state_calls['init'] == 2
+
+        # A partial enumeration cannot disambiguate matching adapters.
+        state_calls['devices'] = 2
+        state_calls['fail_once'] = True
+        assert _openfocus_gpu._nvml_free_vram(dev) is None
+        assert state_calls['shutdown'] == 2
+        assert state_calls['init'] == 3
+    finally:
+        _openfocus_gpu._nvml_state = prev_state
+        _openfocus_gpu._nvml_atexit_registered = prev_atexit

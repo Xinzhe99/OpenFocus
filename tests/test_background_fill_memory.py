@@ -61,13 +61,14 @@ def test_admitted_peak_covers_many_frame_focus_and_protection(height, width, fra
 
 
 def test_working_set_accounts_for_repeated_stack_buffers_at_resource_boundary():
-    # No image allocation is needed to reject a large stack. At this boundary,
-    # the previously retained-G-only estimate admitted too little memory.
+    # No image allocation is needed to reject a large stack. protect_missed_subject
+    # streams in O(1) extra memory, while retained G plus one half-res stack E
+    # (GPU path) or bounded stripes remain within 2 * stack_bytes.
     height, width, frame_count = 4097, 6145, 600
     stack_bytes = (height // 2) * (width // 2) * frame_count * 4
     required = bf.background_working_set_bytes(height, width, frame_count)
     assert isinstance(required, int)
-    assert required >= 3 * stack_bytes
+    assert required >= 2 * stack_bytes
     assert required > bf.background_working_set_bytes(height, width, 15)
 
 
@@ -214,3 +215,113 @@ def test_public_background_scan_stops_before_remaining_frames(preservation_scene
     with pytest.raises(bf.BackgroundFillCancelled):
         bf.replace_background(frames, fused, cancelled=lambda: bool(processed))
     assert 0 < len(processed) < len(frames)
+
+
+@pytest.mark.parametrize("sigma", [0.5, 1.5, 6.0])
+@pytest.mark.parametrize("frames", [7, 258])
+def test_striped_cpu_focus_measures_matches_full_frame_bytes_and_progress(monkeypatch, sigma, frames):
+    rng = np.random.default_rng(113)
+    stack = rng.random((frames, 123, 97), dtype=np.float32)
+    energies = []
+    for frame in stack:
+        lap = cv2.Laplacian(frame, cv2.CV_32F, ksize=3)
+        energies.append(cv2.GaussianBlur(lap * lap, (0, 0), sigma))
+    energy = np.stack(energies)
+    expected_peak = energy.max(axis=0)
+    expected_ratio = np.log10((expected_peak + 1e-10) / (np.median(energy, axis=0) + 1e-10))
+    expected_log_peak = np.log10(expected_peak + 1e-10)
+    expected_idx = energy.argmax(axis=0).astype(np.uint8 if frames <= 256 else np.uint16)
+
+    # Force multiple overlapping spatial stripes across the 123-row image.
+    monkeypatch.setattr(bf, "_CPU_FOCUS_STRIPE_BYTES", 8 * 1024)
+    progress = []
+    measures, indices = bf.focus_measures(stack, sigma=sigma, use_gpu=False, progress=progress.append)
+
+    assert indices.tobytes() == expected_idx.tobytes()
+    assert measures["peak"].tobytes() == expected_log_peak.tobytes()
+    assert measures["ratio"].tobytes() == expected_ratio.tobytes()
+    assert len(progress) > frames
+    assert progress == sorted(progress)
+    assert progress[-1] == 1.0
+
+    calls = 0
+
+    def cancel_mid_stripe():
+        nonlocal calls
+        calls += 1
+        return calls >= 12
+
+    with pytest.raises(bf.BackgroundFillCancelled):
+        bf.focus_measures(stack, sigma=sigma, use_gpu=False, cancelled=cancel_mid_stripe)
+    assert calls == 12
+
+
+@pytest.mark.parametrize("k_far", [-1, 0, 199])
+def test_protect_missed_subject_streams_with_bounded_memory_and_exact_output(k_far):
+    rng = np.random.default_rng(117)
+    stack = rng.random((200, 64, 64), dtype=np.float32) * 0.05
+    stack[50, 5:15, 5:15] += 1.0
+    subject = np.zeros((64, 64), bool)
+    subject[30:55, 30:55] = True
+
+    energies = []
+    for g in stack:
+        lap = cv2.Laplacian(cv2.GaussianBlur(g, (0, 0), 1.0), cv2.CV_32F, ksize=3)
+        energies.append(cv2.GaussianBlur(lap * lap, (0, 0), 2.0))
+    stacked = np.stack(energies)
+    R = np.log10((stacked.max(0) + 1e-9) / (stacked[k_far] + 1e-9))
+    d = cv2.distanceTransform((~subject).astype(np.uint8), cv2.DIST_L2, 5)
+    away = d > 30
+    bg_noise = np.percentile(R[away], 99.9)
+    exp_t = min(bf.otsu_threshold(R), max(0.8, bg_noise + 0.05))
+    covered = cv2.dilate(subject.astype(np.uint8), cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (13, 13)))
+    missed = ((R > exp_t) & (covered == 0)).astype(np.uint8)
+    missed = cv2.morphologyEx(missed, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+    _, lab, st, _ = cv2.connectedComponentsWithStats(missed, 8)
+    keep = np.zeros(st.shape[0], bool)
+    keep[1:] = st[1:, cv2.CC_STAT_AREA] >= 4
+    missed = cv2.dilate(keep[lab].astype(np.uint8), np.ones((5, 5), np.uint8))
+    exp_sub = subject | (missed > 0)
+
+    already_tracing = tracemalloc.is_tracing()
+    if not already_tracing:
+        tracemalloc.start()
+    baseline = tracemalloc.get_traced_memory()[0]
+    tracemalloc.reset_peak()
+    try:
+        sub_out, thresh, count, pct = bf.protect_missed_subject(subject, stack, k_far, 4, near=6, sigma=2.0)
+        peak = tracemalloc.get_traced_memory()[1] - baseline
+    finally:
+        if not already_tracing:
+            tracemalloc.stop()
+
+    np.testing.assert_array_equal(sub_out, exp_sub)
+    assert thresh == pytest.approx(exp_t)
+    assert count == int(keep[1:].sum())
+    assert pct == pytest.approx(float(missed.mean() * 100))
+    assert peak < 0.25 * stack.nbytes
+
+
+@pytest.mark.parametrize("r,eps", [(4, 2e-4), (12, 1e-6)])
+def test_guided_filter_color_matches_linalg_solve_reference(r, eps):
+    rng = np.random.default_rng(121)
+    guide = rng.random((97, 131, 3), dtype=np.float32)
+    p = (rng.random((97, 131)) > 0.5).astype(np.float32)
+    box = lambda x: cv2.boxFilter(x, -1, (2 * r + 1, 2 * r + 1), borderType=cv2.BORDER_REFLECT)
+    mI = [box(guide[..., c]) for c in range(3)]
+    mp = box(p)
+    cov_Ip = [box(guide[..., c] * p) - mI[c] * mp for c in range(3)]
+    var = np.empty(guide.shape[:2] + (3, 3), np.float32)
+    for i in range(3):
+        for j in range(i, 3):
+            v = box(guide[..., i] * guide[..., j]) - mI[i] * mI[j]
+            if i == j:
+                v = v + eps
+            var[..., i, j] = var[..., j, i] = v
+    a = np.linalg.solve(var, np.stack(cov_Ip, -1)[..., None])[..., 0]
+    b = mp - (a * np.stack(mI, -1)).sum(-1)
+    expected = (np.stack([box(a[..., c]) for c in range(3)], -1) * guide).sum(-1) + box(b)
+
+    actual = bf.guided_filter_color(guide, p, r, eps)
+    assert actual.dtype == np.float32
+    np.testing.assert_allclose(actual, expected, atol=1e-5, rtol=1e-5)

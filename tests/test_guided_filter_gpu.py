@@ -434,3 +434,43 @@ def test_guided_filter_non_finite_float_falls_back_to_cpu(monkeypatch):
     actual = gpu.fuse(frames, thread_count=1)
     assert gpu.get_info()['device'] == 'CPU'
     np.testing.assert_array_equal(actual, expected)
+
+
+def test_guided_filter_drains_queue_on_error_and_cancel(monkeypatch):
+    from core.registration import RegistrationCancelled
+    from fusion_methods import _openfocus_gpu, _openfocus_gpu_gff
+
+    class DeviceError(Exception):
+        pass
+
+    drained = []
+
+    def initialize(self):
+        self.cl = SimpleNamespace(Error=DeviceError)
+        self.device_name = 'FakeCL'
+
+    def make_fail(exc):
+        def fail(self, *args):
+            self.q = SimpleNamespace(
+                finish=lambda: drained.append(_openfocus_gpu._device_lock.locked()),
+            )
+            raise exc
+        return fail
+
+    frames = _stack(np.uint8, 3, shape=(33, 39))
+    options = dict(algorithm='guided_filter', exposure_match=False, base_frame='none', sort_mode='off')
+    expected = MultiFocusFusion(use_gpu=False, **options).fuse(frames, thread_count=1)
+    monkeypatch.setattr(_openfocus_gpu_gff.GpuGff, '__init__', initialize)
+
+    monkeypatch.setattr(_openfocus_gpu_gff.GpuGff, '_fuse_locked', make_fail(DeviceError('lost')))
+    monkeypatch.setattr(_openfocus_gpu_gff, '_PROGRAM_CACHE', ('stale',))
+    actual = MultiFocusFusion(use_gpu=True, **options).fuse(frames, thread_count=1)
+    assert drained == [True]
+    assert _openfocus_gpu_gff._PROGRAM_CACHE is None
+    np.testing.assert_array_equal(actual, expected)
+
+    drained.clear()
+    monkeypatch.setattr(_openfocus_gpu_gff.GpuGff, '_fuse_locked', make_fail(RegistrationCancelled('stop')))
+    with pytest.raises(RegistrationCancelled):
+        MultiFocusFusion(use_gpu=True, **options).fuse(frames, thread_count=1)
+    assert drained == [True]

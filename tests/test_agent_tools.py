@@ -1,3 +1,4 @@
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -7,29 +8,42 @@ from PyQt6.QtCore import QSettings
 from constants import app_display_version
 from core.control import client
 from tools import agent_action_sweep
+from utils import account_client
 
 
 @pytest.mark.parametrize('platform_name', ['nt', 'posix'])
-def test_tool_launch_seeds_only_private_settings(tmp_path, monkeypatch, platform_name):
+def test_tool_launch_reads_saved_session_and_removes_private_copy(tmp_path, monkeypatch, platform_name):
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
     user = tmp_path / "user"
     user.mkdir()
     profile = user / "settings.ini"
     profile.write_text("[ui]\nexperimental_features=false\n", encoding="utf-8")
     original = profile.read_bytes()
     monkeypatch.setenv("OPENFOCUS_DATA_DIR", str(user))
+    authorized = tmp_path / "authorized"
+    token_store = account_client.TokenStore
+    saved = {"token": "test-token", "expires_at": 1, "user": {"id": "qa-user"}}
+    source = token_store(authorized / "account-session")
+    source.save(saved)
+    monkeypatch.setattr(account_client, "TokenStore",
+                        lambda *, profile: token_store(profile / "account-session"))
     monkeypatch.setattr(client, 'os', SimpleNamespace(name=platform_name, environ=client.os.environ))
     captured = {}
 
     def launch(socket_name, timeout, env):
         captured.update(env)
+        private = Path(env["OPENFOCUS_DATA_DIR"])
+        assert token_store(private / "account-session").load() == saved
         return {"socket": socket_name}
 
     monkeypatch.setattr(client, "launch_gui", launch)
     monkeypatch.setattr(client, "Session", lambda **kwargs: kwargs)
-    result = client.tool_session(launch=True)
+    result = client.tool_session(launch=True, account_profile=authorized)
     private = Path(captured["OPENFOCUS_DATA_DIR"])
     settings = QSettings(str(private / "settings.ini"), QSettings.Format.IniFormat)
     assert private != user
+    assert not (private / "account-session").exists()
+    assert source.load() == saved
     assert settings.value("ui/experimental_features", type=bool)
     assert settings.value("account/intro_version") == app_display_version()
     socket = result["discovery"]["socket"]
@@ -39,6 +53,11 @@ def test_tool_launch_seeds_only_private_settings(tmp_path, monkeypatch, platform
         assert socket.startswith("OpenFocus-tool-control-")
     assert profile.read_bytes() == original
     assert client.os.environ["OPENFOCUS_DATA_DIR"] == str(user)
+
+
+def test_tool_launch_requests_sign_in_when_session_missing(tmp_path):
+    with pytest.raises(client.ControlError, match="Sign in to OpenFocus"):
+        client.tool_session(launch=True, account_profile=tmp_path / "signed-out")
 
 
 @pytest.fixture

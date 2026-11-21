@@ -25,60 +25,66 @@ def theme_environment(qapp):
         qapp.processEvents()
 
 
-@pytest.fixture
-def invite_server(qapp, monkeypatch):
-    from PyQt6.QtNetwork import QHostAddress, QTcpServer
+def _set_community_origin(monkeypatch, port):
     from dialogs import _community_download
     from dialogs.about import ContactInfoDialog
     from dialogs.support import SupportUsDialog
 
-    server = QTcpServer()
-    assert server.listen(QHostAddress(QHostAddress.SpecialAddress.LocalHost))
     monkeypatch.setenv('no_proxy', '127.0.0.1')
-    origin = f'http://127.0.0.1:{server.serverPort()}'
+    origin = f'http://127.0.0.1:{port}'
     monkeypatch.setattr(_community_download, 'QR_BASE_URL', f'{origin}/v1/qr')
     monkeypatch.setattr(ContactInfoDialog, '_CONTACT_INFO_URL', f'{origin}/v1/contact-info')
     monkeypatch.setattr(SupportUsDialog, '_SPONSORS_URL', f'{origin}/v1/sponsors')
-    yield server
-    server.close()
-    server.deleteLater()
 
 
 @pytest.fixture
-def contact_replies(invite_server):
+def contact_replies(monkeypatch):
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from threading import Thread
+
     reply = {'body': b'{}', 'pngs': {}}
     paths = []
 
-    def accept_connection():
-        socket = invite_server.nextPendingConnection()
-
-        def write_response():
-            if not socket.canReadLine():
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            path = self.path.encode('ascii')
+            serve = reply.get('serve')
+            if serve is not None:
+                serve(self, path)
                 return
-            path = bytes(socket.readLine()).split()[1]
-            socket.readAll()
             if path.startswith(b'/v1/contact-info?'):
                 paths.append(path)
-                body = reply['body']
-                headers = (f'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n'
-                           f'Content-Length: {len(body)}\r\nConnection: close\r\n\r\n')
-                socket.write(headers.encode('ascii') + body)
+                body, content_type = reply['body'], 'application/json'
             elif path in reply['pngs']:
-                body = reply['pngs'][path]
-                headers = (f'HTTP/1.1 200 OK\r\nContent-Type: image/png\r\n'
-                           f'Content-Length: {len(body)}\r\nConnection: close\r\n\r\n')
-                socket.write(headers.encode('ascii') + body)
+                body, content_type = reply['pngs'][path], 'image/png'
             else:
-                socket.write(b'HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n')
-            socket.disconnectFromHost()
+                self.send_error(404)
+                return
+            self.send_payload(body, content_type)
 
-        socket.readyRead.connect(write_response)
-        if socket.bytesAvailable():
-            write_response()
+        def send_payload(self, body, content_type):
+            try:
+                self.send_response(200)
+                self.send_header('Content-Type', content_type)
+                self.send_header('Content-Length', str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            except ConnectionError:
+                # Clients can close before reading an oversized or cancelled response.
+                pass
 
-    invite_server.newConnection.connect(accept_connection)
-    yield reply, paths
-    invite_server.newConnection.disconnect(accept_connection)
+        def log_message(self, *_args):
+            pass
+
+    with ThreadingHTTPServer(('127.0.0.1', 0), Handler) as server:
+        _set_community_origin(monkeypatch, server.server_port)
+        thread = Thread(target=server.serve_forever, kwargs={'poll_interval': .05}, daemon=True)
+        thread.start()
+        try:
+            yield reply, paths
+        finally:
+            server.shutdown()
+            thread.join()
 
 
 def test_contact_links_are_accessible_and_follow_the_theme(qapp, theme_environment, contact_replies):
@@ -177,13 +183,12 @@ def test_contact_links_are_accessible_and_follow_the_theme(qapp, theme_environme
                 wechat_card = dialog.findChild(QLabel, 'wechat-group').parentWidget()
                 assert contact_card.x() < discord_card.x() < wechat_card.x()
                 dialog.resize(560, 480)
-                qapp.processEvents()
-                assert discord_card.x() > contact_card.x() and discord_card.y() == contact_card.y()
+                assert wait_until(lambda: discord_card.x() > contact_card.x()
+                                  and discord_card.y() == contact_card.y()
+                                  and wechat_card.y() > discord_card.y())
                 assert wechat_card.x() == contact_card.x() and wechat_card.y() > contact_card.y()
                 dialog.resize(440, 480)
-                qapp.processEvents()
-                assert wechat_card.x() == contact_card.x()
-                assert discord_card.x() == contact_card.x()
+                assert wait_until(lambda: wechat_card.x() == discord_card.x() == contact_card.x())
                 assert contact_card.y() < discord_card.y() < wechat_card.y()
             finally:
                 dialog.close()
@@ -341,7 +346,7 @@ def test_community_qr_same_geometry_in_dialog_capture(qapp, theme_environment, c
     import numpy as np
     from PIL import Image, ImageDraw
     from PyQt6.QtCore import QPoint, QRect
-    from PyQt6.QtWidgets import QLabel
+    from PyQt6.QtWidgets import QLabel, QScrollArea
 
     from dialogs.about import ContactInfoDialog
     from dialogs.support import SupportUsDialog
@@ -422,6 +427,15 @@ def test_community_qr_same_geometry_in_dialog_capture(qapp, theme_environment, c
                 assert cv2.QRCodeDetector().detectAndDecode(pixels[1:-1, 1:-1])[0] == payload
                 if slot != 'discord-invite':
                     assert np.any(np.all(pixels == mark, axis=2))
+            if dialog_type is ContactInfoDialog:
+                dialog.resize(820, dialog.height())
+                viewport = dialog.findChild(QScrollArea).viewport()
+
+                def all_codes_fit():
+                    return all(0 <= label.mapTo(viewport, QPoint()).x()
+                               <= viewport.width() - label.width() for label in labels)
+
+                assert wait_until(all_codes_fit)
         finally:
             dialog.close()
             dialog.deleteLater()
@@ -430,8 +444,9 @@ def test_community_qr_same_geometry_in_dialog_capture(qapp, theme_environment, c
 
 @pytest.mark.parametrize('response', ['png', 'invalid', 'oversized', 'timeout', 'redirect',
                                       'unpublished', 'wrong_type', 'oversized_pixels'])
-def test_contact_uses_only_current_published_qr(qapp, monkeypatch, invite_server, response):
+def test_contact_uses_only_current_published_qr(qapp, monkeypatch, contact_replies, response):
     from io import BytesIO
+    from threading import Event
 
     from PIL import Image
     from PyQt6.QtWidgets import QLabel
@@ -452,39 +467,29 @@ def test_contact_uses_only_current_published_qr(qapp, monkeypatch, invite_server
         data = data.ljust(_community_download.QR_MAX_BYTES + 1, b'\0')
     elif response == 'invalid':
         data = b'invalid PNG'
-    paths = []
+    reply, paths = contact_replies
+    release = Event()
 
-    def accept_connection():
-        socket = invite_server.nextPendingConnection()
+    def serve(handler, path):
         if response == 'timeout':
+            release.wait(5)
             return
+        if path.startswith(b'/v1/contact-info?'):
+            handler.send_payload(b'{}', 'application/json')
+            return
+        paths.append(path)
+        if response == 'redirect' and path != b'/redirected.png':
+            handler.send_response(302)
+            handler.send_header('Location', '/redirected.png')
+            handler.send_header('Content-Length', '0')
+            handler.end_headers()
+        elif response == 'unpublished':
+            handler.send_error(404)
+        else:
+            mime = 'text/html' if response == 'wrong_type' else 'image/png'
+            handler.send_payload(data, mime)
 
-        def write_response():
-            if not socket.canReadLine():
-                return
-            request = bytes(socket.readLine()).split()
-            socket.readAll()
-            if request[1].startswith(b'/v1/contact-info?'):
-                socket.write(b'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}')
-                socket.disconnectFromHost()
-                return
-            paths.append(request[1])
-            if response == 'redirect' and request[1] != b'/redirected.png':
-                socket.write(b'HTTP/1.1 302 Found\r\nLocation: /redirected.png\r\nContent-Length: 0\r\n\r\n')
-            elif response == 'unpublished':
-                socket.write(b'HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n')
-            else:
-                mime = 'text/html' if response == 'wrong_type' else 'image/png'
-                headers = (f'HTTP/1.1 200 OK\r\nContent-Type: {mime}\r\n'
-                           f'Content-Length: {len(data)}\r\nConnection: close\r\n\r\n')
-                socket.write(headers.encode('ascii') + data)
-            socket.disconnectFromHost()
-
-        socket.readyRead.connect(write_response)
-        if socket.bytesAvailable():
-            write_response()
-
-    invite_server.newConnection.connect(accept_connection)
+    reply['serve'] = serve
     if response == 'timeout':
         monkeypatch.setattr(_community_download.CommunityDownloads, 'timeout_seconds', 0.2)
 
@@ -510,21 +515,26 @@ def test_contact_uses_only_current_published_qr(qapp, monkeypatch, invite_server
             dialog.deleteLater()
             qapp.processEvents()
 
-    if response == 'png':
-        check_dialog('#ff0000')
-        data = png('blue')
-        check_dialog('#0000ff')
-    else:
-        check_dialog()
+    try:
+        if response == 'png':
+            check_dialog('#ff0000')
+            data = png('blue')
+            check_dialog('#0000ff')
+        else:
+            check_dialog()
+    finally:
+        release.set()
     assert b'/redirected.png' not in paths
 
 
 @pytest.mark.parametrize('entry', ['action_contact', 'support_title'])
 def test_community_dialogs_leave_main_window_responsive_during_pending_requests(
-        qapp, tmp_path, monkeypatch, theme_environment, invite_server, entry):
+        qapp, tmp_path, monkeypatch, theme_environment, contact_replies, entry):
+    from queue import SimpleQueue
+    from threading import Event
+
     from PyQt6 import sip
     from PyQt6.QtCore import QTimer, Qt
-    from PyQt6.QtNetwork import QAbstractSocket
     from PyQt6.QtTest import QTest
     from dialogs._community_download import CommunityDownloads
     from dialogs.about import ContactInfoDialog
@@ -537,6 +547,31 @@ def test_community_dialogs_leave_main_window_responsive_during_pending_requests(
     window = _new_main_window(qapp, tmp_path, monkeypatch)
     action = window.ui_objs[entry]
     dialog_type = ContactInfoDialog if entry == 'action_contact' else SupportUsDialog
+
+    reply, _ = contact_replies
+    pending = SimpleQueue()
+    release_headers = Event()
+
+    def serve(handler, path):
+        disconnected = Event()
+        pending.put(disconnected)
+        if not release_headers.wait(10):
+            return
+        mime = 'image/png' if path.startswith(b'/v1/qr/') else 'application/json'
+        try:
+            handler.send_response(200)
+            handler.send_header('Content-Type', mime)
+            handler.send_header('Content-Length', '1024')
+            handler.end_headers()
+            handler.connection.settimeout(3)
+            if handler.connection.recv(1) == b'':
+                disconnected.set()
+        except ConnectionError:
+            disconnected.set()
+        except TimeoutError:
+            pass
+
+    reply['serve'] = serve
 
     def dismiss_modal():
         dialog = qapp.activeModalWidget()
@@ -553,16 +588,13 @@ def test_community_dialogs_leave_main_window_responsive_during_pending_requests(
 
     try:
         for theme in ('gray', 'light'):
+            release_headers.clear()
             dialog = open_from_menu()
             assert open_from_menu() is dialog
-            sockets = []
+            disconnections = []
             for _ in range(3):
-                assert wait_until(invite_server.hasPendingConnections)
-                socket = invite_server.nextPendingConnection()
-                assert wait_until(socket.canReadLine)
-                path = bytes(socket.readLine()).split()[1]
-                mime = b'image/png' if path.startswith(b'/v1/qr/') else b'application/json'
-                sockets.append((socket, mime))
+                assert wait_until(lambda: not pending.empty())
+                disconnections.append(pending.get_nowait())
 
             combo = window.combo_align
             before = window.current_alignment_method()
@@ -578,11 +610,12 @@ def test_community_dialogs_leave_main_window_responsive_during_pending_requests(
 
             dialog.close()
             assert wait_until(lambda: sip.isdeleted(dialog))
-            for socket, mime in sockets:
-                # Completing the headers after close must neither read a body nor touch the UI.
-                socket.write(b'HTTP/1.1 200 OK\r\nContent-Type: ' + mime + b'\r\nContent-Length: 1024\r\n\r\n')
-                assert wait_until(lambda: socket.state() == QAbstractSocket.SocketState.UnconnectedState)
+            # Release only the headers. The cancelled client must close before reading the body.
+            release_headers.set()
+            for disconnected in disconnections:
+                assert wait_until(disconnected.is_set)
     finally:
+        release_headers.set()
         _destroy_main_window(qapp, window)
 
 
