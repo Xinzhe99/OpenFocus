@@ -113,6 +113,7 @@ def _sample(frames, index, should_cancel=None, *, dtype=np.float32, round_uint8=
                 if selected.dtype == np.uint16:
                     selected = common.working_frame(selected, True)
                 if round_uint8:
+                    selected = selected.astype(np.float32, copy=False)
                     np.rint(selected, out=selected)
                     np.clip(selected, 0, 255, out=selected)
                 out[rows][mask] = selected

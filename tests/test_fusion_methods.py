@@ -577,6 +577,16 @@ def test_v2_mapped_source_sampling_crosses_row_strip_boundary(grayscale):
     np.testing.assert_array_equal(actual, expected)
 
 
+def test_v2_uint8_sampling_rounds_in_float32_domain():
+    from fusion_methods.stackmff_v2 import _sample
+
+    frames = [np.zeros((1, 2), np.uint8),
+              np.array([[np.nextafter(126.5, 127), np.nextafter(129.5, 129)]])]
+    positions = np.ones((1, 2), np.int64)
+    result = _sample(frames, positions, dtype=np.uint8, round_uint8=True)
+    np.testing.assert_array_equal(result, np.array([[126, 130]], np.uint8))
+
+
 def test_neural_source_normalization_preserves_mixed_stack_precision():
     from fusion_methods.neural_common import normalized_frames
     from utils.image_utils import normalize_fuse_input
