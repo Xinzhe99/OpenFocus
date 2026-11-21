@@ -28,10 +28,10 @@ def install(bundle: Path, data_home: Path) -> Path:
     text = template.read_text(encoding="utf-8")
     # GLib checks the command's first token before expanding %% to %. Keep
     # the bundle path as an argument and test its existence with TryExec.
-    text = text.replace("Exec=OpenFocus\n", (
-        f"TryExec={desktop_string(str(executable))}\n"
-        f"Exec=/usr/bin/env -- {exec_argument(str(executable))}\n"
-    ))
+    text = text.replace("\nExec=OpenFocus", (
+        f"\nTryExec={desktop_string(str(executable))}\n"
+        f"Exec=/usr/bin/env -- {exec_argument(str(executable))}"
+    ), 1)
     text = text.replace("Icon=OpenFocus\n", f"Icon={desktop_string(str(icon))}\n")
     applications = data_home / "applications"
     applications.mkdir(parents=True, exist_ok=True)

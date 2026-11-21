@@ -20,8 +20,8 @@ class SupportUsDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle(trans.t('support_title'))
         requests = CommunityDownloads(self)
-        body = community_body(self, trans.t('support_heading'), trans.t('support_message'),
-                              width=610, height=552)
+        _, body = community_body(self, trans.t('support_heading'), trans.t('support_message'),
+                                 width=610, height=552)
         self._codes = QHBoxLayout()
         self._codes.setSpacing(body.spacing())
         for title, slot in ((trans.t('support_alipay'), 'alipay'), ('PayPal', 'paypal')):

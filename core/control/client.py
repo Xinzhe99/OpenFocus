@@ -181,8 +181,8 @@ def _launch_command(socket_name=None, paths=()):
 def launch_gui(socket_name=None, timeout=45.0, paths=(), *, env=None, process_factory=None):
     """Start a detached GUI and wait for its control discovery file.
 
-    ``process_factory``, when provided, receives the same arguments as
-    ``subprocess.Popen`` and returns a process with ``poll`` and ``returncode``.
+    ``process_factory`` accepts the same arguments as ``subprocess.Popen``
+    and returns a subprocess owned by this launch until discovery succeeds.
     """
     before = None
     child_env = os.environ.copy() if env is None else env.copy()
@@ -203,32 +203,40 @@ def launch_gui(socket_name=None, timeout=45.0, paths=(), *, env=None, process_fa
         creationflags=creation,
         start_new_session=sys.platform != "win32",
     )
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if process.poll() is not None and process.returncode not in (0, None):
-            raise ControlError(
-                "internal", f"OpenFocus exited during startup ({process.returncode})",
-                "Start it manually with `openfocus gui` to see the error.")
-        try:
-            payload = read_discovery(path)
-            matching = socket_name is None or payload["socket"] == socket_name
-            fresh = before is None or path.stat().st_mtime_ns != before
-            if matching and fresh:
-                return payload
-            # A second GUI process forwards paths to the existing instance and
-            # exits without rewriting its discovery file.
-            if matching and process.poll() == 0:
-                try:
+    try:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if process.poll() is not None and process.returncode != 0:
+                raise ControlError(
+                    "internal", f"OpenFocus exited during startup ({process.returncode})",
+                    "Start it manually with `openfocus gui` to see the error.")
+            try:
+                payload = read_discovery(path)
+                matching = socket_name is None or payload["socket"] == socket_name
+                fresh = before is None or path.stat().st_mtime_ns != before
+                if matching and fresh:
+                    return payload
+                # A second GUI process forwards paths to the existing instance
+                # and exits without rewriting its discovery file.
+                if matching and process.poll() == 0:
                     if require_ok(request("ping", discovery=payload, timeout=2)).get("pong"):
                         return payload
-                except ControlError:
-                    pass
-        except (ControlError, OSError):
-            pass
-        time.sleep(0.25)
-    raise ControlError(
-        "internal", "OpenFocus did not open the control channel in time",
-        "Start it with `openfocus gui` and retry.")
+            except (ControlError, OSError):
+                pass
+            time.sleep(0.25)
+        raise ControlError(
+            "internal", "OpenFocus did not open the control channel in time",
+            "For a new profile, run `openfocus gui` and finish signing in first.")
+    except BaseException:
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+        raise
+
 
 class Session:
     """One persistent local connection for a sequence of commands.
@@ -339,18 +347,32 @@ class Session:
 
 
 def tool_session(timeout=60.0, launch=False, allow_existing=False,
-                 launch_timeout=60.0):
+                 launch_timeout=60.0, *, account_profile=None):
     """Session for tool runs (smoke, sweep).
 
     These tools clear stacks, answer prompts and trigger renders, so they
     must never land on a user's live session by accident: attaching
     requires ``allow_existing``, and ``launch`` starts a private instance
     with its own discovery file and socket that cannot see the user's.
+    The launch reads a saved account session from ``account_profile`` or the
+    current desktop profile. The private copy is removed once startup ends.
     """
-    import tempfile
     if launch:
+        import shutil
+        import tempfile
+
         from PyQt6.QtCore import QSettings
         from constants import app_display_version
+        from utils.account_client import TokenStore
+        from utils.settings_store import REPORTS_AUTO_SEND_KEY
+        from utils.usage_analytics import ENABLED_KEY
+
+        account = TokenStore(profile=account_profile).load()
+        if account is None:
+            raise ControlError(
+                "confirm_required",
+                "Sign in to OpenFocus before using --launch. For a separate "
+                "signed-in desktop profile, pass --account-profile DIRECTORY.")
 
         root = Path(tempfile.mkdtemp(prefix="openfocus-tool-"))
         settings = QSettings(str(root / "settings.ini"), QSettings.Format.IniFormat)
@@ -361,8 +383,11 @@ def tool_session(timeout=60.0, launch=False, allow_existing=False,
         settings.setValue("rendering/ai_cpu_warning_dismissed", True)
         settings.setValue("ui/experimental_features", True)
         settings.setValue("account/intro_version", app_display_version())
+        settings.setValue(REPORTS_AUTO_SEND_KEY, False)
+        settings.setValue(ENABLED_KEY, False)
         settings.sync()
         if settings.status() != QSettings.Status.NoError:
+            shutil.rmtree(root)
             raise ControlError("internal", "Could not initialize private settings")
         env = os.environ.copy()
         env["OPENFOCUS_DATA_DIR"] = str(root)
@@ -372,7 +397,19 @@ def tool_session(timeout=60.0, launch=False, allow_existing=False,
         socket_name = f"OpenFocus-tool-control-{root.name}"
         if os.name == 'posix':
             socket_name = f"/tmp/ofc-{root.name}"
-        discovery = launch_gui(socket_name, timeout=launch_timeout, env=env)
+        private_account = TokenStore(profile=root)
+        launched = False
+        try:
+            try:
+                private_account.save(account)
+                discovery = launch_gui(socket_name, timeout=launch_timeout, env=env)
+                launched = True
+            finally:
+                private_account.clear()
+        except BaseException:
+            if not launched:
+                shutil.rmtree(root)
+            raise
         return Session(discovery=discovery, timeout=timeout)
     if not allow_existing and discovery_path().exists():
         raise ControlError(

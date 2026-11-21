@@ -11,11 +11,29 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   three StackMFF models before activation.
 
 ### Changed
+- Reuse OpenCL contexts and compiled kernels across OpenFocus A/B/C and ECC
+  resize jobs. Reuse upload buffers within a job and drain pending work
+  before releasing buffers after cancellation or error.
+- Reuse the NVML session for VRAM queries and repeat device enumeration after
+  a query fails to avoid using memory information from the wrong adapter.
+- Accelerate OpenFocus alignment candidate scoring, similarity warping,
+  uint8 translation warping, pyramid downsizing, and validity mask generation
+  with single-threaded native CPU kernels while preserving bit-exact results
+  and row-band cancellation.
 - Preselect NVIDIA acceleration review on Windows PCs with an NVIDIA driver,
   including when upgrading from 2.0.0.
+- Stream background replacement focus protection and CPU focus measures in
+  bounded memory stripes, replace per-pixel `3x3` linear solves in color
+  guided filtering with closed-form banded computation, band initial frame
+  grayscale loading, and cache the OpenCL background-focus program. Drain
+  the queue on cancellation and fall back to the CPU if synchronization fails.
 - Choose the PyTorch download order from the network region, with a manual
   override and a server-maintained list of mirrors. Resume interrupted
   transfers on the next source and log why the source changed.
+- Stream DCT, GFG-FGF, DTCWT, and OpenFocus C depth map estimation without
+  materializing the stack or pre-converting all 16-bit frames to float32.
+  Bound concurrent frame workers by the memory budget and preserve the
+  existing focus decisions for low-contrast and mixed-bit-depth inputs.
 - Read the tiles of a tiled neural render from the frames it prepared, instead
   of copying every prepared frame into the render's frame cache a second time.
   This about halves the scratch storage those renders hold. Output pixels are
@@ -29,18 +47,37 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   of copying a rotated NumPy view.
 
 ### Fixed
+- Close the desktop process when its CLI launcher times out waiting for the
+  control channel, and explain how to complete first-run sign-in.
+- Give comparison alignment workers on macOS enough stack for the first
+  native alignment kernel compilation.
+- Reflow contact cards to fit the available width so the QR codes can remain
+  at their scannable size without being clipped at the right edge.
 - Recover a desktop email sign-in after a lost connection to the approval
   endpoint without sending a second email. Record the failed request stage
   without logging sign-in credentials.
+- Keep Start Fresh available while recovery checks saved source paths. If
+  the user starts fresh, keep the previous snapshot until there is a new
+  session to save.
 - Carry over a Windows portable build's existing device registration when
   restoring its saved sign-in after an in-place update.
 - Show the fusion method once in output names after rendering all methods.
+- Open dropped or externally supplied `.ofproj` files through the same project
+  workflow as the File menu. Accept macOS file-open events from the packaged
+  app and forward selected paths from the installed Linux launcher.
+- Keep the startup reply available until the second process reads it, so
+  Windows file forwarding is acknowledged reliably.
 - Reuse one account registration for the same Windows installation and
   consolidate older registrations identified by locally retained device IDs.
+- Restore the isolated agent smoke and menu sweep after the desktop sign-in
+  requirement. Return a nonzero exit status for failed smoke checks.
 - Admit StackMFF tiles against live render-process memory, including the host
   memory needed if GPU inference falls back to CPU.
 - Use consistent visible QR code sizes in the Contact Us and Support Us
   dialogs while preserving the artwork and a scannable white border.
+- Let users cancel a stuck video import or close its scale dialog. Video
+  decoding runs in a separate process so another import can start in the
+  same session.
 - Keep checking the original file when a crop of a prepared frame is prepared
   again. A changed source could otherwise go unnoticed and its old pixels be
   used.

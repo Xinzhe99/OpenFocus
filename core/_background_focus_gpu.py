@@ -8,6 +8,7 @@ from fusion_methods._openfocus_gpu import (
 )
 
 log = logging.getLogger(__name__)
+_PROGRAM_CACHE = {}
 
 _KERNEL = r'''
 // Each work item selects one pixel's median in its private column of the
@@ -86,6 +87,20 @@ def _band_pixels(device, frames, index_bytes):
     return pixels
 
 
+def _get_or_build_kernel(cl, device):
+    """Return cached (ctx, queue, kernel) for this OpenCL device."""
+    key = device.int_ptr
+    cached = _PROGRAM_CACHE.get(key)
+    if cached is not None:
+        return cached
+    ctx = cl.Context(devices=[device])
+    queue = cl.CommandQueue(ctx, device=device)
+    kernel = cl.Kernel(cl.Program(ctx, _KERNEL).build(), 'reduce_focus')
+    entry = (ctx, queue, kernel)
+    _PROGRAM_CACHE[key] = entry
+    return entry
+
+
 def reduce_focus(energy, check_cancel):
     """Return peak, median and first argmax, or raise GpuError to retry on CPU."""
     frames, height, width = energy.shape
@@ -94,6 +109,7 @@ def reduce_focus(energy, check_cancel):
         check_cancel()
     try:
         check_cancel()
+        device = None
         try:
             import pyopencl as cl
             device = _device(cl)
@@ -103,9 +119,7 @@ def reduce_focus(energy, check_cancel):
             if device.single_fp_config & required != required:
                 raise GpuError('OpenCL device lacks IEEE float32 arithmetic')
             band = min(height * width, _band_pixels(device, frames, np.dtype(indices_type).itemsize))
-            ctx = cl.Context(devices=[device])
-            queue = cl.CommandQueue(ctx, device=device)
-            kernel = cl.Kernel(cl.Program(ctx, _KERNEL).build(), 'reduce_focus')
+            ctx, queue, kernel = _get_or_build_kernel(cl, device)
             workspace = cl.Buffer(ctx, cl.mem_flags.READ_WRITE, band * frames * 4)
             peak = np.empty(height * width, np.float32)
             median = np.empty_like(peak)
@@ -114,22 +128,37 @@ def reduce_focus(energy, check_cancel):
         except GpuError:
             raise
         except Exception as exc:
+            if device is not None:
+                _PROGRAM_CACHE.pop(device.int_ptr, None)
             raise GpuError('Could not initialize background focus reduction') from exc
-        for start in range(0, peak.size, band):
-            check_cancel()
-            count = min(band, peak.size - start)
+        completed = False
+        try:
+            for start in range(0, peak.size, band):
+                check_cancel()
+                count = min(band, peak.size - start)
+                try:
+                    # One rectangular DMA reads this band directly from each
+                    # contiguous energy plane, without packing a second host stack.
+                    cl.enqueue_copy(queue, workspace, energy, buffer_origin=(0, 0), host_origin=(start * 4, 0),
+                                    region=(count * 4, frames, 1), host_pitches=(peak.nbytes,))
+                    kernel(queue, (count,), None, workspace, *(buf for _, buf in outputs), np.int32(frames), np.int32(count))
+                    for array, buf in outputs:
+                        cl.enqueue_copy(queue, array[start:start + count], buf)
+                except Exception as exc:
+                    _PROGRAM_CACHE.pop(device.int_ptr, None)
+                    raise GpuError('OpenCL background focus reduction failed') from exc
+            completed = True
+        finally:
             try:
-                # One rectangular DMA reads this band directly from each
-                # contiguous energy plane, without packing a second host stack.
-                cl.enqueue_copy(queue, workspace, energy, buffer_origin=(0, 0), host_origin=(start * 4, 0),
-                                region=(count * 4, frames, 1), host_pitches=(peak.nbytes,))
-                kernel(queue, (count,), None, workspace, *(buf for _, buf in outputs), np.int32(frames), np.int32(count))
-                for array, buf in outputs:
-                    cl.enqueue_copy(queue, array[start:start + count], buf)
+                queue.finish()
             except Exception as exc:
-                raise GpuError('OpenCL background focus reduction failed') from exc
+                _PROGRAM_CACHE.pop(device.int_ptr, None)
+                if completed:
+                    raise GpuError('OpenCL background focus synchronization failed') from exc
+            finally:
+                del workspace, outputs
         log.info('Background focus reduction completed on %s (frames=%d, pixels=%d, band_pixels=%d)',
                  opencl_device_name(device), frames, peak.size, band)
-        return tuple(array.reshape(height, width) for array, _ in outputs)
+        return peak.reshape(height, width), median.reshape(height, width), indices.reshape(height, width)
     finally:
         _device_lock.release()

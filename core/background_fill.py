@@ -30,8 +30,9 @@ incremental peak before any analysis arrays are allocated.
 """
 from __future__ import annotations
 
-import logging
 import contextvars
+import logging
+import math
 from dataclasses import dataclass, field
 from typing import Callable, Optional, Sequence
 
@@ -102,11 +103,11 @@ def background_working_set_bytes(height: int, width: int, frame_count: int) -> i
     pixels = int(height) * int(width)
     frames = int(frame_count)
     half_stack = (int(height) // 2) * (int(width) // 2) * frames * 4
-    # Focus protection retains G, a list of energies, and its stacked copy.
+    # Focus analysis streams G frame-by-frame on CPU (one bounded stripe plus
+    # O(1) protection scratch) or materializes one half-res stack E on GPU,
+    # keeping total peak within 2 * half_stack across both execution paths.
     # Later stages retain G alongside full-resolution colour/maps and scratch.
-    # The scratch allowances include conversion, reductions, native workspaces
-    # and expression temporaries; use the larger phase, not just retained G.
-    focus_peak = 3 * half_stack + 64 * pixels
+    focus_peak = 2 * half_stack + 64 * pixels
     composite_peak = half_stack + 256 * pixels
     return max(focus_peak, composite_peak) + 4096 * frames + 1024 * 1024
 
@@ -221,6 +222,25 @@ def _median_blur_index(idx: np.ndarray, size: int, *, cancelled=None) -> np.ndar
 
 # ---------------------------------------------------------------------- helpers
 _GPU_FOCUS_MIN_BYTES = 128 << 20
+_CPU_FOCUS_STRIPE_BYTES = 32 << 20
+
+
+def _reduce_energy_bands(energy, peak, median, indices, check_cancel, progress_cb=None):
+    """Reduce a [frames, rows, width] energy block into preallocated output views."""
+    frames, height, width = energy.shape
+    rows = max(1, (2 << 20) // max(1, frames * width * energy.dtype.itemsize))
+    for y in range(0, height, rows):
+        check_cancel()
+        band = slice(y, y + rows)
+        # Argmax and partition both want the frame dimension contiguous. Pack
+        # it once per cache-sized band, before the median changes frame order.
+        values = np.ascontiguousarray(energy[:, band].transpose(1, 2, 0))
+        winner = values.argmax(axis=-1)
+        indices[band] = winner
+        peak[band] = np.take_along_axis(values, winner[..., None], axis=-1)[..., 0]
+        median[band] = np.median(values, axis=-1, overwrite_input=True)
+        if progress_cb is not None:
+            progress_cb(min(height, y + rows) / height)
 
 
 def focus_measures(G, sigma=None, *, cancelled=None, use_gpu=False, progress=None):
@@ -238,50 +258,82 @@ def focus_measures(G, sigma=None, *, cancelled=None, use_gpu=False, progress=Non
 
     check_cancel()
     sigma = _sigma(6.0) if sigma is None else sigma
-    E = np.empty(G.shape, dtype=G.dtype)
-    laplacian = np.empty(G.shape[1:], np.float32)
-    for i in range(len(G)):
+    frames, height, width = G.shape
+    indices_dtype = np.uint8 if frames <= 256 else np.uint16
+    median_dtype = np.float64 if G.dtype.kind in 'biu' else G.dtype
+    want_gpu = bool(use_gpu and G.nbytes >= _GPU_FOCUS_MIN_BYTES and G.dtype == np.float32)
+
+    if want_gpu:
+        E = np.empty(G.shape, dtype=G.dtype)
+        laplacian = np.empty((height, width), np.float32)
+        for i in range(frames):
+            check_cancel()
+            cv2.Laplacian(G[i], cv2.CV_32F, dst=laplacian, ksize=3)
+            np.square(laplacian, out=laplacian)
+            if E.dtype == np.float32:
+                cv2.GaussianBlur(laplacian, (0, 0), sigma, dst=E[i])
+            else:
+                E[i] = cv2.GaussianBlur(laplacian, (0, 0), sigma)
+            if progress is not None:
+                progress(0.6 * (i + 1) / frames)
+        del laplacian
         check_cancel()
-        cv2.Laplacian(G[i], cv2.CV_32F, dst=laplacian, ksize=3)
-        np.square(laplacian, out=laplacian)
-        if E.dtype == np.float32:
-            cv2.GaussianBlur(laplacian, (0, 0), sigma, dst=E[i])
-        else:
-            E[i] = cv2.GaussianBlur(laplacian, (0, 0), sigma)
-        if progress is not None:
-            progress(0.6 * (i + 1) / len(G))
-    del laplacian
-    check_cancel()
-    reduced = None
-    # Small stacks finish on the CPU before OpenCL device discovery pays off.
-    if use_gpu and E.nbytes >= _GPU_FOCUS_MIN_BYTES and E.dtype == np.float32:
+        reduced = None
         from ._background_focus_gpu import GpuError, reduce_focus
         try:
             reduced = reduce_focus(E, check_cancel)
         except GpuError as exc:
             log.warning('Background focus reduction using CPU: %s', exc.__cause__ or exc)
-    if reduced is None:
-        height, width = G.shape[1:]
-        peak = np.empty((height, width), E.dtype)
-        median = np.empty(peak.shape, np.float64 if E.dtype.kind in 'biu' else E.dtype)
-        indices = np.empty((height, width), np.uint8 if len(G) <= 256 else np.uint16)
-        # Argmax and partition both want the frame dimension contiguous. Pack
-        # it once per cache-sized band, before the median changes frame order.
-        rows = max(1, (2 << 20) // (len(G) * width * E.itemsize))
-        for y in range(0, height, rows):
-            check_cancel()
-            band = slice(y, y + rows)
-            values = np.ascontiguousarray(E[:, band].transpose(1, 2, 0))
-            winner = values.argmax(axis=-1)
-            indices[band] = winner
-            peak[band] = np.take_along_axis(values, winner[..., None], axis=-1)[..., 0]
-            median[band] = np.median(values, axis=-1, overwrite_input=True)
+        if reduced is None:
+            peak = np.empty((height, width), E.dtype)
+            median = np.empty(peak.shape, median_dtype)
+            indices = np.empty((height, width), indices_dtype)
+            _reduce_energy_bands(
+                E, peak, median, indices, check_cancel,
+                None if progress is None else lambda f: progress(0.6 + 0.38 * f),
+            )
+        else:
+            peak, median, indices = reduced
             if progress is not None:
-                progress(0.6 + 0.38 * min(height, y + rows) / height)
+                progress(0.98)
+        del E
     else:
-        peak, median, indices = reduced
-        if progress is not None:
-            progress(0.98)
+        # Process overlapping spatial stripes on CPU so peak workspace stays
+        # bounded even for long high-resolution stacks, with zero numerical drift.
+        pad = max(2, int(math.ceil(max(float(sigma), 0.0) * 4.0)) + 2)
+        row_bytes = max(1, frames * width * G.dtype.itemsize)
+        stripe_rows = max(1, min(height, _CPU_FOCUS_STRIPE_BYTES // row_bytes))
+        peak = np.empty((height, width), G.dtype)
+        median = np.empty((height, width), median_dtype)
+        indices = np.empty((height, width), indices_dtype)
+        stripe_E = np.empty((frames, stripe_rows, width), dtype=G.dtype)
+        laplacian = None
+        blurred = None
+        for y0 in range(0, height, stripe_rows):
+            y1 = min(height, y0 + stripe_rows)
+            bh = y1 - y0
+            sy0 = max(0, y0 - pad)
+            sy1 = min(height, y1 + pad)
+            sh = sy1 - sy0
+            if laplacian is None or laplacian.shape[0] != sh:
+                laplacian = np.empty((sh, width), np.float32)
+                blurred = np.empty((sh, width), np.float32)
+            valid_rows = slice(y0 - sy0, y1 - sy0)
+            for i in range(frames):
+                check_cancel()
+                cv2.Laplacian(G[i, sy0:sy1], cv2.CV_32F, dst=laplacian, ksize=3)
+                np.square(laplacian, out=laplacian)
+                cv2.GaussianBlur(laplacian, (0, 0), sigma, dst=blurred)
+                stripe_E[i, :bh] = blurred[valid_rows]
+                if progress is not None:
+                    progress(0.98 * (y0 + bh * 0.6 * (i + 1) / frames) / height)
+            _reduce_energy_bands(
+                stripe_E[:, :bh], peak[y0:y1], median[y0:y1], indices[y0:y1], check_cancel,
+                None if progress is None else lambda f, y0=y0, bh=bh: progress(
+                    0.98 * (y0 + bh * (0.6 + 0.4 * f)) / height
+                ),
+            )
+        del stripe_E, laplacian, blurred
     check_cancel()
     eps = 1e-10
     ratio = np.log10((peak + eps) / (median + eps))
@@ -341,20 +393,81 @@ def _box(x, r):
 
 def guided_filter_color(I, p, r, eps):
     """He et al. guided filter with a 3-channel guide I (float32 0-1)."""
-    mI = [_box(I[..., c], r) for c in range(3)]
+    h, w = p.shape
+    b0, b1, b2 = I[..., 0], I[..., 1], I[..., 2]
+    m0 = _box(b0, r)
+    m1 = _box(b1, r)
+    m2 = _box(b2, r)
     mp = _box(p, r)
-    cov_Ip = [_box(I[..., c] * p, r) - mI[c] * mp for c in range(3)]
-    var = np.empty(I.shape[:2] + (3, 3), np.float32)
-    for i in range(3):
-        for j in range(i, 3):
-            v = _box(I[..., i] * I[..., j], r) - mI[i] * mI[j]
-            if i == j:
-                v = v + eps
-            var[..., i, j] = var[..., j, i] = v
-    a = np.linalg.solve(var, np.stack(cov_Ip, -1)[..., None])[..., 0]   # H,W,3
-    b = mp - (a * np.stack(mI, -1)).sum(-1)
-    ma = np.stack([_box(a[..., c], r) for c in range(3)], -1)
-    return (ma * I).sum(-1) + _box(b, r)
+    tmp = np.empty((h, w), np.float32)
+
+    def cov(x, y, mx, my, diag_eps=0.0):
+        np.multiply(x, y, out=tmp)
+        res = _box(tmp, r)
+        np.multiply(mx, my, out=tmp)
+        res -= tmp
+        if diag_eps:
+            res += np.float32(diag_eps)
+        return res
+
+    # Solve into c0/c1/c2 and mp in-place across 64-row bands using the exact
+    # closed-form symmetric 3x3 cofactor inverse in float64 precision.
+    a0 = cov(b0, p, m0, mp)
+    a1 = cov(b1, p, m1, mp)
+    a2 = cov(b2, p, m2, mp)
+    v00 = cov(b0, b0, m0, m0, eps)
+    v01 = cov(b0, b1, m0, m1)
+    v02 = cov(b0, b2, m0, m2)
+    v11 = cov(b1, b1, m1, m1, eps)
+    v12 = cov(b1, b2, m1, m2)
+    v22 = cov(b2, b2, m2, m2, eps)
+    del tmp
+
+    for y0 in range(0, h, 64):
+        s = slice(y0, y0 + 64)
+        u00 = v00[s].astype(np.float64)
+        u01 = v01[s].astype(np.float64)
+        u02 = v02[s].astype(np.float64)
+        u11 = v11[s].astype(np.float64)
+        u12 = v12[s].astype(np.float64)
+        u22 = v22[s].astype(np.float64)
+        r0 = a0[s].astype(np.float64)
+        r1 = a1[s].astype(np.float64)
+        r2 = a2[s].astype(np.float64)
+        k00 = u11 * u22 - u12 * u12
+        k01 = u02 * u12 - u01 * u22
+        k02 = u01 * u12 - u02 * u11
+        k11 = u00 * u22 - u02 * u02
+        k12 = u01 * u02 - u00 * u12
+        k22 = u00 * u11 - u01 * u01
+        det = u00 * k00 + u01 * k01 + u02 * k02
+        with np.errstate(divide="ignore", invalid="ignore"):
+            inv_det = np.where(det != 0.0, 1.0 / det, 0.0)
+        x0 = ((k00 * r0 + k01 * r1 + k02 * r2) * inv_det).astype(np.float32)
+        x1 = ((k01 * r0 + k11 * r1 + k12 * r2) * inv_det).astype(np.float32)
+        x2 = ((k02 * r0 + k12 * r1 + k22 * r2) * inv_det).astype(np.float32)
+        a0[s] = x0
+        a1[s] = x1
+        a2[s] = x2
+        mp[s] -= x0 * m0[s] + x1 * m1[s] + x2 * m2[s]
+    del v00, v01, v02, v11, v12, v22, m0, m1, m2
+
+    ksize = (2 * r + 1, 2 * r + 1)
+    out = _box(a0, r)
+    out *= b0
+    del a0
+    tmp = _box(a1, r)
+    tmp *= b1
+    out += tmp
+    del a1
+    cv2.boxFilter(a2, -1, ksize, dst=tmp, borderType=cv2.BORDER_REFLECT)
+    tmp *= b2
+    out += tmp
+    del a2
+    cv2.boxFilter(mp, -1, ksize, dst=tmp, borderType=cv2.BORDER_REFLECT)
+    out += tmp
+    del mp, tmp
+    return out
 
 
 def _outline_band_and_ring():
@@ -379,13 +492,20 @@ def fine_outline(sub_half, G, color=None, band=None, sigma=1.5, sliver=None, bg_
     sliver = int(round(_px(3))) if sliver is None else sliver
     bg_ring = default_ring if bg_ring is None else bg_ring
     wall_k = _ksize(5) if wall_k is None else wall_k
+    laplacian = np.empty(G.shape[1:], np.float32)
+    energy = np.empty(G.shape[1:], np.float32)
     peak = None
     for g in G:
         if cancelled is not None and cancelled():
             raise BackgroundFillCancelled()
-        L = cv2.Laplacian(g, cv2.CV_32F, ksize=3)
-        e = cv2.GaussianBlur(L * L, (0, 0), sigma)
-        peak = e if peak is None else np.maximum(peak, e)
+        cv2.Laplacian(g, cv2.CV_32F, dst=laplacian, ksize=3)
+        np.square(laplacian, out=laplacian)
+        cv2.GaussianBlur(laplacian, (0, 0), sigma, dst=energy)
+        if peak is None:
+            peak = energy.copy()
+        else:
+            np.maximum(peak, energy, out=peak)
+    del laplacian, energy
     peak = np.log10(peak + 1e-10)
     fine = (peak > otsu_threshold(peak)).astype(np.uint8)
     fine = cv2.morphologyEx(fine, cv2.MORPH_CLOSE,
@@ -474,14 +594,31 @@ def protect_missed_subject(sub_half, G, k_far, min_area, near=None, sigma=None, 
     `near` half-res px) are added back."""
     near = int(round(_px(6))) if near is None else near
     sigma = _sigma(4.0) if sigma is None else sigma
-    E = []
-    for g in G:
+    n_frames = len(G)
+    if not -n_frames <= k_far < n_frames:
+        raise IndexError(f"k_far index {k_far} out of range for stack of {n_frames} frames")
+    k_far_idx = k_far % n_frames
+    blurred = np.empty(G.shape[1:], np.float32)
+    laplacian = np.empty(G.shape[1:], np.float32)
+    energy = np.empty(G.shape[1:], np.float32)
+    e_max = None
+    e_far = None
+    for k, g in enumerate(G):
         if cancelled is not None and cancelled():
             raise BackgroundFillCancelled()
-        L = cv2.Laplacian(cv2.GaussianBlur(g, (0, 0), 1.0), cv2.CV_32F, ksize=3)
-        E.append(cv2.GaussianBlur(L * L, (0, 0), sigma))
-    E = np.stack(E)
-    R = np.log10((E.max(0) + 1e-9) / (E[k_far] + 1e-9))
+        cv2.GaussianBlur(g, (0, 0), 1.0, dst=blurred)
+        cv2.Laplacian(blurred, cv2.CV_32F, dst=laplacian, ksize=3)
+        np.square(laplacian, out=laplacian)
+        cv2.GaussianBlur(laplacian, (0, 0), sigma, dst=energy)
+        if k == k_far_idx:
+            e_far = energy.copy()
+        if e_max is None:
+            e_max = energy.copy()
+        else:
+            np.maximum(e_max, energy, out=e_max)
+    del blurred, laplacian, energy
+    R = np.log10((e_max + 1e-9) / (e_far + 1e-9))
+    del e_max, e_far
     d = cv2.distanceTransform((~sub_half).astype(np.uint8), cv2.DIST_L2, 5)
     away = d > _px(30)
     bg_noise = np.percentile(R[away], 99.9) if away.any() else 0.8
@@ -795,9 +932,19 @@ def protect_visible_detail(sub_half, G, k_bg, fused_half=None, factor=4.0, ratio
     spread = _px(6) if spread is None else spread
     smooth = _sigma(3)
 
-    def energy(g):
-        L = cv2.Laplacian(cv2.GaussianBlur(g, (0, 0), 0.8), cv2.CV_32F, ksize=3)
-        return cv2.GaussianBlur(L * L, (0, 0), smooth)
+    blurred = np.empty(sub_half.shape, np.float32)
+    laplacian = np.empty(sub_half.shape, np.float32)
+    scaled = np.empty(sub_half.shape, np.float32)
+    e_buf = np.empty(sub_half.shape, np.float32)
+
+    def energy(g, out=None):
+        cv2.GaussianBlur(g, (0, 0), 0.8, dst=blurred)
+        cv2.Laplacian(blurred, cv2.CV_32F, dst=laplacian, ksize=3)
+        np.square(laplacian, out=laplacian)
+        if out is None:
+            return cv2.GaussianBlur(laplacian, (0, 0), smooth)
+        cv2.GaussianBlur(laplacian, (0, 0), smooth, dst=out)
+        return out
     # Measured on the frames, not the stacked result: fusion seams (OpenFocus
     # A's patchwork) are detail that exists in no frame, and counting them
     # protected 84% of the Dendrocollybia A image.
@@ -811,10 +958,16 @@ def protect_visible_detail(sub_half, G, k_bg, fused_half=None, factor=4.0, ratio
             raise BackgroundFillCancelled()
         if k == k_bg:
             continue
-        g = G[k] * (medians[k_bg] / max(float(medians[k]), 1e-6))
-        e = energy(g)
-        ef = e if ef is None else np.maximum(ef, e)
+        gain = np.float32(medians[k_bg] / max(float(medians[k]), 1e-6))
+        np.multiply(G[k], gain, out=scaled)
+        if ef is None:
+            ef = energy(scaled)
+        else:
+            energy(scaled, out=e_buf)
+            np.maximum(ef, e_buf, out=ef)
+    del scaled
     if ef is None:
+        del blurred, laplacian, e_buf
         return sub_half, 0.0
     noise = np.percentile(ef, 1)
     keep = (ef > factor * noise) & (ef > ratio * eb)
@@ -826,8 +979,9 @@ def protect_visible_detail(sub_half, G, k_bg, fused_half=None, factor=4.0, ratio
         # noise-floor test: a smooth cap's stacked surface is quieter than
         # any frame (the Psilocybe left cap was replaced again).  Seams in
         # the stack still do not count, since the frames must agree.
-        e_f = energy(fused_half)
+        e_f = energy(fused_half, out=e_buf)
         keep &= e_f > keep_share * ef
+    del blurred, laplacian, e_buf
     keep = keep.astype(np.uint8)
     keep = cv2.morphologyEx(keep, cv2.MORPH_CLOSE,
                             cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (_ksize(9), _ksize(9)))) > 0
@@ -1528,11 +1682,18 @@ def _replace_background(frames: Sequence[np.ndarray], fused: np.ndarray, *,
     step("analysing focus")
     G = np.empty((N, H // 2, W // 2), np.float32)
     frame_medians = []
+    g = np.empty((H, W), np.float32)
     for k, f in enumerate(frames):
         if cancelled is not None and cancelled():
             raise BackgroundFillCancelled()
-        g = cv2.cvtColor(_u16(f).astype(np.float32) / 65535.0, cv2.COLOR_BGR2GRAY)
-        G[k] = cv2.resize(g, (W // 2, H // 2), interpolation=cv2.INTER_AREA)
+        for y0 in range(0, H, 128):
+            if y0 and cancelled is not None and cancelled():
+                raise BackgroundFillCancelled()
+            y1 = min(H, y0 + 128)
+            band_f32 = _u16(f[y0:y1]).astype(np.float32)
+            band_f32 /= np.float32(65535.0)
+            cv2.cvtColor(band_f32, cv2.COLOR_BGR2GRAY, dst=g[y0:y1])
+        cv2.resize(g, (W // 2, H // 2), interpolation=cv2.INTER_AREA, dst=G[k])
         frame_medians.append(np.median(G[k]))
         if progress is not None:
             advance(0.5 * (k + 1) / N)

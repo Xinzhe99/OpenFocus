@@ -25,9 +25,8 @@ def test_oriented_image_headers(tmp_path):
     assert _source_dimensions(str(tmp_path / 'missing.jpg')) is None
 
 
-def test_raw_and_video_headers(monkeypatch):
+def test_raw_headers(monkeypatch):
     import sys
-    import cv2
     import core.image_loader as loader
     from dialogs.settings import _source_dimensions
 
@@ -45,15 +44,79 @@ def test_raw_and_video_headers(monkeypatch):
     assert _source_dimensions('frame.raw') == (11, 23)
     assert _source_dimensions('frame.raw', linear_raw=True) == (11, 23)
 
+
+def _probe_with_controlled_capture(path, dimensions):
+    import os
+    import threading
+    from pathlib import Path
+    import cv2
+    from core.video_import import _probe_video_child
+
     class Capture:
+        def __init__(self, path):
+            if Path(path).stem == 'blocked':
+                Path(path).with_suffix('.opening').write_text(str(os.getpid()), encoding='ascii')
+                threading.Event().wait()
+
         def isOpened(self):
             return True
+
         def get(self, prop):
-            return {cv2.CAP_PROP_FRAME_WIDTH: 23, cv2.CAP_PROP_FRAME_HEIGHT: 11}[prop]
+            return {cv2.CAP_PROP_FRAME_WIDTH: 8192, cv2.CAP_PROP_FRAME_HEIGHT: 4608}[prop]
+
         def release(self):
             pass
-    monkeypatch.setattr(cv2, 'VideoCapture', lambda path: Capture())
-    assert _source_dimensions('movie.mp4', video=True) == (23, 11)
+
+    cv2.VideoCapture = Capture
+    _probe_video_child(path, dimensions)
+
+
+def test_closing_scale_prompt_cancels_blocked_video_probe(qapp, tmp_path, monkeypatch):
+    import threading
+    import time
+    from multiprocessing import active_children
+    from PyQt6.QtTest import QTest
+    from core import video_import
+    from dialogs.settings import DownsampleDialog
+
+    def wait_until(predicate):
+        deadline = time.monotonic() + 20
+        while not predicate() and time.monotonic() < deadline:
+            QTest.qWait(10)
+        assert predicate()
+
+    reaped = threading.Event()
+    probe = video_import.probe_video_dimensions
+
+    def observe_probe(*args):
+        try:
+            return probe(*args)
+        finally:
+            reaped.set()
+
+    monkeypatch.setattr(video_import, 'probe_video_dimensions', observe_probe)
+
+    monkeypatch.setattr(video_import, '_probe_video_child', _probe_with_controlled_capture)
+    path = tmp_path / 'blocked.mp4'
+    opening = path.with_suffix('.opening')
+    dialog = DownsampleDialog(source_video=str(path))
+    try:
+        wait_until(lambda: opening.exists() and opening.stat().st_size > 0)
+        pid = int(opening.read_text(encoding='ascii'))
+    finally:
+        dialog.reject()
+    assert reaped.wait(5)
+    assert pid not in {process.pid for process in active_children()}
+
+    dialog = DownsampleDialog(source_video=str(tmp_path / 'healthy.mp4'))
+    try:
+        wait_until(dialog.preset_buttons['4K'].isEnabled)
+        dialog.preset_buttons['4K'].click()
+        assert dialog.get_scale_factor() == 0.5
+        assert '4096 × 2304' in dialog.resolution_label.text()
+    finally:
+        dialog.reject()
+
 
 def test_folder_inspection_identifies_the_selected_source(qapp, tmp_path, monkeypatch):
     from dialogs import settings
@@ -62,7 +125,7 @@ def test_folder_inspection_identifies_the_selected_source(qapp, tmp_path, monkey
     Image.new('RGB', (40, 30)).save(tmp_path / 'frame10.jpg')
     received = []
     settings._dimension_signals.ready.connect(lambda request, result: received.append((request, result)))
-    settings._inspect_dimensions(123456789, (), str(tmp_path), False, False)
+    settings._inspect_dimensions(123456789, (), str(tmp_path), False)
     assert received[-1] == (123456789, ((23, 11), 'frame2.jpg'))
 
 

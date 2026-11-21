@@ -975,6 +975,10 @@ class SourceManager(QObject):
         if not urls:
             return
         paths = [u.toLocalFile() for u in urls]
+        from core.app import dispatch_project_open
+        if dispatch_project_open(self.window, paths):
+            event.acceptProposedAction()
+            return
 
         # If a single directory was dropped, ask user how to import
         if len(paths) == 1 and os.path.isdir(paths[0]):

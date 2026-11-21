@@ -67,7 +67,6 @@ def community_body(dialog, title, intro, *, width, height):
     scroll.setObjectName('communityScroll')
     scroll.setFrameShape(QFrame.Shape.NoFrame)
     scroll.setWidgetResizable(True)
-    scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
     content = QWidget()
     content.setObjectName('communityContent')
     body = QVBoxLayout(content)
@@ -86,7 +85,7 @@ def community_body(dialog, title, intro, *, width, height):
     close.clicked.connect(dialog.accept)
     footer.addWidget(close)
     root.addLayout(footer)
-    return body
+    return scroll, body
 
 
 def community_card():
