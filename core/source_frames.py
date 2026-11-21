@@ -912,6 +912,20 @@ def crop_frame(frame, x, y, width, height, *, channels=None, should_cancel=None)
     return process_frame(frame, crop, shape=shape, should_cancel=should_cancel, scratch_bytes=0)
 
 
+@contextmanager
+def borrow_frame_region(frame, key, *, should_cancel=None):
+    """Borrow pixels for one short-lived read without pinning mapped pages."""
+    from core.frame_storage import frame_region
+
+    image = resolve_frame(frame, should_cancel=should_cancel)
+    if isinstance(frame, SourceFrame) and frame._rgb_tiff_offset is not None:
+        # The TIFF mapping belongs to this read alone.
+        yield image[key]
+    else:
+        with frame_region(image, key) as region:
+            yield region
+
+
 def resolve_region(frame, x, y, width, height, *, channels=None, should_cancel=None):
     """Copy one resolved region so a tile cannot retain its decoded full source."""
     cropped = crop_frame(frame, x, y, width, height, channels=channels,

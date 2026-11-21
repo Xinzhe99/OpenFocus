@@ -765,7 +765,10 @@ class MultiFocusFusion:
                 snapshot_bytes = 0
                 if self.descriptor.neural and self.tile_enabled:
                     snapshot_bytes = sum(frame.nbytes for frame in input_source)
-                    native_neural_tiles = img_resize is None and snapshot_bytes > _PREPARED_CACHE_BYTES
+                    prepared_bytes = (4 * sum(frame.size for frame in input_source)
+                                      if any(frame.dtype == np.uint16 for frame in input_source)
+                                      else snapshot_bytes)
+                    native_neural_tiles = img_resize is None and prepared_bytes > _PREPARED_CACHE_BYTES
                     if not native_neural_tiles:
                         snapshot_bytes += estimate_fusion_space(input_source, self.exposure_match)
                 elif self.algorithm == 'openfocus_b':
@@ -1946,8 +1949,7 @@ class MultiFocusFusion:
                            pad_alignment=ATTENTION_PAD_ALIGN)
 
         if imgs is not None:
-            from core.frame_storage import frame_region
-            from core.source_frames import resolve_frame
+            from core.source_frames import borrow_frame_region
             from fusion_methods.neural_common import copy_tile_colors
             normalize_stack = any(frame.dtype == np.uint16 for frame in imgs)
 
@@ -1959,13 +1961,12 @@ class MultiFocusFusion:
                 region = np.s_[y0:y1, x0:x1]
                 for index, frame in enumerate(imgs):
                     check_cancel()
-                    image = resolve_frame(frame, should_cancel=should_cancel)
-                    with frame_region(image, region) as pixels:
+                    with borrow_frame_region(frame, region, should_cancel=should_cancel) as pixels:
                         if pixels.shape[:2] != (y1 - y0, x1 - x0):
                             raise ValueError('All frames must have the same dimensions')
                         gain = exposure_gains[index] if exposure_gains is not None else 1.0
                         crops.append(copy_tile_colors(pixels, normalize_stack, gain))
-                    del image, pixels
+                    del pixels
                 return crops
             crops = []
             for index, name in enumerate(files):
