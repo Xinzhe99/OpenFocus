@@ -777,8 +777,9 @@ def logits(planes, path, device, threads, should_cancel=None):
     return result[..., :h, :w]
 
 
-def softmax(x):
-    x = x - x.max(axis=1, keepdims=True)
+def softmax_inplace(x):
+    """Normalize the owned, writable float32 inference output along the stack."""
+    x -= x.max(axis=1, keepdims=True)
     np.exp(x, out=x)
     x /= x.sum(axis=1, keepdims=True)
     return x
@@ -816,7 +817,7 @@ def probabilities(planes, path, device, threads, sigma, cancel=None):
     with profile.stage('logits.full'):
         p = logits(planes, path, device, threads, cancel)
     with profile.stage('softmax.full'):
-        p = softmax(p)
+        p = softmax_inplace(p)
     check(cancel)
     with profile.stage('resize.0.75'):
         small = _resize_antialias(planes, 0.75, cancel)
@@ -824,7 +825,7 @@ def probabilities(planes, path, device, threads, sigma, cancel=None):
         q = logits(small, path, device, threads, cancel)
     del small
     with profile.stage('softmax.reduced'):
-        q = softmax(q)
+        q = softmax_inplace(q)
     with profile.stage('upsample_combine'):
         for n in range(p.shape[1]):
             check(cancel)

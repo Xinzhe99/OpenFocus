@@ -31,7 +31,8 @@ def _prepare_inference(frames, model_path, use_gpu, thread_count=None,
 def _inference_depth(planes, model, device, should_cancel=None, threads=1):
     """Return depth normalized over the complete padded inference."""
     from fusion_methods import neural_runtime
-    probs = neural_runtime.softmax(neural_runtime.logits(planes, model, device, threads, should_cancel))
+    probs = neural_runtime.softmax_inplace(
+        neural_runtime.logits(planes, model, device, threads, should_cancel))
     n = probs.shape[1]
     depth = (probs * np.arange(1, n + 1, dtype=np.float32)[None, :, None, None]).sum(axis=1)[0]
     lo, hi = depth.min(), depth.max()

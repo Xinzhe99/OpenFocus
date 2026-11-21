@@ -228,7 +228,7 @@ def _tiled_depth_under_lease(source, model_path, use_gpu, should_cancel=None,
         for x in xs:
             common.cancel(should_cancel)
             planes = _stage_tile_planes(source, (x, y, block, block), should_cancel)
-            probs = neural_runtime.softmax(neural_runtime.logits(
+            probs = neural_runtime.softmax_inplace(neural_runtime.logits(
                 planes, model, device, plan.native_threads, should_cancel))
             del planes
             positions = (probs * np.arange(1, count + 1, dtype=np.float32)
