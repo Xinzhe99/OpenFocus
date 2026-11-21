@@ -11,6 +11,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   three StackMFF models before activation.
 
 ### Changed
+- Vectorize OpenFocus C pyramid normalization, downsampling, synthesis, merge,
+  and output kernels and optimize shared OpenFocus B/C depth axis blocks and
+  `uint16` transpose packing with single-threaded native CPU kernels while
+  preserving bit-exact `float32` and `uint16` results.
 - Reuse OpenCL contexts and compiled kernels across OpenFocus A/B/C and ECC
   resize jobs. Reuse upload buffers within a job and drain pending work
   before releasing buffers after cancellation or error.
