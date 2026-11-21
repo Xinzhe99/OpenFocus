@@ -11,6 +11,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   three StackMFF models before activation.
 
 ### Changed
+- Vectorize OpenFocus C pyramid normalization, downsampling, synthesis, merge,
+  and output kernels and optimize shared OpenFocus B/C depth axis blocks and
+  `uint16` transpose packing with single-threaded native CPU kernels while
+  preserving bit-exact `float32` and `uint16` results.
 - Reuse OpenCL contexts and compiled kernels across OpenFocus A/B/C and ECC
   resize jobs. Reuse upload buffers within a job and drain pending work
   before releasing buffers after cancellation or error.
@@ -37,9 +41,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Reuse prepared tiled StackMFF frames when switching methods on the same stack
   with matching registration and exposure settings. Check source identities
   before reuse and share the existing 2 GiB limit with retained aligned frames.
-- Compile the shared OpenFocus B/C depth recurrence in a low-priority process
-  when the desktop is idle and enough memory is available. Stop precompilation
-  when a render starts and leave normal compilation available to any render.
+- Precompile shared OpenFocus B/C depth and transpose kernels in a low-priority
+  process when the desktop is idle and enough memory is available. Stop
+  precompilation when a render starts and let the render compile as needed.
 - Reduce OpenFocus A/B/C CPU and OpenCL working sets with bounded row processing,
   reusable pyramid storage, and fewer full-image operations. Expand exact
   OpenCL ECC resize coverage and reuse successful repeated pair solves.

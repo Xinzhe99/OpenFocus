@@ -59,25 +59,40 @@ _AXIS_BLOCK_ROWS = 2048
 
 
 def _axis(src, guide, main, low, count, axis, cancel, allocate, *, output=None):
-    from fusion_methods._depth_kernel import axis_block
+    from fusion_methods._depth_kernel import axis_block, _pack_rows_T, _unpack_rows_T
     cancel = cancellation_check(cancel)
 
     src = np.asarray(src)
     guide = None if guide is None else np.asarray(guide)
     if axis:
+        orig_src = src
+        orig_guide = guide
         src = src.T
         if guide is not None:
             guide = guide.T
+    else:
+        orig_src = None
+        orig_guide = None
     h, w = src.shape
     count = max(1, min(int(count), h))
-    # Unguided filtering can overwrite its source on the reverse sweep. For
-    # the horizontal axis, pack one strip to keep both sweeps cache-local.
-    pack = bool(axis and guide is None)
+    # Pack horizontal strips into contiguous scratch so both recurrence sweeps
+    # stay vectorizable and avoid cache-set thrashing on wide power-of-two rows.
+    pack = bool(axis)
     if output is None:
         out = allocate((h, w), np.uint16)
     else:
         out = output.T if axis else output
     out_pixels = np.asarray(out)
+    orig_out = out_pixels.T if axis else None
+    fast_pack_src = bool(
+        pack and orig_src is not None and orig_out is not None
+        and orig_src.dtype == np.uint16 and orig_out.dtype == np.uint16
+        and orig_src.flags.c_contiguous and orig_out.flags.c_contiguous
+    )
+    fast_pack_guide = bool(
+        pack and orig_guide is not None
+        and orig_guide.dtype == np.uint16 and orig_guide.flags.c_contiguous
+    )
     q = t = tm = tl = 0
     if guide is None:
         q = _weight(main)
@@ -88,45 +103,64 @@ def _axis(src, guide, main, low, count, axis, cancel, allocate, *, output=None):
     # Both recurrence directions stay ordered inside each independent strip.
     # Each worker reuses its history plane for all its assigned columns.
     def columns(left, right, workspace):
-        first, packed = workspace
+        first, packed_src, packed_guide, packed_out = workspace
         first = np.asarray(first)
+        strip_cols = right - left
         if pack:
-            source = np.asarray(packed)[:, :right - left]
-            source[...] = src[:, left:right]
-            destination = source
-            begin, end = 0, source.shape[1]
+            source = np.asarray(packed_src)
+            if fast_pack_src:
+                _pack_rows_T(orig_src, source, left, right)
+            else:
+                source[:, :strip_cols] = src[:, left:right]
+            if guide is not None:
+                strip_guide = np.asarray(packed_guide)
+                if fast_pack_guide:
+                    _pack_rows_T(orig_guide, strip_guide, left, right)
+                else:
+                    strip_guide[:, :strip_cols] = guide[:, left:right]
+                destination = np.asarray(packed_out)
+            else:
+                strip_guide = None
+                destination = source
+            begin, end = 0, strip_cols
         else:
-            source, destination = src, out_pixels
+            source, strip_guide, destination = src, guide, out_pixels
             begin, end = left, right
         initial = ((source[:count, begin:end].sum(axis=0, dtype=np.uint64) << 4)
                    // count)
-        if guide is None:
+        if strip_guide is None:
             initial *= t + q
         acc = (initial & 0xffffffff).astype(np.uint32)
         for start in range(0, h, _AXIS_BLOCK_ROWS):
             cancel()
-            axis_block(source, guide, first, destination, acc, q, t, tm, tl,
+            axis_block(source, strip_guide, first, destination, acc, q, t, tm, tl,
                        start, min(h, start + _AXIS_BLOCK_ROWS), begin, end, False)
         acc = first[-1, :end - begin].astype(np.uint32) << 4
-        if guide is None:
+        if strip_guide is None:
             acc *= t + q
         for stop in range(h, 0, -_AXIS_BLOCK_ROWS):
             cancel()
-            axis_block(source, guide, first, destination, acc, q, t, tm, tl,
+            axis_block(source, strip_guide, first, destination, acc, q, t, tm, tl,
                        max(0, stop - _AXIS_BLOCK_ROWS), stop, begin, end, True)
         if pack:
-            out_pixels[:, left:right] = destination
+            if fast_pack_src:
+                _unpack_rows_T(destination, orig_out, left, right)
+            else:
+                out_pixels[:, left:right] = destination[:, :strip_cols]
 
     strip_shape = h, min(w, 64)
     history_dtype = np.uint16 if guide is None else np.uint32
-    strip_bytes = h * strip_shape[1] * ((2 if guide is None else 4) + 2 * pack)
+    packed_planes = (3 if guide is not None else 1) if pack else 0
+    strip_bytes = h * strip_shape[1] * ((2 if guide is None else 4) + 2 * packed_planes)
     # The row planner admits this bounded workspace independently of the
     # transient-frame cap, which may already be full of long-lived planes.
     scratch = np.empty if allocate is create_frame else allocate
     run_bands(w, 64, columns,
               scratch_bytes=strip_bytes + count * strip_shape[1] * 8 + strip_shape[1] * 32,
               workspace=lambda: (scratch(strip_shape, history_dtype),
-                                 scratch(strip_shape, np.uint16) if pack else None))
+                                 scratch(strip_shape, np.uint16) if pack else None,
+                                 scratch(strip_shape, np.uint16) if (pack and guide is not None) else None,
+                                 scratch(strip_shape, np.uint16) if (pack and guide is not None) else None))
     return out.T if axis else out
 
 
