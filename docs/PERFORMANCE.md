@@ -11,19 +11,28 @@ fit. See [GPU support](GPU_SUPPORT.md) for provider and validation limitations.
 
 ## 8K deep stacks
 
-The CPU measurements compare one run per version against `b7ad5345`.
-The input stack repeats 12 distinct synthetic images as
-100 uncompressed 7680 × 4320 RGB16 TIFFs.
-Each run used four requested threads on a Ryzen 9 7945HX with 16 GiB RAM on
-Windows. Fusion time includes source preparation and excludes export. Both
-runs had registration and exposure matching off. The working pixels and pixels
-read back from the 16-bit TIFF matched for each method.
+The CPU measurements compare one run at `b7ad5345` with one optimized run
+for each method. The input stack repeats 12 distinct synthetic images across
+100 uncompressed 7680 × 4320 RGB16 TIFFs. Each run used four requested threads
+on a Ryzen 9 7945HX with 16 GiB RAM on Windows. Fusion time includes source
+preparation and ends before export. Both versions ran with registration and
+exposure matching off. Working pixels and 16-bit TIFF read-backs matched
+for each method.
 
 | Method | Fusion time (s) | Peak process-tree RSS (GiB) | Peak temporary mappings (GiB) |
 | --- | ---: | ---: | ---: |
 | OpenFocus A | 109.59 → 31.96 | 2.09 → 0.81 | 19.28 → 0.74 |
 | OpenFocus B | 99.42 → 31.49 | 1.68 → 0.70 | 18.91 → 0.37 |
 | OpenFocus C | 310.16 → 115.47 | 2.00 → 1.23 | 20.04 → 0.73 |
+
+All three methods also completed 500-layer 8K renders on the optimized
+revision. Reading each RGB16 TIFF back from disk matched the quantized pixels.
+
+| Method | Fusion time (s) | Peak process-tree RSS (GiB) | Peak temporary mappings (GiB) |
+| --- | ---: | ---: | ---: |
+| OpenFocus A | 153.51 | 0.74 | 0.88 |
+| OpenFocus B | 178.71 | 0.60 | 0.37 |
+| OpenFocus C | 758.35 | 1.18 | 0.73 |
 
 Large renders can read eligible contiguous RGB TIFFs directly. Compression,
 applied registration and resizing can still incur decode or staging costs.
@@ -34,6 +43,26 @@ workspace. The 15 comparisons covered 100, 200, 300, 400 and 500 layers at
 128 × 128. At 500 layers, PyTorch peak allocated memory fell from 1,546 MiB to
 886 MiB and peak reserved memory from 1,680 MiB to 1,022 MiB. These measurements
 cover one inference tile including the model and inputs on the device.
+
+The following pairs fused 100 RGB16 TIFFs at 2048 × 1152 on the same CUDA
+backend, with 40 tiles of 256 × 256. Both working and exported pixels matched
+within each pair.
+
+| Checkpoint | Fusion time (s) | Peak process-tree RSS (GiB) | Peak temporary mappings (GiB) |
+| --- | ---: | ---: | ---: |
+| StackMFF V1 | 120.57 → 80.48 | 0.89 → 0.51 | 6.63 → 0.04 |
+| StackMFF V2 | 87.86 → 35.89 | 1.30 → 2.00 | 6.64 → 0.05 |
+| StackMFF V3 | 94.84 → 43.77 | 1.68 → 3.20 | 6.63 → 0.04 |
+
+Peak process-tree commit was 6.18 → 6.13 GiB for V2 and 6.26 → 6.23 GiB for V3.
+The render process itself peaked at 1.25 → 0.23 GiB RSS for V2 and
+1.86 → 0.33 GiB for V3. The process-tree measurements also count the separate
+PyTorch worker.
+
+With 8.12 GiB available RAM and 6.93 GiB free VRAM in the same resource
+snapshot, TIFF-header preflight admitted the six methods at 2K, 4K and 8K
+in 100-layer steps through 500. At 8K, preflight selected 256-pixel StackMFF
+tiles at 100 and 200 layers and 128-pixel tiles at 300 through 500.
 
 ## StackMFF on an RTX 4060 Laptop GPU
 
@@ -398,32 +427,30 @@ actual B render request reaped the idle compiler within 139 ms and completed.
 
 ## Current bounded execution (unreleased)
 
-OpenFocus A/B/C choose either a RAM-admitted frame window or one reusable row
-executor. The two parallel layers do not overlap. Activity selection preserves
-strict first-frame ties. B/C finish activity production and global depth before
-consuming source bands. B reads contributing source bands; C rereads sources
-through a bounded window in reverse order, using one completed canvas depth.
-A worker budget includes
-completed results waiting for reduction and original-size conversion before
-resizing. Explicit spatial tiles borrow the parent's lease and keep their
-private OpenFocus child execution serial.
+OpenFocus A/B/C bound concurrency to one admitted parallel layer at a time.
+A can produce responses in a frame window or select winners as each response
+row is computed. B finishes global depth before visiting contributing source
+regions. C builds the weighted detail pyramid in source order using two
+rolling Gaussian buffers. Activity and detail selection keep the first frame
+when scores tie. A worker budget includes results waiting for reduction and
+original-size conversion before resizing. Explicit spatial tiles borrow the
+parent's lease and keep their private OpenFocus child execution serial.
 
 Repeated source consumption retains each immutable source's exposure gain as
-a scalar; pixels still resolve through the same admitted window and source
-validation. Winner selection writes the final integer depth code directly.
-C builds immutable gray-resampling axis plans once per job and shares them
-across source producers. Its integer merge follows native reverse ordering
-and signed truncation; it does not allocate RGB reconstruction pyramids.
+a scalar and validates sources when resolving pixels. B's activity pass shares
+one gray-resampling axis plan across its workers and writes integer depth codes
+directly. C's depth export remains a separate calculation from C fusion.
 
 The decoded source cache evicts old entries before admitting an incoming decode.
 An existing consumer keeps its array views valid after eviction; the cache no
 longer pins an entire old cache while the decoder allocates its next frame.
 A stores selected codes as uint16 and accumulates focus-weighted source codes
 for low-detail background blending. Accumulators above 32 MiB use temporary
-row-windowed mappings; their pages are released between bands. The response
-and accumulation planes are released before the common float32 output conversion.
+row-windowed mappings. Bands that have enough response to skip background
+blending can bypass those mappings. A releases its accumulators before the
+common float32 output conversion.
 
-OpenFocus B and C estimate depth on floor-half gray planes at a fixed 0.5 scale.
+OpenFocus B fusion and B/C depth exports use half-resolution gray processing.
 Their 64-node gray kernel stores normalized float32 coefficients and evaluates
 vertical then horizontal taps with explicit LLVM float32 FMA. Intermediate
 float storage is limited to 128 rows per worker. B/C confidence uses the
