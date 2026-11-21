@@ -13,6 +13,8 @@ A_BLEND_LIMIT = 65536
 A_SATURATED, A_SHARP, A_BACKGROUND = range(3)
 
 _BURT_MAX_HALF_WIDTH = 65536
+# Small renders seldom recover the extra time to compile the cached-row kernel.
+_BURT_CACHE_MIN_PIXELS = 512 * 512
 
 
 @njit(nogil=True)
@@ -249,41 +251,8 @@ def _burt_laplacian_row(gray, reduced, output, y):
 
 @njit(nogil=True)
 def burt_laplacian_rows(gray, reduced, output, start, stop):
-    if start >= stop:
-        return
-    fine_width = gray.shape[1]
-    if fine_width == 0:
-        return
-    height, width = reduced.shape
-    vbuf = np.empty(width, np.int64)
-    full_pairs = width - 1
-    even_tail = (fine_width % 2) == 0
     for y in range(start, stop):
-        y0 = y // 2 - (1 if (y & 1) == 0 else 0)
-        y1 = y0 + 1 if y0 + 1 < height else height - 1
-        if y0 < 0:
-            y0 = 0
-        wy0 = 1 if (y & 1) == 0 else 3
-        wy1 = 4 - wy0
-        g_row = gray[y]
-        r0 = reduced[y0]
-        r1 = reduced[y1]
-        for x in range(width):
-            vbuf[x] = np.int64(r0[x]) * wy0 + np.int64(r1[x]) * wy1
-        o_row = output[y]
-        d = np.int64(g_row[0]) * 16 - vbuf[0] * 4
-        o_row[0] = -d if d < 0 else d
-        for x in range(1, width):
-            left = vbuf[x - 1]
-            right = vbuf[x]
-            odd = 2 * x - 1
-            d0 = np.int64(g_row[odd]) * 16 - (3 * left + right)
-            d1 = np.int64(g_row[odd + 1]) * 16 - (left + 3 * right)
-            o_row[odd] = -d0 if d0 < 0 else d0
-            o_row[odd + 1] = -d1 if d1 < 0 else d1
-        if even_tail and full_pairs >= 0:
-            d = np.int64(g_row[fine_width - 1]) * 16 - vbuf[width - 1] * 4
-            o_row[fine_width - 1] = -d if d < 0 else d
+        _burt_laplacian_row(gray, reduced, output[y], y)
 
 
 @njit(nogil=True)
@@ -857,15 +826,22 @@ def _select_band_u32_generic(image, gray, half_gray, laps, levels, response,
     return state
 
 
-@njit(nogil=True)
+def burt_cache_bytes(gray, levels):
+    """Size the expanded-row cache for the native selector."""
+    half_width = (gray.shape[1] + 1) // 2 + 1
+    if (gray.dtype != np.uint16 or levels < 6 or half_width > _BURT_MAX_HALF_WIDTH
+            or gray.size < _BURT_CACHE_MIN_PIXELS):
+        return 0
+    # Six mixed rows, eight cached coarse rows, and two doubling buffers.
+    return 4 * (16 * half_width + 10)
+
+
 def select_rows(image, gray, half_gray, laplacians, levels, response, best, output,
                 start, stop, scale, first, background):
-    """Finish each response row in scratch before consuming its winning codes."""
+    """Choose the native kernel before compiling a signature."""
     if start >= stop or response.size == 0 or gray.size == 0:
         return A_SATURATED
-    width = response.size
-    if (isinstance(gray.flat[0], np.uint16) and levels >= 6
-            and (width + 1) // 2 + 1 <= _BURT_MAX_HALF_WIDTH):
+    if burt_cache_bytes(gray, levels):
         if (image.ndim == 3 and image.shape[2] == 3 and scale == 1
                 and output.ndim == 3 and (background.shape[0] > 0 or not first)):
             return _select_band_u32_3c_s1(
@@ -876,6 +852,15 @@ def select_rows(image, gray, half_gray, laplacians, levels, response, best, outp
             image, gray, half_gray, laplacians, levels, response,
             best, output, start, stop, scale, first, background,
         )
+    return _select_rows_scalar(image, gray, half_gray, laplacians, levels, response,
+                               best, output, start, stop, scale, first, background)
+
+
+@njit(nogil=True)
+def _select_rows_scalar(image, gray, half_gray, laplacians, levels, response, best, output,
+                        start, stop, scale, first, background):
+    """Finish one response row at a time without caching expanded rows."""
+    width = response.size
 
     state = A_SATURATED
     channels = 1 if image.ndim == 2 else image.shape[2]
