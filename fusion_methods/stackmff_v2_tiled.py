@@ -216,9 +216,14 @@ def _tiled_depth_under_lease(source, model_path, use_gpu, should_cancel=None,
     if tile_grid_callback is not None:
         tile_grid_callback(block, overlap, total)
     expected = create_frame((h, w), np.float32)
-    weight = create_frame((h, w), np.float32)
-    expected[...] = 0
-    weight[...] = 0
+    # Edge tiles can overlap even at zero requested overlap. Only a grid
+    # that divides the padded canvas exactly writes every pixel once.
+    weight = None
+    if overlap or h % block or w % block:
+        weight = create_frame((h, w), np.float32)
+        expected.fill(0)
+        weight.fill(0)
+    layer_weights = np.arange(1, count + 1, dtype=np.float32)[None, :, None, None]
     if progress_callback is not None:
         progress_callback(0, total)
     done = 0
@@ -229,21 +234,25 @@ def _tiled_depth_under_lease(source, model_path, use_gpu, should_cancel=None,
             probs = neural_runtime.softmax(neural_runtime.logits(
                 planes, model, device, plan.native_threads, should_cancel))
             del planes
-            positions = (probs * np.arange(1, count + 1, dtype=np.float32)
-                         [None, :, None, None]).sum(axis=1)[0, :block, :block]
+            positions = (probs * layer_weights).sum(axis=1)[0, :block, :block]
             del probs
-            weights = _weights(x, y, x + block, y + block, w, h, overlap)
-            expected[y:y+block, x:x+block] += positions * weights
-            weight[y:y+block, x:x+block] += weights
+            rows, cols = slice(y, y + block), slice(x, x + block)
+            if weight is None:
+                expected[rows, cols] = positions
+            else:
+                weights = _weights(x, y, x + block, y + block, w, h, overlap)
+                expected[rows, cols] += positions * weights
+                weight[rows, cols] += weights
             done += 1
             if progress_callback is not None:
                 progress_callback(done, total)
     common.cancel(should_cancel)
-    for start in range(0, h, 128):
-        common.cancel(should_cancel)
-        rows = slice(start, min(h, start + 128))
-        np.divide(expected[rows], weight[rows], out=expected[rows], where=weight[rows] != 0)
-    del weight
+    if weight is not None:
+        for start in range(0, h, 128):
+            common.cancel(should_cancel)
+            rows = slice(start, min(h, start + 128))
+            np.divide(expected[rows], weight[rows], out=expected[rows], where=weight[rows] != 0)
+        del weight
     lo, hi = expected.min(), expected.max()
     expected -= lo
     expected /= hi - lo + 1e-8
