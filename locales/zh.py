@@ -1056,6 +1056,8 @@ ZH = {
     "advanced_privacy": "隐私",
     "advanced_working_storage": "工作文件存储",
     "advanced_tile_memory_status": "{method} 在处理整幅图像所需的内存超出可用内存时使用分块。",
+    "advanced_tile_manual": "手动分块设置",
+    "advanced_tile_neural_status": "{method} 可根据设备和可用内存选择不超过 {block} 像素的分块。",
     "advanced_settings_intro": "性能与配准设置影响速度与内存；AI 输出方式会改变融合结果，配准宽度会改变对齐估计。",
     "advanced_tab_performance": "性能",
     "advanced_tab_registration": "配准",

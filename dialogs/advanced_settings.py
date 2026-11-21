@@ -114,6 +114,7 @@ class AdvancedSettingsDialog(QDialog):
         buttons.rejected.connect(self.reject)
         root.addWidget(buttons)
         self.tabs.currentChanged.connect(self._fit_page)
+        self.manual_tile_disclosure.toggled.connect(self._fit_page)
         self.sensor_cleanup_disclosure.toggled.connect(self._fit_page)
         self.registration_options_disclosure.toggled.connect(self._fit_page)
         self.chk_ask_scale.toggled.connect(self._fit_page)
@@ -200,7 +201,14 @@ class AdvancedSettingsDialog(QDialog):
         self.combo_resources.setToolTip(
             trans.t("advanced_resource_hint"))
         perf.addRow(trans.t("advanced_resource_mode"), self.combo_resources)
-        tiles = _section(page_lay, trans.t('dialog_tile_title'))
+        self.tile_status = _note(page_lay, '')
+        self.tile_status.setProperty('controlId', 'effective_tiling_status')
+        self.manual_tile_panel = QWidget()
+        tile_layout = QVBoxLayout(self.manual_tile_panel)
+        tile_layout.setContentsMargins(0, 0, 0, 0)
+        self.manual_tile_disclosure = _disclosure(
+            page_lay, trans.t('advanced_tile_manual'), 'manual_tile_disclosure', self.manual_tile_panel)
+        tiles = _section(tile_layout)
         self.chk_tile = QCheckBox(trans.t('advanced_tile_enabled'))
         self.chk_tile.setChecked(bool(getattr(w, 'tile_enabled', True)))
         tiles.addRow(self.chk_tile)
@@ -226,8 +234,6 @@ class AdvancedSettingsDialog(QDialog):
             'tile_overlap': (self.spin_overlap, self.spin_overlap.value()),
             'tile_threshold': (self.spin_threshold, self.spin_threshold.value()),
         }
-        self.tile_status = _note(page_lay, '')
-        self.tile_status.setProperty('controlId', 'effective_tiling_status')
         method = getattr(w, 'current_fusion_method', lambda: FUSION_DEFAULT)()
         spec = None if method == 'none' else get_fusion(method)
         supported = (spec is not None and spec.external_tiling_supported and
@@ -245,14 +251,18 @@ class AdvancedSettingsDialog(QDialog):
                 key = 'advanced_tile_alignment_only'
             elif spatial and method == 'dtcwt':
                 key = 'advanced_tile_memory_status'
+            elif spatial and spec.neural:
+                key = 'advanced_tile_neural_status'
             elif spatial:
                 key = 'advanced_tile_threshold_status'
             else:
                 key = 'advanced_tile_full_frame_status'
             self.tile_status.setText(trans.t(key).format(
-                method=spec.display_name if spec else '', threshold=threshold))
+                method=spec.display_name if spec else '', threshold=threshold,
+                block=int(self.spin_block.value())))
 
         self.chk_tile.toggled.connect(update_tile_controls)
+        self.spin_block.valueChanged.connect(update_tile_controls)
         self.spin_threshold.valueChanged.connect(update_tile_controls)
         update_tile_controls()
 
@@ -337,7 +347,8 @@ class AdvancedSettingsDialog(QDialog):
             prefix, "OpenFocus_20261015_120000_Method_Align.png"))
 
     def _show_error(self, message, field):
-        for panel, disclosure in ((self.sensor_cleanup, self.sensor_cleanup_disclosure),
+        for panel, disclosure in ((self.manual_tile_panel, self.manual_tile_disclosure),
+                                  (self.sensor_cleanup, self.sensor_cleanup_disclosure),
                                   (self.openfocus_registration_panel, self.registration_options_disclosure)):
             if panel is field or panel.isAncestorOf(field):
                 disclosure.setChecked(True)
