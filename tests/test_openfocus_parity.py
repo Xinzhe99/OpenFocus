@@ -145,3 +145,18 @@ def test_c_small_images_select_focused_detail_from_each_source(shape, dtype, smo
     right = pixels[:, midpoint + 8:-8] if horizontal else pixels[midpoint + 8:-8, :]
     assert np.std(left) > 25
     assert np.std(right) > 25
+
+
+@pytest.mark.parametrize('smoothing', [0, None])
+def test_c_single_pixel_keeps_first_source_and_focus_winner(smoothing):
+    from fusion_methods.openfocus_bc import openfocus_c_impl
+
+    frames = [np.array([[value]], dtype=np.uint16) for value in (12345, 49153, 65535)]
+    maps = []
+    result = openfocus_c_impl(frames, blend_smoothing=smoothing, thread_count=1,
+                             focus_callback=lambda indices, scale: maps.append((indices, scale)))
+
+    np.testing.assert_array_equal(quantize_fuse_output(result, True), frames[0])
+    (indices, scale), = maps
+    np.testing.assert_array_equal(indices, np.zeros((1, 1), np.uint16))
+    assert scale == len(frames) - 1

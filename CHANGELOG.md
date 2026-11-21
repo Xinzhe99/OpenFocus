@@ -34,6 +34,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   materializing the stack or pre-converting all 16-bit frames to float32.
   Bound concurrent frame workers by the memory budget and preserve the
   existing focus decisions for low-contrast and mixed-bit-depth inputs.
+- Build and collapse the CPU OpenFocus C pyramid in row bands with reusable
+  detail planes to reduce peak memory during high-resolution fusion.
 
 ### Fixed
 - Close the desktop process when its CLI launcher times out waiting for the
