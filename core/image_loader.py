@@ -692,15 +692,31 @@ def stack_icc_profile(window, indices=None) -> bytes:
     return common_profile_values(profiles[i] for i in selected)
 
 
+def _quarter_turn(image, turns):
+    """Rotate a quarter turn: ``turns`` is 1 (counter-clockwise) or -1.
+
+    Callers copy the upright pixels into a contiguous array. np.rot90 returns
+    a view, and copying it walks a whole image column for every output row.
+    OpenCV writes the same pixels in blocks. It drops a single-channel third
+    axis, so that layout and unusual dtypes keep the NumPy view.
+    """
+    supported_layout = image.ndim == 2 or (image.ndim == 3 and image.shape[2] in (3, 4))
+    if (supported_layout and image.size and image.flags.c_contiguous
+            and image.dtype in (np.uint8, np.uint16)):
+        code = cv2.ROTATE_90_CLOCKWISE if turns == -1 else cv2.ROTATE_90_COUNTERCLOCKWISE
+        return cv2.rotate(image, code)
+    return np.rot90(image, turns)
+
+
 # EXIF Orientation tag values that need a pixel transform (1 = already OK).
 _EXIF_TRANSFORMS = {
     2: lambda a: a[:, ::-1],                       # mirror horizontal
     3: lambda a: np.rot90(a, 2),                   # rotate 180
     4: lambda a: a[::-1, :],                       # mirror vertical
     5: lambda a: np.rot90(a[:, ::-1], 1),          # transpose
-    6: lambda a: np.rot90(a, -1),                  # rotate 90 CW
+    6: lambda a: _quarter_turn(a, -1),             # rotate 90 CW
     7: lambda a: np.rot90(a[::-1, :], 1),          # anti-transpose
-    8: lambda a: np.rot90(a, 1),                   # rotate 90 CCW
+    8: lambda a: _quarter_turn(a, 1),              # rotate 90 CCW
 }
 
 
