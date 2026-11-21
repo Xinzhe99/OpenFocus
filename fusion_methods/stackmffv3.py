@@ -84,25 +84,35 @@ def _blend_tile(probs, frames, mode, should_cancel=None, focus_callback=None):
     normalize_stack = any(frame.dtype == np.uint16 for frame in frames)
     selected_indices = None
     expected = None
+    contributing = None
     if mode == 'hard':
         from core.frame_storage import create_frame
         selected_indices = create_frame((height, width), np.intp)
-        for row in range(0, height, 256):
+        contributing = np.zeros(len(frames), dtype=bool)
+        # NumPy packs the reduction axis. Bound that temporary independently
+        # of the color band's height and keep the original argmax tie order.
+        pick_rows = max(1, min(256, (256 * 1024) // (width * len(frames))))
+        for row in range(0, height, pick_rows):
             _cancel(should_cancel)
-            stop = min(row + 256, height)
-            selected_indices[row:stop] = probs[:, row:stop].argmax(0)
+            stop = min(row + pick_rows, height)
+            winners = probs[:, row:stop].argmax(0)
+            selected_indices[row:stop] = winners
+            contributing |= np.bincount(winners.ravel(), minlength=len(frames)) != 0
     elif focus_callback is not None:
         from core.frame_storage import create_transient_frame
         expected = create_transient_frame((height, width), np.float32)
         expected[...] = 0
-    from core.source_frames import resolve_frame
+    from core.source_frames import resolve_frame, validate_frame_source
     band_rows = 256
     if selected_indices is None:
         # Aim for at most 256 KiB per float32 color temporary, with at least one row.
         band_rows = min(band_rows, max(1, (64 * 1024) // (width * channels)))
     for index, frame in enumerate(frames):
         _cancel(should_cancel)
-        image = resolve_frame(frame)
+        if contributing is not None and not contributing[index]:
+            validate_frame_source(frame)
+            continue
+        image = resolve_frame(frame, should_cancel=should_cancel)
         for row in range(0, height, band_rows):
             _cancel(should_cancel)
             stop = min(row + band_rows, height)

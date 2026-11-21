@@ -47,6 +47,48 @@ def test_streamed_v1_color_keeps_nearest_frame_chroma():
                                   expected)
 
 
+def test_tiled_neural_sources_use_packed_mixed_depth_with_gains():
+    from core.source_frames import resolve_frame
+    from utils.image_utils import apply_exposure_gain
+
+    frames = _mixed_frames()
+    coords = (2, 1, 16, 12)
+    gains = (1.0, 0.79, 1.21)
+    eager, _ = normalize_fuse_input([frame[1:12, 2:16].copy() for frame in frames])
+    eager = [apply_exposure_gain(frame, gain) for frame, gain in zip(eager, gains)]
+    sources = neural_common.tile_sources(frames, coords, exposure_gains=gains)
+    for source, expected in zip(sources, eager):
+        image = resolve_frame(source)
+        assert image.flags.c_contiguous
+        np.testing.assert_array_equal(image, expected)
+    np.testing.assert_array_equal(neural_common.stage_planes(sources, 1),
+                                  neural_common.stage_planes(eager, 1))
+
+
+def test_v3_hard_color_reads_only_winners_and_preserves_ties():
+    from core.source_frames import process_frame
+
+    size = (137, 113)
+    frames = [np.full(size + (3,), i + 20, np.uint8) for i in range(24)]
+    reads = []
+
+    def record(image):
+        reads.append(int(image[0, 0, 0]) - 20)
+        return image
+
+    sources = [process_frame(frame, record, scratch_bytes=0) for frame in frames]
+    probs = np.zeros((len(sources), *size), np.float32)
+    probs[1] = probs[5] = 0.5
+    probs[20, 100:] = 0.75
+    selected = []
+    result = stackmffv3._blend_tile(probs, sources, 'hard',
+                                  focus_callback=lambda positions, _scale: selected.append(positions))
+    expected = probs.argmax(0)
+    np.testing.assert_array_equal(selected[0], expected)
+    np.testing.assert_array_equal(result, np.broadcast_to((expected + 20)[..., None], result.shape))
+    assert reads == [1, 20]
+
+
 @pytest.mark.parametrize('shape,origin,dtypes,gains', [
     ((99, 97, 3), (0, 0), (np.uint8, np.uint8), None),  # strided interior
     ((99, 97, 4), (64, 64), (np.uint16, np.uint8), None),  # reflected edges

@@ -34,6 +34,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   materializing the stack or pre-converting all 16-bit frames to float32.
   Bound concurrent frame workers by the memory budget and preserve the
   existing focus decisions for low-contrast and mixed-bit-depth inputs.
+- Stream prepared color crops through StackMFF V1 and V3 tiles. Use row
+  bands for V1 chroma reconstruction and read only contributing color
+  sources for V3 hard selection.
 
 ### Fixed
 - Close the desktop process when its CLI launcher times out waiting for the
