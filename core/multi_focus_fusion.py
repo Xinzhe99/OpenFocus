@@ -1889,6 +1889,9 @@ class MultiFocusFusion:
         from core.source_frames import frame_resolution_bytes, source_cache_growth_bytes
         source_resolution = max(map(frame_resolution_bytes, imgs), default=0) if imgs is not None else 0
         source_cache = source_cache_growth_bytes(imgs) if imgs is not None else 0
+        # Prepared and resident sources can serve both passes cheaply. When
+        # preparation did not fit, resolve each source only once per tile.
+        streamed_crops = imgs is not None and source_resolution == 0
         check_cancel()
         clamped_block = block_size
         with profile.stage('plan_neural_tiles'):
@@ -1899,6 +1902,7 @@ class MultiFocusFusion:
                           if imgs is not None else np.dtype(out_dtype).itemsize),
                 source_resolution_bytes=source_resolution, source_cache_bytes=source_cache,
                 output_bytes=remaining_output, resident_output_bytes=resident_output,
+                streamed_crops=streamed_crops,
                 preference=self.resource_preference, user_threads=thread_count)
         apply_inference_budget(tile_plan)
         planned_block = block_size
@@ -1925,6 +1929,10 @@ class MultiFocusFusion:
 
         def crop_frames(coords):
             check_cancel()
+            if streamed_crops:
+                from fusion_methods.neural_common import tile_sources
+                return tile_sources(imgs, coords, exposure_gains=exposure_gains,
+                                    should_cancel=should_cancel)
             x0, y0, x1, y1 = coords
             if imgs is not None:
                 from core.source_frames import resolve_region
@@ -1963,8 +1971,11 @@ class MultiFocusFusion:
             check_cancel()
             tile_started = time.perf_counter()
             with profile.tile(index, coords, count):
-                with profile.stage('resolve_region'):
+                if streamed_crops:
                     crops = crop_frames(coords)
+                else:
+                    with profile.stage('resolve_region'):
+                        crops = crop_frames(coords)
                 runner_parameters = dict(kwargs)
                 runner_parameters.update(model_path=model_path,
                     should_cancel=should_cancel, tile_plan=tile_plan)
