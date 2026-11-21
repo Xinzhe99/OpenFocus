@@ -39,6 +39,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   sources for V3 hard selection.
 
 ### Fixed
+- Keep one-pixel edge tiles valid at StackMFF V1's reduced inference scale.
 - Close the desktop process when its CLI launcher times out waiting for the
   control channel, and explain how to complete first-run sign-in.
 - Give comparison alignment workers on macOS enough stack for the first

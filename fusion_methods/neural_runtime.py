@@ -791,9 +791,9 @@ def _resize_antialias(planes, scale, should_cancel=None):
     for axis in (2, 3):
         cancel(should_cancel)
         old = result.shape[axis]
-        new = int(old * scale)
-        if new < 1:
-            raise ValueError('Input is too small for the inference scale')
+        new = max(1, int(old * scale))
+        if new == old == 1:
+            continue
         src = np.moveaxis(result, axis, -1)
         dst = np.empty(src.shape[:-1] + (new,), dtype=np.float32)
         for i in range(new):
