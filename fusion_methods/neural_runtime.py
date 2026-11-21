@@ -150,6 +150,9 @@ def start_inference_job():
     """Reset actual-device reporting and fallback for a new serialized job."""
     global _ACTUAL_DEVICE, _JOB_ACCELERATOR, _FALLBACK_CPU, _ACTUAL_CHECKPOINT
     global _JOB_PACK, _WORKER_FAILURE, _JOB_RAM_LIMIT, _JOB_VRAM_LIMIT
+    from fusion_methods.neural_common import reset_stackmff_kernels
+
+    reset_stackmff_kernels()
     finish_inference_job()
     _JOB_PACK = _WORKER_FAILURE = None
     _JOB_RAM_LIMIT = _JOB_VRAM_LIMIT = None
@@ -846,23 +849,20 @@ def _softmax_shifted(x):
 
 
 def _resize_antialias(planes, scale, should_cancel=None):
-    from fusion_methods.neural_common import cancel, load_stackmff_kernels
+    return _resize_antialias_impl(planes, scale, should_cancel, 1)
+
+
+def _resize_antialias_impl(planes, scale, should_cancel, workers):
+    from fusion_methods.neural_common import StackMFFKernelUnavailable, cancel, load_stackmff_kernels
 
     if planes.ndim == 4 and planes.dtype == np.float32 and planes.size >= 65536:
+        cancel(should_cancel)
         kernels = load_stackmff_kernels()
         if kernels is not None:
-            b_dim, n_dim, old_h, old_w = planes.shape
-            vy_first, vy_cnt, vy_w = kernels.precompute_antialias_taps(old_h, scale)
-            hx_first, hx_cnt, hx_w = kernels.precompute_antialias_taps(old_w, scale)
-            out = np.empty((b_dim, n_dim, vy_first.shape[0], hx_first.shape[0]), dtype=np.float32)
-            for b in range(b_dim):
-                for n0 in range(0, n_dim, 8):
-                    cancel(should_cancel)
-                    kernels.resize_antialias_range(
-                        planes, b, n0, min(n_dim, n0 + 8),
-                        vy_first, vy_cnt, vy_w, hx_first, hx_cnt, hx_w, out)
-            cancel(should_cancel)
-            return out
+            try:
+                return _resize_antialias_native(planes, scale, should_cancel, workers, kernels)
+            except StackMFFKernelUnavailable:
+                pass
 
     # PyTorch bilinear antialias uses a triangle filter widened for downsampling.
     result = planes
@@ -887,39 +887,55 @@ def _resize_antialias(planes, scale, should_cancel=None):
     return result
 
 
+def _resize_antialias_native(planes, scale, should_cancel, workers, kernels):
+    from fusion_methods.neural_common import cancel
+
+    batches, layers, height, width = planes.shape
+    y_taps = kernels.precompute_antialias_taps(height, scale)
+    x_taps = kernels.precompute_antialias_taps(width, scale)
+    out_h, out_w = len(y_taps[0]), len(x_taps[0])
+    out = np.empty((batches, layers, out_h, out_w), dtype=np.float32)
+    # Large planes check cancellation within a layer. Small tiles keep batching.
+    row_block = min(out_h, max(1, (1024 * 1024) // width))
+    layer_block = min(8, max(1, (1024 * 1024) // (width * row_block)))
+
+    def resize_range(batch, start, stop):
+        scratch = np.empty(width, dtype=np.float32)
+        for first in range(start, stop, layer_block):
+            last = min(stop, first + layer_block)
+            for top in range(0, out_h, row_block):
+                cancel(should_cancel)
+                kernels.resize_antialias_range(
+                    planes, batch, first, last, *y_taps, *x_taps, out,
+                    top, min(out_h, top + row_block), scratch)
+
+    if workers > 1 and layers >= 8:
+        from concurrent.futures import ThreadPoolExecutor
+
+        step = (layers + workers - 1) // workers
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            for batch in range(batches):
+                cancel(should_cancel)
+                def resize_partition(start):
+                    resize_range(batch, start, min(layers, start + step))
+
+                for _ in executor.map(resize_partition, range(0, layers, step)):
+                    pass
+    else:
+        for batch in range(batches):
+            resize_range(batch, 0, layers)
+    cancel(should_cancel)
+    return out
+
+
 _DEFAULT_RESIZE_ANTIALIAS = _resize_antialias
 
 
 def _run_resize_antialias(planes, scale, should_cancel=None, threads=1):
-    from fusion_methods.neural_common import cancel, load_stackmff_kernels
-
+    if _resize_antialias is not _DEFAULT_RESIZE_ANTIALIAS:
+        return _resize_antialias(planes, scale, should_cancel)
     workers = max(1, min(4, int(threads or 1)))
-    if (workers > 1 and _resize_antialias is _DEFAULT_RESIZE_ANTIALIAS
-            and planes.ndim == 4 and planes.dtype == np.float32 and planes.size >= 65536):
-        kernels = load_stackmff_kernels()
-        if kernels is not None:
-            from concurrent.futures import ThreadPoolExecutor
-
-            b_dim, n_dim, old_h, old_w = planes.shape
-            if n_dim >= 8:
-                vy_first, vy_cnt, vy_w = kernels.precompute_antialias_taps(old_h, scale)
-                hx_first, hx_cnt, hx_w = kernels.precompute_antialias_taps(old_w, scale)
-                out = np.empty((b_dim, n_dim, vy_first.shape[0], hx_first.shape[0]), dtype=np.float32)
-                step = (n_dim + workers - 1) // workers
-                ranges = [(n0, min(n_dim, n0 + step)) for n0 in range(0, n_dim, step)]
-                for b in range(b_dim):
-                    cancel(should_cancel)
-                    def _run_range(rng_pair, b_idx=b):
-                        for pos in range(rng_pair[0], rng_pair[1], 8):
-                            cancel(should_cancel)
-                            kernels.resize_antialias_range(
-                                planes, b_idx, pos, min(rng_pair[1], pos + 8),
-                                vy_first, vy_cnt, vy_w, hx_first, hx_cnt, hx_w, out)
-                    with ThreadPoolExecutor(max_workers=len(ranges)) as executor:
-                        list(executor.map(_run_range, ranges))
-                cancel(should_cancel)
-                return out
-    return _resize_antialias(planes, scale, should_cancel)
+    return _resize_antialias_impl(planes, scale, should_cancel, workers)
 
 
 def probabilities(planes, path, device, threads, sigma, cancel=None):

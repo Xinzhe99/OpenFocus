@@ -102,41 +102,43 @@ def _blend_tile(probs, frames, mode, should_cancel=None, focus_callback=None):
     for index in indices:
         _cancel(should_cancel)
         image = resolve_frame(frames[index], should_cancel=should_cancel)
-        use_fast = (kernels is not None and result.flags.c_contiguous
-                    and image.flags.c_contiguous
-                    and ((image.ndim == 3 and image.shape[2] == channels)
-                         or (image.ndim == 2 and channels == 1)))
+        blend = None
+        if (kernels is not None and result.flags.c_contiguous and image.flags.c_contiguous
+                and ((image.ndim == 3 and image.shape[2] == channels)
+                     or (image.ndim == 2 and channels == 1))):
+            if selected_indices is None:
+                if image.dtype == np.float32:
+                    blend = kernels.v3_accumulate_soft_f32
+                elif image.dtype == np.uint16:
+                    blend = kernels.v3_accumulate_soft_u16
+                elif image.dtype == np.uint8:
+                    blend = kernels.v3_accumulate_soft_u8
+            elif image.dtype == np.float32:
+                blend = kernels.v3_scatter_hard_f32
+            elif image.dtype == np.uint16:
+                blend = kernels.v3_scatter_hard_u16
+            elif image.dtype == np.uint8:
+                blend = kernels.v3_scatter_hard_u8
         for row in range(0, height, band_rows):
             _cancel(should_cancel)
             stop = min(row + band_rows, height)
             output = result[row:stop]
             img_band = image[row:stop]
-            if use_fast:
+            if blend is not None:
                 src_band = img_band[:, :, None] if img_band.ndim == 2 else img_band
-                if selected_indices is None:
-                    prob_band = np.ascontiguousarray(probs[index, row:stop])
-                    exp_band = expected[row:stop] if expected is not None else output[:, :, 0]
-                    has_exp = bool(expected is not None and index)
-                    if src_band.dtype == np.float32:
-                        kernels.v3_accumulate_soft_f32(src_band, prob_band, output, exp_band, float(index), has_exp)
-                        continue
-                    if src_band.dtype == np.uint16:
-                        kernels.v3_accumulate_soft_u16(src_band, prob_band, output, exp_band, float(index), has_exp)
-                        continue
-                    if src_band.dtype == np.uint8:
-                        kernels.v3_accumulate_soft_u8(src_band, prob_band, output, exp_band, float(index), has_exp)
-                        continue
+                try:
+                    if selected_indices is None:
+                        exp_band = expected[row:stop] if expected is not None else output[:, :, 0]
+                        blend(src_band, np.ascontiguousarray(probs[index, row:stop]), output,
+                              exp_band, float(index), bool(expected is not None and index))
+                    else:
+                        blend(src_band, np.ascontiguousarray(selected_indices[row:stop]), index, output)
+                except common.StackMFFKernelUnavailable:
+                    kernels = blend = None
                 else:
-                    sel_band = np.ascontiguousarray(selected_indices[row:stop])
-                    if src_band.dtype == np.float32:
-                        kernels.v3_scatter_hard_f32(src_band, sel_band, index, output)
-                        continue
-                    if src_band.dtype == np.uint16:
-                        kernels.v3_scatter_hard_u16(src_band, sel_band, index, output)
-                        continue
-                    if src_band.dtype == np.uint8:
-                        kernels.v3_scatter_hard_u8(src_band, sel_band, index, output)
-                        continue
+                    continue
+                finally:
+                    del src_band
             source = common.working_frame(img_band, normalize_stack)
             if source.ndim == 2:
                 source = source[:, :, None]

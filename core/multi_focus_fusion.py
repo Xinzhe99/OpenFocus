@@ -2046,7 +2046,9 @@ class MultiFocusFusion:
             check_cancel()
 
         from core.source_frames import is_direct_rgb_tiff, read_rgb_tiff_rows
-        from fusion_methods.neural_common import plan_rgb_staging
+        from fusion_methods.neural_common import (
+            StackMFFKernelUnavailable, load_stackmff_kernels, plan_rgb_staging,
+        )
         kernels = None
         use_direct_chunked = (
             imgs is not None
@@ -2071,6 +2073,7 @@ class MultiFocusFusion:
                 worker_bytes += tile_pixels * 3 * 5
             kernels, max_k = plan_rgb_staging(tile_plan, row_tiles, one_tile_bytes,
                                               io_workers * worker_bytes, _MAX_NEURAL_CHUNK_BYTES)
+        pos = 0
         if kernels is not None:
             max_tile_h = max(y1 - y0 for _, y0, _, y1 in tile_coords)
             worker_u16 = [np.empty((max_tile_h, w, 3), dtype=np.uint16) if has_u16 else None
@@ -2078,8 +2081,7 @@ class MultiFocusFusion:
             worker_u8 = [np.empty((max_tile_h, w, 3), dtype=np.uint8) if has_u8 else None
                          for _ in range(io_workers)]
             # Group consecutive tiles sharing identical (y0, y1) bands so each row-band is read once.
-            pos = 0
-            while pos < total:
+            while pos < total and kernels is not None:
                 check_cancel()
                 band_y0, band_y1 = tile_coords[pos][1], tile_coords[pos][3]
                 band_end = pos + 1
@@ -2091,7 +2093,11 @@ class MultiFocusFusion:
                     chunk_end = min(band_end, chunk_start + max_k)
                     if chunk_end == chunk_start + 1:
                         _consume_tile(chunk_start, tile_coords[chunk_start])
+                        pos = chunk_end
                         continue
+                    if load_stackmff_kernels() is None:
+                        kernels = None
+                        break
                     chunk_coords = tile_coords[chunk_start:chunk_end]
                     k_count = len(chunk_coords)
                     chunk_crops = [[None] * count for _ in range(k_count)]
@@ -2124,24 +2130,29 @@ class MultiFocusFusion:
                                                 dst = apply_exposure_gain(dst, gain)
                                         chunk_crops[k_i][idx] = dst
 
-                        if io_workers > 1:
-                            with concurrent.futures.ThreadPoolExecutor(max_workers=io_workers) as executor:
-                                futures = [executor.submit(_stage_color_worker, wid) for wid in range(io_workers)]
-                                for fut in futures:
-                                    fut.result()
-                        else:
-                            _stage_color_worker(0)
+                        try:
+                            if io_workers > 1:
+                                with concurrent.futures.ThreadPoolExecutor(max_workers=io_workers) as executor:
+                                    for _ in executor.map(_stage_color_worker, range(io_workers)):
+                                        pass
+                            else:
+                                _stage_color_worker(0)
+                        except StackMFFKernelUnavailable:
+                            kernels = None
+                    if kernels is None:
+                        del chunk_crops
+                        break
                     for k_i, coords in enumerate(chunk_coords):
                         check_cancel()
                         crops = chunk_crops[k_i]
                         chunk_crops[k_i] = None
                         _consume_tile(chunk_start + k_i, coords, crops)
                         del crops
-                pos = band_end
-        else:
-            for index, coords in enumerate(tile_coords):
-                check_cancel()
-                _consume_tile(index, coords)
+                    pos = chunk_end
+            del worker_u16, worker_u8
+        for index in range(pos, total):
+            check_cancel()
+            _consume_tile(index, tile_coords[index])
 
         with profile.stage('normalize'):
             fused = create_frame(acc.shape, out_dtype)

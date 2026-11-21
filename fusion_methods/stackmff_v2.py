@@ -44,19 +44,24 @@ def _expected_positions(logits, should_cancel, *, threads=1):
         out = np.empty((h, w), dtype=np.float32)
         probs_flat = probs.reshape(probs.shape[1], total)
         out_flat = out.reshape(-1)
-        if workers > 1 and probs.size >= 262144 and total >= workers:
-            from concurrent.futures import ThreadPoolExecutor
+        try:
+            if workers > 1 and probs.size >= 262144 and total >= workers:
+                from concurrent.futures import ThreadPoolExecutor
 
-            step = (total + workers - 1) // workers
-            ranges = [(s, min(total, s + step)) for s in range(0, total, step)]
-            with ThreadPoolExecutor(max_workers=len(ranges)) as executor:
-                list(executor.map(
-                    lambda rng: kernels.v2_weighted_sum_layers(probs_flat, rng[0], rng[1], out_flat),
-                    ranges))
+                step = (total + workers - 1) // workers
+                ranges = [(s, min(total, s + step)) for s in range(0, total, step)]
+                with ThreadPoolExecutor(max_workers=len(ranges)) as executor:
+                    for _ in executor.map(
+                            lambda rng: kernels.v2_weighted_sum_layers(probs_flat, rng[0], rng[1], out_flat),
+                            ranges):
+                        pass
+            else:
+                kernels.v2_weighted_sum_layers(probs_flat, 0, total, out_flat)
+        except common.StackMFFKernelUnavailable:
+            del out, out_flat
         else:
-            kernels.v2_weighted_sum_layers(probs_flat, 0, total, out_flat)
-        common.cancel(should_cancel)
-        return out
+            common.cancel(should_cancel)
+            return out
     weights = np.arange(1, probs.shape[1] + 1, dtype=np.float32)[None, :, None, None]
     np.multiply(probs, weights, out=probs)
     common.cancel(should_cancel)
@@ -123,24 +128,33 @@ def _sample(frames, index, should_cancel=None, *, dtype=np.float32, round_uint8=
         gain = gains[layer] if gains is not None else 1.0
         if (kernels is not None and out_is_3ch and is_direct_rgb_tiff(frame)
                 and frame.ndim == 3 and frame.shape[2] == 3 and not round_uint8):
-            if frame.dtype == np.uint16 and out.dtype == np.float32:
+            # Gain in the integer source domain truncates before normalization.
+            # Use the generic path when that order is required.
+            if (frame.dtype == np.uint16 and out.dtype == np.float32
+                    and (gain == 1.0 or normalize_for_exposure)):
                 if strip_rgb_u16 is None:
                     strip_rgb_u16 = np.empty((min(_STRIP_ROWS, shape[0]), shape[1], 3), dtype=np.uint16)
-                for start in strips[layer]:
-                    stop = min(shape[0], start + _STRIP_ROWS)
-                    band = read_rgb_tiff_rows(frame, start, stop, strip_rgb_u16, should_cancel=should_cancel)
-                    idx_band = np.ascontiguousarray(index[start:stop])
-                    kernels.v2_scatter_strip_rgb_u16_to_f32(band, idx_band, layer, out[start:stop], gain, 255.0)
-                continue
-            if frame.dtype == np.uint8 and out.dtype == np.uint8 and gain == 1.0:
+                scatter = kernels.v2_scatter_strip_rgb_u16_to_f32
+                scratch = strip_rgb_u16
+                scatter_args = (gain, 255.0)
+            elif frame.dtype == np.uint8 and out.dtype == np.uint8 and gain == 1.0:
                 if strip_rgb_u8 is None:
                     strip_rgb_u8 = np.empty((min(_STRIP_ROWS, shape[0]), shape[1], 3), dtype=np.uint8)
-                for start in strips[layer]:
-                    stop = min(shape[0], start + _STRIP_ROWS)
-                    band = read_rgb_tiff_rows(frame, start, stop, strip_rgb_u8, should_cancel=should_cancel)
-                    idx_band = np.ascontiguousarray(index[start:stop])
-                    kernels.v2_scatter_strip_rgb_u8(band, idx_band, layer, out[start:stop])
-                continue
+                scatter = kernels.v2_scatter_strip_rgb_u8
+                scratch = strip_rgb_u8
+                scatter_args = ()
+            else:
+                scatter = None
+            if scatter is not None:
+                try:
+                    for start in strips[layer]:
+                        stop = min(shape[0], start + _STRIP_ROWS)
+                        scatter(read_rgb_tiff_rows(frame, start, stop, scratch, should_cancel=should_cancel),
+                                np.ascontiguousarray(index[start:stop]), layer, out[start:stop], *scatter_args)
+                except common.StackMFFKernelUnavailable:
+                    kernels = strip_rgb_u16 = strip_rgb_u8 = scratch = None
+                else:
+                    continue
         image = resolve_frame(frame, should_cancel=should_cancel)
         for start in strips[layer]:
             common.cancel(should_cancel)

@@ -229,17 +229,40 @@ def plan_rgb_staging(plan, tile_count, tile_bytes, scratch_bytes, byte_cap):
 
 
 _STACKMFF_KERNELS = None
+_STACKMFF_KERNELS_DISABLED = False
+
+
+class StackMFFKernelUnavailable(MemoryError):
+    """An optional specialization ran out of memory before touching its output."""
+
+
+def disable_stackmff_kernels():
+    global _STACKMFF_KERNELS_DISABLED
+    _STACKMFF_KERNELS_DISABLED = True
+
+
+def reset_stackmff_kernels():
+    global _STACKMFF_KERNELS_DISABLED
+    _STACKMFF_KERNELS_DISABLED = False
 
 
 def load_stackmff_kernels():
-    """Return compiled StackMFF Numba kernels, or None when admission/Numba is unavailable."""
+    """Load the optional native dispatchers for this inference job."""
     global _STACKMFF_KERNELS
+    if _STACKMFF_KERNELS_DISABLED:
+        return None
     if _STACKMFF_KERNELS is not None:
         return _STACKMFF_KERNELS
-    from core.resource_policy import ResourceLimitError
+    from core.algorithm_adapters import DEPTH_KERNEL_STARTUP_BYTES
+    from core.resource_policy import probe_memory, require_memory
+
     try:
+        require_memory(DEPTH_KERNEL_STARTUP_BYTES, probe_memory())
         from fusion_methods import _stackmff_kernels
-    except (ImportError, MemoryError, ResourceLimitError):
+    except MemoryError:
+        disable_stackmff_kernels()
+        return None
+    except ImportError:
         return None
     _STACKMFF_KERNELS = _stackmff_kernels
     return _STACKMFF_KERNELS
@@ -280,15 +303,20 @@ def tensor_to_bgr(fused_luma, frames, should_cancel=None):
         used_kernel = False
         if (kernels is not None and raw.ndim == 3 and raw.shape[2] >= 3
                 and raw.flags.c_contiguous and target_c.shape == raw.shape[:2]):
+            update = None
             if raw.dtype == np.float32:
-                kernels.v1_update_nearest_f32(raw, target_c, best, cb, cr, index == 0)
-                used_kernel = True
+                update = kernels.v1_update_nearest_f32
             elif raw.dtype == np.uint16:
-                kernels.v1_update_nearest_u16(raw, target_c, best, cb, cr, index == 0)
-                used_kernel = True
+                update = kernels.v1_update_nearest_u16
             elif raw.dtype == np.uint8:
-                kernels.v1_update_nearest_u8(raw, target_c, best, cb, cr, index == 0)
-                used_kernel = True
+                update = kernels.v1_update_nearest_u8
+            if update is not None:
+                try:
+                    update(raw, target_c, best, cb, cr, index == 0)
+                except StackMFFKernelUnavailable:
+                    kernels = target_c = None
+                else:
+                    used_kernel = True
         if not used_kernel:
             if luma is None:
                 luma = np.empty_like(best)
