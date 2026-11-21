@@ -105,6 +105,17 @@ def _output_codes(codes, frames, should_cancel, *, source_scale=1):
     from fusion_methods.openfocus_ab import _check_cancel
     is_8bit = all(frame.dtype == np.uint8 for frame in frames)
     output = create_frame(codes.shape, np.uint8 if is_8bit else np.float32)
+    if (not is_8bit) and codes.dtype == np.uint16 and source_scale == 1:
+        from fusion_methods._openfocus_kernels import output_u16_to_f32_rows
+        factor = np.float32(255.0 / 65535.0)
+
+        def convert_fast(start, stop):
+            _check_cancel(should_cancel)
+            output_u16_to_f32_rows(codes, output, start, stop, factor)
+
+        run_bands(codes.shape[0], 128, convert_fast)
+        return output
+
     def convert(start, stop):
         _check_cancel(should_cancel)
         rows = slice(start, stop)
