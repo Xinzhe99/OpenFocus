@@ -77,11 +77,11 @@ class _Source:
                 original = original.source
             if isinstance(original, SourceFrame):
                 original.validate_source()
-        frame = resolve_frame(self.items[index], should_cancel=self.should_cancel)
-        if frame.shape[:2] != self.shape[:2]:
+        item = self.items[index]
+        if item.shape[:2] != self.shape[:2]:
             raise ValueError('All frames must have the same dimensions')
-        if region is not None:
-            frame = self._crop(frame, region)
+        frame = (resolve_frame(item, should_cancel=self.should_cancel) if region is None
+                 else self._crop(item, region, self.should_cancel))
         if self.gains is not None:
             if self.mixed_16:
                 if frame.dtype == np.uint16:
@@ -92,23 +92,25 @@ class _Source:
         return frame
 
     @staticmethod
-    def _crop(frame, region):
+    def _crop(frame, region, should_cancel):
         x, y, width, height = region
         h, w = frame.shape[:2]
-        from core.frame_storage import frame_region, is_mapped_frame
+        from core.frame_storage import is_mapped_frame
+        from core.source_frames import borrow_frame_region
 
         if x + width <= w and y + height <= h:
             region = np.s_[y:y + height, x:x + width]
-            if not is_mapped_frame(frame):
+            if isinstance(frame, np.ndarray) and not is_mapped_frame(frame):
                 return frame[region]
-            with frame_region(frame, region) as crop:
+            with borrow_frame_region(frame, region, should_cancel=should_cancel) as crop:
                 return crop.copy(order='C')
         ph, pw = (-h) % common.ATTENTION_PAD_ALIGN, (-w) % common.ATTENTION_PAD_ALIGN
         mode = 'reflect' if ph < h and pw < w else 'edge'
         rows = np.pad(np.arange(h), (0, ph), mode=mode)[y:y + height]
         cols = np.pad(np.arange(w), (0, pw), mode=mode)[x:x + width]
         top, left = rows.min(), cols.min()
-        with frame_region(frame, np.s_[top:rows.max() + 1, left:cols.max() + 1]) as crop:
+        key = np.s_[top:rows.max() + 1, left:cols.max() + 1]
+        with borrow_frame_region(frame, key, should_cancel=should_cancel) as crop:
             return crop[(rows - top)[:, None], cols[None, :] - left]
 
 

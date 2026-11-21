@@ -308,8 +308,20 @@ def test_deep_tiled_fusion_preserves_mixed_tiff_pixels(tmp_path, monkeypatch, me
         return result
 
     expected = fuse()
-    monkeypatch.setattr(multi_focus_fusion, '_PREPARED_CACHE_BYTES', 1)
+    # Native samples fit the retention limit, but their float32 snapshot does not.
+    monkeypatch.setattr(multi_focus_fusion, '_PREPARED_CACHE_BYTES', sum(frame.nbytes for frame in frames))
+    monkeypatch.setattr(source_frames, 'SOURCE_CACHE', source_frames.FrameCache(0))
+    from core import image_loader
+    decode_tiff = image_loader.decode_tiff_page
+    decoded = []
+
+    def record_decode(path, *args, **kwargs):
+        decoded.append(path)
+        return decode_tiff(path, *args, **kwargs)
+
+    monkeypatch.setattr(image_loader, 'decode_tiff_page', record_decode)
     np.testing.assert_array_equal(fuse(), expected)
+    assert set(decoded) == {frames[2].path}
 
 
 def test_native_tiff_regions_preserve_page_order_and_source_identity(tmp_path):
