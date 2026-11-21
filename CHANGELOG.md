@@ -11,6 +11,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   three StackMFF models before activation.
 
 ### Changed
+- Accelerate CPU DTCWT fusion with bit-exact native kernels, direct
+  luminance and channel extraction, sparse Pass 2 reconstruction that skips
+  globally inactive frames and weights, single-channel grayscale reconstruction,
+  and a smaller per-worker working set.
 - Reuse OpenCL contexts and compiled kernels across OpenFocus A/B/C and ECC
   resize jobs. Reuse upload buffers within a job and drain pending work
   before releasing buffers after cancellation or error.
