@@ -145,3 +145,59 @@ def test_c_small_images_select_focused_detail_from_each_source(shape, dtype, smo
     right = pixels[:, midpoint + 8:-8] if horizontal else pixels[midpoint + 8:-8, :]
     assert np.std(left) > 25
     assert np.std(right) > 25
+
+
+def _pyramid_axis(source, count, axis, expand):
+    source = np.moveaxis(source, axis, 0)
+    result = np.empty((count, *source.shape[1:]), np.float32)
+    even = np.array([0.019027505, 0.318410337, 0.559359729, 0.103202470, 0], np.float32)
+    down = np.array([0.125, 0.375, 0.375, 0.125], np.float32)
+    for i, row in enumerate(result):
+        row.fill(0)
+        if expand:
+            total = np.float32(0)
+            for k, weight in enumerate(even[::-1] if i % 2 else even):
+                index = i // 2 + k - 2
+                if 0 <= index < source.shape[0]:
+                    row += source[index] * weight
+                    total += weight
+            row /= total
+        else:
+            for k, weight in enumerate(down):
+                index = min(source.shape[0] - 1, max(0, 2 * i + k - 1))
+                row += source[index] * weight
+    return np.moveaxis(result, 0, axis)
+
+
+@pytest.mark.parametrize('shape', [(1, 131, 1), (133, 1, 2), (263, 135, 3)])
+def test_c_banded_pyramid_matches_full_separable_passes(shape):
+    from fusion_methods._openfocus_pyramid import _down, _synthesize
+
+    height, width, channels = shape
+    fine = np.random.default_rng(481).random(shape, dtype=np.float32)
+    coarse = np.empty(((height + 1) // 2, (width + 1) // 2, channels), np.float32)
+    expected_coarse = _pyramid_axis(
+        _pyramid_axis(fine, coarse.shape[1], 1, False), coarse.shape[0], 0, False)
+    _down(fine, coarse, lambda: None)
+    np.testing.assert_array_equal(coarse, expected_coarse)
+
+    expanded = _pyramid_axis(_pyramid_axis(coarse, width, 1, True), height, 0, True)
+    denom = expanded + np.float32(0.1)
+    expected_detail = (fine - expanded) / denom
+    strength = np.zeros((height, width), np.float32)
+    for channel in range(channels):
+        strength += np.abs(expected_detail[:, :, channel])
+    strength *= np.float32(3 / channels)
+    expected_weight = np.minimum(np.float32(65535), strength * np.float32(21845)).astype(np.uint16)
+    if height > 2:
+        expected_weight[[0, -1], :] = 0
+    if width > 2:
+        expected_weight[:, [0, -1]] = 0
+
+    detail = fine.copy()
+    weights = np.empty(fine.shape[:2], np.uint16)
+    _synthesize(coarse, detail, weights, lambda: None)
+    np.testing.assert_array_equal(detail, expected_detail)
+    np.testing.assert_array_equal(weights, expected_weight)
+    _synthesize(coarse, detail, None, lambda: None)
+    np.testing.assert_array_equal(detail, np.clip(denom * expected_detail + expanded, 0, 1))

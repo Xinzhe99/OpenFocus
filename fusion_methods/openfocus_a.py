@@ -86,41 +86,47 @@ def _response(code, radius, should_cancel, check_cancel, *, u8=False):
     return response
 
 
-def _hard_response(gray, radius, should_cancel, check_cancel):
-    """Accumulate bilinearly expanded Burt responses in the Q4 code domain."""
-    from fusion_methods._openfocus_kernels import (
-        down2_rows, burt_laplacian_rows, burt_accumulate_rows,
-    )
+def _hard_pyramid_shapes(shape, radius):
+    shapes = [shape]
+    for _ in range(int(np.floor(np.log2(max(1, radius)))) + 3):
+        height, width = shapes[-1]
+        reduced_shape = ((height + 1) // 2, (width + 1) // 2)
+        shapes.append(reduced_shape)
+        if reduced_shape == (1, 1):
+            break  # Further Laplacians of a single pixel are zero.
+    return shapes
 
-    height, width = gray.shape
-    levels = int(np.floor(np.log2(max(1, radius)))) + 3
-    response = create_frame((height, width), np.int32)
-    for level in range(levels):
+
+def _hard_pyramid(gray, radius, should_cancel, check_cancel):
+    """Keep only the half-size gray plane and packed coarse Laplacians."""
+    from fusion_methods._openfocus_kernels import down2_rows, burt_laplacian_rows
+
+    shapes = _hard_pyramid_shapes(gray.shape, radius)
+
+    lap_size = sum(h * w for h, w in shapes[1:-1])
+    laplacians = (create_frame((lap_size,), np.int32) if lap_size
+                  else np.empty(0, np.int32))
+    offset = 0
+    current = gray
+    for level, shape in enumerate(shapes[1:]):
         check_cancel(should_cancel)
-        reduced = create_frame(((gray.shape[0] + 1) // 2,
-                                (gray.shape[1] + 1) // 2), np.int32)
+        reduced = create_frame(shape, np.int32)
         def reduce_rows(start, stop):
             check_cancel(should_cancel)
-            down2_rows(gray, reduced, start, stop)
-        run_bands(reduced.shape[0], 128, reduce_rows)
+            down2_rows(current, reduced, start, stop)
+        run_bands(shape[0], 128, reduce_rows)
         if level == 0:
-            def laplacian0_rows(start, stop):
-                check_cancel(should_cancel)
-                burt_laplacian_rows(gray, reduced, response, start, stop, True)
-            run_bands(height, 128, laplacian0_rows)
+            half_gray = reduced
         else:
-            laplacian = create_frame(gray.shape, np.int32)
+            end = offset + current.size
+            laplacian = laplacians[offset:end].reshape(current.shape)
             def laplacian_rows(start, stop):
                 check_cancel(should_cancel)
-                burt_laplacian_rows(gray, reduced, laplacian, start, stop, False)
-            run_bands(gray.shape[0], 128, laplacian_rows)
-            def accumulate_rows(start, stop):
-                check_cancel(should_cancel)
-                burt_accumulate_rows(laplacian, response, level, start, stop)
-            run_bands(height, 128, accumulate_rows)
-            del laplacian
-        gray = reduced
-    return response
+                burt_laplacian_rows(current, reduced, laplacian, start, stop)
+            run_bands(current.shape[0], 128, laplacian_rows)
+            offset = end
+        current = reduced
+    return half_gray, laplacians, len(shapes) - 1
 
 
 @execution_job
@@ -187,17 +193,14 @@ def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 17,
             frame = resolve_frame(source, should_cancel=cancelled)
             _check_cancel(cancelled)
             gray = frame_gray_codes(frame, None, cancelled)
-            response = _hard_response(gray, radius, cancelled, _check_cancel)
-            return frame, response
+            return frame, (gray, *_hard_pyramid(gray, radius, cancelled, _check_cancel))
         code = frame_codes(source, img_resize, cancelled)
         if hard:
             gray = gray_codes(code, cancelled, u8=source.dtype == np.uint8)
-            response = _hard_response(gray, radius, cancelled, _check_cancel)
-        else:
-            response = _response(code, radius, cancelled, _check_cancel,
-                                 u8=source.dtype == np.uint8)
-        frame = code if hard else _prepare_frame(source, img_resize, cancelled)
-        return frame, response
+            return code, (gray, *_hard_pyramid(gray, radius, cancelled, _check_cancel))
+        response = _response(code, radius, cancelled, _check_cancel,
+                             u8=source.dtype == np.uint8)
+        return _prepare_frame(source, img_resize, cancelled), response
 
     soft = blend_mode == 'soft'
     feather = blend_mode == 'feather'
@@ -353,32 +356,47 @@ def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 17,
                     progress_callback(step, total_steps)
             output = accumulated
         else:
-            from fusion_methods._openfocus_kernels import select_rows
-            for index, (frame, response) in produced:
-                if index == 0:
-                    best = response
+            from fusion_methods._openfocus_kernels import (
+                A_BACKGROUND, A_SATURATED, select_rows,
+            )
+
+            band = 128
+            for index, (frame, pyramid) in produced:
+                first = index == 0
+                if first:
+                    height, width = frame.shape[:2]
                     output = create_frame(frame.shape, np.uint16)
-                    scratch_bytes = frame.size * 4 + response.size * 8
-                    allocate = (create_frame if scratch_bytes <= _BACKGROUND_RAM_LIMIT_BYTES
+                    best = create_frame((height, width), np.int32)
+                    channels = 1 if frame.ndim == 2 else frame.shape[2]
+                    # One region lease covers the interleaved sums, weight,
+                    # and packed response statistics for each live band.
+                    background_shape = (height, width, channels + 2)
+                    background_bytes = height * width * (channels + 2) * 4
+                    allocate = (create_frame if background_bytes <= _BACKGROUND_RAM_LIMIT_BYTES
                                 else create_disk_frame)
-                    accumulated = allocate(frame.shape, np.float32)
-                    weights = allocate(response.shape, np.float32)
-                    statistics = allocate(response.shape + (2,), np.uint16)
-                    row_scratch = min(128, output.shape[0]) * output.shape[1] * (
-                        4 * (1 if frame.ndim == 2 else frame.shape[2]) + 8)
+                    background = allocate(background_shape, np.float32)
+                    no_background = background[:0]
+                    band_state = [A_BACKGROUND] * ((height + band - 1) // band)
+                    mapped_band_bytes = min(band, height) * width * (channels + 2) * 4
+                    row_scratch = width * 4 + mapped_band_bytes
                 if frame.shape != output.shape:
                     raise ValueError("OpenFocus A requires frames with matching shapes")
                 scale = 256 if frame.dtype == np.uint8 else 1
-                def select(start, stop):
+                def select(start, stop, response):
                     _check_cancel(should_cancel)
-                    rows = slice(start, stop)
-                    with frame_region(accumulated, rows, write=True) as sums, \
-                            frame_region(weights, rows, write=True) as weight_rows, \
-                            frame_region(statistics, rows, write=True) as stats:
-                        select_rows(frame, response, best, output, start, stop, scale,
-                                    index == 0, sums, weight_rows, stats)
-                run_bands(output.shape[0], 128, select, scratch_bytes=row_scratch)
-                del frame, response
+                    slot = start // band
+                    state = band_state[slot]
+                    if state == A_SATURATED:
+                        return
+                    args = (frame, *pyramid, response, best, output, start, stop, scale, first)
+                    if state == A_BACKGROUND:
+                        with frame_region(background, slice(start, stop), write=True) as region:
+                            band_state[slot] = select_rows(*args, region)
+                    else:
+                        band_state[slot] = select_rows(*args, no_background)
+                run_bands(height, band, select, scratch_bytes=row_scratch,
+                          workspace=lambda: np.empty(width, np.int32))
+                del frame, pyramid
                 if progress_callback is not None:
                     progress_callback(index + 1, len(frames))
                 _check_cancel(should_cancel)
@@ -391,13 +409,11 @@ def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 17,
         from fusion_methods._openfocus_kernels import blend_low_response_rows
         def blend_background(start, stop):
             _check_cancel(should_cancel)
-            rows = slice(start, stop)
-            with frame_region(accumulated, rows, write=True) as sums, \
-                    frame_region(weights, rows, write=True) as weight_rows, \
-                    frame_region(statistics, rows, write=True) as stats:
-                blend_low_response_rows(output, best, sums, weight_rows, stats, start, stop)
-        run_bands(output.shape[0], 128, blend_background, scratch_bytes=row_scratch)
-        del best, accumulated, weights, statistics
+            if band_state[start // band] == A_BACKGROUND:
+                with frame_region(background, slice(start, stop)) as region:
+                    blend_low_response_rows(output, best, region, start, stop)
+        run_bands(height, band, blend_background, scratch_bytes=mapped_band_bytes)
+        del best, background, no_background
         SOURCE_CACHE.clear()
         result = output_codes(output, frames, should_cancel, e37=True)
         if device_callback is not None:
