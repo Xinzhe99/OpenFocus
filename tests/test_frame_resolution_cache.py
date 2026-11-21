@@ -458,7 +458,7 @@ def test_cache_discards_unpublished_store_on_cancellation(monkeypatch):
 
 
 @pytest.mark.parametrize('method', ['openfocus_a', 'openfocus_c'])
-def test_whole_cpu_fusion_reuses_existing_snapshots_without_new_writes(tmp_path, method):
+def test_whole_cpu_fusion_reuses_existing_snapshots_without_new_writes(tmp_path, monkeypatch, method):
     from core.multi_focus_fusion import MultiFocusFusion
     from utils.performance_profile import PerformanceProfile, active
 
@@ -470,7 +470,10 @@ def test_whole_cpu_fusion_reuses_existing_snapshots_without_new_writes(tmp_path,
     profile = PerformanceProfile()
     with active(profile), cache_module.render_scope(frames) as scope, _bound(frames):
         frames[0].full_resolution()
-        actual = MultiFocusFusion(**options).fuse(frames, thread_count=1)
+        with monkeypatch.context() as patch:
+            patch.setattr(SOURCE_CACHE, 'put',
+                          lambda *args, **kwargs: pytest.fail('single-pass source retained in RAM'))
+            actual = MultiFocusFusion(**options).fuse(frames, thread_count=1)
         np.testing.assert_array_equal(actual, expected)
         assert scope.get(frames[1]) is None
         np.testing.assert_array_equal(frames[1].full_resolution(), eager[1])
