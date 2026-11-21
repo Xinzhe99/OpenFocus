@@ -64,6 +64,20 @@ snapshot, TIFF-header preflight admitted the six methods at 2K, 4K and 8K
 in 100-layer steps through 500. At 8K, preflight selected 256-pixel StackMFF
 tiles at 100 and 200 layers and 128-pixel tiles at 300 through 500.
 
+## Switching fusion methods on the same stack
+
+The Windows desktop rendered six compressed 512 × 320 RGB16 TIFFs using ECC
+and CPU fusion. One run started with StackMFF V3 and switched through
+OpenFocus B, StackMFF V1, OpenFocus C, StackMFF V2 and OpenFocus A. A second
+run started with V2 and continued through A, V3, B, C and V1. Both orders
+produced identical TIFF pixel hashes for each method.
+
+Only the first render of each order ran ECC. The first StackMFF render computed
+the shared exposure gains and prepared tiled source frames. Later StackMFF
+renders reused them across intervening OpenFocus renders. Disabling exposure
+matching for V2 produced the same pixels as a fresh render with matching off.
+Prepared and retained aligned pixels share a 2 GiB retention limit.
+
 ## StackMFF on an RTX 4060 Laptop GPU
 
 The Windows desktop render worker fused 29 registered 4096 × 3072 photographs
