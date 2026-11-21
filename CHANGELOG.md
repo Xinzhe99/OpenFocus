@@ -54,6 +54,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   post-processing, and color and depth reconstruction. Account for read
   buffers and queued crops alongside inference memory. Read individual
   tile regions when the available memory permits only one tile.
+- Continue StackMFF renders without optional native kernels when compilation
+  runs out of memory. Check cancellation between resize row bands and preserve
+  16-bit exposure rounding in V2 color reconstruction.
 - Reuse OpenFocus A response rows and limit GPU output readback size. Skip
   inactive OpenFocus B merge tiles and reuse OpenFocus C pyramid buffers.
 - Bound PyTorch CUDA and MPS attention workspace while retaining all focus

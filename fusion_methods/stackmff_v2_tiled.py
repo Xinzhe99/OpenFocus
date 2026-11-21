@@ -288,9 +288,8 @@ def _stage_direct_rgb_chunk(source, y, chunk_xs, block, source_h, source_w,
 
     if io_workers > 1:
         with ThreadPoolExecutor(max_workers=io_workers) as executor:
-            futures = [executor.submit(_stage_worker, wid) for wid in range(io_workers)]
-            for fut in futures:
-                fut.result()
+            for _ in executor.map(_stage_worker, range(io_workers)):
+                pass
     else:
         _stage_worker(0)
     common.cancel(should_cancel)
@@ -335,6 +334,7 @@ def _tiled_depth_under_lease(source, model_path, use_gpu, should_cancel=None,
     from core.source_frames import is_direct_rgb_tiff
 
     kernels = None
+    max_k = 1
     if len(xs) > 1 and all(is_direct_rgb_tiff(item) for item in source.items):
         for item in source.items:
             if item.shape[:2] != (source_h, source_w):
@@ -400,29 +400,32 @@ def _tiled_depth_under_lease(source, model_path, use_gpu, should_cancel=None,
              for _ in range(io_workers)],
         )
 
-        for y in ys:
+    for y in ys:
+        common.cancel(should_cancel)
+        for start in range(0, len(xs), max_k):
             common.cancel(should_cancel)
-            for c_start in range(0, len(xs), max_k):
+            stop = min(len(xs), start + max_k)
+            if kernels is not None and stop > start + 1:
+                if common.load_stackmff_kernels() is not None:
+                    chunk_xs = xs[start:stop]
+                    try:
+                        chunk_planes = _stage_direct_rgb_chunk(
+                            source, y, chunk_xs, block, source_h, source_w,
+                            all_rows, all_cols, kernels, io_workers, should_cancel,
+                            worker_buffers=worker_buffers)
+                    except common.StackMFFKernelUnavailable:
+                        pass
+                    else:
+                        for k_idx, x in enumerate(chunk_xs):
+                            common.cancel(should_cancel)
+                            _accumulate_tile(x, y, chunk_planes[k_idx:k_idx + 1])
+                        del chunk_planes
+                        continue
+                kernels = None
+                del worker_buffers, all_rows, all_cols
+            for i in range(start, stop):
                 common.cancel(should_cancel)
-                chunk_xs = xs[c_start:c_start + max_k]
-                if len(chunk_xs) == 1:
-                    x = chunk_xs[0]
-                    planes = _stage_tile_planes(source, (x, y, block, block), should_cancel)
-                    _accumulate_tile(x, y, planes)
-                    del planes
-                    continue
-                chunk_planes = _stage_direct_rgb_chunk(
-                    source, y, chunk_xs, block, source_h, source_w,
-                    all_rows, all_cols, kernels, io_workers, should_cancel,
-                    worker_buffers=worker_buffers)
-                for k_idx, x in enumerate(chunk_xs):
-                    common.cancel(should_cancel)
-                    _accumulate_tile(x, y, chunk_planes[k_idx:k_idx + 1])
-                del chunk_planes
-    else:
-        for y in ys:
-            for x in xs:
-                common.cancel(should_cancel)
+                x = xs[i]
                 planes = _stage_tile_planes(source, (x, y, block, block), should_cancel)
                 _accumulate_tile(x, y, planes)
                 del planes

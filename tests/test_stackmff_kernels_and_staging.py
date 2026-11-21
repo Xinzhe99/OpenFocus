@@ -150,6 +150,20 @@ def test_read_rgb_tiff_rows_and_invalidation(tmp_path):
         read_rgb_tiff_rows(mapped[0], 0, 10, buf)
 
 
+def test_v2_direct_tiff_preserves_integer_exposure(tmp_path):
+    rgb = np.array([[[3, 7, 65535], [21, 2, 1]]], dtype=np.uint16)
+    path = tmp_path / 'exposure.tif'
+    tifffile.imwrite(path, rgb, photometric='rgb')
+    ok, msg, frames, _ = ImageStackLoader().load_from_filepaths([str(path)])
+    assert ok, msg
+    direct = map_native_rgb_tiffs(frames)
+    assert is_direct_rgb_tiff(direct[0])
+
+    fused = stackmff_v2._sample(direct, np.zeros((1, 2), np.int64), gains=[0.5])
+    expected = (rgb[..., ::-1] // 2).astype(np.float32) * np.float32(255.0 / 65535.0)
+    np.testing.assert_array_equal(fused, expected)
+
+
 @pytest.mark.skipif(not is_ai_fusion_available(), reason='ONNX Runtime not installed')
 @pytest.mark.parametrize('dtype', [np.uint16, np.uint8])
 @pytest.mark.parametrize('alg_mode', [
@@ -158,9 +172,12 @@ def test_read_rgb_tiff_rows_and_invalidation(tmp_path):
     ('stackmffv3', 'soft'),
     ('stackmffv3', 'hard'),
 ])
-def test_end_to_end_tiff_chunked_tiled_matches_unchunked_fallback(tmp_path, dtype, alg_mode):
+def test_end_to_end_tiff_chunked_tiled_matches_unchunked_fallback(tmp_path, dtype, alg_mode, monkeypatch):
     from core import multi_focus_fusion as mff_mod, source_frames
+    from core.resource_policy import ResourceSnapshot
 
+    # Small fixtures normally take the prepared snapshot path.
+    monkeypatch.setattr(mff_mod, '_PREPARED_CACHE_BYTES', 0)
     alg, mode = alg_mode
     rng = np.random.default_rng(900 + (16 if dtype == np.uint16 else 8) + len(alg))
     # Odd non-multiple-of-64 dimensions to exercise both interior chunks and reflect/edge boundary tiles
@@ -185,18 +202,22 @@ def test_end_to_end_tiff_chunked_tiled_matches_unchunked_fallback(tmp_path, dtyp
     }
     params = {'mode': mode} if alg == 'stackmffv3' else None
 
-    def run(inp):
+    def run(inp, progress=None):
         fusion = MultiFocusFusion(
             algorithm=alg, use_gpu=False, tile_enabled=True,
             tile_block_size=64, tile_overlap=16, tile_threshold=64,
             exposure_match=False, fusion_parameters=params,
         )
-        return fusion.fuse(inp, model_path=weight_map[alg], thread_count=4)
+        return fusion.fuse(inp, model_path=weight_map[alg], thread_count=4,
+                           progress_callback=progress)
 
-    fast_out = run(direct_frames)
+    with patch.object(source_frames, 'read_rgb_tiff_rows', wraps=read_rgb_tiff_rows) as reads:
+        fast_out = run(direct_frames)
+    assert any(call.args[3].shape[0] == 64 for call in reads.call_args_list)
+    ref_progress = []
     # Force fallback path (no kernels -> legacy borrow_frame_region / _stage_tile_planes / NumPy)
     with patch.object(neural_common, 'load_stackmff_kernels', return_value=None):
-        ref_out = run(direct_frames)
+        ref_out = run(direct_frames, lambda done, total: ref_progress.append((done, total)))
 
     # An individual inference tile does not benefit from reading full image rows.
     with patch.object(stackmff_v2_tiled, '_MAX_V2_CHUNK_BYTES', 1), \
@@ -205,6 +226,24 @@ def test_end_to_end_tiff_chunked_tiled_matches_unchunked_fallback(tmp_path, dtyp
         tight_out = run(direct_frames)
     # V2 reconstruction can still read 128-row strips after inference.
     assert all(call.args[3].shape[0] != 64 for call in reads.call_args_list)
+
+    if dtype == np.uint16 and mode == 'soft':
+        # Force a new dispatcher so the test enters lazy compilation even
+        # after the warm render. Only the compiler sees the low-RAM reading.
+        name = ('pack_rgb_u16_to_bgr_f32_indexed' if alg == 'stackmffv2'
+                else 'pack_rgb_u16_to_bgr_f32')
+        cold = sk._optional_kernel(getattr(sk, name).py_func)
+        low_ram = ResourceSnapshot(available_ram=64 << 20, total_ram=4 << 30)
+        progress = []
+        try:
+            with patch.object(sk, name, cold), \
+                 patch.object(sk, 'probe_memory', return_value=low_ram) as probe:
+                recovered = run(direct_frames, lambda done, total: progress.append((done, total)))
+        finally:
+            neural_common.reset_stackmff_kernels()
+        probe.assert_called_once()
+        np.testing.assert_array_equal(recovered, ref_out)
+        assert progress == ref_progress and progress[-1][0] == progress[-1][1]
 
     if dtype == np.uint16 and mode != 'hard':
         np.testing.assert_allclose(fast_out, ref_out, rtol=1e-5, atol=1e-4)
