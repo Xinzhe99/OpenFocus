@@ -186,9 +186,10 @@ def plan_attention_inference(algorithm, frames, model_path, device,
     requested = device
     for device in candidate_devices(requested):
         host, _ = attention_inference_bytes(n, h, w, c, device, result_count)
+        required_ram = host + fixed_bytes
         workload = Workload(algorithm=algorithm, frames=n, height=h, width=w,
                             channels=c, itemsize=itemsize, parallel_layer='native',
-                            fixed_bytes=host + fixed_bytes, per_worker_bytes=0)
+                            fixed_bytes=required_ram, per_worker_bytes=0)
         try:
             plan = plan_execution(workload, snapshot, preference=resource_preference,
                                   user_threads=thread_count,
@@ -203,9 +204,27 @@ def plan_attention_inference(algorithm, frames, model_path, device,
         if device != requested:
             fallback = f'{requested} did not fit the host memory budget'
         plan = replace(plan, device_kind=device, device_fallback=fallback,
+                       required_ram=required_ram,
                        vram_budget=getattr(execution_plan, 'vram_budget', 0))
         apply_inference_budget(plan)
         return model_path, device, plan
+
+
+def plan_rgb_staging(plan, tile_count, tile_bytes, scratch_bytes, byte_cap):
+    """Admit extra RGB tile data alongside the full inference working set."""
+    limit = min(tile_count, min(byte_cap, plan.ram_budget // 4) // tile_bytes)
+    reserved = plan.required_ram + scratch_bytes
+    if limit < 2 or reserved + tile_bytes > plan.ram_budget:
+        return None, 1
+    kernels = load_stackmff_kernels()
+    if kernels is None:
+        return None, 1
+    from core.resource_policy import probe_memory, ram_ceiling
+
+    headroom = min(plan.ram_budget, ram_ceiling(probe_memory()))
+    size = min(limit, 1 + (headroom - reserved) // tile_bytes)
+    return (kernels, size) if size > 1 else (None, 1)
+
 
 
 

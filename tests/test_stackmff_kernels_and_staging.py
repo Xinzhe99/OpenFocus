@@ -159,7 +159,7 @@ def test_read_rgb_tiff_rows_and_invalidation(tmp_path):
     ('stackmffv3', 'hard'),
 ])
 def test_end_to_end_tiff_chunked_tiled_matches_unchunked_fallback(tmp_path, dtype, alg_mode):
-    import core.multi_focus_fusion as mff_mod
+    from core import multi_focus_fusion as mff_mod, source_frames
 
     alg, mode = alg_mode
     rng = np.random.default_rng(900 + (16 if dtype == np.uint16 else 8) + len(alg))
@@ -198,10 +198,13 @@ def test_end_to_end_tiff_chunked_tiled_matches_unchunked_fallback(tmp_path, dtyp
     with patch.object(neural_common, 'load_stackmff_kernels', return_value=None):
         ref_out = run(direct_frames)
 
-    # Also test K=1 chunking cap
+    # An individual inference tile does not benefit from reading full image rows.
     with patch.object(stackmff_v2_tiled, '_MAX_V2_CHUNK_BYTES', 1), \
-         patch.object(mff_mod, '_MAX_NEURAL_CHUNK_BYTES', 1):
+         patch.object(mff_mod, '_MAX_NEURAL_CHUNK_BYTES', 1), \
+         patch.object(source_frames, 'read_rgb_tiff_rows', wraps=read_rgb_tiff_rows) as reads:
         tight_out = run(direct_frames)
+    # V2 reconstruction can still read 128-row strips after inference.
+    assert all(call.args[3].shape[0] != 64 for call in reads.call_args_list)
 
     if dtype == np.uint16 and mode != 'hard':
         np.testing.assert_allclose(fast_out, ref_out, rtol=1e-5, atol=1e-4)

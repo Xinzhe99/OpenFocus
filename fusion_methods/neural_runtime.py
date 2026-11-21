@@ -952,7 +952,7 @@ def probabilities(planes, path, device, threads, sigma, cancel=None):
                     check(cancel)
                     cv2.resize(q[0, n], (w, h), dst=scratch, interpolation=cv2.INTER_LINEAR)
                     p[0, n] += scratch
-                    p[0, n] *= np.float32(0.5)
+                    p[:, n] *= np.float32(0.5)
             with ThreadPoolExecutor(max_workers=len(ranges)) as executor:
                 list(executor.map(_upsample_range, ranges))
             del q

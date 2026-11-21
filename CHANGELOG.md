@@ -11,10 +11,6 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   three StackMFF models before activation.
 
 ### Changed
-- Accelerate StackMFF V1, V2, and V3 tiled staging, multi-scale probability
-  post-processing, and color/depth reconstruction with bounded RGB TIFF
-  row-band readers, positive-stride RGB-to-BGR native kernels, L1-resident
-  antialias resizing, parallel layer reductions, and direct strip scatters.
 - Reuse OpenCL contexts and compiled kernels across OpenFocus A/B/C and ECC
   resize jobs. Reuse upload buffers within a job and drain pending work
   before releasing buffers after cancellation or error.
@@ -54,6 +50,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - On large stacks, read plain RGB TIFF pixels from the source file and retain
   native bit depth in StackMFF tile snapshots. Prepare a warped or compressed
   frame once when temporary storage can hold the prepared stack.
+- Accelerate StackMFF V1, V2, and V3 tiled TIFF reads, probability
+  post-processing, and color and depth reconstruction. Account for read
+  buffers and queued crops alongside inference memory. Read individual
+  tile regions when the available memory permits only one tile.
 - Reuse OpenFocus A response rows and limit GPU output readback size. Skip
   inactive OpenFocus B merge tiles and reuse OpenFocus C pyramid buffers.
 - Bound PyTorch CUDA and MPS attention workspace while retaining all focus
