@@ -22,6 +22,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and row-band cancellation.
 - Preselect NVIDIA acceleration review on Windows PCs with an NVIDIA driver,
   including when upgrading from 2.0.0.
+- Build the CPU OpenFocus A focus response in cache-sized bands to reduce
+  memory traffic during high-resolution fusion.
 - Stream background replacement focus protection and CPU focus measures in
   bounded memory stripes, replace per-pixel `3x3` linear solves in color
   guided filtering with closed-form banded computation, band initial frame
