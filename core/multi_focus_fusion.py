@@ -952,26 +952,32 @@ class MultiFocusFusion:
                     original = original.source
                 if isinstance(original, SourceFrame):
                     indices.append(index)
-            # Large lazy warps can no longer be admitted after global depth and
-            # merge planes consume RAM. Snapshot them before allocating those
-            # planes; array-backed processors retain their original semantics.
+            # Snapshots avoid redoing expensive lazy warps on the merge pass.
+            # Whole-frame fusion can resolve one source at a time instead.
             tiled = self.tile_enabled and needs_tiles and img_resize is None
             expensive = any(frame_resolution_bytes(input_source[index]) >
                             max(128 * 1024 ** 2, memory_budget_bytes() // 4)
                             for index in indices)
             if indices and (tiled or expensive):
-                prepared = materialize_for_repeated_access(
-                    [input_source[index] for index in indices], should_cancel,
-                    thread_count=kwargs.get('thread_count', 0),
-                    resource_preference=self.resource_preference,
-                    progress_callback=getattr(progress_callback, 'preparation', None),
-                    required=True, staging_bytes=height * width * 48)
-                input_source = list(input_source)
-                for index, frame in zip(indices, prepared):
-                    input_source[index] = frame
-                # Prepared snapshots no longer need the last decoded full frame.
-                from core.source_frames import SOURCE_CACHE
-                SOURCE_CACHE.clear()
+                from core.frame_storage import ScratchSpaceError
+                sources = [input_source[index] for index in indices]
+                try:
+                    prepared = materialize_for_repeated_access(
+                        sources, should_cancel, thread_count=kwargs.get('thread_count', 0),
+                        resource_preference=self.resource_preference,
+                        progress_callback=getattr(progress_callback, 'preparation', None),
+                        required=tiled, staging_bytes=height * width * 48)
+                except ScratchSpaceError:
+                    if tiled:
+                        raise
+                    log_debug('fusion_b_snapshots_skipped', reason='scratch write failed')
+                    prepared = sources
+                if prepared is not sources:
+                    for index, frame in zip(indices, prepared):
+                        input_source[index] = frame
+                    # The prepared snapshots already own the decoded pixels.
+                    from core.source_frames import SOURCE_CACHE
+                    SOURCE_CACHE.clear()
         tile_source, tile_resize = input_source, img_resize
         if resize_for_tiles:
             # Match the whole backend: normalize/sort/exposure above, then
