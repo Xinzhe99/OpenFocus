@@ -12,6 +12,7 @@ import numpy as np
 from fusion_methods import neural_common as common
 from utils.image_utils import apply_exposure_gain
 from core.frame_storage import create_frame
+from fusion_methods.stackmff_v2 import _STRIP_ROWS, _expected_positions, _sample
 
 
 class _Source:
@@ -76,11 +77,11 @@ class _Source:
                 original = original.source
             if isinstance(original, SourceFrame):
                 original.validate_source()
-        frame = resolve_frame(self.items[index])
-        if frame.shape[:2] != self.shape[:2]:
+        item = self.items[index]
+        if item.shape[:2] != self.shape[:2]:
             raise ValueError('All frames must have the same dimensions')
-        if region is not None:
-            frame = self._crop(frame, region)
+        frame = (resolve_frame(item, should_cancel=self.should_cancel) if region is None
+                 else self._crop(item, region, self.should_cancel))
         if self.gains is not None:
             if self.mixed_16:
                 if frame.dtype == np.uint16:
@@ -91,29 +92,43 @@ class _Source:
         return frame
 
     @staticmethod
-    def _crop(frame, region):
+    def _crop(frame, region, should_cancel):
         x, y, width, height = region
         h, w = frame.shape[:2]
+        from core.frame_storage import is_mapped_frame
+        from core.source_frames import borrow_frame_region
+
         if x + width <= w and y + height <= h:
-            return frame[y:y + height, x:x + width]
+            region = np.s_[y:y + height, x:x + width]
+            if isinstance(frame, np.ndarray) and not is_mapped_frame(frame):
+                return frame[region]
+            with borrow_frame_region(frame, region, should_cancel=should_cancel) as crop:
+                return crop.copy(order='C')
         ph, pw = (-h) % common.ATTENTION_PAD_ALIGN, (-w) % common.ATTENTION_PAD_ALIGN
         mode = 'reflect' if ph < h and pw < w else 'edge'
         rows = np.pad(np.arange(h), (0, ph), mode=mode)[y:y + height]
         cols = np.pad(np.arange(w), (0, pw), mode=mode)[x:x + width]
-        return frame[rows[:, None], cols[None, :]]
+        top, left = rows.min(), cols.min()
+        key = np.s_[top:rows.max() + 1, left:cols.max() + 1]
+        with borrow_frame_region(frame, key, should_cancel=should_cancel) as crop:
+            return crop[(rows - top)[:, None], cols[None, :] - left]
 
 
-def _normalized(frame):
-    if frame.dtype == np.uint16:
-        return frame.astype(np.float32) * (255.0 / 65535.0)
-    return frame
 
 
 def tiled_output_bytes(height, width, channels, result_count):
-    """Full-canvas accumulators for V2's globally normalized depth."""
+    """Bound the full-canvas maps and strip workspace used by V2."""
     padded_h = height + (-height) % common.ATTENTION_PAD_ALIGN
     padded_w = width + (-width) % common.ATTENTION_PAD_ALIGN
-    return padded_h * padded_w * (32 + channels * 8 * result_count)
+    pixels = padded_h * padded_w
+    strip_pixels = min(padded_h, _STRIP_ROWS) * padded_w
+    depth_bytes = pixels * 12 + strip_pixels * 12
+    if not result_count:
+        return depth_bytes
+    # Depth is released before sampling. Gathering and exposure adjustment
+    # need at most two float32 strips in addition to the selection mask.
+    output_bytes = pixels * 8 + height * width * channels * 4 * result_count
+    return max(depth_bytes, output_bytes + strip_pixels * max(17, 1 + channels * 8))
 
 
 def _plan(source, model_path, use_gpu, tile_size, execution_plan,
@@ -128,12 +143,10 @@ def _plan(source, model_path, use_gpu, tile_size, execution_plan,
     from core.source_frames import frame_resolution_bytes, source_cache_growth_bytes
     source_resolution = max(frame_resolution_bytes(frame) for frame in source.items)
     source_cache = source_cache_growth_bytes(source.items)
-    gain_bytes = (h * w * channels * max(4, source.dtype.itemsize) * 4
-                  if source.gains is not None else 0)
     block, outer = plan_neural_tiles(
         len(source.items), h, w, channels, tile_size or min(h, w), device,
         estimate_inference_bytes, directory=False,
-        source_resolution_bytes=source_resolution + gain_bytes, source_cache_bytes=source_cache,
+        source_resolution_bytes=source_resolution, source_cache_bytes=source_cache,
         itemsize=source.dtype.itemsize, preference=resource_preference,
         user_threads=thread_count)
     if execution_plan is not None:
@@ -143,7 +156,7 @@ def _plan(source, model_path, use_gpu, tile_size, execution_plan,
                         if execution_plan.vram_budget else outer.vram_budget,
                         device_fallback=outer.device_fallback or execution_plan.device_fallback,
                         native_threads=min(outer.native_threads, execution_plan.native_threads))
-    fixed = tiled_output_bytes(h, w, channels, result_count) + gain_bytes
+    fixed = tiled_output_bytes(h, w, channels, result_count)
     while True:
         try:
             model, device, plan = _prepare_inference(
@@ -223,7 +236,6 @@ def _tiled_depth_under_lease(source, model_path, use_gpu, should_cancel=None,
         weight = create_frame((h, w), np.float32)
         expected.fill(0)
         weight.fill(0)
-    layer_weights = np.arange(1, count + 1, dtype=np.float32)[None, :, None, None]
     if progress_callback is not None:
         progress_callback(0, total)
     done = 0
@@ -231,11 +243,10 @@ def _tiled_depth_under_lease(source, model_path, use_gpu, should_cancel=None,
         for x in xs:
             common.cancel(should_cancel)
             planes = _stage_tile_planes(source, (x, y, block, block), should_cancel)
-            probs = neural_runtime.softmax(neural_runtime.logits(
-                planes, model, device, plan.native_threads, should_cancel))
+            logits = neural_runtime.logits(planes, model, device, plan.native_threads, should_cancel)
             del planes
-            positions = (probs * layer_weights).sum(axis=1)[0, :block, :block]
-            del probs
+            positions = _expected_positions(logits, should_cancel)[:block, :block]
+            del logits
             rows, cols = slice(y, y + block), slice(x, x + block)
             if weight is None:
                 expected[rows, cols] = positions
@@ -282,27 +293,28 @@ def _tiled_fusion_under_lease(input_source, img_resize, model_path, use_gpu,
                               progress_callback=None, exposure_gains=None, source_all_uint8=None,
                               focus_callback=None, tile_grid_callback=None):
     source = _Source(input_source, img_resize, exposure_gains, should_cancel)
+    total_tiles = 0
+
+    def report_tile(done, total):
+        nonlocal total_tiles
+        total_tiles = total
+        progress_callback(done, total + 1)
+
     depth, index = _tiled_depth_under_lease(source, model_path, use_gpu, should_cancel,
                                execution_plan, thread_count, resource_preference,
-                               tile_size, tile_overlap, progress_callback, 1, tile_grid_callback)
+                               tile_size, tile_overlap, report_tile if progress_callback else None,
+                               1, tile_grid_callback)
     del depth
-    first = _normalized(source.get(0))
     if source_all_uint8 is None:
-        source_all_uint8 = all(item.dtype == np.uint8 for item in source.items) if not source.directory else first.dtype == np.uint8
-    output = create_frame(first.shape, np.uint8 if source_all_uint8 else np.float32)
-    for i in range(len(source.items)):
-        common.cancel(should_cancel)
-        frame = first if i == 0 else _normalized(source.get(i))
-        for start in range(0, output.shape[0], 128):
-            common.cancel(should_cancel)
-            rows = slice(start, min(output.shape[0], start + 128))
-            mask = index[rows] == i
-            np.copyto(output[rows], frame[rows],
-                      where=mask[:, :, None] if frame.ndim == 3 else mask,
-                      casting='unsafe')
-    if output.dtype != np.uint8:
-        np.clip(output, 0, 255, out=output)
-    common.cancel(should_cancel)
+        source_all_uint8 = (source.items[0].dtype == np.uint8 if source.directory else
+                            all(item.dtype == np.uint8 for item in source.items))
+    output = _sample(source.items, index, should_cancel,
+                     dtype=np.uint8 if source_all_uint8 else np.float32,
+                     gains=source.gains, normalize_for_exposure=source.mixed_16,
+                     original_frames=source.original_items)
     if focus_callback is not None:
         focus_callback(index, len(source.items) - 1)
-    return output[..., 0] if output.ndim == 3 and output.shape[-1] == 1 else output
+    if progress_callback is not None:
+        progress_callback(total_tiles + 1, total_tiles + 1)
+    common.cancel(should_cancel)
+    return output

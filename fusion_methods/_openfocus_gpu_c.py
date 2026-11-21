@@ -13,7 +13,7 @@ from threading import Lock
 
 import numpy as np
 
-from fusion_methods.openfocus_bc import _source_codes
+from fusion_methods.openfocus_bc import _pyramid_levels, _source_codes
 from fusion_methods.openfocus_ab import _check_cancel
 
 _KERNEL_NAMES = (
@@ -326,12 +326,7 @@ class GpuC:
         is_gray = len(shape) == 2
         channels = 1 if is_gray else shape[2]
         is_u8 = all(getattr(f, 'dtype', None) == np.uint8 for f in frames)
-        levels = [(height, width)]
-        while True:
-            nxt = ((levels[-1][0] + 1) // 2, (levels[-1][1] + 1) // 2)
-            if min(nxt) < 16 and (len(levels) > 1 or nxt == levels[-1]):
-                break
-            levels.append(nxt)
+        levels = _pyramid_levels(height, width)
         detail_levels = list(zip(levels, levels[1:]))
         count = len(frames)
         total = count + 1

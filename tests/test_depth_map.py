@@ -489,24 +489,13 @@ def test_dct_depth_block_size_is_a_legacy_input():
 
 @pytest.mark.parametrize("smoothing", [0, 5])
 @pytest.mark.parametrize("winner", [500, 999])
-def test_deep_stack_depth_index_is_preserved(monkeypatch, smoothing, winner):
+def test_deep_stack_depth_index_is_preserved(smoothing, winner):
     from fusion_methods import openfocus_depth
 
-    calls = 0
-
-    def fake_filter(src, radius, cancel, guide=None, low=None, *,
-                    allocate=None):
-        nonlocal calls
-        if guide is not None:
-            return src.astype(np.int64)
-        calls += 1
-        return np.zeros_like(src) if calls % 2 else src
-
-    monkeypatch.setattr(openfocus_depth, "_filter", fake_filter)
     blank = np.zeros((2, 2), np.uint8)
     frames = [blank] * 1000
-    frames[winner] = np.full((2, 2), 255, np.uint8)
-    depth = openfocus_depth.depth_map(frames, None, 11, smoothing, None)
+    frames[winner] = np.array([[0, 255], [255, 0]], np.uint8)
+    depth = openfocus_depth.depth_map(frames, None, 11, smoothing, None, thread_count=1)
     np.testing.assert_allclose(depth, winner, atol=0.01)
 
 

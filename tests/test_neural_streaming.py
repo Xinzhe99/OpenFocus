@@ -280,3 +280,72 @@ def test_tiled_preparation_survives_transport_and_rejects_changed_source(
     import gc
     gc.collect()
     assert all(not os.path.exists(path) for path in snapshot_paths)
+
+
+@pytest.mark.parametrize('method', ['stackmff', 'stackmffv2', 'stackmffv3'])
+@pytest.mark.parametrize('exposure_match', [False, True])
+def test_deep_tiled_fusion_preserves_mixed_tiff_pixels(tmp_path, monkeypatch, method, exposure_match):
+    pytest.importorskip('onnxruntime')
+    import tifffile
+    from core import multi_focus_fusion, source_frames
+
+    frames = []
+    for index, pixels in enumerate(_mixed_frames()):
+        path = tmp_path / f'{index}.tif'
+        tifffile.imwrite(path, pixels[..., ::-1], photometric='rgb',
+                         compression='deflate' if index == 2 else None)
+        frames.extend(source_frames.scan_source(str(path), header_only=True))
+
+    def fuse():
+        fusion = multi_focus_fusion.MultiFocusFusion(
+            method, use_gpu=False, tile_threshold=1, tile_block_size=13,
+            tile_overlap=2, exposure_match=exposure_match)
+        steps = []
+        result = fusion.fuse(frames, thread_count=1,
+                             progress_callback=lambda done, total: steps.append((done, total)))
+        assert steps[0][0] == 0 and steps[-1][0] == steps[-1][1]
+        assert all(total == steps[-1][1] for _, total in steps)
+        return result
+
+    expected = fuse()
+    # Native samples fit the retention limit, but their float32 snapshot does not.
+    monkeypatch.setattr(multi_focus_fusion, '_PREPARED_CACHE_BYTES', sum(frame.nbytes for frame in frames))
+    monkeypatch.setattr(source_frames, 'SOURCE_CACHE', source_frames.FrameCache(0))
+    from core import image_loader
+    decode_tiff = image_loader.decode_tiff_page
+    decoded = []
+
+    def record_decode(path, *args, **kwargs):
+        decoded.append(path)
+        return decode_tiff(path, *args, **kwargs)
+
+    monkeypatch.setattr(image_loader, 'decode_tiff_page', record_decode)
+    np.testing.assert_array_equal(fuse(), expected)
+    assert set(decoded) == {frames[2].path}
+
+
+@pytest.mark.parametrize('byteorder', ['<', '>'])
+def test_tiff_regions_preserve_byte_order_and_source_identity(tmp_path, byteorder):
+    import os
+    import tifffile
+    from core.frame_storage import frame_region
+    from core.source_frames import map_native_rgb_tiffs, resolve_frame, scan_source
+
+    rng = np.random.default_rng(109)
+    images = rng.integers(0, 65536, (2, 71, 76, 3), dtype=np.uint16)
+    path = tmp_path / 'pages.tiff'
+    with tifffile.TiffWriter(path, byteorder=byteorder) as writer:
+        for image in images:
+            writer.write(image, photometric='rgb', rowsperstrip=7, contiguous=False)
+    sources = scan_source(str(path), header_only=True)
+    mapped = map_native_rgb_tiffs(sources)
+    for image, frame in zip(images, mapped, strict=True):
+        image_map = resolve_frame(frame)
+        if np.dtype('u2').newbyteorder(byteorder).isnative:
+            assert isinstance(image_map, np.memmap) and os.path.samefile(image_map.filename, path)
+        with frame_region(image_map, np.s_[4:66, 3:73]) as pixels:
+            np.testing.assert_array_equal(pixels, image[4:66, 3:73, ::-1])
+    stamp = path.stat()
+    os.utime(path, ns=(stamp.st_atime_ns, stamp.st_mtime_ns + 1_000_000_000))
+    with pytest.raises(OSError, match='Source changed'):
+        resolve_frame(mapped[1])

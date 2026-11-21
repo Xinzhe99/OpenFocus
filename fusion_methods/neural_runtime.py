@@ -15,6 +15,8 @@ import traceback
 import cv2
 import numpy as np
 
+from core.models.attention_workspace import released_attention_workspace_bytes
+
 from utils.logging_setup import get_logger, log_action
 from utils.performance_profile import current as _profile
 
@@ -25,11 +27,13 @@ _PROVIDER = {'CPU': 'CPUExecutionProvider', 'DIRECTML': 'DmlExecutionProvider',
              'OPENVINO': 'OpenVINOExecutionProvider', 'COREML': 'CoreMLExecutionProvider'}
 _ORT_ORDER = ('CUDA', 'ROCM', 'DIRECTML', 'OPENVINO', 'COREML')
 _NATIVE_ORDER = ('TENSORRT', 'TORCH_CUDA', 'TORCH_MPS')
+_NATIVE_TORCH = ('TORCH_CUDA', 'TORCH_MPS')
 # A refresh publishes one immutable installation snapshot. A live job holds
 # its own reference, so an installer cannot switch its interpreter mid-job.
 _PACK = None
 _JOB_PACK = None
 _WORKER = None
+_WORKER_CUDA_TILE = None
 _JOB_RAM_LIMIT = _JOB_VRAM_LIMIT = None
 _WORKER_FAILURE = None
 _FAILED_SHAPES = {}
@@ -120,7 +124,8 @@ def _record_admission(kind, snapshot):
 
 
 def finish_inference_job():
-    global _WORKER
+    global _WORKER, _WORKER_CUDA_TILE
+    _WORKER_CUDA_TILE = None
     worker, _WORKER = _WORKER, None
     if worker is not None:
         worker.close()
@@ -378,11 +383,17 @@ def estimate_inference_bytes(n, h, w, kind):
     pixels = hp * wp
     feature_base = 7 if kind == 'CPU' else 12
     workspace = 0
+    if kind in _NATIVE_TORCH:
+        # Only the released checkpoints enter these engines, with bounded
+        # attention enabled by the app-supplied worker source.
+        attention = released_attention_workspace_bytes(n, hp, wp)
+    else:
+        attention = pixels // 16 * 3 * 4 * (n * 64 + n * n)
     if kind == 'TENSORRT':
         from core.inference_tensorrt import workspace_bytes
         workspace = workspace_bytes(n, hp, wp)
     return (int(n * pixels * 3 * 4 * (feature_base + 4))
-            + int(pixels / 16 * 3 * 4 * (n * 64 + n * n))
+            + attention
             + n * pixels * 4 * 6 + 4 * 1024 * 1024 + workspace)
 
 
@@ -590,6 +601,14 @@ def resolve_job_device(use_gpu):
     return device
 
 
+def _worker_covers_cuda_tile(path, shape):
+    if _WORKER_CUDA_TILE is None:
+        return False
+    model, (layers, height, width) = _WORKER_CUDA_TILE
+    n, hp, wp = shape
+    return model == path and layers == n and hp <= height and wp <= width
+
+
 def _memory_refusal(path, shape, device, threads, *, reclaim=True):
     if device == 'TORCH_MPS':
         from core.resource_policy import probe_memory, ram_ceiling
@@ -622,6 +641,13 @@ def _memory_refusal(path, shape, device, threads, *, reclaim=True):
         del session
     n, hp, wp = shape
     required = estimate_inference_bytes(*shape, device) + n * hp * wp * 4 * 6
+    if _JOB_VRAM_LIMIT is not None and required > _JOB_VRAM_LIMIT:
+        return f'GPU memory plan budget {_JOB_VRAM_LIMIT} bytes, requires {required}'
+    if device == 'TORCH_CUDA' and _worker_covers_cuda_tile(path, shape):
+        # The worker's caching allocator retains its working set. A driver
+        # probe counts that reusable space as unavailable. The worker still
+        # verifies the checkpoint and reports any allocation failure.
+        return None
     snapshot = _vram_snapshot(device)
     if reclaim and (_vram_unknown(snapshot) or required > vram_budget(snapshot)) and (_SESSIONS or _WORKER):
         _clear_sessions()
@@ -657,7 +683,7 @@ def _run_ort(planes, path, device, threads, should_cancel, profile):
 
 
 def _run_native(planes, path, device, should_cancel, profile):
-    global _WORKER, _WORKER_FAILURE, _JOB_PACK
+    global _WORKER, _WORKER_CUDA_TILE, _WORKER_FAILURE, _JOB_PACK
     from fusion_methods.inference_client import Worker, WorkerLost, WorkerError
     from core.inference_pack import pack_root
     if _WORKER_FAILURE:
@@ -686,6 +712,10 @@ def _run_native(planes, path, device, should_cancel, profile):
             raise WorkerError('Engine unavailable on this GPU/driver')
         with profile.stage('session.run'):
             result = _WORKER.run(device, path, planes, pack_root() / 'engine-cache', should_cancel)
+        if device != 'TORCH_CUDA':
+            _WORKER_CUDA_TILE = None
+        elif not _worker_covers_cuda_tile(path, planes.shape[1:]):
+            _WORKER_CUDA_TILE = path, planes.shape[1:]
         return result, device
     except (WorkerLost, OSError) as exc:
         _WORKER_FAILURE = str(exc)
@@ -730,7 +760,7 @@ def logits(planes, path, device, threads, should_cancel=None):
         if device == 'CPU' and requested != 'CPU':
             from core.resource_policy import require_memory
             require_memory(estimate_inference_bytes(*shape, device), None, _JOB_RAM_LIMIT)
-        reason = _memory_refusal(path, shape, device, threads)
+        reason = _memory_refusal(model, shape, device, threads)
         if reason is None:
             try:
                 if device in _NATIVE_ORDER:
@@ -778,7 +808,16 @@ def logits(planes, path, device, threads, should_cancel=None):
 
 
 def softmax(x):
-    x = x - x.max(axis=1, keepdims=True)
+    return _softmax_shifted(x - x.max(axis=1, keepdims=True))
+
+
+def softmax_inplace(x):
+    """Normalize an owned, writable float32 logits buffer over all layers."""
+    x -= x.max(axis=1, keepdims=True)
+    return _softmax_shifted(x)
+
+
+def _softmax_shifted(x):
     np.exp(x, out=x)
     x /= x.sum(axis=1, keepdims=True)
     return x
@@ -816,7 +855,7 @@ def probabilities(planes, path, device, threads, sigma, cancel=None):
     with profile.stage('logits.full'):
         p = logits(planes, path, device, threads, cancel)
     with profile.stage('softmax.full'):
-        p = softmax(p)
+        p = softmax_inplace(p)
     check(cancel)
     with profile.stage('resize.0.75'):
         small = _resize_antialias(planes, 0.75, cancel)
@@ -824,11 +863,13 @@ def probabilities(planes, path, device, threads, sigma, cancel=None):
         q = logits(small, path, device, threads, cancel)
     del small
     with profile.stage('softmax.reduced'):
-        q = softmax(q)
+        q = softmax_inplace(q)
     with profile.stage('upsample_combine'):
+        scratch = np.empty((h, w), np.float32)
         for n in range(p.shape[1]):
             check(cancel)
-            p[0, n] += cv2.resize(q[0, n], (w, h), interpolation=cv2.INTER_LINEAR)
+            cv2.resize(q[0, n], (w, h), dst=scratch, interpolation=cv2.INTER_LINEAR)
+            p[0, n] += scratch
         del q
         p *= 0.5
     if sigma:
@@ -836,8 +877,9 @@ def probabilities(planes, path, device, threads, sigma, cancel=None):
             radius = int(3 * sigma + 0.5)
             for n in range(p.shape[1]):
                 check(cancel)
-                p[0, n] = cv2.GaussianBlur(p[0, n], (radius * 2 + 1,) * 2, sigma,
-                                            borderType=cv2.BORDER_REPLICATE)
+                cv2.GaussianBlur(p[0, n], (radius * 2 + 1,) * 2, sigma,
+                                 dst=scratch, borderType=cv2.BORDER_REPLICATE)
+                p[0, n] = scratch
             check(cancel)
             p /= p.sum(axis=1, keepdims=True)
     check(cancel)

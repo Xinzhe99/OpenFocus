@@ -13,6 +13,9 @@ import numpy as np
 
 from fusion_methods._openfocus_pixels import frame_codes
 from fusion_methods.openfocus_ab import _check_cancel
+from fusion_methods.openfocus_a import _hard_pyramid_shapes
+
+_READBACK_BUFFER_BYTES = 8 * 1024 * 1024
 
 _KERNEL_NAMES = (
     'a_down2_u8', 'a_down2_u16', 'a_down2', 'a_laplacian',
@@ -202,6 +205,10 @@ __kernel void NAME(__global const PIXEL_T* image, __global const int* half_gray,
     if (collect) { \
         ushort current_code = (ushort)(score >> 4); \
         size_t sk = (size_t)k * 2; \
+        if (!first && score == 0) { \
+            if (stats[sk]) stats[sk] = (ushort)0; \
+            return; \
+        } \
         if (first) { \
             stats[sk] = current_code; \
             stats[sk + 1] = (ushort)0; \
@@ -289,20 +296,22 @@ __kernel void a_blend_low(__global ushort* output, __global const int* best,
 }
 
 __kernel void a_out_u8(__global const ushort* src, __global uchar* dst,
-                       const int n, const int C)
+                       const int start, const int n, const int C)
 {
     int i = get_global_id(0);
     if (i >= n) return;
-    int v = (int)src[i] >> 8;
-    if (C != 4 || (i % 4) != 3) v = max(v - 1, 0);
+    int sample = start + i;
+    int v = (int)src[sample] >> 8;
+    if (C != 4 || (sample % 4) != 3) v = max(v - 1, 0);
     dst[i] = (uchar)v;
 }
 
-__kernel void a_out_f32(__global const ushort* src, __global float* dst, const int n)
+__kernel void a_out_f32(__global const ushort* src, __global float* dst,
+                        const int start, const int n)
 {
     int i = get_global_id(0);
     if (i >= n) return;
-    dst[i] = (float)src[i] * (1.0f / 257.0f);
+    dst[i] = (float)src[start + i] * (1.0f / 257.0f);
 }
 '''
 
@@ -418,14 +427,7 @@ class GpuA:
             progress_callback(0, total)
         _check_cancel(should_cancel)
 
-        levels_count = int(np.floor(np.log2(max(1, radius)))) + 3
-        pyr_shapes = [(height, width)]
-        for _ in range(levels_count):
-            ph, pw = pyr_shapes[-1]
-            reduced_shape = ((ph + 1) // 2, (pw + 1) // 2)
-            pyr_shapes.append(reduced_shape)
-            if reduced_shape == (1, 1):
-                break  # Subsequent Laplacians of a single pixel are zero.
+        pyr_shapes = _hard_pyramid_shapes((height, width), radius)
         levels_count = len(pyr_shapes) - 1
 
         is_u8 = all(getattr(source, 'dtype', None) == np.uint8 for source in frames)
@@ -436,15 +438,17 @@ class GpuA:
         # the child job's hard limit. Managed frame residency has its own cap.
         host_budget = resource_policy.ram_ceiling(snapshot)
         samples = n * channels
-        out_bytes = samples * (1 if is_u8 else 4)
+        out_dtype = np.dtype(np.uint8 if is_u8 else np.float32)
+        out_bytes = samples * out_dtype.itemsize
+        readback_bytes = min(out_bytes, _READBACK_BUFFER_BYTES)
         source_peak = 0
         for frame in frames:
             _check_cancel(should_cancel)
             use_native = native_upload and frame.dtype in (np.uint8, np.uint16)
             source_peak = max(source_peak, _source_staging_bytes(frame, shape, img_resize, use_native))
-        # Upload and readback never overlap. The latter can hold the output and
-        # a native transfer copy. Budget context/driver overhead separately.
-        staging = max(source_peak, out_bytes * 2) + 16 * 1024 * 1024
+        # Upload and readback never overlap. Readback holds the host output
+        # and at most one transfer buffer, with driver overhead separate.
+        staging = max(source_peak, out_bytes + readback_bytes) + 16 * 1024 * 1024
         if staging > host_budget:
             raise GpuError(f'OpenFocus A GPU staging exceeds the host memory budget '
                            f'({staging >> 20} MiB needed, {host_budget >> 20} MiB available)')
@@ -458,7 +462,7 @@ class GpuA:
                 + n * 4 * 3          # best, weight, statistics
                 + n * channels * 2   # output codes
                 + n * channels * 4   # accumulated sums
-                + max(src_bytes, out_bytes)  # upload and readback are disjoint
+                + max(src_bytes, readback_bytes)  # upload and readback are disjoint
                 + 16 * 1024 * 1024)
         limit = int(self.device.global_mem_size) // 2
         if self.device.host_unified_memory:
@@ -551,16 +555,18 @@ class GpuA:
             self._run(self.k['a_blend_low'], n, out_buf, best_buf,
                       acc_buf, wt_buf, stat_buf, np.int32(n), np.int32(channels))
 
-            out_dtype = np.uint8 if is_u8 else np.float32
             out = np.empty(shape, dtype=out_dtype)
-            dst_buf = self.cl.Buffer(self.ctx, self.mf.WRITE_ONLY, out_bytes)
-            if is_u8:
-                self._run(self.k['a_out_u8'], samples, out_buf, dst_buf,
-                          np.int32(samples), np.int32(channels))
-            else:
-                self._run(self.k['a_out_f32'], samples, out_buf, dst_buf,
-                          np.int32(samples))
-            self.cl.enqueue_copy(self.q, out, dst_buf, is_blocking=True)
+            out_samples = out.reshape(-1)
+            dst_buf = self.cl.Buffer(self.ctx, self.mf.WRITE_ONLY, readback_bytes)
+            chunk = readback_bytes // out_dtype.itemsize
+            kernel = self.k['a_out_u8'] if is_u8 else self.k['a_out_f32']
+            extra = (np.int32(channels),) if is_u8 else ()
+            for start in range(0, samples, chunk):
+                _check_cancel(should_cancel)
+                region = out_samples[start:min(start + chunk, samples)]
+                self._run(kernel, region.size, out_buf, dst_buf, np.int32(start),
+                          np.int32(region.size), *extra)
+                self.cl.enqueue_copy(self.q, region, dst_buf, is_blocking=True)
             in_flight = False
             _check_cancel(should_cancel)
             return out

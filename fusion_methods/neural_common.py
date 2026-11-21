@@ -64,6 +64,28 @@ def read_stack(input_source, img_resize, should_cancel=None, execution_plan=None
     return frames
 
 
+def copy_tile_colors(pixels, normalize_stack, gain=1.0):
+    """Pack one color tile in its backend's working domain."""
+    from utils.image_utils import apply_exposure_gain
+
+    crop = np.array(pixels, dtype=np.float32 if normalize_stack else pixels.dtype,
+                    copy=True, order='C')
+    if pixels.dtype == np.uint16:
+        crop *= 255.0 / 65535.0
+    if gain == 1.0:
+        return crop
+    if crop.dtype == np.float32:
+        # The pack copy is owned by this tile.
+        if crop.ndim == 3 and crop.shape[2] == 4:
+            color = crop[..., :3]
+        else:
+            color = crop
+        color *= float(gain)
+        np.clip(color, 0.0, 255.0, out=color)
+        return crop
+    return apply_exposure_gain(crop, gain)
+
+
 def working_frame(frame, normalize_stack):
     """Convert a single frame exactly as 16-bit stack normalization does."""
     from core.source_frames import resolve_frame

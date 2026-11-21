@@ -584,6 +584,8 @@ class SourceFrame:
     # Native single-channel samples; the common decoder still exposes BGR pixels.
     grayscale: bool = False
     raw_sensor_shape: tuple = ()
+    _rgb_tiff_offset: int | None = None  # Bound only on a fusion-local descriptor.
+
     def __post_init__(self):
         path = _source_lifetime_key(self.path)
         with _source_lifetime_lock:
@@ -630,6 +632,9 @@ class SourceFrame:
     def full_resolution(self, *, should_cancel=None):
         _check_resolution_cancel(should_cancel)
         self.validate_source()
+        if self._rgb_tiff_offset is not None:
+            return np.memmap(self.path, mode='r', offset=self._rgb_tiff_offset,
+                             dtype=self.dtype, shape=self.shape)[..., ::-1]
         from core import frame_resolution_cache as _resolution_cache
         cache = _resolution_cache.current()
         if cache is not None:
@@ -907,6 +912,20 @@ def crop_frame(frame, x, y, width, height, *, channels=None, should_cancel=None)
     return process_frame(frame, crop, shape=shape, should_cancel=should_cancel, scratch_bytes=0)
 
 
+@contextmanager
+def borrow_frame_region(frame, key, *, should_cancel=None):
+    """Borrow pixels for one short-lived read without pinning mapped pages."""
+    from core.frame_storage import frame_region
+
+    image = resolve_frame(frame, should_cancel=should_cancel)
+    if isinstance(frame, SourceFrame) and frame._rgb_tiff_offset is not None:
+        # The TIFF mapping belongs to this read alone.
+        yield image[key]
+    else:
+        with frame_region(image, key) as region:
+            yield region
+
+
 def resolve_region(frame, x, y, width, height, *, channels=None, should_cancel=None):
     """Copy one resolved region so a tile cannot retain its decoded full source."""
     cropped = crop_frame(frame, x, y, width, height, channels=channels,
@@ -1146,7 +1165,7 @@ def frame_source_cache_bytes(frame):
         if isinstance(frame, RetainedFrame):
             return 0
         frame = frame.source
-    return frame.nbytes if isinstance(frame, SourceFrame) else 0
+    return frame.nbytes if isinstance(frame, SourceFrame) and frame._rgb_tiff_offset is None else 0
 
 
 def source_cache_growth_bytes(frames):
@@ -1162,6 +1181,8 @@ def frame_resolution_bytes(frame, *, metadata_only=False):
     if isinstance(frame, ProcessedFrame):
         return frame_resolution_bytes(frame.source, metadata_only=metadata_only) + frame.scratch_bytes
     if isinstance(frame, SourceFrame):
+        if frame._rgb_tiff_offset is not None:
+            return frame.nbytes
         encoded = frame.fingerprint[0] if metadata_only else os.path.getsize(frame.path)
         if frame.raw_sensor_shape:
             from core.resource_policy import raw_decode_bytes
@@ -1357,17 +1378,41 @@ def _validated_snapshot(image, source):
     return image
 
 
+def map_native_rgb_tiffs(frames, should_cancel=None):
+    """Bind plain TIFF pixel offsets without retaining full-frame mappings."""
+    import tifffile
+
+    result = []
+    for frame in frames:
+        _check_resolution_cancel(should_cancel)
+        if (isinstance(frame, SourceFrame) and frame.scale == 1 and not frame.transforms
+                and frame.orientation == 1 and not frame.raw_sensor_shape and frame.linear_metadata is None
+                and os.path.splitext(frame.path)[1].lower() in ('.tif', '.tiff')):
+            frame.validate_source()
+            with tifffile.TiffFile(frame.path) as tif:
+                page = tif.pages[frame.page]
+                if (page.is_memmappable and int(page.photometric) == 2 and page.axes == 'YXS'
+                        and page.shape == frame.shape and page.samplesperpixel == 3
+                        and page.dtype == frame.dtype and frame.dtype in (np.uint8, np.uint16)
+                        and frame.dtype.newbyteorder(tif.byteorder).isnative
+                        and page.bitspersample == frame.dtype.itemsize * 8):
+                    frame = replace(frame, _rgb_tiff_offset=page.dataoffsets[0])
+        result.append(frame)
+    return result
+
+
 def materialize_for_repeated_access(frames, should_cancel=None, *, thread_count=0,
                                     resource_preference='balanced', progress_callback=None,
                                     required=False, staging_bytes=0):
     """Snapshot lazy sources once, retaining their source identity checks.
 
     Required snapshots fail at scratch admission instead of streaming sources.
-    Retained frames are already mapped and validate their source on access.
+    Already mapped or region-addressable frames validate their source on access.
     """
     indices = [i for i, frame in enumerate(frames)
                if isinstance(frame, (SourceFrame, ProcessedFrame))
-               and not isinstance(frame, RetainedFrame)]
+               and not isinstance(frame, RetainedFrame)
+               and not (isinstance(frame, SourceFrame) and frame._rgb_tiff_offset is not None)]
     if not indices:
         return frames
     lazy = [frames[i] for i in indices]
