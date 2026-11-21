@@ -1032,6 +1032,8 @@ PACK = {
     "advanced_privacy": "Confidentialité",
     "advanced_working_storage": "Stockage temporaire",
     "advanced_tile_memory_status": "{method} utilise des tuiles lorsque la mémoire disponible est insuffisante pour traiter toute l’image.",
+    "advanced_tile_manual": "Réglages manuels des tuiles",
+    "advanced_tile_neural_status": "{method} peut choisir des tuiles de {block} px au maximum selon l’appareil et la mémoire disponible.",
     "advanced_settings_intro": "Les réglages de performance et de recalage influent sur la vitesse et la mémoire. Le mode de sortie IA change le résultat de fusion, la largeur de recalage change l’estimation d’alignement.",
     "render_memory_commit": "Marge d’engagement Windows (RAM et pagination) : {size}.",
     "render_memory_device": "Matériel de fusion prévu : {device}.",

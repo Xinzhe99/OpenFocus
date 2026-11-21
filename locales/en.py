@@ -1059,6 +1059,8 @@ EN = {
     "advanced_privacy": "Privacy",
     "advanced_working_storage": "Working storage",
     "advanced_tile_memory_status": "{method} uses tiles when the whole image would exceed the available memory.",
+    "advanced_tile_manual": "Manual tile settings",
+    "advanced_tile_neural_status": "{method} can choose tiles up to {block} px based on the device and available memory.",
     "advanced_settings_intro": "Performance and registration settings affect speed and memory. The AI output mode changes the fused result, and the registration width changes the alignment estimate.",
     "advanced_tab_performance": "Performance",
     "advanced_tab_registration": "Registration",

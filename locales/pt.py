@@ -1032,6 +1032,8 @@ PACK = {
     "advanced_privacy": "Privacidade",
     "advanced_working_storage": "Armazenamento de arquivos de trabalho",
     "advanced_tile_memory_status": "{method} usa blocos quando a memória disponível é insuficiente para processar a imagem inteira.",
+    "advanced_tile_manual": "Configurações manuais de blocos",
+    "advanced_tile_neural_status": "{method} pode escolher blocos de até {block} px conforme o dispositivo e a memória disponível.",
     "advanced_settings_intro": "Ajustes de desempenho e registro afetam velocidade e memória. O modo de saída da IA altera o resultado fundido e a largura de registro altera a estimativa de alinhamento.",
     "render_memory_commit": "Folga de memória comprometida do Windows (RAM e arquivo de paginação): {size}.",
     "render_memory_device": "Dispositivo previsto para a fusão: {device}.",

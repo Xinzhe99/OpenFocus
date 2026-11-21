@@ -11,6 +11,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   three StackMFF models before activation.
 
 ### Changed
+- Keep manual tile settings collapsed. StackMFF V1 and V3 build their tile grid
+  after memory admission and record the budget checks for rejected sizes.
 - Reuse OpenCL contexts and compiled kernels across OpenFocus A/B/C and ECC
   resize jobs. Reuse upload buffers within a job and drain pending work
   before releasing buffers after cancellation or error.

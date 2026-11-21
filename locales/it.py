@@ -1032,6 +1032,8 @@ PACK = {
     "advanced_privacy": "Privacy",
     "advanced_working_storage": "Archiviazione dei file di lavoro",
     "advanced_tile_memory_status": "{method} usa i tasselli quando la memoria disponibile non basta per elaborare l’intera immagine.",
+    "advanced_tile_manual": "Impostazioni manuali dei tasselli",
+    "advanced_tile_neural_status": "{method} può scegliere tasselli fino a {block} px in base al dispositivo e alla memoria disponibile.",
     "advanced_settings_intro": "Le impostazioni di prestazioni e registrazione influiscono su velocità e memoria. La modalità di output IA cambia il risultato della fusione, la larghezza di registrazione cambia la stima di allineamento.",
     "render_memory_commit": "Margine di memoria impegnata di Windows (RAM e file di paging): {size}.",
     "render_memory_device": "Dispositivo di fusione previsto: {device}.",
