@@ -25,7 +25,7 @@ def test_area_table_preserves_opencv_small_edge_cutoff():
     (np.empty((256, 256, 2), np.uint8), (95, 93)),
     (np.empty((256, 256), np.uint8)[:, ::2], (72, 93)),
     (np.empty((256, 256), np.uint8), (64, 128)),  # CPU integer fast path
-    (np.empty((256, 256), np.uint8), (128, 43)),  # too many filter taps
+    (np.empty((256, 256), np.uint8), (128, 31)),  # too many filter taps
     (np.empty((256, 256), np.uint8), (300, 121)),
 ])
 def test_ineligible_input_does_not_probe_gpu(image, dsize, monkeypatch):
@@ -109,6 +109,16 @@ def test_hardware_stripes_reuse_and_return_independent_outputs(hardware_gpu, dty
         np.testing.assert_array_equal(actual, expected)
     assert hardware_gpu.frames_resized == 2
     assert hardware_gpu.device_name.startswith('OpenCL')
+
+
+def test_hardware_fractional_eightfold_area_matches_cpu(hardware_gpu):
+    rng = np.random.default_rng(170)
+    # The 8K UHD ECC reduction has a 7.5 factor on both axes. Use the same
+    # phases and enough rows to cross several of the smaller source stripes.
+    image = rng.integers(0, 65536, (1530, 1965, 3), dtype=np.uint16)
+    dsize = (262, 204)
+    expected = cv2.resize(image, dsize, interpolation=cv2.INTER_AREA)
+    np.testing.assert_array_equal(hardware_gpu.resize(image, dsize), expected)
 
 
 @pytest.mark.parametrize('drain_fails', [False, True])

@@ -22,9 +22,10 @@ python Registration.py --mode both
 
 import argparse
 import concurrent.futures
-from collections import deque
+from collections import OrderedDict, deque
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
+import hashlib
 import json
 import threading
 import time
@@ -471,6 +472,24 @@ class PerspectiveWarp:
 
     def __call__(self, image):
         self.source.validate_pixels(image, self.should_cancel)
+        # At an integer sampling location Lanczos returns the source code
+        # exactly for integer pixels. Keep the allocating/native path for
+        # floats, where zero-weight taps can propagate NaNs or affect -0.
+        a, b, tx, c, d, ty, p, q, r = self.matrix
+        width, height = self.dsize
+        if (a == d == r == 1 and b == c == p == q == 0
+                and image.dtype in (np.uint8, np.uint16)
+                and (image.ndim == 2 or (image.ndim == 3 and 1 <= image.shape[2] <= 4))
+                and max(image.shape[0], image.shape[1], width, height) < 32767
+                and 0 <= -tx <= image.shape[1] - width
+                and 0 <= -ty <= image.shape[0] - height
+                and int(tx) == tx and int(ty) == ty):
+            left, top = -int(tx), -int(ty)
+            crop = image[top:top + height, left:left + width]
+            if crop.shape[2:] == (1,):
+                crop = crop[:, :, 0]
+            # A resolved warp owns its pixels even without a render cache.
+            return crop.copy(order='C')
         matrix = np.asarray(self.matrix, dtype=self.matrix_dtype).reshape(3, 3)
         threads = _warp_thread_budget()
         if threads <= 1:
@@ -873,11 +892,10 @@ def _report_openfocus_transform(transform, reference_index):
 def apply_alignment_plan(sources, plan, *, defer_warps=False, should_cancel=None):
     """Apply a validated cached or fresh plan, preserving original source order."""
     if isinstance(plan, PerspectiveAlignmentPlan):
-        plan.validate_sources(sources, should_cancel=should_cancel)
         result = sources
         for stage in plan.stages:
-            _record_grouped_crop(*stage.bounds)
             result = stage.apply(result, defer_warps=True, should_cancel=should_cancel)
+            _record_grouped_crop(*stage.bounds)
         if defer_warps:
             return result
         from core.source_frames import resolve_frame
@@ -1013,6 +1031,11 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
     termination_eps = 1e-4
     criteria = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, number_of_iterations, termination_eps)
 
+    # A stack can revisit the same adjacent pair. Cache only small, successful
+    # solve results, keyed by exact prepared pixels in their original order.
+    recent_pairs = OrderedDict() if len(images) > 2 else None
+    recent_pairs_lock = threading.Lock()
+
     # 预处理函数：转灰度 + 降采样 + 高斯模糊 + 归一化
     def preprocess(source):
         from core.source_frames import resolve_frame, source_area_resizer
@@ -1046,7 +1069,11 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
         # 大幅值梯度会让优化步长过大，常见于小位移场景直接不收敛
         divisor = 65535.0 if pixels.dtype == np.uint16 else 255.0
         gray = np.divide(pixels, divisor, dtype=np.float32)
-        return gray, scale, identity
+        del pixels
+        key = None
+        if recent_pairs is not None:
+            key = gray.shape, hashlib.sha256(memoryview(gray)).digest()
+        return gray, scale, key, identity
 
     print(f"Aligning {len(images)} images using ECC (Parallel Optimized)...")
 
@@ -1073,17 +1100,24 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
             return result
 
         source = iter(images)
-        previous, scale_factor, identity = prepare(next(source))
+        previous, scale_factor, previous_key, identity = prepare(next(source))
         source_identities.append(identity)
         for idx, image in enumerate(source, 1):
-            current, _, identity = prepare(image)
+            current, _, current_key, identity = prepare(image)
             source_identities.append(identity)
-            yield idx, previous, current, scale_factor
-            previous = current
+            yield idx, previous, current, scale_factor, previous_key, current_key
+            previous, previous_key = current, current_key
 
     def _compute_pair_transform(pair):
         """ECC transform of frame idx relative to frame idx-1 (scale-restored)."""
-        idx, prev_gray, curr_gray, scale_factor = pair
+        idx, prev_gray, curr_gray, scale_factor, previous_key, current_key = pair
+        key = previous_key, current_key
+        if recent_pairs is not None:
+            with recent_pairs_lock:
+                result = recent_pairs.get(key)
+                if result is not None:
+                    recent_pairs.move_to_end(key)
+                    return result
 
         if warp_mode == cv2.MOTION_HOMOGRAPHY:
             warp_matrix = np.eye(3, 3, dtype=np.float32)
@@ -1121,7 +1155,14 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
                 warp_matrix = np.eye(3, dtype=np.float32)
             else:
                 warp_matrix = np.eye(2, 3, dtype=np.float32)
-        return warp_matrix, cc
+        result = warp_matrix, cc
+        if recent_pairs is not None and cc is not None and np.isfinite(cc):
+            with recent_pairs_lock:
+                recent_pairs[key] = result
+                recent_pairs.move_to_end(key)
+                if len(recent_pairs) > 32:
+                    recent_pairs.popitem(last=False)
+        return result
 
     if max_workers == 1:
         pair_transforms = []
@@ -1141,7 +1182,8 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
                 return preprocess(image)
 
         def estimate_pair(index, previous, current):
-            return _compute_pair_transform((index, previous[0], current[0], scale_of[0]))
+            return _compute_pair_transform((index, previous[0], current[0], scale_of[0],
+                                            previous[2], current[2]))
 
         scale_of = []
 

@@ -14,7 +14,8 @@ import numpy as np
 # ResizeArea_Invoker: ordered binary32 products and sums on the MSVC SSE
 # baseline, followed by saturate_cast (nearest even for integer pixels).
 # Integral scale factors dispatch to a different CPU implementation.
-_TAPS = 5
+_MAX_SCALE = 8
+_TAPS = _MAX_SCALE + 1
 _AXIS = np.dtype([('start', '<i4'), ('count', '<i4'), ('weight', '<f4', _TAPS)])
 _TILE_ROWS = 128
 _MIN_SOURCE_BYTES = 8 * 1024**2
@@ -47,10 +48,10 @@ def _invalidate_program_cache():
     with _cache_lock:
         _PROGRAM_CACHE = None
 
-_KERNEL = r'''
+_KERNEL = f'#define AREA_TAPS {_TAPS}\n' + r'''
 #pragma OPENCL FP_CONTRACT OFF
 
-typedef struct { int start, count; float weight[5]; } Span;
+typedef struct { int start, count; float weight[AREA_TAPS]; } Span;
 
 #define AREA(NAME, TYPE, STORE) \
 __kernel void NAME(__global const TYPE *src, __global TYPE *dst, \
@@ -153,7 +154,9 @@ class ExactAreaGpu:
         self._buffers = self._shape = None
         source_h, source_w = image.shape[:2]
         itemsize = image.itemsize
-        rows = min(_TILE_ROWS, height)
+        # Preserve the source-stripe row bound of the fourfold path. At
+        # larger ratios this reduces transfer staging and device residency.
+        rows = min(_TILE_ROWS, height, _TILE_ROWS * 4 * height // source_h)
         src_bytes = min(source_h, math.ceil(rows * source_h / height) + 2) * source_w * channels * itemsize
         dst_bytes = rows * width * channels * itemsize
         table_bytes = (width + height) * _AXIS.itemsize
@@ -179,6 +182,7 @@ class ExactAreaGpu:
                          cl.Buffer(context, flags.READ_ONLY | flags.COPY_HOST_PTR, hostbuf=xs),
                          cl.Buffer(context, flags.READ_ONLY | flags.COPY_HOST_PTR, hostbuf=ys))
         self._ys = ys
+        self._rows = rows
         self._shape = image.shape, image.dtype, width, height
         return True
 
@@ -187,8 +191,8 @@ class ExactAreaGpu:
 
         dsize is explicit (OpenCV may use different coefficients with fx/fy).
         Large contiguous uint8/uint16 gray, BGR and BGRA images are eligible.
-        Both axes must shrink by at most four, with a fractional factor on at
-        least one axis. All other calls remain ordinary CPU operations.
+        Both axes must shrink by at most eight, with a fractional factor on
+        at least one axis. Integer fast paths remain ordinary CPU operations.
         """
         if (self._disabled or image.dtype not in (np.uint8, np.uint16)
                 or image.ndim not in (2, 3) or not image.flags.c_contiguous
@@ -198,7 +202,8 @@ class ExactAreaGpu:
         width, height = dsize
         channels = image.shape[2] if image.ndim == 3 else 1
         if (channels not in (1, 3, 4) or max(h, w) > _MAX_SIDE
-                or not (0 < width < w <= 4 * width and 0 < height < h <= 4 * height)
+                or not (0 < width < w <= _MAX_SCALE * width
+                        and 0 < height < h <= _MAX_SCALE * height)
                 or (w % width == 0 and h % height == 0)):
             return None
         with self._lock, _queue_lock:
@@ -219,8 +224,8 @@ class ExactAreaGpu:
                 src, dst, xs, ys = self._buffers
                 kernel = self._kernels[image.itemsize]
                 starts, counts = self._ys['start'], self._ys['count']
-                for row in range(0, height, _TILE_ROWS):
-                    stop = min(row + _TILE_ROWS, height)
+                for row in range(0, height, self._rows):
+                    stop = min(row + self._rows, height)
                     first = starts[row]
                     last = starts[stop - 1] + counts[stop - 1]
                     band = image[first:last]

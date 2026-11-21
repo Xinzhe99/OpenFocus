@@ -351,6 +351,8 @@ def test_deferred_resolution_keeps_roi_processor_and_revalidates_source(tmp_path
 
 @pytest.mark.parametrize('method', ['homography', 'ecc', 'both'])
 def test_deferred_consumer_cancellation_before_and_after_native_warp(tmp_path, monkeypatch, method):
+    from dataclasses import replace
+
     sources = _sources(tmp_path, _pixels(np.uint8, 1))
     cancelled = Event()
     deferred = registration.ImageRegistration(method, defer_warps=True).process(
@@ -367,9 +369,15 @@ def test_deferred_consumer_cancellation_before_and_after_native_warp(tmp_path, m
     with pytest.raises(registration.RegistrationCancelled):
         source_frames.resolve_frame(deferred[0])
     cancelled.clear()
+    # Exercise a native resampling call even though the reference crop can
+    # now resolve by copying its integer coordinates.
+    reference = deferred[0]
+    matrix = list(reference.processor.matrix)
+    matrix[2] += 0.25
+    fractional = replace(reference, processor=replace(reference.processor, matrix=tuple(matrix)))
     monkeypatch.setattr(cv2, 'warpPerspective', cancel_after_warp)
     with pytest.raises(registration.RegistrationCancelled):
-        source_frames.resolve_frame(deferred[0])
+        source_frames.resolve_frame(fractional)
     assert calls == [1]
 
 
@@ -688,6 +696,72 @@ def test_render_scope_hashes_each_registration_input_once(tmp_path, monkeypatch,
     assert render() > stages * len(sources)
 
 
+@pytest.mark.parametrize('dtype,channels', [(np.uint8, None), (np.uint8, 4),
+                                          (np.uint16, 1), (np.uint16, 3)])
+def test_ecc_integer_crop_preserves_native_pixels_and_ownership(monkeypatch, dtype, channels):
+    shape = (23, 33) + (() if channels is None else (channels,))
+    rng = np.random.default_rng(817)
+    image = rng.integers(0, np.iinfo(dtype).max, shape, endpoint=True, dtype=dtype)[:, ::-1]
+    matrix = np.array([[1, 0, -3], [0, 1, -2], [0, 0, 1]], dtype=np.float32)
+    dsize = (30, 21)  # include the right and bottom borders
+    expected = cv2.warpPerspective(image, matrix, dsize, flags=cv2.INTER_LANCZOS4)
+    original = image.copy()
+    identity = registration._perspective_source(image, image, None)
+    warp = registration.PerspectiveWarp(identity, tuple(matrix.flat), matrix.dtype.str, dsize)
+
+    def unexpected_warp(*args, **kwargs):
+        pytest.fail('integer crop entered the resampler')
+
+    monkeypatch.setattr(cv2, 'warpPerspective', unexpected_warp)
+    actual = warp(image)
+    np.testing.assert_array_equal(actual, expected)
+    assert actual.dtype == image.dtype and actual.flags.c_contiguous
+    actual[0, 0] = 0
+    np.testing.assert_array_equal(image, original)
+    image[0, 0] ^= 1
+    with pytest.raises(ValueError, match='source pixels changed'):
+        warp(image)
+
+
+def test_ecc_integer_float_crop_uses_native_lanczos_bits():
+    image = np.zeros((11, 14), np.float32)
+    image[4, 6] = np.nan
+    image[6, 8] = -0.0
+    matrix = np.array([[1, 0, -2], [0, 1, -2], [0, 0, 1]], dtype=np.float64)
+    dsize = (10, 7)
+    identity = registration._perspective_source(image, image, None)
+    warp = registration.PerspectiveWarp(identity, tuple(matrix.flat), matrix.dtype.str, dsize)
+    expected = cv2.warpPerspective(image, matrix, dsize, flags=cv2.INTER_LANCZOS4)
+    np.testing.assert_array_equal(warp(image).view(np.uint32), expected.view(np.uint32))
+
+
+def test_ecc_reuses_repeated_ordered_pairs_without_changing_trajectory(tmp_path, monkeypatch):
+    left, right = _pixels(np.uint16, 3)[:2]
+    sources = _sources(tmp_path, [left, right, left, right, left])
+    calls = []
+    solve = cv2.findTransformECC
+
+    def trace(previous, current, *args):
+        calls.append((previous.copy(), current.copy(), args[1:]))
+        return solve(previous, current, *args)
+
+    monkeypatch.setattr(cv2, 'findTransformECC', trace)
+    report = []
+    token = registration.alignment_report.set(report)
+    try:
+        aligned = registration.ImageRegistration('ecc', defer_warps=True).process(sources, thread_count=1)
+    finally:
+        registration.alignment_report.reset(token)
+    assert len(calls) == 2
+    assert [_original(frame) for frame in aligned] == sources
+    trajectory = np.eye(3, dtype=np.float32)
+    for row, (previous, current, args) in zip(report[1:], calls * 2, strict=True):
+        score, matrix = solve(previous, current, np.eye(3, dtype=np.float32), *args)
+        trajectory = matrix @ trajectory
+        assert row['quality'] == score
+        np.testing.assert_array_equal(row['transform'], np.linalg.inv(trajectory))
+
+
 @pytest.mark.parametrize('dtype', [np.uint8, np.uint16])
 def test_lent_warp_keeps_pixels_and_restores_thread_state(monkeypatch, dtype):
     class Source:
@@ -721,7 +795,8 @@ def test_lent_warp_restores_thread_state_after_error(monkeypatch):
     def fail(*args, **kwargs):
         raise RuntimeError('warp failed')
     monkeypatch.setattr(cv2, 'warpPerspective', fail)
-    warp = registration.PerspectiveWarp(Source(), tuple(np.eye(3).flat), '<f8', (4, 4))
+    matrix = np.array([[1, 0, .25], [0, 1, 0], [0, 0, 1]])
+    warp = registration.PerspectiveWarp(Source(), tuple(matrix.flat), '<f8', (4, 4))
     with registration.deferred_warp_threads(2), pytest.raises(RuntimeError, match='warp failed'):
         warp(np.zeros((4, 4), np.uint8))
     assert settings == [2, 0]
