@@ -327,6 +327,7 @@ def test_settings_data_override_bypasses_portable_store(tmp_path, monkeypatch):
 def test_private_tool_launches_isolate_settings_and_instances(tmp_path, monkeypatch):
     from core.control.client import tool_session
     from core.control import client as control_client
+    from utils import account_client
     import tempfile
 
     launch_command = control_client._launch_command
@@ -336,7 +337,7 @@ def test_private_tool_launches_isolate_settings_and_instances(tmp_path, monkeypa
         bootstrap = (
             "import runpy, sys; "
             "from tests.process_isolation import install_test_account; "
-            "install_test_account(); "
+            "install_test_account(seed=False); "
             "sys.argv = sys.argv[1:]; "
             "runpy.run_path(sys.argv[0], run_name='__main__')"
         )
@@ -357,6 +358,13 @@ def test_private_tool_launches_isolate_settings_and_instances(tmp_path, monkeypa
     settings.sync()
     original = real_file.read_bytes()
     monkeypatch.setenv("OPENFOCUS_DATA_DIR", str(real_root))
+    token_store = account_client.TokenStore
+    account = {"token": "test-session-token", "expires_at": 1, "user": {"id": "test-user"}}
+    source_store = token_store(real_root / "account-session")
+    source_store.save(account)
+    # Use file stores so this test also runs with a locked macOS Keychain.
+    monkeypatch.setattr(account_client, "TokenStore", lambda *, profile=None:
+                        token_store((profile or real_root) / "account-session"))
     monkeypatch.setenv("OPENFOCUS_CONTROL_FILE", str(real_root / "control.json"))
     monkeypatch.setenv("OPENFOCUS_INSTANCE_NAME", "OpenFocus-existing-instance")
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
@@ -372,6 +380,7 @@ def test_private_tool_launches_isolate_settings_and_instances(tmp_path, monkeypa
         assert first.call("app.state")["options"]["thread_count"] == 3
         assert second.call("app.state")["options"]["thread_count"] != 3
         assert real_file.read_bytes() == original
+        assert source_store.load() == account
         assert not (real_root / "control.json").exists()
         assert os.environ["OPENFOCUS_DATA_DIR"] == str(real_root)
         assert os.environ["OPENFOCUS_INSTANCE_NAME"] == "OpenFocus-existing-instance"
@@ -1725,6 +1734,100 @@ def test_stack_load_reports_a_failed_decode(server, tmp_path):
     assert frames["load"]["finished"] is True
     assert frames["load"]["error"], frames["load"]
     assert frames["count"] == 0
+
+
+def _decode_video_with_controlled_reader(path, scale, pixels_path, result_path):
+    """Spawn target that runs the real decoder around a controllable read()."""
+    import cv2
+    from core.video_import import _decode_video_child
+
+    class Capture:
+        def __init__(self, path):
+            self.path = Path(path)
+            self.index = 0
+
+        def isOpened(self):
+            return True
+
+        def get(self, prop):
+            return 2
+
+        def read(self):
+            if self.index == 1 and self.path.stem == 'blocked':
+                self.path.with_suffix('.reading').write_text(str(os.getpid()), encoding='ascii')
+                threading.Event().wait()
+            if self.index == 2:
+                return False, None
+            self.index += 1
+            image = np.empty((24, 32, 3), dtype=np.uint8)
+            image[:] = (5, self.index * 40, 150)
+            return True, image
+
+        def release(self):
+            pass
+
+    cv2.VideoCapture = Capture  # This replacement is confined to the spawned process.
+    _decode_video_child(path, scale, pixels_path, result_path)
+
+
+def test_cancel_blocked_video_import_allows_retry(server, stack_frames, tmp_path, monkeypatch):
+    from multiprocessing import active_children
+    from core import frame_storage, video_import
+
+    scratch = tmp_path / 'video-scratch'
+    scratch.mkdir()
+    monkeypatch.setattr(frame_storage, '_storage_directory', str(scratch))
+    monkeypatch.setattr(video_import, '_decode_video_child', _decode_video_with_controlled_reader)
+
+    def stack():
+        return call(server, 'stack.frames')['result']
+
+    assert call(server, 'stack.load', folder=str(stack_frames))['ok']
+    assert wait_until(lambda: stack()['load']['finished'], timeout=20)
+    previous = stack()
+    assert previous['count'] == 3
+    window = server.window
+    previous_stack = window.raw_images
+    previous_paths = window.image_source_paths
+    previous_loader_images = window.image_loader.images
+
+    blocked = tmp_path / 'blocked.avi'
+    blocked.touch()
+    reading = blocked.with_suffix('.reading')
+    started = call(server, 'stack.load', video=str(blocked), scale=0.5)['result']
+    assert wait_until(lambda: reading.exists() and reading.stat().st_size > 0, timeout=20)
+    child_pid = int(reading.read_text(encoding='ascii'))
+    assert stack()['load']['active']
+    assert stack()['names'] == previous['names']
+    assert next(scratch.glob('openfocus-video-*/*.bin')).stat().st_size == 12 * 16 * 3
+
+    window.source_manager._load_cancel_button.click()
+    assert wait_until(lambda: stack()['load']['finished'], timeout=5)
+    cancelled = stack()
+    assert cancelled['load']['id'] == started['load_id']
+    assert cancelled['load']['error'] == 'cancelled'
+    assert not cancelled['load']['active']
+    assert not list(scratch.glob('openfocus-video-*'))
+    assert child_pid not in {process.pid for process in active_children()}
+    assert window.raw_images is previous_stack
+    assert window.image_source_paths is previous_paths
+    assert window.image_loader.images is previous_loader_images
+
+    good = tmp_path / 'good clip.avi'
+    good.touch()
+    retried = call(server, 'stack.load', video=str(good), scale=0.5)['result']
+    assert wait_until(lambda: stack()['load']['finished'], timeout=20)
+    loaded = stack()
+    assert loaded['load']['id'] == retried['load_id'] > started['load_id']
+    assert loaded['load']['error'] is None
+    assert loaded['names'] == ['good clip_frame_0000.png', 'good clip_frame_0001.png']
+    assert loaded['scale'] == 0.5
+    assert loaded['shape'] == [12, 16, 3] and loaded['dtype'] == 'uint8'
+    assert window.image_source_paths == [str(good), str(good)]
+    assert window.image_source_exifs == window.image_icc_profiles == [b'', b'']
+    assert window.source_px_um is None and window.linear_dng_metadata is None
+    for image, green in zip(window.raw_images, (40, 80), strict=True):
+        np.testing.assert_array_equal(image, np.broadcast_to([5, green, 150], (12, 16, 3)))
 
 
 def test_gui_started_load_advances_the_generation(server, stack_frames):

@@ -334,19 +334,22 @@ jobs:
             --exclude-module PyQt6.QtQuick \
             main.py
 
+      - name: Register macOS project and source types
+        run: python packaging/configure_macos_bundle.py dist/OpenFocus.app
+
       - name: Verify bundled runtime resources
         run: python tools/verify_frozen_resources.py dist/OpenFocus.app/Contents/Resources
 
       - name: Verify bundled PyOpenCL extension
         run: python -c "from pathlib import Path; assert any(p.parent.name == 'pyopencl' for p in Path('dist/OpenFocus.app/Contents').rglob('_cl*.so')), 'PyOpenCL extension missing from bundle'"
 
+      - name: Ad-hoc codesign
+        run: codesign --force --deep -s - dist/OpenFocus.app
+
       - name: Verify packaged CLI and desktop control
         env:
           QT_QPA_PLATFORM: offscreen
         run: python tools/frozen_cli_smoke.py --executable dist/OpenFocus.app/Contents/MacOS/OpenFocus
-
-      - name: Ad-hoc codesign
-        run: codesign --force --deep -s - dist/OpenFocus.app
 
       - name: Package zip (portable)
         run: ditto -c -k --keepParent dist/OpenFocus.app "OpenFocus-${{ needs.prepare.outputs.label }}-macos-arm64.zip"

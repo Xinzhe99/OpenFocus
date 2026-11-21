@@ -201,7 +201,7 @@ def test_failed_project_open_preserves_dirty(qapp, monkeypatch):
         lambda window, path: (False, "broken project", {}))
     monkeypatch.setattr(main, "show_warning_box", lambda *args, **kwargs: None)
 
-    host = _bind(_host(), "open_project_dialog")
+    host = _bind(_host(), "open_project_dialog", "_load_project_path")
     host._confirm_discard_project_changes = lambda key: True
     host._project_dirty = True
     host.open_project_dialog()

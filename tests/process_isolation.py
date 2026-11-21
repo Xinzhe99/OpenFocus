@@ -24,18 +24,20 @@ def sandbox_env(tmp_path, overrides=None, *, instance_name=None):
     })
     return env
 
-def install_test_account():
-    """Install a saved synthetic session in this isolated child process."""
+def install_test_account(*, seed=True):
+    """Use a private file store and prohibit account network requests."""
     from pathlib import Path
     from utils import account_client
 
-    session_path = Path(os.environ["OPENFOCUS_DATA_DIR"]) / "test-account-session"
+    name = "test-account-session" if seed else "account-session"
+    session_path = Path(os.environ["OPENFOCUS_DATA_DIR"]) / name
     token_store = account_client.TokenStore
-    store = token_store(session_path)
-    session = {'token': 'test-session-token', 'token_type': 'Bearer',
-               'expires_at': 9999999999, 'user': {'id': 'test-user'}}
-    store.save(session)
-    assert store.load() == session
+    if seed:
+        store = token_store(session_path)
+        session = {'token': 'test-session-token', 'token_type': 'Bearer',
+                   'expires_at': 9999999999, 'user': {'id': 'test-user'}}
+        store.save(session)
+        assert store.load() == session
 
     def isolated_store(path=None):
         return token_store(session_path if path is None else path)

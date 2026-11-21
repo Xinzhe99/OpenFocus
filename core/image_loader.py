@@ -1260,61 +1260,74 @@ class ImageStackLoader:
         return result
 
     def load_from_video(self, video_path: str, scale_factor: float = 1.0) -> Tuple[bool, str, List[np.ndarray], List[str]]:
+        loaded_images = []
+
+        def append_frame(frame):
+            loaded_images.append(store_frame(frame))
+
+        ok, message = self._decode_video(video_path, scale_factor, append_frame)
+        if not ok:
+            return False, message, [], []
+        filenames = self._set_video_frames(video_path, loaded_images)
+        return True, message, loaded_images, filenames
+
+    def _decode_video(self, video_path, scale_factor, append_frame):
         if not os.path.isfile(video_path):
-            return False, "Video file does not exist", [], []
+            return False, "Video file does not exist"
 
         ext = os.path.splitext(video_path)[1].lower()
         if ext not in self.SUPPORTED_VIDEO_FORMATS:
-            return False, f"Unsupported video format: {ext}", [], []
+            return False, f"Unsupported video format: {ext}"
 
         cap = cv2.VideoCapture(video_path)
-        if not cap.isOpened():
-            return False, "Failed to open video file", [], []
-
-        loaded_images = []
-        filenames = []
         frame_index = 0
-        video_name = os.path.splitext(os.path.basename(video_path))[0]
 
         try:
+            if not cap.isOpened():
+                return False, "Failed to open video file"
             total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
             while True:
                 if self.should_cancel():
-                    return False, 'CANCELLED', [], []
+                    return False, 'CANCELLED'
                 ret, frame = cap.read()
                 if not ret:
                     break
 
-                frame = _downscale_page(frame, scale_factor)
-
-                loaded_images.append(store_frame(frame))
-                filenames.append(f"{video_name}_frame_{frame_index:04d}.png")
+                append_frame(_downscale_page(frame, scale_factor))
                 frame_index += 1
         finally:
             cap.release()
 
         if self.should_cancel():
-            return False, 'CANCELLED', [], []
+            return False, 'CANCELLED'
 
-        if not loaded_images:
-            return False, "No frames could be extracted from the video", [], []
+        if not frame_index:
+            return False, "No frames could be extracted from the video"
+
+        message = f"Loaded {frame_index} frame(s) from video"
+        if total_frames > 0 and frame_index < total_frames:
+            message += f" (expected: {total_frames})"
+        return True, message
+
+    def _set_video_frames(self, video_path, loaded_images):
+        frame_count = len(loaded_images)
+        video_name = os.path.splitext(os.path.basename(video_path))[0]
+        filenames = [f"{video_name}_frame_{index:04d}.png" for index in range(frame_count)]
+        source_paths = [video_path] * frame_count
+        empty_metadata = (b"",) * frame_count
 
         self.images = loaded_images
-        self.image_paths = [video_path] * len(loaded_images)
+        self.image_paths = source_paths
         self.source_exif = b""
-        self.source_exifs = tuple(b"" for _ in loaded_images)
+        self.source_exifs = empty_metadata
         self.source_icc_profile = b""
-        self.source_icc_profiles = tuple(b'' for _ in loaded_images)
+        self.source_icc_profiles = empty_metadata
         self.px_size_um = None
         self.linear_dng_metadata = None
         self.failed_count = 0
 
-        message = f"Loaded {len(loaded_images)} frame(s) from video"
-        if total_frames > 0 and len(loaded_images) < total_frames:
-            message += f" (expected: {total_frames})"
-
-        return True, message, loaded_images, filenames
+        return filenames
 
     def is_video_file(self, filepath: str) -> bool:
         ext = os.path.splitext(filepath)[1].lower()
