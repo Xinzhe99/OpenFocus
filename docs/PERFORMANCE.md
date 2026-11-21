@@ -9,6 +9,32 @@ model workspaces and full-size outputs still require available RAM and temporary
 data requires free disk space. A stack can be rejected if its working set cannot
 fit. See [GPU support](GPU_SUPPORT.md) for provider and validation limitations.
 
+## 8K deep stacks
+
+The CPU measurements compare one run per version against `b7ad5345`.
+The input stack repeats 12 distinct synthetic images as
+100 uncompressed 7680 × 4320 RGB16 TIFFs.
+Each run used four requested threads on a Ryzen 9 7945HX with 16 GiB RAM on
+Windows. Fusion time includes source preparation and excludes export. Both
+runs had registration and exposure matching off. The working pixels and pixels
+read back from the 16-bit TIFF matched for each method.
+
+| Method | Fusion time (s) | Peak process-tree RSS (GiB) | Peak temporary mappings (GiB) |
+| --- | ---: | ---: | ---: |
+| OpenFocus A | 109.59 → 31.96 | 2.09 → 0.81 | 19.28 → 0.74 |
+| OpenFocus B | 99.42 → 31.49 | 1.68 → 0.70 | 18.91 → 0.37 |
+| OpenFocus C | 310.16 → 115.47 | 2.00 → 1.23 | 20.04 → 0.73 |
+
+Large renders can read eligible contiguous RGB TIFFs directly. Compression,
+applied registration and resizing can still incur decode or staging costs.
+
+On an RTX 4060 Laptop GPU with PyTorch 2.5.1 CUDA, all three StackMFF checkpoints
+produced identical logits and focus indices before and after bounding attention
+workspace. The 15 comparisons covered 100, 200, 300, 400 and 500 layers at
+128 × 128. At 500 layers, PyTorch peak allocated memory fell from 1,546 MiB to
+886 MiB and peak reserved memory from 1,680 MiB to 1,022 MiB. These measurements
+cover one inference tile including the model and inputs on the device.
+
 ## StackMFF on an RTX 4060 Laptop GPU
 
 The Windows desktop render worker fused 29 registered 4096 × 3072 photographs
