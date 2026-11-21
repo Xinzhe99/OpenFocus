@@ -56,14 +56,6 @@ def _cancel(should_cancel):
         raise RegistrationCancelled()
 
 
-def _gray01(bgr):
-    """Luma in [0, 1] (BT.601, as cv2.COLOR_BGR2GRAY) for one frame."""
-    gray = (bgr if bgr.ndim == 2 else bgr[:, :, 0]
-            if bgr.shape[2] == 1 else cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY))
-    maxv = 65535.0 if gray.dtype == np.uint16 else 255.0
-    return gray.astype(np.float32) / maxv
-
-
 def _forward_probabilities(batch_input, model, device, sigma, should_cancel, threads=1):
     from fusion_methods.neural_runtime import probabilities
     return probabilities(batch_input, model, device, threads, sigma, should_cancel)
@@ -87,22 +79,29 @@ def _blend_tile(probs, frames, mode, should_cancel=None, focus_callback=None):
     if mode == 'hard':
         from core.frame_storage import create_frame
         selected_indices = create_frame((height, width), np.intp)
-        for row in range(0, height, 256):
+        # NumPy packs strided argmax input. Bound that copy by stack depth.
+        row_bytes = len(frames) * width * probs.dtype.itemsize
+        scan_rows = max(1, min(height, (8 * 1024 ** 2) // row_bytes))
+        for row in range(0, height, scan_rows):
             _cancel(should_cancel)
-            stop = min(row + 256, height)
-            selected_indices[row:stop] = probs[:, row:stop].argmax(0)
+            stop = min(row + scan_rows, height)
+            np.argmax(probs[:, row:stop], axis=0, out=selected_indices[row:stop])
     elif focus_callback is not None:
         from core.frame_storage import create_transient_frame
         expected = create_transient_frame((height, width), np.float32)
         expected[...] = 0
     from core.source_frames import resolve_frame
-    band_rows = 256
+    band_rows = min(height, 256, max(1, (64 * 1024) // (width * channels)))
     if selected_indices is None:
-        # Aim for at most 256 KiB per float32 color temporary, with at least one row.
-        band_rows = min(band_rows, max(1, (64 * 1024) // (width * channels)))
-    for index, frame in enumerate(frames):
+        indices = range(len(frames))
+        source_dtypes = {np.float32} if normalize_stack else {frame.dtype for frame in frames}
+        scratch = np.empty((band_rows, width, channels),
+                           dtype=np.result_type(probs.dtype, np.float32, *source_dtypes))
+    else:
+        indices = np.flatnonzero(np.bincount(selected_indices.ravel(), minlength=len(frames)))
+    for index in indices:
         _cancel(should_cancel)
-        image = resolve_frame(frame)
+        image = resolve_frame(frames[index], should_cancel=should_cancel)
         for row in range(0, height, band_rows):
             _cancel(should_cancel)
             stop = min(row + band_rows, height)
@@ -111,9 +110,14 @@ def _blend_tile(probs, frames, mode, should_cancel=None, focus_callback=None):
                 source = source[:, :, None]
             output = result[row:stop]
             if selected_indices is None:
-                output += probs[index, row:stop, :, None] * source
+                probability = probs[index, row:stop]
+                product = scratch[:stop - row]
+                np.multiply(probability[:, :, None], source, out=product)
+                np.add(output, product, out=output)
                 if expected is not None and index:
-                    expected[row:stop] += probs[index, row:stop] * np.float32(index)
+                    depth_product = product[:, :, 0]
+                    np.multiply(probability, np.float32(index), out=depth_product)
+                    np.add(expected[row:stop], depth_product, out=expected[row:stop])
             else:
                 np.copyto(output, source,
                           where=(selected_indices[row:stop] == index)[:, :, None])
@@ -148,7 +152,7 @@ def _stage_gray(frames, should_cancel):
     normalize_stack = any(frame.dtype == np.uint16 for frame in frames)
     for f, frame in enumerate(frames):
         _cancel(should_cancel)
-        batch[0, f, :h, :w] = _gray01(common.working_frame(frame, normalize_stack))
+        common.write_luma_plane(common.working_frame(frame, normalize_stack), batch[0, f, :h, :w])
     if wp != w:
         batch[:, :, :h, w:] = batch[:, :, :h, w - 1:w]
     if hp != h:
