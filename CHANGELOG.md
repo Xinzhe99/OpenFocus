@@ -11,6 +11,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   three StackMFF models before activation.
 
 ### Changed
+- Accelerate CPU homography ECC registration with a disk-cached native
+  centered coarse-to-fine inverse-compositional pyramid solver in
+  `core/_ecc_native.py`, preserving identity fast-path and fallback to
+  `cv2.findTransformECC` on monkeypatched or unconstrained callers.
 - Reuse OpenCL contexts and compiled kernels across OpenFocus A/B/C and ECC
   resize jobs. Reuse upload buffers within a job and drain pending work
   before releasing buffers after cancellation or error.

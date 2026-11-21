@@ -42,6 +42,27 @@ from core.frame_storage import capture_scratch, create_frame, run_with_scratch, 
 from utils.logging_setup import log_action, log_operation
 from utils.performance_profile import current as _profile
 
+_ORIGINAL_FIND_TRANSFORM_ECC = cv2.findTransformECC
+_ecc_native_lock = threading.Lock()
+_ecc_native_solver = None
+_ecc_native_loaded = False
+
+
+def _load_ecc_native():
+    """Load the native CPU homography ECC solver once, falling back cleanly if unavailable."""
+    global _ecc_native_solver, _ecc_native_loaded
+    if _ecc_native_loaded:
+        return _ecc_native_solver
+    with _ecc_native_lock:
+        if not _ecc_native_loaded:
+            try:
+                from core._ecc_native import find_transform_ecc_homography
+                _ecc_native_solver = find_transform_ecc_homography
+            except Exception:
+                _ecc_native_solver = None
+            _ecc_native_loaded = True
+    return _ecc_native_solver
+
 
 
 # ========== 基于变换矩阵的精确裁切函数 ==========
@@ -1012,6 +1033,10 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
     number_of_iterations = 50
     termination_eps = 1e-4
     criteria = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, number_of_iterations, termination_eps)
+    ecc_native = None
+    if (warp_mode == cv2.MOTION_HOMOGRAPHY
+            and cv2.findTransformECC is _ORIGINAL_FIND_TRANSFORM_ECC):
+        ecc_native = _load_ecc_native()
 
     # 预处理函数：转灰度 + 降采样 + 高斯模糊 + 归一化
     def preprocess(source):
@@ -1091,15 +1116,35 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
             warp_matrix = np.eye(2, 3, dtype=np.float32)
 
         try:
-            cc, warp_matrix = cv2.findTransformECC(
-                prev_gray,  # template
-                curr_gray,  # input
-                warp_matrix,
-                warp_mode,
-                criteria,
-                None,
-                1
-            )
+            if ecc_native is not None:
+                cc, native_warp = ecc_native(
+                    prev_gray,
+                    curr_gray,
+                    max_iter=number_of_iterations,
+                    eps=termination_eps,
+                )
+                if cc is not None and native_warp is not None:
+                    warp_matrix = native_warp
+                else:
+                    cc, warp_matrix = cv2.findTransformECC(
+                        prev_gray,  # template
+                        curr_gray,  # input
+                        warp_matrix,
+                        warp_mode,
+                        criteria,
+                        None,
+                        1
+                    )
+            else:
+                cc, warp_matrix = cv2.findTransformECC(
+                    prev_gray,  # template
+                    curr_gray,  # input
+                    warp_matrix,
+                    warp_mode,
+                    criteria,
+                    None,
+                    1
+                )
             if failure_policy == 'fail' and (cc is None or not np.isfinite(cc)):
                 raise RejectedAlignmentFrame('ECC', idx, 'ECC failed to converge')
 
