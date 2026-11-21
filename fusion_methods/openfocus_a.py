@@ -10,6 +10,7 @@ from fusion_methods._openfocus_pixels import frame_codes, frame_gray_codes, gray
 from fusion_methods._openfocus_execution import execution_job, configure_rows, run_bands
 
 _BACKGROUND_RAM_LIMIT_BYTES = 32 * 1024 * 1024
+_RESPONSE_BAND_BYTES = 128 * 1024
 
 
 def _down2(gray, should_cancel, check_cancel):
@@ -94,32 +95,42 @@ def _hard_response(gray, radius, should_cancel, check_cancel):
 
     height, width = gray.shape
     levels = int(np.floor(np.log2(max(1, radius)))) + 3
-    response = create_frame((height, width), np.int32)
-    for level in range(levels):
+
+    def reduce_plane(plane):
         check_cancel(should_cancel)
-        reduced = create_frame(((gray.shape[0] + 1) // 2,
-                                (gray.shape[1] + 1) // 2), np.int32)
+        rows, columns = plane.shape
+        reduced = create_frame(((rows + 1) // 2, (columns + 1) // 2), np.int32)
         def reduce_rows(start, stop):
             check_cancel(should_cancel)
-            down2_rows(gray, reduced, start, stop)
+            down2_rows(plane, reduced, start, stop)
         run_bands(reduced.shape[0], 128, reduce_rows)
-        if level == 0:
-            def laplacian0_rows(start, stop):
-                check_cancel(should_cancel)
-                burt_laplacian_rows(gray, reduced, response, start, stop, True)
-            run_bands(height, 128, laplacian0_rows)
-        else:
-            laplacian = create_frame(gray.shape, np.int32)
-            def laplacian_rows(start, stop):
-                check_cancel(should_cancel)
-                burt_laplacian_rows(gray, reduced, laplacian, start, stop, False)
-            run_bands(gray.shape[0], 128, laplacian_rows)
-            def accumulate_rows(start, stop):
-                check_cancel(should_cancel)
-                burt_accumulate_rows(laplacian, response, level, start, stop)
-            run_bands(height, 128, accumulate_rows)
-            del laplacian
-        gray = reduced
+        return reduced
+
+    first_reduced = current = reduce_plane(gray)
+    laplacians = []
+    for _ in range(1, levels):
+        reduced = reduce_plane(current)
+        laplacian = create_frame(current.shape, np.int32)
+        def laplacian_rows(start, stop):
+            check_cancel(should_cancel)
+            burt_laplacian_rows(current, reduced, laplacian, start, stop, False)
+        run_bands(current.shape[0], 128, laplacian_rows)
+        laplacians.append(laplacian)
+        current = reduced
+    del current, reduced
+
+    # Only the lower-resolution Laplacians are stored. Finish every level in
+    # a band before moving on so the full-resolution response stays cache-local.
+    response = create_frame((height, width), np.int32)
+    row_bytes = max(1, width * response.itemsize)
+    band_rows = max(1, min(128, _RESPONSE_BAND_BYTES // row_bytes))
+    def accumulate_rows(start, stop):
+        check_cancel(should_cancel)
+        burt_laplacian_rows(gray, first_reduced, response, start, stop, True)
+        for level, laplacian in enumerate(laplacians, 1):
+            check_cancel(should_cancel)
+            burt_accumulate_rows(laplacian, response, level, start, stop)
+    run_bands(height, band_rows, accumulate_rows)
     return response
 
 

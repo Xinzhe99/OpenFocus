@@ -110,6 +110,22 @@ def test_burt_odd_edges_do_not_amplify_repeated_samples():
         np.testing.assert_array_equal(_down2(values, None, _check_cancel), expected)
 
 
+def test_burt_q4_response_matches_one_band_across_odd_row_boundaries(monkeypatch):
+    from fusion_methods import openfocus_a
+    from fusion_methods.openfocus_ab import _check_cancel
+
+    rng = np.random.default_rng(423)
+    gray = rng.integers(0, 65536, (139, 517), dtype=np.int32)
+    actual = openfocus_a._hard_response(gray, 8, None, _check_cancel)
+
+    def one_band(length, band, function):
+        function(0, length)
+
+    monkeypatch.setattr(openfocus_a, 'run_bands', one_band)
+    expected = openfocus_a._hard_response(gray, 8, None, _check_cancel)
+    np.testing.assert_array_equal(actual, expected)
+
+
 @pytest.mark.parametrize('dtype', [np.uint8, np.uint16])
 @pytest.mark.parametrize('shape', [(1, 1), (1, 128), (2, 3), (2, 128), (20, 128),
                                    (128, 20), (64, 67), (128, 131), (256, 259), (512, 515)])
