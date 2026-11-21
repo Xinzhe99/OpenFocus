@@ -11,6 +11,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   three StackMFF models before activation.
 
 ### Changed
+- Accelerate OpenFocus A Burt response selection and shared OpenFocus A/B
+  integer row kernels with row-cached midpoint-doubling Burt pyramid
+  accumulation, specialized selection/gray/merge loops, exact integer
+  reciprocals (`detail_rows`, `smooth_detail_rows`, `snap_rows`, `merge_rows`,
+  `active_source_rows`), and parallel banded output code conversion.
 - Reuse OpenCL contexts and compiled kernels across OpenFocus A/B/C and ECC
   resize jobs. Reuse upload buffers within a job and drain pending work
   before releasing buffers after cancellation or error.
