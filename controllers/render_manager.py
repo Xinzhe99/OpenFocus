@@ -909,6 +909,9 @@ class RenderManager:
             return "busy"
         self._render_pending = True
         try:
+            stop_warmup = getattr(self.window, '_cancel_depth_warmup', None)
+            if stop_warmup is not None:
+                stop_warmup()
             self._start_render_inner(force_algorithm, interactive=interactive,
                                      confirmed=confirmed, roi_choice=roi_choice,
                                      storage_assessment=_storage_assessment, cpu_confirmed=_cpu_confirmed)
@@ -1445,30 +1448,25 @@ class RenderManager:
         all_source_paths = list(getattr(window, "image_source_paths", None) or [])
         source_paths = ([all_source_paths[i] for i in included_idx]
                         if len(all_source_paths) == len(window.raw_images) else [])
-        # The cache contains the exact post-alignment, post-exposure pixels.
-        # Keep one stack only, and bound the retained temporary files to 2 GiB.
+        # Tiled StackMFF models share the same post-alignment and exposure
+        # pixels. Tile geometry, model weights and output processing come later.
         from core.source_frames import SourceFrame
-        import numpy as np
-        method = (force_algorithm or fusion_method) if need_fusion else None
-        normalized = any(frame.dtype == np.uint16 for frame in stack_images)
-        snapshot_bytes = sum(frame.size * (4 if normalized else frame.dtype.itemsize)
-                             for frame in stack_images)
+        descriptor = get_fusion(method) if need_fusion else None
         retain_preparation = bool(
-            method and get_fusion(method).neural and not self._preview_mode
-            and roi_rect is None and not use_roi_aligned_images and not collect_report
-            and not getattr(window, 'defect_mask_path', '')
-            and not getattr(window, 'sensor_denoise', False)
-            and snapshot_bytes <= 2 * 1024 ** 3
+            descriptor and descriptor.neural and descriptor.streaming_sources
+            and not (descriptor.sort_frames and getattr(window, 'stack_reverse_order', False))
+            and getattr(window, 'tile_enabled', None) is not False
+            and not self._preview_mode and roi_rect is None and not use_roi_aligned_images
+            and not collect_report and not cleanup
             and all(isinstance(frame, SourceFrame) and
                     not (frame.ndim == 3 and frame.shape[2] == 4)
                     for frame in stack_images))
-        preparation_key = (alignment_key, method)
-        if (not retain_preparation or self._prepared_cache_source is not source_ref
-                or self._prepared_cache_key != preparation_key
-                or (requested_steps and not reusable)):
+        if (self._prepared_cache_source is not source_ref
+                or self._prepared_cache_key != alignment_key
+                or (requested_steps and (not reusable or collect_report))):
             self.clear_prepared_cache()
-        prepared_cache = (self._prepared_cache if not requested_steps or reusable else None)
-        self._render_context['preparation_key'] = preparation_key if retain_preparation else None
+        prepared_cache = self._prepared_cache if retain_preparation else None
+        self._render_context['preparation_key'] = alignment_key if retain_preparation else None
         self.worker = RenderProcessWorker(
             source_images,
             effective_aligned_images,
@@ -1505,6 +1503,9 @@ class RenderManager:
             disk_cache=disk_cache_request,
             collect_alignment_report=collect_report and not use_roi_aligned_images,
             prepared_cache=prepared_cache,
+            # Jobs that cannot consume the retained snapshots may keep their
+            # aligned pixels, but must not grow the shared retention budget.
+            retain_aligned_pixels=self._prepared_cache is None or retain_preparation,
             retain_preparation=retain_preparation,
             preview=self._preview_mode,
             profile_performance=bool(getattr(window, "profile_performance", False)),

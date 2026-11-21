@@ -75,37 +75,76 @@ def down2_rows(image, output, start, stop, scale=1):
 def burt_laplacian_rows(gray, reduced, output, start, stop, clamp=False):
     """Absolute Burt difference in Q4; quarter-phase weights are exact."""
     height, width = reduced.shape
+    fine_width = gray.shape[1]
+    if fine_width == 0:
+        return
     for y in range(start, stop):
         y0 = y // 2 - (1 if y % 2 == 0 else 0)
         y1 = min(y0 + 1, height - 1)
         y0 = max(y0, 0)
         wy0 = 1 if y % 2 == 0 else 3
         wy1 = 4 - wy0
-        for x in range(gray.shape[1]):
-            x0 = x // 2 - (1 if x % 2 == 0 else 0)
-            x1 = min(x0 + 1, width - 1)
-            x0 = max(x0, 0)
-            wx0 = 1 if x % 2 == 0 else 3
-            wx1 = 4 - wx0
-            top = np.int64(reduced[y0, x0]) * wx0 + np.int64(reduced[y0, x1]) * wx1
-            bottom = np.int64(reduced[y1, x0]) * wx0 + np.int64(reduced[y1, x1]) * wx1
-            value = abs(np.int64(gray[y, x]) * 16 - top * wy0 - bottom * wy1)
-            output[y, x] = min(value, 65535 * 16) if clamp else value
+
+        # Interpolate vertically first. Every pair within the coarse grid then
+        # uses the same two columns with complementary quarter-phase weights.
+        edge = np.int64(reduced[y0, 0]) * wy0 + np.int64(reduced[y1, 0]) * wy1
+        value = abs(np.int64(gray[y, 0]) * 16 - edge * 4)
+        output[y, 0] = min(value, 65535 * 16) if clamp else value
+        for x in range(1, width):
+            left = np.int64(reduced[y0, x - 1]) * wy0 + np.int64(reduced[y1, x - 1]) * wy1
+            right = np.int64(reduced[y0, x]) * wy0 + np.int64(reduced[y1, x]) * wy1
+            odd = 2 * x - 1
+            value = abs(np.int64(gray[y, odd]) * 16 - (3 * left + right))
+            output[y, odd] = min(value, 65535 * 16) if clamp else value
+            value = abs(np.int64(gray[y, odd + 1]) * 16 - (left + 3 * right))
+            output[y, odd + 1] = min(value, 65535 * 16) if clamp else value
+        if fine_width % 2 == 0:
+            edge = (np.int64(reduced[y0, width - 1]) * wy0
+                    + np.int64(reduced[y1, width - 1]) * wy1)
+            value = abs(np.int64(gray[y, fine_width - 1]) * 16 - edge * 4)
+            output[y, fine_width - 1] = min(value, 65535 * 16) if clamp else value
 
 
 @njit(nogil=True)
 def burt_accumulate_rows(laplacian, response, level, start, stop):
-    """Accumulate half-pixel bilinear response without a full-size buffer."""
-    if level == 0:
-        for y in range(start, stop):
-            for x in range(response.shape[1]):
-                value = np.int64(response[y, x]) + np.int64(laplacian[y, x])
-                response[y, x] = min(value, 65535 * 16)
+    """Accumulate the rounded, half-pixel bilinear expansion in Q4."""
+    height, width = laplacian.shape
+    fine_width = response.shape[1]
+    if fine_width == 0:
         return
+    if level == 1:
+        # The two-pixel spans are the hottest case. Adjacent output pixels
+        # share four coarse codes and use complementary horizontal weights.
+        for y in range(start, stop):
+            y0 = y // 2 - (1 if y % 2 == 0 else 0)
+            y1 = min(y0 + 1, height - 1)
+            y0 = max(y0, 0)
+            wy0 = 1 if y % 2 == 0 else 3
+            wy1 = 4 - wy0
+            edge = np.int64(laplacian[y0, 0]) * wy0 + np.int64(laplacian[y1, 0]) * wy1
+            value = (edge + 2) >> 2
+            response[y, 0] = min(np.int64(response[y, 0]) + value, 65535 * 16)
+            for x in range(1, width):
+                left = (np.int64(laplacian[y0, x - 1]) * wy0
+                        + np.int64(laplacian[y1, x - 1]) * wy1)
+                right = np.int64(laplacian[y0, x]) * wy0 + np.int64(laplacian[y1, x]) * wy1
+                odd = 2 * x - 1
+                value = (3 * left + right + 8) >> 4
+                response[y, odd] = min(np.int64(response[y, odd]) + value, 65535 * 16)
+                value = (left + 3 * right + 8) >> 4
+                response[y, odd + 1] = min(np.int64(response[y, odd + 1]) + value, 65535 * 16)
+            if fine_width % 2 == 0:
+                edge = (np.int64(laplacian[y0, width - 1]) * wy0
+                        + np.int64(laplacian[y1, width - 1]) * wy1)
+                value = (edge + 2) >> 2
+                response[y, fine_width - 1] = min(
+                    np.int64(response[y, fine_width - 1]) + value, 65535 * 16)
+        return
+
     shift = level + 1
     factor = 1 << level
     den = 1 << shift
-    width, height = laplacian.shape[1], laplacian.shape[0]
+    phase = factor >> 1
     rounding = 1 << (2 * shift - 1)
     for y in range(start, stop):
         py = 2 * y + 1 - factor
@@ -113,23 +152,30 @@ def burt_accumulate_rows(laplacian, response, level, start, stop):
         fy = py - (y0 << shift)
         ya = max(0, min(y0, height - 1))
         yb = max(0, min(y0 + 1, height - 1))
-        px = 1 - factor
-        x0 = px >> shift
-        fx = px - (x0 << shift)
-        xa = max(0, min(x0, width - 1))
-        xb = max(0, min(x0 + 1, width - 1))
-        left = np.int64(laplacian[ya, xa]) * (den - fy) + np.int64(laplacian[yb, xa]) * fy
-        right = np.int64(laplacian[ya, xb]) * (den - fy) + np.int64(laplacian[yb, xb]) * fy
-        for x in range(response.shape[1]):
-            value = ((left << shift) + (right - left) * fx + rounding) >> (2 * shift)
+        left = np.int64(laplacian[ya, 0]) * (den - fy) + np.int64(laplacian[yb, 0]) * fy
+        end = min(phase, fine_width)
+        value = (left + factor) >> shift
+        for x in range(end):
             response[y, x] = min(np.int64(response[y, x]) + value, 65535 * 16)
-            fx += 2
-            if fx >= den and x + 1 < response.shape[1]:
-                fx -= den
-                x0 += 1
-                left = right
-                xb = max(0, min(x0 + 1, width - 1))
-                right = np.int64(laplacian[ya, xb]) * (den - fy) + np.int64(laplacian[yb, xb]) * fy
+
+        # Each span starts at horizontal weight 1/den, then advances by 2/den.
+        # Hoist clamping and both vertical interpolations out of the pixel loop.
+        for column in range(1, width):
+            right = (np.int64(laplacian[ya, column]) * (den - fy)
+                     + np.int64(laplacian[yb, column]) * fy)
+            delta = right - left
+            initial = (left << shift) + delta + rounding
+            span = min(factor, fine_width - end)
+            for dx in range(span):
+                value = (initial + 2 * delta * dx) >> (2 * shift)
+                x = end + dx
+                response[y, x] = min(np.int64(response[y, x]) + value, 65535 * 16)
+            end += span
+            left = right
+
+        value = (left + factor) >> shift
+        for x in range(end, fine_width):
+            response[y, x] = min(np.int64(response[y, x]) + value, 65535 * 16)
 
 
 @njit(nogil=True)
@@ -139,9 +185,12 @@ def select_rows(image, response, best, output, start, stop, scale, first,
         local_y = y - start
         for x in range(response.shape[1]):
             score = np.int64(response[y, x])
-            previous = np.int64(best[y, x])
+            previous = 0 if first else np.int64(best[y, x])
             take = first or score > previous
-            collect = first or previous < 65536
+            # A pixel that has reached the sharp threshold can never blend.
+            collect = previous < 65536 and score < 65536
+            if not (collect or take):
+                continue
             if collect:
                 # Responses are saturated at 65535*16. Store the minimum and
                 # runner-up in code units to keep both in one uint16 pair.

@@ -128,12 +128,12 @@ def _plan(source, model_path, use_gpu, tile_size, execution_plan,
     from core.source_frames import frame_resolution_bytes, source_cache_growth_bytes
     source_resolution = max(frame_resolution_bytes(frame) for frame in source.items)
     source_cache = source_cache_growth_bytes(source.items)
-    if source.gains is not None:
-        source_resolution += h * w * channels * max(4, source.dtype.itemsize) * 4
+    gain_bytes = (h * w * channels * max(4, source.dtype.itemsize) * 4
+                  if source.gains is not None else 0)
     block, outer = plan_neural_tiles(
         len(source.items), h, w, channels, tile_size or min(h, w), device,
         estimate_inference_bytes, directory=False,
-        source_resolution_bytes=source_resolution, source_cache_bytes=source_cache,
+        source_resolution_bytes=source_resolution + gain_bytes, source_cache_bytes=source_cache,
         itemsize=source.dtype.itemsize, preference=resource_preference,
         user_threads=thread_count)
     if execution_plan is not None:
@@ -143,13 +143,11 @@ def _plan(source, model_path, use_gpu, tile_size, execution_plan,
                         if execution_plan.vram_budget else outer.vram_budget,
                         device_fallback=outer.device_fallback or execution_plan.device_fallback,
                         native_threads=min(outer.native_threads, execution_plan.native_threads))
-    first = source.get(0)
-    fixed = tiled_output_bytes(h, w, channels, result_count) + source_resolution + source_cache
+    fixed = tiled_output_bytes(h, w, channels, result_count) + gain_bytes
     while True:
-        crop = first[:block, :block]
         try:
             model, device, plan = _prepare_inference(
-                [crop] * len(source.items), model_path, use_gpu,
+                source.items, model_path, use_gpu, height=block, width=block,
                 thread_count=thread_count, resource_preference=resource_preference,
                 execution_plan=outer, result_count=result_count, fixed_bytes=fixed)
             return block, model, device, plan
@@ -177,7 +175,7 @@ def _stage_tile_planes(source, region, should_cancel):
             raise ValueError('All frames must have the same dimensions')
         frame = common.working_frame(frame, source.mixed_16 or frame.dtype == np.uint16)
         # Keep the packed conversion grid for OpenCV's edge rounding.
-        planes[0, index] = common.luma_plane(np.ascontiguousarray(frame))
+        common.write_luma_plane(np.ascontiguousarray(frame), planes[0, index])
         del frame
     common.cancel(should_cancel)
     return planes
@@ -218,9 +216,14 @@ def _tiled_depth_under_lease(source, model_path, use_gpu, should_cancel=None,
     if tile_grid_callback is not None:
         tile_grid_callback(block, overlap, total)
     expected = create_frame((h, w), np.float32)
-    weight = create_frame((h, w), np.float32)
-    expected[...] = 0
-    weight[...] = 0
+    # Edge tiles can overlap even at zero requested overlap. Only a grid
+    # that divides the padded canvas exactly writes every pixel once.
+    weight = None
+    if overlap or h % block or w % block:
+        weight = create_frame((h, w), np.float32)
+        expected.fill(0)
+        weight.fill(0)
+    layer_weights = np.arange(1, count + 1, dtype=np.float32)[None, :, None, None]
     if progress_callback is not None:
         progress_callback(0, total)
     done = 0
@@ -231,21 +234,25 @@ def _tiled_depth_under_lease(source, model_path, use_gpu, should_cancel=None,
             probs = neural_runtime.softmax(neural_runtime.logits(
                 planes, model, device, plan.native_threads, should_cancel))
             del planes
-            positions = (probs * np.arange(1, count + 1, dtype=np.float32)
-                         [None, :, None, None]).sum(axis=1)[0, :block, :block]
+            positions = (probs * layer_weights).sum(axis=1)[0, :block, :block]
             del probs
-            weights = _weights(x, y, x + block, y + block, w, h, overlap)
-            expected[y:y+block, x:x+block] += positions * weights
-            weight[y:y+block, x:x+block] += weights
+            rows, cols = slice(y, y + block), slice(x, x + block)
+            if weight is None:
+                expected[rows, cols] = positions
+            else:
+                weights = _weights(x, y, x + block, y + block, w, h, overlap)
+                expected[rows, cols] += positions * weights
+                weight[rows, cols] += weights
             done += 1
             if progress_callback is not None:
                 progress_callback(done, total)
     common.cancel(should_cancel)
-    for start in range(0, h, 128):
-        common.cancel(should_cancel)
-        rows = slice(start, min(h, start + 128))
-        np.divide(expected[rows], weight[rows], out=expected[rows], where=weight[rows] != 0)
-    del weight
+    if weight is not None:
+        for start in range(0, h, 128):
+            common.cancel(should_cancel)
+            rows = slice(start, min(h, start + 128))
+            np.divide(expected[rows], weight[rows], out=expected[rows], where=weight[rows] != 0)
+        del weight
     lo, hi = expected.min(), expected.max()
     expected -= lo
     expected /= hi - lo + 1e-8

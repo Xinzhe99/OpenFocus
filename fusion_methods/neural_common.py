@@ -76,16 +76,20 @@ def working_frame(frame, normalize_stack):
     return result
 
 
-def luma_plane(frame):
-    """Return one 0-1 float32 luma plane from a grayscale or BGR frame."""
+def write_luma_plane(frame, destination):
+    """Write BT.601 luma at 0–1 into one float32 model input plane."""
     if frame.ndim == 2:
         gray = frame
     elif frame.shape[2] == 1:
         gray = frame[:, :, 0]
     else:
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    scale = 65535.0 if gray.dtype == np.uint16 else 255.0
-    return gray.astype(np.float32, copy=False) / scale
+        if frame.dtype == np.float32:
+            cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY, dst=destination)
+            gray = destination
+        else:
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    scale = np.float32(65535 if gray.dtype == np.uint16 else 255)
+    np.divide(gray, scale, out=destination, dtype=np.float32)
 
 
 def stage_planes(frames, align, should_cancel=None):
@@ -106,7 +110,7 @@ def stage_planes(frames, align, should_cancel=None):
         if ph or pw:
             padding = ((0, ph), (0, pw)) + ((0, 0),) * (frame.ndim - 2)
             frame = np.pad(frame, padding, mode=mode)
-        batch[0, index] = luma_plane(frame)
+        write_luma_plane(frame, batch[0, index])
     cancel(should_cancel)
     return batch
 
@@ -182,17 +186,6 @@ def plan_attention_inference(algorithm, frames, model_path, device,
         return model_path, device, plan
 
 
-def _ycbcr(frame):
-    """BT.601 Y/Cb/Cr in 0-255, independent of cv2's float input range."""
-    data = frame.astype(np.float32, copy=False)
-    if data.ndim == 3 and data.shape[2] == 1:
-        data = data[:, :, 0]
-    if data.ndim == 2:
-        data = np.repeat(data[:, :, None], 3, axis=2)
-    blue, green, red = data[:, :, 0], data[:, :, 1], data[:, :, 2]
-    luma = 0.299 * red + 0.587 * green + 0.114 * blue
-    return luma, (blue - luma) * 0.564 + 128.0, (red - luma) * 0.713 + 128.0
-
 
 def _ycbcr_to_bgr(luma, cb, cr):
     luma = luma.astype(np.float32, copy=False)
@@ -215,17 +208,40 @@ def tensor_to_bgr(fused_luma, frames, should_cancel=None):
     cancel(should_cancel)
     normalize_stack = any(frame.dtype == np.uint16 for frame in frames)
     target = np.clip(fused_luma, 0.0, 255.0)
-    best = cb = cr = None
-    for frame in frames:
+    best = np.empty(target.shape, dtype=np.float32)
+    cb = np.empty_like(best)
+    cr = np.empty_like(best)
+    luma = np.empty_like(best)
+    work = np.empty_like(best)
+    better = np.empty(best.shape, dtype=bool)
+    for index, frame in enumerate(frames):
         cancel(should_cancel)
-        luma, frame_cb, frame_cr = _ycbcr(working_frame(frame, normalize_stack))
-        distance = np.abs(luma - target)
-        if best is None:
-            best, cb, cr = distance, frame_cb, frame_cr
-            continue
-        better = (distance < best) | (np.isnan(distance) & ~np.isnan(best))
-        np.copyto(best, distance, where=better)
-        np.copyto(cb, frame_cb, where=better)
-        np.copyto(cr, frame_cr, where=better)
+        source = working_frame(frame, normalize_stack).astype(np.float32, copy=False)
+        if source.ndim == 3 and source.shape[2] == 1:
+            source = source[:, :, 0]
+        blue, green, red = ((source,) * 3 if source.ndim == 2 else
+                            (source[:, :, 0], source[:, :, 1], source[:, :, 2]))
+        # Keep the reference's float32 arithmetic order.
+        np.multiply(red, np.float32(0.299), out=luma)
+        np.multiply(green, np.float32(0.587), out=work)
+        np.add(luma, work, out=luma)
+        np.multiply(blue, np.float32(0.114), out=work)
+        np.add(luma, work, out=luma)
+        np.subtract(luma, target, out=work)
+        np.abs(work, out=work)
+        if index == 0:
+            better.fill(True)
+        else:
+            np.less(work, best, out=better)
+            better |= np.isnan(work) & ~np.isnan(best)
+        np.copyto(best, work, where=better)
+        np.subtract(blue, luma, out=cb, where=better)
+        np.subtract(red, luma, out=cr, where=better)
+        del source, blue, green, red
     cancel(should_cancel)
-    return np.clip(_ycbcr_to_bgr(target, cb, cr), 0.0, 255.0)
+    cb *= np.float32(0.564)
+    cb += np.float32(128)
+    cr *= np.float32(0.713)
+    cr += np.float32(128)
+    result = _ycbcr_to_bgr(target, cb, cr)
+    return np.clip(result, 0.0, 255.0, out=result)

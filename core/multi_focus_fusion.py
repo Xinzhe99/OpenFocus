@@ -804,7 +804,7 @@ class MultiFocusFusion:
         else:
             raise ValueError("Fusion requires a non-empty image stack or directory")
 
-        if self.algorithm in ('openfocus_b', 'openfocus_c'):
+        if not self.use_gpu and self.algorithm in ('openfocus_b', 'openfocus_c'):
             from fusion_methods._depth_kernel import prepare_depth_kernel
             smoothing = kwargs['smoothing']
             prepare_depth_kernel(guided=smoothing is None or smoothing > 0,

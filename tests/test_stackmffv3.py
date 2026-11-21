@@ -155,6 +155,7 @@ def test_ai_tile_progress_never_skips_ahead(monkeypatch):
 @pytest.mark.parametrize('grayscale', [False, True])
 def test_gray_staging_matches_single_replicate_padding(shape, grayscale):
     from fusion_methods import stackmffv3 as ai
+    import cv2
     from utils.image_utils import normalize_fuse_input
 
     rng = np.random.default_rng(315)
@@ -163,7 +164,10 @@ def test_gray_staging_matches_single_replicate_padding(shape, grayscale):
     frames = [rng.integers(0, 65536, source_shape, np.uint16)[:, ::2]
               for _ in range(3)]
     normalized, _ = normalize_fuse_input(frames)
-    expected = np.stack([ai._gray01(f) for f in normalized])[None]
+    expected = np.stack([
+        (frame if grayscale else cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)) / np.float32(255)
+        for frame in normalized
+    ])[None]
     expected = np.pad(expected, ((0, 0), (0, 0), (0, (-h) % 64),
                                  (0, (-w) % 64)), mode='edge')
     actual = ai._stage_gray(frames, None)

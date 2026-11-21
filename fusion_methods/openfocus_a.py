@@ -172,8 +172,7 @@ def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 17,
         finally:
             gpu = None
             SOURCE_CACHE.clear()
-    fast_hard = hard and img_resize is None and all(
-        source.dtype in (np.uint8, np.uint16) for source in frames)
+    native_hard = hard and img_resize is None
     workers = _frame_pass_workers(frames, img_resize, 'openfocus_a', thread_count)
     if progress_callback is not None:
         progress_callback(0, len(frames))
@@ -181,11 +180,11 @@ def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 17,
 
     def produce(index, cancelled):
         source = frames[index]
-        if fast_hard:
+        if native_hard and source.dtype in (np.uint8, np.uint16):
             from core.source_frames import resolve_frame
 
             _check_cancel(cancelled)
-            frame = resolve_frame(source)
+            frame = resolve_frame(source, should_cancel=cancelled)
             _check_cancel(cancelled)
             gray = frame_gray_codes(frame, None, cancelled)
             response = _hard_response(gray, radius, cancelled, _check_cancel)
@@ -369,7 +368,7 @@ def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 17,
                         4 * (1 if frame.ndim == 2 else frame.shape[2]) + 8)
                 if frame.shape != output.shape:
                     raise ValueError("OpenFocus A requires frames with matching shapes")
-                scale = 256 if fast_hard and frame.dtype == np.uint8 else 1
+                scale = 256 if frame.dtype == np.uint8 else 1
                 def select(start, stop):
                     _check_cancel(should_cancel)
                     rows = slice(start, stop)

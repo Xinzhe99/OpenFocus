@@ -22,6 +22,12 @@ def _normalize_rows(source, output, factor, start, stop):
 
 
 @njit(nogil=True)
+def _normalize_flat_rows(source, output, factor, row_size, start, stop):
+    for i in range(start * row_size, stop * row_size):
+        output[i] = np.float32(source[i]) * factor
+
+
+@njit(nogil=True)
 def _down_horizontal(source, output, start, stop):
     height, width, channels = source.shape
     for y in range(start, stop):
@@ -167,6 +173,19 @@ def _rows(length, function, cancel):
     run_bands(length, 128, run)
 
 
+def _normalize(source, output, factor, cancel):
+    # Flatten only packed sources. Crops and flipped arrays retain the
+    # strided path without allocating a contiguous copy.
+    height, width, channels = source.shape
+    if source.flags.c_contiguous:
+        pixels = source.reshape(-1)
+        normalized = output.reshape(-1)
+        _rows(height, lambda a, b: _normalize_flat_rows(
+            pixels, normalized, factor, width * channels, a, b), cancel)
+    else:
+        _rows(height, lambda a, b: _normalize_rows(source, output, factor, a, b), cancel)
+
+
 def _down(source, cancel):
     height, width, channels = source.shape
     horizontal = create_frame((height, (width + 1) // 2, channels), np.float32)
@@ -221,7 +240,7 @@ def fuse_pyramid(frames, shape, img_resize, smoothing, should_cancel, progress_c
         source = pixels[:, :, None] if is_gray else pixels
         factor = np.float32(scale / (65280.0 if is_u8 else 65535.0))
         base = create_frame(source.shape, np.float32)
-        _rows(shape[0], lambda a, b: _normalize_rows(source, base, factor, a, b), cancel)
+        _normalize(source, base, factor, cancel)
         del source, pixels
         gaussian = [base]
         del base
