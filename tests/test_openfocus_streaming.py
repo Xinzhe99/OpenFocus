@@ -647,7 +647,11 @@ def test_producer_window_stays_bounded_as_stack_length_grows(monkeypatch):
 
 
 @pytest.mark.parametrize('exposure', [False, True])
-def test_large_tiff_b_snapshots_real_ecc_warps_before_whole_depth(tmp_path, monkeypatch, exposure):
+@pytest.mark.parametrize(('space', 'budget_mib'), [
+    ('available', 129), ('available', 256), ('full', 256), ('fills-during-stage', 256),
+])
+def test_large_tiff_b_runs_real_ecc_warps_with_or_without_snapshots(
+        tmp_path, monkeypatch, exposure, space, budget_mib):
     from collections import Counter
     from core import multi_focus_fusion, registration
 
@@ -673,16 +677,44 @@ def test_large_tiff_b_snapshots_real_ecc_warps_before_whole_depth(tmp_path, monk
                    exposure_match=exposure, use_gpu=False)
     expected = multi_focus_fusion.MultiFocusFusion(**options).fuse(eager, thread_count=1)
     monkeypatch.setattr(source_frames, 'SOURCE_CACHE', source_frames.FrameCache(0))
-    monkeypatch.setattr(multi_focus_fusion, 'memory_budget_bytes', lambda: 129 * 1024 ** 2)
+    monkeypatch.setattr(multi_focus_fusion, 'memory_budget_bytes', lambda: budget_mib * 1024 ** 2)
     original_cost = source_frames.frame_resolution_bytes
     def expensive(frame, *, metadata_only=False):
         if isinstance(frame, source_frames.ProcessedFrame) and not isinstance(frame.source, np.ndarray):
             return 129 * 1024 ** 2
         return original_cost(frame, metadata_only=metadata_only)
     monkeypatch.setattr(source_frames, 'frame_resolution_bytes', expensive)
+    snapshots = []
+    snapshot_failed = False
+    if space == 'full':
+        select_scratch = frame_storage.select_scratch
+
+        def reject_full_stack(size, *args, **kwargs):
+            if size > 32 * 40 * 48:
+                raise frame_storage.ScratchSpaceError(str(tmp_path), size, 32 * 40 * 48)
+            return select_scratch(size, *args, **kwargs)
+
+        monkeypatch.setattr(frame_storage, 'select_scratch', reject_full_stack)
+    elif space == 'fills-during-stage':
+        store_frame = source_frames.store_frame
+
+        def fail_after_first_snapshot(image, *, prefer_ram=True):
+            nonlocal snapshot_failed
+            if prefer_ram:
+                return store_frame(image)
+            if snapshots:
+                snapshot_failed = True
+                raise frame_storage.ScratchSpaceError(str(tmp_path), image.nbytes, 0)
+            stored = store_frame(image, prefer_ram=False)
+            snapshots.append(Path(stored.filename))
+            return stored
+
+        monkeypatch.setattr(source_frames, 'store_frame', fail_after_first_snapshot)
     original_warp = registration.PerspectiveWarp.__call__
     calls = Counter()
     def counted(warp, image):
+        if snapshot_failed:
+            assert not snapshots[0].exists()
         calls[warp.source.path] += 1
         return original_warp(warp, image)
     monkeypatch.setattr(registration.PerspectiveWarp, '__call__', counted)
@@ -693,8 +725,32 @@ def test_large_tiff_b_snapshots_real_ecc_warps_before_whole_depth(tmp_path, monk
     actual = multi_focus_fusion.MultiFocusFusion(**options).fuse(
         deferred, thread_count=1, progress_callback=progress)
     np.testing.assert_array_equal(actual, expected)
-    assert preparation == [(0, 3), (1, 3), (2, 3), (3, 3)]
-    assert [calls[source.path] for source in descriptors] == [2 if exposure else 1, 1, 1]
+    if space == 'available':
+        assert preparation == [(0, 3), (1, 3), (2, 3), (3, 3)]
+        assert [calls[source.path] for source in descriptors] == [2 if exposure else 1, 1, 1]
+    elif space == 'full':
+        assert preparation == []
+    else:
+        assert preparation == [(0, 3), (1, 3)]
+        assert snapshot_failed and not snapshots[0].exists()
+
+
+def test_tiled_b_propagates_late_snapshot_failure(tmp_path, monkeypatch):
+    from core.multi_focus_fusion import MultiFocusFusion
+
+    sources = [_source(tmp_path, f'tile-{i}.png', 17001 + i)[0] for i in range(2)]
+    error = frame_storage.ScratchSpaceError(str(tmp_path), sources[0].nbytes, 0)
+
+    def fail_write(image, *, prefer_ram=True):
+        assert not prefer_ram
+        raise error
+
+    monkeypatch.setattr(source_frames, 'store_frame', fail_write)
+    fusion = MultiFocusFusion(algorithm='openfocus_b', tile_enabled=True, tile_threshold=8,
+                              sort_mode='off', exposure_match=False, use_gpu=False)
+    with pytest.raises(frame_storage.ScratchSpaceError) as caught:
+        fusion.fuse(sources, thread_count=1)
+    assert caught.value is error
 
 
 def test_required_source_snapshots_fail_before_writing_when_scratch_is_full(tmp_path, monkeypatch):
