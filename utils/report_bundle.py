@@ -38,7 +38,7 @@ settings.applied depth_map neural_provider_probe neural_provider_selected neural
 ort_operator_trace render_child_error resource_admission diagnostic_failure
 render.state render_dispatch render_dispatch.worker_started render_dispatch.admitted
 render_dispatch.ipc_ready render_dispatch.request_encoded render_dispatch.spawn_started
-render_dispatch.spawn_completed account_sign_in'''.split())
+render_dispatch.spawn_completed'''.split())
 _NUMBERS = frozenset('''elapsed_ms seconds frame_count frames loaded_frames file_count
 folder_count count workers preview_threads thread_count native_threads page pages files
 success total index column stack_index scale scale_factor reg_downscale_width duration_sec
@@ -299,6 +299,9 @@ def _events_and_error(text):
         match = _EVENT_LINE.match(line)
         if match:
             timestamp, name, payload = match.groups()
+            # Sign-in evidence is handled only by its dedicated anonymous queue.
+            if name == 'account_sign_in.failed':
+                continue
             if name.endswith('.failed'):
                 has_error = True
             if not _known_event(name):
@@ -314,8 +317,6 @@ def _events_and_error(text):
                 parameters = _safe_child_failure(parsed)
             elif name == 'resource_admission':
                 parameters = _safe_admission(parsed)
-            elif name == 'account_sign_in.failed':
-                parameters = safe_sign_in_evidence(parsed)
             else:
                 parameters = _numeric_fields(parsed)
             event = {'timestamp': stamp, 'event': name, 'parameters': parameters}
