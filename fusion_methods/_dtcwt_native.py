@@ -11,7 +11,7 @@ from threading import Lock
 import numpy as np
 
 from fusion_methods._depth_kernel import njit
-from fusion_methods._dtcwt_kernels import make_reflect_table
+from fusion_methods._dtcwt_kernels import _magnitude_scratch, make_reflect_table
 
 _SQRT_HALF_32 = np.float32(np.sqrt(0.5))
 _W_R = np.float32(0.299)
@@ -740,6 +740,12 @@ def _sum6_strip(abs_strip, mag, y_start):
             mag[dy, x] = np.float32(acc + abs_strip[ry, x, 5])
 
 
+def _write_activity_strip(hp_strip, scratch, mag, y_start):
+    absolute = scratch[:hp_strip.size].reshape(hp_strip.shape)
+    np.abs(hp_strip, out=absolute)
+    _sum6_strip(absolute, mag, y_start)
+
+
 @njit(nogil=True, fastmath=False)
 def _max3x3_update(mag, best_act, best_idx, frame_idx, is_first):
     h, w = mag.shape
@@ -1079,12 +1085,14 @@ class _NativeWorkspace:
             self.strip_pairs = 0
             self.hi_strip = None
             self.hp_strip = None
+            self.abs_strip = None
             self.lo_2row = np.empty((2, c0), dtype=np.float32)
             self.hi_2row = np.empty((2, c0), dtype=np.float32)
         else:
             self.strip_pairs = max(1, min(strip_pairs, max(1, sp0.hp_h)))
             self.hi_strip = np.empty((2 * self.strip_pairs, c0), dtype=np.float32)
             self.hp_strip = np.empty((self.strip_pairs, sp0.hp_w, 6), dtype=np.complex64)
+            self.abs_strip = _magnitude_scratch(self.hp_strip.size, np.float32)
             self.lo_2row = None
             self.hi_2row = None
 
@@ -1237,7 +1245,7 @@ class _NativeDtcwtEngine:
             _colfilter_v7_rows(ws.buf_a[:r, :c], hi_strip, self.h1o, r, c, 2 * yp, 2 * (yp + n_pairs))
             hp_strip = ws.hp_strip[:n_pairs, :hp0_w]
             _colfilter_h_q2c_strip(lo, hi_strip, hp_strip, self.h0o, self.h1o, yp, n_pairs, c)
-            _sum6_strip(np.abs(hp_strip), mag0, yp)
+            _write_activity_strip(hp_strip, ws.abs_strip, mag0, yp)
         mags.append(mag0)
 
         if nlevels == 1:
@@ -1262,7 +1270,7 @@ class _NativeDtcwtEngine:
                     lo, hi_strip, hp_strip, self.h0b, self.h0a, self.h1b, self.h1a,
                     sp.xe_c_fwd, yp, n_pairs, sp.hp_w,
                 )
-                _sum6_strip(np.abs(hp_strip), mag_lvl, yp)
+                _write_activity_strip(hp_strip, ws.abs_strip, mag_lvl, yp)
             mags.append(mag_lvl)
 
             if lvl + 1 < nlevels:

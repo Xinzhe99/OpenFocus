@@ -12,6 +12,13 @@ from utils.image_utils import normalize_fuse_input
 pytestmark = pytest.mark.skipif(module.dtcwt is None, reason="dtcwt backend not installed")
 
 
+def _reference_activity(highpass):
+    # Keep NumPy's input and output apart even when heap allocations touch.
+    absolute = np.empty(highpass.size + 2, dtype=np.float32)[1:-1].reshape(highpass.shape)
+    np.abs(highpass, out=absolute)
+    return absolute.sum(axis=2)
+
+
 def _reference(frames, levels):
     images = [cv2.cvtColor(f, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0 for f in frames]
     h, w = images[0].shape[:2]
@@ -21,7 +28,7 @@ def _reference(frames, levels):
         luma = 0.299 * image[:, :, 0] + 0.587 * image[:, :, 1] + 0.114 * image[:, :, 2]
         pyramid = transform.forward(luma, nlevels=levels)
         for level in range(levels):
-            activity = np.abs(pyramid.highpasses[level]).sum(axis=2).astype(np.float32)
+            activity = _reference_activity(pyramid.highpasses[level])
             activities[level].append(module.maximum_filter(activity, size=3, mode="reflect"))
     decisions = []
     for activity in activities:
@@ -130,7 +137,7 @@ def test_native_forward_inverse_bit_exact_with_upstream(shape, nlevels):
     ref_pyr = module.dtcwt.Transform2d().forward(luma, nlevels=nlevels)
 
     for lvl in range(nlevels):
-        ref_mag = np.abs(ref_pyr.highpasses[lvl]).sum(axis=2).astype(np.float32)
+        ref_mag = _reference_activity(ref_pyr.highpasses[lvl])
         np.testing.assert_array_equal(mags[lvl], ref_mag)
 
     dec = [np.zeros((sp.hp_h, sp.hp_w), dtype=np.int32) for sp in ws.plans]
