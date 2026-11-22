@@ -18,6 +18,7 @@ from core.resource_policy import require_memory
 
 require_memory(DEPTH_KERNEL_STARTUP_BYTES)
 from numba import njit as _numba_njit  # noqa: E402 - admit compiler memory first
+import numpy as np  # noqa: E402 - admit compiler memory first
 
 
 @contextmanager
@@ -125,41 +126,129 @@ _prepare_lock = Lock()
 @njit(nogil=True)
 def axis_block(src, guide, first, output, acc, q, t, tm, tl,
                start, stop, left, right, backward):
-    """Advance one column strip, wrapping state before every right shift."""
+    """Advance one column strip, wrapping state in uint32 across row slices."""
     height = src.shape[0]
-    mask = 0xffffffff
-    for step in range(stop - start):
-        y = stop - 1 - step if backward else start + step
-        for x in range(left, right):
-            column = x - left
-            value = int(src[y, x])
-            if guide is None:
-                innovation = (value * 16 * t) & mask
-                state = ((int(acc[column]) + 2048 + innovation) & mask) >> 12
-                if backward:
-                    output[y, x] = (((state + 3) >> 4) + 1
-                                    + int(first[y, column])) >> 1 & 65535
-                else:
-                    first[y, column] = ((state + 4) >> 4) & 65535
-                acc[column] = (state * q + innovation) & mask
-            else:
-                strength = int(guide[y, x])
-                amount = (((65536 - strength) * tl
-                           + strength * tm) & mask) >> 16
-                if backward:
-                    previous = (int(first[height - 1, column])
-                                if y == height - 1 else int(src[y + 1, x]))
-                else:
-                    previous = int(src[max(0, y - 1), x])
-                state = (((4096 - 2 * amount) * int(acc[column]) + 2048
-                          + (value + previous) * (amount << 4))
-                         & mask) >> 12
-                acc[column] = state
-                if backward:
-                    output[y, x] = (((state + 3) >> 4) + 1
-                                    + int(first[y, column])) >> 1 & 65535
-                else:
-                    first[y, column] = (state + 4) >> 4
+    cols = right - left
+    c2048 = np.uint32(2048)
+    u1 = np.uint32(1)
+    u3 = np.uint32(3)
+    u4 = np.uint32(4)
+    u12 = np.uint32(12)
+
+    if guide is None:
+        q32 = np.uint32(q)
+        t16 = np.uint32(t) * np.uint32(16)
+        if not backward:
+            for y in range(start, stop):
+                s_row = src[y, left:right]
+                f_row = first[y]
+                for col in range(cols):
+                    inn = np.uint32(np.uint32(s_row[col]) * t16)
+                    st = np.uint32(acc[col] + c2048 + inn) >> u12
+                    f_row[col] = np.uint16((st + u4) >> u4)
+                    acc[col] = np.uint32(st * q32 + inn)
+        else:
+            for y in range(stop - 1, start - 1, -1):
+                s_row = src[y, left:right]
+                f_row = first[y]
+                o_row = output[y, left:right]
+                for col in range(cols):
+                    inn = np.uint32(np.uint32(s_row[col]) * t16)
+                    st = np.uint32(acc[col] + c2048 + inn) >> u12
+                    o_row[col] = np.uint16((((st + u3) >> u4) + u1 + np.uint32(f_row[col])) >> u1)
+                    acc[col] = np.uint32(st * q32 + inn)
+        return
+
+    tm32 = np.uint32(tm)
+    tl32 = np.uint32(tl)
+    c4096 = np.uint32(4096)
+    c65536 = np.uint32(65536)
+    u2 = np.uint32(2)
+    u16 = np.uint32(16)
+    if not backward:
+        if start < stop and start == 0:
+            s_row = src[0, left:right]
+            g_row = guide[0, left:right]
+            f_row = first[0]
+            for col in range(cols):
+                v = np.uint32(s_row[col])
+                s = np.uint32(g_row[col])
+                amt = np.uint32((c65536 - s) * tl32 + s * tm32) >> u16
+                st = np.uint32((c4096 - u2 * amt) * acc[col] + c2048 + (v + v) * (amt << u4)) >> u12
+                acc[col] = st
+                f_row[col] = (st + u4) >> u4
+        y_begin = 1 if start == 0 else start
+        for y in range(y_begin, stop):
+            s_row = src[y, left:right]
+            p_row = src[y - 1, left:right]
+            g_row = guide[y, left:right]
+            f_row = first[y]
+            for col in range(cols):
+                v = np.uint32(s_row[col])
+                p = np.uint32(p_row[col])
+                s = np.uint32(g_row[col])
+                amt = np.uint32((c65536 - s) * tl32 + s * tm32) >> u16
+                st = np.uint32((c4096 - u2 * amt) * acc[col] + c2048 + (v + p) * (amt << u4)) >> u12
+                acc[col] = st
+                f_row[col] = (st + u4) >> u4
+    else:
+        y_top = stop - 1
+        if y_top >= start and y_top == height - 1:
+            s_row = src[y_top, left:right]
+            g_row = guide[y_top, left:right]
+            f_row = first[y_top]
+            o_row = output[y_top, left:right]
+            for col in range(cols):
+                v = np.uint32(s_row[col])
+                p = f_row[col]
+                s = np.uint32(g_row[col])
+                amt = np.uint32((c65536 - s) * tl32 + s * tm32) >> u16
+                st = np.uint32((c4096 - u2 * amt) * acc[col] + c2048 + (v + p) * (amt << u4)) >> u12
+                acc[col] = st
+                o_row[col] = np.uint16((((st + u3) >> u4) + u1 + np.uint32(f_row[col])) >> u1)
+            y_top -= 1
+        for y in range(y_top, start - 1, -1):
+            s_row = src[y, left:right]
+            p_row = src[y + 1, left:right]
+            g_row = guide[y, left:right]
+            f_row = first[y]
+            o_row = output[y, left:right]
+            for col in range(cols):
+                v = np.uint32(s_row[col])
+                p = np.uint32(p_row[col])
+                s = np.uint32(g_row[col])
+                amt = np.uint32((c65536 - s) * tl32 + s * tm32) >> u16
+                st = np.uint32((c4096 - u2 * amt) * acc[col] + c2048 + (v + p) * (amt << u4)) >> u12
+                acc[col] = st
+                o_row[col] = np.uint16((((st + u3) >> u4) + u1 + np.uint32(f_row[col])) >> u1)
+
+
+@njit(nogil=True)
+def _pack_rows_T(orig, dst, left, right):
+    """Cache-blocked 16x16 transpose from orig[left:right, :] to dst[:, :right-left]."""
+    rows = right - left
+    width = orig.shape[1]
+    for x0 in range(0, width, 16):
+        x1 = min(width, x0 + 16)
+        for col in range(rows):
+            y = left + col
+            for x in range(x0, x1):
+                dst[x, col] = orig[y, x]
+
+
+@njit(nogil=True)
+def _unpack_rows_T(src_buf, orig_out, left, right):
+    """Cache-blocked 16x16 transpose from src_buf[:, :right-left] to orig_out[left:right, :]."""
+    rows = right - left
+    width = orig_out.shape[1]
+    for y0 in range(0, rows, 16):
+        y1 = min(rows, y0 + 16)
+        for x0 in range(0, width, 16):
+            x1 = min(width, x0 + 16)
+            for col in range(y0, y1):
+                y = left + col
+                for x in range(x0, x1):
+                    orig_out[y, x] = src_buf[x, col]
 
 
 def prepare_depth_kernel(guided=True, should_cancel=None):
@@ -170,7 +259,13 @@ def prepare_depth_kernel(guided=True, should_cancel=None):
     pixels = types.Array(types.uint16, 2, 'C')
     forward = types.Array(types.uint32, 2, 'C')
     accumulator = types.Array(types.uint32, 1, 'C')
+    transpose_signature = (pixels, pixels, types.int64, types.int64)
     with _prepare_lock:
+        for kernel in (_pack_rows_T, _unpack_rows_T):
+            _check_cancel(should_cancel)
+            if transpose_signature not in kernel.signatures:
+                require_memory(DEPTH_KERNEL_STARTUP_BYTES)
+                kernel.compile(transpose_signature)
         for layout in ('C', 'F'):
             source = types.Array(types.uint16, 2, layout)
             guides = ((types.none, pixels, types.Array(types.uint16, 2, 'F'))
