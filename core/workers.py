@@ -146,6 +146,7 @@ class StackLoadWorker(QThread):
 
     finished_load = pyqtSignal(bool, str, object, object)  # ok, message, images, filenames
     progress = pyqtSignal(int, int)  # completed files, total files
+    preparing = pyqtSignal()
 
     def __init__(self, loader, folder=None, video=None, filepaths=None, scale=1.0,
                  thread_count: int = 0, resource_preference: str = "balanced", exclude_paths=(),
@@ -164,6 +165,8 @@ class StackLoadWorker(QThread):
         self.expected_metadata = expected_metadata
         self.linear_dng_metadata = None
         self.source_icc_profiles = ()
+        self.prepare_result = None
+        self.prepared_options = None
         self.is_cancelled = False
         self._previous_should_cancel = getattr(self.loader, 'should_cancel', None)
         self._previous_loader_state = {
@@ -196,6 +199,7 @@ class StackLoadWorker(QThread):
                            file_count=len(self.filepaths) if self.filepaths is not None else None) as operation:
             previous_progress_callback = getattr(self.loader, 'progress_callback', None)
             self.loader.progress_callback = self.progress.emit
+            loaded_images = None
             try:
                 with heavy_job(lambda: self.is_cancelled):
                     log_action('stack_load.admitted')
@@ -254,9 +258,13 @@ class StackLoadWorker(QThread):
                         else:
                             operation.fail()
                             logger.error("stack load failed: %s", msg)
-            except RegistrationCancelled as e:
+                    if ok and self.prepare_result is not None and not self.is_cancelled:
+                        loaded_images = imgs
+                        self.preparing.emit()
+                        self.prepared_options = self.prepare_result(imgs, names)
+            except RegistrationCancelled:
                 operation.cancel()
-                ok, msg, imgs, names = False, str(e), [], []
+                ok, msg, imgs, names = False, 'CANCELLED', [], []
             except SourceExifTooLarge as exc:
                 operation.fail()
                 try:
@@ -272,13 +280,19 @@ class StackLoadWorker(QThread):
             finally:
                 self.loader.progress_callback = previous_progress_callback
                 self.loader.should_cancel = self._previous_should_cancel
+                self.prepare_result = None
             if self.is_cancelled:
                 operation.cancel()
-                self.restore_loader_state(imgs if ok else self._previous_loader_state['images'])
+            if self.is_cancelled or not ok:
+                # A preparation error can occur after the decoder replaced
+                # loader metadata. Roll that result back as well.
+                owned_images = (loaded_images if loaded_images is not None else
+                                imgs if ok else self._previous_loader_state['images'])
+                self.restore_loader_state(owned_images)
+            if self.is_cancelled:
                 ok, msg, imgs, names = False, 'CANCELLED', [], []
-            elif not ok:
-                self.restore_loader_state(self._previous_loader_state['images'])
             if not ok:
+                self.prepared_options = None
                 self._previous_loader_state.clear()
             self.finished_load.emit(ok, msg, imgs, names)
 

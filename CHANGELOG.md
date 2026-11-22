@@ -36,6 +36,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   existing focus decisions for low-contrast and mixed-bit-depth inputs.
 
 ### Fixed
+- Show progress while restoring a startup recovery snapshot, and keep the
+  snapshot when restoration is cancelled.
+- Allow a new folder or video stack to load after applying a watermark.
+  Preserve the watermark on historical outputs.
+- Explain why Image Stitching and Dust Map are unavailable in this release,
+  even when experimental features are enabled.
 - Close the desktop process when its CLI launcher times out waiting for the
   control channel, and explain how to complete first-run sign-in.
 - Give comparison alignment workers on macOS enough stack for the first
@@ -71,6 +77,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [2.0.0]
 
 This stable release includes the features introduced in the 1.77.0 beta series.
+
+If you are upgrading from 1.77, Image Stitching and Dust Map are temporarily
+disabled while development continues. Flat-field correction is also
+unavailable in batch processing and on the command line in this release.
 
 ### Added
 - Show the actual whole-input or tiled processing mode, tile geometry, and
@@ -160,7 +170,6 @@ This stable release includes the features introduced in the 1.77.0 beta series.
 - Reorganize Labels, Watermark and Scale Bar around live previews and fixed Apply and Cancel controls. Drag a label in Fit view to set its position.
 - Choose the default font size for new labels and automatic scale bar captions from the target image resolution.
 - Open workspaces at their intended size when the screen has room. Use scrollable panes on smaller displays and restore the side-by-side divider position when space returns.
-- Mark Image Stitching and Dust Map as in development. Batch and command-line flat-field correction are currently unavailable.
 - Load the published email addresses, institution name and website links each time Contact Us opens.
 - Move frame review and cancellation to the source frame context menu. With the list focused, Ctrl+Shift+I includes all frames, Ctrl+Shift+X excludes all frames and Ctrl+Shift+F starts or cancels review. On macOS use Command. The cancellation notice clears after five seconds.
 - Edit OpenFocus A/B/C smoothing in whole levels, one per click. Fractional values

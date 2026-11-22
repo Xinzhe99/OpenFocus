@@ -1007,7 +1007,7 @@ PACK = {
     "experimental_label": "실험적",
     "experimental_locked_hint": "사용하려면 설정 → 고급 설정에서 실험적 기능을 활성화하세요.",
     "development_label": "개발 중",
-    "development_unavailable_hint": "이 기능은 개발 중이며 현재 사용할 수 없습니다.",
+    "development_unavailable_hint": "이 기능은 아직 개발 중이며, 이 릴리스에서는 실험 기능을 켜도 사용할 수 없습니다.",
     "experimental_features": "실험적 기능 활성화",
     "experimental_features_hint": "실험적 이미지 융합 및 정합 방법을 사용할 수 있습니다.",
     "theme_system": "시스템 설정 따르기",

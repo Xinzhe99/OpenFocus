@@ -1007,7 +1007,7 @@ PACK = {
     "experimental_label": "Experimenteel",
     "experimental_locked_hint": "Schakel experimentele functies in via Instellingen → Geavanceerde instellingen om dit te gebruiken.",
     "development_label": "In ontwikkeling",
-    "development_unavailable_hint": "Deze functie is in ontwikkeling en is momenteel niet beschikbaar.",
+    "development_unavailable_hint": "Deze functie is nog in ontwikkeling en blijft in deze versie uitgeschakeld, ook als experimentele functies zijn ingeschakeld.",
     "experimental_features": "Experimentele functies inschakelen",
     "experimental_features_hint": "Maakt experimentele methoden voor beeldfusie en beeldregistratie beschikbaar.",
     "theme_system": "Volg systeeminstelling",

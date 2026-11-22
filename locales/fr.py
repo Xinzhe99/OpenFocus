@@ -1007,7 +1007,7 @@ PACK = {
     "experimental_label": "Expérimental",
     "experimental_locked_hint": "Activez les fonctions expérimentales dans Paramètres → Paramètres avancés pour utiliser cette fonction.",
     "development_label": "En développement",
-    "development_unavailable_hint": "Cette fonction est en cours de développement et reste indisponible.",
+    "development_unavailable_hint": "Cette fonction est encore en développement et reste désactivée dans cette version, même si les fonctions expérimentales sont activées.",
     "experimental_features": "Activer les fonctions expérimentales",
     "experimental_features_hint": "Autorise les méthodes expérimentales de fusion et de recalage d’images.",
     "theme_system": "Suivre le système",

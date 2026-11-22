@@ -1031,7 +1031,7 @@ ZH = {
     "experimental_label": "实验性",
     "experimental_locked_hint": "请在设置 → 高级设置中启用实验性功能后使用。",
     "development_label": "开发中",
-    "development_unavailable_hint": "此功能正在开发，暂不可用。",
+    "development_unavailable_hint": "此功能仍在开发中，本版本暂不开放。启用实验性功能后也无法使用。",
     "experimental_features": "启用实验性功能",
     "experimental_features_hint": "允许使用实验性的图像融合和配准方法。",
     "theme_system": "跟随系统",
