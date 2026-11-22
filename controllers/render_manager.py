@@ -1516,10 +1516,10 @@ class RenderManager:
             retain_aligned_pixels=self._prepared_cache is None or retain_preparation,
             retain_preparation=retain_preparation,
             preview=self._preview_mode,
-            live_preview=live_preview,
             profile_performance=bool(getattr(window, "profile_performance", False)),
         )
         self.worker.storage_directory = storage_override
+        self.worker.live_preview_requested = live_preview
 
         self._progress_first_t = None
         self._progress_last_t = None

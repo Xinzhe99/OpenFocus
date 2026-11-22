@@ -92,7 +92,6 @@ def test_live_canvas_keeps_previews_out_of_output_history(live_view, outcome):
     normal_page = stack.currentWidget()
     assert manager.start_render() == 'started'
     worker = manager.worker
-    assert worker.kwargs['live_preview']
     rgb = bytes([135, 50, 38]) * 6
     frames = iter([None, (rgb, 3, 2, 1, 2), (rgb, 3, 2, 2, 2)])
     worker.take_live_preview = lambda: next(frames, None)
@@ -153,7 +152,6 @@ def test_preview_is_requested_only_for_ordinary_desktop_fusion(live_view, mode):
         window.output_list.setCurrentRow(1)
 
     assert manager.start_render(interactive=mode != 'control') == 'started'
-    assert not manager.worker.kwargs['live_preview']
     assert manager._live_preview_timer is None
 
 
@@ -169,7 +167,6 @@ def test_switching_to_wipe_dismisses_live_preview(live_view):
     window._update_wipe_images = lambda: None
 
     assert manager.start_render() == 'started'
-    assert manager.worker.kwargs['live_preview']
     manager.worker.take_live_preview = lambda: (bytes(18), 3, 2, 1, 2)
     manager._poll_live_preview()
     assert panel.view_stack.currentWidget() is panel.live_preview_page

@@ -413,16 +413,15 @@ class _RenderExchange:
 class RenderProcessWorker(RenderWorker):
     """Retain RenderWorker's signal/lifecycle API, isolating its native work."""
 
-    def __init__(self, *args, live_preview=False, **kwargs):
+    def __init__(self, *args, **kwargs):
         kwargs.setdefault('retain_aligned_pixels', True)
         super().__init__(*args, **kwargs)
-        # A directory chosen for this render only (set before start). It binds
-        # the parent's job scope and therefore the child (see _run_process).
-        # Not a constructor argument: the arguments are RenderWorker's own.
+        # The controller sets process-only options before starting the worker.
+        # Only RenderWorker's constructor arguments go to the child.
         self.storage_directory = None
+        self.live_preview_requested = False
         self._render_args = args
         self._render_kwargs = kwargs
-        self._live_preview_requested = live_preview
         self._live_preview_mailbox = None
         self._process = None
         self._cancel_event = None
@@ -513,7 +512,7 @@ class RenderProcessWorker(RenderWorker):
             request = encoder.encode({'args': self._render_args, 'kwargs': self._render_kwargs,
                 'fusions': fusion_algorithms(), 'registrations': registration_algorithms(),
                 'log_level': logger.getEffectiveLevel()})
-            if self._live_preview_requested:
+            if self.live_preview_requested:
                 mailbox = self._live_preview_mailbox = _LivePreviewMailbox.create(context)
                 # Standard multiprocessing handles keep the same spawn signature
                 # so a mismatched Windows child can still reject the revision.

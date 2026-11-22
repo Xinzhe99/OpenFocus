@@ -505,8 +505,8 @@ def test_spawn_revision_mismatch_relays_restart(qapp, scratch, monkeypatch, targ
     monkeypatch.setattr(render_process, '_LOADED_SOURCE_REVISION', render_process._render_source_revision())
     monkeypatch.setattr(render_process, '_render_child', target)
     monkeypatch.setattr(render_process.trans, 'current_lang', 'en')
-    worker = render_process.RenderProcessWorker([], algorithm=None, need_fusion=False,
-                                                live_preview=live_preview)
+    worker = render_process.RenderProcessWorker([], algorithm=None, need_fusion=False)
+    worker.live_preview_requested = live_preview
     results, errors = _start(worker)
     _wait(worker, qapp)
     assert worker.child_pid is not None
