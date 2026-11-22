@@ -58,6 +58,19 @@ def test_source_frame_decodes_once_per_scope(tmp_path, monkeypatch):
     assert cache_module.current() is None
 
 
+def test_source_frame_can_use_direct_disk_cache(tmp_path):
+    frame = _source(tmp_path, value=57)
+    disk = cache_module.ResolutionCache(frame.nbytes)
+    try:
+        with cache_module.active(disk), _bound([frame]):
+            image = frame.full_resolution()
+            stored = disk.get(frame)
+            assert np.shares_memory(image, stored)
+            np.testing.assert_array_equal(stored, np.full(frame.shape, 57, np.uint8))
+    finally:
+        disk.close()
+
+
 def test_processed_frame_runs_processor_once(tmp_path):
     counter = []
     processed = _processed(_source(tmp_path), counter)
@@ -455,3 +468,28 @@ def test_cache_discards_unpublished_store_on_cancellation(monkeypatch):
     with pytest.raises(RegistrationCancelled):
         cache.put(object(), np.zeros((2, 2), np.uint8), should_cancel=lambda: bool(cancelled))
     assert cache._used == 0 and not cache._entries
+
+
+@pytest.mark.parametrize('method', ['openfocus_a', 'openfocus_c'])
+def test_whole_cpu_fusion_reuses_existing_snapshots_without_new_writes(tmp_path, monkeypatch, method):
+    from core.multi_focus_fusion import MultiFocusFusion
+    from utils.performance_profile import PerformanceProfile, active
+
+    frames = [_source(tmp_path, f'source-{i}.png', value) for i, value in enumerate((12, 64, 220))]
+    eager = [frame.full_resolution().copy() for frame in frames]
+    options = dict(algorithm=method, use_gpu=False, exposure_match=False, tile_enabled=False)
+    expected = MultiFocusFusion(**options).fuse(eager, thread_count=1)
+    SOURCE_CACHE.clear()
+    profile = PerformanceProfile()
+    with active(profile), cache_module.render_scope(frames) as scope, _bound(frames):
+        frames[0].full_resolution()
+        with monkeypatch.context() as patch:
+            patch.setattr(SOURCE_CACHE, 'put',
+                          lambda *args, **kwargs: pytest.fail('single-pass source retained in RAM'))
+            actual = MultiFocusFusion(**options).fuse(frames, thread_count=1)
+        np.testing.assert_array_equal(actual, expected)
+        assert scope.get(frames[1]) is None
+        np.testing.assert_array_equal(frames[1].full_resolution(), eager[1])
+        np.testing.assert_array_equal(scope.get(frames[1]), eager[1])
+    counts = profile.report('completed')['cache']['by_kind']['source']
+    assert counts['puts'] == 2 and counts['hits'] >= 2
