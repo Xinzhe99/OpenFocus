@@ -155,7 +155,7 @@ def test_disabled_numba_leaves_quantization_on_numpy(monkeypatch):
 
     monkeypatch.setattr(image_utils, "_IMAGE_KERNELS", None)
     monkeypatch.setattr(_image_kernels, "_JIT_ENABLED", False)
-    monkeypatch.setattr(resource_policy, "require_memory", lambda required_bytes: required_bytes)
+    monkeypatch.setattr(resource_policy, "require_memory", lambda required_bytes, *_: required_bytes)
     result = image_utils.quantize_fuse_output(np.full((256, 256), 1.5, np.float32), False)
     np.testing.assert_array_equal(result, 2)
 
