@@ -1330,13 +1330,15 @@ def _exposure_mean(frame, should_cancel=None, *, normalize_uint16=False):
     check()
     if frame.size == 0:
         return float('nan')
-    # Floating-point inputs keep OpenCV's reduction order. Reassociating a sum
-    # of mixed-sign float32 values can change exposure gains substantially.
-    if frame.ndim in (2, 3) and frame.dtype in (np.uint8, np.uint16):
+    channels = frame.shape[2] if frame.ndim == 3 else 1
+    normalized = frame.dtype == np.uint16 and normalize_uint16
+    # Keep OpenCV's reduction order for float inputs and normalized grayscale.
+    # OpenCV builds can reduce single-channel float32 stripes differently.
+    if (frame.ndim in (2, 3) and frame.dtype in (np.uint8, np.uint16)
+            and (not normalized or channels >= 3)):
         kernels = _load_image_kernels()
         if kernels is not None:
             height = frame.shape[0]
-            channels = 1 if frame.ndim == 2 else frame.shape[2]
             if frame.ndim == 2:
                 flat = frame
             elif channels == 1 and frame.flags.c_contiguous:
@@ -1353,7 +1355,6 @@ def _exposure_mean(frame, should_cancel=None, *, normalize_uint16=False):
                 arr = flat if flat is not None else frame
                 use_2d = flat is not None
                 count = arr.size if use_2d else height * frame.shape[1] * 3
-                normalized = frame.dtype == np.uint16 and normalize_uint16
                 if normalized:
                     fn = kernels.sum_u16_2d_norm_f64 if use_2d else kernels.sum_u16_3ch_norm_f64
                     workers = kernels.worker_count(count, height, 128, 8, min_elements=1_000_000)
@@ -1378,7 +1379,7 @@ def _exposure_mean(frame, should_cancel=None, *, normalize_uint16=False):
         if strip.ndim == 3 and strip.shape[2] > 3:
             strip = strip[:, :, :3]
         strip = np.ascontiguousarray(strip, dtype=np.float32)
-        if normalize_uint16 and frame.dtype == np.uint16:
+        if normalized:
             strip *= 255.0 / 65535.0
         # Contiguous float32 input lets OpenCV accumulate into doubles without
         # another layout copy or NumPy's buffered float64 casting workspace.
