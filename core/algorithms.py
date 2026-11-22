@@ -423,7 +423,15 @@ _FUSION_CLASS = 'core.multi_focus_fusion:MultiFocusFusion.'
 FUSION_DEFAULT = 'openfocus_b'
 
 
-register_fusion(FusionAlgorithm('stackmffv3', 'radio_stackmff', 'StackMFF V3', 'StackMFFV3', _FUSION_CLASS + '_fuse_stackmffv3', (_MODE,), DepthSpec(_ADAPTER + 'depth_neural', (_MODE,)), hint_key='radio_stackmff_hint', environment=_FUSION_CLASS + '_validate_ai_environment', neural=True, roi=_ADAPTER + 'roi_neural', promotes_color=True, tile_decider=_ADAPTER + 'neural_needs_tiles', tile_runner=_FUSION_CLASS + '_fuse_tiled_ai_batched', depth_planner='core.depth_map:_plan_neural_depth', weights='weights/stackmff_v3_final.onnx', category='ai', family='stackmff', streaming_sources=True))
+register_fusion(FusionAlgorithm(
+    'stackmffv3', 'radio_stackmff', 'StackMFF V3', 'StackMFFV3',
+    _FUSION_CLASS + '_fuse_stackmffv3', (_MODE, _V3_SCALE),
+    DepthSpec(_ADAPTER + 'depth_neural', (_MODE, _V3_SCALE)),
+    hint_key='radio_stackmff_hint', environment=_FUSION_CLASS + '_validate_ai_environment',
+    neural=True, roi=_ADAPTER + 'roi_neural', promotes_color=True,
+    tile_decider=_ADAPTER + 'neural_needs_tiles', tile_runner=_FUSION_CLASS + '_fuse_tiled_ai_batched',
+    depth_planner='core.depth_map:_plan_neural_depth', weights='weights/stackmff_v3_final.onnx',
+    category='ai', family='stackmff', streaming_sources=True))
 register_fusion(FusionAlgorithm('stackmffv2', 'radio_stackmff_v2', 'StackMFF V2', 'StackMFFV2', _FUSION_CLASS + '_fuse_stackmffv2', (), DepthSpec(_ADAPTER + 'depth_stackmffv2', ()), hint_key='radio_stackmff_v2_hint', environment=_FUSION_CLASS + '_validate_ai_environment', neural=True, order_sensitive=True, promotes_color=True, tile_decider=_ADAPTER + 'stackmffv2_needs_tiles', depth_planner='core.depth_map:_plan_stackmffv2_depth', weights='weights/stackmff_v2_final.onnx', category='ai', family='stackmff', streaming_sources=True))
 register_fusion(FusionAlgorithm('stackmff', 'radio_stackmff_v1', 'StackMFF', 'StackMFF', _FUSION_CLASS + '_fuse_stackmff', (), hint_key='radio_stackmff_v1_hint', environment=_FUSION_CLASS + '_validate_ai_environment', neural=True, promotes_color=True, tile_decider=_ADAPTER + 'neural_needs_tiles', tile_runner=_FUSION_CLASS + '_fuse_tiled_stackmff', weights='weights/stackmff_final.onnx', category='ai', family='stackmff', streaming_sources=True))
 register_fusion(FusionAlgorithm('openfocus_a', 'radio_openfocus_a', 'OpenFocus A', 'OpenFocusA', _FUSION_CLASS + '_fuse_openfocus_a', (_R_OF, _S_A), hint_key='radio_openfocus_a_hint', sort_frames=True, environment=_FUSION_CLASS + '_validate_spatial_environment', resource_estimator=_ADAPTER + 'openfocus_a_resources', tile_decider=_ADAPTER + 'openfocus_a_needs_tiles', roi=_ADAPTER + 'roi_openfocus_a', category='spatial', family='openfocus', resize_interpolation='area', external_tiling_default=False, streaming_sources=True, experimental=False))

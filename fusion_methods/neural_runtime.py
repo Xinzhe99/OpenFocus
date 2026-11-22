@@ -883,7 +883,8 @@ def _resize_antialias(planes, scale, should_cancel=None):
 def _resize_antialias_impl(planes, scale, should_cancel, workers):
     from fusion_methods.neural_common import StackMFFKernelUnavailable, cancel, load_stackmff_kernels
 
-    if planes.ndim == 4 and planes.dtype == np.float32 and planes.size >= 65536:
+    if (planes.ndim == 4 and planes.dtype == np.float32 and planes.size >= 65536
+            and min(planes.shape[-2:]) > 1):
         cancel(should_cancel)
         kernels = load_stackmff_kernels()
         if kernels is not None:
@@ -906,9 +907,9 @@ def _resize_triangle(planes, scale, should_cancel=None):
     for axis in (2, 3):
         cancel(should_cancel)
         old = result.shape[axis]
-        new = int(old * scale)
-        if new < 1:
-            raise ValueError('Input is too small for the inference scale')
+        new = max(1, int(old * scale))
+        if new == old == 1:
+            continue
         src = np.moveaxis(result, axis, -1)
         dst = np.empty(src.shape[:-1] + (new,), dtype=np.float32)
         for i in range(new):
@@ -1025,7 +1026,7 @@ def _resize_three_quarters(planes, should_cancel=None):
     return result
 
 
-def probabilities(planes, path, device, threads, sigma, cancel=None):
+def probabilities(planes, path, device, threads, sigma, cancel=None, *, dual_scale=True):
     from fusion_methods.neural_common import cancel as check
     profile = _profile()
     h, w = planes.shape[-2:]
@@ -1035,38 +1036,38 @@ def probabilities(planes, path, device, threads, sigma, cancel=None):
     with profile.stage('softmax.full'):
         p = _run_softmax_inplace(p, workers)
     check(cancel)
-    with profile.stage('resize.0.75'):
-        small = _run_resize_antialias(planes, 0.75, cancel, workers)
-    with profile.stage('logits.reduced'):
-        q = logits(small, path, device, threads, cancel)
-    del small
-    with profile.stage('softmax.reduced'):
-        q = _run_softmax_inplace(q, workers)
     n_layers = p.shape[1]
-    with profile.stage('upsample_combine'):
-        if workers > 1 and n_layers >= 8:
-            from concurrent.futures import ThreadPoolExecutor
+    if dual_scale:
+        with profile.stage('resize.0.75'):
+            small = _run_resize_antialias(planes, 0.75, cancel, workers)
+        with profile.stage('logits.reduced'):
+            q = logits(small, path, device, threads, cancel)
+        del small
+        with profile.stage('softmax.reduced'):
+            q = _run_softmax_inplace(q, workers)
+        with profile.stage('upsample_combine'):
+            if workers > 1 and n_layers >= 8:
+                from concurrent.futures import ThreadPoolExecutor
 
-            step = (n_layers + workers - 1) // workers
-            ranges = [(n0, min(n_layers, n0 + step)) for n0 in range(0, n_layers, step)]
-            def _upsample_range(rng_pair):
+                step = (n_layers + workers - 1) // workers
+                ranges = [(n0, min(n_layers, n0 + step)) for n0 in range(0, n_layers, step)]
+                def _upsample_range(rng_pair):
+                    scratch = np.empty((h, w), np.float32)
+                    for n in range(*rng_pair):
+                        check(cancel)
+                        cv2.resize(q[0, n], (w, h), dst=scratch, interpolation=cv2.INTER_LINEAR)
+                        p[0, n] += scratch
+                        p[:, n] *= np.float32(0.5)
+                with ThreadPoolExecutor(max_workers=len(ranges)) as executor:
+                    list(executor.map(_upsample_range, ranges))
+            else:
                 scratch = np.empty((h, w), np.float32)
-                for n in range(rng_pair[0], rng_pair[1]):
+                for n in range(n_layers):
                     check(cancel)
                     cv2.resize(q[0, n], (w, h), dst=scratch, interpolation=cv2.INTER_LINEAR)
                     p[0, n] += scratch
-                    p[:, n] *= np.float32(0.5)
-            with ThreadPoolExecutor(max_workers=len(ranges)) as executor:
-                list(executor.map(_upsample_range, ranges))
+                p *= 0.5
             del q
-        else:
-            scratch = np.empty((h, w), np.float32)
-            for n in range(n_layers):
-                check(cancel)
-                cv2.resize(q[0, n], (w, h), dst=scratch, interpolation=cv2.INTER_LINEAR)
-                p[0, n] += scratch
-            del q
-            p *= 0.5
     if sigma:
         with profile.stage('gaussian'):
             radius = int(3 * sigma + 0.5)

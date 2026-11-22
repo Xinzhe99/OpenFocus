@@ -304,6 +304,19 @@ def test_gfg_long_uncacheable_sources_resolve_once_per_source_pass(tmp_path, mon
     assert counts == {descriptors[0].path: 4, descriptors[1].path: 1}
 
 
+def test_v3_hard_blend_rejects_changed_noncontributing_source(tmp_path):
+    from fusion_methods.stackmffv3 import _blend_tile
+
+    _arrays, frames = _sources(tmp_path, count=2)
+    probabilities = np.zeros((2, *frames[0].shape[:2]), np.float32)
+    probabilities[0] = 1
+    with open(frames[1].path, 'ab') as stream:
+        stream.write(b'changed source identity')
+
+    with pytest.raises(OSError, match='Source changed'):
+        _blend_tile(probabilities, frames, 'hard')
+
+
 @pytest.mark.parametrize('mode', ['soft', 'hard'])
 def test_v3_long_uncacheable_color_sources_decode_once(tmp_path, monkeypatch, mode):
     from collections import Counter

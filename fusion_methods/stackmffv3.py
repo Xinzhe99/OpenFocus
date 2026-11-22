@@ -53,7 +53,8 @@ def _cancel(should_cancel):
         raise RegistrationCancelled()
 
 
-def _forward_probabilities(batch_input, model, device, sigma, should_cancel, threads=1):
+def _forward_probabilities(batch_input, model, device, sigma, should_cancel,
+                           threads, inference_scale):
     from fusion_methods.neural_runtime import probabilities
     return probabilities(batch_input, model, device, threads, sigma, should_cancel,
                          dual_scale=inference_scale == 'dual')
@@ -89,18 +90,21 @@ def _blend_tile(probs, frames, mode, should_cancel=None, focus_callback=None):
         from core.frame_storage import create_transient_frame
         expected = create_transient_frame((height, width), np.float32)
         expected[...] = 0
-    from core.source_frames import resolve_frame
+    from core.source_frames import resolve_frame, validate_frame_source
     kernels = common.load_stackmff_kernels()
     band_rows = min(height, 256, max(1, (64 * 1024) // (width * channels)))
+    selected_counts = None
     if selected_indices is None:
-        indices = range(len(frames))
         source_dtypes = {np.float32} if normalize_stack else {frame.dtype for frame in frames}
         scratch = None
     else:
-        indices = np.flatnonzero(np.bincount(selected_indices.ravel(), minlength=len(frames)))
-    for index in indices:
+        selected_counts = np.bincount(selected_indices.ravel(), minlength=len(frames))
+    for index, frame in enumerate(frames):
         _cancel(should_cancel)
-        image = resolve_frame(frames[index], should_cancel=should_cancel)
+        if selected_counts is not None and not selected_counts[index]:
+            validate_frame_source(frame)
+            continue
+        image = resolve_frame(frame, should_cancel=should_cancel)
         blend = None
         if (kernels is not None and result.flags.c_contiguous and image.flags.c_contiguous
                 and ((image.ndim == 3 and image.shape[2] == channels)
@@ -157,7 +161,7 @@ def _blend_tile(probs, frames, mode, should_cancel=None, focus_callback=None):
                 np.copyto(output, source,
                           where=(selected_indices[row:stop] == index)[:, :, None])
             del source
-        del image
+        del img_band, image
     _cancel(should_cancel)
     if focus_callback is not None:
         focus_callback(selected_indices if expected is None else expected, len(frames) - 1)
