@@ -31,6 +31,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   guided filtering with closed-form banded computation, band initial frame
   grayscale loading, and cache the OpenCL background-focus program. Drain
   the queue on cancellation and fall back to the CPU if synchronization fails.
+- Reuse existing decoded frames during whole-image CPU OpenFocus A and C
+  without adding single-use frames to disk or memory caches.
 - Choose the PyTorch download order from the network region, with a manual
   override and a server-maintained list of mirrors. Resume interrupted
   transfers on the next source and log why the source changed.

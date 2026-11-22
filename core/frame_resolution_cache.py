@@ -436,6 +436,7 @@ class ScopedCache:
         self._should_cancel = should_cancel
         self._cache = None
         self._attempted = False
+        self.read_only = False
         self._closed = False
         self._lock = threading.RLock()
 
@@ -495,6 +496,16 @@ class ScopedCache:
                 self._cache = None
             return self._cache
 
+    @contextlib.contextmanager
+    def reuse_only(self):
+        """Borrow existing snapshots during a known single-pass stage."""
+        previous = self.read_only
+        self.read_only = True
+        try:
+            yield
+        finally:
+            self.read_only = previous
+
     def _check_cancel(self, should_cancel=None):
         if ((self._should_cancel is not None and self._should_cancel()) or
                 (should_cancel is not None and should_cancel())):
@@ -503,12 +514,14 @@ class ScopedCache:
 
     def get(self, frame, *, should_cancel=None):
         self._check_cancel(should_cancel)
-        cache = self._plan()
+        cache = self._cache if self.read_only else self._plan()
         self._check_cancel(should_cancel)
         return None if cache is None else cache.get(frame, should_cancel=should_cancel)
 
     def put(self, frame, image, *, should_cancel=None):
         self._check_cancel(should_cancel)
+        if self.read_only:
+            return None
         cache = self._plan()
         self._check_cancel(should_cancel)
         return None if cache is None else cache.put(frame, image, should_cancel=should_cancel)

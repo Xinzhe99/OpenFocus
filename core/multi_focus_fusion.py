@@ -321,6 +321,7 @@ class MultiFocusFusion:
         # 融合前曝光匹配：把整栈每帧均值标定到末帧，再交给任何后端。
         # 必须在分块之前按整栈计算，否则每个 tile 各自归一化会出现亮度接缝。
         self.exposure_match = bool(exposure_match)
+        self.retain_aligned_pixels = False
         # 资源偏好（'balanced' | 'responsive' | 'maximum'）：只影响并发、
         # 预取和预算，不改变任何输出几何或数值路径。
         from core.resource_policy import PREFERENCES
@@ -1063,7 +1064,18 @@ class MultiFocusFusion:
                     kwargs['execution_plan'] = plan
             kwargs['should_cancel'] = should_cancel
             kwargs['progress_callback'] = progress_callback
-            with _profile().stage('full_frame'):
+            from contextlib import nullcontext
+            cache_access = nullcontext()
+            if (streaming_sources and self.algorithm in ('openfocus_a', 'openfocus_c')
+                    and not self.use_gpu and self.base_frame == 'none'
+                    and not self.retain_aligned_pixels):
+                # Each source feeds the whole CPU pass once. Borrow existing
+                # decode snapshots (e.g. from ECC) without storing new ones.
+                from core.frame_resolution_cache import ScopedCache, current
+                scope = current()
+                if isinstance(scope, ScopedCache):
+                    cache_access = scope.reuse_only()
+            with cache_access, _profile().stage('full_frame'):
                 result = resolve_runner(spec.runner)(self, input_source, img_resize, **kwargs)
 
         check_cancel()
