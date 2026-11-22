@@ -11,6 +11,13 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   three StackMFF models before activation.
 
 ### Changed
+- Accelerate pipeline exposure matching (`_exposure_mean`, `apply_exposure_gain`),
+  output quantization (`quantize_fuse_output`), uint16 display conversion
+  (`to_display_uint8`), and bounded TIFF export (`_write_tiff_page`) using
+  lazily admitted native Numba kernels, exact uint16 LUT gain mapping, LLVM
+  nearest-even rounding, zero-copy channel reversal for uncompressed RGB strips,
+  and memory-bounded parallel compressed TIFF strip encoding while preserving
+  bit-exact outputs and fallback compatibility.
 - Reuse OpenCL contexts and compiled kernels across OpenFocus A/B/C and ECC
   resize jobs. Reuse upload buffers within a job and drain pending work
   before releasing buffers after cancellation or error.
