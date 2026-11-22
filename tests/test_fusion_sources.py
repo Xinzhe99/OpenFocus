@@ -455,6 +455,21 @@ def test_direct_v2_long_resized_sources_stage_once_and_keep_identity(tmp_path, m
         source.get(0, (0, 0, 13, 11))
 
 
+def test_v2_tiled_rejects_changed_unselected_resized_source(tmp_path, monkeypatch):
+    from fusion_methods import stackmff_v2_tiled as tiled
+
+    _, descriptors = _sources(tmp_path, count=2)
+
+    def infer_depth(source, *_):
+        with open(descriptors[1].path, 'ab') as stream:
+            stream.write(b'changed after V2 staging')
+        return None, np.zeros(source.shape[:2], dtype=np.int64)
+
+    monkeypatch.setattr(tiled, '_tiled_depth_under_lease', infer_depth)
+    with pytest.raises(OSError, match='Source changed'):
+        tiled._tiled_fusion_under_lease(descriptors, (21, 19), 'model', False)
+
+
 def test_direct_v2_resized_prepared_sources_keep_identity(tmp_path):
     from fusion_methods.stackmff_v2_tiled import _Source
     rng = np.random.default_rng(806)
