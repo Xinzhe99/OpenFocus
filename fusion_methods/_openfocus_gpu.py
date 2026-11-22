@@ -3,7 +3,6 @@ import atexit
 from concurrent.futures import ThreadPoolExecutor, wait
 import contextvars
 import logging
-import sys
 from threading import Event, Lock
 
 import numpy as np
@@ -43,37 +42,49 @@ def _prepare_gpu_upload(array, dtype=None):
     return np.ascontiguousarray(array), False
 
 
-def _filter_kernel_source(device):
-    """Build filter kernels with tiled local transpose when work-group size allows."""
-    if getattr(device, 'max_work_group_size', 256) >= 256:
-        return _FILTER_K_BODY + _TRANSPOSE_TILED_K
-    return _FILTER_K_BODY + _TRANSPOSE_NAIVE_K
+def _supports_tiled_transpose(device):
+    item_sizes = getattr(device, 'max_work_item_sizes', (16, 16))
+    return (getattr(device, 'max_work_group_size', 256) >= 256
+            and len(item_sizes) >= 2 and min(item_sizes[:2]) >= 16
+            and getattr(device, 'local_mem_size', 16 * 17 * 2) >= 16 * 17 * 2)
+
+
+def _build_filter_program(cl, device, context, extra_source, *, options=None):
+    """Build the program and return whether its transpose can launch tiled."""
+    tiled = _supports_tiled_transpose(device)
+    source = _TRANSPOSE_TILED_K if tiled else _TRANSPOSE_NAIVE_K
+    program = cl.Program(context, _FILTER_K_BODY + source + extra_source).build(options=options)
+    if tiled:
+        group_size = cl.Kernel(program, 'transpose_u16').get_work_group_info(
+            cl.kernel_work_group_info.WORK_GROUP_SIZE, device,
+        )
+        if group_size < 256:
+            program = cl.Program(
+                context, _FILTER_K_BODY + _TRANSPOSE_NAIVE_K + extra_source,
+            ).build(options=options)
+            tiled = False
+    return program, tiled
 
 
 def _iter_prefetched(items, prepare_fn, *, enabled: bool, should_cancel=None):
     """Yield (index, prepare_fn(index, item, cancelled)) with at most 1 frame prefetched."""
     from fusion_methods.openfocus_ab import _check_cancel
+    from fusion_methods._openfocus_execution import _current, _worker_native_limit
 
     total = len(items)
     if total == 0:
         return
-    if enabled:
-        exec_mod = sys.modules.get('fusion_methods._openfocus_execution')
-        if exec_mod is not None:
-            job = exec_mod._current.get()
-            if job is not None and job.thread_count == 1:
-                enabled = False
+    job = _current.get() if enabled else None
+    if job is not None and job.thread_count == 1:
+        enabled = False
     if not enabled or total < 2:
         for index, item in enumerate(items):
             _check_cancel(should_cancel)
-            yield index, prepare_fn(index, item, should_cancel)
+            result = prepare_fn(index, item, should_cancel)
+            _check_cancel(should_cancel)
+            yield index, result
+            del result
         return
-
-    try:
-        from fusion_methods._openfocus_execution import _worker_native_limit
-        initializer = _worker_native_limit
-    except Exception:
-        initializer = None
 
     stop = Event()
 
@@ -85,16 +96,17 @@ def _iter_prefetched(items, prepare_fn, *, enabled: bool, should_cancel=None):
         return pool.submit(ctx.run, prepare_fn, index, items[index], cancelled)
 
     _check_cancel(should_cancel)
-    with ThreadPoolExecutor(max_workers=1, initializer=initializer) as pool:
-        future = submit_item(pool, 0)
+    with ThreadPoolExecutor(max_workers=1, initializer=_worker_native_limit) as pool:
+        future = None
         try:
+            future = submit_item(pool, 0)
             for index in range(total):
                 while not future.done():
                     _check_cancel(should_cancel)
                     wait((future,), timeout=0.05)
+                _check_cancel(should_cancel)
                 result = future.result()
                 future = None
-                _check_cancel(should_cancel)
                 if index + 1 < total:
                     future = submit_item(pool, index + 1)
                 yield index, result
@@ -103,7 +115,6 @@ def _iter_prefetched(items, prepare_fn, *, enabled: bool, should_cancel=None):
             stop.set()
             if future is not None:
                 future.cancel()
-                wait((future,))
 
 
 def _device_cache_key(device):
@@ -137,16 +148,14 @@ def _get_or_build_depth_program(cl, device, context):
     with _cache_lock:
         if _DEPTH_PROGRAM_CACHE is not None and _DEPTH_PROGRAM_CACHE[0] == key:
             return _DEPTH_PROGRAM_CACHE[1:]
-        program = cl.Program(
-            context, _filter_kernel_source(device) + _DEPTH_K + _RESAMPLE_K,
-        ).build()
+        program, tiled = _build_filter_program(cl, device, context, _DEPTH_K + _RESAMPLE_K)
         depth_kernels = {name: cl.Kernel(program, name) for name in _DEPTH_KERNEL_NAMES}
         filter_kernels = {name: cl.Kernel(program, name) for name in _FILTER_KERNEL_NAMES}
         resample_kernels = {name: cl.Kernel(program, name) for name in _RESAMPLE_KERNEL_NAMES}
         _DEPTH_PROGRAM_CACHE = (
-            key, program, depth_kernels, filter_kernels, resample_kernels,
+            key, program, depth_kernels, filter_kernels, resample_kernels, tiled,
         )
-        return program, depth_kernels, filter_kernels, resample_kernels
+        return program, depth_kernels, filter_kernels, resample_kernels, tiled
 
 
 def _invalidate_program_cache():
@@ -487,18 +496,22 @@ class Merge:
         from core import resource_policy
         from core.multi_focus_fusion import memory_budget_bytes
         from core.source_frames import frame_has_mapped_pixels, frame_resolution_bytes
-        height, width = shape[:2]
+        height, width = map(int, shape[:2])
         if min(height, width) < 2:
             return None
-        pixels = int(height) * int(width)
+        pixels = height * width
+        oh, ow = height // 2, width // 2
+        # Both axis plans retain 8-tap indices, weights, and counts on the device.
+        axes_bytes = (height + width + oh + ow) * (8 * (8 + 4) + 8)
         snapshot = resource_policy.probe_resources()
         host_budget = min(int(memory_budget_bytes()),
                           int(resource_policy.ram_ceiling(snapshot)))
         source_peak = 0
-        max_src_bytes = pixels * 2
+        max_src_bytes = 0
         for frame in frames:
             resolution = frame_resolution_bytes(frame)
-            if frame_has_mapped_pixels(frame):
+            mapped = frame_has_mapped_pixels(frame)
+            if mapped:
                 resolution = max(resolution, frame.nbytes)
             raw_native = img_resize is None and getattr(frame, 'dtype', None) in (np.uint8, np.uint16)
             if raw_native:
@@ -508,18 +521,36 @@ class Merge:
                                   and frame[..., ::-1].flags.c_contiguous))
                     working = frame.nbytes * (1 if packed else 2)
                 else:
-                    working = frame.nbytes * (1 if frame_has_mapped_pixels(frame)
-                                              or getattr(frame, '_rgb_tiff_offset', None) is not None else 2)
-                src_bytes = int(frame.nbytes)
+                    # Mapped descriptors may resolve to strided views requiring a copy.
+                    working = frame.nbytes * (1 if getattr(frame, '_rgb_tiff_offset', None) is not None else 2)
             else:
-                working = max(pixels * 4, int(frame.size) * 4)
-                src_bytes = pixels * 2
+                channels = 1 if frame.ndim == 2 else int(frame.shape[2])
+                source_codes = int(frame.size) * 4
+                target_codes = pixels * channels * 4
+                working = max(target_codes + pixels * 4, pixels * 6)
+                if img_resize is not None and frame.dtype.kind != 'f':
+                    # The resize holds int32 codes, a float32 input copy, and float32 output.
+                    working = max(working, 2 * source_codes + target_codes,
+                                  source_codes + 2 * target_codes)
+                else:
+                    # Float conversion holds two arithmetic row temporaries.
+                    resized = img_resize is not None
+                    rows = min(128, height if resized else frame.shape[0])
+                    row_size = (width if resized else frame.shape[1]) * channels
+                    row_scratch = 2 * rows * row_size * max(4, frame.dtype.itemsize)
+                    float_input = target_codes if resized else 0
+                    working = max(working, target_codes + float_input + row_scratch)
+                    if resized:
+                        working = max(working, source_codes + target_codes)
             source_peak = max(source_peak, resolution + working)
-            max_src_bytes = max(max_src_bytes, src_bytes)
-        host_staging = max(source_peak, pixels * 2 + (height // 2) * (width // 2) * 2) + 16 * 1024 * 1024
-        vram_need = pixels * 24 + max_src_bytes + 16 * 1024 * 1024
-        if (host_staging > host_budget
-                or max(pixels * 8, max_src_bytes) > int(self.device.max_mem_alloc_size)):
+            if raw_native:
+                max_src_bytes = max(max_src_bytes, int(frame.nbytes))
+        # bincount casts the half-resolution uint16 confidence plane to native ints.
+        final_staging = max(pixels * 2 + oh * ow * 2, oh * ow * (2 + np.dtype(np.intp).itemsize))
+        host_staging = max(source_peak, final_staging + axes_bytes) + 16 * 1024 * 1024
+        vram_need = pixels * 24 + max_src_bytes + axes_bytes + 16 * 1024 * 1024
+        largest_alloc = max(pixels * 8, max_src_bytes, max(height, width) * 8 * 8)
+        if host_staging > host_budget or largest_alloc > int(self.device.max_mem_alloc_size):
             logging.getLogger(__name__).info('OpenFocus full GPU depth exceeds the job memory budget')
             return None
 
@@ -537,7 +568,8 @@ class Merge:
         try:
             if self.device.host_unified_memory:
                 # Device allocations share the same physical RAM as staging.
-                if vram_need + host_staging > host_budget:
+                host_staging += vram_need
+                if host_staging > host_budget or vram_need > int(self.device.global_mem_size):
                     logging.getLogger(__name__).info('OpenFocus full GPU depth exceeds unified memory budget')
                     return None
             else:
@@ -554,14 +586,14 @@ class Merge:
                     logging.getLogger(__name__).info('OpenFocus full GPU depth exceeds the free VRAM budget')
                     return None
             try:
-                depth_prog, depth_k, filt_k, resamp_k = _get_or_build_depth_program(
+                depth_prog, depth_k, filt_k, resamp_k, tiled = _get_or_build_depth_program(
                     self.cl, self.device, self.context,
                 )
                 self.depth_program = depth_prog
                 prefetch = (host_staging + source_peak <= host_budget)
                 engine = _GpuB(
-                    self, img_resize, should_cancel,
-                    depth_kernels=depth_k, filter_kernels=filt_k, resample_kernels=resamp_k,
+                    self, img_resize, depth_kernels=depth_k, filter_kernels=filt_k,
+                    resample_kernels=resamp_k, tiled_transpose=tiled,
                 )
                 return engine.depth(frames, kernel_size, smoothing, feather, shape,
                                     len(frames), should_cancel, progress, prefetch=prefetch)
@@ -611,7 +643,8 @@ class Merge:
         required = pixels * (depth_bytes + 4 * channels)
         host = min(int(memory_budget_bytes()),
                    int(resource_policy.ram_ceiling(resource_policy.probe_resources())))
-        host_staging = pixels * (depth_bytes + 2 * channels) + 16 * 1024 * 1024
+        # Code conversion can retain int32 source samples beside their uint16 upload.
+        host_staging = pixels * max(depth_bytes, 6 * channels) + 16 * 1024 * 1024
         if host_staging > host:
             return False
         if pixels * max(depth_bytes, 2 * channels) > int(self.device.max_mem_alloc_size):
@@ -619,7 +652,8 @@ class Merge:
         self.acquire(should_cancel)
         try:
             if self.device.host_unified_memory:
-                admitted = required + host_staging <= host
+                admitted = (required + host_staging <= host
+                            and required <= int(self.device.global_mem_size))
             else:
                 memory = _free_vram(self.device)
                 snapshot = (None if memory is None else
@@ -644,7 +678,7 @@ class Merge:
             self._merge_shape = shape
             self._merge_u16_depth = u16_depth
             return True
-        except Exception as exc:
+        except BaseException as exc:
             if hasattr(self, 'cl') and isinstance(exc, (self.cl.Error, MemoryError)):
                 _invalidate_program_cache()
             self._drain_queue()
@@ -653,6 +687,8 @@ class Merge:
             self._merge_u16_depth = False
             self._merge_needs_drain = False
             self.release()
+            if not isinstance(exc, Exception):
+                raise
             raise GpuError('OpenCL GPU merge allocation failed') from exc
 
     def resident_frame(self, frame, index, count, scale):
@@ -667,10 +703,7 @@ class Merge:
             else:
                 rev_attr = 'merge_u8_i64_bgr_rev_kernel' if is_u8 else 'kernel_bgr_rev'
                 norm_attr = 'merge_u8_i64_kernel' if is_u8 else 'kernel'
-            kern = getattr(self, rev_attr, None) if bgr_rev else getattr(self, norm_attr)
-            if bgr_rev and kern is None:
-                image = np.ascontiguousarray(frame, dtype=target_dtype)
-                kern = getattr(self, norm_attr)
+            kern = getattr(self, rev_attr if bgr_rev else norm_attr)
             if self._merge_src is None or self._merge_src_bytes != image.nbytes:
                 self._merge_src = None
                 self._merge_src_bytes = 0
@@ -679,7 +712,7 @@ class Merge:
                 )
                 self._merge_src_bytes = image.nbytes
             self._merge_needs_drain = True
-            cl.enqueue_copy(self.queue, self._merge_src, image, is_blocking=False)
+            upload = cl.enqueue_copy(self.queue, self._merge_src, image, is_blocking=False)
             height, width = self._merge_shape[:2]
             channels = 1 if image.ndim == 2 else image.shape[2]
             event = kern(self.queue, (height * width,), None, self._merge_acc,
@@ -687,6 +720,7 @@ class Merge:
                          np.int32(channels), np.int32(65535 // max(1, count - 1)),
                          np.int32(index), np.int32(scale), np.int32(index == 0))
             event.wait()
+            del upload
             self._merge_needs_drain = False
             self.used = True
         except Exception as exc:
@@ -879,8 +913,6 @@ __kernel void transpose_u16(__global const ushort* s, __global ushort* d,
     d[(size_t)x * H + y] = s[(size_t)y * W + x];
 }
 '''
-
-_FILTER_K = _FILTER_K_BODY + _TRANSPOSE_TILED_K
 
 _DEPTH_K = r'''
 #pragma OPENCL FP_CONTRACT OFF
@@ -1260,12 +1292,11 @@ class _ExpandDepth(_HalfResample):
 class _GpuB:
     """GPU depth_map (half-res + preserve-detail) + MergeWeighted stream."""
 
-    def __init__(self, gpu, img_resize, should_cancel,
-                 depth_kernels=None, filter_kernels=None, resample_kernels=None):
+    def __init__(self, gpu, img_resize, depth_kernels=None, filter_kernels=None,
+                 resample_kernels=None, *, tiled_transpose=True):
         self.gpu = gpu
         cl, ctx, q, mf, pk = gpu.cl, gpu.context, gpu.queue, gpu.cl.mem_flags, gpu.depth_program
         self.img_resize = img_resize
-        self.should_cancel = should_cancel
         self.cl = cl
         self.ctx = ctx
         self.q = q
@@ -1275,17 +1306,22 @@ class _GpuB:
                         {name: cl.Kernel(self.p, name) for name in _DEPTH_KERNEL_NAMES})
         self.filt = _Filter(
             cl, ctx, q, mf, pk, kernels=filter_kernels,
-            tiled_transpose=getattr(gpu.device, 'max_work_group_size', 256) >= 256,
+            tiled_transpose=tiled_transpose,
         )
         self.half = _HalfResample(cl, ctx, q, mf, pk, kernels=resample_kernels)
         self.expand = _ExpandDepth(cl, ctx, q, mf, pk, kernels=resample_kernels)
         self._cbuf = {}
 
-    def _buf(self, key, nbytes):
-        buf = self._cbuf.get(key)
-        if buf is None:
-            buf = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, max(1, int(nbytes)))
-            self._cbuf[key] = buf
+    def _source_buffer(self, nbytes):
+        # Each frame finishes the queue before the next upload. Mixed source
+        # layouts can therefore share one allocation, growing it when needed.
+        capacity, buf = self._cbuf.get('src_in', (0, None))
+        if buf is None or nbytes > capacity:
+            self._cbuf.pop('src_in', None)
+            del buf
+            capacity = max(1, nbytes)
+            buf = self.cl.Buffer(self.ctx, self.mf.READ_ONLY, capacity)
+            self._cbuf['src_in'] = capacity, buf
         return buf
 
     # -- per-frame stages -------------------------------------------------
@@ -1310,22 +1346,18 @@ class _GpuB:
         host_gray = np.ascontiguousarray(gray, dtype=np.uint16)
         return False, host_gray, 1, False
 
-    def _gray_into(self, frame, gray_buf, height, width):
-        is_raw, host_buf, channels, is_u8 = self._prepare_gray_input(
-            0, frame, self.should_cancel, height, width,
-        )
+    def _gray_into(self, prepared, gray_buf, height, width):
+        is_raw, host_buf, channels, is_u8 = prepared
         if is_raw:
-            ib = self._buf(('src_in', height, width, channels, host_buf.dtype.itemsize),
-                           host_buf.nbytes)
-            self.cl.enqueue_copy(self.q, ib, host_buf, is_blocking=False)
+            ib = self._source_buffer(host_buf.nbytes)
+            upload = self.cl.enqueue_copy(self.q, ib, host_buf, is_blocking=False)
             kern = self.kernels['gray_u8' if is_u8 else 'gray_u16']
             kern(self.q, (width, height), None, ib, gray_buf,
                  np.int32(height), np.int32(width), np.int32(channels),
                  np.int32(256 if is_u8 else 1))
             self.gpu.used = True
-        else:
-            self.cl.enqueue_copy(self.q, gray_buf, host_buf, is_blocking=False)
-        return host_buf
+            return upload
+        return self.cl.enqueue_copy(self.q, gray_buf, host_buf, is_blocking=False)
 
     # -- depth_map equivalent ---------------------------------------------
     def depth(self, frames, kernel_size, smoothing, feather, shape, count,
@@ -1351,6 +1383,7 @@ class _GpuB:
         step = 65535 // (count - 1)
 
         completed = False
+        prepared_iter = None
         try:
             gray_buf = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, height * width * 2)
             pb = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, m_bytes)
@@ -1372,19 +1405,9 @@ class _GpuB:
             prepared_iter = _iter_prefetched(
                 frames, prepare, enabled=prefetch, should_cancel=should_cancel,
             )
-            for idx, (is_raw, host_buf, channels, is_u8) in prepared_iter:
+            for idx, prepared in prepared_iter:
                 cancel()
-                if is_raw:
-                    ib = self._buf(('src_in', height, width, channels, host_buf.dtype.itemsize),
-                                   host_buf.nbytes)
-                    self.cl.enqueue_copy(self.q, ib, host_buf, is_blocking=False)
-                    kern = self.kernels['gray_u8' if is_u8 else 'gray_u16']
-                    kern(self.q, (width, height), None, ib, gray_buf,
-                         np.int32(height), np.int32(width), np.int32(channels),
-                         np.int32(256 if is_u8 else 1))
-                    self.gpu.used = True
-                else:
-                    self.cl.enqueue_copy(self.q, gray_buf, host_buf, is_blocking=False)
+                upload = self._gray_into(prepared, gray_buf, height, width)
                 cancel()
                 self.kernels['detail_pool'](self.q, (ow, oh), None, gray_buf, pb,
                                             np.int32(height), np.int32(width),
@@ -1416,7 +1439,7 @@ class _GpuB:
                                                   d_second_buf, d_winner_buf, np.uint16(code),
                                                   np.int32(m))
                 self.q.finish()
-                del host_buf
+                del upload, prepared
                 if progress_callback is not None:
                     progress_callback(idx, count)
 
@@ -1470,6 +1493,8 @@ class _GpuB:
         finally:
             if not completed:
                 self.gpu._drain_queue()
+            if prepared_iter is not None:
+                prepared_iter.close()
             self._cbuf.clear()
             self.filt._bufs.clear()
             self.half._cache.clear()

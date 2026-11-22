@@ -31,7 +31,7 @@ _PROGRAM_CACHE = None
 
 def _get_or_build_program(cl, device):
     global _PROGRAM_CACHE
-    from fusion_methods._openfocus_gpu import _device_cache_key, _filter_kernel_source
+    from fusion_methods._openfocus_gpu import _build_filter_program, _device_cache_key
 
     key = _device_cache_key(device)
     with _cache_lock:
@@ -39,12 +39,12 @@ def _get_or_build_program(cl, device):
             return _PROGRAM_CACHE[1:]
         ctx = cl.Context(devices=[device])
         queue = cl.CommandQueue(ctx, device=device)
-        program = cl.Program(ctx, _filter_kernel_source(device) + _C_K).build(
-            options=['-cl-fp32-correctly-rounded-divide-sqrt'],
+        program, tiled_transpose = _build_filter_program(
+            cl, device, ctx, _C_K, options=['-cl-fp32-correctly-rounded-divide-sqrt'],
         )
         kernels = {name: cl.Kernel(program, name) for name in _KERNEL_NAMES}
-        _PROGRAM_CACHE = (key, ctx, queue, kernels)
-        return ctx, queue, kernels
+        _PROGRAM_CACHE = (key, ctx, queue, kernels, tiled_transpose)
+        return ctx, queue, kernels, tiled_transpose
 
 
 def _invalidate_program_cache():
@@ -261,8 +261,7 @@ class GpuC:
             self.device = device
             self.device_name = opencl_device_name(device)
             self.mf = cl.mem_flags
-            self.ctx, self.q, self.k = _get_or_build_program(cl, device)
-            self._tiled_transpose = getattr(device, 'max_work_group_size', 256) >= 256
+            self.ctx, self.q, self.k, self._tiled_transpose = _get_or_build_program(cl, device)
         except GpuError:
             raise
         except Exception as exc:
@@ -330,6 +329,12 @@ class GpuC:
             except BaseException as exc:
                 raise CallbackFailure() from exc
 
+        def focus(positions, scale):
+            try:
+                focus_callback(positions, scale)
+            except BaseException as exc:
+                raise CallbackFailure() from exc
+
         while not _device_lock.acquire(timeout=0.1):
             _check_cancel(should_cancel)
         try:
@@ -337,7 +342,7 @@ class GpuC:
                 args = (frames, shape, img_resize, smoothing, should_cancel,
                         progress if progress_callback is not None else None)
                 if focus_callback is not None:
-                    return self._fuse_locked(*args, focus_callback=focus_callback)
+                    return self._fuse_locked(*args, focus_callback=focus)
                 return self._fuse_locked(*args)
             except CallbackFailure as exc:
                 self._drain_queue()
@@ -424,7 +429,8 @@ class GpuC:
         need += 2 * full_size * (bool(detail_levels) + filter_planes + keep_winner)
         need += max(n * in_bytes, readback_bytes) + 16 * 1024 * 1024
         limit = int(self.device.global_mem_size) // 2
-        if self.device.host_unified_memory:
+        unified_memory = self.device.host_unified_memory
+        if unified_memory:
             limit = min(limit, host_budget - staging)
         else:
             memory = _free_vram(self.device)
@@ -453,7 +459,8 @@ class GpuC:
                 filter_configs.append((max(1, min(int(radius), w)), max(1, min(int(radius), h)),
                                        q, (4096 - q) >> 1))
         src = self.cl.Buffer(self.ctx, self.mf.READ_ONLY, n * in_bytes)
-        prefetch = bool(detail_levels) and (staging + source_peak <= host_budget)
+        prefetch_budget = host_budget - need if unified_memory else host_budget
+        prefetch = bool(detail_levels) and (staging + source_peak <= prefetch_budget)
         in_flight = False
 
         def prepare_frame(index, frame, cancelled):
@@ -470,10 +477,10 @@ class GpuC:
             del pixels
             return codes, scale, pix_u8, bgr_rev
 
+        prepared_iter = _iter_prefetched(
+            frames, prepare_frame, enabled=prefetch, should_cancel=should_cancel,
+        )
         try:
-            prepared_iter = _iter_prefetched(
-                frames, prepare_frame, enabled=prefetch, should_cancel=should_cancel,
-            )
             for index, item in prepared_iter:
                 _check_cancel(should_cancel)
                 if item is None:
@@ -544,24 +551,24 @@ class GpuC:
                 self._run(kern, region.size, result, dst, np.int32(start), np.int32(region.size))
                 self.cl.enqueue_copy(self.q, region, dst, is_blocking=True)
             if focus_callback is not None:
-                from core.frame_storage import create_frame
-                positions = create_frame((height, width), np.uint16)
+                from core.frame_storage import create_transient_frame
+                positions = create_transient_frame((height, width), np.uint16)
                 if winner is None:
                     positions.fill(0)
                 else:
                     self.cl.enqueue_copy(self.q, positions, winner, is_blocking=True)
-                in_flight = False
-                _check_cancel(should_cancel)
-                focus_callback(positions, count - 1)
-            else:
-                in_flight = False
+            in_flight = False
             if progress_callback is not None:
                 progress_callback(total, total)
             _check_cancel(should_cancel)
+            if focus_callback is not None:
+                focus_callback(positions, count - 1)
             return out[:, :, 0] if is_gray else out
         except BaseException:
             if in_flight:
                 self._drain_queue()
             raise
+        finally:
+            prepared_iter.close()
 
 

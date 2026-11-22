@@ -178,12 +178,16 @@ def test_tiled_transpose_u16_parity(shape):
     ctx, q = _openfocus_gpu._get_or_build_merge_program(cl, device)[:2]
     mf = cl.mem_flags
 
-    prg_tiled = cl.Program(ctx, _openfocus_gpu._filter_kernel_source(device)).build()
-    small_dev = type("_SmallDev", (), {"max_work_group_size": 64})()
-    prg_naive = cl.Program(ctx, _openfocus_gpu._filter_kernel_source(small_dev)).build()
+    prg_tiled, tiled = _openfocus_gpu._build_filter_program(cl, device, ctx, '')
+    small_dev = type('_SmallDev', (), {
+        'max_work_group_size': 256, 'max_work_item_sizes': (8, 32, 8),
+        'local_mem_size': 32 * 1024,
+    })()
+    prg_naive, tiled_naive = _openfocus_gpu._build_filter_program(cl, small_dev, ctx, '')
+    assert not tiled_naive
 
-    flt_tiled = _openfocus_gpu._Filter(cl, ctx, q, mf, prg_tiled, tiled_transpose=True)
-    flt_naive = _openfocus_gpu._Filter(cl, ctx, q, mf, prg_naive, tiled_transpose=False)
+    flt_tiled = _openfocus_gpu._Filter(cl, ctx, q, mf, prg_tiled, tiled_transpose=tiled)
+    flt_naive = _openfocus_gpu._Filter(cl, ctx, q, mf, prg_naive, tiled_transpose=tiled_naive)
 
     h, w = shape
     rng = np.random.default_rng(700 + h * 31 + w)
@@ -312,7 +316,7 @@ def test_merge_full_depth_and_begin_merge_4k_8k_admission(monkeypatch, shape):
     monkeypatch.setattr(
         _openfocus_gpu,
         "_get_or_build_depth_program",
-        lambda cl, dev, ctx: (object(), {}, {}, {}),
+        lambda cl, dev, ctx: (object(), {}, {}, {}, False),
     )
 
     envelope = resource_policy.ProcessBudget(
@@ -356,6 +360,31 @@ def test_merge_full_depth_and_begin_merge_4k_8k_admission(monkeypatch, shape):
         res = m.full_depth(frames, (h, w, c), None, 17, 1.44, 0, None, None)
         assert len(called) == 1
         assert res.shape == (h, w)
+
+
+def test_unified_depth_only_prefetches_when_both_sources_fit(monkeypatch):
+    shape = (1024, 1024, 3)
+    frame = np.zeros(shape, np.uint16)
+    snapshot = resource_policy.ResourceSnapshot(available_ram=12 * GiB, total_ram=16 * GiB)
+    monkeypatch.setattr(resource_policy, 'probe_resources', lambda *a, **kw: snapshot)
+    monkeypatch.setattr(resource_policy, 'probe_memory', lambda *a, **kw: snapshot)
+    monkeypatch.setattr(_openfocus_gpu, '_get_or_build_depth_program',
+                        lambda *args: (object(), {}, {}, {}, False))
+
+    merge = _make_fake_merge()
+    merge.device.host_unified_memory = True
+    prefetch_modes = []
+
+    def depth(self, *args, prefetch):
+        prefetch_modes.append(prefetch)
+        return frame[..., 0]
+
+    monkeypatch.setattr(_openfocus_gpu._GpuB, 'depth', depth)
+    for limits in (71 * MiB, 80 * MiB):
+        with resource_policy.process_budget(resource_policy.ProcessBudget(limits, limits)):
+            result = merge.full_depth([frame, frame], shape, None, 17, 1.44, 0, None, None)
+            assert result is not None and result.shape == shape[:2]
+    assert prefetch_modes == [False, True]
 
 
 def test_iter_prefetched_order_context_serial_and_cancel():
@@ -460,8 +489,10 @@ def test_gpu_c_chunked_readback_parity_and_focus_callback(monkeypatch, dtype, ch
     )
 
     gpu_focus_default = []
+    devices = []
     out_gpu_default = openfocus_c_impl(
         [f.copy() for f in frames], use_gpu=True,
+        device_callback=devices.append,
         focus_callback=lambda pos, scale: gpu_focus_default.append((pos.copy(), scale)),
     )
 
@@ -470,8 +501,10 @@ def test_gpu_c_chunked_readback_parity_and_focus_callback(monkeypatch, dtype, ch
     gpu_focus_chunked = []
     out_gpu_chunked = openfocus_c_impl(
         [f.copy() for f in frames], use_gpu=True,
+        device_callback=devices.append,
         focus_callback=lambda pos, scale: gpu_focus_chunked.append((pos.copy(), scale)),
     )
+    assert len(devices) == 2 and all(device.startswith('OpenCL: ') for device in devices)
 
     np.testing.assert_array_equal(out_gpu_chunked, out_gpu_default)
     assert len(gpu_focus_chunked) == len(gpu_focus_default) == len(cpu_focus) == 1
@@ -483,6 +516,25 @@ def test_gpu_c_chunked_readback_parity_and_focus_callback(monkeypatch, dtype, ch
         out_gpu_chunked.astype(np.float64) - out_cpu.astype(np.float64)
     )))
     assert max_diff <= (1e-2 if dtype == np.uint16 else 1.0)
+
+
+def test_gpu_c_cancel_at_final_progress_does_not_publish_focus():
+    _require_gpu()
+    frames = _synthetic_stack(np.random.default_rng(829), 2, 33, 39, 2, np.uint16)
+    cancelled = False
+    published = []
+
+    def progress(done, total):
+        nonlocal cancelled
+        cancelled = done == total
+
+    with pytest.raises(RegistrationCancelled):
+        _openfocus_gpu_c.GpuC().fuse(
+            frames, frames[0].shape, None, 4.0,
+            should_cancel=lambda: cancelled, progress_callback=progress,
+            focus_callback=lambda *args: published.append(args),
+        )
+    assert cancelled and not published
 
 
 @pytest.mark.parametrize("alg", ["openfocus_a", "openfocus_b", "openfocus_c"])

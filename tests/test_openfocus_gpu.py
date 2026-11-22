@@ -662,8 +662,8 @@ def test_openfocus_ac_program_cache_reuse_and_invalidation(module_name, cls_name
     cl = __import__('pyopencl')
     dev = _openfocus_gpu._device(cl)
     try:
-        ctx1, q1, k1 = mod._get_or_build_program(cl, dev)
-        ctx2, q2, k2 = mod._get_or_build_program(cl, dev)
+        ctx1, q1, k1, *_ = mod._get_or_build_program(cl, dev)
+        ctx2, q2, k2, *_ = mod._get_or_build_program(cl, dev)
         assert ctx1 is ctx2 and q1 is q2 and k1 is k2
     finally:
         mod._invalidate_program_cache()
@@ -763,7 +763,7 @@ def test_openfocus_b_full_depth_drains_queue_before_clearing_buffers_on_cancel()
     resamp_k = {n: DummyEvent() for n in _openfocus_gpu._RESAMPLE_KERNEL_NAMES}
 
     engine = _openfocus_gpu._GpuB(
-        gpu, None, lambda: True,
+        gpu, None,
         depth_kernels=depth_k, filter_kernels=filt_k, resample_kernels=resamp_k,
     )
     engine._cbuf = TrackingDict()

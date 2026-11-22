@@ -471,7 +471,8 @@ class GpuA:
                 + max(src_bytes, readback_bytes)  # upload and readback are disjoint
                 + 16 * 1024 * 1024)
         limit = int(self.device.global_mem_size) // 2
-        if self.device.host_unified_memory:
+        unified_memory = self.device.host_unified_memory
+        if unified_memory:
             limit = min(limit, host_budget - staging)
         else:
             memory = _free_vram(self.device)
@@ -494,14 +495,15 @@ class GpuA:
         stat_buf = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, max(1, n * 4))
 
         src_buf = self.cl.Buffer(self.ctx, self.mf.READ_ONLY, src_bytes)
-        prefetch = (staging + source_peak <= host_budget)
+        prefetch_budget = host_budget - need if unified_memory else host_budget
+        prefetch = staging + source_peak <= prefetch_budget
         in_flight = False
 
         def prepare_frame(_index, source, cancelled):
             _check_cancel(cancelled)
+            with without_source_cache_growth():
+                raw = resolve_frame(source, should_cancel=cancelled)
             if native_upload and source.dtype in (np.uint8, np.uint16):
-                with without_source_cache_growth():
-                    raw = resolve_frame(source, should_cancel=cancelled)
                 _check_cancel(cancelled)
                 if tuple(raw.shape) != tuple(shape):
                     raise ValueError('OpenFocus A requires frames with matching shapes')
@@ -509,8 +511,8 @@ class GpuA:
                 del raw
                 src_is_u8 = host_src.dtype == np.uint8
                 return host_src, src_is_u8, 0, bgr_rev
-            with without_source_cache_growth():
-                raw_code = frame_codes(source, img_resize, cancelled)
+            raw_code = frame_codes(raw, img_resize, cancelled)
+            del raw
             if tuple(raw_code.shape) != tuple(shape):
                 raise ValueError('OpenFocus A requires frames with matching shapes')
             host_src, bgr_rev = _prepare_gpu_upload(raw_code, np.uint16)
@@ -518,10 +520,10 @@ class GpuA:
             u8_gray = 1 if getattr(source, 'dtype', None) == np.uint8 else 0
             return host_src, False, u8_gray, bgr_rev
 
+        prepared_iter = _iter_prefetched(
+            frames, prepare_frame, enabled=prefetch, should_cancel=should_cancel,
+        )
         try:
-            prepared_iter = _iter_prefetched(
-                frames, prepare_frame, enabled=prefetch, should_cancel=should_cancel,
-            )
             for index, (host_src, src_is_u8, u8_gray, bgr_rev) in prepared_iter:
                 _check_cancel(should_cancel)
                 in_flight = True
@@ -590,3 +592,5 @@ class GpuA:
             if in_flight:
                 self._drain_queue()
             raise
+        finally:
+            prepared_iter.close()
