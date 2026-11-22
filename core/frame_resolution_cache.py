@@ -21,6 +21,7 @@ serialized per process (GUI child process / CLI / one batch task).
 from __future__ import annotations
 
 import contextlib
+import os
 import threading
 import time
 
@@ -126,6 +127,29 @@ def pixel_digest(image, compute):
     scope = current()
     remembered = getattr(scope, 'pixel_digest', None)
     return compute() if remembered is None else remembered(image, compute)
+
+
+def _validated_direct_tiff(frame):
+    from core.source_frames import is_direct_rgb_tiff
+
+    if not is_direct_rgb_tiff(frame):
+        return None
+    frame.validate_source()
+    return frame
+
+
+def source_digest(frame, compute):
+    """Return ``compute()`` for a direct-mapped source, remembered once per render scope."""
+    scope = current()
+    remembered = getattr(scope, 'source_digest', None)
+    return compute() if remembered is None else remembered(frame, compute)
+
+
+def get_source_digest(frame):
+    """Return a remembered direct-mapped source digest after validating source identity."""
+    scope = current()
+    lookup = getattr(scope, 'get_source_digest', None)
+    return None if lookup is None else lookup(frame)
 
 
 def _buffer_identity(image):
@@ -438,6 +462,7 @@ class ScopedCache:
         self._attempted = False
         self.read_only = False
         self._closed = False
+        self._source_digests = {}
         self._lock = threading.RLock()
 
     @property
@@ -531,9 +556,42 @@ class ScopedCache:
         cache = self._cache
         return compute() if cache is None else cache.pixel_digest(image, compute)
 
+    def source_digest(self, frame, compute):
+        """Remember one immutable direct-RGB TIFF hash per render scope.
+
+        Never calls ``_plan()``, and always validates the backing file stamp on
+        every lookup.
+        """
+        if self._closed:
+            return compute()
+        key = _validated_direct_tiff(frame)
+        if key is None:
+            return compute()
+        with self._lock:
+            digest = self._source_digests.get(key)
+        if digest is not None:
+            return digest
+        digest = compute()
+        frame.validate_source()
+        with self._lock:
+            if not self._closed:
+                self._source_digests[key] = digest
+        return digest
+
+    def get_source_digest(self, frame):
+        """Return remembered direct-RGB TIFF hash if present after validating file stamp."""
+        if self._closed:
+            return None
+        key = _validated_direct_tiff(frame)
+        if key is None:
+            return None
+        with self._lock:
+            return self._source_digests.get(key)
+
     def close(self):
         with self._lock:
             self._closed = True
+            self._source_digests.clear()
             cache = self._cache
         if cache is not None:
             cache.close()

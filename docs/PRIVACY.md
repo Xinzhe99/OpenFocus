@@ -39,14 +39,14 @@ are independent of account sign-in and diagnostic reporting.
   diagnostic reports. Signing out also requests server session revocation. If
   local credential removal fails, the account dialog reports incomplete cleanup
   and offers a retry; signing out in memory does not erase credentials on disk.
-  OpenFocus uses a device ID to manage the three-device limit. The computer
-  name is a display label. On Windows, installed, portable, source and
-  recognized preview builds run by the same user share the device ID in
-  `%LOCALAPPDATA%\OpenFocus\account-device`. When signing in, OpenFocus also
-  sends a product-specific hash of the Windows installation identifier and
-  any existing device IDs it finds in local OpenFocus profiles. The raw
-  Windows identifier stays on the PC. The service scopes the key to the
-  signed-in account and uses it to reuse the same registration. An updated
+  OpenFocus uses a device ID to recognize desktop registrations and manage
+  their sessions. The computer name is a display label. On Windows, installed,
+  portable, source and recognized preview builds run by the same user share the
+  device ID in `%LOCALAPPDATA%\OpenFocus\account-device`. When signing in,
+  OpenFocus also sends a product-specific hash of the Windows installation
+  identifier and any existing device IDs it finds in local OpenFocus profiles.
+  The raw Windows identifier stays on the PC. The service scopes the key to
+  the signed-in account and uses it to reuse the same registration. An updated
   portable build can carry over its prior ID when it restores a saved session.
   Each profile keeps its own credentials. Explicit session paths and macOS
   and Linux builds keep profile-local device IDs.
