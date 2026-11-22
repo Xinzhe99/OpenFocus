@@ -5010,27 +5010,13 @@ if __name__ == "__main__":
     # Crash auto-recovery: a leftover lock means the last session died
     # without a clean close. Offer the saved snapshot before anything else.
     if not recovered:
-        from ui.session_recovery import prompt_crash_recovery
-        generation = getattr(window.source_manager, '_load_generation', 0)
-        pending = prompt_crash_recovery(window)
-        # The control channel can change the stack even during a modal prompt.
-        if (pending is not None and not window.raw_images
-                and getattr(window.source_manager, '_load_worker', None) is None
-                and generation == getattr(window.source_manager, '_load_generation', 0)
-                and not getattr(window, '_shutting_down', False)):
-            from utils.project_file import apply_project
-            document = pending.get('recovery_document')
-            def _crash_restored():
-                window.project_path = (document.get('project_path') or None) if document else None
-                window._project_dirty = document['dirty'] if document else True
-                window._update_project_title()
-            def _crash_restore_failed(reason):
-                _log.warning("crash recovery failed: %s", reason)
-                show_warning_box(window, trans.t('recovery_title'), str(reason))
-            apply_project(window, pending, on_loaded=_crash_restored,
-                          on_error=_crash_restore_failed)
-            recovered = True
-            _log.info("recovered previous session from %s", recovery.session_path())
+        from ui.session_recovery import restore_crash_session
+        recovered = restore_crash_session(window)
+    if getattr(window, '_shutting_down', False):
+        app.aboutToQuit.emit()
+        window.deleteLater()
+        QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        sys.exit(0)
     recovery.init_lock()
 
     # Handle files passed via command-line (drag-to-EXE, desktop file, etc.)
