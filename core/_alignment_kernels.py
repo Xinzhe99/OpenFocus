@@ -617,3 +617,373 @@ if _HAVE_NUMBA:
                     best_dy = dy
                     found = True
         return best_dx, best_dy, found
+
+    @njit(cache=True, nogil=True, fastmath=False)
+    def score_grid_4d_slice(ref, img_b, xs, ys, tx0, ty0, cx_tab, cy_tab, p08_tab, p18_tab,
+                            n0, n1, n2, n3, k_start, k_stop, out_best_k, out_best_sc, slot):
+        """Fused candidate generation, bbox culling, bilinear scoring, and min reduction."""
+        h, w = img_b.shape
+        h_f = np.float32(h)
+        w_f = np.float32(w)
+        zero_f = np.float32(0.0)
+        nyy = ys.shape[0]
+        nxx = xs.shape[0]
+        x_lo = xs[0]
+        x_hi = xs[nxx - 1]
+        y_lo = ys[0]
+        y_hi = ys[nyy - 1]
+
+        best_sc = np.float32(np.inf)
+        best_k = np.int64(-1)
+
+        for k in range(k_start, k_stop):
+            rem = k
+            t0 = rem % n0
+            rem //= n0
+            t1 = rem % n1
+            rem //= n1
+            t2 = rem % n2
+            t3 = rem // n2
+
+            cx_k = cx_tab[t0]
+            cy_k = cy_tab[t1]
+            p08_k = p08_tab[t3, t2]
+            p18_k = p18_tab[t3, t2]
+            p0c_k = p08_k
+            p1c_k = p18_k
+
+            c_u = np.float32(np.float32(tx0 - np.float32(cx_k * p18_k)) - np.float32(cy_k * p0c_k))
+            c_v = np.float32(np.float32(ty0 - np.float32(cy_k * p1c_k)) - np.float32(cx_k * p08_k))
+
+            aux0 = np.float32(p18_k * x_lo)
+            aux1 = np.float32(p18_k * x_hi)
+            buy0 = np.float32(p0c_k * y_lo)
+            buy1 = np.float32(p0c_k * y_hi)
+            u_lo = np.float32(np.float32((aux0 if aux0 < aux1 else aux1) + (buy0 if buy0 < buy1 else buy1)) + c_u)
+            u_hi = np.float32(np.float32((aux0 if aux0 > aux1 else aux1) + (buy0 if buy0 > buy1 else buy1)) + c_u)
+
+            avx0 = np.float32(p1c_k * x_lo)
+            avx1 = np.float32(p1c_k * x_hi)
+            bvy0 = np.float32(p08_k * y_lo)
+            bvy1 = np.float32(p08_k * y_hi)
+            v_lo = np.float32(np.float32((avx0 if avx0 < avx1 else avx1) + (bvy0 if bvy0 < bvy1 else bvy1)) + c_v)
+            v_hi = np.float32(np.float32((avx0 if avx0 > avx1 else avx1) + (bvy0 if bvy0 > bvy1 else bvy1)) + c_v)
+
+            if not (u_hi >= zero_f and u_lo < w_f and v_hi >= zero_f and v_lo < h_f):
+                continue
+
+            acc_sum = np.int64(0)
+            acc_sq = np.int64(0)
+            acc_cnt = np.int64(0)
+            for iy_i in range(nyy):
+                v_dy, u_dy = _map_uv_row(ys[iy_i], cy_k, p1c_k, p0c_k)
+                for ix_i in range(nxx):
+                    u, v = _map_uv_col(xs[ix_i], cx_k, p08_k, p18_k, tx0, ty0, v_dy, u_dy)
+                    if not (u >= zero_f and u < w_f and v >= zero_f and v < h_f):
+                        continue
+                    ix, jx, fx, _ = _axis(u, w)
+                    iy, jy, fy, _ = _axis(v, h)
+                    gx = np.uint32(256) - fx
+                    gy = np.uint32(256) - fy
+                    val = _bilinear_u32_2d(img_b, iy, jy, ix, jx, gx, fx, gy, fy)
+                    diff = np.int64(ref[iy_i, ix_i]) - np.int64(val)
+                    acc_sum += diff
+                    acc_sq += diff * diff
+                    acc_cnt += 1
+
+            if acc_cnt >= 2:
+                denom = np.float64(np.float32(acc_cnt))
+                msq_f = np.float32(np.float64(acc_sq) / denom)
+                msu_f = np.float32(np.float64(acc_sum) / denom)
+                var_f = np.float32(msq_f - np.float32(msu_f * msu_f))
+                if var_f >= zero_f:
+                    sc = np.sqrt(var_f)
+                    if sc < best_sc:
+                        best_sc = sc
+                        best_k = k
+
+        out_best_k[slot] = best_k
+        out_best_sc[slot] = best_sc
+
+    @njit(cache=True, nogil=True)
+    def warp_alignment_region_int_rows(image, out, src_h, src_w, src_y0, x_off, y_off,
+                                       tx, ty, cx, cy, p08, p0c, p18, p1c, oy_start, oy_stop):
+        """Region similarity warp for uint8/uint16 2D or 3D image/band buffers."""
+        rw = out.shape[1]
+        if out.ndim == 2:
+            for oy in range(oy_start, oy_stop):
+                v_dy, u_dy = _map_uv_row(np.float32(y_off + oy), cy, p1c, p0c)
+                for ox in range(rw):
+                    u, v = _map_uv_col(np.float32(x_off + ox), cx, p08, p18, tx, ty, v_dy, u_dy)
+                    ix, jx, fx, inv_x = _axis(u, src_w)
+                    iy, jy, fy, inv_y = _axis(v, src_h)
+                    if inv_x or inv_y:
+                        out[oy, ox] = 0
+                    else:
+                        out[oy, ox] = _bilinear_u32_2d(
+                            image, iy - src_y0, jy - src_y0, ix, jx,
+                            np.uint32(256) - fx, fx, np.uint32(256) - fy, fy,
+                        )
+        elif out.shape[2] == 3:
+            for oy in range(oy_start, oy_stop):
+                v_dy, u_dy = _map_uv_row(np.float32(y_off + oy), cy, p1c, p0c)
+                for ox in range(rw):
+                    u, v = _map_uv_col(np.float32(x_off + ox), cx, p08, p18, tx, ty, v_dy, u_dy)
+                    ix, jx, fx, inv_x = _axis(u, src_w)
+                    iy, jy, fy, inv_y = _axis(v, src_h)
+                    if inv_x or inv_y:
+                        out[oy, ox, 0] = 0
+                        out[oy, ox, 1] = 0
+                        out[oy, ox, 2] = 0
+                    else:
+                        gx = np.uint32(256) - fx
+                        gy = np.uint32(256) - fy
+                        iy_b = iy - src_y0
+                        jy_b = jy - src_y0
+                        t0 = np.uint32(image[iy_b, ix, 0]) * gx + np.uint32(image[iy_b, jx, 0]) * fx
+                        b0 = np.uint32(image[jy_b, ix, 0]) * gx + np.uint32(image[jy_b, jx, 0]) * fx
+                        out[oy, ox, 0] = (t0 * gy + b0 * fy) >> np.uint32(16)
+                        t1 = np.uint32(image[iy_b, ix, 1]) * gx + np.uint32(image[iy_b, jx, 1]) * fx
+                        b1 = np.uint32(image[jy_b, ix, 1]) * gx + np.uint32(image[jy_b, jx, 1]) * fx
+                        out[oy, ox, 1] = (t1 * gy + b1 * fy) >> np.uint32(16)
+                        t2 = np.uint32(image[iy_b, ix, 2]) * gx + np.uint32(image[iy_b, jx, 2]) * fx
+                        b2 = np.uint32(image[jy_b, ix, 2]) * gx + np.uint32(image[jy_b, jx, 2]) * fx
+                        out[oy, ox, 2] = (t2 * gy + b2 * fy) >> np.uint32(16)
+        else:
+            channels = out.shape[2]
+            for oy in range(oy_start, oy_stop):
+                v_dy, u_dy = _map_uv_row(np.float32(y_off + oy), cy, p1c, p0c)
+                for ox in range(rw):
+                    u, v = _map_uv_col(np.float32(x_off + ox), cx, p08, p18, tx, ty, v_dy, u_dy)
+                    ix, jx, fx, inv_x = _axis(u, src_w)
+                    iy, jy, fy, inv_y = _axis(v, src_h)
+                    if inv_x or inv_y:
+                        for c in range(channels):
+                            out[oy, ox, c] = 0
+                    else:
+                        gx = np.uint32(256) - fx
+                        gy = np.uint32(256) - fy
+                        iy_b = iy - src_y0
+                        jy_b = jy - src_y0
+                        for c in range(channels):
+                            top = np.uint32(image[iy_b, ix, c]) * gx + np.uint32(image[iy_b, jx, c]) * fx
+                            bottom = np.uint32(image[jy_b, ix, c]) * gx + np.uint32(image[jy_b, jx, c]) * fx
+                            out[oy, ox, c] = (top * gy + bottom * fy) >> np.uint32(16)
+
+    @njit(cache=True, nogil=True)
+    def warp_alignment_region_int_rows_bgr_rev(src_rgb, out, src_h, src_w, src_y0, x_off, y_off,
+                                               tx, ty, cx, cy, p08, p0c, p18, p1c, oy_start, oy_stop):
+        """Region similarity warp from C-contiguous RGB band/view into C-contiguous BGR output."""
+        rw = out.shape[1]
+        for oy in range(oy_start, oy_stop):
+            v_dy, u_dy = _map_uv_row(np.float32(y_off + oy), cy, p1c, p0c)
+            for ox in range(rw):
+                u, v = _map_uv_col(np.float32(x_off + ox), cx, p08, p18, tx, ty, v_dy, u_dy)
+                ix, jx, fx, inv_x = _axis(u, src_w)
+                iy, jy, fy, inv_y = _axis(v, src_h)
+                if inv_x or inv_y:
+                    out[oy, ox, 0] = 0
+                    out[oy, ox, 1] = 0
+                    out[oy, ox, 2] = 0
+                else:
+                    gx = np.uint32(256) - fx
+                    gy = np.uint32(256) - fy
+                    iy_b = iy - src_y0
+                    jy_b = jy - src_y0
+                    t0 = np.uint32(src_rgb[iy_b, ix, 2]) * gx + np.uint32(src_rgb[iy_b, jx, 2]) * fx
+                    b0 = np.uint32(src_rgb[jy_b, ix, 2]) * gx + np.uint32(src_rgb[jy_b, jx, 2]) * fx
+                    out[oy, ox, 0] = (t0 * gy + b0 * fy) >> np.uint32(16)
+                    t1 = np.uint32(src_rgb[iy_b, ix, 1]) * gx + np.uint32(src_rgb[iy_b, jx, 1]) * fx
+                    b1 = np.uint32(src_rgb[jy_b, ix, 1]) * gx + np.uint32(src_rgb[jy_b, jx, 1]) * fx
+                    out[oy, ox, 1] = (t1 * gy + b1 * fy) >> np.uint32(16)
+                    t2 = np.uint32(src_rgb[iy_b, ix, 0]) * gx + np.uint32(src_rgb[iy_b, jx, 0]) * fx
+                    b2 = np.uint32(src_rgb[jy_b, ix, 0]) * gx + np.uint32(src_rgb[jy_b, jx, 0]) * fx
+                    out[oy, ox, 2] = (t2 * gy + b2 * fy) >> np.uint32(16)
+
+    @njit(cache=True, nogil=True)
+    def warp_alignment_region_float_rows(image, out, src_h, src_w, src_y0, x_off, y_off,
+                                         tx, ty, cx, cy, p08, p0c, p18, p1c, oy_start, oy_stop):
+        """Region similarity warp for internal float32/float64 2D or 3D images."""
+        rw = out.shape[1]
+        inv_scale = np.float64(65536.0)
+        if out.ndim == 2:
+            for oy in range(oy_start, oy_stop):
+                v_dy, u_dy = _map_uv_row(np.float32(y_off + oy), cy, p1c, p0c)
+                for ox in range(rw):
+                    u, v = _map_uv_col(np.float32(x_off + ox), cx, p08, p18, tx, ty, v_dy, u_dy)
+                    ix, jx, fx, inv_x = _axis(u, src_w)
+                    iy, jy, fy, inv_y = _axis(v, src_h)
+                    if inv_x or inv_y:
+                        out[oy, ox] = np.float64(0.0)
+                    else:
+                        fgx = np.float64(np.uint32(256) - fx)
+                        ffx = np.float64(fx)
+                        fgy = np.float64(np.uint32(256) - fy)
+                        ffy = np.float64(fy)
+                        iy_b = iy - src_y0
+                        jy_b = jy - src_y0
+                        top = np.float64(image[iy_b, ix]) * fgx + np.float64(image[iy_b, jx]) * ffx
+                        bottom = np.float64(image[jy_b, ix]) * fgx + np.float64(image[jy_b, jx]) * ffx
+                        out[oy, ox] = (top * fgy + bottom * ffy) / inv_scale
+        else:
+            channels = out.shape[2]
+            for oy in range(oy_start, oy_stop):
+                v_dy, u_dy = _map_uv_row(np.float32(y_off + oy), cy, p1c, p0c)
+                for ox in range(rw):
+                    u, v = _map_uv_col(np.float32(x_off + ox), cx, p08, p18, tx, ty, v_dy, u_dy)
+                    ix, jx, fx, inv_x = _axis(u, src_w)
+                    iy, jy, fy, inv_y = _axis(v, src_h)
+                    if inv_x or inv_y:
+                        for c in range(channels):
+                            out[oy, ox, c] = np.float64(0.0)
+                    else:
+                        fgx = np.float64(np.uint32(256) - fx)
+                        ffx = np.float64(fx)
+                        fgy = np.float64(np.uint32(256) - fy)
+                        ffy = np.float64(fy)
+                        iy_b = iy - src_y0
+                        jy_b = jy - src_y0
+                        for c in range(channels):
+                            top = np.float64(image[iy_b, ix, c]) * fgx + np.float64(image[iy_b, jx, c]) * ffx
+                            bottom = np.float64(image[jy_b, ix, c]) * fgx + np.float64(image[jy_b, jx, c]) * ffx
+                            out[oy, ox, c] = (top * fgy + bottom * ffy) / inv_scale
+
+    @njit(cache=True, nogil=True)
+    def warp_translation_region_int_rows(image, out, src_h, src_w, src_y0, x_off, y_off,
+                                         dx, dy, oy_start, oy_stop):
+        """Region translation warp for uint8/uint16 2D or 3D image/band buffers."""
+        rw = out.shape[1]
+        dx32 = np.float32(dx)
+        dy32 = np.float32(dy)
+        ix = np.empty(rw, np.int32)
+        jx = np.empty(rw, np.int32)
+        fx = np.empty(rw, np.uint32)
+        inv_x = np.empty(rw, np.bool_)
+        for ox in range(rw):
+            ix_v, jx_v, fx_v, inv_v = _axis(np.float32(x_off + ox) - dx32, src_w)
+            ix[ox] = ix_v
+            jx[ox] = jx_v
+            fx[ox] = fx_v
+            inv_x[ox] = inv_v
+        if out.ndim == 2:
+            for oy in range(oy_start, oy_stop):
+                iy, jy, fy, inv_y = _axis(np.float32(y_off + oy) - dy32, src_h)
+                if inv_y:
+                    for ox in range(rw):
+                        out[oy, ox] = 0
+                    continue
+                gy = np.uint32(256) - fy
+                iy_b = iy - src_y0
+                jy_b = jy - src_y0
+                for ox in range(rw):
+                    if inv_x[ox]:
+                        out[oy, ox] = 0
+                    else:
+                        fxx = fx[ox]
+                        out[oy, ox] = _bilinear_u32_2d(
+                            image, iy_b, jy_b, ix[ox], jx[ox], np.uint32(256) - fxx, fxx, gy, fy
+                        )
+        elif out.shape[2] == 3:
+            for oy in range(oy_start, oy_stop):
+                iy, jy, fy, inv_y = _axis(np.float32(y_off + oy) - dy32, src_h)
+                if inv_y:
+                    for ox in range(rw):
+                        out[oy, ox, 0] = 0
+                        out[oy, ox, 1] = 0
+                        out[oy, ox, 2] = 0
+                    continue
+                gy = np.uint32(256) - fy
+                iy_b = iy - src_y0
+                jy_b = jy - src_y0
+                for ox in range(rw):
+                    if inv_x[ox]:
+                        out[oy, ox, 0] = 0
+                        out[oy, ox, 1] = 0
+                        out[oy, ox, 2] = 0
+                    else:
+                        fxx = fx[ox]
+                        gxx = np.uint32(256) - fxx
+                        ixx = ix[ox]
+                        jxx = jx[ox]
+                        t0 = np.uint32(image[iy_b, ixx, 0]) * gxx + np.uint32(image[iy_b, jxx, 0]) * fxx
+                        b0 = np.uint32(image[jy_b, ixx, 0]) * gxx + np.uint32(image[jy_b, jxx, 0]) * fxx
+                        out[oy, ox, 0] = (t0 * gy + b0 * fy) >> np.uint32(16)
+                        t1 = np.uint32(image[iy_b, ixx, 1]) * gxx + np.uint32(image[iy_b, jxx, 1]) * fxx
+                        b1 = np.uint32(image[jy_b, ixx, 1]) * gxx + np.uint32(image[jy_b, jxx, 1]) * fxx
+                        out[oy, ox, 1] = (t1 * gy + b1 * fy) >> np.uint32(16)
+                        t2 = np.uint32(image[iy_b, ixx, 2]) * gxx + np.uint32(image[iy_b, jxx, 2]) * fxx
+                        b2 = np.uint32(image[jy_b, ixx, 2]) * gxx + np.uint32(image[jy_b, jxx, 2]) * fxx
+                        out[oy, ox, 2] = (t2 * gy + b2 * fy) >> np.uint32(16)
+        else:
+            channels = out.shape[2]
+            for oy in range(oy_start, oy_stop):
+                iy, jy, fy, inv_y = _axis(np.float32(y_off + oy) - dy32, src_h)
+                if inv_y:
+                    for ox in range(rw):
+                        for c in range(channels):
+                            out[oy, ox, c] = 0
+                    continue
+                gy = np.uint32(256) - fy
+                iy_b = iy - src_y0
+                jy_b = jy - src_y0
+                for ox in range(rw):
+                    if inv_x[ox]:
+                        for c in range(channels):
+                            out[oy, ox, c] = 0
+                    else:
+                        fxx = fx[ox]
+                        gxx = np.uint32(256) - fxx
+                        ixx = ix[ox]
+                        jxx = jx[ox]
+                        for c in range(channels):
+                            top = np.uint32(image[iy_b, ixx, c]) * gxx + np.uint32(image[iy_b, jxx, c]) * fxx
+                            bottom = np.uint32(image[jy_b, ixx, c]) * gxx + np.uint32(image[jy_b, jxx, c]) * fxx
+                            out[oy, ox, c] = (top * gy + bottom * fy) >> np.uint32(16)
+
+    @njit(cache=True, nogil=True)
+    def warp_translation_region_int_rows_bgr_rev(src_rgb, out, src_h, src_w, src_y0, x_off, y_off,
+                                                 dx, dy, oy_start, oy_stop):
+        """Region translation warp from C-contiguous RGB band/view into C-contiguous BGR output."""
+        rw = out.shape[1]
+        dx32 = np.float32(dx)
+        dy32 = np.float32(dy)
+        ix = np.empty(rw, np.int32)
+        jx = np.empty(rw, np.int32)
+        fx = np.empty(rw, np.uint32)
+        inv_x = np.empty(rw, np.bool_)
+        for ox in range(rw):
+            ix_v, jx_v, fx_v, inv_v = _axis(np.float32(x_off + ox) - dx32, src_w)
+            ix[ox] = ix_v
+            jx[ox] = jx_v
+            fx[ox] = fx_v
+            inv_x[ox] = inv_v
+        for oy in range(oy_start, oy_stop):
+            iy, jy, fy, inv_y = _axis(np.float32(y_off + oy) - dy32, src_h)
+            if inv_y:
+                for ox in range(rw):
+                    out[oy, ox, 0] = 0
+                    out[oy, ox, 1] = 0
+                    out[oy, ox, 2] = 0
+                continue
+            gy = np.uint32(256) - fy
+            iy_b = iy - src_y0
+            jy_b = jy - src_y0
+            for ox in range(rw):
+                if inv_x[ox]:
+                    out[oy, ox, 0] = 0
+                    out[oy, ox, 1] = 0
+                    out[oy, ox, 2] = 0
+                else:
+                    fxx = fx[ox]
+                    gxx = np.uint32(256) - fxx
+                    ixx = ix[ox]
+                    jxx = jx[ox]
+                    t0 = np.uint32(src_rgb[iy_b, ixx, 2]) * gxx + np.uint32(src_rgb[iy_b, jxx, 2]) * fxx
+                    b0 = np.uint32(src_rgb[jy_b, ixx, 2]) * gxx + np.uint32(src_rgb[jy_b, jxx, 2]) * fxx
+                    out[oy, ox, 0] = (t0 * gy + b0 * fy) >> np.uint32(16)
+                    t1 = np.uint32(src_rgb[iy_b, ixx, 1]) * gxx + np.uint32(src_rgb[iy_b, jxx, 1]) * fxx
+                    b1 = np.uint32(src_rgb[jy_b, ixx, 1]) * gxx + np.uint32(src_rgb[jy_b, jxx, 1]) * fxx
+                    out[oy, ox, 1] = (t1 * gy + b1 * fy) >> np.uint32(16)
+                    t2 = np.uint32(src_rgb[iy_b, ixx, 0]) * gxx + np.uint32(src_rgb[iy_b, jxx, 0]) * fxx
+                    b2 = np.uint32(src_rgb[jy_b, ixx, 0]) * gxx + np.uint32(src_rgb[jy_b, jxx, 0]) * fxx
+                    out[oy, ox, 2] = (t2 * gy + b2 * fy) >> np.uint32(16)
