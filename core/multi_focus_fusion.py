@@ -1990,9 +1990,6 @@ class MultiFocusFusion:
                            block_after_image_clamp=clamped_block,
                            block_after_memory_plan=planned_block, block_effective=block_size,
                            pad_alignment=ATTENTION_PAD_ALIGN)
-        normalize_crops = (exposure_gains is not None and imgs is not None
-                           and any(frame.dtype == np.uint16 for frame in imgs))
-
         if imgs is not None:
             from core.source_frames import borrow_frame_region
             from fusion_methods.neural_common import copy_tile_colors
@@ -2002,7 +1999,6 @@ class MultiFocusFusion:
             check_cancel()
             x0, y0, x1, y1 = coords
             if imgs is not None:
-<<<<<<< HEAD
                 crops = []
                 region = np.s_[y0:y1, x0:x1]
                 for index, frame in enumerate(imgs):
@@ -2013,20 +2009,6 @@ class MultiFocusFusion:
                         gain = exposure_gains[index] if exposure_gains is not None else 1.0
                         crops.append(copy_tile_colors(pixels, normalize_stack, gain))
                     del pixels
-=======
-                from core.source_frames import resolve_region
-                from fusion_methods.neural_common import working_frame
-                crops = []
-                for index, frame in enumerate(imgs):
-                    crop = resolve_region(frame, x0, y0, x1 - x0, y1 - y0,
-                                          should_cancel=should_cancel)
-                    if exposure_gains is not None:
-                        # resolve_region returned this tile's own copy, so the
-                        # gain can scale a float32 crop in place.
-                        crop = working_frame(crop, normalize_crops)
-                        crop = apply_exposure_gain(crop, exposure_gains[index], copy=False)
-                    crops.append(crop)
->>>>>>> origin/pr/149
                 return crops
             crops = []
             for index, name in enumerate(files):
