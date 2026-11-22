@@ -777,16 +777,18 @@ def plan_execution(workload: Workload, snapshot: Optional[ResourceSnapshot] = No
 
 
 def neural_tile_bytes(frames, height, width, channels, block, kind,
-                      estimate_inference, source_bytes=0, *, output_bytes=None):
+                      estimate_inference, source_bytes=0, *, output_bytes=None,
+                      streamed_crops=False):
     """Host and device working sets for one complete-stack spatial tile."""
     padded = ((block + 63) // 64) * 64
     tile_pixels = padded * padded
     from fusion_methods.neural_runtime import native_startup_bytes
     if output_bytes is None:
         output_bytes = height * width * ((channels + 1) * 4 + channels * 4)
-    # Matched/normalized crops may coexist with their predecessors.
-    crops = frames * block * block * channels * 8
-    staging = frames * tile_pixels * 4 * (2 * channels + 3)
+    # Packed crops and their scratch stay on the host. Streamed inference
+    # reuses that workspace for one frame and only stages luma on the device.
+    crops = block * block * channels * (12 if streamed_crops else frames * 8)
+    staging = frames * tile_pixels * 4 * (6 if streamed_crops else 2 * channels + 3)
     reduction = tile_pixels * (channels * 4 * 3 + 8)
     inference = estimate_inference(frames, block, block, kind)
     device = inference + staging + reduction
@@ -798,6 +800,7 @@ def plan_neural_tiles(frames: int, height: int, width: int, channels: int,
                       *, directory: bool = False, itemsize: int = 1,
                       source_resolution_bytes: int = 0, source_cache_bytes: int = 0,
                       output_bytes: Optional[int] = None, resident_output_bytes: int = 0,
+                      streamed_crops: bool = False,
                       snapshot: Optional[ResourceSnapshot] = None,
                       preference: str = PREFERENCE_BALANCED,
                       user_threads: Optional[int] = None):
@@ -851,7 +854,7 @@ def plan_neural_tiles(frames: int, height: int, width: int, channels: int,
         while best is None or block > best[0]:
             required, device_required = neural_tile_bytes(
                 frames, height, width, channels, block, kind, estimate_inference,
-                source_bytes, output_bytes=output_bytes)
+                source_bytes, output_bytes=output_bytes, streamed_crops=streamed_crops)
             device_fits = not dedicated or fits_in_budget(device_required, device_budget)
             ram_fits = ceiling > 0 and required <= ceiling
             if ram_fits and device_fits:
