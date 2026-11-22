@@ -1034,7 +1034,7 @@ EN = {
     "experimental_label": "Experimental",
     "experimental_locked_hint": "Enable experimental features in Settings → Advanced Settings to use this.",
     "development_label": "In development",
-    "development_unavailable_hint": "This feature is in development and is currently unavailable.",
+    "development_unavailable_hint": "This feature is still in development and is disabled in this release, even when experimental features are enabled.",
     "experimental_features": "Enable experimental features",
     "experimental_features_hint": "Allow experimental fusion and image registration methods.",
     "theme_system": "Follow system",

@@ -1007,7 +1007,7 @@ PACK = {
     "experimental_label": "Experimentell",
     "experimental_locked_hint": "Zur Verwendung experimentelle Funktionen unter Einstellungen → Erweiterte Einstellungen aktivieren.",
     "development_label": "In Entwicklung",
-    "development_unavailable_hint": "Diese Funktion ist in Entwicklung und derzeit nicht verfügbar.",
+    "development_unavailable_hint": "Diese Funktion ist noch in Entwicklung und in dieser Version auch bei aktivierten experimentellen Funktionen deaktiviert.",
     "experimental_features": "Experimentelle Funktionen aktivieren",
     "experimental_features_hint": "Erlaubt experimentelle Verfahren zur Fusion und Bildregistrierung.",
     "theme_system": "Systemeinstellung",
