@@ -25,7 +25,7 @@ except ImportError:
 
 
 def command(*args, check=True):
-    return subprocess.run(args, text=True, stdout=subprocess.PIPE,
+    return subprocess.run(args, encoding='utf-8', stdout=subprocess.PIPE,
                           stderr=subprocess.PIPE, check=check)
 
 
