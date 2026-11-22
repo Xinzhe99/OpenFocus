@@ -239,12 +239,10 @@ class SourceFingerprint:
     def validate_direct_source(self, source_frame, should_cancel=None):
         """Validate a direct-mapped RGB TIFF source via render-scope digest if cached."""
         _check_cancel(should_cancel)
-        self.validate_file()
         from core import frame_resolution_cache
         from core.source_frames import is_direct_rgb_tiff
         if not is_direct_rgb_tiff(source_frame):
             return False
-        source_frame.validate_source()
         if (tuple(source_frame.shape) != self.shape
                 or np.dtype(source_frame.dtype).str != self.dtype
                 or _source_file_identity(source_frame) != (self.path, self.page, self.file_stamp)
@@ -255,7 +253,6 @@ class SourceFingerprint:
             return False
         if digest != self.sha256:
             raise ValueError('Alignment source pixels changed')
-        self.validate_file()
         return True
 
     def validate_pixels(self, image, should_cancel=None, *, source=None):
@@ -751,17 +748,8 @@ def _warp_translation_region_np(band, x, y, width, height, src_h, src_w, src_y0,
 def _validate_direct_rgb_source(fingerprint, source_frame, should_cancel):
     if fingerprint.validate_direct_source(source_frame, should_cancel):
         return
-    with open(source_frame.path, 'rb') as stream:
-        with mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ) as mm:
-            rgb = np.ndarray(
-                source_frame.shape, dtype=source_frame.dtype,
-                buffer=mm, offset=source_frame._rgb_tiff_offset,
-            )
-            bgr_rev = rgb[..., ::-1]
-            try:
-                fingerprint.validate_pixels(bgr_rev, should_cancel, source=source_frame)
-            finally:
-                del bgr_rev, rgb
+    pixels = resolve_frame(source_frame, should_cancel=should_cancel)
+    fingerprint.validate_pixels(pixels, should_cancel, source=source_frame)
 
 
 def apply_translation_region(source_or_image, transform, x, y, width, height, *,
@@ -836,7 +824,7 @@ def apply_translation_region(source_or_image, transform, x, y, width, height, *,
 
     if direct_tiff:
         output = np.empty(full_out_shape, dtype=src_dtype)
-        with open(source_or_image.path, 'rb') as stream:
+        with source_or_image._open_direct_tiff() as stream:
             with mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ) as mm:
                 rgb_full = np.ndarray(
                     src_shape, dtype=src_dtype,
@@ -1266,23 +1254,30 @@ def grid_level_4d(img_a, img_b, base8, ranges4, coef=1.0, grid_half=8,
         ) if _native_kernels.available() else None)
         if (_native_kernels.available() and _score_chunk is _ORIGINAL_SCORE_CHUNK
                 and enumerate_candidates is _ORIGINAL_ENUMERATE_CANDIDATES
-                and A.dtype == np.uint16 and B.dtype == np.uint16 and samples > 0):
+                and A.dtype == np.uint16 and B.dtype == np.uint16 and samples > 0
+                and min(cnts) > 0):
             cx_tab, cy_tab, p08_tab, p18_tab = _grid_4d_tables(base, cnts, steps, M)
             n0, n1, n2, n3 = (int(c) for c in cnts)
             tx0 = F32(base[0])
             ty0 = F32(base[1])
             total_workers = _alignment_workers(N * samples, min_items=32_768)
             total_workers = min(total_workers, max(1, N // 256))
-            wave = N if should_cancel is None else max(2048, (65_536 // max(samples, 1)) * max(1, total_workers))
+            # Bound each worker to about a million candidate-sample pairs
+            # between checks. A single candidate is the minimum work unit.
+            slice_limit = N if should_cancel is None else max(1, 1_048_576 // samples)
+            wave = min(N, slice_limit * total_workers)
             best_k = -1
             kernel = _native_kernels.score_grid_4d_slice
+            args = (ref_grid, B, xs_f, ys_f, tx0, ty0, cx_tab, cy_tab,
+                    p08_tab, p18_tab, n0, n1, n2, n3)
+            out_k = np.empty(total_workers, dtype=np.int64)
+            out_sc = np.empty(total_workers, dtype=np.float32)
             for lo in range(0, N, wave):
                 _check_cancel(should_cancel)
                 hi = min(N, lo + wave)
                 span = hi - lo
                 workers = min(total_workers, max(1, span // 256))
-                out_k = np.full(workers, -1, dtype=np.int64)
-                out_sc = np.full(workers, np.inf, dtype=np.float32)
+                workers = max(workers, (span + slice_limit - 1) // slice_limit)
                 ran_par = False
                 if workers > 1 and _PARALLEL_BATCH_LOCK.acquire(blocking=False):
                     futures = []
@@ -1291,16 +1286,8 @@ def grid_level_4d(img_a, img_b, base8, ranges4, coef=1.0, grid_half=8,
                         for s_idx in range(1, workers):
                             s0 = lo + (span * s_idx) // workers
                             s1 = lo + (span * (s_idx + 1)) // workers
-                            futures.append(pool.submit(
-                                kernel, ref_grid, B, xs_f, ys_f, tx0, ty0,
-                                cx_tab, cy_tab, p08_tab, p18_tab, n0, n1, n2, n3,
-                                s0, s1, out_k, out_sc, s_idx,
-                            ))
-                        kernel(
-                            ref_grid, B, xs_f, ys_f, tx0, ty0,
-                            cx_tab, cy_tab, p08_tab, p18_tab, n0, n1, n2, n3,
-                            lo, lo + span // workers, out_k, out_sc, 0,
-                        )
+                            futures.append(pool.submit(kernel, *args, s0, s1, out_k, out_sc, s_idx))
+                        kernel(*args, lo, lo + span // workers, out_k, out_sc, 0)
                     except BaseException:
                         for future in futures:
                             future.cancel()
@@ -1313,16 +1300,12 @@ def grid_level_4d(img_a, img_b, base8, ranges4, coef=1.0, grid_half=8,
                     for future in futures:
                         future.result()
                     ran_par = True
-                if not ran_par:
-                    out_k[0] = -1
-                    out_sc[0] = np.float32(np.inf)
-                    kernel(
-                        ref_grid, B, xs_f, ys_f, tx0, ty0,
-                        cx_tab, cy_tab, p08_tab, p18_tab, n0, n1, n2, n3,
-                        lo, hi, out_k, out_sc, 0,
-                    )
-                    workers = 1
                 for s_idx in range(workers):
+                    if not ran_par:
+                        _check_cancel(should_cancel)
+                        s0 = lo + (span * s_idx) // workers
+                        s1 = lo + (span * (s_idx + 1)) // workers
+                        kernel(*args, s0, s1, out_k, out_sc, s_idx)
                     k_cand = int(out_k[s_idx])
                     sc_cand = out_sc[s_idx]
                     if k_cand >= 0 and sc_cand < best_score:
@@ -1832,7 +1815,7 @@ def apply_alignment_region(source_or_image, transform, x, y, width, height, *,
 
     if direct_tiff:
         output = np.empty(full_out_shape, dtype=src_dtype)
-        with open(source_or_image.path, 'rb') as stream:
+        with source_or_image._open_direct_tiff() as stream:
             with mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ) as mm:
                 rgb_full = np.ndarray(
                     src_shape, dtype=src_dtype,
@@ -1997,6 +1980,7 @@ def estimate_alignment_plan(sources, *, max_shift_ratio=.05, reference_frame=1,
             prev_pyr = curr_pyr
         else:
             prev_pyr = None
+        del curr_pyr
         if index == ref and ref > 0:
             anchor = previous
             anchor_pyr = prev_pyr

@@ -706,6 +706,22 @@ if _HAVE_NUMBA:
         out_best_sc[slot] = best_sc
 
     @njit(cache=True, nogil=True)
+    def perspective_has_rounding_edge(inverse, x0, x1, y0, y1, bins, tolerance):
+        for y in range(y0, y1):
+            nx0 = inverse[0, 1] * y + inverse[0, 2]
+            ny0 = inverse[1, 1] * y + inverse[1, 2]
+            denom0 = inverse[2, 1] * y + inverse[2, 2]
+            for x in range(x0, x1):
+                scale = bins / (denom0 + inverse[2, 0] * x)
+                nx = (nx0 + inverse[0, 0] * x) * scale
+                ny = (ny0 + inverse[1, 0] * x) * scale
+                if (abs(nx - np.floor(nx) - 0.5) <= tolerance
+                        or abs(ny - np.floor(ny) - 0.5) <= tolerance):
+                    return True
+        return False
+
+
+    @njit(cache=True, nogil=True)
     def warp_alignment_region_int_rows(image, out, src_h, src_w, src_y0, x_off, y_off,
                                        tx, ty, cx, cy, p08, p0c, p18, p1c, oy_start, oy_stop):
         """Region similarity warp for uint8/uint16 2D or 3D image/band buffers."""

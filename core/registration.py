@@ -510,6 +510,54 @@ def _merge_cancel_callbacks(primary, secondary):
     return lambda: bool(primary() or secondary())
 
 
+def _perspective_near_lanczos_boundary(inverse, x, y, width, height, sx0, sy0,
+                                       min_denom, should_cancel):
+    from core import _alignment_kernels
+
+    x1, y1 = x + width, y + height
+    magnitude = np.abs(inverse) @ (x1 - 1, y1 - 1, 1)
+    # Bound both evaluations of the rational coordinates, including matrix
+    # rebasing and OpenCV's block/FMA evaluation order. The sums of absolute
+    # terms also cover cancellation in the numerator or denominator.
+    eps = 64 * np.finfo(np.float64).eps
+    denom = min_denom - eps * magnitude[2]
+    if denom <= 0:
+        return True
+    numerator = max(magnitude[0] + sx0 * magnitude[2],
+                    magnitude[1] + sy0 * magnitude[2])
+    bins = float(cv2.INTER_TAB_SIZE)
+    tolerance = bins * eps * numerator / denom * (1 + magnitude[2] / denom)
+    if not math.isfinite(tolerance) or tolerance >= 0.25:
+        return True
+
+    if (inverse[2, 0] == inverse[2, 1] == inverse[0, 1] == inverse[1, 0] == 0
+            and inverse[0, 0] == inverse[1, 1] == inverse[2, 2]):
+        # Integer destination steps leave a translation's fraction unchanged.
+        x, y, x1, y1 = 0, 0, 1, 1
+    elif _alignment_kernels.available():
+        for start in range(y, y1, 128):
+            _check_cancel(should_cancel)
+            if _alignment_kernels.perspective_has_rounding_edge(
+                    inverse, x, x1, start, min(start + 128, y1), bins, tolerance):
+                return True
+        return False
+
+    # Optional-Numba fallback needs only row-sized workspaces.
+    from core.resource_policy import require_memory
+    require_memory(6 * (x1 - x) * np.dtype(np.float64).itemsize)
+    xs = np.arange(x, x1, dtype=np.float64)
+    ax, ay, aw = inverse[:, 0, None] * xs
+    for row in range(y, y1):
+        _check_cancel(should_cancel)
+        shift = inverse[:, 1] * row + inverse[:, 2]
+        scale = bins / (aw + shift[2])
+        for values, offset in ((ax, shift[0]), (ay, shift[1])):
+            coords = (values + offset) * scale
+            if np.any(np.abs(coords - np.floor(coords) - 0.5) <= tolerance):
+                return True
+    return False
+
+
 @dataclass(frozen=True)
 class PerspectiveWarp:
     source: object
@@ -592,6 +640,27 @@ class PerspectiveWarp:
         self.source.validate_pixels(image, cancel_fn, source=source_frame)
         return self._apply_to_image(image, should_cancel=cancel_fn)
 
+    def _full_warp_crop(self, image, x, y, width, height, channels, should_cancel):
+        from core import _alignment_kernels
+        from core.openfocus_alignment import _is_bgr_rev
+        from core.resource_policy import require_memory
+
+        src_channels = image.shape[2] if image.ndim == 3 else 1
+        packed = (0 if image.flags.c_contiguous or
+                  (_is_bgr_rev(image) and _alignment_kernels.available()) else image.nbytes)
+        full_bytes = math.prod(self.dsize) * src_channels * image.dtype.itemsize
+        crop_bytes = width * height * (channels or src_channels) * image.dtype.itemsize
+        require_memory(full_bytes + max(packed, crop_bytes))
+        _check_cancel(should_cancel)
+        full = self._apply_to_image(image, should_cancel=should_cancel)
+        _check_cancel(should_cancel)
+        if full.shape[:2] == (height, width) and (channels is None or full.ndim == 2):
+            return full
+        cropped = full[y:y + height, x:x + width]
+        if channels is not None and cropped.ndim == 3:
+            cropped = cropped[:, :, :channels]
+        return cropped.copy(order='C')
+
     def warp_region(self, source_or_image, x, y, width, height, *,
                     channels=None, should_cancel=None):
         """Compute one destination rectangle bit-identical to full warp[y:y+h, x:x+w]."""
@@ -636,6 +705,7 @@ class PerspectiveWarp:
                     should_cancel=cancel_fn,
                 )
                 return result
+            require_memory(math.prod(out_shape) * src_dtype.itemsize)
             crop = image[top:top + height, left:left + width]
             if crop.shape[2:] == (1,):
                 crop = crop[:, :, 0]
@@ -662,21 +732,18 @@ class PerspectiveWarp:
             [float(x), float(y + height - 1), 1.0],
         ], dtype=np.float64).T
         sc = (M_inv @ corners) if ok else None
-        if not ok or not np.all(np.isfinite(sc)) or np.any(sc[2] <= 1e-6):
+        unsafe = (not ok or not np.all(np.isfinite(sc)) or np.any(sc[2] <= 1e-6)
+                  or max(src_shape[:2]) >= 32767)
+        if not unsafe:
+            sx = sc[0] / sc[2]
+            sy = sc[1] / sc[2]
+            # The full OpenCV map saturates to signed 16-bit coordinates.
+            unsafe = max(np.max(np.abs(sx)), np.max(np.abs(sy))) >= 32760
+        if unsafe:
             if direct_tiff:
                 image = resolve_frame(source_or_image, should_cancel=cancel_fn)
-            try:
-                full = self._apply_to_image(image, should_cancel=cancel_fn)
-            finally:
-                if direct_tiff:
-                    del image
-            cropped = full[y:y + height, x:x + width]
-            if channels is not None and cropped.ndim == 3:
-                cropped = cropped[:, :, :channels]
-            return np.array(cropped, copy=True, order='C')
+            return self._full_warp_crop(image, x, y, width, height, channels, cancel_fn)
 
-        sx = sc[0] / sc[2]
-        sy = sc[1] / sc[2]
         halo = 8
         sx0 = max(0, int(math.floor(float(np.min(sx)))) - halo)
         sy0 = max(0, int(math.floor(float(np.min(sy)))) - halo)
@@ -685,6 +752,12 @@ class PerspectiveWarp:
         if sx0 >= sx1 or sy0 >= sy1:
             require_memory(math.prod(out_shape) * src_dtype.itemsize)
             return np.zeros(out_shape, dtype=src_dtype)
+
+        if _perspective_near_lanczos_boundary(
+                M_inv, x, y, width, height, sx0, sy0, float(np.min(sc[2])), cancel_fn):
+            if direct_tiff:
+                image = resolve_frame(source_or_image, should_cancel=cancel_fn)
+            return self._full_warp_crop(image, x, y, width, height, channels, cancel_fn)
 
         T_shift = np.array([[1.0, 0.0, float(x)], [0.0, 1.0, float(y)], [0.0, 0.0, 1.0]], dtype=np.float64)
         T_src = np.array([[1.0, 0.0, float(-sx0)], [0.0, 1.0, float(-sy0)], [0.0, 0.0, 1.0]], dtype=np.float64)
@@ -698,7 +771,7 @@ class PerspectiveWarp:
             sub_bytes = (sy1 - sy0) * (sx1 - sx0) * src_ch * src_dtype.itemsize
             out_bytes = height * width * src_ch * src_dtype.itemsize
             require_memory(out_bytes + (0 if have_native else sub_bytes))
-            with open(source_or_image.path, 'rb') as stream:
+            with source_or_image._open_direct_tiff() as stream:
                 with mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ) as mm:
                     rgb_full = np.ndarray(
                         src_shape, dtype=src_dtype,
