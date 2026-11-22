@@ -1,10 +1,14 @@
 """Shared staging, cancellation and resource planning for neural fusion."""
 import os
 from contextlib import contextmanager
+from dataclasses import dataclass
+from functools import partial
 
 import cv2
 import numpy as np
 
+from core.source_frames import ProcessedFrame, borrow_frame_region
+from utils.performance_profile import current as _profile
 from utils.sorting import natural_sort_key
 ATTENTION_PAD_ALIGN = 64
 
@@ -72,18 +76,47 @@ def copy_tile_colors(pixels, normalize_stack, gain=1.0):
                     copy=True, order='C')
     if pixels.dtype == np.uint16:
         crop *= 255.0 / 65535.0
-    if gain == 1.0:
+    return apply_exposure_gain(crop, gain, copy=False)
+
+
+@dataclass(frozen=True, eq=False, kw_only=True)
+class _TileCrop(ProcessedFrame):
+    """Pack a single admitted crop on demand without caching its pixels."""
+
+    region: tuple
+
+    def full_resolution(self, *, should_cancel=None, cache_result=True, store_result=True):
+        def cancelled():
+            return ((should_cancel is not None and should_cancel()) or
+                    (self.should_cancel is not None and self.should_cancel()))
+
+        cancel(cancelled)
+        with _profile().stage('resolve_region'):
+            with borrow_frame_region(self.source, self.region, should_cancel=cancelled) as pixels:
+                if pixels.shape != self.shape:
+                    raise ValueError('All frames must have the same dimensions')
+                crop = self.processor(pixels)
+        cancel(cancelled)
         return crop
-    if crop.dtype == np.float32:
-        # The pack copy is owned by this tile.
-        if crop.ndim == 3 and crop.shape[2] == 4:
-            color = crop[..., :3]
-        else:
-            color = crop
-        color *= float(gain)
-        np.clip(color, 0.0, 255.0, out=color)
-        return crop
-    return apply_exposure_gain(crop, gain)
+
+
+def tile_sources(frames, coords, *, exposure_gains=None, should_cancel=None):
+    """Describe packed crops in the same working domain as eager tile staging."""
+    x0, y0, x1, y1 = coords
+    region = np.s_[y0:y1, x0:x1]
+    normalize_stack = any(frame.dtype == np.uint16 for frame in frames)
+    sources = []
+    for index, frame in enumerate(frames):
+        cancel(should_cancel)
+        if frame.shape[0] < y1 or frame.shape[1] < x1:
+            raise ValueError('All frames must have the same dimensions')
+        gain = exposure_gains[index] if exposure_gains is not None else 1.0
+        shape = (y1 - y0, x1 - x0) + frame.shape[2:]
+        converted = normalize_stack or (gain != 1.0 and frame.dtype != np.uint8)
+        dtype = np.dtype(np.float32) if converted else frame.dtype
+        pack = partial(copy_tile_colors, normalize_stack=normalize_stack, gain=gain)
+        sources.append(_TileCrop(frame, pack, shape, dtype, should_cancel, region=region))
+    return sources
 
 
 def working_frame(frame, normalize_stack):

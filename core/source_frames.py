@@ -819,8 +819,10 @@ class ProcessedFrame:
                 if hit is not None:
                     _check_resolution_cancel(cancelled)
                     return hit
-            from core.resource_policy import require_memory
-            require_memory(frame_resolution_bytes(self))
+            required = frame_resolution_bytes(self)
+            if required:
+                from core.resource_policy import require_memory
+                require_memory(required)
             if isinstance(self.source, ProcessedFrame):
                 image = self.source.full_resolution(
                     should_cancel=cancelled, store_result=store_result and self.store_source)
