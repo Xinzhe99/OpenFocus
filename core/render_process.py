@@ -34,7 +34,7 @@ _LIVE_PREVIEW_EDGE = 512
 _ERROR_STATE_FIELDS = ('alignment_reused', 'alignment_computed', 'alignment_report',
                        'alignment_report_provenance', 'performance_report')
 _SUCCESS_STATE_FIELDS = (*_ERROR_STATE_FIELDS, 'prepared_cache', 'rendered_depth', 'fusion_details')
-_RENDER_STAGES = ('prepare', 'align', 'fuse', 'finish')
+_RENDER_STAGES = ('prepare', 'align', 'fuse', 'finish', 'finalize', 'publish')
 _ERROR_CATEGORIES = ('resource_limit', 'memory', 'os', 'value', 'runtime', 'other')
 _ERROR_ORIGINS = ('child_worker', 'child_setup_or_transfer')
 _CHILD_EXIT_ORIGIN = 'child_exit'
@@ -145,28 +145,28 @@ def _validated_admission(admission):
 
 
 class _LivePreviewMailbox:
-    """One latest RGB frame shared with the spawned child, outside the pipe."""
+    """One latest grayscale map shared with the spawned child, outside the pipe."""
 
     def __init__(self, shared):
         self._pixels, self._metadata, self._lock = self.shared = shared
-        self._last_read = 0
+        self._last_read = (0, 0)
 
     @classmethod
     def create(cls, context):
-        return cls((context.RawArray('B', _LIVE_PREVIEW_EDGE ** 2 * 3),
-                    context.RawArray('q', 4),  # width, height, done, total
+        return cls((context.RawArray('B', _LIVE_PREVIEW_EDGE ** 2),
+                    context.RawArray('q', 5),  # width, height, done, total, blending
                     context.Lock()))
 
-    def publish(self, rgb, done, total):
-        height, width, channels = rgb.shape
+    def publish(self, gray, done, total, blending):
+        height, width = gray.shape
         if not (0 < width <= _LIVE_PREVIEW_EDGE and 0 < height <= _LIVE_PREVIEW_EDGE
-                and channels == 3 and 0 < done <= total):
+                and 0 < done <= total):
             return
         if not self._lock.acquire(False):
             return
         try:
-            memoryview(self._pixels).cast('B')[:width * height * 3] = memoryview(rgb).cast('B')
-            self._metadata[:] = (width, height, done, total)
+            memoryview(self._pixels).cast('B')[:width * height] = memoryview(gray).cast('B')
+            self._metadata[:] = (width, height, done, total, blending)
         finally:
             self._lock.release()
 
@@ -174,12 +174,13 @@ class _LivePreviewMailbox:
         if not self._lock.acquire(False):
             return None
         try:
-            width, height, done, total = self._metadata[:]
-            if done <= self._last_read:
+            width, height, done, total, blending = self._metadata[:]
+            position = (blending, done)
+            if position <= self._last_read:
                 return None
-            rgb = bytes(memoryview(self._pixels)[:width * height * 3])
-            self._last_read = done
-            return rgb, width, height, done, total
+            gray = bytes(memoryview(self._pixels)[:width * height])
+            self._last_read = position
+            return gray, width, height, done, total, bool(blending)
         finally:
             self._lock.release()
 
@@ -303,6 +304,7 @@ def _render_child(connection, cancel_event, request, budget, directory, language
                 return
             if not results:
                 raise RuntimeError('Render worker produced neither a result nor an error')
+            relay.stage('publish')
             state = {name: getattr(worker, name) for name in _SUCCESS_STATE_FIELDS}
             encoder = FrameEncoder(cancel_event.is_set)
             payload = encoder.encode({'result': results[-1], 'state': state})

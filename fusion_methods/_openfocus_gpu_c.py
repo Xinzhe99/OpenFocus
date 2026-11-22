@@ -23,6 +23,7 @@ _KERNEL_NAMES = (
     'c_down_h', 'c_down_v', 'c_up_h',
     'c_detail_w', 'c_collapse', 'c_merge', 'c_merge_focus',
     'c_out_u8', 'c_out_f32', 'transpose_u16', 'filt4',
+    'sample_focus_plane',
 )
 
 _cache_lock = Lock()
@@ -31,7 +32,7 @@ _PROGRAM_CACHE = None
 
 def _get_or_build_program(cl, device):
     global _PROGRAM_CACHE
-    from fusion_methods._openfocus_gpu import _build_filter_program, _device_cache_key
+    from fusion_methods._openfocus_gpu import _PREVIEW_KERNEL, _build_filter_program, _device_cache_key
 
     key = _device_cache_key(device)
     with _cache_lock:
@@ -40,7 +41,8 @@ def _get_or_build_program(cl, device):
         ctx = cl.Context(devices=[device])
         queue = cl.CommandQueue(ctx, device=device)
         program, tiled_transpose = _build_filter_program(
-            cl, device, ctx, _C_K, options=['-cl-fp32-correctly-rounded-divide-sqrt'],
+            cl, device, ctx, _C_K + _PREVIEW_KERNEL.format(type='ushort'),
+            options=['-cl-fp32-correctly-rounded-divide-sqrt'],
         )
         kernels = {name: cl.Kernel(program, name) for name in _KERNEL_NAMES}
         _PROGRAM_CACHE = (key, ctx, queue, kernels, tiled_transpose)
@@ -383,7 +385,7 @@ class GpuC:
             frame_has_mapped_pixels, frame_resolution_bytes, without_source_cache_growth,
         )
         from fusion_methods._openfocus_gpu import (
-            GpuError, _free_vram, _iter_prefetched, _prepare_gpu_upload,
+            GpuError, _PreviewPlaneReader, _free_vram, _iter_prefetched, _prepare_gpu_upload,
         )
 
         snapshot = resource_policy.probe_resources()
@@ -466,6 +468,10 @@ class GpuC:
         prefetch_budget = host_budget - need if unified_memory else host_budget
         prefetch = bool(detail_levels) and (staging + source_peak <= prefetch_budget)
         in_flight = False
+        reader = None
+        if live_preview is not None and detail_levels:
+            reader = _PreviewPlaneReader(self.cl, self.ctx, self.q, self.k['sample_focus_plane'],
+                                         (height, width), np.uint16)
 
         def prepare_frame(index, frame, cancelled):
             _check_cancel(cancelled)
@@ -531,10 +537,13 @@ class GpuC:
                 # Bound queued frame uploads to one source, even for very deep stacks.
                 self.q.finish()
                 in_flight = False
-                if live_preview is not None:
+                if reader is not None and live_preview.tracks():
                     _check_cancel(should_cancel)
-                    live_preview.push(codes, index, count, rgb=bgr_rev,
-                                      source_u8=frames[index].dtype == np.uint8)
+                    sample = reader.read(maxima[0], live_preview)
+                    if sample is not None:
+                        live_preview.update_best(sample, index, count, sampled=True)
+                elif reader is None and live_preview is not None and not detail_levels:
+                    live_preview.show_positions(np.zeros((height, width), np.uint8), index, count, 1)
                 del codes, item
                 if progress_callback is not None:
                     progress_callback(index + 1, total)

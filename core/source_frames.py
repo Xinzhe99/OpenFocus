@@ -79,6 +79,19 @@ SOURCE_CACHE = FrameCache()
 PREVIEW_CACHE = FrameCache(64 * 1024 * 1024)
 _retain_decoded_sources = ContextVar('retain_decoded_sources', default=True)
 _area_resizer = ContextVar('source_area_resizer', default=None)
+_resolution_observer = None
+
+
+@contextmanager
+def observe_resolved_frames(observer):
+    """Observe borrowed pixels inside a heavy-job lease, including producer threads."""
+    global _resolution_observer
+    previous = _resolution_observer
+    _resolution_observer = observer
+    try:
+        yield
+    finally:
+        _resolution_observer = previous
 
 
 @contextmanager
@@ -898,6 +911,9 @@ class ProcessedFrame:
             if isinstance(self.source, ProcessedFrame):
                 image = self.source.full_resolution(
                     should_cancel=cancelled, store_result=store_result and self.store_source)
+                observer = _resolution_observer
+                if observer is not None:
+                    observer(self.source, image)
             else:
                 image = resolve_frame(self.source, should_cancel=cancelled)
             if cancelled():
@@ -1615,8 +1631,12 @@ def select_frame_scratch(frames, *, preferred_size=0, should_cancel=None):
 
 
 def resolve_frame(frame, *, should_cancel=None):
-    return (frame.full_resolution(should_cancel=should_cancel)
-            if isinstance(frame, (SourceFrame, ProcessedFrame)) else frame)
+    image = (frame.full_resolution(should_cancel=should_cancel)
+             if isinstance(frame, (SourceFrame, ProcessedFrame)) else frame)
+    observer = _resolution_observer
+    if observer is not None:
+        observer(frame, image)
+    return image
 
 
 def scratch_source_headers(paths, should_cancel=None):

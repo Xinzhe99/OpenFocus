@@ -105,7 +105,7 @@ def test_cancelled_render_has_no_success_or_failure(monkeypatch, diagnostics, ca
     def fuse(images, **kwargs):
         calls.append(True)
         worker.cancel()
-        return images[0], "CPU"
+        return images[0], "CPU", 0.0
 
     monkeypatch.setattr(worker, "_run_fusion", fuse)
     if cancel_before_run:

@@ -243,6 +243,8 @@ def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 17,
                         np.copyto(i2[rows], np.full(r.shape, index, np.int32), where=take2)
                     run_bands(response.shape[0], 128, select_top_two,
                               scratch_bytes=min(128, response.shape[0]) * response.shape[1] * 8)
+                if live_preview is not None:
+                    live_preview.show_positions(i1, index, len(frames), len(frames) - 1)
                 del frame, response
                 step += 1
                 if progress_callback is not None:
@@ -304,6 +306,8 @@ def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 17,
                     log_max = lr
                 else:
                     np.maximum(log_max, lr, out=log_max)
+                if live_preview is not None:
+                    live_preview.update_best(log_max, index, len(frames))
                 del frame, response, lr
                 step += 1
                 if progress_callback is not None:
@@ -401,8 +405,7 @@ def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 17,
                           workspace=lambda: np.empty(width, np.int32))
                 if live_preview is not None:
                     _check_cancel(should_cancel)
-                    live_preview.push(frame, index, len(frames),
-                                      source_u8=frames[index].dtype == np.uint8)
+                    live_preview.update_best(best, index, len(frames))
                 del frame, pyramid
                 if progress_callback is not None:
                     progress_callback(index + 1, len(frames))

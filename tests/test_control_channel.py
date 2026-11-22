@@ -1955,6 +1955,29 @@ def test_gui_started_load_advances_the_generation(server, stack_frames):
     assert frames["count"] == 3
 
 
+def test_import_during_render_does_not_queue_source_replacement(server, stack_frames):
+    window = server.window
+    assert call(server, 'stack.load', folder=str(stack_frames))['ok']
+    assert wait_until(lambda: call(server, 'stack.frames')['result']['load']['finished'])
+    before = call(server, 'stack.frames')['result']
+
+    renderer = window.render_manager
+    renderer._pending_storage = object()
+    try:
+        rejected = call(server, 'stack.load', folder=str(stack_frames))
+        assert rejected['error']['code'] == 'busy'
+        errors = []
+        window.source_manager._start_load_worker(folder=str(stack_frames), on_error=errors.append)
+        assert errors
+        assert call(server, 'stack.frames')['result'] == before
+    finally:
+        renderer._pending_storage = None
+
+    assert call(server, 'stack.load', folder=str(stack_frames))['ok']
+    assert wait_until(lambda: call(server, 'stack.frames')['result']['load']['finished'])
+    assert call(server, 'stack.frames')['result']['load']['id'] == before['load']['id'] + 1
+
+
 def test_render_state_keeps_cancelled_and_discarded_terminal(server, control_window):
     manager = control_window.render_manager
     control_window.fusion_result = np.zeros((4, 4, 3), np.uint8)
@@ -1972,17 +1995,33 @@ def test_render_state_keeps_cancelled_and_discarded_terminal(server, control_win
 
 def test_render_state_reports_only_the_active_worker_stage(server, control_window, monkeypatch):
     manager = control_window.render_manager
+
     class Worker:
         running = True
+        is_cancelled = False
+
         def isRunning(self):
             return self.running
 
+        def cancel(self):
+            self.is_cancelled = True
+
     worker = Worker()
-    monkeypatch.setattr(manager, 'worker', worker)
-    monkeypatch.setattr(manager, '_render_progress_stage', 'align', raising=False)
-    assert call(server, 'render.state')['result']['stage'] == 'align'
-    worker.running = False
-    assert call(server, 'render.state')['result']['stage'] is None
+    with monkeypatch.context() as patch:
+        patch.setattr(manager, 'worker', worker)
+        patch.setattr(manager, '_render_progress_stage', 'align', raising=False)
+        assert call(server, 'render.state')['result']['stage'] == 'align'
+        worker.running = False
+        assert call(server, 'render.state')['result']['stage'] is None
+        context_worker = Worker()
+        patch.setattr(manager, 'context_worker', context_worker)
+        patch.setattr(manager, '_render_progress_stage', 'publish')
+        state = call(server, 'render.state')['result']
+        assert state['busy'] and state['state'] == 'rendering'
+        assert state['stage'] == 'publish'
+        assert call(server, 'render.cancel')['result']['cancelling']
+        assert context_worker.is_cancelled
+        assert not worker.is_cancelled
 
 
 def test_render_state_is_idle_without_a_finished_render(server, control_window):

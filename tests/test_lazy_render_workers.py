@@ -162,7 +162,8 @@ def test_render_stages_follow_actual_work(mode, deferred, need_fusion, monkeypat
         events.append(('fusion',))
         progress_callback(1, 2)
         progress_callback(2, 2)
-        return images[0], 'CPU'
+        worker.stage_signal.emit('finalize')
+        return images[0], 'CPU', 2.0
 
     monkeypatch.setattr(worker, '_run_registration', register)
     monkeypatch.setattr(worker, '_run_fusion', fuse)
@@ -175,7 +176,7 @@ def test_render_stages_follow_actual_work(mode, deferred, need_fusion, monkeypat
         expected += [('stage', 'align'), ('register',)]
     if need_fusion:
         expected += [('stage', 'fuse'), ('fusion',), ('progress', 1, 2), ('progress', 2, 2)]
-    expected += [('stage', 'finish')]
+    expected += [('stage', 'finalize')]
     if fresh:
         expected += [('cache',)]
     expected += [('result',)]
@@ -194,7 +195,7 @@ def test_render_cancelled_during_fusion_does_not_finalize(monkeypatch):
 
     def fuse(frames, should_cancel, progress_callback):
         worker.cancel()
-        return images[0], 'CPU'
+        return images[0], 'CPU', 0.0
 
     monkeypatch.setattr(worker, '_run_fusion', fuse)
     monkeypatch.setattr(worker, '_save_cached_alignment',
@@ -202,6 +203,40 @@ def test_render_cancelled_during_fusion_does_not_finalize(monkeypatch):
     with pytest.raises(workers.RegistrationCancelled):
         worker._run_admitted()
     assert events == ['align', 'fuse']
+
+
+def test_aligned_openfocus_depth_uses_pixels_borrowed_during_fusion(monkeypatch):
+    from core import frame_resolution_cache
+
+    shape = (48, 64, 3)
+    first = np.full(shape, 78, np.uint8)
+    second = np.full(shape, 123, np.uint8)
+    first[:4, :6] = 0
+    first[12:17, 11:16] = 0  # interior black remains valid
+    second[-5:, -8:] = 0
+    stages = []
+    monkeypatch.setattr(frame_resolution_cache, 'current', lambda: None)
+
+    def aligned_pixels(pixels):
+        assert stages[-1] == 'fuse', 'aligned source resolved after fusion'
+        return pixels
+
+    frames = [source_frames.process_frame(frame, aligned_pixels) for frame in (first, second)]
+    worker = workers.RenderWorker([first, second], aligned_images=frames, is_images_aligned=True,
+        algorithm='openfocus_b', alignment='ecc', exposure_match=True, thread_count=1, use_gpu=False)
+    worker.last_alignment_options = (worker.alignment, worker.registration_parameters)
+    worker.stage_signal.connect(stages.append, Qt.ConnectionType.DirectConnection)
+    results, errors = _capture(worker)
+    worker.run()
+
+    assert not errors and len(results) == 1
+    assert stages[-2:] == ['fuse', 'finalize']
+    assert results[0][0] == frames
+    mask = worker.rendered_depth['valid_mask']
+    expected = np.ones(shape[:2], dtype=bool)
+    expected[:4, :6] = expected[-5:, -8:] = False
+    np.testing.assert_array_equal(mask, expected)
+    assert not mask.flags.writeable
 
 
 def test_preview_uses_display_pixels_and_skips_original_alignment_cache(tmp_path, monkeypatch):
@@ -379,33 +414,6 @@ def test_queued_cancelled_decode_never_enters_native_decoder(monkeypatch):
         queued.cancel()
         assert first.wait(5000)
         assert queued.wait(5000)
-
-
-def test_source_decode_waits_for_shared_processing_budget(tmp_path):
-    from core.resource_policy import heavy_job
-
-    frame, original = _source(tmp_path)
-    worker = SourceRegionWorker(frame, 'loupe')
-    worker.submit(('loupe', 1, (0, 0, 56, 40), (56, 40)))
-    started = Event()
-    results, errors = [], []
-    worker.started.connect(started.set, Qt.ConnectionType.DirectConnection)
-    def accept(*args):
-        results.append(args)
-        worker.cancel()
-    worker.ready.connect(accept, Qt.ConnectionType.DirectConnection)
-    worker.failed.connect(lambda *args: errors.append(args), Qt.ConnectionType.DirectConnection)
-    try:
-        with heavy_job():
-            worker.start()
-            assert started.wait(5)
-            assert not worker.wait(200), 'original decode competed with an admitted render'
-        assert worker.wait(5000)
-        assert errors == [] and results[0][0] == 'loupe'
-        np.testing.assert_array_equal(results[0][2], original)
-    finally:
-        worker.cancel()
-        assert worker.wait(5000)
 
 
 def test_source_decode_failure_keeps_request_key(monkeypatch):
@@ -663,7 +671,7 @@ def test_render_worker_keeps_openfocus_whole_with_shared_tile_settings(qapp, mon
                                   tile_threshold=8, tile_block_size=16, use_gpu=False)
     monkeypatch.setattr(MultiFocusFusion, '_fuse_tiled',
                         lambda *args, **kwargs: pytest.fail('OpenFocus GUI render tiled'))
-    actual, device = worker._run_fusion(frames)
+    actual, device, _ = worker._run_fusion(frames)
     assert actual.shape == frames[0].shape and device == 'CPU'
 
 
@@ -677,5 +685,5 @@ def test_render_worker_reports_actual_opencl_device(qapp, monkeypatch, method):
                                         int(device.global_mem_size)))
     frames = [np.full((24, 32, 3), value, np.uint8) for value in (31, 123)]
     worker = workers.RenderWorker(frames, algorithm=method, use_gpu=True)
-    _, reported_device = worker._run_fusion(frames)
+    _, reported_device, _ = worker._run_fusion(frames)
     assert reported_device.startswith('OpenCL: ')

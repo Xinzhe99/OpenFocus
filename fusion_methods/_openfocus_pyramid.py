@@ -710,16 +710,11 @@ def fuse_pyramid(frames, shape, img_resize, smoothing, should_cancel, progress_c
             pixels, scale = _source_codes(frame, img_resize, should_cancel)
         if pixels.shape != shape:
             raise ValueError('OpenFocus C requires frames with matching shapes')
-        preview_ready = False
         if detail_levels or index == 0:
             source = pixels[:, :, None] if is_gray else pixels
             factor = np.float32(scale / (65280.0 if is_u8 else 65535.0))
             _normalize(source, full, factor, cancel)
             del source
-            if live_preview is not None:
-                cancel()
-                preview_ready = live_preview.accumulate(pixels, index,
-                                                        source_u8=frame.dtype == np.uint8)
         del pixels
         fine = full
         for level, ((height, width), (ch, cw)) in enumerate(detail_levels):
@@ -737,9 +732,11 @@ def fuse_pyramid(frames, shape, img_resize, smoothing, should_cancel, progress_c
             _rows(height, lambda a, b: _merge_rows(fine, weights, accumulators[level],
                   maxima[level], index == 0, a, b, level_winner, index), cancel)
             fine = coarse
-        if preview_ready:
-            cancel()
-            live_preview.publish(len(frames))
+        if live_preview is not None:
+            if detail_levels:
+                live_preview.update_best(maxima[0], index, len(frames))
+            else:
+                live_preview.show_positions(np.zeros((1, 1), np.uint8), index, len(frames), 1)
         if progress_callback is not None:
             progress_callback(index + 1, total)
     del maxima, full, fine

@@ -108,14 +108,14 @@ class ResultPanel:
 
 
 class _LiveFusionPreviewPage(QWidget):
-    """Fit the sampled composite in the output panel with its own status label."""
+    """Fit the current focus or reconstruction map in the output panel."""
 
     def __init__(self):
         super().__init__()
         self.setObjectName('livePreviewPage')
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
         self._image = QImage()
-        self._rgb = None
+        self._gray = None
         self._progress = None
         self.status = QLabel()
         self.status.setObjectName('livePreviewStatus')
@@ -129,24 +129,25 @@ class _LiveFusionPreviewPage(QWidget):
         layout.addWidget(self.status)
         trans.languageChanged.connect(self._update_status)
 
-    def show_frame(self, rgb, width, height, done, total):
-        self._image = QImage(rgb, width, height, width * 3, QImage.Format.Format_RGB888)
-        self._rgb = rgb  # The QImage borrows this snapshot for painting.
-        self._progress = done, total
+    def show_frame(self, gray, width, height, done, total, blending):
+        self._image = QImage(gray, width, height, width, QImage.Format.Format_Grayscale8)
+        self._gray = gray  # The QImage borrows this snapshot for painting.
+        self._progress = done, total, blending
         self._update_status()
         self.update()
 
     def clear(self):
         self._image = QImage()
-        self._rgb = None
+        self._gray = None
         self._progress = None
         self.status.clear()
         self.update()
 
     def _update_status(self):
         if self._progress is not None:
-            done, total = self._progress
-            self.status.setText(trans.t('render_live_preview').format(done=done, total=total))
+            done, total, blending = self._progress
+            key = 'render_live_blend' if blending else 'render_live_preview'
+            self.status.setText(trans.t(key).format(done=done, total=total))
 
     def paintEvent(self, event):  # noqa: N802
         super().paintEvent(event)

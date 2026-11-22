@@ -188,12 +188,11 @@ def openfocus_b_impl(input_source, img_resize=None, kernel_size: int = 17,
     def depth_progress(index, _total):
         if progress_callback is not None:
             progress_callback(index + 1, total)
-    depth_preview = live_preview if depth_override is None and img_resize is None else None
     depth = _depth(frames, shape, img_resize, kernel_size,
                    smoothing * (5.0 / 1.2), should_cancel, depth_override,
                    thread_count, depth_progress, return_codes=True,
                    half_resolution=True, preserve_detail=True, feather=feather,
-                   gpu=gpu, live_preview=depth_preview)
+                   gpu=gpu, live_preview=live_preview)
     bands, columns = ((side + _MERGE_TILE - 1) // _MERGE_TILE for side in depth.shape)
     # Limit the auxiliary mask even for stacks much deeper than the 8K target.
     tiles = (np.zeros((bands, columns, count), dtype=bool)
@@ -231,10 +230,9 @@ def openfocus_b_impl(input_source, img_resize=None, kernel_size: int = 17,
                     gpu = _merge_codes(result, frame, depth, index, count, should_cancel,
                                        source_scale=source_scale, gpu=gpu,
                                        tiles=None if tiles is None else tiles[:, :, index])
-                if live_preview is not None and depth_preview is None:
-                    _check_cancel(should_cancel)
-                    live_preview.push(frame, index, count, source_u8=source.dtype == np.uint8)
                 del frame
+            if live_preview is not None:
+                live_preview.show_blend(depth, index, count)
             current = activity_steps + index + 1
             if progress_callback is not None and current > merge_progress:
                 progress_callback(current, total)

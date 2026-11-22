@@ -11,11 +11,11 @@ def _publish_preview(shared):
     from core.render_process import _LivePreviewMailbox
 
     mailbox = _LivePreviewMailbox(shared)
-    rgb = np.full((2, 3, 3), 31, np.uint8)
-    mailbox.publish(rgb, 1, 4)
-    rgb[:] = 63
-    mailbox.publish(rgb, 2, 4)
-    rgb[:] = 255
+    gray = np.full((2, 3), 31, np.uint8)
+    mailbox.publish(gray, 4, 4, False)
+    gray[:] = 63
+    mailbox.publish(gray, 1, 4, True)
+    gray[:] = 255
 
 
 def test_preview_mailbox_shares_only_latest_snapshot_with_spawned_child():
@@ -29,7 +29,7 @@ def test_preview_mailbox_shares_only_latest_snapshot_with_spawned_child():
     try:
         child.join(15)
         assert child.exitcode == 0
-        assert mailbox.take() == (bytes([63]) * 18, 3, 2, 2, 4)
+        assert mailbox.take() == (bytes([63]) * 6, 3, 2, 1, 4, True)
         assert mailbox.take() is None
     finally:
         if child.is_alive():
@@ -42,13 +42,13 @@ def test_preview_mailbox_drops_contention_and_oversized_pixels():
     from core.render_process import _LivePreviewMailbox
 
     mailbox = _LivePreviewMailbox.create(multiprocessing.get_context('spawn'))
-    frame = np.full((2, 3, 3), 31, np.uint8)
-    mailbox.publish(frame, 1, 4)
+    frame = np.full((2, 3), 31, np.uint8)
+    mailbox.publish(frame, 1, 4, False)
     with mailbox.shared[2]:
-        mailbox.publish(frame, 2, 4)
+        mailbox.publish(frame, 2, 4, False)
         assert mailbox.take() is None
-    mailbox.publish(np.zeros((1, 513, 3), np.uint8), 3, 4)
-    assert mailbox.take() == (frame.tobytes(), 3, 2, 1, 4)
+    mailbox.publish(np.zeros((1, 513), np.uint8), 3, 4, False)
+    assert mailbox.take() == (frame.tobytes(), 3, 2, 1, 4, False)
 
 
 @pytest.fixture
@@ -92,20 +92,22 @@ def test_live_canvas_keeps_previews_out_of_output_history(live_view, outcome):
     normal_page = stack.currentWidget()
     assert manager.start_render() == 'started'
     worker = manager.worker
-    rgb = bytes([135, 50, 38]) * 6
-    frames = iter([None, (rgb, 3, 2, 1, 2), (rgb, 3, 2, 2, 2)])
+    gray = bytes([135]) * 6
+    frames = iter([None, (gray, 3, 2, 1, 2, False), (gray, 3, 2, 2, 2, True)])
     worker.take_live_preview = lambda: next(frames, None)
     manager._poll_live_preview()
     assert stack.currentWidget() is normal_page
     manager._poll_live_preview()
     assert stack.currentWidget() is page
-    assert page._image.pixelColor(0, 0).getRgb() == (135, 50, 38, 255)
+    assert page._image.pixelColor(0, 1).getRgb() == (135, 135, 135, 255)
     assert window.fusion_result is previous
     assert window.output_list.count() == 1
     assert window.fusion_results[0] is previous
     assert '1/2' in page.status.text()
+    focus_label = page.status.text()
     manager._poll_live_preview()
     assert '2/2' in page.status.text()
+    assert page.status.text().replace('2/2', '1/2') != focus_label
 
     final = np.full_like(window.raw_images[0], 222)
     if outcome == 'stale':
@@ -167,7 +169,7 @@ def test_switching_to_wipe_dismisses_live_preview(live_view):
     window._update_wipe_images = lambda: None
 
     assert manager.start_render() == 'started'
-    manager.worker.take_live_preview = lambda: (bytes(18), 3, 2, 1, 2)
+    manager.worker.take_live_preview = lambda: (bytes(6), 3, 2, 1, 2, False)
     manager._poll_live_preview()
     assert panel.view_stack.currentWidget() is panel.live_preview_page
 

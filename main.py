@@ -3028,7 +3028,9 @@ class OpenFocus(QMainWindow):
             self.lbl_source_img.set_source_region(cv2_to_pixmap(image), rect,
                                                    source_key=decoded_key, request=region_request)
         def failed(decoded_key, message):
-            if decoded_key == getattr(self, '_source_display_key', None):
+            if (decoded_key == getattr(self, '_source_display_key', None)
+                    and not getattr(self, '_shutting_down', False)):
+                self.lbl_source_img.set_source_region_failed(decoded_key)
                 self.statusBar().showMessage(message)
         def finished():
             workers.pop(key, None)

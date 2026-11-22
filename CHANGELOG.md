@@ -12,9 +12,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Use single-scale inference by default in StackMFF V3. Select dual-scale
   inference in fusion, batch, method comparison, and depth settings, or
   with the command-line inference scale option.
-- Show a live focus composite and processed frame count in the result pane
-  during OpenFocus A, B, and C desktop renders. Keep the preview separate
-  from output history and exports.
+- Show live grayscale focus layers while OpenFocus A, B, and C render, and
+  layer blending progress during OpenFocus B reconstruction. Keep these
+  views out of output history and exports.
 
 ### Changed
 - Compute deferred perspective, OpenFocus alignment, and OpenFocus translation
@@ -108,6 +108,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and preserve their output order.
 
 ### Fixed
+- Keep the source loupe visible during a render, then replace its preview
+  with native detail when the active frame is ready.
+- Reject new stack imports during a render so they cannot replace the original
+  stack after the result appears.
+- Show finalization and publication after the counted fusion work. Collect
+  depth validity while reading the aligned frames for fusion.
 - Show progress while restoring a startup recovery snapshot, and keep the
   snapshot when restoration is cancelled.
 - Allow a new folder or video stack to load after applying a watermark.

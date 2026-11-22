@@ -1,5 +1,7 @@
 from typing import Any, List, Optional
 from copy import deepcopy
+from math import ceil
+from time import monotonic
 
 
 from PyQt6.QtCore import QObject, QTimer, Qt, pyqtSignal
@@ -20,6 +22,11 @@ from ui.algorithm_combo import desktop_fusion_lock_reason, fusion_lock_reason
 
 
 _STORAGE_UNSET = object()
+_RENDER_STAGE_KEYS = {
+    'waiting': 'render_stage_waiting', 'prepare': 'render_stage_prepare',
+    'align': 'render_stage_align', 'fuse': 'render_stage_fuse',
+    'finalize': 'render_stage_finalize', 'publish': 'render_stage_publish',
+}
 
 
 def _base_frame(method, enabled):
@@ -1441,6 +1448,7 @@ class RenderManager:
         self.last_result = None
         self._control_progress = None
         self.last_state = "running"
+        self._render_context['started_at'] = monotonic()
         self._render_interactive = interactive
         if publish_cached_alignment:
             self._render_context["alignment_reused"] = True
@@ -1521,14 +1529,12 @@ class RenderManager:
         self.worker.storage_directory = storage_override
         self.worker.live_preview_requested = live_preview
 
-        self._progress_first_t = None
-        self._progress_last_t = None
         self.worker.finished_signal.connect(self.on_render_finished)
         self.worker.error_signal.connect(self.on_render_error)
         self.worker.progress_signal.connect(self.on_render_progress)
         self.worker.stage_signal.connect(self.on_render_stage)
         window.statusBar().clearMessage()
-        self._render_progress_stage = 'waiting'
+        self.on_render_stage('waiting')
         if memory_estimate:
             summary = self._memory_summary(memory_estimate)
             if memory_estimate.gpu_fallback:
@@ -1536,7 +1542,6 @@ class RenderManager:
                 summary += ' · ' + trans.t('render_memory_fallback_plan').format(
                     device=display_name(memory_estimate.accelerator))
             window.statusBar().showMessage(summary, 8000)
-        self._show_progress_bar(trans.t('render_stage_waiting'))
         self.worker.start()
         if live_preview:
             self._start_live_preview()
@@ -1606,11 +1611,7 @@ class RenderManager:
         if self.worker is not None and getattr(self.worker, "is_cancelled", False):
             self.on_render_error("CANCELLED: render cancelled")
             return
-        from utils.logging_setup import log_action
-        log_action("render_finished", preview=bool(
-            (self._render_context or {}).get("preview")),
-            seconds=round(fusion_time, 2))
-        # The render stays busy until any provenance copy has finished.
+        # The render stays busy until the output and its provenance are published.
         context = self._render_context
         preview = context["preview"] if context else getattr(self, '_preview_mode', False)
         # Preserve the request while a context worker is active.
@@ -1639,9 +1640,12 @@ class RenderManager:
             # with a stale "-1/0" progress label.
             self._abort_compare_run()
             self._render_context = None
+            self._hide_progress_bar()
             self._dispose_worker()
             self._restore_ui_controls()
             return
+        if getattr(self, '_render_progress_stage', None) != 'publish':
+            self.on_render_stage('publish')
         candidate = getattr(self, "_context_candidate", None)
         if candidate is None and fusion_result is not None and not preview:
             import numpy as np
@@ -1662,7 +1666,6 @@ class RenderManager:
                 worker.finished.connect(lambda: self._context_worker_finished(worker))
                 worker.start()
                 return
-        self._hide_progress_bar()
         self._preview_mode = False
         reused_preview_alignment = bool(context and context.get("preview")
                                         and not context.get("roi")
@@ -1684,6 +1687,7 @@ class RenderManager:
 
         previous_preview_record = getattr(window, "_wipe_preview_record", None)
         display_committed = False
+        result_info = None
         try:
             window._wipe_preview_record = None
             # Draft ownership changes only after the replacement pixels are displayed.
@@ -1715,7 +1719,7 @@ class RenderManager:
                         logging.getLogger("openfocus").exception("could not record preview provenance")
                 previous_fusion = getattr(window, "fusion_result", None)
                 window.fusion_result = fusion_result
-                self.last_result = {
+                result_info = {
                     "shape": list(fusion_result.shape),
                     "dtype": str(fusion_result.dtype),
                     "device": device_name,
@@ -1822,7 +1826,7 @@ class RenderManager:
                     "render finished (preview=%s, method fusion, %.1fs)", preview, fusion_time)
             else:
                 if effective_registration:
-                    self.last_result = {
+                    result_info = {
                         "device": device_name,
                         "alignment_seconds": round(float(alignment_time), 3),
                         "fusion_seconds": round(float(fusion_time), 3),
@@ -1913,7 +1917,10 @@ class RenderManager:
                 # encode); writing it here again re-encoded the whole stack on
                 # the GUI thread for nothing.
 
-            total_time = alignment_time + fusion_time
+            started_at = (context or {}).get('started_at')
+            total_time = monotonic() - started_at if started_at is not None else alignment_time + fusion_time
+            if result_info is not None:
+                result_info['elapsed_seconds'] = round(total_time, 3)
 
             info_lines = []
             if fusion_result is not None:
@@ -1986,9 +1993,14 @@ class RenderManager:
                         refresh(0)
                     else:
                         newest.setToolTip("\n".join([newest.text(), ""] + info_lines))
+            self.last_result = result_info
             self.last_state = "done" if self.last_result is not None else "error"
             if self.last_state == "error":
                 self.last_error = "Render completed without producing a result"
+            else:
+                from utils.logging_setup import log_action
+                log_action('render_finished', preview=bool(preview), seconds=round(total_time, 2),
+                           alignment_seconds=round(alignment_time, 2), fusion_seconds=round(fusion_time, 2))
 
         except Exception as exc:
             if not display_committed:
@@ -2008,6 +2020,7 @@ class RenderManager:
                 )
 
         finally:
+            self._hide_progress_bar()
             if compare:
                 if self._compare_queue:
                     # Keep controls locked and chain the next method. The
@@ -2179,18 +2192,16 @@ class RenderManager:
         if self.worker is not None and getattr(self.worker, 'is_cancelled', False):
             text = trans.t('depth_cancelling')
         else:
-            key = {'waiting': 'render_stage_waiting', 'prepare': 'render_stage_prepare',
-                   'align': 'render_stage_align', 'fuse': 'render_stage_fuse',
-                   'finish': 'render_progress'}.get(stage, 'render_progress')
-            text = trans.t(key)
+            text = trans.t(_RENDER_STAGE_KEYS.get(stage, 'render_progress'))
         self._control_progress = None
-        self._progress_first_t = None
+        self._progress_first_t = monotonic()
         self._progress_last_t = None
         self._show_progress_bar(text)
 
     def on_render_progress(self, done: int, total: int) -> None:
         """Surface completed preparation frames or fusion tiles with an ETA."""
-        import time as _time
+        if total <= 0:
+            return
         if self.worker is not None and getattr(self.worker, 'is_cancelled', False):
             self.on_render_stage('cancelling')
             return
@@ -2203,21 +2214,17 @@ class RenderManager:
             bar.setRange(0, int(total))
             bar.setValue(int(done))
         self._control_progress = (int(done), int(total))
-        now = _time.time()
+        now = monotonic()
         last = getattr(self, '_progress_last_t', None)
         if last is None or now - last > 1.0 or (total > 0 and done >= total):
             self._progress_last_t = now
             pct = int(done * 100 / max(1, total))
             eta = ''
             first = getattr(self, '_progress_first_t', None)
-            if first is not None and done > 0:
+            if first is not None and 0 < done < total:
                 remaining = (now - first) / done * (total - done)
-                eta = f" · ~{int(remaining) + 1}s"
-            else:
-                self._progress_first_t = now
-            key = {'prepare': 'render_stage_prepare', 'align': 'render_stage_align',
-                   'fuse': 'render_stage_fuse'}.get(
-                       getattr(self, '_render_progress_stage', None), 'render_progress')
+                eta = f" · ~{ceil(remaining)}s"
+            key = _RENDER_STAGE_KEYS.get(getattr(self, '_render_progress_stage', None), 'render_progress')
             text = f"{trans.t(key)} {pct}% ({done}/{total}){eta}"
             label = getattr(self, '_status_bar_label', None)
             if label is not None:

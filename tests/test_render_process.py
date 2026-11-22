@@ -79,7 +79,7 @@ def _changed_source_child(connection, cancel_event, request, budget, directory, 
 
 def _render_with_prepared_cache(connection, cancel_event, request, budget, directory, language, failure):
     """Run the real child pipeline with a mapped cache produced after fusion."""
-    from core import frame_storage, render_process, workers
+    from core import frame_storage, render_process
     from core.multi_focus_fusion import MultiFocusFusion
     from core.resource_policy import ResourceSnapshot, require_memory
     from utils import output_sharpen
@@ -94,7 +94,7 @@ def _render_with_prepared_cache(connection, cancel_event, request, budget, direc
         if failure == 'store':
             def fail_store(*args, **kwargs):
                 raise OSError('injected output store failure')
-            workers.store_frame = fail_store
+            frame_storage.create_transient_frame = fail_store
         return result
 
     def run_with_diagnostics(self):
@@ -577,7 +577,7 @@ def test_failed_render_preserves_parent_cache_and_cleans_child_scratch(
     fields = _child_evidence(caplog)
     assert fields['error_category'] == category
     assert fields['error_origin'] == 'child_worker'
-    assert fields['render_stage'] in ('prepare', 'align', 'fuse', 'finish')
+    assert fields['render_stage'] in ('prepare', 'align', 'fuse', 'finalize')
     if target is _sharpen_failure_child:
         assert fields['error']['kind'] == 'ResourceLimitError'
         assert any(frame['function'] == 'require_memory' for frame in fields['error']['stack'])
@@ -1058,7 +1058,7 @@ def test_aligned_and_prepared_caches_share_retention_budget(
         for image in images:
             source_frames.resolve_frame(image)
         worker.prepared_cache = prepared
-        return np.zeros(frames[0].shape, frames[0].dtype), 'CPU'
+        return np.zeros(frames[0].shape, frames[0].dtype), 'CPU', 0.0
 
     monkeypatch.setattr(worker, '_run_fusion', fuse)
     results = []
@@ -1115,9 +1115,12 @@ def test_isolated_render_adopts_readonly_focus_map(qapp, scratch):
     flat = np.full(shape, 128, np.uint8)
     worker = RenderProcessWorker([sharp, flat], algorithm='openfocus_c', use_gpu=False,
         sort_mode='desc', fusion_parameters={'smoothing': 0}, thread_count=1, exposure_match=False)
+    stages = []
+    worker.stage_signal.connect(stages.append)
     results, errors = _start(worker)
     _wait(worker, qapp)
     assert len(results) == 1 and not errors
+    assert stages[-2:] == ['finalize', 'publish']
     retained = worker.rendered_depth
     index = retained['index']
     assert retained['frame_count'] == 2 and retained['reverse_order']

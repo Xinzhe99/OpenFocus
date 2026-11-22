@@ -80,7 +80,7 @@ def test_render_registration_direction_preserves_source_order(
         sorted_images = fusion._maybe_sort_input(images)
         assert [int(image[0, 0]) for image in sorted_images] == (
             [2, 1, 0] if sort_mode == 'desc' else [0, 1, 2])
-        return images[0], 'CPU'
+        return images[0], 'CPU', 0.0
     monkeypatch.setattr(worker, '_run_registration', register)
     monkeypatch.setattr(worker, '_run_fusion', fuse)
     worker.finished_signal.connect(lambda *args: published.append(args))
@@ -104,7 +104,7 @@ def test_openfocus_alignment_reuse_requires_matching_direction(
     monkeypatch.setattr(worker, '_run_registration',
                         lambda images, **kwargs: ([image + 10 for image in images], 0.0))
     monkeypatch.setattr(worker, '_run_fusion',
-                        lambda images, **kwargs: (images[0], 'CPU'))
+                        lambda images, **kwargs: (images[0], 'CPU', 0.0))
     published = []
     worker.finished_signal.connect(lambda *args: published.append(args))
     worker._run_admitted()
@@ -154,7 +154,7 @@ def test_reverse_registration_roi_paste_uses_original_base_index(qapp, monkeypat
         roi_mode='paste', roi_base_index=0)
     monkeypatch.setattr(worker, '_run_registration', lambda images, **kwargs: (images, 0.0))
     monkeypatch.setattr(worker, '_run_fusion', lambda images, **kwargs: (
-        np.full(images[0].shape, 200, np.uint8), 'CPU'))
+        np.full(images[0].shape, 200, np.uint8), 'CPU', 0.0))
     published = []
     worker.finished_signal.connect(lambda *args: published.append(args))
     worker._run_admitted()

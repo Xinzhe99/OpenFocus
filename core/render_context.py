@@ -18,6 +18,7 @@ one full-size mask per frame.
 from __future__ import annotations
 
 import time
+from threading import Lock
 import uuid
 from dataclasses import dataclass, field, fields
 from typing import Iterable, Optional, Sequence, Tuple
@@ -171,23 +172,21 @@ def _alignment_valid_mask(image: np.ndarray, *, should_cancel=None) -> Optional[
     else:
         return None
 
-    if color.ndim == 3 and color.shape[2] == 3 and color.dtype in (np.uint8, np.uint16, np.float32, np.float64):
-        zero = cv2.inRange(color, (0, 0, 0), (0, 0, 0))
+    # Join all edge-connected regions through one synthetic black border. A
+    # single flood fill needs byte pixels instead of a full int32 label image.
+    height, width = color.shape[:2]
+    padded = np.empty((height + 2, width + 2), np.uint8)
+    padded[0, :] = padded[-1, :] = 255
+    padded[:, 0] = padded[:, -1] = 255
+    zero = padded[1:-1, 1:-1]
+    if (color.ndim == 2 or color.shape[2] == 3) and color.dtype in (np.uint8, np.uint16, np.float32, np.float64):
+        cv2.inRange(color, (0,) * (1 if color.ndim == 2 else 3),
+                    (0,) * (1 if color.ndim == 2 else 3), dst=zero)
     else:
-        zero = (np.all(color == 0, axis=2) if color.ndim == 3 else color == 0).view(np.uint8)
-    count, labels = cv2.connectedComponents(zero, connectivity=8)
+        zero[:] = (np.all(color == 0, axis=2) if color.ndim == 3 else color == 0) * 255
+    cv2.floodFill(padded, None, (0, 0), 127, flags=8)
     _check_cancel(should_cancel)
-    if count <= 1:
-        return None
-    border_labels = np.unique(np.concatenate((
-        labels[0, :], labels[-1, :], labels[:, 0], labels[:, -1])))
-    border_labels = border_labels[border_labels != 0]
-    if border_labels.size == 0:
-        return None
-    allow = np.ones(int(count), dtype=bool)
-    allow[0] = True              # non-zero image pixels
-    allow[border_labels] = False  # zero components touching the border
-    return allow[labels]
+    return zero != 127
 
 
 @dataclass(frozen=True)
@@ -210,25 +209,52 @@ class RenderedDepth:
     valid_mask: Optional[np.ndarray] = None
 
 
-def render_alignment_mask(frames, crop, should_cancel):
-    """Capture the intersection in the index domain while render pixels are available."""
-    mask = None
-    for frame in frames:
-        pixels = resolve_frame(frame, should_cancel=should_cancel)
-        if crop is not None:
-            x, y, w, h = crop
-            pixels = pixels[y:y + h, x:x + w]
-        valid = _alignment_valid_mask(pixels, should_cancel=should_cancel)
-        del pixels
-        if valid is not None:
-            if mask is None:
-                mask = create_frame(valid.shape, np.bool_)
-                mask[:] = valid
-            else:
-                np.logical_and(mask, valid, out=mask)
-    if mask is not None:
-        mask.flags.writeable = False
-    return mask
+class RenderAlignmentMask:
+    """Accumulate exact aligned validity while fusion borrows source pixels."""
+
+    def __init__(self, frames, crop, should_cancel):
+        self._pending = {id(frame): frame for frame in frames}
+        self._crop = crop
+        self._should_cancel = should_cancel
+        self._lock = Lock()
+        self._mask = None
+        self._failed = False
+
+    def capture(self, frame, pixels):
+        key = id(frame)
+        if key not in self._pending:
+            return
+        with self._lock:
+            if self._pending.pop(key, None) is None or self._failed:
+                return
+            if self._crop is not None:
+                x, y, width, height = self._crop
+                pixels = pixels[y:y + height, x:x + width]
+            try:
+                valid = _alignment_valid_mask(pixels, should_cancel=self._should_cancel)
+                if valid is not None:
+                    if self._mask is None:
+                        self._mask = create_frame(valid.shape, np.bool_)
+                        self._mask[:] = valid
+                    else:
+                        np.logical_and(self._mask, valid, out=self._mask)
+            except (OSError, MemoryError):
+                self._failed = True
+                self._mask = None
+
+    def complete(self):
+        """Visit only sources a tiled or cached backend never borrowed whole."""
+        for frame in list(self._pending.values()):
+            if self._failed:
+                break
+            try:
+                self.capture(frame, resolve_frame(frame, should_cancel=self._should_cancel))
+            except (OSError, MemoryError):
+                self._failed = True
+                self._mask = None
+        if self._mask is not None:
+            self._mask.flags.writeable = False
+        return self._mask, self._failed
 
 
 def store_rendered_focus(positions, scale, domain_shape, *, crop=None, transparent=None,

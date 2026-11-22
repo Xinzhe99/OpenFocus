@@ -200,8 +200,7 @@ def _filter(src, radius, cancel, guide=None, low=None, *, allocate=None, overwri
 
 
 def _activity_frames(frames, img_resize, kernel_size, thread_count, should_cancel,
-                     *, half_resolution=False, preserve_detail=False, gpu=None,
-                     sample_preview=None):
+                     *, half_resolution=False, preserve_detail=False, gpu=None):
     """Return ordered activity planes from the admitted source window."""
     from core.source_frames import resolve_frame, without_source_cache_growth
     from fusion_methods.openfocus_ab import (
@@ -232,7 +231,6 @@ def _activity_frames(frames, img_resize, kernel_size, thread_count, should_cance
 
         with without_source_cache_growth():
             pixels = resolve_frame(frames[index], should_cancel=cancelled)
-        sample = sample_preview(pixels) if sample_preview is not None else None
         gray = frame_gray_codes(pixels, img_resize, cancelled, depth_color=True)
         del pixels
         if gray.shape != shape:
@@ -295,7 +293,7 @@ def _activity_frames(frames, img_resize, kernel_size, thread_count, should_cance
             run_bands(gray.shape[0], 128, activity)
         del gray, fine
         activity = _filter(diff, coarse_radius, cancel, overwrite=True)
-        return activity, detail, sample
+        return activity, detail
 
     return _ordered_frame_results(len(frames), produce, workers, should_cancel)
 
@@ -376,16 +374,11 @@ def depth_map(frames, img_resize, kernel_size, smoothing, should_cancel,
     reciprocal = reciprocal32(len(frames))
     best = depth = votes = None
     detail_best = detail_second = detail_winner = None
-    sample_preview = None
-    if _live_preview is not None:
-        from core.fusion_live_preview import sample_live_frame
-        sample_preview = sample_live_frame
     produced = _activity_frames(frames, img_resize, kernel_size, thread_count,
                                 should_cancel, half_resolution=half_resolution,
-                                preserve_detail=preserve_detail, gpu=gpu,
-                                sample_preview=sample_preview)
+                                preserve_detail=preserve_detail, gpu=gpu)
     try:
-        for index, (activity, detail, sample) in produced:
+        for index, (activity, detail) in produced:
             cancel()
             if preserve_detail:
                 if detail_best is None:
@@ -425,10 +418,8 @@ def depth_map(frames, img_resize, kernel_size, smoothing, should_cancel,
                     select_activity_rows(activity, best, depth, votes, code,
                                          reciprocal, start, stop)
                 run_bands(activity.shape[0], 128, select)
-            if sample is not None:
-                cancel()
-                _live_preview.push(sample, index, len(frames))
-            del sample
+            if _live_preview is not None:
+                _live_preview.show_positions(depth, index, len(frames), step * (len(frames) - 1))
             if progress_callback is not None:
                 progress_callback(index, len(frames))
             del activity
