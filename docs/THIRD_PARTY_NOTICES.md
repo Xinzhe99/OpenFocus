@@ -161,7 +161,9 @@ OTHER DEALINGS IN THE SOFTWARE.
 - **Changes**: the module imports were rewritten for this package layout
   (`stackmff_v3.network` → `core.models.stackmff_v3.network`), the default
   weights path points at OpenFocus's `weights/` directory, and the docstring of
-  the package was rewritten. The network math is unchanged.
+  the package was rewritten. The attention blocks select query, key and value
+  before transposing their heads, so each projection is transposed on its own
+  instead of the joint tensor. The network math is unchanged.
 - **Weights**: `weights/stackmff_v3_final.pth` is the released checkpoint from
   the upstream v1.0 release (658,587 bytes, SHA-256
   `39b2ea3738e8fea1676c379238d6be81a87988fc9952dbd6ac3825d5d7249f46`).
@@ -194,10 +196,15 @@ OTHER DEALINGS IN THE SOFTWARE.
 - **ONNX identity**: the V1 graph SHA-256 is
   `f7ba388afcefb988f38707b349d5609b4a56770d81c8405d881e50f605b18a19`;
   the V3 graph SHA-256 is
-  `7b92bf31c984eac2b93d6000158b4802b7d62c23140d52e28a47676f58d5c4f7`.
-  They contain distinct learned initializers. V1's checkpoint records a 0.7
-  weight soup of the released V3 model and its retraining checkpoint; sharing
-  the backbone can produce visually similar results on some source stacks.
+  `ebf28996d80bd9f7ba6dfca3177ab0e0997ab39075c7341beac0bcf8919081f5`.
+  The V3 graph is the earlier export
+  (`7b92bf31c984eac2b93d6000158b4802b7d62c23140d52e28a47676f58d5c4f7`) with
+  the same query, key and value reordering applied to its attention nodes; its
+  initializers and logits are unchanged.
+  The V1 and V3 graphs contain distinct learned initializers. V1's checkpoint
+  records a 0.7 weight soup of the released V3 model and its retraining
+  checkpoint; sharing the backbone can produce visually similar results on
+  some source stacks.
   No image-independent difference between final outputs is guaranteed.
 - **Development diagnosis**: `python tools/diagnose_stackmff.py --torch`
   compares the shipped ONNX graphs with their original PyTorch checkpoints

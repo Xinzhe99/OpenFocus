@@ -440,21 +440,41 @@ def test_remembered_digest_still_rejects_a_mismatched_fingerprint(tmp_path, monk
     assert len(hashed) == 1
 
 
+def test_cached_tile_does_not_need_room_for_another_full_decode(tmp_path, monkeypatch):
+    from core import resource_policy
+    from core.source_frames import resolve_region
+    frame = _source(tmp_path)
+    with cache_module.render_scope([frame]), _bound([frame]):
+        pixels = frame.full_resolution()
+        def only_tile_fits(size, *args, **kwargs):
+            if size > 12:
+                raise resource_policy.ResourceLimitError('Only the tile fits')
+        monkeypatch.setattr(resource_policy, 'require_memory', only_tile_fits)
+        tile = resolve_region(frame, 1, 2, 2, 2)
+        np.testing.assert_array_equal(tile, pixels[2:4, 1:3])
+        assert not np.shares_memory(tile, pixels)
+
+
 def test_cached_materialized_snapshot_retains_original_identity(tmp_path):
     from core.source_frames import materialize_for_repeated_access, crop_frame
     source = _source(tmp_path)
     snapshot = materialize_for_repeated_access([source], required=True)[0]
     crop = crop_frame(snapshot, 0, 0, 4, 4)
+    # Staging a crop of prepared pixels must carry the original fingerprint
+    # through a second snapshot, including after a cache hit.
+    second = materialize_for_repeated_access([crop], required=True)[0]
     with cache_module.render_scope([snapshot, crop]):
         first = snapshot.full_resolution()
+        assert np.shares_memory(first, snapshot.source)
+        assert not first.flags.writeable
         np.testing.assert_array_equal(first, snapshot.full_resolution())
+        np.testing.assert_array_equal(second.full_resolution(), first[:4, :4])
         crop.full_resolution()
         stamp = source.fingerprint[1] + 10_000_000_000
         os.utime(source.path, ns=(stamp, stamp))
-        with pytest.raises(OSError):
-            snapshot.full_resolution()
-        with pytest.raises(OSError):
-            crop.full_resolution()
+        for frame in (snapshot, crop, second):
+            with pytest.raises(OSError):
+                frame.full_resolution()
 
 
 def test_cache_discards_unpublished_store_on_cancellation(monkeypatch):

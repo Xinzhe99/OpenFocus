@@ -15,13 +15,19 @@ import warnings
 ROOT = Path(__file__).resolve().parents[1]
 # Only exact releases that passed ONNX/forward_logits parity have a Torch adapter.
 # A renamed copy is equivalent. A replacement with the same name is not.
-_TORCH_EXPORTS = {
+_SHIPPED_TORCH_EXPORTS = {
     'f7ba388afcefb988f38707b349d5609b4a56770d81c8405d881e50f605b18a19': (
         'stackmff_final.pth', '8a530228077a4dc0476258f55dd6e00d0b00d04861b1177bdbe4767eb449fb7d'),
     '045c7db9052f2d31c78633ced5eb299e841b2974c63eebcfbbf36f4ad2610614': (
         'stackmff_v2_final.pth', 'f7f2ee36453d6073d62b89289133012b95116c07b208e76f5ba6d00a1f3f2cda'),
-    '7b92bf31c984eac2b93d6000158b4802b7d62c23140d52e28a47676f58d5c4f7': (
+    'ebf28996d80bd9f7ba6dfca3177ab0e0997ab39075c7341beac0bcf8919081f5': (
         'stackmff_v3_final.pth', '39b2ea3738e8fea1676c379238d6be81a87988fc9952dbd6ac3825d5d7249f46'),
+}
+# Imported copies of the previous V3 export also passed checkpoint parity.
+_TORCH_EXPORTS = {
+    **_SHIPPED_TORCH_EXPORTS,
+    '7b92bf31c984eac2b93d6000158b4802b7d62c23140d52e28a47676f58d5c4f7':
+        _SHIPPED_TORCH_EXPORTS['ebf28996d80bd9f7ba6dfca3177ab0e0997ab39075c7341beac0bcf8919081f5'],
 }
 
 
@@ -128,7 +134,7 @@ class InferenceWorker:
         shape = (1, 3, 128, 128)
         with self.torch.inference_mode():
             x = self.torch.zeros(shape, device=self.torch_device, dtype=self.torch.float32)
-            for expected, (name, _) in _TORCH_EXPORTS.items():
+            for expected, (name, _) in _SHIPPED_TORCH_EXPORTS.items():
                 graph = (ROOT / 'weights' / name).with_suffix('.onnx')
                 try:
                     digest = hashlib.sha256(graph.read_bytes()).hexdigest()
