@@ -1007,7 +1007,7 @@ PACK = {
     "experimental_label": "Experimental",
     "experimental_locked_hint": "Para usar, ative os recursos experimentais em Configurações → Configurações avançadas.",
     "development_label": "Em desenvolvimento",
-    "development_unavailable_hint": "Este recurso está em desenvolvimento e não está disponível no momento.",
+    "development_unavailable_hint": "Este recurso ainda está em desenvolvimento e permanece desativado nesta versão, mesmo com os recursos experimentais ativados.",
     "experimental_features": "Ativar recursos experimentais",
     "experimental_features_hint": "Permite usar métodos experimentais de fusão e registro de imagens.",
     "theme_system": "Seguir o sistema",
