@@ -853,9 +853,14 @@ def plan_neural_tiles(frames: int, height: int, width: int, channels: int,
                 frames, height, width, channels, block, kind, estimate_inference,
                 source_bytes, output_bytes=output_bytes)
             device_fits = not dedicated or fits_in_budget(device_required, device_budget)
-            if required <= ceiling and ceiling > 0 and device_fits:
+            ram_fits = ceiling > 0 and required <= ceiling
+            if ram_fits and device_fits:
                 best = block, kind, required, device_required if dedicated else 0, device_budget
                 break
+            log_debug('neural_tile_rejected', block=block, device=kind,
+                      required_bytes=required, ram_ceiling=ceiling, ram_fits=ram_fits,
+                      required_vram_bytes=device_required if dedicated else 0,
+                      vram_budget=device_budget, vram_fits=device_fits)
             if block <= minimum:
                 break
             block = max(minimum, block // 2)
