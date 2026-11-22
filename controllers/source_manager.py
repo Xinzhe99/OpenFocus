@@ -355,7 +355,7 @@ class SourceManager(QObject):
     def _start_load_worker(self, folder=None, video=None, filepaths=None,
                            scale=1.0, append=False, on_success=None,
                            accept_event=None, prepare_options=None, on_error=None,
-                           linear_raw=False, on_finished=None) -> None:
+                           linear_raw=False, on_finished=None, crash_restore=False) -> None:
         """Run the loader on a background thread and apply results on the
         UI thread when it finishes."""
         window = self.window
@@ -502,7 +502,8 @@ class SourceManager(QObject):
                     return
                 if reject_changed_append():
                     return
-                load_options = self._build_load_options(images, filenames, scale)
+                load_options = (worker.prepared_options if crash_restore else
+                                self._build_load_options(images, filenames, scale))
                 if append and window.raw_images and working_scale != scale:
                     from core.image_loader import UnsupportedTransparency, _has_transparency
                     if any(_has_transparency(image) for image in images):
@@ -513,7 +514,7 @@ class SourceManager(QObject):
                         transform_frame(image, 'resize', width=max(1, int(image.shape[1] * factor)),
                                         height=max(1, int(image.shape[0] * factor)))
                         for image in images]
-                mixed_ok = self._confirm_mixed_sizes(load_options.working_images)
+                mixed_ok = self._confirm_mixed_sizes(images if crash_restore else load_options.working_images)
                 if not load_is_current():
                     return
                 if reject_changed_append():
@@ -531,12 +532,16 @@ class SourceManager(QObject):
                     if on_error is not None:
                         on_error("CANCELLED")
                     return
-                if prepare_options is not None:
+                if prepare_options is not None and not crash_restore:
                     load_options = prepare_options(load_options)
                 if not load_is_current():
                     return
                 if reject_changed_append():
                     return
+                if crash_restore:
+                    # Cancellation applies to decode and replay, before Qt
+                    # publishes the stack and applies the project settings.
+                    self._load_cancel_button.setEnabled(False)
                 from utils import watermark
                 state_fields = ("current_folder_path", "source_px_um", "linear_dng_metadata",
                                 "base_images", "raw_images", "image_filenames", "image_source_paths",
@@ -605,9 +610,11 @@ class SourceManager(QObject):
                 from utils.image_utils import set_source_exif
                 set_source_exif(getattr(window.image_loader, "source_exif", b""))
 
-                # Crash auto-recovery: refresh the session snapshot
-                from utils import recovery
-                recovery.write_snapshot(window)
+                # Recovery already has a validated snapshot of this exact
+                # session. Avoid probing its sources again on the GUI thread.
+                if not crash_restore:
+                    from utils import recovery
+                    recovery.write_snapshot(window)
                 self._show_linear_profile_notice(getattr(window, "linear_dng_metadata", None))
                 worker._load_applied = load_is_current()
             except Exception as exc:  # pylint: disable=broad-except
@@ -648,6 +655,10 @@ class SourceManager(QObject):
                     self._finish_load_worker(worker)
 
         worker = self._load_worker
+        if crash_restore:
+            worker.prepare_result = lambda images, names: prepare_options(
+                self._build_load_options(images, names, scale), lambda: worker.is_cancelled)
+            worker.preparing.connect(self._show_restore_progress)
         worker.progress.connect(self._on_load_progress)
         worker.finished_load.connect(on_done)
         worker.finished.connect(on_thread_finished)
@@ -752,6 +763,13 @@ class SourceManager(QObject):
         self._load_status_label.setText(trans.t("msg_loading_stack"))
         self._load_status_label.show()
         self._load_progress_bar.show()
+
+    def _show_restore_progress(self) -> None:
+        worker = self.sender()
+        if worker is not None and worker is getattr(self, '_load_worker', None) and not worker.is_cancelled:
+            self._load_status_label.setText(trans.t('update_restore_running'))
+            self._load_progress_bar.setRange(0, 0)
+            self._load_progress_bar.setValue(0)
 
     def _on_load_progress(self, done: int, total: int) -> None:
         worker = self.sender()

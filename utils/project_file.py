@@ -154,11 +154,18 @@ def _finite_scalar(value, field):
     return number
 
 
-def _validate_source_transforms(transforms, scale, *, require_sources=True):
+def _check_project_cancel(should_cancel):
+    if should_cancel is not None and should_cancel():
+        from core.registration import RegistrationCancelled
+        raise RegistrationCancelled()
+
+
+def _validate_source_transforms(transforms, scale, *, require_sources=True, should_cancel=None):
     from utils.dust_map import load_flat_field_reference
     if not isinstance(transforms, list):
         raise ValueError("invalid source transformations")
     for item in transforms:
+        _check_project_cancel(should_cancel)
         if not isinstance(item, dict):
             raise ValueError("invalid source transformations")
         operation = item.get("operation")
@@ -522,7 +529,7 @@ def save_project(window, path: str, *, recovery_document=None) -> Tuple[bool, st
                     pass
 
 
-def _resolve_sources(state: Dict[str, Any], project_dir: str) -> Optional[List[str]]:
+def _resolve_sources(state: Dict[str, Any], project_dir: str, *, should_cancel=None) -> Optional[List[str]]:
     """Locate every recorded frame. Returns the aligned path list, or None.
     Absolute references must still exist. Legacy bare names may resolve next
     to the project or in their recorded folder; a missing absolute reference
@@ -537,11 +544,16 @@ def _resolve_sources(state: Dict[str, Any], project_dir: str) -> Optional[List[s
             if i < len(recorded_folders) and recorded_folders[i]:
                 candidates.append(os.path.join(str(recorded_folders[i]), name))
             candidates.append(os.path.join(project_dir, recorded))
-        hit = next((c for c in candidates if c and os.path.isfile(c)), None)
+        hit = next((c for c in candidates if c and _project_source_exists(c, should_cancel)), None)
         if hit is None:
             return None
         resolved.append(os.path.abspath(hit))
     return resolved
+
+
+def _project_source_exists(path, should_cancel):
+    _check_project_cancel(should_cancel)
+    return os.path.isfile(path)
 
 
 def _validate_recovery_document(document):
@@ -551,11 +563,13 @@ def _validate_recovery_document(document):
         raise ValueError("invalid recovery_document")
 
 
-def validate_project(path: str, source_root: Optional[str] = None, *, require_sources=True) -> Tuple[bool, str, Dict[str, Any]]:
+def validate_project(path: str, source_root: Optional[str] = None, *, require_sources=True,
+                     should_cancel=None) -> Tuple[bool, str, Dict[str, Any]]:
     """Read and validate a project file. Returns (ok, error, state).
 
     The resolved paths are stored back into the state as `resolved_sources`,
     so apply_project() opens exactly the frames that were found here."""
+    _check_project_cancel(should_cancel)
     try:
         with open(path, encoding="utf-8") as f:
             state = json.load(f)
@@ -604,10 +618,12 @@ def validate_project(path: str, source_root: Optional[str] = None, *, require_so
         return False, "invalid sensor cleanup settings", {}
     if mask_path and require_sources:
         try:
+            _check_project_cancel(should_cancel)
             actual = _sensor_mask_digest(mask_path)
             if actual != digest:
                 return False, "sensor defect mask has changed: " + mask_path, {}
             from utils.sensor_cleanup import load_sensor_defect_mask
+            _check_project_cancel(should_cancel)
             load_sensor_defect_mask(mask_path)
         except (OSError, ValueError) as exc:
             return False, str(exc), {}
@@ -622,6 +638,7 @@ def validate_project(path: str, source_root: Optional[str] = None, *, require_so
         return False, "invalid project frame order", {}
     try:
         for frame in frames or ():
+            _check_project_cancel(should_cancel)
             if type(frame.get("snapshot", False)) is not bool:
                 raise ValueError("invalid source snapshot")
             for key in ("scale", "snapshot_scale"):
@@ -645,10 +662,11 @@ def validate_project(path: str, source_root: Optional[str] = None, *, require_so
         return False, str(exc), {}
     project_dir = os.path.dirname(os.path.abspath(path))
     if require_sources:
-        resolved = (_relocated_sources(state, source_root, project_dir) if source_root is not None
-                    else _resolve_sources(state, project_dir))
+        resolved = (_relocated_sources(state, source_root, project_dir, should_cancel=should_cancel)
+                    if source_root is not None else
+                    _resolve_sources(state, project_dir, should_cancel=should_cancel))
         if resolved is None:
-            missing = [p for p in sources if not os.path.isfile(p)] or sources
+            missing = [p for p in sources if not _project_source_exists(p, should_cancel)] or sources
             return False, f"{len(missing)} source file(s) missing:\n" + "\n".join(missing), {}
         state["resolved_sources"] = resolved
 
@@ -693,9 +711,11 @@ def validate_project(path: str, source_root: Optional[str] = None, *, require_so
     if not math.isfinite(state["scale_factor"]) or not 0 < state["scale_factor"] <= 1:
         return False, "invalid scale_factor", {}
     try:
-        _validate_source_transforms(state.get("source_transforms", []), state["scale_factor"], require_sources=require_sources)
+        _validate_source_transforms(state.get("source_transforms", []), state["scale_factor"],
+                                    require_sources=require_sources, should_cancel=should_cancel)
     except (OSError, ValueError) as exc:
         return False, str(exc), {}
+    _check_project_cancel(should_cancel)
     return True, "", state
 
 
@@ -805,7 +825,7 @@ def _normalize_algorithm_settings(settings, *, legacy=True, old_parameters=False
     settings["brightness_by_method"] = brightness
 
 
-def _relocated_sources(state, root, project_dir):
+def _relocated_sources(state, root, project_dir, *, should_cancel=None):
     """Map one selected replacement root without guessing among basenames."""
     sources = state.get("sources", [])
     if not sources:
@@ -818,7 +838,7 @@ def _relocated_sources(state, root, project_dir):
         return None
     mapped = [os.path.abspath(os.path.join(root, os.path.relpath(path, old_root)))
               for path in absolute]
-    return mapped if all(os.path.isfile(path) for path in mapped) else None
+    return mapped if all(_project_source_exists(path, should_cancel) for path in mapped) else None
 
 
 def validate_project_for_open(window, path):
@@ -866,7 +886,7 @@ def validate_project_for_open(window, path):
 
 
 def apply_project(window, state: Dict[str, Any],
-                  on_loaded=None, on_error=None) -> None:
+                  on_loaded=None, on_error=None, *, crash_restore=False) -> None:
     """Load the project's sources and restore settings/labels/index.
 
     `on_loaded` runs only after lazy frames and their settings are installed;
@@ -878,12 +898,22 @@ def apply_project(window, state: Dict[str, Any],
     videos = [p for p in sources if os.path.splitext(p)[1].lower() in ImageStackLoader.SUPPORTED_VIDEO_FORMATS]
     if videos and len(sources) != 1:
         raise ValueError("Mixed video/image projects require exporting the source stack first")
+    if crash_restore:
+        loader = window.image_loader
+
+        def prepare(options, should_cancel):
+            return _prepare_project_frames(loader, state, options, should_cancel=should_cancel)
+    else:
+        def prepare(options):
+            return _prepare_project_load(window, state, options)
+
     window.source_manager._start_load_worker(
         **({"video": sources[0]} if videos else {"filepaths": list(sources)}),
         scale=float(state.get("scale_factor", 1.0) or 1.0),
         append=False,
         linear_raw=state.get("linear_raw", False),
-        prepare_options=lambda options: _prepare_project_load(window, state, options),
+        crash_restore=crash_restore,
+        prepare_options=prepare,
         on_error=on_error,
         on_success=lambda: (_apply_after_load(window, state),
                             on_loaded() if on_loaded is not None else None),
@@ -893,17 +923,18 @@ def apply_project(window, state: Dict[str, Any],
 def _prepare_project_load(window, state, options):
     from utils.frame_pixels import run_pixel_worker
     return run_pixel_worker(window, "OpenFocus project",
-                            lambda: _prepare_project_frames(window, state, options))
+                            lambda: _prepare_project_frames(window.image_loader, state, options))
 
 
-def _prepare_project_frames(window, state, options):
+def _prepare_project_frames(loader, state, options, *, should_cancel=None):
     """Order lazy frames and replay descriptors before publishing the stack."""
     from core.source_frames import transform_frame, materialize_frames, scan_source
     sources = state.get("resolved_sources") or state["sources"]
-    paths = list(getattr(window.image_loader, "image_paths", []))
+    paths = list(getattr(loader, "image_paths", []))
     frames = state.get("frame_order")
     decoded = {os.path.normcase(os.path.abspath(path)) for path in paths}
     for source in sources:
+        _check_project_cancel(should_cancel)
         if os.path.normcase(os.path.abspath(source)) not in decoded:
             raise ValueError("Project source could not be decoded: " + source)
     if frames is not None:
@@ -913,6 +944,7 @@ def _prepare_project_frames(window, state, options):
         page_lookup = {(os.path.normcase(os.path.abspath(path)), getattr(image, "page", None)): i
                        for i, (path, image) in enumerate(zip(paths, options.base_images))}
         for frame in frames:
+            _check_project_cancel(should_cancel)
             source = os.path.normcase(os.path.abspath(sources[frame["source"]]))
             key = (source, frame["name"])
             match = (page_lookup.get((source, frame.get("page")))
@@ -920,7 +952,7 @@ def _prepare_project_frames(window, state, options):
             if match is None:
                 raise ValueError("Project frame could not be decoded: " + frame["name"])
             order.append(match)
-        profiles = tuple(getattr(window.image_loader, "source_icc_profiles", ()) or ())
+        profiles = tuple(getattr(loader, "source_icc_profiles", ()) or ())
         options.source_icc_profiles = tuple(
             profiles[i] if i < len(profiles) else b"" for i in order)
         exifs = tuple(getattr(options, "source_exifs", ()) or ())
@@ -931,17 +963,16 @@ def _prepare_project_frames(window, state, options):
         paths = [paths[i] for i in order]
         if any(frame.get("snapshot") or ("scale" in frame and frame["scale"] != getattr(image, "scale", None))
                for frame, image in zip(frames, options.base_images)):
-            from utils.frame_pixels import run_pixel_worker
-            def restore_frame_scales():
-                restored = []
-                for index, (frame, image) in enumerate(zip(frames, options.base_images)):
-                    scale = frame.get("scale", 1.0 if frame.get("snapshot") else getattr(image, "scale", 1.0))
-                    if frame.get("snapshot") or scale != getattr(image, "scale", None):
-                        image = scan_source(paths[index], scale=scale, linear=state.get("linear_raw", False),
-                                            header_only=True, page_index=frame.get("page", 0))[0]
-                    restored.append(image)
-                return restored
-            options.base_images = run_pixel_worker(window, "OpenFocus project", restore_frame_scales)
+            restored = []
+            for index, (frame, image) in enumerate(zip(frames, options.base_images)):
+                _check_project_cancel(should_cancel)
+                scale = frame.get("scale", 1.0 if frame.get("snapshot") else getattr(image, "scale", 1.0))
+                if frame.get("snapshot") or scale != getattr(image, "scale", None):
+                    image = scan_source(paths[index], scale=scale, linear=state.get("linear_raw", False),
+                                        header_only=True, page_index=frame.get("page", 0),
+                                        should_cancel=should_cancel)[0]
+                restored.append(image)
+            options.base_images = restored
     # A descriptor's scale precedes its replayed resize operations. Snapshot
     # files already contain working pixels, even though their file scale is 1.
     working_scale = getattr(options, "scale_factor", state.get("scale_factor", 1.0))
@@ -959,33 +990,35 @@ def _prepare_project_frames(window, state, options):
     options.reset_images = [
         image if scale == reset_scale else scan_source(
             paths[index], scale=image.scale * reset_scale / scale, linear=state.get("linear_raw", False),
-            header_only=True, page_index=getattr(image, "page", 0))[0]
+            header_only=True, page_index=getattr(image, "page", 0), should_cancel=should_cancel)[0]
         for index, (image, scale) in enumerate(zip(options.base_images, reset_scales))]
     if frames:
         for index, frame in enumerate(frames):
+            _check_project_cancel(should_cancel)
             for operation in frame.get("transforms", []):
                 options.base_images[index] = transform_frame(
                     options.base_images[index], operation["operation"],
                     **{key: value for key, value in operation.items() if key != "operation"})
     for item in state.get("source_transforms", []):
+        _check_project_cancel(should_cancel)
         if item["operation"] == "flat_field":
-            from utils.frame_pixels import run_pixel_worker
-            def apply_reference():
-                from utils.dust_map import load_flat_field_reference, compute_flat_field, apply_flat_field
-                white, _ = load_flat_field_reference(item["path"], expected_hash=item["sha256"])
-                gain = compute_flat_field(white, sigma=item["sigma"])
-                originals = materialize_frames(options.base_images)
-                return materialize_frames(
-                    image if frames and frames[index].get("snapshot") else apply_flat_field(image, gain)
-                    for index, image in enumerate(originals))
-            options.base_images = run_pixel_worker(window, "OpenFocus project", apply_reference)
+            from utils.dust_map import load_flat_field_reference, compute_flat_field, apply_flat_field
+            white, _ = load_flat_field_reference(item["path"], expected_hash=item["sha256"])
+            _check_project_cancel(should_cancel)
+            gain = compute_flat_field(white, sigma=item["sigma"])
+            originals = materialize_frames(options.base_images, should_cancel=should_cancel)
+            options.base_images = materialize_frames(
+                (image if frames and frames[index].get("snapshot") else apply_flat_field(image, gain)
+                 for index, image in enumerate(originals)), should_cancel=should_cancel)
         else:
-            options.base_images = [image if frames and (frames[index].get("snapshot") or "transforms" in frames[index]) else
-                                   transform_frame(image, item["operation"], code=item["code"])
-                                   for index, image in enumerate(options.base_images)]
+            for index, image in enumerate(options.base_images):
+                _check_project_cancel(should_cancel)
+                if not frames or not (frames[index].get("snapshot") or "transforms" in frames[index]):
+                    options.base_images[index] = transform_frame(image, item["operation"], code=item["code"])
     options.working_images = list(options.base_images)
     options.reset_paths = list(paths)
-    window.image_loader.image_paths = paths
+    _check_project_cancel(should_cancel)
+    loader.image_paths = paths
     return options
 
 
