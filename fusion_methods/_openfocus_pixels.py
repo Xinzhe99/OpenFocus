@@ -102,24 +102,35 @@ def output_codes(code, frames, should_cancel, *, e37=False):
     is_u8 = all(source.dtype == np.uint8 for source in frames)
     output = create_frame(code.shape, np.uint8 if is_u8 else np.float32)
     u16_source = code.dtype == np.uint16
+    if u16_source:
+        from fusion_methods._openfocus_execution import run_bands
+        from fusion_methods._openfocus_kernels import (
+            output_u16_to_f32_rows, output_u16_to_u8_rows,
+        )
+
+        factor = np.float32(1.0 / 257.0)
+
+        def convert(start, stop):
+            _check_cancel(should_cancel)
+            if is_u8:
+                output_u16_to_u8_rows(code, output, start, stop, e37)
+            else:
+                output_u16_to_f32_rows(code, output, start, stop, factor)
+
+        run_bands(code.shape[0], 128, convert)
+        return output
+
     for start in range(0, code.shape[0], 128):
         _check_cancel(should_cancel)
         rows = slice(start, min(code.shape[0], start + 128))
-        block = code[rows] if u16_source else np.clip(code[rows], 0, 65535)
+        block = np.clip(code[rows], 0, 65535)
         if is_u8:
-            values = (block >> np.uint16(8)) if u16_source else (block.astype(np.int32) >> 8)
+            values = block.astype(np.int32) >> 8
             if e37:
                 if values.ndim == 3 and values.shape[2] == 4:
-                    if u16_source:
-                        np.subtract(values[:, :, :3], 1, out=values[:, :, :3],
-                                    where=values[:, :, :3] > 0)
-                    else:
-                        values[:, :, :3] = np.maximum(values[:, :, :3] - 1, 0)
+                    values[:, :, :3] = np.maximum(values[:, :, :3] - 1, 0)
                 else:
-                    if u16_source:
-                        np.subtract(values, 1, out=values, where=values > 0)
-                    else:
-                        values = np.maximum(values - 1, 0)
+                    values = np.maximum(values - 1, 0)
             output[rows] = values
         else:
             output[rows] = block.astype(np.float32) * (1.0 / 257.0)
