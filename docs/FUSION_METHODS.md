@@ -35,6 +35,11 @@ supports 8-bit and 16-bit output. The depth-map dialog uses the shared B/C
 depth estimator. B's external tiles share a full-image depth map; resizing uses
 whole frames.
 
+StackMFF automatically chooses a tile size within the device and host memory
+budgets. The default upper limit is 1024 px. The debug log records the RAM and
+VRAM checks when that size or a smaller candidate is rejected. **Advanced
+Settings → Fusion → Manual tile settings** exposes the limit and overlap.
+
 Direct Python directory inputs to the DCT, DTCWT, guided filter and GFG-FGF
 backends collect regular image files with supported extensions, ignoring case
 and excluding other files and directories. Files are naturally sorted by each

@@ -1032,6 +1032,8 @@ PACK = {
     "advanced_privacy": "Prywatność",
     "advanced_working_storage": "Miejsce na pliki robocze",
     "advanced_tile_memory_status": "{method} używa kafelków, gdy brakuje pamięci do przetworzenia całego obrazu.",
+    "advanced_tile_manual": "Ręczne ustawienia kafelków",
+    "advanced_tile_neural_status": "{method} może wybrać kafelki o rozmiarze do {block} px w zależności od urządzenia i dostępnej pamięci.",
     "advanced_settings_intro": "Ustawienia wydajności i rejestracji wpływają na szybkość i pamięć. Tryb wyjścia AI zmienia wynik fuzji, a szerokość rejestracji — szacowanie wyrównania.",
     "render_memory_commit": "Zapas pamięci zadeklarowanej systemu Windows (RAM i plik stronicowania): {size}.",
     "render_memory_device": "Przewidywane urządzenie fuzji: {device}.",
