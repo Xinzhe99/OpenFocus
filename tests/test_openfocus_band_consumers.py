@@ -63,15 +63,19 @@ def _native_sources(tmp_path):
     return sources, pixels
 
 
-def test_b_active_sources_include_fractional_neighbors_across_row_bands():
+def test_b_active_sources_include_fractional_neighbors_across_tiles():
     count = 92
     step = 65535 // (count - 1)
-    depth = np.zeros((129, 4), np.uint16)
+    depth = np.zeros((129, 259), np.uint16)
     depth[0, 0] = 7 * step
-    depth[128, 0] = 23 * step + 1
-    depth[128, 1] = 65535
-    active = bc._active_sources(depth, count, None)
+    depth[128, 128] = 23 * step + 1
+    depth[128, 258] = 65535
+    tiles = np.zeros((2, 3, count), bool)
+    active = bc._active_sources(depth, count, None, tiles=tiles)
     assert np.flatnonzero(active).tolist() == [0, 7, 23, 24, 91]
+    assert np.flatnonzero(tiles[0, 0]).tolist() == [0, 7]
+    assert np.flatnonzero(tiles[1, 1]).tolist() == [0, 23, 24]
+    assert np.flatnonzero(tiles[1, 2]).tolist() == [0, 91]
 
 
 @pytest.mark.parametrize('method', [bc.openfocus_b_impl])

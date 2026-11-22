@@ -991,7 +991,8 @@ class MultiFocusFusion:
             elif not native_neural_tiles and input_source is not before_snapshot:
                 self.prepared_cache = input_source
         if self.algorithm == 'openfocus_b' and streaming_sources:
-            from core.source_frames import (SourceFrame, ProcessedFrame,
+            from core.frame_storage import ScratchSpaceError
+            from core.source_frames import (SourceFrame, ProcessedFrame, SOURCE_CACHE,
                                             frame_resolution_bytes, materialize_for_repeated_access,
                                             source_cache_growth_bytes)
             indices = []
@@ -1001,30 +1002,39 @@ class MultiFocusFusion:
                     original = original.source
                 if isinstance(original, SourceFrame):
                     indices.append(index)
-            # Tiled B needs repeated access. Whole-frame B only stages when
-            # a source cannot be resolved alongside the full-frame workspaces.
-            tiled = self.tile_enabled and needs_tiles and img_resize is None
-            if indices and not tiled:
+            # Explicit tiles require repeated access. Whole-image B also
+            # stages expensive sources when disk can save a second decode.
+            required = stage = self.tile_enabled and needs_tiles and img_resize is None
+            if indices and not required:
                 fixed, worker = resolve_runner(spec.resource_estimator)(
                     max(h, height), max(w, width), kwargs, count)
                 decode = max(frame_resolution_bytes(frame) for frame in input_source)
-                tiled_or_over_budget = (fixed + worker + decode + source_cache_growth_bytes(input_source)
-                                        > memory_budget_bytes())
-            else:
-                tiled_or_over_budget = tiled
-            if indices and tiled_or_over_budget:
-                prepared = materialize_for_repeated_access(
-                    [input_source[index] for index in indices], should_cancel,
-                    thread_count=kwargs.get('thread_count', 0),
-                    resource_preference=self.resource_preference,
-                    progress_callback=getattr(progress_callback, 'preparation', None),
-                    required=True, staging_bytes=height * width * 48)
-                input_source = list(input_source)
-                for index, frame in zip(indices, prepared):
-                    input_source[index] = frame
-                # Prepared snapshots no longer need the last decoded full frame.
-                from core.source_frames import SOURCE_CACHE
-                SOURCE_CACHE.clear()
+                budget = memory_budget_bytes()
+                # Keep staging mandatory when the streamed peak exceeds RAM.
+                required = (fixed + worker + decode + source_cache_growth_bytes(input_source)
+                            > budget)
+                expensive_decode = max(128 * 1024 ** 2, budget // 4)
+                stage = required or (decode > expensive_decode and any(
+                    frame_resolution_bytes(input_source[index]) > expensive_decode
+                    for index in indices))
+            if indices and stage:
+                sources = [input_source[index] for index in indices]
+                try:
+                    prepared = materialize_for_repeated_access(
+                        sources, should_cancel, thread_count=kwargs.get('thread_count', 0),
+                        resource_preference=self.resource_preference,
+                        progress_callback=getattr(progress_callback, 'preparation', None),
+                        required=required, staging_bytes=height * width * 48)
+                except ScratchSpaceError:
+                    if required:
+                        raise
+                    log_debug('fusion_b_snapshots_skipped', reason='scratch write failed')
+                    prepared = sources
+                if prepared is not sources:
+                    input_source = list(input_source)
+                    for index, frame in zip(indices, prepared):
+                        input_source[index] = frame
+                    SOURCE_CACHE.clear()
         tile_source, tile_resize = input_source, img_resize
         if resize_for_tiles:
             # Match the whole backend: normalize/sort/exposure above, then
