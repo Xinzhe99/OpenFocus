@@ -475,6 +475,95 @@ def test_iter_prefetched_order_context_serial_and_cancel():
     it_early.close()
 
 
+@pytest.mark.parametrize('free_mib,max_allocation,error', [
+    (5681, 2_146_304_000, None),
+    (5400, 2_146_304_000, r'need 4,027,696,882 bytes, limit .*verified free VRAM'),
+    (5681, 1_221_083_135, r'needs a 1,221,083,136-byte buffer.*1,221,083,135 bytes'),
+    (None, 2_146_304_000, r'free memory is unknown.*need 4,027,696,882 bytes'),
+])
+def test_gpu_c_full_resolution_admission(monkeypatch, free_mib, max_allocation, error):
+    from types import SimpleNamespace
+
+    class AllocationReached(Exception):
+        pass
+
+    def allocate(*args):
+        raise AllocationReached
+
+    shape = (8736, 11648, 3)
+    frames = [_make_stub_frame(*shape, dtype=np.uint8)] * 29
+    total_vram = 8188 * MiB
+    gpu = _openfocus_gpu_c.GpuC.__new__(_openfocus_gpu_c.GpuC)
+    gpu.cl = SimpleNamespace(Buffer=allocate)
+    gpu.ctx = None
+    gpu.mf = SimpleNamespace(READ_WRITE=1)
+    gpu.device = SimpleNamespace(global_mem_size=8_585_216_000,
+                                 max_mem_alloc_size=max_allocation,
+                                 host_unified_memory=False)
+    monkeypatch.setattr(resource_policy, 'probe_resources', lambda: resource_policy.ResourceSnapshot(
+        available_ram=8 * GiB, total_ram=16 * GiB))
+    monkeypatch.setattr(_openfocus_gpu, '_free_vram', lambda _: (
+        None if free_mib is None else (free_mib * MiB, total_vram)))
+
+    # The focus callback includes a full-size winner map in the device budget.
+    # Admission must decide from metadata before creating the OpenCL buffers.
+    with pytest.raises(AllocationReached if error is None else _openfocus_gpu.GpuError,
+                       match=error):
+        gpu._fuse_locked(frames, shape, None, 4.0, None, None, lambda *_: None)
+
+
+def test_gpu_c_logs_fallback_in_application_namespace(monkeypatch, caplog):
+    from utils.logging_setup import get_logger
+
+    class RefusedGpu:
+        device_name = 'OpenCL: test device'
+
+        def fuse(self, *args):
+            raise _openfocus_gpu.GpuError('need 400 bytes, limit 300 bytes')
+
+    frames = [np.full((23, 31, 3), level, dtype=np.uint8) for level in (42, 82)]
+    expected = openfocus_c_impl(frames, thread_count=1)
+    monkeypatch.setattr(_openfocus_gpu_c, 'GpuC', RefusedGpu)
+    monkeypatch.setattr(get_logger(), 'propagate', True)
+    devices = []
+    with caplog.at_level('WARNING', logger='openfocus.fusion_methods.openfocus_bc'):
+        actual = openfocus_c_impl(frames, thread_count=1, use_gpu=True,
+                                  device_callback=devices.append)
+
+    np.testing.assert_array_equal(actual, expected)
+    assert devices == ['CPU']
+    [warning] = [record.getMessage() for record in caplog.records
+                 if record.name == 'openfocus.fusion_methods.openfocus_bc']
+    assert 'GPU fallback to CPU' in warning
+    assert 'shape=(23, 31, 3) device=OpenCL: test device' in warning
+    assert 'need 400 bytes, limit 300 bytes' in warning
+
+
+@pytest.mark.parametrize('shape', [(1, 1), (23, 31, 3), (67, 99, 3)])
+def test_gpu_c_unsmoothed_packed_level_matches_cpu(shape):
+    device_name = _require_gpu()
+    rng = np.random.default_rng(451)
+    frames = [rng.integers(0, 256, shape, dtype=np.uint8) for _ in range(3)]
+    positions = []
+    devices = []
+    cpu_positions = []
+    expected = openfocus_c_impl(
+        frames, thread_count=1, blend_smoothing=0.0,
+        focus_callback=lambda pos, scale: cpu_positions.append((pos.copy(), scale)),
+    )
+    actual = openfocus_c_impl(
+        frames, thread_count=1, blend_smoothing=0.0, use_gpu=True,
+        device_callback=devices.append,
+        focus_callback=lambda pos, scale: positions.append((pos.copy(), scale)),
+    )
+    assert devices == [device_name]
+    np.testing.assert_array_equal(actual, expected)
+    [(cpu_focus, cpu_scale)] = cpu_positions
+    [(gpu_focus, gpu_scale)] = positions
+    assert cpu_scale == gpu_scale == len(frames) - 1
+    np.testing.assert_array_equal(gpu_focus, cpu_focus)
+
+
 @pytest.mark.parametrize("dtype", [np.uint8, np.uint16])
 @pytest.mark.parametrize("channels", [3, 4])
 def test_gpu_c_chunked_readback_parity_and_focus_callback(monkeypatch, dtype, channels):

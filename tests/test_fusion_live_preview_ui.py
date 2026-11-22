@@ -139,7 +139,7 @@ def test_live_canvas_keeps_previews_out_of_output_history(live_view, outcome):
         assert window.output_list.count() == 1
 
 
-@pytest.mark.parametrize('mode', ['quick', 'other_method', 'wipe', 'history', 'control'])
+@pytest.mark.parametrize('mode', ['quick', 'other_method', 'wipe', 'control'])
 def test_preview_is_requested_only_for_ordinary_desktop_fusion(live_view, mode):
     manager, _, _ = live_view
     window = manager.window
@@ -149,12 +149,64 @@ def test_preview_is_requested_only_for_ordinary_desktop_fusion(live_view, mode):
         window.set_fusion_method('guided_filter')
     elif mode == 'wipe':
         window.wipe_active = True
-    elif mode == 'history':
-        window.output_list.addItem('Older result')
-        window.output_list.setCurrentRow(1)
 
     assert manager.start_render(interactive=mode != 'control') == 'started'
     assert manager._live_preview_timer is None
+
+
+def test_live_preview_follows_included_layers_after_ecc_and_history_browsing(live_view):
+    from main import OpenFocus
+
+    manager, panel, _ = live_view
+    window = manager.window
+    window.raw_images.append(window.raw_images[0].copy())
+    window.image_filenames.append('last.png')
+    window.file_list.addItem('last.png')
+    window.excluded_frames = {1}
+    window.effective_stack = lambda: OpenFocus.effective_stack(window)
+    window.stack_reverse_order = True
+    window.set_fusion_method('openfocus_b')
+    window.set_alignment_method('ecc')
+    window.output_list.addItems(['Older result', 'Oldest result'])
+    window.output_list.setCurrentRow(1)
+    window.output_list.currentRowChanged.connect(manager.inspect_previous_output)
+    assert manager.start_render(confirmed=True) == 'started'
+
+    gray = bytes([80]) * 6
+    frames = iter((None, (gray, 3, 2, 1, 2, False), (gray, 3, 2, 2, 2, False),
+                   (gray, 3, 2, 1, 2, True)))
+    manager.worker.take_live_preview = lambda: next(frames, None)
+    manager._poll_live_preview()
+    window.output_list.setCurrentRow(2)
+    manager._poll_live_preview()
+    assert panel.view_stack.currentWidget() is panel.live_preview_page
+    assert window.file_list.currentItem().text() == 'last.png'
+    manager._poll_live_preview()
+    assert window.file_list.currentItem().text() == 'f0.png'
+    manager._poll_live_preview()
+    assert window.file_list.currentItem().text() == 'last.png'
+
+    window.output_list.setCurrentRow(0)
+    assert panel.view_stack.currentIndex() == 0
+    assert not manager._live_preview_timer.isActive()
+
+
+def test_b_blend_reveals_focus_layers_without_whitening_completed_pixels(monkeypatch):
+    from core import fusion_live_preview
+
+    frames = []
+    clock = iter(range(20))
+    monkeypatch.setattr(fusion_live_preview, 'monotonic', lambda: next(clock))
+    preview = fusion_live_preview.LiveFusionPreview(lambda *args: frames.append(args))
+    depth = np.array([[0, 16383, 32767, 49150, 65534]], np.uint16)
+    preview.show_blend(depth, 0, 3)
+    preview.show_blend(depth, 1, 3)
+    preview.show_blend(depth, 2, 3)
+
+    assert [frame[1:] for frame in frames] == [(1, 3, True), (2, 3, True), (3, 3, True)]
+    np.testing.assert_array_equal(frames[0][0], [[0, 32, 0, 0, 0]])
+    np.testing.assert_array_equal(frames[1][0], [[0, 64, 128, 96, 0]])
+    np.testing.assert_array_equal(frames[2][0], [[0, 64, 128, 191, 255]])
 
 
 def test_switching_to_wipe_dismisses_live_preview(live_view):

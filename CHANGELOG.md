@@ -12,9 +12,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Use single-scale inference by default in StackMFF V3. Select dual-scale
   inference in fusion, batch, method comparison, and depth settings, or
   with the command-line inference scale option.
-- Show live grayscale focus layers while OpenFocus A, B, and C render, and
-  layer blending progress during OpenFocus B reconstruction. Keep these
-  views out of output history and exports.
+- Show live grayscale focus layers while OpenFocus A, B, and C render. The
+  selected source row follows the frame in processing order, and OpenFocus B
+  keeps the focus map readable during layer blending.
+- Report registration and fusion devices separately in result details. Show
+  ECC resize acceleration and where reused registration came from.
 
 ### Changed
 - Compute deferred perspective, OpenFocus alignment, and OpenFocus translation
@@ -99,6 +101,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   arena memory after each StackMFF inference.
 - Reuse OpenFocus A response rows and limit GPU output readback size. Skip
   inactive OpenFocus B merge tiles and reuse OpenFocus C pyramid buffers.
+- Reduce the OpenFocus C OpenCL working set by processing the finest layer
+  from packed source pixels. Log the device and admission limit on CPU fallback.
+- Count prepared frames and reuse OpenFocus B scratch data for matching renders
+  in the same session, including the aligned depth validity mask.
 - Bound PyTorch CUDA and MPS attention workspace while retaining all focus
   layers. Reuse CUDA worker admission on completed tile sizes and reuse logits
   storage for probabilities. StackMFF V2 reads only contributing color strips.
@@ -108,6 +114,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and preserve their output order.
 
 ### Fixed
+- Show live focus layers on new full renders started from an earlier output,
+  including when output history is browsed during alignment or preparation.
 - Keep the source loupe visible during a render, then replace its preview
   with native detail when the active frame is ready.
 - Reject new stack imports during a render so they cannot replace the original

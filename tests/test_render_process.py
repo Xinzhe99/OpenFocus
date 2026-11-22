@@ -685,9 +685,42 @@ def test_legacy_tooltip_uses_saved_choice_without_guessing_tiling(monkeypatch):
     assert trans.t('output_fusion_tiled').split('（')[0] not in tooltip
 
 
+@pytest.mark.parametrize('kind', ['fusion', 'aligned'])
+def test_output_tooltip_discloses_registration_accelerator_and_reuse(qapp, monkeypatch, kind):
+    from types import SimpleNamespace
+    from PyQt6.QtWidgets import QLabel, QListWidget
+    from controllers.output_manager import OutputManager, OutputRecord
+    from core.render_context import RegistrationDetails, RegistrationDispatch
+    from locales import trans
+
+    monkeypatch.setattr(trans, 'current_lang', 'en')
+    panel = SimpleNamespace(output_list=QListWidget(), output_label=QLabel(), fusion_results=[])
+    manager = OutputManager(panel)
+    image = np.zeros((8, 9), np.uint8) if kind == 'fusion' else None
+    dispatch = RegistrationDispatch('ecc', 'CPU', 'CPU', 'OpenCL: Test GPU', True)
+    record = OutputRecord.create(image, 'result', kind=kind,
+        registration_details=RegistrationDetails((dispatch,)))
+    if kind == 'fusion':
+        record.tooltip_details = ('Fusion Device: OpenCL: Test GPU',)
+    item = manager._insert_output(image, 'result', record)
+    tooltip = item.toolTip().splitlines()
+    assert 'Registration Device: CPU' in tooltip
+    assert 'ECC Resize Accelerator: OpenCL: Test GPU' in tooltip
+    assert 'ECC Resize: CPU fallback used' in tooltip
+    assert ('Fusion Device: OpenCL: Test GPU' in tooltip) == (kind == 'fusion')
+
+    legacy = OutputRecord.create(image, 'cached', kind=kind,
+        registration_details=RegistrationDetails(reuse='disk_plan'))
+    tooltip = manager._insert_output(image, 'cached', legacy).toolTip().splitlines()
+    assert 'Registration: reused cached transforms (applied on CPU)' in tooltip
+    assert 'Original Registration Device: unavailable' in tooltip
+    assert 'Original Registration Device: CPU' not in tooltip
+
+
 @pytest.mark.parametrize('alignment', ['none', 'openfocus'])
 def test_spawned_render_preserves_uint16_and_lazy_alignment(qapp, tmp_path, scratch, alignment):
     from core.render_process import RenderProcessWorker
+    from core.render_context import RegistrationDetails, RegistrationDispatch
     from core.source_frames import ProcessedFrame, SourceFrame, resolve_frame
     from core.workers import RenderWorker
     frames = _sources(tmp_path)
@@ -717,6 +750,9 @@ def test_spawned_render_preserves_uint16_and_lazy_alignment(qapp, tmp_path, scra
         np.testing.assert_array_equal(resolve_frame(frame), resolve_frame(expected))
     assert registered == (alignment != 'none')
     assert worker.alignment_report == reference.alignment_report
+    expected_dispatch = (None if alignment == 'none' else
+                         RegistrationDetails((RegistrationDispatch('openfocus', 'CPU', 'CPU'),)))
+    assert worker.registration_details == reference.registration_details == expected_dispatch
     assert worker.fusion_details == reference.fusion_details
     assert worker.fusion_details.tile_grid is None
     assert worker.fusion_details.input_size == tuple(processed[0].shape[1::-1])

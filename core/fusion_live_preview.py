@@ -85,18 +85,24 @@ class LiveFusionPreview:
             self.unavailable()
 
     def show_blend(self, depth, index, total):
-        """Show how far reconstruction has reached through the depth map."""
+        """Reveal the layer shades as reconstruction reaches each pixel."""
         if not self.ready() or index <= self._blend_seen:
             return
         try:
             step = 65535 // (total - 1)
-            # Pixels turn white when both bracketing layers have been merged.
-            pending = _sample(depth).astype(np.int32)
-            np.subtract((index + 1) * step, pending, out=pending)
-            np.clip(pending, 0, step, out=pending)
-            gray = np.rint(pending * np.float32(255 / step)).astype(np.uint8)
+            positions = _sample(depth)
+            # Reveal the fixed depth shade with the same two-layer coverage
+            # used by the merge. Completed pixels retain their focus detail.
+            coverage = positions.astype(np.int32)
+            np.subtract((index + 1) * step, coverage, out=coverage)
+            np.clip(coverage, 0, step, out=coverage)
+            gray = positions * np.float32(255 / (step * (total - 1)))
+            gray *= coverage
+            gray *= np.float32(1 / step)
+            np.minimum(gray, 255, out=gray)
+            np.rint(gray, out=gray)
             self._blend_seen = index
-            self._publish(gray, index, total, blending=True)
+            self._publish(gray.astype(np.uint8), index, total, blending=True)
         except MemoryError:
             self.unavailable()
 

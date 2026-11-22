@@ -190,6 +190,25 @@ def _alignment_valid_mask(image: np.ndarray, *, should_cancel=None) -> Optional[
 
 
 @dataclass(frozen=True)
+class RegistrationDispatch:
+    """Devices used by a completed registration step."""
+
+    method: str
+    estimation: str
+    warp: str
+    resize_accelerator: Optional[str] = None
+    resize_fallback: bool = False
+
+
+@dataclass(frozen=True)
+class RegistrationDetails:
+    """The original dispatch, and how this result obtained its alignment."""
+
+    dispatch: Tuple[RegistrationDispatch, ...] = ()
+    reuse: Optional[str] = None
+
+
+@dataclass(frozen=True)
 class FusionDetails:
     """Parameters and spatial domain of a completed fusion dispatch."""
 
@@ -322,6 +341,7 @@ class RenderContext:
     source_paths: Tuple[str, ...] = ()
     rendered_depth: Optional[RenderedDepth] = None
     fusion_details: Optional[FusionDetails] = None
+    registration_details: Optional[RegistrationDetails] = None
 
     @property
     def alignment(self) -> str:
@@ -430,6 +450,7 @@ def build_render_context(
     source_paths: Optional[Sequence[str]] = None,
     rendered_depth: Optional[dict] = None,
     fusion_details: Optional[FusionDetails] = None,
+    registration_details: Optional[RegistrationDetails] = None,
     should_cancel=None,
 ) -> Optional[RenderContext]:
     """Build the provenance context for one completed fusion.
@@ -556,4 +577,5 @@ def build_render_context(
         source_paths=paths,
         rendered_depth=depth,
         fusion_details=fusion_details,
+        registration_details=registration_details,
     )

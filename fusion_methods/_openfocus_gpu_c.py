@@ -17,11 +17,11 @@ from fusion_methods.openfocus_bc import _pyramid_levels, _source_codes
 from fusion_methods.openfocus_ab import _check_cancel
 
 _READBACK_BUFFER_BYTES = 8 * 1024 * 1024
+_WORKSPACE_RESERVE_BYTES = 16 * 1024 * 1024
 
 _KERNEL_NAMES = (
-    'c_norm', 'c_norm_u8', 'c_norm_bgr_rev', 'c_norm_u8_bgr_rev',
-    'c_down_h', 'c_down_v', 'c_up_h',
-    'c_detail_w', 'c_collapse', 'c_merge', 'c_merge_focus',
+    'c_norm', 'c_down_h_packed', 'c_down_h', 'c_down_v', 'c_up_h',
+    'c_weight_packed', 'c_merge_packed', 'c_detail_w', 'c_collapse', 'c_merge',
     'c_out_u8', 'c_out_f32', 'transpose_u16', 'filt4',
     'sample_focus_plane',
 )
@@ -60,38 +60,36 @@ __constant float C_DOWN[4]={0.125f,0.375f,0.375f,0.125f};
 __constant float C_EVEN[5]={0.019027505f,0.318410337f,0.559359729f,0.103202470f,0.0f};
 __constant float C_ODD[5]={0.0f,0.103202470f,0.559359729f,0.318410337f,0.019027505f};
 
-__kernel void c_norm(__global const ushort* src, __global float* dst,
-                     const float factor, const int n)
+static inline float c_source_value(__global const uchar* src, int k, int c, int C,
+                                   int u8, int reverse, float factor)
 {
-    int i=get_global_id(0); if(i>=n)return;
-    dst[i]=(float)src[i]*factor;
+    int i=k*C+(reverse?2-c:c);
+    float code=u8?(float)src[i]:(float)((__global const ushort*)src)[i];
+    return code*factor;
 }
 
-__kernel void c_norm_u8(__global const uchar* src, __global float* dst,
-                        const float factor, const int n)
+__kernel void c_norm(__global const uchar* src, __global float* dst,
+                     const float factor, const int u8, const int reverse, const int C)
 {
-    int i=get_global_id(0); if(i>=n)return;
-    dst[i]=(float)src[i]*factor;
+    int k=get_global_id(0);
+    for(int c=0;c<C;c++) dst[k*C+c]=c_source_value(src,k,c,C,u8,reverse,factor);
 }
 
-__kernel void c_norm_bgr_rev(__global const ushort* src, __global float* dst,
-                             const float factor, const int pixels)
+__kernel void c_down_h_packed(__global const uchar* src, __global float* dst,
+                             const float factor, const int u8, const int reverse,
+                             const int W, const int H, const int OW, const int C)
 {
-    int k=get_global_id(0); if(k>=pixels)return;
-    size_t base=(size_t)k*3;
-    dst[base]=(float)src[base+2]*factor;
-    dst[base+1]=(float)src[base+1]*factor;
-    dst[base+2]=(float)src[base]*factor;
-}
-
-__kernel void c_norm_u8_bgr_rev(__global const uchar* src, __global float* dst,
-                                const float factor, const int pixels)
-{
-    int k=get_global_id(0); if(k>=pixels)return;
-    size_t base=(size_t)k*3;
-    dst[base]=(float)src[base+2]*factor;
-    dst[base+1]=(float)src[base+1]*factor;
-    dst[base+2]=(float)src[base]*factor;
+    int x=get_global_id(0); if(x>=OW)return;
+    int y=get_global_id(1); if(y>=H)return;
+    for(int c=0;c<C;c++){
+        float v=0.0f;
+        for(int k=0;k<4;k++){
+            int sx=min(W-1,max(0,2*x+k-1));
+            float s=c_source_value(src,y*W+sx,c,C,u8,reverse,factor);
+            float p=s*C_DOWN[k]; v=v+p;
+        }
+        dst[(y*OW+x)*C+c]=v;
+    }
 }
 
 __kernel void c_down_h(__global const float* s, __global float* d,
@@ -159,6 +157,81 @@ __kernel void c_up_h(__global const float* s, __global float* d,
         d[(y*DW+x)*C+c]=c_up_value(s,w,y*SW*C+c,C,sx,SW,total);
 }
 
+static inline ushort c_weight(float st, int x, int y, int W, int H, int C)
+{
+    if(C==1) st=st*3.0f;
+    else if(C==2) st=st*1.5f;
+    int border=(H>2&&(y==0||y==H-1))||(W>2&&(x==0||x==W-1));
+    return border?0:(ushort)min(65535,(int)(st*21845.0f));
+}
+
+static inline float c_packed_detail(__global const uchar* src,
+                                    __global const float* horizontal,
+                                    const __constant float* w, int x, int k,
+                                    int c, int W, int C, int sy, int SH, float total,
+                                    float factor, int u8, int reverse)
+{
+    float lo=c_up_value(horizontal,w,x*C+c,W*C,sy,SH,total);
+    float fine=c_source_value(src,k,c,C,u8,reverse,factor);
+    return (fine-lo)/(lo+0.1f);
+}
+
+__kernel void c_weight_packed(__global const uchar* src, __global const float* horizontal,
+                              __global ushort* weight, const float factor, const int u8,
+                              const int reverse, const int W, const int H, const int SH,
+                              const int C)
+{
+    int x=get_global_id(0); if(x>=W)return;
+    int y=get_global_id(1); if(y>=H)return;
+    int k=y*W+x;
+    const __constant float* w=(y&1)?C_ODD:C_EVEN;
+    int sy=(y>>1)-2;
+    float total=c_up_total(w,sy,SH);
+    float st=0.0f;
+    for(int c=0;c<min(C,3);c++){
+        float v=c_packed_detail(src,horizontal,w,x,k,c,W,C,sy,SH,total,factor,u8,reverse);
+        st=st+fabs(v);
+    }
+    weight[k]=c_weight(st,x,y,W,H,C);
+}
+
+__kernel void c_merge_packed(__global const uchar* src, __global const float* horizontal,
+                             __global const ushort* weight, __global float* acc,
+                             __global ushort* best, __global ushort* winner,
+                             const int index, const float factor, const int u8,
+                             const int reverse, const int W, const int H, const int SH,
+                             const int C)
+{
+    int x=get_global_id(0); if(x>=W)return;
+    int y=get_global_id(1); if(y>=H)return;
+    int k=y*W+x;
+    const __constant float* w=(y&1)?C_ODD:C_EVEN;
+    int sy=(y>>1)-2;
+    float total=c_up_total(w,sy,SH);
+    int colors=0;
+    float detail[3];
+    ushort score;
+    if(weight){
+        score=weight[k];
+    }else{
+        // Without filtering, compare the weight immediately and reuse the detail.
+        colors=min(C,3);
+        float st=0.0f;
+        for(int c=0;c<colors;c++){
+            detail[c]=c_packed_detail(src,horizontal,w,x,k,c,W,C,sy,SH,total,factor,u8,reverse);
+            st=st+fabs(detail[c]);
+        }
+        score=c_weight(st,x,y,W,H,C);
+    }
+    if(index!=0&&score<=best[k]) return;
+    best[k]=score;
+    if(winner) winner[k]=(ushort)index;
+    for(int c=0;c<colors;c++) acc[k*C+c]=detail[c];
+    for(int c=colors;c<C;c++){
+        acc[k*C+c]=c_packed_detail(src,horizontal,w,x,k,c,W,C,sy,SH,total,factor,u8,reverse);
+    }
+}
+
 __kernel void c_detail_w(__global float* fine, __global const float* horizontal,
                          __global ushort* weight, const int W, const int H,
                          const int SH, const int C)
@@ -176,11 +249,7 @@ __kernel void c_detail_w(__global float* fine, __global const float* horizontal,
         fine[i]=v;
         if(c<3) st=st+fabs(v);
     }
-    if(C==1) st=st*3.0f;
-    else if(C==2) st=st*1.5f;
-    int border=(H>2&&(y==0||y==H-1))||(W>2&&(x==0||x==W-1));
-    int wi=border?0:min(65535,(int)(st*21845.0f));
-    weight[y*W+x]=(ushort)wi;
+    weight[y*W+x]=c_weight(st,x,y,W,H,C);
 }
 
 __kernel void c_merge(__global const float* detail, __global const ushort* weight,
@@ -193,22 +262,6 @@ __kernel void c_merge(__global const float* detail, __global const ushort* weigh
     ushort w=weight[k];
     if(first||w>best[k]){
         best[k]=w;
-        for(int c=0;c<C;c++) acc[k*C+c]=detail[k*C+c];
-    }
-}
-
-__kernel void c_merge_focus(__global const float* detail, __global const ushort* weight,
-                            __global float* acc, __global ushort* best,
-                            __global ushort* winner, const int index,
-                            const int W, const int H, const int C)
-{
-    int x=get_global_id(0); if(x>=W)return;
-    int y=get_global_id(1); if(y>=H)return;
-    int k=y*W+x;
-    ushort w=weight[k];
-    if(index==0||w>best[k]){
-        best[k]=w;
-        winner[k]=(ushort)index;
         for(int c=0;c<C;c++) acc[k*C+c]=detail[k*C+c];
     }
 }
@@ -303,10 +356,13 @@ class GpuC:
         self._transpose(a, weight, h, w)
         self._filt4(weight, weight, first, h, w, count_v, q, t)
 
-    def _synthesize(self, kernel, coarse, horizontal, target, sh, sw, dh, dw, c,
-                    *extra):
+    def _up_horizontal(self, coarse, horizontal, sh, sw, dw, c):
         self._run(self.k['c_up_h'], (dw, sh), coarse, horizontal,
                   np.int32(sw), np.int32(sh), np.int32(dw), np.int32(c))
+
+    def _synthesize(self, kernel, coarse, horizontal, target, sh, sw, dh, dw, c,
+                    *extra):
+        self._up_horizontal(coarse, horizontal, sh, sw, dw, c)
         self._run(kernel, (dw, dh), target, horizontal, *extra,
                   np.int32(dw), np.int32(dh), np.int32(sh), np.int32(c))
 
@@ -387,6 +443,7 @@ class GpuC:
         from fusion_methods._openfocus_gpu import (
             GpuError, _PreviewPlaneReader, _free_vram, _iter_prefetched, _prepare_gpu_upload,
         )
+        from utils.logging_setup import log_debug
 
         snapshot = resource_policy.probe_resources()
         host_budget = resource_policy.ram_ceiling(snapshot)
@@ -418,42 +475,75 @@ class GpuC:
         readback_bytes = min(max(1, n * out_bytes), _READBACK_BUFFER_BYTES)
         readback = max(n * out_bytes + readback_bytes,
                        n * out_bytes + 4 * full_size if focus_callback is not None else 0)
-        staging = max(source_peak, readback) + 16 * 1024 * 1024
+        staging = max(source_peak, readback) + _WORKSPACE_RESERVE_BYTES
         if staging > host_budget:
-            raise GpuError('OpenFocus C GPU staging exceeds the host memory budget')
-        # Each size matches an allocation below. The queue is in order, so
-        # a smaller pyramid level can reuse a prefix of the same scratch plane.
+            raise GpuError(f'OpenFocus C GPU staging exceeds the host memory budget '
+                           f'(need {staging:,} bytes, limit {host_budget:,} bytes)')
+        # The finest level reads packed source codes directly. Only the two
+        # largest reduced levels need rolling float32 scratch.
         detail_sizes = [h * w for (h, w), _ in detail_levels]
         coarsest_size = levels[-1][0] * levels[-1][1]
-        rolling_sizes = (full_size, levels[1][0] * levels[1][1]) if detail_levels else ()
+        rolling_sizes = tuple(h * w for h, w in levels[1:3])
         horizontal_size = (max(height * levels[1][1], levels[1][0] * width)
                            if detail_levels else 0)
         filter_planes = 2 if detail_levels and parameter > 0 else 0
         keep_winner = focus_callback is not None and bool(detail_levels)
-        need = 4 * channels * (sum(rolling_sizes) + horizontal_size + coarsest_size)
-        need += sum(detail_sizes) * (4 * channels + 2)
-        need += 2 * full_size * (bool(detail_levels) + filter_planes + keep_winner)
-        need += max(n * in_bytes, readback_bytes) + 16 * 1024 * 1024
-        limit = int(self.device.global_mem_size) // 2
+        weight_size = full_size if filter_planes else 0
+        if not filter_planes and len(detail_sizes) > 1:
+            weight_size = detail_sizes[1]
+        upload_bytes = n * in_bytes
+        # Upload and chunked readback do not coexist. Reserve separately for
+        # the context, driver overhead and the bounded live preview sample.
+        buffers = (
+            *(4 * channels * size for size in (*detail_sizes, *rolling_sizes,
+                                              horizontal_size, coarsest_size)),
+            *(2 * size for size in detail_sizes),
+            2 * weight_size,
+            *((2 * full_size,) * (filter_planes + keep_winner)),
+            max(upload_bytes, readback_bytes),
+        )
+        need = sum(buffers) + _WORKSPACE_RESERVE_BYTES
+        largest = max(buffers)
+        single = int(self.device.max_mem_alloc_size)
+        if largest > single:
+            raise GpuError(f'OpenFocus C GPU workspace needs a {largest:,}-byte buffer, '
+                           f'but the OpenCL single allocation limit is {single:,} bytes')
+        device_cap = int(self.device.global_mem_size) // 2
         unified_memory = self.device.host_unified_memory
+        free_vram = total_vram = None
         if unified_memory:
-            limit = min(limit, host_budget - staging)
+            policy_limit = host_budget - staging
         else:
             memory = _free_vram(self.device)
             if memory is None:
-                raise GpuError('OpenFocus C GPU free memory is unknown')
-            snapshot = replace(snapshot, free_vram=memory[0], total_vram=memory[1])
-            limit = min(limit, resource_policy.vram_budget(snapshot))
-        single = int(self.device.max_mem_alloc_size)
-        if need > limit or n * 4 > single:
-            raise GpuError('OpenFocus C GPU workspace exceeds the device budget')
+                raise GpuError(f'OpenFocus C GPU free memory is unknown '
+                               f'(need {need:,} bytes of device workspace)')
+            free_vram, total_vram = memory
+            snapshot = replace(snapshot, free_vram=free_vram, total_vram=total_vram)
+            policy_limit = resource_policy.vram_budget(snapshot)
+        limit = min(device_cap, policy_limit)
+        if need > limit:
+            if unified_memory:
+                policy_reason = (f'shared host memory after staging {policy_limit:,} bytes, '
+                                 f'host budget {host_budget:,} bytes, staging {staging:,} bytes')
+            else:
+                policy_reason = (f'verified free VRAM {free_vram:,} of {total_vram:,} bytes, '
+                                 f'VRAM policy budget {policy_limit:,} bytes')
+            raise GpuError(f'OpenFocus C GPU workspace exceeds the device budget '
+                           f'(need {need:,} bytes, limit {limit:,} bytes, {policy_reason}, '
+                           f'OpenCL half-total cap {device_cap:,} bytes)')
+        log_debug('openfocus_c.gpu_admitted', shape=shape, workspace_bytes=need,
+                  device_budget_bytes=limit, largest_buffer_bytes=largest,
+                  max_allocation_bytes=single, free_vram_bytes=free_vram,
+                  total_vram_bytes=total_vram, staging_bytes=staging,
+                  host_budget_bytes=host_budget)
 
         accumulators = [self._f32(size, channels) for size in detail_sizes]
         maxima = [self._u16(size) for size in detail_sizes]
         coarsest = self._f32(coarsest_size, channels)
         rolling = tuple(self._f32(size, channels) for size in rolling_sizes)
         horizontal = self._f32(horizontal_size, channels) if detail_levels else None
-        weight = self._u16(full_size) if detail_levels else None
+        weight = self._u16(weight_size) if weight_size else None
         winner = self._u16(full_size) if keep_winner else None
         filter_scratch = tuple(self._u16(full_size) for _ in range(filter_planes))
         filter_configs = []
@@ -464,7 +554,7 @@ class GpuC:
                 q = int(_weight(radius))
                 filter_configs.append((max(1, min(int(radius), w)), max(1, min(int(radius), h)),
                                        q, (4096 - q) >> 1))
-        src = self.cl.Buffer(self.ctx, self.mf.READ_ONLY, n * in_bytes)
+        src = self.cl.Buffer(self.ctx, self.mf.READ_ONLY, upload_bytes)
         prefetch_budget = host_budget - need if unified_memory else host_budget
         prefetch = bool(detail_levels) and (staging + source_peak <= prefetch_budget)
         in_flight = False
@@ -498,42 +588,51 @@ class GpuC:
                         progress_callback(index + 1, total)
                     continue
                 codes, scale, pix_u8, bgr_rev = item
-                factor = np.float32(scale / (65280.0 if is_u8 else 65535.0))
-                fine = rolling[0] if detail_levels else coarsest
+                packing = (np.float32(scale / (65280.0 if is_u8 else 65535.0)),
+                           np.int32(pix_u8), np.int32(bgr_rev))
                 in_flight = True
                 self.cl.enqueue_copy(self.q, src, codes, is_blocking=False)
-                if bgr_rev:
-                    kern_name = 'c_norm_u8_bgr_rev' if pix_u8 else 'c_norm_bgr_rev'
-                    self._run(self.k[kern_name], full_size, src, fine,
-                              factor, np.int32(full_size))
-                else:
-                    self._run(self.k['c_norm_u8' if pix_u8 else 'c_norm'], n, src, fine,
-                              factor, np.int32(n))
+                if not detail_levels:
+                    self._run(self.k['c_norm'], full_size, src, coarsest,
+                              *packing, np.int32(channels))
 
                 for level, ((h, w), (ch, cw)) in enumerate(detail_levels):
                     _check_cancel(should_cancel)
                     # Coarsest weights depended only on geometry, so every
                     # frame tied. Write the first frame directly to its own plane.
                     coarse = (coarsest if index == 0 and level == len(detail_levels) - 1
-                              else rolling[(level + 1) % 2])
-                    self._run(self.k['c_down_h'], (cw, h), fine, horizontal,
-                              np.int32(w), np.int32(h), np.int32(cw), np.int32(channels))
-                    self._run(self.k['c_down_v'], (cw, ch), horizontal, coarse,
-                              np.int32(cw), np.int32(h), np.int32(cw), np.int32(ch),
-                              np.int32(channels))
-                    self._synthesize(self.k['c_detail_w'], coarse, horizontal, fine,
-                                     ch, cw, h, w, channels, weight)
-                    if filter_scratch:
-                        self._filter_w(weight, filter_scratch, h, w, filter_configs[level])
-                    buffers = fine, weight, accumulators[level], maxima[level]
-                    dimensions = np.int32(w), np.int32(h), np.int32(channels)
-                    if level == 0 and winner is not None:
-                        self._run(self.k['c_merge_focus'], (w, h), *buffers, winner,
-                                  np.int32(index), *dimensions)
+                              else rolling[level % 2])
+                    w_arg, h_arg, cw_arg, ch_arg, c_arg = map(np.int32, (w, h, cw, ch, channels))
+                    if level == 0:
+                        self._run(self.k['c_down_h_packed'], (cw, h), src, horizontal,
+                                  *packing, w_arg, h_arg, cw_arg, c_arg)
                     else:
-                        self._run(self.k['c_merge'], (w, h), *buffers,
-                                  np.int32(index == 0), *dimensions)
-                    fine = coarse
+                        fine = rolling[(level - 1) % 2]
+                        self._run(self.k['c_down_h'], (cw, h), fine, horizontal,
+                                  w_arg, h_arg, cw_arg, c_arg)
+                    self._run(self.k['c_down_v'], (cw, ch), horizontal, coarse,
+                              cw_arg, h_arg, cw_arg, ch_arg, c_arg)
+                    if level == 0:
+                        # The filtered scores depend on whole rows and columns.
+                        # After filtering, recompute detail only where a source
+                        # wins, avoiding a full-size current-frame float plane.
+                        self._up_horizontal(coarse, horizontal, ch, cw, w, channels)
+                        up_dims = w_arg, h_arg, ch_arg, c_arg
+                        filtered_weight = weight if filter_scratch else None
+                        if filter_scratch:
+                            self._run(self.k['c_weight_packed'], (w, h), src, horizontal,
+                                      weight, *packing, *up_dims)
+                            self._filter_w(weight, filter_scratch, h, w, filter_configs[level])
+                        self._run(self.k['c_merge_packed'], (w, h), src, horizontal,
+                                  filtered_weight, accumulators[0], maxima[0], winner,
+                                  np.int32(index), *packing, *up_dims)
+                    else:
+                        self._synthesize(self.k['c_detail_w'], coarse, horizontal, fine,
+                                         ch, cw, h, w, channels, weight)
+                        if filter_scratch:
+                            self._filter_w(weight, filter_scratch, h, w, filter_configs[level])
+                        self._run(self.k['c_merge'], (w, h), fine, weight, accumulators[level],
+                                  maxima[level], np.int32(index == 0), w_arg, h_arg, c_arg)
                 # Bound queued frame uploads to one source, even for very deep stacks.
                 self.q.finish()
                 in_flight = False

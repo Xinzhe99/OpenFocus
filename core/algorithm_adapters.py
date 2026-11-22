@@ -133,7 +133,8 @@ def registration_openfocus(registration, images, thread_count=4, should_cancel=N
             failure_policy=parameters['failure_policy'], reference_frame=parameters['reference_frame'],
             rotation=parameters['rotation'], magnification=parameters['magnification'],
             defer_warps=registration.defer_warps, output_path=parameters.get('output_path'),
-            plan_callback=lambda plan: setattr(registration, 'alignment_plan', plan))
+            plan_callback=lambda plan: setattr(registration, 'alignment_plan', plan),
+            dispatch_callback=registration._record_dispatch)
 
 
 def depth_dct(images, progress_callback=None, should_cancel=None, **parameters):

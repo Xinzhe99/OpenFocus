@@ -191,7 +191,7 @@ def test_reverse_cache_plan_binds_names_and_sources_in_registration_order(qapp, 
     worker._cache_source_images = list(reversed(frames))
     worker._alignment_plan = object()
     seen = []
-    def save(folder, names, plan, sources, identity, should_cancel):
+    def save(folder, names, plan, sources, identity, should_cancel, registration_dispatch):
         seen.append((names, [int(source[0, 0]) for source in sources], dict(identity)))
     monkeypatch.setattr(align_cache, 'save_alignment_plan', save)
     worker._save_cached_alignment(list(reversed(frames)))
@@ -199,16 +199,19 @@ def test_reverse_cache_plan_binds_names_and_sources_in_registration_order(qapp, 
     assert seen[0][1] == [2, 1, 0]
     assert seen[0][2]['registration_order'] == 'reverse-v1'
     plan = worker._alignment_plan
-    def load(folder, names, sources, identity, should_cancel):
+    def load(folder, names, sources, identity, should_cancel, with_dispatch):
         assert names == seen[0][0]
         assert [int(source[0, 0]) for source in sources] == seen[0][1]
         assert identity == seen[0][2]
-        return plan
+        assert with_dispatch
+        return plan, ()
     monkeypatch.setattr(align_cache, 'load_alignment_plan', load)
     monkeypatch.setattr(registration, 'apply_alignment_plan',
                         lambda sources, plan, **kwargs: list(sources))
     cached = worker._load_cached_alignment()
     assert [int(source[0, 0]) for source in cached] == [2, 1, 0]
+    assert worker.registration_details.reuse == 'disk_plan'
+    assert worker.registration_details.dispatch == ()
     assert worker.alignment_reused is False  # The caller marks a completed cache hit.
     asc = workers.RenderWorker(frames, algorithm='openfocus_b', alignment='openfocus',
                                sort_mode='asc', thread_count=1, disk_cache=request)

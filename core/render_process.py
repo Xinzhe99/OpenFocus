@@ -33,7 +33,8 @@ _CANCEL_GRACE_SECONDS = 3.0
 _LIVE_PREVIEW_EDGE = 512
 _ERROR_STATE_FIELDS = ('alignment_reused', 'alignment_computed', 'alignment_report',
                        'alignment_report_provenance', 'performance_report')
-_SUCCESS_STATE_FIELDS = (*_ERROR_STATE_FIELDS, 'prepared_cache', 'rendered_depth', 'fusion_details')
+_SUCCESS_STATE_FIELDS = (*_ERROR_STATE_FIELDS, 'prepared_cache', 'rendered_depth', 'fusion_details',
+                         'registration_details')
 _RENDER_STAGES = ('prepare', 'align', 'fuse', 'finish', 'finalize', 'publish')
 _ERROR_CATEGORIES = ('resource_limit', 'memory', 'os', 'value', 'runtime', 'other')
 _ERROR_ORIGINS = ('child_worker', 'child_setup_or_transfer')
@@ -450,6 +451,7 @@ class RenderProcessWorker(RenderWorker):
     def run(self):
         self.failure_category = None
         self.fusion_details = None
+        self.registration_details = None
         self._child_error_evidence = None
         result = None
         error = None
@@ -490,6 +492,7 @@ class RenderProcessWorker(RenderWorker):
             error = 'CANCELLED: render cancelled'
         if error is not None:
             self.fusion_details = None
+            self.registration_details = None
             self.error_signal.emit(error)
         elif result is not None:
             self.finished_signal.emit(*result)

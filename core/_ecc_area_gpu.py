@@ -146,6 +146,7 @@ class ExactAreaGpu:
         self._kernels = None
         self.frames_resized = 0
         self.device_name = ''
+        self.fell_back = False
 
     def _select_device(self):
         if not _cpu_contract() or os.environ.get('PYOPENCL_BUILD_OPTIONS'):
@@ -232,12 +233,15 @@ class ExactAreaGpu:
             try:
                 if self._cl is None and not self._select_device():
                     self._disabled = True
+                    self.fell_back = True
                     return None
                 if cv2.ipp.useIPP_NotExact() or self._round_mode() != 0:
+                    self.fell_back = True
                     return None
                 if self._shape != (image.shape, image.dtype, width, height):
                     if not self._workspace(image, width, height, channels):
                         self._disabled = True
+                        self.fell_back = True
                         return None
                 shape = (height, width) if channels == 1 else (height, width, channels)
                 output = np.empty(shape, image.dtype)
@@ -282,6 +286,7 @@ class ExactAreaGpu:
                 if drain_failed or (err_types and isinstance(exc, err_types)):
                     _invalidate_program_cache()
                 self._disabled = True
+                self.fell_back = True
                 self._buffers = self._ys = None
                 self._context = None
                 self._queue = None

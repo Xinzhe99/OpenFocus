@@ -246,6 +246,35 @@ def workspace_fusions(window):
             yield record
 
 
+def registration_tooltip_lines(details):
+    if details is None:
+        return []
+    lines = []
+    if details.reuse is not None:
+        lines.append(trans.t(f'output_registration_reuse_{details.reuse}'))
+    device_key = 'output_registration_original_device' if details.reuse else 'output_registration_device'
+    if not details.dispatch:
+        lines.append(trans.t(device_key).format(trans.t('output_registration_device_unknown')))
+        return lines
+    devices = {(stage.estimation, stage.warp) for stage in details.dispatch}
+    if len(devices) == 1:
+        estimation, warp = next(iter(devices))
+        description = estimation if estimation == warp else trans.t('output_registration_device_stages').format(
+            estimation=estimation, warp=warp)
+        lines.append(trans.t(device_key).format(description))
+    else:
+        for stage in details.dispatch:
+            description = trans.t('output_registration_device_stages').format(
+                estimation=stage.estimation, warp=stage.warp)
+            lines.append(trans.t(device_key).format(f'{stage.method.upper()} — {description}'))
+    for stage in details.dispatch:
+        if stage.resize_accelerator:
+            lines.append(trans.t('output_registration_resize_device').format(stage.resize_accelerator))
+        if stage.resize_fallback:
+            lines.append(trans.t('output_registration_resize_fallback'))
+    return lines
+
+
 def _fusion_tooltip_lines(record):
     from core.algorithms import get_fusion
 
@@ -376,10 +405,12 @@ class OutputRecord:
     linear_dng_metadata: Any = None
     source_paths: tuple = ()
     fusion_details: Any = None
+    registration_details: Any = None
 
     @classmethod
     def create(cls, image, label: str, *, context=None, kind: str = "fusion",
-               parent_id: Optional[str] = None, exported: bool = False, fusion_details=None):
+               parent_id: Optional[str] = None, exported: bool = False, fusion_details=None,
+               registration_details=None):
         return cls(output_id=uuid.uuid4().hex, image=image, label=label,
                    context=context, kind=kind, parent_id=parent_id,
                    exported=exported,
@@ -388,7 +419,7 @@ class OutputRecord:
                    frame_icc_profiles=tuple(getattr(context, 'frame_icc_profiles', ()) or ()),
                    linear_dng_metadata=deepcopy(getattr(context, 'linear_dng_metadata', None)),
                    source_paths=tuple(getattr(context, 'source_paths', ()) or ()),
-                   fusion_details=fusion_details)
+                   fusion_details=fusion_details, registration_details=registration_details)
 
     @property
     def retouchable(self) -> bool:
@@ -588,6 +619,8 @@ class OutputManager:
             h, w = record.image.shape[:2]
             lines.append(trans.t('status_res_fmt').format(w, h))
         lines.extend(line for line in record.tooltip_details if line not in lines)
+        details = record.registration_details or getattr(record.context, 'registration_details', None)
+        lines.extend(line for line in registration_tooltip_lines(details) if line not in lines)
         if record.kind in ('fusion', 'compare'):
             lines.extend(line for line in _fusion_tooltip_lines(record) if line not in lines)
         if record.export_path:
@@ -751,7 +784,7 @@ class OutputManager:
 
     def update_output_list_for_fusion(self, label: str, *, context=None,
                                       linear_dng_metadata=None, source_paths=(),
-                                      fusion_details=None) -> None:
+                                      fusion_details=None, registration_details=None) -> None:
         window = self.window
 
         image = None
@@ -759,7 +792,8 @@ class OutputManager:
         if window.fusion_result is not None:
             image = window.fusion_result
             record = OutputRecord.create(image, label,
-                                         context=context, kind="fusion", fusion_details=fusion_details)
+                                         context=context, kind="fusion", fusion_details=fusion_details,
+                                         registration_details=registration_details)
             # Freeze the load lineage with the result so later rotate/flip/
             # resize/exclusion keep it in this stack's watermark scope.
             record.stack_lineage = watermark.stack_lineage(window)
@@ -2090,7 +2124,8 @@ class OutputManager:
 def publish_aligned_stack(window, frames, *, filenames=None, icc_profile=None,
                           source_frames=None, source_indices=None, source_revision=0,
                           linear_dng_metadata=None, alignment_options=None,
-                          source_exif=b"", frame_exif=(), frame_icc_profiles=()) -> None:
+                          source_exif=b"", frame_exif=(), frame_icc_profiles=(),
+                          registration_details=None) -> None:
     """List an aligned stack once; write its folder only on explicit export."""
     if not frames:
         return
@@ -2100,7 +2135,8 @@ def publish_aligned_stack(window, frames, *, filenames=None, icc_profile=None,
         filenames = [source_names[i] if i < len(source_names) else f'frame_{i + 1:04d}.png' for i in indices]
     names = tuple(filenames)
     label = trans.t('output_aligned_stack').format(n=len(frames))
-    record = OutputRecord.create(None, label, kind='aligned', exported=False)
+    record = OutputRecord.create(None, label, kind='aligned', exported=False,
+                                 registration_details=registration_details)
     # Registered-frame watermarks use the same stack ownership as results;
     # the aligned folder stays part of the stack it was rendered from.
     record.stack_lineage = watermark.stack_lineage(window)

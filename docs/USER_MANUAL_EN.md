@@ -800,6 +800,10 @@ Wipe mode and ROI mode share the result panel, so entering one exits the other. 
 
 Image registration corrects spatial misalignment between frames in your image stack. This is essential when images have slight shifts or perspective changes.
 
+Hover over an output to see the registration device and the fusion device.
+The details also identify GPU-assisted ECC resizing and registration reused
+from the session or cache.
+
 ### Registration Methods
 
 #### ECC (Enhanced Correlation Coefficient)
@@ -1104,10 +1108,12 @@ return safely.
 
 ### Live Fusion Preview
 
-Run a full OpenFocus A, B, or C render to see a sampled focus composite and
-the source-frame count in the result pane. The completed full-resolution
-image replaces the preview and is available for export and in output history.
-Cancel rendering to return to the previous result view.
+During a full OpenFocus A, B, or C render, the result pane shows a sampled
+grayscale focus map and the source list follows the current participating
+frame. The source pane holds its frame during a drag or loupe gesture.
+OpenFocus B reveals the focus layers as it blends them. Selecting an earlier
+output while the live map is visible returns to that output for the rest of
+the render. The completed image appears in output history and can be exported.
 
 
 ### Quick Preview (Draft Render)

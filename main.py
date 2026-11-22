@@ -676,7 +676,7 @@ class OpenFocus(QMainWindow):
         self.result_control_bar = result_panel.control_bar
         self.result_slider = result_panel.slider
         self.live_preview_page = result_panel.live_preview_page
-        self.result_slider.actionTriggered.connect(self.render_manager.dismiss_live_preview)
+        self.result_slider.actionTriggered.connect(self.render_manager.inspect_previous_output)
         # 连接右侧面板的ROI模式退出请求信号
         self.lbl_result_img.roiModeExitRequested.connect(self._on_roi_mode_exit_requested)
         self.lbl_result_info = result_panel.info_label
@@ -777,8 +777,8 @@ class OpenFocus(QMainWindow):
                 _widget.setProperty("controlId", _control)
 
         self.main_splitter.addWidget(right_panel_components.widget)
-        self.output_list.currentRowChanged.connect(self.render_manager.dismiss_live_preview)
-        self.output_list.itemClicked.connect(self.render_manager.dismiss_live_preview)
+        self.output_list.currentRowChanged.connect(self.render_manager.inspect_previous_output)
+        self.output_list.itemClicked.connect(self.render_manager.inspect_previous_output)
         bind_right_panel(self, right_panel_components)
         # Selecting a method through the combo box is a project edit even
         # though it does not go through set_fusion_method()/set_alignment_method().
@@ -3862,6 +3862,7 @@ class OpenFocus(QMainWindow):
             return
 
         self.roi_aligned_images = aligned_images
+        self.roi_registration_details = getattr(self.roi_alignment_worker, 'registration_details', None)
         self.roi_aligned_raw_count = snapshot_count  # 对齐时快照的帧数
         self.roi_source_revision = context_now[0]
         self.roi_reg_downscale_width = self.reg_downscale_width

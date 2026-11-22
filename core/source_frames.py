@@ -979,6 +979,48 @@ class TileExposureCache:
 
 
 @dataclass(frozen=True, eq=False)
+class NativePreparedCache:
+    """Disk-backed OpenFocus B samples in fusion order, with source identity."""
+    frames: list
+    sources: tuple
+    options: tuple
+    valid_mask: np.ndarray | None = None
+
+    def __iter__(self):
+        return iter(self.frames)
+
+    @staticmethod
+    def source_identities(frames, should_cancel):
+        identities = []
+        for frame in frames:
+            _check_resolution_cancel(should_cancel)
+            source = _original_source(frame)
+            if not isinstance(source, SourceFrame):
+                return None
+            source.validate_source()
+            with open(source.path, 'rb') as stream:
+                generation = _direct_tiff_generation(stream)
+            if generation is None:
+                return None
+            if generation[:2] != source.fingerprint:
+                raise OSError(f'Source changed since it was opened; reopen the stack: {source.path}')
+            key = (source._source_cache_key(), frame.shape, frame.dtype.str)
+            identities.append((source.path, key, generation))
+        return tuple(identities)
+
+    def matches(self, sources):
+        if sources is None or len(sources) != len(self.sources):
+            return False
+        same_sources = True
+        for (path, key, generation), (_, saved_key, saved_generation) in zip(sources, self.sources):
+            if key != saved_key:
+                same_sources = False
+            elif generation != saved_generation:
+                raise OSError(f'Source changed since it was prepared; reopen the stack: {path}')
+        return same_sources
+
+
+@dataclass(frozen=True, eq=False)
 class PreparedFrame(ProcessedFrame):
     """A mapped processing result with the file identity it was captured from.
 
@@ -1663,7 +1705,8 @@ def scratch_source_headers(paths, should_cancel=None):
 
 def materialize_frames(frames, should_cancel=None, *, staging_bytes=0,
                        preferred_staging_bytes=0, thread_count=None, max_in_flight=None,
-                       resource_preference='balanced', progress_callback=None, prefer_ram=True):
+                       resource_preference='balanced', progress_callback=None, prefer_ram=True,
+                       parallel_processed=False):
     """Prepare ordered frames with bounded decoding and an explicit storage preference."""
     from contextvars import copy_context
     from collections import deque
@@ -1695,13 +1738,14 @@ def materialize_frames(frames, should_cancel=None, *, staging_bytes=0,
             paths = [frame.path for frame in frames if isinstance(frame, SourceFrame)]
             select_scratch(size + staging_bytes, paths,
                            preferred_size=size + staging_bytes + preferred_staging_bytes)
-            sources = [frame for frame in frames if isinstance(frame, SourceFrame)]
+            sources = (frames if parallel_processed else
+                       [frame for frame in frames if isinstance(frame, SourceFrame)])
             if len(sources) > 1:
                 per_worker = max(frame_resolution_bytes(frame) for frame in sources)
                 plan = policy.plan_execution(
                     policy.Workload(algorithm='decode', frames=len(sources),
-                                    fixed_bytes=min(max(0, SOURCE_CACHE.max_bytes - SOURCE_CACHE.bytes),
-                                                    sum(frame.nbytes for frame in sources)),
+                                    fixed_bytes=(source_cache_growth_bytes(sources)
+                                                 if _retain_decoded_sources.get() else 0),
                                     per_worker_bytes=per_worker,
                                     outer_tasks=min(8, len(sources))),
                     preference=resource_preference, user_threads=thread_count or 0)
@@ -1823,7 +1867,7 @@ def map_native_rgb_tiffs(frames, should_cancel=None):
 
 def materialize_for_repeated_access(frames, should_cancel=None, *, thread_count=0,
                                     resource_preference='balanced', progress_callback=None,
-                                    required=False, staging_bytes=0):
+                                    required=False, staging_bytes=0, parallel_processed=False):
     """Snapshot lazy sources once, retaining their source identity checks.
 
     Required snapshots fail at scratch admission instead of streaming sources.
@@ -1855,7 +1899,7 @@ def materialize_for_repeated_access(frames, should_cancel=None, *, thread_count=
         stored = materialize_frames(lazy, should_cancel, thread_count=thread_count,
                                     resource_preference=resource_preference,
                                     progress_callback=progress_callback, prefer_ram=False,
-                                    staging_bytes=staging_bytes)
+                                    staging_bytes=staging_bytes, parallel_processed=parallel_processed)
 
     result = list(frames)
     for index, original, image in zip(indices, originals, stored):

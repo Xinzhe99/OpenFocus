@@ -311,20 +311,27 @@ def openfocus_c_impl(input_source, img_resize=None, thread_count: int = None,
                 reported = index
     try:
         if use_gpu:
-            from fusion_methods._openfocus_gpu import GpuError, log_fallback
+            from fusion_methods._openfocus_gpu import GpuError
             from fusion_methods._openfocus_gpu_c import GpuC
+            from utils.logging_setup import get_logger
+
+            gpu = None
             try:
                 gpu = GpuC()
                 args = (frames, shape, img_resize, smoothing * (5.0 / 3.0),
                         should_cancel, progress_callback, focus_callback)
                 result = (gpu.fuse(*args) if live_preview is None else
                           gpu.fuse(*args, live_preview=live_preview))
+            except GpuError as exc:
+                cause = f': {exc.__cause__}' if exc.__cause__ is not None else ''
+                get_logger(__name__).warning(
+                    'OpenFocus C GPU fallback to CPU for shape=%s device=%s: %s%s',
+                    shape, getattr(gpu, 'device_name', 'OpenCL'), exc, cause,
+                )
+            else:
                 if device_callback is not None:
                     device_callback(gpu.device_name)
                 return result
-            except GpuError as exc:
-                log_fallback(exc)
-                gpu = None
         from fusion_methods._openfocus_pyramid import fuse_pyramid
         result = fuse_pyramid(frames, shape, img_resize, smoothing * (5.0 / 3.0),
                               should_cancel, progress_callback, focus_callback,

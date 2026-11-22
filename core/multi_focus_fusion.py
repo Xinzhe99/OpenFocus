@@ -324,6 +324,8 @@ class MultiFocusFusion:
         # 必须在分块之前按整栈计算，否则每个 tile 各自归一化会出现亮度接缝。
         self.exposure_match = bool(exposure_match)
         self.retain_aligned_pixels = False
+        self.prepared_cache = None
+        self.retain_preparation = False
         # 资源偏好（'balanced' | 'responsive' | 'maximum'）：只影响并发、
         # 预取和预算，不改变任何输出几何或数值路径。
         from core.resource_policy import PREFERENCES
@@ -848,16 +850,32 @@ class MultiFocusFusion:
         identity_sources = input_source
         resize_for_tiles = (self.tile_enabled and needs_tiles and img_resize is not None
                             and self.algorithm not in ('openfocus_b', 'openfocus_c'))
-        from core.source_frames import TileExposureCache
+        from core.frame_resolution_cache import NATIVE_PREPARED_FRAME_LIMIT_BYTES
+        from core.source_frames import NativePreparedCache, TileExposureCache
         has_uint16 = any(frame.dtype == np.uint16 for frame in input_source)
         native_neural_tiles = native_neural_tiles and needs_tiles
         # Small V3 stacks can use the same per-crop exposure path as large stacks.
         tile_raw_exposure = (self.algorithm == 'stackmffv3' and self.exposure_match
                              and self.tile_enabled and needs_tiles and img_resize is None
                              and has_uint16)
-        cached_preparation = getattr(self, 'prepared_cache', None)
+        cached_preparation = self.prepared_cache
         cached_gains = None
-        if isinstance(cached_preparation, TileExposureCache) != tile_raw_exposure:
+        native_sources = None
+        native_options = (self.exposure_match, self.sort_mode, img_resize)
+        if (self.algorithm == 'openfocus_b' and self.retain_preparation
+                and sum(frame.nbytes for frame in input_source) + h * w
+                <= NATIVE_PREPARED_FRAME_LIMIT_BYTES):
+            native_sources = NativePreparedCache.source_identities(identity_sources, should_cancel)
+        reuse_native = (isinstance(cached_preparation, NativePreparedCache)
+                        and cached_preparation.options == native_options
+                        and cached_preparation.matches(native_sources))
+        native_cache = cached_preparation if reuse_native else None
+        if isinstance(cached_preparation, NativePreparedCache):
+            if not reuse_native:
+                cached_preparation = self.prepared_cache = None
+            else:
+                cached_preparation = cached_preparation.frames
+        elif isinstance(cached_preparation, TileExposureCache) != tile_raw_exposure:
             cached_preparation = self.prepared_cache = None
         elif tile_raw_exposure:
             cached_gains = cached_preparation.gains
@@ -887,14 +905,15 @@ class MultiFocusFusion:
         policy.require_memory(preparation, user_limit=memory_budget_bytes())
         check_cancel()
         # Sorting fixes the reference end before exposure and tile dispatch.
-        with _profile().stage('sort'):
-            input_source = self._maybe_sort_input(input_source, should_cancel)
-        reuse_preparation = (cached_preparation is not None and spec.neural
-                             and self.tile_enabled and needs_tiles and streaming_sources
-                             and (tile_raw_exposure or not native_neural_tiles))
+        if not reuse_native:
+            with _profile().stage('sort'):
+                input_source = self._maybe_sort_input(input_source, should_cancel)
+        reuse_preparation = reuse_native or (
+            cached_preparation is not None and spec.neural and self.tile_enabled
+            and needs_tiles and streaming_sources and (tile_raw_exposure or not native_neural_tiles))
         before_snapshot = input_source
         large_native_stack = native_codes and sum(frame.nbytes for frame in input_source) > _PREPARED_CACHE_BYTES
-        if (native_neural_tiles and not reuse_preparation) or large_native_stack:
+        if not reuse_preparation and (native_neural_tiles or large_native_stack):
             from core.source_frames import map_native_rgb_tiffs
             with _profile().stage('prepare_tile_sources'):
                 input_source = map_native_rgb_tiffs(input_source, should_cancel)
@@ -995,11 +1014,14 @@ class MultiFocusFusion:
                     self.prepared_cache = TileExposureCache(input_source, tuple(exposure_gains_))
             elif not native_neural_tiles and input_source is not before_snapshot:
                 self.prepared_cache = input_source
-        if self.algorithm == 'openfocus_b' and streaming_sources:
+        if self.algorithm == 'openfocus_b' and streaming_sources and not reuse_native:
+            from contextlib import nullcontext
+            from core.frame_resolution_cache import ScopedCache, current
             from core.frame_storage import ScratchSpaceError
-            from core.source_frames import (SourceFrame, ProcessedFrame, SOURCE_CACHE,
-                                            frame_resolution_bytes, materialize_for_repeated_access,
-                                            source_cache_growth_bytes)
+            from core.source_frames import (PreparedFrame, ProcessedFrame, SOURCE_CACHE, SourceFrame,
+                                            frame_resolution_bytes, is_direct_rgb_tiff,
+                                            materialize_for_repeated_access, source_cache_growth_bytes,
+                                            without_source_cache_growth)
             indices = []
             for index, frame in enumerate(input_source):
                 original = frame
@@ -1024,12 +1046,19 @@ class MultiFocusFusion:
                     for index in indices))
             if indices and stage:
                 sources = [input_source[index] for index in indices]
+                scope = current()
+                cache_access = (scope.reuse_only() if isinstance(scope, ScopedCache)
+                                and not self.retain_aligned_pixels else nullcontext())
                 try:
-                    prepared = materialize_for_repeated_access(
-                        sources, should_cancel, thread_count=kwargs.get('thread_count', 0),
-                        resource_preference=self.resource_preference,
-                        progress_callback=getattr(progress_callback, 'preparation', None),
-                        required=required, staging_bytes=height * width * 48)
+                    # The snapshot supplies both passes. Borrow ECC's decoded
+                    # frames without writing one-use intermediates.
+                    with cache_access, without_source_cache_growth(), _profile().stage('snapshot_openfocus_b'):
+                        prepared = materialize_for_repeated_access(
+                            sources, should_cancel, thread_count=kwargs.get('thread_count', 0),
+                            resource_preference=self.resource_preference,
+                            progress_callback=getattr(progress_callback, 'preparation', None),
+                            required=required, staging_bytes=height * width * 48,
+                            parallel_processed=True)
                 except ScratchSpaceError:
                     if required:
                         raise
@@ -1040,6 +1069,10 @@ class MultiFocusFusion:
                     for index, frame in zip(indices, prepared):
                         input_source[index] = frame
                     SOURCE_CACHE.clear()
+                if native_sources is not None and all(
+                        isinstance(frame, PreparedFrame) or is_direct_rgb_tiff(frame)
+                        for frame in input_source):
+                    native_cache = NativePreparedCache(input_source, native_sources, native_options)
         tile_source, tile_resize = input_source, img_resize
         if resize_for_tiles:
             # Match the whole backend: normalize/sort/exposure above, then
@@ -1110,11 +1143,12 @@ class MultiFocusFusion:
                 kwargs['live_preview'] = live_preview
             from contextlib import nullcontext
             cache_access = nullcontext()
-            if (streaming_sources and self.algorithm in ('openfocus_a', 'openfocus_c')
-                    and not self.use_gpu and self.base_frame == 'none'
-                    and not self.retain_aligned_pixels):
-                # Each source feeds the whole CPU pass once. Borrow existing
-                # decode snapshots (e.g. from ECC) without storing new ones.
+            if (streaming_sources and (self.algorithm == 'openfocus_c' or
+                                       (self.algorithm == 'openfocus_a' and not self.use_gpu))
+                    and self.base_frame == 'none' and not self.retain_aligned_pixels):
+                # A successful pass consumes each source once. Borrow ECC's
+                # existing decode snapshots without writing one-use pixels.
+                # A GPU failure can still restart C from its source descriptors.
                 from core.frame_resolution_cache import ScopedCache, current
                 scope = current()
                 if isinstance(scope, ScopedCache):
@@ -1132,6 +1166,9 @@ class MultiFocusFusion:
             for frame in identity_sources:
                 check_cancel()
                 validate_frame_source(frame)
+        if native_cache is not None:
+            self.prepared_cache = (native_cache if native_cache.matches(
+                NativePreparedCache.source_identities(identity_sources, should_cancel)) else None)
         result = result if is_mapped_frame(result) else store_frame(result)
         options = [('exposure_match', self.exposure_match), ('base_frame', self.base_frame)]
         if spec.sort_frames:
