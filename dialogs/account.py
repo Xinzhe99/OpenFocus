@@ -1,6 +1,7 @@
 """Optional desktop account access; all account I/O runs off the GUI thread."""
 import sys
 import threading
+import time
 from datetime import date
 
 from PyQt6.QtCore import QObject, QSize, QTimer, QUrl, QUrlQuery, Qt, pyqtSignal
@@ -9,12 +10,14 @@ from PyQt6.QtWidgets import (QCheckBox, QDialog, QFrame, QHBoxLayout, QLabel,
                              QLineEdit, QPushButton, QVBoxLayout, QWidget)
 
 from locales import trans
-from utils.account_client import BASE_URL, AccountClient, AccountError
+from utils.account_client import (BASE_URL, AccountClient, AccountError, _sign_in_stage,
+                                  log_sign_in_failure)
 from utils.design_tokens import palette
 from utils.settings_store import enable_account_default_reports
 from utils.ui_utils import resource_path
 
 _ACTIVE_JOBS = set()
+_SIGN_IN_OPERATIONS = ('email', 'github', 'google', 'browser')
 # Older service terms do not disclose the signed-in reporting default.
 _REPORT_TERMS_VERSION = date(2026, 11, 11)
 
@@ -32,10 +35,12 @@ class _AccountJob(QObject):
     started = pyqtSignal()
     finished = pyqtSignal(object, object)
 
-    def __init__(self, call, owner):
+    def __init__(self, call, owner, *, sign_in_method=None, cancel=None):
         super().__init__()
         self.call = call
         self.owner = owner
+        self.sign_in_method = sign_in_method
+        self.cancel = cancel
         self._thread = None
 
     def _release(self, _result, _error):
@@ -49,13 +54,24 @@ class _AccountJob(QObject):
         self._thread.start()
 
     def _run(self):
+        stage = _sign_in_stage.set('unknown')
+        started_at = time.monotonic()
         try:
-            value = self.call(self.started.emit)
-            self.finished.emit(value, None)
-        except AccountError as exc:
-            self.finished.emit(None, exc)
-        except Exception:
-            self.finished.emit(None, AccountError('unknown'))
+            try:
+                value = self.call(self.started.emit)
+            except AccountError as exc:
+                error = exc
+            except Exception:
+                error = AccountError('unknown')
+            else:
+                self.finished.emit(value, None)
+                return
+            if self.sign_in_method is not None and (self.cancel is None or not self.cancel.is_set()):
+                log_sign_in_failure(self.sign_in_method, error,
+                                    round((time.monotonic() - started_at) * 1000))
+            self.finished.emit(None, error)
+        finally:
+            _sign_in_stage.reset(stage)
 
 
 class AccountDialog(QDialog):
@@ -309,7 +325,7 @@ class AccountDialog(QDialog):
         signed_in = self.client is not None and self.client.is_signed_in()
         pending = self.client is not None and getattr(self.client, 'logout_cleanup_pending', False)
         self.form.setVisible(not signed_in and not pending)
-        switching = self._operation in ('email', 'github', 'google', 'browser')
+        switching = self._operation in _SIGN_IN_OPERATIONS
         self.form.setEnabled((not busy or switching) and self.client is not None and not pending)
         self.retry_button.setVisible(not busy and self.client is None)
         self.devices_button.hide()
@@ -341,7 +357,10 @@ class AccountDialog(QDialog):
 
     def _start(self, operation, call):
         self._operation = operation
-        job = _AccountJob(call, self.window_main)
+        method = operation if operation in _SIGN_IN_OPERATIONS else None
+        if operation == 'load':
+            method = 'restore'
+        job = _AccountJob(call, self.window_main, sign_in_method=method, cancel=self._cancel)
         self._job = job
         job.started.connect(self._started)
         job.finished.connect(self._finished)
@@ -357,7 +376,7 @@ class AccountDialog(QDialog):
 
     def _begin_sign_in(self):
         if self.client is None or (self._job is not None and
-                self._operation not in ('email', 'github', 'google', 'browser')):
+                self._operation not in _SIGN_IN_OPERATIONS):
             return None
         self._cancel.set()
         self._cancel = threading.Event()
@@ -377,7 +396,7 @@ class AccountDialog(QDialog):
 
     def _sign_in(self, provider):
         if self.client is None or (self._job is not None and
-                self._operation not in ('email', 'github', 'google', 'browser')):
+                self._operation not in _SIGN_IN_OPERATIONS):
             return
         if not self.terms.isChecked():
             self.status.setText(trans.t('account_terms_required'))
@@ -394,13 +413,15 @@ class AccountDialog(QDialog):
         client = self.client
         language = 'zh' if trans.current_lang == 'zh' else 'en'
         def login(started):
-            terms = client.terms()
+            _sign_in_stage.set('terms')
+            version = client.terms()['version']
             if cancel.is_set():
                 return None
+            _sign_in_stage.set('unknown')
             user = client.login(provider, email=email if provider == 'email' else None,
                                 cancel=cancel, on_started=started,
-                                terms_version=terms['version'], language=language)
-            return user, terms['version']
+                                terms_version=version, language=language)
+            return user, version
         self.status.setText(trans.t('account_checking'))
         self.status.show()
         self._start(provider, login)
@@ -439,16 +460,18 @@ class AccountDialog(QDialog):
         if operation == 'load':
             self.client = result
             self.window_main._account_client = result
-        elif operation in ('email', 'github', 'google', 'browser'):
+        elif operation in _SIGN_IN_OPERATIONS:
             version = (self.client.accepted_terms_version() if operation == 'browser'
                        else result[1])
             try:
                 enable_disclosed_reports(self.window_main, version)
             except Exception:
                 report_cleanup_failed = True
+            else:
+                self._retry_queued_reports()
         self._refresh_controls()
         if (self.required and not report_cleanup_failed and self.client is not None
-                and self.client.is_signed_in() and operation in ('load', 'email', 'github', 'google', 'browser')):
+                and self.client.is_signed_in() and (operation == 'load' or operation in _SIGN_IN_OPERATIONS)):
             self.accept()
             return
         if report_cleanup_failed:
@@ -460,6 +483,22 @@ class AccountDialog(QDialog):
         if operation == 'logout':
             self.status.setText(trans.t('account_signed_out'))
             self.status.show()
+
+    def _retry_queued_reports(self):
+        from utils.app_paths import user_data_dir
+        from utils.report_client import ReportClient, ReportError
+        from utils.reporting import build_channel
+
+        if build_channel() != 'release' or not self.client.is_signed_in():
+            return
+        directory = user_data_dir() / 'reports'
+        try:
+            pending = directory.is_dir() and ReportClient(directory).pending_count
+        except (OSError, ReportError):
+            return
+        if pending:
+            from ui.report_retry import schedule_report_retries
+            schedule_report_retries(self.window_main, urgent=True)
 
     @staticmethod
     def _error_text(error):
