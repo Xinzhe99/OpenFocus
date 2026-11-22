@@ -63,7 +63,11 @@ def _expected_positions(logits, should_cancel, *, threads=1):
             common.cancel(should_cancel)
             return out
     weights = np.arange(1, probs.shape[1] + 1, dtype=np.float32)[None, :, None, None]
-    np.multiply(probs, weights, out=probs)
+    # Non-float32 checkpoints can require NumPy's promoted product dtype.
+    if np.result_type(probs, weights) == probs.dtype:
+        np.multiply(probs, weights, out=probs)
+    else:
+        probs = probs * weights
     common.cancel(should_cancel)
     return probs.sum(axis=1)[0]
 
@@ -165,21 +169,22 @@ def _sample(frames, index, should_cancel=None, *, dtype=np.float32, round_uint8=
                         and (not round_uint8 or pixels.dtype == np.uint8)):
                     np.copyto(out[rows], pixels, where=mask[..., None] if pixels.ndim == 3 else mask,
                               casting='unsafe')
-                    continue
-                selected = pixels[mask]
-                if gain != 1.0:
-                    if normalize_for_exposure:
+                else:
+                    selected = pixels[mask]
+                    if gain != 1.0:
+                        if normalize_for_exposure:
+                            selected = common.working_frame(selected, True)
+                        # Preserve the channel axis for exposure handling of alpha.
+                        selected = apply_exposure_gain(selected[None], gain)[0]
+                    if selected.dtype == np.uint16:
                         selected = common.working_frame(selected, True)
-                    # Preserve the channel axis for exposure handling of alpha.
-                    selected = apply_exposure_gain(selected[None], gain)[0]
-                if selected.dtype == np.uint16:
-                    selected = common.working_frame(selected, True)
-                if round_uint8:
-                    selected = selected.astype(np.float32, copy=False)
-                    np.rint(selected, out=selected)
-                    np.clip(selected, 0, 255, out=selected)
-                out[rows][mask] = selected
-                del selected
+                    if round_uint8:
+                        selected = selected.astype(np.float32, copy=False)
+                        np.rint(selected, out=selected)
+                        np.clip(selected, 0, 255, out=selected)
+                    out[rows][mask] = selected
+                    del selected
+            del pixels  # An ndarray view keeps the decoded source alive.
         del image
     if out.dtype != np.uint8:
         for start in range(0, out.shape[0], _STRIP_ROWS):

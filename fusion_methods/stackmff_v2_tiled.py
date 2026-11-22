@@ -427,18 +427,18 @@ def _tiled_depth_under_lease(source, model_path, use_gpu, should_cancel=None,
                 del planes
     common.cancel(should_cancel)
     if weight is not None:
-        for start in range(0, h, 128):
+        for start in range(0, h, _STRIP_ROWS):
             common.cancel(should_cancel)
-            rows = slice(start, min(h, start + 128))
+            rows = slice(start, start + _STRIP_ROWS)
             np.divide(expected[rows], weight[rows], out=expected[rows], where=weight[rows] != 0)
         del weight
     lo, hi = expected.min(), expected.max()
     expected -= lo
     expected /= hi - lo + 1e-8
     index = create_frame((h, w), np.int64)
-    for start in range(0, h, 128):
+    for start in range(0, h, _STRIP_ROWS):
         common.cancel(should_cancel)
-        rows = slice(start, min(h, start + 128))
+        rows = slice(start, start + _STRIP_ROWS)
         index[rows] = np.clip(np.rint(expected[rows] * (count - 1)), 0, count - 1).astype(np.int64)
     return expected[:source_h, :source_w], index[:source_h, :source_w]
 
