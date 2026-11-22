@@ -1007,7 +1007,7 @@ PACK = {
     "experimental_label": "Eksperymentalne",
     "experimental_locked_hint": "Aby użyć, włącz funkcje eksperymentalne w Ustawienia → Ustawienia zaawansowane.",
     "development_label": "W trakcie tworzenia",
-    "development_unavailable_hint": "Ta funkcja jest w trakcie tworzenia i obecnie jest niedostępna.",
+    "development_unavailable_hint": "Ta funkcja jest nadal rozwijana i pozostaje wyłączona w tej wersji także po włączeniu funkcji eksperymentalnych.",
     "experimental_features": "Włącz funkcje eksperymentalne",
     "experimental_features_hint": "Umożliwia korzystanie z eksperymentalnych metod fuzji i rejestracji obrazów.",
     "theme_system": "Zgodnie z systemem",
