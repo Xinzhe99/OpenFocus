@@ -12,11 +12,17 @@ def clear_font_state():
 
 
 class Face:
-    def __init__(self, family, style, size, covered=True):
+    def __init__(self, family, style, size, covered=True, can_layout=True):
         self.family, self.style, self.size, self.covered = family, style, size, covered
+        self.can_layout = can_layout
 
     def getname(self):
         return self.family, self.style
+
+    def getbbox(self, text):
+        if not self.can_layout and len(text) > 1:
+            raise OSError('division by zero')
+        return (0, 0, self.size * len(text), self.size)
 
     def getmask(self, char):
         class Mask:
@@ -118,6 +124,21 @@ def test_corrupt_candidate_and_cjk_style_fallback(tmp_path, monkeypatch):
     monkeypatch.setattr(fonts, '_cjk_capable_candidates', lambda: (cjk,))
     face, family, substituted = fonts.load_font_for_text(20, 'Latin', '漢', True)
     assert (family, substituted, face.getname()[1]) == ('CJK', 'Latin', 'Bold')
+
+
+def test_text_layout_error_at_requested_size_uses_covering_fallback(tmp_path, monkeypatch):
+    broken = touch(tmp_path, 'broken.ttf')
+    working = touch(tmp_path, 'working.ttf')
+    setup_fonts(monkeypatch, tmp_path, {
+        (broken, 0): ('Broken', 'Regular', True, False),
+        (working, 0): ('Working', 'Regular', True),
+    })
+    monkeypatch.setattr(fonts, '_cjk_capable_candidates', lambda: (working,))
+
+    face, family, substituted = fonts.load_font_for_text(7, 'Broken', '© 漢')
+
+    assert (family, substituted) == ('Working', 'Broken')
+    assert face.getbbox('© 漢') == (0, 0, 21, 7)
 
 
 def test_pillow_unavailable(tmp_path, monkeypatch):

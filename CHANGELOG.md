@@ -98,6 +98,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Preserve the watermark on historical outputs.
 - Explain why Image Stitching and Dust Map are unavailable in this release,
   even when experimental features are enabled.
+- Choose a fallback font for watermarks when the selected face cannot lay out
+  the complete text at the requested size.
 - Close the desktop process when its CLI launcher times out waiting for the
   control channel, and explain how to complete first-run sign-in.
 - Give comparison alignment workers on macOS enough stack for the first
