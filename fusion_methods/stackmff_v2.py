@@ -31,10 +31,10 @@ def _prepare_inference(frames, model_path, use_gpu, thread_count=None,
 
 def _expected_positions(logits, should_cancel, *, threads=1):
     """Reuse private logits for softmax and the ordered layer reduction."""
-    from fusion_methods.neural_runtime import _run_softmax_inplace
+    from fusion_methods.neural_runtime import _run_softmax_inplace, run_neural_tasks
 
     common.cancel(should_cancel)
-    workers = max(1, min(4, int(threads or 1)))
+    workers = max(1, min(8, int(threads or 1)))
     probs = _run_softmax_inplace(logits, workers)
     kernels = common.load_stackmff_kernels()
     if (kernels is not None and probs.ndim == 4 and probs.shape[0] == 1
@@ -46,15 +46,12 @@ def _expected_positions(logits, should_cancel, *, threads=1):
         out_flat = out.reshape(-1)
         try:
             if workers > 1 and probs.size >= 262144 and total >= workers:
-                from concurrent.futures import ThreadPoolExecutor
-
                 step = (total + workers - 1) // workers
                 ranges = [(s, min(total, s + step)) for s in range(0, total, step)]
-                with ThreadPoolExecutor(max_workers=len(ranges)) as executor:
-                    for _ in executor.map(
-                            lambda rng: kernels.v2_weighted_sum_layers(probs_flat, rng[0], rng[1], out_flat),
-                            ranges):
-                        pass
+                run_neural_tasks(
+                    workers, ranges,
+                    lambda rng: kernels.v2_weighted_sum_layers(probs_flat, rng[0], rng[1], out_flat),
+                )
             else:
                 kernels.v2_weighted_sum_layers(probs_flat, 0, total, out_flat)
         except common.StackMFFKernelUnavailable:
@@ -75,7 +72,7 @@ def _expected_positions(logits, should_cancel, *, threads=1):
 def _whole_depth(frames, model, device, threads, should_cancel):
     from fusion_methods.neural_runtime import logits
 
-    planes = common.stage_planes(frames, PAD_ALIGN, should_cancel)
+    planes = common.stage_planes(frames, PAD_ALIGN, should_cancel, threads=threads)
     scores = logits(planes, model, device, threads, should_cancel)
     del planes
     depth = _expected_positions(scores, should_cancel, threads=threads)
@@ -153,8 +150,11 @@ def _sample(frames, index, should_cancel=None, *, dtype=np.float32, round_uint8=
                 try:
                     for start in strips[layer]:
                         stop = min(shape[0], start + _STRIP_ROWS)
+                        idx_strip = index[start:stop]
+                        if not idx_strip.flags.c_contiguous:
+                            idx_strip = np.ascontiguousarray(idx_strip)
                         scatter(read_rgb_tiff_rows(frame, start, stop, scratch, should_cancel=should_cancel),
-                                np.ascontiguousarray(index[start:stop]), layer, out[start:stop], *scatter_args)
+                                idx_strip, layer, out[start:stop], *scatter_args)
                 except common.StackMFFKernelUnavailable:
                     kernels = strip_rgb_u16 = strip_rgb_u8 = scratch = None
                 else:
@@ -163,27 +163,60 @@ def _sample(frames, index, should_cancel=None, *, dtype=np.float32, round_uint8=
         for start in strips[layer]:
             common.cancel(should_cancel)
             rows = slice(start, start + _STRIP_ROWS)
-            mask = index[rows] == layer
             with frame_region(image, rows) as pixels:
-                if (gain == 1.0 and pixels.dtype != np.uint16
-                        and (not round_uint8 or pixels.dtype == np.uint8)):
-                    np.copyto(out[rows], pixels, where=mask[..., None] if pixels.ndim == 3 else mask,
-                              casting='unsafe')
-                else:
-                    selected = pixels[mask]
-                    if gain != 1.0:
-                        if normalize_for_exposure:
+                scattered = False
+                if (kernels is not None and out_is_3ch and not round_uint8
+                        and pixels.ndim == 3 and pixels.shape[2] == 3):
+                    is_c = pixels.flags.c_contiguous
+                    is_rev = False if is_c else common.is_bgr_rev_contiguous(pixels)
+                    if is_c or is_rev:
+                        src = pixels if is_c else pixels[:, :, ::-1]
+                        rscatter = None
+                        rargs = ()
+                        if pixels.dtype == np.uint16 and out.dtype == np.float32 and (gain == 1.0 or normalize_for_exposure):
+                            rscatter = (kernels.v2_scatter_strip_bgr_u16_to_f32 if is_c
+                                        else kernels.v2_scatter_strip_rgb_u16_to_f32)
+                            rargs = (gain, 255.0)
+                        elif pixels.dtype == np.uint8 and out.dtype == np.float32 and (gain == 1.0 or normalize_for_exposure):
+                            rscatter = (kernels.v2_scatter_strip_bgr_u8_to_f32 if is_c
+                                        else kernels.v2_scatter_strip_rgb_u8_to_f32)
+                            rargs = (gain, 255.0)
+                        elif pixels.dtype == np.uint8 and out.dtype == np.uint8 and gain == 1.0:
+                            rscatter = (kernels.v2_scatter_strip_bgr_u8 if is_c
+                                        else kernels.v2_scatter_strip_rgb_u8)
+                        elif pixels.dtype == np.float32 and out.dtype == np.float32 and (gain == 1.0 or normalize_for_exposure) and is_c:
+                            rscatter = kernels.v2_scatter_strip_bgr_f32
+                            rargs = (gain, 255.0)
+                        if rscatter is not None:
+                            idx_strip = index[rows]
+                            if not idx_strip.flags.c_contiguous:
+                                idx_strip = np.ascontiguousarray(idx_strip)
+                            try:
+                                rscatter(src, idx_strip, layer, out[rows], *rargs)
+                                scattered = True
+                            except common.StackMFFKernelUnavailable:
+                                kernels = strip_rgb_u16 = strip_rgb_u8 = scratch = None
+                if not scattered:
+                    mask = index[rows] == layer
+                    if (gain == 1.0 and pixels.dtype != np.uint16
+                            and (not round_uint8 or pixels.dtype == np.uint8)):
+                        np.copyto(out[rows], pixels, where=mask[..., None] if pixels.ndim == 3 else mask,
+                                  casting='unsafe')
+                    else:
+                        selected = pixels[mask]
+                        if gain != 1.0:
+                            if normalize_for_exposure:
+                                selected = common.working_frame(selected, True)
+                            # Preserve the channel axis for exposure handling of alpha.
+                            selected = apply_exposure_gain(selected[None], gain)[0]
+                        if selected.dtype == np.uint16:
                             selected = common.working_frame(selected, True)
-                        # Preserve the channel axis for exposure handling of alpha.
-                        selected = apply_exposure_gain(selected[None], gain)[0]
-                    if selected.dtype == np.uint16:
-                        selected = common.working_frame(selected, True)
-                    if round_uint8:
-                        selected = selected.astype(np.float32, copy=False)
-                        np.rint(selected, out=selected)
-                        np.clip(selected, 0, 255, out=selected)
-                    out[rows][mask] = selected
-                    del selected
+                        if round_uint8:
+                            selected = selected.astype(np.float32, copy=False)
+                            np.rint(selected, out=selected)
+                            np.clip(selected, 0, 255, out=selected)
+                        out[rows][mask] = selected
+                        del selected
             del pixels  # An ndarray view keeps the decoded source alive.
         del image
     if out.dtype != np.uint8:

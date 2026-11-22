@@ -68,9 +68,48 @@ def read_stack(input_source, img_resize, should_cancel=None, execution_plan=None
     return frames
 
 
+def is_bgr_rev_contiguous(image):
+    """True when image is a contiguous C-order RGB buffer viewed via ::-1 as BGR."""
+    return (isinstance(image, np.ndarray)
+            and image.ndim == 3 and image.shape[2] == 3
+            and image.strides[2] == -image.dtype.itemsize
+            and image[:, :, ::-1].flags.c_contiguous)
+
+
+def is_bgr_rev_strided(image):
+    """True when image views an RGB buffer via ::-1 with positive row/col strides."""
+    itemsize = getattr(getattr(image, 'dtype', None), 'itemsize', 0)
+    return (isinstance(image, np.ndarray)
+            and image.ndim == 3 and image.shape[2] == 3
+            and itemsize > 0
+            and image.strides[0] > 0
+            and image.strides[1] == 3 * itemsize
+            and image.strides[2] == -itemsize)
+
+
 def copy_tile_colors(pixels, normalize_stack, gain=1.0):
     """Pack one color tile in its backend's working domain."""
     from utils.image_utils import apply_exposure_gain
+
+    if is_bgr_rev_strided(pixels) and (pixels.dtype == np.uint16 or pixels.dtype == np.uint8):
+        kernels = load_stackmff_kernels()
+        if kernels is not None:
+            rgb = pixels[:, :, ::-1]
+            h, w = pixels.shape[:2]
+            try:
+                if normalize_stack:
+                    dst = np.empty((h, w, 3), dtype=np.float32)
+                    if pixels.dtype == np.uint16:
+                        kernels.pack_rgb_u16_to_bgr_f32(rgb, 0, 0, h, w, dst, float(gain))
+                    else:
+                        kernels.pack_rgb_u8_to_bgr_f32(rgb, 0, 0, h, w, dst, float(gain))
+                    return dst
+                if pixels.dtype == np.uint8 and float(gain) == 1.0:
+                    dst = np.empty((h, w, 3), dtype=np.uint8)
+                    kernels.pack_rgb_u8_to_bgr_u8(rgb, 0, 0, h, w, dst)
+                    return dst
+            except StackMFFKernelUnavailable:
+                pass
 
     crop = np.array(pixels, dtype=np.float32 if normalize_stack else pixels.dtype,
                     copy=True, order='C')
@@ -147,25 +186,239 @@ def write_luma_plane(frame, destination):
     np.divide(gray, scale, out=destination, dtype=np.float32)
 
 
-def stage_planes(frames, align, should_cancel=None):
+def _pad_plane_2d(dst_plane, h, w, ph, pw, pad_mode):
+    """Pad dst_plane[0:h, 0:w] in-place out to (h + ph, w + pw)."""
+    if pw:
+        if pad_mode == 'reflect' and pw < w:
+            dst_plane[:h, w:] = dst_plane[:h, w - 2::-1][:, :pw]
+        else:
+            dst_plane[:h, w:] = dst_plane[:h, w - 1:w]
+    if ph:
+        if pad_mode == 'reflect' and ph < h:
+            dst_plane[h:, :] = dst_plane[h - 2::-1, :][:ph, :]
+        else:
+            dst_plane[h:, :] = dst_plane[h - 1:h, :]
+
+
+def _pad_band_width_3ch(scratch_band, h_band, w, pw, pad_mode):
+    if not pw:
+        return
+    if pad_mode == 'reflect' and pw < w:
+        scratch_band[:h_band, w:] = scratch_band[:h_band, w - 2::-1][:, :pw]
+    else:
+        scratch_band[:h_band, w:] = scratch_band[:h_band, w - 1:w]
+
+
+def write_luma_plane_fast(raw, dst_plane, normalize_stack, *, ph=0, pw=0,
+                          pad_mode='edge', threads=1, should_cancel=None,
+                          kernels=None, scratch=None):
+    """Write BT.601 normalized [0-1] luma + padding bit-exact with reference."""
+    h, w = raw.shape[:2]
+    wp = w + pw
+    workers = max(1, min(8, int(threads or 1)))
+    inv255 = np.float32(255.0)
+    use_band_threads = workers > 1 and h * w >= 262144 and h >= 2
+
+    if raw.ndim == 2 or (raw.ndim == 3 and raw.shape[2] == 1):
+        gray = raw if raw.ndim == 2 else raw[:, :, 0]
+        if normalize_stack and gray.dtype == np.uint16:
+            # Mirror working_frame (float32 * (255/65535)) followed by / float32(255).
+            band_rows = min(h, max(1, (256 * 1024) // max(1, w * 4)))
+            scale16 = np.float32(255.0 / 65535.0)
+
+            def _gray_u16_band(rng):
+                buf_arr = (scratch[:band_rows, :w, 0]
+                           if (scratch is not None and scratch.shape[0] >= band_rows and scratch.shape[1] >= w)
+                           else np.empty((band_rows, w), dtype=np.float32))
+                for y0 in range(rng[0], rng[1], band_rows):
+                    cancel(should_cancel)
+                    y1 = min(rng[1], y0 + band_rows)
+                    bh = y1 - y0
+                    buf = buf_arr[:bh]
+                    np.multiply(gray[y0:y1], scale16, out=buf, dtype=np.float32)
+                    np.divide(buf, inv255, out=dst_plane[y0:y1, :w], dtype=np.float32)
+
+            if use_band_threads:
+                from fusion_methods.neural_runtime import run_neural_tasks
+                parts = min(workers, h)
+                step = (h + parts - 1) // parts
+                run_neural_tasks(parts, [(y0, min(h, y0 + step)) for y0 in range(0, h, step)],
+                                 _gray_u16_band)
+            else:
+                _gray_u16_band((0, h))
+        else:
+            scale = np.float32(65535 if gray.dtype == np.uint16 else 255)
+            np.divide(gray, scale, out=dst_plane[:h, :w], dtype=np.float32)
+        _pad_plane_2d(dst_plane, h, w, ph, pw, pad_mode)
+        return
+
+    if raw.ndim == 3 and raw.shape[2] == 3:
+        is_c = raw.flags.c_contiguous
+        is_rev = False if is_c else is_bgr_rev_contiguous(raw)
+        if raw.dtype == np.float32 and is_c and not pw and not use_band_threads:
+            cv2.cvtColor(raw, cv2.COLOR_BGR2GRAY, dst=dst_plane[:h, :w])
+            np.divide(dst_plane[:h, :w], inv255, out=dst_plane[:h, :w], dtype=np.float32)
+            if ph:
+                _pad_plane_2d(dst_plane, h, wp, ph, 0, pad_mode)
+            return
+
+        if raw.dtype == np.uint8 and not normalize_stack and (is_c or is_rev):
+            if kernels is None:
+                kernels = load_stackmff_kernels()
+            if kernels is not None:
+                kfn = kernels.bgr_u8_to_luma_rows if is_c else kernels.rgb_u8_to_luma_rows
+                src = raw if is_c else raw[:, :, ::-1]
+                try:
+                    if use_band_threads:
+                        from fusion_methods.neural_runtime import run_neural_tasks
+                        parts = min(workers, h)
+                        step = (h + parts - 1) // parts
+                        run_neural_tasks(parts, [(y0, min(h, y0 + step)) for y0 in range(0, h, step)],
+                                         lambda rng: kfn(src, dst_plane, rng[0], rng[1]))
+                    else:
+                        kfn(src, dst_plane, 0, h)
+                except StackMFFKernelUnavailable:
+                    pass
+                else:
+                    _pad_plane_2d(dst_plane, h, w, ph, pw, pad_mode)
+                    return
+
+        if raw.dtype == np.float32 and is_c:
+            band_rows = min(h, max(1, (256 * 1024) // max(1, wp * 12))) if pw else min(h, max(64, (256 * 1024) // max(1, w * 4)))
+
+            def _f32_band(rng):
+                s_arr = (scratch[:band_rows, :wp]
+                         if (pw and scratch is not None and scratch.shape[0] >= band_rows and scratch.shape[1] == wp)
+                         else (np.empty((band_rows, wp, 3), dtype=np.float32) if pw else None))
+                for y0 in range(rng[0], rng[1], band_rows):
+                    cancel(should_cancel)
+                    y1 = min(rng[1], y0 + band_rows)
+                    bh = y1 - y0
+                    if pw:
+                        s_view = s_arr[:bh]
+                        s_view[:, :w] = raw[y0:y1]
+                        _pad_band_width_3ch(s_view, bh, w, pw, pad_mode)
+                        cv2.cvtColor(s_view, cv2.COLOR_BGR2GRAY, dst=dst_plane[y0:y1, :wp])
+                        np.divide(dst_plane[y0:y1, :wp], inv255, out=dst_plane[y0:y1, :wp], dtype=np.float32)
+                    else:
+                        cv2.cvtColor(raw[y0:y1], cv2.COLOR_BGR2GRAY, dst=dst_plane[y0:y1, :w])
+                        np.divide(dst_plane[y0:y1, :w], inv255, out=dst_plane[y0:y1, :w], dtype=np.float32)
+
+            if use_band_threads:
+                from fusion_methods.neural_runtime import run_neural_tasks
+                parts = min(workers, h)
+                step = (h + parts - 1) // parts
+                run_neural_tasks(parts, [(y0, min(h, y0 + step)) for y0 in range(0, h, step)],
+                                 _f32_band)
+            else:
+                _f32_band((0, h))
+            if ph:
+                _pad_plane_2d(dst_plane, h, wp, ph, 0, pad_mode)
+            return
+
+        if (raw.dtype == np.uint16 or (raw.dtype == np.uint8 and normalize_stack)) and (is_c or is_rev):
+            if kernels is None:
+                kernels = load_stackmff_kernels()
+            if kernels is not None:
+                if is_c:
+                    pack_fn = (kernels.pack_bgr_u16_to_bgr_f32_rows if raw.dtype == np.uint16
+                               else kernels.pack_bgr_u8_to_bgr_f32_rows)
+                    src = raw
+                else:
+                    pack_fn = (kernels.pack_rgb_u16_to_bgr_f32_rows if raw.dtype == np.uint16
+                               else kernels.pack_rgb_u8_to_bgr_f32_rows)
+                    src = raw[:, :, ::-1]
+                band_rows = min(h, max(1, (256 * 1024) // max(1, wp * 12)))
+
+                def _pack_band(rng):
+                    s_arr = (scratch[:band_rows, :wp]
+                             if (scratch is not None and scratch.shape[0] >= band_rows and scratch.shape[1] == wp)
+                             else np.empty((band_rows, wp, 3), dtype=np.float32))
+                    for y0 in range(rng[0], rng[1], band_rows):
+                        cancel(should_cancel)
+                        y1 = min(rng[1], y0 + band_rows)
+                        bh = y1 - y0
+                        pack_fn(src, y0, y1, s_arr)
+                        s_view = s_arr[:bh]
+                        if pw:
+                            _pad_band_width_3ch(s_view, bh, w, pw, pad_mode)
+                        cv2.cvtColor(s_view, cv2.COLOR_BGR2GRAY, dst=dst_plane[y0:y1, :wp])
+                        np.divide(dst_plane[y0:y1, :wp], inv255, out=dst_plane[y0:y1, :wp], dtype=np.float32)
+
+                try:
+                    if use_band_threads:
+                        from fusion_methods.neural_runtime import run_neural_tasks
+                        parts = min(workers, h)
+                        step = (h + parts - 1) // parts
+                        run_neural_tasks(parts, [(y0, min(h, y0 + step)) for y0 in range(0, h, step)],
+                                         _pack_band)
+                    else:
+                        _pack_band((0, h))
+                except StackMFFKernelUnavailable:
+                    pass
+                else:
+                    if ph:
+                        _pad_plane_2d(dst_plane, h, wp, ph, 0, pad_mode)
+                    return
+
+    # Fallback: preserve exact padding before conversion
+    work = working_frame(raw, normalize_stack)
+    if ph or pw:
+        padding = ((0, ph), (0, pw)) + ((0, 0),) * (work.ndim - 2)
+        work = np.pad(work, padding, mode=pad_mode)
+    write_luma_plane(work, dst_plane)
+
+
+def stage_planes(frames, align, should_cancel=None, *, threads=1):
     """Stage a padded image grid as float32 luma at 0-1.
 
     Pad before native colour conversion so whole and tiled inference use the
     same conversion grid, including scalar/SIMD rounding at image edges.
     """
+    from core.source_frames import resolve_frame
+    from fusion_methods.neural_runtime import run_neural_tasks
+
     h, w = frames[0].shape[:2]
     hp, wp = h + (-h) % align, w + (-w) % align
     ph, pw = hp - h, wp - w
     mode = 'reflect' if ph < h and pw < w else 'edge'
     batch = np.empty((1, len(frames), hp, wp), dtype=np.float32)
     normalize_stack = any(frame.dtype == np.uint16 for frame in frames)
-    for index, frame in enumerate(frames):
-        cancel(should_cancel)
-        frame = working_frame(frame, normalize_stack)
-        if ph or pw:
-            padding = ((0, ph), (0, pw)) + ((0, 0),) * (frame.ndim - 2)
-            frame = np.pad(frame, padding, mode=mode)
-        write_luma_plane(frame, batch[0, index])
+    workers = max(1, min(8, int(threads or 1)))
+    kernels = load_stackmff_kernels()
+    need_scratch = bool(pw) or (kernels is not None and any(
+        f.dtype == np.uint16 or (f.dtype == np.uint8 and normalize_stack) for f in frames
+    ))
+    band_rows = min(h, max(1, (256 * 1024) // max(1, wp * 12)))
+    total_px = len(frames) * h * w
+    layer_workers = min(workers, max(1, total_px // 4194304)) if h * w >= 32768 else 1
+    if (layer_workers > 1 and len(frames) >= 4
+            and all(isinstance(frame, np.ndarray) for frame in frames)):
+        step = (len(frames) + layer_workers - 1) // layer_workers
+        ranges = [(i0, min(len(frames), i0 + step)) for i0 in range(0, len(frames), step)]
+
+        def _stage_range(rng):
+            scratch = np.empty((band_rows, wp, 3), dtype=np.float32) if need_scratch else None
+            for idx in range(rng[0], rng[1]):
+                cancel(should_cancel)
+                write_luma_plane_fast(
+                    frames[idx], batch[0, idx], normalize_stack,
+                    ph=ph, pw=pw, pad_mode=mode, threads=1, should_cancel=should_cancel,
+                    kernels=kernels, scratch=scratch,
+                )
+
+        run_neural_tasks(layer_workers, ranges, _stage_range)
+    else:
+        scratch = np.empty((band_rows, wp, 3), dtype=np.float32) if need_scratch else None
+        for index, frame in enumerate(frames):
+            cancel(should_cancel)
+            raw = resolve_frame(frame, should_cancel=should_cancel)
+            write_luma_plane_fast(
+                raw, batch[0, index], normalize_stack,
+                ph=ph, pw=pw, pad_mode=mode, threads=workers, should_cancel=should_cancel,
+                kernels=kernels, scratch=scratch,
+            )
+            del raw
     cancel(should_cancel)
     return batch
 
@@ -311,7 +564,28 @@ def _ycbcr_to_bgr(luma, cb, cr):
     return np.stack((blue, green, red), axis=-1)
 
 
-def tensor_to_bgr(fused_luma, frames, should_cancel=None):
+def _select_v1_nearest_kernel(kernels, raw, target_shape):
+    """Return (kernel_rows_fn, src_array) for a single frame, or (None, None)."""
+    if (kernels is None or raw.ndim != 3 or raw.shape[2] < 3
+            or raw.shape[:2] != target_shape):
+        return None, None
+    if raw.flags.c_contiguous:
+        if raw.dtype == np.float32:
+            return kernels.v1_update_nearest_f32_rows, raw
+        if raw.dtype == np.uint16:
+            return kernels.v1_update_nearest_u16_rows, raw
+        if raw.dtype == np.uint8:
+            return kernels.v1_update_nearest_u8_rows, raw
+    elif is_bgr_rev_contiguous(raw) and raw.shape[2] == 3:
+        rgb = raw[:, :, ::-1]
+        if raw.dtype == np.uint16:
+            return kernels.v1_update_nearest_rgb_u16_rows, rgb
+        if raw.dtype == np.uint8:
+            return kernels.v1_update_nearest_rgb_u8_rows, rgb
+    return None, None
+
+
+def tensor_to_bgr(fused_luma, frames, should_cancel=None, *, threads=1):
     """Colour reconstruction from the frame whose luma matches the prediction.
 
     This mirrors the StackMFF reference: the fused luma is kept and Cb/Cr are
@@ -320,6 +594,7 @@ def tensor_to_bgr(fused_luma, frames, should_cancel=None):
     0-1 inputs, while every buffer here is in the project's 0-255 range.
     """
     from core.source_frames import resolve_frame
+    from fusion_methods.neural_runtime import run_neural_tasks
 
     cancel(should_cancel)
     normalize_stack = any(frame.dtype == np.uint16 for frame in frames)
@@ -328,57 +603,115 @@ def tensor_to_bgr(fused_luma, frames, should_cancel=None):
     cb = np.empty_like(best)
     cr = np.empty_like(best)
     kernels = load_stackmff_kernels()
+    workers = max(1, min(8, int(threads or 1)))
+    h, w = target.shape
     luma = work = better = None
     target_c = np.ascontiguousarray(target) if kernels is not None else None
-    for index, frame in enumerate(frames):
-        cancel(should_cancel)
-        raw = resolve_frame(frame, should_cancel=should_cancel)
-        used_kernel = False
-        if (kernels is not None and raw.ndim == 3 and raw.shape[2] >= 3
-                and raw.flags.c_contiguous and target_c.shape == raw.shape[:2]):
-            update = None
-            if raw.dtype == np.float32:
-                update = kernels.v1_update_nearest_f32
-            elif raw.dtype == np.uint16:
-                update = kernels.v1_update_nearest_u16
-            elif raw.dtype == np.uint8:
-                update = kernels.v1_update_nearest_u8
-            if update is not None:
+
+    resident_pairs = None
+    row_workers = min(workers, h, max(1, (h * w) // 16384))
+    if (row_workers > 1 and kernels is not None and h >= 2 and h * w >= 65536
+            and all(isinstance(frame, np.ndarray) for frame in frames)):
+        pairs = [_select_v1_nearest_kernel(kernels, frame, (h, w)) for frame in frames]
+        if all(pair[0] is not None for pair in pairs):
+            resident_pairs = pairs
+
+    if resident_pairs is not None:
+        parts = row_workers
+        step = (h + parts - 1) // parts
+        ranges = [(y0, min(h, y0 + step)) for y0 in range(0, h, step)]
+
+        def _nearest_band(rng):
+            y0, y1 = rng
+            for idx, (kfn, src) in enumerate(resident_pairs):
+                cancel(should_cancel)
+                kfn(src, target_c, best, cb, cr, idx == 0, y0, y1)
+
+        try:
+            run_neural_tasks(row_workers, ranges, _nearest_band)
+        except StackMFFKernelUnavailable:
+            kernels = target_c = resident_pairs = None
+        else:
+            cancel(should_cancel)
+            result = np.empty((h, w, 3), dtype=np.float32)
+            try:
+                run_neural_tasks(
+                    row_workers, ranges,
+                    lambda rng: kernels.v1_ycbcr_to_bgr_rows(target_c, cb, cr, result, rng[0], rng[1]),
+                )
+                return result
+            except StackMFFKernelUnavailable:
+                kernels = target_c = None
+
+    if resident_pairs is None:
+        for index, frame in enumerate(frames):
+            cancel(should_cancel)
+            raw = resolve_frame(frame, should_cancel=should_cancel)
+            used_kernel = False
+            kfn, src = _select_v1_nearest_kernel(kernels, raw, (h, w))
+            if kfn is not None:
                 try:
-                    update(raw, target_c, best, cb, cr, index == 0)
+                    if workers > 1 and h * w >= 262144 and h >= 2:
+                        parts = min(workers, h)
+                        step = (h + parts - 1) // parts
+                        ranges = [(y0, min(h, y0 + step)) for y0 in range(0, h, step)]
+                        run_neural_tasks(
+                            workers, ranges,
+                            lambda rng, _fn=kfn, _src=src, _first=(index == 0): _fn(
+                                _src, target_c, best, cb, cr, _first, rng[0], rng[1]),
+                        )
+                    else:
+                        kfn(src, target_c, best, cb, cr, index == 0, 0, h)
                 except StackMFFKernelUnavailable:
                     kernels = target_c = None
                 else:
                     used_kernel = True
-        if not used_kernel:
-            if luma is None:
-                luma = np.empty_like(best)
-                work = np.empty_like(best)
-                better = np.empty(best.shape, dtype=bool)
-            source = working_frame(raw, normalize_stack).astype(np.float32, copy=False)
-            if source.ndim == 3 and source.shape[2] == 1:
-                source = source[:, :, 0]
-            blue, green, red = ((source,) * 3 if source.ndim == 2 else
-                                (source[:, :, 0], source[:, :, 1], source[:, :, 2]))
-            # Keep the reference's float32 arithmetic order.
-            np.multiply(red, np.float32(0.299), out=luma)
-            np.multiply(green, np.float32(0.587), out=work)
-            np.add(luma, work, out=luma)
-            np.multiply(blue, np.float32(0.114), out=work)
-            np.add(luma, work, out=luma)
-            np.subtract(luma, target, out=work)
-            np.abs(work, out=work)
-            if index == 0:
-                better.fill(True)
-            else:
-                np.less(work, best, out=better)
-                better |= np.isnan(work) & ~np.isnan(best)
-            np.copyto(best, work, where=better)
-            np.subtract(blue, luma, out=cb, where=better)
-            np.subtract(red, luma, out=cr, where=better)
-            del source, blue, green, red
-        del raw
+            if not used_kernel:
+                if luma is None:
+                    luma = np.empty_like(best)
+                    work = np.empty_like(best)
+                    better = np.empty(best.shape, dtype=bool)
+                source = working_frame(raw, normalize_stack).astype(np.float32, copy=False)
+                if source.ndim == 3 and source.shape[2] == 1:
+                    source = source[:, :, 0]
+                blue, green, red = ((source,) * 3 if source.ndim == 2 else
+                                    (source[:, :, 0], source[:, :, 1], source[:, :, 2]))
+                # Keep the reference's float32 arithmetic order.
+                np.multiply(red, np.float32(0.299), out=luma)
+                np.multiply(green, np.float32(0.587), out=work)
+                np.add(luma, work, out=luma)
+                np.multiply(blue, np.float32(0.114), out=work)
+                np.add(luma, work, out=luma)
+                np.subtract(luma, target, out=work)
+                np.abs(work, out=work)
+                if index == 0:
+                    better.fill(True)
+                else:
+                    np.less(work, best, out=better)
+                    better |= np.isnan(work) & ~np.isnan(best)
+                np.copyto(best, work, where=better)
+                np.subtract(blue, luma, out=cb, where=better)
+                np.subtract(red, luma, out=cr, where=better)
+                del source, blue, green, red
+            del kfn, src, raw
+
     cancel(should_cancel)
+    if kernels is not None and target_c is not None:
+        result = np.empty((h, w, 3), dtype=np.float32)
+        try:
+            if workers > 1 and h * w >= 65536 and h >= 2:
+                parts = min(workers, h)
+                step = (h + parts - 1) // parts
+                ranges = [(y0, min(h, y0 + step)) for y0 in range(0, h, step)]
+                run_neural_tasks(
+                    workers, ranges,
+                    lambda rng: kernels.v1_ycbcr_to_bgr_rows(target_c, cb, cr, result, rng[0], rng[1]),
+                )
+            else:
+                kernels.v1_ycbcr_to_bgr_rows(target_c, cb, cr, result, 0, h)
+            return result
+        except StackMFFKernelUnavailable:
+            pass
     cb *= np.float32(0.564)
     cb += np.float32(128)
     cr *= np.float32(0.713)

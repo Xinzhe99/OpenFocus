@@ -14,6 +14,15 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   with the command-line inference scale option.
 
 ### Changed
+- Accelerate StackMFF V1, V2, and V3 staging, probability post-processing,
+  and frame reconstruction on CPU and DirectML workflows while preserving
+  bit-exact outputs and existing resource admission budgets. Reuse a persistent
+  bounded neural thread pool across upsampling, resizing, smoothing, softmax,
+  and direct RGB TIFF chunk staging, add L2-blocked softmax and native row
+  normalization/weighted-luma/YCbCr/argmax/scatter kernels supporting both
+  contiguous BGR and direct RGB TIFF views, keep StackMFF V3 hard-mode
+  selection indices in transient scratch storage, and skip redundant small-tile
+  pool synchronization.
 - Accelerate ECC preprocessing, deferred perspective warping, and OpenFocus
   alignment on single-strip RGB TIFFs and deep stacks while preserving exact
   source hashes, transforms, and warped pixels. Account for hash buffers in
