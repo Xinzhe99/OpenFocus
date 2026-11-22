@@ -15,10 +15,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 - Accelerate ECC preprocessing, deferred perspective warping, and OpenFocus
-  alignment on single-strip RGB TIFFs and deep stacks using OpenCL `bgr_rev`
-  area resizing, streamed chunked pixel hashing, hoisted pyramid scratch, and
-  bounded row-band and candidate-slice parallelism while preserving bit-exact
-  hashes, transforms, and warped pixels.
+  alignment on single-strip RGB TIFFs and deep stacks while preserving exact
+  source hashes, transforms, and warped pixels. Account for hash buffers in
+  ECC's memory check, check for cancellation between GPU resize stripes, and
+  respect the thread budget during alignment and deferred warps.
 - Vectorize OpenFocus C pyramid normalization, downsampling, synthesis, merge,
   and output kernels and optimize shared OpenFocus B/C depth axis blocks and
   `uint16` transpose packing with single-threaded native CPU kernels while

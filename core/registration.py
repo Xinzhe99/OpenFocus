@@ -79,18 +79,15 @@ alignment_report = ContextVar('alignment_report', default=None)
 # OpenCV's thread setting is process-wide. All temporary exchanges share this
 # lock; the owner budget is local to the source-producing context.
 _warp_threads_lock = threading.Lock()
-_deferred_warp_threads = ContextVar('deferred_warp_threads', default=1)
-_explicit_warp_threads = ContextVar('_explicit_warp_threads', default=None)
+_deferred_warp_threads = ContextVar('deferred_warp_threads', default=None)
 
 
 @contextmanager
 def deferred_warp_threads(threads):
     token = _deferred_warp_threads.set(threads)
-    explicit_token = _explicit_warp_threads.set(threads)
     try:
         yield
     finally:
-        _explicit_warp_threads.reset(explicit_token)
         _deferred_warp_threads.reset(token)
 
 
@@ -158,7 +155,10 @@ def _warp_thread_budget():
     """Threads lent to a warp on this thread; one outside a lending scope."""
     try:
         threads = _deferred_warp_threads.get()
-        threads = max(1, int(threads() if callable(threads) else threads))
+        threads = threads() if callable(threads) else threads
+        if threads is None:
+            return 1
+        threads = max(1, int(threads))
         if threads == 1 or not _active_backend_bounds_threads():
             return 1
         return threads
@@ -535,14 +535,13 @@ class PerspectiveWarp:
                            else _native_kernels.swap_rgb_to_bgr_rows_u16)
                 _run_row_bands(
                     height, 128, self.should_cancel, swap_fn, crop[..., ::-1], out,
-                    parallel_pixels=height * width,
+                    parallel_pixels=height * width, workers=_warp_thread_budget(),
                 )
                 return out
             # A resolved warp owns its pixels even without a render cache.
             return crop.copy(order='C')
         matrix = np.asarray(self.matrix, dtype=self.matrix_dtype).reshape(3, 3)
-        bgr_rev = (_is_bgr_rev(image) and image.dtype in (np.uint8, np.uint16)
-                   and _native_kernels.available())
+        bgr_rev = _is_bgr_rev(image) and _native_kernels.available()
         src = image[..., ::-1] if bgr_rev else image
         threads = _warp_thread_budget()
         if threads <= 1:
@@ -562,7 +561,7 @@ class PerspectiveWarp:
                        else _native_kernels.swap_bgr_inplace_rows_u16)
             _run_row_bands(
                 warped.shape[0], 128, self.should_cancel, swap_fn, warped,
-                parallel_pixels=warped.shape[0] * warped.shape[1],
+                parallel_pixels=warped.shape[0] * warped.shape[1], workers=threads,
             )
         return warped
 
@@ -1084,9 +1083,12 @@ class _EccStageBudget:
 
 def _plan_deferred_ecc(images, downscale_width, accelerate_ecc, preference, thread_count,
                        should_cancel):
-    from core.openfocus_alignment import _is_bgr_rev
+    from core.openfocus_alignment import _hash_scratch_bytes, _is_bgr_rev
     from core.resource_policy import cpu_capacity, probe_resources, require_memory
     from core.source_frames import frame_resolution_bytes, is_direct_rgb_tiff
+
+    if accelerate_ecc:
+        from core._ecc_area_gpu import _AXIS
 
     width = _ecc_width(images[0].shape, downscale_width)
     max_pixels = prepare_bytes = 0
@@ -1098,24 +1100,26 @@ def _plan_deferred_ecc(images, downscale_width, accelerate_ecc, preference, thre
         channels = frame.shape[2] if frame.ndim == 3 else 1
         itemsize = frame.dtype.itemsize
         decode = frame_resolution_bytes(frame)
-        # A decoded frame can outlive the decoder's scratch allocation. Hashing
-        # and cv2 may each need a packed input, at separate points in time.
+        # Source hashing uses one band, independently of any pack that OpenCV
+        # needs for resize or conversion. A direct TIFF still faults in pixels.
         decoded = frame.nbytes if decode else 0
         packed = (0 if ((isinstance(frame, np.ndarray)
                          and (frame.flags.c_contiguous or _is_bgr_rev(frame)))
-                        or is_direct_rgb_tiff(frame))
+                        or (is_direct_rgb_tiff(frame)
+                            and frame._rgb_tiff_offset % frame.dtype.alignment == 0))
                   else frame.nbytes)
         color, gray = pixels * channels * itemsize, pixels * itemsize
-        prepare = max(decode, decoded + packed, 2 * gray + 64 * 1024)
+        prepare = max(decode, decoded + _hash_scratch_bytes(frame), 2 * gray + 64 * 1024)
         if scale < 1.0:
             # INTER_AREA uses axis tables and a pair of accumulator rows. Also
             # allow the accelerated path its pageable transfer staging (at
             # most one input and output stripe) plus its coefficient tables.
             resize_scratch = 32 * (sum(frame.shape[:2]) + h + w * channels)
             if accelerate_ecc:
-                resize_scratch = max(resize_scratch, frame.nbytes + color + 32 * (h + w))
+                resize_scratch = max(resize_scratch,
+                                     frame.nbytes + color + _AXIS.itemsize * (h + w))
             prepare = max(prepare, decoded + packed + color + resize_scratch, color + gray)
-        elif channels > 1:
+        else:
             prepare = max(prepare, decoded + packed + gray)
         prepare_bytes = max(prepare_bytes, prepare)
 
@@ -1166,7 +1170,7 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
     area_gpu = None
     if accelerate_ecc:
         from core._ecc_area_gpu import ExactAreaGpu
-        area_gpu = ExactAreaGpu()
+        area_gpu = ExactAreaGpu(should_cancel=should_cancel)
 
     # --- 2. 初始化 ---
     h_orig, w_orig = images[0].shape[:2]
