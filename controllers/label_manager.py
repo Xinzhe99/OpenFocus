@@ -125,12 +125,11 @@ class LabelManager:
             self._replace_labels(LabelSet())
 
     def reset_labels(self) -> None:
-        """Drop every caption (used when a different stack is loaded)."""
-        if not len(self._labels):
-            self._sync_delete_actions()
-            return
-        self._labels.clear()
-        self._after_model_change(refresh_source=True, refresh_output=True)
+        """Drop captions before the stack change publishes its views and snapshot."""
+        if len(self._labels):
+            self._labels.clear()
+            self._bump_revision()
+        self._sync_delete_actions()
 
     def _after_model_change(self, refresh_source: bool = False,
                             refresh_output: bool = False) -> None:

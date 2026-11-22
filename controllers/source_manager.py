@@ -355,7 +355,7 @@ class SourceManager(QObject):
     def _start_load_worker(self, folder=None, video=None, filepaths=None,
                            scale=1.0, append=False, on_success=None,
                            accept_event=None, prepare_options=None, on_error=None,
-                           linear_raw=False, on_finished=None) -> None:
+                           linear_raw=False, on_finished=None, crash_restore=False) -> None:
         """Run the loader on a background thread and apply results on the
         UI thread when it finishes."""
         window = self.window
@@ -477,6 +477,7 @@ class SourceManager(QObject):
         # Preparing or displaying frames may run a nested Qt event loop. Keep
         # the loader busy until both its thread and its GUI transaction finish.
         result_handled = thread_finished = False
+        missing = object()
 
         def on_thread_finished():
             nonlocal thread_finished
@@ -502,7 +503,8 @@ class SourceManager(QObject):
                     return
                 if reject_changed_append():
                     return
-                load_options = self._build_load_options(images, filenames, scale)
+                load_options = (worker.prepared_options if crash_restore else
+                                self._build_load_options(images, filenames, scale))
                 if append and window.raw_images and working_scale != scale:
                     from core.image_loader import UnsupportedTransparency, _has_transparency
                     if any(_has_transparency(image) for image in images):
@@ -513,7 +515,7 @@ class SourceManager(QObject):
                         transform_frame(image, 'resize', width=max(1, int(image.shape[1] * factor)),
                                         height=max(1, int(image.shape[0] * factor)))
                         for image in images]
-                mixed_ok = self._confirm_mixed_sizes(load_options.working_images)
+                mixed_ok = self._confirm_mixed_sizes(images if crash_restore else load_options.working_images)
                 if not load_is_current():
                     return
                 if reject_changed_append():
@@ -531,28 +533,29 @@ class SourceManager(QObject):
                     if on_error is not None:
                         on_error("CANCELLED")
                     return
-                if prepare_options is not None:
+                if prepare_options is not None and not crash_restore:
                     load_options = prepare_options(load_options)
                 if not load_is_current():
                     return
                 if reject_changed_append():
                     return
+                if crash_restore:
+                    # Cancellation applies to decode and replay, before Qt
+                    # publishes the stack and applies the project settings.
+                    self._load_cancel_button.setEnabled(False)
                 from utils import watermark
                 state_fields = ("current_folder_path", "source_px_um", "linear_dng_metadata",
                                 "base_images", "raw_images", "image_filenames", "image_source_paths",
                                 "image_source_exifs", "image_icc_profiles", "current_scale_factor", "base_scale_factor",
                                 "excluded_frames", "source_transforms", "unrecoverable_source_changes",
-                                "watermark_text", "watermark_font_family",
-                                "watermark_size_percent", "watermark_opacity",
-                                "watermark_color", "watermark_angle", "watermark_density",
-                                "watermark_copyright_enabled", "watermark_copyright_position",
-                                "watermark_source_enabled", "watermark_registered_enabled",
-                                "watermark_output_enabled", watermark.STACK_LINEAGE_ATTR)
+                                *(attr for attr, _ in watermark.ATTRS.values()),
+                                *(attr for attr, _ in watermark.SCOPE_ATTRS.values()),
+                                *watermark.TARGET_CONFIG_ATTRS.values(), watermark.STACK_LINEAGE_ATTR)
                 # Rotating the lineage is what isolates the replaced stack's
                 # outputs; a rolled-back load must restore the old one.
                 watermark.stack_lineage(window)
-                previous_window_state = {name: getattr(window, name) for name in state_fields
-                                         if hasattr(window, name)}
+                previous_window_state = {name: getattr(window, name, missing)
+                                         for name in state_fields}
                 previous_baseline = self._stack_baseline
                 load_folder = folder or (os.path.dirname(video) if video else
                                         os.path.dirname(filepaths[0]) if filepaths else "")
@@ -570,20 +573,31 @@ class SourceManager(QObject):
                         self._stack_baseline = {**baseline, "source_px_um": None}
                 if not append or not window.raw_images:
                     window.linear_dng_metadata = worker.linear_dng_metadata
+                if not append:
+                    # First paint runs inside _apply_load_options. A watermark
+                    # validated for the outgoing stack may fail on the incoming
+                    # canvas and open a modal before the load can finish.
+                    watermark.reset_for_new_stack(window)
+                    invalidate = getattr(window, "invalidate_annotation_caches", None)
+                    if callable(invalidate):
+                        invalidate()
                 self._apply_load_options(load_options, append=append,
                                          profile_map=getattr(worker, "source_icc_profiles", ()))
                 if not append:
-                    # A new source stack must not inherit the previous stack's
-                    # watermark text/scope.  Project restore re-applies its own
-                    # validated settings in on_success below.
-                    watermark.reset_for_new_stack(window)
+                    history = getattr(window, "output_list", None)
+                    if history is not None:
+                        history.setCurrentRow(-1)
+                    # A project load restores its own settings in on_success.
                     persist = getattr(window, "persist_settings", None)
                     if callable(persist):
                         try:
                             persist()
                         except Exception:
                             pass
-                    refresh = getattr(window, "refresh_annotation_views", None)
+                    # Update history metadata without repainting the old result
+                    # the stack replacement just cleared from the result view.
+                    refresh = getattr(getattr(window, "output_manager", None),
+                                      "refresh_annotation_export_state", None)
                     if callable(refresh):
                         try:
                             refresh()
@@ -605,16 +619,21 @@ class SourceManager(QObject):
                 from utils.image_utils import set_source_exif
                 set_source_exif(getattr(window.image_loader, "source_exif", b""))
 
-                # Crash auto-recovery: refresh the session snapshot
-                from utils import recovery
-                recovery.write_snapshot(window)
+                # Recovery already has a validated snapshot of this exact
+                # session. Avoid probing its sources again on the GUI thread.
+                if not crash_restore:
+                    from utils import recovery
+                    recovery.write_snapshot(window)
                 self._show_linear_profile_notice(getattr(window, "linear_dng_metadata", None))
                 worker._load_applied = load_is_current()
             except Exception as exc:  # pylint: disable=broad-except
                 result_error = str(exc) or "Load failed"
                 if not accepted and previous_window_state is not None:
                     for name, value in previous_window_state.items():
-                        setattr(window, name, value)
+                        if value is not missing:
+                            setattr(window, name, value)
+                        elif hasattr(window, name):
+                            delattr(window, name)
                     self._stack_baseline = previous_baseline
                     persist = getattr(window, "persist_settings", None)
                     if callable(persist):
@@ -648,6 +667,10 @@ class SourceManager(QObject):
                     self._finish_load_worker(worker)
 
         worker = self._load_worker
+        if crash_restore:
+            worker.prepare_result = lambda images, names: prepare_options(
+                self._build_load_options(images, names, scale), lambda: worker.is_cancelled)
+            worker.preparing.connect(self._show_restore_progress)
         worker.progress.connect(self._on_load_progress)
         worker.finished_load.connect(on_done)
         worker.finished.connect(on_thread_finished)
@@ -752,6 +775,13 @@ class SourceManager(QObject):
         self._load_status_label.setText(trans.t("msg_loading_stack"))
         self._load_status_label.show()
         self._load_progress_bar.show()
+
+    def _show_restore_progress(self) -> None:
+        worker = self.sender()
+        if worker is not None and worker is getattr(self, '_load_worker', None) and not worker.is_cancelled:
+            self._load_status_label.setText(trans.t('update_restore_running'))
+            self._load_progress_bar.setRange(0, 0)
+            self._load_progress_bar.setValue(0)
 
     def _on_load_progress(self, done: int, total: int) -> None:
         worker = self.sender()
