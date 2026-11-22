@@ -49,6 +49,59 @@ def test_streamed_v1_color_keeps_nearest_frame_chroma():
                                   expected)
 
 
+@pytest.mark.parametrize('mixed_depth', [False, True])
+@pytest.mark.parametrize('gains', [None, (1.0, 0.79, 1.21)])
+def test_lazy_tiles_match_eager_packed_exposure(mixed_depth, gains):
+    from core.source_frames import resolve_frame
+    from utils.image_utils import apply_exposure_gain
+
+    frames = _mixed_frames()
+    if not mixed_depth:
+        frames[1] = frames[1].astype(np.uint8)
+    # A full-width singleton row can be contiguous without owning its pixels.
+    coords = (0, 12, 17, 13)
+    eager, _ = normalize_fuse_input([frame[12:13].copy() for frame in frames])
+    if gains is not None:
+        eager = [apply_exposure_gain(frame, gain) for frame, gain in zip(eager, gains)]
+    sources = neural_common.tile_sources(frames, coords, exposure_gains=gains)
+    for source, frame, expected in zip(sources, frames, eager):
+        image = resolve_frame(source)
+        assert image.dtype == source.dtype == expected.dtype
+        assert image.flags.c_contiguous
+        assert not np.shares_memory(image, frame)
+        np.testing.assert_array_equal(image, expected)
+    np.testing.assert_array_equal(neural_common.stage_planes(sources, 1),
+                                  neural_common.stage_planes(eager, 1))
+
+
+def test_tiled_v1_releases_packed_pixels_between_frame_reads(monkeypatch):
+    import weakref
+    from core.multi_focus_fusion import MultiFocusFusion
+    from fusion_methods import neural_runtime
+
+    monkeypatch.setattr(MultiFocusFusion, '_validate_environment', lambda self: None)
+    monkeypatch.setattr(neural_runtime, 'probabilities',
+                        lambda planes, *_args: np.full_like(planes, 1 / planes.shape[1]))
+    pack = neural_common.copy_tile_colors
+    packed = []
+
+    def track(pixels, normalize_stack, gain):
+        if packed:
+            assert packed[-1]() is None
+        crop = pack(pixels, normalize_stack, gain)
+        packed.append(weakref.ref(crop))
+        return crop
+
+    monkeypatch.setattr(neural_common, 'copy_tile_colors', track)
+    frames = _mixed_frames()
+    fusion = MultiFocusFusion('stackmff', use_gpu=False)
+    result = fusion._fuse_tiled(frames, 'stackmff', block_size=8, overlap=2,
+                               exposure_gains=(1.0, 0.79, 1.21), thread_count=1)
+    assert result.shape == frames[0].shape
+    assert len(packed) > len(frames)  # Luma and chroma both resolved the crops.
+    assert packed[-1]() is None
+
+
 @pytest.mark.parametrize('shape,origin,dtypes,gains', [
     ((99, 97, 3), (0, 0), (np.uint8, np.uint8), None),  # strided interior
     ((99, 97, 4), (64, 64), (np.uint16, np.uint8), None),  # reflected edges
