@@ -57,15 +57,14 @@ def retry_reports(account=None, *, include_auto=False, account_only_auto=False,
     client = account if account is not None else AccountClient()
     user = client.current_user()
     owner_id = user.get('id') if isinstance(user, dict) else None
+    token = None
     if owner_id:
         try:
             token = client.token(expected_owner=owner_id)
         except AccountError:
-            return reports.retry_pending(include_auto=include_auto and not account_only_auto,
-                                         permission=permission, cancel=cancel, deadline=deadline)
-        if token:
-            return reports.retry_pending(token, owner_id=owner_id, include_auto=include_auto,
-                                         include_anonymous_auto=not account_only_auto,
-                                         permission=permission, cancel=cancel, deadline=deadline)
-    return reports.retry_pending(include_auto=include_auto and not account_only_auto,
-                                 permission=permission, cancel=cancel, deadline=deadline)
+            pass
+    return reports.retry_pending(
+        token, owner_id=owner_id if token else None, include_auto=include_auto,
+        include_anonymous_auto=not account_only_auto,
+        include_sign_in=include_auto and (not account_only_auto or bool(token)),
+        permission=permission, cancel=cancel, deadline=deadline)

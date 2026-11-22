@@ -386,35 +386,29 @@ def test_every_method_has_a_selection_hint_and_ordered_models_lock_reverse(
 
 
 def test_method_dropdown_groups_families_in_a_stable_order(qapp, algorithm_host):
-    """Section headers are visible, non-selectable and ordered AI → spatial → transform."""
-    from PyQt6.QtCore import Qt
-    from core.algorithms import fusion_algorithms
+    """Each section contains the expected method IDs in display order."""
     from locales import trans
-    from ui.algorithm_combo import CATEGORY_KEYS, CATEGORY_ORDER
 
     combo = algorithm_host.combo_fusion
-    headers, methods, last_category = [], [], None
-    for index in range(combo.count()):
-        code = combo.itemData(index)
-        item = combo.model().item(index)
-        if code is None:
-            assert item is not None and not item.isEnabled()
-            headers.append(combo.itemText(index))
-        elif code != "none":
-            methods.append(code)
-
     assert combo.itemData(0) == "none"
-    assert headers == [trans.t(CATEGORY_KEYS[category]) for category in CATEGORY_ORDER]
-    expected = [spec.id for spec in sorted(
-        fusion_algorithms(), key=lambda spec: CATEGORY_ORDER.index(spec.category))]
-    assert methods == expected
-    # Header rows stay disabled and a step smaller than the method text.
-    for index in range(combo.count()):
-        if combo.itemData(index) is None:
+    groups = []
+    for index in range(1, combo.count()):
+        code = combo.itemData(index)
+        if code is None:
             item = combo.model().item(index)
-            assert not item.isEnabled()
+            assert item is not None and not item.isEnabled()
             if combo.font().pointSizeF() > 0:
                 assert item.font().pointSizeF() < combo.font().pointSizeF()
+            groups.append((combo.itemText(index), []))
+        else:
+            assert groups
+            groups[-1][1].append(code)
+
+    assert groups == [
+        (trans.t("group_openfocus_methods"), ["openfocus_a", "openfocus_b", "openfocus_c"]),
+        (trans.t("group_stackmff_methods"), ["stackmffv3", "stackmffv2", "stackmff"]),
+        (trans.t("group_other_methods"), ["guided_filter", "gfgfgf", "dct", "dtcwt", "extension"]),
+    ]
 
 
 @pytest.mark.parametrize('method', ['openfocus_a', 'openfocus_b', 'openfocus_c'])

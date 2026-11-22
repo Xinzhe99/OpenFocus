@@ -1,24 +1,18 @@
-"""Category-grouped algorithm selectors shared by every dropdown.
-
-Fusion methods declare ``category`` in the registry; this module turns that
-into non-selectable section headers, so the main window, batch dialog and
-depth dialog all present the same order and grouping.
-"""
+"""Shared fusion method families and dropdown presentation."""
 import importlib.util
 
 from PyQt6.QtCore import QEvent, QObject, QSignalBlocker, Qt
 from PyQt6.QtGui import QBrush, QFont, QPalette
 from PyQt6.QtWidgets import QComboBox, QToolTip
 
-from core.algorithms import FUSION_DEFAULT, fusion_algorithms, get_fusion
+from core.algorithms import FUSION_DEFAULT, FUSION_FAMILY_ORDER, fusion_algorithms, get_fusion
 from core.experimental import alignment_is_experimental, alignment_is_locked, experimental_enabled
 from locales import trans
 
-CATEGORY_ORDER = ('ai', 'spatial', 'transform')
-CATEGORY_KEYS = {
-    'ai': 'group_ai_methods',
-    'spatial': 'group_spatial_methods',
-    'transform': 'group_transform_methods',
+_FAMILY_LABEL_KEYS = {
+    'openfocus': 'group_openfocus_methods',
+    'stackmff': 'group_stackmff_methods',
+    'other': 'group_other_methods',
 }
 _LOCKED_HINT_ROLE = Qt.ItemDataRole.UserRole + 101
 
@@ -119,13 +113,18 @@ def selected_item_enabled(combo):
 
 
 
-def _grouped(specs):
-    """Registry order inside each family; families in display order."""
-    return sorted(specs, key=lambda spec: CATEGORY_ORDER.index(spec.category))
+def fusion_method_groups(specs=None):
+    """Yield localized family headers and methods in registry order."""
+    groups = {family: [] for family in FUSION_FAMILY_ORDER}
+    for spec in fusion_algorithms() if specs is None else specs:
+        groups[spec.family].append(spec)
+    for family, members in groups.items():
+        if members:
+            yield trans.t(_FAMILY_LABEL_KEYS[family]), members
 
 
-def _add_header(combo, category):
-    combo.addItem(trans.t(CATEGORY_KEYS[category]), None)
+def _add_header(combo, label):
+    combo.addItem(label, None)
     item = combo.model().item(combo.count() - 1)
     item.setEnabled(False)
     # Section labels sit a step below the method text so the list stays
@@ -144,7 +143,6 @@ def _add_header(combo, category):
 
 def fill_fusion_combo(combo, specs=None, *, none_label=None, none_hint=None):
     """Rebuild a method combo with family headers; preserves the selection."""
-    specs = list(fusion_algorithms() if specs is None else specs)
     current = combo.currentData()
     with QSignalBlocker(combo):
         combo.clear()
@@ -153,15 +151,13 @@ def fill_fusion_combo(combo, specs=None, *, none_label=None, none_hint=None):
             if none_hint:
                 combo.setItemData(combo.count() - 1, trans.t(none_hint),
                                   Qt.ItemDataRole.ToolTipRole)
-        last = None
-        for spec in _grouped(specs):
-            if spec.category != last:
-                _add_header(combo, spec.category)
-                last = spec.category
-            combo.addItem(fusion_label(spec), spec.id)
-            if spec.hint_key:
-                combo.setItemData(combo.count() - 1, trans.t(spec.hint_key),
-                                  Qt.ItemDataRole.ToolTipRole)
+        for label, members in fusion_method_groups(specs):
+            _add_header(combo, label)
+            for spec in members:
+                combo.addItem(fusion_label(spec), spec.id)
+                if spec.hint_key:
+                    combo.setItemData(combo.count() - 1, trans.t(spec.hint_key),
+                                      Qt.ItemDataRole.ToolTipRole)
         default = 'none' if none_label else FUSION_DEFAULT
         index = combo.findData(current if current is not None else default)
         if index >= 0:
