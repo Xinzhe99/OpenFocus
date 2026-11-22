@@ -80,6 +80,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Bound PyTorch CUDA and MPS attention workspace while retaining all focus
   layers. Reuse CUDA worker admission on completed tile sizes and reuse logits
   storage for probabilities. StackMFF V2 reads only contributing color strips.
+- Accelerate exposure matching, fusion output conversion, and 16-bit previews
+  with native row kernels. Encode compressed TIFF strips in a bounded
+  queue and preserve their output order.
 
 ### Fixed
 - Show progress while restoring a startup recovery snapshot, and keep the
