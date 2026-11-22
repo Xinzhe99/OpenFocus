@@ -1007,7 +1007,7 @@ PACK = {
     "experimental_label": "Sperimentale",
     "experimental_locked_hint": "Per usare questa funzione, attiva le funzioni sperimentali in Impostazioni → Impostazioni avanzate.",
     "development_label": "In sviluppo",
-    "development_unavailable_hint": "Questa funzione è in sviluppo e al momento non è disponibile.",
+    "development_unavailable_hint": "Questa funzione è ancora in sviluppo e resta disattivata in questa versione, anche se si abilitano le funzioni sperimentali.",
     "experimental_features": "Attiva funzioni sperimentali",
     "experimental_features_hint": "Consente di usare i metodi sperimentali di fusione e allineamento delle immagini.",
     "theme_system": "Segui il sistema",
