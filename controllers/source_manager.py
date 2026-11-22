@@ -477,6 +477,7 @@ class SourceManager(QObject):
         # Preparing or displaying frames may run a nested Qt event loop. Keep
         # the loader busy until both its thread and its GUI transaction finish.
         result_handled = thread_finished = False
+        missing = object()
 
         def on_thread_finished():
             nonlocal thread_finished
@@ -542,17 +543,14 @@ class SourceManager(QObject):
                                 "base_images", "raw_images", "image_filenames", "image_source_paths",
                                 "image_source_exifs", "image_icc_profiles", "current_scale_factor", "base_scale_factor",
                                 "excluded_frames", "source_transforms", "unrecoverable_source_changes",
-                                "watermark_text", "watermark_font_family",
-                                "watermark_size_percent", "watermark_opacity",
-                                "watermark_color", "watermark_angle", "watermark_density",
-                                "watermark_copyright_enabled", "watermark_copyright_position",
-                                "watermark_source_enabled", "watermark_registered_enabled",
-                                "watermark_output_enabled", watermark.STACK_LINEAGE_ATTR)
+                                *(attr for attr, _ in watermark.ATTRS.values()),
+                                *(attr for attr, _ in watermark.SCOPE_ATTRS.values()),
+                                *watermark.TARGET_CONFIG_ATTRS.values(), watermark.STACK_LINEAGE_ATTR)
                 # Rotating the lineage is what isolates the replaced stack's
                 # outputs; a rolled-back load must restore the old one.
                 watermark.stack_lineage(window)
-                previous_window_state = {name: getattr(window, name) for name in state_fields
-                                         if hasattr(window, name)}
+                previous_window_state = {name: getattr(window, name, missing)
+                                         for name in state_fields}
                 previous_baseline = self._stack_baseline
                 load_folder = folder or (os.path.dirname(video) if video else
                                         os.path.dirname(filepaths[0]) if filepaths else "")
@@ -570,20 +568,31 @@ class SourceManager(QObject):
                         self._stack_baseline = {**baseline, "source_px_um": None}
                 if not append or not window.raw_images:
                     window.linear_dng_metadata = worker.linear_dng_metadata
+                if not append:
+                    # First paint runs inside _apply_load_options. A watermark
+                    # validated for the outgoing stack may fail on the incoming
+                    # canvas and open a modal before the load can finish.
+                    watermark.reset_for_new_stack(window)
+                    invalidate = getattr(window, "invalidate_annotation_caches", None)
+                    if callable(invalidate):
+                        invalidate()
                 self._apply_load_options(load_options, append=append,
                                          profile_map=getattr(worker, "source_icc_profiles", ()))
                 if not append:
-                    # A new source stack must not inherit the previous stack's
-                    # watermark text/scope.  Project restore re-applies its own
-                    # validated settings in on_success below.
-                    watermark.reset_for_new_stack(window)
+                    history = getattr(window, "output_list", None)
+                    if history is not None:
+                        history.setCurrentRow(-1)
+                    # A project load restores its own settings in on_success.
                     persist = getattr(window, "persist_settings", None)
                     if callable(persist):
                         try:
                             persist()
                         except Exception:
                             pass
-                    refresh = getattr(window, "refresh_annotation_views", None)
+                    # Update history metadata without repainting the old result
+                    # the stack replacement just cleared from the result view.
+                    refresh = getattr(getattr(window, "output_manager", None),
+                                      "refresh_annotation_export_state", None)
                     if callable(refresh):
                         try:
                             refresh()
@@ -614,7 +623,10 @@ class SourceManager(QObject):
                 result_error = str(exc) or "Load failed"
                 if not accepted and previous_window_state is not None:
                     for name, value in previous_window_state.items():
-                        setattr(window, name, value)
+                        if value is not missing:
+                            setattr(window, name, value)
+                        elif hasattr(window, name):
+                            delattr(window, name)
                     self._stack_baseline = previous_baseline
                     persist = getattr(window, "persist_settings", None)
                     if callable(persist):
