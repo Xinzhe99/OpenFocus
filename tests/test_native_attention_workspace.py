@@ -47,7 +47,7 @@ def test_released_logits_agree_with_dense_attention(torch_cpu, monkeypatch, grap
     assert calls == {3, 5}  # Cross-layer sites and intra-layer windows.
 
 
-@pytest.mark.parametrize('layers', [100, 500])
+@pytest.mark.parametrize('layers', [100, 500, 600])
 def test_cross_layer_blocks_keep_every_key_and_query(torch_cpu, monkeypatch, layers):
     torch = torch_cpu
     from core.models.stackmff_v3 import network

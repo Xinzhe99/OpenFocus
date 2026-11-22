@@ -296,7 +296,11 @@ def test_native_worker_runs_deep_released_checkpoints(tmp_path, graph):
     python = os.environ.get('OPENFOCUS_TEST_NATIVE_WORKER_PYTHON')
     if not python:
         pytest.skip('Set OPENFOCUS_TEST_NATIVE_WORKER_PYTHON to the GPU pack interpreter')
-    worker = inference_client.Worker([python, '-I', '-u', str(ROOT / 'core' / 'inference_worker.py')], None)
+    command = [python, '-I', '-u', str(ROOT / 'core' / 'inference_worker.py')]
+    if sys.platform != 'win32':
+        # Unix pack activation verifies every shipped graph against its checkpoint.
+        command.append('--probe')
+    worker = inference_client.Worker(command, None)
     try:
         backend, = (kind for kind in worker.backends if kind in ('TORCH_CUDA', 'TORCH_MPS'))
         assert worker.device
