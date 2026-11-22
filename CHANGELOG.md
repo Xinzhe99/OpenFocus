@@ -9,6 +9,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Offer PyTorch CUDA on supported NVIDIA Linux systems and PyTorch MPS on
   Apple Silicon. The optional packs use the same installer and verify all
   three StackMFF models before activation.
+- Use single-scale inference by default in StackMFF V3. Select dual-scale
+  inference in fusion, batch, method comparison, and depth settings, or
+  with the command-line inference scale option.
 
 ### Changed
 - Vectorize OpenFocus C pyramid normalization, downsampling, synthesis, merge,
@@ -29,6 +32,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   uint8 translation warping, pyramid downsizing, and validity mask generation
   with single-threaded native CPU kernels while preserving bit-exact results
   and row-band cancellation.
+- Accelerate ECC with a coarse-to-fine CPU solver and retain the OpenCV
+  fallback when the native solver cannot accept a pair.
+- Reduce CPU DTCWT processing time and peak memory with native transform
+  kernels and sparse coefficient selection.
+- Group desktop fusion choices under OpenFocus, StackMFF, and Other.
 - Preselect NVIDIA acceleration review on Windows PCs with an NVIDIA driver,
   including when upgrading from 2.0.0.
 - Stream background replacement focus protection and CPU focus measures in
@@ -54,6 +62,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Reduce OpenFocus A/B/C CPU and OpenCL working sets with bounded row processing,
   reusable pyramid storage, and fewer full-image operations. Expand exact
   OpenCL ECC resize coverage and reuse successful repeated pair solves.
+- Stream whole-image OpenFocus B when optional stack snapshots do not fit
+  on disk and the streamed job fits the available RAM.
 - Write neural input grayscale directly into model planes. Reduce V1 color
   reconstruction allocations, size V2 tiles from frame metadata, skip V2 weight
   maps when tiles cover each pixel once, and bound V3 hard-choice scratch by
@@ -61,6 +71,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - On large stacks, read plain RGB TIFF pixels from the source file and retain
   native bit depth in StackMFF tile snapshots. Prepare a warped or compressed
   frame once when temporary storage can hold the prepared stack.
+- Resolve prepared StackMFF V1 and V3 tile colors one source at a time.
+  Bound direct TIFF staging by the available RAM and the admitted tile grid.
+- Limit the lifetime of ONNX Runtime CPU work buffers and release unused
+  arena memory after each StackMFF inference.
 - Reuse OpenFocus A response rows and limit GPU output readback size. Skip
   inactive OpenFocus B merge tiles and reuse OpenFocus C pyramid buffers.
 - Bound PyTorch CUDA and MPS attention workspace while retaining all focus
@@ -68,6 +82,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   storage for probabilities. StackMFF V2 reads only contributing color strips.
 
 ### Fixed
+- Show progress while restoring a startup recovery snapshot, and keep the
+  snapshot when restoration is cancelled.
+- Allow a new folder or video stack to load after applying a watermark.
+  Preserve the watermark on historical outputs.
+- Explain why Image Stitching and Dust Map are unavailable in this release,
+  even when experimental features are enabled.
 - Close the desktop process when its CLI launcher times out waiting for the
   control channel, and explain how to complete first-run sign-in.
 - Give comparison alignment workers on macOS enough stack for the first
@@ -103,6 +123,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [2.0.0]
 
 This stable release includes the features introduced in the 1.77.0 beta series.
+
+If you are upgrading from 1.77, Image Stitching and Dust Map are temporarily
+disabled while development continues. Flat-field correction is also
+unavailable in batch processing and on the command line in this release.
 
 ### Added
 - Show the actual whole-input or tiled processing mode, tile geometry, and
@@ -192,7 +216,6 @@ This stable release includes the features introduced in the 1.77.0 beta series.
 - Reorganize Labels, Watermark and Scale Bar around live previews and fixed Apply and Cancel controls. Drag a label in Fit view to set its position.
 - Choose the default font size for new labels and automatic scale bar captions from the target image resolution.
 - Open workspaces at their intended size when the screen has room. Use scrollable panes on smaller displays and restore the side-by-side divider position when space returns.
-- Mark Image Stitching and Dust Map as in development. Batch and command-line flat-field correction are currently unavailable.
 - Load the published email addresses, institution name and website links each time Contact Us opens.
 - Move frame review and cancellation to the source frame context menu. With the list focused, Ctrl+Shift+I includes all frames, Ctrl+Shift+X excludes all frames and Ctrl+Shift+F starts or cancels review. On macOS use Command. The cancellation notice clears after five seconds.
 - Edit OpenFocus A/B/C smoothing in whole levels, one per click. Fractional values
