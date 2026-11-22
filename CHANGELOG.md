@@ -11,6 +11,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   three StackMFF models before activation.
 
 ### Changed
+- Accelerate OpenFocus A, B, and C OpenCL GPU pipelines on deep 16-bit stacks
+  with zero-copy BGR-reversed uploads from single-strip TIFF mappings,
+  shared-memory tiled `transpose_u16`, bounded single-frame source prefetch,
+  accurate host memory admission for OpenFocus B whole-depth and GPU merge on
+  2K/4K/8K frames, and 8 MiB chunked readback for OpenFocus C.
 - Reuse OpenCL contexts and compiled kernels across OpenFocus A/B/C and ECC
   resize jobs. Reuse upload buffers within a job and drain pending work
   before releasing buffers after cancellation or error.

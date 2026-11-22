@@ -16,8 +16,11 @@ import numpy as np
 from fusion_methods.openfocus_bc import _pyramid_levels, _source_codes
 from fusion_methods.openfocus_ab import _check_cancel
 
+_READBACK_BUFFER_BYTES = 8 * 1024 * 1024
+
 _KERNEL_NAMES = (
-    'c_norm', 'c_norm_u8', 'c_down_h', 'c_down_v', 'c_up_h',
+    'c_norm', 'c_norm_u8', 'c_norm_bgr_rev', 'c_norm_u8_bgr_rev',
+    'c_down_h', 'c_down_v', 'c_up_h',
     'c_detail_w', 'c_collapse', 'c_merge', 'c_merge_focus',
     'c_out_u8', 'c_out_f32', 'transpose_u16', 'filt4',
 )
@@ -28,7 +31,7 @@ _PROGRAM_CACHE = None
 
 def _get_or_build_program(cl, device):
     global _PROGRAM_CACHE
-    from fusion_methods._openfocus_gpu import _FILTER_K, _device_cache_key
+    from fusion_methods._openfocus_gpu import _device_cache_key, _filter_kernel_source
 
     key = _device_cache_key(device)
     with _cache_lock:
@@ -36,7 +39,7 @@ def _get_or_build_program(cl, device):
             return _PROGRAM_CACHE[1:]
         ctx = cl.Context(devices=[device])
         queue = cl.CommandQueue(ctx, device=device)
-        program = cl.Program(ctx, _FILTER_K + _C_K).build(
+        program = cl.Program(ctx, _filter_kernel_source(device) + _C_K).build(
             options=['-cl-fp32-correctly-rounded-divide-sqrt'],
         )
         kernels = {name: cl.Kernel(program, name) for name in _KERNEL_NAMES}
@@ -67,6 +70,26 @@ __kernel void c_norm_u8(__global const uchar* src, __global float* dst,
 {
     int i=get_global_id(0); if(i>=n)return;
     dst[i]=(float)src[i]*factor;
+}
+
+__kernel void c_norm_bgr_rev(__global const ushort* src, __global float* dst,
+                             const float factor, const int pixels)
+{
+    int k=get_global_id(0); if(k>=pixels)return;
+    size_t base=(size_t)k*3;
+    dst[base]=(float)src[base+2]*factor;
+    dst[base+1]=(float)src[base+1]*factor;
+    dst[base+2]=(float)src[base]*factor;
+}
+
+__kernel void c_norm_u8_bgr_rev(__global const uchar* src, __global float* dst,
+                                const float factor, const int pixels)
+{
+    int k=get_global_id(0); if(k>=pixels)return;
+    size_t base=(size_t)k*3;
+    dst[base]=(float)src[base+2]*factor;
+    dst[base+1]=(float)src[base+1]*factor;
+    dst[base+2]=(float)src[base]*factor;
 }
 
 __kernel void c_down_h(__global const float* s, __global float* d,
@@ -204,18 +227,20 @@ __kernel void c_collapse(__global float* detail, __global const float* horizonta
     }
 }
 
-__kernel void c_out_u8(__global const float* src, __global uchar* dst, const int n)
+__kernel void c_out_u8(__global const float* src, __global uchar* dst,
+                       const int start, const int n)
 {
     int i=get_global_id(0); if(i>=n)return;
-    float v=fmin(1.0f,fmax(0.0f,src[i]));
+    float v=fmin(1.0f,fmax(0.0f,src[start+i]));
     int code=(int)(v*65535.0f);
     dst[i]=(uchar)(code>>8);
 }
 
-__kernel void c_out_f32(__global const float* src, __global float* dst, const int n)
+__kernel void c_out_f32(__global const float* src, __global float* dst,
+                        const int start, const int n)
 {
     int i=get_global_id(0); if(i>=n)return;
-    float v=fmin(1.0f,fmax(0.0f,src[i]));
+    float v=fmin(1.0f,fmax(0.0f,src[start+i]));
     float code=v*65535.0f;
     dst[i]=rint(code)*(1.0f/257.0f);
 }
@@ -237,6 +262,7 @@ class GpuC:
             self.device_name = opencl_device_name(device)
             self.mf = cl.mem_flags
             self.ctx, self.q, self.k = _get_or_build_program(cl, device)
+            self._tiled_transpose = getattr(device, 'max_work_group_size', 256) >= 256
         except GpuError:
             raise
         except Exception as exc:
@@ -257,16 +283,23 @@ class GpuC:
                         np.int32(h), np.int32(w), np.int32(count),
                         np.uint32(q), np.uint32(t), np.int32(step))
 
+    def _transpose(self, src, dst, w, h):
+        if self._tiled_transpose:
+            gw, gh = ((w + 15) // 16) * 16, ((h + 15) // 16) * 16
+            self.k['transpose_u16'](self.q, (gw, gh), (16, 16), src, dst,
+                                    np.int32(w), np.int32(h))
+        else:
+            self._run(self.k['transpose_u16'], (w, h), src, dst,
+                      np.int32(w), np.int32(h))
+
     def _filter_w(self, weight, scratch, h, w, config):
         """Device-side openfocus_depth._filter: axis 1 (horizontal) then 0."""
         a, first = scratch
         count_h, count_v, q, t = config
         # filt4 reads src[y,x] before writing that cell, so src==dst is safe.
-        self._run(self.k['transpose_u16'], (w, h), weight, a,
-                  np.int32(w), np.int32(h))
+        self._transpose(weight, a, w, h)
         self._filt4(a, a, first, w, h, count_h, q, t)
-        self._run(self.k['transpose_u16'], (h, w), a, weight,
-                  np.int32(h), np.int32(w))
+        self._transpose(a, weight, h, w)
         self._filt4(weight, weight, first, h, w, count_v, q, t)
 
     def _synthesize(self, kernel, coarse, horizontal, target, sh, sw, dh, dw, c,
@@ -340,7 +373,9 @@ class GpuC:
         from core.source_frames import (
             frame_has_mapped_pixels, frame_resolution_bytes, without_source_cache_growth,
         )
-        from fusion_methods._openfocus_gpu import GpuError, _free_vram
+        from fusion_methods._openfocus_gpu import (
+            GpuError, _free_vram, _iter_prefetched, _prepare_gpu_upload,
+        )
 
         snapshot = resource_policy.probe_resources()
         host_budget = resource_policy.ram_ceiling(snapshot)
@@ -354,7 +389,11 @@ class GpuC:
             if frame_has_mapped_pixels(frame):
                 resolution = max(resolution, frame.nbytes)
             if img_resize is None and frame.dtype in (np.uint8, np.uint16):
-                packed = isinstance(frame, np.ndarray) and frame.flags.c_contiguous
+                packed = isinstance(frame, np.ndarray) and (
+                    frame.flags.c_contiguous
+                    or (frame.ndim == 3 and frame.shape[2] == 3
+                        and frame[..., ::-1].flags.c_contiguous)
+                )
                 working = frame.nbytes * (1 if packed else 2)
             else:
                 # Legacy conversion can hold int32 codes and OpenCV's float32
@@ -365,7 +404,8 @@ class GpuC:
                               else 8 * (frame.size + n))
                 working = max(n * 8, conversion + row_samples * 16)
             source_peak = max(source_peak, resolution + working)
-        readback = max(2 * n * out_bytes,
+        readback_bytes = min(max(1, n * out_bytes), _READBACK_BUFFER_BYTES)
+        readback = max(n * out_bytes + readback_bytes,
                        n * out_bytes + 4 * full_size if focus_callback is not None else 0)
         staging = max(source_peak, readback) + 16 * 1024 * 1024
         if staging > host_budget:
@@ -382,7 +422,7 @@ class GpuC:
         need = 4 * channels * (sum(rolling_sizes) + horizontal_size + coarsest_size)
         need += sum(detail_sizes) * (4 * channels + 2)
         need += 2 * full_size * (bool(detail_levels) + filter_planes + keep_winner)
-        need += n * (in_bytes + out_bytes) + 16 * 1024 * 1024
+        need += max(n * in_bytes, readback_bytes) + 16 * 1024 * 1024
         limit = int(self.device.global_mem_size) // 2
         if self.device.host_unified_memory:
             limit = min(limit, host_budget - staging)
@@ -413,28 +453,45 @@ class GpuC:
                 filter_configs.append((max(1, min(int(radius), w)), max(1, min(int(radius), h)),
                                        q, (4096 - q) >> 1))
         src = self.cl.Buffer(self.ctx, self.mf.READ_ONLY, n * in_bytes)
+        prefetch = bool(detail_levels) and (staging + source_peak <= host_budget)
         in_flight = False
+
+        def prepare_frame(index, frame, cancelled):
+            _check_cancel(cancelled)
+            with without_source_cache_growth():
+                pixels, scale = _source_codes(frame, img_resize, cancelled)
+            if tuple(pixels.shape) != tuple(shape):
+                raise ValueError('OpenFocus C requires frames with matching shapes')
+            if not detail_levels and index > 0:
+                del pixels
+                return None
+            pix_u8 = pixels.dtype == np.uint8
+            codes, bgr_rev = _prepare_gpu_upload(pixels, np.uint8 if pix_u8 else np.uint16)
+            del pixels
+            return codes, scale, pix_u8, bgr_rev
+
         try:
-            for index, frame in enumerate(frames):
+            prepared_iter = _iter_prefetched(
+                frames, prepare_frame, enabled=prefetch, should_cancel=should_cancel,
+            )
+            for index, item in prepared_iter:
                 _check_cancel(should_cancel)
-                with without_source_cache_growth():
-                    pixels, scale = _source_codes(frame, img_resize, should_cancel)
-                if tuple(pixels.shape) != tuple(shape):
-                    raise ValueError('OpenFocus C requires frames with matching shapes')
-                if not detail_levels and index > 0:
-                    del pixels
+                if item is None:
                     if progress_callback is not None:
                         progress_callback(index + 1, total)
                     continue
-                pix_u8 = pixels.dtype == np.uint8
-                codes = np.ascontiguousarray(pixels, dtype=np.uint8 if pix_u8 else np.uint16)
-                del pixels
+                codes, scale, pix_u8, bgr_rev = item
                 factor = np.float32(scale / (65280.0 if is_u8 else 65535.0))
                 fine = rolling[0] if detail_levels else coarsest
                 in_flight = True
                 self.cl.enqueue_copy(self.q, src, codes, is_blocking=False)
-                self._run(self.k['c_norm_u8' if pix_u8 else 'c_norm'], n, src, fine,
-                          factor, np.int32(n))
+                if bgr_rev:
+                    kern_name = 'c_norm_u8_bgr_rev' if pix_u8 else 'c_norm_bgr_rev'
+                    self._run(self.k[kern_name], full_size, src, fine,
+                              factor, np.int32(full_size))
+                else:
+                    self._run(self.k['c_norm_u8' if pix_u8 else 'c_norm'], n, src, fine,
+                              factor, np.int32(n))
 
                 for level, ((h, w), (ch, cw)) in enumerate(detail_levels):
                     _check_cancel(should_cancel)
@@ -463,10 +520,11 @@ class GpuC:
                 # Bound queued frame uploads to one source, even for very deep stacks.
                 self.q.finish()
                 in_flight = False
-                del codes
+                del codes, item
                 if progress_callback is not None:
                     progress_callback(index + 1, total)
 
+            del src
             result = coarsest
             in_flight = True
             for ((h, w), (ch, cw)), detail in zip(reversed(detail_levels), reversed(accumulators)):
@@ -476,10 +534,15 @@ class GpuC:
                 result = detail
 
             out = np.empty((height, width, channels), out_dtype)
-            dst = self.cl.Buffer(self.ctx, self.mf.WRITE_ONLY, out.nbytes)
+            out_samples = out.reshape(-1)
+            dst = self.cl.Buffer(self.ctx, self.mf.WRITE_ONLY, readback_bytes)
+            chunk = max(1, readback_bytes // out_bytes)
             kern = self.k['c_out_u8'] if is_u8 else self.k['c_out_f32']
-            self._run(kern, n, result, dst, np.int32(n))
-            self.cl.enqueue_copy(self.q, out, dst, is_blocking=True)
+            for start in range(0, n, chunk):
+                _check_cancel(should_cancel)
+                region = out_samples[start:min(start + chunk, n)]
+                self._run(kern, region.size, result, dst, np.int32(start), np.int32(region.size))
+                self.cl.enqueue_copy(self.q, region, dst, is_blocking=True)
             if focus_callback is not None:
                 from core.frame_storage import create_frame
                 positions = create_frame((height, width), np.uint16)
