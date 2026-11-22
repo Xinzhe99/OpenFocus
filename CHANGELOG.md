@@ -64,6 +64,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Reduce OpenFocus A/B/C CPU and OpenCL working sets with bounded row processing,
   reusable pyramid storage, and fewer full-image operations. Expand exact
   OpenCL ECC resize coverage and reuse successful repeated pair solves.
+- Upload packed reversed-channel TIFF data without a host copy in OpenFocus
+  A/B/C. Prefetch one frame when the job budget allows, and cap GPU OpenFocus
+  C color readback buffers at 8 MiB. Use tiled OpenCL transposes when the
+  device and compiled kernel support the work-group size.
 - Stream whole-image OpenFocus B when optional stack snapshots do not fit
   on disk and the streamed job fits the available RAM.
 - Write neural input grayscale directly into model planes. Reduce V1 color
