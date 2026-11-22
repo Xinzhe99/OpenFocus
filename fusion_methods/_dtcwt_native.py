@@ -14,7 +14,6 @@ from fusion_methods._depth_kernel import njit
 from fusion_methods._dtcwt_kernels import make_reflect_table
 
 _SQRT_HALF_32 = np.float32(np.sqrt(0.5))
-_SQRT_HALF_64 = np.float64(np.sqrt(0.5))
 _W_R = np.float32(0.299)
 _W_G = np.float32(0.587)
 _W_B = np.float32(0.114)
@@ -825,23 +824,18 @@ def _acc_weighted_lp(lp, weight, src):
 
 
 @njit(nogil=True, fastmath=False)
-def _c2q_pair(hp, quad, c0, c1):
+def _c2q_pair(hp, quad, c0, c1, scale):
     h2, w2, _ = hp.shape
-    sc = _SQRT_HALF_64
     for y in range(h2):
         qy0 = 2 * y
         qy1 = qy0 + 1
         for x in range(w2):
             z0 = hp[y, x, c0]
             z1 = hp[y, x, c1]
-            z0r = np.float64(z0.real)
-            z0i = np.float64(z0.imag)
-            z1r = np.float64(z1.real)
-            z1i = np.float64(z1.imag)
-            w0r = z0r * sc
-            w0i = z0i * sc
-            w1r = z1r * sc
-            w1i = z1i * sc
+            w0r = z0.real * scale
+            w0i = z0.imag * scale
+            w1r = z1.real * scale
+            w1i = z1.imag * scale
             qx0 = 2 * x
             qx1 = qx0 + 1
             quad[qy0, qx0] = np.float32(w0r + w1r)
@@ -1122,6 +1116,12 @@ class _NativeDtcwtEngine:
         self.h1b = h1b
         self.g1a = g1a
         self.g1b = g1b
+        # dtcwt multiplies a complex64 subband by a NumPy float64 gain scalar.
+        # NumPy 1.x can keep that product complex64, while NumPy 2 promotes it.
+        # Pass the matching real scalar type explicitly so Numba caches each signature.
+        scale = np.sqrt(0.5)
+        product_dtype = np.result_type(np.empty(0, dtype=np.complex64), scale)
+        self._inverse_scale = product_dtype.type(scale).real
         self._warmup_lock = Lock()
         self._warmed_keys = set()
 
@@ -1354,14 +1354,14 @@ class _NativeDtcwtEngine:
             off_x = 1 if (2 * in_c) != exp_c else 0
 
             quad = y2[:in_r, :in_c]
-            _c2q_pair(hp, quad, 0, 5)
+            _c2q_pair(hp, quad, 0, 5, self._inverse_scale)
             _colifilt_v_add(z[:in_r, :in_c], quad, y1[:out_r, :in_c],
                             self.g0b, self.g0a, self.g1b, self.g1a, sp.xe_r_inv, in_r, in_c)
 
             q_hl = np.empty((in_r, in_c), dtype=np.float32)
             q_hh = z[:in_r, :in_c]
-            _c2q_pair(hp, q_hl, 2, 3)
-            _c2q_pair(hp, q_hh, 1, 4)
+            _c2q_pair(hp, q_hl, 2, 3, self._inverse_scale)
+            _c2q_pair(hp, q_hh, 1, 4, self._inverse_scale)
             _colifilt_v_add(q_hl, q_hh, y2[:out_r, :in_c],
                             self.g0b, self.g0a, self.g1b, self.g1a, sp.xe_r_inv, in_r, in_c)
             del q_hl
@@ -1375,13 +1375,13 @@ class _NativeDtcwtEngine:
         r, c = sp0.in_r, sp0.in_c
         hp0 = fused_high[0]
         quad = y2[:r, :c]
-        _c2q_pair(hp0, quad, 0, 5)
+        _c2q_pair(hp0, quad, 0, 5, self._inverse_scale)
         _colfilter_v_add0(z[:r, :c], quad, y1[:r, :c], self.g0o, self.g1o, r, c)
 
         q_hl = np.empty((r, c), dtype=np.float32)
         q_hh = z[:r, :c]
-        _c2q_pair(hp0, q_hl, 2, 3)
-        _c2q_pair(hp0, q_hh, 1, 4)
+        _c2q_pair(hp0, q_hl, 2, 3, self._inverse_scale)
+        _c2q_pair(hp0, q_hh, 1, 4, self._inverse_scale)
         _colfilter_v_add0(q_hl, q_hh, y2[:r, :c], self.g0o, self.g1o, r, c)
         del q_hl
 
