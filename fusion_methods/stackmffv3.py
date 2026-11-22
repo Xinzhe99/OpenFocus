@@ -203,6 +203,7 @@ def _blend_tile(probs, frames, mode, should_cancel=None, focus_callback=None, *,
                     sel_band = (selected_indices[row:stop] if selected_indices[row:stop].flags.c_contiguous
                                 else np.ascontiguousarray(selected_indices[row:stop])) if is_hard else None
                     for index, blend, src in entries:
+                        _cancel(should_cancel)
                         img_band = src[row:stop]
                         src_band = img_band[:, :, None] if img_band.ndim == 2 else img_band
                         if not is_hard:
@@ -235,6 +236,7 @@ def _blend_tile(probs, frames, mode, should_cancel=None, focus_callback=None, *,
             continue
         image = resolve_frame(frame, should_cancel=should_cancel)
         blend, src_view = _select_v3_blend_kernel(kernels, image, channels, is_hard)
+        remaining = ((0, height),)
         if blend is not None and result.flags.c_contiguous:
             def _run_frame_band(rng):
                 y0, y1 = rng
@@ -244,57 +246,62 @@ def _blend_tile(probs, frames, mode, should_cancel=None, focus_callback=None, *,
                     output = result[row:stop]
                     img_band = src_view[row:stop]
                     src_band = img_band[:, :, None] if img_band.ndim == 2 else img_band
-                    if not is_hard:
-                        exp_band = expected[row:stop] if expected is not None else output[:, :, 0]
-                        p_band = probs[index, row:stop]
-                        if not p_band.flags.c_contiguous:
-                            p_band = np.ascontiguousarray(p_band)
-                        blend(src_band, p_band, output, exp_band, float(index),
-                              bool(expected is not None and index))
-                    else:
-                        sel_band = selected_indices[row:stop]
-                        if not sel_band.flags.c_contiguous:
-                            sel_band = np.ascontiguousarray(sel_band)
-                        blend(src_band, sel_band, index, output)
+                    try:
+                        if not is_hard:
+                            exp_band = expected[row:stop] if expected is not None else output[:, :, 0]
+                            p_band = probs[index, row:stop]
+                            if not p_band.flags.c_contiguous:
+                                p_band = np.ascontiguousarray(p_band)
+                            blend(src_band, p_band, output, exp_band, float(index),
+                                  bool(expected is not None and index))
+                        else:
+                            sel_band = selected_indices[row:stop]
+                            if not sel_band.flags.c_contiguous:
+                                sel_band = np.ascontiguousarray(sel_band)
+                            blend(src_band, sel_band, index, output)
+                    except common.StackMFFKernelUnavailable:
+                        return row, y1
+                return y1, y1
 
-            try:
-                if workers > 1 and height * width >= 262144 and height >= 2:
-                    parts = min(workers, height)
-                    step = (height + parts - 1) // parts
-                    yranges = [(y0, min(height, y0 + step)) for y0 in range(0, height, step)]
-                    run_neural_tasks(workers, yranges, _run_frame_band)
-                else:
-                    _run_frame_band((0, height))
-            except common.StackMFFKernelUnavailable:
-                kernels = blend = None
+            if workers > 1 and height * width >= 262144 and height >= 2:
+                parts = min(workers, height)
+                step = (height + parts - 1) // parts
+                yranges = [(y0, min(height, y0 + step)) for y0 in range(0, height, step)]
+                remaining = run_neural_tasks(workers, yranges, _run_frame_band)
             else:
+                remaining = (_run_frame_band((0, height)),)
+            if all(first == stop for first, stop in remaining):
                 del blend, image, src_view
                 continue
+            # A later band can require a new specialization. Keep completed
+            # bands so the fallback does not accumulate this source twice.
+            kernels = None
 
-        for row in range(0, height, band_rows):
-            _cancel(should_cancel)
-            stop = min(row + band_rows, height)
-            output = result[row:stop]
-            img_band = image[row:stop]
-            source = common.working_frame(img_band, normalize_stack)
-            if source.ndim == 2:
-                source = source[:, :, None]
-            if not is_hard:
-                if scratch is None:
-                    scratch = np.empty((band_rows, width, channels),
-                                       dtype=np.result_type(probs.dtype, np.float32, *source_dtypes))
-                probability = probs[index, row:stop]
-                product = scratch[:stop - row]
-                np.multiply(probability[:, :, None], source, out=product)
-                np.add(output, product, out=output)
-                if expected is not None and index:
-                    depth_product = product[:, :, 0]
-                    np.multiply(probability, np.float32(index), out=depth_product)
-                    np.add(expected[row:stop], depth_product, out=expected[row:stop])
-            else:
-                np.copyto(output, source,
-                          where=(selected_indices[row:stop] == index)[:, :, None])
-            del source
+        for first, last in remaining:
+            for row in range(first, last, band_rows):
+                _cancel(should_cancel)
+                stop = min(row + band_rows, last)
+                output = result[row:stop]
+                img_band = image[row:stop]
+                source = common.working_frame(img_band, normalize_stack)
+                if source.ndim == 2:
+                    source = source[:, :, None]
+                if not is_hard:
+                    if scratch is None:
+                        scratch = np.empty((band_rows, width, channels),
+                                           dtype=np.result_type(probs.dtype, np.float32, *source_dtypes))
+                    probability = probs[index, row:stop]
+                    product = scratch[:stop - row]
+                    np.multiply(probability[:, :, None], source, out=product)
+                    np.add(output, product, out=output)
+                    if expected is not None and index:
+                        depth_product = product[:, :, 0]
+                        np.multiply(probability, np.float32(index), out=depth_product)
+                        np.add(expected[row:stop], depth_product, out=expected[row:stop])
+                else:
+                    np.copyto(output, source,
+                              where=(selected_indices[row:stop] == index)[:, :, None])
+                del source
         del blend, src_view, img_band, image
     _cancel(should_cancel)
     if focus_callback is not None:

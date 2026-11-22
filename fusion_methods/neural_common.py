@@ -218,6 +218,8 @@ def write_luma_plane_fast(raw, dst_plane, normalize_stack, *, ph=0, pw=0,
     workers = max(1, min(8, int(threads or 1)))
     inv255 = np.float32(255.0)
     use_band_threads = workers > 1 and h * w >= 262144 and h >= 2
+    # Only the first row range may borrow the caller's scratch. Concurrent
+    # ranges must keep their packed pixels until their conversion finishes.
 
     if raw.ndim == 2 or (raw.ndim == 3 and raw.shape[2] == 1):
         gray = raw if raw.ndim == 2 else raw[:, :, 0]
@@ -228,7 +230,8 @@ def write_luma_plane_fast(raw, dst_plane, normalize_stack, *, ph=0, pw=0,
 
             def _gray_u16_band(rng):
                 buf_arr = (scratch[:band_rows, :w, 0]
-                           if (scratch is not None and scratch.shape[0] >= band_rows and scratch.shape[1] >= w)
+                           if (rng[0] == 0 and scratch is not None
+                               and scratch.shape[0] >= band_rows and scratch.shape[1] >= w)
                            else np.empty((band_rows, w), dtype=np.float32))
                 for y0 in range(rng[0], rng[1], band_rows):
                     cancel(should_cancel)
@@ -288,7 +291,8 @@ def write_luma_plane_fast(raw, dst_plane, normalize_stack, *, ph=0, pw=0,
 
             def _f32_band(rng):
                 s_arr = (scratch[:band_rows, :wp]
-                         if (pw and scratch is not None and scratch.shape[0] >= band_rows and scratch.shape[1] == wp)
+                         if (rng[0] == 0 and pw and scratch is not None
+                             and scratch.shape[0] >= band_rows and scratch.shape[1] == wp)
                          else (np.empty((band_rows, wp, 3), dtype=np.float32) if pw else None))
                 for y0 in range(rng[0], rng[1], band_rows):
                     cancel(should_cancel)
@@ -332,7 +336,8 @@ def write_luma_plane_fast(raw, dst_plane, normalize_stack, *, ph=0, pw=0,
 
                 def _pack_band(rng):
                     s_arr = (scratch[:band_rows, :wp]
-                             if (scratch is not None and scratch.shape[0] >= band_rows and scratch.shape[1] == wp)
+                             if (rng[0] == 0 and scratch is not None
+                                 and scratch.shape[0] >= band_rows and scratch.shape[1] == wp)
                              else np.empty((band_rows, wp, 3), dtype=np.float32))
                     for y0 in range(rng[0], rng[1], band_rows):
                         cancel(should_cancel)

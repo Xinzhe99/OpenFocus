@@ -255,6 +255,39 @@ def test_stage_planes_and_stage_gray_fast_paths_and_lazy_release(shape):
     np.testing.assert_array_equal(staged, neural_common.stage_planes(pure_u8, 64, threads=1))
 
 
+@pytest.mark.parametrize('variant,dtype', [
+    ('v1/v2', np.float32), ('v1/v2', np.uint16), ('v3', np.uint16),
+])
+def test_parallel_luma_staging_keeps_row_bands_independent(monkeypatch, variant, dtype):
+    image = np.zeros((513, 513, 3), dtype=dtype)
+    image[257:] = 192 if dtype == np.float32 else 49152
+    frames = [image, image]
+
+    def stage(threads):
+        if variant == 'v3':
+            return stackmffv3._stage_gray(frames, None, threads=threads)
+        return neural_common.stage_planes(frames, 64, threads=threads)
+
+    expected = stage(1)
+    convert = cv2.cvtColor
+    first_pair = iter(range(2))
+    both_ready = threading.Barrier(2, timeout=10)
+
+    def convert_together(src, *args, **kwargs):
+        first = next(first_pair, None) is not None
+        if first:
+            # Both row ranges have packed different pixels. Neither can reuse
+            # its buffer until both conversions finish reading it.
+            both_ready.wait()
+        result = convert(src, *args, **kwargs)
+        if first:
+            both_ready.wait()
+        return result
+
+    monkeypatch.setattr(cv2, 'cvtColor', convert_together)
+    np.testing.assert_array_equal(stage(2), expected)
+
+
 def test_softmax_l2_blocking_and_monkeypatch():
     rng = np.random.default_rng(111)
     # Force strip_rows < h on big height & multiple layers
@@ -332,6 +365,45 @@ def test_v3_blend_tile_recovers_and_zeroes_on_kernel_unavailable():
         recovered = stackmffv3._blend_tile(probs, frames, "soft", threads=4)
     assert _FakeKernels.calls >= 1
     np.testing.assert_allclose(recovered, ref, rtol=1e-6, atol=1e-5)
+
+
+def test_v3_soft_fallback_keeps_completed_bands(monkeypatch):
+    height = 257
+    frames = [np.full((height, 1, 3), color, np.uint8) for color in (40, 120)]
+    probs = np.full((2, height, 1), 0.5, np.float32)
+    native = sk.v3_accumulate_soft_u8
+
+    def reject_tail_specialization(src, prob, out, expected, index, has_expected):
+        # The unused focus view is strided in full bands and contiguous in
+        # the final one-pixel band, requiring a second native specialization.
+        if expected.flags.c_contiguous:
+            raise neural_common.StackMFFKernelUnavailable()
+        return native(src, prob, out, expected, index, has_expected)
+
+    monkeypatch.setattr(neural_common, 'load_stackmff_kernels', lambda: sk)
+    monkeypatch.setattr(sk, 'v3_accumulate_soft_u8', reject_tail_specialization)
+    fused = stackmffv3._blend_tile(probs, frames, 'soft')
+    np.testing.assert_array_equal(fused, np.full((height, 1, 3), 80, np.float32))
+
+
+def test_v3_parallel_blend_stops_between_sources(monkeypatch):
+    height = width = 256
+    frames = [np.full((height, width, 3), color, np.uint8) for color in (40, 120, 200)]
+    probs = np.full((len(frames), height, width), 1 / len(frames), np.float32)
+    cancelled = threading.Event()
+    started_sources = []
+    native = sk.v3_accumulate_soft_u8
+
+    def cancel_in_first_source(src, *args):
+        started_sources.append(int(src[0, 0, 0]))
+        cancelled.set()
+        return native(src, *args)
+
+    monkeypatch.setattr(neural_common, 'load_stackmff_kernels', lambda: sk)
+    monkeypatch.setattr(sk, 'v3_accumulate_soft_u8', cancel_in_first_source)
+    with pytest.raises(RegistrationCancelled):
+        stackmffv3._blend_tile(probs, frames, 'soft', cancelled.is_set, threads=2)
+    assert set(started_sources) == {40}
 
 
 @pytest.mark.skipif(not is_ai_fusion_available(), reason="ONNX Runtime not installed")
