@@ -102,6 +102,28 @@ def test_v1_nearest_and_ycbcr_row_kernels_with_bgr_rev_and_nan():
     np.testing.assert_array_equal(fast_u8, ref_u8)
 
 
+@pytest.mark.parametrize('threads', [1, 2])
+def test_v1_fallback_releases_native_color_output(monkeypatch, threads):
+    luma = np.full((256, 256), 64, np.float32)
+    image = np.zeros(luma.shape + (3,), np.uint8)
+    destinations = []
+    numpy_to_bgr = neural_common._ycbcr_to_bgr
+
+    def refuse_color_kernel(_luma, _cb, _cr, destination, *_rows):
+        destinations.append(weakref.ref(destination))
+        raise neural_common.StackMFFKernelUnavailable()
+
+    def convert_with_available_memory(*args):
+        assert destinations and all(ref() is None for ref in destinations)
+        return numpy_to_bgr(*args)
+
+    monkeypatch.setattr(neural_common, 'load_stackmff_kernels', lambda: sk)
+    monkeypatch.setattr(sk, 'v1_ycbcr_to_bgr_rows', refuse_color_kernel)
+    monkeypatch.setattr(neural_common, '_ycbcr_to_bgr', convert_with_available_memory)
+    fused = neural_common.tensor_to_bgr(luma, [image, image], threads=threads)
+    np.testing.assert_array_equal(fused, np.full(image.shape, 64, np.float32))
+
+
 def test_v3_argmax_rows_matches_numpy_ties_inf_and_nan():
     rng = np.random.default_rng(106)
     n, hp, wp = 12, 51, 64
@@ -253,6 +275,14 @@ def test_stage_planes_and_stage_gray_fast_paths_and_lazy_release(shape):
     assert len(refs) == len(sources)
     assert refs[-1]() is None
     np.testing.assert_array_equal(staged, neural_common.stage_planes(pure_u8, 64, threads=1))
+
+
+def test_stackmff_staging_rejects_mismatched_source_geometry():
+    frames = [np.zeros((height, 64, 3), np.uint8) for height in (64, 63)]
+    with pytest.raises(ValueError, match='same dimensions'):
+        neural_common.stage_planes(frames, 64)
+    with pytest.raises(ValueError, match='same dimensions'):
+        stackmffv3._stage_gray(frames, None)
 
 
 @pytest.mark.parametrize('variant,dtype', [

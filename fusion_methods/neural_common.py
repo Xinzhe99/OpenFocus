@@ -215,6 +215,8 @@ def write_luma_plane_fast(raw, dst_plane, normalize_stack, *, ph=0, pw=0,
     """Write BT.601 normalized [0-1] luma + padding bit-exact with reference."""
     h, w = raw.shape[:2]
     wp = w + pw
+    if dst_plane.shape != (h + ph, wp):
+        raise ValueError('All frames must have the same dimensions')
     workers = max(1, min(8, int(threads or 1)))
     inv255 = np.float32(255.0)
     use_band_threads = workers > 1 and h * w >= 262144 and h >= 2
@@ -636,17 +638,6 @@ def tensor_to_bgr(fused_luma, frames, should_cancel=None, *, threads=1):
             run_neural_tasks(row_workers, ranges, _nearest_band)
         except StackMFFKernelUnavailable:
             kernels = target_c = resident_pairs = None
-        else:
-            cancel(should_cancel)
-            result = np.empty((h, w, 3), dtype=np.float32)
-            try:
-                run_neural_tasks(
-                    row_workers, ranges,
-                    lambda rng: kernels.v1_ycbcr_to_bgr_rows(target_c, cb, cr, result, rng[0], rng[1]),
-                )
-                return result
-            except StackMFFKernelUnavailable:
-                kernels = target_c = None
 
     if resident_pairs is None:
         for index, frame in enumerate(frames):
@@ -703,20 +694,24 @@ def tensor_to_bgr(fused_luma, frames, should_cancel=None, *, threads=1):
     cancel(should_cancel)
     if kernels is not None and target_c is not None:
         result = np.empty((h, w, 3), dtype=np.float32)
-        try:
-            if workers > 1 and h * w >= 65536 and h >= 2:
-                parts = min(workers, h)
-                step = (h + parts - 1) // parts
-                ranges = [(y0, min(h, y0 + step)) for y0 in range(0, h, step)]
-                run_neural_tasks(
-                    workers, ranges,
-                    lambda rng: kernels.v1_ycbcr_to_bgr_rows(target_c, cb, cr, result, rng[0], rng[1]),
-                )
-            else:
-                kernels.v1_ycbcr_to_bgr_rows(target_c, cb, cr, result, 0, h)
+
+        def convert_rows(rows):
+            try:
+                kernels.v1_ycbcr_to_bgr_rows(target_c, cb, cr, result, *rows)
+            except StackMFFKernelUnavailable:
+                return False
+            return True
+
+        parts = row_workers if resident_pairs is not None else min(workers, h)
+        if parts > 1 and h * w >= 65536:
+            step = (h + parts - 1) // parts
+            ranges = [(y0, min(h, y0 + step)) for y0 in range(0, h, step)]
+            converted = all(run_neural_tasks(parts, ranges, convert_rows))
+        else:
+            converted = convert_rows((0, h))
+        if converted:
             return result
-        except StackMFFKernelUnavailable:
-            pass
+        del result
     cb *= np.float32(0.564)
     cb += np.float32(128)
     cr *= np.float32(0.713)

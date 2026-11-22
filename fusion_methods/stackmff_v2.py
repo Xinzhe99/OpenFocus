@@ -170,7 +170,6 @@ def _sample(frames, index, should_cancel=None, *, dtype=np.float32, round_uint8=
                     is_c = pixels.flags.c_contiguous
                     is_rev = False if is_c else common.is_bgr_rev_contiguous(pixels)
                     if is_c or is_rev:
-                        src = pixels if is_c else pixels[:, :, ::-1]
                         rscatter = None
                         rargs = ()
                         if pixels.dtype == np.uint16 and out.dtype == np.float32 and (gain == 1.0 or normalize_for_exposure):
@@ -191,11 +190,14 @@ def _sample(frames, index, should_cancel=None, *, dtype=np.float32, round_uint8=
                             idx_strip = index[rows]
                             if not idx_strip.flags.c_contiguous:
                                 idx_strip = np.ascontiguousarray(idx_strip)
+                            src = pixels if is_c else pixels[:, :, ::-1]
                             try:
                                 rscatter(src, idx_strip, layer, out[rows], *rargs)
                                 scattered = True
                             except common.StackMFFKernelUnavailable:
                                 kernels = strip_rgb_u16 = strip_rgb_u8 = scratch = None
+                            finally:
+                                del src
                 if not scattered:
                     mask = index[rows] == layer
                     if (gain == 1.0 and pixels.dtype != np.uint16

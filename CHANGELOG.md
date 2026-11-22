@@ -22,8 +22,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   normalization/weighted-luma/YCbCr/argmax/scatter kernels supporting both
   contiguous BGR and direct RGB TIFF views, keep StackMFF V3 hard-mode
   selection indices in transient scratch storage, and skip redundant small-tile
-  pool synchronization. Isolate parallel luma scratch, retain completed rows
-  when V3 falls back to NumPy, and check cancellation between source frames.
+  pool synchronization. Validate source dimensions and isolate row staging
+  buffers. Release source views and rejected native buffers promptly, resume
+  V3 fallback at unfinished rows, and check cancellation between source frames.
 - Accelerate ECC preprocessing, deferred perspective warping, and OpenFocus
   alignment on single-strip RGB TIFFs and deep stacks while preserving exact
   source hashes, transforms, and warped pixels. Account for hash buffers in
