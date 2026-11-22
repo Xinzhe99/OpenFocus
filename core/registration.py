@@ -80,14 +80,17 @@ alignment_report = ContextVar('alignment_report', default=None)
 # lock; the owner budget is local to the source-producing context.
 _warp_threads_lock = threading.Lock()
 _deferred_warp_threads = ContextVar('deferred_warp_threads', default=1)
+_explicit_warp_threads = ContextVar('_explicit_warp_threads', default=None)
 
 
 @contextmanager
 def deferred_warp_threads(threads):
     token = _deferred_warp_threads.set(threads)
+    explicit_token = _explicit_warp_threads.set(threads)
     try:
         yield
     finally:
+        _explicit_warp_threads.reset(explicit_token)
         _deferred_warp_threads.reset(token)
 
 
@@ -510,6 +513,8 @@ class PerspectiveWarp:
         # At an integer sampling location Lanczos returns the source code
         # exactly for integer pixels. Keep the allocating/native path for
         # floats, where zero-weight taps can propagate NaNs or affect -0.
+        from core import _alignment_kernels as _native_kernels
+        from core.openfocus_alignment import _is_bgr_rev, _run_row_bands
         a, b, tx, c, d, ty, p, q, r = self.matrix
         width, height = self.dsize
         if (a == d == r == 1 and b == c == p == q == 0
@@ -523,21 +528,43 @@ class PerspectiveWarp:
             crop = image[top:top + height, left:left + width]
             if crop.shape[2:] == (1,):
                 crop = crop[:, :, 0]
+            if (crop.ndim == 3 and crop.shape[2] == 3
+                    and _is_bgr_rev(image) and _native_kernels.available()):
+                out = np.empty((height, width, 3), dtype=image.dtype)
+                swap_fn = (_native_kernels.swap_rgb_to_bgr_rows_u8 if image.dtype == np.uint8
+                           else _native_kernels.swap_rgb_to_bgr_rows_u16)
+                _run_row_bands(
+                    height, 128, self.should_cancel, swap_fn, crop[..., ::-1], out,
+                    parallel_pixels=height * width,
+                )
+                return out
             # A resolved warp owns its pixels even without a render cache.
             return crop.copy(order='C')
         matrix = np.asarray(self.matrix, dtype=self.matrix_dtype).reshape(3, 3)
+        bgr_rev = (_is_bgr_rev(image) and image.dtype in (np.uint8, np.uint16)
+                   and _native_kernels.available())
+        src = image[..., ::-1] if bgr_rev else image
         threads = _warp_thread_budget()
         if threads <= 1:
-            return cv2.warpPerspective(image, matrix, self.dsize,
+            warped = cv2.warpPerspective(src, matrix, self.dsize,
                 flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_CONSTANT)
-        with _warp_threads_lock:
-            previous = cv2.getNumThreads()
-            cv2.setNumThreads(threads)
-            try:
-                return cv2.warpPerspective(image, matrix, self.dsize,
-                    flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_CONSTANT)
-            finally:
-                cv2.setNumThreads(0 if previous == 1 else previous)
+        else:
+            with _warp_threads_lock:
+                previous = cv2.getNumThreads()
+                cv2.setNumThreads(threads)
+                try:
+                    warped = cv2.warpPerspective(src, matrix, self.dsize,
+                        flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_CONSTANT)
+                finally:
+                    cv2.setNumThreads(0 if previous == 1 else previous)
+        if bgr_rev:
+            swap_fn = (_native_kernels.swap_bgr_inplace_rows_u8 if warped.dtype == np.uint8
+                       else _native_kernels.swap_bgr_inplace_rows_u16)
+            _run_row_bands(
+                warped.shape[0], 128, self.should_cancel, swap_fn, warped,
+                parallel_pixels=warped.shape[0] * warped.shape[1],
+            )
+        return warped
 
 
 def _perspective_output_shape(shape, dsize):
@@ -1057,8 +1084,9 @@ class _EccStageBudget:
 
 def _plan_deferred_ecc(images, downscale_width, accelerate_ecc, preference, thread_count,
                        should_cancel):
+    from core.openfocus_alignment import _is_bgr_rev
     from core.resource_policy import cpu_capacity, probe_resources, require_memory
-    from core.source_frames import frame_resolution_bytes
+    from core.source_frames import frame_resolution_bytes, is_direct_rgb_tiff
 
     width = _ecc_width(images[0].shape, downscale_width)
     max_pixels = prepare_bytes = 0
@@ -1073,7 +1101,9 @@ def _plan_deferred_ecc(images, downscale_width, accelerate_ecc, preference, thre
         # A decoded frame can outlive the decoder's scratch allocation. Hashing
         # and cv2 may each need a packed input, at separate points in time.
         decoded = frame.nbytes if decode else 0
-        packed = (0 if isinstance(frame, np.ndarray) and frame.flags.c_contiguous
+        packed = (0 if ((isinstance(frame, np.ndarray)
+                         and (frame.flags.c_contiguous or _is_bgr_rev(frame)))
+                        or is_direct_rgb_tiff(frame))
                   else frame.nbytes)
         color, gray = pixels * channels * itemsize, pixels * itemsize
         prepare = max(decode, decoded + packed, 2 * gray + 64 * 1024)
@@ -1171,6 +1201,7 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
 
     # 预处理函数：转灰度 + 降采样 + 高斯模糊 + 归一化
     def preprocess(source):
+        from core.openfocus_alignment import _is_bgr_rev
         from core.source_frames import resolve_frame, source_area_resizer
         # Replace each intermediate so a deferred full-size decode can be
         # released as soon as resize or color conversion no longer needs it.
@@ -1178,6 +1209,7 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
             pixels = resolve_frame(source, should_cancel=should_cancel)
         identity = _perspective_source(source, pixels, should_cancel)
         target_height, _, scale = _ecc_resize_geometry(pixels.shape, downscale_width)
+        is_rgb = False
         if scale < 1.0:
             resized = None
             if area_gpu is not None:
@@ -1186,15 +1218,23 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
                 height = pixels.shape[0]
                 if target_height > 0 and target_height / height == scale:
                     resized = area_gpu.resize(pixels, (downscale_width, target_height))
-            pixels = (resized if resized is not None else
-                      cv2.resize(pixels, (0, 0), fx=scale, fy=scale, interpolation=cv2.INTER_AREA))
+            if resized is not None:
+                pixels = resized
+            elif _is_bgr_rev(pixels):
+                pixels = cv2.resize(pixels[..., ::-1], (0, 0), fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+                is_rgb = True
+            else:
+                pixels = cv2.resize(pixels, (0, 0), fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
             del resized
+        elif _is_bgr_rev(pixels):
+            pixels = pixels[..., ::-1]
+            is_rgb = True
 
         if pixels.ndim != 2:
             if pixels.shape[2] == 1:
                 pixels = pixels[:, :, 0]
             else:
-                pixels = cv2.cvtColor(pixels, cv2.COLOR_BGR2GRAY)
+                pixels = cv2.cvtColor(pixels, cv2.COLOR_RGB2GRAY if is_rgb else cv2.COLOR_BGR2GRAY)
         pixels = cv2.GaussianBlur(pixels, (5, 5), 0)
         # findTransformECC 的数值稳定性依赖归一化的浮点输入：uint8 的
         # 大幅值梯度会让优化步长过大，常见于小位移场景直接不收敛
