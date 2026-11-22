@@ -243,20 +243,24 @@ def test_tiled_preparation_survives_transport_and_rejects_changed_source(
         return original_decode(frame, key, cache, should_cancel)
     monkeypatch.setattr(source_frames.SourceFrame, '_decode', decode)
 
-    def consume(_self, images, **kwargs):
-        return sum(source_frames.resolve_frame(frame).astype(np.float32)
-                   for frame in images)
-    monkeypatch.setattr(MultiFocusFusion, '_fuse_tiled', consume)
+    monkeypatch.setattr(stackmffv3, '_probabilities',
+                        lambda batch, *args: np.full_like(batch, 1 / batch.shape[1]))
     monkeypatch.setattr(MultiFocusFusion, '_validate_environment', lambda self: None)
     def fusion():
         return MultiFocusFusion('stackmffv3', use_gpu=False, tile_enabled=True,
-                                tile_threshold=1, exposure_match=exposure_match)
+                                tile_threshold=1, tile_block_size=8, tile_overlap=2,
+                                exposure_match=exposure_match, base_frame='first')
 
     first = fusion()
     first.retain_preparation = True
     with frame_storage.scratch_directory():
+        normalized, _ = normalize_fuse_input(_mixed_frames())
+        reference = fusion()._fuse_under_lease(normalized, None, None, None, thread_count=1)
         expected = first._fuse_under_lease(frames, None, None, None, thread_count=1)
+    np.testing.assert_array_equal(reference, expected)
     assert first.prepared_cache is not None
+    if exposure_match:
+        assert [f.dtype for f in first.prepared_cache] == [f.dtype for f in frames]
     snapshot_paths = [frame_storage.describe_frame(frame.source)['path']
                       for frame in first.prepared_cache]
     encoder = FrameEncoder()
@@ -265,6 +269,8 @@ def test_tiled_preparation_survives_transport_and_rejects_changed_source(
     decoded_count = len(calls)
     second = fusion()
     second.prepared_cache = transferred
+    monkeypatch.setattr(MultiFocusFusion, '_exposure_gains_for_source',
+                        lambda *a, **kw: pytest.fail('recomputed cached gains'))
     with frame_storage.scratch_directory():
         actual = second._fuse_under_lease(frames, None, None, None, thread_count=1)
     np.testing.assert_array_equal(actual, expected)
