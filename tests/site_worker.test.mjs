@@ -378,6 +378,55 @@ test("opted-in updates select the newest version and stable wins ties", async ()
   }
 });
 
+test("delta metadata and ranges use pinned official tags for stable and beta", async () => {
+  installCache();
+  const github = installReleaseFetch({ fail: true });
+  const stable = manifestFor("v2.0.1");
+  const beta = manifestFor("v2.0.2-beta.3");
+  const delta = (tag, from, platform = "windows-x64") => ({
+    name: `OpenFocus-${tag}-${platform}-from-${from}.ofdelta.zip`,
+    size: 4, digest: `sha256:${"b".repeat(64)}`, from, platform,
+  });
+  const stablePatch = delta(stable.tag, "v2.0.0");
+  const betaPatch = delta(beta.tag, "v2.0.2-beta.2");
+  const duplicate = delta(stable.tag, "v1.99.0", "macos-arm64");
+  stable.deltas = [stablePatch, { ...delta(stable.tag, "v1.99.0"), size: PAYLOAD.length },
+    { ...delta(stable.tag, "v1.99.1"), digest: "invalid" }, delta(stable.tag, stable.tag),
+    delta(stable.tag, "v2.0.0-beta.1"), delta(stable.tag, "v2.0.0", "linux-x86_64"),
+    duplicate, duplicate];
+  beta.deltas = [betaPatch, { ...delta(beta.tag, "v2.0.0"), name: "/bad" }];
+  const env = makeEnv({
+    "openfocus-meta/latest-release.json": manifestBytes(stable),
+    "openfocus-meta/beta-release.json": manifestBytes(beta),
+    [stablePatch.name]: PAYLOAD.slice(0, 4),
+    [betaPatch.name]: PAYLOAD.slice(0, 4),
+  });
+  for (const [channel, tag, patch] of [["stable", stable.tag, stablePatch], ["beta", beta.tag, betaPatch]]) {
+    const metadata = await (await run(`https://openfocus.top/api/updates?channel=${channel}`, { env })).json();
+    assert.deepEqual(metadata.deltas, [patch]);
+    assert.equal(metadata.actual_tag || metadata.tag, tag);
+    const url = `https://openfocus.top/download/releases/${tag}/delta/${patch.from}/${patch.platform}`;
+    const head = await run(url, { env, method: "HEAD" });
+    assert.equal(head.status, 200);
+    assert.equal(head.headers.get("content-length"), "4");
+    assert.equal(await head.text(), "");
+    const response = await run(url, { env, headers: { Range: "bytes=1-2" } });
+    assert.equal(response.status, 206);
+    assert.equal(response.headers.get("content-range"), "bytes 1-2/4");
+    assert.equal(await response.text(), "12");
+  }
+  for (const invalid of ["v2.0.1/delta/v2.0.1/windows-x64", "v2.0.1/delta/v2.0.0/windows-x64/",
+    "v2.0.2.999999999.3/delta/v2.0.0/windows-x64", "v2.0.1/delta/v2.0.0/windows-setup"]) {
+    assert.equal((await run(`https://openfocus.top/download/releases/${invalid}`, { env })).status, 404);
+  }
+  const missing = await run("https://openfocus.top/download/releases/v2.0.1/delta/v2.0.0/macos-arm64", { env });
+  assert.equal(missing.status, 503);
+  assert.equal(github(), 0);
+  const legacy = await (await run("https://openfocus.top/api/latest", { env })).json();
+  assert.equal(legacy.tag, stable.tag);
+  assert.equal(Object.hasOwn(legacy, "deltas"), false);
+});
+
 test("preview downloads and update aliases work offline", async () => {
   installCache();
   installReleaseFetch({ fail: true });

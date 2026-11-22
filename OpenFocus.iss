@@ -48,6 +48,11 @@ Name: "reviewnvidiaacceleration"; Description: "Review NVIDIA acceleration for A
 Type: filesandordirs; Name: "{app}\_internal"; Check: FileExists(ExpandConstant('{app}\OpenFocus.exe'))
 Type: filesandordirs; Name: "{app}\_openfocus_runtime_*"; Check: FileExists(ExpandConstant('{app}\OpenFocus.exe'))
 
+[UninstallDelete]
+; In-app updates replace these managed directories without rerunning Inno Setup.
+Type: filesandordirs; Name: "{app}\_internal"
+Type: filesandordirs; Name: "{app}\_openfocus_runtime_*"
+
 [Files]
 Source: "dist\OpenFocus\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion
 

@@ -510,11 +510,20 @@ def test_mirror_accepts_published_metadata_as_independent_digest(tmp_path):
 
 
 @pytest.mark.skipif(os.name == "nt" or not shutil.which("bash"), reason="requires POSIX shell")
-@pytest.mark.parametrize("corrupt", [False, True])
+@pytest.mark.parametrize("corrupt", [None, "full", "delta"])
 def test_mirror_workflow_preflight_precedes_r2_writes(tmp_path, corrupt):
-    directory, files, _, _, _ = _mirror_fixture(tmp_path)
+    directory, files, release, release_path, _ = _mirror_fixture(tmp_path)
+    delta = f"OpenFocus-{LABEL}-windows-x64-from-v1.2.2.ofdelta.zip"
+    files[delta] = b"patch"
+    _write(directory / delta, files[delta])
+    release["assets"].append({
+        "name": delta, "size": len(files[delta]), "digest": "sha256:" + _digest(files[delta]),
+        "browser_download_url": f"https://github.com/o/r/releases/download/{LABEL}/{delta}",
+    })
+    release_path.write_text(json.dumps(release), encoding="utf-8")
     if corrupt:
-        name, content = next(iter(files.items()))
+        name = delta if corrupt == "delta" else next(iter(files))
+        content = files[name]
         _write(directory / name, b"x" * len(content))
     _write(tmp_path / "assets.txt", "\n".join(files).encode())
     root = Path(__file__).resolve().parents[1]
@@ -534,15 +543,15 @@ def test_mirror_workflow_preflight_precedes_r2_writes(tmp_path, corrupt):
     command("jq", """
         import json, sys
         args = sys.argv[1:]
-        if '-r' in args and '.assets[].name' in args:
+        if len(args) > 1 and '.deltas[]?' in args[-2]:
             with open(args[-1]) as stream:
                 data = json.load(stream)
-            print('\\n'.join(item['name'] for item in data['assets'].values()))
-        elif '--arg' in args and 'name' in args:
-            name = args[args.index('name') + 1]
-            with open(args[-1]) as stream:
-                data = json.load(stream)
-            print(next(item['digest'] for item in data['assets'].values() if item['name'] == name))
+            items = [*data['assets'].values(), *data.get('deltas', [])]
+            if '--arg' in args:
+                name = args[args.index('name') + 1]
+                print(next(item['digest'] for item in items if item['name'] == name))
+            else:
+                print('\\n'.join(item['name'] for item in items))
         else:
             if any('.[][]' in arg for arg in args):
                 json.load(sys.stdin)
@@ -587,6 +596,11 @@ def test_mirror_workflow_preflight_precedes_r2_writes(tmp_path, corrupt):
     else:
         assert result.returncode == 0, result.stderr
         assert {line.rsplit('/', 1)[-1] for line in writes.read_text().splitlines()} == set(files)
+        metadata = json.loads((tmp_path / "openfocus-latest.json").read_text(encoding="utf-8"))
+        assert metadata["deltas"] == [{
+            "name": delta, "size": len(files[delta]), "digest": "sha256:" + _digest(files[delta]),
+            "from": "v1.2.2", "platform": "windows-x64",
+        }]
 
 
 def test_gpu_preview_stage_reuses_split_contract(tmp_path):

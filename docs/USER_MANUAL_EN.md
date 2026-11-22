@@ -1584,6 +1584,16 @@ the verified package is ready. The update can then be applied offline. Use
 opt in to beta releases or disable automatic downloads. Automatic checks still
 run quietly at most once a day. Builds without self-update open the website.
 
+Windows x64, Apple Silicon macOS, and Linux x86-64 desktop builds prefer a
+smaller patch for the installed version. OpenFocus checks the patch and the
+reconstructed application before replacing it. It downloads the full package
+if a matching smaller patch is unavailable or the installed files differ.
+
+To upgrade an official 2.0.0 build with a patch, use the matching
+`patch-from-v2.0.0.zip` on the GitHub release page when available. Quit
+OpenFocus, extract the archive to a separate folder, and follow `README.txt`.
+The helper asks for the existing OpenFocus folder or `.app` bundle.
+
 ### Registration Cache
 
 OpenFocus stores registration results in your user cache. Reopening an

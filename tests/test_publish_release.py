@@ -205,3 +205,93 @@ def test_release_inventory_includes_linux_and_preserves_legacy(tmp_path, tag, re
     linux.write_bytes(b'')
     with pytest.raises(ValueError, match='missing or empty asset'):
         publisher.local_assets(directory, tag)
+
+
+def test_direct_bases_exclude_same_newer_draft_and_unrelated_beta():
+    def published(tag, prerelease=False, draft=False):
+        return dict(tag_name=tag, prerelease=prerelease, draft=draft)
+
+    releases = [published('v2.0.2'), published('v2.0.0'), published('v1.99.0'),
+                published('v2.0.1', draft=True), published('v2.0.1-beta.2', True),
+                published('v2.0.1-beta.3', True), published('v2.0.1-beta.10', True),
+                published('v2.0.0-beta.20', True), published('v2.0.1-beta.11')]
+    assert publisher.select_delta_bases(releases, 'v2.0.1-beta.3', 'v2.0.0') == [
+        'v2.0.0', 'v2.0.1-beta.2']
+    assert publisher.select_delta_bases(releases, 'v2.0.1', 'v2.0.0') == [
+        'v2.0.0', 'v2.0.1-beta.10']
+    assert publisher.select_delta_bases(releases, 'v2.0.0-preview.45', 'v2.0.0') == ['v2.0.0']
+
+
+def test_downloaded_split_base_uses_github_digests_and_skips_setup(tmp_path, monkeypatch):
+    from tools import release_archives
+
+    tag = 'v2.0.0'
+    remote = tmp_path / 'remote'
+    remote.mkdir()
+    portable = tmp_path / f'OpenFocus-{tag}-windows-x64.zip'
+    setup = tmp_path / f'OpenFocus-{tag}-setup.exe'
+    recovery = tmp_path / 'join-openfocus-parts.ps1'
+    portable.write_bytes(b'windows split portable asset')
+    setup.write_bytes(b'setup')
+    recovery.write_bytes(b'recover')
+    stage_windows = release_archives.stage_windows
+    stage_windows(tag, portable, setup, remote, recovery, limit=20, part_size=15)
+    real_reassemble = publisher.reassemble
+    monkeypatch.setattr(publisher, 'load_manifest', lambda path: release_archives.load_manifest(path, limit=20))
+    monkeypatch.setattr(publisher, 'reassemble',
+                        lambda *args, **kwargs: real_reassemble(*args, limit=20, **kwargs))
+    metadata = [{'name': path.name, 'size': path.stat().st_size,
+                 'digest': 'sha256:' + publisher.sha256_file(path)} for path in sorted(remote.iterdir())]
+    monkeypatch.setattr(publisher, 'api', lambda *_: {
+        'id': 42, 'tag_name': tag, 'draft': False, 'prerelease': False})
+    monkeypatch.setattr(publisher, 'release_assets', lambda *_: metadata)
+    downloads = []
+
+    def download(*args):
+        name = args[args.index('--pattern') + 1]
+        directory = publisher.Path(args[args.index('--dir') + 1])
+        (directory / name).write_bytes((remote / name).read_bytes())
+        downloads.append(name)
+
+    monkeypatch.setattr(publisher, 'command', download)
+    local = tmp_path / 'local'
+    local.mkdir()
+    assert publisher._base_archive('o/r', tag, 'windows-x64', local).read_bytes() == portable.read_bytes()
+    assert set(downloads) == {f'{portable.name}.part001', f'{portable.name}.part002',
+                              f'OpenFocus-{tag}-windows-assets.json'}
+    (remote / f'{portable.name}.part001').write_bytes(b'X' * 15)
+    with pytest.raises(ValueError, match='differs from GitHub'):
+        publisher._base_archive('o/r', tag, 'windows-x64', local)
+
+
+def test_publish_patch_identity_and_matching_legacy_bytes(tmp_path):
+    import zipfile
+
+    from tools.build_update_delta import build_bridge, build_delta
+    from utils.release_delta import delta_name, legacy_patch_name
+
+    base_tag, tag, platform = 'v2.0.0', 'v2.0.1', 'windows-x64'
+    base, target, directory = (tmp_path / name for name in ('base', 'target', 'staged'))
+    for path in (base, target, directory):
+        path.mkdir()
+    (base / 'OpenFocus.exe').write_bytes(b'base')
+    (target / 'OpenFocus.exe').write_bytes(b'target')
+    patch = directory / delta_name(tag, base_tag, platform)
+    helper = tmp_path / 'OpenFocus-Patch.exe'
+    helper.write_bytes(b'helper')
+    full_sizes = {platform: 4096}
+    build_delta(base, target, patch, base_tag=base_tag, target_tag='v2.0.2', platform=platform)
+    with pytest.raises(ValueError, match='manifest identity differs'):
+        publisher._validate_delta_assets(directory, tag, full_sizes)
+    patch.unlink()
+    build_delta(base, target, patch, base_tag=base_tag, target_tag=tag, platform=platform)
+    assert publisher._validate_delta_assets(directory, tag, full_sizes) == [patch.name]
+    build_bridge(patch, helper, directory)
+    legacy = directory / legacy_patch_name(tag, platform)
+    assert publisher._validate_delta_assets(directory, tag, full_sizes) == [patch.name, legacy.name]
+    with zipfile.ZipFile(legacy, 'w') as archive:
+        archive.writestr(helper.name, helper.read_bytes())
+        archive.writestr('README.txt', b'Instructions')
+        archive.writestr(patch.name, b'x' * patch.stat().st_size)
+    with pytest.raises(ValueError, match='differs from standalone patch'):
+        publisher._validate_delta_assets(directory, tag, full_sizes)
