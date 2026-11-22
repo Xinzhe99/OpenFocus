@@ -1,5 +1,9 @@
+import math
 import numbers
 import os
+import threading
+from collections import deque
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from functools import lru_cache
 
 import cv2
@@ -144,6 +148,29 @@ def thumbnail_bgr(img: np.ndarray, size: int) -> np.ndarray:
     return display
 
 
+_IMAGE_KERNELS = None
+_IMAGE_KERNELS_LOCK = threading.Lock()
+_IMAGE_KERNEL_STARTUP_BYTES = 64 * 1024 * 1024
+
+
+def _load_image_kernels():
+    """Lazily admit and import Numba image kernels, keeping pure fallback intact."""
+    global _IMAGE_KERNELS
+    if _IMAGE_KERNELS is not None:
+        return _IMAGE_KERNELS
+    with _IMAGE_KERNELS_LOCK:
+        if _IMAGE_KERNELS is not None:
+            return _IMAGE_KERNELS
+        try:
+            from core.resource_policy import ResourceLimitError, require_memory
+            require_memory(_IMAGE_KERNEL_STARTUP_BYTES)
+            from utils import _image_kernels
+            _IMAGE_KERNELS = _image_kernels
+        except (ImportError, OSError, ResourceLimitError):
+            return None
+        return _IMAGE_KERNELS
+
+
 def to_display_uint8(img: np.ndarray) -> np.ndarray:
     """Convert any supported bit depth to uint8 for on-screen display.
 
@@ -159,6 +186,34 @@ def to_display_uint8(img: np.ndarray) -> np.ndarray:
     on a 12 MP frame).
     """
     if img.dtype == np.uint16:
+        if img.ndim in (2, 3) and img.size >= 262144 and img.dtype.isnative:
+            kernels = _load_image_kernels()
+            if kernels is not None:
+                height = img.shape[0]
+                out = np.empty(img.shape, dtype=np.uint8)
+                workers = kernels.worker_count(img.size, height, 128, 4)
+                if img.ndim == 2:
+                    fn = kernels.u16_to_display_u8_2d
+                    src = img
+                    dst = out
+                elif img.flags.c_contiguous:
+                    fn = kernels.u16_to_display_u8_2d
+                    src = img.reshape(height, -1)
+                    dst = out.reshape(height, -1)
+                elif img.shape[2] == 3 and img[..., ::-1].flags.c_contiguous:
+                    fn = kernels.u16_bgr_rev_to_display_u8
+                    src = img[..., ::-1]
+                    dst = out
+                else:
+                    fn = kernels.u16_to_display_u8_3d
+                    src = img
+                    dst = out
+                kernels.run_image_bands(
+                    height, 128,
+                    lambda start, stop: fn(src, dst, start, stop),
+                    workers=workers,
+                )
+                return out
         # convertScaleAbs turns a 1-D array into a column (N,1); reshape keeps
         # the caller's shape for every rank.
         return cv2.convertScaleAbs(img, alpha=1.0 / 257.0).reshape(img.shape)
@@ -680,20 +735,100 @@ def _write_tiff_page(handle, image, exif, profile, params, should_cancel, bigtif
     handle.write(header)
     offsets, counts = [], []
     samples = image.shape[2] if image.ndim == 3 else 1
-    for start in range(0, image.shape[0], rows):
+    if compression != 1:
+        remaining_starts = list(range(rows, image.shape[0], rows))
+        workers = 1
+        if len(remaining_starts) >= 3 and image.nbytes >= 4 * 1024 ** 2:
+            per_worker_bytes = (
+                image.shape[1] * samples * image.dtype.itemsize * rows * 8
+                + 1024 ** 2
+            )
+            try:
+                from core.resource_policy import probe_memory, ram_budget
+                from utils.platform_utils import cpu_limits
+                physical, logical = cpu_limits()[:2]
+                cpu_cap = physical or max(1, (logical or 1) // 2)
+                budget = ram_budget(probe_memory())
+                mem_cap = max(1, budget // max(1, per_worker_bytes))
+                workers = max(1, min(8, cpu_cap, len(remaining_starts), mem_cap))
+            except Exception:
+                workers = 1
         _check_write_cancelled(should_cancel)
-        with frame_region(image, np.s_[start:start + rows]) as strip:
-            if compression != 1:
-                if start == 0:
-                    pixels, first = first, None
-                else:
+        first_offset = handle.tell()
+        first_count = len(first)
+        if not bigtiff and first_offset + first_count >= _CLASSIC_TIFF_LIMIT:
+            raise ImageWriteError('tiff_too_large',
+                                  'Classic TIFF exceeds the 4 GiB limit; use BigTIFF.')
+        offsets.append(first_offset)
+        counts.append(first_count)
+        handle.write(first)
+        first = None
+
+        if workers <= 1:
+            for start in remaining_starts:
+                _check_write_cancelled(should_cancel)
+                with frame_region(image, np.s_[start:start + rows]) as strip:
                     pixels, actual, strip_predictor = _compressed_tiff_strip(strip, params)
                     if actual != compression or strip_predictor != predictor:
                         raise ValueError('TIFF codec changed strip layout')
-            else:
+                offsets.append(handle.tell())
+                counts.append(len(pixels))
+                if not bigtiff and handle.tell() + len(pixels) >= _CLASSIC_TIFF_LIMIT:
+                    raise ImageWriteError('tiff_too_large',
+                                          'Classic TIFF exceeds the 4 GiB limit; use BigTIFF.')
+                handle.write(pixels)
+        else:
+            stop = threading.Event()
+
+            def encode_strip(row_start):
+                if stop.is_set():
+                    from core.registration import RegistrationCancelled
+                    raise RegistrationCancelled()
+                _check_write_cancelled(should_cancel)
+                with frame_region(image, np.s_[row_start:row_start + rows]) as strip:
+                    return _compressed_tiff_strip(strip, params)
+
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                window = deque()
+                next_idx = 0
+                while next_idx < min(workers, len(remaining_starts)):
+                    window.append(pool.submit(encode_strip, remaining_starts[next_idx]))
+                    next_idx += 1
+                try:
+                    while window:
+                        _check_write_cancelled(should_cancel)
+                        if not window[0].done():
+                            wait((window[0],), timeout=0.05)
+                            continue
+                        future = window.popleft()
+                        pixels, actual, strip_predictor = future.result()
+                        if next_idx < len(remaining_starts):
+                            window.append(pool.submit(encode_strip, remaining_starts[next_idx]))
+                            next_idx += 1
+                        if actual != compression or strip_predictor != predictor:
+                            raise ValueError('TIFF codec changed strip layout')
+                        offsets.append(handle.tell())
+                        counts.append(len(pixels))
+                        if not bigtiff and handle.tell() + len(pixels) >= _CLASSIC_TIFF_LIMIT:
+                            raise ImageWriteError('tiff_too_large',
+                                                  'Classic TIFF exceeds the 4 GiB limit; use BigTIFF.')
+                        handle.write(pixels)
+                finally:
+                    stop.set()
+                    for pending_future in window:
+                        pending_future.cancel()
+                    if window:
+                        wait(window)
+    else:
+        for start in range(0, image.shape[0], rows):
+            _check_write_cancelled(should_cancel)
+            with frame_region(image, np.s_[start:start + rows]) as strip:
                 if samples > 1:
-                    code = cv2.COLOR_BGRA2RGBA if samples == 4 else cv2.COLOR_BGR2RGB
-                    strip = cv2.cvtColor(strip, code)
+                    if samples == 3 and not strip.flags.c_contiguous and strip[..., ::-1].flags.c_contiguous:
+                        strip = strip[..., ::-1]
+                    else:
+                        code = cv2.COLOR_BGRA2RGBA if samples == 4 else cv2.COLOR_BGR2RGB
+                        strip = cv2.cvtColor(strip, code)
                 strip = np.ascontiguousarray(strip, dtype=strip.dtype.newbyteorder('<'))
                 pixels = memoryview(strip).cast('B')
             offsets.append(handle.tell())
@@ -1161,6 +1296,33 @@ def quantize_fuse_output(result, is_16bit: bool):
 
     pixels = np.asarray(result)
     output = create_transient_frame(pixels.shape, np.uint16 if is_16bit else np.uint8)
+    if (pixels.ndim in (2, 3) and pixels.size >= 65536
+            and pixels.dtype in (np.float32, np.float64) and pixels.dtype.isnative):
+        kernels = _load_image_kernels()
+        if kernels is not None:
+            height = pixels.shape[0]
+            workers = kernels.worker_count(pixels.size, height, 128, 4)
+            is_f32 = pixels.dtype == np.float32
+            if pixels.ndim == 2 or (pixels.flags.c_contiguous and output.flags.c_contiguous):
+                src = pixels if pixels.ndim == 2 else pixels.reshape(height, -1)
+                dst = output if output.ndim == 2 else output.reshape(height, -1)
+                if is_f32:
+                    fn = kernels.quantize_f32_to_u16_2d if is_16bit else kernels.quantize_f32_to_u8_2d
+                else:
+                    fn = kernels.quantize_f64_to_u16_2d if is_16bit else kernels.quantize_f64_to_u8_2d
+            else:
+                src = pixels
+                dst = output
+                if is_f32:
+                    fn = kernels.quantize_f32_to_u16_3d if is_16bit else kernels.quantize_f32_to_u8_3d
+                else:
+                    fn = kernels.quantize_f64_to_u16_3d if is_16bit else kernels.quantize_f64_to_u8_3d
+            kernels.run_image_bands(
+                height, 128,
+                lambda start, stop: fn(src, dst, start, stop),
+                workers=workers,
+            )
+            return output
     # Buffered external loops cap every arithmetic temporary independently of
     # image dimensions while retaining source/output coordinates for any stride.
     with np.nditer([pixels, output], flags=['external_loop', 'buffered', 'zerosize_ok'],
@@ -1185,6 +1347,78 @@ def _exposure_mean(frame, should_cancel=None, *, normalize_uint16=False):
     whole-frame preparation pass. Accumulate in float64 so strip boundaries
     and stack depth do not amplify float32 reduction error.
     """
+    if frame.size == 0:
+        return float('nan')
+    if (frame.ndim in (2, 3) and frame.dtype in (np.uint8, np.uint16, np.float32)
+            and frame.dtype.isnative):
+        kernels = _load_image_kernels()
+        if kernels is not None:
+            height = frame.shape[0]
+            channels = 1 if frame.ndim == 2 else frame.shape[2]
+            if frame.ndim == 2:
+                flat = frame
+            elif channels == 1 and frame.flags.c_contiguous:
+                flat = frame.reshape(height, frame.shape[1])
+            elif channels == 3 and frame.flags.c_contiguous:
+                flat = frame.reshape(height, frame.shape[1] * 3)
+            elif channels == 3 and frame[..., ::-1].flags.c_contiguous:
+                # Sum across BGR and RGB channels is invariant under reversal.
+                flat = frame[..., ::-1].reshape(height, frame.shape[1] * 3)
+            else:
+                flat = None
+
+            if flat is not None or channels >= 3:
+                arr = flat if flat is not None else frame
+                use_2d = flat is not None
+                count = arr.size if use_2d else height * frame.shape[1] * 3
+                if frame.dtype == np.uint16 and not normalize_uint16:
+                    fn = kernels.sum_u16_2d_u64 if use_2d else kernels.sum_u16_3ch_u64
+                    workers = (1 if use_2d else
+                               kernels.worker_count(count, height, 128, 4, min_elements=1_000_000))
+                    parts = kernels.run_image_bands(
+                        height, 128,
+                        lambda start, stop: fn(arr, start, stop),
+                        workers=workers, should_cancel=should_cancel,
+                    )
+                    total = 0
+                    for part in parts:
+                        total += int(part)
+                    return float(total) / count
+                if frame.dtype == np.uint8:
+                    fn = kernels.sum_u8_2d_u64 if use_2d else kernels.sum_u8_3ch_u64
+                    workers = (1 if use_2d else
+                               kernels.worker_count(count, height, 128, 4, min_elements=1_000_000))
+                    parts = kernels.run_image_bands(
+                        height, 128,
+                        lambda start, stop: fn(arr, start, stop),
+                        workers=workers, should_cancel=should_cancel,
+                    )
+                    total = 0
+                    for part in parts:
+                        total += int(part)
+                    return float(total) / count
+                if frame.dtype == np.uint16:
+                    fn = kernels.sum_u16_2d_norm_f64 if use_2d else kernels.sum_u16_3ch_norm_f64
+                    workers = kernels.worker_count(count, height, 128, 8, min_elements=1_000_000)
+                    parts = kernels.run_image_bands(
+                        height, 128,
+                        lambda start, stop: fn(arr, start, stop),
+                        workers=workers, should_cancel=should_cancel,
+                    )
+                    return float(math.fsum(parts)) / count
+                if frame.dtype == np.float32:
+                    fn = kernels.sum_f32_2d_f64 if use_2d else kernels.sum_f32_3ch_f64
+                    workers = kernels.worker_count(count, height, 128, 4, min_elements=1_000_000)
+                    parts = kernels.run_image_bands(
+                        height, 128,
+                        lambda start, stop: fn(arr, start, stop),
+                        workers=workers, should_cancel=should_cancel,
+                    )
+                    total = 0.0
+                    for part in parts:
+                        total += part
+                    return float(total) / count
+
     total = 0.0
     count = 0
     for y in range(0, frame.shape[0], 128):
@@ -1230,14 +1464,71 @@ def apply_exposure_gain(frame, gain):
     if gain == 1.0 or frame is None:
         return frame
     dtype = frame.dtype
+    gain_f = float(gain)
+    if (frame.ndim in (2, 3) and frame.size > 0 and dtype.isnative
+            and math.isfinite(gain_f)):
+        threshold = 4096 if dtype == np.uint8 else (131072 if dtype == np.uint16 else 262144)
+        if frame.size >= threshold:
+            kernels = _load_image_kernels()
+            if kernels is not None:
+                height = frame.shape[0]
+                limit = 65535.0 if dtype == np.uint16 else 255.0
+                if dtype in (np.uint8, np.uint16):
+                    n_codes = 65536 if dtype == np.uint16 else 256
+                    codes = np.arange(n_codes, dtype=np.float32)
+                    codes *= gain_f
+                    np.clip(codes, 0.0, limit, out=codes)
+                    lut = codes.astype(dtype)
+                    out = np.empty(frame.shape, dtype=dtype)
+                    workers = kernels.worker_count(frame.size, height, 128, 4)
+                    if frame.ndim == 2:
+                        fn = kernels.apply_lut_2d_rows
+                        src, dst = frame, out
+                    elif frame.shape[2] == 4:
+                        fn = kernels.apply_lut_bgra_rows
+                        src, dst = frame, out
+                    elif frame.flags.c_contiguous:
+                        fn = kernels.apply_lut_2d_rows
+                        src = frame.reshape(height, -1)
+                        dst = out.reshape(height, -1)
+                    elif frame.shape[2] == 3 and frame[..., ::-1].flags.c_contiguous:
+                        fn = kernels.apply_lut_bgr_rev_rows
+                        src = frame[..., ::-1]
+                        dst = out
+                    else:
+                        fn = kernels.apply_lut_3d_rows
+                        src, dst = frame, out
+                    kernels.run_image_bands(
+                        height, 128,
+                        lambda start, stop: fn(src, lut, dst, start, stop),
+                        workers=workers,
+                    )
+                    return out
+                if dtype == np.float32:
+                    if frame.ndim == 2 or frame.flags.c_contiguous or frame.shape[2] == 4:
+                        out = np.empty(frame.shape, dtype=np.float32)
+                        workers = kernels.worker_count(frame.size, height, 128, 4)
+                        if frame.ndim == 3 and frame.shape[2] == 4:
+                            fn = kernels.scale_clip_f32_bgra_rows
+                            src, dst = frame, out
+                        else:
+                            fn = kernels.scale_clip_f32_2d_rows
+                            src = frame if frame.ndim == 2 else frame.reshape(height, -1)
+                            dst = out if out.ndim == 2 else out.reshape(height, -1)
+                        kernels.run_image_bands(
+                            height, 128,
+                            lambda start, stop: fn(src, gain_f, limit, dst, start, stop),
+                            workers=workers,
+                        )
+                        return out
     limit = 65535.0 if dtype == np.uint16 else 255.0
     out = frame.astype(np.float32)
     if out.ndim == 3 and out.shape[2] == 4:
         color = out[:, :, :3]
-        color *= float(gain)
+        color *= gain_f
         np.clip(color, 0.0, limit, out=color)
     else:
-        out *= float(gain)
+        out *= gain_f
         np.clip(out, 0.0, limit, out=out)
     if dtype in (np.uint8, np.uint16):
         return out.astype(dtype)
