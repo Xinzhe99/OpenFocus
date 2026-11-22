@@ -413,6 +413,9 @@ _S_C = ParameterSpec('smoothing', 'label_of_smoothing', 4., 0, 14, decimals=6, w
 _FEATHER_B = ParameterSpec('feather', 'label_of_feather', 3, 0, 10)
 _LEVELS = ParameterSpec('N', 'compare_levels', 4, 1, 6)
 _MODE = ParameterSpec('mode', 'label_ai_mode', 'soft', choices=('soft', 'hard'), choice_labels=('radio_ai_soft', 'radio_ai_hard'))
+_V3_SCALE = ParameterSpec('inference_scale', 'label_ai_inference_scale', 'single',
+                          choices=('single', 'dual'), hint_key='label_ai_inference_scale_hint',
+                          choice_labels=('ai_inference_scale_single', 'ai_inference_scale_dual'))
 _ADAPTER = 'core.algorithm_adapters:'
 _ALIGN_FAILURE = ParameterSpec('failure_policy', 'label_align_failure_policy', 'continue', choices=('continue', 'fail'), choice_labels=('align_failure_continue', 'align_failure_fail'))
 _FUSION_CLASS = 'core.multi_focus_fusion:MultiFocusFusion.'
