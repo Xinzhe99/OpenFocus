@@ -98,7 +98,7 @@ def test_parallel_exposure_polls_cancellation_on_caller(monkeypatch):
         assert threading.get_ident() == caller
         return False
 
-    frame = np.full((384, 160), 65535, np.uint16)
+    frame = np.full((384, 160, 3), 65535, np.uint16)
     assert image_utils._exposure_mean(frame, should_cancel, normalize_uint16=True) == 255.0
 
 
