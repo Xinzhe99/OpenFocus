@@ -20,6 +20,7 @@ _READBACK_BUFFER_BYTES = 8 * 1024 * 1024
 _KERNEL_NAMES = (
     'a_down2_u8', 'a_down2_u16', 'a_down2', 'a_laplacian',
     'a_select_u8', 'a_select_u16',
+    'a_select_u8_bgr_rev', 'a_select_u16_bgr_rev',
     'a_blend_low', 'a_out_u8', 'a_out_f32',
 )
 
@@ -174,7 +175,7 @@ static inline int burt_expand_laplacian(__global const int* lap, int y, int x,
     return (int)((left * (den - fx) + right * fx + (1L << (bits - 1))) >> bits);
 }
 
-#define DEFINE_A_SELECT(NAME, PIXEL_T, SCALE, GRAY) \
+#define DEFINE_A_SELECT(NAME, PIXEL_T, SCALE, GRAY, BGR_REV) \
 __kernel void NAME(__global const PIXEL_T* image, __global const int* half_gray, \
                    __global const int* lap, __global int* best, __global ushort* output, \
                    __global float* accumulated, __global float* weights, \
@@ -243,7 +244,8 @@ __kernel void NAME(__global const PIXEL_T* image, __global const int* half_gray,
     } \
     for (int c = 0; c < C; ++c) { \
         size_t idx = (size_t)k * C + c; \
-        int value = (int)image[idx] * SCALE; \
+        size_t sidx = BGR_REV ? ((size_t)k * 3 + (2 - c)) : idx; \
+        int value = (int)image[sidx] * SCALE; \
         if (collect) { \
             if (first) { \
                 accumulated[idx] = (float)value * weight; \
@@ -262,8 +264,10 @@ __kernel void NAME(__global const PIXEL_T* image, __global const int* half_gray,
     } \
 }
 
-DEFINE_A_SELECT(a_select_u8, uchar, 256, gray_u8)
-DEFINE_A_SELECT(a_select_u16, ushort, 1, gray_u16)
+DEFINE_A_SELECT(a_select_u8, uchar, 256, gray_u8, 0)
+DEFINE_A_SELECT(a_select_u16, ushort, 1, gray_u16, 0)
+DEFINE_A_SELECT(a_select_u8_bgr_rev, uchar, 256, gray_u8, 1)
+DEFINE_A_SELECT(a_select_u16_bgr_rev, ushort, 1, gray_u16, 1)
 
 __kernel void a_blend_low(__global ushort* output, __global const int* best,
                           __global const float* accumulated, __global const float* weights,
@@ -411,7 +415,9 @@ class GpuA:
         from dataclasses import replace
         from core import resource_policy
         from core.source_frames import resolve_frame, without_source_cache_growth
-        from fusion_methods._openfocus_gpu import GpuError, _free_vram
+        from fusion_methods._openfocus_gpu import (
+            GpuError, _free_vram, _iter_prefetched, _prepare_gpu_upload,
+        )
 
         shape = frames[0].shape
         if img_resize is not None:
@@ -488,29 +494,36 @@ class GpuA:
         stat_buf = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, max(1, n * 4))
 
         src_buf = self.cl.Buffer(self.ctx, self.mf.READ_ONLY, src_bytes)
+        prefetch = (staging + source_peak <= host_budget)
         in_flight = False
+
+        def prepare_frame(_index, source, cancelled):
+            _check_cancel(cancelled)
+            if native_upload and source.dtype in (np.uint8, np.uint16):
+                with without_source_cache_growth():
+                    raw = resolve_frame(source, should_cancel=cancelled)
+                _check_cancel(cancelled)
+                if tuple(raw.shape) != tuple(shape):
+                    raise ValueError('OpenFocus A requires frames with matching shapes')
+                host_src, bgr_rev = _prepare_gpu_upload(raw)
+                del raw
+                src_is_u8 = host_src.dtype == np.uint8
+                return host_src, src_is_u8, 0, bgr_rev
+            with without_source_cache_growth():
+                raw_code = frame_codes(source, img_resize, cancelled)
+            if tuple(raw_code.shape) != tuple(shape):
+                raise ValueError('OpenFocus A requires frames with matching shapes')
+            host_src, bgr_rev = _prepare_gpu_upload(raw_code, np.uint16)
+            del raw_code
+            u8_gray = 1 if getattr(source, 'dtype', None) == np.uint8 else 0
+            return host_src, False, u8_gray, bgr_rev
+
         try:
-            for index, source in enumerate(frames):
+            prepared_iter = _iter_prefetched(
+                frames, prepare_frame, enabled=prefetch, should_cancel=should_cancel,
+            )
+            for index, (host_src, src_is_u8, u8_gray, bgr_rev) in prepared_iter:
                 _check_cancel(should_cancel)
-                if native_upload and source.dtype in (np.uint8, np.uint16):
-                    with without_source_cache_growth():
-                        raw = resolve_frame(source, should_cancel=should_cancel)
-                    _check_cancel(should_cancel)
-                    if tuple(raw.shape) != tuple(shape):
-                        raise ValueError('OpenFocus A requires frames with matching shapes')
-                    host_src = np.ascontiguousarray(raw)
-                    del raw
-                    src_is_u8 = host_src.dtype == np.uint8
-                    u8_gray = 0
-                else:
-                    with without_source_cache_growth():
-                        raw_code = frame_codes(source, img_resize, should_cancel)
-                    if tuple(raw_code.shape) != tuple(shape):
-                        raise ValueError('OpenFocus A requires frames with matching shapes')
-                    host_src = np.ascontiguousarray(raw_code, dtype=np.uint16)
-                    del raw_code
-                    src_is_u8 = False
-                    u8_gray = 1 if getattr(source, 'dtype', None) == np.uint8 else 0
                 in_flight = True
                 self.cl.enqueue_copy(self.q, src_buf, host_src, is_blocking=False)
                 _check_cancel(should_cancel)
@@ -537,8 +550,11 @@ class GpuA:
                     gray_slot = reduced_slot
 
                 _check_cancel(should_cancel)
-                select_kern = self.k['a_select_u8'] if src_is_u8 else self.k['a_select_u16']
-                self._run(select_kern, (width, height), src_buf, gray_bufs[0], lap_buf,
+                if src_is_u8:
+                    kern_name = 'a_select_u8_bgr_rev' if bgr_rev else 'a_select_u8'
+                else:
+                    kern_name = 'a_select_u16_bgr_rev' if bgr_rev else 'a_select_u16'
+                self._run(self.k[kern_name], (width, height), src_buf, gray_bufs[0], lap_buf,
                           best_buf, out_buf, acc_buf, wt_buf, stat_buf, np.int32(height),
                           np.int32(width), np.int32(channels), np.int32(levels_count),
                           np.int32(index == 0), np.int32(u8_gray))
