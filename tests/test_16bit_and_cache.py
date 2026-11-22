@@ -85,11 +85,18 @@ class TestFuseBitDepth:
         out = quantize_fuse_output(frames[0], is16)
         assert out is frames[0]
 
-    def test_quantize_retains_low_bits_with_bounded_scratch(self):
+    @pytest.mark.parametrize('native', [False, True])
+    def test_quantize_retains_low_bits_with_bounded_scratch(self, monkeypatch, native):
         import tracemalloc
+        from utils import image_utils
+
+        if not native:
+            monkeypatch.setattr(image_utils, '_load_image_kernels', lambda: None)
 
         codes = np.arange(513 * 1025 * 3, dtype=np.uint16).reshape(513, 1025, 3)
         working = codes.astype(np.float32) * (255.0 / 65535.0)
+        # Measure per-image scratch after the optional JIT specialization.
+        quantize_fuse_output(working[:32], True)
         tracemalloc.start()
         try:
             output = quantize_fuse_output(working, True)

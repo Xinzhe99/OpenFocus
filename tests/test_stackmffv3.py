@@ -50,6 +50,7 @@ def test_hard_mode_values_come_from_the_source_frames():
 def test_tiled_hard_selection_does_not_blend_conflicting_tiles(monkeypatch):
     """Overlapping tiles may choose different source frames at one pixel."""
     import core.multi_focus_fusion as mff
+    from core.source_frames import resolve_frame
 
     frames = [np.full((16, 24, 3), value, np.uint8) for value in (16, 240)]
     fusion = MultiFocusFusion('stackmffv3', use_gpu=False, exposure_match=False)
@@ -58,7 +59,7 @@ def test_tiled_hard_selection_does_not_blend_conflicting_tiles(monkeypatch):
         choices = iter([0, 1] * 20)
 
         def predict(_fusion, crops, _resize, **_kwargs):
-            return crops[next(choices)]
+            return resolve_frame(crops[next(choices)])
 
         monkeypatch.setattr(mff, 'resolve_runner', lambda _name: predict)
         return fusion._fuse_tiled_neural(

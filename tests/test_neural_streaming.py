@@ -387,6 +387,13 @@ def test_directory_rejects_oversized_frame_before_decode(tmp_path, monkeypatch, 
     encoded[16:24] = struct.pack('>II', 500000, 500000)
     encoded[29:33] = struct.pack('>I', zlib.crc32(encoded[12:29]))
     path.write_bytes(encoded)
+    oversized_paths = {str(path)}
+    if entry == 'stackmffv2':
+        # Match tile geometry so the decode guard is reached before any
+        # independent rejection for mismatched frame sizes.
+        first_path = tmp_path / 'first.png'
+        first_path.write_bytes(encoded)
+        oversized_paths.add(str(first_path))
     snapshot = resource_policy.ResourceSnapshot(
         available_ram=2 * 1024 ** 3, total_ram=4 * 1024 ** 3,
         physical_cores=2, logical_cpus=2)
@@ -412,7 +419,7 @@ def test_directory_rejects_oversized_frame_before_decode(tmp_path, monkeypatch, 
         else:
             for item in stackmffv3._read_stack(str(tmp_path), None):
                 source_frames.resolve_frame(item)
-    assert str(path) not in decoded
+    assert oversized_paths.isdisjoint(decoded)
 
 
 @pytest.mark.parametrize('method', ['stackmff', 'stackmffv2', 'stackmffv3'])
