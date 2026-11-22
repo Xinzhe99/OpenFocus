@@ -162,18 +162,18 @@ class IntraLayerWindowAttention(nn.Module):
             x = torch.roll(x, shifts=(-s, -s), dims=(1, 2))
         xw = window_partition(x, ws)                                 # M*nW, T, C
 
-        qkv = self.qkv(xw).reshape(M, nW, T, 3, heads, d).permute(3, 0, 1, 4, 2, 5)
+        qkv = self.qkv(xw).reshape(M, nW, T, 3, heads, d)
         bias = self.rel_pos_bias_table[self.rel_index.reshape(-1)].reshape(T, T, heads)
         bias = bias.permute(2, 0, 1)                                 # heads, T, T
         regions = self._shift_regions(h, w, s, x.device) if s > 0 else None
         if self.bounded_workspace and M * nW * heads * T * T > attention_workspace.SCORE_ELEMENTS:
             del x, xw
-            o = self._bounded_windows(qkv, bias, regions)
+            o = self._bounded_windows(qkv.permute(3, 0, 1, 4, 2, 5), bias, regions)
             del qkv
         else:
-            q = qkv[0].reshape(M, nW * heads, T, d)
-            k = qkv[1].reshape(M, nW * heads, T, d)
-            v = qkv[2].reshape(M, nW * heads, T, d)
+            # Select the projections before permuting their heads in the export.
+            q, k, v = (qkv.select(3, i).permute(0, 1, 3, 2, 4).reshape(M, nW * heads, T, d)
+                       for i in range(3))
             if regions is not None:
                 full = bias.unsqueeze(0) + self._shift_mask(regions).unsqueeze(1)  # nW, heads, T, T
             else:
@@ -250,12 +250,12 @@ class InterLayerAttention(nn.Module):
         t = xs.permute(0, 2, 3, 1, 4).reshape(M, N, C)              # M groups of N tokens
 
         qkv = self.qkv(self.norm1(t)).reshape(M, N, 3, self.heads, self.head_dim)
-        qkv = qkv.permute(2, 0, 3, 1, 4)                             # 3, M, heads, N, d
         if self.bounded_workspace and M * self.heads * N * N > attention_workspace.SCORE_ELEMENTS:
-            o = self._bounded_focus(qkv)
+            o = self._bounded_focus(qkv.permute(2, 0, 3, 1, 4))
             del qkv
         else:
-            o = F.scaled_dot_product_attention(qkv[0], qkv[1], qkv[2])   # M, heads, N, d
+            q, k, v = (qkv.select(2, i).permute(0, 2, 1, 3) for i in range(3))
+            o = F.scaled_dot_product_attention(q, k, v)              # M, heads, N, d
             o = o.transpose(1, 2).reshape(M, N, C)
         t = t + self.proj(o)
         t = t + self.mlp(self.norm2(t))

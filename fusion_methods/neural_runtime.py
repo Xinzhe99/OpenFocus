@@ -864,7 +864,16 @@ def _resize_antialias_impl(planes, scale, should_cancel, workers):
             except StackMFFKernelUnavailable:
                 pass
 
-    # PyTorch bilinear antialias uses a triangle filter widened for downsampling.
+    h, w = planes.shape[-2:]
+    if (scale == 0.75 and planes.dtype == np.float32 and h and w
+            and h % 4 == 0 and w % 4 == 0):
+        return _resize_three_quarters(planes, should_cancel)
+    return _resize_triangle(planes, scale, should_cancel)
+
+
+def _resize_triangle(planes, scale, should_cancel=None):
+    """Antialiased bilinear resize of the last two axes, at any scale."""
+    from fusion_methods.neural_common import cancel
     result = planes
     for axis in (2, 3):
         cancel(should_cancel)
@@ -936,6 +945,56 @@ def _run_resize_antialias(planes, scale, should_cancel=None, threads=1):
         return _resize_antialias(planes, scale, should_cancel)
     workers = max(1, min(4, int(threads or 1)))
     return _resize_antialias_impl(planes, scale, should_cancel, workers)
+
+
+def _resize_three_quarters_axis(source, dest, should_cancel):
+    """Reduce the first axis by 3/4: four input rows make three output rows.
+
+    These are the weights `_resize_triangle` computes at this scale. Output
+    centers repeat at input offsets 1/6, 3/2 and 17/6 with radius 4/3, so the
+    outer two outputs also read one row of the neighbouring group. At either
+    end of the axis that row is missing, and renormalizing the two remaining
+    taps gives 7/10 and 3/10. Products are summed in input order, which keeps
+    every float32 result identical to the general filter.
+    """
+    from fusion_methods.neural_common import cancel
+
+    a, b, c, d = (source[offset::4] for offset in range(4))
+    dest[0] = a[0] * 0.7 + b[0] * 0.3
+    dest[-1] = c[-1] * 0.3 + d[-1] * 0.7
+    # Bound temporary products and the work between cancellation checks.
+    groups = max(1, 262144 // source.shape[1])
+    for start in range(0, len(a), groups):
+        if start:
+            cancel(should_cancel)
+        stop = min(start + groups, len(a))
+        dest[3 * start + 1:3 * stop:3] = b[start:stop] * 0.5 + c[start:stop] * 0.5
+        first = max(1, start)
+        dest[3 * first:3 * stop:3] = (d[first - 1:stop - 1] * (1 / 11)
+                                      + a[first:stop] * (7 / 11) + b[first:stop] * (3 / 11))
+        last = min(stop, len(a) - 1)
+        dest[3 * start + 2:3 * last + 2:3] = (c[start:last] * (3 / 11)
+                                               + d[start:last] * (7 / 11) + a[start + 1:last + 1] * (1 / 11))
+
+
+def _resize_three_quarters(planes, should_cancel=None):
+    """`_resize_triangle` at 3/4 scale for float32 planes of whole four-row groups.
+
+    Each plane is finished before the next starts, so the intermediate
+    vertical pass is one plane however deep the stack is.
+    """
+    from fusion_methods.neural_common import cancel
+    cancel(should_cancel)
+    h, w = planes.shape[-2:]
+    height, width = 3 * h // 4, 3 * w // 4
+    result = np.empty((*planes.shape[:2], height, width), dtype=np.float32)
+    vertical = np.empty((height, w), dtype=np.float32)
+    for batch, layer in np.ndindex(planes.shape[:2]):
+        cancel(should_cancel)
+        _resize_three_quarters_axis(planes[batch, layer], vertical, should_cancel)
+        cancel(should_cancel)
+        _resize_three_quarters_axis(vertical.T, result[batch, layer].T, should_cancel)
+    return result
 
 
 def probabilities(planes, path, device, threads, sigma, cancel=None):
