@@ -1832,6 +1832,111 @@ def test_cancel_blocked_video_import_allows_retry(server, stack_frames, tmp_path
         np.testing.assert_array_equal(image, np.broadcast_to([5, green, 150], (12, 16, 3)))
 
 
+@pytest.mark.parametrize("target, source", [("source", "folder"), ("output", "video")])
+def test_stack_load_replaces_watermarked_stack(server, stack_frames, tmp_path, monkeypatch,
+                                               target, source):
+    from PyQt6.QtWidgets import QDialog, QMessageBox
+    from core import video_import
+    from dialogs.watermark import WatermarkDialog
+    from locales import trans
+    from utils import watermark
+
+    window = server.window
+    assert _load_stack_for_render(server, stack_frames)["count"] == 3
+    assert call(server, "method.set", id="dct")["ok"]
+    assert call(server, "render.start")["result"]["started"]
+    assert wait_until(lambda: call(server, "render.state")["result"]["state"] == "done",
+                      timeout=30)
+    record = window.output_manager.record_for_row(0)
+    old_lineage = watermark.stack_lineage(window)
+
+    dialog = WatermarkDialog(window)
+    dialog.text_edit.setText("QA")
+    dialog.size_spin.setValue(watermark.MAX_SIZE_PERCENT)
+    for name, checkbox in dialog.target_checks.items():
+        checkbox.setChecked(name == target)
+    dialog.show()
+    assert wait_until(dialog._ok_button.isEnabled), dialog._error.text()
+    dialog._save_and_accept()
+    assert wait_until(lambda: dialog.result() == QDialog.DialogCode.Accepted)
+    assert watermark.active_targets(window) == (target,)
+    saved_mark = watermark.record_export_cfg(record)
+    if target == "output":
+        assert saved_mark["text"] == "QA"
+        exported = tmp_path / "marked.png"
+        assert call(server, "output.export", index=0, path=str(exported))["ok"]
+        assert exported.is_file()
+
+    # The outgoing style is valid on the 48-pixel source, but cannot draw on
+    # either incoming canvas. Close any unexpected modal so a regression
+    # fails with the actual error instead of trapping pytest in Qt's exec().
+    config = watermark.config_for_target(window, target)
+    with pytest.raises(watermark.WatermarkError, match="font .*px"):
+        watermark.plan(config, 32, 24)
+    dialogs = []
+
+    def record_modal(box):
+        dialogs.append((box.windowTitle(), box.informativeText()))
+        return int(QMessageBox.StandardButton.Ok)
+
+    monkeypatch.setattr(QMessageBox, "exec", record_modal)
+    if source == "folder":
+        replacement = tmp_path / "next-stack"
+        replacement.mkdir()
+        expected = ["small-1.png", "small-2.png"]
+        for name in expected:
+            assert imwrite_auto(str(replacement / name), np.full((24, 32, 3), 125, np.uint8))
+    else:
+        # Exercise the real video worker and completion callback with portable
+        # decoded frames, independent of the available video codecs.
+        monkeypatch.setattr(video_import, "_decode_video_child", _decode_video_with_controlled_reader)
+        replacement = tmp_path / "replacement.avi"
+        replacement.touch()
+        expected = ["replacement_frame_0000.png", "replacement_frame_0001.png"]
+
+    started = call(server, "stack.load", **{source: str(replacement)})["result"]
+    assert wait_until(lambda: call(server, "stack.frames")["result"]["load"]["finished"],
+                      timeout=20)
+    final = call(server, "stack.frames")["result"]
+    assert final["load"] == {"id": started["load_id"], "active": False, "finished": True,
+                             "error": None, "baseline_count": 3}
+    assert final["names"] == expected and final["shape"] == [24, 32, 3]
+    assert dialogs == []
+    assert watermark.active_targets(window) == ()
+    assert watermark.stack_lineage(window) != old_lineage
+    assert window.output_manager.record_for_row(0) is record
+    assert watermark.record_export_cfg(record) == saved_mark
+    assert window.output_list.currentRow() == -1
+    assert window.lbl_result_img.text() == trans.t("result_hint")
+    window.output_list.setCurrentRow(0)
+    assert window.lbl_result_img.text() != trans.t("result_hint")
+    assert dialogs == []
+
+
+def test_stack_load_rolls_back_watermark_after_publication_error(server, stack_frames, monkeypatch):
+    from utils import watermark
+
+    window = server.window
+    previous = _load_stack_for_render(server, stack_frames)
+    config = watermark.normalize_config({"text": "Prior stack"})
+    for target in watermark.TARGETS:
+        watermark.set_target_config(window, target, config)
+    saved_mark = watermark.capture_state(window)
+
+    def fail_publication(**_kwargs):
+        raise ValueError("Could not publish stack")
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(window.transform_manager, "invalidate_processing_results", fail_publication)
+        started = call(server, "stack.load", folder=str(stack_frames))["result"]
+        assert wait_until(lambda: call(server, "stack.frames")["result"]["load"]["finished"])
+    current = call(server, "stack.frames")["result"]
+    assert current["load"]["id"] == started["load_id"]
+    assert current["load"]["error"] == "Could not publish stack"
+    assert current["names"] == previous["names"]
+    assert watermark.capture_state(window) == saved_mark
+
+
 def test_gui_started_load_advances_the_generation(server, stack_frames):
     before = call(server, "stack.frames")["result"]["load"]["id"]
     # The menu/button path calls the manager directly: it must move the same
