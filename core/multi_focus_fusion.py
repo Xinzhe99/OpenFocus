@@ -1564,6 +1564,7 @@ class MultiFocusFusion:
             channels = first_img.shape[2] if first_img.ndim == 3 else 1
             channels = min(channels, 3)  # see the list branch: BGR accumulator
             src_dtype = first_img.dtype
+            del first_img
         else:
             raise ValueError("_fuse_tiled input_source must be a list of arrays or a directory path string")
 
@@ -1960,6 +1961,9 @@ class MultiFocusFusion:
         from core.source_frames import frame_resolution_bytes, source_cache_growth_bytes
         source_resolution = max(map(frame_resolution_bytes, imgs), default=0) if imgs is not None else 0
         source_cache = source_cache_growth_bytes(imgs) if imgs is not None else 0
+        # Resident frames and prepared snapshots are cheap to revisit. Eager
+        # crops avoid a second full decode or warp when preparation did not fit.
+        streamed_crops = imgs is not None and source_resolution == 0
         check_cancel()
         clamped_block = block_size
         with profile.stage('plan_neural_tiles'):
@@ -1970,6 +1974,7 @@ class MultiFocusFusion:
                           if imgs is not None else np.dtype(out_dtype).itemsize),
                 source_resolution_bytes=source_resolution, source_cache_bytes=source_cache,
                 output_bytes=remaining_output, resident_output_bytes=resident_output,
+                streamed_crops=streamed_crops,
                 preference=self.resource_preference, user_threads=thread_count)
         apply_inference_budget(tile_plan)
         planned_block = block_size
@@ -1995,7 +2000,7 @@ class MultiFocusFusion:
                            pad_alignment=ATTENTION_PAD_ALIGN)
         if imgs is not None:
             from core.source_frames import borrow_frame_region
-            from fusion_methods.neural_common import copy_tile_colors
+            from fusion_methods.neural_common import copy_tile_colors, tile_sources
             normalize_stack = any(frame.dtype == np.uint16 for frame in imgs)
 
         def crop_frames(coords):
@@ -2022,6 +2027,7 @@ class MultiFocusFusion:
                 if full is None:
                     raise RuntimeError(f"Unable to read image: {name}")
                 crop = full[y0:y1, x0:x1].copy()
+                del full
                 if exposure_gains is not None:
                     crop = apply_exposure_gain(crop, exposure_gains[index])
                 crops.append(crop)
@@ -2042,7 +2048,10 @@ class MultiFocusFusion:
             nonlocal tile_focus
             tile_started = time.perf_counter()
             with profile.tile(tile_idx, coords, count):
-                if crops is None:
+                if crops is None and streamed_crops:
+                    crops = tile_sources(imgs, coords, exposure_gains=exposure_gains,
+                                         should_cancel=should_cancel)
+                elif crops is None:
                     with profile.stage('resolve_region'):
                         crops = crop_frames(coords)
                 runner_parameters = dict(kwargs)
