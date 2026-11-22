@@ -72,9 +72,10 @@ def test_cache_initialization_failure_skips_cache_and_releases_lock(tmp_path, mo
     assert modes == [1, 2]
 
 
-def test_cache_lock_contention_is_bounded_and_never_unlocks_unowned_byte(tmp_path, monkeypatch):
+def test_initialized_cache_contention_skips_wait_and_preserves_owners_lock(tmp_path, monkeypatch):
     platform_os = _WindowsOS()
     modes = []
+    (tmp_path / '.openfocus-numba.lock').write_bytes(b'\0')
 
     def locking(fd, mode, length):
         modes.append(mode)
@@ -84,7 +85,11 @@ def test_cache_lock_contention_is_bounded_and_never_unlocks_unowned_byte(tmp_pat
     monkeypatch.setattr(_depth_kernel, 'os', platform_os)
     monkeypatch.setitem(sys.modules, 'msvcrt', SimpleNamespace(
         LK_NBLCK=1, LK_UNLCK=2, locking=locking))
-    monkeypatch.setattr(_depth_kernel.time, 'sleep', lambda _: None)
+
+    def unexpected_sleep(_):
+        raise AssertionError('waiting on an initialized optional cache')
+
+    monkeypatch.setattr(_depth_kernel.time, 'sleep', unexpected_sleep)
     with _depth_kernel._cache_access(tmp_path) as locked:
         assert not locked
-    assert modes == [1] * 51
+    assert modes == [1]

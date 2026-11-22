@@ -39,17 +39,22 @@ def _cache_access(directory):
                 time.sleep(0.01)
         if os.name == 'nt':
             import msvcrt
-            for attempt in range(51):
+            # An initialized lock can be held by another long-running process.
+            # Retry only during creation so each compiler cache miss can proceed.
+            initializing = os.fstat(descriptor).st_size == 0
+            attempts = 51 if initializing else 1
+            for attempt in range(attempts):
                 try:
                     os.lseek(descriptor, 0, os.SEEK_SET)
                     msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
                     held = True
                     break
                 except OSError as exc:
-                    if exc.errno not in (errno.EACCES, errno.EAGAIN, errno.EDEADLK) or attempt == 50:
+                    if (attempt + 1 == attempts
+                            or exc.errno not in (errno.EACCES, errno.EAGAIN, errno.EDEADLK)):
                         raise
                     time.sleep(0.01)
-            if os.fstat(descriptor).st_size == 0:
+            if initializing and os.fstat(descriptor).st_size == 0:
                 os.lseek(descriptor, 0, os.SEEK_SET)
                 os.write(descriptor, b'\0')
         else:

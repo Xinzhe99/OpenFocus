@@ -59,6 +59,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Precompile shared OpenFocus B/C depth and transpose kernels in a low-priority
   process when the desktop is idle and enough memory is available. Stop
   precompilation when a render starts and let the render compile as needed.
+- Continue compilation without the disk cache when another process holds its
+  lock on Windows, avoiding repeated waits during a cold render.
 - Reduce OpenFocus A/B/C CPU and OpenCL working sets with bounded row processing,
   reusable pyramid storage, and fewer full-image operations. Expand exact
   OpenCL ECC resize coverage and reuse successful repeated pair solves.
