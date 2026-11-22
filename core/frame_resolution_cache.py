@@ -129,19 +129,13 @@ def pixel_digest(image, compute):
     return compute() if remembered is None else remembered(image, compute)
 
 
-def _direct_tiff_digest_key(frame):
-    """Return immutable scope key for direct-mapped uncompressed RGB TIFF sources."""
-    from core.source_frames import SourceFrame
-    if not isinstance(frame, SourceFrame) or frame._rgb_tiff_offset is None:
+def _validated_direct_tiff(frame):
+    from core.source_frames import is_direct_rgb_tiff
+
+    if not is_direct_rgb_tiff(frame):
         return None
-    return (
-        os.path.normcase(os.path.abspath(frame.path)),
-        int(frame.page),
-        tuple(frame.fingerprint),
-        int(frame._rgb_tiff_offset),
-        tuple(frame.shape),
-        np.dtype(frame.dtype).str,
-    )
+    frame.validate_source()
+    return frame
 
 
 def source_digest(frame, compute):
@@ -570,10 +564,9 @@ class ScopedCache:
         """
         if self._closed:
             return compute()
-        key = _direct_tiff_digest_key(frame)
+        key = _validated_direct_tiff(frame)
         if key is None:
             return compute()
-        frame.validate_source()
         with self._lock:
             digest = self._source_digests.get(key)
         if digest is not None:
@@ -589,10 +582,9 @@ class ScopedCache:
         """Return remembered direct-RGB TIFF hash if present after validating file stamp."""
         if self._closed:
             return None
-        key = _direct_tiff_digest_key(frame)
+        key = _validated_direct_tiff(frame)
         if key is None:
             return None
-        frame.validate_source()
         with self._lock:
             return self._source_digests.get(key)
 

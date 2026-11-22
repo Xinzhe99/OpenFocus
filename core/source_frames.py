@@ -7,7 +7,7 @@ from collections import OrderedDict
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
-from functools import partial
+from functools import cache, partial
 from io import BytesIO
 import logging
 import math
@@ -298,6 +298,40 @@ def _fingerprint(path):
     return stat.st_size, stat.st_mtime_ns
 
 
+@cache
+def _windows_file_change_clock():
+    import ctypes
+    from msvcrt import get_osfhandle
+
+    class FileBasicInfo(ctypes.Structure):
+        _fields_ = [('creation', ctypes.c_int64), ('access', ctypes.c_int64),
+                    ('write', ctypes.c_int64), ('change', ctypes.c_int64),
+                    ('attributes', ctypes.c_uint32)]
+
+    get_info = ctypes.WinDLL('kernel32').GetFileInformationByHandleEx
+    get_info.argtypes = (ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32)
+    get_info.restype = ctypes.c_int
+
+    def change_time(fd):
+        info = FileBasicInfo()
+        file_basic_info = 0
+        if get_info(get_osfhandle(fd), file_basic_info, ctypes.byref(info), ctypes.sizeof(info)):
+            return info.change
+        return 0
+
+    return change_time
+
+
+def _direct_tiff_generation(stream):
+    fd = stream.fileno()
+    stat = os.fstat(fd)
+    # Windows's stat ctime is not consistently a metadata change time.
+    change = _windows_file_change_clock()(fd) if os.name == 'nt' else stat.st_ctime_ns
+    if not stat.st_ino or not change:
+        return None
+    return stat.st_size, stat.st_mtime_ns, stat.st_dev, stat.st_ino, change
+
+
 def _small(image, edge=PREVIEW_EDGE):
     h, w = image.shape[:2]
     factor = min(1.0, edge / max(h, w))
@@ -586,6 +620,7 @@ class SourceFrame:
     grayscale: bool = False
     raw_sensor_shape: tuple = ()
     _rgb_tiff_offset: int | None = None  # Bound only on a fusion-local descriptor.
+    _rgb_tiff_generation: tuple | None = None
 
     def __post_init__(self):
         path = _source_lifetime_key(self.path)
@@ -616,8 +651,23 @@ class SourceFrame:
 
     def validate_source(self):
         """Check the opened source identity without decoding its pixels."""
+        if self._rgb_tiff_offset is not None:
+            with open(self.path, 'rb') as stream:
+                self._validate_direct_tiff_stream(stream)
+            return
         if _fingerprint(self.path) != self.fingerprint:
             raise OSError(f'Source changed since it was opened; reopen the stack: {self.path}')
+
+    def _validate_direct_tiff_stream(self, stream):
+        if _direct_tiff_generation(stream) != self._rgb_tiff_generation:
+            raise OSError(f'Source changed since it was opened; reopen the stack: {self.path}')
+
+    @contextmanager
+    def _open_direct_tiff(self):
+        with open(self.path, 'rb') as stream:
+            self._validate_direct_tiff_stream(stream)
+            yield stream
+            self._validate_direct_tiff_stream(stream)
 
     def _source_cache_key(self):
         # Native gray and display BGR layouts retain independent cached buffers.
@@ -632,10 +682,13 @@ class SourceFrame:
 
     def full_resolution(self, *, should_cancel=None):
         _check_resolution_cancel(should_cancel)
-        self.validate_source()
         if self._rgb_tiff_offset is not None:
-            return np.memmap(self.path, mode='r', offset=self._rgb_tiff_offset,
-                             dtype=self.dtype, shape=self.shape)[..., ::-1]
+            with self._open_direct_tiff() as stream:
+                image = np.memmap(stream, mode='r', offset=self._rgb_tiff_offset,
+                                  dtype=self.dtype, shape=self.shape)[..., ::-1]
+            _check_resolution_cancel(should_cancel)
+            return image
+        self.validate_source()
         from core import frame_resolution_cache as _resolution_cache
         cache = _resolution_cache.current()
         if cache is not None:
@@ -825,7 +878,6 @@ class ProcessedFrame:
                 direct = _try_resolve_region_direct(
                     self.source, kw['x'], kw['y'], kw['width'], kw['height'],
                     channels=kw.get('channels'), should_cancel=cancelled,
-                    prefer_cache_full=False, allow_direct_source=True,
                 )
                 if direct is not None:
                     if cancelled():
@@ -1018,7 +1070,6 @@ def _read_direct_rgb_tiff_region(frame, x, y, width, height, *, channels=None, s
     _check_resolution_cancel(should_cancel)
     if not is_direct_rgb_tiff(frame):
         raise TypeError('_read_direct_rgb_tiff_region requires a direct-mapped RGB SourceFrame')
-    frame.validate_source()
     src_h, src_w = frame.shape[:2]
     src_ch = frame.shape[2] if frame.ndim == 3 else 1
     if x < 0 or y < 0 or width < 0 or height < 0 or x + width > src_w or y + height > src_h:
@@ -1031,7 +1082,7 @@ def _read_direct_rgb_tiff_region(frame, x, y, width, height, *, channels=None, s
     out_bytes = height * width * out_ch * dtype.itemsize
     require_memory(out_bytes)
     output = np.empty(out_shape, dtype=dtype)
-    with open(frame.path, 'rb') as stream:
+    with frame._open_direct_tiff() as stream:
         with mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ) as mm:
             rgb_full = np.ndarray(frame.shape, dtype=dtype, buffer=mm, offset=frame._rgb_tiff_offset)
             try:
@@ -1057,7 +1108,9 @@ def _read_direct_rgb_tiff_region(frame, x, y, width, height, *, channels=None, s
     return output
 
 
-def _unwrap_region_target(frame, x, y, width, height, channels):
+def _unwrap_region_target(frame, x, y, width, height, channels, should_cancel):
+    from core.registration import _merge_cancel_callbacks
+
     target = frame
     rx, ry, rw, rh, rc = int(x), int(y), int(width), int(height), channels
     while (type(target) is ProcessedFrame
@@ -1066,25 +1119,43 @@ def _unwrap_region_target(frame, x, y, width, height, channels):
         kw = target.processor.keywords
         if rx < 0 or ry < 0 or rw < 0 or rh < 0 or rx + rw > kw['width'] or ry + rh > kw['height']:
             return None
-        rx += int(kw['x'])
-        ry += int(kw['y'])
+        left, top = kw['x'], kw['y']
         inner_c = kw.get('channels')
+        src_shape = target.source.shape
+        if (left < 0 or top < 0 or left + kw['width'] > src_shape[1]
+                or top + kw['height'] > src_shape[0]
+                or (inner_c is not None and len(src_shape) == 3 and not 0 <= inner_c <= src_shape[2])):
+            return None
+        rx += int(left)
+        ry += int(top)
         if rc is None:
             rc = inner_c
         elif inner_c is not None:
             rc = min(rc, inner_c)
         target = target.source
-    return target, rx, ry, rw, rh, rc
+        if isinstance(target, ProcessedFrame):
+            should_cancel = _merge_cancel_callbacks(should_cancel, target.should_cancel)
+    return target, rx, ry, rw, rh, rc, should_cancel
+
+
+def _copy_region_pixels(crop, should_cancel):
+    from core.resource_policy import require_memory
+
+    require_memory(crop.nbytes)
+    pixels = np.array(crop, copy=True, order='C')
+    _check_resolution_cancel(should_cancel)
+    return pixels
 
 
 def _try_resolve_region_direct(frame, x, y, width, height, *, channels=None,
-                               should_cancel=None, prefer_cache_full=False,
-                               allow_direct_source=True):
+                               should_cancel=None, borrow=False):
     """Resolve one rectangular ROI directly when backed by crop/warp/direct-RGB descriptors."""
     from core import frame_resolution_cache as _resolution_cache
     from core import openfocus_alignment as _oa
-    from core.registration import PerspectiveWarp, _ORIGINAL_PERSPECTIVE_CALL
+    from core.registration import PerspectiveWarp, _ORIGINAL_PERSPECTIVE_CALL, _merge_cancel_callbacks
 
+    if isinstance(frame, ProcessedFrame):
+        should_cancel = _merge_cancel_callbacks(should_cancel, frame.should_cancel)
     _check_resolution_cancel(should_cancel)
     if frame.ndim < 2 or x < 0 or y < 0 or width < 0 or height < 0:
         return None
@@ -1092,28 +1163,29 @@ def _try_resolve_region_direct(frame, x, y, width, height, *, channels=None,
         return None
 
     cache = _resolution_cache.current()
-    if cache is not None:
+    if cache is not None and isinstance(frame, (SourceFrame, ProcessedFrame)):
         hit = cache.get(frame, should_cancel=should_cancel)
         if hit is not None:
             crop = hit[y:y + height, x:x + width]
             if channels is not None and crop.ndim == 3:
                 crop = crop[:, :, :channels]
-            return np.array(crop, copy=True, order='C')
+            return crop if borrow else _copy_region_pixels(crop, should_cancel)
 
-    unwrapped = _unwrap_region_target(frame, x, y, width, height, channels)
+    unwrapped = _unwrap_region_target(frame, x, y, width, height, channels, should_cancel)
     if unwrapped is None:
         return None
-    target, tx, ty, tw, th, tc = unwrapped
+    target, tx, ty, tw, th, tc, should_cancel = unwrapped
+    _check_resolution_cancel(should_cancel)
 
-    if cache is not None and target is not frame:
+    if cache is not None and target is not frame and isinstance(target, (SourceFrame, ProcessedFrame)):
         hit = cache.get(target, should_cancel=should_cancel)
         if hit is not None:
             crop = hit[ty:ty + th, tx:tx + tw]
             if tc is not None and crop.ndim == 3:
                 crop = crop[:, :, :tc]
-            return np.array(crop, copy=True, order='C')
+            return crop if borrow else _copy_region_pixels(crop, should_cancel)
 
-    if allow_direct_source and is_direct_rgb_tiff(target):
+    if is_direct_rgb_tiff(target):
         return _read_direct_rgb_tiff_region(
             target, tx, ty, tw, th, channels=tc, should_cancel=should_cancel)
 
@@ -1123,7 +1195,7 @@ def _try_resolve_region_direct(frame, x, y, width, height, *, channels=None,
     processor = target.processor
     inner = getattr(cache, '_cache', cache) if cache is not None else None
     cache_can_store_full = (
-        prefer_cache_full
+        borrow
         and cache is not None
         and getattr(cache, 'enabled', True)
         and not getattr(cache, 'degraded', False)
@@ -1131,35 +1203,25 @@ def _try_resolve_region_direct(frame, x, y, width, height, *, channels=None,
         and not getattr(cache, 'closed', False)
         and (inner is None or inner._used + target.nbytes <= inner.max_bytes)
     )
+    if cache_can_store_full:
+        return None
     if isinstance(processor, PerspectiveWarp) and PerspectiveWarp.__call__ is _ORIGINAL_PERSPECTIVE_CALL:
-        if cache_can_store_full:
-            return None
-        return processor.warp_region(
+        region = processor.warp_region(
             target.source, tx, ty, tw, th, channels=tc, should_cancel=should_cancel)
-
-    if isinstance(processor, partial):
+    elif isinstance(processor, partial):
         if processor.func is _oa.apply_alignment and _oa.apply_alignment is _oa._ORIGINAL_APPLY_ALIGNMENT:
-            if cache_can_store_full:
-                return None
-            proc_cancel = processor.keywords.get('should_cancel')
-            merged = (should_cancel if proc_cancel is None
-                      else proc_cancel if should_cancel is None or should_cancel is proc_cancel
-                      else (lambda: bool(should_cancel() or proc_cancel())))
-            return _oa.apply_alignment_region(
-                target.source, processor.keywords['transform'], tx, ty, tw, th,
-                channels=tc, should_cancel=merged)
-        if processor.func is _oa.apply_translation and _oa.apply_translation is _oa._ORIGINAL_APPLY_TRANSLATION:
-            if cache_can_store_full:
-                return None
-            proc_cancel = processor.keywords.get('should_cancel')
-            merged = (should_cancel if proc_cancel is None
-                      else proc_cancel if should_cancel is None or should_cancel is proc_cancel
-                      else (lambda: bool(should_cancel() or proc_cancel())))
-            return _oa.apply_translation_region(
-                target.source, processor.keywords['transform'], tx, ty, tw, th,
-                channels=tc, should_cancel=merged)
-
-    return None
+            warp = _oa.apply_alignment_region
+        elif processor.func is _oa.apply_translation and _oa.apply_translation is _oa._ORIGINAL_APPLY_TRANSLATION:
+            warp = _oa.apply_translation_region
+        else:
+            return None
+        should_cancel = _merge_cancel_callbacks(should_cancel, processor.keywords.get('should_cancel'))
+        region = warp(target.source, processor.keywords['transform'], tx, ty, tw, th,
+                      channels=tc, should_cancel=should_cancel)
+    else:
+        return None
+    _check_resolution_cancel(should_cancel)
+    return region
 
 
 def read_rgb_tiff_rows(frame, y0, y1, dest_buf, *, should_cancel=None):
@@ -1171,14 +1233,13 @@ def read_rgb_tiff_rows(frame, y0, y1, dest_buf, *, should_cancel=None):
     _check_resolution_cancel(should_cancel)
     if not is_direct_rgb_tiff(frame):
         raise TypeError('read_rgb_tiff_rows requires a direct-mapped RGB SourceFrame')
-    frame.validate_source()
     row_count = int(y1) - int(y0)
     if row_count <= 0:
         return dest_buf[:0]
     row_bytes = frame.shape[1] * frame.shape[2] * frame.dtype.itemsize
     expected_bytes = row_count * row_bytes
     view = memoryview(dest_buf[:row_count]).cast('B')
-    with open(frame.path, 'rb') as stream:
+    with frame._open_direct_tiff() as stream:
         stream.seek(frame._rgb_tiff_offset + int(y0) * row_bytes)
         offset = 0
         while offset < expected_bytes:
@@ -1205,11 +1266,11 @@ def borrow_frame_region(frame, key, *, should_cancel=None):
             frame, int(sx.start), int(sy.start),
             int(sx.stop) - int(sx.start), int(sy.stop) - int(sy.start),
             should_cancel=should_cancel,
-            prefer_cache_full=True,
-            allow_direct_source=True,
+            borrow=True,
         )
         if direct is not None:
-            yield direct
+            with frame_region(direct) as region:
+                yield region
             return
 
     image = resolve_frame(frame, should_cancel=should_cancel)
@@ -1224,20 +1285,17 @@ def borrow_frame_region(frame, key, *, should_cancel=None):
 def resolve_region(frame, x, y, width, height, *, channels=None, should_cancel=None):
     """Copy one resolved region so a tile cannot retain its decoded full source."""
     from core.frame_storage import scratch_directory
-    from core.resource_policy import require_memory
     _check_resolution_cancel(should_cancel)
     region = crop_frame(frame, x, y, width, height, channels=channels)
     direct = _try_resolve_region_direct(
         frame, x, y, width, height, channels=channels,
-        should_cancel=should_cancel, prefer_cache_full=False, allow_direct_source=True,
+        should_cancel=should_cancel,
     )
     if direct is not None:
         if direct.shape != region.shape:
             raise ValueError('Requested region does not fit the frame')
-        require_memory(direct.nbytes)
         if not direct.flags.owndata or not direct.flags.c_contiguous:
-            direct = np.array(direct, copy=True, order='C')
-        _check_resolution_cancel(should_cancel)
+            direct = _copy_region_pixels(direct, should_cancel)
         return direct
     # Resolve the frame itself. Resolving a crop descriptor would admit the
     # frame's whole decode workspace again, even when its pixels are cached.
@@ -1248,10 +1306,7 @@ def resolve_region(frame, x, y, width, height, *, channels=None, should_cancel=N
     if crop.shape != region.shape:
         raise ValueError('Requested region does not fit the frame')
     # Resolution admitted any decode, so the tile is the only new allocation.
-    require_memory(crop.nbytes)
-    result = np.array(crop, copy=True, order='C')
-    _check_resolution_cancel(should_cancel)
-    return result
+    return _copy_region_pixels(crop, should_cancel)
 
 
 def _normalize_frame(image, *, should_cancel, gain=1.0):
@@ -1725,15 +1780,23 @@ def map_native_rgb_tiffs(frames, should_cancel=None):
         if (isinstance(frame, SourceFrame) and frame.scale == 1 and not frame.transforms
                 and frame.orientation == 1 and not frame.raw_sensor_shape and frame.linear_metadata is None
                 and os.path.splitext(frame.path)[1].lower() in ('.tif', '.tiff')):
-            frame.validate_source()
-            with tifffile.TiffFile(frame.path) as tif:
-                page = tif.pages[frame.page]
-                if (page.is_memmappable and int(page.photometric) == 2 and page.axes == 'YXS'
-                        and page.shape == frame.shape and page.samplesperpixel == 3
-                        and page.dtype == frame.dtype and frame.dtype in (np.uint8, np.uint16)
-                        and frame.dtype.newbyteorder(tif.byteorder).isnative
-                        and page.bitspersample == frame.dtype.itemsize * 8):
-                    frame = replace(frame, _rgb_tiff_offset=page.dataoffsets[0])
+            with open(frame.path, 'rb') as stream:
+                generation = _direct_tiff_generation(stream)
+                stamp = generation[:2] if generation is not None else _fingerprint(frame.path)
+                if stamp != frame.fingerprint:
+                    raise OSError(f'Source changed since it was opened; reopen the stack: {frame.path}')
+                if generation is not None:
+                    with tifffile.TiffFile(stream) as tif:
+                        page = tif.pages[frame.page]
+                        if (page.is_memmappable and int(page.photometric) == 2 and page.axes == 'YXS'
+                                and page.shape == frame.shape and page.samplesperpixel == 3
+                                and page.dtype == frame.dtype and frame.dtype in (np.uint8, np.uint16)
+                                and frame.dtype.newbyteorder(tif.byteorder).isnative
+                                and page.bitspersample == frame.dtype.itemsize * 8):
+                            frame = replace(frame, _rgb_tiff_offset=page.dataoffsets[0],
+                                            _rgb_tiff_generation=generation)
+                    if _direct_tiff_generation(stream) != generation:
+                        raise OSError(f'Source changed while opening the TIFF: {frame.path}')
         result.append(frame)
     return result
 

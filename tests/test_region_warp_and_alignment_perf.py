@@ -1,5 +1,7 @@
 """Tests for region-direct deferred warping, direct-RGB digest reuse, and fused OpenFocus 4D search."""
 
+import os
+from contextlib import nullcontext
 from pathlib import Path
 from threading import Event
 
@@ -105,6 +107,89 @@ def test_direct_rgb_tiff_source_digest_lifecycle(tmp_path, monkeypatch):
     assert frc.get_source_digest(frame) is None
 
 
+@pytest.mark.parametrize('replace_file', [True, False])
+def test_deferred_warp_rejects_tiff_changed_with_same_size_and_mtime(tmp_path, replace_file):
+    rgb = _textured_rgb(64, 80, seed=19)
+    (frame,), (path,) = _direct_rgb_tiff_frames(tmp_path, [rgb])
+    _, (replacement,) = _direct_rgb_tiff_frames(tmp_path, [np.bitwise_not(rgb)], prefix='replacement')
+    with frc.render_scope([frame]):
+        fingerprint = _perspective_source(frame, resolve_frame(frame), None)
+        warp = PerspectiveWarp(fingerprint, (1, 0, -1, 0, 1, -1, 0, 0, 1), '<f8', (79, 63))
+        stamp = os.stat(path)
+        assert os.stat(replacement).st_size == stamp.st_size
+        if replace_file:
+            os.utime(replacement, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+            os.replace(replacement, path)
+        else:
+            Path(path).write_bytes(Path(replacement).read_bytes())
+            os.utime(path, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+        current = os.stat(path)
+        assert (current.st_size, current.st_mtime_ns) == frame.fingerprint
+        with pytest.raises(OSError, match='Source changed'):
+            warp.warp_region(frame, 5, 4, 12, 10)
+
+
+def test_tiff_replacement_during_region_admission_is_rejected(tmp_path, monkeypatch):
+    from core import resource_policy
+
+    rgb = _textured_rgb(64, 80, seed=18)
+    (frame,), (path,) = _direct_rgb_tiff_frames(tmp_path, [rgb])
+    _, (replacement,) = _direct_rgb_tiff_frames(tmp_path, [np.bitwise_not(rgb)], prefix='replacement')
+    with frc.render_scope([frame]):
+        fingerprint = _perspective_source(frame, resolve_frame(frame), None)
+        warp = PerspectiveWarp(fingerprint, (1, 0, -1, 0, 1, -1, 0, 0, 1), '<f8', (79, 63))
+        require_memory = resource_policy.require_memory
+
+        def replace_at_admission(size):
+            os.replace(replacement, path)
+            return require_memory(size)
+
+        monkeypatch.setattr(resource_policy, 'require_memory', replace_at_admission)
+        with pytest.raises(OSError, match='Source changed'):
+            warp.warp_region(frame, 5, 4, 12, 10)
+
+
+def test_nested_direct_tiff_crop_observes_parent_cancellation(tmp_path):
+    rgb = _textured_rgb(64, 80, seed=20)
+    (frame,), _ = _direct_rgb_tiff_frames(tmp_path, [rgb])
+    cancelled = Event()
+    parent = crop_frame(frame, 4, 5, 60, 45, should_cancel=cancelled.is_set)
+    child = crop_frame(parent, 2, 3, 30, 25)
+    np.testing.assert_array_equal(resolve_region(child, 1, 3, 6, 5), rgb[11:16, 7:13, ::-1])
+
+    cancelled.set()
+    with pytest.raises(RegistrationCancelled):
+        resolve_region(child, 1, 3, 6, 5)
+    with pytest.raises(RegistrationCancelled):
+        with borrow_frame_region(child, np.s_[3:8, 1:7]):
+            pytest.fail('Cancelled crop yielded pixels')
+    with pytest.raises(RegistrationCancelled):
+        resolve_frame(child)
+
+
+def test_region_read_does_not_hide_an_invalid_parent_crop(tmp_path):
+    rgb = _textured_rgb(64, 80, seed=22)
+    (frame,), _ = _direct_rgb_tiff_frames(tmp_path, [rgb])
+    parent = crop_frame(frame, 78, 4, 4, 10)
+    child = crop_frame(parent, 0, 0, 2, 10)
+    with pytest.raises(ValueError, match='declared shape'):
+        resolve_frame(child)
+    with pytest.raises(ValueError, match='declared shape'):
+        resolve_region(parent, 0, 0, 2, 10)
+
+
+def test_regions_from_materialized_arrays_work_in_an_active_cache(tmp_path):
+    rgb = _textured_rgb(64, 80, seed=23)
+    (frame,), _ = _direct_rgb_tiff_frames(tmp_path, [rgb])
+    with scratch_directory(), frc.render_scope([frame]) as scope:
+        select_frame_scratch([frame])
+        pixels = resolve_frame(frame)
+        crop = crop_frame(pixels, 1, 2, 7, 8)
+        np.testing.assert_array_equal(resolve_frame(crop), rgb[2:10, 1:8, ::-1])
+        np.testing.assert_array_equal(resolve_region(pixels, 1, 2, 7, 8), rgb[2:10, 1:8, ::-1])
+        assert scope.enabled
+
+
 def test_source_digest_cancelled_not_remembered(tmp_path):
     rgb = _textured_rgb(64, 80, dtype=np.uint16, seed=21)
     (frame,), _ = _direct_rgb_tiff_frames(tmp_path, [rgb])
@@ -152,17 +237,43 @@ def test_score_grid_4d_slice_matches_chunk_fallback_bit_exact(monkeypatch):
     f8_flat_ref, _ = oa.align_pair_wide(flat_a, flat_b, h_pct=4.0, v_pct=4.0, rot_deg=2.0, mag_pct=1.0, grid_half=4)
     np.testing.assert_array_equal(f8_flat_fast.view(np.uint32), f8_flat_ref.view(np.uint32))
 
-    # Cancellation during search
-    monkeypatch.undo()
-    checks = 0
 
-    def cancel_soon():
-        nonlocal checks
-        checks += 1
-        return checks >= 3
 
-    with pytest.raises(RegistrationCancelled):
-        oa.align_pair_wide(ref_u16, test_u16, h_pct=8.0, v_pct=8.0, rot_deg=4.0, mag_pct=4.0, should_cancel=cancel_soon)
+def test_wide_search_preserves_signed_grid_ranges():
+    level = np.zeros((16, 16), dtype=np.uint16)
+    identity = oa._IDENTITY_F8
+    found, _, _ = oa.grid_level_4d(level, level, identity, (0, 0, -0.10, -5))
+    np.testing.assert_array_equal(found, identity)
+
+
+@pytest.mark.parametrize('pool_busy', [False, True])
+def test_dense_native_search_checks_cancellation_between_small_slices(monkeypatch, pool_busy):
+    if not kernels.available():
+        pytest.skip('Numba alignment kernels unavailable')
+
+    cancelled = Event()
+    slice_work = []
+    level = np.zeros((1024, 1024), dtype=np.uint16)
+    monkeypatch.setattr(oa, '_alignment_workers', lambda *args, **kwargs: 4)
+    score = kernels.score_grid_4d_slice
+
+    def cancel_inside_slice(*args):
+        ref_grid = args[0]
+        start, stop = args[-5:-3]
+        slice_work.append((stop - start) * ref_grid.size)
+        cancelled.set()
+        # Avoid executing the oversized slice the regression detects.
+        if stop - start == 1:
+            score(*args)
+
+    monkeypatch.setattr(kernels, 'score_grid_4d_slice', cancel_inside_slice)
+    with oa._PARALLEL_BATCH_LOCK if pool_busy else nullcontext():
+        with pytest.raises(RegistrationCancelled):
+            oa.grid_level_4d(level, level, oa._IDENTITY_F8, (0.1, 0.1, 0.05, 0),
+                             divisor=level.size, should_cancel=cancelled.is_set)
+    assert slice_work and max(slice_work) == level.size
+    if pool_busy:
+        assert slice_work == [level.size]
 
 
 def test_estimate_alignment_plan_pyramid_reuse_exact(tmp_path):
@@ -235,6 +346,40 @@ def test_perspective_warp_region_bit_exact(dtype, channels):
                     actual3.view(np.uint32) if dtype == np.float32 else actual3,
                     expected[:, :, :2].view(np.uint32) if dtype == np.float32 else expected[:, :, :2],
                 )
+
+
+@pytest.mark.parametrize('use_numba', [True, False])
+def test_perspective_warp_region_matches_lanczos_rounding_edge(monkeypatch, use_numba):
+    if use_numba and not kernels.available():
+        pytest.skip('Numba alignment kernels unavailable')
+    if not use_numba:
+        monkeypatch.setattr(kernels, 'available', lambda: False)
+    # Rebasing this projective inverse moves the bottom-right sample to the
+    # other side of a Lanczos phase boundary on x64 OpenCV.
+    image = np.zeros((128, 128), dtype=np.uint16)
+    image[:, 57] = 65535
+    p, b = 17 / 2048, 44691 / 131072
+    matrix = np.array([[1, -b, 0], [0, 1, 0], [-p, p * b, 1]], dtype=np.float64)
+    warp = PerspectiveWarp(_perspective_source(image, image, None),
+                           tuple(matrix.flat), matrix.dtype.str, (65, 65))
+    np.testing.assert_array_equal(warp.warp_region(image, 64, 64, 1, 1), warp(image)[64:, 64:])
+
+
+def test_full_perspective_fallback_obeys_memory_admission(monkeypatch):
+    from core import resource_policy
+
+    image = _textured_rgb(48, 64)
+    matrix = -np.eye(3, dtype=np.float64)
+    warp = PerspectiveWarp(_perspective_source(image, image, None),
+                           tuple(matrix.flat), matrix.dtype.str, (64, 48))
+
+    def only_tile_fits(size):
+        if size > image.dtype.itemsize * image.shape[2]:
+            raise resource_policy.ResourceLimitError('Only the tile fits')
+
+    monkeypatch.setattr(resource_policy, 'require_memory', only_tile_fits)
+    with pytest.raises(resource_policy.ResourceLimitError, match='Only the tile fits'):
+        warp.warp_region(image, 4, 5, 1, 1)
 
 
 def test_perspective_warp_region_direct_rgb_tiff_closes_handles_on_windows(tmp_path):
@@ -355,8 +500,16 @@ def test_region_dispatch_borrow_cache_and_preview_contracts(tmp_path, monkeypatc
             assert scope.enabled
             assert scope.get(deferred[1]) is not None
             monkeypatch.setattr(PerspectiveWarp, "__call__", lambda *a, **k: pytest.fail("cache hit called full warp"))
+            from core import resource_policy
+
+            def no_more_allocations(*args, **kwargs):
+                raise resource_policy.ResourceLimitError('No additional memory')
+
+            monkeypatch.setattr(resource_policy, 'require_memory', no_more_allocations)
             with borrow_frame_region(deferred[1], np.s_[20:60, 20:60]) as b2:
                 np.testing.assert_array_equal(b2, expected_full[1][20:60, 20:60])
+                assert not b2.flags.writeable
+            monkeypatch.undo()
 
     # apply_alignment_plan eager vs deferred + store_source=False
     plan_oa = oa.estimate_alignment_plan(frames, max_shift_ratio=0.05, rotation=1.0, magnification=1.0)
