@@ -59,6 +59,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   storage for probabilities. StackMFF V2 reads only contributing color strips.
 
 ### Fixed
+- Record sanitized sign-in failures and deliver queued reports after automatic
+  reporting is authorized and the service is reachable.
 - Close the desktop process when its CLI launcher times out waiting for the
   control channel, and explain how to complete first-run sign-in.
 - Give comparison alignment workers on macOS enough stack for the first

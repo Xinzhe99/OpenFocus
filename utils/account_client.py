@@ -1,9 +1,10 @@
 """Optional account access. Call network methods from a worker, not the UI thread.
 
-No network access occurs at construction. AccountError exposes only a status and
-safe category; response bodies and credentials are never included in errors.
+No network access occurs at construction. AccountError carries limited diagnostic
+metadata; response bodies and credentials are never included in errors.
 """
 import base64
+from contextvars import ContextVar
 import copy
 import ctypes
 import hashlib
@@ -30,8 +31,10 @@ from http.client import HTTPException
 
 from constants import app_display_version
 from utils.app_paths import legacy_windows_account_dirs, shared_account_device_dir, user_data_dir
-from utils.logging_setup import log_action
+from utils.logging_setup import get_logger, log_action
 from utils.report_client import ReportError, _file_lock
+
+_logger = get_logger(__name__)
 
 BASE_URL = "https://account.openfocus.top"
 _RUN_ID = secrets.token_urlsafe(16)
@@ -56,12 +59,70 @@ _ERROR_CODES = frozenset({
     "device_limit_reached",
 })
 
+_SIGN_IN_METHODS = frozenset({"email", "github", "google", "browser", "restore"})
+_SIGN_IN_STAGES = frozenset({
+    "terms", "email_capabilities", "email_start", "email_poll", "browser_launch",
+    "browser_callback", "exchange", "session_save", "session_restore", "unknown",
+})
+_SIGN_IN_CATEGORIES = _ERROR_CODES | {
+    "http", "network", "invalid_response", "terms_unavailable", "loopback",
+    "browser", "timeout", "sign_in_expired", "not_signed_in", "storage", "unknown",
+}
+_RUN_ID_PATTERN = re.compile(r"[A-Za-z0-9_-]{21}[AQgw]")
+_EDGE_REQUEST_ID_PATTERN = re.compile(r"[0-9a-f]{16}-[A-Z]{3}")
+# Each account worker tracks its own stage, including when attempts overlap.
+_sign_in_stage = ContextVar("account_sign_in_stage", default="unknown")
+
+
+def safe_sign_in_evidence(fields):
+    """Copy only recognized sign-in fields with independently validated values."""
+    if not isinstance(fields, dict):
+        return {}
+    safe = {}
+    for key, allowed in (("method", _SIGN_IN_METHODS), ("stage", _SIGN_IN_STAGES),
+                         ("category", _SIGN_IN_CATEGORIES)):
+        value = fields.get(key)
+        if type(value) is str and value in allowed:
+            safe[key] = value
+    for key, pattern in (("run_id", _RUN_ID_PATTERN), ("edge_request_id", _EDGE_REQUEST_ID_PATTERN)):
+        value = fields.get(key)
+        if type(value) is str and pattern.fullmatch(value):
+            safe[key] = value
+    status = fields.get("status")
+    if type(status) is int and 100 <= status <= 599:
+        safe["status"] = status
+    elapsed_ms = fields.get("elapsed_ms")
+    if type(elapsed_ms) is int and 0 <= elapsed_ms <= 2**31 - 1:
+        safe["elapsed_ms"] = elapsed_ms
+    return safe
+
+
+def log_sign_in_failure(method, error, elapsed_ms=None):
+    """Log a completed sign-in failure using only allowlisted evidence."""
+    if error.category in ("cancelled", "sign_in_cancelled"):
+        return
+    fields = safe_sign_in_evidence({
+        "method": method,
+        "stage": "session_restore" if method == "restore" else _sign_in_stage.get(),
+        "category": error.category,
+        "status": error.status,
+        "run_id": _RUN_ID,
+        "elapsed_ms": elapsed_ms,
+        "edge_request_id": error.edge_request_id,
+    })
+    fields.setdefault("category", "unknown")
+    event = "account_sign_in.failed"
+    _logger.error("event=%s %s", event, json.dumps(fields, separators=(",", ":")),
+                  extra={"event": event, "report_sign_in": fields})
+
 
 class AccountError(Exception):
-    def __init__(self, category, status=None, retry_after=None):
+    def __init__(self, category, status=None, retry_after=None, *, edge_request_id=None):
         self.category = category
         self.status = status
         self.retry_after = retry_after
+        self.edge_request_id = (edge_request_id if type(edge_request_id) is str
+                                and _EDGE_REQUEST_ID_PATTERN.fullmatch(edge_request_id) else None)
         super().__init__(category)
 
 
@@ -372,6 +433,7 @@ def _http(method, url, body=None, token=None, timeout=15):
             raise AccountError("invalid_response")
         return value
     except urllib.error.HTTPError as exc:
+        edge_request_id = exc.headers.get("CF-Ray") if exc.headers else None
         retry = exc.headers.get("Retry-After") if exc.headers else None
         # Only numeric Retry-After is exposed, never arbitrary server content.
         retry = int(retry) if retry and retry.isascii() and retry.isdigit() and len(retry) <= 8 else None
@@ -387,7 +449,7 @@ def _http(method, url, body=None, token=None, timeout=15):
             pass
         finally:
             exc.close()
-        raise AccountError(category, exc.code, retry) from None
+        raise AccountError(category, exc.code, retry, edge_request_id=edge_request_id) from None
     except (urllib.error.URLError, TimeoutError, OSError, HTTPException):
         raise AccountError("network") from None
     except (ValueError, UnicodeError):
@@ -720,6 +782,7 @@ class AccountClient:
         handoff = "loopback"
         retryable_poll = False
         if provider == "email":
+            _sign_in_stage.set("email_capabilities")
             try:
                 capabilities = self._login_call(generation, "GET", "/v1/auth/email/capabilities",
                                                 cancel=cancel, retry_transient=True)
@@ -731,6 +794,7 @@ class AccountClient:
                     raise AccountError("invalid_response")
                 handoff = "poll-v1"
                 retryable_poll = capabilities.get("retryable_poll") is True
+        _sign_in_stage.set("browser_callback")
         verifier, challenge = pkce_pair()
         try:
             server = _CallbackServer(("127.0.0.1", 0), _CallbackHandler)
@@ -749,6 +813,7 @@ class AccountClient:
             if language is not None:
                 parameters["lang"] = language
             if provider == "email":
+                _sign_in_stage.set("email_start")
                 start = {"email": email.strip(), **parameters}
                 if handoff == "poll-v1":
                     start["handoff"] = handoff
@@ -764,6 +829,7 @@ class AccountClient:
                 if handoff == "loopback":
                     self._check_login(generation, cancel)
             else:
+                _sign_in_stage.set("browser_launch")
                 query = urllib.parse.urlencode(parameters)
                 if not webbrowser.open(self.base_url + "/v1/auth/" + provider + "/start?" + query):
                     raise AccountError("browser")
@@ -778,11 +844,13 @@ class AccountClient:
                     on_started()
                 deadline = time.monotonic() + timeout
                 if provider == "email" and handoff == "poll-v1":
+                    _sign_in_stage.set("email_poll")
                     poll = {"flow_id": flow_id, "poll_token": poll_token}
                     if retryable_poll:
                         poll["code_verifier"] = verifier
                     code = self._poll_email(generation, cancel, poll, deadline)
                 else:
+                    _sign_in_stage.set("browser_callback")
                     while not server.code and not server.error:
                         self._check_login(generation, cancel)
                         remaining = deadline - time.monotonic()
@@ -799,10 +867,12 @@ class AccountClient:
                                     self._clear_storage()
                         raise AccountError(server.error)
                     code = server.code
+                _sign_in_stage.set("exchange")
                 session = self._exchange_login(generation, code, verifier, cancel)
                 with self._condition:
                     if generation != (self._generation, self._login_epoch) or (cancel is not None and cancel.is_set()):
                         raise AccountError("cancelled")
+                    _sign_in_stage.set("session_save")
                     self._replace(session)
             except AccountError as exc:
                 if provider == "email" and handoff == "poll-v1" and exc.category in ("cancelled", "timeout"):
@@ -816,6 +886,7 @@ class AccountClient:
         Returns the local user snapshot. An anonymous browser raises
         AccountError("not_signed_in"); cancel is a threading.Event.
         """
+        _sign_in_stage.set("browser_callback")
         if language is not None and language not in ("en", "zh"):
             raise ValueError("Invalid language")
         if timeout <= 0:
@@ -841,9 +912,11 @@ class AccountClient:
             if language is not None:
                 parameters["lang"] = language
             self._check_login(generation, cancel)
+            _sign_in_stage.set("browser_launch")
             if not webbrowser.open(self.base_url + "/v1/auth/browser/start?" + urllib.parse.urlencode(parameters)):
                 self._check_login(generation, cancel)
                 raise AccountError("browser")
+            _sign_in_stage.set("browser_callback")
             self._check_login(generation, cancel)
             if on_started:
                 on_started()
@@ -863,10 +936,12 @@ class AccountClient:
                             self._invalidate_session()
                             self._clear_storage()
                 raise AccountError(server.error)
+            _sign_in_stage.set("exchange")
             session = self._exchange_login(generation, server.code, verifier, cancel)
             with self._condition:
                 if generation != (self._generation, self._login_epoch) or (cancel is not None and cancel.is_set()):
                     raise AccountError("cancelled")
+                _sign_in_stage.set("session_save")
                 self._replace(session)
                 return self.current_user()
 
@@ -1065,7 +1140,8 @@ class AccountClient:
             result = self._call("GET", "/v1/terms")
         except AccountError as exc:
             if exc.status in (404, 405):
-                raise AccountError("terms_unavailable", exc.status) from None
+                raise AccountError("terms_unavailable", exc.status,
+                                   edge_request_id=exc.edge_request_id) from None
             raise
         version = result.get("version")
         url = result.get("url")
