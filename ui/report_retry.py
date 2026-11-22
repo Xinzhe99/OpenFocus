@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import QApplication, QMessageBox
 from locales import trans
 from utils import diagnostics, logging_setup
 from utils.app_paths import user_data_dir
-from utils.report_bundle import snapshot_failure
+from utils.report_bundle import snapshot_failure, snapshot_sign_in_failure
 from utils.report_client import ReportClient, automatic_snapshot, revoke_automatic
 from utils.reporting import build_channel, report_metadata, retry_reports
 from utils.settings_store import automatic_reports_allowed, get_settings, REPORTS_AUTO_SEND_KEY, REPORTS_CHOICE_KEY
@@ -174,22 +174,33 @@ class _FailureReports(logging.Handler):
     def _capture(self, record):
         permission = automatic_snapshot(self.path)
         settings = QSettings(self.settings_file, self.settings_format)
-        if not automatic_reports_allowed(settings):
-            return
-        window = self.trigger.window()
-        account = getattr(window, '_account_client', None) if window is not None else None
-        user = account.current_user() if account is not None else None
-        owner = user.get('id') if isinstance(user, dict) else None
-        if not owner and (settings.value(REPORTS_CHOICE_KEY) == 'account_default'
-                          or account is not None and account.is_signed_in()):
-            return
-        if self.facts is None:
-            self.facts = diagnostics.system_facts()
-        bundle = snapshot_failure(record, self.facts)
+        enabled = automatic_reports_allowed(settings)
+        sign_in = hasattr(record, 'report_sign_in')
+        owner = None
+        if sign_in:
+            if not enabled and (settings.value(REPORTS_CHOICE_KEY) not in (None, 'unselected')
+                                or not settings.value(REPORTS_AUTO_SEND_KEY, True, type=bool)):
+                return
+            bundle = snapshot_sign_in_failure(record)
+            if bundle is None:
+                return
+        else:
+            if not enabled:
+                return
+            window = self.trigger.window()
+            account = getattr(window, '_account_client', None) if window is not None else None
+            user = account.current_user() if account is not None else None
+            owner = user.get('id') if isinstance(user, dict) else None
+            if not owner and (settings.value(REPORTS_CHOICE_KEY) == 'account_default'
+                              or account is not None and account.is_signed_in()):
+                return
+            if self.facts is None:
+                self.facts = diagnostics.system_facts()
+            bundle = snapshot_failure(record, self.facts)
         metadata = report_metadata(bundle, source='auto', locale=trans.current_lang)
-        result = self.reports.enqueue(metadata, bundle.data, owner_id=owner,
+        result = self.reports.enqueue(metadata, bundle.data, owner_id=owner, sign_in=sign_in,
                                       permission=permission, deadline=time.monotonic() + .25)
-        if result == 'queued':
+        if result == 'queued' and enabled:
             self.trigger.queued.emit()
 
 

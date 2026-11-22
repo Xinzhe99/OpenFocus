@@ -53,6 +53,17 @@ def test_error_detection_for_failed_unhandled_and_crash():
     assert report_bundle.session_has_error('', 'native crash text')
 
 
+def test_general_report_excludes_sign_in_evidence():
+    text = _event('account_sign_in.failed', {
+        'method': 'email', 'stage': 'exchange', 'category': 'network',
+        'run_id': 'AAAAAAAAAAAAAAAAAAAAAA', 'edge_request_id': '0123456789abcdef-IAD',
+    })
+    bundle = report_bundle.build_report_bundle(log_text=text, crash_text='', facts={})
+    assert _contents(bundle)['events.json'] == []
+    assert 'account_sign_in.failed' not in bundle.log_excerpt
+    assert not bundle.has_error
+
+
 def test_fingerprint_normalizes_and_excludes_version():
     def trace(path, message, kind='ValueError'):
         return ('Traceback (most recent call last):\n'
