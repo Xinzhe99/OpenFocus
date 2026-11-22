@@ -99,12 +99,15 @@ def exchange_opencv_threads(threads):
 
 
 @contextmanager
-def _serial_opencv_threads():
-    # Disable native parallel regions while outer tasks share the stage's
-    # thread budget, including backends that cannot cap a parallel region.
+def _serial_ecc_native_threads():
+    from threadpoolctl import threadpool_limits
+
+    # Zero disables OpenCV parallel regions on every backend. Limit BLAS for
+    # the native solver's small linear systems until all pair workers join.
     previous = exchange_opencv_threads(0)
     try:
-        yield
+        with threadpool_limits(limits=1, user_api='blas'):
+            yield
     finally:
         exchange_opencv_threads(0 if previous == 1 else previous)
 
@@ -1247,32 +1250,18 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
                     recent_pairs.move_to_end(key)
                     return result
 
-        if warp_mode == cv2.MOTION_HOMOGRAPHY:
-            warp_matrix = np.eye(3, 3, dtype=np.float32)
-        else:
-            warp_matrix = np.eye(2, 3, dtype=np.float32)
-
+        cc, warp_matrix = None, None
         try:
             if ecc_native is not None:
-                cc, native_warp = ecc_native(
+                cc, warp_matrix = ecc_native(
                     prev_gray,
                     curr_gray,
                     max_iter=number_of_iterations,
                     eps=termination_eps,
                 )
-                if cc is not None and native_warp is not None:
-                    warp_matrix = native_warp
-                else:
-                    cc, warp_matrix = cv2.findTransformECC(
-                        prev_gray,  # template
-                        curr_gray,  # input
-                        warp_matrix,
-                        warp_mode,
-                        criteria,
-                        None,
-                        1
-                    )
-            else:
+            if cc is None or warp_matrix is None:
+                rows = 3 if warp_mode == cv2.MOTION_HOMOGRAPHY else 2
+                warp_matrix = np.eye(rows, 3, dtype=np.float32)
                 cc, warp_matrix = cv2.findTransformECC(
                     prev_gray,  # template
                     curr_gray,  # input
@@ -1844,7 +1833,7 @@ class ImageRegistration:
             配准后的图像列表
         """
         try:
-            with _serial_opencv_threads() if stage_budget is not None else nullcontext():
+            with _serial_ecc_native_threads() if stage_budget is not None else nullcontext():
                 return _align_ecc_impl(input_source, output_path, downscale_width=self.downscale_width,
                     thread_count=thread_count, should_cancel=should_cancel, use_gpu=self.use_gpu,
                     failure_policy=failure_policy, defer_warps=self.defer_warps,

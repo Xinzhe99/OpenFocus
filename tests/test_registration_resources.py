@@ -300,7 +300,7 @@ def test_combined_alignment_admits_disk_backed_stack_by_active_working_set(
     assert dispatched == [1, 1]
 
 
-@pytest.mark.parametrize('outcome', ['aligned', 'fallback', 'reject', 'fail', 'cancel'])
+@pytest.mark.parametrize('outcome', ['aligned', 'native', 'fallback', 'reject', 'fail', 'cancel'])
 def test_deferred_ecc_keeps_solvers_parallel_with_one_decode_slot(tmp_path, monkeypatch, outcome):
     from threading import Barrier
     from core import source_frames
@@ -315,8 +315,9 @@ def test_deferred_ecc_keeps_solvers_parallel_with_one_decode_slot(tmp_path, monk
     # kinds of work at once. At 64 MiB even one preparation cannot fit.
     scratch = 66 * mib - source_frames.frame_resolution_bytes(source)
     assert scratch > 0
-    frames = [source_frames.process_frame(source, np.asarray, scratch_bytes=scratch)
-              for _ in range(7)]
+    # Distinct prepared planes keep the exact-pair cache from skipping a batch.
+    frames = [source_frames.process_frame(source, lambda pixels, offset=i: pixels + offset,
+                                         scratch_bytes=scratch) for i in range(7)]
     snapshot = resource_policy.ResourceSnapshot(
         available_ram=1024 ** 3 + (64 if outcome == 'reject' else 72) * mib,
         total_ram=4 * 1024 ** 3, physical_cores=3, logical_cpus=3)
@@ -324,7 +325,7 @@ def test_deferred_ecc_keeps_solvers_parallel_with_one_decode_slot(tmp_path, monk
 
     cancelled, together, lock = Event(), Barrier(3), Lock()
     preparing = solving = 0
-    prepared = 0
+    prepared = estimated = 0
     original = source_frames.ProcessedFrame.full_resolution
 
     def resolve(frame, **kwargs):
@@ -340,12 +341,13 @@ def test_deferred_ecc_keeps_solvers_parallel_with_one_decode_slot(tmp_path, monk
                 prepared += 1
 
     def estimate(previous, current, matrix, *_args):
-        nonlocal solving
+        nonlocal solving, estimated
         assert previous.shape == current.shape == (107, 1024)
         assert previous.dtype == current.dtype == np.float32
         with lock:
             assert preparing == 0
             solving += 1
+            estimated += 1
         try:
             together.wait(timeout=10)
             if outcome in ('fail', 'fallback'):
@@ -358,7 +360,13 @@ def test_deferred_ecc_keeps_solvers_parallel_with_one_decode_slot(tmp_path, monk
                 solving -= 1
 
     monkeypatch.setattr(source_frames.ProcessedFrame, 'full_resolution', resolve)
-    monkeypatch.setattr(cv2, 'findTransformECC', estimate)
+    if outcome == 'native':
+        def solve_native(previous, current, *, max_iter, eps):
+            return estimate(previous, current, np.eye(3, dtype=np.float32))
+
+        monkeypatch.setattr(registration, '_load_ecc_native', lambda: solve_native)
+    else:
+        monkeypatch.setattr(cv2, 'findTransformECC', estimate)
     engine = registration.ImageRegistration('ecc', defer_warps=True, downscale_width=200,
         parameters={'failure_policy': 'continue' if outcome == 'fallback' else 'fail'})
     destination = tmp_path / 'aligned'
@@ -367,14 +375,16 @@ def test_deferred_ecc_keeps_solvers_parallel_with_one_decode_slot(tmp_path, monk
         return engine.process(frames, output_path=output_path, thread_count=3,
                               resource_preference='maximum', should_cancel=cancelled.is_set)
 
-    if outcome in ('aligned', 'fallback'):
+    if outcome in ('aligned', 'native', 'fallback'):
         report = []
         token = registration.alignment_report.set(report)
         try:
             output = process()
         finally:
             registration.alignment_report.reset(token)
-        assert [item['status'] for item in report] == ['reference'] + [outcome] * 6
+        status = 'fallback' if outcome == 'fallback' else 'aligned'
+        assert [item['status'] for item in report] == ['reference'] + [status] * 6
+        assert estimated == 6
         assert prepared == len(output) == len(frames)
         assert engine.alignment_plan.stages[0].bounds == (2, 319, 2, 3071)
         monkeypatch.setattr(source_frames.ProcessedFrame, 'full_resolution', original)
@@ -383,7 +393,7 @@ def test_deferred_ecc_keeps_solvers_parallel_with_one_decode_slot(tmp_path, monk
         monkeypatch.setattr(resource_policy, 'probe_resources', lambda *args, **kwargs: render_snapshot)
         pixels = source_frames.resolve_frame(output[-1])
         assert pixels.dtype == np.uint16
-        np.testing.assert_array_equal(pixels, image[2:-2, 2:-2])
+        np.testing.assert_array_equal(pixels, image[2:-2, 2:-2] + len(frames) - 1)
     else:
         errors = {'reject': resource_policy.ResourceLimitError,
                   'fail': registration.RejectedAlignmentFrame,
