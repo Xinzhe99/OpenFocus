@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 
-from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QFont
+from PyQt6.QtCore import QRect, Qt
+from PyQt6.QtGui import QFont, QImage, QPainter
 from PyQt6.QtWidgets import (
     QCheckBox,
     QHBoxLayout,
@@ -35,7 +35,7 @@ QLabel#panelTitle {{
     font-weight: {WEIGHT['semibold']};
     padding-left: {SPACE['md']}px;
 }}
-QLabel#panelCanvas, QLabel#panelCanvasHint {{
+QLabel#panelCanvas, QLabel#panelCanvasHint, QWidget#livePreviewPage {{
     background-color: {t['canvas']};
     color: {t['canvasText']};
 }}
@@ -46,6 +46,12 @@ QWidget#panelTitleBar {{
 QWidget#panelControlBar {{
     background-color: {t['surface']};
     border-top: 1px solid {t['border']};
+}}
+QLabel#livePreviewStatus {{
+    background-color: {t['surface']};
+    color: {t['textMuted']};
+    border-top: 1px solid {t['border']};
+    padding: 4px {SPACE['md']}px;
 }}
 QPushButton#panelToggle {{
     background-color: transparent;
@@ -89,6 +95,7 @@ class ResultPanel:
     slider: QSlider
     info_label: QLabel
     view_stack: QStackedWidget
+    live_preview_page: "_LiveFusionPreviewPage"
     wipe_widget: WipeCompareWidget
     wipe_bar: QWidget
     btn_wipe: QPushButton
@@ -98,6 +105,60 @@ class ResultPanel:
     chk_wipe_follow_right: QCheckBox
     slider_wipe_right: QSlider
     lbl_wipe_right_index: QLabel
+
+
+class _LiveFusionPreviewPage(QWidget):
+    """Fit the sampled composite in the output panel with its own status label."""
+
+    def __init__(self):
+        super().__init__()
+        self.setObjectName('livePreviewPage')
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
+        self._image = QImage()
+        self._rgb = None
+        self._progress = None
+        self.status = QLabel()
+        self.status.setObjectName('livePreviewStatus')
+        self.status.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.status.setWordWrap(True)
+        self.status.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        layout.addStretch(1)
+        layout.addWidget(self.status)
+        trans.languageChanged.connect(self._update_status)
+
+    def show_frame(self, rgb, width, height, done, total):
+        self._image = QImage(rgb, width, height, width * 3, QImage.Format.Format_RGB888)
+        self._rgb = rgb  # The QImage borrows this snapshot for painting.
+        self._progress = done, total
+        self._update_status()
+        self.update()
+
+    def clear(self):
+        self._image = QImage()
+        self._rgb = None
+        self._progress = None
+        self.status.clear()
+        self.update()
+
+    def _update_status(self):
+        if self._progress is not None:
+            done, total = self._progress
+            self.status.setText(trans.t('render_live_preview').format(done=done, total=total))
+
+    def paintEvent(self, event):  # noqa: N802
+        super().paintEvent(event)
+        if self._image.isNull():
+            return
+        bounds = self.rect().adjusted(0, 0, 0, -self.status.height())
+        target = QRect(bounds)
+        target.setSize(self._image.size().scaled(bounds.size(), Qt.AspectRatioMode.KeepAspectRatio))
+        target.moveCenter(bounds.center())
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        painter.drawImage(target, self._image)
 
 
 class _ResultZoomBar(QWidget):
@@ -348,6 +409,8 @@ def create_result_panel() -> ResultPanel:
     view_stack = QStackedWidget()
     view_stack.addWidget(result_page)  # index 0: normal result view
     view_stack.addWidget(wipe_page)    # index 1: wipe compare view
+    live_preview_page = _LiveFusionPreviewPage()
+    view_stack.addWidget(live_preview_page)
 
     layout.addWidget(title_bar)
     layout.addWidget(view_stack, 1)
@@ -361,6 +424,7 @@ def create_result_panel() -> ResultPanel:
         slider=slider,
         info_label=info_label,
         view_stack=view_stack,
+        live_preview_page=live_preview_page,
         wipe_widget=wipe_widget,
         wipe_bar=wipe_bar,
         btn_wipe=wipe_btn,

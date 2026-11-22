@@ -829,6 +829,7 @@ ZH = {
     "render_progress": "渲染中",
     "render_stage_align": "正在对齐帧…",
     "render_stage_fuse": "正在融合…",
+    "render_live_preview": "实时融合预览 · {done}/{total} 张",
     "btn_cancel_render": "取消渲染",
     "msg_render_cancelled": "渲染已取消",
     "msg_confirm_delete_title": "确认删除",

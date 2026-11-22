@@ -1102,6 +1102,13 @@ Switching source frames or resizing the window preserves the selection.
 Cancel stops further work; closing waits for the current native operation to
 return safely.
 
+### Live Fusion Preview
+
+Run a full OpenFocus A, B, or C render to see a sampled focus composite and
+the source-frame count in the result pane. The completed full-resolution
+image replaces the preview and is available for export and in output history.
+Cancel rendering to return to the previous result view.
+
 
 ### Quick Preview (Draft Render)
 

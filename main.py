@@ -675,6 +675,8 @@ class OpenFocus(QMainWindow):
         self.lbl_result_img = result_panel.image_label
         self.result_control_bar = result_panel.control_bar
         self.result_slider = result_panel.slider
+        self.live_preview_page = result_panel.live_preview_page
+        self.result_slider.actionTriggered.connect(self.render_manager.dismiss_live_preview)
         # 连接右侧面板的ROI模式退出请求信号
         self.lbl_result_img.roiModeExitRequested.connect(self._on_roi_mode_exit_requested)
         self.lbl_result_info = result_panel.info_label
@@ -775,6 +777,8 @@ class OpenFocus(QMainWindow):
                 _widget.setProperty("controlId", _control)
 
         self.main_splitter.addWidget(right_panel_components.widget)
+        self.output_list.currentRowChanged.connect(self.render_manager.dismiss_live_preview)
+        self.output_list.itemClicked.connect(self.render_manager.dismiss_live_preview)
         bind_right_panel(self, right_panel_components)
         # Selecting a method through the combo box is a project edit even
         # though it does not go through set_fusion_method()/set_alignment_method().
@@ -3368,6 +3372,7 @@ class OpenFocus(QMainWindow):
             self.btn_wipe.setChecked(False)
             return
 
+        self.render_manager.dismiss_live_preview()
         self.wipe_active = True
         self._setup_wipe_sliders()
         self.wipe_bar.setVisible(True)
@@ -3749,6 +3754,7 @@ class OpenFocus(QMainWindow):
             alignment_method = self.current_alignment_method()
             alignment_key = self.render_manager._alignment_key(indices)
 
+            self.render_manager.dismiss_live_preview()
             # ROI 模式占用结果面板，进入前退出 wipe 对比
             if getattr(self, 'wipe_active', False):
                 self.btn_wipe.setChecked(False)

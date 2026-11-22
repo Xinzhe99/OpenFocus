@@ -804,6 +804,7 @@ PACK = {
     "render_progress": "Rendu",
     "render_stage_align": "Alignement des images…",
     "render_stage_fuse": "Fusion…",
+    "render_live_preview": "Aperçu en direct · {done}/{total} images",
     "btn_cancel_render": "Annuler le rendu",
     "msg_render_cancelled": "Rendu annulé",
     "msg_confirm_delete_title": "Confirmer la suppression",

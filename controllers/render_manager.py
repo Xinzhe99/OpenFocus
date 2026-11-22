@@ -112,6 +112,7 @@ class RenderManager:
         self._compare_token = object()
         self._compare_context = None
         self._preview_mode = False
+        self._live_preview_timer = None
         # What the *running* render was launched with; see start_render().
         self._render_context: Optional[dict] = None
         # Control-channel observability: the last outcome and tile progress.
@@ -950,6 +951,7 @@ class RenderManager:
             self._start_status = "busy"
             if interactive:
                 self.worker.is_cancelled = True
+                self.dismiss_live_preview()
                 window.btn_render.setEnabled(False)
                 window.btn_render.setText(trans.t('depth_cancelling'))
                 self._show_progress_bar(trans.t('depth_cancelling'))
@@ -1467,6 +1469,12 @@ class RenderManager:
             self.clear_prepared_cache()
         prepared_cache = self._prepared_cache if retain_preparation else None
         self._render_context['preparation_key'] = alignment_key if retain_preparation else None
+        live_preview = (
+            interactive and not compare and need_fusion
+            and method in ('openfocus_a', 'openfocus_b', 'openfocus_c')
+            and not self._preview_mode and roi_rect is None and not use_roi_aligned_images
+            and getattr(window, 'live_preview_page', None) is not None
+            and not window.wipe_active and window.output_list.currentRow() <= 0)
         self.worker = RenderProcessWorker(
             source_images,
             effective_aligned_images,
@@ -1508,6 +1516,7 @@ class RenderManager:
             retain_aligned_pixels=self._prepared_cache is None or retain_preparation,
             retain_preparation=retain_preparation,
             preview=self._preview_mode,
+            live_preview=live_preview,
             profile_performance=bool(getattr(window, "profile_performance", False)),
         )
         self.worker.storage_directory = storage_override
@@ -1529,6 +1538,43 @@ class RenderManager:
             window.statusBar().showMessage(summary, 8000)
         self._show_progress_bar(trans.t('render_stage_waiting'))
         self.worker.start()
+        if live_preview:
+            self._start_live_preview()
+
+    def _start_live_preview(self):
+        if self._live_preview_timer is None:
+            timer = self._live_preview_timer = QTimer(self.window.live_preview_page)
+            timer.setInterval(80)
+            timer.timeout.connect(self._poll_live_preview)
+        self._live_preview_timer.start()
+
+    def _poll_live_preview(self):
+        if not self._live_preview_timer.isActive():
+            return
+        worker, context, window = self.worker, self._render_context, self.window
+        if (worker is None or worker.is_cancelled or context is None
+                or getattr(self, '_closing', False)
+                or window.raw_images is not context['source_ref']
+                or getattr(window, 'source_revision', 0) != context['source_revision']
+                or window.wipe_active or getattr(window, 'roi_mode_active', False)):
+            self.dismiss_live_preview()
+            return
+        frame = worker.take_live_preview()
+        if frame is not None:
+            page = window.live_preview_page
+            page.show_frame(*frame)
+            window.view_stack.setCurrentWidget(page)
+
+    def dismiss_live_preview(self):
+        """Restore the current output and keep it visible for this job."""
+        timer = self._live_preview_timer
+        if timer is None or not timer.isActive():
+            return
+        timer.stop()
+        page, stack = self.window.live_preview_page, self.window.view_stack
+        if stack.currentWidget() is page:
+            stack.setCurrentIndex(0)
+        page.clear()
 
     def _stack_changed_since(self, context) -> bool:
         """True when the stack (or the settings it was rendered with) is no
@@ -1555,6 +1601,7 @@ class RenderManager:
         fusion_time: float,
         device_name: str,
     ) -> None:
+        self.dismiss_live_preview()
         window = self.window
         if self.worker is not None and getattr(self.worker, "is_cancelled", False):
             self.on_render_error("CANCELLED: render cancelled")
@@ -2201,6 +2248,7 @@ class RenderManager:
                              details, QMessageBox.Icon.Warning)
 
     def on_render_error(self, error_message: str) -> None:
+        self.dismiss_live_preview()
         window = self.window
         if (getattr(self, "_compare_cancelling", False)
                 or bool(getattr(self.worker, "is_cancelled", False))):

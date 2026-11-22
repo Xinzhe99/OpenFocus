@@ -497,14 +497,16 @@ def test_exchange_filters_malformed_child_details():
 
 
 @pytest.mark.parametrize('target', [_legacy_source_child, _changed_source_child])
-def test_spawn_revision_mismatch_relays_restart(qapp, scratch, monkeypatch, target):
+@pytest.mark.parametrize('live_preview', [False, True])
+def test_spawn_revision_mismatch_relays_restart(qapp, scratch, monkeypatch, target, live_preview):
     from core import render_process
 
     monkeypatch.setattr(render_process, '_windows_source_run', lambda: True)
     monkeypatch.setattr(render_process, '_LOADED_SOURCE_REVISION', render_process._render_source_revision())
     monkeypatch.setattr(render_process, '_render_child', target)
     monkeypatch.setattr(render_process.trans, 'current_lang', 'en')
-    worker = render_process.RenderProcessWorker([], algorithm=None, need_fusion=False)
+    worker = render_process.RenderProcessWorker([], algorithm=None, need_fusion=False,
+                                                live_preview=live_preview)
     results, errors = _start(worker)
     _wait(worker, qapp)
     assert worker.child_pid is not None

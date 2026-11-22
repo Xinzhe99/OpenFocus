@@ -509,6 +509,7 @@ class RenderWorker(QThread):
         self.last_alignment_options = last_alignment_options
         self.need_fusion = bool(need_fusion)
         self.preview = bool(preview)
+        self.live_preview_sink = None
         self.roi_rect = roi_rect
         self.roi_mode = roi_mode
         self.roi_base_index = roi_base_index
@@ -1188,7 +1189,7 @@ class RenderWorker(QThread):
         profile = performance_profile.current()
         with profile.stage('prepare_input'):
             images, is_16bit = prepare_fusion_input(images, should_cancel)
-        focus = {}
+        callbacks = {}
         if not self.preview and self.algorithm in _RENDER_DEPTH_METHODS:
             from core.render_context import store_rendered_focus
 
@@ -1208,10 +1209,16 @@ class RenderWorker(QThread):
                         'parameters': dict(self.fusion_parameters),
                     }
 
-            focus['focus_callback'] = capture
+            callbacks['focus_callback'] = capture
+        if (self.live_preview_sink is not None and not self.preview
+                and self.algorithm in ('openfocus_a', 'openfocus_b', 'openfocus_c')):
+            from core.fusion_live_preview import LiveFusionPreview
+            callbacks['live_preview'] = LiveFusionPreview(
+                self.live_preview_sink,
+                linear_metadata=getattr(self.raw_images[0], 'linear_metadata', None))
         with profile.stage('fuse'):
             result = fusion.fuse(images, thread_count=self.thread_count,
-                should_cancel=should_cancel, progress_callback=progress_callback, **focus)
+                should_cancel=should_cancel, progress_callback=progress_callback, **callbacks)
         self.prepared_cache = fusion.prepared_cache
         if self.sharpen_output and result is not None:
             from utils.output_sharpen import sharpen_output

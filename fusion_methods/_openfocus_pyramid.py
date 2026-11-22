@@ -674,7 +674,7 @@ def _synthesize(coarse, target, weight, cancel):
 
 
 def fuse_pyramid(frames, shape, img_resize, smoothing, should_cancel, progress_callback=None,
-                 focus_callback=None):
+                 focus_callback=None, *, live_preview=None):
     """Fuse ordered sources in mapped, cancellable pyramid passes."""
     from core.source_frames import without_source_cache_growth
     from fusion_methods.openfocus_ab import _check_cancel
@@ -710,11 +710,16 @@ def fuse_pyramid(frames, shape, img_resize, smoothing, should_cancel, progress_c
             pixels, scale = _source_codes(frame, img_resize, should_cancel)
         if pixels.shape != shape:
             raise ValueError('OpenFocus C requires frames with matching shapes')
+        preview_ready = False
         if detail_levels or index == 0:
             source = pixels[:, :, None] if is_gray else pixels
             factor = np.float32(scale / (65280.0 if is_u8 else 65535.0))
             _normalize(source, full, factor, cancel)
             del source
+            if live_preview is not None:
+                cancel()
+                preview_ready = live_preview.accumulate(pixels, index,
+                                                        source_u8=frame.dtype == np.uint8)
         del pixels
         fine = full
         for level, ((height, width), (ch, cw)) in enumerate(detail_levels):
@@ -732,6 +737,9 @@ def fuse_pyramid(frames, shape, img_resize, smoothing, should_cancel, progress_c
             _rows(height, lambda a, b: _merge_rows(fine, weights, accumulators[level],
                   maxima[level], index == 0, a, b, level_winner, index), cancel)
             fine = coarse
+        if preview_ready:
+            cancel()
+            live_preview.publish(len(frames))
         if progress_callback is not None:
             progress_callback(index + 1, total)
     del maxima, full, fine

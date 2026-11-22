@@ -317,7 +317,8 @@ class GpuC:
                 _invalidate_program_cache()
 
     def fuse(self, frames, shape, img_resize, smoothing,
-             should_cancel=None, progress_callback=None, focus_callback=None):
+             should_cancel=None, progress_callback=None, focus_callback=None,
+             *, live_preview=None):
         from fusion_methods._openfocus_gpu import GpuError, _device_lock
 
         class CallbackFailure(BaseException):
@@ -341,9 +342,12 @@ class GpuC:
             try:
                 args = (frames, shape, img_resize, smoothing, should_cancel,
                         progress if progress_callback is not None else None)
+                callbacks = {}
                 if focus_callback is not None:
-                    return self._fuse_locked(*args, focus_callback=focus)
-                return self._fuse_locked(*args)
+                    callbacks['focus_callback'] = focus
+                if live_preview is not None:
+                    callbacks['live_preview'] = live_preview
+                return self._fuse_locked(*args, **callbacks)
             except CallbackFailure as exc:
                 self._drain_queue()
                 raise exc.__cause__
@@ -359,7 +363,7 @@ class GpuC:
             _device_lock.release()
 
     def _fuse_locked(self, frames, shape, img_resize, smoothing,
-                     should_cancel, progress_callback, focus_callback=None):
+                     should_cancel, progress_callback, focus_callback=None, *, live_preview=None):
         height, width = shape[0], shape[1]
         is_gray = len(shape) == 2
         channels = 1 if is_gray else shape[2]
@@ -527,6 +531,10 @@ class GpuC:
                 # Bound queued frame uploads to one source, even for very deep stacks.
                 self.q.finish()
                 in_flight = False
+                if live_preview is not None:
+                    _check_cancel(should_cancel)
+                    live_preview.push(codes, index, count, rgb=bgr_rev,
+                                      source_u8=frames[index].dtype == np.uint8)
                 del codes, item
                 if progress_callback is not None:
                     progress_callback(index + 1, total)

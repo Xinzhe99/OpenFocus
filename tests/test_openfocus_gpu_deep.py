@@ -375,7 +375,7 @@ def test_unified_depth_only_prefetches_when_both_sources_fit(monkeypatch):
     merge.device.host_unified_memory = True
     prefetch_modes = []
 
-    def depth(self, *args, prefetch):
+    def depth(self, *args, prefetch, live_preview=None):
         prefetch_modes.append(prefetch)
         return frame[..., 0]
 

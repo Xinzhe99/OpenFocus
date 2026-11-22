@@ -804,6 +804,7 @@ PACK = {
     "render_progress": "Рендеринг",
     "render_stage_align": "Выравнивание кадров…",
     "render_stage_fuse": "Объединение…",
+    "render_live_preview": "Предпросмотр слияния · {done}/{total} кадров",
     "btn_cancel_render": "Отменить рендеринг",
     "msg_render_cancelled": "Рендеринг отменён",
     "msg_confirm_delete_title": "Подтвердите удаление",

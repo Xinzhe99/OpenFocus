@@ -12,6 +12,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Use single-scale inference by default in StackMFF V3. Select dual-scale
   inference in fusion, batch, method comparison, and depth settings, or
   with the command-line inference scale option.
+- Show a live focus composite and processed frame count in the result pane
+  during OpenFocus A, B, and C desktop renders. Keep the preview separate
+  from output history and exports.
 
 ### Changed
 - Accelerate ECC preprocessing, deferred perspective warping, and OpenFocus

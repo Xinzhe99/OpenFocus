@@ -832,6 +832,7 @@ EN = {
     "render_progress": "Rendering",
     "render_stage_align": "Aligning frames…",
     "render_stage_fuse": "Fusing…",
+    "render_live_preview": "Live fusion preview · {done}/{total} frames",
     "btn_cancel_render": "Cancel render",
     "msg_render_cancelled": "Render cancelled",
     "msg_confirm_delete_title": "Confirm Delete",

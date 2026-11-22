@@ -804,6 +804,7 @@ PACK = {
     "render_progress": "Renderowanie",
     "render_stage_align": "Wyrównywanie klatek…",
     "render_stage_fuse": "Fuzja…",
+    "render_live_preview": "Podgląd fuzji na żywo · {done}/{total} klatek",
     "btn_cancel_render": "Anuluj renderowanie",
     "msg_render_cancelled": "Renderowanie anulowane",
     "msg_confirm_delete_title": "Potwierdź usunięcie",

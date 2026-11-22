@@ -804,6 +804,7 @@ PACK = {
     "render_progress": "렌더링",
     "render_stage_align": "프레임 정렬 중…",
     "render_stage_fuse": "합성 중…",
+    "render_live_preview": "실시간 합성 미리보기 · {done}/{total} 프레임",
     "btn_cancel_render": "렌더링 취소",
     "msg_render_cancelled": "렌더링이 취소되었습니다",
     "msg_confirm_delete_title": "삭제 확인",

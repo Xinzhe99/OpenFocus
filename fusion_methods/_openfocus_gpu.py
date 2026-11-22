@@ -491,7 +491,7 @@ class Merge:
         _device_lock.release()
 
     def full_depth(self, frames, shape, img_resize, kernel_size, smoothing,
-                   feather, should_cancel, progress_callback):
+                   feather, should_cancel, progress_callback, *, live_preview=None):
         """Run the PR depth stages only when all resident planes fit the job."""
         from core import resource_policy
         from core.multi_focus_fusion import memory_budget_bytes
@@ -596,7 +596,8 @@ class Merge:
                     resample_kernels=resamp_k, tiled_transpose=tiled,
                 )
                 return engine.depth(frames, kernel_size, smoothing, feather, shape,
-                                    len(frames), should_cancel, progress, prefetch=prefetch)
+                                    len(frames), should_cancel, progress, prefetch=prefetch,
+                                    live_preview=live_preview)
             except CallbackFailure as exc:
                 self._drain_queue()
                 raise exc.__cause__
@@ -1325,11 +1326,12 @@ class _GpuB:
         return buf
 
     # -- per-frame stages -------------------------------------------------
-    def _prepare_gray_input(self, _index, frame, cancelled, height, width):
+    def _prepare_gray_input(self, frame, cancelled, height, width, sample_preview):
         from fusion_methods._openfocus_pixels import frame_gray_codes
         from core.source_frames import resolve_frame, without_source_cache_growth
         with without_source_cache_growth():
             pixels = resolve_frame(frame, should_cancel=cancelled)
+        sample = sample_preview(pixels) if sample_preview is not None else None
         if self.img_resize is None:
             if pixels.shape[:2] != (height, width):
                 raise ValueError("OpenFocus depth requires frames with matching shapes")
@@ -1338,13 +1340,13 @@ class _GpuB:
                 is_u8 = pixels.dtype == np.uint8
                 source, _ = _prepare_gpu_upload(pixels)
                 del pixels
-                return True, source, channels, is_u8
+                return (True, source, channels, is_u8), sample
         gray = frame_gray_codes(pixels, self.img_resize, cancelled, depth_color=True)
         del pixels
         if gray.shape != (height, width):
             raise ValueError("OpenFocus depth requires frames with matching shapes")
         host_gray = np.ascontiguousarray(gray, dtype=np.uint16)
-        return False, host_gray, 1, False
+        return (False, host_gray, 1, False), sample
 
     def _gray_into(self, prepared, gray_buf, height, width):
         is_raw, host_buf, channels, is_u8 = prepared
@@ -1361,7 +1363,7 @@ class _GpuB:
 
     # -- depth_map equivalent ---------------------------------------------
     def depth(self, frames, kernel_size, smoothing, feather, shape, count,
-              should_cancel, progress_callback=None, *, prefetch=False):
+              should_cancel, progress_callback=None, *, prefetch=False, live_preview=None):
         from fusion_methods.openfocus_depth import _snap_lut
         from fusion_methods.openfocus_ab import _check_cancel
 
@@ -1399,13 +1401,18 @@ class _GpuB:
             depth_buf = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, m_bytes)
             votes_buf = self.cl.Buffer(self.ctx, self.mf.READ_WRITE, m_bytes)
 
-            def prepare(index, frame, cancelled):
-                return self._prepare_gray_input(index, frame, cancelled, height, width)
+            sample_preview = None
+            if live_preview is not None:
+                from core.fusion_live_preview import sample_live_frame
+                sample_preview = sample_live_frame
+
+            def prepare(_index, frame, cancelled):
+                return self._prepare_gray_input(frame, cancelled, height, width, sample_preview)
 
             prepared_iter = _iter_prefetched(
                 frames, prepare, enabled=prefetch, should_cancel=should_cancel,
             )
-            for idx, prepared in prepared_iter:
+            for idx, (prepared, sample) in prepared_iter:
                 cancel()
                 upload = self._gray_into(prepared, gray_buf, height, width)
                 cancel()
@@ -1439,7 +1446,10 @@ class _GpuB:
                                                   d_second_buf, d_winner_buf, np.uint16(code),
                                                   np.int32(m))
                 self.q.finish()
-                del upload, prepared
+                if sample is not None:
+                    cancel()
+                    live_preview.push(sample, idx, count)
+                del upload, prepared, sample
                 if progress_callback is not None:
                     progress_callback(idx, count)
 

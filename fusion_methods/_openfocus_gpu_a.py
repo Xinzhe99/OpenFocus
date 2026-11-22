@@ -377,7 +377,8 @@ class GpuA:
             except Exception:
                 _invalidate_program_cache()
 
-    def fuse(self, frames, img_resize, radius, should_cancel=None, progress_callback=None):
+    def fuse(self, frames, img_resize, radius, should_cancel=None, progress_callback=None,
+             *, live_preview=None):
         from fusion_methods._openfocus_gpu import GpuError, _device_lock
 
         class CallbackFailure(BaseException):
@@ -393,8 +394,10 @@ class GpuA:
             _check_cancel(should_cancel)
         try:
             try:
-                return self._fuse_locked(frames, img_resize, radius, should_cancel,
-                                         progress if progress_callback is not None else None)
+                args = (frames, img_resize, radius, should_cancel,
+                        progress if progress_callback is not None else None)
+                return (self._fuse_locked(*args) if live_preview is None else
+                        self._fuse_locked(*args, live_preview=live_preview))
             except CallbackFailure as exc:
                 self._drain_queue()
                 raise exc.__cause__
@@ -411,7 +414,8 @@ class GpuA:
             self.ctx = None
             _device_lock.release()
 
-    def _fuse_locked(self, frames, img_resize, radius, should_cancel, progress_callback):
+    def _fuse_locked(self, frames, img_resize, radius, should_cancel, progress_callback,
+                     *, live_preview=None):
         from dataclasses import replace
         from core import resource_policy
         from core.source_frames import resolve_frame, without_source_cache_growth
@@ -563,6 +567,9 @@ class GpuA:
                 # Bound queued frame uploads to one source, even for very deep stacks.
                 self.q.finish()
                 in_flight = False
+                if live_preview is not None:
+                    _check_cancel(should_cancel)
+                    live_preview.push(host_src, index, total, rgb=bgr_rev, source_u8=bool(u8_gray))
                 del host_src
                 if progress_callback is not None:
                     progress_callback(index + 1, total)

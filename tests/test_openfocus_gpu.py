@@ -577,7 +577,7 @@ def test_depth_device_failure_keeps_progress_monotonic(monkeypatch):
         pytest.skip('No OpenCL GPU is available')
 
     def fail(self, frames, shape, img_resize, kernel_size, smoothing,
-             feather, should_cancel, progress_callback):
+             feather, should_cancel, progress_callback, *, live_preview=None):
         progress_callback(1, len(frames))
         raise _openfocus_gpu.GpuError('device lost')
 

@@ -385,7 +385,8 @@ class MultiFocusFusion:
                                 should_cancel=kwargs.get('should_cancel'),
                                 progress_callback=kwargs.get('progress_callback'),
                                 use_gpu=self.use_gpu,
-                                device_callback=self._record_openfocus_device)
+                                device_callback=self._record_openfocus_device,
+                                live_preview=kwargs.get('live_preview'))
 
     def _record_openfocus_device(self, device):
         with self._device_lock:
@@ -411,7 +412,8 @@ class MultiFocusFusion:
                                 progress_callback=kwargs.get('progress_callback'),
                                 use_gpu=self.use_gpu,
                                 device_callback=self._record_openfocus_device,
-                                focus_callback=kwargs.get('focus_callback'))
+                                focus_callback=kwargs.get('focus_callback'),
+                                live_preview=kwargs.get('live_preview'))
 
     def _fuse_openfocus_c(self,
                           input_source: Union[str, List[np.ndarray]],
@@ -426,7 +428,8 @@ class MultiFocusFusion:
                                 progress_callback=kwargs.get('progress_callback'),
                                 use_gpu=self.use_gpu,
                                 device_callback=self._record_openfocus_device,
-                                focus_callback=kwargs.get('focus_callback'))
+                                focus_callback=kwargs.get('focus_callback'),
+                                live_preview=kwargs.get('live_preview'))
 
     # ------------------------------------------------------------------
     # 基底校正（消除亮度漂移）
@@ -701,10 +704,12 @@ class MultiFocusFusion:
         for key in tuple(kwargs):
             if key in parameter_keys:
                 values[key] = kwargs.pop(key)
-        runtime_keys = {'thread_count', 'model_path', 'execution_plan', 'block_size', 'focus_callback'}
+        runtime_keys = {'thread_count', 'model_path', 'execution_plan', 'block_size',
+                        'focus_callback', 'live_preview'}
         unknown = set(kwargs) - runtime_keys
         if unknown:
             raise ValueError(f'Unknown fusion parameters: {sorted(unknown)}')
+        live_preview = kwargs.pop('live_preview', None)
         parameters = resolve_fusion_parameters(self.algorithm, values)
         kwargs.update(parameters)
         if img_resize is not None and self.descriptor.runner == get_fusion('dct').runner:
@@ -1101,6 +1106,8 @@ class MultiFocusFusion:
                     kwargs['execution_plan'] = plan
             kwargs['should_cancel'] = should_cancel
             kwargs['progress_callback'] = progress_callback
+            if native_codes and live_preview is not None:
+                kwargs['live_preview'] = live_preview
             from contextlib import nullcontext
             cache_access = nullcontext()
             if (streaming_sources and self.algorithm in ('openfocus_a', 'openfocus_c')

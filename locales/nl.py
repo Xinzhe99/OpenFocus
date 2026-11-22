@@ -804,6 +804,7 @@ PACK = {
     "render_progress": "Renderen",
     "render_stage_align": "Frames uitlijnen…",
     "render_stage_fuse": "Fuseren…",
+    "render_live_preview": "Live fusievoorbeeld · {done}/{total} beelden",
     "btn_cancel_render": "Render annuleren",
     "msg_render_cancelled": "Render geannuleerd",
     "msg_confirm_delete_title": "Verwijderen bevestigen",
