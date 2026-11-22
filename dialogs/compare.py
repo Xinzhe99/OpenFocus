@@ -290,24 +290,18 @@ class CompareDialog(QDialog):
         self._checks = {}
         # Same family order and captions as the main/batch/depth selectors, so
         # a method keeps its familiar neighbour and family.
-        from ui.algorithm_combo import CATEGORY_KEYS, CATEGORY_ORDER
-        specs = sorted(fusion_algorithms(),
-                       key=lambda spec: CATEGORY_ORDER.index(spec.category))
-        last_category = None
-        flow = None
-        for spec in specs:
-            method = spec.id
-            if spec.category != last_category:
-                header = QLabel(trans.t(CATEGORY_KEYS[spec.category]))
-                header.setObjectName("sectionLabel")
-                methods_layout.addWidget(header)
-                flow = _MethodFlowPanel(h_spacing=12, v_spacing=6)
-                methods_layout.addWidget(flow)
-                last_category = spec.category
-            box = QCheckBox(trans.t(spec.label_key), flow)
-            box.toggled.connect(self._methods_changed)
-            flow.add(box)
-            self._checks[method] = box
+        from ui.algorithm_combo import fusion_method_groups
+        for label, members in fusion_method_groups():
+            header = QLabel(label)
+            header.setObjectName("sectionLabel")
+            methods_layout.addWidget(header)
+            flow = _MethodFlowPanel(h_spacing=12, v_spacing=6)
+            methods_layout.addWidget(flow)
+            for spec in members:
+                box = QCheckBox(trans.t(spec.label_key), flow)
+                box.toggled.connect(self._methods_changed)
+                flow.add(box)
+                self._checks[spec.id] = box
         self._apply_method_availability()
         methods_row.addWidget(methods_host, 1)
         self.btn_run = QPushButton(trans.t("compare_run"))
