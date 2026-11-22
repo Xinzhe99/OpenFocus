@@ -99,7 +99,7 @@ def pending_restore_path() -> str:
     return os.path.join(recovery_dir(), PENDING_RESTORE_FILE)
 
 
-def load_snapshot_state(path: Optional[str] = None) -> Optional[dict]:
+def load_snapshot_state(path: Optional[str] = None, *, should_cancel=None) -> Optional[dict]:
     """Validated project state from the recovery snapshot, lock ignored."""
     try:
         if path is None:
@@ -107,7 +107,7 @@ def load_snapshot_state(path: Optional[str] = None) -> Optional[dict]:
         if not os.path.isfile(path):
             return None
         from utils.project_file import validate_project
-        ok, _err, state = validate_project(path)
+        ok, _err, state = validate_project(path, should_cancel=should_cancel)
         return state if ok else None
     except Exception:
         return None

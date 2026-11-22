@@ -204,7 +204,7 @@ class TestRecovery:
 
         from PyQt6.QtCore import QTimer, Qt
         from PyQt6.QtTest import QTest
-        from PyQt6.QtWidgets import QMessageBox, QWidget
+        from PyQt6.QtWidgets import QMessageBox, QProgressBar, QWidget
 
         from locales import trans
         from ui.session_recovery import prompt_crash_recovery
@@ -258,7 +258,9 @@ class TestRecovery:
             if restore_btn is None or fresh_btn is None:
                 return
             if not observed:
-                observed.append((box.text(), restore_btn.isEnabled(), fresh_btn.isEnabled(), returned.is_set()))
+                progress = box.findChild(QProgressBar)
+                observed.append((box.text(), restore_btn.isEnabled(), fresh_btn.isEnabled(), returned.is_set(),
+                                 progress is not None and progress.isVisible() and progress.maximum() == 0))
                 if restore:
                     release.set()
             button = restore_btn if restore else fresh_btn
@@ -272,7 +274,7 @@ class TestRecovery:
         driver.start(10)
         try:
             state = prompt_crash_recovery(parent)
-            assert observed == [(trans.t('recovery_checking'), False, True, False)]
+            assert observed == [(trans.t('recovery_checking'), False, True, False, True)]
             assert clicked == [trans.t('btn_restore' if restore else 'btn_start_fresh')]
             if restore:
                 assert rec.snapshot_frame_count(state) == 2
@@ -294,3 +296,106 @@ class TestRecovery:
         assert qapp.activeModalWidget() is None
         assert snapshot.read_bytes() == original_bytes
         assert rec.crash_snapshot_path() == str(snapshot)
+
+    @pytest.mark.parametrize('cancel', [False, True], ids=['complete', 'cancel'])
+    def test_startup_replay_reports_progress_and_keeps_snapshot(self, qapp, tmp_path, recovery_mod,
+                                                              monkeypatch, cancel):
+        from pathlib import Path
+        from threading import Event, current_thread
+        from time import monotonic
+
+        from PyQt6.QtCore import QSettings, QTimer, Qt
+        from PyQt6.QtTest import QTest
+        from PyQt6.QtWidgets import QMessageBox
+
+        from core import source_frames
+        from locales import trans
+        from main import OpenFocus
+        from ui.session_recovery import restore_crash_session
+        from utils import settings_store
+
+        stack = tmp_path / 'stack'
+        stack.mkdir()
+        saved = self._fake_window(str(stack))
+        saved.project_path = str(tmp_path / 'original.ofproj')
+        saved._project_dirty = True
+        saved.source_transforms = [{'operation': 'flip', 'code': 0}]
+        assert recovery_mod.write_snapshot(saved)
+        recovery_mod.init_lock()
+        snapshot = Path(recovery_mod.session_path())
+        original_bytes = snapshot.read_bytes()
+
+        settings = QSettings(str(tmp_path / 'settings.ini'), QSettings.Format.IniFormat)
+        monkeypatch.setattr(settings_store, '_settings_singleton', settings)
+        window = OpenFocus()
+        manager = window.source_manager
+        previous_images = window.image_loader.images
+        release = Event()
+        replay_threads = []
+        gui_thread = current_thread()
+        transform_frame = source_frames.transform_frame
+
+        def delayed_transform(frame, operation, **kwargs):
+            if operation == 'flip':
+                replay_threads.append(current_thread())
+                release.wait(15)
+            return transform_frame(frame, operation, **kwargs)
+
+        monkeypatch.setattr(source_frames, 'transform_frame', delayed_transform)
+        driver = QTimer()
+        choice_deadline = monotonic() + 10
+
+        def choose_restore():
+            box = qapp.activeModalWidget()
+            if isinstance(box, QMessageBox) and box.parentWidget() is window:
+                if monotonic() >= choice_deadline:
+                    box.reject()
+                    return
+                for button in box.buttons():
+                    if button.text() == trans.t('btn_restore') and button.isEnabled():
+                        QTest.mouseClick(button, Qt.MouseButton.LeftButton)
+                        break
+
+        def wait_until(predicate):
+            deadline = monotonic() + 10
+            while not predicate() and monotonic() < deadline:
+                QTest.qWait(10)
+            assert predicate()
+
+        driver.timeout.connect(choose_restore)
+        driver.start(10)
+        try:
+            assert restore_crash_session(window)
+            driver.stop()
+            window.show()
+            status = manager._load_status_label
+            wait_until(lambda: replay_threads and status.text() == trans.t('update_restore_running'))
+            assert len(replay_threads) == 1 and replay_threads[0] is not gui_thread
+            assert qapp.activeModalWidget() is None and not window.raw_images
+            progress = manager._load_progress_bar
+            assert progress.isVisible() and (progress.minimum(), progress.maximum()) == (0, 0)
+            button = manager._load_cancel_button
+            assert button.isVisible() and button.isEnabled()
+            if cancel:
+                QTest.mouseClick(button, Qt.MouseButton.LeftButton)
+                assert not button.isEnabled() and status.text() == trans.t('depth_cancelling')
+
+            release.set()
+            wait_until(lambda: manager._load_worker is None)
+            assert not progress.isVisible() and qapp.activeModalWidget() is None
+            if cancel:
+                assert len(replay_threads) == 1
+                assert not window.raw_images and getattr(window, 'project_path', None) is None
+                assert window.image_loader.images is previous_images
+            else:
+                assert window.image_filenames == saved.image_filenames
+                assert window.source_transforms == saved.source_transforms
+                assert window.project_path == saved.project_path and window._project_dirty
+            assert snapshot.read_bytes() == original_bytes
+        finally:
+            driver.stop()
+            release.set()
+            window._force_quit = True
+            window.close()
+            window.deleteLater()
+            qapp.processEvents()
