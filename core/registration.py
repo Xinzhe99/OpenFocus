@@ -23,7 +23,7 @@ python Registration.py --mode both
 import argparse
 import concurrent.futures
 from collections import OrderedDict, deque
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import asdict, dataclass
 import hashlib
 import json
@@ -42,6 +42,27 @@ from core.registration_errors import RejectedAlignmentFrame
 from core.frame_storage import capture_scratch, create_frame, run_with_scratch, store_frame
 from utils.logging_setup import log_action, log_operation
 from utils.performance_profile import current as _profile
+
+_ORIGINAL_FIND_TRANSFORM_ECC = cv2.findTransformECC
+_ecc_native_lock = threading.Lock()
+_ecc_native_solver = None
+_ecc_native_loaded = False
+
+
+def _load_ecc_native():
+    """Load the native CPU homography ECC solver once, falling back cleanly if unavailable."""
+    global _ecc_native_solver, _ecc_native_loaded
+    if _ecc_native_loaded:
+        return _ecc_native_solver
+    with _ecc_native_lock:
+        if not _ecc_native_loaded:
+            try:
+                from core._ecc_native import find_transform_ecc_homography
+                _ecc_native_solver = find_transform_ecc_homography
+            except Exception:
+                _ecc_native_solver = None
+            _ecc_native_loaded = True
+    return _ecc_native_solver
 
 
 
@@ -75,6 +96,20 @@ def exchange_opencv_threads(threads):
         previous = cv2.getNumThreads()
         cv2.setNumThreads(threads)
         return previous
+
+
+@contextmanager
+def _serial_ecc_native_threads():
+    from threadpoolctl import threadpool_limits
+
+    # Zero disables OpenCV parallel regions on every backend. Limit BLAS for
+    # the native solver's small linear systems until all pair workers join.
+    previous = exchange_opencv_threads(0)
+    try:
+        with threadpool_limits(limits=1, user_api='blas'):
+            yield
+    finally:
+        exchange_opencv_threads(0 if previous == 1 else previous)
 
 
 # OpenCV parallel backends whose setNumThreads(N) caps a parallel region at N
@@ -716,7 +751,7 @@ def _bounded_registration_map(function, values, workers, should_cancel=None, *,
 
 
 def _prepare_and_estimate_pairs(values, prepare, estimate, workers, should_cancel=None, *,
-                                on_prepared=None, window=None):
+                                on_prepared=None, window=None, budget=None):
     """Prepare each value and estimate each adjacent pair in one bounded pool.
 
     ``prepare(value)`` returns a tuple whose last item is the source identity;
@@ -727,6 +762,8 @@ def _prepare_and_estimate_pairs(values, prepare, estimate, workers, should_cance
     prepared values are retained, including those still held by unfinished
     estimates. Returns the estimates in pair order and the identities in
     value order.
+    If given, ``budget`` limits the sum of queued and running task workspaces.
+    Its gray retention window is reserved separately.
 
     Leaving early, through cancellation or a failed task, cancels queued work
     and waits for running native calls before returning.
@@ -737,6 +774,14 @@ def _prepare_and_estimate_pairs(values, prepare, estimate, workers, should_cance
     if count < 2:
         raise ValueError('pair estimation needs at least two values')
     window = max(2, int(window if window is not None else workers + 1))
+    prepare_bytes = budget.prepare_bytes if budget is not None else 0
+    solve_bytes = budget.solve_bytes if budget is not None else 0
+    task_bytes = budget.task_bytes if budget is not None else 0
+    # If memory cannot overlap the two kinds of tasks, fill the window before
+    # handing it to the solvers. Alternating decode and solve would serialize
+    # every pair even when concurrent solvers fit easily.
+    batch_prepares = prepare_bytes + solve_bytes > task_bytes
+    prepare_until = min(window, count) if batch_prepares else count
     scratch = capture_scratch()
 
     def staged(stage, function, *args):
@@ -788,9 +833,16 @@ def _prepare_and_estimate_pairs(values, prepare, estimate, workers, should_cance
                         future.result()
                 for index in [index for index, future in estimates.items() if future.done()]:
                     results[index - 1] = estimates.pop(index).result()
+                if batch_prepares and not estimates and next_estimate == prepare_until:
+                    prepare_until = min(count, prepare_until + window - 1)
+                work_left = task_bytes - solve_bytes * len(estimates)
+                if prepare_bytes:
+                    work_left -= prepare_bytes * sum(not future.done() for future in prepared.values())
                 # Pairs go first: they release prepared frames.
-                while (next_estimate < count and next_estimate in prepared
-                       and prepared[next_estimate - 1].done() and prepared[next_estimate].done()):
+                while (work_left >= solve_bytes and next_estimate < count
+                       and (not batch_prepares or next_prepare == prepare_until)
+                       and next_estimate in prepared and prepared[next_estimate - 1].done()
+                       and prepared[next_estimate].done()):
                     # A future can fail after the scan above and before this pair
                     # becomes ready. Propagate its error before accessing pixels.
                     prepared[next_estimate - 1].result()
@@ -802,6 +854,7 @@ def _prepare_and_estimate_pairs(values, prepare, estimate, workers, should_cance
                         run_with_scratch, scratch,
                         staged('registration.estimate', estimate, next_estimate, previous, current))
                     del previous, current
+                    work_left -= solve_bytes
                     next_estimate += 1
                 # Count every distinct frame still referenced: a pending estimate
                 # holds both of its frames, and estimates can finish out of
@@ -809,7 +862,8 @@ def _prepare_and_estimate_pairs(values, prepare, estimate, workers, should_cance
                 retained = set(prepared)
                 for index in estimates:
                     retained.update((index - 1, index))
-                while next_prepare < count and len(retained) < window:
+                while (next_prepare < prepare_until and len(retained) < window
+                       and work_left >= prepare_bytes):
                     index = next_prepare
 
                     def prepare_one(index=index, value=values[index]):
@@ -822,6 +876,7 @@ def _prepare_and_estimate_pairs(values, prepare, estimate, workers, should_cance
                     prepared[index] = pool.submit(
                         run_with_scratch, scratch,
                         staged('registration.prepare', prepare_one))
+                    work_left -= prepare_bytes
                     retained.add(index)
                     next_prepare += 1
                 if next_estimate >= count and not estimates:
@@ -982,10 +1037,88 @@ def _align_openfocus_impl(input_source, output_path=None, img_filenames=None, *,
 
 # ========== ECC对齐算法实现（高精度） ==========
 
+def _ecc_width(shape, requested):
+    return 1024 if max(shape[:2]) >= 2048 else requested
+
+
+def _ecc_resize_geometry(shape, downscale_width):
+    h, w = shape[:2]
+    scale = downscale_width / float(w) if w > downscale_width else 1.0
+    return (round(h * scale), round(w * scale), scale) if scale < 1.0 else (h, w, scale)
+
+
+@dataclass(frozen=True)
+class _EccStageBudget:
+    workers: int
+    task_bytes: int
+    prepare_bytes: int
+    solve_bytes: int
+
+
+def _plan_deferred_ecc(images, downscale_width, accelerate_ecc, preference, thread_count,
+                       should_cancel):
+    from core.resource_policy import cpu_capacity, probe_resources, require_memory
+    from core.source_frames import frame_resolution_bytes
+
+    width = _ecc_width(images[0].shape, downscale_width)
+    max_pixels = prepare_bytes = 0
+    for frame in images:
+        _check_cancel(should_cancel)
+        h, w, scale = _ecc_resize_geometry(frame.shape, width)
+        pixels = max(1, h) * max(1, w)
+        max_pixels = max(max_pixels, pixels)
+        channels = frame.shape[2] if frame.ndim == 3 else 1
+        itemsize = frame.dtype.itemsize
+        decode = frame_resolution_bytes(frame)
+        # A decoded frame can outlive the decoder's scratch allocation. Hashing
+        # and cv2 may each need a packed input, at separate points in time.
+        decoded = frame.nbytes if decode else 0
+        packed = (0 if isinstance(frame, np.ndarray) and frame.flags.c_contiguous
+                  else frame.nbytes)
+        color, gray = pixels * channels * itemsize, pixels * itemsize
+        prepare = max(decode, decoded + packed, 2 * gray + 64 * 1024)
+        if scale < 1.0:
+            # INTER_AREA uses axis tables and a pair of accumulator rows. Also
+            # allow the accelerated path its pageable transfer staging (at
+            # most one input and output stripe) plus its coefficient tables.
+            resize_scratch = 32 * (sum(frame.shape[:2]) + h + w * channels)
+            if accelerate_ecc:
+                resize_scratch = max(resize_scratch, frame.nbytes + color + 32 * (h + w))
+            prepare = max(prepare, decoded + packed + color + resize_scratch, color + gray)
+        elif channels > 1:
+            prepare = max(prepare, decoded + packed + gray)
+        prepare_bytes = max(prepare_bytes, prepare)
+
+    gray_bytes = 4 * max_pixels
+    # OpenCV's homography ECC uses an eight-plane Jacobian, float grids,
+    # warped/zero-mean images and gradients, masks and Jacobian temporaries.
+    # Allow 30 float planes for live buffers and expression temporaries, four
+    # byte masks and native tile scratch. Count the input planes separately.
+    solve_bytes = (30 * 4 + 4) * max_pixels + 128 * 1024
+    snapshot = probe_resources()
+    ram = require_memory(2 * gray_bytes + max(prepare_bytes, solve_bytes), snapshot)
+    ceiling = cpu_capacity(snapshot, preference)
+    if thread_count is not None and thread_count > 0:
+        ceiling = min(ceiling, int(thread_count))
+    # Reserve a window for all the prepared inputs. With that window full,
+    # either all solvers or at least one preparation must fit on its own.
+    workers = min(ceiling, len(images) - 1,
+                  (ram - gray_bytes) // (solve_bytes + gray_bytes),
+                  (ram - gray_bytes - prepare_bytes) // gray_bytes)
+    task_bytes = ram - (workers + 1) * gray_bytes
+    log_action('registration_plan', method='ecc', frames=len(images), shape=images[0].shape,
+               workers=workers, native_threads=1, ram_budget=ram, vram_budget=0,
+               gpu_requested=False, accelerated_resize_requested=accelerate_ecc,
+               prepare_bytes=prepare_bytes,
+               solve_bytes=solve_bytes, retained_gray_bytes=(workers + 1) * gray_bytes)
+    return _EccStageBudget(workers, task_bytes, prepare_bytes, solve_bytes)
+
+
+
 def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscale_width=1000,
                     thread_count: int = 4, should_cancel=None, use_gpu: bool = False,
                     failure_policy='continue', *, defer_warps=False, plan_callback=None,
-                    accelerate_ecc=False):
+                    accelerate_ecc=False, stage_budget=None):
     """
     基于 ECC (增强相关系数) 的高精度图像栈对齐算法
     适用于：显微摄影、微距摄影中伴随呼吸效应的图像栈
@@ -1008,14 +1141,10 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
     # --- 2. 初始化 ---
     h_orig, w_orig = images[0].shape[:2]
     # 如果单张图像过大（任一边 >= 2048），强制将用于下采样的目标宽度设为 1024
-    max_dim = max(h_orig, w_orig)
-    if max_dim >= 2048:
-        try:
-            prev_down = downscale_width
-        except NameError:
-            prev_down = None
-        downscale_width = 1024
-        print(f"[Registration][ECC] Large image detected ({h_orig}x{w_orig}), setting downscale_width {prev_down} -> {downscale_width}")
+    requested_width = downscale_width
+    downscale_width = _ecc_width(images[0].shape, requested_width)
+    if max(h_orig, w_orig) >= 2048:
+        print(f"[Registration][ECC] Large image detected ({h_orig}x{w_orig}), setting downscale_width {requested_width} -> {downscale_width}")
     
     # 全局变换矩阵 (3x3 单位矩阵)
     H_global = np.eye(3, dtype=np.float32)
@@ -1030,6 +1159,10 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
     number_of_iterations = 50
     termination_eps = 1e-4
     criteria = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, number_of_iterations, termination_eps)
+    ecc_native = None
+    if (warp_mode == cv2.MOTION_HOMOGRAPHY
+            and cv2.findTransformECC is _ORIGINAL_FIND_TRANSFORM_ECC):
+        ecc_native = _load_ecc_native()
 
     # A stack can revisit the same adjacent pair. Cache only small, successful
     # solve results, keyed by exact prepared pixels in their original order.
@@ -1044,15 +1177,13 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
         with source_area_resizer(area_gpu):
             pixels = resolve_frame(source, should_cancel=should_cancel)
         identity = _perspective_source(source, pixels, should_cancel)
-        w = pixels.shape[1]
-        scale = downscale_width / float(w) if w > downscale_width else 1.0
+        target_height, _, scale = _ecc_resize_geometry(pixels.shape, downscale_width)
         if scale < 1.0:
             resized = None
             if area_gpu is not None:
                 # OpenCV keeps fx/fy when it rounds the destination height.
                 # An explicit size is equivalent only if it gives the same scale.
                 height = pixels.shape[0]
-                target_height = round(height * scale)
                 if target_height > 0 and target_height / height == scale:
                     resized = area_gpu.resize(pixels, (downscale_width, target_height))
             pixels = (resized if resized is not None else
@@ -1119,21 +1250,27 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
                     recent_pairs.move_to_end(key)
                     return result
 
-        if warp_mode == cv2.MOTION_HOMOGRAPHY:
-            warp_matrix = np.eye(3, 3, dtype=np.float32)
-        else:
-            warp_matrix = np.eye(2, 3, dtype=np.float32)
-
+        cc, warp_matrix = None, None
         try:
-            cc, warp_matrix = cv2.findTransformECC(
-                prev_gray,  # template
-                curr_gray,  # input
-                warp_matrix,
-                warp_mode,
-                criteria,
-                None,
-                1
-            )
+            if ecc_native is not None:
+                cc, warp_matrix = ecc_native(
+                    prev_gray,
+                    curr_gray,
+                    max_iter=number_of_iterations,
+                    eps=termination_eps,
+                )
+            if cc is None or warp_matrix is None:
+                rows = 3 if warp_mode == cv2.MOTION_HOMOGRAPHY else 2
+                warp_matrix = np.eye(rows, 3, dtype=np.float32)
+                cc, warp_matrix = cv2.findTransformECC(
+                    prev_gray,  # template
+                    curr_gray,  # input
+                    warp_matrix,
+                    warp_mode,
+                    criteria,
+                    None,
+                    1
+                )
             if failure_policy == 'fail' and (cc is None or not np.isfinite(cc)):
                 raise RejectedAlignmentFrame('ECC', idx, 'ECC failed to converge')
 
@@ -1176,6 +1313,7 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
                 transform = _compute_pair_transform(pair)
             _check_cancel(should_cancel)
             pair_transforms.append(transform)
+            del pair  # Release the old gray before decoding the next frame.
     else:
         def prepare_frame(image):
             with deferred_warp_threads(1):
@@ -1193,7 +1331,7 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
 
         pair_transforms, prepared_identities = _prepare_and_estimate_pairs(
             images, prepare_frame, estimate_pair, max_workers, should_cancel,
-            on_prepared=remember_scale)
+            on_prepared=remember_scale, budget=stage_budget)
         source_identities.extend(prepared_identities)
 
     if area_gpu is not None:
@@ -1604,25 +1742,26 @@ class ImageRegistration:
             if not self.steps:
                 _save_registration(images, output_path, filenames, should_cancel)
                 return images
-            height, width = images[0].shape[:2]
-            channels = images[0].shape[2] if images[0].ndim == 3 else 1
-            # Charge active source resolution and bounded concurrent estimation;
-            # deferred output descriptors retain no full-resolution warp stack.
-            from core.resource_policy import registration_working_set
-            from core.source_frames import frame_resolution_bytes
-            fixed, per_worker = registration_working_set(height, width,
-                max(image.size * 16 + frame_resolution_bytes(image) for image in images))
-            plan = plan_execution(Workload(
-                algorithm='registration', frames=len(images), height=height,
-                width=width, channels=channels, itemsize=images[0].dtype.itemsize,
-                fixed_bytes=fixed, per_worker_bytes=per_worker,
-                outer_tasks=len(images), parallel_layer='outer'),
-                preference=resource_preference, user_threads=thread_count)
-            workers = min(plan.workers, plan.max_in_flight)
-            log_action('registration_plan', method=self.method, frames=len(images),
-                       shape=images[0].shape, workers=workers,
-                       native_threads=plan.native_threads, ram_budget=plan.ram_budget,
-                       vram_budget=plan.vram_budget, gpu_requested=self.use_gpu)
+            workers = 1
+            if not deferred or self.steps != ('ecc',):
+                height, width = images[0].shape[:2]
+                channels = images[0].shape[2] if images[0].ndim == 3 else 1
+                # Other aligners and eager warps retain their existing shared budget.
+                from core.resource_policy import registration_working_set
+                from core.source_frames import frame_resolution_bytes
+                fixed, per_worker = registration_working_set(height, width,
+                    max(image.size * 16 + frame_resolution_bytes(image) for image in images))
+                plan = plan_execution(Workload(
+                    algorithm='registration', frames=len(images), height=height,
+                    width=width, channels=channels, itemsize=images[0].dtype.itemsize,
+                    fixed_bytes=fixed, per_worker_bytes=per_worker,
+                    outer_tasks=len(images), parallel_layer='outer'),
+                    preference=resource_preference, user_threads=thread_count)
+                workers = min(plan.workers, plan.max_in_flight)
+                log_action('registration_plan', method=self.method, frames=len(images),
+                           shape=images[0].shape, workers=workers,
+                           native_threads=plan.native_threads, ram_budget=plan.ram_budget,
+                           vram_budget=plan.vram_budget, gpu_requested=self.use_gpu)
             from core.algorithms import get_registration, resolve_runner
             result = images
             for step in self.steps:
@@ -1641,8 +1780,13 @@ class ImageRegistration:
                                    shape=result[0].shape) as operation, \
                         _profile().stage(f'step.{step}'):
                     try:
+                        execution = {'thread_count': workers, 'should_cancel': should_cancel}
+                        if deferred and step == 'ecc':
+                            budget = _plan_deferred_ecc(result, self.downscale_width,
+                                self.accelerate_ecc, resource_preference, thread_count, should_cancel)
+                            execution.update(thread_count=budget.workers, stage_budget=budget)
                         result = resolve_runner(spec.runner)(self, result,
-                            thread_count=workers, should_cancel=should_cancel, **parameters)
+                            **execution, **parameters)
                         _check_cancel(should_cancel)
                     except RegistrationCancelled:
                         operation.cancel()
@@ -1677,7 +1821,7 @@ class ImageRegistration:
                     input_source: Union[str, List[np.ndarray]], 
                     output_path: Optional[str] = None,
                     thread_count: int = 4,
-                    should_cancel=None, failure_policy='continue') -> List[np.ndarray]:
+                    should_cancel=None, failure_policy='continue', *, stage_budget=None) -> List[np.ndarray]:
         """
         ECC对齐配准（高精度、亚像素级）
         
@@ -1689,10 +1833,12 @@ class ImageRegistration:
             配准后的图像列表
         """
         try:
-            return _align_ecc_impl(input_source, output_path, downscale_width=self.downscale_width,
-                thread_count=thread_count, should_cancel=should_cancel, use_gpu=self.use_gpu,
-                failure_policy=failure_policy, defer_warps=self.defer_warps,
-                plan_callback=self._perspective_stages.append, accelerate_ecc=self.accelerate_ecc)
+            with _serial_ecc_native_threads() if stage_budget is not None else nullcontext():
+                return _align_ecc_impl(input_source, output_path, downscale_width=self.downscale_width,
+                    thread_count=thread_count, should_cancel=should_cancel, use_gpu=self.use_gpu,
+                    failure_policy=failure_policy, defer_warps=self.defer_warps,
+                    plan_callback=self._perspective_stages.append, accelerate_ecc=self.accelerate_ecc,
+                    stage_budget=stage_budget)
         except RejectedAlignmentFrame as error:
             # Pair estimation may run on a pool thread. Record it in the caller's report.
             _report_alignment(error.frame_index, 'ecc', 'failed', reason=error.reason,
