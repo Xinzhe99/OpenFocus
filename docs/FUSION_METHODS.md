@@ -144,6 +144,12 @@ provenance of a fused image. StackMFF V2 reports the sampled focal layer;
 StackMFF V3 reports a probability-weighted position (soft blend) or the most
 probable frame (hard pick).
 
+StackMFF V3 runs one inference at the working size by default. Choose
+**Dual scale** to average the predictions from the working size and 75% of
+that size. Dual scale takes longer and can change which frames contribute
+to the result. It works with both output modes and with depth maps. On the
+CLI, pass a JSON string with `--method stackmffv3 --param 'inference_scale="dual"'`.
+
 Depth maps are unavailable for transparent PNG stacks and for grouped fusion.
 The GUI requires an explicit **Compute** click and can export raw depth, index
 TIFFs, alternative images, physical depth and 3D models; the CLI

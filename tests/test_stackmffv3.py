@@ -226,7 +226,7 @@ def test_cancel_between_native_inference_scales(monkeypatch):
     frames = [np.full((17, 19, 3), value, np.uint8) for value in (30, 70)]
     with pytest.raises(RegistrationCancelled):
         ai.model_probabilities(frames, WEIGHTS, False, thread_count=1,
-                               should_cancel=lambda: bool(completed))
+                               should_cancel=lambda: bool(completed), inference_scale='dual')
     assert len(completed) == 1
 
 
@@ -277,14 +277,15 @@ def test_direct_probability_inference_cannot_bypass_memory_budget(monkeypatch):
 
 
 @pytest.mark.parametrize('mode', ['soft', 'hard'])
-def test_adapter_matches_probability_weighted_source_pixels(mode):
+@pytest.mark.parametrize('scale', ['single', 'dual'])
+def test_adapter_matches_probability_weighted_source_pixels(mode, scale):
     from fusion_methods import stackmffv3 as ai
     rng = np.random.default_rng(905)
     frames = [rng.uniform(0, 255, (17, 38, 3)).astype(np.float32)[:, ::2]
               for _ in range(3)]
     probs = ai.model_probabilities(frames, WEIGHTS, False,
                                    sigma=0.5 if mode == 'soft' else 0.0,
-                                   thread_count=1)
+                                   thread_count=1, inference_scale=scale)
     colors = np.stack(frames)
     if mode == 'soft':
         expected = (probs[..., None] * colors).sum(axis=0)
@@ -292,7 +293,7 @@ def test_adapter_matches_probability_weighted_source_pixels(mode):
         expected = colors[probs.argmax(0), np.arange(17)[:, None],
                           np.arange(19)[None, :]]
     actual = ai._stackmffv3_batch_impl([frames], WEIGHTS, False, mode,
-                                       thread_count=1)[0]
+                                       thread_count=1, inference_scale=scale)[0]
     np.testing.assert_allclose(actual, expected, rtol=0, atol=1e-5)
 
 

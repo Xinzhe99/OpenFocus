@@ -4,12 +4,12 @@
 The network predicts, for every pixel, a probability distribution over the N
 input frames. Two output modes consume that distribution:
 
-* ``soft`` — probability-weighted blend of the observed frame values. This is
-  the paper's default: probabilities are averaged over the inference scales
-  and lightly smoothed, then used as weights.
-* ``hard`` — the value of the most probable frame (argmax), a pure pixel pick
-  with no interpolation between frames. Same scales, no smoothing (the
-  reference implementation's ``--hard``).
+* ``soft`` — probability-weighted blend of the observed frame values, with
+  light spatial smoothing of the probabilities.
+* ``hard`` — the value of the most probable frame (argmax), without smoothing.
+
+Inference runs at the working size by default. Dual-scale inference averages
+the probabilities from the working size and 75% of that size for either mode.
 
 The network sees luma only; the resulting per-pixel weights or indices are
 applied to the three colour channels, exactly as in the reference code.
@@ -29,9 +29,6 @@ from fusion_methods import neural_common as common
 # 对齐量预处理批内瓦片，让同批张量形状一致。
 PAD_ALIGN = common.ATTENTION_PAD_ALIGN
 
-# 推理尺度（论文配置）：soft 在全分辨率与 0.75 倍上平均概率；hard 用同一
-# 组尺度、不做平滑，然后取 argmax。
-INFER_SCALES = (1.0, 0.75)
 SOFT_SIGMA = 0.5
 
 VALID_MODES = ("soft", "hard")
@@ -58,13 +55,15 @@ def _cancel(should_cancel):
 
 def _forward_probabilities(batch_input, model, device, sigma, should_cancel, threads=1):
     from fusion_methods.neural_runtime import probabilities
-    return probabilities(batch_input, model, device, threads, sigma, should_cancel)
+    return probabilities(batch_input, model, device, threads, sigma, should_cancel,
+                         dual_scale=inference_scale == 'dual')
 
 
-def _probabilities(batch_input, model, device, mode, should_cancel=None, threads=1):
+def _probabilities(batch_input, model, device, mode, should_cancel, threads,
+                   inference_scale):
     return _forward_probabilities(batch_input, model, device,
                                   0.0 if mode == 'hard' else SOFT_SIGMA,
-                                  should_cancel, threads)
+                                  should_cancel, threads, inference_scale)
 
 
 def _blend_tile(probs, frames, mode, should_cancel=None, focus_callback=None):
@@ -211,7 +210,7 @@ def _prepare_inference(frames, model_path, use_gpu, thread_count=None,
 def _stackmffv3_batch_impl(tiles_list, model_path, use_gpu, mode='soft',
                           should_cancel=None, thread_count=None,
                           resource_preference='balanced', execution_plan=None,
-                          focus_callback=None, *, tile_plan=None):
+                          focus_callback=None, *, tile_plan=None, inference_scale='single'):
     """Fuse tiles in order with B=1 until true batching passes GPU gates.
 
     The spatial scheduler supplies a tile plan covering the complete grid.
@@ -242,7 +241,7 @@ def _stackmffv3_batch_impl(tiles_list, model_path, use_gpu, mode='soft',
                 batch_input = _stage_gray(frames, should_cancel)
             with profile.stage('probabilities'):
                 probs = _probabilities(batch_input, model, device, mode, should_cancel,
-                                       plan.native_threads)
+                                       plan.native_threads, inference_scale)
             del batch_input
             h, w = frames[0].shape[:2]
             # Color mixing does not need an N-frame color stack.
@@ -270,7 +269,8 @@ def _read_stack(input_source, img_resize, should_cancel=None, execution_plan=Non
 def _stackmffv3_impl(input_source, img_resize, model_path, use_gpu,
                      mode='soft', progress_callback=None, should_cancel=None,
                      thread_count=None, resource_preference='balanced',
-                     execution_plan=None, focus_callback=None, *, tile_plan=None):
+                     execution_plan=None, focus_callback=None, *, tile_plan=None,
+                     inference_scale='single'):
     """Whole-frame fusion with the same resource contract as tiled fusion."""
     from core.resource_policy import heavy_job
 
@@ -286,7 +286,8 @@ def _stackmffv3_impl(input_source, img_resize, model_path, use_gpu,
             [frames], model_path, use_gpu, mode,
             should_cancel=should_cancel, thread_count=thread_count,
             resource_preference=resource_preference, execution_plan=execution_plan,
-            focus_callback=focus_callback, tile_plan=tile_plan)[0]
+            focus_callback=focus_callback, tile_plan=tile_plan,
+            inference_scale=inference_scale)[0]
         _cancel(should_cancel)
         if progress_callback is not None:
             progress_callback(1, 1)
@@ -296,8 +297,9 @@ def _stackmffv3_impl(input_source, img_resize, model_path, use_gpu,
 
 def model_probabilities(frames, model_path, use_gpu, sigma=0.0,
                         should_cancel=None, thread_count=None,
-                        resource_preference='balanced', execution_plan=None):
-    """Per-pixel [N,H,W] probabilities, using fusion's single replicated pad."""
+                        resource_preference='balanced', execution_plan=None, *,
+                        inference_scale='single'):
+    """Per-pixel [N,H,W] probabilities with the selected fusion inference scale."""
     with common.neural_lease(execution_plan, should_cancel):
         _cancel(should_cancel)
         _validate_tiles([frames])
@@ -306,7 +308,7 @@ def model_probabilities(frames, model_path, use_gpu, sigma=0.0,
             resource_preference, execution_plan)
         batch = _stage_gray(frames, should_cancel)
         probabilities = _forward_probabilities(batch, model, device, sigma,
-                                               should_cancel, plan.native_threads)
+                                               should_cancel, plan.native_threads, inference_scale)
         h, w = frames[0].shape[:2]
         result = probabilities[0, :, :h, :w]
         _cancel(should_cancel)
