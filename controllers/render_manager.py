@@ -1448,8 +1448,8 @@ class RenderManager:
         all_source_paths = list(getattr(window, "image_source_paths", None) or [])
         source_paths = ([all_source_paths[i] for i in included_idx]
                         if len(all_source_paths) == len(window.raw_images) else [])
-        # Tiled StackMFF models share the same post-alignment and exposure
-        # pixels. Tile geometry, model weights and output processing come later.
+        # Reuse post-alignment frames across tiled StackMFF methods when the
+        # prepared pixel representation matches. Budget for float32 here.
         from core.source_frames import SourceFrame
         descriptor = get_fusion(method) if need_fusion else None
         retain_preparation = bool(
