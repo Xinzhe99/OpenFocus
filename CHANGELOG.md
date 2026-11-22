@@ -105,6 +105,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   even when experimental features are enabled.
 - Choose a fallback font for watermarks when the selected face cannot lay out
   the complete text at the requested size.
+- Keep DTCWT focus scores independent of where NumPy allocates its work buffers.
 - Close the desktop process when its CLI launcher times out waiting for the
   control channel, and explain how to complete first-run sign-in.
 - Give comparison alignment workers on macOS enough stack for the first

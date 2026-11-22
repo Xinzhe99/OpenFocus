@@ -9,6 +9,7 @@ from typing import Union, List, Tuple, Optional
 import cv2
 
 from utils.image_utils import fuse_output_dtype
+from fusion_methods._dtcwt_kernels import _magnitude_scratch
 from fusion_methods.dct import _ensure_color_image
 from core.frame_storage import (create_frame, create_transient_frame,
                                 store_frame, capture_scratch, run_with_scratch)
@@ -45,6 +46,12 @@ except ImportError:
 _ORIGINAL_DTCWT_FORWARD = dtcwt.Transform2d.forward if dtcwt is not None else None
 _ORIGINAL_DTCWT_INVERSE = dtcwt.Transform2d.inverse if dtcwt is not None else None
 _EMPTY_PACKED_HP = np.empty((0, 1, 6), dtype=np.complex64)
+
+
+def _focus_activity(highpass):
+    absolute = _magnitude_scratch(highpass.size, highpass.real.dtype).reshape(highpass.shape)
+    np.abs(highpass, out=absolute)
+    return absolute.sum(axis=2).astype(np.float32, copy=False)
 
 
 class _MonotonicProgress:
@@ -415,7 +422,7 @@ def _dtcwt_native_cpu(engine, images, N, workers, should_cancel,
             pyr = dtcwt.Transform2d().forward(luma, nlevels=N)
             acts = [
                 maximum_filter(
-                    np.abs(pyr.highpasses[lvl]).sum(axis=2).astype(np.float32),
+                    _focus_activity(pyr.highpasses[lvl]),
                     size=3, mode="reflect",
                 )
                 for lvl in range(N)
@@ -749,7 +756,7 @@ def _dtcwt_impl_planned(input_source, img_resize, N, thread_count,
             for level in range(N):
                 _check_cancel()
                 activity = maximum_filter(
-                    np.abs(pyr.highpasses[level]).sum(axis=2).astype(np.float32),
+                    _focus_activity(pyr.highpasses[level]),
                     size=3, mode='reflect')
                 if best_activity[level] is None:
                     best_activity[level] = store_frame(activity)

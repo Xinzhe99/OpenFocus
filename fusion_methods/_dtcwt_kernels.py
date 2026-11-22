@@ -4,6 +4,12 @@ from functools import lru_cache
 import numpy as np
 
 
+def _magnitude_scratch(size, dtype):
+    # NumPy 1.26 treats touching buffers as overlapping and can use a scalar
+    # complex absolute value with different rounding. Leave a gap on both sides.
+    return np.empty(size + 2, dtype=dtype)[1:-1]
+
+
 def _vote(labels, output, start, stop):
     height, width = labels.shape
     for y in range(start, stop):
