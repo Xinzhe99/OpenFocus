@@ -219,7 +219,8 @@ class TestSettingsCast:
         class Client:
             def __init__(self, directory):
                 pass
-            def enable_automatic(self):
+            def enable_automatic(self, *, preserve_sign_in=False):
+                assert preserve_sign_in is True
                 raise report_client.ReportError("unavailable")
         monkeypatch.setattr(settings_store, "get_settings", lambda: Store())
         monkeypatch.setattr(app_paths, "user_data_dir", lambda: tmp_path)

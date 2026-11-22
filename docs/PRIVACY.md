@@ -68,6 +68,7 @@ are independent of account sign-in and diagnostic reporting.
   delivered anonymously after automatic reporting is authorized. The default
   authorization takes effect after sign-in under the reporting terms. An
   explicit opt-out keeps sign-in diagnostics in the ordinary local log.
+  Other diagnostic reports exclude sign-in events from their log history.
   Reports can include a separate random
   report installation ID,
   software and system versions, selected hardware details, image counts and
