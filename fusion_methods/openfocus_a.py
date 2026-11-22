@@ -357,7 +357,7 @@ def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 17,
             output = accumulated
         else:
             from fusion_methods._openfocus_kernels import (
-                A_BACKGROUND, A_SATURATED, select_rows,
+                A_BACKGROUND, A_SATURATED, burt_cache_bytes, select_rows,
             )
 
             band = 128
@@ -382,6 +382,7 @@ def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 17,
                 if frame.shape != output.shape:
                     raise ValueError("OpenFocus A requires frames with matching shapes")
                 scale = 256 if frame.dtype == np.uint8 else 1
+                cache_bytes = burt_cache_bytes(pyramid[0], pyramid[-1])
                 def select(start, stop, response):
                     _check_cancel(should_cancel)
                     slot = start // band
@@ -394,7 +395,7 @@ def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 17,
                             band_state[slot] = select_rows(*args, region)
                     else:
                         band_state[slot] = select_rows(*args, no_background)
-                run_bands(height, band, select, scratch_bytes=row_scratch,
+                run_bands(height, band, select, scratch_bytes=row_scratch + cache_bytes,
                           workspace=lambda: np.empty(width, np.int32))
                 del frame, pyramid
                 if progress_callback is not None:
