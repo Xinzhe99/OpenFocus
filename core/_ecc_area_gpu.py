@@ -20,11 +20,21 @@ _AXIS = np.dtype([('start', '<i4'), ('count', '<i4'), ('weight', '<f4', _TAPS)])
 _TILE_ROWS = 128
 _MIN_SOURCE_BYTES = 8 * 1024**2
 _MAX_SIDE = 32768
-_KERNEL_NAMES = ((1, 'area8'), (2, 'area16'))
+_KERNEL_NAMES = (
+    (1, False, 'area8'),
+    (2, False, 'area16'),
+    (1, True, 'area8_bgr_rev'),
+    (2, True, 'area16_bgr_rev'),
+)
 
 _cache_lock = Lock()
 _queue_lock = Lock()
 _PROGRAM_CACHE = None
+
+
+def _is_bgr_rev(image):
+    return (not image.flags.c_contiguous and image.ndim == 3 and image.shape[2] == 3
+            and image.dtype in (np.uint8, np.uint16) and image[..., ::-1].flags.c_contiguous)
 
 
 def _get_or_build_program(cl, device):
@@ -38,7 +48,9 @@ def _get_or_build_program(cl, device):
         context = cl.Context([device])
         queue = cl.CommandQueue(context, device=device)
         program = cl.Program(context, _KERNEL).build()
-        kernels = {size: cl.Kernel(program, name) for size, name in _KERNEL_NAMES}
+        kernels = {(size, rev): cl.Kernel(program, name) for size, rev, name in _KERNEL_NAMES}
+        kernels[1] = kernels[(1, False)]
+        kernels[2] = kernels[(2, False)]
         _PROGRAM_CACHE = (key, context, queue, kernels)
         return context, queue, kernels
 
@@ -72,6 +84,27 @@ __kernel void NAME(__global const TYPE *src, __global TYPE *dst, \
 }
 AREA(area8, uchar, convert_uchar_sat_rte)
 AREA(area16, ushort, convert_ushort_sat_rte)
+
+#define AREA_BGR_REV(NAME, TYPE, STORE) \
+__kernel void NAME(__global const TYPE *src, __global TYPE *dst, \
+                   __global const Span *xs, __global const Span *ys, \
+                   int channels, int src_stride, int first_src_y, int first_dst_y) \
+{ \
+    int k = get_global_id(0), y = get_global_id(1); \
+    int c = k % 3; \
+    Span xspan = xs[k / 3], yspan = ys[first_dst_y + y]; \
+    int i = (yspan.start - first_src_y) * src_stride + xspan.start * 3 + (2 - c); \
+    float total = 0.0f; \
+    for (int dy = 0; dy < yspan.count; ++dy, i += src_stride) { \
+        float row = 0.0f; \
+        for (int dx = 0; dx < xspan.count; ++dx) \
+            row += (float)src[i + dx * 3] * xspan.weight[dx]; \
+        total += row * yspan.weight[dy]; \
+    } \
+    dst[y * get_global_size(0) + k] = STORE(total); \
+}
+AREA_BGR_REV(area8_bgr_rev, uchar, convert_uchar_sat_rte)
+AREA_BGR_REV(area16_bgr_rev, ushort, convert_ushort_sat_rte)
 '''
 
 
@@ -190,12 +223,13 @@ class ExactAreaGpu:
         """Return CPU-equivalent cv2.resize(image, dsize, interpolation=INTER_AREA), or None.
 
         dsize is explicit (OpenCV may use different coefficients with fx/fy).
-        Large contiguous uint8/uint16 gray, BGR and BGRA images are eligible.
+        Large contiguous uint8/uint16 gray, BGR, BGRA and bgr_rev images are eligible.
         Both axes must shrink by at most eight, with a fractional factor on
         at least one axis. Integer fast paths remain ordinary CPU operations.
         """
+        bgr_rev = _is_bgr_rev(image)
         if (self._disabled or image.dtype not in (np.uint8, np.uint16)
-                or image.ndim not in (2, 3) or not image.flags.c_contiguous
+                or image.ndim not in (2, 3) or not (image.flags.c_contiguous or bgr_rev)
                 or image.nbytes < _MIN_SOURCE_BYTES):
             return None
         h, w = image.shape[:2]
@@ -222,13 +256,14 @@ class ExactAreaGpu:
                 shape = (height, width) if channels == 1 else (height, width, channels)
                 output = np.empty(shape, image.dtype)
                 src, dst, xs, ys = self._buffers
-                kernel = self._kernels[image.itemsize]
+                kernel = self._kernels[(image.itemsize, bgr_rev)]
+                source_view = image[..., ::-1] if bgr_rev else image
                 starts, counts = self._ys['start'], self._ys['count']
                 for row in range(0, height, self._rows):
                     stop = min(row + self._rows, height)
                     first = starts[row]
                     last = starts[stop - 1] + counts[stop - 1]
-                    band = image[first:last]
+                    band = source_view[first:last]
                     self._cl.enqueue_copy(self._queue, src, band, is_blocking=False)
                     kernel(self._queue, (width * channels, stop - row), None, src, dst, xs, ys,
                            np.int32(channels), np.int32(w * channels), first, np.int32(row))

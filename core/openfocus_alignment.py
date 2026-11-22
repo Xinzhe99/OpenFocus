@@ -4,9 +4,12 @@ The wide detector uses float32 evaluation order. Plans retain immutable source
 identities, never decoded frame stacks.
 """
 from dataclasses import dataclass
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import math
 import os
+import sys
+import threading
 
 import numpy as np
 
@@ -17,6 +20,45 @@ from core.registration_errors import AlignmentEstimationError, RejectedAlignment
 
 _F32 = np.float32
 _WEIGHTS = (12, 64, 37, 2)
+_HASH_CHUNK_BYTES = 4 * 1024 * 1024
+_PARALLEL_PIXEL_THRESHOLD = 512 * 512
+_POOL_LOCK = threading.Lock()
+_ALIGNMENT_POOL = None
+
+
+def _is_bgr_rev(image):
+    return (isinstance(image, np.ndarray) and not image.flags.c_contiguous
+            and image.ndim == 3 and image.shape[2] == 3
+            and image.dtype in (np.uint8, np.uint16)
+            and image[..., ::-1].flags.c_contiguous)
+
+
+def _alignment_pool():
+    global _ALIGNMENT_POOL
+    if _ALIGNMENT_POOL is None:
+        with _POOL_LOCK:
+            if _ALIGNMENT_POOL is None:
+                max_workers = min(8, max(1, os.cpu_count() or 1))
+                _ALIGNMENT_POOL = ThreadPoolExecutor(
+                    max_workers=max_workers, thread_name_prefix='openfocus-align',
+                )
+    return _ALIGNMENT_POOL
+
+
+def _alignment_workers(work_items, min_items=_PARALLEL_PIXEL_THRESHOLD):
+    if work_items < min_items:
+        return 1
+    reg = sys.modules.get('core.registration')
+    if reg is not None:
+        var = getattr(reg, '_explicit_warp_threads', None)
+        explicit = var.get() if var is not None else None
+        if explicit is not None:
+            try:
+                value = explicit() if callable(explicit) else explicit
+                return max(1, min(8, int(value)))
+            except Exception:
+                return 1
+    return min(8, max(1, os.cpu_count() or 1))
 
 
 def _check_cancel(should_cancel):
@@ -25,14 +67,46 @@ def _check_cancel(should_cancel):
         raise RegistrationCancelled()
 
 
-def _run_row_bands(rows, band, should_cancel, fn, *args):
+def _run_row_bands(rows, band, should_cancel, fn, *args, parallel_pixels=0):
     """Run a row-bounded native kernel, checking cancellation between bands."""
-    if should_cancel is None:
-        fn(*args, 0, rows)
-        return
-    for start in range(0, rows, band):
+    if rows <= 0:
         _check_cancel(should_cancel)
-        fn(*args, start, min(rows, start + band))
+        return
+    workers = (_alignment_workers(parallel_pixels)
+               if parallel_pixels > 0 and rows > band else 1)
+    if workers <= 1:
+        if should_cancel is None:
+            fn(*args, 0, rows)
+            return
+        for start in range(0, rows, band):
+            _check_cancel(should_cancel)
+            fn(*args, start, min(rows, start + band))
+        _check_cancel(should_cancel)
+        return
+    pool = _alignment_pool()
+    if should_cancel is None:
+        chunks = min(workers, rows)
+        futures = [
+            pool.submit(fn, *args, (rows * i) // chunks, (rows * (i + 1)) // chunks)
+            for i in range(1, chunks)
+        ]
+        try:
+            fn(*args, 0, rows // chunks)
+        finally:
+            for fut in futures:
+                fut.result()
+        return
+    wave = workers * band
+    for w_start in range(0, rows, wave):
+        _check_cancel(should_cancel)
+        w_stop = min(rows, w_start + wave)
+        ranges = [(s, min(w_stop, s + band)) for s in range(w_start, w_stop, band)]
+        futures = [pool.submit(fn, *args, s, e) for s, e in ranges[1:]]
+        try:
+            fn(*args, ranges[0][0], ranges[0][1])
+        finally:
+            for fut in futures:
+                fut.result()
     _check_cancel(should_cancel)
 
 
@@ -52,7 +126,45 @@ def _geometry(frame, *, internal_float=False):
 def _hash_pixels(image, should_cancel):
     _check_cancel(should_cancel)
     digest = hashlib.sha256()
-    digest.update(memoryview(np.ascontiguousarray(image)).cast('B'))
+    if image.flags.c_contiguous:
+        if should_cancel is None or image.nbytes <= _HASH_CHUNK_BYTES:
+            digest.update(memoryview(image).cast('B'))
+        else:
+            view = memoryview(image).cast('B')
+            for offset in range(0, len(view), _HASH_CHUNK_BYTES):
+                _check_cancel(should_cancel)
+                digest.update(view[offset:offset + _HASH_CHUNK_BYTES])
+    elif _is_bgr_rev(image):
+        h, w = image.shape[:2]
+        if h > 0 and w > 0:
+            row_bytes = max(1, w * 3 * image.dtype.itemsize)
+            band = max(1, min(h, (2 * 1024 * 1024) // row_bytes))
+            buf = np.empty((min(band, h), w, 3), dtype=image.dtype)
+            src_rgb = image[..., ::-1]
+            swap_fn = (
+                (_native_kernels.swap_rgb_to_bgr_rows_u8 if image.dtype == np.uint8
+                 else _native_kernels.swap_rgb_to_bgr_rows_u16)
+                if _native_kernels.available() else None
+            )
+            for start in range(0, h, band):
+                _check_cancel(should_cancel)
+                stop = min(h, start + band)
+                n = stop - start
+                out = buf[:n]
+                if swap_fn is not None:
+                    swap_fn(src_rgb[start:stop], out, 0, n)
+                else:
+                    out[...] = image[start:stop]
+                digest.update(memoryview(out).cast('B'))
+    elif image.ndim == 0 or image.size == 0:
+        digest.update(memoryview(np.ascontiguousarray(image)).cast('B'))
+    else:
+        rows = image.shape[0]
+        row_bytes = max(1, image[0].nbytes)
+        band = max(1, _HASH_CHUNK_BYTES // row_bytes)
+        for start in range(0, rows, band):
+            _check_cancel(should_cancel)
+            digest.update(memoryview(np.ascontiguousarray(image[start:start + band])).cast('B'))
     _check_cancel(should_cancel)
     return digest.hexdigest()
 
@@ -269,17 +381,14 @@ def _gray16(image, should_cancel):
     _check_cancel(should_cancel)
     gray = np.empty(image.shape[:2], dtype=np.uint16)
     if _native_kernels.available() and image.ndim in (2, 3):
-        kernel = (_native_kernels.gray16_u8 if image.dtype == np.uint8 else
-                  _native_kernels.gray16_u16 if image.dtype == np.uint16 else None)
-        if kernel is not None:
-            if should_cancel is None:
-                kernel(image, gray)
-            else:
-                # Bound native work between cancellation checks without copying rows.
-                for start in range(0, len(image), 128):
-                    _check_cancel(should_cancel)
-                    kernel(image[start:start + 128], gray[start:start + 128])
-                _check_cancel(should_cancel)
+        kernel_rows = (_native_kernels.gray16_u8_rows if image.dtype == np.uint8 else
+                       _native_kernels.gray16_u16_rows if image.dtype == np.uint16 else None)
+        if kernel_rows is not None:
+            src = image[..., ::-1] if _is_bgr_rev(image) else image
+            _run_row_bands(
+                len(src), 128, should_cancel, kernel_rows, src, gray,
+                parallel_pixels=src.shape[0] * src.shape[1],
+            )
             return gray
     for y, row in enumerate(image):
         _check_cancel(should_cancel)
@@ -296,7 +405,14 @@ def _down_half(src, should_cancel):
     """Separable (12,64,37,2)/115, rounded after EACH axis, edge replicated."""
     _check_cancel(should_cancel)
     if _native_kernels.available() and src.dtype == np.uint16 and src.ndim == 2:
-        return _native_kernels.down_half(src)
+        h, w = src.shape
+        oh = (h + 1) // 2
+        out = np.empty((oh, (w + 1) // 2), dtype=np.uint16)
+        _run_row_bands(
+            oh, 128, should_cancel, _native_kernels.down_half_rows, src, out,
+            parallel_pixels=h * w,
+        )
+        return out
     h, w = src.shape
     cols = np.arange(0, w, 2)
     out = np.empty(((h + 1) // 2, (w + 1) // 2), dtype=np.uint16)
@@ -426,10 +542,18 @@ def _warp(image, dx, dy, should_cancel):
     output = np.empty_like(image)
     if (_native_kernels.available() and image.dtype in (np.uint8, np.uint16)
             and image.ndim in (2, 3)):
-        _run_row_bands(
-            h, 128, should_cancel, _native_kernels.warp_int_rows,
-            image, output, _F32(dx), _F32(dy),
-        )
+        if _is_bgr_rev(image):
+            _run_row_bands(
+                h, 128, should_cancel, _native_kernels.warp_int_rows_bgr_rev,
+                image[..., ::-1], output, _F32(dx), _F32(dy),
+                parallel_pixels=h * w,
+            )
+        else:
+            _run_row_bands(
+                h, 128, should_cancel, _native_kernels.warp_int_rows,
+                image, output, _F32(dx), _F32(dy),
+                parallel_pixels=h * w,
+            )
         return output
     x = np.arange(w, dtype=np.float32) - _F32(dx)
     y = np.arange(h, dtype=np.float32) - _F32(dy)
@@ -545,7 +669,10 @@ def fast_downsize(img, should_cancel=None):
     oh = (h + 1) // 2
     out = np.empty((oh, (w + 1) // 2), np.uint16)
     if _native_kernels.available() and img.dtype == np.uint16 and img.ndim == 2:
-        _run_row_bands(oh, 128, should_cancel, _native_kernels.fast_downsize_u16_rows, img, out)
+        _run_row_bands(
+            oh, 128, should_cancel, _native_kernels.fast_downsize_u16_rows, img, out,
+            parallel_pixels=h * w,
+        )
         return out
     xs = np.arange(0, w, 2)
     xe = np.minimum(xs + 1, w - 1)
@@ -670,7 +797,7 @@ def enumerate_candidates(cfg8, cnts, steps, M, start=0, stop=None):
     out[:, 7] = _ONE_F32
     return N, out
 
-def _score_chunk(img_a, img_b, xs, ys, cand):
+def _score_chunk(img_a, img_b, xs, ys, cand, *, _ref=None):
     """img_a: ref u16 level; img_b: test u16 level; cand: (C,8) f32.
 
     Returns per-candidate (sum i64, sumsq i64, cnt i64) with oob pixels
@@ -714,17 +841,45 @@ def _score_chunk(img_a, img_b, xs, ys, cand):
     idx = np.nonzero(alive)[0]
     if (_native_kernels.available() and img_a.dtype == np.uint16
             and img_b.dtype == np.uint16 and img_a.ndim == 2 and img_b.ndim == 2):
-        xs_i = xs.astype(np.int64)
-        ys_i = ys.astype(np.int64)
-        ref = np.ascontiguousarray(img_a[ys_i[:, None], xs_i[None, :]], dtype=np.uint16)
+        if _ref is not None:
+            ref = _ref
+        else:
+            xs_i = xs.astype(np.int64)
+            ys_i = ys.astype(np.int64)
+            ref = np.ascontiguousarray(img_a[ys_i[:, None], xs_i[None, :]], dtype=np.uint16)
         xs_f = np.ascontiguousarray(xs, dtype=np.float32)
         ys_f = np.ascontiguousarray(ys, dtype=np.float32)
-        _native_kernels.score_chunk_u16(
-            ref, img_b, xs_f, ys_f,
-            fields["P08"], fields["P0C"], fields["P18"], fields["P1C"],
-            fields["tx"], fields["ty"], fields["cx"], fields["cy"],
-            idx, ssum, ssq, cnt,
-        )
+        n_alive = len(idx)
+        work = n_alive * ref.size
+        workers = (_alignment_workers(max(_PARALLEL_PIXEL_THRESHOLD, work))
+                   if n_alive >= 16 and work >= 32_768 else 1)
+        workers = min(workers, max(1, n_alive // 8))
+        p08, p0c, p18, p1c = fields["P08"], fields["P0C"], fields["P18"], fields["P1C"]
+        tx_a, ty_a, cx_a, cy_a = fields["tx"], fields["ty"], fields["cx"], fields["cy"]
+        if workers <= 1:
+            _native_kernels.score_chunk_u16_slice(
+                ref, img_b, xs_f, ys_f, p08, p0c, p18, p1c, tx_a, ty_a, cx_a, cy_a,
+                idx, 0, n_alive, ssum, ssq, cnt,
+            )
+        else:
+            pool = _alignment_pool()
+            futures = [
+                pool.submit(
+                    _native_kernels.score_chunk_u16_slice,
+                    ref, img_b, xs_f, ys_f, p08, p0c, p18, p1c, tx_a, ty_a, cx_a, cy_a,
+                    idx, (n_alive * i) // workers, (n_alive * (i + 1)) // workers,
+                    ssum, ssq, cnt,
+                )
+                for i in range(1, workers)
+            ]
+            try:
+                _native_kernels.score_chunk_u16_slice(
+                    ref, img_b, xs_f, ys_f, p08, p0c, p18, p1c, tx_a, ty_a, cx_a, cy_a,
+                    idx, 0, n_alive // workers, ssum, ssq, cnt,
+                )
+            finally:
+                for fut in futures:
+                    fut.result()
         return ssum, ssq, cnt
     u, v = map_coords({k: v[idx] for k, v in fields.items()},
                       xs[None, :], ys[:, None])
@@ -741,6 +896,9 @@ def _score_chunk(img_a, img_b, xs, ys, cand):
     ssum[idx] = d.sum(axis=(1, 2))
     ssq[idx] = (d * d).sum(axis=(1, 2))
     return ssum, ssq, cnt
+
+
+_ORIGINAL_SCORE_CHUNK = _score_chunk
 
 
 def _decide(ssum, ssq, cnt):
@@ -850,11 +1008,17 @@ def grid_level_4d(img_a, img_b, base8, ranges4, coef=1.0, grid_half=8,
         best_score = np.float32(np.inf)
         winner = None
         samples = len(xs) * len(ys)
-        chunk = max(1, int(65_536 // max(samples, 1)))
+        ref_grid = (np.ascontiguousarray(A[ys[:, None], xs[None, :]], dtype=np.uint16)
+                    if _native_kernels.available() else None)
+        chunk_budget = 262_144 if _native_kernels.available() else 65_536
+        chunk = max(1, int(chunk_budget // max(samples, 1)))
         for lo in range(0, N, chunk):
             _check_cancel(should_cancel)
             _, cand = enumerate_candidates(base, cnts, steps, M, lo, lo + chunk)
-            ssum, ssq, cnt = _score_chunk(A, B, xs_f, ys_f, cand)
+            if _score_chunk is _ORIGINAL_SCORE_CHUNK:
+                ssum, ssq, cnt = _score_chunk(A, B, xs_f, ys_f, cand, _ref=ref_grid)
+            else:
+                ssum, ssq, cnt = _score_chunk(A, B, xs_f, ys_f, cand)
             win, sc = _decide(ssum, ssq, cnt)
             if win >= 0 and sc < best_score:
                 winner, best_score = cand[win].copy(), sc
@@ -1173,13 +1337,23 @@ def _warp_alignment(image, f8, should_cancel):
     output = np.empty_like(image)
     if (_native_kernels.available() and image.ndim in (2, 3)
             and image.dtype in (np.uint8, np.uint16, np.float32, np.float64)):
-        kernel = (_native_kernels.warp_alignment_float_rows if image.dtype.kind == 'f'
-                  else _native_kernels.warp_alignment_int_rows)
-        _run_row_bands(
-            h, 128, should_cancel, kernel, image, output,
-            fields["tx"], fields["ty"], fields["cx"], fields["cy"],
-            fields["P08"], fields["P0C"], fields["P18"], fields["P1C"],
-        )
+        if _is_bgr_rev(image):
+            _run_row_bands(
+                h, 128, should_cancel, _native_kernels.warp_alignment_int_rows_bgr_rev,
+                image[..., ::-1], output,
+                fields["tx"], fields["ty"], fields["cx"], fields["cy"],
+                fields["P08"], fields["P0C"], fields["P18"], fields["P1C"],
+                parallel_pixels=h * w,
+            )
+        else:
+            kernel = (_native_kernels.warp_alignment_float_rows if image.dtype.kind == 'f'
+                      else _native_kernels.warp_alignment_int_rows)
+            _run_row_bands(
+                h, 128, should_cancel, kernel, image, output,
+                fields["tx"], fields["ty"], fields["cx"], fields["cy"],
+                fields["P08"], fields["P0C"], fields["P18"], fields["P1C"],
+                parallel_pixels=h * w,
+            )
         return output
     xs = np.arange(w, dtype=np.float32)
     for y in range(h):
@@ -1218,6 +1392,7 @@ def alignment_valid_mask(transform, *, should_cancel=None):
             mask, h, w,
             fields["tx"], fields["ty"], fields["cx"], fields["cy"],
             fields["P08"], fields["P0C"], fields["P18"], fields["P1C"],
+            parallel_pixels=h * w,
         )
         return mask
     xs = np.arange(w, dtype=np.float32)
