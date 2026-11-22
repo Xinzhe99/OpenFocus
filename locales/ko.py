@@ -1032,6 +1032,8 @@ PACK = {
     "advanced_privacy": "개인정보 보호",
     "advanced_working_storage": "작업 파일 저장소",
     "advanced_tile_memory_status": "{method} 방식은 전체 이미지를 처리하는 데 필요한 메모리가 부족하면 타일을 사용합니다.",
+    "advanced_tile_manual": "수동 타일 설정",
+    "advanced_tile_neural_status": "{method} 방식은 장치와 사용 가능한 메모리에 따라 최대 {block} px의 타일을 선택할 수 있습니다.",
     "advanced_settings_intro": "성능 및 정렬 설정은 속도와 메모리에 영향을 줍니다. AI 출력 모드는 융합 결과를, 정렬 너비는 정렬 추정을 바꿉니다.",
     "render_memory_commit": "Windows 커밋 여유(RAM과 페이지 파일): {size}.",
     "render_memory_device": "예상 융합 장치: {device}.",
