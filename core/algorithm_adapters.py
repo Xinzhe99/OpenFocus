@@ -125,13 +125,15 @@ def registration_ecc(registration, images, thread_count=4, should_cancel=None, *
 
 
 def registration_openfocus(registration, images, thread_count=4, should_cancel=None, **parameters):
-    from core.registration import _align_openfocus_impl
-    return _align_openfocus_impl(images, should_cancel=should_cancel,
-        max_shift_ratio=parameters['max_shift_ratio'],
-        failure_policy=parameters['failure_policy'], reference_frame=parameters['reference_frame'],
-        rotation=parameters['rotation'], magnification=parameters['magnification'],
-        defer_warps=registration.defer_warps, output_path=parameters.get('output_path'),
-        plan_callback=lambda plan: setattr(registration, 'alignment_plan', plan))
+    from core.registration import _align_openfocus_impl, deferred_warp_threads
+
+    with deferred_warp_threads(thread_count if thread_count and thread_count > 0 else None):
+        return _align_openfocus_impl(images, should_cancel=should_cancel,
+            max_shift_ratio=parameters['max_shift_ratio'],
+            failure_policy=parameters['failure_policy'], reference_frame=parameters['reference_frame'],
+            rotation=parameters['rotation'], magnification=parameters['magnification'],
+            defer_warps=registration.defer_warps, output_path=parameters.get('output_path'),
+            plan_callback=lambda plan: setattr(registration, 'alignment_plan', plan))
 
 
 def depth_dct(images, progress_callback=None, should_cancel=None, **parameters):

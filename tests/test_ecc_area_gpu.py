@@ -121,10 +121,13 @@ def test_hardware_fractional_eightfold_area_matches_cpu(hardware_gpu):
     np.testing.assert_array_equal(hardware_gpu.resize(image, dsize), expected)
 
 
-@pytest.mark.parametrize('drain_fails', [False, True])
-def test_ecc_area_program_cache_reuse_and_error_drain(monkeypatch, drain_fails):
+@pytest.mark.parametrize('outcome', ['device_lost', 'drain_failed', 'cancelled'])
+def test_ecc_area_program_cache_failure_recovery(monkeypatch, outcome):
     import sys
     from fusion_methods import _openfocus_gpu
+    from core.registration import RegistrationCancelled
+
+    drain_fails = outcome == 'drain_failed'
 
     builds = []
     events = []
@@ -152,9 +155,13 @@ def test_ecc_area_program_cache_reuse_and_error_drain(monkeypatch, drain_fails):
         return None
 
     fail_copy = [False]
+    cancelled_readbacks = []
 
     def fake_enqueue_copy(queue, dst, src, is_blocking=True):
         if fail_copy[0] and is_blocking:
+            if outcome == 'cancelled':
+                cancelled_readbacks.append(dst.shape[0])
+                return
             if drain_fails:
                 raise ValueError('host readback failed')
             raise FakeError('queue lost')
@@ -185,6 +192,7 @@ def test_ecc_area_program_cache_reuse_and_error_drain(monkeypatch, drain_fails):
     monkeypatch.setitem(sys.modules, 'pyopencl', fake_cl)
     monkeypatch.setattr(area, '_cpu_contract', lambda: True)
     monkeypatch.setattr(area, '_MIN_SOURCE_BYTES', 0)
+    monkeypatch.setattr(area, '_TILE_ROWS', 32)
     monkeypatch.setattr(cv2.ipp, 'useIPP_NotExact', lambda: False)
     monkeypatch.setattr(_openfocus_gpu, '_device', lambda cl: fake_dev)
     monkeypatch.setattr(_openfocus_gpu, '_free_vram', lambda dev: (4 * 1024**3, 8 * 1024**3))
@@ -195,14 +203,14 @@ def test_ecc_area_program_cache_reuse_and_error_drain(monkeypatch, drain_fails):
         self._cl = fake_cl
         return True
 
-    image = np.zeros((182, 182), np.uint8)
+    image = np.zeros((182, 182, 3), np.uint8)[..., ::-1]
     try:
         g1 = area.ExactAreaGpu()
         gpu_holder.append(g1)
         monkeypatch.setattr(g1, '_select_device', lambda: fake_select(g1))
         assert g1.resize(image, (64, 64)) is not None
 
-        g2 = area.ExactAreaGpu()
+        g2 = area.ExactAreaGpu(should_cancel=lambda: bool(cancelled_readbacks))
         gpu_holder.append(g2)
         monkeypatch.setattr(g2, '_select_device', lambda: fake_select(g2))
         assert g2.resize(image, (64, 64)) is not None
@@ -212,6 +220,17 @@ def test_ecc_area_program_cache_reuse_and_error_drain(monkeypatch, drain_fails):
         assert g1._queue is g2._queue
 
         fail_copy[0] = True
+        if outcome == 'cancelled':
+            with pytest.raises(RegistrationCancelled):
+                g2.resize(image, (64, 64))
+            assert len(cancelled_readbacks) == 1
+            assert not events
+            assert g2.frames_resized == 1
+            fail_copy[0] = False
+            cancelled_readbacks.clear()
+            assert g2.resize(image, (64, 64)) is not None
+            assert len(builds) == 1
+            return
         assert g2.resize(image, (64, 64)) is None
         assert events == [('finish', True)]
         assert g2._disabled is True

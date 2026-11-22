@@ -23,28 +23,77 @@ def available():
 
 if _HAVE_NUMBA:
     @njit(cache=True, nogil=True)
-    def gray16_u8(image, out):
-        h, w = image.shape[:2]
-        take = min(image.shape[2], 3) if image.ndim == 3 else 1
-        for y in range(h):
+    def swap_rgb_to_bgr_rows_u8(src, dst, y_start, y_stop):
+        w = src.shape[1]
+        for y in range(y_start, y_stop):
             for x in range(w):
-                if image.ndim == 2:
-                    value = np.uint32(image[y, x])
-                else:
+                dst[y, x, 0] = src[y, x, 2]
+                dst[y, x, 1] = src[y, x, 1]
+                dst[y, x, 2] = src[y, x, 0]
+
+    @njit(cache=True, nogil=True)
+    def swap_rgb_to_bgr_rows_u16(src, dst, y_start, y_stop):
+        w = src.shape[1]
+        for y in range(y_start, y_stop):
+            for x in range(w):
+                dst[y, x, 0] = src[y, x, 2]
+                dst[y, x, 1] = src[y, x, 1]
+                dst[y, x, 2] = src[y, x, 0]
+
+    @njit(cache=True, nogil=True)
+    def swap_bgr_inplace_rows_u8(arr, y_start, y_stop):
+        w = arr.shape[1]
+        for y in range(y_start, y_stop):
+            for x in range(w):
+                v0 = arr[y, x, 0]
+                arr[y, x, 0] = arr[y, x, 2]
+                arr[y, x, 2] = v0
+
+    @njit(cache=True, nogil=True)
+    def swap_bgr_inplace_rows_u16(arr, y_start, y_stop):
+        w = arr.shape[1]
+        for y in range(y_start, y_stop):
+            for x in range(w):
+                v0 = arr[y, x, 0]
+                arr[y, x, 0] = arr[y, x, 2]
+                arr[y, x, 2] = v0
+
+    @njit(cache=True, nogil=True)
+    def gray16_u8_rows(image, out, y_start, y_stop):
+        w = image.shape[1]
+        if image.ndim == 2:
+            for y in range(y_start, y_stop):
+                for x in range(w):
+                    out[y, x] = np.uint16(np.uint32(image[y, x]) << np.uint32(8))
+        elif image.shape[2] >= 3:
+            for y in range(y_start, y_stop):
+                for x in range(w):
+                    value = (
+                        np.uint32(image[y, x, 0])
+                        + np.uint32(image[y, x, 1])
+                        + np.uint32(image[y, x, 2])
+                    ) // np.uint32(3)
+                    out[y, x] = np.uint16(value << np.uint32(8))
+        else:
+            take = image.shape[2]
+            for y in range(y_start, y_stop):
+                for x in range(w):
                     value = np.uint32(0)
                     for c in range(take):
                         value += np.uint32(image[y, x, c])
-                    value //= np.uint32(take)
-                out[y, x] = np.uint16(value << np.uint32(8))
+                    out[y, x] = np.uint16((value // np.uint32(take)) << np.uint32(8))
         return out
 
     @njit(cache=True, nogil=True)
-    def down_half(src):
+    def gray16_u8(image, out):
+        return gray16_u8_rows(image, out, 0, image.shape[0])
+
+    @njit(cache=True, nogil=True)
+    def down_half_rows(src, out, oy_start, oy_stop):
         h, w = src.shape
-        oh, ow = (h + 1) // 2, (w + 1) // 2
-        out = np.empty((oh, ow), np.uint16)
-        for oy in range(oh):
-            scratch = np.empty(w, np.uint32)
+        ow = out.shape[1]
+        scratch = np.empty(w, np.uint32)
+        for oy in range(oy_start, oy_stop):
             y = 2 * oy
             for x in range(w):
                 v = np.uint32(0)
@@ -68,21 +117,43 @@ if _HAVE_NUMBA:
                 out[oy, ox] = np.uint16((v + np.uint32(57)) // np.uint32(115))
         return out
 
+    @njit(cache=True, nogil=True)
+    def down_half(src):
+        h, w = src.shape
+        oh, ow = (h + 1) // 2, (w + 1) // 2
+        out = np.empty((oh, ow), np.uint16)
+        return down_half_rows(src, out, 0, oh)
+
 if _HAVE_NUMBA:
     @njit(cache=True, nogil=True)
-    def gray16_u16(image, out):
-        h, w = image.shape[:2]
-        take = min(image.shape[2], 3) if image.ndim == 3 else 1
-        for y in range(h):
-            for x in range(w):
-                if image.ndim == 2:
+    def gray16_u16_rows(image, out, y_start, y_stop):
+        w = image.shape[1]
+        if image.ndim == 2:
+            for y in range(y_start, y_stop):
+                for x in range(w):
                     out[y, x] = np.uint16(image[y, x])
-                else:
+        elif image.shape[2] >= 3:
+            for y in range(y_start, y_stop):
+                for x in range(w):
+                    value = (
+                        np.uint32(image[y, x, 0])
+                        + np.uint32(image[y, x, 1])
+                        + np.uint32(image[y, x, 2])
+                    ) // np.uint32(3)
+                    out[y, x] = np.uint16(value)
+        else:
+            take = image.shape[2]
+            for y in range(y_start, y_stop):
+                for x in range(w):
                     value = np.uint32(0)
                     for c in range(take):
                         value += np.uint32(image[y, x, c])
                     out[y, x] = np.uint16(value // np.uint32(take))
         return out
+
+    @njit(cache=True, nogil=True)
+    def gray16_u16(image, out):
+        return gray16_u16_rows(image, out, 0, image.shape[0])
 
 if _HAVE_NUMBA:
     @njit(cache=True, nogil=True)
@@ -163,6 +234,35 @@ if _HAVE_NUMBA:
                         out[y, x] = _bilinear_u32_2d(
                             image, iy, jy, ix[x], jx[x], np.uint32(256) - fxx, fxx, gy, fy
                         )
+        elif image.shape[2] == 3:
+            for y in range(y_start, y_stop):
+                iy, jy, fy, inv_y = _axis(np.float32(y) - dy32, h)
+                if inv_y:
+                    for x in range(w):
+                        out[y, x, 0] = 0
+                        out[y, x, 1] = 0
+                        out[y, x, 2] = 0
+                    continue
+                gy = np.uint32(256) - fy
+                for x in range(w):
+                    if inv_x[x]:
+                        out[y, x, 0] = 0
+                        out[y, x, 1] = 0
+                        out[y, x, 2] = 0
+                    else:
+                        fxx = fx[x]
+                        gxx = np.uint32(256) - fxx
+                        ixx = ix[x]
+                        jxx = jx[x]
+                        t0 = np.uint32(image[iy, ixx, 0]) * gxx + np.uint32(image[iy, jxx, 0]) * fxx
+                        b0 = np.uint32(image[jy, ixx, 0]) * gxx + np.uint32(image[jy, jxx, 0]) * fxx
+                        out[y, x, 0] = (t0 * gy + b0 * fy) >> np.uint32(16)
+                        t1 = np.uint32(image[iy, ixx, 1]) * gxx + np.uint32(image[iy, jxx, 1]) * fxx
+                        b1 = np.uint32(image[jy, ixx, 1]) * gxx + np.uint32(image[jy, jxx, 1]) * fxx
+                        out[y, x, 1] = (t1 * gy + b1 * fy) >> np.uint32(16)
+                        t2 = np.uint32(image[iy, ixx, 2]) * gxx + np.uint32(image[iy, jxx, 2]) * fxx
+                        b2 = np.uint32(image[jy, ixx, 2]) * gxx + np.uint32(image[jy, jxx, 2]) * fxx
+                        out[y, x, 2] = (t2 * gy + b2 * fy) >> np.uint32(16)
         else:
             channels = image.shape[2]
             for y in range(y_start, y_stop):
@@ -188,6 +288,51 @@ if _HAVE_NUMBA:
                             out[y, x, c] = (top * gy + bottom * fy) >> np.uint32(16)
 
     @njit(cache=True, nogil=True)
+    def warp_int_rows_bgr_rev(src_rgb, out, dx, dy, y_start, y_stop):
+        """Translate C-contiguous RGB view into C-contiguous BGR output with exact Q8.8 weights."""
+        h, w = src_rgb.shape[:2]
+        dx32 = np.float32(dx)
+        dy32 = np.float32(dy)
+        ix = np.empty(w, np.int32)
+        jx = np.empty(w, np.int32)
+        fx = np.empty(w, np.uint32)
+        inv_x = np.empty(w, np.bool_)
+        for x in range(w):
+            ix_v, jx_v, fx_v, inv_v = _axis(np.float32(x) - dx32, w)
+            ix[x] = ix_v
+            jx[x] = jx_v
+            fx[x] = fx_v
+            inv_x[x] = inv_v
+        for y in range(y_start, y_stop):
+            iy, jy, fy, inv_y = _axis(np.float32(y) - dy32, h)
+            if inv_y:
+                for x in range(w):
+                    out[y, x, 0] = 0
+                    out[y, x, 1] = 0
+                    out[y, x, 2] = 0
+                continue
+            gy = np.uint32(256) - fy
+            for x in range(w):
+                if inv_x[x]:
+                    out[y, x, 0] = 0
+                    out[y, x, 1] = 0
+                    out[y, x, 2] = 0
+                else:
+                    fxx = fx[x]
+                    gxx = np.uint32(256) - fxx
+                    ixx = ix[x]
+                    jxx = jx[x]
+                    t0 = np.uint32(src_rgb[iy, ixx, 2]) * gxx + np.uint32(src_rgb[iy, jxx, 2]) * fxx
+                    b0 = np.uint32(src_rgb[jy, ixx, 2]) * gxx + np.uint32(src_rgb[jy, jxx, 2]) * fxx
+                    out[y, x, 0] = (t0 * gy + b0 * fy) >> np.uint32(16)
+                    t1 = np.uint32(src_rgb[iy, ixx, 1]) * gxx + np.uint32(src_rgb[iy, jxx, 1]) * fxx
+                    b1 = np.uint32(src_rgb[jy, ixx, 1]) * gxx + np.uint32(src_rgb[jy, jxx, 1]) * fxx
+                    out[y, x, 1] = (t1 * gy + b1 * fy) >> np.uint32(16)
+                    t2 = np.uint32(src_rgb[iy, ixx, 0]) * gxx + np.uint32(src_rgb[iy, jxx, 0]) * fxx
+                    b2 = np.uint32(src_rgb[jy, ixx, 0]) * gxx + np.uint32(src_rgb[jy, jxx, 0]) * fxx
+                    out[y, x, 2] = (t2 * gy + b2 * fy) >> np.uint32(16)
+
+    @njit(cache=True, nogil=True)
     def fast_downsize_u16_rows(img, out, oy_start, oy_stop):
         """2x2 mean (sum+2)>>2 matching fast_downsize with odd edge replication."""
         h, w = img.shape
@@ -208,16 +353,15 @@ if _HAVE_NUMBA:
                 out[oy, ox] = np.uint16(total)
 
     @njit(cache=True, nogil=True)
-    def score_chunk_u16(ref, img_b, xs, ys, p08, p0c, p18, p1c, tx, ty, cx, cy,
-                        idx, ssum, ssq, cnt):
-        """Score alive similarity candidates over a uint16 level with zero temporaries."""
+    def score_chunk_u16_slice(ref, img_b, xs, ys, p08, p0c, p18, p1c, tx, ty, cx, cy,
+                              idx, k_start, k_stop, ssum, ssq, cnt):
+        """Score a slice [k_start, k_stop) of alive candidates over a uint16 level."""
         h, w = img_b.shape
         h_f = np.float32(h)
         w_f = np.float32(w)
         nyy = ys.shape[0]
         nxx = xs.shape[0]
-        n_alive = idx.shape[0]
-        for k in range(n_alive):
+        for k in range(k_start, k_stop):
             c_idx = idx[k]
             p08_k = p08[c_idx]
             p0c_k = p0c[c_idx]
@@ -250,6 +394,15 @@ if _HAVE_NUMBA:
             cnt[c_idx] = acc_cnt
 
     @njit(cache=True, nogil=True)
+    def score_chunk_u16(ref, img_b, xs, ys, p08, p0c, p18, p1c, tx, ty, cx, cy,
+                        idx, ssum, ssq, cnt):
+        """Score alive similarity candidates over a uint16 level with zero temporaries."""
+        score_chunk_u16_slice(
+            ref, img_b, xs, ys, p08, p0c, p18, p1c, tx, ty, cx, cy,
+            idx, 0, idx.shape[0], ssum, ssq, cnt,
+        )
+
+    @njit(cache=True, nogil=True)
     def warp_alignment_int_rows(image, out, tx, ty, cx, cy, p08, p0c, p18, p1c, y_start, y_stop):
         """Similarity warp for uint8/uint16 2D or 3D images matching _warp_alignment."""
         h, w = image.shape[:2]
@@ -267,6 +420,29 @@ if _HAVE_NUMBA:
                             image, iy, jy, ix, jx,
                             np.uint32(256) - fx, fx, np.uint32(256) - fy, fy,
                         )
+        elif image.shape[2] == 3:
+            for y in range(y_start, y_stop):
+                v_dy, u_dy = _map_uv_row(np.float32(y), cy, p1c, p0c)
+                for x in range(w):
+                    u, v = _map_uv_col(np.float32(x), cx, p08, p18, tx, ty, v_dy, u_dy)
+                    ix, jx, fx, inv_x = _axis(u, w)
+                    iy, jy, fy, inv_y = _axis(v, h)
+                    if inv_x or inv_y:
+                        out[y, x, 0] = 0
+                        out[y, x, 1] = 0
+                        out[y, x, 2] = 0
+                    else:
+                        gx = np.uint32(256) - fx
+                        gy = np.uint32(256) - fy
+                        t0 = np.uint32(image[iy, ix, 0]) * gx + np.uint32(image[iy, jx, 0]) * fx
+                        b0 = np.uint32(image[jy, ix, 0]) * gx + np.uint32(image[jy, jx, 0]) * fx
+                        out[y, x, 0] = (t0 * gy + b0 * fy) >> np.uint32(16)
+                        t1 = np.uint32(image[iy, ix, 1]) * gx + np.uint32(image[iy, jx, 1]) * fx
+                        b1 = np.uint32(image[jy, ix, 1]) * gx + np.uint32(image[jy, jx, 1]) * fx
+                        out[y, x, 1] = (t1 * gy + b1 * fy) >> np.uint32(16)
+                        t2 = np.uint32(image[iy, ix, 2]) * gx + np.uint32(image[iy, jx, 2]) * fx
+                        b2 = np.uint32(image[jy, ix, 2]) * gx + np.uint32(image[jy, jx, 2]) * fx
+                        out[y, x, 2] = (t2 * gy + b2 * fy) >> np.uint32(16)
         else:
             channels = image.shape[2]
             for y in range(y_start, y_stop):
@@ -285,6 +461,34 @@ if _HAVE_NUMBA:
                             top = np.uint32(image[iy, ix, c]) * gx + np.uint32(image[iy, jx, c]) * fx
                             bottom = np.uint32(image[jy, ix, c]) * gx + np.uint32(image[jy, jx, c]) * fx
                             out[y, x, c] = (top * gy + bottom * fy) >> np.uint32(16)
+
+    @njit(cache=True, nogil=True)
+    def warp_alignment_int_rows_bgr_rev(src_rgb, out, tx, ty, cx, cy, p08, p0c, p18, p1c,
+                                        y_start, y_stop):
+        """Similarity warp from C-contiguous RGB view into C-contiguous BGR output."""
+        h, w = src_rgb.shape[:2]
+        for y in range(y_start, y_stop):
+            v_dy, u_dy = _map_uv_row(np.float32(y), cy, p1c, p0c)
+            for x in range(w):
+                u, v = _map_uv_col(np.float32(x), cx, p08, p18, tx, ty, v_dy, u_dy)
+                ix, jx, fx, inv_x = _axis(u, w)
+                iy, jy, fy, inv_y = _axis(v, h)
+                if inv_x or inv_y:
+                    out[y, x, 0] = 0
+                    out[y, x, 1] = 0
+                    out[y, x, 2] = 0
+                else:
+                    gx = np.uint32(256) - fx
+                    gy = np.uint32(256) - fy
+                    t0 = np.uint32(src_rgb[iy, ix, 2]) * gx + np.uint32(src_rgb[iy, jx, 2]) * fx
+                    b0 = np.uint32(src_rgb[jy, ix, 2]) * gx + np.uint32(src_rgb[jy, jx, 2]) * fx
+                    out[y, x, 0] = (t0 * gy + b0 * fy) >> np.uint32(16)
+                    t1 = np.uint32(src_rgb[iy, ix, 1]) * gx + np.uint32(src_rgb[iy, jx, 1]) * fx
+                    b1 = np.uint32(src_rgb[jy, ix, 1]) * gx + np.uint32(src_rgb[jy, jx, 1]) * fx
+                    out[y, x, 1] = (t1 * gy + b1 * fy) >> np.uint32(16)
+                    t2 = np.uint32(src_rgb[iy, ix, 0]) * gx + np.uint32(src_rgb[iy, jx, 0]) * fx
+                    b2 = np.uint32(src_rgb[jy, ix, 0]) * gx + np.uint32(src_rgb[jy, jx, 0]) * fx
+                    out[y, x, 2] = (t2 * gy + b2 * fy) >> np.uint32(16)
 
     @njit(cache=True, nogil=True)
     def warp_alignment_float_rows(image, out, tx, ty, cx, cy, p08, p0c, p18, p1c, y_start, y_stop):
